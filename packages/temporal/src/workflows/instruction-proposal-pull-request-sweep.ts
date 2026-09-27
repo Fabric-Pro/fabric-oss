@@ -39,9 +39,29 @@
  * the sandbox, so the budget replays deterministically. Imports only the SDK,
  * the pure proposal types and type-only activity signatures. The activities
  * name no task queue: they run on the workflow's own, `fabric-worker`.
+ *
+ * Member proposal branches (Fizzy #2738 spec §8), behind
+ * `patched("instruction-proposal-branch-sweep-v1")`, so a tick recorded
+ * before them replays unchanged: after #2563's selection the branch rows
+ * are selected too (`selectDueInstructionProposalBranches`), and each
+ * sub-batch's branch rows follow its #2563 rows in the one queue, with
+ * Attach after Restart. Close, Recover and Restart wake the branch's
+ * workflow (`signalWithStart`), which alone writes git; Merge sync runs the
+ * §9.1 dispatch on the branch; Observe reconciles, and wakes the branch
+ * when its pull request ended, so its workflow classifies it; Attach joins
+ * a v2 proposal left without a branch, then wakes that branch. A branch
+ * selection that fails leaves #2563's rows to run as before.
  */
-import { log, proxyActivities } from "@temporalio/workflow";
+import { log, patched, proxyActivities } from "@temporalio/workflow";
+import type * as branchActivities from "../activities/instruction-proposal-branches";
 import type * as proposalActivities from "../activities/instruction-proposal-pull-requests";
+import {
+	BRANCH_SWEEP_LIMITS,
+	type BranchAttachItem,
+	type BranchSweepItem,
+	BRANCH_LOOP_ACTIVITY_TIMEOUTS as BT,
+	type DueBranchSweep,
+} from "../activities/lib/instruction-branch-types";
 import {
 	type DispatchProposalInput,
 	type DueProposalSweep,
@@ -56,6 +76,15 @@ import {
 } from "../lib/instruction-proposal-pull-request-types";
 
 type SubBatch = keyof DueProposalSweep;
+
+/** The patch marker that gates the branch sub-batches (spec §8). */
+export const BRANCH_SWEEP_PATCH = "instruction-proposal-branch-sweep-v1";
+
+/** One queued item: a #2563 row, a branch row, or an Attach proposal. */
+type Entry =
+	| { lane: "operation"; batch: SubBatch; item: ProposalSweepItem }
+	| { lane: "branch"; batch: SubBatch; item: BranchSweepItem }
+	| { lane: "attach"; item: BranchAttachItem };
 
 /** Spec §9's table order. */
 const ORDER: readonly SubBatch[] = [
@@ -135,6 +164,40 @@ function sweepActivities(budgetLeftMs: number) {
 	};
 }
 
+/** The branch sub-batches' proxies, with the same budget-bound schedule-to-close. */
+function branchSweepActivities(budgetLeftMs: number) {
+	const within = { scheduleToCloseTimeout: budgetLeftMs, retry: RETRY };
+	const {
+		attachInstructionProposalToBranch,
+		selectDueInstructionProposalBranches,
+		wakeInstructionProposalBranch,
+	} = proxyActivities<typeof proposalActivities>({
+		...within,
+		startToCloseTimeout: T.select.startToCloseMs,
+	});
+	const { reconcileInstructionProposalBranch } = proxyActivities<
+		typeof branchActivities
+	>({
+		...within,
+		startToCloseTimeout: BT.reconcile.startToCloseMs,
+		heartbeatTimeout: BT.reconcile.heartbeatMs,
+	});
+	const { dispatchBranchMergeSync } = proxyActivities<
+		typeof branchActivities
+	>({
+		...within,
+		startToCloseTimeout: BT.mergeSync.startToCloseMs,
+		heartbeatTimeout: BT.mergeSync.heartbeatMs,
+	});
+	return {
+		attachInstructionProposalToBranch,
+		dispatchBranchMergeSync,
+		reconcileInstructionProposalBranch,
+		selectDueInstructionProposalBranches,
+		wakeInstructionProposalBranch,
+	};
+}
+
 function idsOf(item: ProposalSweepItem): ProposalOperationInput {
 	return {
 		snapshotId: item.snapshotId,
@@ -153,6 +216,9 @@ function errorName(error: unknown): string {
 }
 
 export async function instructionProposalPullRequestSweepWorkflow(): Promise<ProposalSweepResult> {
+	// Recorded before any command, so a tick from before the branch
+	// sub-batches replays on the path it took.
+	const withBranches = patched(BRANCH_SWEEP_PATCH);
 	const deadline = Date.now() + PROPOSAL_SWEEP_BUDGET_MS;
 	// Every action's absolute deadline (#2540's poll pattern): the attempt
 	// stops issuing effects 10 s before the budget ends.
@@ -185,22 +251,52 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 		return result;
 	}
 
+	let dueBranches: DueBranchSweep | null = null;
+	if (withBranches) {
+		try {
+			dueBranches = await branchSweepActivities(
+				budgetLeft(),
+			).selectDueInstructionProposalBranches(BRANCH_SWEEP_LIMITS);
+		} catch (error) {
+			log.warn(
+				"Proposal branch sweep selection failed; the pull-request rows still run",
+				{ error: errorName(error) },
+			);
+		}
+	}
+
 	// One queue in the table's order. The selection already skips an id an
 	// earlier sub-batch took; this keeps it so if a later one repeats it.
-	const queue: Array<{ batch: SubBatch; item: ProposalSweepItem }> = [];
+	const queue: Entry[] = [];
 	const taken = new Set<string>();
 	for (const batch of ORDER) {
 		for (const item of due[batch]) {
 			result.selected++;
 			if (!taken.has(item.snapshotId)) {
 				taken.add(item.snapshotId);
-				queue.push({ batch, item });
+				queue.push({ lane: "operation", batch, item });
 			}
+		}
+		for (const item of dueBranches?.[batch] ?? []) {
+			result.selected++;
+			const key = `branch:${item.branchId}`;
+			if (!taken.has(key)) {
+				taken.add(key);
+				queue.push({ lane: "branch", batch, item });
+			}
+		}
+	}
+	for (const item of dueBranches?.attach ?? []) {
+		result.selected++;
+		const key = `attach:${item.snapshotId}`;
+		if (!taken.has(key)) {
+			taken.add(key);
+			queue.push({ lane: "attach", item });
 		}
 	}
 
 	const limited = new Set<string>();
-	const isLimited = (item: ProposalSweepItem): boolean =>
+	const isLimited = (item: { integrationId: string | null }): boolean =>
 		item.integrationId !== null && limited.has(item.integrationId);
 	const noteLimit = (answer: { rateLimitedIntegrationId?: string }) => {
 		if (answer.rateLimitedIntegrationId) {
@@ -278,6 +374,73 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 		}
 	};
 
+	/** A branch row's action (spec §8); the branch workflow alone writes git. */
+	const actOnBranch = async (batch: SubBatch, item: BranchSweepItem) => {
+		const wake = {
+			branchId: item.branchId,
+			projectId: item.projectId,
+			organizationId: item.organizationId,
+			deadlineAt,
+		};
+		const ids = {
+			branchId: item.branchId,
+			organizationId: item.organizationId,
+			deadlineAt,
+		};
+		const now = branchSweepActivities(budgetLeft());
+		switch (batch) {
+			case "close":
+			case "recover":
+			case "restart": {
+				await now.wakeInstructionProposalBranch(wake);
+				return;
+			}
+			case "mergeSync": {
+				await now.dispatchBranchMergeSync(ids);
+				return;
+			}
+			case "observe": {
+				const observed = await now.reconcileInstructionProposalBranch({
+					...ids,
+					expectedAttempt: item.attempt,
+				});
+				if (
+					(observed.state === "MERGED" ||
+						observed.state === "CLOSED") &&
+					mayStart()
+				) {
+					await branchSweepActivities(
+						budgetLeft(),
+					).wakeInstructionProposalBranch(wake);
+				}
+				return;
+			}
+		}
+	};
+
+	const run = async (entry: Entry): Promise<void> => {
+		switch (entry.lane) {
+			case "operation":
+				return act(entry.batch, entry.item);
+			case "branch":
+				return actOnBranch(entry.batch, entry.item);
+			case "attach": {
+				await branchSweepActivities(
+					budgetLeft(),
+				).attachInstructionProposalToBranch({
+					...entry.item,
+					deadlineAt,
+				});
+				return;
+			}
+		}
+	};
+
+	const keyOf = (entry: Entry) =>
+		entry.lane === "branch"
+			? { branchId: entry.item.branchId }
+			: { snapshotId: entry.item.snapshotId };
+
 	let next = 0;
 	const lane = async (): Promise<void> => {
 		while (next < queue.length) {
@@ -290,20 +453,20 @@ export async function instructionProposalPullRequestSweepWorkflow(): Promise<Pro
 			if (!entry) {
 				return;
 			}
-			if (isLimited(entry.item)) {
+			if (entry.lane !== "attach" && isLimited(entry.item)) {
 				result.rateLimited++;
 				continue;
 			}
 			try {
-				await act(entry.batch, entry.item);
+				await run(entry);
 				result.processed++;
 			} catch (error) {
 				result.failed++;
 				log.warn(
 					"Proposal pull-request sweep item failed; the next tick retries it",
 					{
-						batch: entry.batch,
-						snapshotId: entry.item.snapshotId,
+						batch: entry.lane === "attach" ? "attach" : entry.batch,
+						...keyOf(entry),
 						error: errorName(error),
 					},
 				);

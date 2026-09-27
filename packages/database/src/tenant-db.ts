@@ -120,6 +120,7 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectInstructionFile", // Coding Instructions files
 	"ProjectInstructionRepositorySync", // Coding Instructions repository sync configuration
 	"ProjectInstructionRepositorySyncRun", // Coding Instructions repository sync runs
+	"ProjectInstructionProposalBranch", // Member proposal branches (Fizzy #2738)
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
 	"DeletedMeetingArchive", // 7-day recovery window for unlinked meetings (#2355)
@@ -255,6 +256,10 @@ const ORG_ONLY_TABLES = new Set([
 	// member reads the same answer.
 	"OrganizationCliReach",
 	"OrganizationCliFirstReach",
+	// Member proposal branches (Fizzy #2738): the permanent ref reservation
+	// and the push journal carry neither userId nor projectId.
+	"ProjectInstructionProposalRefReservation",
+	"ProjectInstructionProposalBranchOperation",
 ]);
 
 /**
@@ -307,6 +312,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectInstructionFile: "projectId",
 	ProjectInstructionRepositorySync: "projectId",
 	ProjectInstructionRepositorySyncRun: "projectId",
+	ProjectInstructionProposalBranch: "projectId",
 	UserStory: "projectId",
 	TestCase: "projectId",
 	TestPlan: "projectId",

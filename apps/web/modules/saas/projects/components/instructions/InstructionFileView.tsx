@@ -89,24 +89,35 @@ function invocationLabel(
  *
  *  - a binary file, which has no text to put in a textarea. Replacing it goes
  *    through "Add file" at the same path.
- *  - a file past `maxInlineTextBytes`, which the reader itself only shows the
- *    first 200,000 characters of — saving a truncated body would silently
- *    delete the rest of the file.
+ *  - a file past `maxInlineTextBytes`, or one whose shown body was cut short
+ *    (offset paging or the 200,000-character reader cap) — saving a
+ *    truncated body would silently delete the rest of the file.
  *  - `.fabricignore`, because it decides what the version excludes and the
  *    validation gate binds it to the snapshot's frozen rules. The server
  *    refuses it too; this is the explanation, not the enforcement.
+ *
+ * `file` is always the EFFECTIVE (display) response — the branch's own
+ * `written` bytes when the viewer is looking at one, the published file's
+ * otherwise — never the published file alone: a branch version can be binary
+ * or truncated on its own, independent of whether the published file is, and
+ * editing has to be refused on what is actually about to be overwritten.
  */
 function editRefusal(
-	f: { path: string; body: string | null; size: number },
+	file: {
+		path: string;
+		body: string | null;
+		size: number;
+		truncated: boolean;
+	},
 	t: (key: string) => string,
 ): string | null {
-	if (f.path === FABRIC_IGNORE_FILE) {
+	if (file.path === FABRIC_IGNORE_FILE) {
 		return t("editFabricignore");
 	}
-	if (f.body === null) {
+	if (file.body === null) {
 		return t("editBinary");
 	}
-	if (f.size > SNAPSHOT_LIMITS.maxInlineTextBytes) {
+	if (file.truncated || file.size > SNAPSHOT_LIMITS.maxInlineTextBytes) {
 		return t("editTooLarge");
 	}
 	return null;
@@ -167,13 +178,96 @@ export function InstructionFileView({
 			},
 		}),
 	);
-	const parsed = useMemo(
-		() =>
-			q.data?.body != null && !PLAIN_KINDS.has(q.data.kind)
-				? parseFrontmatter(q.data.body)
-				: null,
-		[q.data],
-	);
+	/**
+	 * The viewer's accepting branch's projection of THIS path (Fizzy #2738
+	 * spec §10 "Editor"): a Fabric write whose bytes Fabric holds reads as
+	 * "From your branch"; bytes Fabric does not hold (a revert restored a
+	 * start version) shows a notice and falls back to the published body —
+	 * never a silent substitution. Only relevant on a repository-backed
+	 * project, where a member branch can exist at all.
+	 */
+	const myBranch = useQuery({
+		...orpc.projects.instructions.proposals.myBranch.queryOptions({
+			input: { projectId },
+		}),
+		enabled: repositoryTarget !== null,
+	});
+	const branchEntry = (
+		myBranch.data as
+			| {
+					branch: { id: string } | null;
+					files: Array<{
+						path: string;
+						state: "written" | "deleted" | "restored_unavailable";
+					}>;
+			  }
+			| undefined
+	)?.files.find((f) => f.path === path);
+	const branchWritten = branchEntry?.state === "written";
+	const branchId =
+		(myBranch.data as { branch: { id: string } | null } | undefined)?.branch
+			?.id ?? null;
+	const branchFile = useQuery({
+		...orpc.projects.instructions.proposals.myBranchFile.queryOptions({
+			input: {
+				projectId,
+				branchId: branchId ?? "",
+				path,
+				offset: 0,
+				maxLength: 200_000,
+			},
+		}),
+		enabled:
+			repositoryTarget !== null && branchWritten && branchId !== null,
+	});
+	type BranchFileBody = {
+		body: string | null;
+		url: string | null;
+		truncated: boolean;
+		nextOffset: number | null;
+		size: number;
+	};
+	const fromBranch = branchWritten
+		? (branchFile.data as BranchFileBody | undefined)
+		: undefined;
+	const showFromBranch = fromBranch !== undefined;
+	/**
+	 * The `myBranch` projection itself — not just the later `myBranchFile`
+	 * read — can be loading or have failed. Until it resolves, whether this
+	 * path is even `written` on the branch is unknown, so falling back to
+	 * editable published content here is the same silent-substitution risk
+	 * `myBranchFile`'s own pending/failed states guard against below: a fast
+	 * Edit click could seed a draft from the published body moments before
+	 * the projection reveals a branch version underneath it.
+	 */
+	const myBranchPending = repositoryTarget !== null && myBranch.isLoading;
+	const myBranchFailed = repositoryTarget !== null && myBranch.isError;
+	/**
+	 * A `written` projection promises Fabric-held bytes, but the branch file
+	 * query can still be loading or have failed independently of `myBranch`.
+	 * Neither falls back to the published body while that is true — that
+	 * would be exactly the silent substitution the spec rules out (Fizzy
+	 * #2738 spec §10 "Editor") — so the viewer shows why instead, and
+	 * editing stays unavailable until the branch bytes resolve one way or
+	 * the other. The projection's own loading state is folded in here too,
+	 * so the same gate covers both requests with one pair of booleans.
+	 */
+	const branchFilePending =
+		myBranchPending ||
+		(branchWritten && !showFromBranch && !branchFile.isError);
+	const branchFileFailed =
+		!branchFilePending &&
+		(myBranchFailed ||
+			(branchWritten && !showFromBranch && branchFile.isError));
+	const showBranchVersionUnavailable =
+		branchEntry?.state === "restored_unavailable";
+	const parsed = useMemo(() => {
+		const body = showFromBranch ? fromBranch?.body : q.data?.body;
+		const kind = q.data?.kind;
+		return body != null && kind !== undefined && !PLAIN_KINDS.has(kind)
+			? parseFrontmatter(body)
+			: null;
+	}, [q.data, showFromBranch, fromBranch]);
 	// `null` is "not editing". The working copy is seeded from the body when
 	// Edit is pressed — never from a render, so a background refetch cannot
 	// overwrite what someone has typed.
@@ -200,7 +294,6 @@ export function InstructionFileView({
 		path: string;
 		text: string;
 	} | null>(null);
-	const body = q.data?.body ?? null;
 
 	const save = useMutation({
 		mutationFn: (input: {
@@ -247,7 +340,6 @@ export function InstructionFileView({
 	const showHeader = Boolean(
 		f.name || f.description || extraFields.length > 0,
 	);
-	const refusal = editRefusal(f, t);
 	const draftForPath = draft?.path === f.path ? draft : null;
 	// Saveable only while the version it was taken from is still the one this
 	// view is showing.
@@ -261,6 +353,42 @@ export function InstructionFileView({
 			? draftForPath.text
 			: null;
 	const editorText = editingText ?? staleText;
+	// The read-only body: the branch's `written` bytes when Fabric holds
+	// them, the published ones otherwise. Never a silent substitution — a
+	// `restored_unavailable` path still shows the published body, under its
+	// own notice below.
+	const displayBody = showFromBranch ? (fromBranch?.body ?? null) : f.body;
+	const displayUrl = showFromBranch ? (fromBranch?.url ?? null) : f.url;
+	const displayTruncated = showFromBranch
+		? (fromBranch?.truncated ?? false)
+		: f.truncated;
+	const displayNextOffset = showFromBranch
+		? (fromBranch?.nextOffset ?? null)
+		: f.nextOffset;
+	// Edit eligibility reads the branch's own size once its bytes resolve —
+	// a branch version can be larger (or smaller) than the published file it
+	// replaces, and "too large to edit" has to be decided on what editing
+	// would actually replace.
+	const displaySize = showFromBranch ? (fromBranch?.size ?? f.size) : f.size;
+	// A `written` projection's own body isn't known yet: editing stays
+	// unavailable (Fizzy #2738 spec §10 "Editor") until it resolves, the same
+	// disabled-tooltip pattern `editRefusal` already uses. Once it has
+	// resolved (or there is no branch to wait on), refusal reads the
+	// EFFECTIVE (display) file — the branch's own binary/size/truncated
+	// state when the viewer is looking at one, never the published file's.
+	const refusal = branchFilePending
+		? t("branchFileLoading")
+		: branchFileFailed
+			? t("branchFileError")
+			: editRefusal(
+					{
+						path: f.path,
+						body: displayBody,
+						size: displaySize,
+						truncated: displayTruncated,
+					},
+					t,
+				);
 
 	function saveDraft(publishOnReady: boolean, proposal = false) {
 		if (editingText === null) {
@@ -268,10 +396,23 @@ export function InstructionFileView({
 		}
 		// An unchanged body is a no-op, not a version. Publishing one would
 		// spend a version number and a whole validation run to say nothing, and
-		// the history would fill with versions nobody changed.
-		if (editingText === body) {
+		// the history would fill with versions nobody changed. Compared
+		// against the resolved DISPLAY body (the branch's, when the viewer is
+		// looking at one) rather than the published body, so a small edit on
+		// top of a branch's own content is never mistaken for a no-op, and a
+		// save is always diffed against what the editor was actually seeded
+		// from.
+		if (editingText === displayBody) {
 			setDraft(null);
-			toast.info(t("noChanges"));
+			// Spec §10 Copy: "the 'no changes' refusal gains the withdrawal
+			// hint" — a repository suggestion identical to the published file
+			// has nothing new to propose; the fix is withdrawing an earlier
+			// suggestion, or editing the branch directly, not resubmitting.
+			toast.info(
+				proposal && repositoryTarget
+					? t("noChangesRepositoryHint")
+					: t("noChanges"),
+			);
 			return;
 		}
 		save.mutate({
@@ -298,6 +439,9 @@ export function InstructionFileView({
 					<Badge variant="secondary">
 						{kindLabels[f.kind] ?? kindLabels.OTHER}
 					</Badge>
+					{editorText === null && showFromBranch ? (
+						<Badge variant="outline">{t("fromBranchLabel")}</Badge>
+					) : null}
 					<span className="text-muted-foreground text-xs">
 						{Math.round(f.size / 1024)} KB
 					</span>
@@ -349,7 +493,14 @@ export function InstructionFileView({
 										setDraft({
 											snapshotId,
 											path: f.path,
-											text: body ?? "",
+											// Seeded from the resolved DISPLAY
+											// body — the branch's, when the
+											// viewer is looking at one — never
+											// the published body underneath
+											// it, so a small edit cannot
+											// silently overwrite the branch's
+											// own change.
+											text: displayBody ?? "",
 										})
 									}
 								>
@@ -493,110 +644,154 @@ export function InstructionFileView({
 				</div>
 			) : (
 				<div className="flex min-w-0 flex-col gap-4 overflow-auto p-5 [overflow-wrap:anywhere]">
-					{showHeader ? (
-						<div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-4">
-							{f.name ? (
-								<h2 className="font-semibold text-base">
-									{f.name}
-								</h2>
-							) : null}
-							{f.description ? <p>{f.description}</p> : null}
-							{parsed ? (
-								<dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-									{parsed.fields["argument-hint"] ? (
-										<>
-											<dt className="text-muted-foreground">
-												{t("argumentHint")}
-											</dt>
-											<dd>
-												{parsed.fields["argument-hint"]}
-											</dd>
-										</>
-									) : null}
-									{(parsed.fields["allowed-tools"] ??
-									parsed.fields.tools) ? (
-										<>
-											<dt className="text-muted-foreground">
-												{t("allowedTools")}
-											</dt>
-											<dd>
-												{parsed.fields[
-													"allowed-tools"
-												] ?? parsed.fields.tools}
-											</dd>
-										</>
-									) : null}
-									{parsed.fields.model ? (
-										<>
-											<dt className="text-muted-foreground">
-												{t("model")}
-											</dt>
-											<dd>{parsed.fields.model}</dd>
-										</>
-									) : null}
-									{parsed.fields.paths ? (
-										<>
-											<dt className="text-muted-foreground">
-												{t("appliesTo")}
-											</dt>
-											<dd className="whitespace-pre-line font-mono text-xs">
-												{parsed.fields.paths}
-											</dd>
-										</>
-									) : null}
-									{invocationLabel(parsed.fields, t) ? (
-										<>
-											<dt className="text-muted-foreground">
-												{t("modelInvocation")}
-											</dt>
-											<dd>
-												{invocationLabel(
-													parsed.fields,
-													t,
-												)}
-											</dd>
-										</>
-									) : null}
-									{extraFields.map(([key, value]) => (
-										<Fragment key={key}>
-											<dt className="text-muted-foreground">
-												{key}
-											</dt>
-											<dd className="whitespace-pre-line">
-												{value}
-											</dd>
-										</Fragment>
-									))}
-								</dl>
-							) : null}
-						</div>
-					) : null}
-					{f.body == null ? (
-						<p className="text-muted-foreground">
-							{t("binaryFile")}{" "}
-							{f.url ? (
-								<a
-									href={f.url}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="underline"
-								>
-									{t("downloadIt")}
-								</a>
-							) : null}
+					{branchFilePending || branchFileFailed ? (
+						// A `written` projection promises Fabric-held bytes
+						// this view has not resolved yet: showing the
+						// published body underneath would be exactly the
+						// silent substitution the spec rules out, so this
+						// says why instead (Fizzy #2738 spec §10 "Editor").
+						<p
+							role={branchFileFailed ? "alert" : "status"}
+							className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
+						>
+							{t(
+								branchFileFailed
+									? "branchFileError"
+									: "branchFileLoading",
+							)}
 						</p>
-					) : PLAIN_KINDS.has(f.kind) ? (
-						<pre className="whitespace-pre-wrap font-mono text-xs">
-							{f.body}
-						</pre>
 					) : (
-						<Markdown>{parsed ? parsed.body : f.body}</Markdown>
+						<>
+							{showHeader ? (
+								<div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-4">
+									{f.name ? (
+										<h2 className="font-semibold text-base">
+											{f.name}
+										</h2>
+									) : null}
+									{f.description ? (
+										<p>{f.description}</p>
+									) : null}
+									{parsed ? (
+										<dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+											{parsed.fields["argument-hint"] ? (
+												<>
+													<dt className="text-muted-foreground">
+														{t("argumentHint")}
+													</dt>
+													<dd>
+														{
+															parsed.fields[
+																"argument-hint"
+															]
+														}
+													</dd>
+												</>
+											) : null}
+											{(parsed.fields["allowed-tools"] ??
+											parsed.fields.tools) ? (
+												<>
+													<dt className="text-muted-foreground">
+														{t("allowedTools")}
+													</dt>
+													<dd>
+														{parsed.fields[
+															"allowed-tools"
+														] ??
+															parsed.fields.tools}
+													</dd>
+												</>
+											) : null}
+											{parsed.fields.model ? (
+												<>
+													<dt className="text-muted-foreground">
+														{t("model")}
+													</dt>
+													<dd>
+														{parsed.fields.model}
+													</dd>
+												</>
+											) : null}
+											{parsed.fields.paths ? (
+												<>
+													<dt className="text-muted-foreground">
+														{t("appliesTo")}
+													</dt>
+													<dd className="whitespace-pre-line font-mono text-xs">
+														{parsed.fields.paths}
+													</dd>
+												</>
+											) : null}
+											{invocationLabel(
+												parsed.fields,
+												t,
+											) ? (
+												<>
+													<dt className="text-muted-foreground">
+														{t("modelInvocation")}
+													</dt>
+													<dd>
+														{invocationLabel(
+															parsed.fields,
+															t,
+														)}
+													</dd>
+												</>
+											) : null}
+											{extraFields.map(([key, value]) => (
+												<Fragment key={key}>
+													<dt className="text-muted-foreground">
+														{key}
+													</dt>
+													<dd className="whitespace-pre-line">
+														{value}
+													</dd>
+												</Fragment>
+											))}
+										</dl>
+									) : null}
+								</div>
+							) : null}
+							{showBranchVersionUnavailable ? (
+								<p
+									role="alert"
+									className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
+								>
+									{t("branchVersionUnavailable")}
+								</p>
+							) : null}
+							{displayBody == null ? (
+								<p className="text-muted-foreground">
+									{t("binaryFile")}{" "}
+									{displayUrl ? (
+										<a
+											href={displayUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											className="underline"
+										>
+											{t("downloadIt")}
+										</a>
+									) : null}
+								</p>
+							) : PLAIN_KINDS.has(f.kind) ? (
+								<pre className="whitespace-pre-wrap font-mono text-xs">
+									{displayBody}
+								</pre>
+							) : (
+								<Markdown>
+									{parsed ? parsed.body : displayBody}
+								</Markdown>
+							)}
+							{displayTruncated ? (
+								<p className="text-muted-foreground text-xs">
+									{t("truncated", {
+										offset: displayNextOffset ?? 0,
+									})}
+								</p>
+							) : null}
+						</>
 					)}
-					{f.truncated ? (
-						<p className="text-muted-foreground text-xs">
-							{t("truncated", { offset: f.nextOffset ?? 0 })}
-						</p>
-					) : null}
 				</div>
 			)}
 		</div>

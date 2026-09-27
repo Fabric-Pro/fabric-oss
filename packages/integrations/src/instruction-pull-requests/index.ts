@@ -28,6 +28,7 @@ export { gitlab } from "./gitlab";
 export {
 	credentialFreeUrl,
 	repositoryIdentity,
+	repositoryKey,
 	sameRepository,
 } from "./repository-identity";
 export * from "./types";
@@ -45,4 +46,23 @@ export function adapterFor(
 		default:
 			throw new Error(`No pull-request adapter for ${String(provider)}`);
 	}
+}
+
+/**
+ * The ref and expected SHA a caller should fetch to verify a pull request's
+ * source head (spec §7 "Adapters"). Naming only: the fetch and the
+ * `rev-parse` equality against `observedHeadSha` are `fetchPullRequestHead`'s
+ * job. `unavailable` when the provider has no such ref (Azure DevOps) or
+ * `externalId` fails the adapter's own validation.
+ */
+export function sourceHeadEvidence(
+	adapter: InstructionPullRequestAdapter,
+	externalId: string,
+	observedHeadSha: string,
+): { ref: string; expectSha: string } | { kind: "unavailable" } {
+	const ref = adapter.pullRequestHeadRef(externalId);
+	if (ref === null) {
+		return { kind: "unavailable" };
+	}
+	return { ref, expectSha: observedHeadSha };
 }

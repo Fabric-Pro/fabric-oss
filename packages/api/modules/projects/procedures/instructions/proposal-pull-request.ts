@@ -26,9 +26,12 @@ import {
 	getProposalOperation,
 	getSyncRunReceiptByRunId,
 	getSyncRunReceiptsByRunIds,
+	type ProposalBranchAttachment,
 	type ProposalOperationRow,
 	type PullRequestFailure,
+	proposalBranchIdOf,
 	type RecordAuditInput,
+	readProposalBranchAttachments,
 	requestPullRequestRefresh,
 	transitionPullRequest,
 } from "@repo/database";
@@ -37,9 +40,17 @@ import { getTemporalClient } from "@repo/temporal";
 import type { ProposalOperationInput } from "@repo/temporal/instruction-proposal-pull-request-types";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import { canReviewInstructionProposals } from "./proposal-authorization";
-
-/** The operation workflow's queue: it shares the instructions worker with the snapshot workflow. */
-const PROPOSAL_WORKFLOW_TASK_QUEUE = "project-instructions";
+import {
+	PROPOSAL_WORKFLOW_TASK_QUEUE,
+	startAdmittedBranchProposal,
+	wakeBranchAfterCommand,
+} from "./proposal-branch";
+import {
+	type ProposalAppendView,
+	type ProposalBranchView,
+	proposalAppendView,
+	proposalBranchView,
+} from "./proposal-branch-view";
 
 type ProposalPullRequestState = NonNullable<
 	ProposalOperationRow["pullRequestState"]
@@ -50,6 +61,11 @@ type ProposalPullRequestState = NonNullable<
  * says, and nothing a provider was asked. `failure` is the stored typed
  * failure, whose `params` hold safe values only; copy comes from `en.json`
  * by `code`.
+ *
+ * A member branch proposal (Fizzy #2738 spec §10) keeps these fields: its
+ * `state` is the proposal's own, and `url` and `externalId` are its
+ * branch's pull request. It adds `branch` and `append`, both null for any
+ * other proposal.
  */
 export type ProposalPullRequestView = {
 	operationId: string;
@@ -58,6 +74,8 @@ export type ProposalPullRequestView = {
 	externalId: string | null;
 	failure: PullRequestFailure | null;
 	lastCheckedAt: Date | null;
+	branch: ProposalBranchView | null;
+	append: ProposalAppendView | null;
 };
 
 /**
@@ -118,11 +136,54 @@ export async function startProposalPullRequestWorkflow(
  * intent, and the sweeper's Restart starts a workflow for a queued row with
  * none running. Failing the request here would tell the proposer their
  * suggestion was refused when it was accepted.
+ *
+ * Dispatches on the row's frozen `pullRequestContext.v` (Fizzy #2738 spec
+ * Decision 4): a member branch proposal (`v = 2`) joins its member's branch
+ * and wakes that branch's workflow; every other row starts the #2563
+ * operation workflow exactly as before. A row that cannot be read is left
+ * to the sweeper rather than guessed at: its version decides which workflow
+ * may own it.
  */
 export async function startAdmittedProposalPullRequest(
 	input: ProposalOperationInput,
 ): Promise<void> {
+	let version: number | null;
+	try {
+		version = contextVersion(
+			(
+				await getProposalOperation({
+					snapshotId: input.snapshotId,
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+				})
+			)?.pullRequestContext,
+		);
+	} catch (error) {
+		console.error(
+			"[instructions] could not read the admitted proposal; the sweeper will start it",
+			{ snapshotId: input.snapshotId, operationId: input.operationId },
+			error,
+		);
+		return;
+	}
+	if (version === 2) {
+		await startAdmittedBranchProposal({
+			snapshotId: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+		});
+		return;
+	}
 	await startOrLeaveToSweeper(input);
+}
+
+/** A stored `pullRequestContext`'s `v`, or null when it has none. */
+function contextVersion(context: unknown): number | null {
+	if (context === null || typeof context !== "object") {
+		return null;
+	}
+	const v = (context as { v?: unknown }).v;
+	return typeof v === "number" ? v : null;
 }
 
 /**
@@ -156,7 +217,12 @@ function failureOf(value: unknown): PullRequestFailure | null {
 	return null;
 }
 
-/** The `pullRequest` block from a row, or null for a row that is not an operation. */
+/**
+ * The `pullRequest` block from a row, or null for a row that is not an
+ * operation. `attachment` is the row's member branch, when it is on one
+ * (`readProposalBranchAttachments`): the branch's pull request then gives
+ * `url` and `externalId`, and `branch` and `append` are filled.
+ */
 export function pullRequestView(
 	row: Pick<
 		ProposalOperationRow,
@@ -167,18 +233,48 @@ export function pullRequestView(
 		| "pullRequestFailure"
 		| "pullRequestLastCheckedAt"
 	>,
+	attachment?: ProposalBranchAttachment | null,
 ): ProposalPullRequestView | null {
 	if (!row.pullRequestOperationId || !row.pullRequestState) {
 		return null;
 	}
+	const branch = attachment ? proposalBranchView(attachment.branch) : null;
 	return {
 		operationId: row.pullRequestOperationId,
 		state: row.pullRequestState,
-		url: row.pullRequestUrl,
-		externalId: row.pullRequestExternalId,
+		url: attachment ? attachment.branch.pullRequestUrl : row.pullRequestUrl,
+		externalId: attachment
+			? attachment.branch.pullRequestExternalId
+			: row.pullRequestExternalId,
 		failure: failureOf(row.pullRequestFailure),
-		lastCheckedAt: row.pullRequestLastCheckedAt,
+		lastCheckedAt: attachment
+			? attachment.branch.lastCheckedAt
+			: row.pullRequestLastCheckedAt,
+		branch,
+		append: attachment ? proposalAppendView(attachment) : null,
 	};
+}
+
+/** Member branch attachments, by proposal id (Fizzy #2738 spec §10). */
+export type ProposalBranchAttachments = ReadonlyMap<
+	string,
+	ProposalBranchAttachment
+>;
+
+/**
+ * The branch attachments every operation row of a page needs, in one batch
+ * of tenant-scoped queries rather than per row, as `readMergeSyncReceipts`.
+ */
+export function readBranchAttachments(
+	rows: readonly { id?: string; pullRequestOperationId: string | null }[],
+	scope: { organizationId: string },
+): Promise<ProposalBranchAttachments> {
+	return readProposalBranchAttachments({
+		organizationId: scope.organizationId,
+		snapshotIds: rows.flatMap((row) =>
+			row.id && row.pullRequestOperationId ? [row.id] : [],
+		),
+	});
 }
 
 /** The row's `pullRequest` block, tenant-scoped; null when there is none. */
@@ -188,7 +284,11 @@ export async function readProposalPullRequest(i: {
 	organizationId: string;
 }): Promise<ProposalPullRequestView | null> {
 	const row = await getProposalOperation(i);
-	return row ? pullRequestView(row) : null;
+	if (!row || !row.pullRequestOperationId) {
+		return row ? pullRequestView(row) : null;
+	}
+	const attachments = await readBranchAttachments([row], i);
+	return pullRequestView(row, attachments.get(row.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -233,19 +333,20 @@ type InstructionProposal = NonNullable<
 	Awaited<ReturnType<typeof getInstructionProposal>>
 >;
 
-type StatusRow = Pick<
-	InstructionProposal,
-	| "pullRequestOperationId"
-	| "pullRequestState"
-	| "pullRequestAttempt"
-	| "pullRequestUrl"
-	| "pullRequestExternalId"
-	| "pullRequestFailure"
-	| "pullRequestLastCheckedAt"
-	| "pullRequestObservation"
-	| "mergeSyncRequestedAt"
-	| "mergeSyncRunId"
->;
+type StatusRow = Partial<Pick<InstructionProposal, "id">> &
+	Pick<
+		InstructionProposal,
+		| "pullRequestOperationId"
+		| "pullRequestState"
+		| "pullRequestAttempt"
+		| "pullRequestUrl"
+		| "pullRequestExternalId"
+		| "pullRequestFailure"
+		| "pullRequestLastCheckedAt"
+		| "pullRequestObservation"
+		| "mergeSyncRequestedAt"
+		| "mergeSyncRunId"
+	>;
 
 function observationOf(value: unknown): ProposalPullRequestObservation | null {
 	if (typeof value !== "object" || value === null) {
@@ -274,16 +375,41 @@ export type MergeSyncReceipts = ReadonlyMap<string, { status: string | null }>;
 export function readMergeSyncReceipts(
 	rows: readonly StatusRow[],
 	scope: { projectId: string; organizationId: string },
+	attachments?: ProposalBranchAttachments,
 ): Promise<MergeSyncReceipts> {
 	return getSyncRunReceiptsByRunIds({
 		projectId: scope.projectId,
 		organizationId: scope.organizationId,
-		runIds: rows.flatMap((row) =>
-			pullRequestView(row) && row.mergeSyncRunId
-				? [row.mergeSyncRunId]
-				: [],
-		),
+		runIds: rows.flatMap((row) => {
+			const runId = mergeSyncSourceOf(
+				row,
+				row.id ? attachments?.get(row.id) : undefined,
+			).mergeSyncRunId;
+			return pullRequestView(row) && runId ? [runId] : [];
+		}),
 	});
+}
+
+/**
+ * Where a row's observation and merge sync live: a member branch
+ * proposal's are its branch's (Fizzy #2738 spec §4.1: the proposal's own
+ * observation and merge-sync columns stay null), anyone else's its own.
+ */
+function mergeSyncSourceOf(
+	row: StatusRow,
+	attachment: ProposalBranchAttachment | undefined,
+): Pick<
+	StatusRow,
+	"pullRequestObservation" | "mergeSyncRequestedAt" | "mergeSyncRunId"
+> {
+	return attachment
+		? {
+				pullRequestObservation:
+					attachment.branch.pullRequestObservation,
+				mergeSyncRequestedAt: attachment.branch.mergeSyncRequestedAt,
+				mergeSyncRunId: attachment.branch.mergeSyncRunId,
+			}
+		: row;
 }
 
 /**
@@ -298,32 +424,39 @@ export async function pullRequestStatusOf(
 	row: StatusRow,
 	scope: { projectId: string; organizationId: string },
 	receipts?: MergeSyncReceipts,
+	attachments?: ProposalBranchAttachments,
 ): Promise<ProposalPullRequestStatus | null> {
-	const view = pullRequestView(row);
+	if (!row.pullRequestOperationId || !row.pullRequestState) {
+		return null;
+	}
+	const branchOf = attachments ?? (await readBranchAttachments([row], scope));
+	const attachment = row.id ? branchOf.get(row.id) : undefined;
+	const view = pullRequestView(row, attachment);
 	if (!view) {
 		return null;
 	}
+	const source = mergeSyncSourceOf(row, attachment);
 	let mergeSync: ProposalMergeSync | null = null;
-	if (row.mergeSyncRequestedAt || row.mergeSyncRunId) {
-		const receipt = !row.mergeSyncRunId
+	if (source.mergeSyncRequestedAt || source.mergeSyncRunId) {
+		const receipt = !source.mergeSyncRunId
 			? null
 			: receipts
-				? (receipts.get(row.mergeSyncRunId) ?? null)
+				? (receipts.get(source.mergeSyncRunId) ?? null)
 				: await getSyncRunReceiptByRunId({
 						projectId: scope.projectId,
 						organizationId: scope.organizationId,
-						runId: row.mergeSyncRunId,
+						runId: source.mergeSyncRunId,
 					});
 		mergeSync = {
-			requestedAt: row.mergeSyncRequestedAt,
-			runId: row.mergeSyncRunId,
+			requestedAt: source.mergeSyncRequestedAt,
+			runId: source.mergeSyncRunId,
 			runStatus: receipt?.status ?? null,
 		};
 	}
 	return {
 		...view,
 		attempt: row.pullRequestAttempt,
-		observation: observationOf(row.pullRequestObservation),
+		observation: observationOf(source.pullRequestObservation),
 		mergeSync,
 	};
 }
@@ -445,6 +578,17 @@ export async function refreshProposalPullRequest(
 		refreshed.state === "OPENING" ||
 		isRetryableBlocked(refreshed.state, refreshed.failure)
 	) {
+		// A member branch proposal's git writes belong to its branch's
+		// workflow (Fizzy #2738 spec Decision 9), never to a #2563 operation
+		// workflow: wake that one instead.
+		const branchId = await proposalBranchIdOf({
+			snapshotId: caller.snapshotId,
+			organizationId: caller.organizationId,
+		});
+		if (branchId !== null) {
+			await wakeBranchAfterCommand(branchId, caller);
+			return { refreshed: true };
+		}
 		await startOrLeaveToSweeper({
 			snapshotId: caller.snapshotId,
 			projectId: caller.projectId,

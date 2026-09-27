@@ -1,0 +1,19 @@
+-- The ("proposalBranchId", "proposalBranchSequence") unique index on
+-- project_instruction_snapshot (Fizzy #2738 spec §4.1, §4.6 step 3): one
+-- proposal per place on a member branch. The explicit name matches the
+-- schema's `map:`; Prisma's default would exceed Postgres's 63-character
+-- limit. Every existing row is NULL in both columns, and Postgres treats NULLs
+-- as distinct in a unique index, so none of them conflict.
+--
+-- CONCURRENTLY because project_instruction_snapshot is populated and a plain
+-- build takes a write lock on it for the length of the build. NO `IF NOT
+-- EXISTS`: a failed concurrent build leaves an invalid index behind under this
+-- name, and the clause would then skip the rebuild and record the migration as
+-- applied with no uniqueness enforced. Recovery per docs/database-promotion.md:
+-- find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE UNIQUE INDEX CONCURRENTLY "project_instruction_snapshot_proposal_branch_seq_key" ON "project_instruction_snapshot"("proposalBranchId", "proposalBranchSequence");

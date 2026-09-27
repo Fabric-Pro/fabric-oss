@@ -205,6 +205,17 @@ import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
 import { listFilesProcedure } from "./procedures/instructions/list-files";
 import { listSnapshotsProcedure } from "./procedures/instructions/list-snapshots";
 import {
+	closeProposalBranchProcedure,
+	getMyProposalBranchFileProcedure,
+	getMyProposalBranchProcedure,
+	getProposalBranchesForReviewerProcedure,
+	proposeAgainProcedure,
+	retryProposalBranchProcedure,
+	retryProposalConflictProcedure,
+	startOverProposalBranchProcedure,
+	stopTrackingProposalBranchProcedure,
+} from "./procedures/instructions/proposal-branch-procedures";
+import {
 	approveInstructionProposalProcedure,
 	cancelInstructionProposalProcedure,
 	getInstructionProposalFileProcedure,
@@ -1986,6 +1997,19 @@ export const projectsRouter = {
 			getPullRequestStatus: getInstructionProposalPullRequestProcedure,
 			refreshPullRequest: refreshInstructionProposalPullRequestProcedure,
 			retryPullRequest: retryInstructionProposalPullRequestProcedure,
+			// The member's proposal branch (Fizzy #2738 spec §10).
+			myBranch: getMyProposalBranchProcedure,
+			myBranchFile: getMyProposalBranchFileProcedure,
+			// Every member's tracked branch, for a reviewer (spec §10
+			// "Reviewers see every member's branches read-only") —
+			// independent of the proposal list's own pagination.
+			branches: getProposalBranchesForReviewerProcedure,
+			closeBranch: closeProposalBranchProcedure,
+			startOverBranch: startOverProposalBranchProcedure,
+			retryBranch: retryProposalBranchProcedure,
+			stopTrackingBranch: stopTrackingProposalBranchProcedure,
+			retryConflict: retryProposalConflictProcedure,
+			proposeAgain: proposeAgainProcedure,
 		},
 		// Repository as the source of truth (design 2026-09-23 §5.1).
 		repositorySync: {

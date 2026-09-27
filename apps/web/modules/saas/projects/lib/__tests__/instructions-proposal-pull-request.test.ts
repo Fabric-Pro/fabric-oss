@@ -12,6 +12,8 @@ import {
 import en from "@repo/i18n/translations/en.json";
 import { describe, expect, it } from "vitest";
 import {
+	canProposeAgain,
+	canRetryConflict,
 	canRetryOpening,
 	offersPullRequestRefresh,
 	offersReconnect,
@@ -23,9 +25,15 @@ import {
 	REFRESH_COOLDOWN_MS,
 	refreshHoldSeconds,
 	refreshRetryAfterSeconds,
+	withdrawConfirmVariant,
 } from "../instructions-proposal-pull-request";
 
 const copy = en.projects.codingInstructions.proposalReview.pullRequest;
+
+/** A member branch, minimally: only `ref` is read by the card policy. */
+function branch(): { id: string; ref: string } {
+	return { id: "branch_1", ref: "fabric/instructions/members/reader-ab12/1" };
+}
 
 function failure(
 	code: PullRequestFailure["code"],
@@ -124,6 +132,29 @@ describe("failure copy (spec §11)", () => {
 		MERGE_SYNC_FAILED:
 			"The pull request merged, but Fabric could not sync it. Sync the repository manually.",
 		UNEXPECTED: "Something went wrong. Fabric will retry.",
+		BRANCH_CONFLICT:
+			"Files on your branch were changed outside Fabric: {paths}. Fabric does not overwrite them while this pull request is open. Make this change on your branch in the repository, or wait until the pull request merges.",
+		SUPERSEDED_BY_LATER_CHANGE:
+			"A newer change of yours already edits {paths}. Try again to apply this one on top of it, or withdraw it.",
+		BRANCH_MOVED:
+			"Your branch kept changing while Fabric was adding to it. Fabric will try again.",
+		BRANCH_NAME_UNAVAILABLE:
+			"Fabric could not reserve a branch name for your pull request. Ask an owner to remove old proposal branches.",
+		WITHDRAW_CONFLICT:
+			"This change's files were changed again on your branch, so Fabric did not withdraw it.",
+		WITHDRAW_BLOCKED_BY_LATER_CHANGE:
+			"A later change on your branch also edits {paths}, so this change cannot be withdrawn on its own. Close the pull request to withdraw everything, or edit the branch in the repository.",
+		REPOSITORY_CHANGED:
+			"The repository connection now points at another repository, so Fabric can no longer reach this pull request. Close it in the repository, then stop tracking it here.",
+		ALREADY_ON_BRANCH: "Already on your branch; nothing to add.",
+		PUSH_OUTCOME_UNKNOWN:
+			"Fabric could not confirm whether this change reached your branch, which may have been changed outside Fabric. Check the branch, then try again or withdraw it.",
+		WITHDRAW_OUTCOME_UNKNOWN:
+			"Fabric could not confirm whether this change was withdrawn from your branch. Check the branch, then withdraw it again if needed.",
+		START_OVER_REFUSED:
+			"Your branch has commits made outside Fabric, so Fabric did not start over. Close the pull request, or open it by hand in the repository.",
+		BRANCH_MISSING:
+			"Your branch was deleted in the repository, so Fabric will add this change to a new branch.",
 	};
 
 	it.each([...INSTRUCTION_PULL_REQUEST_FAILURE_CODES])(
@@ -482,6 +513,270 @@ describe("actions", () => {
 		[null, null],
 	] as const)("reads the server's wait from %j as %s", (error, seconds) => {
 		expect(refreshRetryAfterSeconds(error)).toBe(seconds);
+	});
+});
+
+describe("a member branch proposal (Fizzy #2738 spec §10 Card)", () => {
+	it.each([
+		[
+			"QUEUED" as const,
+			"VALIDATING",
+			"states.waitingForChecks",
+			"Waiting for checks",
+		],
+		[
+			"QUEUED" as const,
+			"READY",
+			"states.queuedForBranch",
+			"Queued for your branch",
+		],
+		[
+			"OPENING" as const,
+			"READY",
+			"states.addingToBranch",
+			"Adding to your branch",
+		],
+		["OPEN" as const, "READY", "states.onBranch", "On your branch"],
+		[
+			"CLOSE_REQUESTED" as const,
+			"READY",
+			"states.withdrawingFromBranch",
+			"Withdrawing from your branch",
+		],
+	])(
+		"%s reads as %s, not the #2563 copy",
+		(state, snapshotStatus, key, expected) => {
+			const line = pullRequestCardLine(
+				pr({ state, branch: branch() }),
+				snapshotStatus,
+			);
+			expect(line.key).toBe(key);
+			expect(text(line.key)).toBe(expected);
+		},
+	);
+
+	it("a v1 (non-branch) proposal keeps the #2563 copy in every one of those states", () => {
+		for (const state of [
+			"QUEUED",
+			"OPENING",
+			"OPEN",
+			"CLOSE_REQUESTED",
+		] as const) {
+			const line = pullRequestCardLine(pr({ state }), "READY");
+			expect(
+				[
+					"waitingForChecks",
+					"queuedForBranch",
+					"addingToBranch",
+					"onBranch",
+					"withdrawingFromBranch",
+				].some((branchKey) => line.key === `states.${branchKey}`),
+			).toBe(false);
+		}
+	});
+
+	it("BLOCKED shows the failure's own sentence as the whole line, with its paths interpolated", () => {
+		const line = pullRequestCardLine(
+			pr({
+				state: "BLOCKED",
+				branch: branch(),
+				failure: failure("BRANCH_CONFLICT", {
+					phase: "append",
+					retryable: false,
+					params: { paths: "CLAUDE.md, AGENTS.md", count: 2 },
+				}),
+			}),
+			"READY",
+		);
+		expect(line.key).toBe("failures.BRANCH_CONFLICT");
+		expect(line.failureKey).toBeUndefined();
+		expect(line.values).toEqual({
+			paths: "CLAUDE.md, AGENTS.md",
+			count: "2",
+		});
+		expect(
+			String(text(line.key)).replace("{paths}", line.values?.paths ?? ""),
+		).toBe(
+			"Files on your branch were changed outside Fabric: CLAUDE.md, AGENTS.md. Fabric does not overwrite them while this pull request is open. Make this change on your branch in the repository, or wait until the pull request merges.",
+		);
+	});
+
+	it.each([
+		["BRANCH_CONFLICT", true],
+		["SUPERSEDED_BY_LATER_CHANGE", true],
+		["PUSH_OUTCOME_UNKNOWN", true],
+		["WITHDRAW_CONFLICT", false],
+		["BRANCH_NAME_UNAVAILABLE", false],
+	] as const)(
+		"Try again (retryConflict) on branch BLOCKED %s: %s",
+		(code, offered) => {
+			expect(
+				canRetryConflict(
+					pr({
+						state: "BLOCKED",
+						branch: branch(),
+						failure: failure(code),
+					}),
+				),
+			).toBe(offered);
+		},
+	);
+
+	it("never offers Try again (retryConflict) on a v1 proposal", () => {
+		expect(
+			canRetryConflict(
+				pr({ state: "BLOCKED", failure: failure("BRANCH_CONFLICT") }),
+			),
+		).toBe(false);
+	});
+
+	it("never offers the v1 Retry opening on a branch proposal", () => {
+		expect(
+			canRetryOpening(
+				pr({
+					state: "BLOCKED",
+					branch: branch(),
+					failure: failure("PR_CREATION_REFUSED"),
+				}),
+			),
+		).toBe(false);
+	});
+
+	it.each([
+		["MERGED" as const, "included", false],
+		["MERGED" as const, "unverified", true],
+		["CLOSED" as const, "unverified", true],
+		["CANCELED" as const, "unverified", true],
+		["OPEN" as const, "unverified", false],
+	])(
+		"Propose again on %s with membership %s: %s",
+		(state, membership, offered) => {
+			expect(
+				canProposeAgain(
+					pr({
+						state,
+						branch: branch(),
+						append: {
+							outcome: "appended",
+							commitSha: "abc",
+							membership,
+						},
+					}),
+				),
+			).toBe(offered);
+		},
+	);
+
+	it("never offers Propose again on a v1 proposal", () => {
+		expect(
+			canProposeAgain(
+				pr({
+					state: "MERGED",
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "unverified",
+					},
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("MERGED and CLOSED show the unverified note when the append could not be confirmed", () => {
+		const merged = pullRequestCardLine(
+			pr({
+				state: "MERGED",
+				branch: branch(),
+				append: {
+					outcome: "appended",
+					commitSha: "abc",
+					membership: "unverified",
+				},
+			}),
+			"READY",
+		);
+		expect(merged.showUnverifiedNote).toBe(true);
+		const closed = pullRequestCardLine(
+			pr({
+				state: "CLOSED",
+				branch: branch(),
+				append: {
+					outcome: "appended",
+					commitSha: "abc",
+					membership: "included",
+				},
+			}),
+			"READY",
+		);
+		expect(closed.showUnverifiedNote).toBeUndefined();
+	});
+
+	it("CANCELED reads as already-on-branch or withdrawn-from-branch by the append's outcome", () => {
+		expect(
+			pullRequestCardLine(
+				pr({
+					state: "CANCELED",
+					branch: branch(),
+					append: {
+						outcome: "already_on_branch",
+						commitSha: null,
+						membership: null,
+					},
+				}),
+				"READY",
+			).key,
+		).toBe("states.alreadyOnBranch");
+		expect(
+			pullRequestCardLine(
+				pr({
+					state: "CANCELED",
+					branch: branch(),
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "included",
+					},
+				}),
+				"READY",
+			).key,
+		).toBe("states.withdrawnFromBranch");
+		expect(
+			pullRequestCardLine(
+				pr({ state: "CANCELED", branch: branch(), append: null }),
+				"READY",
+			).key,
+		).toBe("states.CANCELED");
+	});
+
+	it("withdrawConfirmVariant: v1 stays v1; a branch proposal is pending or appended by its append", () => {
+		expect(withdrawConfirmVariant(pr())).toBe("v1");
+		expect(withdrawConfirmVariant(pr({ branch: branch() }))).toBe(
+			"pending",
+		);
+		expect(
+			withdrawConfirmVariant(
+				pr({
+					branch: branch(),
+					append: {
+						outcome: "appended",
+						commitSha: "abc",
+						membership: "included",
+					},
+				}),
+			),
+		).toBe("appended");
+		expect(
+			withdrawConfirmVariant(
+				pr({
+					branch: branch(),
+					append: {
+						outcome: "already_on_branch",
+						commitSha: null,
+						membership: null,
+					},
+				}),
+			),
+		).toBe("pending");
 	});
 });
 

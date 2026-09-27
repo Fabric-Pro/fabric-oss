@@ -454,6 +454,7 @@ describe.skipIf(!hasGit)(
 			const b = branch("push");
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -466,6 +467,7 @@ describe.skipIf(!hasGit)(
 			// "refuses a create-only push at our own SHA" (R21): never adopted by SHA.
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -474,6 +476,7 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "exists" });
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: base,
 					branch: b,
@@ -485,6 +488,7 @@ describe.skipIf(!hasGit)(
 			);
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("hooked"),
@@ -503,6 +507,7 @@ describe.skipIf(!hasGit)(
 			]);
 			await expect(
 				pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("pushfail"),
@@ -517,13 +522,25 @@ describe.skipIf(!hasGit)(
 			const env = proposalEnv(work);
 			const url = `file://${source}`;
 			expect(
-				await lsRemoteRef({ cwd: work, url, branch: b, env }),
+				await lsRemoteRef({
+					validator: "operation",
+					cwd: work,
+					url,
+					branch: b,
+					env,
+				}),
 			).toEqual({
 				kind: "missing",
 			});
 			git(source, ["branch", b, tip]);
 			expect(
-				await lsRemoteRef({ cwd: work, url, branch: b, env }),
+				await lsRemoteRef({
+					validator: "operation",
+					cwd: work,
+					url,
+					branch: b,
+					env,
+				}),
 			).toEqual({
 				kind: "found",
 				sha: tip,
@@ -538,6 +555,7 @@ describe.skipIf(!hasGit)(
 			// "refuses a leased delete at a moved tip"
 			expect(
 				await deleteBranch({
+					validator: "operation",
 					cwd: work,
 					url,
 					branch: ours,
@@ -548,6 +566,7 @@ describe.skipIf(!hasGit)(
 			expect(git(source, ["rev-parse", `refs/heads/${ours}`])).toBe(base);
 			expect(
 				await deleteBranch({
+					validator: "operation",
 					cwd: work,
 					url,
 					branch: ours,
@@ -556,10 +575,17 @@ describe.skipIf(!hasGit)(
 				}),
 			).toEqual({ kind: "deleted" });
 			expect(
-				await lsRemoteRef({ cwd: work, url, branch: ours, env }),
+				await lsRemoteRef({
+					validator: "operation",
+					cwd: work,
+					url,
+					branch: ours,
+					env,
+				}),
 			).toEqual({ kind: "missing" });
 			expect(
 				await deleteBranch({
+					validator: "operation",
 					cwd: work,
 					url,
 					branch: branch("neverpushed"),
@@ -571,6 +597,7 @@ describe.skipIf(!hasGit)(
 			git(source, ["branch", guarded, base]);
 			expect(
 				await deleteBranch({
+					validator: "operation",
 					cwd: work,
 					url,
 					branch: guarded,
@@ -600,6 +627,7 @@ describe.skipIf(!hasGit)(
 			const started = Date.now();
 			await expect(
 				pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("abort"),
@@ -620,6 +648,7 @@ describe.skipIf(!hasGit)(
 			const b = branch("token");
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -628,6 +657,7 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "created" });
 			expect(
 				await pushCreateOnly({
+					validator: "operation",
 					dir: built.dir,
 					sha: built.commit,
 					branch: b,
@@ -636,10 +666,17 @@ describe.skipIf(!hasGit)(
 			).toEqual({ kind: "exists" });
 			const url = `file://${source}`;
 			expect(
-				await lsRemoteRef({ cwd: built.run, url, branch: b, env }),
+				await lsRemoteRef({
+					validator: "operation",
+					cwd: built.run,
+					url,
+					branch: b,
+					env,
+				}),
 			).toMatchObject({ kind: "found" });
 			expect(
 				await deleteBranch({
+					validator: "operation",
 					cwd: built.run,
 					url,
 					branch: b,
@@ -655,6 +692,7 @@ describe.skipIf(!hasGit)(
 			// A failing call with the trace on stderr: the token never reached it at
 			// all (not merely redacted), and neither tail carries it.
 			const failed = (await lsRemoteRef({
+				validator: "operation",
 				cwd: built.run,
 				url: `file://${path.join(work, "no-such-repo")}`,
 				branch: b,
@@ -699,10 +737,17 @@ describe("proposal plumbing guards", () => {
 		const env = buildGitEnv({ home: tmpdir() });
 		const sha = "a".repeat(40);
 		await expect(
-			pushCreateOnly({ dir: tmpdir(), sha, branch: "main", env }),
+			pushCreateOnly({
+				validator: "operation",
+				dir: tmpdir(),
+				sha,
+				branch: "main",
+				env,
+			}),
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			pushCreateOnly({
+				validator: "operation",
 				dir: tmpdir(),
 				sha: "--upload-pack=x",
 				branch: branch("x"),
@@ -711,6 +756,7 @@ describe("proposal plumbing guards", () => {
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			deleteBranch({
+				validator: "operation",
 				cwd: tmpdir(),
 				url: `https://token@${"example.com"}/example-org/example-repo`,
 				branch: branch("x"),
@@ -720,6 +766,7 @@ describe("proposal plumbing guards", () => {
 		).rejects.toMatchObject({ kind: "invalid_argument" });
 		await expect(
 			lsRemoteRef({
+				validator: "operation",
 				cwd: tmpdir(),
 				url: "https://example.com/example-org/example-repo",
 				branch: "-x",
@@ -844,6 +891,7 @@ describe("proposal plumbing guards", () => {
 			async (_provider, stderr) => {
 				expect(
 					await pushCreateOnly({
+						validator: "operation",
 						dir: fake,
 						sha,
 						branch: branch("httprefused"),
@@ -858,6 +906,7 @@ describe("proposal plumbing guards", () => {
 			async (_provider, stderr) => {
 				expect(
 					await deleteBranch({
+						validator: "operation",
 						cwd: fake,
 						url,
 						branch: branch("httprefused"),
@@ -872,6 +921,7 @@ describe("proposal plumbing guards", () => {
 			"pushCreateOnly and deleteBranch rethrow %s as a credential failure",
 			async (_case, stderr) => {
 				const pushError = await pushCreateOnly({
+					validator: "operation",
 					dir: fake,
 					sha,
 					branch: branch("httpauth"),
@@ -883,6 +933,7 @@ describe("proposal plumbing guards", () => {
 				});
 				expect(isCredentialFailure(pushError)).toBe(true);
 				const deleteError = await deleteBranch({
+					validator: "operation",
 					cwd: fake,
 					url,
 					branch: branch("httpauth"),
@@ -899,6 +950,7 @@ describe("proposal plumbing guards", () => {
 
 		it("rethrows a bare 403 that names no write refusal", async () => {
 			const error = await pushCreateOnly({
+				validator: "operation",
 				dir: fake,
 				sha,
 				branch: branch("httpbare"),
@@ -914,6 +966,7 @@ describe("proposal plumbing guards", () => {
 		it("still rethrows an unreachable remote", async () => {
 			await expect(
 				pushCreateOnly({
+					validator: "operation",
 					dir: fake,
 					sha,
 					branch: branch("httpother"),

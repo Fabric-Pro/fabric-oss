@@ -22,6 +22,16 @@ import {
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+	AttachBranchInput,
+	BranchAttachItem,
+	BranchSweepItem,
+	BranchSweepLimits,
+	DueBranchSweep,
+	ReconcileBranchInput,
+	ReconcileBranchResult,
+	WakeBranchInput,
+} from "../src/activities/lib/instruction-branch-types";
+import type {
 	CloseProposalInput,
 	CloseProposalResult,
 	DispatchProposalInput,
@@ -104,17 +114,74 @@ function sweep(due: Partial<DueProposalSweep>): DueProposalSweep {
 /** The snapshot id an activity input names. */
 const idOf = (input: { snapshotId: string }) => input.snapshotId;
 
+function branchItem(
+	id: string,
+	overrides: Partial<BranchSweepItem> = {},
+): BranchSweepItem {
+	return {
+		branchId: `branch_${id}`,
+		projectId: "proj_1",
+		organizationId: "org_1",
+		attempt: 4,
+		integrationId: "int_1",
+		...overrides,
+	};
+}
+
+function attachItem(id: string): BranchAttachItem {
+	return {
+		snapshotId: `snap_${id}`,
+		projectId: "proj_1",
+		organizationId: "org_1",
+	};
+}
+
+function branchSweep(due: Partial<DueBranchSweep>): DueBranchSweep {
+	return {
+		close: [],
+		recover: [],
+		mergeSync: [],
+		observe: [],
+		restart: [],
+		attach: [],
+		...due,
+	};
+}
+
 function sweepMocks(
 	due:
 		| DueProposalSweep
 		| ((limits: ProposalSweepLimits) => Promise<DueProposalSweep>),
 	overrides: Record<string, unknown> = {},
+	branches: DueBranchSweep = branchSweep({}),
 ) {
 	return {
 		selectDueInstructionProposalOperations: vi.fn(
 			async (limits: ProposalSweepLimits): Promise<DueProposalSweep> =>
 				typeof due === "function" ? due(limits) : due,
 		),
+		// The member proposal branch sub-batches (Fizzy #2738 spec §8).
+		selectDueInstructionProposalBranches: vi.fn(
+			async (_limits: BranchSweepLimits): Promise<DueBranchSweep> =>
+				branches,
+		),
+		wakeInstructionProposalBranch: vi.fn(
+			async (_input: WakeBranchInput) => ({ woken: true }),
+		),
+		attachInstructionProposalToBranch: vi.fn(
+			async (input: AttachBranchInput) => ({
+				kind: "joined",
+				branchId: `branch_for_${input.snapshotId}`,
+			}),
+		),
+		reconcileInstructionProposalBranch: vi.fn(
+			async (
+				_input: ReconcileBranchInput,
+			): Promise<ReconcileBranchResult> => ({
+				state: "OPEN",
+			}),
+		),
+		dispatchBranchMergeSync: vi.fn(async () => ({ outcome: "dispatched" })),
 		closeInstructionProposalPullRequest: vi.fn(
 			async (
 				_input: CloseProposalInput,
@@ -245,6 +312,60 @@ async function deadlineOffsetMs(
 	return Date.parse(deadlineAt) - startedMs;
 }
 
+/** The patch ids a history's markers record (the SDK's `core_patch` markers). */
+function patchMarkers(history: {
+	events?: Array<{
+		markerRecordedEventAttributes?: {
+			markerName?: string | null;
+			details?: Record<
+				string,
+				{ payloads?: Array<{ data?: Uint8Array | null }> | null }
+			> | null;
+		} | null;
+	}> | null;
+}): string[] {
+	return (history.events ?? []).flatMap((event) => {
+		const marker = event.markerRecordedEventAttributes;
+		if (!marker) {
+			return [];
+		}
+		const payloads = Object.values(marker.details ?? {}).flatMap(
+			(detail) => detail.payloads ?? [],
+		);
+		return [
+			`${marker.markerName}:${payloads
+				.map((p) =>
+					Buffer.from(p.data ?? new Uint8Array()).toString("utf8"),
+				)
+				.join(",")}`,
+		];
+	});
+}
+
+/**
+ * The first argument of every scheduled activity of `type`, in the order
+ * the workflow scheduled them (the history's, which is deterministic; the
+ * order a worker runs concurrent activities in is not).
+ */
+async function scheduledInputs(
+	workflowId: string,
+	type: string,
+): Promise<unknown[]> {
+	const history = await env.client.workflow
+		.getHandle(workflowId)
+		.fetchHistory();
+	return (history.events ?? []).flatMap((event) => {
+		const a = event.activityTaskScheduledEventAttributes;
+		if (!a || a.activityType?.name !== type) {
+			return [];
+		}
+		const data = a.input?.payloads?.[0]?.data;
+		return [
+			JSON.parse(Buffer.from(data ?? new Uint8Array()).toString("utf8")),
+		];
+	});
+}
+
 async function expectReplays(workflowId: string): Promise<void> {
 	const history = await env.client.workflow
 		.getHandle(workflowId)
@@ -278,6 +399,7 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		});
 		expect((await scheduled(workflowId)).map((a) => a.type)).toEqual([
 			"selectDueInstructionProposalOperations",
+			"selectDueInstructionProposalBranches",
 			"closeInstructionProposalPullRequest",
 			"recoverInstructionProposalPullRequest",
 			"dispatchInstructionProposalMergeSync",
@@ -351,6 +473,7 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		// a start-to-close at the call's schedule-to-close, the budget left.
 		const declared: Record<string, [number, number]> = {
 			selectDueInstructionProposalOperations: [60, 0],
+			selectDueInstructionProposalBranches: [60, 0],
 			closeInstructionProposalPullRequest: [10 * 60, 60],
 			recoverInstructionProposalPullRequest: [5 * 60, 60],
 			dispatchInstructionProposalMergeSync: [60, 30],
@@ -649,6 +772,7 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 		).toEqual(
 			new Set([
 				"selectDueInstructionProposalOperations",
+				"selectDueInstructionProposalBranches",
 				"closeInstructionProposalPullRequest",
 				"recoverInstructionProposalPullRequest",
 				"dispatchInstructionProposalMergeSync",
@@ -750,5 +874,255 @@ describe("instructionProposalPullRequestSweepWorkflow (spec §9)", () => {
 			acts.selectDueInstructionProposalOperations,
 		).toHaveBeenCalledTimes(3);
 		expect(result).toEqual({ ...ZERO, selectFailed: true });
+	}, 60_000);
+	// -----------------------------------------------------------------------
+	// Member proposal branches (Fizzy #2738 spec §8), behind
+	// `patched("instruction-proposal-branch-sweep-v1")`
+	// -----------------------------------------------------------------------
+
+	it("selects the branch rows after #2563's, with their limits, and runs each sub-batch's branch rows after its #2563 rows, Attach last", async () => {
+		const acts = sweepMocks(
+			sweep({
+				close: [item("c")],
+				recover: [item("r")],
+				mergeSync: [item("m")],
+				observe: [item("o")],
+				restart: [item("s")],
+			}),
+			{},
+			branchSweep({
+				close: [branchItem("c")],
+				recover: [branchItem("r")],
+				mergeSync: [branchItem("m")],
+				observe: [branchItem("o")],
+				restart: [branchItem("s")],
+				attach: [attachItem("a")],
+			}),
+		);
+		const { result, workflowId } = await run(acts);
+		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledWith({
+			close: 10,
+			recover: 10,
+			mergeSync: 10,
+			observe: 20,
+			restart: 10,
+			attach: 10,
+		});
+		// One lane at a time would show the exact queue; four lanes start
+		// the first four in queue order, so the order of scheduling is the
+		// queue's.
+		expect((await scheduled(workflowId)).map((a) => a.type)).toEqual([
+			"selectDueInstructionProposalOperations",
+			"selectDueInstructionProposalBranches",
+			"closeInstructionProposalPullRequest",
+			"wakeInstructionProposalBranch",
+			"recoverInstructionProposalPullRequest",
+			"wakeInstructionProposalBranch",
+			"dispatchInstructionProposalMergeSync",
+			"dispatchBranchMergeSync",
+			"reconcileInstructionProposalPullRequest",
+			"reconcileInstructionProposalBranch",
+			"dispatchInstructionProposalPullRequest",
+			"wakeInstructionProposalBranch",
+			"attachInstructionProposalToBranch",
+		]);
+		const deadlineAt = expect.any(String);
+		const wake = (id: string) => ({
+			branchId: `branch_${id}`,
+			projectId: "proj_1",
+			organizationId: "org_1",
+			deadlineAt,
+		});
+		// Close's, Recover's, then Restart's, as scheduled.
+		expect(
+			await scheduledInputs(workflowId, "wakeInstructionProposalBranch"),
+		).toEqual([wake("c"), wake("r"), wake("s")]);
+		expect(acts.wakeInstructionProposalBranch).toHaveBeenCalledTimes(3);
+		expect(acts.dispatchBranchMergeSync).toHaveBeenCalledWith({
+			branchId: "branch_m",
+			organizationId: "org_1",
+			deadlineAt,
+		});
+		expect(acts.reconcileInstructionProposalBranch).toHaveBeenCalledWith({
+			branchId: "branch_o",
+			organizationId: "org_1",
+			expectedAttempt: 4,
+			deadlineAt,
+		});
+		expect(acts.attachInstructionProposalToBranch).toHaveBeenCalledWith({
+			...attachItem("a"),
+			deadlineAt,
+		});
+		expect(result).toEqual({ ...ZERO, selected: 11, processed: 11 });
+		await expectReplays(workflowId);
+	}, 60_000);
+
+	it("Observe wakes a branch whose pull request ended, so its workflow classifies it; an open one is not woken", async () => {
+		const states: Record<string, ReconcileBranchResult["state"]> = {
+			branch_o1: "MERGED",
+			branch_o2: "CLOSED",
+			branch_o3: "OPEN",
+		};
+		const acts = sweepMocks(
+			sweep({}),
+			{
+				reconcileInstructionProposalBranch: vi.fn(
+					async (input: ReconcileBranchInput) => ({
+						state: states[input.branchId] ?? "OPEN",
+					}),
+				),
+			},
+			branchSweep({
+				observe: [branchItem("o1"), branchItem("o2"), branchItem("o3")],
+			}),
+		);
+		const { result } = await run(acts);
+		expect(
+			acts.wakeInstructionProposalBranch.mock.calls
+				.map(([i]) => i.branchId)
+				.sort(),
+		).toEqual(["branch_o1", "branch_o2"]);
+		expect(acts.dispatchBranchMergeSync).not.toHaveBeenCalled();
+		expect(result).toEqual({ ...ZERO, selected: 3, processed: 3 });
+	}, 60_000);
+
+	it("never writes git for a branch: only wake, reconcile, merge sync and attach, never a branch workflow activity", async () => {
+		const forbidden = {
+			appendBranchProposal: vi.fn(),
+			revertBranchProposal: vi.fn(),
+			settleBranch: vi.fn(),
+			createBranchPullRequest: vi.fn(),
+			releaseBranch: vi.fn(),
+			classifyBranch: vi.fn(),
+		};
+		const acts = sweepMocks(
+			sweep({}),
+			forbidden,
+			branchSweep({
+				close: [branchItem("c")],
+				recover: [branchItem("r")],
+				restart: [branchItem("s")],
+			}),
+		);
+		await run(acts);
+		for (const fn of Object.values(forbidden)) {
+			expect(fn).not.toHaveBeenCalled();
+		}
+		expect(acts.wakeInstructionProposalBranch).toHaveBeenCalledTimes(3);
+	}, 60_000);
+
+	it("skips a rate-limited integration's branch rows too, and runs Attach, which names no integration", async () => {
+		const acts = sweepMocks(
+			sweep({ close: [item("a1", { integrationId: "int_a" })] }),
+			{
+				closeInstructionProposalPullRequest: vi.fn(async () => ({
+					kind: "pending",
+					rateLimitedIntegrationId: "int_a",
+				})),
+				wakeInstructionProposalBranch: vi.fn(async () => {
+					await delay(300);
+					return { woken: true };
+				}),
+			},
+			branchSweep({
+				recover: [
+					branchItem("x", { integrationId: "int_b" }),
+					branchItem("y", { integrationId: "int_b" }),
+					branchItem("z", { integrationId: "int_b" }),
+				],
+				restart: [branchItem("a2", { integrationId: "int_a" })],
+				attach: [attachItem("n")],
+			}),
+		);
+		const { result } = await run(acts);
+		expect(
+			acts.wakeInstructionProposalBranch.mock.calls.map(
+				([i]) => i.branchId,
+			),
+		).not.toContain("branch_a2");
+		expect(acts.attachInstructionProposalToBranch).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({
+			...ZERO,
+			selected: 6,
+			processed: 5,
+			rateLimited: 1,
+		});
+	}, 60_000);
+
+	it("a branch selection that keeps failing leaves #2563's rows to run", async () => {
+		const acts = sweepMocks(sweep({ restart: [item("s")] }), {
+			selectDueInstructionProposalBranches: vi.fn(async () => {
+				throw new Error("database unavailable");
+			}),
+		});
+		const { result } = await run(acts);
+		expect(acts.selectDueInstructionProposalBranches).toHaveBeenCalledTimes(
+			3,
+		);
+		expect(
+			acts.dispatchInstructionProposalPullRequest,
+		).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ ...ZERO, selected: 1, processed: 1 });
+	}, 60_000);
+
+	it("replays a tick recorded before the patch on the pre-patch path: no marker, no branch selection", async () => {
+		const legacyBundle = await bundleWorkflowCode({
+			workflowsPath: resolve(
+				__dirname,
+				"helpers",
+				"legacy-proposal-sweep",
+			),
+		});
+		const acts = sweepMocks(
+			sweep({
+				close: [item("c")],
+				recover: [item("r")],
+				mergeSync: [item("m")],
+				observe: [item("o")],
+				restart: [item("s")],
+			}),
+			{},
+			branchSweep({ restart: [branchItem("never")] }),
+		);
+		const taskQueue = `instruction-proposal-sweep-${seq++}`;
+		const workflowId = `${taskQueue}-legacy`;
+		const worker = await Worker.create({
+			connection: env.nativeConnection,
+			taskQueue,
+			workflowBundle: legacyBundle,
+			activities: acts,
+		});
+		await worker.runUntil(
+			env.client.workflow.execute(WORKFLOW_NAME, {
+				args: [],
+				taskQueue,
+				workflowId,
+			}),
+		);
+		const history = await env.client.workflow
+			.getHandle(workflowId)
+			.fetchHistory();
+		expect(patchMarkers(history)).toEqual([]);
+		expect(
+			acts.selectDueInstructionProposalBranches,
+		).not.toHaveBeenCalled();
+		// The current workflow replays it: `patched` answers false on a
+		// history without the marker, so it schedules exactly what the
+		// legacy tick did.
+		await expect(
+			Worker.runReplayHistory({ workflowBundle }, history, workflowId),
+		).resolves.toBeUndefined();
+	}, 120_000);
+
+	it("records the patch marker on a new tick, and its history replays", async () => {
+		const acts = sweepMocks(sweep({}), {}, branchSweep({}));
+		const { workflowId } = await run(acts);
+		const history = await env.client.workflow
+			.getHandle(workflowId)
+			.fetchHistory();
+		const markers = patchMarkers(history);
+		expect(markers).toHaveLength(1);
+		expect(markers[0]).toContain("instruction-proposal-branch-sweep-v1");
+		await expectReplays(workflowId);
 	}, 60_000);
 });

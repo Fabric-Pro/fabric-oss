@@ -449,3 +449,17 @@ describe("GitHub open, get and close", () => {
 		expect(adapterFor("GITHUB")).toBe(github);
 	});
 });
+
+describe("GitHub pullRequestHeadRef", () => {
+	it("names the pull request's own head, never the synthetic merge ref", () => {
+		expect(github.pullRequestHeadRef("42")).toBe("refs/pull/42/head");
+		expect(github.pullRequestHeadRef("42")).not.toBe("refs/pull/42/merge");
+	});
+
+	it.each(["0", "-1", "1.5", "01", "abc", "", "42 ", " 42", "42abc"])(
+		"never turns %j into a ref",
+		(externalId) => {
+			expect(github.pullRequestHeadRef(externalId)).toBeNull();
+		},
+	);
+});

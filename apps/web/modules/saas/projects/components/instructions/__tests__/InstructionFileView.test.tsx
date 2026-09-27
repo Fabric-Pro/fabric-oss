@@ -104,6 +104,39 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+// The member branch projection `InstructionFileView` reads to show "From
+// your branch" or the `restored_unavailable` notice (Fizzy #2738 spec §10
+// "Editor"). Empty by default: most tests are not repository-backed, and a
+// `myBranch` with no `files` entry for the viewed path is exactly a no-op.
+const branchResponse = vi.hoisted(() => ({
+	current: {
+		branch: null as { id: string } | null,
+		liveChanges: 0,
+		files: [] as Array<{
+			path: string;
+			state: "written" | "deleted" | "restored_unavailable";
+			sha256: string | null;
+			snapshotId: string | null;
+		}>,
+		branches: [] as unknown[],
+	},
+	// `pending` never resolves the `myBranch` projection itself (not merely
+	// the later `myBranchFile` read); `error` rejects it. Both simulate the
+	// review finding: the projection can be loading or failed independently
+	// of, and before, the branch file it would otherwise gate on.
+	pending: false,
+	error: null as Error | null,
+}));
+const branchFileResponse = vi.hoisted(() => ({
+	current: {} as Record<string, unknown>,
+	// `pending` never resolves the query (a written path whose bytes have
+	// not arrived yet); `error` rejects it. Both let a test hold
+	// `myBranchFile` in a state short of success, which `.current` alone
+	// cannot do once it settles synchronously in these mocks.
+	pending: false,
+	error: null as Error | null,
+}));
+
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
@@ -113,6 +146,36 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryKey: ["getFile", o],
 						queryFn: async () => fileResponse.current,
 					}),
+				},
+				proposals: {
+					myBranch: {
+						queryOptions: (o: unknown) => ({
+							queryKey: ["myBranch", o],
+							queryFn: async () => {
+								if (branchResponse.pending) {
+									return new Promise(() => {});
+								}
+								if (branchResponse.error) {
+									throw branchResponse.error;
+								}
+								return branchResponse.current;
+							},
+						}),
+					},
+					myBranchFile: {
+						queryOptions: (o: unknown) => ({
+							queryKey: ["myBranchFile", o],
+							queryFn: async () => {
+								if (branchFileResponse.pending) {
+									return new Promise(() => {});
+								}
+								if (branchFileResponse.error) {
+									throw branchFileResponse.error;
+								}
+								return branchFileResponse.current;
+							},
+						}),
+					},
 				},
 			},
 		},
@@ -133,6 +196,17 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 describe("InstructionFileView", () => {
 	beforeEach(() => {
 		fileResponse.current = { ...TEXT_FILE };
+		branchResponse.current = {
+			branch: null,
+			liveChanges: 0,
+			files: [],
+			branches: [],
+		};
+		branchResponse.pending = false;
+		branchResponse.error = null;
+		branchFileResponse.current = {};
+		branchFileResponse.pending = false;
+		branchFileResponse.error = null;
 		for (const fn of Object.values(editMocks)) {
 			fn.mockReset();
 		}
@@ -723,5 +797,554 @@ describe("InstructionFileView", () => {
 		expect(screen.getByText(/- api\s+- web/)).toBeInTheDocument();
 		// The heading and description are not repeated as rows.
 		expect(screen.queryByText("description")).toBeNull();
+	});
+
+	/**
+	 * The viewer's accepting branch's projection of the viewed path (Fizzy
+	 * #2738 spec §10 "Editor"): a `written` path reads the branch's own
+	 * bytes and is labelled "From your branch"; a `restored_unavailable`
+	 * path opens the published version under its own notice and never
+	 * substitutes content. Only relevant on a repository-backed project,
+	 * where `myBranch` is queried at all.
+	 */
+	describe("the member branch version", () => {
+		const repositoryTarget = {
+			repository: "example-org/example-repo",
+			ref: "main",
+		};
+
+		it("shows no 'From your branch' label or notice with no branch entry for the path", async () => {
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [],
+				branches: [],
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await screen.findByRole("heading", { name: "example-qa-test" });
+			expect(
+				screen.queryByText("From your branch"),
+			).not.toBeInTheDocument();
+			expect(screen.getByText("Body.")).toBeInTheDocument();
+		});
+
+		it("labels a written branch path 'From your branch' and shows the branch's own bytes, not the published body", async () => {
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.current = {
+				branchId: "branch_1",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+				snapshotId: "snap_branch",
+				sha256: "abc",
+				size: 40,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: null,
+				body: "# From the branch\nBranch-only body.",
+				offset: 0,
+				nextOffset: null,
+				truncated: false,
+				url: null,
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText("From your branch"),
+			).toBeInTheDocument();
+			expect(screen.getByText("Branch-only body.")).toBeInTheDocument();
+			// The published body's own text is gone: the branch's bytes replaced
+			// it, not merely joined it.
+			expect(screen.queryByText("Body.")).not.toBeInTheDocument();
+		});
+
+		/**
+		 * Regression for the review finding: Edit used to seed the draft from
+		 * the PUBLISHED body and compare "unchanged" against it too, so a
+		 * small edit on top of a written branch version could silently
+		 * overwrite the member's own branch content instead of building on
+		 * it. Both the seed and the comparison have to be the resolved
+		 * DISPLAY body — the branch's, here — never the published one
+		 * underneath it.
+		 */
+		it("seeds Edit from the branch's own body and submits on top of it, not the published body", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.current = {
+				branchId: "branch_1",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+				snapshotId: "snap_branch",
+				sha256: "abc",
+				size: 40,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: null,
+				body: "# From the branch\nBranch-only body.",
+				offset: 0,
+				nextOffset: null,
+				truncated: false,
+				url: null,
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			// Wait for the branch's own bytes to resolve before pressing
+			// Edit: its accessible name is "Edit" either way, so pressing it
+			// while `myBranchFile` is still loading would click the
+			// disabled-tooltip variant instead of opening the editor.
+			await screen.findByText("From your branch");
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			// Seeded from the branch's body — the published body's own text
+			// ("Body.", from `TEXT_FILE`) never appears in the draft.
+			expect(screen.getByRole("textbox")).toHaveValue(
+				"# From the branch\nBranch-only body.",
+			);
+			await user.type(screen.getByRole("textbox"), "\nplus an edit");
+			await user.click(
+				screen.getByRole("button", { name: "Save and publish" }),
+			);
+			await waitFor(() =>
+				expect(editMocks.editInstructionSnapshot).toHaveBeenCalled(),
+			);
+			const call = editMocks.editInstructionSnapshot.mock
+				.calls[0]![0] as {
+				edits: Array<{ op: string; path: string; body: Blob }>;
+			};
+			// Built on the branch's content, not the published one: it would
+			// read "Body.\nplus an edit" if the draft had been seeded from
+			// the published body instead.
+			expect(await call.edits[0]!.body.text()).toBe(
+				"# From the branch\nBranch-only body.\nplus an edit",
+			);
+		});
+
+		it("makes no version when the branch's own body is unchanged, even though it differs from the published body", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.current = {
+				branchId: "branch_1",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+				snapshotId: "snap_branch",
+				sha256: "abc",
+				size: 40,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: null,
+				body: "# From the branch\nBranch-only body.",
+				offset: 0,
+				nextOffset: null,
+				truncated: false,
+				url: null,
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			// See the sibling test above: wait for the branch's own bytes
+			// before pressing Edit, whose accessible name doesn't change
+			// between the disabled and the real button.
+			await screen.findByText("From your branch");
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			await user.click(
+				screen.getByRole("button", { name: "Save and publish" }),
+			);
+			// If "unchanged" had compared against the published body ("Body.",
+			// which differs from the branch's), this would have been treated
+			// as a real change and submitted.
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Nothing changed, so no new version was made.",
+			);
+		});
+
+		/**
+		 * Review finding (round 2): only the later `myBranchFile` read was
+		 * gated on loading/error. The `myBranch` PROJECTION itself is a
+		 * separate query that can be loading (or fail) first — while it is,
+		 * `branchEntry` is undefined, so a fast Edit click before it resolves
+		 * used to seed a draft from the published body even though the
+		 * branch turns out to hold a different one underneath it.
+		 */
+		it("keeps editing unavailable while the branch projection itself is still loading", async () => {
+			const user = userEvent.setup();
+			branchResponse.pending = true;
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText(
+					"Loading your branch's version of this file…",
+				),
+			).toBeInTheDocument();
+			// No silent fallback to the published body, and no destructive
+			// seed, while the projection itself is still unresolved.
+			expect(screen.queryByText("Body.")).not.toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Loading your branch's version of this file…",
+			);
+		});
+
+		// The projection resolving to no branch entry for this path at all
+		// (the ordinary case for most files) is covered by "shows no 'From
+		// your branch' label or notice with no branch entry for the path"
+		// and the plain, non-repository-backed editing tests above: editing
+		// the published body is fine once there is no branch version that
+		// could be silently overwritten.
+
+		it("keeps editing unavailable and shows an error state when the branch projection itself fails to load", async () => {
+			const user = userEvent.setup();
+			branchResponse.error = new Error("network down");
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Fabric could not load your branch's version of this file. Refresh the page to try again.",
+			);
+			expect(screen.queryByText("Body.")).not.toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Fabric could not load your branch's version of this file. Refresh the page to try again.",
+			);
+		});
+
+		it("keeps editing unavailable and shows a loading state while a written branch file has not resolved yet", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.pending = true;
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText(
+					"Loading your branch's version of this file…",
+				),
+			).toBeInTheDocument();
+			// Never a silent fallback to the published body while the
+			// branch's own bytes are still unresolved.
+			expect(screen.queryByText("Body.")).not.toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Loading your branch's version of this file…",
+			);
+		});
+
+		it("keeps editing unavailable and shows an error state when a written branch file fails to load", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.error = new Error("network down");
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Fabric could not load your branch's version of this file. Refresh the page to try again.",
+			);
+			// Never a silent fallback to the published body once the branch's
+			// own bytes are confirmed unreachable.
+			expect(screen.queryByText("Body.")).not.toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Fabric could not load your branch's version of this file. Refresh the page to try again.",
+			);
+		});
+
+		/**
+		 * Review finding (round 2): edit eligibility used to come from the
+		 * PUBLISHED file `f` even while showing a branch version — so a
+		 * binary or truncated branch body could still be replaced by an
+		 * empty (or silently shortened) text draft. `TEXT_FILE` here is
+		 * text and well within any size limit, proving the refusal is read
+		 * from the branch's own response, not the published one.
+		 */
+		it("refuses to edit a branch file that is binary, even though the published file is text", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.current = {
+				branchId: "branch_1",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+				snapshotId: "snap_branch",
+				sha256: "abc",
+				size: 900,
+				mimeType: "image/png",
+				isText: false,
+				mode: null,
+				body: null,
+				offset: 0,
+				nextOffset: null,
+				truncated: false,
+				url: "https://storage.example.com/signed/branch-logo.png",
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText("This is a binary file.", {
+					exact: false,
+				}),
+			).toBeInTheDocument();
+			// Never the published text body, and no textarea a click could
+			// have replaced it with.
+			expect(screen.queryByText(/Example QA Test Workflow/)).toBeNull();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"This file is not text. Use Add file to replace it.",
+			);
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+		});
+
+		it("refuses to edit a branch file whose body was cut short, even though the published file is not truncated", async () => {
+			const user = userEvent.setup();
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "written",
+						sha256: "abc",
+						snapshotId: "snap_branch",
+					},
+				],
+				branches: [],
+			};
+			branchFileResponse.current = {
+				branchId: "branch_1",
+				path: ".claude/skills/example-qa-test/SKILL.md",
+				snapshotId: "snap_branch",
+				sha256: "abc",
+				size: 400_000,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: null,
+				body: "# From the branch\nFirst page only.",
+				offset: 0,
+				nextOffset: 200_000,
+				truncated: true,
+				url: null,
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText(
+					"Showing the first 200000 characters. Download the snapshot for the full file.",
+				),
+			).toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			// Saving a truncated body would silently delete the rest of the
+			// branch's file, so no textarea is offered at all.
+			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"This file is too large to edit here. Upload the folder again to replace it.",
+			);
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+		});
+
+		it("shows the restored_unavailable notice and the published body, never a substitution", async () => {
+			branchResponse.current = {
+				branch: { id: "branch_1" },
+				liveChanges: 1,
+				files: [
+					{
+						path: ".claude/skills/example-qa-test/SKILL.md",
+						state: "restored_unavailable",
+						sha256: null,
+						snapshotId: null,
+					},
+				],
+				branches: [],
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(
+				await screen.findByText(
+					"Your branch holds an earlier version of this file that Fabric cannot show here",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText("Use when the user provides a work item ID."),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText("From your branch"),
+			).not.toBeInTheDocument();
+		});
+
+		it("gives the 'no changes' refusal the withdrawal hint for a repository suggestion", async () => {
+			const user = userEvent.setup();
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canPropose
+					repositoryTarget={repositoryTarget}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.click(
+				screen.getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"Nothing changed, so no new suggestion was made. To remove this file's suggested change, withdraw it in Review proposals, or edit the branch in the repository.",
+			);
+			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
+		});
 	});
 });

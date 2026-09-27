@@ -84,3 +84,50 @@ export function mergeSyncDispatchesBefore(elapsedMs: number): number {
 	}
 	return elapsedMs < 20 * MINUTE_MS ? 1 : 2;
 }
+
+/**
+ * #2563 §9.1 steps 1 and 5 for a member proposal branch (Fizzy #2738 spec
+ * §6.6 "Merge sync"), whose destination is frozen on the branch rather than
+ * in a proposal's context: give up after 24 h or when the destination
+ * changed; otherwise the CURRENT (sync row, generation) tuple is the one to
+ * dispatch. The #2563 dispatcher keeps its own inline reading of a v1
+ * context.
+ */
+export function branchMergeSyncTarget(i: {
+	elapsedMs: number;
+	destination: {
+		integrationId: string;
+		targetRef: string;
+		rootPath: string;
+	} | null;
+	sync: {
+		id: string;
+		generation: number;
+		repositoryIntegrationId: string;
+		ref: string;
+		rootPath: string;
+	} | null;
+	sourceOfTruth: string | null;
+}):
+	| { kind: "give_up"; code: "CONFIGURATION_CHANGED" | "MERGE_SYNC_FAILED" }
+	| { kind: "current"; tuple: { syncId: string; generation: number } } {
+	if (i.elapsedMs >= 24 * 60 * MINUTE_MS) {
+		return { kind: "give_up", code: "MERGE_SYNC_FAILED" };
+	}
+	const d = i.destination;
+	const sync = i.sync;
+	if (
+		d === null ||
+		sync === null ||
+		i.sourceOfTruth !== "REPOSITORY" ||
+		sync.repositoryIntegrationId !== d.integrationId ||
+		sync.ref !== d.targetRef ||
+		sync.rootPath !== d.rootPath
+	) {
+		return { kind: "give_up", code: "CONFIGURATION_CHANGED" };
+	}
+	return {
+		kind: "current",
+		tuple: { syncId: sync.id, generation: sync.generation },
+	};
+}

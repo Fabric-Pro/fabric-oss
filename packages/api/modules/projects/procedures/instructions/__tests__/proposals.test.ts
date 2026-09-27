@@ -27,6 +27,8 @@ const m = vi.hoisted(() => ({
 	getProposalPullRequestStatus: vi.fn(),
 	refreshProposalPullRequest: vi.fn(),
 	retryProposalPullRequest: vi.fn(),
+	proposalBranchIdOf: vi.fn(),
+	wakeBranchAfterCommand: vi.fn(),
 	requiredPermissions: [] as string[],
 }));
 
@@ -51,6 +53,16 @@ vi.mock("@repo/database", () => ({
 		m.getSyncRunReceiptByRunId(...args),
 	getSyncRunReceiptsByRunIds: (...args: unknown[]) =>
 		m.getSyncRunReceiptsByRunIds(...args),
+	// No row here is on a member branch (Fizzy #2738); the branch blocks
+	// have their own suite, `proposal-branch-procedures.test.ts`.
+	readProposalBranchAttachments: async () => new Map(),
+	proposalBranchIdOf: (...args: unknown[]) => m.proposalBranchIdOf(...args),
+}));
+// A member branch withdrawal wakes the branch workflow after it commits
+// (spec §6.8); the wake itself is `proposal-branch-procedures.test.ts`'s.
+vi.mock("../proposal-branch", () => ({
+	wakeBranchAfterCommand: (...args: unknown[]) =>
+		m.wakeBranchAfterCommand(...args),
 }));
 // The list rows' `pullRequest` block is built by the real
 // `pullRequestStatusOf`; the status, refresh and retry procedures delegate to
@@ -187,6 +199,8 @@ beforeEach(() => {
 	m.requireHostingOrganizationId.mockResolvedValue("org_1");
 	m.canReviewInstructionProposals.mockResolvedValue(true);
 	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
+	m.proposalBranchIdOf.mockResolvedValue(null);
+	m.wakeBranchAfterCommand.mockResolvedValue(undefined);
 });
 
 describe("projects.instructions.proposals", () => {
@@ -354,6 +368,48 @@ describe("projects.instructions.proposals", () => {
 		).resolves.toEqual(expect.objectContaining({ changes: null }));
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();
 		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+
+	// Review finding (round 2): the single-proposal GET called `proposalRow`
+	// without the viewer id at all, so `isProposer` (and therefore, for a
+	// terminal branch proposal, "Propose again" — Fizzy #2738 spec Decision
+	// 14) always read false on the detail response regardless of who asked,
+	// even though the list procedure right above it got this right.
+	it("reports isProposer on the detail read the same way the list does, for the proposal's own author", async () => {
+		const own = {
+			...proposal,
+			user: { id: "reviewer_1", name: "Reviewer" },
+		};
+		m.getInstructionProposal.mockResolvedValue(own);
+		m.listInstructionProposals.mockResolvedValue({
+			items: [own],
+			nextCursor: null,
+		});
+
+		const detail = (await run(GET, {
+			projectId: "project_1",
+			snapshotId: "proposal_1",
+		})) as { isProposer: boolean };
+		const listed = (await run(LIST, { projectId: "project_1" })) as {
+			items: Array<{ isProposer: boolean }>;
+		};
+
+		// `context.user.id` ("reviewer_1") is this proposal's own author.
+		expect(detail.isProposer).toBe(true);
+		expect(listed.items[0]?.isProposer).toBe(true);
+	});
+
+	it("reports isProposer false on the detail read for someone else's proposal", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+
+		const detail = (await run(GET, {
+			projectId: "project_1",
+			snapshotId: "proposal_1",
+		})) as { isProposer: boolean };
+
+		// `proposal.user.id` ("reader_1") differs from `context.user.id`
+		// ("reviewer_1"): the viewer is a reviewer reading someone else's row.
+		expect(detail.isProposer).toBe(false);
 	});
 
 	it("returns text changes only after the proposal is READY", async () => {
@@ -842,6 +898,83 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 				correlationId: "corr_1",
 			}),
 		});
+	});
+
+	it("wakes the member branch after a withdrawal that committed a command, and not after one that changed nothing", async () => {
+		m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+		m.proposalBranchIdOf.mockResolvedValue("branch_1");
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: true,
+			version: 8,
+			pullRequest: "close_requested",
+			scope: "branch",
+		});
+
+		await expect(
+			run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).resolves.toEqual({ canceled: true, pullRequest: "close_requested" });
+		expect(m.proposalBranchIdOf).toHaveBeenCalledWith({
+			snapshotId: "proposal_1",
+			organizationId: "org_1",
+		});
+		expect(m.wakeBranchAfterCommand).toHaveBeenCalledWith("branch_1", {
+			projectId: "project_1",
+			organizationId: "org_1",
+			userId: "reviewer_1",
+		});
+
+		m.wakeBranchAfterCommand.mockClear();
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: false,
+			version: 8,
+			pullRequest: "close_requested",
+			scope: "change",
+		});
+		await run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" });
+		expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
+	});
+
+	it("wakes nothing for a #2563 cancel, which has no member branch", async () => {
+		m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: true,
+			changed: true,
+			version: 8,
+			pullRequest: "close_requested",
+		});
+		await run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" });
+		expect(m.proposalBranchIdOf).not.toHaveBeenCalled();
+		expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
+	});
+
+	it("answers a withdrawal a later change blocks with 409 WITHDRAW_BLOCKED_BY_LATER_CHANGE, naming the paths and their count", async () => {
+		m.getInstructionProposal.mockResolvedValue(repositoryProposal);
+		m.cancelInstructionProposal.mockResolvedValue({
+			ok: false,
+			reason: "already_decided",
+			withdrawBlocked: { paths: ["CLAUDE.md", "rules/a.md"], count: 23 },
+		});
+
+		const refusal = run(CANCEL, {
+			projectId: "project_1",
+			snapshotId: "proposal_1",
+		});
+		await expect(refusal).rejects.toBeInstanceOf(ORPCError);
+		await expect(refusal).rejects.toMatchObject({
+			code: "CONFLICT",
+			status: 409,
+			data: {
+				reason: "WITHDRAW_BLOCKED_BY_LATER_CHANGE",
+				paths: ["CLAUDE.md", "rules/a.md"],
+				count: 23,
+			},
+			message: expect.stringContaining(
+				"CLAUDE.md, rules/a.md and 21 more",
+			),
+		});
+		expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
 	});
 
 	it("refuses a cancel from anyone but the proposer", async () => {

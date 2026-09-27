@@ -121,4 +121,12 @@ export interface InstructionPullRequestAdapter {
 	): Promise<PullRequestObservation>;
 	get(i: Target & { externalId: string }): Promise<PullRequestObservation>;
 	close(i: Target & { externalId: string }): Promise<PullRequestObservation>;
+	/**
+	 * The provider ref that carries the pull request's source head commit,
+	 * fetchable from the source repository (spec §7 "Adapters"). `null` when
+	 * the provider has no such ref (Azure DevOps: its build ref is a merge
+	 * ref, not a source head) or when `externalId` is not a positive decimal
+	 * integer — never interpolated into a ref in that case.
+	 */
+	pullRequestHeadRef(externalId: string): string | null;
 }

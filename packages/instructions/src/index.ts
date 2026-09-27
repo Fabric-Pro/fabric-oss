@@ -8,6 +8,7 @@ export * from "./limits";
 export * from "./manifest";
 export * from "./paths";
 export * from "./plan-files";
+export * from "./proposal-branch-schemas";
 export * from "./proposal-note";
 export * from "./pull-request-context";
 export * from "./pull-request-text";

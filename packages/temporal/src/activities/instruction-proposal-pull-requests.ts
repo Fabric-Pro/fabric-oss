@@ -23,19 +23,21 @@ import {
 	getProposalOperation,
 	getSyncRunReceiptByRunId,
 	type InstructionPullRequestFailureCode,
+	joinProposalBranch,
 	listInstructionFiles,
 	type MergeSyncTuple,
 	markMergeSyncDispatched,
 	type ProposalOperationRow,
 	type PullRequestAttemptRecord,
 	recordMergeSyncRun,
+	selectDueBranches,
 	selectDueProposalOperations,
 	storePullRequestHeadSha,
 	transitionPullRequest,
 	writeAttemptRecord,
 } from "@repo/database";
 import {
-	type PullRequestContext,
+	type PullRequestContextV1,
 	pullRequestContextSchema,
 } from "@repo/instructions";
 import {
@@ -71,6 +73,15 @@ import type {
 	RecoverProposalInput,
 	RecoverProposalResult,
 } from "../lib/instruction-proposal-pull-request-types";
+import { BRANCH_NAMING } from "./lib/instruction-branch-settlement";
+import type {
+	AttachBranchInput,
+	AttachBranchResult,
+	BranchSweepLimits,
+	DueBranchSweep,
+	WakeBranchInput,
+} from "./lib/instruction-branch-types";
+import { wakeBranchWorkflow } from "./lib/instruction-branch-wake";
 import {
 	activityCancellationSignal,
 	asJson,
@@ -440,6 +451,7 @@ async function recoverOperation(
 			cwd: credential.runDir,
 			url: credential.url,
 			branch: currentRef,
+			validator: "operation",
 			env: credential.env,
 			signal: credential.signal,
 		}),
@@ -661,7 +673,7 @@ function unhandledIntegrationStatus(status: never): never {
 async function checkCreationAuthority(
 	input: OpenProposalOperationInput,
 	attempt: number,
-	context: PullRequestContext,
+	context: PullRequestContextV1,
 ): Promise<CreationCheck> {
 	const row = await getProposalOperation(input);
 	if (
@@ -889,6 +901,7 @@ async function pushCurrentRecord(
 			dir: credential.workDir,
 			sha,
 			branch: ref,
+			validator: "operation",
 			env: credential.env,
 			signal: credential.signal,
 		}),
@@ -2005,5 +2018,75 @@ export async function dispatchInstructionProposalPullRequest(
 			await deferInstructionProposalOperation(input);
 			return { kind: "already_running" };
 		}
+	});
+}
+
+// ---------------------------------------------------------------------------
+// The sweeper's member proposal branch sub-batches (Fizzy #2738 spec §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The branch rows of the five sub-batches, and Attach (`selectDueBranches`).
+ * Read-only; system-wide by design, returning ids and each row's own tenant
+ * columns. `untracked` branches are never selected.
+ */
+export async function selectDueInstructionProposalBranches(
+	limits: BranchSweepLimits,
+): Promise<DueBranchSweep> {
+	return selectDueBranches(limits);
+}
+
+/**
+ * Close, Recover and Restart's action on a branch row (spec §8 "wake"):
+ * `signalWithStart(wake)` on its workflow, which is safe while it runs. The
+ * sweeper never writes git; the workflow does the work.
+ */
+export async function wakeInstructionProposalBranch(
+	input: WakeBranchInput,
+): Promise<{ woken: true }> {
+	return withProposalDeadline(input, async () => {
+		assertMayContinue();
+		await wakeBranchWorkflow(
+			{
+				branchId: input.branchId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			activityCancellationSignal(),
+		);
+		return { woken: true };
+	});
+}
+
+/**
+ * Attach (spec §8): a v2 proposal the admission left without a branch (its
+ * join or wake failed after commit) joins its member's accepting branch,
+ * whose workflow is then woken. A proposal the join leaves unjoined wakes
+ * nothing; a stale destination is BLOCKED CONFIGURATION_CHANGED by the join
+ * itself.
+ */
+export async function attachInstructionProposalToBranch(
+	input: AttachBranchInput,
+): Promise<AttachBranchResult> {
+	return withProposalDeadline(input, async () => {
+		assertMayContinue();
+		const joined = await joinProposalBranch({
+			snapshotId: input.snapshotId,
+			organizationId: input.organizationId,
+			naming: BRANCH_NAMING,
+		});
+		if (joined.kind !== "joined" && joined.kind !== "already") {
+			return { kind: joined.kind };
+		}
+		assertMayContinue();
+		await wakeBranchWorkflow(
+			{
+				branchId: joined.branchId,
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			activityCancellationSignal(),
+		);
+		return { kind: joined.kind, branchId: joined.branchId };
 	});
 }

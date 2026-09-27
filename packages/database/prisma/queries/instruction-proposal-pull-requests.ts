@@ -61,6 +61,20 @@ export const INSTRUCTION_PULL_REQUEST_FAILURE_CODES = [
 	"SYNC_START_FAILED",
 	"MERGE_SYNC_FAILED",
 	"UNEXPECTED",
+	// Member proposal branches (Fizzy #2738 spec §9). ATTRIBUTION_REJECTED and
+	// CONFIGURATION_CHANGED above are reused.
+	"BRANCH_CONFLICT",
+	"SUPERSEDED_BY_LATER_CHANGE",
+	"BRANCH_MOVED",
+	"BRANCH_NAME_UNAVAILABLE",
+	"WITHDRAW_CONFLICT",
+	"WITHDRAW_BLOCKED_BY_LATER_CHANGE",
+	"REPOSITORY_CHANGED",
+	"ALREADY_ON_BRANCH",
+	"PUSH_OUTCOME_UNKNOWN",
+	"WITHDRAW_OUTCOME_UNKNOWN",
+	"START_OVER_REFUSED",
+	"BRANCH_MISSING",
 ] as const;
 
 export type InstructionPullRequestFailureCode =
@@ -75,7 +89,11 @@ export type PullRequestPhase =
 	| "create"
 	| "reconcile"
 	| "close"
-	| "merge_sync";
+	| "merge_sync"
+	// Member proposal branches (Fizzy #2738 spec §9): a branch proposal's
+	// append to, or revert from, its member's branch.
+	| "append"
+	| "revert";
 
 /** `pullRequestFailure`. `params` holds safe values only (counts, branch, delay, phase). */
 export type PullRequestFailure = {
@@ -242,6 +260,9 @@ export function nextRetryDelayMs(
 		case "STORAGE_FAILED":
 		case "GIT_FAILED":
 		case "LIMITS_EXCEEDED":
+		// The only retryable member-branch code (spec §9): the branch kept
+		// moving under the lease, so the append or revert is tried again.
+		case "BRANCH_MOVED":
 			return 15 * MINUTE_MS;
 		case "VALIDATION_REJECTED":
 		case "ATTRIBUTION_REJECTED":
@@ -252,6 +273,19 @@ export function nextRetryDelayMs(
 		case "TREE_CONFLICT":
 		case "PR_CREATION_REFUSED":
 		case "MERGE_SYNC_FAILED":
+		// Member proposal branches (spec §9): a person acts (Try again, Stop
+		// tracking, withdraw again) or the code is informational.
+		case "BRANCH_CONFLICT":
+		case "SUPERSEDED_BY_LATER_CHANGE":
+		case "BRANCH_NAME_UNAVAILABLE":
+		case "WITHDRAW_CONFLICT":
+		case "WITHDRAW_BLOCKED_BY_LATER_CHANGE":
+		case "REPOSITORY_CHANGED":
+		case "ALREADY_ON_BRANCH":
+		case "PUSH_OUTCOME_UNKNOWN":
+		case "WITHDRAW_OUTCOME_UNKNOWN":
+		case "START_OVER_REFUSED":
+		case "BRANCH_MISSING":
 			return null;
 		default:
 			return unknownCode(code);
@@ -289,7 +323,47 @@ export type PullRequestEvent =
 	| "observe"
 	| "merge_sync_acknowledged"
 	| "merge_sync_given_up"
-	| "restart_deferred";
+	| "restart_deferred"
+	// Member proposal branches (Fizzy #2738 spec §4.3), v2 rows only.
+	| BranchPullRequestEvent;
+
+/**
+ * The member proposal branch events (Fizzy #2738 spec §4.3). Every arm of
+ * every one of them requires a v2 `pullRequestContext`, so a #2563 row
+ * (`v = 1`) never matches one and keeps its §4.4 table unchanged
+ * (spec Decision 4).
+ */
+export const BRANCH_PULL_REQUEST_EVENTS = [
+	/** Join (spec §5 step 5): QUEUED, no branch, keeps QUEUED. */
+	"branch_join",
+	/** Stale destination (spec §5 step 2): BLOCKED CONFIGURATION_CHANGED. */
+	"branch_stale_destination",
+	/** Transfer (rehome, start over, Propose again): QUEUED on another branch. */
+	"branch_transfer",
+	/** Claim (spec §6.1): OPENING at a new attempt. */
+	"branch_claim",
+	/** Evidence reconciliation (spec §4.1): `reconcileProposalFromEvidence`. */
+	"branch_evidence",
+	/** Stop tracking (spec Decision 19): CANCELED REPOSITORY_CHANGED. */
+	"branch_stop_tracking",
+	/**
+	 * The member's withdrawal (spec §4.3 "Withdraw" rows, §6.8 request):
+	 * not appended -> CANCELED; appended -> CLOSE_REQUESTED with a WITHDRAW
+	 * command; the last live change keeps OPEN with a `branch` intent.
+	 */
+	"branch_withdraw",
+	/**
+	 * Classification and settlement (spec §4.3 "Classification" and "Branch
+	 * settled", §6.6 step 3, §6.7 step 4): a non-terminal proposal takes the
+	 * pull request's outcome, or CANCELED when both its append and its
+	 * revert were included, when it was withdrawn before any append, or when
+	 * no pull request existed.
+	 */
+	"branch_settled",
+] as const;
+
+export type BranchPullRequestEvent =
+	(typeof BRANCH_PULL_REQUEST_EVENTS)[number];
 
 type JsonColumn =
 	| "pullRequestFailure"
@@ -314,6 +388,17 @@ export type PullRequestColumns = Partial<
 		| "mergeSyncRequestedAt"
 		| "mergeSyncDispatchedAt"
 		| "mergeSyncRunId"
+		// Member proposal branches (Fizzy #2738 spec §4.1): the branch
+		// assignment, submission intent and pending command. The CHECKs keep
+		// each pair set or cleared together.
+		| "proposalBranchId"
+		| "proposalBranchSequence"
+		| "proposalAssignment"
+		| "proposalIntentOrder"
+		| "withdrawRequestedAt"
+		| "withdrawScope"
+		| "pendingCommand"
+		| "pendingCommandSeq"
 	>
 > & {
 	[K in JsonColumn]?:
@@ -370,6 +455,19 @@ type FromRule = {
 	 * cannot both write and a stale activity cannot overwrite a newer one.
 	 */
 	attemptIndependent?: true;
+	/**
+	 * A condition a Prisma guard cannot state, checked by
+	 * `transitionPullRequest` under the row lock before it writes. Only
+	 * `established_current_revert` exists, on exactly one arm: `branch_settled`
+	 * from CANCELED (Fizzy #2738 spec Decision 14, "a merge racing the revert
+	 * is decided by classification"). The row must be CANCELED only because
+	 * its current withdrawal is an established revert: the latest revert
+	 * issued after its current append, under its current `proposalBranchId`
+	 * and `proposalAssignment`, not `not_pushed`, and `acked` or `observed`
+	 * (`hasEstablishedCurrentRevert`). No other terminal branch arm exists
+	 * except `branch_transfer` to QUEUED.
+	 */
+	requires?: "established_current_revert";
 };
 
 /**
@@ -405,11 +503,53 @@ const failureRetryable = (retryable: boolean): Guard => ({
 	pullRequestFailure: { path: ["retryable"], equals: retryable },
 });
 
+/**
+ * A member proposal branch row (Fizzy #2738 spec Decision 4): its context is
+ * v2. Every branch event's every arm carries it, so no #2563 row matches one.
+ */
+const V2_CONTEXT: Guard = { pullRequestContext: { path: ["v"], equals: 2 } };
+const ON_BRANCH: Guard = {
+	AND: [V2_CONTEXT, { proposalBranchId: { not: null } }],
+};
+const NOT_YET_JOINED: Guard = {
+	AND: [V2_CONTEXT, { proposalBranchId: null }],
+};
+/** Submission intent holds: no withdrawal requested (spec §6.1 "with intent"). */
+const NOT_WITHDRAWN: Guard = { withdrawRequestedAt: null };
+
+/** Every non-terminal state, in table order. */
+const NON_TERMINAL_STATES: readonly State[] = [
+	"QUEUED",
+	"OPENING",
+	"OPEN",
+	"CLOSE_REQUESTED",
+	"BLOCKED",
+];
+
 /** No head SHA and no outstanding record obligation: nothing was pushed or created. */
 const NOTHING_PUSHED: Guard = {
 	pullRequestHeadSha: null,
 	pullRequestObligationOpen: false,
 };
+
+/**
+ * The #2563 events that cancel a row "before anything was pushed or
+ * created". Their guards read the #2563 columns (`pullRequestHeadSha`, the
+ * obligation), which a member branch proposal never writes: its pushes are
+ * journal operations. So a v2 row with any journal operation would still
+ * match them, and its own commit may already be on the branch.
+ * `transitionPullRequest` therefore refuses these events, under the row
+ * lock, for a row that has any journal operation (Fizzy #2738 spec §4.3
+ * "Validation REJECTED or abandonment": QUEUED, OPENING with no journal
+ * operation, BLOCKED in validation or admission). Only v2 rows have journal
+ * operations, so a #2563 row is unaffected. A member's own withdrawal of a
+ * v2 row is `branch_withdraw`.
+ */
+export const PRE_CREATE_CANCEL_EVENTS = [
+	"validation_rejected",
+	"abandoned",
+	"cancel_pre_create",
+] as const satisfies readonly PullRequestEvent[];
 
 /** A validation verdict or abandonment cancels every pre-create state (spec §2.12). */
 const PRE_CREATE_CANCEL_FROM: readonly FromRule[] = [
@@ -717,6 +857,177 @@ export const PULL_REQUEST_TRANSITIONS: Readonly<
 		bump: false,
 		audit: NO_AUDIT,
 	},
+
+	// -----------------------------------------------------------------------
+	// Member proposal branches (Fizzy #2738 spec §4.3). v2 rows only; this
+	// amends #2563 §4.4 for them: CLOSE_REQUESTED can return to OPEN
+	// (evidence), and Propose again moves a terminal proposal back to QUEUED
+	// (transfer). Every arm is fenced on the attempt its writer read under
+	// the row lock.
+	// -----------------------------------------------------------------------
+
+	// Join (spec §5 step 5): the branch, its sequence and a new assignment
+	// are written; the state stays QUEUED.
+	branch_join: {
+		from: [{ state: "QUEUED", to: ["unchanged"], guard: NOT_YET_JOINED }],
+		bump: false,
+		audit: NO_AUDIT,
+	},
+	// Stale destination (spec §5 step 2, Decision 15): the proposal's frozen
+	// destination no longer matches the configuration. It never retires
+	// anything; it is BLOCKED CONFIGURATION_CHANGED where it stands.
+	branch_stale_destination: {
+		from: (["QUEUED", "OPENING", "OPEN", "BLOCKED"] as const).map(
+			(state) => ({
+				state,
+				to: ["BLOCKED"] as const,
+				guard: V2_CONTEXT,
+			}),
+		),
+		bump: true,
+		audit: NO_AUDIT,
+	},
+	// Transfer (spec §5): rehome (QUEUED, BLOCKED), start over (any live
+	// state) and Propose again (a terminal proposal with unverified
+	// membership). Always QUEUED on the new branch, with a new assignment.
+	branch_transfer: {
+		from: (
+			[
+				"QUEUED",
+				"OPENING",
+				"OPEN",
+				"BLOCKED",
+				"MERGED",
+				"CLOSED",
+				"CANCELED",
+			] as const
+		).map((state) => ({
+			state,
+			to: ["QUEUED"] as const,
+			guard: { AND: [ON_BRANCH, NOT_WITHDRAWN] },
+		})),
+		bump: true,
+		audit: NO_AUDIT,
+	},
+	// Claim (spec §6.1): QUEUED, OPENING at any attempt, or a retryable
+	// BLOCKED row in phase append or validation whose backoff the claim has
+	// checked on the database clock under the row lock.
+	branch_claim: {
+		from: [
+			{
+				state: "QUEUED",
+				to: ["OPENING"],
+				guard: { AND: [ON_BRANCH, NOT_WITHDRAWN] },
+			},
+			{
+				state: "OPENING",
+				to: ["OPENING"],
+				guard: { AND: [ON_BRANCH, NOT_WITHDRAWN] },
+			},
+			{
+				state: "BLOCKED",
+				to: ["OPENING"],
+				guard: {
+					AND: [
+						ON_BRANCH,
+						NOT_WITHDRAWN,
+						failureRetryable(true),
+						failurePhaseIn(["append", "validation"]),
+					],
+				},
+			},
+		],
+		bump: true,
+		audit: NO_AUDIT,
+	},
+	// Evidence reconciliation (spec §4.1): any non-terminal state to the
+	// first matching row's lifecycle. Only `reconcileProposalFromEvidence`
+	// computes the target; it also fences on the branch and assignment.
+	branch_evidence: {
+		from: NON_TERMINAL_STATES.map((state) => ({
+			state,
+			to: [
+				"CANCELED",
+				"CLOSE_REQUESTED",
+				"OPEN",
+				"BLOCKED",
+				"unchanged",
+			] as const,
+			guard: ON_BRANCH,
+		})),
+		bump: true,
+		audit: { CANCELED: [RECONCILED] },
+	},
+	// Stop tracking (spec Decision 19): every non-terminal proposal on an
+	// untracked branch is CANCELED REPOSITORY_CHANGED.
+	branch_stop_tracking: {
+		from: NON_TERMINAL_STATES.map((state) => ({
+			state,
+			to: ["CANCELED"] as const,
+			guard: ON_BRANCH,
+		})),
+		bump: true,
+		audit: { CANCELED: [RECONCILED] },
+	},
+	// The member's withdrawal (spec §4.3, §6.8), decided by
+	// `withdrawBranchProposal` under the branch and proposal locks:
+	// - not appended (QUEUED, or BLOCKED without an established append;
+	//   joined or not yet joined): CANCELED, intent `change`;
+	// - appended (OPEN): CLOSE_REQUESTED, intent `change`, WITHDRAW command;
+	// - the branch's last live change (OPEN): unchanged, intent `branch`,
+	//   while the branch itself becomes CLOSE_REQUESTED (WITHDRAW).
+	// Each writes one `pull_request_close_requested` row, as #2563's cancel.
+	branch_withdraw: {
+		from: [
+			{ state: "QUEUED", to: ["CANCELED"], guard: V2_CONTEXT },
+			{ state: "BLOCKED", to: ["CANCELED"], guard: V2_CONTEXT },
+			{
+				state: "OPEN",
+				to: ["CLOSE_REQUESTED", "unchanged"],
+				guard: { AND: [ON_BRANCH, NOT_WITHDRAWN] },
+			},
+		],
+		bump: true,
+		audit: {
+			CANCELED: [CLOSE_REQUESTED_AUDIT],
+			CLOSE_REQUESTED: [CLOSE_REQUESTED_AUDIT],
+			unchanged: [CLOSE_REQUESTED_AUDIT],
+		},
+	},
+	// Classification and settlement (spec §4.3, §6.6 step 3, §6.7 step 4),
+	// decided by the branch's settlement writers under the branch and
+	// proposal locks, fenced on the attempt and the branch assignment read
+	// there. Each writes one `pull_request_reconciled` row.
+	//
+	// The one terminal arm (Decision 14's first outcome): a proposal CANCELED
+	// because its revert was established takes the pull request's outcome
+	// when classification finds its append included and its revert not (the
+	// pull request merged or closed before the revert reached it). The
+	// in-lock `established_current_revert` check keeps every other CANCELED
+	// row out, and MERGED or CLOSED rows have no arm here at all.
+	branch_settled: {
+		from: [
+			...NON_TERMINAL_STATES.map(
+				(state): FromRule => ({
+					state,
+					to: ["MERGED", "CLOSED", "CANCELED"] as const,
+					guard: ON_BRANCH,
+				}),
+			),
+			{
+				state: "CANCELED",
+				to: ["MERGED", "CLOSED"],
+				guard: ON_BRANCH,
+				requires: "established_current_revert",
+			},
+		],
+		bump: true,
+		audit: {
+			MERGED: [RECONCILED],
+			CLOSED: [RECONCILED],
+			CANCELED: [RECONCILED],
+		},
+	},
 };
 
 function fromRuleOf(
@@ -862,6 +1173,80 @@ async function lockSnapshotClock(
 	};
 }
 
+/**
+ * Whether any member-branch journal operation names this proposal (Fizzy
+ * #2738 spec §4.1), on any branch it was ever assigned to. Read under the
+ * proposal's row lock, which `recordBranchOperation` also takes before it
+ * inserts, so the answer cannot go stale before the caller's write.
+ */
+async function hasJournalOperation(
+	client: Prisma.TransactionClient,
+	snapshotId: string,
+	organizationId: string,
+): Promise<boolean> {
+	const [row] = await client.$queryRaw<Array<{ journaled?: unknown }>>`
+		SELECT EXISTS (
+			SELECT 1 FROM "project_instruction_proposal_branch_operation" o
+			WHERE o."snapshotId" = ${snapshotId} AND o."organizationId" = ${organizationId}
+		) AS "journaled"`;
+	return row?.journaled === true;
+}
+
+/**
+ * Whether the proposal's current withdrawal is an established revert under
+ * its current `proposalBranchId` and `proposalAssignment` (Fizzy #2738 spec
+ * §4.1): the latest REVERT issued after the latest APPEND, both not
+ * `not_pushed`, with outcome `acked` or `observed`. The SQL twin of
+ * `hasEstablishedCurrentRevert` in the evidence module; `s` is the snapshot
+ * row. `executionSeq` is unique per branch, so the latest revert is one
+ * operation.
+ */
+export function establishedCurrentRevertSql(): Prisma.Sql {
+	return Prisma.sql`EXISTS (
+	SELECT 1 FROM "project_instruction_proposal_branch_operation" r
+	WHERE r."snapshotId" = s."id" AND r."organizationId" = s."organizationId"
+		AND r."branchId" = s."proposalBranchId" AND r."assignment" = s."proposalAssignment"
+		AND r."kind"::text = 'REVERT' AND r."outcome" IN ('acked', 'observed')
+		AND r."executionSeq" = (
+			SELECT max(w."executionSeq") FROM "project_instruction_proposal_branch_operation" w
+			WHERE w."snapshotId" = s."id" AND w."organizationId" = s."organizationId"
+				AND w."branchId" = s."proposalBranchId" AND w."assignment" = s."proposalAssignment"
+				AND w."kind"::text = 'REVERT' AND w."outcome" IS DISTINCT FROM 'not_pushed'
+				AND w."executionSeq" > (
+					SELECT max(a."executionSeq") FROM "project_instruction_proposal_branch_operation" a
+					WHERE a."snapshotId" = s."id" AND a."organizationId" = s."organizationId"
+						AND a."branchId" = s."proposalBranchId" AND a."assignment" = s."proposalAssignment"
+						AND a."kind"::text = 'APPEND' AND a."outcome" IS DISTINCT FROM 'not_pushed'
+				)
+		)
+)`;
+}
+
+/**
+ * The row's state and whether its current withdrawal is an established
+ * revert (`establishedCurrentRevertSql`), read under the row lock. Issuing a
+ * new operation (`recordBranchOperation`) takes that lock first, and an
+ * established outcome never regresses (§4.1 monotonic evidence), so a true
+ * answer cannot turn false before the caller's write.
+ */
+async function readCurrentRevert(
+	client: Prisma.TransactionClient,
+	snapshotId: string,
+	organizationId: string,
+): Promise<{ state: string | null; revertEstablished: boolean }> {
+	const [row] = await client.$queryRaw<
+		Array<{ state?: string | null; revertEstablished?: unknown }>
+	>`
+		SELECT s."pullRequestState"::text AS "state",
+			${establishedCurrentRevertSql()} AS "revertEstablished"
+		FROM "project_instruction_snapshot" s
+		WHERE s."id" = ${snapshotId} AND s."organizationId" = ${organizationId}`;
+	return {
+		state: row?.state ?? null,
+		revertEstablished: row?.revertEstablished === true,
+	};
+}
+
 function keepValidatingClock(
 	locked: { status: string; updatedAt: Date } | null,
 ): { updatedAt?: Date } {
@@ -878,6 +1263,11 @@ function keepValidatingClock(
  * `expectedAttempt` is the attempt the caller observed: required (a number)
  * whenever the call selects an attempt-fenced arm, and null only for a call
  * whose every arm is attempt-independent (`pullRequestTransitionWhere`).
+ *
+ * `branch` (member proposal branches, Fizzy #2738 spec §4.1) further
+ * conditions the write on the proposal's current `proposalBranchId` and
+ * `proposalAssignment`: a fact about a submission the proposal has left
+ * never moves it. Only a branch event may name it.
  */
 export async function transitionPullRequest(
 	i: {
@@ -890,6 +1280,7 @@ export async function transitionPullRequest(
 		bumpAttempt: boolean;
 		data?: PullRequestColumns;
 		audit?: RecordAuditInput | readonly RecordAuditInput[];
+		branch?: { id: string; assignment: number };
 	},
 	tx?: Prisma.TransactionClient,
 ): Promise<{ ok: true; attempt: number } | { ok: false }> {
@@ -908,6 +1299,11 @@ export async function transitionPullRequest(
 		i.expectedAttempt,
 	);
 	const fencedCall = allArmsFenced(i.event, i.from, i.to);
+	const revertStates = i.from.filter(
+		(state) =>
+			fromRuleOf(i.event, state, i.to).requires ===
+			"established_current_revert",
+	);
 	if (i.bumpAttempt !== rule.bump) {
 		throw new Error(
 			`Pull-request transition ${i.event} ${rule.bump ? "must" : "must not"} bump the attempt`,
@@ -915,10 +1311,24 @@ export async function transitionPullRequest(
 	}
 	const audits = auditsOf(i.audit);
 	assertExactAudits(i.event, i.to, audits);
+	if (
+		i.branch !== undefined &&
+		!(BRANCH_PULL_REQUEST_EVENTS as readonly string[]).includes(i.event)
+	) {
+		throw new Error(
+			`Pull-request transition ${i.event} is not a branch event and takes no branch fence`,
+		);
+	}
 	const where: Prisma.ProjectInstructionSnapshotWhereInput = {
 		id: i.snapshotId,
 		organizationId: i.organizationId,
 		AND: [stateWhere],
+		...(i.branch === undefined
+			? {}
+			: {
+					proposalBranchId: i.branch.id,
+					proposalAssignment: i.branch.assignment,
+				}),
 	};
 	const data: Prisma.ProjectInstructionSnapshotUncheckedUpdateManyInput = {
 		...columnsForPrisma(i.data),
@@ -941,6 +1351,29 @@ export async function transitionPullRequest(
 		);
 		if (!locked) {
 			return { ok: false };
+		}
+		if (
+			(PRE_CREATE_CANCEL_EVENTS as readonly string[]).includes(i.event) &&
+			(await hasJournalOperation(client, i.snapshotId, i.organizationId))
+		) {
+			// A member branch proposal with a journal operation: its commit
+			// may be on the branch, so no pre-create cancel applies.
+			return { ok: false };
+		}
+		if (revertStates.length > 0) {
+			// Decision 14: a terminal row moves here only when its current
+			// withdrawal is an established revert on its current branch.
+			const current = await readCurrentRevert(
+				client,
+				i.snapshotId,
+				i.organizationId,
+			);
+			const needsRevert =
+				current.state === null ||
+				(revertStates as readonly string[]).includes(current.state);
+			if (needsRevert && !current.revertEstablished) {
+				return { ok: false };
+			}
 		}
 		const { count } = await client.projectInstructionSnapshot.updateMany({
 			where,
@@ -1257,10 +1690,34 @@ const RESOLVED_STATES = [
 	"CANCELED",
 ] as const satisfies readonly State[];
 
+/** A branch's terminal states (Fizzy #2738 spec §4.4). */
+const TERMINAL_BRANCH_STATES = ["MERGED", "CLOSED", "CANCELED"] as const;
+
+/**
+ * Fizzy #2738 spec §4.5: the branch a v2 row sits on still owes work. It is
+ * not terminal, its membership is pending, it owes a merge sync, or it has
+ * an open settlement obligation (a create marker, or a confirmation due);
+ * and it is tracked: an `untracked` branch owes nothing Fabric can still do.
+ */
+function unresolvedBranch() {
+	return {
+		untracked: false,
+		OR: [
+			{ state: { notIn: [...TERMINAL_BRANCH_STATES] } },
+			{ membership: { path: ["status"], equals: "pending" } },
+			{ mergeSyncRequestedAt: { not: null } },
+			{ createIssuedAt: { not: null } },
+			{ confirmationDueAt: { not: null } },
+		],
+	} satisfies Prisma.ProjectInstructionProposalBranchWhereInput;
+}
+
 /**
  * A row retention must keep: a live operation, a merge sync still owed, or
  * any attempt record with an outstanding obligation (the maintained
- * `pullRequestObligationOpen` column). Spec §4.3.
+ * `pullRequestObligationOpen` column). Spec §4.3. A member proposal branch
+ * row (Fizzy #2738 spec §4.5) is also kept while its branch still owes work
+ * (`unresolvedBranch`).
  */
 export function unresolvedPullRequestOperation() {
 	return {
@@ -1268,6 +1725,7 @@ export function unresolvedPullRequestOperation() {
 			{ pullRequestState: { in: [...UNRESOLVED_STATES] } },
 			{ mergeSyncRequestedAt: { not: null } },
 			{ pullRequestObligationOpen: true },
+			{ proposalBranch: { is: unresolvedBranch() } },
 		],
 	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
 }
@@ -1276,7 +1734,9 @@ export function unresolvedPullRequestOperation() {
  * The null-safe complement of `unresolvedPullRequestOperation`, which every
  * retention filter uses. `NOT` over that `OR` would be wrong for a FABRIC
  * row: `"pullRequestState" IN (...)` is NULL for a null state, so the
- * negation is NULL too and no FABRIC row would ever be prunable again.
+ * negation is NULL too and no FABRIC row would ever be prunable again. The
+ * branch clause is negated only for a row that has a branch, for the same
+ * reason.
  */
 export function resolvedPullRequestOperation() {
 	return {
@@ -1289,15 +1749,54 @@ export function resolvedPullRequestOperation() {
 			},
 			{ mergeSyncRequestedAt: null },
 			{ pullRequestObligationOpen: false },
+			{
+				OR: [
+					{ proposalBranchId: null },
+					{ NOT: { proposalBranch: { is: unresolvedBranch() } } },
+				],
+			},
 		],
 	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
 }
 
-/** The same predicate over a row value, for a caller that has read the row. */
+/** What the row form reads of a v2 row's branch (Fizzy #2738 spec §4.5). */
+export type RetentionBranchFields = {
+	state: string;
+	untracked: boolean;
+	membership: unknown;
+	mergeSyncRequestedAt: Date | null;
+	createIssuedAt: Date | null;
+	confirmationDueAt: Date | null;
+};
+
+function isUnresolvedBranch(b: RetentionBranchFields): boolean {
+	if (b.untracked) {
+		return false;
+	}
+	const membership =
+		b.membership !== null && typeof b.membership === "object"
+			? (b.membership as { status?: unknown }).status
+			: undefined;
+	return (
+		!(TERMINAL_BRANCH_STATES as readonly string[]).includes(b.state) ||
+		membership === "pending" ||
+		b.mergeSyncRequestedAt !== null ||
+		b.createIssuedAt !== null ||
+		b.confirmationDueAt !== null
+	);
+}
+
+/**
+ * The same predicate over a row value, for a caller that has read the row.
+ * A caller that reads a v2 row passes its `proposalBranch` (the
+ * `RetentionBranchFields`); one that omits it answers for the row's own
+ * columns only.
+ */
 export function isUnresolvedPullRequestOperation(row: {
 	pullRequestState?: State | null;
 	mergeSyncRequestedAt?: Date | null;
 	pullRequestObligationOpen?: boolean | null;
+	proposalBranch?: RetentionBranchFields | null;
 }): boolean {
 	return (
 		(row.pullRequestState !== null &&
@@ -1307,7 +1806,10 @@ export function isUnresolvedPullRequestOperation(row: {
 			)) ||
 		(row.mergeSyncRequestedAt !== null &&
 			row.mergeSyncRequestedAt !== undefined) ||
-		row.pullRequestObligationOpen === true
+		row.pullRequestObligationOpen === true ||
+		(row.proposalBranch !== null &&
+			row.proposalBranch !== undefined &&
+			isUnresolvedBranch(row.proposalBranch))
 	);
 }
 
@@ -1325,15 +1827,23 @@ function stateList(states: readonly State[]): Prisma.Sql {
 	return Prisma.raw(states.map((state) => `'${state}'`).join(", "));
 }
 
+/**
+ * `unresolvedBranch()` for raw SQL: an EXISTS over the row's branch, so it
+ * is never NULL and its negation is null-safe.
+ */
+function unresolvedBranchSql(alias: string): Prisma.Sql {
+	return Prisma.sql`EXISTS (SELECT 1 FROM "project_instruction_proposal_branch" rb WHERE rb."id" = ${column(alias, "proposalBranchId")} AND NOT rb."untracked" AND (rb."state"::text NOT IN ('MERGED', 'CLOSED', 'CANCELED') OR rb."membership"->>'status' = 'pending' OR rb."mergeSyncRequestedAt" IS NOT NULL OR rb."createIssuedAt" IS NOT NULL OR rb."confirmationDueAt" IS NOT NULL))`;
+}
+
 /** `unresolvedPullRequestOperation()` for raw SQL over `alias`. */
 export function unresolvedPullRequestOperationSql(alias: string): Prisma.Sql {
-	return Prisma.sql`(${column(alias, "pullRequestState")} IN (${stateList(UNRESOLVED_STATES)}) OR ${column(alias, "mergeSyncRequestedAt")} IS NOT NULL OR ${column(alias, "pullRequestObligationOpen")})`;
+	return Prisma.sql`(${column(alias, "pullRequestState")} IN (${stateList(UNRESOLVED_STATES)}) OR ${column(alias, "mergeSyncRequestedAt")} IS NOT NULL OR ${column(alias, "pullRequestObligationOpen")} OR ${unresolvedBranchSql(alias)})`;
 }
 
 /** `resolvedPullRequestOperation()` for raw SQL over `alias`, null-safe as it is. */
 export function resolvedPullRequestOperationSql(alias: string): Prisma.Sql {
 	const state = column(alias, "pullRequestState");
-	return Prisma.sql`(${state} IS NULL OR ${state} IN (${stateList(RESOLVED_STATES)})) AND ${column(alias, "mergeSyncRequestedAt")} IS NULL AND NOT ${column(alias, "pullRequestObligationOpen")}`;
+	return Prisma.sql`(${state} IS NULL OR ${state} IN (${stateList(RESOLVED_STATES)})) AND ${column(alias, "mergeSyncRequestedAt")} IS NULL AND NOT ${column(alias, "pullRequestObligationOpen")} AND NOT ${unresolvedBranchSql(alias)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,8 +1967,11 @@ export async function selectDueProposalOperations(limits: {
 				taken.push(...items.map((item) => item.snapshotId));
 				return items;
 			};
+			// The #2563 clauses take #2563 rows only (Fizzy #2738 spec §8,
+			// Decision 4): no branch, and a context that is not v2. Null-safe,
+			// so a v1 row selects exactly as before.
 			const from = (excluded: string[]) =>
-				Prisma.sql`FROM "project_instruction_snapshot" s WHERE s."proposalDestination" = 'REPOSITORY' AND s."id" <> ALL(${excluded}::text[])`;
+				Prisma.sql`FROM "project_instruction_snapshot" s WHERE s."proposalDestination" = 'REPOSITORY' AND s."proposalBranchId" IS NULL AND (s."pullRequestContext"->>'v') IS DISTINCT FROM '2' AND s."id" <> ALL(${excluded}::text[])`;
 
 			const close = await run(
 				(

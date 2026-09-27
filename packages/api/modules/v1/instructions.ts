@@ -7,6 +7,7 @@
  *   POST /projects/:projectId/instructions/versions             publish a change directly
  *   GET  /projects/:projectId/instructions/proposals/:snapshotId/pull-request
  *                                                               a repository proposal's pull request
+ *   GET  /projects/:projectId/instructions/proposals/open       the caller's open proposals' hashes
  *
  * These exist so `@fabricorg/cli` can keep a working tree current
  * (`fabric instructions check | sync | init | push`). The oRPC twins under
@@ -944,6 +945,65 @@ export function registerInstructionRoutes(
 					failure.status,
 				);
 			}
+		},
+	);
+
+	/**
+	 * GET /projects/:projectId/instructions/proposals/open
+	 *
+	 * The key creator's own open (`PENDING`) proposals with the paths each
+	 * changes against its own base and the proposed files' sha256, never
+	 * bytes (Fizzy #2738 spec §14.2): `fabric instructions push` reads it to
+	 * skip a change already proposed (Fizzy #2739). Newest version first, at
+	 * most 20; a member branch path is listed only on the proposal holding
+	 * the member's newest intent for it, and only while that proposal is
+	 * carrying it toward review (`listOpenInstructionProposals`).
+	 *
+	 * Another member's proposals never appear, whatever the creator may
+	 * review: the rows are narrowed to the creator, not to their visibility.
+	 *
+	 * TWO gates, in order, each with its own refusal (AGENTS.md: an API key
+	 * never grants more than the UI):
+	 * 1. the key's declared scope, `instructions:read`: the flat
+	 *    `{ error: "Missing required scope: …" }` from the middleware;
+	 * 2. the creator's live `INSTRUCTION_READ` and the organization binding,
+	 *    `resolveInstructionProject`, as every route here: a wildcard `*` key
+	 *    passes gate 1 and still meets this one, answered
+	 *    `{ error: { message } }`.
+	 *
+	 * The implementation is imported lazily, as the other routes do, so the
+	 * read routes' module graph stays small.
+	 */
+	app.get(
+		"/projects/:projectId/instructions/proposals/open",
+		requireScope("instructions:read"),
+		async (c) => {
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId")!;
+			const resolved = await resolveInstructionProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			const { readOpenProposals } = await import(
+				"../projects/procedures/instructions/open-proposals"
+			);
+			return c.json(
+				ok(
+					await readOpenProposals({
+						projectId,
+						organizationId: resolved.organizationId,
+						userId: resolved.userId,
+					}),
+				),
+			);
 		},
 	);
 }

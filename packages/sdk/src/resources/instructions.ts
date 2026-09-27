@@ -230,10 +230,72 @@ export interface ProposalPullRequestFailure {
 	params: Record<string, unknown>;
 }
 
+/** Where a member's proposal branch stands. */
+export type ProposalBranchState =
+	| "PENDING"
+	| "OPENING"
+	| "OPEN"
+	| "CLOSE_REQUESTED"
+	| "BLOCKED"
+	| "MERGED"
+	| "CLOSED"
+	| "CANCELED";
+
+/**
+ * The member's own branch that a suggestion to a repository-backed project
+ * is added to, one commit per suggestion, with one pull request for all of
+ * them. A mirror of the server's view, written by hand.
+ */
+export interface ProposalBranch {
+	id: string;
+	/** `fabric/instructions/members/<name>-<id>/<n>`. */
+	ref: string;
+	number: number;
+	state: ProposalBranchState;
+	/** The branch's fencing attempt: pass it as `expectedAttempt` to a branch command. */
+	attempt: number;
+	/** The branch has commits made outside Fabric. */
+	foreignCommits: boolean;
+	/** Whether Fabric has checked which changes the finished pull request carried. */
+	membership: "pending" | "done" | "unverified" | null;
+	failure: {
+		code: string;
+		retryable: boolean;
+		params?: Record<string, unknown>;
+	} | null;
+	/** The project's repository settings changed; this branch takes no new changes. */
+	retired: boolean;
+	/** Null until Fabric has opened the pull request. */
+	pullRequest: {
+		url: string;
+		externalId: string;
+		state: "OPEN" | "MERGED" | "CLOSED";
+		/** ISO 8601, or null before Fabric first checked it. */
+		lastCheckedAt: string | null;
+	} | null;
+}
+
+/**
+ * What adding a suggestion to its branch did: `appended` with the commit,
+ * `already_on_branch` when every file already matched (the suggestion is
+ * `CANCELED` and nothing was added), null while that is not known yet.
+ */
+export interface ProposalAppend {
+	outcome: "appended" | "already_on_branch" | null;
+	commitSha: string | null;
+	/** Whether Fabric proved the commit was in the finished pull request. */
+	membership: "included" | "unverified" | null;
+}
+
 /**
  * The pull request a suggestion to a repository-backed project opens.
  * Everything here is what Fabric last recorded; nothing is read from the
  * provider on request.
+ *
+ * On a suggestion added to the member's branch, `state` is the suggestion's
+ * own and `url` and `externalId` are the branch's pull request; `branch` and
+ * `append` say more. Both are null for any other suggestion, and absent from
+ * a server that predates member branches.
  */
 export interface ProposalPullRequest {
 	operationId: string;
@@ -243,6 +305,8 @@ export interface ProposalPullRequest {
 	failure: ProposalPullRequestFailure | null;
 	/** ISO 8601, or null before Fabric first checked it. */
 	lastCheckedAt: string | null;
+	branch?: ProposalBranch | null;
+	append?: ProposalAppend | null;
 }
 
 /** `getProposalPullRequest`'s answer: the block plus what the tab's card shows. */
@@ -322,6 +386,8 @@ export interface OpenInstructionProposal {
 		url: string | null;
 	} | null;
 	changes: OpenInstructionProposalChange[];
+	/** The member branch the proposal is on, or null. Absent from an older server. */
+	branch?: ProposalBranch | null;
 }
 
 export interface SubmittedInstructionChange {

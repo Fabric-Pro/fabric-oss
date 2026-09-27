@@ -1639,7 +1639,8 @@
 						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested",
 						"published_unscanned": "Coding instructions published before secret scan",
 						"deferred_scan_issues_found": "Coding-instructions secret scan found issues after publishing",
-						"deferred_scan_incomplete": "Coding-instructions secret scan could not finish"
+						"deferred_scan_incomplete": "Coding-instructions secret scan could not finish",
+						"pull_request_branch_updated": "Coding-instructions proposal branch updated"
 					}
 				},
 				"story": {
@@ -5593,6 +5594,7 @@
 				"saved": "Saved. Checking the new version.",
 				"proposalSubmitted": "Proposal submitted. It will be ready for review after the checks finish.",
 				"noChanges": "Nothing changed, so no new version was made.",
+				"noChangesRepositoryHint": "Nothing changed, so no new suggestion was made. To remove this file's suggested change, withdraw it in Review proposals, or edit the branch in the repository.",
 				"editBinary": "This file is not text. Use Add file to replace it.",
 				"editTooLarge": "This file is too large to edit here. Upload the folder again to replace it.",
 				"editFabricignore": "This file decides what the version leaves out, so it can only be changed by uploading the folder again.",
@@ -5620,7 +5622,11 @@
 				"repositoryProposalNotice": "Submitting opens a pull request in {repository} against {ref}. The branch is pushed with the repository connection's credentials, and pushing it can start the repository's CI before anyone reviews it. The commit names you as author with a Fabric no-reply address.",
 				"deleteSuggestionConfirm": "Suggest deleting {path}? Once the change passes its checks, Fabric opens a pull request in {repository} against {ref}.",
 				"submitSuggestionButton": "Suggest as a pull request",
-				"suggestionSubmitted": "Suggestion submitted. Fabric opens the pull request once the files pass their checks."
+				"suggestionSubmitted": "Suggestion submitted. Fabric opens the pull request once the files pass their checks.",
+				"fromBranchLabel": "From your branch",
+				"branchVersionUnavailable": "Your branch holds an earlier version of this file that Fabric cannot show here",
+				"branchFileLoading": "Loading your branch's version of this file…",
+				"branchFileError": "Fabric could not load your branch's version of this file. Refresh the page to try again."
 			},
 			"rejectedBanner": {
 				"titleSecretsSingular": "Upload rejected: {count} file contains secrets",
@@ -5998,7 +6004,7 @@
 				"noTextualChanges": "The text of this file did not change.",
 				"emptyFile": "This file is empty.",
 				"repositoryTitle": "Suggested changes",
-				"repositoryDescription": "Each suggestion opens a pull request in the project's repository once its files pass the same checks as a direct edit. Review, merge or close it there.",
+				"repositoryDescription": "Your suggestions go to your own branch in the project's repository, one commit each, with one pull request for all of them. Review, merge or close it there.",
 				"merged": "Merged",
 				"closed": "Closed",
 				"repositoryProposalBody": "This suggestion is a pull request in the project's repository. Review and merge or close it there.",
@@ -6020,7 +6026,14 @@
 						"mergedElsewhere": "Merged into {branch}, a different branch; Fabric did not sync it",
 						"CLOSED": "Closed without merging",
 						"CANCELED": "Withdrawn",
-						"rejectedByValidation": "Rejected by validation"
+						"rejectedByValidation": "Rejected by validation",
+						"waitingForChecks": "Waiting for checks",
+						"queuedForBranch": "Queued for your branch",
+						"addingToBranch": "Adding to your branch",
+						"onBranch": "On your branch",
+						"withdrawingFromBranch": "Withdrawing from your branch",
+						"alreadyOnBranch": "Already on your branch; nothing to add",
+						"withdrawnFromBranch": "Withdrawn from your branch"
 					},
 					"mergeSyncOutcomes": {
 						"SUCCEEDED": "Merged and synced: the repository sync published it.",
@@ -6056,7 +6069,19 @@
 						"LIMITS_EXCEEDED": "The repository is too large to prepare this proposal.",
 						"SYNC_START_FAILED": "The pull request merged; Fabric will sync the repository shortly.",
 						"MERGE_SYNC_FAILED": "The pull request merged, but Fabric could not sync it. Sync the repository manually.",
-						"UNEXPECTED": "Something went wrong. Fabric will retry."
+						"UNEXPECTED": "Something went wrong. Fabric will retry.",
+						"BRANCH_CONFLICT": "Files on your branch were changed outside Fabric: {paths}. Fabric does not overwrite them while this pull request is open. Make this change on your branch in the repository, or wait until the pull request merges.",
+						"SUPERSEDED_BY_LATER_CHANGE": "A newer change of yours already edits {paths}. Try again to apply this one on top of it, or withdraw it.",
+						"BRANCH_MOVED": "Your branch kept changing while Fabric was adding to it. Fabric will try again.",
+						"BRANCH_NAME_UNAVAILABLE": "Fabric could not reserve a branch name for your pull request. Ask an owner to remove old proposal branches.",
+						"WITHDRAW_CONFLICT": "This change's files were changed again on your branch, so Fabric did not withdraw it.",
+						"WITHDRAW_BLOCKED_BY_LATER_CHANGE": "A later change on your branch also edits {paths}, so this change cannot be withdrawn on its own. Close the pull request to withdraw everything, or edit the branch in the repository.",
+						"REPOSITORY_CHANGED": "The repository connection now points at another repository, so Fabric can no longer reach this pull request. Close it in the repository, then stop tracking it here.",
+						"ALREADY_ON_BRANCH": "Already on your branch; nothing to add.",
+						"PUSH_OUTCOME_UNKNOWN": "Fabric could not confirm whether this change reached your branch, which may have been changed outside Fabric. Check the branch, then try again or withdraw it.",
+						"WITHDRAW_OUTCOME_UNKNOWN": "Fabric could not confirm whether this change was withdrawn from your branch. Check the branch, then withdraw it again if needed.",
+						"START_OVER_REFUSED": "Your branch has commits made outside Fabric, so Fabric did not start over. Close the pull request, or open it by hand in the repository.",
+						"BRANCH_MISSING": "Your branch was deleted in the repository, so Fabric will add this change to a new branch."
 					},
 					"createOutcomeUnknownFinal": "Fabric could not confirm whether the pull request was created.",
 					"mergeSyncConfigurationChanged": "Merged; the repository configuration changed, sync it manually.",
@@ -6083,6 +6108,63 @@
 						"PULL_REQUEST_REFRESH_COOLDOWN": "This pull request was refreshed a moment ago. You can refresh it again in {seconds} seconds.",
 						"PULL_REQUEST_PROVIDER_RATE_LIMITED": "The repository's provider asked Fabric to wait. Fabric will try again by itself; you can refresh in {seconds} seconds.",
 						"NOT_FOUND": "This suggestion could not be found."
+					}
+				},
+				"branch": {
+					"refLabel": "Branch {ref}",
+					"liveChanges": "Live changes: {count}",
+					"foreignCommitsNotice": "Your branch has commits made outside Fabric",
+					"unverifiedNotice": "Fabric could not confirm some changes were in the pull request",
+					"viewPullRequest": "View pull request",
+					"checkedAt": "Checked {time}",
+					"close": "Close pull request",
+					"closeConfirm": "Fabric closes the pull request and withdraws its {count} changes. It deletes the branch only if Fabric made every commit on it.",
+					"closeSuccess": "Fabric is closing your pull request.",
+					"retryOpening": "Retry opening the pull request",
+					"retrySuccess": "Fabric is opening the pull request again.",
+					"startOver": "Start over on a new branch",
+					"startOverConfirm": "Fabric first looks for the pull request again and keeps it if it exists. If none exists, Fabric adds your {count} changes to a new branch and pull request. It does not start over if your branch has commits made outside Fabric.",
+					"startOverSuccess": "Fabric is starting your branch over.",
+					"stopTracking": "Stop tracking",
+					"stopTrackingConfirm": "Stop tracking this branch here? Fabric does nothing in the repository; close the pull request there yourself.",
+					"stopTrackingSuccess": "Fabric stopped tracking this branch.",
+					"refresh": "Refresh",
+					"refreshSuccess": "Refreshed.",
+					"retryConfirm": "Fabric looks for the pull request again and, if none exists, asks the repository to open it again.",
+					"tryAgain": "Try again",
+					"tryAgainSuccess": "Fabric is trying to add this change to your branch again.",
+					"proposeAgain": "Propose again",
+					"proposeAgainSuccess": "Fabric is proposing this change again.",
+					"withdrawConfirmPending": "Withdraw this change? Fabric has not added it to your branch yet.",
+					"withdrawConfirmAppended": "Fabric adds a commit to your branch that restores these files. If this is your branch's last change, Fabric closes the pull request instead.",
+					"states": {
+						"PENDING": "Preparing your branch",
+						"OPENING": "Opening your branch's pull request",
+						"OPEN": "Your branch's pull request is open",
+						"CLOSE_REQUESTED": "Closing your branch's pull request",
+						"MERGED": "Merged",
+						"CLOSED": "Closed without merging",
+						"CANCELED": "Withdrawn"
+					},
+					"empty": "You have no proposal branch on this project yet.",
+					"loadError": "Could not load your branch. Try again.",
+					"otherStates": {
+						"PENDING": "Preparing the branch",
+						"OPENING": "Opening the branch's pull request",
+						"OPEN": "The branch's pull request is open",
+						"CLOSE_REQUESTED": "Closing the branch's pull request",
+						"MERGED": "Merged",
+						"CLOSED": "Closed without merging",
+						"CANCELED": "Withdrawn"
+					},
+					"other": {
+						"heading": "{member}'s branch",
+						"unknownMember": "This member",
+						"foreignCommitsNotice": "This branch has commits made outside Fabric",
+						"loadError": "Could not load {member}'s branch. Try again.",
+						"listLoadError": "Could not load other members' branches. Try again.",
+						"showMoreBranches": "Show more branches",
+						"loadingMoreBranches": "Loading more branches…"
 					}
 				}
 			},

@@ -15,7 +15,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import {
 	collisionKey,
-	type PullRequestContext,
+	type PullRequestContextV1,
+	type TreeEntry,
 	validateRelativePath,
 } from "@repo/instructions";
 import {
@@ -26,6 +27,7 @@ import {
 	readBaseTree,
 	type TreeDeltaEntry,
 	writeProposalTree,
+	writeResolvedTree,
 } from "./instruction-sync-git";
 
 /** The file-row fields the delta needs; `path` is relative to the root. */
@@ -291,7 +293,7 @@ export async function buildProposalCommit(input: {
 	dir: string;
 	env: NodeJS.ProcessEnv;
 	signal: AbortSignal;
-	context: PullRequestContext;
+	context: PullRequestContextV1;
 	delta: EffectiveDelta;
 	entries: readonly RawTreeEntry[];
 	readBytes(key: string): Promise<Buffer>;
@@ -395,4 +397,107 @@ export async function buildProposalCommit(input: {
 		return { ok: false, code: "GIT_FAILED" };
 	}
 	return { ok: true, sha };
+}
+
+/**
+ * One path a member proposal branch append or revert changes (member
+ * proposal branch spec §6.4 step 6, §6.8 step 3): `rawPath` is the
+ * repository path, and `after` is the exact tree entry to write there, or
+ * `null` to delete it. Unlike `buildProposalCommit`'s `EffectiveDelta`, every
+ * entry's object id is already known — a new blob an append already hashed,
+ * or an existing repository blob a revert is restoring — so nothing here is
+ * re-hashed from storage.
+ */
+export type BranchWritePlanEntry = { rawPath: string; after: TreeEntry | null };
+
+export type BranchCommitResult =
+	| { ok: true; sha: string }
+	| { ok: false; code: "GIT_FAILED" };
+
+/**
+ * Member proposal branch spec §6.4 steps 6-7 (append) and §6.8 step 3
+ * (revert): build one commit on an explicit `parent` (the branch's fetched
+ * tip, or the branch's base commit on its first push) from a write plan of
+ * already-resolved entries, then verify the built commit's diff from
+ * `parent` is exactly the plan — the same "never push an unverified commit"
+ * invariant `buildProposalCommit` enforces for the #2563 v1 path, kept as a
+ * separate function so v1's own commit building is untouched.
+ */
+export async function buildBranchCommit(input: {
+	dir: string;
+	env: NodeJS.ProcessEnv;
+	signal: AbortSignal;
+	parent: string;
+	plan: readonly BranchWritePlanEntry[];
+	author: { name: string; email: string };
+	committer: { name: string; email: string };
+	message: string;
+	date: string;
+}): Promise<BranchCommitResult> {
+	const { dir, env, signal, parent, plan } = input;
+	const indexFile = path.join(dir, ".git", "fabric-branch-index");
+	await readBaseTree({ dir, sha: parent, indexFile, env, signal });
+	const tree = await writeResolvedTree({
+		dir,
+		indexFile,
+		entries: plan,
+		env,
+		signal,
+	});
+	const sha = await commitTree({
+		dir,
+		tree,
+		parent,
+		author: input.author,
+		committer: input.committer,
+		message: input.message,
+		date: input.date,
+		env,
+		signal,
+	});
+	const actual = await diffTreeEntries({
+		dir,
+		from: parent,
+		to: sha,
+		env,
+		signal,
+	});
+	if (!matchesBranchWritePlan(actual, plan)) {
+		return { ok: false, code: "GIT_FAILED" };
+	}
+	return { ok: true, sha };
+}
+
+const DELETED_MODE = "000000";
+
+/**
+ * Whether `actual` (the built commit's diff from `parent`) is exactly `plan`:
+ * the same path set, each written path at its plan entry's mode and object
+ * id, each deleted path reported as a deletion. `plan` carries no `before`,
+ * so this checks the resulting state rather than `buildProposalCommit`'s
+ * full status/oldMode equality; the path-set-size check below rules out an
+ * actual entry the plan does not account for.
+ */
+function matchesBranchWritePlan(
+	actual: readonly DiffTreeEntry[],
+	plan: readonly BranchWritePlanEntry[],
+): boolean {
+	if (actual.length !== plan.length) {
+		return false;
+	}
+	const byPath = new Map(actual.map((entry) => [entry.path, entry]));
+	return plan.every((entry) => {
+		const found = byPath.get(entry.rawPath);
+		if (!found) {
+			return false;
+		}
+		if (entry.after === null) {
+			return found.status === "D" && found.newMode === DELETED_MODE;
+		}
+		return (
+			found.status !== "D" &&
+			found.newMode === entry.after.mode &&
+			found.newOid === entry.after.oid
+		);
+	});
 }

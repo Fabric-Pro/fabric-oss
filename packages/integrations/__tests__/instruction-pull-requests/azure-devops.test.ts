@@ -324,3 +324,10 @@ describe("Azure DevOps open, get, close and credentials", () => {
 		expect(adapterFor("AZURE_DEVOPS")).toBe(azureDevOps);
 	});
 });
+
+describe("Azure DevOps pullRequestHeadRef", () => {
+	it("has no fetchable source-head ref, for any externalId", () => {
+		expect(azureDevOps.pullRequestHeadRef("42")).toBeNull();
+		expect(azureDevOps.pullRequestHeadRef("abc")).toBeNull();
+	});
+});

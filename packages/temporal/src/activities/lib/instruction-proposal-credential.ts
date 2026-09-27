@@ -17,7 +17,7 @@ import {
 	type ProposalOperationRow,
 } from "@repo/database";
 import {
-	type PullRequestContext,
+	type PullRequestContextV1,
 	pullRequestContextSchema,
 } from "@repo/instructions";
 import {
@@ -66,7 +66,7 @@ const CREDENTIAL_EXCHANGE_BOUND_MS = 30_000;
 
 /** Everything a step needs to reach the repository; lives only in the activity's memory. */
 export type ProposalCredential = {
-	context: PullRequestContext;
+	context: PullRequestContextV1;
 	/** Credential-free (`credentialFreeUrl`); the token reaches git only through `env`. */
 	url: string;
 	env: NodeJS.ProcessEnv;
@@ -86,9 +86,12 @@ export type ProposalCredential = {
 function proposalContextOf(
 	row: Pick<ProposalOperationRow, "pullRequestContext">,
 	phase: ProposalStepFailure["phase"],
-): PullRequestContext {
+): PullRequestContextV1 {
 	const parsed = pullRequestContextSchema.safeParse(row.pullRequestContext);
-	if (!parsed.success) {
+	// Only a #2563 (v1) row runs here; a member-branch (v2) context never
+	// reaches a per-proposal step, and one that did is refused like any other
+	// context that is not this path's.
+	if (!parsed.success || parsed.data.v !== 1) {
 		throw new ProposalStepFailure({
 			code: "CONFIGURATION_CHANGED",
 			phase,

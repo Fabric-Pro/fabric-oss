@@ -16,7 +16,7 @@ import {
 	type PullRequestPhase,
 	type RecordAuditInput,
 } from "@repo/database";
-import type { PullRequestContext } from "@repo/instructions";
+import type { PullRequestContextV1 } from "@repo/instructions";
 import {
 	InstructionPullRequestError,
 	type PullRequestObservation,
@@ -50,7 +50,7 @@ export function recordsOf(
 /** The operation's current branch: admission leaves the column empty until the first build. */
 export function currentRefOf(
 	row: Pick<ProposalOperationRow, "pullRequestRef">,
-	context: Pick<PullRequestContext, "branch">,
+	context: Pick<PullRequestContextV1, "branch">,
 ): string {
 	return row.pullRequestRef ?? context.branch;
 }
@@ -266,7 +266,7 @@ export async function lookupRef(
 
 function observationJson(
 	observation: PullRequestObservation,
-	context: Pick<PullRequestContext, "targetRef">,
+	context: Pick<PullRequestContextV1, "targetRef">,
 ) {
 	return {
 		targetRef: observation.targetRef,
@@ -286,7 +286,7 @@ function observationJson(
 export function observedColumns(
 	row: Pick<ProposalOperationRow, "databaseNow">,
 	observation: PullRequestObservation,
-	context: Pick<PullRequestContext, "targetRef">,
+	context: Pick<PullRequestContextV1, "targetRef">,
 	to: State | "unchanged",
 ): PullRequestColumns {
 	return {
@@ -318,7 +318,7 @@ type AuditRow = Pick<
 /** `pull_request_opened` (spec §13.4): actor the proposer; no URL. */
 function openedAudit(
 	row: AuditRow,
-	context: Pick<PullRequestContext, "provider">,
+	context: Pick<PullRequestContextV1, "provider">,
 	observation: Pick<PullRequestObservation, "externalId">,
 	adopted: boolean,
 ): RecordAuditInput {
@@ -387,7 +387,7 @@ function terminalOutcome(
  */
 export async function recordFound(
 	row: ProposalOperationRow,
-	context: PullRequestContext,
+	context: PullRequestContextV1,
 	observation: PullRequestObservation,
 	o: {
 		event: "adopt" | "receipt";

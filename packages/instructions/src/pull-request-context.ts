@@ -41,7 +41,12 @@ export const pullRequestRepositorySchema = z.discriminatedUnion("provider", [
 	}),
 ]);
 
-export const pullRequestContextSchema = z
+/**
+ * The #2563 per-proposal context. Rows admitted before member proposal
+ * branches keep it and drain on the #2563 workflow (member proposal branch
+ * spec Decision 4).
+ */
+export const pullRequestContextSchemaV1 = z
 	.object({
 		v: z.literal(1),
 		integrationId: nonEmpty,
@@ -68,5 +73,44 @@ export const pullRequestContextSchema = z
 		path: ["repository", "provider"],
 	});
 
+/**
+ * The member proposal branch context (member proposal branch spec §4.2): v1's
+ * destination, identities and commit text, without `branch`, `title` and
+ * `body`, which belong to the branch. Strict, so a v1-shaped value can never
+ * parse as v2.
+ */
+export const pullRequestContextSchemaV2 = z
+	.object({
+		v: z.literal(2),
+		integrationId: nonEmpty,
+		syncId: nonEmpty,
+		syncGeneration: z.number().int().positive(),
+		provider: z.enum(PULL_REQUEST_PROVIDERS),
+		/** Branch name, without `refs/heads/`. */
+		targetRef: nonEmpty,
+		/** POSIX, relative, no trailing slash; "" is the repository root. */
+		rootPath: z.string(),
+		baseCommitSha: commitSha,
+		repository: pullRequestRepositorySchema,
+		author: identity,
+		committer: identity,
+		message: z.string(),
+		/** ISO 8601 UTC, whole seconds: part of the reproducible commit. */
+		committedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+	})
+	.strict()
+	.refine((context) => context.repository.provider === context.provider, {
+		message: "The repository's provider must equal the context's",
+		path: ["repository", "provider"],
+	});
+
+/** Every stored `pullRequestContext`. Readers switch on `v`. */
+export const pullRequestContextSchema = z.discriminatedUnion("v", [
+	pullRequestContextSchemaV1,
+	pullRequestContextSchemaV2,
+]);
+
 export type PullRequestRepository = z.infer<typeof pullRequestRepositorySchema>;
+export type PullRequestContextV1 = z.infer<typeof pullRequestContextSchemaV1>;
+export type PullRequestContextV2 = z.infer<typeof pullRequestContextSchemaV2>;
 export type PullRequestContext = z.infer<typeof pullRequestContextSchema>;

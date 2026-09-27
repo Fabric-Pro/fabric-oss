@@ -10,6 +10,13 @@
  * state) prunable, and `pullRequestObligationOpen`, the column the predicate
  * reads, must equal what the records themselves say. Self-skips without a
  * reachable database.
+ *
+ * A member proposal branch row (Fizzy #2738 spec §4.5) is unresolved while
+ * its branch still owes work; the `branches` project holds a v2 row on a
+ * terminal branch whose membership is pending (unresolved), one on an
+ * untracked branch with a confirmation still due (resolved: an untracked
+ * branch owes nothing), one on a fully settled branch (resolved), and a v1
+ * row, which the branch clause leaves as it was.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -139,6 +146,58 @@ async function publishBase(project: string) {
 	});
 }
 
+let branchNumber = 0;
+
+/** A member proposal branch in `project` (spec §4.5's retention reads it). */
+async function seedBranch(
+	project: string,
+	data: Partial<Prisma.ProjectInstructionProposalBranchUncheckedCreateInput>,
+): Promise<string> {
+	branchNumber += 1;
+	const repositoryKey = `github:example-org/retention-${RUN_ID}`;
+	const row = await db.projectInstructionProposalBranch.create({
+		data: {
+			organizationId: ORGANIZATION_ID,
+			projectId: projects[project]!,
+			userId: USER_ID,
+			repositoryKey,
+			number: branchNumber,
+			ref: `fabric/instructions/members/retention-author-abcd/${branchNumber}`,
+			destination: {
+				integrationId: "int_example",
+				syncId: "sync_example",
+				repositoryKey,
+				provider: "GITHUB",
+				repository: {
+					provider: "GITHUB",
+					owner: "example-org",
+					repo: `retention-${RUN_ID}`,
+				},
+				targetRef: "main",
+				rootPath: "",
+			},
+			...data,
+		},
+		select: { id: true },
+	});
+	return row.id;
+}
+
+/** A v2 (member branch) proposal's own columns, settled `outcome` on `branchId`. */
+function onBranch(
+	branchId: string,
+	outcome: "MERGED" | "CLOSED" | "CANCELED",
+): Partial<Prisma.ProjectInstructionSnapshotUncheckedCreateInput> {
+	return {
+		...settled(outcome),
+		...(outcome === "CANCELED" ? { status: "REJECTED" as const } : {}),
+		pullRequestContext: { v: 2 },
+		proposalBranchId: branchId,
+		proposalBranchSequence: 1,
+		proposalAssignment: 1,
+	};
+}
+
 const repository = (
 	state: "QUEUED" | "OPENING" | "OPEN" | "CLOSE_REQUESTED" | "BLOCKED",
 ) =>
@@ -178,7 +237,13 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					createdAt: now,
 				},
 			});
-			for (const name of ["main", "unresolved", "merged", "closed"]) {
+			for (const name of [
+				"main",
+				"unresolved",
+				"merged",
+				"closed",
+				"branches",
+			]) {
 				const project = await db.project.create({
 					data: {
 						name: `Retention ${name}`,
@@ -274,6 +339,44 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			// merged / closed: one prunable settled row each.
 			await seed("merged", "onlyMerged", settled("MERGED"));
 			await seed("closed", "onlyClosed", settled("CLOSED"));
+
+			// branches (Fizzy #2738 spec §4.5).
+			const pendingMembership = await seedBranch("branches", {
+				state: "MERGED",
+				membership: { status: "pending", at, attempts: 0 },
+			});
+			await seed(
+				"branches",
+				"branchMembershipPending",
+				onBranch(pendingMembership, "MERGED"),
+			);
+			const untrackedConfirming = await seedBranch("branches", {
+				state: "CANCELED",
+				untracked: true,
+				settledAt: new Date(at),
+				confirmationDueAt: new Date(at),
+				createIssuedAt: new Date(at),
+			});
+			await seed(
+				"branches",
+				"branchUntrackedConfirming",
+				onBranch(untrackedConfirming, "CANCELED"),
+			);
+			const settledBranch = await seedBranch("branches", {
+				state: "CLOSED",
+				membership: { status: "done", at, attempts: 0 },
+				settledAt: new Date(at),
+				confirmations: 2,
+			});
+			await seed(
+				"branches",
+				"branchSettled",
+				onBranch(settledBranch, "CLOSED"),
+			);
+			await seed("branches", "v1Merged", {
+				...settled("MERGED"),
+				pullRequestContext: { v: 1 },
+			});
 		});
 
 		afterAll(async () => {
@@ -283,6 +386,9 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				data: { publishedInstructionSnapshotId: null },
 			});
 			await db.projectInstructionSnapshot.deleteMany({
+				where: { projectId: { in: projectIds } },
+			});
+			await db.projectInstructionProposalBranch.deleteMany({
 				where: { projectId: { in: projectIds } },
 			});
 			await db.project.deleteMany({ where: { id: { in: projectIds } } });
@@ -340,7 +446,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					"rejectedWithCreateMarker",
 					"unresolvedOpen",
 					"unresolvedRejected",
+					"branchMembershipPending",
 				].sort(),
+			);
+			expect(resolved).toEqual(
+				expect.arrayContaining([
+					"branchUntrackedConfirming",
+					"branchSettled",
+					"v1Merged",
+				]),
 			);
 			// A partition: every row is exactly one of the two, FABRIC rows
 			// (null state) resolved rather than lost to SQL's NULL.
@@ -352,6 +466,16 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						pullRequestState: true,
 						mergeSyncRequestedAt: true,
 						pullRequestObligationOpen: true,
+						proposalBranch: {
+							select: {
+								state: true,
+								untracked: true,
+								membership: true,
+								mergeSyncRequestedAt: true,
+								createIssuedAt: true,
+								confirmationDueAt: true,
+							},
+						},
 					},
 				})
 			).map((r) => ({ ...r, id: name(r.id) }));
@@ -444,6 +568,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			expect(nominated.has(projects.merged!)).toBe(true);
 			expect(nominated.has(projects.closed!)).toBe(true);
 			expect(nominated.has(projects.unresolved!)).toBe(false);
+			// Its resolved branch rows (and the v1 row) are prunable.
+			expect(nominated.has(projects.branches!)).toBe(true);
 		});
 
 		it("the DELETE refuses unresolved rows, rolls their file rows back, and keeps its protections", async () => {
@@ -485,6 +611,28 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					ORGANIZATION_ID,
 				),
 			).toEqual({ deleted: false, reason: "active" });
+			// A v2 row whose branch still owes classification is kept. (Its
+			// refusal reason is not asserted: see the Fizzy #2738 report.)
+			expect(
+				await deleteInstructionSnapshot(
+					ids.branchMembershipPending!,
+					projects.branches!,
+					ORGANIZATION_ID,
+				),
+			).toMatchObject({ deleted: false });
+			for (const [project, deletable] of [
+				["branches", "branchUntrackedConfirming"],
+				["branches", "branchSettled"],
+				["branches", "v1Merged"],
+			] as const) {
+				expect(
+					await deleteInstructionSnapshot(
+						ids[deletable]!,
+						projects[project]!,
+						ORGANIZATION_ID,
+					),
+				).toEqual({ deleted: true });
+			}
 			for (const deletable of [
 				"merged",
 				"closed",

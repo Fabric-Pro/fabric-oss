@@ -24,6 +24,8 @@ const { mocks } = vi.hoisted(() => ({
 		buildInstructionSnapshotZip: vi.fn(),
 		submitInstructionChange: vi.fn(),
 		getProposalPullRequestStatus: vi.fn(),
+		/** `readOpenProposals`, the service behind `proposals/open`. */
+		readOpenProposals: vi.fn(),
 		/** The real service behind the route, for the cases that run it whole. */
 		realProposalPullRequestStatus: null as
 			| null
@@ -98,6 +100,13 @@ vi.mock(
 		};
 	},
 );
+
+// The open-proposals selection is `listOpenInstructionProposals`'s own
+// (`packages/database/__tests__/instruction-open-proposals*.test.ts`); the
+// route owns the gates, the tenant and the creator it reads for.
+vi.mock("../../projects/procedures/instructions/open-proposals", () => ({
+	readOpenProposals: mocks.readOpenProposals,
+}));
 
 /**
  * A faithful stand-in for the real middleware, not a no-op: the scope refusal
@@ -2160,5 +2169,227 @@ describe("GET instructions/proposals/:snapshotId/pull-request", () => {
 			).status,
 		).toBe(400);
 		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+});
+
+describe("GET instructions/proposals/open", () => {
+	const OPEN_PATH = `/projects/${PROJECT}/instructions/proposals/open`;
+	const BRANCH = {
+		id: "branch-1",
+		ref: "fabric/instructions/members/dev-example-abcd/1",
+		number: 1,
+		state: "OPEN",
+		foreignCommits: false,
+		membership: null,
+		failure: null,
+		retired: false,
+		pullRequest: {
+			url: "https://example.com/pr/7",
+			externalId: "7",
+			state: "OPEN",
+			lastCheckedAt: null,
+		},
+	};
+	const OPEN = {
+		proposals: [
+			{
+				snapshotId: "snap-4",
+				version: 9,
+				baseSnapshotId: "snap-2",
+				status: "VALIDATING",
+				pullRequest: {
+					state: "BLOCKED",
+					url: "https://example.com/pr/7",
+				},
+				changes: [
+					{ path: "AGENTS.md", op: "put", sha256: "a".repeat(64) },
+					{ path: "rules/old.md", op: "delete", sha256: null },
+				],
+				branch: BRANCH,
+			},
+			{
+				snapshotId: "snap-3",
+				version: 8,
+				baseSnapshotId: "snap-2",
+				status: "READY",
+				pullRequest: null,
+				changes: [
+					{ path: "CLAUDE.md", op: "put", sha256: "b".repeat(64) },
+				],
+				branch: null,
+			},
+		],
+	};
+
+	it("returns the key creator's open proposals, read in the project's organization", async () => {
+		mocks.readOpenProposals.mockResolvedValue(OPEN);
+
+		const response = await buildApp().request(OPEN_PATH);
+
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body).toEqual({ data: OPEN });
+		// A delete's sha256 is present and exactly null on the wire.
+		const deleted = body.data.proposals[0].changes[1];
+		expect(Object.hasOwn(deleted, "sha256")).toBe(true);
+		expect(deleted.sha256).toBeNull();
+		expect(mocks.readOpenProposals).toHaveBeenCalledExactlyOnceWith({
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "user-1",
+		});
+	});
+
+	it("reads for the key's creator, never for anyone the request names", async () => {
+		apiContext = organizationKey(ORG, "creator-7");
+		mocks.readOpenProposals.mockResolvedValue({ proposals: [] });
+
+		const response = await buildApp().request(
+			`${OPEN_PATH}?userId=someone-else`,
+		);
+
+		expect(response.status).toBe(200);
+		expect(mocks.readOpenProposals).toHaveBeenCalledExactlyOnceWith({
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "creator-7",
+		});
+		expect(mocks.resolveEffectiveProjectPermissions).toHaveBeenCalledWith(
+			PROJECT,
+			"creator-7",
+		);
+	});
+
+	it("refuses a key without instructions:read with the scope refusal, before any lookup", async () => {
+		mocks.scopes = ["instructions:write"];
+
+		const response = await buildApp().request(OPEN_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: "Missing required scope: instructions:read",
+		});
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.readOpenProposals).not.toHaveBeenCalled();
+	});
+
+	it("refuses a key whose creator lost read access with the permission refusal, a different shape", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["project:read"],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(OPEN_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"No coding-instructions read permission for this project",
+			},
+		});
+		expect(mocks.readOpenProposals).not.toHaveBeenCalled();
+	});
+
+	it("still runs the live check for a wildcard key", async () => {
+		mocks.scopes = ["*"];
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(OPEN_PATH);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toMatchObject({
+			error: { message: expect.any(String) },
+		});
+		expect(mocks.readOpenProposals).not.toHaveBeenCalled();
+	});
+
+	it("accepts ?org= naming the project's organization, and 404s another tenant's project", async () => {
+		apiContext = personalKey();
+		mocks.readOpenProposals.mockResolvedValue({ proposals: [] });
+
+		const honoured = await buildApp().request(
+			`${OPEN_PATH}?org=example-org`,
+		);
+		expect(honoured.status).toBe(200);
+		expect(mocks.findOrganization).toHaveBeenCalledWith({
+			where: { slug: "example-org" },
+			select: { id: true },
+		});
+
+		mocks.readOpenProposals.mockClear();
+		mocks.findOrganization.mockResolvedValue({ id: "org-2" });
+		const other = await buildApp().request(`${OPEN_PATH}?org=other-org`);
+		expect(other.status).toBe(404);
+		expect(mocks.readOpenProposals).not.toHaveBeenCalled();
+	});
+
+	it("refuses ?personal=1 before any lookup", async () => {
+		apiContext = personalKey();
+
+		const response = await buildApp().request(`${OPEN_PATH}?personal=1`);
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: {
+				message:
+					"Coding instructions are an organization surface; ?personal=1 is not supported",
+			},
+		});
+		expect(mocks.readOpenProposals).not.toHaveBeenCalled();
+	});
+
+	it("is not taken for a snapshot id by the pull-request route", async () => {
+		mocks.readOpenProposals.mockResolvedValue({ proposals: [] });
+
+		await buildApp().request(OPEN_PATH);
+
+		expect(mocks.getProposalPullRequestStatus).not.toHaveBeenCalled();
+	});
+});
+
+describe("GET instructions/proposals/:snapshotId/pull-request on a member branch", () => {
+	it("passes the branch and append blocks through", async () => {
+		const block = pullRequestBlock({
+			state: "OPEN",
+			url: "https://example.com/pr/7",
+			externalId: "7",
+			branch: {
+				id: "branch-1",
+				ref: "fabric/instructions/members/dev-example-abcd/1",
+				number: 1,
+				state: "OPEN",
+				foreignCommits: false,
+				membership: null,
+				failure: null,
+				retired: false,
+				pullRequest: {
+					url: "https://example.com/pr/7",
+					externalId: "7",
+					state: "OPEN",
+					lastCheckedAt: null,
+				},
+			},
+			append: {
+				outcome: "appended",
+				commitSha: "c".repeat(40),
+				membership: null,
+			},
+		});
+		mocks.getProposalPullRequestStatus.mockResolvedValue(block);
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/proposals/snap-3/pull-request`,
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: { pullRequest: block },
+		});
 	});
 });

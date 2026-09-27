@@ -270,3 +270,18 @@ describe("GitLab open, get and close", () => {
 		expect(adapterFor("GITLAB")).toBe(gitlab);
 	});
 });
+
+describe("GitLab pullRequestHeadRef", () => {
+	it("names the merge request's head", () => {
+		expect(gitlab.pullRequestHeadRef("42")).toBe(
+			"refs/merge-requests/42/head",
+		);
+	});
+
+	it.each(["0", "-1", "1.5", "01", "abc", "", "42 ", " 42", "42abc"])(
+		"never turns %j into a ref",
+		(externalId) => {
+			expect(gitlab.pullRequestHeadRef(externalId)).toBeNull();
+		},
+	);
+});

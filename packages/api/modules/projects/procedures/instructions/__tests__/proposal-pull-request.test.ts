@@ -33,6 +33,10 @@ vi.mock("@repo/database", () => ({
 	requestPullRequestRefresh: (...a: unknown[]) =>
 		m.requestPullRequestRefresh(...a),
 	transitionPullRequest: (...a: unknown[]) => m.transitionPullRequest(...a),
+	// No row here is on a member branch (Fizzy #2738): those have their own
+	// suite, `proposal-branch-procedures.test.ts`.
+	readProposalBranchAttachments: async () => new Map(),
+	proposalBranchIdOf: async () => null,
 }));
 vi.mock("../proposal-authorization", () => ({
 	canReviewInstructionProposals: (...a: unknown[]) =>
@@ -189,6 +193,9 @@ describe("reading the pull request", () => {
 			externalId: null,
 			failure,
 			lastCheckedAt: checked,
+			// Not on a member branch (Fizzy #2738 spec §10).
+			branch: null,
+			append: null,
 		});
 		expect(m.getProposalOperation).toHaveBeenCalledWith({
 			snapshotId: "snap_1",
@@ -310,6 +317,8 @@ describe("getProposalPullRequestStatus", () => {
 			externalId: "7",
 			failure: null,
 			lastCheckedAt: checked,
+			branch: null,
+			append: null,
 			attempt: 3,
 			observation: {
 				targetRef: "main",

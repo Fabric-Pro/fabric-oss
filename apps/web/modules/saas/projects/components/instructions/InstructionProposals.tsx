@@ -2,7 +2,12 @@
 
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useInfiniteQuery,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -25,6 +30,8 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+	canProposeAgain,
+	canRetryConflict,
 	canRetryOpening,
 	offersPullRequestRefresh,
 	offersReconnect,
@@ -34,10 +41,16 @@ import {
 	REFRESH_COOLDOWN_MS,
 	refreshHoldSeconds,
 	refreshRetryAfterSeconds,
+	withdrawConfirmVariant,
 } from "../../lib/instructions-proposal-pull-request";
 import { repositoryProviderSupportsReconnect } from "../../lib/repo-reconnect-capability";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
+import {
+	InstructionProposalBranchPanel,
+	type MyProposalBranch,
+} from "./InstructionProposalBranchPanel";
 import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
+import { branchPanelPollInterval } from "./lib/instructions-proposal-branch";
 
 /**
  * A REPOSITORY proposal is MERGED or CLOSED once its pull request settles
@@ -64,6 +77,13 @@ type ProposalRow = {
 	reviewedAt: string | Date | null;
 	isStale: boolean;
 	canCancel: boolean;
+	/**
+	 * The viewer is this proposal's author (server-computed, Fizzy #2738
+	 * spec Decision 14). Unlike `canCancel`, it stays true once the proposal
+	 * is terminal, so it is what gates "Propose again" on a settled,
+	 * unverified branch proposal.
+	 */
+	isProposer: boolean;
 	/** Where an accepted proposal goes (spec §12); absent reads as FABRIC. */
 	destination?: "FABRIC" | "REPOSITORY" | null;
 	note?: { title?: string; body?: string } | null;
@@ -157,6 +177,7 @@ function PullRequestStatus({
 	pr,
 	snapshotStatus,
 	canTryAgain,
+	isProposer,
 	busy,
 	refreshPending,
 	refreshWaitSeconds,
@@ -165,11 +186,19 @@ function PullRequestStatus({
 	onRetry,
 	onTryAgain,
 	onReconnect,
+	onRetryConflict,
+	onProposeAgain,
 }: {
 	pr: ProposalPullRequest;
 	snapshotStatus: string;
-	/** The proposer may re-run checks that could not finish. */
+	/** The proposer may re-run checks that could not finish, or retry a branch change. */
 	canTryAgain: boolean;
+	/**
+	 * The viewer is this proposal's author. Gates "Propose again"
+	 * independently of `canTryAgain`, which reads false once a branch
+	 * proposal's pull request has settled (Fizzy #2738 spec Decision 14).
+	 */
+	isProposer: boolean;
 	busy: boolean;
 	refreshPending: boolean;
 	/** Whole seconds until Refresh may be pressed again; 0 when it may. */
@@ -179,13 +208,22 @@ function PullRequestStatus({
 	onRetry: () => void;
 	onTryAgain: () => void;
 	onReconnect: () => void;
+	/** "Try again" on a branch BLOCKED conflict code (spec §10 Card). */
+	onRetryConflict: () => void;
+	/** "Propose again" on an unverified, finished branch proposal (Decision 14). */
+	onProposeAgain: () => void;
 }) {
 	const t = useTranslations(
 		"projects.codingInstructions.proposalReview.pullRequest",
 	);
+	const tBranch = useTranslations(
+		"projects.codingInstructions.proposalReview.branch",
+	);
 	const line = pullRequestCardLine(pr, snapshotStatus);
 	const url = safePullRequestUrl(pr.url);
 	const tryAgain = canTryAgain && line.key === "states.validationFailed";
+	const retryConflict = canTryAgain && canRetryConflict(pr);
+	const proposeAgain = isProposer && canProposeAgain(pr);
 	return (
 		<div className="ml-1 flex flex-col gap-1 border-border border-l-2 pl-3 text-sm">
 			<div aria-live="polite" className="flex flex-col gap-1">
@@ -194,7 +232,7 @@ function PullRequestStatus({
 				</p>
 				{line.failureKey ? (
 					<p className="text-muted-foreground">
-						{t(line.failureKey)}
+						{t(line.failureKey, line.failureValues)}
 					</p>
 				) : null}
 				{line.failureAt && pr.state === "BLOCKED" ? (
@@ -209,6 +247,11 @@ function PullRequestStatus({
 						{t("checkedAt", {
 							time: formatRelativeTime(line.checkedAt),
 						})}
+					</p>
+				) : null}
+				{line.showUnverifiedNote ? (
+					<p className="text-muted-foreground text-xs">
+						{tBranch("unverifiedNotice")}
 					</p>
 				) : null}
 			</div>
@@ -237,6 +280,26 @@ function PullRequestStatus({
 						onClick={onTryAgain}
 					>
 						{t("tryAgain")}
+					</Button>
+				) : null}
+				{retryConflict ? (
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={busy}
+						onClick={onRetryConflict}
+					>
+						{t("tryAgain")}
+					</Button>
+				) : null}
+				{proposeAgain ? (
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={busy}
+						onClick={onProposeAgain}
+					>
+						{tBranch("proposeAgain")}
 					</Button>
 				) : null}
 				{canRetryOpening(pr) ? (
@@ -380,6 +443,16 @@ function proposalLabel(
 }
 
 /**
+ * One other member's already-fetched branch view, as `proposals.branches`
+ * returns it for a reviewer — passed straight to `InstructionProposalBranchPanel`
+ * as `data`, so that panel never re-queries `myBranch({userId})` for it.
+ */
+type ProposalBranchOwner = {
+	userId: string;
+	userName: string | null;
+} & MyProposalBranch;
+
+/**
  * Proposal metadata for readers and validated, immutable diffs for reviewers.
  * The server limits a reader's list to their own rows, withholds file bytes
  * until the scan has completed, and alone decides whether the published base
@@ -420,6 +493,9 @@ export function InstructionProposals({
 	const t = useTranslations("projects.codingInstructions.proposalReview");
 	const tPr = useTranslations(
 		"projects.codingInstructions.proposalReview.pullRequest",
+	);
+	const tBranch = useTranslations(
+		"projects.codingInstructions.proposalReview.branch",
 	);
 	const queryClient = useQueryClient();
 	// Until when Refresh is held on each card (epoch ms). A press holds it
@@ -508,6 +584,56 @@ export function InstructionProposals({
 		enabled:
 			open && canReview && selectedId !== null && filePageInput !== null,
 	});
+	/**
+	 * Every other member with a tracked branch, for a reviewer's read-only
+	 * panels (Fizzy #2738 spec §10 "Reviewers see every member's branches
+	 * read-only"). Independent of `proposals`' own pagination: a member whose
+	 * proposals are not on the current page still gets a panel, since this
+	 * reads branches directly rather than deriving owners from the visible
+	 * proposal rows. The server already excludes the viewer's own branch —
+	 * `InstructionProposalBranchPanel`'s ownerless instance below covers it.
+	 *
+	 * Cursor-paged, one page at a time (round-3 review finding: capping an
+	 * eagerly-loaded owner list in memory silently drops the rest on a large
+	 * project) — a "Show more branches" button loads further pages as long as
+	 * `nextCursor` keeps coming back, the same cursor-`useInfiniteQuery`
+	 * pattern `TodoListPage.tsx` uses for its own cursor-paged list. Each
+	 * page's owners already carry their full branch view (`proposals.branches`
+	 * built it once, reviewer-side), so `InstructionProposalBranchPanel` is
+	 * given that view directly as `data` rather than re-querying
+	 * `myBranch({userId})` per panel.
+	 */
+	const branchOwnersOptions =
+		orpc.projects.instructions.proposals.branches.infiniteOptions({
+			input: (cursor: string | undefined) => ({
+				projectId,
+				...(cursor ? { cursor } : {}),
+			}),
+			initialPageParam: undefined as string | undefined,
+			getNextPageParam: (lastPage: { nextCursor: string | null }) =>
+				lastPage.nextCursor ?? undefined,
+		});
+	const branchOwners = useInfiniteQuery({
+		...branchOwnersOptions,
+		enabled: open && repositoryBacked && canReview,
+		// Reviewer panels render from this read and never poll on their own,
+		// so it polls for them while any loaded branch is still in flight.
+		refetchInterval: (query) =>
+			branchPanelPollInterval(
+				(
+					(query.state.data?.pages ?? []) as Array<{
+						owners: ProposalBranchOwner[];
+					}>
+				).flatMap((page) =>
+					page.owners.flatMap((owner) =>
+						owner.branches.map((entry) => entry.branch),
+					),
+				),
+			),
+	});
+	const branchOwnerRows: ProposalBranchOwner[] = (
+		branchOwners.data?.pages ?? []
+	).flatMap((page) => (page as { owners: ProposalBranchOwner[] }).owners);
 	const clearSelection = () => {
 		setSelectedId(null);
 		setFilePageInput(null);
@@ -518,6 +644,9 @@ export function InstructionProposals({
 		void proposals.refetch();
 		if (canReview && selectedId !== null) {
 			void detail.refetch();
+		}
+		if (repositoryBacked && canReview) {
+			void branchOwners.refetch();
 		}
 		void queryClient.invalidateQueries({
 			queryKey: orpc.projects.instructions.getPublished.queryOptions({
@@ -641,13 +770,45 @@ export function InstructionProposals({
 			},
 		}),
 	);
+	/**
+	 * "Try again" on a member branch proposal's BLOCKED card (spec §10 Card:
+	 * both conflict codes and PUSH_OUTCOME_UNKNOWN), distinct from `retry`
+	 * (v1 "Retry opening") and `tryAgain` (FABRIC validation retry).
+	 */
+	const retryConflict = useMutation(
+		orpc.projects.instructions.proposals.retryConflict.mutationOptions({
+			onSuccess: () => {
+				toast.success(tBranch("tryAgainSuccess"));
+				refreshState();
+			},
+			onError: (error: Error) => {
+				toast.error(error.message);
+				refreshState();
+			},
+		}),
+	);
+	/** "Propose again" on an unverified, finished branch proposal (Decision 14). */
+	const proposeAgain = useMutation(
+		orpc.projects.instructions.proposals.proposeAgain.mutationOptions({
+			onSuccess: () => {
+				toast.success(tBranch("proposeAgainSuccess"));
+				refreshState();
+			},
+			onError: (error: Error) => {
+				toast.error(error.message);
+				refreshState();
+			},
+		}),
+	);
 	const selected = detail.data as ProposalDetail | undefined;
 	const deciding =
 		approve.isPending ||
 		reject.isPending ||
 		cancel.isPending ||
 		retry.isPending ||
-		tryAgain.isPending;
+		tryAgain.isPending ||
+		retryConflict.isPending ||
+		proposeAgain.isPending;
 	const reconnectLabel = repositoryProviderSupportsReconnect(
 		repositoryProvider,
 	)
@@ -682,6 +843,58 @@ export function InstructionProposals({
 						)}
 					</DialogDescription>
 				</DialogHeader>
+				{repositoryBacked ? (
+					<InstructionProposalBranchPanel
+						projectId={projectId}
+						onChanged={refreshState}
+					/>
+				) : null}
+				{repositoryBacked && canReview ? (
+					<>
+						{branchOwnerRows.map((owner) => (
+							<InstructionProposalBranchPanel
+								key={owner.userId}
+								projectId={projectId}
+								onChanged={refreshState}
+								userId={owner.userId}
+								ownerName={owner.userName}
+								data={owner}
+							/>
+						))}
+						{/* The first page only: once any page has loaded, the
+						    button below carries the "more still to come"
+						    state, and re-showing this skeleton on top of
+						    already-rendered panels would look like the list
+						    reset. */}
+						{branchOwners.isLoading ? (
+							<Skeleton className="h-16 w-full" />
+						) : null}
+						{branchOwners.isError ? (
+							<p
+								role="alert"
+								className="text-destructive text-sm"
+							>
+								{tBranch("other.listLoadError")}
+							</p>
+						) : null}
+						{branchOwners.hasNextPage ? (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								aria-busy={branchOwners.isFetchingNextPage}
+								disabled={branchOwners.isFetchingNextPage}
+								onClick={() =>
+									void branchOwners.fetchNextPage()
+								}
+							>
+								{branchOwners.isFetchingNextPage
+									? tBranch("other.loadingMoreBranches")
+									: tBranch("other.showMoreBranches")}
+							</Button>
+						) : null}
+					</>
+				) : null}
 				{proposals.isLoading ? (
 					<Skeleton className="h-24 w-full" />
 				) : null}
@@ -782,13 +995,41 @@ export function InstructionProposals({
 												variant="outline"
 												disabled={deciding}
 												onClick={() => {
+													// Spec §10 Copy:
+													// `withdrawConfirm` splits
+													// into a pre-append and a
+													// post-append version for a
+													// member branch proposal; a
+													// non-branch (v1 or FABRIC)
+													// row keeps its single
+													// confirm.
+													const confirmText =
+														!repository
+															? t("cancelConfirm")
+															: !pr
+																? t(
+																		"withdrawConfirm",
+																	)
+																: withdrawConfirmVariant(
+																			pr,
+																		) ===
+																		"appended"
+																	? tBranch(
+																			"withdrawConfirmAppended",
+																		)
+																	: withdrawConfirmVariant(
+																				pr,
+																			) ===
+																			"pending"
+																		? tBranch(
+																				"withdrawConfirmPending",
+																			)
+																		: t(
+																				"withdrawConfirm",
+																			);
 													if (
 														window.confirm(
-															t(
-																repository
-																	? "withdrawConfirm"
-																	: "cancelConfirm",
-															),
+															confirmText,
 														)
 													) {
 														cancel.mutate({
@@ -815,6 +1056,10 @@ export function InstructionProposals({
 											// check; on a FAILED pending proposal it
 											// is exactly who may re-run the checks.
 											canTryAgain={proposal.canCancel}
+											// Stays true once the proposal is
+											// terminal, unlike `canCancel` (Decision
+											// 14).
+											isProposer={proposal.isProposer}
 											busy={deciding}
 											refreshPending={refresh.isPending}
 											refreshWaitSeconds={refreshHoldSeconds(
@@ -863,6 +1108,19 @@ export function InstructionProposals({
 													"development",
 												);
 											}}
+											onRetryConflict={() =>
+												retryConflict.mutate({
+													projectId,
+													snapshotId: proposal.id,
+													expectedAttempt: pr.attempt,
+												})
+											}
+											onProposeAgain={() =>
+												proposeAgain.mutate({
+													projectId,
+													snapshotId: proposal.id,
+												})
+											}
 										/>
 									) : null}
 								</div>

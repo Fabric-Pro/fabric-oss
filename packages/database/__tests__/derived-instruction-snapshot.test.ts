@@ -30,11 +30,17 @@ const { FakePrismaKnownRequestError } = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
 	snapshot: {
 		findFirst: vi.fn(),
+		findMany: vi.fn(),
 		create: vi.fn(),
 		count: vi.fn(),
 	},
 	file: {
 		createMany: vi.fn(),
+		findMany: vi.fn(),
+	},
+	// Member branch journal (Fizzy #2738): the v2 duplicate lookup asks
+	// which BLOCKED candidates have an operation.
+	branchOperation: {
 		findMany: vi.fn(),
 	},
 	project: {},
@@ -126,7 +132,7 @@ function put(path: string, size = 20) {
 }
 
 beforeEach(() => {
-	for (const group of [mocks.snapshot, mocks.file]) {
+	for (const group of [mocks.snapshot, mocks.file, mocks.branchOperation]) {
 		for (const fn of Object.values(group)) {
 			fn.mockReset();
 		}
@@ -138,6 +144,8 @@ beforeEach(() => {
 			cb({
 				projectInstructionSnapshot: mocks.snapshot,
 				projectInstructionFile: mocks.file,
+				projectInstructionProposalBranchOperation:
+					mocks.branchOperation,
 				project: mocks.project,
 				$queryRaw: mocks.$queryRaw,
 			}),
@@ -1532,5 +1540,284 @@ describe("countInFlightDerivedSnapshots", () => {
 				],
 			},
 		});
+	});
+});
+
+/**
+ * Member branch proposals (Fizzy #2738 spec Decisions 4, 8 and 16): a
+ * REPOSITORY admission with a v2 context draws its member-wide intent order
+ * inside the admission transaction, keeps no per-proposal ref, dedups only
+ * against v2 proposals not yet appended, and the caps stop counting a
+ * proposal whose change is on its branch.
+ */
+describe("member branch proposals", () => {
+	const CONTEXT_V2 = {
+		v: 2,
+		syncId: "sync_1",
+		syncGeneration: 3,
+		message: "Tighten the review skill",
+	};
+
+	function memberBranch(): NonNullable<
+		Parameters<typeof createDerivedInstructionSnapshot>[0]["destination"]
+	> {
+		return {
+			kind: "REPOSITORY",
+			operationId: "op_2",
+			context: CONTEXT_V2,
+			syncId: "sync_1",
+			syncGeneration: 3,
+			uploadStartedAudit: {
+				actor: { type: "user", userId: "user_1" },
+				organizationId: ORG,
+				projectId: PROJECT,
+				metadata: {
+					mode: "proposal",
+					baseSnapshotId: BASE,
+					baseVersion: 7,
+					putCount: 1,
+					deleteCount: 0,
+				},
+			},
+		};
+	}
+
+	/** The project lock, and the intent sequence answering 42. */
+	function withIntentSequence() {
+		mocks.$queryRaw.mockImplementation(async (strings: string[]) =>
+			strings.join("?").includes("nextval")
+				? [{ v: 42n }]
+				: [{ publishedInstructionSnapshotId: BASE }],
+		);
+	}
+
+	const nextvalCalls = () =>
+		mocks.$queryRaw.mock.calls.filter((call) =>
+			(call[0] as string[]).join("?").includes("nextval"),
+		);
+
+	function createdData() {
+		return (
+			mocks.snapshot.create.mock.calls[0]![0] as {
+				data: Record<string, unknown>;
+			}
+		).data;
+	}
+
+	function candidates(rows: Array<Record<string, unknown>>) {
+		mocks.snapshot.findMany.mockResolvedValue(
+			rows.map((r) => ({
+				status: "READY",
+				proposalStatus: "PENDING",
+				fileCount: 1,
+				proposalIntentOrder: 9n,
+				...r,
+			})),
+		);
+	}
+
+	it("draws a positive intent order in the admission transaction and writes no per-proposal ref", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		withIntentSequence();
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: memberBranch(),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			ok: true,
+			auditWritten: true,
+			proposalIntentOrder: 42n,
+		});
+		expect(createdData()).toMatchObject({
+			pullRequestOperationId: "op_2",
+			pullRequestState: "QUEUED",
+			pullRequestContext: CONTEXT_V2,
+			proposalIntentOrder: 42n,
+		});
+		expect(createdData()).not.toHaveProperty("pullRequestRef");
+		expect(nextvalCalls()).toHaveLength(1);
+		// One transaction, and the order is drawn only after the duplicate
+		// lookup answered.
+		expect(mocks.$transaction).toHaveBeenCalledTimes(1);
+		const nextval = mocks.$queryRaw.mock.calls.findIndex((call) =>
+			(call[0] as string[]).join("?").includes("nextval"),
+		);
+		expect(
+			mocks.$queryRaw.mock.invocationCallOrder[nextval]!,
+		).toBeGreaterThan(mocks.snapshot.findMany.mock.invocationCallOrder[0]!);
+	});
+
+	it("dedups against v2 proposals not yet appended, with the #2605 identity", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		withIntentSequence();
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: memberBranch(),
+			}),
+		);
+
+		const lookup = mocks.snapshot.findMany.mock.calls[0]![0] as {
+			where: Record<string, unknown>;
+			orderBy: unknown;
+		};
+		expect(lookup.where).toMatchObject({
+			projectId: PROJECT,
+			organizationId: ORG,
+			userId: "user_1",
+			baseSnapshotId: BASE,
+			changeSetDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+			proposalStatus: "PENDING",
+			proposalDestination: "REPOSITORY",
+			pullRequestState: { in: ["QUEUED", "BLOCKED"] },
+			AND: [
+				{ pullRequestContext: { path: ["syncId"], equals: "sync_1" } },
+				{ pullRequestContext: { path: ["syncGeneration"], equals: 3 } },
+				{ pullRequestContext: { path: ["v"], equals: 2 } },
+			],
+		});
+		expect(lookup.orderBy).toEqual({ version: "desc" });
+		// The #2563 lookup is not the one asked.
+		for (const call of mocks.snapshot.findFirst.mock.calls) {
+			expect(
+				(call[0] as { where: Record<string, unknown> }).where,
+			).not.toHaveProperty("changeSetDigest");
+		}
+	});
+
+	it("answers a duplicate QUEUED proposal with the row and its existing intent order, drawing none", async () => {
+		withIntentSequence();
+		candidates([
+			{ id: "snap_existing", version: 8, pullRequestState: "QUEUED" },
+		]);
+		mocks.file.findMany.mockResolvedValue([]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: memberBranch(),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			ok: false,
+			reason: "duplicate_proposal",
+			existing: { id: "snap_existing", proposalIntentOrder: 9n },
+		});
+		expect(nextvalCalls()).toHaveLength(0);
+		expect(mocks.snapshot.create).not.toHaveBeenCalled();
+		// A QUEUED candidate needs no journal read.
+		expect(mocks.branchOperation.findMany).not.toHaveBeenCalled();
+	});
+
+	it("skips a BLOCKED candidate that has a journal operation, taking an older one that has none", async () => {
+		withIntentSequence();
+		candidates([
+			{ id: "snap_pushed", version: 9, pullRequestState: "BLOCKED" },
+			{ id: "snap_clean", version: 8, pullRequestState: "BLOCKED" },
+		]);
+		mocks.branchOperation.findMany.mockResolvedValue([
+			{ snapshotId: "snap_pushed" },
+		]);
+		mocks.file.findMany.mockResolvedValue([]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: memberBranch(),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			ok: false,
+			reason: "duplicate_proposal",
+			existing: { id: "snap_clean" },
+		});
+		expect(mocks.branchOperation.findMany).toHaveBeenCalledWith({
+			where: {
+				organizationId: ORG,
+				snapshotId: { in: ["snap_pushed", "snap_clean"] },
+			},
+			select: { snapshotId: true },
+		});
+	});
+
+	it("admits a new proposal when the only match's change reached the branch (B, C, then B again)", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		withIntentSequence();
+		// The earlier B was appended and is OPEN, so the lookup's state filter
+		// never returns it; a BLOCKED one with a journal operation is skipped.
+		candidates([
+			{ id: "snap_b_blocked", version: 9, pullRequestState: "BLOCKED" },
+		]);
+		mocks.branchOperation.findMany.mockResolvedValue([
+			{ snapshotId: "snap_b_blocked" },
+		]);
+
+		const result = await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: memberBranch(),
+			}),
+		);
+
+		expect(result).toMatchObject({ ok: true, proposalIntentOrder: 42n });
+		expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
+	});
+
+	it("draws no intent order for a FABRIC proposal or a #2563 context", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		withIntentSequence();
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true }),
+		);
+		expect(createdData()).not.toHaveProperty("proposalIntentOrder");
+
+		mocks.snapshot.create.mockClear();
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], {
+				proposal: true,
+				destination: {
+					...memberBranch(),
+					context: { v: 1, syncId: "sync_1", syncGeneration: 3 },
+					branch: "fabric/instructions/op_2",
+				},
+			}),
+		);
+		expect(createdData()).not.toHaveProperty("proposalIntentOrder");
+		expect(createdData()).toMatchObject({
+			pullRequestRef: "fabric/instructions/op_2",
+		});
+		expect(nextvalCalls()).toHaveLength(0);
+		expect(mocks.snapshot.findMany).not.toHaveBeenCalled();
+	});
+
+	it("stops counting a branch proposal whose change is on its branch toward either cap", async () => {
+		mocks.snapshot.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		await createDerivedInstructionSnapshot(
+			input([put("README.md")], { proposal: true }),
+		);
+
+		const excluded = {
+			OR: [
+				{ proposalBranchId: null },
+				{ pullRequestState: { notIn: ["OPEN", "CLOSE_REQUESTED"] } },
+			],
+		};
+		for (const n of [1, 2]) {
+			expect(mocks.snapshot.count).toHaveBeenNthCalledWith(n, {
+				where: expect.objectContaining({ AND: [excluded] }),
+			});
+		}
 	});
 });

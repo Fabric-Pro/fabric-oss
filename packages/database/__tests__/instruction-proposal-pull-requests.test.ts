@@ -29,6 +29,13 @@ const store = vi.hoisted(() => ({
 	transactionOptions: [] as unknown[],
 	runFindFirst: vi.fn(),
 	runFindMany: vi.fn(),
+	/** Snapshot ids with a member-branch journal operation (Fizzy #2738). */
+	journaled: new Set<string>(),
+	/**
+	 * Snapshot ids whose current withdrawal is an established revert on
+	 * their current branch (Fizzy #2738 Decision 14).
+	 */
+	revertEstablished: new Set<string>(),
 }));
 
 const auditMocks = vi.hoisted(() => ({ recordAuditTx: vi.fn() }));
@@ -214,7 +221,24 @@ vi.mock("../prisma/client", async () => {
 		}
 		const sql = strings.join("?");
 		store.queries.push(sql);
+		if (sql.includes('AS "revertEstablished"')) {
+			// The revert check composes its EXISTS fragment first, so its
+			// bound values are the flattened statement's.
+			const [rid, rorg] = flat.values as [string, string];
+			const found = store.rows.get(rid);
+			return found && found.organizationId === rorg
+				? [
+						{
+							state: found.pullRequestState,
+							revertEstablished: store.revertEstablished.has(rid),
+						},
+					]
+				: [];
+		}
 		const [id, organizationId] = values as [string, string];
+		if (sql.includes('"project_instruction_proposal_branch_operation"')) {
+			return [{ journaled: store.journaled.has(id) }];
+		}
 		const row = store.rows.get(id);
 		if (!row || row.organizationId !== organizationId) {
 			return [];
@@ -293,6 +317,7 @@ vi.mock("../prisma/client", async () => {
 
 import type { Prisma } from "../prisma/client";
 import {
+	BRANCH_PULL_REQUEST_EVENTS,
 	claimPullRequestOpen,
 	clearMergeSyncRequest,
 	deferProposalOperation,
@@ -302,6 +327,7 @@ import {
 	hasOutstandingObligation,
 	INSTRUCTION_PULL_REQUEST_FAILURE_CODES,
 	nextRetryDelayMs,
+	PRE_CREATE_CANCEL_EVENTS,
 	PULL_REQUEST_TRANSITIONS,
 	type PullRequestAttemptRecord,
 	type PullRequestEvent,
@@ -392,6 +418,8 @@ beforeEach(() => {
 	store.transactionOptions = [];
 	store.runFindFirst.mockReset();
 	store.runFindMany.mockReset();
+	store.journaled = new Set();
+	store.revertEstablished = new Set();
 	auditMocks.recordAuditTx.mockReset();
 });
 
@@ -634,6 +662,29 @@ describe("nextRetryDelayMs (spec §11, Global Constraints)", () => {
 		expect(nextRetryDelayMs(code, {})).toBeNull();
 	});
 
+	it("retries BRANCH_MOVED after 15 min (member branches, spec §9)", () => {
+		expect(nextRetryDelayMs("BRANCH_MOVED", {})).toBe(15 * MIN);
+	});
+
+	it.each([
+		"BRANCH_CONFLICT",
+		"SUPERSEDED_BY_LATER_CHANGE",
+		"BRANCH_NAME_UNAVAILABLE",
+		"WITHDRAW_CONFLICT",
+		"WITHDRAW_BLOCKED_BY_LATER_CHANGE",
+		"REPOSITORY_CHANGED",
+		"ALREADY_ON_BRANCH",
+		"PUSH_OUTCOME_UNKNOWN",
+		"WITHDRAW_OUTCOME_UNKNOWN",
+		"START_OVER_REFUSED",
+		"BRANCH_MISSING",
+	] as const)(
+		"never retries the member-branch code %s automatically",
+		(code) => {
+			expect(nextRetryDelayMs(code, {})).toBeNull();
+		},
+	);
+
 	it("answers every failure code", () => {
 		for (const code of INSTRUCTION_PULL_REQUEST_FAILURE_CODES) {
 			expect(() => nextRetryDelayMs(code, {})).not.toThrow();
@@ -684,6 +735,226 @@ const PRE_CREATE: readonly Seed[] = [
 const PRE_CREATE_GUARDED: readonly Seed[] = [
 	{ state: "OPENING", with: HEAD },
 	{ state: "BLOCKED", with: { pullRequestFailure: PREPARE } },
+];
+
+// Member proposal branches (Fizzy #2738 spec §4.3): v2 rows only. A #2563
+// (v1) row in an allowed state is refused by the guard.
+const V2 = { pullRequestContext: { v: 2 } };
+const V1 = { pullRequestContext: { v: 1 } };
+const ON_BRANCH_ROW = { ...V2, proposalBranchId: "branch_1" };
+const APPEND_RETRYABLE = failure("BRANCH_CONFLICT", "append", true);
+const WITHDRAWN = { withdrawRequestedAt: new Date("2026-09-24T10:00:00.000Z") };
+const NON_TERMINAL = [
+	"QUEUED",
+	"OPENING",
+	"OPEN",
+	"CLOSE_REQUESTED",
+	"BLOCKED",
+] as const;
+
+const BRANCH_ROWS: readonly RowCase[] = [
+	{
+		row: "Join writes the branch, its sequence and a new assignment",
+		event: "branch_join",
+		to: "unchanged",
+		allowed: [{ state: "QUEUED", with: { ...V2, proposalBranchId: null } }],
+		guarded: [
+			{ state: "QUEUED", with: ON_BRANCH_ROW },
+			{ state: "QUEUED", with: V1 },
+			{ state: "QUEUED" },
+		],
+		audit: [],
+	},
+	{
+		row: "A stale destination blocks a branch proposal where it stands",
+		event: "branch_stale_destination",
+		to: "BLOCKED",
+		allowed: [
+			{ state: "QUEUED", with: V2 },
+			{ state: "OPENING", with: ON_BRANCH_ROW },
+			{ state: "OPEN", with: ON_BRANCH_ROW },
+			{ state: "BLOCKED", with: ON_BRANCH_ROW },
+		],
+		guarded: [{ state: "QUEUED", with: V1 }, { state: "OPEN" }],
+		audit: [],
+	},
+	{
+		row: "Transfer (rehome, start over, Propose again) queues on the new branch",
+		event: "branch_transfer",
+		to: "QUEUED",
+		allowed: (
+			[
+				"QUEUED",
+				"OPENING",
+				"OPEN",
+				"BLOCKED",
+				"MERGED",
+				"CLOSED",
+				"CANCELED",
+			] as const
+		).map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [
+			{ state: "CANCELED", with: { ...ON_BRANCH_ROW, ...WITHDRAWN } },
+			{ state: "QUEUED", with: { ...V2, proposalBranchId: null } },
+			{ state: "MERGED", with: { ...V1, proposalBranchId: "branch_1" } },
+		],
+		audit: [],
+	},
+	{
+		row: "Claim takes the queue head to OPENING",
+		event: "branch_claim",
+		to: "OPENING",
+		allowed: [
+			{ state: "QUEUED", with: ON_BRANCH_ROW },
+			{ state: "OPENING", with: ON_BRANCH_ROW },
+			{
+				state: "BLOCKED",
+				with: {
+					...ON_BRANCH_ROW,
+					pullRequestFailure: APPEND_RETRYABLE,
+				},
+			},
+			{
+				state: "BLOCKED",
+				with: { ...ON_BRANCH_ROW, pullRequestFailure: V_TIMEOUT },
+			},
+		],
+		guarded: [
+			{ state: "QUEUED", with: { ...ON_BRANCH_ROW, ...WITHDRAWN } },
+			{
+				state: "BLOCKED",
+				with: {
+					...ON_BRANCH_ROW,
+					pullRequestFailure: failure(
+						"PUSH_OUTCOME_UNKNOWN",
+						"append",
+						false,
+					),
+				},
+			},
+			{
+				state: "BLOCKED",
+				with: {
+					...ON_BRANCH_ROW,
+					pullRequestFailure: CREATE_UNKNOWN_RETRYABLE,
+				},
+			},
+			{ state: "QUEUED", with: { ...V2, proposalBranchId: null } },
+			{ state: "OPENING", with: V1 },
+		],
+		audit: [],
+	},
+	{
+		row: "Evidence cancels a withdrawn branch proposal",
+		event: "branch_evidence",
+		to: "CANCELED",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [{ state: "OPEN", with: V1 }, { state: "OPEN" }],
+		audit: [RECONCILED],
+	},
+	{
+		row: "Evidence returns CLOSE_REQUESTED to OPEN (spec §4.3 amends #2563 §4.4)",
+		event: "branch_evidence",
+		to: "OPEN",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [{ state: "CLOSE_REQUESTED", with: V1 }],
+		audit: [],
+	},
+	{
+		row: "Evidence of an unknown append blocks",
+		event: "branch_evidence",
+		to: "BLOCKED",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [{ state: "OPENING", with: V1 }],
+		audit: [],
+	},
+	{
+		row: "Evidence of a pending withdrawal requests the close",
+		event: "branch_evidence",
+		to: "CLOSE_REQUESTED",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [{ state: "OPEN", with: V1 }],
+		audit: [],
+	},
+	{
+		row: "Evidence that changes failure or intent only keeps the state",
+		event: "branch_evidence",
+		to: "unchanged",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [{ state: "OPEN", with: V1 }],
+		audit: [],
+	},
+	{
+		row: "Stop tracking cancels every live proposal on the branch",
+		event: "branch_stop_tracking",
+		to: "CANCELED",
+		allowed: NON_TERMINAL.map((state) => ({ state, with: ON_BRANCH_ROW })),
+		guarded: [
+			{ state: "OPEN", with: V1 },
+			{ state: "OPEN", with: { ...V2, proposalBranchId: null } },
+		],
+		audit: [RECONCILED],
+	},
+	{
+		row: "Withdrawal cancels a branch proposal not yet appended (spec §4.3)",
+		event: "branch_withdraw",
+		to: "CANCELED",
+		allowed: [
+			{ state: "QUEUED", with: { ...V2, proposalBranchId: null } },
+			{ state: "QUEUED", with: ON_BRANCH_ROW },
+			{
+				state: "BLOCKED",
+				with: {
+					...ON_BRANCH_ROW,
+					pullRequestFailure: APPEND_RETRYABLE,
+				},
+			},
+			{
+				state: "BLOCKED",
+				with: {
+					...V2,
+					proposalBranchId: null,
+					pullRequestFailure: failure(
+						"CONFIGURATION_CHANGED",
+						"admission",
+						false,
+					),
+				},
+			},
+		],
+		guarded: [
+			{ state: "QUEUED", with: V1 },
+			{ state: "QUEUED" },
+			{
+				state: "BLOCKED",
+				with: { ...V1, pullRequestFailure: V_TIMEOUT },
+			},
+		],
+		audit: [CLOSE_REQ],
+	},
+	{
+		row: "Withdrawal of an appended change requests its revert (spec §6.8)",
+		event: "branch_withdraw",
+		to: "CLOSE_REQUESTED",
+		allowed: [{ state: "OPEN", with: ON_BRANCH_ROW }],
+		guarded: [
+			{ state: "OPEN", with: V1 },
+			{ state: "OPEN", with: { ...V2, proposalBranchId: null } },
+			{ state: "OPEN", with: { ...ON_BRANCH_ROW, ...WITHDRAWN } },
+		],
+		audit: [CLOSE_REQ],
+	},
+	{
+		row: "Withdrawal of the last live change keeps OPEN; the branch closes",
+		event: "branch_withdraw",
+		to: "unchanged",
+		allowed: [{ state: "OPEN", with: ON_BRANCH_ROW }],
+		guarded: [
+			{ state: "OPEN", with: V1 },
+			{ state: "OPEN", with: { ...ON_BRANCH_ROW, ...WITHDRAWN } },
+		],
+		audit: [CLOSE_REQ],
+	},
 ];
 
 const ROWS: readonly RowCase[] = [
@@ -1053,6 +1324,7 @@ const ROWS: readonly RowCase[] = [
 		],
 		audit: [],
 	},
+	...BRANCH_ROWS,
 ];
 
 function fromOf(c: RowCase): State[] {
@@ -1127,11 +1399,307 @@ describe.each(ROWS)("§4.4: $row", (c) => {
 	}
 });
 
+/**
+ * The #2563 pre-create cancels read #2563 columns a member branch proposal
+ * never writes, so on their own they would match a v2 row whose commit is
+ * already on its branch (Fizzy #2738 spec §4.3 "Validation REJECTED or
+ * abandonment": OPENING only with no journal operation). A v2 row with any
+ * journal operation is refused under the row lock.
+ */
+describe("pre-create cancels never take a branch proposal with a journal operation", () => {
+	const JOURNALED_V2: readonly Seed[] = [
+		{ state: "QUEUED", with: ON_BRANCH_ROW },
+		{ state: "OPENING", with: ON_BRANCH_ROW },
+		{
+			state: "BLOCKED",
+			with: { ...ON_BRANCH_ROW, pullRequestFailure: V_TIMEOUT },
+		},
+	];
+	const cancel = (
+		event: (typeof PRE_CREATE_CANCEL_EVENTS)[number],
+		state: State,
+	) =>
+		transitionPullRequest({
+			snapshotId: ID,
+			organizationId: ORG,
+			event,
+			from: [state],
+			expectedAttempt: 3,
+			to: "CANCELED",
+			bumpAttempt: true,
+			audit: audit(
+				event === "cancel_pre_create" ? CLOSE_REQ : RECONCILED,
+			),
+		});
+
+	it("names exactly the three #2563 pre-create cancels", () => {
+		expect([...PRE_CREATE_CANCEL_EVENTS].sort()).toEqual([
+			"abandoned",
+			"cancel_pre_create",
+			"validation_rejected",
+		]);
+	});
+
+	for (const event of ["validation_rejected", "abandoned"] as const) {
+		it.each(JOURNALED_V2)(
+			`${event} leaves a v2 $state proposal with a journal operation alone`,
+			async (s) => {
+				const before = seed(s.state, s.with);
+				store.journaled.add(ID);
+
+				expect(await cancel(event, s.state)).toEqual({ ok: false });
+				expect(current()).toEqual(before);
+				expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+			},
+		);
+
+		it(`${event} still cancels a v2 OPENING proposal with no journal operation`, async () => {
+			seed("OPENING", ON_BRANCH_ROW);
+
+			expect(await cancel(event, "OPENING")).toEqual({
+				ok: true,
+				attempt: 4,
+			});
+			expect(current().pullRequestState).toBe("CANCELED");
+		});
+	}
+
+	it.each([
+		{ state: "QUEUED", with: ON_BRANCH_ROW },
+		{
+			state: "BLOCKED",
+			with: { ...ON_BRANCH_ROW, pullRequestFailure: V_TIMEOUT },
+		},
+	] as const)(
+		"cancel_pre_create leaves a v2 $state proposal with a journal operation alone",
+		async (s) => {
+			const before = seed(s.state, s.with);
+			store.journaled.add(ID);
+
+			expect(await cancel("cancel_pre_create", s.state)).toEqual({
+				ok: false,
+			});
+			expect(current()).toEqual(before);
+		},
+	);
+
+	it("cancel_pre_create never takes OPENING at all", async () => {
+		seed("OPENING", ON_BRANCH_ROW);
+		store.journaled.add(ID);
+
+		await expect(cancel("cancel_pre_create", "OPENING")).rejects.toThrow(
+			/Illegal pull-request transition/,
+		);
+	});
+
+	it("reads the journal under the row lock, after it", async () => {
+		seed("OPENING", ON_BRANCH_ROW);
+		store.journaled.add(ID);
+
+		await cancel("validation_rejected", "OPENING");
+
+		const lock = store.queries.findIndex((q) => /FOR UPDATE/.test(q));
+		const journal = store.queries.findIndex((q) =>
+			q.includes('"project_instruction_proposal_branch_operation"'),
+		);
+		expect(lock).toBeGreaterThanOrEqual(0);
+		expect(journal).toBeGreaterThan(lock);
+	});
+
+	it("leaves every other event's arms to their own guards", async () => {
+		seed("OPEN", ON_BRANCH_ROW);
+		store.journaled.add(ID);
+
+		expect(
+			await transitionPullRequest({
+				snapshotId: ID,
+				organizationId: ORG,
+				event: "branch_evidence",
+				from: ["OPEN"],
+				expectedAttempt: 3,
+				to: "unchanged",
+				bumpAttempt: true,
+			}),
+		).toEqual({ ok: true, attempt: 4 });
+		expect(
+			store.queries.some((q) =>
+				q.includes('"project_instruction_proposal_branch_operation"'),
+			),
+		).toBe(false);
+	});
+});
+
+/**
+ * A merge racing the revert (Fizzy #2738 spec Decision 14, line 869): a
+ * branch proposal CANCELED because its current withdrawal is an established
+ * revert takes its pull request's outcome through `branch_settled`, and no
+ * other CANCELED row does. The revert is read under the row lock.
+ */
+describe("branch_settled from CANCELED needs an established current revert", () => {
+	const REVERT_CANCELED = { ...ON_BRANCH_ROW, ...WITHDRAWN };
+	const settle = (
+		to: "MERGED" | "CLOSED",
+		expectedAttempt = 3,
+		from: readonly State[] = ["CANCELED"],
+	) =>
+		transitionPullRequest({
+			snapshotId: ID,
+			organizationId: ORG,
+			event: "branch_settled",
+			from,
+			expectedAttempt,
+			to,
+			bumpAttempt: true,
+			branch: { id: "branch_1", assignment: 1 },
+			audit: audit(RECONCILED),
+		});
+
+	it.each(["MERGED", "CLOSED"] as const)(
+		"moves a revert-CANCELED proposal to %s with one reconciled row",
+		async (to) => {
+			seed("CANCELED", { ...REVERT_CANCELED, proposalAssignment: 1 });
+			store.revertEstablished.add(ID);
+
+			expect(await settle(to)).toEqual({ ok: true, attempt: 4 });
+			const after = current();
+			expect(after.pullRequestState).toBe(to);
+			expect(after.proposalStatus).toBe(
+				proposalStatusForPullRequestState(to),
+			);
+			expect(after.pullRequestAttempt).toBe(4);
+			expect(auditMocks.recordAuditTx).toHaveBeenCalledTimes(1);
+			expect(auditMocks.recordAuditTx.mock.calls[0]?.[1].action).toBe(
+				RECONCILED,
+			);
+		},
+	);
+
+	it("refuses a CANCELED proposal whose current withdrawal is not an established revert, writing nothing", async () => {
+		const before = seed("CANCELED", {
+			...REVERT_CANCELED,
+			proposalAssignment: 1,
+		});
+
+		expect(await settle("MERGED")).toEqual({ ok: false });
+		expect(current()).toEqual(before);
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ label: "a #2563 row", with: { ...V1, ...WITHDRAWN } },
+		{
+			label: "a row off every branch",
+			with: { ...V2, proposalBranchId: null, ...WITHDRAWN },
+		},
+		{
+			label: "another assignment",
+			with: { ...REVERT_CANCELED, proposalAssignment: 2 },
+		},
+		{
+			label: "another branch",
+			with: {
+				...REVERT_CANCELED,
+				proposalBranchId: "branch_2",
+				proposalAssignment: 1,
+			},
+		},
+	])("refuses $label even with an established revert", async (c) => {
+		const before = seed("CANCELED", c.with);
+		store.revertEstablished.add(ID);
+
+		expect(await settle("MERGED")).toEqual({ ok: false });
+		expect(current()).toEqual(before);
+		expect(auditMocks.recordAuditTx).not.toHaveBeenCalled();
+	});
+
+	it("is refused at a stale attempt", async () => {
+		const before = seed("CANCELED", {
+			...REVERT_CANCELED,
+			proposalAssignment: 1,
+		});
+		store.revertEstablished.add(ID);
+
+		expect(await settle("MERGED", 2)).toEqual({ ok: false });
+		expect(current()).toEqual(before);
+	});
+
+	it("never takes CANCELED to CANCELED, nor a MERGED or CLOSED proposal anywhere", async () => {
+		seed("CANCELED", { ...REVERT_CANCELED, proposalAssignment: 1 });
+		store.revertEstablished.add(ID);
+
+		await expect(
+			transitionPullRequest({
+				snapshotId: ID,
+				organizationId: ORG,
+				event: "branch_settled",
+				from: ["CANCELED"],
+				expectedAttempt: 3,
+				to: "CANCELED",
+				bumpAttempt: true,
+				audit: audit(RECONCILED),
+			}),
+		).rejects.toThrow(/Illegal pull-request transition/);
+		for (const state of ["MERGED", "CLOSED"] as const) {
+			for (const to of ["MERGED", "CLOSED"] as const) {
+				await expect(settle(to, 3, [state])).rejects.toThrow(
+					/Illegal pull-request transition/,
+				);
+			}
+		}
+	});
+
+	it("reads the revert under the row lock, after it", async () => {
+		seed("CANCELED", { ...REVERT_CANCELED, proposalAssignment: 1 });
+		store.revertEstablished.add(ID);
+
+		await settle("MERGED");
+
+		const lock = store.queries.findIndex((q) => /FOR UPDATE/.test(q));
+		const revert = store.queries.findIndex((q) =>
+			q.includes('AS "revertEstablished"'),
+		);
+		expect(lock).toBeGreaterThanOrEqual(0);
+		expect(revert).toBeGreaterThan(lock);
+	});
+
+	it("reads no revert for a non-terminal arm, and a call naming both applies it only to CANCELED", async () => {
+		seed("OPEN", { ...ON_BRANCH_ROW, proposalAssignment: 1 });
+
+		expect(await settle("MERGED", 3, ["OPEN"])).toEqual({
+			ok: true,
+			attempt: 4,
+		});
+		expect(
+			store.queries.some((q) => q.includes('AS "revertEstablished"')),
+		).toBe(false);
+
+		// OPEN and CANCELED named together: the OPEN row still moves, and
+		// a CANCELED row without the revert does not.
+		seed("OPEN", { ...ON_BRANCH_ROW, proposalAssignment: 1 });
+		expect(await settle("CLOSED", 3, ["OPEN", "CANCELED"])).toEqual({
+			ok: true,
+			attempt: 4,
+		});
+		const before = seed("CANCELED", {
+			...REVERT_CANCELED,
+			proposalAssignment: 1,
+		});
+		expect(await settle("CLOSED", 3, ["OPEN", "CANCELED"])).toEqual({
+			ok: false,
+		});
+		expect(current()).toEqual(before);
+	});
+});
+
 describe("transition table invariants", () => {
 	const events = Object.keys(PULL_REQUEST_TRANSITIONS) as PullRequestEvent[];
+	const branchEvents: readonly PullRequestEvent[] =
+		BRANCH_PULL_REQUEST_EVENTS;
+	/** The #2563 events: Fizzy #2738 §4.3 amends §4.4 for branch proposals only. */
+	const v1Events = events.filter((event) => !branchEvents.includes(event));
 
 	it("never moves CLOSE_REQUESTED to BLOCKED or OPEN", () => {
-		for (const event of events) {
+		for (const event of v1Events) {
 			for (const to of ["BLOCKED", "OPEN"] as const) {
 				expect(() =>
 					pullRequestTransitionWhere(
@@ -1152,7 +1720,7 @@ describe("transition table invariants", () => {
 	});
 
 	it("changes a terminal state only by a settlement confirmation", () => {
-		for (const event of events) {
+		for (const event of v1Events) {
 			for (const rule of PULL_REQUEST_TRANSITIONS[event].from) {
 				if (["MERGED", "CLOSED", "CANCELED"].includes(rule.state)) {
 					const moves = rule.to.filter((to) => to !== "unchanged");
@@ -1160,6 +1728,119 @@ describe("transition table invariants", () => {
 						expect(moves).toEqual(["CLOSED", "MERGED"]);
 					} else {
 						expect(moves).toEqual([]);
+					}
+				}
+			}
+		}
+	});
+
+	it("guards every branch arm on a v2 context, so no #2563 row takes one", () => {
+		for (const event of branchEvents) {
+			for (const rule of PULL_REQUEST_TRANSITIONS[event].from) {
+				expect(JSON.stringify(rule.guard)).toContain(
+					'{"pullRequestContext":{"path":["v"],"equals":2}}',
+				);
+			}
+		}
+	});
+
+	it("moves a branch proposal from CLOSE_REQUESTED to OPEN or BLOCKED only by its evidence", () => {
+		for (const event of branchEvents) {
+			for (const rule of PULL_REQUEST_TRANSITIONS[event].from) {
+				if (
+					rule.state === "CLOSE_REQUESTED" &&
+					(rule.to.includes("OPEN") || rule.to.includes("BLOCKED"))
+				) {
+					expect(event).toBe("branch_evidence");
+				}
+			}
+		}
+	});
+
+	it("moves a terminal branch proposal only by a transfer to QUEUED, or by classification from a revert CANCELED (Decision 14)", () => {
+		for (const event of branchEvents) {
+			for (const rule of PULL_REQUEST_TRANSITIONS[event].from) {
+				if (!["MERGED", "CLOSED", "CANCELED"].includes(rule.state)) {
+					continue;
+				}
+				if (event === "branch_settled") {
+					expect(rule).toEqual({
+						state: "CANCELED",
+						to: ["MERGED", "CLOSED"],
+						guard: {
+							AND: [
+								{
+									pullRequestContext: {
+										path: ["v"],
+										equals: 2,
+									},
+								},
+								{ proposalBranchId: { not: null } },
+							],
+						},
+						requires: "established_current_revert",
+					});
+				} else {
+					expect(event).toBe("branch_transfer");
+					expect(rule.to).toEqual(["QUEUED"]);
+					expect(rule.requires).toBeUndefined();
+				}
+			}
+		}
+	});
+
+	it("lets no other event move a terminal branch proposal", () => {
+		const terminal = ["MERGED", "CLOSED", "CANCELED"] as const;
+		const moves: string[] = [];
+		for (const event of events) {
+			for (const rule of PULL_REQUEST_TRANSITIONS[event].from) {
+				if (!(terminal as readonly string[]).includes(rule.state)) {
+					continue;
+				}
+				for (const to of rule.to) {
+					if (to !== "unchanged" && to !== rule.state) {
+						moves.push(`${event}:${rule.state}->${to}`);
+					}
+				}
+			}
+		}
+		expect(moves.sort()).toEqual(
+			[
+				// #2563 only: written with its settled record's count, which
+				// a branch proposal never has (a v1 sweep row).
+				"confirmation:CANCELED->CLOSED",
+				"confirmation:CANCELED->MERGED",
+				"branch_settled:CANCELED->MERGED",
+				"branch_settled:CANCELED->CLOSED",
+				"branch_transfer:MERGED->QUEUED",
+				"branch_transfer:CLOSED->QUEUED",
+				"branch_transfer:CANCELED->QUEUED",
+			].sort(),
+		);
+		// Only the Decision 14 arm carries the revert requirement.
+		const requiring = events.flatMap((event) =>
+			PULL_REQUEST_TRANSITIONS[event].from
+				.filter((rule) => rule.requires !== undefined)
+				.map((rule) => `${event}:${rule.state}`),
+		);
+		expect(requiring).toEqual(["branch_settled:CANCELED"]);
+		// And every other (branch event, terminal state, target) is illegal.
+		for (const event of branchEvents) {
+			for (const state of terminal) {
+				for (const to of [...STATES, "unchanged"] as const) {
+					const legal =
+						(event === "branch_transfer" && to === "QUEUED") ||
+						(event === "branch_settled" &&
+							state === "CANCELED" &&
+							(to === "MERGED" || to === "CLOSED"));
+					const where = () =>
+						pullRequestTransitionWhere(event, [state], to, 3);
+					if (legal) {
+						expect(where).not.toThrow();
+					} else {
+						expect(where).toThrow(
+							/Illegal pull-request transition/,
+						);
 					}
 				}
 			}
@@ -1588,6 +2269,14 @@ describe("exact audit rows (spec §4.4, §13.4)", () => {
 			"confirmation:MERGED": [RECONCILED],
 			"observe:MERGED": [RECONCILED],
 			"observe:CLOSED": [RECONCILED],
+			"branch_evidence:CANCELED": [RECONCILED],
+			"branch_stop_tracking:CANCELED": [RECONCILED],
+			"branch_withdraw:CANCELED": [CLOSE_REQ],
+			"branch_withdraw:CLOSE_REQUESTED": [CLOSE_REQ],
+			"branch_withdraw:unchanged": [CLOSE_REQ],
+			"branch_settled:MERGED": [RECONCILED],
+			"branch_settled:CLOSED": [RECONCILED],
+			"branch_settled:CANCELED": [RECONCILED],
 		});
 		expect(
 			requiredPullRequestAudits("merge_sync_acknowledged", "unchanged"),

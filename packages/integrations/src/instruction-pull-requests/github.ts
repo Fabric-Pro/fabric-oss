@@ -10,7 +10,14 @@ import {
 	MAX_PAGES,
 	OPEN_TIMEOUT_MS,
 } from "./classify";
-import { encodeSegment, isRecord, num, requestJson, str } from "./http";
+import {
+	encodeSegment,
+	isPositiveDecimalInteger,
+	isRecord,
+	num,
+	requestJson,
+	str,
+} from "./http";
 import {
 	type FindOperationResult,
 	type InstructionPullRequestAdapter,
@@ -299,5 +306,12 @@ export const github: InstructionPullRequestAdapter = {
 			throw adapterError("close", "unknown");
 		}
 		return observe(pull, "close");
+	},
+
+	pullRequestHeadRef(externalId) {
+		// The pull request's own head, never the synthetic `.../merge` ref.
+		return isPositiveDecimalInteger(externalId)
+			? `refs/pull/${externalId}/head`
+			: null;
 	},
 };
