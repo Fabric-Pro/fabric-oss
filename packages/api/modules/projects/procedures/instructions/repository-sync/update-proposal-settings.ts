@@ -16,9 +16,12 @@ import { requireHostingOrganizationId } from "../hosting-organization";
  *
  * "Let read-only members propose changes as pull requests" (Fizzy #2563
  * spec §12, §16.1; plan Decision 4). Its own procedure, not a `configure`
- * field, because `configure` re-points the configuration and bumps
+ * field: a `configure` that changes what is synced (the repository, branch,
+ * folder or ignore rules) re-points the configuration and bumps
  * `generation`, which fails every in-flight proposal with
- * CONFIGURATION_CHANGED; this writes `allowReaderProposals` alone. Admission
+ * CONFIGURATION_CHANGED, and even a flag-only `configure` re-delegates to the
+ * caller, clears a pause and resets the failure count (Fizzy #2744). This
+ * writes `allowReaderProposals` alone. Admission
  * and the open activity read the setting live, so turning it off stops new
  * pushes by read-only proposers without touching proposals already admitted
  * by others.

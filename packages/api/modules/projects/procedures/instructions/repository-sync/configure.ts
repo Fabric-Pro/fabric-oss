@@ -27,9 +27,20 @@ import {
  *
  * Points the project's coding instructions at a branch and optional folder
  * of one of its repository integrations (design 2026-09-23 §5.1). The caller
- * becomes the delegate automatic runs act as; the generation is bumped so
- * any in-flight run is fenced; the project flips to REPOSITORY. Does not
- * start a run: the client calls `syncNow` after this.
+ * becomes the delegate automatic runs act as; the project flips to
+ * REPOSITORY. Does not start a run: the client calls `syncNow` after this.
+ *
+ * Only a change to what is synced (the repository, the branch, the folder or
+ * the ignore rules) bumps the generation, fencing an in-flight run and
+ * making a proposal frozen at the old generation stale, and resets the rest
+ * of the automatic schedule. The "Automatic sync" toggle and "Re-enable"
+ * send the stored repository, branch and folder and no ignore rules, so they
+ * keep the generation: a run already open finishes and publishes normally,
+ * and a proposal in flight stays current (Fizzy #2744). Either clears a
+ * pause and the failure count and makes the sync due now. The query decides
+ * which under its lock. Either is audited as
+ * `project.instructions.repository_sync_configured`; the `*Changed` flags
+ * say which it was.
  *
  * `ignoreGlobs` (Fizzy #2726) carries the configure dialog's folder
  * exclusions: the project's own ignore list, written in the SAME transaction
@@ -144,12 +155,17 @@ export const configureRepositorySyncProcedure = tenantProtectedProcedure
 			metadata: {
 				provider: integration.provider,
 				automatic: written.sync.automatic,
+				repositoryChanged: written.previous
+					? written.previous.repositoryIntegrationId !==
+						written.sync.repositoryIntegrationId
+					: true,
 				refChanged: written.previous
 					? written.previous.ref !== written.sync.ref
 					: true,
 				rootPathChanged: written.previous
 					? written.previous.rootPath !== written.sync.rootPath
 					: true,
+				ignoreGlobsChanged: written.ignoreGlobsChanged,
 				generation: written.sync.generation,
 			},
 		});

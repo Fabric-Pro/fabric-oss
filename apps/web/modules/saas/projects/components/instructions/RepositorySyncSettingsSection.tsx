@@ -18,9 +18,11 @@ import {
  * such a project can always be switched back and is never locked.
  *
  * The automatic toggle calls `configure` with the stored repository, branch
- * and folder and the flipped flag, so it goes through the same branch check,
- * generation bump and delegation as "Change…". Readers see the state as
- * text.
+ * and folder and the flipped flag, so it goes through the same branch check
+ * and delegation as "Change…". Because nothing that is synced changes, it
+ * keeps the configuration's generation: a sync already running finishes
+ * normally and suggestions in flight stay current (Fizzy #2744). Readers see
+ * the state as text.
  *
  * One change at a time (Decision 40): while the toggle's `configure` or a
  * switch to upload mode is in flight, the toggle, "Change…" and "Switch to

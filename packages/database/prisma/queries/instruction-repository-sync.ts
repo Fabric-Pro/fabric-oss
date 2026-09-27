@@ -4,11 +4,21 @@
  * (design 2026-09-23 §4, §5.1, §5.4, §5.6).
  *
  * Configuration identity is `(id, generation)`. Every change that alters
- * what a run would produce, or whom it acts as, bumps `generation`, and
- * every durable effect of a run is conditioned on the pair it captured in
- * `begin`: the publish fence below, and the scheduling write in
- * `completeInstructionRepositorySyncRun`. Snapshot cleanup is NOT fenced; it
- * is keyed on the snapshot.
+ * what a run would produce (the repository, the branch, the folder or the
+ * ignore rules) bumps `generation`, and every durable effect of a run is
+ * conditioned on the pair it captured in `begin`: the publish fence below,
+ * and the scheduling write in `completeInstructionRepositorySyncRun`.
+ * Snapshot cleanup is NOT fenced; it is keyed on the snapshot.
+ *
+ * A change of whom automatic runs act as alone does NOT bump it (Fizzy
+ * #2744): the "Automatic sync" toggle and "Re-enable" re-delegate to the
+ * caller and keep the generation, so a run already open finishes and
+ * publishes normally, and a proposal frozen at that generation stays
+ * current. That is safe because the delegate is not what a run's output is
+ * checked against: a run acts as the member `begin` froze in its context,
+ * and the publish fence (`repositorySyncPublishRefusal`) re-checks THAT
+ * member's permission inside the publish transaction, so a run whose member
+ * lost it is refused whatever the delegate is now.
  */
 
 import { logger } from "@repo/logs";
@@ -103,8 +113,26 @@ function sameGlobs(
  * The ONE writer of `project.instructionSettings`.
  *
  * Takes the project row's write lock first, so a mode flip, an ignore-rule
- * change and the publish fence (which reads the same column under the same
- * lock) are serialized rather than interleaved. `sourceOfTruth` is written
+ * change and the publish fence (which reads the same column under
+ * `FOR UPDATE OF p`) are serialized rather than interleaved.
+ *
+ * The lock is `FOR NO KEY UPDATE`, not `FOR UPDATE`, on purpose, as in
+ * `deleteRepoIntegrationReleasingSyncs` (./projects/repository-integration-disconnect):
+ * every caller goes on to lock or write the configuration row, and the
+ * transactions that hold that row first then insert rows carrying a project
+ * foreign key, each of which takes `FOR KEY SHARE` on the project row — a
+ * finishing run's completion audit row (`completeInstructionRepositorySyncRun`),
+ * a poll check's FAILED receipt and audit row
+ * (`recordInstructionSyncCheckFailure`), a proposal-branch join's branch row
+ * (under the configuration row's `FOR SHARE`). `FOR UPDATE` here conflicts
+ * with `FOR KEY SHARE` and closes a cycle (they hold the configuration row
+ * and wait for the project; this holds the project and waits for the
+ * configuration row) that Postgres breaks with `40P01`. `FOR NO KEY UPDATE`
+ * does not conflict with `FOR KEY SHARE`, so their inserts proceed and no
+ * cycle forms, while it still conflicts with itself and with the publish
+ * paths' `FOR UPDATE OF p`, which is the serialization this lock is for. The
+ * `instructionSettings` update below changes no key column, so it keeps the
+ * lock at `NO KEY UPDATE`. `sourceOfTruth` is written
  * only by the sync configuration functions in this module; the settings
  * procedure exposes `ignoreGlobs` alone. An `ignoreGlobs` change bumps the
  * sync generation, clears the poll cursor and makes the sync due now,
@@ -128,7 +156,7 @@ export async function writeProjectInstructionSettings(
 		SELECT "instructionSettings"
 		FROM "project"
 		WHERE "id" = ${projectId} AND "organizationId" = ${organizationId}
-		FOR UPDATE
+		FOR NO KEY UPDATE
 	`;
 	const row = rows[0];
 	if (row === undefined) {
@@ -346,12 +374,37 @@ export function getInstructionRepositorySyncForProposal(
 }
 
 /**
- * `configure` (spec §5.1): one transaction under the project row lock
- * creates or re-points the configuration, makes the caller its delegate,
- * bumps the generation, clears pause, suppression, the poll cursor, the
- * pending head and the failure count, and flips the project to REPOSITORY.
- * Run history is kept.
- * `automatic` is kept when omitted, and `false` on insert.
+ * `configure` (spec §5.1): one transaction under the project row lock, then
+ * the configuration row's, creates or updates the configuration and flips
+ * the project to REPOSITORY. The caller always becomes its delegate. Run
+ * history is kept.
+ *
+ * What the update does depends on whether it changes what is synced, which
+ * is decided under the configuration row's lock against the stored row
+ * (Fizzy #2744, as `upsertContextRepositorySync` decides it, Fizzy #2713):
+ *
+ *  - The repository integration, the branch, the folder or the ignore rules
+ *    change: the configuration is re-pointed. `generation` is bumped, so an
+ *    in-flight run is fenced (`CONFIGURATION_CHANGED`) and a proposal frozen
+ *    at the old generation is stale; and the whole automatic schedule is
+ *    reset — pause, suppression, poll cursor, pending head and failure count
+ *    cleared, due now — so the next poll tick evaluates the new
+ *    configuration.
+ *  - None of them changes (the "Automatic sync" toggle, "Re-enable" after a
+ *    pause, a re-save of the same settings): only the delegate, `automatic`
+ *    (kept when omitted), the pause and the failure count are written, and
+ *    the sync is made due now. `generation`, the generation-bound cursors
+ *    (`lastEvaluated*`, `suppressed*`) and the pending head are kept: an open
+ *    run's plan is unaffected and it finishes and publishes normally (its
+ *    completion consumes the pending head), a proposal in flight stays
+ *    current, and a head this configuration already evaluated or suppressed
+ *    is not re-run. Re-delegating without a bump is safe; see the module
+ *    header. The due time is the database's clock the lock read, which no
+ *    lease a poll check holds can equal: without a generation bump, moving
+ *    `nextCheckAt` is what ends such a lease, as the lease fence's writer
+ *    contract requires (`repositorySyncLeaseFenceSql`, Fizzy #2689).
+ *
+ * `automatic` is `false` on insert when omitted.
  *
  * `ignoreGlobs`, when given, is the project's ignore list written in the SAME
  * transaction (`null` clears it; omitted leaves it alone), so the configure
@@ -359,7 +412,23 @@ export function getInstructionRepositorySyncForProposal(
  * relative to or not at all: rules saved ahead of a `configure` that then
  * failed would re-plan the configuration still in place under patterns
  * written for another folder. `ignoreGlobsChanged` reports whether the
- * stored list actually changed, for the caller's audit.
+ * stored list actually changed, for the caller's audit; a change bumps the
+ * generation in `writeProjectInstructionSettings` and takes the re-point
+ * branch above too.
+ *
+ * Lock order: the project row (`writeProjectInstructionSettings`, `FOR NO
+ * KEY UPDATE`), then the configuration row (`FOR UPDATE`). Other
+ * transactions take the configuration row first and then insert a row
+ * carrying a project foreign key, which takes `FOR KEY SHARE` on the project
+ * row: a finishing run's completion, a poll check's recorded failure, a
+ * proposal-branch join. That is the opposite order, and it is safe only
+ * because the project lock here is `NO KEY`: `FOR KEY SHARE` does not
+ * conflict with it, so their inserts proceed, they commit, and this
+ * transaction then gets the configuration row. With `FOR UPDATE` on the
+ * project row the two would deadlock (`40P01`); the regression test is in
+ * `__tests__/instruction-repository-sync-toggle.integration.test.ts`. Two
+ * configures of one project, including two first configures, still
+ * serialize on the project row lock, so the second sees the first's row.
  */
 export async function upsertInstructionRepositorySync(input: {
 	projectId: string;
@@ -386,19 +455,70 @@ export async function upsertInstructionRepositorySync(input: {
 		if (!written.written) {
 			return null;
 		}
-		const existing = await tx.projectInstructionRepositorySync.findFirst({
-			where: {
-				projectId: input.projectId,
-				organizationId: input.organizationId,
-			},
-			select: {
-				id: true,
-				ref: true,
-				rootPath: true,
-				repositoryIntegrationId: true,
-				automatic: true,
-			},
-		});
+		const [existing] = await tx.$queryRaw<
+			Array<{
+				id: string;
+				ref: string;
+				rootPath: string;
+				repositoryIntegrationId: string;
+				automatic: boolean;
+				now: Date;
+			}>
+		>`
+			SELECT "id", "ref", "rootPath", "repositoryIntegrationId", "automatic", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
+			FROM "project_instruction_repository_sync"
+			WHERE "projectId" = ${input.projectId}
+				AND "organizationId" = ${input.organizationId}
+			FOR UPDATE
+		`;
+		const select = {
+			id: true,
+			generation: true,
+			repositoryIntegrationId: true,
+			ref: true,
+			rootPath: true,
+			automatic: true,
+		} as const;
+		const previous = existing
+			? {
+					ref: existing.ref,
+					rootPath: existing.rootPath,
+					repositoryIntegrationId: existing.repositoryIntegrationId,
+				}
+			: null;
+
+		// What is synced is unchanged: keep the generation and the cursors
+		// bound to it, and date the due time on the lock's clock so a held
+		// poll lease still ends (Fizzy #2744).
+		if (
+			existing &&
+			!written.ignoreGlobsChanged &&
+			existing.repositoryIntegrationId ===
+				input.repositoryIntegrationId &&
+			existing.ref === input.ref &&
+			existing.rootPath === input.rootPath
+		) {
+			const sync = await tx.projectInstructionRepositorySync.update({
+				where: { id: existing.id },
+				data: {
+					userId: input.userId,
+					automatic: input.automatic ?? existing.automatic,
+					automaticPausedReason: null,
+					automaticPausedAt: null,
+					failureCount: 0,
+					nextCheckAt: existing.now,
+				},
+				select,
+			});
+			return {
+				sync,
+				previous,
+				ignoreGlobsChanged: written.ignoreGlobsChanged,
+			};
+		}
+
+		// A first configure, or a change of what is synced: a new
+		// configuration is evaluated afresh, now.
 		const reset = {
 			automaticPausedReason: null,
 			automaticPausedAt: null,
@@ -410,13 +530,6 @@ export async function upsertInstructionRepositorySync(input: {
 			failureCount: 0,
 			nextCheckAt: new Date(),
 		};
-		const select = {
-			id: true,
-			generation: true,
-			ref: true,
-			rootPath: true,
-			automatic: true,
-		} as const;
 		const sync = existing
 			? await tx.projectInstructionRepositorySync.update({
 					where: { id: existing.id },
@@ -446,14 +559,7 @@ export async function upsertInstructionRepositorySync(input: {
 				});
 		return {
 			sync,
-			previous: existing
-				? {
-						ref: existing.ref,
-						rootPath: existing.rootPath,
-						repositoryIntegrationId:
-							existing.repositoryIntegrationId,
-					}
-				: null,
+			previous,
 			ignoreGlobsChanged: written.ignoreGlobsChanged,
 		};
 	});
@@ -920,8 +1026,11 @@ export async function claimDueInstructionSyncRows(
  *    condition, never a subset. Each clause excludes a different competitor:
  *    `"id"`: exactly the claimed row (the id comes only from the server-side
  *    claim, never from a request, so there is no tenant arm).
- *    `"generation"`: no re-configure or settings change landed since the
- *    claim; the run such a change starts must replace this check's work.
+ *    `"generation"`: no re-configure that changes what is synced, and no
+ *    settings change, landed since the claim; the run such a change starts
+ *    must replace this check's work. A flag-only configure (the automatic
+ *    toggle, "Re-enable") keeps the generation and is excluded by the
+ *    `"nextCheckAt"` clauses instead (Fizzy #2744).
  *    `"nextCheckAt" = leaseUntil`: no later claim, finishing run or settled
  *    re-check request moved the schedule since the claim; the value the
  *    claim wrote is the lease itself, so equality is holding it.
@@ -933,16 +1042,20 @@ export async function claimDueInstructionSyncRows(
  *    `failureCount`, `lastEvaluated*`, `suppressed*`, `automaticPaused*`)
  *    moves a fence input in the same statement, so a check holding a lease
  *    taken before it can no longer apply a patch computed from the row its
- *    claim returned: a re-configure of an existing row
- *    (`upsertInstructionRepositorySync`; its create branch starts a row no
- *    lease can exist on) or a settings change
- *    (`writeProjectInstructionSettings`) bumps `generation`; a finishing run
- *    that applies a scheduling patch (`completeInstructionRepositorySyncRun`,
- *    under the row lock; a `none` effect writes nothing) and a settled
- *    re-check request (`settlePendingInstructionSyncHead`) write
- *    `nextCheckAt`; a pause sets `automaticPausedReason`; configuring
- *    automatic sync off keeps the row, clears `automatic` and bumps
- *    `generation`; switching the project back to upload mode or
+ *    claim returned: a re-configure of an existing row that changes what is
+ *    synced (`upsertInstructionRepositorySync`; its create branch starts a
+ *    row no lease can exist on) or a settings change
+ *    (`writeProjectInstructionSettings`) bumps `generation`; a configure
+ *    that changes only the flags (the "Automatic sync" toggle, "Re-enable",
+ *    a re-save; Fizzy #2744) keeps `generation` and instead writes
+ *    `nextCheckAt` from the database's clock read under the configuration
+ *    row's lock, which cannot equal a lease still ahead of that clock, and
+ *    configuring automatic sync off that way also clears `automatic`; a
+ *    finishing run that applies a scheduling patch
+ *    (`completeInstructionRepositorySyncRun`, under the row lock; a `none`
+ *    effect writes nothing) and a settled re-check request
+ *    (`settlePendingInstructionSyncHead`) write `nextCheckAt`; a pause sets
+ *    `automaticPausedReason`; switching the project back to upload mode or
  *    disconnecting its integration deletes the row. A lease nobody touched
  *    ends by the clock alone.
  * 3. A writer of only columns neither the fence nor a check reads
@@ -1270,9 +1383,12 @@ export async function findInstructionSyncsForPush(input: {
  *
  * Fenced on the configuration's identity and tenant, `(id, generation)` plus
  * `projectId` and `organizationId`, and NOT on a lease: the webhook holds
- * none, and the marker changes nothing a lease protects. A re-configure bumps
- * the generation and clears the marker, so a head seen under the old
- * configuration writes nothing.
+ * none, and the marker changes nothing a lease protects. A re-configure that
+ * changes what is synced bumps the generation and clears the marker, so a
+ * head seen under the old configuration writes nothing. A flag-only
+ * configure (the automatic toggle, "Re-enable"; Fizzy #2744) keeps both: the
+ * configuration the head was seen under is still current, and the open run's
+ * completion, or the settle below, consumes the marker.
  */
 export async function recordPendingInstructionSyncHead(
 	tx: Prisma.TransactionClient,
@@ -1311,7 +1427,8 @@ export async function recordPendingInstructionSyncHead(
  * completion will take this lock after this commits and read the marker:
  *
  * - no row at this generation: `stale`, nothing written (a re-configure
- *   made the row due now and cleared the marker);
+ *   that changed what is synced made the row due now and cleared the
+ *   marker; a flag-only one keeps the generation and the marker);
  * - receipt unfinished, or not inserted yet (`begin` has not run):
  *   `consumer_pending`, nothing written;
  * - receipt finished and the marker still there: the completion missed it,
@@ -1467,6 +1584,34 @@ function withPendingHead(
 }
 
 /**
+ * A run's PERMISSION_DENIED pauses automatic sync as PERMISSION_REVOKED
+ * because the member it acted as lost INSTRUCTION_CREATE. That verdict can
+ * be stale by the time the run completes (Fizzy #2744): an automatic-sync
+ * toggle or "Re-enable" keeps the generation, so it no longer fences the
+ * run, and meanwhile another member may have become the delegate, or the
+ * same member may have had the permission restored, and re-enabled it. So
+ * the pause stands only while the delegate the locked configuration names
+ * NOW still lacks INSTRUCTION_CREATE, read through the completion's
+ * transaction under the configuration row's lock; otherwise it becomes
+ * `none`. The receipt still completes with the run's own verdict, and a
+ * re-check request is still folded by `withPendingHead`. Every other effect
+ * passes through unread. As `withoutStalePermissionPause` in the Living
+ * Memory completion (Fizzy #2713).
+ */
+async function withoutStalePermissionPause(
+	tx: Prisma.TransactionClient,
+	sync: { projectId: string; userId: string },
+	effect: InstructionSyncSchedulingEffect,
+): Promise<InstructionSyncSchedulingEffect> {
+	if (effect.kind !== "pause" || effect.reason !== "PERMISSION_REVOKED") {
+		return effect;
+	}
+	return (await canCreateProjectInstructions(sync.projectId, sync.userId, tx))
+		? { kind: "none" }
+		: effect;
+}
+
+/**
  * `record`'s Part B (spec §5.4): locks the sync row FIRST, tenant-scoped,
  * before touching the run row, so every transaction that touches both takes
  * them in one order. `deleteInstructionRepositorySync` and
@@ -1508,6 +1653,10 @@ function withPendingHead(
  * `settlePendingInstructionSyncHead`, which finds this receipt finished. A
  * run of an older generation leaves it alone, like the rest of the
  * schedule.
+ *
+ * The same lock read carries the configuration's current delegate, so a
+ * PERMISSION_REVOKED pause that delegate already disproves is dropped
+ * (`withoutStalePermissionPause`, Fizzy #2744).
  */
 export async function completeInstructionRepositorySyncRun(input: {
 	runKey: string;
@@ -1530,13 +1679,14 @@ export async function completeInstructionRepositorySyncRun(input: {
 		const locked = await tx.$queryRaw<
 			Array<{
 				generation: number;
+				userId: string;
 				failureCount: number;
 				automaticPausedReason: string | null;
 				pendingCommitSha: string | null;
 				now: Date;
 			}>
 		>`
-			SELECT "generation", "failureCount", "automaticPausedReason", "pendingCommitSha", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
+			SELECT "generation", "userId", "failureCount", "automaticPausedReason", "pendingCommitSha", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 			FROM "project_instruction_repository_sync"
 			WHERE "id" = ${input.syncId}
 				AND "projectId" = ${input.projectId}
@@ -1588,12 +1738,20 @@ export async function completeInstructionRepositorySyncRun(input: {
 		const configurationCurrent =
 			current !== undefined && current.generation === input.generation;
 		if (configurationCurrent && current !== undefined) {
+			const scheduling = await withoutStalePermissionPause(
+				tx,
+				{ projectId: input.projectId, userId: current.userId },
+				input.scheduling,
+			);
 			const data = withPendingHead(
-				schedulingPatchOrBackoff(input, {
-					now,
-					failureCount: current.failureCount,
-					generation: input.generation,
-				}),
+				schedulingPatchOrBackoff(
+					{ ...input, scheduling },
+					{
+						now,
+						failureCount: current.failureCount,
+						generation: input.generation,
+					},
+				),
 				current,
 				now,
 			);

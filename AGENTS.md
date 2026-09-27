@@ -180,6 +180,12 @@ sibling in the same task:
   provider-specific differences explicit.
 - Document editors: compare both implementations before changing shared
   streaming/diff behavior.
+- Repository sync: Coding Instructions
+  ([queries](packages/database/prisma/queries/instruction-repository-sync.ts))
+  and Living Memory
+  ([queries](packages/database/prisma/queries/projects/context-repository-sync.ts))
+  configure, run and schedule in parallel copies; a fix to one usually
+  applies to the other.
 
 When adding, renaming, removing, or feature-gating navigation, tabs, settings,
 or covered page components, update the

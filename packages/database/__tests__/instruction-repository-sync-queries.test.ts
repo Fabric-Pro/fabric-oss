@@ -111,6 +111,7 @@ beforeEach(() => {
 	m.$queryRaw.mockReset();
 	m.$executeRaw.mockReset();
 	m.recordAuditTx.mockReset();
+	m.canCreateProjectInstructions.mockReset();
 	m.$transaction.mockReset();
 	m.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
 		cb(client),
@@ -121,6 +122,28 @@ beforeEach(() => {
 function lockedSettings(settings: Record<string, unknown> | null) {
 	m.$queryRaw.mockResolvedValueOnce(
 		settings === null ? [] : [{ instructionSettings: settings }],
+	);
+}
+
+/** The database's clock, as the configuration row lock reads it. */
+const DB_NOW = new Date("2026-09-23T12:34:56.789Z");
+
+/**
+ * The configuration row lock `upsertInstructionRepositorySync` takes after
+ * the project row's (Fizzy #2744), answering with this stored row and the
+ * database's clock, or with nothing for a first configure.
+ */
+function lockedSync(
+	row: {
+		id: string;
+		ref: string;
+		rootPath: string;
+		repositoryIntegrationId: string;
+		automatic: boolean;
+	} | null,
+) {
+	m.$queryRaw.mockResolvedValueOnce(
+		row === null ? [] : [{ ...row, now: new Date(DB_NOW) }],
 	);
 }
 
@@ -136,7 +159,7 @@ describe("upsertInstructionRepositorySync", () => {
 
 	it("creates the row with automatic off and flips the project to REPOSITORY in the same transaction", async () => {
 		lockedSettings({ ignoreGlobs: ["dist/**"] });
-		m.sync.findFirst.mockResolvedValue(null);
+		lockedSync(null);
 		m.sync.create.mockResolvedValue({
 			id: "sync_1",
 			generation: 1,
@@ -184,7 +207,7 @@ describe("upsertInstructionRepositorySync", () => {
 
 	it("re-configuring bumps the generation, re-delegates to the caller and clears every scheduling cursor", async () => {
 		lockedSettings({ sourceOfTruth: "REPOSITORY" });
-		m.sync.findFirst.mockResolvedValue({
+		lockedSync({
 			id: "sync_1",
 			ref: "develop",
 			rootPath: "",
@@ -235,9 +258,9 @@ describe("upsertInstructionRepositorySync", () => {
 
 	it("makes a re-configured sync due now, so the next poll tick evaluates it (Decision 9)", async () => {
 		lockedSettings({ sourceOfTruth: "REPOSITORY" });
-		m.sync.findFirst.mockResolvedValue({
+		lockedSync({
 			id: "sync_1",
-			ref: "main",
+			ref: "develop",
 			rootPath: "agents",
 			repositoryIntegrationId: "int_1",
 			automatic: true,
@@ -259,6 +282,201 @@ describe("upsertInstructionRepositorySync", () => {
 		};
 		expect(nextCheckAt.getTime()).toBeGreaterThanOrEqual(before);
 		expect(nextCheckAt.getTime()).toBeLessThanOrEqual(after);
+	});
+
+	describe("a configure that leaves what is synced alone (Fizzy #2744)", () => {
+		/** The stored configuration: what the toggle and "Re-enable" send back. */
+		const stored = {
+			id: "sync_1",
+			ref: "main",
+			rootPath: "agents",
+			repositoryIntegrationId: "int_1",
+			automatic: false,
+		};
+		const kept = {
+			id: "sync_1",
+			generation: 5,
+			repositoryIntegrationId: "int_1",
+			ref: "main",
+			rootPath: "agents",
+		};
+
+		it("the automatic toggle writes only the delegate, the flag, the pause and the failures, and makes the sync due on the lock's clock", async () => {
+			lockedSettings({ sourceOfTruth: "REPOSITORY" });
+			lockedSync(stored);
+			m.sync.update.mockResolvedValue({ ...kept, automatic: true });
+
+			const result = await upsertInstructionRepositorySync({
+				...input,
+				automatic: true,
+			});
+
+			// Exactly these columns: `generation`, `lastEvaluated*`,
+			// `suppressed*` and `pendingCommitSha` are not written, so an
+			// open run passes the publish and completion fences, a proposal
+			// frozen at this generation stays current, and a head this
+			// configuration already evaluated is not re-run.
+			expect(m.sync.update).toHaveBeenCalledTimes(1);
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: { id: "sync_1" },
+				data: {
+					userId: "user_2",
+					automatic: true,
+					automaticPausedReason: null,
+					automaticPausedAt: null,
+					failureCount: 0,
+					// The database's clock read under the lock, never a held
+					// lease's value: moving `nextCheckAt` is what ends a poll
+					// check's lease when the generation stays.
+					nextCheckAt: DB_NOW,
+				},
+				select: {
+					id: true,
+					generation: true,
+					repositoryIntegrationId: true,
+					ref: true,
+					rootPath: true,
+					automatic: true,
+				},
+			});
+			expect(m.sync.create).not.toHaveBeenCalled();
+			// Nothing touched the generation for the ignore rules either.
+			expect(m.sync.updateMany).not.toHaveBeenCalled();
+			expect(result).toEqual({
+				sync: { ...kept, automatic: true },
+				previous: {
+					ref: "main",
+					rootPath: "agents",
+					repositoryIntegrationId: "int_1",
+				},
+				ignoreGlobsChanged: false,
+			});
+		});
+
+		it("locks the configuration row FOR UPDATE, tenant-scoped, on the database's clock, AFTER the project row's NO KEY UPDATE lock", async () => {
+			lockedSettings({ sourceOfTruth: "REPOSITORY" });
+			lockedSync(stored);
+			m.sync.update.mockResolvedValue({ ...kept, automatic: true });
+
+			await upsertInstructionRepositorySync({
+				...input,
+				automatic: true,
+			});
+
+			expect(m.$queryRaw).toHaveBeenCalledTimes(2);
+			const [projectLock] = m.$queryRaw.mock.calls[0] as [
+				TemplateStringsArray,
+			];
+			expect(projectLock.join(" ")).toContain('FROM "project"');
+			// NO KEY: a completion holds the configuration row while its audit
+			// insert takes KEY SHARE on the project row; FOR UPDATE here would
+			// close that cycle into a 40P01.
+			expect(projectLock.join(" ")).toContain("FOR NO KEY UPDATE");
+			const [strings, ...values] = m.$queryRaw.mock.calls[1] as [
+				TemplateStringsArray,
+				...unknown[],
+			];
+			const sql = strings.join(" ");
+			expect(sql).toContain('FROM "project_instruction_repository_sync"');
+			expect(sql).toContain(
+				`(clock_timestamp() AT TIME ZONE 'UTC') AS "now"`,
+			);
+			expect(sql).toContain("FOR UPDATE");
+			expect(sql).toContain('"projectId" =');
+			expect(sql).toContain('"organizationId" =');
+			expect(values).toEqual(["proj_1", "org_1"]);
+			// The row is locked before it is written.
+			expect(m.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+				m.sync.update.mock.invocationCallOrder[0] ?? 0,
+			);
+		});
+
+		it("switching automatic sync off keeps the generation too", async () => {
+			lockedSettings({ sourceOfTruth: "REPOSITORY" });
+			lockedSync({ ...stored, automatic: true });
+			m.sync.update.mockResolvedValue({ ...kept, automatic: false });
+
+			await upsertInstructionRepositorySync({
+				...input,
+				automatic: false,
+			});
+
+			const data = m.sync.update.mock.calls[0]?.[0].data;
+			expect(data).toEqual({
+				userId: "user_2",
+				automatic: false,
+				automaticPausedReason: null,
+				automaticPausedAt: null,
+				failureCount: 0,
+				nextCheckAt: DB_NOW,
+			});
+		});
+
+		it("re-enabling after a pause with the stored settings keeps automatic sync on and the generation", async () => {
+			lockedSettings({
+				sourceOfTruth: "REPOSITORY",
+				ignoreGlobs: ["dist/**"],
+			});
+			lockedSync({ ...stored, automatic: true });
+			m.sync.update.mockResolvedValue({ ...kept, automatic: true });
+
+			// The configure dialog re-sends the same exclusions, or none.
+			await upsertInstructionRepositorySync({
+				...input,
+				ignoreGlobs: ["dist/**"],
+			});
+
+			expect(m.sync.updateMany).not.toHaveBeenCalled();
+			expect(m.sync.update.mock.calls[0]?.[0].data).toEqual({
+				userId: "user_2",
+				// Omitted by the caller, so the stored value stands.
+				automatic: true,
+				automaticPausedReason: null,
+				automaticPausedAt: null,
+				failureCount: 0,
+				nextCheckAt: DB_NOW,
+			});
+		});
+
+		it.each([
+			["the repository", { repositoryIntegrationId: "int_2" }],
+			["the branch", { ref: "release" }],
+			["the folder", { rootPath: "" }],
+			["the ignore rules", { ignoreGlobs: ["skills/**"] }],
+		])(
+			"changing %s still bumps the generation and resets the whole schedule",
+			async (_label, change) => {
+				lockedSettings({
+					sourceOfTruth: "REPOSITORY",
+					ignoreGlobs: null,
+				});
+				lockedSync(stored);
+				m.sync.updateMany.mockResolvedValue({ count: 1 });
+				m.sync.update.mockResolvedValue({ ...kept, generation: 6 });
+
+				await upsertInstructionRepositorySync({
+					...input,
+					automatic: true,
+					...change,
+				});
+
+				const data = m.sync.update.mock.calls[0]?.[0].data;
+				expect(data).toMatchObject({
+					userId: "user_2",
+					automatic: true,
+					generation: { increment: 1 },
+					automaticPausedReason: null,
+					automaticPausedAt: null,
+					suppressedCommitSha: null,
+					suppressedGeneration: null,
+					lastEvaluatedCommitSha: null,
+					lastEvaluatedGeneration: null,
+					pendingCommitSha: null,
+					failureCount: 0,
+				});
+				expect(data.nextCheckAt).toBeInstanceOf(Date);
+			},
+		);
 	});
 
 	describe("the ignore rules the configure dialog's exclusions stage (Fizzy #2726)", () => {
@@ -316,7 +534,7 @@ describe("upsertInstructionRepositorySync", () => {
 		it("writes the rules and re-points the configuration in ONE transaction, and says the rules changed", async () => {
 			const writes = trackTransaction();
 			lockedSettings({ ignoreGlobs: null, sourceOfTruth: "REPOSITORY" });
-			m.sync.findFirst.mockResolvedValue({
+			lockedSync({
 				id: "sync_1",
 				ref: "main",
 				rootPath: "",
@@ -355,7 +573,7 @@ describe("upsertInstructionRepositorySync", () => {
 				return { count: 0 };
 			});
 			lockedSettings({});
-			m.sync.findFirst.mockResolvedValue(null);
+			lockedSync(null);
 
 			const result = await upsertInstructionRepositorySync({
 				...input,
@@ -379,7 +597,7 @@ describe("upsertInstructionRepositorySync", () => {
 		it("clears the rules for null", async () => {
 			trackTransaction();
 			lockedSettings({ ignoreGlobs: ["dist/**"] });
-			m.sync.findFirst.mockResolvedValue(null);
+			lockedSync(null);
 
 			const result = await upsertInstructionRepositorySync({
 				...input,
@@ -402,7 +620,7 @@ describe("upsertInstructionRepositorySync", () => {
 		it("says the rules did not change when the same list is written, and bumps nothing for them", async () => {
 			trackTransaction();
 			lockedSettings({ ignoreGlobs: ["skills/**"] });
-			m.sync.findFirst.mockResolvedValue(null);
+			lockedSync(null);
 
 			const result = await upsertInstructionRepositorySync({
 				...input,
@@ -416,7 +634,7 @@ describe("upsertInstructionRepositorySync", () => {
 		it("leaves the rules alone when omitted", async () => {
 			trackTransaction();
 			lockedSettings({ ignoreGlobs: ["dist/**"] });
-			m.sync.findFirst.mockResolvedValue(null);
+			lockedSync(null);
 
 			const result = await upsertInstructionRepositorySync(input);
 
@@ -1264,6 +1482,123 @@ describe("completeInstructionRepositorySyncRun", () => {
 			scheduling: { kind: "none" },
 		});
 		expect(m.sync.update).not.toHaveBeenCalled();
+	});
+
+	describe("a PERMISSION_REVOKED pause the current delegate disproves (Fizzy #2744)", () => {
+		const revoked = {
+			...base,
+			trigger: "POLL" as const,
+			userId: "user_1",
+			status: "NOT_PUBLISHED" as const,
+			error: "PERMISSION_DENIED" as const,
+			scheduling: {
+				kind: "pause",
+				reason: "PERMISSION_REVOKED",
+			} as const,
+		};
+
+		/** The locked configuration, naming `userId` as its delegate NOW. */
+		function lockedDelegate(userId: string, generation = 3) {
+			m.run.updateMany.mockResolvedValue({ count: 1 });
+			m.$queryRaw.mockResolvedValueOnce([
+				{
+					generation,
+					userId,
+					failureCount: 0,
+					automaticPausedReason: null,
+					pendingCommitSha: null,
+					now: NOW,
+				},
+			]);
+		}
+
+		it("reads the delegate under the same lock the scheduling write holds", async () => {
+			lockedDelegate("user_1");
+			m.canCreateProjectInstructions.mockResolvedValue(false);
+
+			await completeInstructionRepositorySyncRun(revoked);
+
+			const [strings] = m.$queryRaw.mock.calls[0] as [
+				TemplateStringsArray,
+			];
+			expect(strings.join(" ")).toContain('"userId"');
+		});
+
+		it("drops the pause when a re-enable by another member left a delegate who may create instructions: the receipt still records the run's verdict", async () => {
+			lockedDelegate("user_9");
+			m.canCreateProjectInstructions.mockResolvedValue(true);
+
+			expect(await completeInstructionRepositorySyncRun(revoked)).toEqual(
+				{
+					completed: true,
+					configurationCurrent: true,
+				},
+			);
+			// Asked about the delegate the locked row names, not the member
+			// the run acted as, through the completion's transaction.
+			expect(m.canCreateProjectInstructions).toHaveBeenCalledWith(
+				"proj_1",
+				"user_9",
+				client,
+			);
+			// `none`: no scheduling column is written.
+			expect(m.sync.update).not.toHaveBeenCalled();
+			expect(m.run.updateMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						status: "NOT_PUBLISHED",
+						error: "PERMISSION_DENIED",
+					}),
+				}),
+			);
+		});
+
+		it("drops the pause when the same member had the permission restored", async () => {
+			lockedDelegate("user_1");
+			m.canCreateProjectInstructions.mockResolvedValue(true);
+
+			await completeInstructionRepositorySyncRun(revoked);
+
+			expect(m.canCreateProjectInstructions).toHaveBeenCalledWith(
+				"proj_1",
+				"user_1",
+				client,
+			);
+			expect(m.sync.update).not.toHaveBeenCalled();
+		});
+
+		it("keeps the pause while the current delegate still lacks the permission", async () => {
+			lockedDelegate("user_9");
+			m.canCreateProjectInstructions.mockResolvedValue(false);
+
+			await completeInstructionRepositorySyncRun(revoked);
+
+			expect(m.sync.update).toHaveBeenCalledWith({
+				where: {
+					id: "sync_1",
+					projectId: "proj_1",
+					organizationId: "org_1",
+				},
+				data: {
+					nextCheckAt: null,
+					automaticPausedReason: "PERMISSION_REVOKED",
+					automaticPausedAt: NOW,
+				},
+			});
+		});
+
+		it("never reads the permission for another effect, or for a run of an older generation", async () => {
+			lockedDelegate("user_9");
+			await completeInstructionRepositorySyncRun({
+				...revoked,
+				error: "REF_MISSING",
+				scheduling: { kind: "pause", reason: "REF_MISSING" },
+			});
+			lockedDelegate("user_9", 99);
+			await completeInstructionRepositorySyncRun(revoked);
+
+			expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("the re-check request a push or a poll left while the run was open (Fizzy #2682)", () => {
