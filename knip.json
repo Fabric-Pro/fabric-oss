@@ -34,7 +34,6 @@
 			]
 		},
 		"agents/langchain/data-analyst": {
-			"entry": ["tests/setup.ts"],
 			"ignoreDependencies": [
 				"@hono/node-server",
 				"hono",

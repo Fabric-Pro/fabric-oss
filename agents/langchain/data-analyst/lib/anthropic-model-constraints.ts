@@ -12,7 +12,7 @@
 const ADAPTIVE_ONLY_CLAUDE_RE =
 	/(?:^|[^a-z0-9])claude-(?:opus-4[.-][78]|(?:opus|sonnet|fable|mythos)-5|mythos-preview)(?![0-9])/i;
 
-export function isAnthropicAdaptiveOnlyModel(model: string): boolean {
+function isAnthropicAdaptiveOnlyModel(model: string): boolean {
 	return ADAPTIVE_ONLY_CLAUDE_RE.test(model);
 }
 
