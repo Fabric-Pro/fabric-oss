@@ -5140,6 +5140,17 @@ model ProjectLinkedTeamsChannelSeenMessage {
   createdAt         DateTime @default(now())
   pendingProposalId String?
 
+  // The thread's Graph threadLastActivity (max createdDateTime over the root
+  // and every reply) as of its last analysis. A reply created after this is a
+  // late reply and sends the thread back to the analyzer. Nullable with no
+  // backfill: a NULL row (written before this column, or by an older worker
+  // mid-rollout) falls back to `createdAt`. Every reply that analysis saw
+  // predates its own insert, so nothing already analyzed looks new on deploy.
+  // Known legacy limit: a reply that arrived during that original analysis
+  // run stays unanalyzed, as it always did. Only ever written NULL on insert;
+  // see getSeenThreadWatermarks.
+  analyzedThroughAt DateTime?
+
   linkedChannel   ProjectLinkedTeamsChannel @relation(fields: [linkedChannelId], references: [id], onDelete: Cascade)
   pendingProposal PendingBacklogProposal?   @relation(fields: [pendingProposalId], references: [id], onDelete: SetNull)
 

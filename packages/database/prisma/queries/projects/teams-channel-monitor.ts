@@ -7,6 +7,7 @@
  */
 
 import { db } from "../../client";
+import type { Prisma } from "../../generated/client";
 
 // ---------------------------------------------------------------------------
 // Channel linking (project settings)
@@ -229,11 +230,18 @@ export async function recordTeamsChannelFailure(
 /**
  * Insert seen-thread markers for the given root message IDs.
  * Idempotent — duplicates are skipped.
+ *
+ * `analyzedThroughAt` is the thread's Graph `threadLastActivity` as of this
+ * analysis; it is written on insert only. An existing row keeps its value —
+ * moving a watermark forward is `advanceTeamsThreadWatermark`'s job. Because
+ * this never overwrites a row, a NULL `analyzedThroughAt` can only ever be the
+ * value a row was inserted with, never a value written over an advanced one.
  */
 export async function markTeamsMessagesAsSeen(
 	linkedChannelId: string,
 	messageIds: string[],
 	pendingProposalId?: string | null,
+	analyzedThroughAt?: Date | null,
 ) {
 	if (messageIds.length === 0) {
 		return { count: 0 };
@@ -243,29 +251,103 @@ export async function markTeamsMessagesAsSeen(
 			linkedChannelId,
 			messageId,
 			pendingProposalId: pendingProposalId ?? null,
+			analyzedThroughAt: analyzedThroughAt ?? null,
 		})),
 		skipDuplicates: true,
 	});
 }
 
 /**
- * Return the subset of candidate IDs that have already been seen (for pre-filtering).
+ * Effective watermark for each already-seen thread root among the candidates:
+ * `analyzedThroughAt` when set, otherwise the row's `createdAt`.
+ *
+ * NULL rows were written before the column existed, or by a not-yet-upgraded
+ * worker during a rollout. A NULL row does not record what its analysis
+ * observed, so no boundary derived from the row alone is exact; `createdAt`
+ * is the one that can never re-propose or mass re-analyze, because every
+ * reply the old analyzer saw predates the row it inserted afterwards.
+ *
+ * Documented legacy limit: a reply that arrived while such a row's original
+ * analysis was running (after its fetch, before its insert) is older than
+ * `createdAt` and stays unanalyzed — exactly as before this column existed,
+ * so it is not a regression. It applies only to legacy rows; a row written
+ * with `analyzedThroughAt` records the thread's `threadLastActivity` and so
+ * catches such replies on the next pass.
+ *
+ * Roots with no seen row are absent from the map (never analyzed).
  */
-export async function getSeenMessageIds(
+export async function getSeenThreadWatermarks(
 	linkedChannelId: string,
-	candidateMessageIds: string[],
-): Promise<Set<string>> {
-	if (candidateMessageIds.length === 0) {
-		return new Set();
+	rootIds: string[],
+): Promise<Map<string, Date>> {
+	if (rootIds.length === 0) {
+		return new Map();
 	}
 	const rows = await db.projectLinkedTeamsChannelSeenMessage.findMany({
 		where: {
 			linkedChannelId,
-			messageId: { in: candidateMessageIds },
+			messageId: { in: rootIds },
 		},
-		select: { messageId: true },
+		select: { messageId: true, analyzedThroughAt: true, createdAt: true },
 	});
-	return new Set(rows.map((r) => r.messageId));
+	return new Map(
+		rows.map((row) => [
+			row.messageId,
+			row.analyzedThroughAt ?? row.createdAt,
+		]),
+	);
+}
+
+/**
+ * Compare-and-swap one thread's watermark from `expectedPrevious` (the value
+ * `getSeenThreadWatermarks` returned when the thread was fetched) to `next`.
+ *
+ * Matches only while the row still holds what the caller read: either
+ * `analyzedThroughAt = expectedPrevious`, or a still-NULL `analyzedThroughAt`
+ * (a legacy row, whose `expectedPrevious` was its `createdAt` fallback). The
+ * NULL arm deliberately has no `createdAt` comparison: it is not needed, since
+ * the fetch only sends a revisit when a reply is strictly newer than the
+ * effective watermark and `next > expectedPrevious` is enforced below, so
+ * there is no way for it to loop. It is still a CAS: NULL is only ever
+ * written on insert and never over an advanced value, so the NULL arm cannot
+ * match a row another revisit already moved.
+ *
+ * Two overlapping runs that both read the same watermark therefore cannot
+ * both advance it: the first to commit wins, the other matches nothing. Any
+ * reply newer than the winner's `next` is still newer on the next tick, so it
+ * is revisited then rather than lost.
+ *
+ * `next` must be strictly later than `expectedPrevious` (the fetch activity
+ * only sends a revisit when a reply is newer than the watermark it read);
+ * otherwise nothing is written and 0 is returned. Pass a transaction client to
+ * use this as the idempotency fence for a write that must commit with it.
+ *
+ * Returns the number of rows updated (0 or 1).
+ */
+export async function advanceTeamsThreadWatermark(
+	linkedChannelId: string,
+	rootId: string,
+	expectedPrevious: Date,
+	next: Date,
+	client: Prisma.TransactionClient = db,
+): Promise<number> {
+	if (!(next.getTime() > expectedPrevious.getTime())) {
+		return 0;
+	}
+	const result = await client.projectLinkedTeamsChannelSeenMessage.updateMany(
+		{
+			where: {
+				linkedChannelId,
+				messageId: rootId,
+				OR: [
+					{ analyzedThroughAt: expectedPrevious },
+					{ analyzedThroughAt: null },
+				],
+			},
+			data: { analyzedThroughAt: next },
+		},
+	);
+	return result.count;
 }
 
 // ---------------------------------------------------------------------------

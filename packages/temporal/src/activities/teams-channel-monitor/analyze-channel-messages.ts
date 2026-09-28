@@ -8,11 +8,18 @@
  *     one or more changes), or
  *   - just a seen-message marker (when the thread has no relevant content).
  *
+ * A thread that was analyzed before and is back because a reply arrived after
+ * that analysis (`thread.previouslyAnalyzedThrough` set — a "revisit") is
+ * analyzed for its NEW replies only: the earlier messages ride along as
+ * already-reviewed context, and its existing seen row's `analyzedThroughAt`
+ * watermark is moved forward instead of a new row being inserted.
+ *
  * Cursor advance + dedup markers + proposal insert all happen after the LLM
  * call returns, so retries are bounded to Temporal's default 3 attempts.
  */
 
 import {
+	advanceTeamsThreadWatermark,
 	db,
 	markTeamsMessagesAsSeen,
 	resolveProposalSummary,
@@ -37,7 +44,8 @@ import {
 	jobStep,
 	seedJobSteps,
 } from "../lib/job-progress";
-import type { FetchedThread } from "./fetch-new-messages";
+import type { FetchedThread, FetchedThreadReply } from "./fetch-new-messages";
+import { isReplyNewerThanWatermark } from "./reply-watermark";
 
 // =============================================================================
 // Types
@@ -108,6 +116,13 @@ A single thread typically yields zero or one proposal. Only split into multiple 
 
 Keep each proposal concise: a short title and brief reasoning citing the discussion. Description and acceptance criteria can be minimal — they will be refined later.`;
 
+/**
+ * Appended to `THREAD_ANALYSIS_USER_PROMPT` on a revisit only — a thread that
+ * was analyzed before and has since received new replies. The first-analysis
+ * prompt stays byte-identical.
+ */
+const THREAD_REVISIT_USER_PROMPT_ADDENDUM = `This thread was already analyzed once. Everything under "Earlier messages" was reviewed then and is context only — anything it asked for has already been proposed or deliberately left out, so do not propose it again. Propose changes only for what the messages under "New replies" add: a new requirement, a newly reported bug, or a material change in scope. If the new replies only restate, acknowledge, thank, or chat about the already-reviewed content, return zero changes.`;
+
 // =============================================================================
 // Formatter
 // =============================================================================
@@ -143,6 +158,95 @@ export function formatTeamsThreadForBacklog(
 }
 
 /**
+ * Format a revisited thread for LLM analysis: the root and every reply created
+ * at or before `previouslyAnalyzedThrough` go under an "already reviewed —
+ * context only" heading, and the replies created after it under a "New
+ * replies" heading. Same line shapes as `formatTeamsThreadForBacklog`.
+ */
+export function formatTeamsThreadRevisitForBacklog(
+	thread: FetchedThread,
+	channelDisplayName: string,
+	previouslyAnalyzedThrough: string,
+): string {
+	const newReplies = selectNewReplies(
+		thread.replies,
+		previouslyAnalyzedThrough,
+	);
+	const newIds = new Set(newReplies.map((reply) => reply.messageId));
+	const earlierReplies = thread.replies.filter(
+		(reply) => !newIds.has(reply.messageId),
+	);
+	const lines: string[] = [];
+	lines.push(
+		`## Thread in #${channelDisplayName} — started ${thread.rootCreatedAt} by ${thread.rootAuthor}`,
+	);
+	lines.push("");
+	lines.push(
+		`### Earlier messages (already reviewed through ${previouslyAnalyzedThrough} — context only)`,
+	);
+	lines.push("");
+	lines.push(`**${thread.rootAuthor}**: ${thread.rootContent}`);
+	for (const reply of earlierReplies) {
+		lines.push(
+			`  ↳ **${reply.author}** (${reply.createdAt}): ${reply.content}`,
+		);
+	}
+	lines.push("");
+	lines.push(
+		`### New replies since ${previouslyAnalyzedThrough} (analyze these)`,
+	);
+	lines.push("");
+	for (const reply of newReplies) {
+		lines.push(
+			`  ↳ **${reply.author}** (${reply.createdAt}): ${reply.content}`,
+		);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Replies created strictly after `previouslyAnalyzedThrough`, in their
+ * original order, under the rule the fetch activity used to send the thread
+ * here (`isReplyNewerThanWatermark`): a reply created exactly at the
+ * watermark is the one the previous analysis ended on, and a reply whose
+ * `createdAt` does not parse is not new either.
+ */
+export function selectNewReplies(
+	replies: FetchedThreadReply[],
+	previouslyAnalyzedThrough: string,
+): FetchedThreadReply[] {
+	const watermarkMs = new Date(previouslyAnalyzedThrough).getTime();
+	return replies.filter((reply) =>
+		isReplyNewerThanWatermark(reply.createdAt, watermarkMs),
+	);
+}
+
+/**
+ * Revisit counterpart of `isAppAuthoredOnly`: true when every NEW reply (see
+ * `selectNewReplies`) is positively application-authored AND the reply list is
+ * known complete. The root and the older replies were handled by the earlier
+ * analysis, so their authorship is irrelevant here — a human reply on an
+ * application root is analyzed, and an application reply on a human thread is
+ * not.
+ *
+ * Fails open exactly like `isAppAuthoredOnly`: a missing/"unknown" `fromKind`
+ * on any new reply, or `repliesComplete` not strictly `true`, returns false.
+ * Returns false for a first analysis (`previouslyAnalyzedThrough` absent).
+ */
+export function hasOnlyAppAuthoredNewReplies(thread: FetchedThread): boolean {
+	if (thread.previouslyAnalyzedThrough === undefined) {
+		return false;
+	}
+	if (thread.repliesComplete !== true) {
+		return false;
+	}
+	return selectNewReplies(
+		thread.replies,
+		thread.previouslyAnalyzedThrough,
+	).every((reply) => reply.fromKind === "application");
+}
+
+/**
  * True when every message in the thread — root and every reply — is
  * positively known to be application-authored (`fromKind === "application"`)
  * AND the reply list is known to be complete. A thread with an
@@ -161,10 +265,13 @@ export function formatTeamsThreadForBacklog(
  *
  * Only a thread where every message IS PRESENT and is POSITIVELY known to be
  * app/connector/bot authored is skipped: a thread that contains any human or
- * unattributed message at the time it is analyzed is still analyzed. (A
- * reply that arrives on Graph only after the root is marked seen is a
- * separate, pre-existing gap shared with the zero-change path below — out of
- * scope here.)
+ * unattributed message at the time it is analyzed is still analyzed.
+ *
+ * This is the FIRST-analysis rule. A reply that arrives after the thread was
+ * marked seen is no longer lost: the fetch activity sends the thread back as
+ * a revisit (`previouslyAnalyzedThrough` set) once a reply is newer than the
+ * seen row's watermark, and `hasOnlyAppAuthoredNewReplies` decides the skip
+ * for that pass from the new replies alone.
  */
 export function isAppAuthoredOnly(thread: FetchedThread): boolean {
 	if (thread.rootFromKind !== "application") {
@@ -210,12 +317,39 @@ export async function analyzeChannelThreadActivity(
 		channelWebUrl,
 	} = input;
 
+	// A revisit: this thread was analyzed before and is back because a reply
+	// was created after that analysis. Absent on every first analysis, and on
+	// any input recorded before the field existed.
+	//
+	// Every revisit write is a compare-and-swap of the seen row's watermark
+	// from the value the fetch read (`previouslyAnalyzedThrough`) to this
+	// analysis's `threadLastActivity`. Two overlapping runs (e.g. a one-shot
+	// "monitor now" run beside the scheduled one) that read the same
+	// watermark cannot both record: the first to commit wins, the other
+	// matches nothing. Any reply newer than the winner's watermark is still
+	// newer on the next tick, so it is revisited then rather than lost.
+	//
+	// Known limit: replies Graph left out of a truncated `$expand=replies`
+	// page (`repliesComplete === false`) are not recovered — one that falls
+	// between two watermarks is never seen. That gap predates revisits and
+	// needs a full reply-paging path to close.
+	const previouslyAnalyzedThrough = thread.previouslyAnalyzedThrough;
+	const isRevisit = previouslyAnalyzedThrough !== undefined;
+	// The watermark this analysis records: the thread's threadLastActivity,
+	// i.e. the newest message it saw.
+	const analyzedThroughAt = new Date(thread.threadLastActivity);
+	const newReplies = isRevisit
+		? selectNewReplies(thread.replies, previouslyAnalyzedThrough)
+		: thread.replies;
+
 	logger.info("[TeamsChannelMonitor] Analyzing channel thread", {
 		projectId,
 		linkedChannelId,
 		threadRootId: thread.rootMessageId,
 		replyCount: thread.replies.length,
 		channelDisplayName,
+		isRevisit,
+		...(isRevisit ? { newReplyCount: newReplies.length } : {}),
 	});
 
 	// Job Hub: the first analyzed thread opens this channel's job row for the
@@ -239,11 +373,15 @@ export async function analyzeChannelThreadActivity(
 		heartbeat("fetching project backlog");
 		const existingBacklog = await getCachedProjectBacklog(projectId);
 
-		// Step 2: Format thread + invoke the existing LLM analysis.
-		const formatted = formatTeamsThreadForBacklog(
-			thread,
-			channelDisplayName,
-		);
+		// Step 2: Format thread + invoke the existing LLM analysis. A revisit
+		// separates the already-reviewed messages from the new replies.
+		const formatted = isRevisit
+			? formatTeamsThreadRevisitForBacklog(
+					thread,
+					channelDisplayName,
+					previouslyAnalyzedThrough,
+				)
+			: formatTeamsThreadForBacklog(thread, channelDisplayName);
 
 		// Step 2b: Capture the conversation BEFORE the analyzer runs, so it
 		// happens on both branches of the analyzer's outcome (Fizzy #2228).
@@ -252,6 +390,10 @@ export async function analyzeChannelThreadActivity(
 		// PendingBacklogProposal, and that branch writes none. Placing capture
 		// here — rather than duplicating it into each branch — is what makes
 		// the guarantee independent of what the LLM decided.
+		//
+		// A revisit hands over the whole thread too. Capture claims per
+		// message, so the root and replies an earlier pass already bundled
+		// lose their claims and only the new replies land in this bundle.
 		//
 		// Not wrapped in its own try/catch on purpose. A failure inside the
 		// capture transaction rolls its message claims back, so the Temporal
@@ -296,6 +438,48 @@ export async function analyzeChannelThreadActivity(
 		// for future fetch-time skip reasons. Mirrors the Slack contract.
 		const attachmentWarnings: AttachmentWarning[] = [];
 
+		// Record "analyzed through threadLastActivity, no proposal" for this
+		// thread. A first analysis inserts the root's seen row; a revisit
+		// already has one, so it compare-and-swaps that row's watermark from
+		// the value the fetch read.
+		//
+		// If the process dies right after this write, the thread is not
+		// revisited again until a reply newer than threadLastActivity arrives.
+		// That is the intended outcome of both callers (skip / zero changes):
+		// the analysis they record has already happened.
+		const recordAnalyzedWithoutProposal = async () => {
+			if (isRevisit) {
+				const advanced = await advanceTeamsThreadWatermark(
+					linkedChannelId,
+					thread.rootMessageId,
+					new Date(previouslyAnalyzedThrough),
+					analyzedThroughAt,
+				);
+				if (advanced === 0) {
+					// Another run recorded this thread first. Nothing to undo:
+					// this pass wrote nothing, and whatever is newer than the
+					// winner's watermark comes back on the next tick.
+					logger.info(
+						"[TeamsChannelMonitor] Revisit watermark already moved by another run",
+						{
+							projectId,
+							linkedChannelId,
+							threadRootId: thread.rootMessageId,
+							previouslyAnalyzedThrough,
+							threadLastActivity: thread.threadLastActivity,
+						},
+					);
+				}
+			} else {
+				await markTeamsMessagesAsSeen(
+					linkedChannelId,
+					[thread.rootMessageId],
+					null,
+					analyzedThroughAt,
+				);
+			}
+		};
+
 		// Step 2c: Skip the LLM analyzer entirely when every message in the
 		// thread — root and every reply — is application-authored AND the
 		// reply list is known complete (e.g. an automated alerts/bot
@@ -307,18 +491,19 @@ export async function analyzeChannelThreadActivity(
 		// analyzer below. Capture already ran unconditionally above, so this
 		// channel's content stays exportable/citable exactly as on the
 		// zero-change branch — only the analyzer call and its cost are
-		// skipped.
-		if (isAppAuthoredOnly(thread)) {
+		// skipped. On a revisit only the NEW replies decide: the root and
+		// the older replies were handled by the earlier analysis.
+		const skipAsAppAuthored = isRevisit
+			? hasOnlyAppAuthoredNewReplies(thread)
+			: isAppAuthoredOnly(thread);
+		if (skipAsAppAuthored) {
 			logger.info("[TeamsChannelMonitor] Skipping app-authored thread", {
 				projectId,
 				linkedChannelId,
 				threadRootId: thread.rootMessageId,
+				isRevisit,
 			});
-			await markTeamsMessagesAsSeen(
-				linkedChannelId,
-				[thread.rootMessageId],
-				null,
-			);
+			await recordAnalyzedWithoutProposal();
 			await jobIncrement(
 				{ threadsAnalyzed: 1, emptyThreads: 1 },
 				linkedChannelId,
@@ -344,7 +529,9 @@ export async function analyzeChannelThreadActivity(
 				teamsMessages: formatted,
 			},
 			existingBacklog,
-			userPrompt: THREAD_ANALYSIS_USER_PROMPT,
+			userPrompt: isRevisit
+				? `${THREAD_ANALYSIS_USER_PROMPT}\n\n${THREAD_REVISIT_USER_PROMPT_ADDENDUM}`
+				: THREAD_ANALYSIS_USER_PROMPT,
 			// Bug 1429: the channel-monitor feature-proposal flow only supports
 			// feature/bug. `epic` is not a valid proposal type here, so forbid
 			// the analyzer from emitting it (the apply/approve paths normalize
@@ -360,13 +547,10 @@ export async function analyzeChannelThreadActivity(
 		});
 
 		// Step 3a: Zero-change thread → seen marker only (cursor is advanced
-		// by the workflow after all threads in a channel are processed).
+		// by the workflow after all threads in a channel are processed). On a
+		// revisit, the existing marker's watermark moves forward instead.
 		if (proposal.changes.length === 0) {
-			await markTeamsMessagesAsSeen(
-				linkedChannelId,
-				[thread.rootMessageId],
-				null,
-			);
+			await recordAnalyzedWithoutProposal();
 			await jobIncrement(
 				{ threadsAnalyzed: 1, emptyThreads: 1 },
 				linkedChannelId,
@@ -387,6 +571,14 @@ export async function analyzeChannelThreadActivity(
 		// single DB transaction. The seen-marker acts as an idempotency fence
 		// (first writer wins on the unique constraint), and if the proposal
 		// insert fails the claim rolls back so retries can succeed.
+		//
+		// A revisit already has its seen row, so inserting it cannot be the
+		// fence (it would report `already_claimed` every time). Its fence is
+		// the watermark compare-and-swap instead: only the first run to move
+		// the watermark off the value the fetch read matches. The advance
+		// and the proposal insert share the transaction, so if the process
+		// dies between them nothing is left behind — the watermark rolls back
+		// with the missing proposal and the retry (or next tick) redoes both.
 		//
 		// `attachments` + `attachmentWarnings` carry the fetch-time image refs
 		// for the apply-time orchestrator. Existing keys are preserved via
@@ -418,6 +610,15 @@ export async function analyzeChannelThreadActivity(
 			})),
 			attachments: pendingAttachments,
 			attachmentWarnings,
+			// A revisit proposal covers only the replies created after the
+			// earlier analysis; record which ones, and the watermark they are
+			// newer than, so a reviewer can tell it from a first analysis.
+			...(isRevisit
+				? {
+						revisitOfAnalyzedThrough: previouslyAnalyzedThrough,
+						newReplyIds: newReplies.map((reply) => reply.messageId),
+					}
+				: {}),
 			// Fold any decision-precheck findings that rode along on the proposal
 			// under `sourceMetadata.decisionPrecheck` so the review inbox reads
 			// them back durably. Omitted when the flag is off / no conflicts.
@@ -430,19 +631,33 @@ export async function analyzeChannelThreadActivity(
 		const sourceMetadataJson = JSON.parse(JSON.stringify(sourceMetadata));
 
 		const txResult = await db.$transaction(async (tx) => {
-			const claim =
-				await tx.projectLinkedTeamsChannelSeenMessage.createMany({
-					data: [
-						{
-							linkedChannelId,
-							messageId: thread.rootMessageId,
-							pendingProposalId: null,
-						},
-					],
-					skipDuplicates: true,
-				});
-			if (claim.count === 0) {
-				return { claimed: false as const };
+			if (isRevisit) {
+				const advanced = await advanceTeamsThreadWatermark(
+					linkedChannelId,
+					thread.rootMessageId,
+					new Date(previouslyAnalyzedThrough),
+					analyzedThroughAt,
+					tx,
+				);
+				if (advanced === 0) {
+					return { claimed: false as const };
+				}
+			} else {
+				const claim =
+					await tx.projectLinkedTeamsChannelSeenMessage.createMany({
+						data: [
+							{
+								linkedChannelId,
+								messageId: thread.rootMessageId,
+								pendingProposalId: null,
+								analyzedThroughAt,
+							},
+						],
+						skipDuplicates: true,
+					});
+				if (claim.count === 0) {
+					return { claimed: false as const };
+				}
 			}
 			const pending = await tx.pendingBacklogProposal.create({
 				data: {
@@ -459,10 +674,15 @@ export async function analyzeChannelThreadActivity(
 					organizationId,
 				},
 			});
+			// A revisit leaves the root row pointing at the proposal it already
+			// has, if any; it only fills an empty link (e.g. the earlier pass
+			// found zero changes). The daily brief resolves the channel of an
+			// unlinked revisit proposal from its sourceMetadata instead.
 			await tx.projectLinkedTeamsChannelSeenMessage.updateMany({
 				where: {
 					linkedChannelId,
 					messageId: thread.rootMessageId,
+					...(isRevisit ? { pendingProposalId: null } : {}),
 				},
 				data: { pendingProposalId: pending.id },
 			});
@@ -491,6 +711,7 @@ export async function analyzeChannelThreadActivity(
 			projectId,
 			linkedChannelId,
 			threadRootId: thread.rootMessageId,
+			isRevisit,
 			pendingProposalId: pending.id,
 			changeCount: proposal.changes.length,
 			attachmentCount: pendingAttachments.length,

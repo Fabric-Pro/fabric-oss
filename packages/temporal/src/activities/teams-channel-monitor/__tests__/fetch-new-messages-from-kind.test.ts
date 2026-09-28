@@ -17,7 +17,7 @@ vi.mock("@repo/integrations/microsoft", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	getSeenMessageIds: vi.fn(async () => new Set<string>()),
+	getSeenThreadWatermarks: vi.fn(async () => new Map<string, Date>()),
 }));
 
 vi.mock("@repo/logs", () => ({

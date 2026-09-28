@@ -240,10 +240,13 @@ describe("analyzeChannelThreadActivity — app-authored thread skip", () => {
 			changeCount: 0,
 			skippedReason: "app_authored_thread",
 		});
+		// The seen row records the watermark this pass analyzed through (the
+		// thread's threadLastActivity), so only a later reply revisits it.
 		expect(markTeamsMessagesAsSeen).toHaveBeenCalledWith(
 			"lc1",
 			["M1"],
 			null,
+			new Date("2026-05-23T10:00:00.000Z"),
 		);
 		// No proposal is written on the skip path.
 		expect(create).not.toHaveBeenCalled();
