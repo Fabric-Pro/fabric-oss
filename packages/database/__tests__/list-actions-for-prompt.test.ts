@@ -35,6 +35,11 @@ describe("listActionsForPrompt", () => {
 		expect(whereOf().promptVersion).toEqual({ promptId: "p-1" });
 	});
 
+	it("excludes soft-cleared bindings from edit reach", () => {
+		listActionsForPrompt({ promptId: "p-1", userId: "u-1" });
+		expect(whereOf().isDefault).toBe(true);
+	});
+
 	it("sees SYSTEM, org, and the caller's personal tier in organization context", () => {
 		listActionsForPrompt({
 			promptId: "p-1",

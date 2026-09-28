@@ -2052,6 +2052,8 @@ export type PromptBoundAction = {
  *
  * Include the caller's personal preference inside an organization: editing
  * this body also changes actions selected by that preference.
+ * Soft-cleared bindings remain available in the catalog but no longer use
+ * this prompt as their default.
  */
 export async function listActionsForPrompt({
 	promptId,
@@ -2073,6 +2075,7 @@ export async function listActionsForPrompt({
 	const bindings = await db.promptBinding.findMany({
 		where: {
 			targetType: "AGENT" as any,
+			isDefault: true,
 			OR: scopeConditions,
 			promptVersion: { promptId },
 		},
