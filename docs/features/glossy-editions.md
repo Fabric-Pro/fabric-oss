@@ -1,6 +1,6 @@
 # Glossy Editions
 
-How a Proposal or Business Case becomes a stakeholder-ready Glossy edition: the build pipeline, its attempt guard, the segment cache, visual slots, and how to roll the feature out.
+How a Proposal or Business Case becomes a stakeholder-ready Glossy edition: the build pipeline, its attempt guard, the segment cache, visual slots, brand styling, performance, and how to roll the feature out.
 
 - **Audience**: Developers extending Glossy editions; operators enabling the feature for an organization
 - **Owner**: Documents
@@ -11,12 +11,33 @@ A Glossy edition is a second, presentation-ready rendering of one Proposal or Bu
 
 A build:
 
-1. cleans the source deterministically — internal scaffolding (citations, source indexes, evidence parentheticals, status qualifiers) is relocated to the edition's appendix or softened, never sent to a model as prose to rewrite;
-2. rewrites each main-flow section in `brief` (default, never longer than the source) or `standard` (at most 1.25× the source) length, behind a fact guard that keeps the original wording when a rewrite drops, adds or changes a fact;
+1. cleans the source deterministically — internal scaffolding is relocated to the edition's appendix or softened, never sent to a model as prose to rewrite (see [What cleanup removes](#what-cleanup-removes));
+2. rewrites each main-flow section in `brief` (default, never longer than the source) or `standard` (at most 1.25× the source) length, behind a fact guard that keeps the original wording when a rewrite drops, adds or changes a fact, or changes the negation the source states (see [Negation guard](#negation-guard));
 3. extracts structured visual specs — for every visual slot the author placed, for existing Mermaid diagrams, and for opportunities detected in the text (Roll the dice) or confirmed on the Align-first form;
 4. publishes the edition in one transaction.
 
-Visuals are stored as specs and rendered in the browser (Mermaid with a strict security level and plain-text labels, or SVG cards), themed with the preparer's Brand kit and the project's recipient brand at display and download time, not at build time.
+Visuals are stored as specs and rendered in the browser (Mermaid with a strict security level and plain-text labels, or SVG cards), themed with the preparer's Brand kit and the project's recipient brand at display and download time, not at build time (see [Brand styling](#brand-styling)). A flow whose steps each name who performs them renders as swimlanes, one lane per performer; lane names are fact-checked against the section like org-chart names.
+
+### What cleanup removes
+
+Cleanup never deletes a statement: where it cannot tell an anchor from the next sentence, it leaves a fragment rather than lose text.
+
+- **Citation markers**: `[S#]` and `[cite…]` always, including the editor's escaped `\[S1\]`. A numeric `[1]` is removed only when a numeric apparatus defines that number (a footnote definition, or a source entry numbered `1.` or `[1]`), and a footnote `[^1]` only when the document has footnote definitions or a source index. An `[S#]` source index defines no number, so `option [2] over option [1]` stays; a four-digit `[2025]` is never a citation. A marker inside inline code, after `]` or before `(` is left alone. Whether an apparatus exists is decided before any section is cleaned.
+- **Evidence and source clauses**: an `Evidence:` or `Sources:` label (optionally led by `Data`, `Key`, `Supporting` or `Primary`) opens a clause only at the start of a line or list item, after a sentence end, or after `;` or `(`; its markers or `n/a` are removed, and its anchor text only after a dash or colon. The clause ends at the next label, at the next statement (which may start with a capital, a digit, a currency sign, emphasis or a quote), or at the end of the line. Mid-sentence, the label is prose and loses only its markers; a capitalized label after a line the editor joined without punctuation loses its markers and separator but keeps its anchor text.
+- **Parentheticals**: labelled parts of `(Status: …; Evidence: …)` and `(Source: …)` are removed, and the description beside a source's markers moves to the appendix source list once; an unlabelled part stays in the text in parentheses. Lines that start with `Evidence:`, `Status:` or `Confidence:` are removed.
+- **Source indexes**: `Source Index`, `Sources` and `Source List` sections, and `References`-family sections whose entries are citation-shaped: led by a marker, a bare titled link, or a numbered list the text cites as `[n]`. A list of customer references stays in the main flow, even when its entries link a case study or cite a source mid-entry. An entry listed twice is kept once.
+- **Document metadata**: cover, `Document Control`, revision history, version history and change log sections become label/value appendix details. A table row is flattened (first cell as the label, the rest joined with ` · `); the markdown header row is kept as a pair unless its cells are generic column titles. Placeholder values (TBD, or a bracketed `[QA Lead]` in metadata) go to the placeholders list.
+
+Anything that looks like a marker but is not removed is reported, and the page shows a banner for it.
+
+### Negation guard
+
+The rewrite prompt and the fact guard share one list of negating words (`not`, `no`, `none`, `nothing`, `nobody`, `nowhere`, `neither`, `nor`, `never`, `cannot`, `without`, `no longer` and contractions); a pairing test in `packages/temporal/src/lib/glossy/__tests__/rewrite-section.test.ts` keeps them in step. Uses that negate nothing (`no-code`, `not only`, `no matter`, `No. 4`) are ignored.
+
+- **Section counts**: a rewrite with fewer negating words in a group than its source fails as `negation`; one with more fails as `structural`.
+- **Clause polarity**: when the counts match, each source clause is paired with the rewrite clause that shares most of its content words; a negation that leaves one aligned statement for another fails as `negation`. Clauses that were merged or condensed have no confident pair and fall back to the section counts.
+
+A failure keeps the section's cleaned original wording. Known limits, all on the safe side: rephrasing `not X or Y` as `neither X nor Y` is rejected, and a move between statements that share fewer than two content words, or that were condensed, is not seen.
 
 ## Where the code lives
 
@@ -46,9 +67,13 @@ The workflow (`glossyEditionBuildWorkflow`, queue `glossy-edition`, four activit
 
 `GlossySegmentCache` stores reusable model work per document under content-addressed keys (`packages/utils/lib/glossy/keys.ts`). Every key includes `GLOSSY_PIPELINE_VERSION`, so a prompt or pipeline change re-keys everything without a migration.
 
+A bump is not free for existing editions. Review decisions are filed under section keys, so the next rebuild after a bump regenerates every section and visual and drops that edition's accept and discard decisions. Batch every key-changing edit (cleanup output, section identity, prompts) under one bump.
+
+The document's `#` title is not part of a section's identity, so renaming it keeps every cached rewrite, visual and review decision. Only a section's own headings decide whether it is a key section for the fact guard's must-keep rule.
+
 | Kind | Keyed by |
 |---|---|
-| Section identity | heading anchor path, occurrence index, normalized section text (slot lines excluded) |
+| Section identity | heading anchor path without the document title, occurrence index, normalized section text (slot lines excluded) |
 | `REWRITE` | section key, length mode, key-section class, document type |
 | `DETECTION` | ordered section keys, the slot set, document type |
 | `EXTRACTION` | section key, kind, slot hint, style direction, and a slot's own id (so two like slots in a section get a visual each) |
@@ -69,6 +94,23 @@ It runs on every AI or external write path:
 Embedding strips slots before chunking and hashing, and every regular export (Markdown, PDF, DOCX) strips them.
 
 **Agents and the public API.** Agents and API keys interact with Glossy only through the slot contract above: MCP `fabric_get_document` / `fabric_update_document` and the v1 document `PATCH` keep stored slots in place and ignore slot tags they are sent. Building, detection, review and the brand kits are UI-only in this release — review is a judgment on rendered visuals no agent can make yet. Any later MCP or v1 surface for them must check both the key's scope and its creator's live permission.
+
+## Brand styling
+
+The palette is derived in the browser (`apps/web/modules/saas/projects/lib/glossy/palette.ts`) from three inputs: the organization's Brand kit, the project's recipient brand and the edition's Align-first overrides. The preparer's brand leads whenever the preparer set one.
+
+| Palette slot | Resolved from, first match wins |
+|---|---|
+| Primary | Align-first override → the organization's chosen theme color → its first Brand kit accent → the recipient's first color → neutral |
+| Accents | Align-first accents or Brand kit accents, then the recipient's colors, validated, deduplicated, without the primary |
+
+An organization that never chose a theme color gets neutral visuals, not the app's default crimson; the app theme itself is unchanged. For such an organization the Align-first primary picker starts empty, and an untouched form records no override. Every color goes through the same validation and contrast handling: an invalid value is dropped, and a low-contrast primary keeps its fill while text and borders fall back to neutral. The cover carries the preparer's logo and, when known, the recipient's.
+
+## Performance
+
+The working target for a Roll-the-dice build of a 5,500-word Business Case is about two minutes. Measure it from the Build click to the published edition on staging, on the first build after a `GLOSSY_PIPELINE_VERSION` bump, which is cold by construction. Record the kept-original section count by violation kind with it, because each kept-original section costs a retry and is never cached.
+
+No measurement has been recorded yet.
 
 ## Tenancy and access
 

@@ -154,6 +154,63 @@ describe("renderGlossyVisual", () => {
 		expect(text).toContain("Review");
 	});
 
+	it("renders a flow whose steps name their performers as one titled lane each", async () => {
+		const spec: VisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: "Qualify lead", lane: "Sales" },
+				{ label: "Review contract", lane: "Legal" },
+				{ label: "Sign order", lane: "Sales" },
+			],
+		};
+
+		const image = await renderGlossyVisual(spec, palette);
+
+		expect(image).not.toBeNull();
+		const doc = parseSvg(captured.svgs.at(-1) ?? "");
+		expect(doc.querySelector("parsererror")).toBeNull();
+		const lanes = Array.from(doc.querySelectorAll("g.cluster"));
+		expect(lanes.map((lane) => squash(lane.textContent)).sort()).toEqual([
+			"Legal",
+			"Sales",
+		]);
+		expect(doc.querySelectorAll("g.node")).toHaveLength(3);
+		expect(doc.querySelectorAll("path.flowchart-link")).toHaveLength(2);
+		const text = squash(doc.documentElement.textContent);
+		for (const step of spec.steps) {
+			expect(text).toContain(squash(step.label));
+		}
+	});
+
+	it("renders hostile lane titles as literal text through mermaid", async () => {
+		const spec: VisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: "Qualify lead", lane: 'Sales"] end' },
+				{ label: "Review contract", lane: "Legal %% --> click A" },
+			],
+		};
+
+		const image = await renderGlossyVisual(spec, palette);
+
+		expect(image).not.toBeNull();
+		const doc = parseSvg(captured.svgs.at(-1) ?? "");
+		expect(doc.querySelector("parsererror")).toBeNull();
+		// No title closed its lane early, commented out a line, or added an
+		// edge, a node, or a link...
+		const lanes = Array.from(doc.querySelectorAll("g.cluster"));
+		expect(lanes).toHaveLength(2);
+		expect(doc.querySelectorAll("g.node")).toHaveLength(2);
+		expect(doc.querySelectorAll("path.flowchart-link")).toHaveLength(1);
+		expect(doc.querySelectorAll("a")).toHaveLength(0);
+		expect(doc.querySelectorAll(".clickable")).toHaveLength(0);
+		// ...and each title's words are drawn as its lane's text.
+		const titles = lanes.map((lane) => squash(lane.textContent)).join("|");
+		expect(titles).toContain("Sales＂］end");
+		expect(titles).toContain("Legal％％--");
+		expect(titles).toContain("clickA");
+	});
+
 	it("restyles existing Mermaid over the diagram's own theme directive", async () => {
 		const render = vi.spyOn(mermaid, "render");
 		const spec: VisualSpec = {

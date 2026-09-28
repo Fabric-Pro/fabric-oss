@@ -181,16 +181,28 @@ export const brandColorValues: Record<string, BrandColorValue> = {
 const DEFAULT_BRAND_COLOR = "red";
 
 /**
+ * The values for a stored brand colour name, or `null` for a missing or
+ * unknown name. Own keys only, so a name such as `constructor` or
+ * `__proto__` cannot resolve to an `Object.prototype` member.
+ */
+export function findBrandColor(
+	name: string | null | undefined,
+): BrandColorValue | null {
+	if (!name || !Object.hasOwn(brandColorValues, name)) {
+		return null;
+	}
+	return brandColorValues[name] ?? null;
+}
+
+/**
  * The values for a stored brand colour name, falling back to the default
- * brand for a missing or unknown name. Own keys only, so a name such as
- * `constructor` cannot resolve to an `Object.prototype` member.
+ * brand for a missing or unknown name (see `findBrandColor`).
  */
 export function resolveBrandColor(
 	name: string | null | undefined,
 ): BrandColorValue {
-	const key = name || DEFAULT_BRAND_COLOR;
-	const fallback = brandColorValues[DEFAULT_BRAND_COLOR] as BrandColorValue;
-	return Object.hasOwn(brandColorValues, key)
-		? (brandColorValues[key] ?? fallback)
-		: fallback;
+	return (
+		findBrandColor(name) ??
+		(brandColorValues[DEFAULT_BRAND_COLOR] as BrandColorValue)
+	);
 }

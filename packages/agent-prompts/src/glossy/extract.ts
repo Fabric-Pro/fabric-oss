@@ -60,7 +60,7 @@ export const GLOSSY_KIND_FIELD_RULES: Readonly<
 	comparison:
 		"items: 2–4 options. title: the option's name (≤60). points: 1–6 short points each (≤120), for example its pros and cons.",
 	stat: "items: 1–4 figures. value: the figure exactly as the section writes it (≤24 characters, e.g. 240k or 15%). label: what the figure measures (≤120).",
-	flow: "steps: 2–8 steps in order. label: the step (≤120). description: optional (≤240).",
+	flow: "steps: 2–8 steps in order. label: the step (≤120). description: optional (≤240). lane: who performs the step, a team, role, or person as the section names them (≤60). Set a lane on every step only when the section says who performs each one; otherwise every lane is null.",
 	org_chart:
 		"nodes: 2–16 roles. id: a short unique id (≤40). label: the role or person (≤120). parentId: the id of the node it reports to, or null for exactly one top node. No cycles.",
 };

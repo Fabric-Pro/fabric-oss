@@ -73,6 +73,11 @@ const statSpecSchema = z.object({
 const flowStepSchema = z.object({
 	label: mediumLabel,
 	description: longText.optional(),
+	/** Who performs the step — a team, role, or person the section names.
+	 * Optional so specs stored before swimlanes still parse; the flow draws
+	 * swimlanes only when every step has one and there are at least two
+	 * (see `flowToMermaid`). */
+	lane: shortLabel.optional(),
 });
 
 const flowSpecSchema = z.object({
@@ -317,6 +322,13 @@ export function visualSpecFacts(spec: VisualSpec): VisualSpecFacts {
 			break;
 		case "flow":
 			addLabel(spec.title);
+			// Lanes first, in first-appearance order, so they lead the alt text
+			// like the headings they are. Every lane is checked, including one
+			// on a flow that falls back to a plain chain: it is a stored
+			// display field, so it must be traceable like the org chart's names.
+			for (const step of spec.steps) {
+				addLabel(step.lane);
+			}
 			for (const step of spec.steps) {
 				addLabel(step.label);
 				addLabel(step.description);

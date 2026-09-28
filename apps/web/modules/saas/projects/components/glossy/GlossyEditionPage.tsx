@@ -195,6 +195,23 @@ function withoutItem(set: ReadonlySet<string>, item: string): Set<string> {
 	return next;
 }
 
+/**
+ * What the palette derives from in one read of the edition: both brands and
+ * the edition's preparer overrides. The preview and a download each take it
+ * from the read they show.
+ */
+function glossyPaletteInput({
+	brand,
+	edition,
+}: GlossyEdition): GlossyPaletteInput {
+	return {
+		brandColorName: brand.preparer.brandColorName,
+		accentColors: brand.preparer.accentColors,
+		recipientColors: brand.recipient?.colors ?? [],
+		overrides: edition?.lastOptions?.preparerOverrides ?? null,
+	};
+}
+
 /** The edition with one visual's review decision replaced. */
 function withDecision(
 	edition: GlossyEdition | undefined,
@@ -305,12 +322,10 @@ function GlossyEditionWorkspace({
 			? t("outcome.rateLimited")
 			: fallback;
 
-	// Brands apply at render time, so a Brand kit change shows without a rebuild.
-	const paletteInput = JSON.stringify({
-		brandColorName: brand.preparer.brandColorName,
-		accentColors: brand.preparer.accentColors,
-		overrides: edition?.lastOptions?.preparerOverrides ?? null,
-	} satisfies GlossyPaletteInput);
+	// Brands apply at render time, so a Brand kit or recipient brand change
+	// shows without a rebuild. A download derives its palette the same way
+	// from the read it renders, which may be fresher than this one.
+	const paletteInput = JSON.stringify(glossyPaletteInput(data));
 	const palette = useMemo(
 		() =>
 			deriveGlossyPalette(JSON.parse(paletteInput) as GlossyPaletteInput),
@@ -578,11 +593,20 @@ function GlossyEditionWorkspace({
 					.filter((entry) => entry.decision === "DISCARDED")
 					.map((entry) => entry.visualKey),
 			);
+			// The refreshed read can carry a Brand kit, recipient, or override
+			// change the preview has not drawn yet. Its colors go with its
+			// logos; the preview's images, drawn in the old colors, are then
+			// left for the renderer to draw again in the new ones.
+			const currentPalette = deriveGlossyPalette(
+				glossyPaletteInput(current),
+			);
+			const samePalette =
+				JSON.stringify(currentPalette) === JSON.stringify(palette);
 			const render =
 				formatName === "pdf" ? renderGlossyPdf : renderGlossyDocx;
 			const result = await render({
 				content: currentContent,
-				palette,
+				palette: currentPalette,
 				preparer: {
 					name: current.brand.preparer.name,
 					logoUrl: current.brand.preparer.logoUrl,
@@ -593,7 +617,9 @@ function GlossyEditionWorkspace({
 				},
 				imageUrls: current.imageUrls,
 				excludedVisualKeys: discarded,
-				renderedVisuals: visualImages.lookup(currentContent.visuals),
+				renderedVisuals: samePalette
+					? visualImages.lookup(currentContent.visuals)
+					: undefined,
 				labels: renderLabels,
 			});
 			triggerBlobDownload(

@@ -114,6 +114,9 @@ const OUTPUT_SPEC_SCHEMAS = {
 				z.object({
 					label: z.string().describe("The step."),
 					description: nullableText("Optional detail."),
+					lane: nullableText(
+						"Who performs the step, as the section names them.",
+					),
 				}),
 			)
 			.describe("2–8 steps in order."),

@@ -6,10 +6,11 @@
  *
  * Pinned here: everything detected is selected by default and only what the
  * editor keeps is sent; the prefills come from the Brand kit; untouched
- * preparer colors record nothing; a failed website fetch leaves manual entry
- * and still allows the build (AE9); a changed recipient brand is saved to the
- * project against the version read before the build starts, and a conflict
- * stops the build; reasons are plain text.
+ * preparer colors record nothing, and an unbranded organization's primary
+ * picker starts empty rather than crimson; a failed website fetch
+ * leaves manual entry and still allows the build (AE9); a changed recipient
+ * brand is saved to the project against the version read before the build
+ * starts, and a conflict stops the build; reasons are plain text.
  *
  * `@tanstack/react-query` is real (the shared recipient fields run their own
  * mutations); the oRPC client is faked. `next-intl` echoes keys with values.
@@ -466,12 +467,70 @@ describe("GlossyAlignFirstPanel", () => {
 		});
 	});
 
+	it("starts the primary picker empty for an unbranded organization and records nothing untouched", async () => {
+		const user = userEvent.setup();
+		// No theme color, or a stored name that is not a brand color: the
+		// app theme would show crimson, and none of it may reach the edition.
+		for (const brandColorName of [null, "magenta"]) {
+			const { onBuild, unmount } = renderPanel({
+				brand: {
+					preparer: {
+						name: "Example Org",
+						logoUrl: null,
+						brandColorName,
+						accentColors: ["#227744"],
+						guidance: null,
+					},
+				},
+			});
+
+			const primary = screen.getByRole("group", {
+				name: "primaryColor",
+			});
+			expect(within(primary).queryByRole("textbox")).toBeNull();
+			expect(
+				within(primary).getByRole("button", { name: "addColor" }),
+			).toBeEnabled();
+
+			await user.click(screen.getByRole("button", { name: "build" }));
+			await waitFor(() => expect(onBuild).toHaveBeenCalledTimes(1));
+			expect(onBuild.mock.calls[0][0].preparerOverrides).toBeNull();
+			unmount();
+		}
+	});
+
+	it("records a primary color an unbranded organization's editor adds", async () => {
+		const user = userEvent.setup();
+		const { onBuild } = renderPanel();
+
+		await user.click(
+			within(
+				screen.getByRole("group", { name: "primaryColor" }),
+			).getByRole("button", { name: "addColor" }),
+		);
+		await user.type(
+			screen.getByRole("textbox", { name: "primaryHex" }),
+			"#5b2a86",
+		);
+		await user.click(screen.getByRole("button", { name: "build" }));
+
+		await waitFor(() => expect(onBuild).toHaveBeenCalledTimes(1));
+		expect(onBuild.mock.calls[0][0].preparerOverrides).toEqual({
+			primary: "#5b2a86",
+			accents: [],
+		});
+	});
+
 	it("refuses to build while a color is malformed", async () => {
 		const user = userEvent.setup();
 		const { onBuild } = renderPanel();
 
+		await user.click(
+			within(
+				screen.getByRole("group", { name: "primaryColor" }),
+			).getByRole("button", { name: "addColor" }),
+		);
 		const primary = screen.getByRole("textbox", { name: "primaryHex" });
-		await user.clear(primary);
 		await user.type(primary, "not-a-color");
 		await user.click(screen.getByRole("button", { name: "build" }));
 

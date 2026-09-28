@@ -174,6 +174,109 @@ describe("extractGlossyVisual", () => {
 		});
 	});
 
+	describe("flow lanes", () => {
+		const process = {
+			heading: "Order process",
+			markdown:
+				"Sales qualifies the lead, Legal reviews the contract, and Sales signs the order.",
+		};
+
+		function flow(lanes: Array<string | null>) {
+			return {
+				kind: "flow",
+				title: null,
+				steps: [
+					"Qualifies the lead",
+					"Reviews the contract",
+					"Signs the order",
+				].map((label, index) => ({
+					label,
+					description: null,
+					lane: lanes[index],
+				})),
+			};
+		}
+
+		it("requires lane as a nullable key and drops a null lane from the spec", async () => {
+			modelReturns(flow([null, null, null]));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: process,
+				kind: "flow",
+			});
+
+			const schema = mocks.generateObject.mock.calls[0][0].schema;
+			expect(
+				schema.safeParse({ spec: flow([null, null, null]) }).success,
+			).toBe(true);
+			// Strict structured output needs every key, so lane is not optional.
+			const withoutLane = {
+				label: "Qualifies the lead",
+				description: null,
+			};
+			expect(
+				schema.safeParse({
+					spec: {
+						kind: "flow",
+						title: null,
+						steps: [withoutLane, withoutLane],
+					},
+				}).success,
+			).toBe(false);
+			expect(result).toEqual({
+				status: "extracted",
+				spec: {
+					kind: "flow",
+					steps: [
+						{ label: "Qualifies the lead" },
+						{ label: "Reviews the contract" },
+						{ label: "Signs the order" },
+					],
+				},
+			});
+		});
+
+		it("keeps lanes the section names", async () => {
+			modelReturns(flow(["Sales", "Legal", "Sales"]));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: process,
+				kind: "flow",
+			});
+
+			expect(result).toMatchObject({
+				status: "extracted",
+				spec: {
+					steps: [
+						{ lane: "Sales" },
+						{ lane: "Legal" },
+						{ lane: "Sales" },
+					],
+				},
+			});
+		});
+
+		it("drops a flow with a lane the section does not name", async () => {
+			modelReturns(flow(["Sales", "Finance", "Sales"]));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: process,
+				kind: "flow",
+			});
+
+			expect(result).toMatchObject({
+				status: "dropped",
+				reason: "factCheck",
+				violations: [
+					expect.objectContaining({ kind: "label", text: "Finance" }),
+				],
+			});
+		});
+	});
+
 	it("drops a spec of another kind than requested", async () => {
 		modelReturns({
 			kind: "stat",

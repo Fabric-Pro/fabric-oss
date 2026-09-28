@@ -140,6 +140,111 @@ describe("flowToMermaid", () => {
 		expect(source).toContain("f0 --> f1");
 		expect(source).toContain("f1 --> f2");
 	});
+
+	/** The plain chain, as it rendered before swimlanes existed. */
+	const chain = [
+		"flowchart TD",
+		'f0["Submit"]',
+		"style f0 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+		'f1["Review"]',
+		"style f1 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+		"f0 --> f1",
+		'f2["Approve"]',
+		"style f2 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+		"f1 --> f2",
+	].join("\n");
+
+	it("draws steps in lanes Sales, Legal, Sales as two lanes around three ordered steps", () => {
+		const source = flowToMermaid({
+			kind: "flow",
+			steps: [
+				{ label: "Submit", lane: "Sales" },
+				{ label: "Review", lane: "Legal" },
+				{ label: "Approve", lane: "Sales" },
+			],
+		});
+
+		expect(source).toBe(
+			[
+				"flowchart TD",
+				'subgraph lane0["Sales"]',
+				'f0["Submit"]',
+				'f2["Approve"]',
+				"end",
+				'subgraph lane1["Legal"]',
+				'f1["Review"]',
+				"end",
+				"style f0 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+				"style f1 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+				"f0 --> f1",
+				"style f2 fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER",
+				"f1 --> f2",
+			].join("\n"),
+		);
+	});
+
+	it("renders the plain chain exactly when there are no lanes, one lane, or a missing lane", () => {
+		const withLanes = (
+			lanes: Array<string | undefined>,
+		): FlowVisualSpec => ({
+			kind: "flow",
+			steps: spec.steps.map((step, index) => ({
+				...step,
+				...(lanes[index] === undefined ? {} : { lane: lanes[index] }),
+			})),
+		});
+
+		expect(flowToMermaid(spec)).toBe(chain);
+		expect(flowToMermaid(withLanes(["Sales", "Sales", "Sales"]))).toBe(
+			chain,
+		);
+		expect(flowToMermaid(withLanes(["Sales", undefined, "Legal"]))).toBe(
+			chain,
+		);
+	});
+
+	it("renders a stored spec without lanes unchanged", () => {
+		const stored = visualSpecSchema.parse(
+			JSON.parse(
+				JSON.stringify({
+					kind: "flow",
+					steps: [
+						{ label: "Submit" },
+						{ label: "Review" },
+						{ label: "Approve" },
+					],
+				}),
+			),
+		);
+		expect(visualSpecToMermaid(stored)).toBe(chain);
+	});
+
+	it("keeps hostile lane titles inside their quoted titles as text", () => {
+		const titles = ['Sales"]', "end", "%% Legal", "Ops --> f0", "Ops]"];
+		const source = flowToMermaid({
+			kind: "flow",
+			steps: titles.map((lane, index) => ({
+				label: `Step ${index}`,
+				lane,
+			})),
+		});
+
+		// Outside quoted text, every line is one this template writes.
+		for (const line of source.split("\n")) {
+			expect(line.replace(/"[^"]*"/g, '""')).toMatch(
+				/^(?:flowchart TD|subgraph lane\d+\[""\]|f\d+\[""\]|end|style f\d+ fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER|f\d+ --> f\d+)$/,
+			);
+		}
+		expect(source).not.toContain("%%");
+		// One lane per title, each closed once, each title escaped like a node label.
+		expect(source.match(/^subgraph /gm)).toHaveLength(titles.length);
+		expect(source.match(/^end$/gm)).toHaveLength(titles.length);
+		titles.forEach((title, index) => {
+			expect(source).toContain(
+				`subgraph lane${index}["${escapeMermaidLabel(title)}"]`,
+			);
+		});
+	});
 });
 
 describe("orgChartToMermaid", () => {

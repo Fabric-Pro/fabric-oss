@@ -11,9 +11,11 @@
  * Enters every Glossy cache key (KTD8, KTD14). Bump it whenever a prompt or
  * output schema here or in packages/temporal/src/lib/glossy changes in a way
  * that could change model output, so cached rewrites, detections, and
- * extractions are recomputed rather than reused.
+ * extractions are recomputed rather than reused. Cleanup output and section
+ * identity feed the same keys, so a change to either needs a bump too. A bump
+ * also drops an existing edition's review decisions on its next rebuild.
  */
-export const GLOSSY_PIPELINE_VERSION = "2026-09-24.1";
+export const GLOSSY_PIPELINE_VERSION = "2026-09-28.1";
 
 export {
 	buildGlossyDetectInstructions,

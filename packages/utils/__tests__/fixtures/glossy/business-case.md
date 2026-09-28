@@ -29,9 +29,11 @@ Key risks / unknowns (1–3 bullets):
 
 ### 2.1 Problem / Opportunity
 Onboarding relies on six manual handoffs between sales and support (Status: Confirmed; Evidence: \[S2\] — process map (page 4))
+Onboarding takes 14 days on average. Evidence: [S2] — cycle-time table
 
 ### 2.2 Who is impacted and why now?
 Support leads and new customer administrators carry most of the delay (Status: Confirmed; Evidence: [S1])
+Most delays start at contract signature (Source: Example Operations Survey)
 Renewal targets for the next fiscal year depend on faster activation (Status: Derived Dependency — needed for the renewal plan; Evidence: [S1] — targets slide)
 
 ---
@@ -50,6 +52,7 @@ Risks / Constraints: support workload stays high (Status: Confirmed; Evidence: [
 ## 4) Recommended Option (Required)
 Recommendation: Extend the existing admin console (Status: Confirmed; Evidence: [S1] — decision section)
 What we are explicitly NOT doing (right now): replacing the billing system (Status: Confirmed; Evidence: [S1])
+Sources: [S1], [S3]
 
 ---
 ## 6) Value Hypothesis & Success Metrics (Required)

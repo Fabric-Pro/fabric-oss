@@ -157,7 +157,10 @@ vi.mock("../../../lib/markdown-to-document", () => ({
 
 import de from "@repo/i18n/translations/de.json";
 import en from "@repo/i18n/translations/en.json";
+import { brandColorValues } from "@repo/utils/brand-colors";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
+import { NEUTRAL_GLOSSY_COLORS } from "../../../lib/glossy/palette";
+import { renderGlossyVisual } from "../../../lib/glossy/visual-render";
 import { GlossyEditionPage } from "../GlossyEditionPage";
 import { GLOSSY_CODED_COPY } from "../glossy-copy";
 import {
@@ -1936,6 +1939,10 @@ describe("GlossyEditionPage — preview and downloads", () => {
 		expect(input.preparer.logoUrl).toBe(
 			"https://storage.example.com/org-logo.png?sig=fresh",
 		);
+		// The brands did not change, so the preview's images still hold.
+		expect([...input.renderedVisuals.keys()].sort()).toEqual(
+			[COMPARISON_KEY, DIAGRAM_KEY, TIMELINE_KEY].sort(),
+		);
 	});
 
 	it("downloads a fresh page's edition without asking for it again", async () => {
@@ -1958,6 +1965,149 @@ describe("GlossyEditionPage — preview and downloads", () => {
 			[IMAGE_A]: "https://storage.example.com/a.png?sig=1",
 		});
 	});
+});
+
+// Brand precedence (Fizzy #2589 follow-up): the preview and the download share
+// one palette. Sentinel colors that no default equals, so a match can only come
+// from the brand.
+describe("GlossyEditionPage — brand colors", () => {
+	const RECIPIENT = "#0055aa";
+	const RECIPIENT_ACCENT = "#aa5500";
+	const BLUE = brandColorValues.blue?.hex as string;
+
+	function brandedEdition(
+		brandColorName: string | null,
+		recipientColors: string[] | null,
+	): GlossyEdition {
+		return glossyEdition({
+			brand: {
+				preparer: {
+					name: "Example Org",
+					logoUrl: null,
+					brandColorName,
+					accentColors: [],
+					guidance: null,
+				},
+				recipient: recipientColors
+					? {
+							name: "Example Corp",
+							website: null,
+							colors: recipientColors,
+							logoUrl: null,
+							updatedAt: new Date("2026-09-20T10:00:00.000Z"),
+						}
+					: null,
+				recipientVersion: recipientColors ? 1 : 0,
+			},
+		});
+	}
+
+	it.each([
+		{
+			case: "neutral without either brand",
+			brandColorName: null,
+			recipientColors: null,
+			primary: NEUTRAL_GLOSSY_COLORS.primary,
+			accents: [],
+		},
+		{
+			case: "the recipient's first color when the preparer set none",
+			brandColorName: null,
+			recipientColors: [RECIPIENT, RECIPIENT_ACCENT],
+			primary: RECIPIENT,
+			accents: [RECIPIENT_ACCENT],
+		},
+		{
+			case: "the preparer's theme color, with the recipient's as accents",
+			brandColorName: "blue",
+			recipientColors: [RECIPIENT_ACCENT],
+			primary: BLUE,
+			accents: [RECIPIENT_ACCENT],
+		},
+	])(
+		"styles the preview and the download alike: $case",
+		async ({ brandColorName, recipientColors, primary, accents }) => {
+			const user = userEvent.setup();
+			renderPage(brandedEdition(brandColorName, recipientColors));
+			await renderedCard(TIMELINE_KEY);
+
+			const previewPalettes = vi
+				.mocked(renderGlossyVisual)
+				.mock.calls.map((call) => call[1]);
+			expect(previewPalettes.length).toBeGreaterThan(0);
+			for (const palette of previewPalettes) {
+				expect(palette.primary).toBe(primary);
+				expect(palette.accents).toEqual(accents);
+			}
+
+			await user.click(
+				screen.getByRole("button", { name: "downloadPdf" }),
+			);
+			await waitFor(() => expect(api.renderPdf).toHaveBeenCalledTimes(1));
+			expect(api.renderPdf.mock.calls[0][0].palette).toEqual(
+				previewPalettes[0],
+			);
+		},
+	);
+
+	it.each([
+		{ format: "PDF", button: "downloadPdf" },
+		{ format: "DOCX", button: "downloadDocx" },
+	])(
+		"downloads a stale page's $format in the recipient colors its refresh brings, next to the refreshed logos",
+		async ({ format, button }) => {
+			const REFRESHED = "#117733";
+			const REFRESHED_ACCENT = "#771133";
+			const renderer = format === "PDF" ? api.renderPdf : api.renderDocx;
+			const user = userEvent.setup();
+			renderPage(brandedEdition(null, [RECIPIENT, RECIPIENT_ACCENT]));
+			await renderedCard(TIMELINE_KEY);
+			const previewPalette =
+				vi.mocked(renderGlossyVisual).mock.calls[0]?.[1];
+			expect(previewPalette?.primary).toBe(RECIPIENT);
+
+			// Meanwhile someone saves new recipient colors and logo.
+			const recipient = serverState.brand.recipient;
+			if (!recipient) {
+				throw new Error("The fixture has a recipient brand");
+			}
+			serverState = {
+				...serverState,
+				brand: {
+					...serverState.brand,
+					recipient: {
+						...recipient,
+						colors: [REFRESHED, REFRESHED_ACCENT],
+						logoUrl:
+							"https://storage.example.com/recipient-logo.png?sig=fresh",
+					},
+					recipientVersion: 2,
+				},
+			};
+			const later = Date.now() + 46 * 60 * 1000;
+			const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+			try {
+				await user.click(screen.getByRole("button", { name: button }));
+				await waitFor(() => expect(renderer).toHaveBeenCalledTimes(1));
+			} finally {
+				clock.mockRestore();
+			}
+
+			const input = renderer.mock.calls[0][0];
+			expect(input.recipient.logoUrl).toBe(
+				"https://storage.example.com/recipient-logo.png?sig=fresh",
+			);
+			expect(input.palette.primary).toBe(REFRESHED);
+			expect(input.palette.accents).toEqual([REFRESHED_ACCENT]);
+			expect(input.palette.series.slice(0, 2)).toEqual([
+				REFRESHED,
+				REFRESHED_ACCENT,
+			]);
+			// The preview's images carry the old colors, so none is reused:
+			// the renderer draws every visual in the refreshed palette.
+			expect(input.renderedVisuals?.size ?? 0).toBe(0);
+		},
+	);
 });
 
 describe("GlossyEditionPage — Align first", () => {
