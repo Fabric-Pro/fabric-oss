@@ -1,7 +1,0 @@
----
-"fabric-app": patch
----
-
-Automatic coding-instructions sync now leases its poll checks on the database clock and dates their schedule writes from it, so a worker whose clock drifts no longer stalls or floods the schedule.
-
-Fizzy #2683. The poll's claim used to compute each check's two-minute lease on the worker's clock while every fenced write judged it by the database's, and every check and run completion dated the next check from the worker's clock too. A worker behind the database wrote leases that were already expired, so its write-backs applied nothing, or, once a lease held, next checks that were already due, so the row was claimed again at once; a worker ahead gave up live leases. The claim now writes the lease from the database clock. Each check reads the database clock together with its first lease read, on the worker that runs it, and dates its schedule writes and judges its deadline on that calibrated time; a run completion or a re-check settle dates its writes from the database clock read under the row lock. The workflow's own lease-left test at dispatch still reads Temporal's clock; a refusal there only defers the row to the next tick. The check logs an `instructions.sync.lease_fence_rejected` warning, with the lease, the calibrated time and the worker's raw time, when a fenced write is refused while the check believed its lease live. That includes healthy races, such as a run finishing in between, so operators compare the timestamps rather than read each warning as skew.

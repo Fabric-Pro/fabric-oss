@@ -1,7 +1,0 @@
----
-"fabric-app": patch
----
-
-A prompt longer than 50,000 characters can no longer be forked, bound as a default, or nominated, and one saved before the limit can still be renamed in the editor.
-
-Fizzy #2250 follow-up, found by the post-ship review of the length limit. The limit shipped on every path that SAVES a prompt body, but two paths put an EXISTING body to new use without checking it: `prompts.fork.fork` copied the source's latest body into a new prompt, and `bindings.set` / `bindings.setMany` / `nominations.create` / `nominations.approve` could make any reachable version a default. A body saved before the limit existed (the ticket's own 100,000-character QA prompt) could therefore still be copied or promoted into a default, which is the org-wide cost risk the ticket opened with. `assertWithinPromptContentLimit` (extracted from `assertSavablePromptContent`) now runs on all of them; `loadVersion` in `prompt-version-access.ts` selects the body so the bind and approve paths can check it, and `nominations.create` checks before the nomination summary sends the body to a model. Existing bindings to an over-limit version keep running until the prompt is edited below the limit — nothing is truncated or unbound. Separately, the editor judged the UNEDITED body against the limit, so a legacy over-limit prompt could not be renamed from the UI even though the server accepts that save; the editor now validates the body only once it has been edited.

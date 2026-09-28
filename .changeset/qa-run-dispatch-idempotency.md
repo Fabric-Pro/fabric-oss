@@ -1,9 +1,0 @@
----
-"fabric-app": patch
----
-
-A double-clicked or retried Start on a QA test run no longer dispatches a second run or spends a second bill.
-
-The run-configuration dialog now sends a per-attempt key with a dispatch, stable across a same-tick double click or a network retry and regenerated whenever the runner, environment, browser, resolution, or selection changes. The server turns that key into the run's own deterministic id (scoped to the project and the dispatching user), so a retried dispatch collides on the row that already exists and returns it instead of creating a duplicate; a first request that crashed before its workflow started is completed by the retry instead of orphaned. The Runner picker's closed trigger now shows a short label ("Agentic" / "Scripted") instead of truncating its full description at narrow widths, and a muted hint under the picker states when Scripted is admin/owner-only, since that reason inside a disabled option is not reliably reachable by keyboard or screen-reader navigation.
-
-Also in this change: a scripted run's authored `goto`/`assertUrl` step label now masks query values and any fragment the same way the runner's own runtime assertion messages already do, closing a gap where an OAuth/SSO callback's `code`/`state` could land unmasked in a persisted step label. A blocked-navigation explanation now starts on its own line instead of being glued onto the end of Playwright's own multi-line error text with a single space. A scripted run's non-secret settings (base URL, sign-in URL, browser, resolution, auth kind, pinned host/address) now travel to the sandboxed runner as a config file instead of environment variables, because the sandbox masks every environment variable's value wherever it appears in output — which was turning the environment's own base URL into `[REDACTED]` in every scripted-run failure message. Only credential material remains in the environment.
