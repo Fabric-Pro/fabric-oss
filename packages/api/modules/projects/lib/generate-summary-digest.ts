@@ -102,7 +102,12 @@ function getHedgePreservationClause(): string {
 When the specification presents a cause, diagnosis, or explanation as
 unconfirmed, a hypothesis, inconclusive, or not established, either say so or
 leave it out entirely — never restate it as settled fact. When it gives
-expected and actual values, keep them on the same sides you were given them.`;
+expected and actual values, keep them on the same sides you were given them.
+
+When an unverified cause appears in the specification:
+- In a section headed What Is Broken (or equivalent), state only the observed failure and expected-versus-actual behaviour. Do not name, infer, or explain an unverified causal mechanism there.
+- Every mention elsewhere of an unverified mechanism must say in the same sentence that it is an unverified AI hypothesis.
+- Never write an unqualified claim such as "indicating discounts are not being clamped at zero."`;
 }
 
 /**

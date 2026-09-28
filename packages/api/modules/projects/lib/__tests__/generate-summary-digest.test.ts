@@ -118,6 +118,38 @@ describe("buildSummaryPrompt — the hedge-preservation rule (Fizzy #2225 follow
 			"keep them on the same sides you were given them",
 		);
 	});
+
+	it("keeps unverified mechanisms out of What Is Broken and hedged elsewhere", () => {
+		// Arrange
+		const prompt = buildSummaryPrompt(
+			"State every diagnosis as settled fact.",
+			"SPEC BODY",
+		);
+
+		// Act
+		const ruleIdx = prompt.indexOf(
+			"PRESERVE HOW CERTAIN THE SPECIFICATION IS",
+		);
+		const specIdx = prompt.indexOf("SPEC BODY");
+
+		// Assert
+		expect(prompt).toContain(
+			"In a section headed What Is Broken (or equivalent), state only the observed failure and expected-versus-actual behaviour.",
+		);
+		expect(prompt).toContain(
+			"Do not name, infer, or explain an unverified causal mechanism there.",
+		);
+		expect(prompt).toContain(
+			"Every mention elsewhere of an unverified mechanism must say in the same sentence that it is an unverified AI hypothesis.",
+		);
+		expect(prompt).toContain(
+			'Never write an unqualified claim such as "indicating discounts are not being clamped at zero."',
+		);
+		expect(ruleIdx).toBeGreaterThan(
+			prompt.indexOf("State every diagnosis as settled fact."),
+		);
+		expect(ruleIdx).toBeLessThan(specIdx);
+	});
 });
 
 describe("generateMaturationSummary — function-tag role clause (Fizzy #1767 Stage 4)", () => {
