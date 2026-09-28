@@ -1,5 +1,12 @@
 # fabric-app
 
+## 1.16.14
+
+### Patch Changes
+
+- 78d4259: The Teams channel monitor now analyzes and captures replies posted to a thread after that thread was first analyzed, instead of ignoring them, and proposes backlog changes only for what the new replies add.
+- 761be22: Teams channel and chat monitors no longer run an AI backlog analysis on conversation threads posted only by apps, bots, or connectors, so a channel that only ever receives automated messages stops generating and paying for per-thread AI calls that were never going to produce anything.
+
 ## 1.16.13
 
 ### Patch Changes
