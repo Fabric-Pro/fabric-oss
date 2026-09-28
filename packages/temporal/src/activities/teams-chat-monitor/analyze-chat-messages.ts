@@ -100,6 +100,35 @@ export function formatTeamsChatThreadForBacklog(
 	return lines.join("\n");
 }
 
+/**
+ * True when every message in the bundle — root and every reply — is
+ * positively known to be application-authored (`fromKind === "application"`).
+ * A bundle with an application-authored root and no replies still counts.
+ *
+ * Fails OPEN (returns false, so the bundle is still analyzed) on `"unknown"`
+ * or missing `fromKind` (older fetch results, or a message Graph didn't
+ * attribute a `from` for) — treated as possibly-human. Only a bundle where
+ * every message IS PRESENT and is POSITIVELY known to be app/connector/bot
+ * authored is skipped: a bundle that contains any human or unattributed
+ * message at the time it is analyzed is still analyzed. Mirrors
+ * `isAppAuthoredOnly` in the channel-monitor analyzer.
+ *
+ * Unlike the channel monitor's threads, a chat bundle has no
+ * `repliesComplete`-style gate: `fetchNewChatThreadsActivity` builds a bundle
+ * from its own flat, already-fetched `unseenCollected` list — there is no
+ * Graph-side nested sub-collection (like `$expand=replies`) that could come
+ * back truncated within a single message the way a channel thread's reply
+ * page can. Every message this function inspects is exactly the set of ids
+ * the caller marks seen; nothing outside the bundle is ever included in that
+ * decision.
+ */
+export function isAppAuthoredOnly(thread: FetchedChatThread): boolean {
+	if (thread.rootFromKind !== "application") {
+		return false;
+	}
+	return thread.replies.every((reply) => reply.fromKind === "application");
+}
+
 // =============================================================================
 // Activity
 // =============================================================================
@@ -155,6 +184,37 @@ export async function analyzeChatThreadActivity(
 		const existingBacklog = await getCachedProjectBacklog(projectId);
 
 		const formatted = formatTeamsChatThreadForBacklog(thread, chatTopic);
+
+		// Skip the LLM analyzer entirely when every message in the bundle —
+		// root and every reply — is application-authored (mirrors the
+		// channel-monitor skip). `isAppAuthoredOnly` fails OPEN on
+		// "unknown" authorship, so a human reply to an automated post still
+		// reaches the analyzer below. The chat monitor has no conversation-
+		// bundle capture step (unlike the channel monitor) — chats are
+		// excluded from that feature by decision — so there is nothing else
+		// to run unconditionally here.
+		if (isAppAuthoredOnly(thread)) {
+			logger.info("[TeamsChatMonitor] Skipping app-authored thread", {
+				projectId,
+				linkedChatId,
+				threadRootId: thread.rootMessageId,
+			});
+			await markTeamsChatMessagesAsSeen(
+				linkedChatId,
+				thread.messageIds,
+				null,
+			);
+			await jobIncrement(
+				{ threadsAnalyzed: 1, emptyThreads: 1 },
+				linkedChatId,
+			);
+			await jobStep("analyze", "completed", { sourceId: linkedChatId });
+			return {
+				success: true,
+				changeCount: 0,
+				skippedReason: "app_authored_thread",
+			};
+		}
 
 		heartbeat("calling analyzeContextAndPropose");
 		const proposal: ChangeProposal = await analyzeContextAndPropose({

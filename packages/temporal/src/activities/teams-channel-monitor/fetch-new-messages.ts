@@ -12,6 +12,7 @@ import type {
 	AttachmentWarning,
 	PendingAttachmentRef,
 } from "@repo/integrations";
+import type { MicrosoftGraphFromKind } from "@repo/integrations/microsoft";
 import {
 	executeMicrosoftTeamsTool,
 	truncateContent,
@@ -59,6 +60,15 @@ export interface FetchedThreadReply {
 	 * Empty when the reply has no inline `<img>` tags (FR-8).
 	 */
 	pendingAttachments?: PendingAttachmentRef[];
+	/**
+	 * Author kind for this reply, surfaced by `list_channel_threads`
+	 * (app-authored-thread skip). Optional so a Temporal activity input
+	 * recorded before this field existed — an in-flight execution's history,
+	 * or a fetch activity that hasn't rolled out yet — still deserializes;
+	 * absent means "unknown" and the analyze activity treats "unknown" as
+	 * "assume human" (fail open), never as a reason to skip.
+	 */
+	fromKind?: MicrosoftGraphFromKind;
 }
 
 export interface FetchedThread {
@@ -78,6 +88,23 @@ export interface FetchedThread {
 	 * threaded into the LLM prompt (FR-9 / spec § 4.4).
 	 */
 	pendingAttachments?: PendingAttachmentRef[];
+	/**
+	 * Author kind for the root message. See `FetchedThreadReply.fromKind` —
+	 * same optionality and fail-open contract.
+	 */
+	rootFromKind?: MicrosoftGraphFromKind;
+	/**
+	 * False when Graph's `$expand=replies` truncated this thread's own reply
+	 * list (a replies OData nextLink annotation came back instead of every reply) —
+	 * `replies` above then holds only the replies Graph included on this
+	 * page, not the whole thread. Optional for the same reason as
+	 * `rootFromKind`: an older fetch result (in-flight execution history, or
+	 * a fetch activity that hasn't rolled out yet) won't carry it. The
+	 * app-authored-thread skip requires this to be strictly `true` before it
+	 * will draw any conclusion from `replies` — missing or `false` fails
+	 * open.
+	 */
+	repliesComplete?: boolean;
 }
 
 export interface FetchNewChannelThreadsOutput {
@@ -123,6 +150,13 @@ interface RawThread {
 	lastModifiedDateTime?: string;
 	webUrl?: string;
 	from: string;
+	/**
+	 * Author kind surfaced by the Microsoft `list_channel_threads` tool.
+	 * Optional — older tool responses (pre-feature) omit it, and the mapping
+	 * below carries that absence through as "unknown" rather than defaulting
+	 * it to a human author.
+	 */
+	fromKind?: MicrosoftGraphFromKind;
 	bodyContent: string;
 	replies: Array<{
 		id: string;
@@ -130,6 +164,7 @@ interface RawThread {
 		lastModifiedDateTime?: string;
 		webUrl?: string;
 		from: string;
+		fromKind?: MicrosoftGraphFromKind;
 		bodyContent: string;
 		/**
 		 * Image-attachment refs extracted from the reply HTML by
@@ -145,6 +180,14 @@ interface RawThread {
 	 * the canonical source of truth (FR-6 / FR-8).
 	 */
 	pendingAttachments?: PendingAttachmentRef[];
+	/**
+	 * Surfaced by the Microsoft `list_channel_threads` tool: false when
+	 * Graph's `$expand=replies` truncated this thread's own reply list.
+	 * Optional — older tool responses (pre-feature) omit it, and the mapping
+	 * below carries that absence through as "unknown/incomplete" rather than
+	 * assuming the reply list is whole.
+	 */
+	repliesComplete?: boolean;
 }
 
 // =============================================================================
@@ -360,11 +403,14 @@ export async function fetchNewChannelThreadsActivity(
 				rootMessageId: thread.id,
 				rootCreatedAt: thread.createdDateTime ?? threadLastActivity,
 				rootAuthor: thread.from,
+				rootFromKind: thread.fromKind,
+				repliesComplete: thread.repliesComplete,
 				rootContent: truncateContent(thread.bodyContent, 2000),
 				rootWebLink: thread.webUrl,
 				replies: (thread.replies ?? []).map((r) => ({
 					messageId: r.id,
 					author: r.from,
+					fromKind: r.fromKind,
 					createdAt: r.createdDateTime ?? threadLastActivity,
 					content: truncateContent(r.bodyContent, 2000),
 					webLink: r.webUrl,

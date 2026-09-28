@@ -13,6 +13,7 @@
  */
 
 import { getSeenChatMessageIds } from "@repo/database";
+import type { MicrosoftGraphFromKind } from "@repo/integrations/microsoft";
 import {
 	executeMicrosoftTeamsTool,
 	truncateContent,
@@ -47,6 +48,15 @@ export interface FetchedChatMessage {
 	/** HTML-stripped, truncated to ~2000 chars. */
 	content: string;
 	webLink?: string;
+	/**
+	 * Author kind for this message, surfaced by `list_chat_messages_for_monitor`
+	 * (app-authored-thread skip). Optional so a Temporal activity input
+	 * recorded before this field existed — an in-flight execution's history,
+	 * or a fetch activity that hasn't rolled out yet — still deserializes;
+	 * absent means "unknown" and the analyze activity treats "unknown" as
+	 * "assume human" (fail open), never as a reason to skip.
+	 */
+	fromKind?: MicrosoftGraphFromKind;
 }
 
 /**
@@ -66,6 +76,11 @@ export interface FetchedChatThread {
 	threadLastActivity: string;
 	/** All message IDs in this bundle — used by the analyze activity to mark them seen. */
 	messageIds: string[];
+	/**
+	 * Author kind for the root message. See `FetchedChatMessage.fromKind` —
+	 * same optionality and fail-open contract.
+	 */
+	rootFromKind?: MicrosoftGraphFromKind;
 }
 
 export interface FetchNewChatThreadsOutput {
@@ -91,6 +106,13 @@ interface RawChatMessage {
 	lastModifiedDateTime?: string;
 	webUrl?: string;
 	from: string;
+	/**
+	 * Author kind surfaced by the Microsoft `list_chat_messages_for_monitor`
+	 * tool. Optional — older tool responses (pre-feature) omit it, and the
+	 * mapping below carries that absence through as "unknown" rather than
+	 * defaulting it to a human author.
+	 */
+	fromKind?: MicrosoftGraphFromKind;
 	bodyContent: string;
 }
 
@@ -273,6 +295,7 @@ export async function fetchNewChatThreadsActivity(
 		const replies: FetchedChatMessage[] = tail.map(({ message }) => ({
 			messageId: message.id,
 			author: message.from,
+			fromKind: message.fromKind,
 			createdAt: message.createdDateTime ?? new Date().toISOString(),
 			content: truncateContent(message.bodyContent, 2000),
 			webLink: message.webUrl,
@@ -292,6 +315,7 @@ export async function fetchNewChatThreadsActivity(
 				root.message.createdDateTime ??
 				new Date(root.createdAtMs).toISOString(),
 			rootAuthor: root.message.from,
+			rootFromKind: root.message.fromKind,
 			rootContent: truncateContent(root.message.bodyContent, 2000),
 			rootWebLink: root.message.webUrl,
 			replies,

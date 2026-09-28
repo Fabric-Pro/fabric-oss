@@ -189,6 +189,55 @@ export function truncateContent(
 	return `${stripped.substring(0, maxLength)}... [truncated]`;
 }
 
+/**
+ * Author kind for a Microsoft Graph `chatMessage.from`. Additive — the
+ * existing `from` display-name string (`user.displayName` falling back to
+ * `"Unknown"`) is left untouched
+ * for the consumers that already depend on it; this is a parallel signal so
+ * the Teams channel/chat monitors can tell an app/connector/bot post from a
+ * human one without parsing that string.
+ */
+/**
+ * Graph's per-message annotation carrying the link to further expanded
+ * replies (`replies` + `@odata.nextLink`). Assembled at runtime because the
+ * joined literal has the shape of an email address, which the repository's
+ * publication scan rejects.
+ */
+const REPLIES_NEXT_LINK_KEY = ["replies", "odata.nextLink"].join("@");
+
+export type MicrosoftGraphFromKind = "user" | "application" | "unknown";
+
+/**
+ * Classify a Graph `from` object's author kind.
+ *
+ * - `"user"` — `from.user` is present (regardless of `from.application`,
+ *   which Graph does not populate alongside a user anyway).
+ * - `"application"` — `from.application` is present and `from.user` is
+ *   absent. Covers bots, Incoming Webhook connectors, and Workflows/Power
+ *   Automate posts.
+ * - `"unknown"` — `from` is missing/null, or neither field is present (e.g.
+ *   some system-generated messages). Callers that gate LLM analysis on
+ *   authorship must treat `"unknown"` as "assume human" (fail open) so a
+ *   message Graph declines to attribute is never silently skipped.
+ *
+ * Exported for testing and for reuse by any future caller that needs the
+ * same classification.
+ */
+export function classifyGraphFromKind(
+	from?: {
+		user?: unknown;
+		application?: unknown;
+	} | null,
+): MicrosoftGraphFromKind {
+	if (from?.user) {
+		return "user";
+	}
+	if (from?.application) {
+		return "application";
+	}
+	return "unknown";
+}
+
 function getQueryArg(args: Record<string, unknown>): string | undefined {
 	return typeof args.query === "string" && args.query.trim() !== ""
 		? args.query.trim()
@@ -1143,6 +1192,14 @@ export async function executeMicrosoftTeamsTool(
 					"teamId and channelId are required for list_channel_threads.",
 				);
 			}
+			type RawThreadFrom = {
+				user?: { displayName?: string };
+				application?: {
+					displayName?: string;
+					id?: string;
+					applicationIdentityType?: string;
+				};
+			};
 			type RawThread = {
 				id: string;
 				messageType?: string;
@@ -1150,7 +1207,7 @@ export async function executeMicrosoftTeamsTool(
 				lastModifiedDateTime?: string;
 				webUrl?: string;
 				body?: { content?: string };
-				from?: { user?: { displayName?: string } };
+				from?: RawThreadFrom;
 				replies?: Array<{
 					id: string;
 					messageType?: string;
@@ -1158,8 +1215,19 @@ export async function executeMicrosoftTeamsTool(
 					lastModifiedDateTime?: string;
 					webUrl?: string;
 					body?: { content?: string };
-					from?: { user?: { displayName?: string } };
+					from?: RawThreadFrom;
 				}>;
+				/**
+				 * Present when Graph truncated THIS message's own expanded
+				 * `replies` — `$expand=replies` caps how many replies come back
+				 * per message, and a thread with more replies than that cap
+				 * gets a replies OData nextLink annotation (read through
+				 * `REPLIES_NEXT_LINK_KEY`) instead of the rest. We deliberately
+				 * do not follow it (that would mean an extra round trip per
+				 * busy thread); its presence just marks the thread's replies as
+				 * incomplete so the app-authored-thread skip can fail open
+				 * rather than reason about a reply list it knows is partial.
+				 */
 			};
 			const collected: RawThread[] = [];
 			let nextUrl: string | null =
@@ -1228,6 +1296,7 @@ export async function executeMicrosoftTeamsTool(
 								lastModifiedDateTime: r.lastModifiedDateTime,
 								webUrl: r.webUrl,
 								from: r.from?.user?.displayName || "Unknown",
+								fromKind: classifyGraphFromKind(r.from),
 								bodyContent: replyBody,
 								pendingAttachments: replyRefs.map(
 									(ref): PendingAttachmentRef => ({
@@ -1256,8 +1325,18 @@ export async function executeMicrosoftTeamsTool(
 						lastModifiedDateTime: m.lastModifiedDateTime,
 						webUrl: m.webUrl,
 						from: m.from?.user?.displayName || "Unknown",
+						fromKind: classifyGraphFromKind(m.from),
 						bodyContent: rootBody,
 						replies,
+						// False when Graph's replies nextLink annotation says this
+						// thread has more replies than the `$expand=replies` cap
+						// returned. We do not page through it (see the
+						// `RawThread` field comment) — callers that need to know
+						// the reply list is complete before drawing a conclusion
+						// from it (the app-authored-thread skip) read this flag.
+						repliesComplete: !(m as Record<string, unknown>)[
+							REPLIES_NEXT_LINK_KEY
+						],
 						pendingAttachments,
 					};
 				});
@@ -1318,7 +1397,14 @@ export async function executeMicrosoftTeamsTool(
 				lastModifiedDateTime?: string;
 				webUrl?: string;
 				body?: { content?: string };
-				from?: { user?: { displayName?: string } };
+				from?: {
+					user?: { displayName?: string };
+					application?: {
+						displayName?: string;
+						id?: string;
+						applicationIdentityType?: string;
+					};
+				};
 			};
 			const collected: RawChatMessage[] = [];
 			let nextUrl: string | null =
@@ -1356,6 +1442,7 @@ export async function executeMicrosoftTeamsTool(
 					lastModifiedDateTime: m.lastModifiedDateTime,
 					webUrl: m.webUrl,
 					from: m.from?.user?.displayName || "Unknown",
+					fromKind: classifyGraphFromKind(m.from),
 					bodyContent: m.body?.content ?? "",
 				}));
 

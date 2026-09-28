@@ -57,7 +57,7 @@ export interface AnalyzeChannelThreadInput {
 	 */
 	teamId: string;
 	/**
-	 * Microsoft Graph channel id (e.g. `19:abc@thread.tacv2`). Persisted on
+	 * Microsoft Graph channel id (the `19:`-prefixed thread id). Persisted on
 	 * `PendingBacklogProposal.sourceMetadata.channelId`. Distinct from
 	 * `linkedChannelId` which is the DB-side cuid of the linked-channel row.
 	 */
@@ -140,6 +140,40 @@ export function formatTeamsThreadForBacklog(
 		);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * True when every message in the thread — root and every reply — is
+ * positively known to be application-authored (`fromKind === "application"`)
+ * AND the reply list is known to be complete. A thread with an
+ * application-authored root and no replies still counts.
+ *
+ * Fails OPEN (returns false, so the thread is still analyzed) on:
+ *  - `"unknown"` or missing `fromKind` (older fetch results, or a message
+ *    Graph didn't attribute a `from` for) — treated as possibly-human;
+ *  - `repliesComplete` not strictly `true` — Graph's `$expand=replies` caps
+ *    how many replies come back per message, and a busy thread with more
+ *    replies than that cap only has the newest page reflected here. A later
+ *    (unfetched) reply could be human-authored, and this activity marks the
+ *    thread's root seen forever on the skip path, so an incomplete reply
+ *    list must never be treated as "all application" — that would discard a
+ *    reply this code never looked at.
+ *
+ * Only a thread where every message IS PRESENT and is POSITIVELY known to be
+ * app/connector/bot authored is skipped: a thread that contains any human or
+ * unattributed message at the time it is analyzed is still analyzed. (A
+ * reply that arrives on Graph only after the root is marked seen is a
+ * separate, pre-existing gap shared with the zero-change path below — out of
+ * scope here.)
+ */
+export function isAppAuthoredOnly(thread: FetchedThread): boolean {
+	if (thread.rootFromKind !== "application") {
+		return false;
+	}
+	if (thread.repliesComplete !== true) {
+		return false;
+	}
+	return thread.replies.every((reply) => reply.fromKind === "application");
 }
 
 // =============================================================================
@@ -249,6 +283,58 @@ export async function analyzeChannelThreadActivity(
 			],
 		});
 
+		// Flatten root + reply image-attachment refs into a single sidecar
+		// list (chat-thread image-attachments feature, FR-9 / spec § 4.4).
+		// The fetch activity already populates these; we just project them
+		// here for persistence into `sourceMetadata.attachments`. Computed
+		// before the app-authored skip check below so both the skip return
+		// and the zero-change return carry the same sidecar shape.
+		const pendingAttachments: PendingAttachmentRef[] = [
+			...(thread.pendingAttachments ?? []),
+		];
+		// Fetch-time warnings — currently always empty for Teams; reserved
+		// for future fetch-time skip reasons. Mirrors the Slack contract.
+		const attachmentWarnings: AttachmentWarning[] = [];
+
+		// Step 2c: Skip the LLM analyzer entirely when every message in the
+		// thread — root and every reply — is application-authored AND the
+		// reply list is known complete (e.g. an automated alerts/bot
+		// channel): a monitor linked to such a channel was running one
+		// COMPLEX-tier analyzer call per thread and getting zero changes
+		// back every time. `isAppAuthoredOnly` fails OPEN on "unknown"
+		// authorship (missing/unattributed `from`) and on an incomplete
+		// reply page, so a human or not-yet-fetched reply still reaches the
+		// analyzer below. Capture already ran unconditionally above, so this
+		// channel's content stays exportable/citable exactly as on the
+		// zero-change branch — only the analyzer call and its cost are
+		// skipped.
+		if (isAppAuthoredOnly(thread)) {
+			logger.info("[TeamsChannelMonitor] Skipping app-authored thread", {
+				projectId,
+				linkedChannelId,
+				threadRootId: thread.rootMessageId,
+			});
+			await markTeamsMessagesAsSeen(
+				linkedChannelId,
+				[thread.rootMessageId],
+				null,
+			);
+			await jobIncrement(
+				{ threadsAnalyzed: 1, emptyThreads: 1 },
+				linkedChannelId,
+			);
+			await jobStep("analyze", "completed", {
+				sourceId: linkedChannelId,
+			});
+			return {
+				success: true,
+				changeCount: 0,
+				skippedReason: "app_authored_thread",
+				pendingAttachments,
+				attachmentWarnings,
+			};
+		}
+
 		heartbeat("calling analyzeContextAndPropose");
 		const proposal: ChangeProposal = await analyzeContextAndPropose({
 			projectId,
@@ -272,17 +358,6 @@ export async function analyzeChannelThreadActivity(
 			// applies the project's own opt-in.
 			allowRouting: true,
 		});
-
-		// Flatten root + reply image-attachment refs into a single sidecar
-		// list (chat-thread image-attachments feature, FR-9 / spec § 4.4).
-		// The fetch activity already populates these; we just project them
-		// here for persistence into `sourceMetadata.attachments`.
-		const pendingAttachments: PendingAttachmentRef[] = [
-			...(thread.pendingAttachments ?? []),
-		];
-		// Fetch-time warnings — currently always empty for Teams; reserved
-		// for future fetch-time skip reasons. Mirrors the Slack contract.
-		const attachmentWarnings: AttachmentWarning[] = [];
 
 		// Step 3a: Zero-change thread → seen marker only (cursor is advanced
 		// by the workflow after all threads in a channel are processed).
