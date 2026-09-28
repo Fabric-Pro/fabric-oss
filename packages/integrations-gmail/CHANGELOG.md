@@ -1,5 +1,16 @@
 # @fabricorg/integrations-gmail
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [94e1e9d]
+- Updated dependencies [e875302]
+- Updated dependencies [bab1886]
+- Updated dependencies [8f45162]
+- Updated dependencies [2a8962e]
+  - @fabricorg/sdk@0.4.1
+
 ## 0.1.8
 
 ### Patch Changes
