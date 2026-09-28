@@ -181,3 +181,28 @@ describe("register — storage startup", () => {
 		expect(ensureBucketsMock).toHaveBeenCalledWith(["documents"]);
 	});
 });
+
+describe("register — startup timing", () => {
+	it("reports successful Node registration timing without request identifiers", async () => {
+		// Arrange
+		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
+		const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+		vi.spyOn(process, "uptime").mockReturnValue(12.345);
+		vi.spyOn(performance, "now")
+			.mockReturnValueOnce(100)
+			.mockReturnValueOnce(110)
+			.mockReturnValueOnce(125)
+			.mockReturnValueOnce(145);
+
+		// Act
+		await register();
+
+		// Assert
+		expect(infoSpy).toHaveBeenCalledWith("Web instrumentation timing", {
+			appInsightsInitMs: 15,
+			event: "web.instrumentation_timing",
+			processUptimeMs: 12345,
+			registerMs: 45,
+		});
+	});
+});

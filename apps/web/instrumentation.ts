@@ -35,6 +35,7 @@ function warnIfAuditRetentionBelowFloor(): void {
 export async function register() {
 	// Only run on server-side (Node.js runtime)
 	if (process.env.NEXT_RUNTIME === "nodejs") {
+		const registerStartedAt = performance.now();
 		// Report a production deployment that cannot run its cron schedule
 		// because CRON_SECRET is missing. Deliberately first: the cron gate has
 		// no fallback any more, so this is the only signal that those jobs are
@@ -80,7 +81,11 @@ export async function register() {
 
 		// Forward warn/error/fatal logs to App Insights independently of OTel.
 		// Vercel runtime logs are otherwise the web app's only backend log sink.
+		const appInsightsInitStartedAt = performance.now();
 		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+		const appInsightsInitMs = Math.round(
+			performance.now() - appInsightsInitStartedAt,
+		);
 		const { addLogSink } = await import("@repo/logs");
 		// The "app-insights" id makes this idempotent across register()
 		// re-running, and across register() and a route handler resolving
@@ -146,5 +151,12 @@ export async function register() {
 				console.error("Failed to ensure storage buckets:", e);
 			}
 		}
+
+		console.info("Web instrumentation timing", {
+			appInsightsInitMs,
+			event: "web.instrumentation_timing",
+			processUptimeMs: Math.round(process.uptime() * 1000),
+			registerMs: Math.round(performance.now() - registerStartedAt),
+		});
 	}
 }

@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { cache } from "react";
 
 type CatalogRequestPhase =
+	| "root_locale"
 	| "saas_messages"
 	| "saas_locale"
 	| "saas_session"
