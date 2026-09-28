@@ -1,15 +1,10 @@
+import { config } from "@repo/config";
 import { Document } from "@shared/components/Document";
 import type { Metadata } from "next";
 import { getLocale } from "next-intl/server";
 import type { PropsWithChildren } from "react";
 import "./globals.css";
-// Eager-load the notification-service so its
-// `setAiUsageThresholdNotifier(fanOut.aiUsageThreshold)` self-registration
-// runs at app boot. Without this, the very first AI call after server start
-// could race against lazy loading and silently drop the threshold fan-out
-// (counters still increment, log still fires, but no email/inbox dispatch).
-import "@repo/api/lib/notification-service";
-import { config } from "@repo/config";
+import "./register-ai-usage-threshold-notifier";
 
 export const metadata: Metadata = {
 	title: {
