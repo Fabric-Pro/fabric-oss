@@ -124,25 +124,28 @@ describe("addLogSink", () => {
 		});
 	});
 
-	it("redacts credentials and PII from a trailing Error stack before forwarding", () => {
+	it("redacts a password URL, Bearer token, and email from Error message and stack", () => {
 		withSink((records) => {
-			// Arrange
 			const secret = [
 				"eyJhbGciOiJub25lIn0",
 				"eyJzdWIiOiJ1c2VyIn0",
 				"signature",
 			].join(".");
-			const err = new Error("request failed");
-			err.stack = `Error: request failed\n    at https://user:password@example.com/path?token=${secret}\n    at dev@example.com`;
+			const sensitiveText = `postgresql://user:password@example.com/db Authorization: Bearer ${secret} dev@example.com`;
+			const err = new Error(sensitiveText);
+			err.stack = `Error: ${sensitiveText}\n    at https://example.com/path`;
 
-			// Act
 			logger.error("request failed", err);
 
-			// Assert
-			expect(records[0]?.error?.stack).toContain("[REDACTED]");
-			expect(records[0]?.error?.stack).not.toContain("password");
-			expect(records[0]?.error?.stack).not.toContain(secret);
-			expect(records[0]?.error?.stack).not.toContain("dev@example.com");
+			for (const text of [
+				records[0]?.error?.message,
+				records[0]?.error?.stack,
+			]) {
+				expect(text).toContain("[REDACTED]");
+				expect(text).not.toContain("password");
+				expect(text).not.toContain(secret);
+				expect(text).not.toContain("dev@example.com");
+			}
 			expect(err.stack).toContain("password");
 		});
 	});
