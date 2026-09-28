@@ -2,7 +2,9 @@
 
 import { GENERATION_DEPENDENCY_CATEGORIES } from "@repo/database/src/generation-dependency-categories";
 import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
+import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -52,6 +54,7 @@ import {
 	getDocumentsPollInterval,
 	isDocumentGenerationRunning,
 } from "../lib/document-pipeline";
+import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
@@ -449,8 +452,17 @@ export function DocumentsList({
 		"projects.documents.regenerateToast",
 	);
 	const router = useRouter();
-	const { basePath: orgBasePath, organizationId } = useOrganizationContext();
+	const {
+		basePath: orgBasePath,
+		organizationId,
+		organizationSlug,
+	} = useOrganizationContext();
 	const basePath = `${orgBasePath}/projects`;
+	// The Glossy page is an organization route behind the `GLOSSY_EDITION`
+	// rollout gate (Fizzy #2589, R1, R40). The list decides; the download
+	// menu only renders the href it is handed.
+	const glossyEnabled =
+		useFeatureFlag("GLOSSY_EDITION") && !!organizationSlug;
 	const queryClient = useQueryClient();
 	const [createDialogOpen, setCreateDialogOpen] = useState(false);
 	const [regeneratingDocId, setRegeneratingDocId] = useState<string | null>(
@@ -823,6 +835,14 @@ export function DocumentsList({
 							(doc.wordCount && doc.wordCount > 0);
 						const isClickable = hasContent;
 						const isActive = (doc as any).isActive !== false;
+						const glossyHref =
+							glossyEnabled && isGlossyEligible(doc.type)
+								? buildGlossyEditionRoute(
+										orgBasePath,
+										projectId,
+										doc.id,
+									)
+								: undefined;
 
 						return (
 							<div
@@ -847,6 +867,26 @@ export function DocumentsList({
 											}
 											handleDocumentClick(doc.id);
 										}}
+									/>
+								)}
+
+								{/*
+								 * Get Started anchor for the Glossy edition step
+								 * (Fizzy #2589): only on a card whose Download menu
+								 * offers the Glossy item, so with the rollout gate
+								 * off, or no Proposal or Business Case with content,
+								 * the tour finds no anchor and degrades as it does
+								 * for any conditional one. A marker covering the
+								 * card rather than a conditional attribute on it,
+								 * so the anchor stays a literal the Get Started
+								 * drift test can find; inert to pointer and
+								 * assistive technology.
+								 */}
+								{isClickable && glossyHref && (
+									<span
+										aria-hidden="true"
+										data-onboarding-target="documents-glossy"
+										className="pointer-events-none absolute inset-0 rounded-2xl"
 									/>
 								)}
 
@@ -947,6 +987,11 @@ export function DocumentsList({
 														documentId={doc.id}
 														title={doc.title}
 														projectId={projectId}
+														documentType={doc.type}
+														organizationId={
+															organizationId
+														}
+														glossyHref={glossyHref}
 														className={
 															actionButtonClassName
 														}

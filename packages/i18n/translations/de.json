@@ -1293,6 +1293,9 @@
 						"created": "Kontakt hinzugefügt",
 						"updated": "Kontakt aktualisiert",
 						"redacted": "Kontakt gelöscht"
+					},
+					"brand_kit": {
+						"updated": "Markenkit aktualisiert"
 					}
 				},
 				"account": {
@@ -1365,6 +1368,18 @@
 					},
 					"document_generation": {
 						"failed": "Dokumenterstellung fehlgeschlagen"
+					},
+					"glossy_edition": {
+						"build_started": "Glossy-Edition-Build gestartet",
+						"built": "Glossy-Edition erstellt",
+						"build_failed": "Glossy-Edition-Build fehlgeschlagen",
+						"opportunities_detected": "Visuelle Möglichkeiten für Glossy-Edition erkannt",
+						"visual_regenerated": "Glossy-Edition-Visual neu erstellt",
+						"visual_reviewed": "Glossy-Edition-Visual geprüft"
+					},
+					"recipient_brand": {
+						"fetched": "Empfängermarke von Website abgerufen",
+						"updated": "Empfängermarke aktualisiert"
 					},
 					"context_source": {
 						"scan_stopped": "Kanal- oder Chat-Scan gestoppt oder fortgesetzt",
@@ -1998,7 +2013,30 @@
 				"dangerZone": "Gefahrenzone"
 			}
 		},
-		"save": "Speichern"
+		"save": "Speichern",
+		"brandKit": {
+			"title": "Markenkit",
+			"description": "Akzentfarben und Markenrichtlinien für Glossy-Editionen. Logo und Designfarbe oben gehören ebenfalls zum Kit.",
+			"loading": "Wird geladen…",
+			"loadFailed": "Das Markenkit konnte nicht geladen werden",
+			"readOnly": "Nur Administratoren und Inhaber der Organisation können das Markenkit ändern.",
+			"accentColors": "Akzentfarben",
+			"accentColorsHelp": "Bis zu 3 Farben, die neben Ihrer Designfarbe in Visuals und Überschriften verwendet werden.",
+			"accentHex": "Akzentfarbe {position} (Hex)",
+			"accentPicker": "Akzentfarbe {position} auswählen",
+			"removeAccent": "Akzentfarbe {position} entfernen",
+			"addAccent": "Akzentfarbe hinzufügen",
+			"invalidColor": "Geben Sie eine Farbe als #rrggbb ein, zum Beispiel #1a73e8.",
+			"noAccents": "Noch keine Akzentfarben.",
+			"guidance": "Markenrichtlinien",
+			"guidancePlaceholder": "Tonalität, bevorzugte oder zu vermeidende Begriffe und alles andere, dem eine Glossy-Edition folgen soll.",
+			"guidanceHelp": "Optional. Füllt die Stilvorgabe vor, wenn jemand eine Glossy-Edition vorbereitet.",
+			"guidanceCount": "{count} von {max} Zeichen.",
+			"save": "Markenkit speichern",
+			"saved": "Markenkit gespeichert",
+			"saveFailed": "Das Markenkit konnte nicht gespeichert werden",
+			"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern."
+		}
 	},
 	"start": {
 		"subtitle": "Sieh dir die neuesten Statistiken über dein großartiges Unternehmen an.",
@@ -4554,6 +4592,10 @@
 				"error": "Neuzuordnung fehlgeschlagen. Bitte erneut versuchen."
 			}
 		},
+		"glossyEntry": {
+			"editorLink": "Glossy-Version",
+			"menuItem": "Glossy-Version"
+		},
 		"proposals": {
 			"source": {
 				"TEAMS_CHANNEL": "Teams-Kanal",
@@ -4569,11 +4611,330 @@
 				"FAILED": "Fehlgeschlagen",
 				"SUPERSEDED": "Überholt"
 			}
+		},
+		"glossy": {
+			"recipientBrand": {
+				"title": "Empfängermarke",
+				"description": "Für wen die Glossy-Editionen dieses Projekts erstellt werden. Das Deckblatt zeigt Name und Logo neben denen Ihrer Organisation.",
+				"loading": "Wird geladen…",
+				"loadFailed": "Die Empfängermarke konnte nicht geladen werden",
+				"readOnly": "Nur Projektbearbeiter können die Empfängermarke ändern.",
+				"name": "Name des Empfängers",
+				"namePlaceholder": "Example Corp",
+				"website": "Website",
+				"websitePlaceholder": "example.com",
+				"websiteHelp": "Logo und Farben von der öffentlichen Website des Empfängers abrufen oder unten von Hand eingeben.",
+				"fetch": "Abrufen",
+				"fetching": "Logo und Farben werden von der Website abgerufen…",
+				"fetched": "Von {website} abgerufen. Prüfen Sie Logo und Farben und speichern Sie, um sie zu bestätigen.",
+				"failure": {
+					"unreachable": "Die Website war nicht erreichbar. Prüfen Sie die Adresse oder geben Sie Logo und Farben unten von Hand ein.",
+					"blocked": "Diese Adresse kann nicht abgerufen werden. Verwenden Sie die öffentliche Website des Empfängers oder geben Sie Logo und Farben unten von Hand ein.",
+					"too_large": "Das Logo der Website ist zu groß. Laden Sie unten ein kleineres Logo hoch.",
+					"unsupported": "Das Logo der Website hat ein Format, das wir nicht verwenden können. Laden Sie unten ein PNG-, JPEG-, GIF- oder WebP-Logo hoch.",
+					"no_logo": "Auf dieser Website wurde kein Logo gefunden. Laden Sie unten eines hoch.",
+					"rateLimited": "Sie haben in kurzer Zeit mehrere Websites abgerufen. Geben Sie Logo und Farben unten von Hand ein oder versuchen Sie es in einer Minute erneut.",
+					"unavailable": "Das Abrufen ist gerade nicht verfügbar. Geben Sie Logo und Farben unten von Hand ein."
+				},
+				"logo": "Logo",
+				"logoAlt": "Logo des Empfängers",
+				"noLogo": "Kein Logo",
+				"uploadLogo": "Logo hochladen",
+				"removeLogo": "Logo entfernen",
+				"logoHelp": "PNG, JPEG, GIF oder WebP, bis 5 MB.",
+				"logoError": {
+					"too_large": "Das Logo ist größer als 5 MB. Wählen Sie eine kleinere Datei.",
+					"unsupported": "Diese Datei ist kein PNG-, JPEG-, GIF- oder WebP-Bild.",
+					"uploadFailed": "Das Logo konnte nicht hochgeladen werden. Versuchen Sie es erneut."
+				},
+				"colors": "Farben",
+				"colorsHelp": "Bis zu 3 Markenfarben des Empfängers.",
+				"colorHex": "Empfängerfarbe {position} (Hex)",
+				"colorPicker": "Empfängerfarbe {position} auswählen",
+				"removeColor": "Empfängerfarbe {position} entfernen",
+				"addColor": "Farbe hinzufügen",
+				"invalidColor": "Geben Sie eine Farbe als #rrggbb ein, zum Beispiel #1a73e8.",
+				"noColors": "Noch keine Farben.",
+				"save": "Empfängermarke speichern",
+				"discard": "Verwerfen",
+				"saved": "Empfängermarke gespeichert",
+				"saveFailed": "Die Empfängermarke konnte nicht gespeichert werden",
+				"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern.",
+				"conflict": "Jemand anderes hat die Empfängermarke geändert, während Sie sie bearbeitet haben. Unten sehen Sie die neue Fassung — prüfen Sie sie und nehmen Sie Ihre Änderung erneut vor."
+			},
+			"page": {
+				"title": "Glossy-Version",
+				"description": "Eine versandfertige Edition dieses Dokuments: interne Hilfsstruktur im Anhang, Formulierungen für die Führungsebene und Visuals im Markendesign. Das Quelldokument bleibt unverändert.",
+				"backToDocument": "Zurück zum Dokument",
+				"breadcrumbProjects": "Projekte",
+				"breadcrumbDocument": "Dokument",
+				"loading": "Glossy-Edition wird geladen…",
+				"loadFailed": "Die Glossy-Edition konnte nicht geladen werden.",
+				"retryLoad": "Erneut versuchen",
+				"unavailable": "Diese Glossy-Edition ist nicht verfügbar. Das Dokument wurde möglicherweise verschoben, oder Sie haben keinen Zugriff mehr darauf."
+			},
+			"toolbar": {
+				"mode": "Modus",
+				"modes": {
+					"roll_the_dice": "Roll the dice",
+					"roll_the_diceHelp": "In einem Schritt mit Ihren gespeicherten Marken erstellen.",
+					"align_first": "Align first",
+					"align_firstHelp": "Vorgeschlagene Visuals und Marken prüfen, bevor etwas erstellt wird."
+				},
+				"length": "Länge",
+				"lengths": {
+					"brief": "Kurz",
+					"briefHelp": "Fasst jeden Abschnitt knapp zusammen. Zahlen, Daten, Namen und Zusagen bleiben erhalten.",
+					"standard": "Standard",
+					"standardHelp": "Behält ungefähr die ursprüngliche Länge bei, im Ton für die Führungsebene."
+				},
+				"build": "Erstellen",
+				"rebuild": "Neu erstellen",
+				"retry": "Erneut versuchen",
+				"building": "Wird erstellt…",
+				"alignFirst": "Align first…",
+				"downloadPdf": "PDF herunterladen",
+				"downloadDocx": "DOCX herunterladen",
+				"viewerNote": "Nur Projektbearbeiter können diese Edition erstellen oder prüfen. Sie können sie lesen und herunterladen."
+			},
+			"status": {
+				"region": "Erstellungsstatus",
+				"someone": "einem anderen Bearbeiter",
+				"building": "Glossy-Edition wird erstellt: {step}",
+				"steps": {
+					"preparing": "Dokument wird vorbereitet",
+					"detecting": "Möglichkeiten für Visuals werden gesucht",
+					"rewriting": "Abschnitte werden umgeschrieben",
+					"visualizing": "Visuals werden erstellt",
+					"finalizing": "Edition wird fertiggestellt",
+					"unknown": "in Arbeit"
+				},
+				"startedBy": "Gestartet von {name} {time}.",
+				"progress": "{done} von {total} Abschnitten umgeschrieben",
+				"progressLabel": "Fortschritt der Erstellung",
+				"stuck": "Die letzte Erstellung hat nicht mehr reagiert und wurde abgebrochen. Starten Sie eine neue Erstellung, die ihren Platz einnimmt.",
+				"lastRebuildFailed": "Die letzte Neuerstellung ist fehlgeschlagen. Die vorherige Edition wird weiterhin angezeigt.",
+				"firstBuildFailed": "Die Glossy-Edition konnte nicht erstellt werden.",
+				"errors": {
+					"AI_PROVIDER_NOT_CONFIGURED": "Für den Bearbeiter, der die Erstellung gestartet hat, war kein KI-Anbieter verfügbar.",
+					"SOURCE_DOCUMENT_DELETED": "Das Quelldokument wurde gelöscht, bevor die Erstellung abgeschlossen war.",
+					"ACCESS_REVOKED": "Der Bearbeiter, der die Erstellung gestartet hat, kann dieses Dokument nicht mehr bearbeiten.",
+					"NOTHING_TO_PRESENT": "Nach dem Entfernen der internen Hilfsstruktur bleibt nichts zum Darstellen übrig.",
+					"NOT_ELIGIBLE": "Aus diesem Dokument konnte zu diesem Zeitpunkt keine Glossy-Edition erstellt werden.",
+					"SUPERSEDED": "Eine neuere Erstellung hat diese ersetzt.",
+					"BUILD_FAILED": "Beim Erstellen ist ein Fehler aufgetreten. Versuchen Sie es erneut.",
+					"WORKFLOW_START_FAILED": "Die Erstellung konnte nicht gestartet werden. Versuchen Sie es erneut."
+				},
+				"outOfDate": "Das Quelldokument wurde geändert, nachdem diese Edition erstellt wurde.",
+				"outOfDateEditor": "Erstellen Sie sie neu, um sie zu aktualisieren. Unveränderte Abschnitte und ihre Visuals werden wiederverwendet.",
+				"outOfDateViewer": "Bitten Sie einen Projektbearbeiter, sie neu zu erstellen."
+			},
+			"provider": {
+				"title": "Richten Sie einen KI-Anbieter ein, um zu erstellen",
+				"body": "Glossy-Erstellungen laufen über den KI-Anbieter Ihrer Organisation oder über Ihren eigenen API-Schlüssel, und keines von beiden ist verfügbar. Bitten Sie einen Organisationsadministrator, einen Anbieter hinzuzufügen, oder fügen Sie Ihren eigenen Schlüssel hinzu.",
+				"link": "Einstellungen für KI-Anbieter öffnen"
+			},
+			"ineligible": {
+				"documentType": "Glossy-Editionen gibt es nur für Angebote und Business Cases.",
+				"generating": "Dieses Dokument wird noch generiert. Erstellen Sie die Edition, sobald es fertig ist.",
+				"empty": "Dieses Dokument hat noch keinen Inhalt, aus dem erstellt werden kann.",
+				"nothingToPresent": "Nach dem Entfernen der internen Hilfsstruktur dieses Dokuments bleibt nichts zum Darstellen übrig."
+			},
+			"report": {
+				"keptOriginal": "{count, plural, one {# Abschnitt behält seinen ursprünglichen Wortlaut} other {# Abschnitte behalten ihren ursprünglichen Wortlaut}}",
+				"keptOriginalHelp": "Die Umformulierung hätte eine Tatsache verändert oder weggelassen, daher wird der bereinigte Originaltext verwendet.",
+				"entry": "{subject}: {reason}",
+				"untitledSection": "Abschnitt ohne Titel",
+				"keptOriginalReasons": {
+					"fact_guard": "die Umformulierung hat eine Zahl, ein Datum, einen Namen oder eine Zusage verändert",
+					"truncated": "die Umformulierung wurde abgeschnitten",
+					"rewrite_unavailable": "keine Umformulierung verfügbar",
+					"unknown": "die Umformulierung konnte nicht verwendet werden"
+				},
+				"droppedVisuals": "{count, plural, one {# Visual wurde weggelassen} other {# Visuals wurden weggelassen}}",
+				"droppedEntry": "{kind} in „{section}“: {reason}",
+				"slotEntry": "Visual-Platzhalter: {reason}",
+				"dropReasons": {
+					"truncated": "die Extraktion wurde abgeschnitten",
+					"invalid_spec": "der extrahierte Inhalt war kein gültiges Visual",
+					"kind_mismatch": "die Extraktion hat eine andere Art von Visual ergeben",
+					"fact_check": "es zeigte eine Zahl, ein Datum oder eine Beschriftung, die im Abschnitt nicht vorkommt",
+					"slot_unavailable": "der Platzhalter ist nicht mehr im Dokument",
+					"appendix_slot": "Platzhalter im Anhang werden nicht gefüllt",
+					"invalid_diagram": "das Diagramm des Dokuments konnte nicht gelesen werden",
+					"visual_unavailable": "das Visual war beim Abschluss der Erstellung nicht mehr verfügbar",
+					"render_failed": "es konnte nicht dargestellt werden",
+					"unsupported_kind": "diese Art kann nicht dargestellt werden",
+					"unknown": "es konnte nicht verwendet werden"
+				},
+				"unfilledSlots": "{count, plural, one {# Visual-Platzhalter wurde nicht gefüllt} other {# Visual-Platzhalter wurden nicht gefüllt}}",
+				"noSuggestions": "Für dieses Dokument wurden keine Visuals vorgeschlagen. Die Edition enthält nur Bereinigung und Umformulierung.",
+				"scaffoldingUnrecognized": "Ein Teil der internen Hilfsstruktur dieses Dokuments wurde nicht erkannt, daher können zitatähnliche Stellen übrig sein. Lesen Sie die Edition vor dem Versand durch."
+			},
+			"empty": {
+				"title": "Noch keine Glossy-Edition",
+				"buildingTitle": "Die erste Edition wird erstellt",
+				"buildingBody": "Die Edition erscheint hier, sobald die Erstellung abgeschlossen ist. Sie können diese Seite verlassen; die Erstellung läuft weiter.",
+				"editorBody": "Wählen Sie oben einen Modus und erstellen Sie dann. Vorher wird nichts generiert.",
+				"viewerBody": "Ein Projektbearbeiter hat noch keine erstellt."
+			},
+			"outcome": {
+				"started": "Erstellung gestartet. Sie können diese Seite verlassen; die Erstellung läuft weiter.",
+				"alreadyBuilding": "Es läuft bereits eine Erstellung.",
+				"alreadyBuildingBy": "Es läuft bereits eine Erstellung, gestartet von {name}.",
+				"startFailed": "Die Erstellung konnte nicht gestartet werden. Versuchen Sie es erneut.",
+				"rateLimited": "Sie haben in kurzer Zeit mehrere KI-Aktionen gestartet. Versuchen Sie es in einer Minute erneut."
+			},
+			"alignFirst": {
+				"title": "Align first",
+				"description": "Prüfen Sie, was die Erstellung tun wird, und erstellen Sie dann. Verwendet wird nur, was Sie hier bestätigen.",
+				"detecting": "Möglichkeiten für Visuals werden gesucht…",
+				"detectFailed": "Möglichkeiten für Visuals konnten nicht ermittelt werden.",
+				"detectAgain": "Erneut ermitteln",
+				"draftStale": "Das Dokument wurde geändert, nachdem seine Visuals ermittelt wurden. Ermitteln Sie sie vor dem Erstellen erneut.",
+				"opportunities": "Vorgeschlagene Visuals",
+				"opportunitiesHelp": "Entfernen Sie die Häkchen bei allem, was Sie nicht möchten. Jedes Visual entsteht nur aus dem Text seines eigenen Abschnitts.",
+				"opportunityLabel": "{kind} für „{section}“",
+				"degraded": "Die Ermittlung wurde nicht abgeschlossen, daher werden keine Visuals vorgeschlagen. Sie können trotzdem mit Bereinigung und Umformulierung erstellen.",
+				"noOpportunities": "Es wurden keine Möglichkeiten für Visuals gefunden. Die Edition enthält nur Bereinigung und Umformulierung.",
+				"styleDirection": "Stilvorgabe",
+				"styleDirectionPlaceholder": "Zum Beispiel: ruhig und sachlich, mit dem Zeitplan beginnen",
+				"styleDirectionHelp": "Optionale Vorgabe für die Visuals. Vorausgefüllt aus dem Markenkit Ihrer Organisation.",
+				"preparer": "Ihre Marke",
+				"preparerHelp": "Farben für Überschriften und Visuals dieser Edition, vorausgefüllt aus dem Markenkit Ihrer Organisation. Änderungen hier gelten nur für diese Edition.",
+				"primaryColor": "Hauptfarbe",
+				"primaryHex": "Hauptfarbe (Hex)",
+				"primaryPicker": "Hauptfarbe auswählen",
+				"primaryRemove": "Hauptfarbe entfernen",
+				"accentColors": "Akzentfarben",
+				"accentHex": "Akzentfarbe {position} (Hex)",
+				"accentPicker": "Akzentfarbe {position} auswählen",
+				"accentRemove": "Akzentfarbe {position} entfernen",
+				"addColor": "Farbe hinzufügen",
+				"invalidColor": "Geben Sie eine Farbe als #rrggbb ein, zum Beispiel #1a73e8.",
+				"noColors": "Keine Farben.",
+				"recipient": "Empfängermarke",
+				"recipientHelp": "Für wen diese Edition erstellt wird. Änderungen werden beim Erstellen im Projekt gespeichert, damit spätere Erstellungen sie wiederverwenden.",
+				"recipientConflict": "Jemand anderes hat die Empfängermarke geändert, während Sie sie bearbeitet haben. Unten sehen Sie die neue Fassung — prüfen Sie sie und erstellen Sie erneut.",
+				"recipientSaveFailed": "Die Empfängermarke konnte nicht gespeichert werden, daher wurde die Erstellung nicht gestartet.",
+				"suggestedWebsites": "Vorschläge aus den Links des Projekts:",
+				"useWebsite": "{website} verwenden",
+				"build": "Mit dieser Auswahl erstellen",
+				"rebuild": "Mit dieser Auswahl neu erstellen",
+				"cancel": "Abbrechen",
+				"fixColors": "Korrigieren Sie die markierten Farben vor dem Erstellen."
+			},
+			"preview": {
+				"preparedBy": "Erstellt von",
+				"preparedFor": "Erstellt für",
+				"logoOf": "Logo von {name}",
+				"recipientLogo": "Logo des Empfängers",
+				"documentImage": "Bild aus dem Quelldokument",
+				"appendix": "Anhang",
+				"sources": "Quellen",
+				"details": "Dokumentangaben",
+				"placeholders": "Offene Punkte",
+				"assumptions": "Annahmen",
+				"additionalMaterial": "Weiteres Material",
+				"provenance": "Erstellt aus „{title}“, Version {version}, am {date}."
+			},
+			"visual": {
+				"kinds": {
+					"timeline": "Zeitplan",
+					"comparison": "Vergleich",
+					"stat": "Kennzahlen",
+					"flow": "Prozessablauf",
+					"org_chart": "Organigramm",
+					"existing_mermaid": "Diagramm",
+					"auto": "Visual"
+				},
+				"alt": "{kind}: {labels}",
+				"altNoLabels": "{kind}",
+				"status": {
+					"pending": "Prüfung ausstehend",
+					"accepted": "Angenommen",
+					"discarded": "Verworfen"
+				},
+				"accept": "Annehmen",
+				"regenerate": "Neu generieren",
+				"discard": "Verwerfen",
+				"restore": "Wiederherstellen",
+				"rendering": "Visual wird dargestellt…",
+				"regenerating": "Dieses Visual wird neu generiert…",
+				"couldNotRender": "Dieses Visual konnte nicht dargestellt werden und fehlt daher in Downloads. Generieren Sie es neu oder verwerfen Sie es.",
+				"couldNotRenderViewer": "Dieses Visual konnte nicht angezeigt werden.",
+				"discardedNote": "Verworfen — fehlt in Downloads. Stellen Sie es wieder her, um es erneut aufzunehmen.",
+				"fromSlot": "Füllt einen Visual-Platzhalter im Dokument.",
+				"restyled": "Das eigene Diagramm des Dokuments, neu gestaltet.",
+				"regenerated": "Visual neu generiert",
+				"superseded": "Inzwischen wurde eine neuere Edition veröffentlicht. Die Seite zeigt jetzt diese.",
+				"regenerateFailed": "Das Visual konnte nicht neu generiert werden. Versuchen Sie es erneut.",
+				"reviewFailed": "Die Prüfung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+				"notices": {
+					"noValidReplacement": "Es wurde kein gültiger Ersatz gefunden: {reason}. Das bisherige Visual bleibt erhalten.",
+					"building": "Es läuft eine Erstellung. Versuchen Sie es erneut, wenn sie abgeschlossen ist.",
+					"buildingBy": "Es läuft eine Erstellung, gestartet von {name}. Versuchen Sie es erneut, wenn sie abgeschlossen ist.",
+					"buildingStuck": "Eine Erstellung, die nicht mehr reagiert, blockiert diese Edition noch. Erstellen Sie neu, um sie zu übernehmen.",
+					"visualChanged": "Dieses Visual hat sich geändert, nachdem die Seite geladen wurde. Prüfen Sie die neue Fassung, bevor Sie sie annehmen.",
+					"rebuildRequired": "Diese Edition wurde mit einer früheren Version von Glossy erstellt. Erstellen Sie sie neu, bevor Sie Visuals neu generieren.",
+					"notRegenerable": "Dieses Diagramm stammt aus dem Dokument selbst und kann nicht neu generiert werden.",
+					"visualNotFound": "Dieses Visual ist nicht mehr in der Edition."
+				}
+			},
+			"download": {
+				"failed": "Das {format} konnte nicht erstellt werden. Versuchen Sie es erneut.",
+				"omittedVisuals": "{count, plural, one {# Visual konnte nicht dargestellt werden und fehlt im Download.} other {# Visuals konnten nicht dargestellt werden und fehlen im Download.}}",
+				"omittedImages": "{count, plural, one {# Bild aus dem Dokument konnte nicht geladen werden und fehlt.} other {# Bilder aus dem Dokument konnten nicht geladen werden und fehlen.}}"
+			}
 		}
 	},
 	"tooltips": {
 		"documentEditor": {
-			"generationQueued": "Dieses Dokument wartet auf die Kontextarbeit des Projekts, bevor es generiert werden kann. Es startet von selbst, sobald das abgeschlossen ist — ein erneuter Versuch ist nicht nötig."
+			"generationQueued": "Dieses Dokument wartet auf die Kontextarbeit des Projekts, bevor es generiert werden kann. Es startet von selbst, sobald das abgeschlossen ist — ein erneuter Versuch ist nicht nötig.",
+			"visualSlot": {
+				"insert": "Visuellen Platzhalter einfügen: Die Glossy-Ausgabe erhält an dieser Stelle ein Visual in der gewählten Art oder in der passendsten.",
+				"title": "Visueller Platzhalter",
+				"kindGroupLabel": "Art des Visuals",
+				"hintLabel": "Hinweis (optional)",
+				"hintPlaceholder": "Was soll das Visual zeigen?",
+				"insertAction": "Einfügen",
+				"save": "Speichern",
+				"remove": "Platzhalter entfernen",
+				"chipLabel": "Visueller Platzhalter: {kind}",
+				"orphanedFrom": "Hierher verschoben: Der Abschnitt „{section}“ existiert nicht mehr",
+				"kinds": {
+					"auto": {
+						"title": "Beste Wahl",
+						"name": "beste Wahl",
+						"description": "Die Glossy-Ausgabe wählt die Art, die an diese Stelle passt."
+					},
+					"timeline": {
+						"title": "Zeitleiste",
+						"name": "Zeitleiste",
+						"description": "Phasen oder Termine in ihrer Reihenfolge."
+					},
+					"comparison": {
+						"title": "Vergleichskarten",
+						"name": "Vergleichskarten",
+						"description": "Optionen nebeneinander oder Vor- und Nachteile."
+					},
+					"stat": {
+						"title": "Kennzahl",
+						"name": "Kennzahl",
+						"description": "Zentrale Zahlen, groß hervorgehoben."
+					},
+					"flow": {
+						"title": "Ablauf",
+						"name": "Ablauf",
+						"description": "Ein Prozess, Schritt für Schritt."
+					},
+					"org_chart": {
+						"title": "Organigramm",
+						"name": "Organigramm",
+						"description": "Rollen und Zuständigkeiten."
+					}
+				}
+			}
 		},
 		"stories": {
 			"groupBy": "Wähle die Spuren, in die die Roadmap gruppiert wird.",

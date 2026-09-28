@@ -121,6 +121,7 @@ export type OnboardingArea =
 	| "todos"
 	| "overview"
 	| "documents"
+	| "glossy"
 	| "roadmap"
 	| "proposals"
 	| "atlas"
@@ -195,6 +196,8 @@ type OnboardingStepTarget =
 export type TourStepGates = {
 	/** `TODO_LIST`, resolved for the viewer's organization (Fizzy #2340). */
 	todoList: boolean;
+	/** `GLOSSY_EDITION`, resolved for the viewer's organization (Fizzy #2589). */
+	glossyEdition: boolean;
 };
 
 export type OnboardingStep = {
@@ -317,6 +320,23 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			kind: "projectComponent",
 			tab: "documents",
 			anchorId: "documents-create",
+			side: "bottom",
+		},
+	},
+	// Fizzy #2589. Gated: Glossy editions ship to named organizations first,
+	// and with the gate off neither entry point renders. The anchor is
+	// conditional even with the gate on — it sits only on a Proposal or
+	// Business Case card — so, like `proposals`, a project without one gets
+	// the centered card on the Documents tab instead of a spotlight.
+	{
+		id: "glossy",
+		area: "glossy",
+		icon: SparklesIcon,
+		runtimeGate: "glossyEdition",
+		target: {
+			kind: "projectComponent",
+			tab: "documents",
+			anchorId: "documents-glossy",
 			side: "bottom",
 		},
 	},

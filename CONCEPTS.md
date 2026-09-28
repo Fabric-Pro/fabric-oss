@@ -457,6 +457,24 @@ The mark on a transcript saying its to-dos have been built, carried together wit
 
 It is load-bearing in a way that is easy to miss: the only thing that looks for meetings still needing to-dos is a query for transcripts this mark is unset or superseded on. Setting it therefore removes the meeting from the only process that would ever look again, so it must be withheld by any run that cannot honestly claim to have processed the commitments currently on the transcript. Moving the vocabulary version invalidates every stamp taken under the old one.
 
+## Glossy editions
+
+### Glossy edition
+The stakeholder-facing rendition of one Proposal or Business Case: scaffolding moved to an appendix, text rewritten for an external reader, and visuals added. A document has at most one current edition, and building it never touches the document itself.
+
+It is deliberately not a document. Stored as a second document of the same type it would contest the Active document invariant and feed client-facing rewrites into retrieval, where they would steer later generations. An edition records the source content and title it was built from, so an edition can be *out of date* — a state that asks for a rebuild, not a failure.
+
+### Visual slot
+A marker an editor places in a document body to say *a visual belongs here*, with a kind and an optional hint. A Glossy build fills slots before anything it detects on its own; every other download omits them.
+
+A slot is the editor's own work inside text that AI and API writers replace wholesale, so every such writer must carry it through — lifted out before the rewrite and returned under the same section heading. A slot whose section no longer exists is moved to the end with a note rather than dropped. Slots carried through from an earlier read are only right for the version that read saw, so a writer that returns them refuses to overwrite a newer version rather than drop a slot added since or restore one deleted since; a body with no slot on either side is written exactly as before.
+
+### Brand kit
+The organization's own branding as a preparer of documents — logo, brand color, accent colors and guidance text. It belongs to the organization and applies to every project's editions.
+
+### Recipient brand
+The branding of the party a project's documents are prepared for, held on the project because a project is normally one engagement with one recipient. Distinct from the Brand kit: the Brand kit says who wrote the edition, the recipient brand says who it is for, and an edition can carry both.
+
 ## Flagged ambiguities
 
 - "Queued" had been used for both a generation deliberately holding until the project's context work completes, and a job step that simply has not been reached yet — these are distinct. The first advances on its own and offers nothing to retry; the second is only a step's position in a list. Copy that blurs them invites a retry that supersedes a healthy attempt.

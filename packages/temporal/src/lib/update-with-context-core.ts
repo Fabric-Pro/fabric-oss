@@ -21,6 +21,7 @@ import {
 	fetchLiveIntegrationContext,
 	type LiveIntegrationContextResult,
 } from "@repo/rag/lib/project-contexts/live-integration-context";
+import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import { z } from "zod";
 
@@ -347,13 +348,30 @@ ${formatContextItems(contextItems)}`;
 			projectId,
 		});
 
+		// Visual slots (KTD17). The model returns the whole body and may drop,
+		// move, or echo a slot tag, so the slots the caller's body held are
+		// spliced back under their headings — here, once, so every caller (the
+		// interactive document button, the scheduled refresh, and the work-item
+		// paths) gets it. It runs BEFORE the gate below so a rewrite whose only
+		// difference is a dropped slot compares equal and is not reported as a
+		// change. With no slot on either side `updatedDocument` is the model's
+		// string unchanged, so documents without slots and every story body are
+		// byte-identical to before.
+		const result: ContextUpdateResult = {
+			...object,
+			updatedDocument: preserveVisualSlots(
+				documentMarkdown,
+				object.updatedDocument,
+			),
+		};
+
 		// No-op relevance gate (I5): the prompt invites returning the document
 		// "unchanged if no updates", so the model can set hasRelevantContext while
 		// handing back a normalized-identical document. Judge that with the same
 		// comparator the save layer uses, so no caller (documents or stories)
 		// presents a Confirm affordance for content that would save to nothing.
 		const normalizedProposed = normalizeForComparison(
-			object.updatedDocument,
+			result.updatedDocument,
 		);
 		const normalizedCurrent = normalizeForComparison(documentMarkdown);
 		if (
@@ -379,7 +397,7 @@ ${formatContextItems(contextItems)}`;
 			};
 		}
 
-		return object;
+		return result;
 	} catch (error) {
 		if (
 			NoObjectGeneratedError.isInstance(error) &&

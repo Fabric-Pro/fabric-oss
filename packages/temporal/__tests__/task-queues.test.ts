@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	CONTEXT_SYNC_ACTIVITY_TASK_QUEUE,
+	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
 } from "../src/task-queues";
 
@@ -23,5 +24,14 @@ describe("CONTEXT_SYNC_ACTIVITY_TASK_QUEUE", () => {
 	it("names the general-purpose queue the fabric-worker worker polls", () => {
 		// worker.ts creates that worker with the literal "fabric-worker".
 		expect(CONTEXT_SYNC_ACTIVITY_TASK_QUEUE).toBe("fabric-worker");
+	});
+});
+
+describe("GLOSSY_EDITION_TASK_QUEUE", () => {
+	it("names the queue the Glossy edition worker polls", () => {
+		// worker.ts creates that worker with this constant, and the build
+		// procedure starts glossyEditionBuildWorkflow on it; API tests mock
+		// @repo/temporal, so the literal is pinned here.
+		expect(GLOSSY_EDITION_TASK_QUEUE).toBe("glossy-edition");
 	});
 });

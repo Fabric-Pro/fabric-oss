@@ -405,12 +405,17 @@ export async function updateDocument(
 		 * `DocumentVersionConflictError` if the document is no longer at this
 		 * version.
 		 *
-		 * The unattended auto-refresh needs this and a human editor does not: a
-		 * refresh reads the document, spends MINUTES in a model call, then writes.
-		 * Someone can open the editor and save in that window, and without the
-		 * guard the refresh would silently overwrite them. Nobody is watching, so
-		 * there is no one to notice. Omitted by every interactive caller, whose
-		 * behavior is unchanged.
+		 * The unattended auto-refresh needs this: a refresh reads the document,
+		 * spends MINUTES in a model call, then writes. Someone can open the
+		 * editor and save in that window, and without the guard the refresh
+		 * would silently overwrite them. Nobody is watching, so there is no one
+		 * to notice.
+		 *
+		 * The writers that splice Glossy visual slots from a read (Update using
+		 * context, the MCP and v1 document updates, the in-editor assistant
+		 * accept) pass the version of that read whenever a slot is involved, so
+		 * a slot added or deleted in between is neither lost nor resurrected.
+		 * Ordinary saves and slot-free writes omit it and are unchanged.
 		 */
 		expectedVersion?: number;
 	},

@@ -5,10 +5,8 @@
  * backslash is printed literally in the PDF/DOCX.
  */
 import { describe, expect, it } from "vitest";
-import {
-	normalizeOrderedMarkerEscape,
-	ORDERED_ITEM_LINE_RE,
-} from "../markdown-to-document";
+import { normalizeOrderedMarkerEscape } from "../document-export-helpers";
+import { ORDERED_ITEM_LINE_RE } from "../markdown-to-document";
 
 describe("ordered marker escape handling in exports", () => {
 	it("recognises an escaped ordered marker as a list line", () => {

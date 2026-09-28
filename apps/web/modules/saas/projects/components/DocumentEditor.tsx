@@ -9,6 +9,10 @@ import {
 } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
+import {
+	hasVisualSlots,
+	preserveVisualSlots,
+} from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
@@ -97,7 +101,6 @@ import {
 	isNoOpProposedContent,
 } from "../lib/confirm-noop-guards";
 import {
-	diffPartialText,
 	focusOnAnchor,
 	focusOnLastDiff,
 	fromMarkdown,
@@ -121,6 +124,11 @@ import {
 } from "../lib/mention-status-context";
 import { createCollaborativeExtensions } from "../lib/tiptap-extensions";
 import { createAdvancedExtensions } from "../lib/tiptap-extensions-advanced";
+import {
+	diffKeepingVisualSlotsWhole,
+	preserveEditorVisualSlots,
+	VisualSlotControlsGate,
+} from "../lib/tiptap-visual-slot-extension";
 import { CollaborationStatus } from "./CollaborationStatus";
 import { CopilotHistoryDrawer } from "./copilot/CopilotHistoryDrawer";
 import { CopilotPersistenceHook } from "./copilot/CopilotPersistenceHook";
@@ -137,6 +145,7 @@ import { DocumentTocRail } from "./DocumentTocRail";
 import { DocumentVersionHistory } from "./DocumentVersionHistory";
 import { useUpdateDocumentWithContext } from "./documents/useUpdateDocumentWithContext";
 import { EditorToolbar } from "./EditorToolbar";
+import { getOrpcCode } from "./field-mapping/orpc-error";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImageSelectionToolbar } from "./ImageSelectionToolbar";
 import {
@@ -160,6 +169,71 @@ function buildNonCollaborativeExtensions(
 		SlashCommandsExtension,
 	];
 }
+
+type DocumentTiptapEditor = NonNullable<ReturnType<typeof useEditor>>;
+type EditorContentArg = Parameters<
+	DocumentTiptapEditor["commands"]["setContent"]
+>[0];
+
+/**
+ * Where a programmatic content application comes from (Fizzy #2589, KTD17).
+ * Required at every call site, so the type checker makes each new one
+ * choose:
+ *
+ * - `server` — a body the person or the server already stands behind: the
+ *   initial load, a polled refresh, a repair of what was loaded, a restore,
+ *   a rejected proposal's baseline, the person's own raw-markdown edit.
+ *   Applied as is: a visual slot it lacks was deleted on purpose — by another
+ *   editor, in raw mode, or by a server write path that already preserved
+ *   slots — and must stay deleted.
+ * - `assistant` — model output from the in-editor assistant. The document's
+ *   visual slots are spliced in before it is rendered, so the model can
+ *   neither drop a slot nor introduce one.
+ */
+type ProgrammaticContentSource = "server" | "assistant";
+
+interface AssistantApplicationOptions {
+	/**
+	 * Turns the markdown, once the slots are spliced in, into editor content
+	 * — a diff against the baseline, for instance. By default the markdown is
+	 * rendered as is.
+	 */
+	render?: (markdown: string) => EditorContentArg;
+	/**
+	 * The markdown whose visual slots are spliced in. By default the editor's
+	 * current content, which is right only while it holds a complete
+	 * document. A streamed run passes its baseline instead: mid-run the
+	 * editor holds the previous partial frame, where a slot whose section has
+	 * not streamed yet sits orphaned at the partial's end.
+	 */
+	slotSource?: string;
+}
+
+interface ApplyProgrammaticContent {
+	(
+		ed: DocumentTiptapEditor | null | undefined,
+		content: EditorContentArg,
+		source: "server",
+	): void;
+	/**
+	 * `markdown` is the assistant's body; see `AssistantApplicationOptions`
+	 * for how it is rendered and whose slots it keeps. Returns the markdown
+	 * applied, or `null` when there is no editor.
+	 */
+	(
+		ed: DocumentTiptapEditor | null | undefined,
+		markdown: string,
+		source: "assistant",
+		options?: AssistantApplicationOptions,
+	): string | null;
+}
+
+/**
+ * Shown when an accepted assistant proposal was not saved because the
+ * document changed after the editor last synced (a guarded save's CONFLICT).
+ */
+const ACCEPT_VERSION_CONFLICT_MESSAGE =
+	"Your accepted changes were not saved: the document changed in the meantime. They are still in the editor — copy anything you want to keep, then reload to review the latest version and apply them again.";
 
 const DOCUMENT_TYPE_LABELS: Record<string, string> = {
 	GENERAL: "General",
@@ -1309,6 +1383,13 @@ function DocumentEditorInner({
 	// On long documents this is dramatically cheaper than the full markdown
 	// comparison and short-circuits the common typing case.
 	const lastSavedTextRef = useRef<string>("");
+	// The server version of the body the editor last took on: the loaded
+	// document, then each save, context update, restore, regeneration or
+	// rejected regeneration it adopted. An accepted assistant proposal keeps
+	// the editor's visual slots, so when a slot is involved its save is
+	// guarded with this version (Fizzy #2589, KTD17). The query cache is not
+	// used: a refetch can bring a newer version the editor never took on.
+	const editorBodyVersionRef = useRef<number | undefined>(document?.version);
 	const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 	// Debounce running getEditorMarkdownForSave (Turndown) on every keystroke.
 	const dirtyCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -2006,21 +2087,39 @@ function DocumentEditorInner({
 	// real user input. Without this, every Yjs init / content repair / view
 	// toggle / regen / version restore would mark the document as dirty and
 	// the Save button would be permanently stuck on "Save" instead of "Saved".
-	const applyProgrammaticContent = useCallback(
+	//
+	// The source argument is required (see `ApplyProgrammaticContent`): an
+	// assistant application splices visual slots into the model's body before
+	// it is rendered — the editor's current ones, or those of `slotSource`
+	// when the editor is mid-run and holds a partial frame.
+	const applyProgrammaticContent: ApplyProgrammaticContent = useCallback(
 		(
-			ed: ReturnType<typeof useEditor> | null | undefined,
-			content: Parameters<
-				NonNullable<typeof ed>["commands"]["setContent"]
-			>[0],
-		) => {
+			ed: DocumentTiptapEditor | null | undefined,
+			content: EditorContentArg,
+			source: ProgrammaticContentSource,
+			{
+				render = fromMarkdown,
+				slotSource,
+			}: AssistantApplicationOptions = {},
+		): string | null => {
 			if (!ed) {
-				return;
+				return null;
+			}
+			let applied = content;
+			let appliedMarkdown: string | null = null;
+			if (source === "assistant" && typeof content === "string") {
+				appliedMarkdown =
+					slotSource === undefined
+						? preserveEditorVisualSlots(ed, content)
+						: preserveVisualSlots(slotSource, content);
+				applied = render(appliedMarkdown);
 			}
 			isProgrammaticUpdateRef.current = true;
-			ed.commands.setContent(content);
+			ed.commands.setContent(applied);
 			queueMicrotask(() => {
 				isProgrammaticUpdateRef.current = false;
 			});
+			return appliedMarkdown;
 		},
 		[],
 	);
@@ -2456,6 +2555,7 @@ function DocumentEditorInner({
 				applyProgrammaticContent(
 					editor,
 					fromMarkdown(document.content),
+					"server",
 				);
 			}
 			yjsInitializedRef.current = true;
@@ -2580,7 +2680,10 @@ function DocumentEditorInner({
 					applyProgrammaticContent(
 						editor,
 						fromMarkdown(markdownContent),
+						"server",
 					);
+					editorBodyVersionRef.current =
+						document.version ?? editorBodyVersionRef.current;
 				} catch {
 					/* leave canvas as-is on programmatic update error */
 				}
@@ -2624,7 +2727,11 @@ function DocumentEditorInner({
 			repairedMarkdown.trim().length > 0 &&
 			repairedMarkdown !== sourceMarkdown
 		) {
-			applyProgrammaticContent(editor, fromMarkdown(repairedMarkdown));
+			applyProgrammaticContent(
+				editor,
+				fromMarkdown(repairedMarkdown),
+				"server",
+			);
 			setCurrentDocument(repairedMarkdown);
 			setRawContent(repairedMarkdown);
 			// applyProgrammaticContent dispatches synchronously, so the editor
@@ -2720,10 +2827,16 @@ function DocumentEditorInner({
 
 			// For regeneration: Load new content directly into editor (no diff)
 			// The user can then Accept (keep) or Reject (revert)
+			// A polled body the generation workflow wrote — it already carried
+			// the visual slots over server-side — so it is applied as is.
 			const markdown = fromMarkdown(polledContent);
 			requestAnimationFrame(() => {
-				applyProgrammaticContent(editor, markdown);
+				applyProgrammaticContent(editor, markdown, "server");
 			});
+			// The editor now holds the regenerated body; a rejection moves this
+			// on to the version the rewind (or its fallback save) answers with.
+			editorBodyVersionRef.current =
+				document?.version ?? editorBodyVersionRef.current;
 			setCurrentDocument(polledContent);
 			// NOTE: Don't call setAgentState here - it can trigger CopilotKit to respond
 			// The agent state will be updated when user accepts/rejects
@@ -2861,15 +2974,25 @@ function DocumentEditorInner({
 				newDocument.trim().length > 0 &&
 				baseline !== newDocument
 			) {
-				const diff = diffPartialText(baseline, newDocument, true);
-				const markdown = fromMarkdown(diff);
 				// TipTap's setContent calls flushSync internally; deferring to a
 				// microtask moves it out of the useEffect's render phase, where
 				// React would otherwise throw "flushSync was called from inside
 				// a lifecycle method".
 				queueMicrotask(() => {
 					isDiffReviewEditRef.current = true;
-					applyProgrammaticContent(editor, markdown);
+					// Slots from the baseline, as in Effect 3: the editor
+					// still holds the last streamed frame.
+					applyProgrammaticContent(editor, newDocument, "assistant", {
+						slotSource: baseline,
+						render: (preserved) =>
+							fromMarkdown(
+								diffKeepingVisualSlotsWhole(
+									baseline,
+									preserved,
+									true,
+								),
+							),
+					});
 					isDiffReviewEditRef.current = false;
 				});
 			}
@@ -2888,6 +3011,15 @@ function DocumentEditorInner({
 	// Effect 3: Streaming diff updates
 	// CRITICAL: Uses baselineRef.current instead of currentDocument state
 	// This fixes the race condition where state hasn't updated yet
+	//
+	// Every frame takes its visual slots from the baseline, not the editor.
+	// The editor holds the previous partial frame, where a slot whose section
+	// has not streamed yet sits orphaned at the partial's end; lifted from
+	// there, it would be re-anchored under an earlier section, and copied
+	// again from the baseline tail the partial diff appends. The editor is
+	// read-only while the run streams (Effect 1), so the baseline holds every
+	// slot the person placed; a collaborator's mid-run change is replaced by
+	// the next frame, slots included, like the rest of the editor.
 	useEffect(() => {
 		if (isLoading && !isRegenerating) {
 			const baseline = baselineRef.current;
@@ -2897,8 +3029,9 @@ function DocumentEditorInner({
 			if (baseline.trim().length === 0) {
 				// No baseline - just show the new content without diff
 				if (newDocument.trim().length > 0) {
-					const markdown = fromMarkdown(newDocument);
-					applyProgrammaticContent(editor, markdown);
+					applyProgrammaticContent(editor, newDocument, "assistant", {
+						slotSource: baseline,
+					});
 				}
 				return;
 			}
@@ -2908,9 +3041,13 @@ function DocumentEditorInner({
 				return;
 			}
 
-			const diff = diffPartialText(baseline, newDocument);
-			const markdown = fromMarkdown(diff);
-			applyProgrammaticContent(editor, markdown);
+			applyProgrammaticContent(editor, newDocument, "assistant", {
+				slotSource: baseline,
+				render: (preserved) =>
+					fromMarkdown(
+						diffKeepingVisualSlotsWhole(baseline, preserved),
+					),
+			});
 			// Follow the last diff element during streaming
 			focusOnLastDiff(editor);
 		}
@@ -2974,7 +3111,13 @@ function DocumentEditorInner({
 			setRawContent(normalized);
 			setCurrentDocument(normalized);
 			if (editor) {
-				applyProgrammaticContent(editor, fromMarkdown(normalized));
+				// The person's own edit: a slot they deleted in raw mode stays
+				// deleted.
+				applyProgrammaticContent(
+					editor,
+					fromMarkdown(normalized),
+					"server",
+				);
 			}
 			setViewMode("rich");
 		} else {
@@ -3234,7 +3377,7 @@ function DocumentEditorInner({
 				});
 				return { previous };
 			},
-			onError: (error, _variables, context) => {
+			onError: (error, variables, context) => {
 				// Rollback cache
 				if (context?.previous) {
 					queryClient.setQueryData(
@@ -3242,7 +3385,35 @@ function DocumentEditorInner({
 						context.previous,
 					);
 				}
-				toast.error(`Failed to save document: ${error.message}`);
+				if (
+					variables.expectedVersion !== undefined &&
+					getOrpcCode(error) === "CONFLICT"
+				) {
+					// A guarded accept lost the race: the document was saved
+					// elsewhere since the editor last synced, and nothing was
+					// written. The proposal stays in the editor and reads as
+					// unsaved. No autosave is scheduled — an unguarded one would
+					// overwrite the newer version the guard just protected. The
+					// refetch brings that version to the badge and the history;
+					// the editor's content is left alone.
+					toast.error(ACCEPT_VERSION_CONFLICT_MESSAGE);
+					setHasUnsavedChanges(true);
+					void queryClient.invalidateQueries({
+						queryKey: documentGetQueryKey,
+					});
+					void queryClient.invalidateQueries({
+						queryKey:
+							orpc.projects.documents.versions.list.queryKey({
+								input: {
+									projectId,
+									documentId,
+									organizationId,
+								},
+							}),
+					});
+				} else {
+					toast.error(`Failed to save document: ${error.message}`);
+				}
 				setIsSaving(false);
 			},
 			onSuccess: (data, variables) => {
@@ -3264,6 +3435,11 @@ function DocumentEditorInner({
 								: "Changes applied.",
 						);
 					}
+				}
+				// The body just saved is the one the editor holds (plus any
+				// typing since, which is local).
+				if (data?.document?.version != null) {
+					editorBodyVersionRef.current = data.document.version;
 				}
 				// Update the persisted-content baseline, then re-derive the
 				// dirty flag from it. recomputeDirtyState handles the
@@ -3332,8 +3508,12 @@ function DocumentEditorInner({
 		editor,
 		getEditorMarkdownForSave,
 		fromMarkdown,
-		diffPartialText,
-		onSaved: () => {
+		// Its review diff is rendered into this editor too, so a slot the
+		// proposal re-anchors must not be split by the word diff.
+		diffPartialText: diffKeepingVisualSlotsWhole,
+		onSaved: (savedVersion) => {
+			// The hook puts the confirmed body in the editor.
+			editorBodyVersionRef.current = savedVersion;
 			queryClient.invalidateQueries({ queryKey: documentGetQueryKey });
 			queryClient.invalidateQueries({
 				queryKey: orpc.projects.documents.versions.list.queryKey({
@@ -3686,7 +3866,10 @@ function DocumentEditorInner({
 	// CONFLICT (e.g. first-ever generation has no prior version to revert to).
 	const rejectRegenerationMutation = useMutation(
 		orpc.projects.documents.rejectRegeneration.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (data) => {
+				// The editor is back on the prior body, and so is the server.
+				editorBodyVersionRef.current =
+					data?.document?.version ?? editorBodyVersionRef.current;
 				queryClient.invalidateQueries({
 					queryKey: documentGetQueryKey,
 				});
@@ -4624,12 +4807,14 @@ function DocumentEditorInner({
 				const handleReject = () => {
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
-					// Reject: Restore the baseline content
+					// Reject: Restore the baseline content — the document as it
+					// stood before the assistant ran, slots included.
 					const fallback =
 						baselineRef.current || currentDocumentRef.current;
 					applyProgrammaticContent(
 						editorRef.current,
 						fromMarkdown(fallback),
+						"server",
 					);
 					setAgentState((prev) => ({
 						...prev,
@@ -4693,16 +4878,33 @@ function DocumentEditorInner({
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
 
-					applyProgrammaticContent(
-						currentEditor,
-						fromMarkdown(finalContent),
-					);
-					setCurrentDocument(finalContent);
-					baselineRef.current = finalContent;
+					// An accepted assistant proposal: the editor's slots as they
+					// stand now — one placed while the proposal was pending
+					// included — are what get applied and saved.
+					const acceptedContent =
+						applyProgrammaticContent(
+							currentEditor,
+							finalContent,
+							"assistant",
+						) ?? finalContent;
+					setCurrentDocument(acceptedContent);
+					baselineRef.current = acceptedContent;
 					setAgentState((prev) => ({
 						...prev,
-						document: finalContent,
+						document: acceptedContent,
 					}));
+
+					// The spliced slots are right only for the version the editor
+					// last synced with: when a slot is involved, guard the save
+					// with it, so a slot another writer added or deleted in
+					// between is neither lost nor resurrected — the save is
+					// refused instead. A slot-free accept keeps the unguarded
+					// save it always had.
+					const expectedVersion =
+						hasVisualSlots(finalContent) ||
+						hasVisualSlots(acceptedContent)
+							? editorBodyVersionRef.current
+							: undefined;
 
 					// Mark this as a confirm-initiated save so its outcome is
 					// surfaced (version bump / no-op / error) instead of silent.
@@ -4712,7 +4914,10 @@ function DocumentEditorInner({
 						saveMutation.mutate({
 							projectId,
 							id: documentId,
-							content: finalContent,
+							content: acceptedContent,
+							...(expectedVersion !== undefined
+								? { expectedVersion }
+								: {}),
 						});
 					});
 					// Fire-and-forget operation-result persistence (Tier 3).
@@ -4778,23 +4983,38 @@ function DocumentEditorInner({
 									// failed — treat like "not already merged"
 									// so the diff overlay below still applies
 									// rather than comparing against a failed read.
+									// Compared with the slots spliced in, as the
+									// application below would write them — else a
+									// document with visual slots never reads as
+									// merged when the model left the tags out.
 									const editorAlreadyMerged =
 										editorMarkdown !== null &&
 										editorMarkdown !== "" &&
 										normalizeForComparison(
 											editorMarkdown,
 										) ===
-											normalizeForComparison(proposedDoc);
+											normalizeForComparison(
+												preserveEditorVisualSlots(
+													currentEditor,
+													proposedDoc,
+												),
+											);
 									if (!editorAlreadyMerged) {
-										const diff = diffPartialText(
-											baseline,
-											proposedDoc,
-											true,
-										);
 										isDiffReviewEditRef.current = true;
 										applyProgrammaticContent(
 											currentEditor,
-											fromMarkdown(diff),
+											proposedDoc,
+											"assistant",
+											{
+												render: (preserved) =>
+													fromMarkdown(
+														diffKeepingVisualSlotsWhole(
+															baseline,
+															preserved,
+															true,
+														),
+													),
+											},
 										);
 										isDiffReviewEditRef.current = false;
 									}
@@ -5362,12 +5582,24 @@ function DocumentEditorInner({
 									)}
 								</div>
 
-								{/* Toolbar - Only show in rich mode */}
+								{/* Toolbar - Only show in rich mode. Visual-slot
+								    insert controls (toolbar and slash command)
+								    need the Glossy gate and an eligible type. */}
 								{viewMode === "rich" && (
-									<EditorToolbar
+									<VisualSlotControlsGate
 										editor={editor}
-										onImageUpload={handleImageUpload}
-									/>
+										documentType={document.type}
+									>
+										{(visualSlots) => (
+											<EditorToolbar
+												editor={editor}
+												onImageUpload={
+													handleImageUpload
+												}
+												visualSlots={visualSlots}
+											/>
+										)}
+									</VisualSlotControlsGate>
 								)}
 
 								{/* Non-blocking banner when generation progress overlay is dismissed */}
@@ -5586,10 +5818,13 @@ function DocumentEditorInner({
 													fromMarkdown(newContent);
 
 												// Use requestAnimationFrame to defer editor update
+												// The stored regenerated body — the workflow
+												// already carried the visual slots over.
 												requestAnimationFrame(() => {
 													applyProgrammaticContent(
 														editor,
 														html,
+														"server",
 													);
 												});
 
@@ -5647,6 +5882,7 @@ function DocumentEditorInner({
 													applyProgrammaticContent(
 														editor,
 														markdown,
+														"server",
 													);
 												});
 
@@ -6026,12 +6262,17 @@ function DocumentEditorInner({
 								}
 								onVersionRestored={(
 									restoredContent: string,
+									restoredVersion?: number,
 								) => {
 									// Programmatically update editor - no page reload
 									applyProgrammaticContent(
 										editor,
 										fromMarkdown(restoredContent),
+										"server",
 									);
+									editorBodyVersionRef.current =
+										restoredVersion ??
+										editorBodyVersionRef.current;
 									setCurrentDocument(restoredContent);
 									baselineRef.current = restoredContent;
 									updateSavedBaseline(restoredContent);

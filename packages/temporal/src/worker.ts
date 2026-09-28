@@ -33,7 +33,10 @@ import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
-import { ORCHESTRATOR_TASK_QUEUE } from "./task-queues";
+import {
+	GLOSSY_EDITION_TASK_QUEUE,
+	ORCHESTRATOR_TASK_QUEUE,
+} from "./task-queues";
 import {
 	getTelemetryInterceptors,
 	initTelemetry,
@@ -95,13 +98,20 @@ function getCombinedInterceptors(): Partial<
 /**
  * Activity concurrency per queue. Declared in one place because the sum is the
  * worker's real database-connection budget: every activity below shares the one
- * Prisma pool in this process.
+ * Prisma pool in this process. Exported for the worker bootstrap test.
  */
-const ACTIVITY_SLOTS = {
+export const ACTIVITY_SLOTS = {
 	aiChat: 10,
 	documentProcessing: 5,
 	projectDocument: 5,
 	documentRefresh: 3,
+	// Glossy edition builds (Fizzy #2589, KTD3). One build fans out at most
+	// four concurrent model calls (`GLOSSY_BUILD_POOL_SIZE`), so four slots run
+	// one build at full width and a second waits its turn instead of widening
+	// the pool. More would enlarge the connection budget below without serving
+	// the two-minute build target: the calls are provider-bound, not
+	// slot-bound. Through the half-the-slots rule this adds two connections.
+	glossyEdition: 4,
 	// Coding-instructions snapshot validation. Deliberately tiny, and for a
 	// different reason than most: these activities are the most I/O-bound
 	// tenant of any queue here. One upload downloads and hashes every byte
@@ -145,7 +155,7 @@ const TOTAL_ACTIVITY_SLOTS = Object.values(ACTIVITY_SLOTS).reduce(
  * Size the database pool against the work this process actually admits.
  *
  * `pg` defaults to 10 connections. That default was silently governing a
- * process that admits 82 concurrent activities — the sum of `ACTIVITY_SLOTS`
+ * process that admits 86 concurrent activities — the sum of `ACTIVITY_SLOTS`
  * above, so re-add it whenever a key is added or changed rather than trusting
  * this figure — so the pool saturated under ordinary scheduled bursts and,
  * because `connectionTimeoutMillis` also bounds queued callers, surfaced as
@@ -424,6 +434,22 @@ async function run() {
 			...telemetryOptions,
 		});
 
+		// Glossy edition builds get their OWN queue and slots (KTD3), for the
+		// same reason Living Documents did: a build holds up to four model calls
+		// for minutes, and on "project-documents" it would take the slots a
+		// member clicking "Update using context" is waiting on.
+		const glossyEditionWorker = await Worker.create({
+			connection,
+			namespace: config.namespace,
+			taskQueue: GLOSSY_EDITION_TASK_QUEUE,
+			workflowBundle,
+			activities,
+			maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.glossyEdition,
+			maxConcurrentWorkflowTaskExecutions: 5,
+			reuseV8Context: true,
+			...telemetryOptions,
+		});
+
 		// Coding-instructions snapshot validation gets its OWN queue, for the
 		// same reason Living Documents did.
 		//
@@ -614,7 +640,7 @@ async function run() {
 		console.log("[Worker] Workers created successfully");
 		console.log(`[Worker] Namespace: ${config.namespace}`);
 		console.log(
-			"[Worker] Task Queues: ai-chat, document-processing, project-documents, document-refresh, project-instructions, workflow-builder, fabric-worker, fabric-orchestrator, agents, code-indexing, atlas, trigger-system, publishing-reconcile, monitoring (back-compat alias for fabric-worker)",
+			"[Worker] Task Queues: ai-chat, document-processing, project-documents, document-refresh, glossy-edition, project-instructions, workflow-builder, fabric-worker, fabric-orchestrator, agents, code-indexing, atlas, trigger-system, publishing-reconcile, monitoring (back-compat alias for fabric-worker)",
 		);
 
 		// Registered before run() so a signal arriving mid-startup still drains
@@ -624,6 +650,7 @@ async function run() {
 			documentProcessingWorker,
 			projectDocumentWorker,
 			documentRefreshWorker,
+			glossyEditionWorker,
 			projectInstructionsWorker,
 			workflowBuilderWorker,
 			fabricWorker,

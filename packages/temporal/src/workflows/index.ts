@@ -374,6 +374,8 @@ export {
 	type GeneratePublishingWebinarScriptWorkflowOutput,
 	generatePublishingWebinarScriptWorkflow,
 } from "./generate-publishing-webinar-script";
+// Glossy edition build (Fizzy #2589) — one claimed attempt per workflow
+export { glossyEditionBuildWorkflow } from "./glossy-edition-build";
 // Goal-Oriented Agent workflow (iterative goal achievement)
 export {
 	cancelSignal as goalOrientedCancelSignal,

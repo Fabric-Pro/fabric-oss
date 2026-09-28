@@ -45,6 +45,8 @@ const {
 	runContextUpdateMock,
 	sideEffectsMock,
 	flagMock,
+	generateObjectMock,
+	getModelMock,
 } = vi.hoisted(() => ({
 	getDocumentMock: vi.fn(),
 	updateDocumentMock: vi.fn(),
@@ -58,6 +60,8 @@ const {
 	runContextUpdateMock: vi.fn(),
 	sideEffectsMock: vi.fn(),
 	flagMock: vi.fn(),
+	generateObjectMock: vi.fn(),
+	getModelMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -104,6 +108,19 @@ vi.mock("../lib/side-effects", () => ({
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+// The visual-slots cases run the REAL `runContextUpdate`, so the model call
+// beneath it is stubbed here. Every other case replaces `runContextUpdate`
+// wholesale and never reaches these.
+vi.mock("@repo/ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/ai")>()),
+	generateObject: generateObjectMock,
+	getAIModelWithMetadata: getModelMock,
+	logModelUsageAsync: vi.fn(),
+}));
+vi.mock("@repo/ai/lib/function-tag-context", () => ({
+	getProjectFunctionTagClause: vi.fn(async () => ""),
 }));
 
 import { DocumentVersionConflictError } from "@repo/database";
@@ -883,6 +900,110 @@ describe("lost race", () => {
 		);
 		expect(notifyMock).not.toHaveBeenCalled();
 		expect(sideEffectsMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("visual slots (Fizzy #2589)", () => {
+	// The refresh has no splice of its own: it inherits the one inside
+	// `runContextUpdate`. So these cases run the real engine over a stubbed model
+	// and look at what is PERSISTED — the stored proposal and the committed body.
+	const SLOT =
+		'<visual-slot data-slot-id="slot-a" data-kind="timeline"></visual-slot>';
+	const WITH_SLOT = `# PRD\n\n## Rollout\n\nPhase one covers discovery.\n\n${SLOT}\n\nPhase two covers delivery.\n`;
+	/** The model's rewrite: new prose, same heading, the slot dropped. */
+	const REWRITE =
+		"# PRD\n\n## Rollout\n\nPhase one covers discovery and design.\n\nPhase two covers delivery.\n";
+	const REWRITE_WITH_SLOT = `# PRD\n\n## Rollout\n\nPhase one covers discovery and design.\n\n${SLOT}\n\nPhase two covers delivery.\n`;
+
+	const modelReturns = (updatedDocument: string) => {
+		generateObjectMock.mockResolvedValue({
+			object: {
+				hasRelevantContext: true,
+				updatedDocument,
+				needsHumanResolution: false,
+				summary: "Folded design into discovery.",
+			},
+			usage: {},
+		});
+	};
+
+	beforeEach(async () => {
+		const actual = await vi.importActual<
+			typeof import("../../../lib/update-with-context-core")
+		>("../../../lib/update-with-context-core");
+		runContextUpdateMock.mockImplementation(actual.runContextUpdate);
+		getModelMock.mockResolvedValue({
+			model: {},
+			metadata: {},
+			trackUsage: vi.fn(),
+		});
+		getDocumentMock.mockResolvedValue({ ...DOCUMENT, content: WITH_SLOT });
+		// The real engine formats every field of a context item into the prompt.
+		fetchSourcesMock.mockResolvedValue({
+			...SOURCES,
+			contextItems: [
+				{
+					sourceLabel: "Standup",
+					sourceType: "transcript",
+					sourceDate: "2026-08-21",
+					sourceLinkOrId: "ctx_1",
+					content: "Discovery now includes design.",
+				},
+			],
+		});
+	});
+
+	it("stores the proposal with the slot the model dropped still under its heading", async () => {
+		modelReturns(REWRITE);
+
+		const outcome = await runDocumentRefreshActivity(DUE);
+
+		expect(outcome).toEqual({
+			status: "PROPOSED",
+			summary: "Folded design into discovery.",
+		});
+		expect(storeProposalMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({ content: REWRITE_WITH_SLOT }),
+		);
+	});
+
+	it("commits the body with the slot when auto-apply is on", async () => {
+		autoApplyOn();
+		modelReturns(REWRITE);
+
+		const outcome = await runDocumentRefreshActivity(DUE);
+
+		expect(outcome.status).toBe("COMMITTED");
+		expect(updateDocumentMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({ content: REWRITE_WITH_SLOT }),
+		);
+	});
+
+	it("records NO_CHANGES when the model's only difference is the dropped slot", async () => {
+		autoApplyOn();
+		modelReturns(WITH_SLOT.replace(`${SLOT}\n\n`, ""));
+
+		const outcome = await runDocumentRefreshActivity(DUE);
+
+		expect(outcome.status).toBe("NO_CHANGES");
+		expect(updateDocumentMock).not.toHaveBeenCalled();
+		expect(storeProposalMock).not.toHaveBeenCalled();
+	});
+
+	it("persists a document without slots exactly as the model wrote it", async () => {
+		autoApplyOn();
+		getDocumentMock.mockResolvedValue(DOCUMENT);
+		const proposed = "# PRD\r\n\r\nSSO is out of scope.  \n\n\n";
+		modelReturns(proposed);
+
+		await runDocumentRefreshActivity(DUE);
+
+		expect(updateDocumentMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({ content: proposed }),
+		);
 	});
 });
 

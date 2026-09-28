@@ -45,6 +45,13 @@ beforeEach(() => {
 	}
 	mocks.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
 	mocks.findProject.mockResolvedValue(null); // default: project was hard-deleted
+	// Default: an empty prefix. The activity sweeps two prefixes (attachments,
+	// then Glossy recipient logos), so a test that stubs only the first page
+	// still sees the second listing come back empty.
+	mocks.listObjects.mockResolvedValue({
+		objects: [],
+		nextContinuationToken: undefined,
+	});
 });
 
 describe("deleteProjectAttachmentsFromStorageActivity", () => {
@@ -82,7 +89,8 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			["story-attachments/p/s/a.png", "story-attachments/p/s/b.png"],
 			{ bucket: "project-contexts" },
 		);
-		expect(res).toEqual({ deleted: 2, pages: 1 });
+		// One page per prefix: the attachments, then the empty brand prefix.
+		expect(res).toEqual({ deleted: 2, pages: 2 });
 	});
 
 	it("paginates across pages via nextContinuationToken until exhausted", async () => {
@@ -101,23 +109,20 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			projectId: "p",
 		});
 
-		expect(mocks.listObjects).toHaveBeenCalledTimes(2);
+		// Two attachment pages, then one (empty) brand page.
+		expect(mocks.listObjects).toHaveBeenCalledTimes(3);
 		expect(mocks.listObjects.mock.calls[1][0]).toMatchObject({
 			continuationToken: "t",
 		});
-		expect(res).toEqual({ deleted: 2, pages: 2 });
+		expect(res).toEqual({ deleted: 2, pages: 3 });
 	});
 
-	it("is a no-op (no delete) on an empty prefix", async () => {
-		mocks.listObjects.mockResolvedValueOnce({
-			objects: [],
-			nextContinuationToken: undefined,
-		});
+	it("is a no-op (no delete) on empty prefixes", async () => {
 		const res = await deleteProjectAttachmentsFromStorageActivity({
 			projectId: "p",
 		});
 		expect(mocks.deleteObjects).not.toHaveBeenCalled();
-		expect(res).toEqual({ deleted: 0, pages: 1 });
+		expect(res).toEqual({ deleted: 0, pages: 2 });
 	});
 
 	it("propagates a listObjects failure (so Temporal retries)", async () => {
@@ -136,6 +141,109 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			deleted: 0,
 			errors: [{ key: "story-attachments/p/a", message: "denied" }],
 		});
+		await expect(
+			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
+		).rejects.toThrow(/1 object/);
+	});
+});
+
+// Glossy recipient logos (Fizzy #2589, KTD23): pending and promoted objects
+// under `project-brand/{projectId}/` that a best-effort cleanup left behind
+// are unreferenced, and project deletion is what removes them.
+describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix", () => {
+	it("also lists and deletes everything under project-brand/{projectId}/", async () => {
+		mocks.listObjects
+			.mockResolvedValueOnce({
+				objects: [obj("story-attachments/p/s/a.png")],
+				nextContinuationToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				objects: [
+					obj("project-brand/p/recipient-brand/current/c1.png"),
+					obj("project-brand/p/recipient-brand/pending/t1.png"),
+				],
+				nextContinuationToken: undefined,
+			});
+		mocks.deleteObjects
+			.mockResolvedValueOnce({ deleted: 1, errors: [] })
+			.mockResolvedValueOnce({ deleted: 2, errors: [] });
+
+		const res = await deleteProjectAttachmentsFromStorageActivity({
+			projectId: "p",
+		});
+
+		expect(mocks.listObjects.mock.calls.map((c) => c[0].prefix)).toEqual([
+			"story-attachments/p/",
+			"project-brand/p/",
+		]);
+		expect(mocks.deleteObjects).toHaveBeenLastCalledWith(
+			[
+				"project-brand/p/recipient-brand/current/c1.png",
+				"project-brand/p/recipient-brand/pending/t1.png",
+			],
+			{ bucket: "project-contexts" },
+		);
+		expect(res).toEqual({ deleted: 3, pages: 2 });
+	});
+
+	it("paginates the brand prefix like the attachment prefix", async () => {
+		mocks.listObjects
+			.mockResolvedValueOnce({
+				objects: [],
+				nextContinuationToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				objects: [obj("project-brand/p/recipient-brand/pending/a.png")],
+				nextContinuationToken: "b1",
+			})
+			.mockResolvedValueOnce({
+				objects: [obj("project-brand/p/recipient-brand/pending/b.png")],
+				nextContinuationToken: undefined,
+			});
+		mocks.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
+
+		const res = await deleteProjectAttachmentsFromStorageActivity({
+			projectId: "p",
+		});
+
+		expect(mocks.listObjects.mock.calls[2][0]).toMatchObject({
+			prefix: "project-brand/p/",
+			continuationToken: "b1",
+		});
+		expect(res).toEqual({ deleted: 2, pages: 3 });
+	});
+
+	it("keeps a restored project's brand objects", async () => {
+		mocks.findProject.mockResolvedValue({ id: "p" });
+
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.listObjects).not.toHaveBeenCalled();
+		expect(mocks.deleteObjects).not.toHaveBeenCalled();
+	});
+
+	it("throws (so Temporal retries) when a brand object could not be deleted", async () => {
+		mocks.listObjects
+			.mockResolvedValueOnce({
+				objects: [],
+				nextContinuationToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				objects: [
+					obj("project-brand/p/recipient-brand/current/c1.png"),
+				],
+				nextContinuationToken: undefined,
+			});
+		mocks.deleteObjects.mockResolvedValueOnce({
+			deleted: 0,
+			errors: [
+				{
+					key: "project-brand/p/recipient-brand/current/c1.png",
+					message: "denied",
+				},
+			],
+		});
+
 		await expect(
 			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
 		).rejects.toThrow(/1 object/);

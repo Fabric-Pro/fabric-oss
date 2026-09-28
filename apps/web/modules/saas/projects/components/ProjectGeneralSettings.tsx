@@ -20,6 +20,7 @@ import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ProjectRecipientBrandCard } from "./ProjectRecipientBrandCard";
 
 type Project = {
 	id: string;
@@ -37,6 +38,8 @@ type Project = {
 	 */
 	effectiveAttachmentRetentionDays?: number;
 	canEditSettings?: boolean;
+	/** PROJECT_UPDATE, which Editors hold too; gates the recipient brand. */
+	canUpdateProject?: boolean;
 };
 
 type Props = {
@@ -268,6 +271,14 @@ export function ProjectGeneralSettings({ project }: Props) {
 					</p>
 				</div>
 			</Card>
+
+			{/* Recipient brand (Fizzy #2589): who this project's Glossy editions
+			    are prepared for. Saves on its own — it is confirmed against the
+			    version it was read at, not with the fields above. */}
+			<ProjectRecipientBrandCard
+				projectId={project.id}
+				canEdit={project.canUpdateProject ?? false}
+			/>
 
 			{/* Save bar */}
 			{hasChanges && (

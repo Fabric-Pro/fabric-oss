@@ -26,6 +26,7 @@ export * from "./authority";
 export * from "./authority-providers";
 export * from "./background-jobs";
 export * from "./brand-color";
+export * from "./brand-kit";
 export * from "./chat-agent-selection";
 export * from "./chat-artifacts";
 export * from "./chat-documents";

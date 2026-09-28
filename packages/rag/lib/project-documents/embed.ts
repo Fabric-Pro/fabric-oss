@@ -20,6 +20,7 @@ import {
 	markDocumentAsEmbeddedIfVersionUnchanged,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import {
 	type ChunkingStrategy,
 	chunkText,
@@ -99,7 +100,11 @@ export interface DocumentEmbedResult {
 }
 
 /**
- * Generate content hash for change detection
+ * Generate content hash for change detection.
+ *
+ * Hashes exactly what it is given: the decision pre-check shares it, and
+ * `computeDocumentContentHash` in `@repo/database` must match it byte for
+ * byte. The embed paths below pass it the slot-free body.
  */
 export function generateContentHash(content: string): string {
 	return createHash("sha256").update(content).digest("hex").substring(0, 16);
@@ -160,11 +165,14 @@ export async function embedProjectDocument(
 		projectId,
 		userId,
 		organizationId,
-		content,
 		documentType,
 		title,
 		apiKey,
 	} = options;
+	// A Glossy visual slot is a placeholder marker, not prose: retrieval never
+	// sees it, and the hash is the slot-free body's, so placing or removing a
+	// slot leaves an otherwise unchanged document's embedding alone (KTD17).
+	const content = stripVisualSlots(options.content);
 
 	logger.info(
 		`[DocumentEmbed] Embedding document ${documentId} (${documentType}) for project ${projectId}`,
@@ -218,7 +226,7 @@ export async function embedProjectDocument(
 
 		if (needsChunking) {
 			return await embedDocumentWithChunking(
-				options,
+				{ ...options, content },
 				ragSettings,
 				embeddingContextId,
 				contentHash,
@@ -645,10 +653,13 @@ export async function reembedProjectDocument(
 	options: EmbedDocumentOptions,
 	oldContentHash?: string,
 ): Promise<DocumentEmbedResult> {
-	const { documentId, organizationId, content } = options;
+	const { documentId, organizationId } = options;
 
-	// Check if content actually changed
-	const newContentHash = generateContentHash(content);
+	// Check if content actually changed — on the slot-free body, the one
+	// `embedProjectDocument` hashes and stores.
+	const newContentHash = generateContentHash(
+		stripVisualSlots(options.content),
+	);
 	if (oldContentHash && newContentHash === oldContentHash) {
 		logger.info(
 			`[DocumentEmbed] Document ${documentId} content unchanged, skipping re-embed`,

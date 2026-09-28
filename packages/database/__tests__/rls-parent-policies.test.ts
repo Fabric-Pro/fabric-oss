@@ -20,10 +20,13 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	buildOrgOnlyWithProjectGuestReadPolicySQL,
 	buildParentScopedPolicySQL,
+	buildProjectMemberOrTenantConsistentPolicySQL,
 	buildProjectMemberOrTenantPolicySQL,
 	buildProjectSelfMemberOrTenantPolicySQL,
 	PARENT_SCOPED_POLICIES,
+	PROJECT_GUEST_READ_POLICY,
 } from "../scripts/rls-policy-sql";
 import {
 	createOrganizationContext,
@@ -392,5 +395,74 @@ describe("project_member_or_tenant on the project table itself", () => {
 			'"project"."userId" = current_user_id() AND "project"."organizationId" IS NULL',
 		);
 		expect(sql).toContain('m."projectId" = "project"."id"');
+	});
+});
+
+describe("project_member_or_tenant_consistent policy SQL (Glossy, Fizzy #2589)", () => {
+	const sql = buildProjectMemberOrTenantConsistentPolicySQL("glossy_build");
+	const { using, withCheck } = splitPolicy(sql);
+	const consistency =
+		'op."id" = "glossy_build"."projectId" AND op."organizationId" = "glossy_build"."organizationId"';
+
+	it("reads exactly the project_member_or_tenant predicate", () => {
+		const plain = splitPolicy(
+			buildProjectMemberOrTenantPolicySQL("glossy_build"),
+		);
+		expect(using).toBe(plain.using);
+	});
+
+	it("also requires the row's organizationId to be its parent project's on write", () => {
+		expect(withCheck).toContain('FROM "project" AS op');
+		expect(withCheck).toContain(consistency);
+		expect(using).not.toContain(consistency);
+	});
+
+	it("keeps both access branches in WITH CHECK, so a guest can still write", () => {
+		expect(withCheck).toContain('FROM "project_member" AS m');
+		expect(withCheck).toContain(
+			'm."projectId" = "glossy_build"."projectId"',
+		);
+		expect(withCheck).toContain('p."organizationId" = current_tenant_id()');
+	});
+});
+
+describe("org_only_with_project_guest_read policy SQL (Brand kit, Fizzy #2589)", () => {
+	const [tenantIsolation, guestRead] =
+		buildOrgOnlyWithProjectGuestReadPolicySQL("organization_brand_kit").map(
+			normalize,
+		);
+
+	it("keeps every command org_only under tenant_isolation", () => {
+		expect(tenantIsolation).toContain(
+			'CREATE POLICY tenant_isolation ON "organization_brand_kit" FOR ALL',
+		);
+		const { using, withCheck } = splitPolicy(tenantIsolation);
+		for (const body of [using, withCheck]) {
+			expect(body).toContain(
+				'"organization_brand_kit"."organizationId" = current_tenant_id()',
+			);
+			expect(body).toContain("ELSE false");
+			expect(body).not.toContain("project_member");
+		}
+	});
+
+	it("adds a SELECT-only policy for accepted members of the organization's projects", () => {
+		expect(guestRead).toContain(
+			`CREATE POLICY ${PROJECT_GUEST_READ_POLICY} ON "organization_brand_kit" FOR SELECT`,
+		);
+		expect(guestRead).toContain(
+			'JOIN "project" AS p ON p."id" = m."projectId"',
+		);
+		expect(guestRead).toContain(
+			'p."organizationId" = "organization_brand_kit"."organizationId"',
+		);
+		expect(guestRead).toContain('m."userId" = current_user_id()');
+		expect(guestRead).toContain('m."acceptedAt" IS NOT NULL');
+		expect(guestRead).toContain(
+			'm."expiresAt" IS NULL OR m."expiresAt" > now()',
+		);
+		// A SELECT policy cannot admit a write: no WITH CHECK, no FOR ALL.
+		expect(guestRead).not.toContain("WITH CHECK");
+		expect(guestRead).not.toContain("FOR ALL");
 	});
 });

@@ -187,6 +187,12 @@ import {
 } from "./procedures/github";
 // GitLab procedures
 import { listGitLabProjectsProcedure } from "./procedures/gitlab/list-projects";
+// Glossy Version Export editions (Fizzy #2589)
+import { buildGlossyEditionProcedure } from "./procedures/glossy/build-edition";
+import { detectGlossyOpportunitiesProcedure } from "./procedures/glossy/detect-opportunities";
+import { getGlossyEditionProcedure } from "./procedures/glossy/get-edition";
+import { regenerateGlossyVisualProcedure } from "./procedures/glossy/regenerate-visual";
+import { reviewGlossyVisualProcedure } from "./procedures/glossy/review-visual";
 // Governance (engagement profile, stage approvers)
 import { listStageApproversProcedure } from "./procedures/governance/list-stage-approvers";
 import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
@@ -454,6 +460,13 @@ import {
 	setReadinessItemNotApplicableProcedure,
 	snoozeReadinessItemProcedure,
 } from "./procedures/readiness";
+// Glossy Version Export recipient brand (Fizzy #2589)
+import {
+	createRecipientLogoUploadUrlProcedure,
+	fetchRecipientBrandProcedure,
+	getRecipientBrandProcedure,
+	updateRecipientBrandProcedure,
+} from "./procedures/recipient-brand";
 import { recordProjectVisitProcedure } from "./procedures/record-project-visit";
 import { attachPatToRepoIntegrationProcedure } from "./procedures/repository-integrations/attach-pat";
 // Repository Integration procedures
@@ -2071,6 +2084,28 @@ export const projectsRouter = {
 	// Code Indexing (GitHub push webhook for auto-reindex)
 	codeIndexing: {
 		githubWebhook: githubPushWebhookProcedure,
+	},
+
+	// Glossy Version Export editions (Fizzy #2589): read an edition, run
+	// Align-first detection, start a build, and regenerate or review one
+	// visual. Every procedure is gated on the rollout flag (NOT_FOUND when
+	// off); writes need edit access.
+	glossy: {
+		get: getGlossyEditionProcedure,
+		detect: detectGlossyOpportunitiesProcedure,
+		build: buildGlossyEditionProcedure,
+		regenerateVisual: regenerateGlossyVisualProcedure,
+		reviewVisual: reviewGlossyVisualProcedure,
+	},
+
+	// Glossy Version Export: the party an edition is prepared for (Fizzy
+	// #2589). A fetch or an upload yields a token; `update` confirms it
+	// against the version the editor read (KTD23).
+	recipientBrand: {
+		get: getRecipientBrandProcedure,
+		update: updateRecipientBrandProcedure,
+		fetch: fetchRecipientBrandProcedure,
+		createLogoUploadUrl: createRecipientLogoUploadUrlProcedure,
 	},
 
 	// @mentions autocomplete search

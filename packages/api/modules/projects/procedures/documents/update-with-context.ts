@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import {
+	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
 	updateDocument,
@@ -11,6 +12,7 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "@repo/temporal";
+import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -67,10 +69,12 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			 */
 			confirmedContent: z.string().optional(),
 			/**
-			 * Document version at the time the preview was generated. Advisory
-			 * today — `updateDocument()` does not yet support `expectedVersion`
-			 * optimistic concurrency (unlike stories). Threaded through so we
-			 * can add enforcement later without a client API break.
+			 * Document version at the time the preview was generated. Advisory:
+			 * the apply guards its write with the version it reads itself (the
+			 * body the visual slots are lifted from), not this one, so an edit
+			 * saved between preview and confirm is still overwritten. Threaded
+			 * through so preview-time enforcement can be added without a client
+			 * API break.
 			 */
 			documentVersion: z.number().optional(),
 		}),
@@ -109,13 +113,35 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			}
 			const confirmedContent = input.confirmedContent;
 
-			const updated = await updateDocument(input.id, {
-				content: normalizeQuoteArtifacts(confirmedContent),
-				lastEditedBy: user.id,
-				changeDescription: "Updated with latest context",
-				userId: user.id,
-				organizationId,
-			});
+			// Visual slots (KTD17) come from the CURRENT stored body, not from the
+			// confirmed text: the preview was drafted minutes earlier, so a slot a
+			// person deleted in between must not come back, and one the confirmed
+			// text lost must. With no slot on either side the confirmed text is
+			// saved unchanged.
+			// Guard the write with the version just read: the slots were lifted
+			// from that body, so a slot saved between this read and the write
+			// would otherwise be lost. A conflict writes nothing.
+			let updated: Awaited<ReturnType<typeof updateDocument>>;
+			try {
+				updated = await updateDocument(input.id, {
+					content: normalizeQuoteArtifacts(
+						preserveVisualSlots(document.content, confirmedContent),
+					),
+					lastEditedBy: user.id,
+					changeDescription: "Updated with latest context",
+					userId: user.id,
+					organizationId,
+					expectedVersion: document.version,
+				});
+			} catch (error) {
+				if (error instanceof DocumentVersionConflictError) {
+					throw new ORPCError("CONFLICT", {
+						message:
+							"The document changed while the update was being applied. Try again.",
+					});
+				}
+				throw error;
+			}
 
 			await applyDocumentUpdateSideEffects({
 				projectId: input.projectId,

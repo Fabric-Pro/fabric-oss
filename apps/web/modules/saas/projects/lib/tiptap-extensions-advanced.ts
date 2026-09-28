@@ -31,6 +31,7 @@ import { ExcalidrawEmbed } from "./tiptap-excalidraw-embed-extension";
 import { DocumentImage } from "./tiptap-image-extension";
 import { ImageUploadPlaceholder } from "./tiptap-image-upload-extension";
 import { MERMAID_LANGUAGES, MermaidBlock } from "./tiptap-mermaid-extension";
+import { VisualSlot } from "./tiptap-visual-slot-extension";
 
 // Create lowlight instance for syntax highlighting
 const lowlight = createLowlight(common);
@@ -434,6 +435,12 @@ function buildSharedRichDocumentExtensions(
 		// Fetches scenes fresh from the MCP server on every mount so edits
 		// users make in the chat sidebar reflect here automatically.
 		ExcalidrawEmbed,
+
+		// Glossy visual slot — `<visual-slot data-slot-id=… data-kind=…
+		// data-hint=…>` on its own line. Registered in every editor that shares
+		// this schema, whatever the rollout gate says, so a slot is never
+		// dropped on load or save; only the insert controls are gated.
+		VisualSlot,
 
 		// Enhanced code blocks with syntax highlighting (excludes mermaid - handled by MermaidBlock)
 		CodeBlockLowlightNoMermaid.configure({

@@ -1,6 +1,7 @@
 ---
 title: "A test double must mirror the contract, not the convenience"
 date: 2026-08-18
+last_updated: 2026-09-25
 category: conventions
 module: api projects documents tests mocks vitest
 problem_type: convention
@@ -10,7 +11,8 @@ applies_when:
   - "Writing a mock or double for something with a non-trivial shape — a discriminated union, a row with relations, a module with more than a couple of exports"
   - "Hand-listing a mocked module's exports instead of passing the real module through with importActual and overriding one export"
   - "Mocking a Prisma query result without every relation the real query's select requests"
-tags: [test-doubles, mocking, vitest, contract-fidelity, prisma-mocks, fizzy-2190]
+  - "Adding a named import from a module that other test files mock with a hand-listed factory, where importActual is not an option"
+tags: [test-doubles, mocking, vitest, contract-fidelity, prisma-mocks, sibling-tests, fizzy-2190, fizzy-2589]
 related_components: [documents, testing]
 audience: engineers writing mocks and fixtures for typed contracts
 owner: web app team
@@ -54,6 +56,15 @@ Three rules that cover most of it:
   `importActual` and override the specific function over hand-listing the exports
   you currently use. A hand-listed subset is a maintenance trap that fires on an
   unrelated import.
+- **When you cannot pass it through, update every double of the module, not
+  just yours.** Some modules are hand-listed on purpose. `@repo/database`
+  builds the Prisma client when it is imported, and the MCP gateway's
+  `platform-tools.ts` keeps it out of module scope altogether by running
+  `await import("@repo/database")` inside each handler. When the code under
+  test gains a new export from such a module, every test file that mocks the
+  module and drives the changed code needs the export too. The failure does
+  not show up in the file you are writing. See the second example below for
+  why.
 - **Mirror the query, not the call site.** When a double stands in for a data
   fetch, its return must carry every field the query selects — including relations
   — not just the ones today's code reads.
@@ -97,6 +108,37 @@ vi.mock("./queries", async () => ({ countWords: (await importActual()).countWord
 
 // Survives it, and still exercises the real implementations.
 vi.mock("./queries", async () => await importActual<typeof import("./queries")>());
+```
+
+A new export breaking a sibling test. `handleUpdateDocument` started
+destructuring `DocumentVersionConflictError` from its per-handler
+`await import("@repo/database")`. The new test file had the class in its mock
+and passed. `platform-tool-write-permissions.test.ts` also drives
+`fabric_update_document` with a hand-listed `@repo/database` factory, and it
+failed:
+
+```
+[vitest] No "DocumentVersionConflictError" export is defined on the "@repo/database" mock. Did you forget to return it from "vi.mock"?
+```
+
+Vitest reports a missing export when it is *read*, not when the module is
+imported. Because the import is per handler, only the tests that call that
+handler break. Eleven gateway test files mock `@repo/database` and load
+`platform-tools.ts`, and just two of them needed the class. So "the gateway
+tests pass" does not tell you much until the files that exercise the changed
+handler have run. Find them before relying on the result:
+
+```bash
+# Test files that mock the module AND reach the changed handler
+grep -rl 'vi.mock("@repo/database"' apps/web/modules/saas/mcp/lib/gateway/__tests__ \
+  | xargs grep -l "fabric_update_document"
+```
+
+Each of them gets the export with its real shape, which for an error class
+means a class, so that `instanceof` in the code under test still works:
+
+```
+DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
 ```
 
 ## Related

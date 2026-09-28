@@ -138,6 +138,26 @@ export function buildProjectMemberOrTenantPolicySQL(
 	tableName: string,
 	childKeyColumn = "projectId",
 ): string {
+	const predicate = projectMemberOrTenantPredicate(tableName, childKeyColumn);
+	return `
+							CREATE POLICY tenant_isolation ON "${tableName}"
+							USING (
+								${predicate}
+							)
+							WITH CHECK (
+								${predicate}
+							)
+						`;
+}
+
+/**
+ * The `project_member_or_tenant` predicate on its own, shared by that policy
+ * and by `project_member_or_tenant_consistent` below.
+ */
+function projectMemberOrTenantPredicate(
+	tableName: string,
+	childKeyColumn: string,
+): string {
 	// Two independent branches. The member branch deliberately does NOT go
 	// through the `project` row: `project` carries its own user_owned policy,
 	// and RLS applies inside policy sub-selects, so a guest (who cannot see the
@@ -147,7 +167,7 @@ export function buildProjectMemberOrTenantPolicySQL(
 	// m."projectId" (a self-comparison that admits every member of any
 	// project) — review round 5.
 	const outer = `"${tableName}"."${childKeyColumn}"`;
-	const predicate = `(
+	return `(
 									EXISTS (
 										SELECT 1
 										FROM "project" AS p
@@ -163,6 +183,44 @@ export function buildProjectMemberOrTenantPolicySQL(
 										AND (m."expiresAt" IS NULL OR m."expiresAt" > now())
 									)
 								)`;
+}
+
+// ---------------------------------------------------------------------------
+// project_member_or_tenant_consistent
+// ---------------------------------------------------------------------------
+
+/**
+ * `project_member_or_tenant` for rows that carry their own non-null
+ * `organizationId` beside `projectId` (the Glossy edition tables, Fizzy #2589).
+ *
+ * USING is exactly the `project_member_or_tenant` predicate: the tenant, or an
+ * accepted, non-expired member of the row's project. `user_owned` has no guest
+ * branch and would deny invited guests at the database.
+ *
+ * WITH CHECK adds that the row's `organizationId` equals its parent project's.
+ * Without it the member branch admits any tenant columns a guest cares to
+ * write, since that branch never reads them; with it, no insert or update, by
+ * a guest or by an organization member, can file a row under another tenant.
+ * The sub-select reads `project` under that table's own policy, which admits
+ * both the tenant and accepted members, so it adds no access of its own.
+ */
+export function buildProjectMemberOrTenantConsistentPolicySQL(
+	tableName: string,
+): string {
+	const predicate = projectMemberOrTenantPredicate(tableName, "projectId");
+	// Document-to-project consistency (a row's documentId belongs to its own
+	// projectId) is deliberately NOT checked here. A sub-select into
+	// project_document runs under that table's user_owned policy, which has no
+	// guest branch, so it would deny every invited guest's write. The query
+	// layer enforces it instead: ensureGlossyEditionWith loads the document by
+	// (id, projectId) before any Glossy row exists, and build and cache rows
+	// copy their projectId from the edition.
+	const consistent = `EXISTS (
+									SELECT 1
+									FROM "project" AS op
+									WHERE op."id" = "${tableName}"."projectId"
+									AND op."organizationId" = "${tableName}"."organizationId"
+								)`;
 	return `
 							CREATE POLICY tenant_isolation ON "${tableName}"
 							USING (
@@ -170,8 +228,71 @@ export function buildProjectMemberOrTenantPolicySQL(
 							)
 							WITH CHECK (
 								${predicate}
+								AND ${consistent}
 							)
 						`;
+}
+
+// ---------------------------------------------------------------------------
+// org_only_with_project_guest_read
+// ---------------------------------------------------------------------------
+
+/** Name of the extra, SELECT-only policy the builder below creates. */
+export const PROJECT_GUEST_READ_POLICY = "project_guest_read";
+
+/**
+ * Organization-owned rows that invited project guests must be able to READ
+ * (the preparer's Brand kit, Fizzy #2589), and that only the organization may
+ * write.
+ *
+ * Two policies, because one cannot express it: a single policy's USING governs
+ * SELECT, UPDATE and DELETE alike, so a guest branch there would let a guest
+ * delete the row (DELETE checks only USING). Instead:
+ *
+ *  - `tenant_isolation`, FOR ALL: the `org_only` predicate for both USING and
+ *    WITH CHECK, so every write stays with the organization.
+ *  - `project_guest_read`, FOR SELECT: the current user is an accepted,
+ *    non-expired member of a project that belongs to the row's organization.
+ *
+ * Permissive policies combine with OR per command, so SELECT admits either
+ * branch while INSERT, UPDATE and DELETE see only the first.
+ */
+export function buildOrgOnlyWithProjectGuestReadPolicySQL(
+	tableName: string,
+): string[] {
+	const orgOnly = `CASE current_tenant_type()
+									WHEN 'organization' THEN
+										"${tableName}"."organizationId" = current_tenant_id()
+									ELSE false
+								END`;
+	const guestRead = `EXISTS (
+									SELECT 1
+									FROM "project_member" AS m
+									JOIN "project" AS p ON p."id" = m."projectId"
+									WHERE p."organizationId" = "${tableName}"."organizationId"
+									AND m."userId" = current_user_id()
+									AND m."acceptedAt" IS NOT NULL
+									AND (m."expiresAt" IS NULL OR m."expiresAt" > now())
+								)`;
+	return [
+		`
+							CREATE POLICY tenant_isolation ON "${tableName}"
+							FOR ALL
+							USING (
+								${orgOnly}
+							)
+							WITH CHECK (
+								${orgOnly}
+							)
+						`,
+		`
+							CREATE POLICY ${PROJECT_GUEST_READ_POLICY} ON "${tableName}"
+							FOR SELECT
+							USING (
+								${guestRead}
+							)
+						`,
+	];
 }
 
 /**

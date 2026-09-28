@@ -142,6 +142,14 @@ useEffect(() => {
 
 ## Diff Highlighting
 
+**Visual slots.** `DocumentEditor.tsx` diffs through `diffKeepingVisualSlotsWhole`
+(`apps/web/modules/saas/projects/lib/tiptap-visual-slot-extension.tsx`), which
+treats each `<visual-slot>` line as one word so a slot is deleted or inserted
+whole instead of being split into escaped text, and its assistant applications
+splice the stored slots back in (during a streaming run, from the run's
+baseline). `DocumentGeneratorEditor.tsx` keeps plain `diffPartialText`: it has
+no persistence path and never enables slot insertion.
+
 ### The `diffPartialText` Function
 
 Located in `apps/web/modules/saas/projects/lib/diff-utils.ts`:

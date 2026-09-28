@@ -887,14 +887,66 @@ describe("LINEAR_INTEGRATION (#2628)", () => {
 		expect(FEATURE_FLAG_REGISTRY.LINEAR_INTEGRATION.orgScopable).toBe(true);
 	});
 
-	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays the
-	// head that two API tests use as their fixture flag. When the next entry
-	// lands it takes over this assertion, and this block restates itself as
-	// relative order the way the two above it did.
+	// Stated as relative order rather than as the tail, for the reason the
+	// #1930 block above records: #2589's GLOSSY_EDITION has since been
+	// appended after this entry, so a block pinning the tail by name would
+	// fail for its neighbour rather than for itself.
+	it("is appended after every org-scopable flag that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("LINEAR_INTEGRATION"),
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("TODO_LIST"));
+	});
+});
+
+describe("GLOSSY_EDITION (#2589)", () => {
+	// Default OFF, and there is no companion kill switch (KTD20): a build
+	// writes only Glossy-owned rows and never the document or retrieval, and
+	// the prepare step re-reads this gate before every build, so this one
+	// entry is the whole rollback lever.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("GLOSSY_EDITION")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.GLOSSY_EDITION.default).toBe(false);
+		expect(FEATURE_FLAG_REGISTRY.GLOSSY_EDITION.envVar).toBe(
+			"FABRIC_FEATURE_GLOSSY_EDITION",
+		);
+		expect(FEATURE_FLAG_REGISTRY.GLOSSY_EDITION.orgScopable).toBe(true);
+	});
+
+	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays
+	// the head that two API tests use as their fixture flag. When the next
+	// entry lands it takes over this assertion, and this block restates
+	// itself as relative order the way TODO_LIST's did above.
 	it("is appended after every existing org-scopable flag", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
 		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
-			"LINEAR_INTEGRATION",
+			"GLOSSY_EDITION",
 		);
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("GLOSSY_EDITION", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	// An org override of true beats a global false, per the resolver's
+	// documented precedence — this is how one organization is enabled ahead
+	// of the rest.
+	it("lets an org override of true beat a global override of false", () => {
+		expect(
+			resolveFlag("GLOSSY_EDITION", { org: true, global: false }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	it("is seeded by its env var when no override row exists", () => {
+		expect(
+			resolveFlag(
+				"GLOSSY_EDITION",
+				{},
+				{ FABRIC_FEATURE_GLOSSY_EDITION: "true" },
+			),
+		).toEqual({ enabled: true, source: "env" });
 	});
 });

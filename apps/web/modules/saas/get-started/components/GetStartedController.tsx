@@ -19,6 +19,7 @@ import {
 	type GsPage,
 	type GsRuntimeGates,
 	isNewlyIntroducedPage,
+	pageComponentsFor,
 	pageForTab,
 } from "../lib/get-started-registry";
 import { useOnboardingViewClaim } from "../lib/onboarding-claim";
@@ -76,7 +77,7 @@ function adHocStepFor(item: GsItem, gates: GsRuntimeGates): OnboardingStep {
 		// Prefer spotlighting the page's primary in-page component over the tab
 		// itself, so "Show me" points at the real thing the user will use.
 		const page = pageForTab(item.projectTab, gates);
-		const primary = page?.components[0];
+		const primary = page ? pageComponentsFor(page, gates)[0] : undefined;
 		return {
 			...base,
 			target: primary
@@ -112,12 +113,16 @@ function adHocStepFor(item: GsItem, gates: GsRuntimeGates): OnboardingStep {
 
 /**
  * Build the detailed page tour: one spotlight step per in-page component,
- * skipping conditional components that aren't currently mounted (e.g. the
- * proposals button when there are no proposals). We're already on the page, so
- * steps anchor directly to the in-page component.
+ * skipping components whose own runtime gate is off for this viewer and
+ * conditional components that aren't currently mounted (e.g. the proposals
+ * button when there are no proposals). We're already on the page, so steps
+ * anchor directly to the in-page component.
  */
-function buildPageTourSteps(page: GsPage): OnboardingStep[] {
-	return page.components
+function buildPageTourSteps(
+	page: GsPage,
+	gates: GsRuntimeGates,
+): OnboardingStep[] {
+	return pageComponentsFor(page, gates)
 		.filter(
 			(c) =>
 				!c.conditional ||
@@ -167,12 +172,18 @@ export function GetStartedController() {
 	// than from `tabGates`. Read unconditionally at the top level, like every
 	// other flag here.
 	const todoListEnabled = useFeatureFlag("TODO_LIST");
+	// Glossy editions are the same kind of rollout (#2589) and are not a tab
+	// either — they hang off a Proposal or Business Case — so the value comes
+	// from the flag provider too. It gates one Documents page-tour component
+	// and one guided-tour step.
+	const glossyEditionEnabled = useFeatureFlag("GLOSSY_EDITION");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
 			todoList: todoListEnabled,
+			glossyEdition: glossyEditionEnabled,
 		}),
-		[tabGates, todoListEnabled],
+		[tabGates, todoListEnabled, glossyEditionEnabled],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't
 	// see would navigate nowhere or spotlight a missing anchor — drop it.
@@ -335,9 +346,17 @@ export function GetStartedController() {
 				// silently default to off here without it.
 				gates: {
 					todoList: todoListEnabled,
+					glossyEdition: glossyEditionEnabled,
 				} satisfies TourStepGates,
 			}),
-		[mode, frozenHasProject, hasProject, isTabVisible, todoListEnabled],
+		[
+			mode,
+			frozenHasProject,
+			hasProject,
+			isTabVisible,
+			todoListEnabled,
+			glossyEditionEnabled,
+		],
 	);
 	const [adHocStep, setAdHocStep] = useState<OnboardingStep | null>(null);
 	const [pageTourSteps, setPageTourSteps] = useState<OnboardingStep[]>([]);
@@ -446,7 +465,7 @@ export function GetStartedController() {
 
 	const launchPageTour = useCallback(
 		(page: GsPage, auto: boolean) => {
-			const steps = buildPageTourSteps(page);
+			const steps = buildPageTourSteps(page, gsGates);
 			if (steps.length === 0) {
 				return;
 			}
@@ -458,7 +477,7 @@ export function GetStartedController() {
 			setIndex(0);
 			setMode("pageTour");
 		},
-		[persist],
+		[persist, gsGates],
 	);
 
 	// Open a specific page's tour by id (from a page's "Get started" launcher).

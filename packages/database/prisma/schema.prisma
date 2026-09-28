@@ -374,6 +374,12 @@ model User {
   // model doc for why this is not a column on Member.
   cliPromptDismissals CliConnectionPromptDismissal[]
 
+  // Glossy editions (Fizzy #2589). Actor columns only; SetNull on delete.
+  glossyBuildsStarted    GlossyBuild[]           @relation("GlossyBuildStartedBy")
+  glossyVisualDecisions  GlossyVisualDecision[]  @relation("GlossyVisualDecisionDecidedBy")
+  recipientBrandsUpdated ProjectRecipientBrand[] @relation("ProjectRecipientBrandUpdatedBy")
+  brandKitsUpdated       OrganizationBrandKit[]  @relation("OrganizationBrandKitUpdatedBy")
+
   // Brute force protection
   failedLoginAttempts Int       @default(0)
   lockedUntil         DateTime?
@@ -830,6 +836,14 @@ model Organization {
   cliReaches          OrganizationCliReach[]
   cliFirstReach       OrganizationCliFirstReach?
   cliPromptDismissals CliConnectionPromptDismissal[]
+
+  // Glossy editions (Fizzy #2589); cascade on org delete (tenant erasure).
+  glossyEditions        GlossyEdition[]
+  glossyBuilds          GlossyBuild[]
+  glossyVisualDecisions GlossyVisualDecision[]
+  glossySegmentCache    GlossySegmentCache[]
+  recipientBrands       ProjectRecipientBrand[]
+  brandKit              OrganizationBrandKit?
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
@@ -2070,6 +2084,13 @@ model Project {
   discoveryRuns           DiscoveryRun[]
   successMetrics          ProjectSuccessMetric[]
 
+  // Glossy editions (Fizzy #2589)
+  glossyEditions        GlossyEdition[]
+  glossyBuilds          GlossyBuild[]
+  glossyVisualDecisions GlossyVisualDecision[]
+  glossySegmentCache    GlossySegmentCache[]
+  recipientBrand        ProjectRecipientBrand?
+
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
 
@@ -2193,6 +2214,9 @@ model ProjectDocument {
   lock          DocumentLock?
   evals         DocumentEval[]
   autoRefresh   DocumentAutoRefreshSettings?
+  glossyEdition GlossyEdition?
+  glossyBuilds  GlossyBuild[]
+  glossyCache   GlossySegmentCache[]
   user          User?                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization  Organization?                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -3199,6 +3223,223 @@ model DocumentAutoRefreshSettings {
   @@index([userId])
   @@index([organizationId])
   @@map("document_auto_refresh_settings")
+}
+
+// ============================================================================
+// Glossy editions (Fizzy #2589)
+//
+// A stakeholder-ready edition of a Proposal or Business Case, stored beside the
+// document rather than as a second document. Every project table carries a
+// non-null organizationId and projectId and NO userId: the organization is the
+// only tenant (ADR-018), so a copied author column would only be something to
+// forge. Status and kind columns are TEXT with hand-added CHECK constraints (see
+// migration `*_glossy_editions`), so a new kind never needs an enum migration.
+// The writers live in prisma/queries/projects/glossy-editions.ts; every guarded
+// write there keys on the attempt id, never on a shared status.
+// ============================================================================
+
+model GlossyEdition {
+  id             String @id @default(cuid())
+  documentId     String @unique
+  projectId      String
+  organizationId String
+
+  /// Published edition content. Null until the first build finalizes; a CHECK
+  /// keeps it and `publishedBuildId` both present or both absent, so a failed
+  /// rebuild can never leave a half-published edition behind.
+  content          Json?
+  /// The attempt whose snapshot the published content came from. Regenerate
+  /// reads that snapshot, and out-of-date compares against its source hash.
+  publishedBuildId String?
+  /// Bumped by every write to `content` (finalize and single-visual
+  /// regenerate), so two writers of the same content cannot both apply.
+  contentRevision  Int     @default(0)
+  /// The attempt holding the build claim; null when no build is running. A
+  /// plain id rather than a foreign key: finalize deletes superseded attempt
+  /// rows in the same transaction that moves this pointer, and a circular
+  /// FK would make that ordering-sensitive.
+  currentBuildId   String?
+  /// Options the most recent build was started with, to prefill the next one.
+  lastOptions      Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  decisions    GlossyVisualDecision[]
+
+  // Composite target for GlossyVisualDecision's (editionId, projectId) foreign
+  // key, so a decision can never name an edition of another project.
+  @@unique([id, projectId])
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("glossy_edition")
+}
+
+model GlossyBuild {
+  id             String @id @default(cuid())
+  documentId     String
+  projectId      String
+  organizationId String
+
+  /// BUILDING | SUCCEEDED | FAILED | SUPERSEDED. A row is BUILDING exactly
+  /// while its edition's `currentBuildId` names it: the claim, finalize, fail
+  /// and reclaim writes move both in one transaction.
+  status      String
+  startedById String?
+  startedAt   DateTime  @default(now())
+  heartbeatAt DateTime?
+  finishedAt  DateTime?
+  workflowId  String?
+
+  /// Build options as confirmed by the editor (length mode, mode, style
+  /// direction, and for Align first the confirmed opportunities).
+  options Json
+
+  // Source snapshot, read once by the build procedure. Each run reads only its
+  // own snapshot, never the live document.
+  sourceTitle       String
+  sourceContent     String
+  sourceVersion     Int
+  sourceContentHash String
+
+  // Progress, written through the same attempt guard as the heartbeat.
+  progressStep  String?
+  sectionsDone  Int     @default(0)
+  sectionsTotal Int?
+
+  report       Json?
+  /// A fixed failure code and message; free text is redacted by the caller.
+  errorCode    String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  startedBy    User?           @relation("GlossyBuildStartedBy", fields: [startedById], references: [id], onDelete: SetNull)
+
+  @@index([documentId, startedAt])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([startedById])
+  @@map("glossy_build")
+}
+
+model GlossyVisualDecision {
+  id             String  @id @default(cuid())
+  editionId      String
+  projectId      String
+  organizationId String
+  visualKey      String
+  /// The section the visual belongs to. Decisions are pruned only when their
+  /// section no longer exists, so a discard survives a rebuild that omits it.
+  sectionKey     String
+  /// ACCEPTED | DISCARDED
+  decision       String
+  /// The spec hash an acceptance approved. ACCEPTED applies only while it
+  /// matches the current spec; a CHECK requires it on every acceptance.
+  specHash       String?
+  decidedById    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  edition      GlossyEdition @relation(fields: [editionId, projectId], references: [id, projectId], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  decidedBy    User?         @relation("GlossyVisualDecisionDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@unique([editionId, visualKey])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([decidedById])
+  @@map("glossy_visual_decision")
+}
+
+model GlossySegmentCache {
+  id             String   @id @default(cuid())
+  documentId     String
+  projectId      String
+  organizationId String
+  /// REWRITE | DETECTION | EXTRACTION
+  kind           String
+  /// Hash of everything that shaped the output, including the pipeline version.
+  cacheKey       String
+  sectionKey     String?
+  output         Json
+  /// Stamped by finalize for every key the build used. Finalize then deletes
+  /// the document's rows last used before the claim, so rows written during a
+  /// build survive it.
+  lastUsedAt     DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, kind, cacheKey])
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("glossy_segment_cache")
+}
+
+/// The recipient's brand for a project: one engagement, one recipient.
+model ProjectRecipientBrand {
+  id             String   @id @default(cuid())
+  projectId      String   @unique
+  organizationId String
+  name           String?
+  /// Normalized to `https://host` before it is fetched, stored, or audited.
+  website        String?
+  /// `project-brand/{projectId}/recipient-brand/current/{promotionId}.png`,
+  /// server-issued only; a CHECK pins the prefix to this row's project.
+  logoKey        String?
+  /// `#rrggbb` values.
+  colors         String[] @default([])
+  /// Compare-and-set token: every confirmation names the version it read.
+  version        Int      @default(1)
+  updatedById    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy    User?        @relation("ProjectRecipientBrandUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([updatedById])
+  @@map("project_recipient_brand")
+}
+
+/// The preparer's Brand kit: accent colors and guidance text. Its own table,
+/// never organization metadata, because the auth library writes metadata
+/// wholesale and a concurrent update would drop any key stored there. The
+/// existing named brand color stays in metadata and seeds the primary color.
+model OrganizationBrandKit {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  /// Up to three `#rrggbb` values.
+  accentColors   String[] @default([])
+  /// Up to 2,000 characters.
+  guidance       String?
+  updatedById    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy    User?        @relation("OrganizationBrandKitUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([updatedById])
+  @@map("organization_brand_kit")
 }
 
 // Project RAG Settings - Per-project RAG configuration

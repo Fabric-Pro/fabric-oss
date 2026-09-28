@@ -11,9 +11,12 @@ import { pathToFileURL } from "node:url";
 import { db } from "../prisma/client";
 import {
 	buildFrameProjectOrUserPolicySQL,
+	buildOrgOnlyWithProjectGuestReadPolicySQL,
 	buildParentScopedPolicySQL,
+	buildProjectMemberOrTenantConsistentPolicySQL,
 	buildProjectMemberOrTenantPolicySQL,
 	buildProjectSelfMemberOrTenantPolicySQL,
+	PROJECT_GUEST_READ_POLICY,
 } from "./rls-policy-sql";
 
 async function applyRLS() {
@@ -538,6 +541,38 @@ async function applyRLS() {
 				name: "stage_transition_request",
 				policy: "project_member_or_tenant",
 			}, // Governed stage transition requests (guests may request/approve)
+			// Glossy editions (Fizzy #2589). Organization-tenanted project rows
+			// with no userId: readable and writable by the tenant or an accepted
+			// project member (guests build too), and a write must carry its
+			// parent project's organizationId. Which member may write stays an
+			// application decision (DOCUMENT_UPDATE and canEditProject).
+			{
+				name: "glossy_edition",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "glossy_build",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "glossy_visual_decision",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "glossy_segment_cache",
+				policy: "project_member_or_tenant_consistent",
+			},
+			{
+				name: "project_recipient_brand",
+				policy: "project_member_or_tenant_consistent",
+			},
+			// The preparer's Brand kit: written by the organization only, read
+			// also by guests of any of its projects, who see it on the editions
+			// they are invited to.
+			{
+				name: "organization_brand_kit",
+				policy: "org_only_with_project_guest_read",
+			},
 			{ name: "discovery_run", policy: "user_owned" }, // Discovery runs (integration contracts)
 			{ name: "project_success_metric", policy: "user_owned" }, // Customer success metrics
 			// Parent-scoped: no tenant columns of their own, tenancy is
@@ -690,6 +725,9 @@ async function applyRLS() {
 
 				// Create appropriate policy based on type
 				let policySQL: string;
+				// Additional policies beyond tenant_isolation, for the shapes a
+				// single policy cannot express. Each is dropped and recreated.
+				let extraPolicies: { name: string; sql: string }[] = [];
 
 				switch (table.policy) {
 					case "strict":
@@ -1269,6 +1307,29 @@ async function applyRLS() {
 									);
 						break;
 
+					case "project_member_or_tenant_consistent":
+						// project_member_or_tenant, plus a WITH CHECK that the
+						// row's organizationId is its parent project's.
+						policySQL =
+							buildProjectMemberOrTenantConsistentPolicySQL(
+								table.name,
+							);
+						break;
+
+					case "org_only_with_project_guest_read": {
+						// org_only for every command, plus a SELECT-only policy
+						// for accepted members of the organization's projects.
+						const [tenantIsolation, guestRead] =
+							buildOrgOnlyWithProjectGuestReadPolicySQL(
+								table.name,
+							);
+						policySQL = tenantIsolation;
+						extraPolicies = [
+							{ name: PROJECT_GUEST_READ_POLICY, sql: guestRead },
+						];
+						break;
+					}
+
 					case "project_parent":
 						// No tenant columns on the row itself. Visibility is
 						// inherited from the parent `project` row, which uses
@@ -1293,6 +1354,12 @@ async function applyRLS() {
 				}
 
 				await db.$executeRawUnsafe(policySQL);
+				for (const extra of extraPolicies) {
+					await db.$executeRawUnsafe(
+						`DROP POLICY IF EXISTS ${extra.name} ON "${table.name}"`,
+					);
+					await db.$executeRawUnsafe(extra.sql);
+				}
 
 				// Worker bypass policy (policy-mode alternative to the BYPASSRLS attribute).
 				// Always drop so switching back to bypassrls mode cleans up.

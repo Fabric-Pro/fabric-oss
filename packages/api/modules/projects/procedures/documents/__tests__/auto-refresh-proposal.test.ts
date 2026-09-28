@@ -333,6 +333,66 @@ describe("applyDocumentAutoRefreshProposalProcedure — nothing to apply", () =>
 	});
 });
 
+describe("applyDocumentAutoRefreshProposalProcedure — visual slots", () => {
+	// The proposal can sit for days before someone accepts it, so the slots come
+	// from the document AS STORED NOW, not from the draft (KTD17, R39).
+	const SLOT =
+		'<visual-slot data-slot-id="slot-a" data-kind="timeline"></visual-slot>';
+	const WITH_SLOT = `# PRD\n\n## Rollout\n\nPhase one covers discovery.\n\n${SLOT}\n\nPhase two covers delivery.\n`;
+	const WITHOUT_SLOT =
+		"# PRD\n\n## Rollout\n\nPhase one covers discovery.\n\nPhase two covers delivery.\n";
+	const PROPOSAL =
+		"# PRD\n\n## Rollout\n\nPhase one covers discovery and design.\n\nPhase two covers delivery.\n";
+	const PROPOSAL_WITH_SLOT = `# PRD\n\n## Rollout\n\nPhase one covers discovery and design.\n\n${SLOT}\n\nPhase two covers delivery.\n`;
+
+	const writtenContent = () =>
+		(mocks.updateDocument.mock.calls[0] as [string, { content: string }])[1]
+			.content;
+
+	it("returns a slot the proposal lost to its heading (AE5)", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ content: WITH_SLOT }),
+		);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({ pendingContent: PROPOSAL }),
+		);
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
+		expect(result).toEqual({ applied: true, version: 4 });
+		expect(writtenContent()).toBe(PROPOSAL_WITH_SLOT);
+	});
+
+	it("does not bring back a slot the person deleted after the proposal was drafted", async () => {
+		// The refresh spliced the slot into its draft while the slot existed; the
+		// person has since deleted it.
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ content: WITHOUT_SLOT }),
+		);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({ pendingContent: PROPOSAL_WITH_SLOT }),
+		);
+
+		await applyHandler({ input: input(), context: ctx() });
+
+		expect(writtenContent()).toBe(PROPOSAL);
+	});
+
+	it("writes the proposal byte for byte when neither body has a slot", async () => {
+		const pendingContent = "# PRD\r\n\r\nNew content.  \n\n\n\n| a | b |\n";
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ content: WITHOUT_SLOT }),
+		);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({ pendingContent }),
+		);
+
+		await applyHandler({ input: input(), context: ctx() });
+
+		expect(writtenContent()).toBe(pendingContent);
+	});
+});
+
 describe("discardDocumentAutoRefreshProposalProcedure", () => {
 	it("clears the proposal and never touches the document", async () => {
 		const result = await discardHandler({

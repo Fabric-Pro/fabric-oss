@@ -33,6 +33,29 @@ export function buildStoryDetailsRoute(
 }
 
 /**
+ * Build the route of a document's Glossy edition page (Fizzy #2589).
+ *
+ * The Glossy page is an organization route, so callers pass the
+ * organization base and decide themselves whether a link is shown at all.
+ *
+ * Examples:
+ *   buildGlossyEditionRoute("/app/acme", "proj_1", "doc_2")
+ *     -> "/app/acme/projects/proj_1/documents/doc_2/glossy"
+ *
+ * @param basePath   The organization route base (e.g., "/app/acme").
+ * @param projectId  Project ID.
+ * @param documentId Project document ID.
+ * @returns The relative path string.
+ */
+export function buildGlossyEditionRoute(
+	basePath: string,
+	projectId: string,
+	documentId: string,
+): string {
+	return `${basePath}/projects/${projectId}/documents/${documentId}/glossy`;
+}
+
+/**
  * Build the project "Settings" tab route — the destination for the
  * PM-credentials / "Check Configuration" CTAs shown when a PM tool is
  * missing, expired, or otherwise unavailable.

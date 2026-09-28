@@ -90,6 +90,12 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+// The list reads the `GLOSSY_EDITION` rollout gate to hand the download menu
+// its Glossy link (Fizzy #2589). The hook throws without a provider, by design.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));

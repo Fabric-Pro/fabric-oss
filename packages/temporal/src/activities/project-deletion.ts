@@ -450,6 +450,14 @@ export async function sendProjectDeletionReminderActivity(
 }
 
 const ATTACHMENT_FINAL_PREFIX = "story-attachments/";
+/**
+ * Glossy recipient logos (Fizzy #2589, KTD23) live in the same bucket under
+ * their own project prefix, deliberately outside `story-attachments/` so the
+ * attachment orphan sweeps never see them. A promoted or pending logo that a
+ * best-effort cleanup left behind is unreferenced, and this sweep is what
+ * finally removes it.
+ */
+const PROJECT_BRAND_PREFIX = "project-brand/";
 /** Infinite-loop guard only — NOT a silent partial cap; exceeding it throws so
  * a pathological prefix surfaces as a failure (and Temporal retries) rather
  * than a silently incomplete cleanup. */
@@ -467,9 +475,10 @@ function safeAttachmentHeartbeat(): void {
 /**
  * Best-effort-but-durable cleanup of a permanently-deleted project's attachment
  * objects. Lists everything under `story-attachments/{projectId}/` and
- * batch-deletes it, paging until the prefix is exhausted (NO silent deletion
- * cap — the project row is already gone, so a cap would strand objects with no
- * discoverable retry). Idempotent: re-running deletes whatever remains.
+ * `project-brand/{projectId}/` and batch-deletes it, paging until each prefix
+ * is exhausted (NO silent deletion cap — the project row is already gone, so a
+ * cap would strand objects with no discoverable retry). Idempotent: re-running
+ * deletes whatever remains. `pages` counts the pages of both prefixes.
  *
  * Throws on a systemic `listObjects` failure or if any `deleteObjects` errors
  * remain after the full pass, so Temporal retries the whole activity. The
@@ -498,40 +507,48 @@ export async function deleteProjectAttachmentsFromStorageActivity(
 	}
 
 	const bucket = config.storage.bucketNames.projectContexts;
-	const prefix = `${ATTACHMENT_FINAL_PREFIX}${projectId}/`;
+	const prefixes = [
+		`${ATTACHMENT_FINAL_PREFIX}${projectId}/`,
+		`${PROJECT_BRAND_PREFIX}${projectId}/`,
+	];
 
 	let deleted = 0;
 	let pages = 0;
 	const errors: { key: string; message: string }[] = [];
-	let continuationToken: string | undefined;
 
-	while (true) {
-		if (pages >= ATTACHMENT_PAGE_SANITY_LIMIT) {
-			throw new Error(
-				`[ProjectDeletion] attachment cleanup exceeded ${ATTACHMENT_PAGE_SANITY_LIMIT} pages for project ${projectId}`,
-			);
+	for (const prefix of prefixes) {
+		let prefixPages = 0;
+		let continuationToken: string | undefined;
+
+		while (true) {
+			if (prefixPages >= ATTACHMENT_PAGE_SANITY_LIMIT) {
+				throw new Error(
+					`[ProjectDeletion] attachment cleanup exceeded ${ATTACHMENT_PAGE_SANITY_LIMIT} pages for project ${projectId}`,
+				);
+			}
+			const page = await listObjects({
+				bucket,
+				prefix,
+				continuationToken,
+				maxKeys: 1000,
+			});
+			prefixPages += 1;
+			pages += 1;
+
+			const keys = page.objects.map((o) => o.key);
+			if (keys.length > 0) {
+				const res = await deleteObjects(keys, { bucket });
+				deleted += res.deleted;
+				errors.push(...res.errors);
+			}
+
+			safeAttachmentHeartbeat();
+
+			if (!page.nextContinuationToken) {
+				break;
+			}
+			continuationToken = page.nextContinuationToken;
 		}
-		const page = await listObjects({
-			bucket,
-			prefix,
-			continuationToken,
-			maxKeys: 1000,
-		});
-		pages += 1;
-
-		const keys = page.objects.map((o) => o.key);
-		if (keys.length > 0) {
-			const res = await deleteObjects(keys, { bucket });
-			deleted += res.deleted;
-			errors.push(...res.errors);
-		}
-
-		safeAttachmentHeartbeat();
-
-		if (!page.nextContinuationToken) {
-			break;
-		}
-		continuationToken = page.nextContinuationToken;
 	}
 
 	if (errors.length > 0) {

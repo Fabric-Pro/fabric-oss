@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildStoryDetailsRoute, buildStoryQaRoute } from "../routes";
+import {
+	buildGlossyEditionRoute,
+	buildStoryDetailsRoute,
+	buildStoryQaRoute,
+} from "../routes";
 
 // Spec: specs/2026-05-25-backlog-context-menu-open-in-new-tab/spec.md §9.1.
 // Locks the single source of truth that the context-menu "Open in new tab"
@@ -42,6 +46,14 @@ describe("buildStoryQaRoute", () => {
 	it("opens the feature on its QA tab (case→criterion direction)", () => {
 		expect(buildStoryQaRoute("/app/acme", "p1", "s1")).toBe(
 			"/app/acme/projects/p1/stories/s1?storyTab=qa",
+		);
+	});
+});
+
+describe("buildGlossyEditionRoute", () => {
+	it("composes the document's Glossy page under the organization base", () => {
+		expect(buildGlossyEditionRoute("/app/example-org", "p1", "d1")).toBe(
+			"/app/example-org/projects/p1/documents/d1/glossy",
 		);
 	});
 });

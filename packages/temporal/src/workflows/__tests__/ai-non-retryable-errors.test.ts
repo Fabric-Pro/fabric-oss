@@ -131,6 +131,13 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		// Prepare resolves the model to fail fast; detect, rewrite, and
+		// extract call it. Fail-build's proxy reaches no model.
+		name: "glossy-edition-build",
+		load: () => import("../glossy-edition-build"),
+		aiProxies: 2,
+	},
+	{
 		name: "link-meeting-action-items",
 		load: () => import("../link-meeting-action-items"),
 		aiProxies: 1,

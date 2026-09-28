@@ -906,6 +906,10 @@
 					"body": "In the Documents tab, Fabric drafts PRDs, specs, and technical docs from your context, then lets you edit them collaboratively and keep them in sync.",
 					"title": "Generate documents with AI"
 				},
+				"glossy": {
+					"body": "A Proposal or Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document.",
+					"title": "Hand stakeholders a Glossy edition"
+				},
 				"overview": {
 					"body": "The Overview tab is mission control for a project — recent activity, key documents, and quick actions to move the work forward.",
 					"title": "Start at the project overview"
@@ -1536,6 +1540,9 @@
 						"created": "Contact added",
 						"updated": "Contact updated",
 						"redacted": "Contact erased"
+					},
+					"brand_kit": {
+						"updated": "Brand kit updated"
 					}
 				},
 				"account": {
@@ -1608,6 +1615,18 @@
 					},
 					"document_generation": {
 						"failed": "Document generation failed"
+					},
+					"glossy_edition": {
+						"build_started": "Glossy edition build started",
+						"built": "Glossy edition built",
+						"build_failed": "Glossy edition build failed",
+						"opportunities_detected": "Glossy edition visual opportunities detected",
+						"visual_regenerated": "Glossy edition visual regenerated",
+						"visual_reviewed": "Glossy edition visual reviewed"
+					},
+					"recipient_brand": {
+						"fetched": "Recipient brand fetched from website",
+						"updated": "Recipient brand updated"
 					},
 					"context_source": {
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
@@ -2323,7 +2342,30 @@
 				"dangerZone": "Danger zone"
 			}
 		},
-		"save": "Save"
+		"save": "Save",
+		"brandKit": {
+			"title": "Brand kit",
+			"description": "Accent colors and brand guidance for Glossy editions. The logo and theme color above are part of the kit too.",
+			"loading": "Loading…",
+			"loadFailed": "Couldn't load the Brand kit",
+			"readOnly": "Only organization admins and owners can change the Brand kit.",
+			"accentColors": "Accent colors",
+			"accentColorsHelp": "Up to 3 colors used beside your theme color in visuals and headings.",
+			"accentHex": "Accent color {position} (hex)",
+			"accentPicker": "Pick accent color {position}",
+			"removeAccent": "Remove accent color {position}",
+			"addAccent": "Add accent color",
+			"invalidColor": "Enter a color as #rrggbb, for example #1a73e8.",
+			"noAccents": "No accent colors yet.",
+			"guidance": "Brand guidance",
+			"guidancePlaceholder": "Tone of voice, terms to prefer or avoid, and anything else a Glossy edition should follow.",
+			"guidanceHelp": "Optional. Prefills the style direction when an editor prepares a Glossy edition.",
+			"guidanceCount": "{count} of {max} characters.",
+			"save": "Save Brand kit",
+			"saved": "Brand kit saved",
+			"saveFailed": "Couldn't save the Brand kit",
+			"fixColors": "Fix the highlighted colors before saving."
+		}
 	},
 	"start": {
 		"subtitle": "See the latest stats of your awesome business.",
@@ -6279,6 +6321,10 @@
 				"noChangesInLoadedPrefix": "No differences appear in the loaded portion of this file. Download both versions to inspect the rest."
 			}
 		},
+		"glossyEntry": {
+			"editorLink": "Glossy version",
+			"menuItem": "Glossy version"
+		},
 		"proposals": {
 			"source": {
 				"TEAMS_CHANNEL": "Teams channel",
@@ -6501,6 +6547,281 @@
 				"action": "Show dismissed warnings",
 				"count": "{count, plural, one {# dismissed warning} other {# dismissed warnings}}",
 				"done": "Dismissed warnings restored"
+			}
+		},
+		"glossy": {
+			"recipientBrand": {
+				"title": "Recipient brand",
+				"description": "Who this project's Glossy editions are prepared for. The cover shows their name and logo next to your organization's.",
+				"loading": "Loading…",
+				"loadFailed": "Couldn't load the recipient brand",
+				"readOnly": "Only project editors can change the recipient brand.",
+				"name": "Recipient name",
+				"namePlaceholder": "Example Corp",
+				"website": "Website",
+				"websitePlaceholder": "example.com",
+				"websiteHelp": "Fetch a logo and colors from the recipient's public website, or add them by hand below.",
+				"fetch": "Fetch",
+				"fetching": "Fetching the logo and colors from the website…",
+				"fetched": "Fetched from {website}. Review the logo and colors, then save to confirm them.",
+				"failure": {
+					"unreachable": "We couldn't reach that website. Check the address, or add the logo and colors by hand below.",
+					"blocked": "That address can't be fetched. Use the recipient's public website, or add the logo and colors by hand below.",
+					"too_large": "The website's logo is too large to use. Upload a smaller logo below.",
+					"unsupported": "The website's logo is in a format we can't use. Upload a PNG, JPEG, GIF, or WebP logo below.",
+					"no_logo": "We couldn't find a logo on that website. Upload one below.",
+					"rateLimited": "You've fetched several websites in a short time. Add the logo and colors by hand below, or try again in a minute.",
+					"unavailable": "Fetching isn't available right now. Add the logo and colors by hand below."
+				},
+				"logo": "Logo",
+				"logoAlt": "Recipient logo",
+				"noLogo": "No logo",
+				"uploadLogo": "Upload logo",
+				"removeLogo": "Remove logo",
+				"logoHelp": "PNG, JPEG, GIF, or WebP, up to 5 MB.",
+				"logoError": {
+					"too_large": "That logo is larger than 5 MB. Choose a smaller file.",
+					"unsupported": "That file isn't a PNG, JPEG, GIF, or WebP image.",
+					"uploadFailed": "The logo couldn't be uploaded. Try again."
+				},
+				"colors": "Colors",
+				"colorsHelp": "Up to 3 of the recipient's brand colors.",
+				"colorHex": "Recipient color {position} (hex)",
+				"colorPicker": "Pick recipient color {position}",
+				"removeColor": "Remove recipient color {position}",
+				"addColor": "Add color",
+				"invalidColor": "Enter a color as #rrggbb, for example #1a73e8.",
+				"noColors": "No colors yet.",
+				"save": "Save recipient brand",
+				"discard": "Discard",
+				"saved": "Recipient brand saved",
+				"saveFailed": "Couldn't save the recipient brand",
+				"fixColors": "Fix the highlighted colors before saving.",
+				"conflict": "Someone else changed the recipient brand while you were editing. Their version is shown below — review it and make your change again."
+			},
+			"page": {
+				"title": "Glossy version",
+				"description": "A stakeholder-ready edition of this document: internal scaffolding moved to an appendix, executive wording, and branded visuals. The source document never changes.",
+				"backToDocument": "Back to document",
+				"breadcrumbProjects": "Projects",
+				"breadcrumbDocument": "Document",
+				"loading": "Loading the Glossy edition…",
+				"loadFailed": "Couldn't load the Glossy edition.",
+				"retryLoad": "Try again",
+				"unavailable": "This Glossy edition isn't available. The document may have moved, or you may no longer have access to it."
+			},
+			"toolbar": {
+				"mode": "Mode",
+				"modes": {
+					"roll_the_dice": "Roll the dice",
+					"roll_the_diceHelp": "Build in one step with your saved brands.",
+					"align_first": "Align first",
+					"align_firstHelp": "Review the suggested visuals and brands before anything is built."
+				},
+				"length": "Length",
+				"lengths": {
+					"brief": "Brief",
+					"briefHelp": "Condenses each section. Figures, dates, names, and commitments are kept.",
+					"standard": "Standard",
+					"standardHelp": "Keeps roughly the original length in an executive tone."
+				},
+				"build": "Build",
+				"rebuild": "Rebuild",
+				"retry": "Retry",
+				"building": "Building…",
+				"alignFirst": "Align first…",
+				"downloadPdf": "Download PDF",
+				"downloadDocx": "Download DOCX",
+				"viewerNote": "Only project editors can build or review this edition. You can read and download it."
+			},
+			"status": {
+				"region": "Build status",
+				"someone": "another editor",
+				"building": "Building the Glossy edition: {step}",
+				"steps": {
+					"preparing": "preparing the document",
+					"detecting": "finding visual opportunities",
+					"rewriting": "rewriting sections",
+					"visualizing": "building visuals",
+					"finalizing": "finishing the edition",
+					"unknown": "working"
+				},
+				"startedBy": "Started by {name} {time}.",
+				"progress": "{done} of {total} sections rewritten",
+				"progressLabel": "Build progress",
+				"stuck": "The last build stopped responding and was abandoned. Start a new build to take its place.",
+				"lastRebuildFailed": "The last rebuild failed, so the previous edition is still shown.",
+				"firstBuildFailed": "The Glossy edition couldn't be built.",
+				"errors": {
+					"AI_PROVIDER_NOT_CONFIGURED": "No AI provider was available for the editor who started the build.",
+					"SOURCE_DOCUMENT_DELETED": "The source document was deleted before the build finished.",
+					"ACCESS_REVOKED": "The editor who started the build can no longer edit this document.",
+					"NOTHING_TO_PRESENT": "Nothing is left to present once the document's internal scaffolding is removed.",
+					"NOT_ELIGIBLE": "This document couldn't be built into a Glossy edition at that time.",
+					"SUPERSEDED": "A newer build replaced this one.",
+					"BUILD_FAILED": "Something went wrong while building. Try again.",
+					"WORKFLOW_START_FAILED": "The build couldn't be started. Try again."
+				},
+				"outOfDate": "The source document changed after this edition was built.",
+				"outOfDateEditor": "Rebuild to bring it up to date. Unchanged sections and their visuals are reused.",
+				"outOfDateViewer": "Ask a project editor to rebuild it."
+			},
+			"provider": {
+				"title": "Set up an AI provider to build",
+				"body": "Glossy builds run on your organization's AI provider or on your own API key, and neither is available. Ask an organization admin to add a provider, or add your own key.",
+				"link": "Open AI provider settings"
+			},
+			"ineligible": {
+				"documentType": "Glossy editions are available for Proposals and Business Cases only.",
+				"generating": "This document is still being generated. Build once it has finished.",
+				"empty": "This document has no content to build from yet.",
+				"nothingToPresent": "Nothing is left to present once this document's internal scaffolding is removed."
+			},
+			"report": {
+				"keptOriginal": "{count, plural, one {# section kept its original wording} other {# sections kept their original wording}}",
+				"keptOriginalHelp": "The rewrite would have changed or dropped a fact, so the cleaned original text is used instead.",
+				"entry": "{subject}: {reason}",
+				"untitledSection": "Untitled section",
+				"keptOriginalReasons": {
+					"fact_guard": "the rewrite changed a figure, date, name, or commitment",
+					"truncated": "the rewrite was cut short",
+					"rewrite_unavailable": "no rewrite was available",
+					"unknown": "the rewrite couldn't be used"
+				},
+				"droppedVisuals": "{count, plural, one {# visual was left out} other {# visuals were left out}}",
+				"droppedEntry": "{kind} in “{section}”: {reason}",
+				"slotEntry": "Visual slot: {reason}",
+				"dropReasons": {
+					"truncated": "the extraction was cut short",
+					"invalid_spec": "the extracted content wasn't a valid visual",
+					"kind_mismatch": "the extraction produced a different kind of visual",
+					"fact_check": "it showed a figure, date, or label its section doesn't contain",
+					"slot_unavailable": "the slot is no longer in the document",
+					"appendix_slot": "slots in the appendix aren't filled",
+					"invalid_diagram": "the document's diagram couldn't be read",
+					"visual_unavailable": "the visual was no longer available when the build finished",
+					"render_failed": "it couldn't be rendered",
+					"unsupported_kind": "its kind can't be rendered",
+					"unknown": "it couldn't be used"
+				},
+				"unfilledSlots": "{count, plural, one {# visual slot wasn't filled} other {# visual slots weren't filled}}",
+				"noSuggestions": "No visuals were suggested for this document. The edition has cleanup and rewriting only.",
+				"scaffoldingUnrecognized": "Some of this document's internal scaffolding wasn't recognized, so citation-like text may remain. Read the edition through before sending it."
+			},
+			"empty": {
+				"title": "No Glossy edition yet",
+				"buildingTitle": "Building the first edition",
+				"buildingBody": "The edition appears here when the build finishes. You can leave this page; the build keeps running.",
+				"editorBody": "Choose a mode above, then build. Nothing is generated until you do.",
+				"viewerBody": "A project editor hasn't built one yet."
+			},
+			"outcome": {
+				"started": "Build started. You can leave this page; the build keeps running.",
+				"alreadyBuilding": "A build is already running.",
+				"alreadyBuildingBy": "A build started by {name} is already running.",
+				"startFailed": "The build couldn't be started. Try again.",
+				"rateLimited": "You've started several AI actions in a short time. Try again in a minute."
+			},
+			"alignFirst": {
+				"title": "Align first",
+				"description": "Review what the build will do, then build. Only what you confirm here is used.",
+				"detecting": "Finding visual opportunities…",
+				"detectFailed": "Visual opportunities couldn't be detected.",
+				"detectAgain": "Detect again",
+				"draftStale": "The document changed after its visuals were detected. Detect again before building.",
+				"opportunities": "Suggested visuals",
+				"opportunitiesHelp": "Clear any you don't want. Each visual is built only from its own section's text.",
+				"opportunityLabel": "{kind} for “{section}”",
+				"degraded": "Detection didn't finish, so no visuals are suggested. You can still build with cleanup and rewriting.",
+				"noOpportunities": "No visual opportunities were found. The edition will have cleanup and rewriting only.",
+				"styleDirection": "Style direction",
+				"styleDirectionPlaceholder": "For example: calm and factual, lead with the timeline",
+				"styleDirectionHelp": "Optional guidance for the visuals. Prefilled from your organization's Brand kit.",
+				"preparer": "Your brand",
+				"preparerHelp": "Colors for this edition's headings and visuals, prefilled from your organization's Brand kit. Changes here apply to this edition only.",
+				"primaryColor": "Primary color",
+				"primaryHex": "Primary color (hex)",
+				"primaryPicker": "Pick the primary color",
+				"primaryRemove": "Remove the primary color",
+				"accentColors": "Accent colors",
+				"accentHex": "Accent color {position} (hex)",
+				"accentPicker": "Pick accent color {position}",
+				"accentRemove": "Remove accent color {position}",
+				"addColor": "Add color",
+				"invalidColor": "Enter a color as #rrggbb, for example #1a73e8.",
+				"noColors": "No colors.",
+				"recipient": "Recipient brand",
+				"recipientHelp": "Who this edition is prepared for. Changes are saved to the project when you build, so later builds reuse them.",
+				"recipientConflict": "Someone else changed the recipient brand while you were editing. Their version is shown below — review it and build again.",
+				"recipientSaveFailed": "The recipient brand couldn't be saved, so the build wasn't started.",
+				"suggestedWebsites": "Suggested from the project's links:",
+				"useWebsite": "Use {website}",
+				"build": "Build with these choices",
+				"rebuild": "Rebuild with these choices",
+				"cancel": "Cancel",
+				"fixColors": "Fix the highlighted colors before building."
+			},
+			"preview": {
+				"preparedBy": "Prepared by",
+				"preparedFor": "Prepared for",
+				"logoOf": "{name} logo",
+				"recipientLogo": "Recipient logo",
+				"documentImage": "Image from the source document",
+				"appendix": "Appendix",
+				"sources": "Sources",
+				"details": "Document details",
+				"placeholders": "Open items",
+				"assumptions": "Assumptions",
+				"additionalMaterial": "Additional material",
+				"provenance": "Built from “{title}”, version {version}, on {date}."
+			},
+			"visual": {
+				"kinds": {
+					"timeline": "Timeline",
+					"comparison": "Comparison",
+					"stat": "Key figures",
+					"flow": "Process flow",
+					"org_chart": "Org chart",
+					"existing_mermaid": "Diagram",
+					"auto": "Visual"
+				},
+				"alt": "{kind}: {labels}",
+				"altNoLabels": "{kind}",
+				"status": {
+					"pending": "Pending review",
+					"accepted": "Accepted",
+					"discarded": "Discarded"
+				},
+				"accept": "Accept",
+				"regenerate": "Regenerate",
+				"discard": "Discard",
+				"restore": "Restore",
+				"rendering": "Rendering the visual…",
+				"regenerating": "Regenerating this visual…",
+				"couldNotRender": "This visual couldn't be rendered, so downloads leave it out. Regenerate it or discard it.",
+				"couldNotRenderViewer": "This visual couldn't be displayed.",
+				"discardedNote": "Discarded — left out of downloads. Restore it to include it again.",
+				"fromSlot": "Fills a visual slot placed in the document.",
+				"restyled": "The document's own diagram, restyled.",
+				"regenerated": "Visual regenerated",
+				"superseded": "A newer edition was published meanwhile. The page now shows it.",
+				"regenerateFailed": "The visual couldn't be regenerated. Try again.",
+				"reviewFailed": "The review couldn't be saved. Try again.",
+				"notices": {
+					"noValidReplacement": "No valid replacement was found: {reason}. The previous visual is kept.",
+					"building": "A build is running. Try again when it finishes.",
+					"buildingBy": "A build started by {name} is running. Try again when it finishes.",
+					"buildingStuck": "A build that stopped responding still holds this edition. Rebuild to take it over.",
+					"visualChanged": "This visual changed after the page loaded. Review the new version before accepting it.",
+					"rebuildRequired": "This edition was built by an earlier version of Glossy. Rebuild it before regenerating visuals.",
+					"notRegenerable": "This diagram comes from the document itself and can't be regenerated.",
+					"visualNotFound": "This visual is no longer in the edition."
+				}
+			},
+			"download": {
+				"failed": "The {format} couldn't be created. Try again.",
+				"omittedVisuals": "{count, plural, one {# visual couldn't be rendered and was left out of the download.} other {# visuals couldn't be rendered and were left out of the download.}}",
+				"omittedImages": "{count, plural, one {# image from the document couldn't be loaded and was left out.} other {# images from the document couldn't be loaded and were left out.}}"
 			}
 		}
 	},
@@ -6805,7 +7126,51 @@
 			"assistantVisibilityPrivate": "Private — only you",
 			"assistantVisibilityLocked": "Visibility locked after the first message.",
 			"generationError": "Generation failed for this document: {error}",
-			"generationQueued": "This document is waiting on the project's context work before it can be generated. It starts on its own when that finishes — there is nothing to retry."
+			"generationQueued": "This document is waiting on the project's context work before it can be generated. It starts on its own when that finishes — there is nothing to retry.",
+			"visualSlot": {
+				"insert": "Insert a visual slot: ask the Glossy edition for a visual at this spot, of a kind you choose or the best fit.",
+				"title": "Visual slot",
+				"kindGroupLabel": "Visual kind",
+				"hintLabel": "Hint (optional)",
+				"hintPlaceholder": "What should the visual show?",
+				"insertAction": "Insert",
+				"save": "Save",
+				"remove": "Remove slot",
+				"chipLabel": "Visual slot: {kind}",
+				"orphanedFrom": "Moved here: its section “{section}” no longer exists",
+				"kinds": {
+					"auto": {
+						"title": "Best fit",
+						"name": "best fit",
+						"description": "Let the Glossy edition pick the kind that suits this spot."
+					},
+					"timeline": {
+						"title": "Timeline",
+						"name": "timeline",
+						"description": "Ordered phases or dates."
+					},
+					"comparison": {
+						"title": "Comparison cards",
+						"name": "comparison cards",
+						"description": "Options side by side, or pros and cons."
+					},
+					"stat": {
+						"title": "Stat callout",
+						"name": "stat callout",
+						"description": "Key figures, called out large."
+					},
+					"flow": {
+						"title": "Flow",
+						"name": "flow",
+						"description": "A process, step by step."
+					},
+					"org_chart": {
+						"title": "Org chart",
+						"name": "org chart",
+						"description": "Roles, and who owns what."
+					}
+				}
+			}
 		},
 		"contextSources": {
 			"addContext": "Add a file, link, text snippet, or integration source as project context.",

@@ -259,6 +259,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2628. Hides Linear from integration catalogs and pickers while keeping underlying code and configurations intact.",
 	},
+	GLOSSY_EDITION: {
+		label: "Glossy Version Export",
+		description:
+			"Lets a project editor turn a Proposal or Business Case into a stakeholder-ready Glossy edition — internal scaffolding relocated, executive text, branded data-faithful visuals — without changing the source document.",
+		envVar: "FABRIC_FEATURE_GLOSSY_EDITION",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2589. This is the ONLY switch for the feature — there is no kill switch, because a build writes only Glossy-owned rows and never the document or retrieval, and the prepare step re-reads this gate before every build (KTD20). Off: the Glossy page returns 404, every procedure returns NOT_FOUND, an in-flight build is left to finish (its writes are already isolated), and any edition already built lies dormant rather than being torn down. Enable it for an organization only after BOTH the web deployment and the `glossy-edition` Temporal worker have rolled out — the build runs on its own task queue, and an organization gated on with no worker listening would claim builds that never start.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

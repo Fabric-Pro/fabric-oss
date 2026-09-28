@@ -143,3 +143,48 @@ describe("Member proposal branch tables are registered on the tenant path", () =
 		);
 	});
 });
+
+/**
+ * Glossy editions (Fizzy #2589). The five project tables carry organizationId
+ * and projectId and no userId, so they are organization-only in tenant-db — a
+ * USER_OWNED_TABLES entry would inject a userId filter Prisma rejects — and
+ * project-scoped, so accepted guests reach the rows of the project they were
+ * invited to. The Brand kit is organization-only and not project-scoped: guests
+ * read it only through getBrandKitForProject.
+ */
+describe("Glossy edition tables are registered on the tenant path", () => {
+	const orgOnly = setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set([");
+	const userOwned = setMembers(
+		tenantDb,
+		"const USER_OWNED_TABLES = new Set([",
+	);
+
+	it.each([
+		["GlossyEdition", "glossy_edition"],
+		["GlossyBuild", "glossy_build"],
+		["GlossyVisualDecision", "glossy_visual_decision"],
+		["GlossySegmentCache", "glossy_segment_cache"],
+		["ProjectRecipientBrand", "project_recipient_brand"],
+	])(
+		"%s is organization-only, project-scoped, and tenant-consistent under RLS",
+		(model, table) => {
+			expect(orgOnly).toContain(model);
+			expect(userOwned).not.toContain(model);
+			expect(tenantDb).toMatch(new RegExp(`\\b${model}: "projectId",`));
+			expect(rls).toMatch(
+				new RegExp(
+					`\\{\\s*name: "${table}",\\s*policy: "project_member_or_tenant_consistent",?\\s*\\}`,
+				),
+			);
+		},
+	);
+
+	it("OrganizationBrandKit is organization-only with a guest read policy, never project-scoped", () => {
+		expect(orgOnly).toContain("OrganizationBrandKit");
+		expect(userOwned).not.toContain("OrganizationBrandKit");
+		expect(tenantDb).not.toMatch(/\bOrganizationBrandKit: "/);
+		expect(rls).toMatch(
+			/\{\s*name: "organization_brand_kit",\s*policy: "org_only_with_project_guest_read",?\s*\}/,
+		);
+	});
+});

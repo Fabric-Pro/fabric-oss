@@ -11,6 +11,10 @@ import {
 	getOrganizationBrandColorProcedure,
 	updateOrganizationBrandColorProcedure,
 } from "./procedures/brand-color";
+import {
+	getBrandKitProcedure,
+	updateBrandKitProcedure,
+} from "./procedures/brand-kit";
 import { createLogoUploadUrl } from "./procedures/create-logo-upload-url";
 import {
 	getOrganizationDelegationSettingProcedure,
@@ -58,6 +62,12 @@ export const organizationsRouter = {
 	brandColor: {
 		get: getOrganizationBrandColorProcedure,
 		update: updateOrganizationBrandColorProcedure,
+	},
+	// Glossy Version Export (Fizzy #2589): accent colors and brand guidance,
+	// in their own table rather than organization metadata (KTD2).
+	brandKit: {
+		get: getBrandKitProcedure,
+		update: updateBrandKitProcedure,
 	},
 	delegationSettings: {
 		get: getOrganizationDelegationSettingProcedure,
