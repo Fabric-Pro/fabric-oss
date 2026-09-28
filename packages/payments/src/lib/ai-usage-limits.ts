@@ -58,55 +58,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "./ai-usage-limit-error";
-
-export { AiUsageLimitExceededError } from "./ai-usage-limit-error";
-
-// ---------------------------------------------------------------------------
-// AI usage-threshold notifier registry
-// ---------------------------------------------------------------------------
-
-/**
- * Shape of the notification fan-out handler — mirrors the signature of
- * `fanOut.aiUsageThreshold` in `@repo/api/lib/notification-service`.
- * Defined here (not imported) so this package stays free of an `@repo/api`
- * runtime dep, which would form a workspace cycle.
- */
-export interface AiUsageThresholdNotifierInput {
-	limitId: string;
-	organizationId: string | null;
-	userId: string | null;
-	createdById: string;
-	windowStartIso: string;
-	threshold: 80 | 100;
-	dimension: AiUsageLimitDimension;
-	window: AiUsageLimitWindow;
-	enforcement: AiUsageLimitEnforcement;
-	used: bigint;
-	max: bigint;
-	limitName: string | null;
-}
-
-export type AiUsageThresholdNotifier = (
-	input: AiUsageThresholdNotifierInput,
-) => Promise<void>;
-
-let aiUsageThresholdNotifier: AiUsageThresholdNotifier | null = null;
-
-/**
- * Register the notification handler that {@link recordAiUsageAndCheckOverage}
- * invokes when an 80%/100% threshold is crossed. The handler must be wired up
- * at app boot from a layer that has `@repo/api/lib/notification-service`
- * available — typically `apps/web` startup or the oRPC bootstrap, depending
- * on the deployment target. If no handler is registered, threshold events are
- * still emitted to the structured log; only the email/inbox dispatch is
- * suppressed. This keeps `@repo/payments` free of a runtime dep on
- * `@repo/api` (which would form a workspace cycle).
- */
-export function setAiUsageThresholdNotifier(
-	notifier: AiUsageThresholdNotifier | null,
-): void {
-	aiUsageThresholdNotifier = notifier;
-}
+import { getAiUsageThresholdNotifier } from "./ai-usage-threshold-notifier";
 
 // Re-export the Prisma enums so downstream callers in @repo/payments,
 // @repo/ai, and the oRPC layer don't need to deep-import @repo/database
@@ -118,6 +70,12 @@ export {
 	AiUsageLimitEnforcement,
 	AiUsageLimitWindow,
 } from "@repo/database";
+export { AiUsageLimitExceededError } from "./ai-usage-limit-error";
+export {
+	type AiUsageThresholdNotifier,
+	type AiUsageThresholdNotifierInput,
+	setAiUsageThresholdNotifier,
+} from "./ai-usage-threshold-notifier";
 
 // Public types
 
@@ -995,7 +953,7 @@ export async function recordAiUsageAndCheckOverage(
 					// app boot; if none is registered, the threshold is still logged
 					// above but no email/inbox notification is dispatched — that's
 					// the trade-off for keeping the cycle broken.
-					const notifier = aiUsageThresholdNotifier;
+					const notifier = getAiUsageThresholdNotifier();
 					if (notifier) {
 						await notifier({
 							limitId: limit.id,
