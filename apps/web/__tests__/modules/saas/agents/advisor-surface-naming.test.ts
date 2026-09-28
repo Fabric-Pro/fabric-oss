@@ -5,9 +5,13 @@ import { describe, expect, it } from "vitest";
 
 /**
  * The AI assistant is called "Advisor" (Fizzy #2571, after #2487 and #2040).
- * Its /agents featured card, the register-agent hint, the MCP chat dialog and
- * the orchestrator chat's default name still said "Fabric Loom", and a
- * template in the gallery was "Manager Nexus".
+ * The register-agent hint, the MCP chat dialog and the orchestrator chat's
+ * default name still said "Fabric Loom", and a template in the gallery was
+ * "Manager Nexus".
+ *
+ * The /agents featured card is the one exception. It was renamed with the
+ * rest, then Product asked for it back as "Fabric Loom"; the page it opens
+ * stays Advisor. That single line is exempt from the scan and pinned below.
  *
  * Only user-visible copy moves. "Loom" and "Nexus" survive deliberately as
  * structure — `LOOM_AGENT_IDS`, the `"loom-orchestrator"` / `"nexus"` surface
@@ -39,6 +43,9 @@ function withoutComments(source: string): string {
 
 const RETIRED_NAMES = /\b(Loom|Nexus)\b/;
 
+/** The featured card's name prop, the only sanctioned retired-name line. */
+const FEATURED_CARD_NAME = 'name="Fabric Loom"';
+
 const ADVISOR_SURFACES = [
 	"apps/web/modules/saas/agents/components/UnifiedAgentView.tsx",
 	"apps/web/modules/saas/agents/components/RegisterExternalAgent.tsx",
@@ -50,19 +57,26 @@ const ADVISOR_SURFACES = [
 
 describe("Advisor surfaces no longer use retired names", () => {
 	it.each(ADVISOR_SURFACES)("%s has no 'Loom' or 'Nexus' copy", (file) => {
+		const exempt = file === ADVISOR_SURFACES[0] ? FEATURED_CARD_NAME : null;
 		const hits = withoutComments(read(file))
 			.split("\n")
+			.filter((line) => line.trim() !== exempt)
 			.filter((line) => RETIRED_NAMES.test(line));
 
 		expect(hits).toEqual([]);
 	});
 
-	it("the /agents featured card is Advisor and keeps its tour target", () => {
+	it("the /agents featured card is Fabric Loom and keeps its tour target", () => {
 		const view = read(ADVISOR_SURFACES[0]);
 
 		expect(view).toMatch(
-			/data-onboarding-target="agents-featured">\s*<FeaturedAgentCard\s+name="Advisor"/,
+			/data-onboarding-target="agents-featured">\s*<FeaturedAgentCard\s+name="Fabric Loom"/,
 		);
+		expect(
+			withoutComments(view)
+				.split("\n")
+				.filter((line) => line.trim() === FEATURED_CARD_NAME),
+		).toHaveLength(1);
 		expect(view).toContain(
 			'const LOOM_AGENT_IDS = new Set(["fabric-workspace-assistant", "fabric-ai"]);',
 		);

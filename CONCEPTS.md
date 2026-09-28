@@ -25,7 +25,7 @@ The workspace assistant's page, and the name the assistant gives itself. Distinc
 
 Two interface modes, a per-user preference: **Simple** runs every new chat on the Orchestrator and hides how the work is routed; **Advanced** exposes the engine tabs — **Direct**, **Orchestrator** and **Research**. The engines are distinct implementations rather than one shared surface. Direct and Orchestrator both accept document attachments (Excel, PDF, DOCX, and the rest of the shared chat allowlist) alongside images — Direct through its single attachment queue, Orchestrator through two queues (images feed the multimodal-vision path; documents feed RAG plus inline extracted text). A mode does not tell you the engine — Simple and Advanced can both be running the Orchestrator — so always name the engine when reasoning about behavior.
 
-"Loom" (and "Nexus", merged into this page by #2040) is a retired name. It survives only as structure — surface literals such as `loom-orchestrator`, Temporal patch ids — and as the name of Weave's routing agent, which is a different thing. Copy and prompts say Advisor.
+"Loom" (and "Nexus", merged into this page by #2040) is a retired name. It survives only as structure — surface literals such as `loom-orchestrator`, Temporal patch ids — and as the name of Weave's routing agent, which is a different thing. One piece of copy keeps it on purpose: the orchestrator's featured card on the AI Agents page is "Fabric Loom" at Product's request, although the page it opens is Advisor. All other copy and prompts say Advisor.
 
 ### Attached file
 A file the user supplied in the current turn, as opposed to a chunk the knowledge base returned.
