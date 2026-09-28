@@ -1,4 +1,5 @@
 import { config } from "@repo/config";
+import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
 import { Document } from "@shared/components/Document";
 import type { Metadata } from "next";
 import { getLocale } from "next-intl/server";
@@ -47,6 +48,6 @@ export const viewport = {
 };
 
 export default async function RootLayout({ children }: PropsWithChildren) {
-	const locale = await getLocale();
+	const locale = await measureCatalogRequestPhase("root_locale", getLocale);
 	return <Document locale={locale}>{children}</Document>;
 }
