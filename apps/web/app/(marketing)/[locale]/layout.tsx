@@ -8,6 +8,7 @@ import { notFound } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages, setRequestLocale } from "next-intl/server";
 import type { PropsWithChildren } from "react";
+import "./fumadocs.css";
 
 const locales = Object.keys(config.i18n.locales);
 
