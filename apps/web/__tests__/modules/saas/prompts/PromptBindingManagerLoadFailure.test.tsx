@@ -8,7 +8,11 @@
  */
 
 import { PromptBindingManager } from "@saas/prompts/components/PromptBindingManager";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	onlineManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +64,24 @@ describe("PromptBindingManager — prompt-details load failure", () => {
 	beforeEach(() => {
 		getById.mockReset();
 		bindSet.mockReset();
+	});
+
+	it("explains a paused offline read before a default can be set", async () => {
+		onlineManager.setOnline(false);
+		try {
+			const user = userEvent.setup();
+			await openDialog(user);
+
+			expect(screen.getByRole("status")).toHaveTextContent(
+				"Loading this prompt's latest version…",
+			);
+			expect(
+				screen.getByRole("button", { name: "Set as Default" }),
+			).toBeDisabled();
+			expect(getById).not.toHaveBeenCalled();
+		} finally {
+			onlineManager.setOnline(true);
+		}
 	});
 
 	it("explains why Set as Default is disabled, with a retry", async () => {

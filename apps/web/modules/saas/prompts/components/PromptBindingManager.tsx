@@ -324,6 +324,11 @@ export function PromptBindingManager({
 
 						{/* At the top of the scroll area, not above the footer: below the
 						    fold on a short viewport, it was clipped out of view. */}
+						{isLoadingDetails && (
+							<output className="text-muted-foreground text-xs">
+								Loading this prompt's latest version…
+							</output>
+						)}
 						{promptDetailsFailed && (
 							<div
 								role="alert"

@@ -22,8 +22,7 @@ export interface LogSinkRecord {
 	message: string;
 	properties: Record<string, unknown>;
 	/** The `Error` instance passed as one of the call's args, if any. Its
-	 *  `message` has already been redacted the same way `properties` has;
-	 *  its `stack` is untouched (stack frames name files, not secrets). */
+	 *  `message` and `stack` have been redacted without mutating the original. */
 	error?: Error;
 }
 
