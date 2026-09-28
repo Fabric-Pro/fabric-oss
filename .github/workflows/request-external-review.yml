@@ -1,9 +1,10 @@
 name: Request OSS review
 
 # Replaces native CODEOWNERS auto-review (see .github/CODEOWNERS).
-# This workflow requests the designated reviewer for pull requests in
-# fabric-oss, or the owners team when that reviewer authored the PR. It does
-# not request reviews in the internal repository.
+# This workflow requests the designated reviewer for non-relay pull requests
+# in fabric-oss, or the owners team when that reviewer authored the PR. Relay
+# App PRs publish authorized internal changes and need no second review request.
+# The internal repository does not request reviews.
 #
 # pull_request_target (not pull_request) so the base repository's token can
 # write review requests even when the PR comes from a fork. Nothing is
@@ -20,7 +21,9 @@ permissions:
 
 jobs:
   request-review:
-    if: github.repository == 'Fabric-Pro/fabric-oss'
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-oss' &&
+      github.event.pull_request.user.login != 'fabric-relay[bot]'
     # arm64: this job only runs `gh api` — architecture-neutral.
     runs-on: ubuntu-24.04-arm
     steps:
