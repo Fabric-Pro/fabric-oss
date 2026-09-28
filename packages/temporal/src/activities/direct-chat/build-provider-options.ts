@@ -1,3 +1,4 @@
+import { isAnthropicAdaptiveOnlyModel } from "@repo/agent-types";
 import {
 	type BudgetMetadata,
 	computeMaxOutputTokenBudget,
@@ -16,6 +17,20 @@ import type { AIProvider } from "@repo/database";
  * apps/web). Keep in sync if the canonical type changes.
  */
 export type BackendReasoningMode = "lite" | "balanced" | "pro";
+
+/**
+ * The `providerOptions` block `buildProviderOptions` returns when it enables
+ * Anthropic thinking. Budgeted extended thinking for Claude releases that
+ * accept it; adaptive thinking for adaptive-only Claude (Opus 4.7/4.8 and the
+ * 5.x generation), which returns HTTP 400 for the budgeted form.
+ */
+export type AnthropicThinkingProviderOptions = {
+	anthropic: {
+		thinking:
+			| { type: "enabled"; budgetTokens: number }
+			| { type: "adaptive" };
+	};
+};
 
 /**
  * Default token budget for Anthropic extended thinking. Set to 5000 — the
@@ -65,9 +80,7 @@ export const ANTHROPIC_THINKING_MIN_MAX_TOKENS = 16000;
  * @param providerOptions - The value returned by `buildProviderOptions()`.
  */
 export function getMaxOutputTokensForProviderOptions(
-	providerOptions:
-		| { anthropic: { thinking: { type: "enabled"; budgetTokens: number } } }
-		| undefined,
+	providerOptions: AnthropicThinkingProviderOptions | undefined,
 ): number | undefined {
 	if (!providerOptions?.anthropic?.thinking) {
 		return undefined;
@@ -117,9 +130,7 @@ export const DIRECT_CHAT_OUTPUT_TOKEN_CEILING = 16_384;
  * does.
  */
 export function resolveOutputTokenBudget(opts: {
-	providerOptions:
-		| { anthropic: { thinking: { type: "enabled"; budgetTokens: number } } }
-		| undefined;
+	providerOptions: AnthropicThinkingProviderOptions | undefined;
 	metadata: BudgetMetadata;
 	promptChars: number;
 }): number | undefined {
@@ -173,6 +184,12 @@ export function isAnthropicProvider(
  *      mode via the UI (these modes are normalized to "pro" by Task 4b's
  *      `normalizeReasoningMode` at the route boundary).
  *
+ * Adaptive-only Claude (`isAnthropicAdaptiveOnlyModel` — Opus 4.7/4.8 and the
+ * 5.x generation) rejects `thinking: { type: "enabled", budget_tokens }` with
+ * HTTP 400, and `@ai-sdk/anthropic` forwards a caller-supplied `budgetTokens`
+ * to the wire unchanged, so those models get `{ type: "adaptive" }` instead.
+ * No `effort` is set: depth stays at the provider default.
+ *
  * Returning undefined for "lite" and "balanced" preserves the cheap/fast cost
  * and latency profile for non-reasoning modes — otherwise Claude users on cheap
  * modes would silently pay +5000 thinking tokens per turn (Codex P2 finding on
@@ -192,14 +209,15 @@ export function buildProviderOptions(
 	provider: AIProvider,
 	modelString: string,
 	reasoningMode: BackendReasoningMode | undefined,
-):
-	| { anthropic: { thinking: { type: "enabled"; budgetTokens: number } } }
-	| undefined {
+): AnthropicThinkingProviderOptions | undefined {
 	if (reasoningMode !== "pro") {
 		return undefined;
 	}
 	if (!isAnthropicProvider(provider, modelString)) {
 		return undefined;
+	}
+	if (isAnthropicAdaptiveOnlyModel(modelString)) {
+		return { anthropic: { thinking: { type: "adaptive" } } };
 	}
 	return {
 		anthropic: {

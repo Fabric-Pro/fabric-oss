@@ -15,6 +15,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatGroq } from "@langchain/groq";
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
 import { createSecurityHeaders } from "@repo/agent-runtime";
+import { isAnthropicAdaptiveOnlyModel } from "@repo/agent-types";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import {
 	createDatabricksFetch,
@@ -584,6 +585,10 @@ const AZURE_RESPONSES_API_MODELS = [
  *   are stripped from the wire body. Mirrors the v1 `REASONING_MODELS`
  *   substring list. Most reasoning-capable families need this; Anthropic
  *   is handled separately via `applyReasoningConfig`.
+ * - `rejectsSamplingParams`: when true, the model rejects any non-default
+ *   `temperature` / `topP` / `topK` whether or not reasoning is enrolled
+ *   (adaptive-only Claude). Unlike `requiresParamStrip` it says nothing
+ *   about `maxTokens`, which these models accept.
  */
 export interface ModelFamily {
 	readonly id: string;
@@ -591,6 +596,7 @@ export interface ModelFamily {
 	readonly directBranchReasoning: Record<string, unknown> | null;
 	readonly gatewayReasoning: Record<string, unknown> | null;
 	readonly requiresParamStrip: boolean;
+	readonly rejectsSamplingParams?: boolean;
 }
 
 // Belt + suspenders immutability:
@@ -604,13 +610,44 @@ export interface ModelFamily {
 //     could still mutate inner fields; that's out of scope.
 export const MODEL_FAMILIES: readonly ModelFamily[] = Object.freeze([
 	{
+		id: "anthropic-claude-adaptive",
+		// Adaptive-only Claude (Opus 4.7/4.8 and the 5.x generation).
+		// `anthropic-claude-4` excludes these names explicitly, so the two
+		// families never overlap. The shared predicate lives in
+		// `@repo/agent-types` so the Temporal activities key on the same list.
+		// It tolerates routing prefixes (`system.ai.`, `anthropic.`, ...), so
+		// e.g. a Bedrock-style id on a gateway still gets the sampling strip.
+		//
+		// These models reject `thinking: { type: "enabled", budget_tokens }`
+		// and any non-default temperature/topP/topK with HTTP 400, and
+		// `@langchain/anthropic` throws for both before any network call
+		// (dist/utils/params.cjs). `{ type: "adaptive" }` is the only
+		// thinking on-mode. The key is `thinking`, so `applyReasoningConfig`
+		// strips temperature/topP/topK on the ANTHROPIC_DIRECT branch.
+		//
+		// Gateway: `{ reasoning: { enabled, max_tokens } }` is a Vercel
+		// extension that maps `max_tokens` to Anthropic's thinking BUDGET,
+		// and nothing here establishes that it maps to adaptive thinking for
+		// these models. Send no gateway reasoning payload; the gateway
+		// branch still drops temperature via `rejectsSamplingParams`.
+		matches: (m: string) => isAnthropicAdaptiveOnlyModel(m),
+		directBranchReasoning: { thinking: { type: "adaptive" } },
+		gatewayReasoning: null,
+		requiresParamStrip: false,
+		rejectsSamplingParams: true,
+	},
+	{
 		id: "anthropic-claude-4",
 		// Matches both `anthropic/claude-...` (gateway routing notation) and
 		// `claude-...` (Direct branch canonical names). Same family — same
 		// kwargs apply regardless of routing prefix; the prefix is purely a
 		// gateway hint, not a different model.
+		// Adaptive-only Opus 4.7/4.8 are carved out explicitly (they belong to
+		// `anthropic-claude-adaptive`) so no name matches two families and
+		// the table does not depend on ordering.
 		matches: (m: string) =>
-			/^(anthropic\/)?claude-(sonnet|opus|haiku)-4[-.]/i.test(m),
+			/^(anthropic\/)?claude-(sonnet|opus|haiku)-4[-.]/i.test(m) &&
+			!isAnthropicAdaptiveOnlyModel(m),
 		directBranchReasoning: {
 			thinking: { type: "enabled", budget_tokens: 5000 },
 		},
@@ -643,6 +680,30 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = Object.freeze([
 		matches: (m: string) => /^(openai\/)?gpt-5(?!-chat)(-|\.|$)/i.test(m),
 		directBranchReasoning: {
 			reasoning: { effort: "medium", summary: "detailed" },
+			useResponsesApi: true,
+		},
+		gatewayReasoning: { reasoning: { effort: "medium" } },
+		requiresParamStrip: true,
+	},
+	{
+		id: "openai-gpt-6",
+		// gpt-6 (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) has the gpt-5
+		// reasoning contract: rejects `temperature != 1`, needs
+		// `max_completion_tokens` / Responses-API reasoning params. Same
+		// matcher shape as `openai-gpt-5`, `-chat*` variants excluded.
+		matches: (m: string) => /^(openai\/)?gpt-6(?!-chat)(-|\.|$)/i.test(m),
+		// Direct branch: `@langchain/openai`'s wire-level reasoning gate
+		// (`utils/misc.cjs` `isReasoningModel`, consulted by
+		// `_getReasoningParams`) only recognises o-series and gpt-5, so the
+		// top-level `reasoning` field is silently dropped for gpt-6.
+		// `modelKwargs` is spread into the Responses-API body unconditionally
+		// (chat_models/responses.cjs `invocationParams`), so the reasoning
+		// object travels there instead. `useResponsesApi` stays explicit so
+		// `reasoning.summary` is honoured.
+		directBranchReasoning: {
+			modelKwargs: {
+				reasoning: { effort: "medium", summary: "detailed" },
+			},
 			useResponsesApi: true,
 		},
 		gatewayReasoning: { reasoning: { effort: "medium" } },
@@ -876,7 +937,9 @@ export function isGatewayReasoningCapableModel(model: string): boolean {
  * helper returns null for them so they pass through unchanged.
  *
  * Body shape varies per family (PR 5 multi-family extension):
- *   - Anthropic Claude 4.x: `reasoning: { enabled: true, max_tokens: 5000 }`
+ *   - Anthropic Claude 4.x (except adaptive-only Opus 4.7/4.8, which get
+ *     no gateway reasoning payload — see `anthropic-claude-adaptive`):
+ *     `reasoning: { enabled: true, max_tokens: 5000 }`
  *     — Vercel Chat Completions extension that maps `max_tokens` to
  *     Anthropic's thinking budget. Matches the ANTHROPIC_DIRECT branch's
  *     5000-token budget for consistency. Verified shipping in PR #1049.
@@ -907,14 +970,17 @@ export function getGatewayReasoningConfig(
  * reasoning/thinking content. Returns null if the model is not
  * reasoning-capable per isReasoningCapableModel.
  *
- * Anthropic: `{ thinking: { type: "enabled", budget_tokens: 5000 } }`.
+ * Anthropic: `{ thinking: { type: "enabled", budget_tokens: 5000 } }`, or
+ *   `{ thinking: { type: "adaptive" } }` for adaptive-only Claude (Opus
+ *   4.7/4.8 and the 5.x generation), which rejects the budget form.
  *   Note: the @langchain/anthropic runtime throws if `temperature !== 1` or
  *   `topK`/`topP` are set alongside thinking (verified at
  *   node_modules/@langchain/anthropic/dist/chat_models.cjs:756-758).
  *   The caller MUST run applyReasoningConfig to strip those fields.
  *
  * OpenAI: `{ reasoning: { effort: "medium", summary: "detailed" }, useResponsesApi: true }`
- *   — both top-level parameters on ChatOpenAI (per
+ *   (gpt-6 carries the same `reasoning` object inside `modelKwargs` — see the
+ *   `openai-gpt-6` family for why) — both top-level parameters on ChatOpenAI (per
  *   @langchain/openai/dist/chat_models/base.d.ts:109 and the inherited
  *   `useResponsesApi` field at chat_models/index.cjs:553).
  *
@@ -1254,6 +1320,11 @@ function createUninstrumentedProviderModel(
 			(VERCEL_GATEWAY_PROVIDERS as readonly string[]).includes(provider);
 		const stripParams =
 			enrollReasoning || family?.requiresParamStrip === true;
+		// Adaptive-only Claude rejects a non-default temperature even with no
+		// reasoning enrolled, but has no thinking budget to stay under, so
+		// only temperature is dropped for it — maxTokens stays.
+		const stripTemperature =
+			stripParams || family?.rejectsSamplingParams === true;
 		const reasoningFamily = enrollReasoning
 			? (family?.id ?? "(unknown)")
 			: "(none)";
@@ -1264,7 +1335,7 @@ function createUninstrumentedProviderModel(
 					? ` (reasoning enabled, family=${reasoningFamily})`
 					: ""
 			}${
-				stripParams && !enrollReasoning
+				stripTemperature && !enrollReasoning
 					? ` (param strip only, family=${family?.id ?? "(unknown)"})`
 					: ""
 			}`,
@@ -1280,7 +1351,8 @@ function createUninstrumentedProviderModel(
 			// `temperature != 1`. Omitting the field on the LangChain side lets
 			// the OpenAI client strip it from the wire body so the Gateway
 			// forwards a request with no temperature override.
-			...(stripParams ? {} : { temperature }),
+			// Adaptive-only Claude (`rejectsSamplingParams`) also drops it.
+			...(stripTemperature ? {} : { temperature }),
 			// Drop maxTokens when EITHER reasoning is enrolled OR the family
 			// requires param strip. Anthropic enforces
 			// `thinking.budget_tokens < max_tokens` strictly; OpenAI reasoning
@@ -1303,7 +1375,12 @@ function createUninstrumentedProviderModel(
 			// `message.reasoning_content` but never `message.reasoning`, so the
 			// gateway's field survives only inside the raw envelope. The agent
 			// extractReasoningFromMessage helper reads it back from there.
-			...(enrollReasoning ? { __includeRawResponse: true } : {}),
+			// Adaptive-only Claude gets no reasoning payload (see the family
+			// entry) but still thinks by default — always, on Opus 5.5 — so
+			// keep the envelope for it too.
+			...(enrollReasoning || family?.rejectsSamplingParams === true
+				? { __includeRawResponse: true }
+				: {}),
 		});
 	}
 

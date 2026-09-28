@@ -6,6 +6,10 @@
  * that communicates via AG-UI protocol.
  */
 
+export {
+	anthropicModelRejectsForcedToolChoice,
+	isAnthropicAdaptiveOnlyModel,
+} from "./anthropic-model-constraints";
 export type {
 	DecisionConflictFinding,
 	DecisionPrecheckResult,

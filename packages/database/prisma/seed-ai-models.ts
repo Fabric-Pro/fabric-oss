@@ -51,6 +51,10 @@ async function seedModels() {
 					inputCostPer1M: modelData.inputCostPer1M,
 					outputCostPer1M: modelData.outputCostPer1M,
 					suitableForTasks: modelData.suitableForTasks,
+					...(modelData.deprecation && {
+						isActive: false,
+						deprecatedAt: new Date(),
+					}),
 				},
 				update: {
 					displayName: modelData.displayName,
@@ -65,6 +69,13 @@ async function seedModels() {
 					inputCostPer1M: modelData.inputCostPer1M,
 					outputCostPer1M: modelData.outputCostPer1M,
 					suitableForTasks: modelData.suitableForTasks,
+					// Only a catalog deprecation is written here; an active
+					// entry leaves isActive/deprecatedAt alone so a model an
+					// admin switched off in the database stays off.
+					...(modelData.deprecation && {
+						isActive: false,
+						deprecatedAt: existing?.deprecatedAt ?? new Date(),
+					}),
 				},
 			});
 
@@ -112,6 +123,46 @@ async function seedModels() {
 	}
 
 	logger.info(`\nModels: ${createdCount} created, ${updatedCount} updated`);
+}
+
+/**
+ * Point each deprecated catalog model at its replacement. Runs after
+ * seedModels so the replacement row exists whatever the catalog order.
+ */
+async function linkDeprecatedModels() {
+	const deprecated = MODELS.filter((m) => m.deprecation);
+	if (deprecated.length === 0) {
+		return;
+	}
+	logger.info("\nLinking deprecated models to their replacements...");
+
+	for (const modelData of deprecated) {
+		const replacedBy = modelData.deprecation?.replacedBy;
+		try {
+			const replacement = replacedBy
+				? await db.aiModel.findUnique({
+						where: { canonicalName: replacedBy },
+						select: { id: true },
+					})
+				: null;
+			if (!replacement) {
+				logger.warn(
+					`  ⚠ Replacement ${replacedBy} not found for ${modelData.canonicalName}, skipping`,
+				);
+				continue;
+			}
+			await db.aiModel.update({
+				where: { canonicalName: modelData.canonicalName },
+				data: { replacementModelId: replacement.id },
+			});
+			logger.info(`  ✓ ${modelData.canonicalName} -> ${replacedBy}`);
+		} catch (error) {
+			logger.error(
+				`  ✗ Error linking ${modelData.canonicalName} to ${replacedBy}:`,
+				error,
+			);
+		}
+	}
 }
 
 async function seedTaskDefaults() {
@@ -327,6 +378,7 @@ export async function seedAiModels() {
 	await cleanupOrphanedData();
 
 	await seedModels();
+	await linkDeprecatedModels();
 	await seedTaskDefaults();
 
 	logger.info(`\n${"=".repeat(60)}`);

@@ -91,7 +91,10 @@ import {
 	resolveOutputTokenBudget,
 } from "./build-provider-options";
 import { createBuiltInTools } from "./built-in-tools";
-import { decideForcedToolChoice } from "./decide-forced-tool-choice";
+import {
+	decideForcedToolChoice,
+	modelRejectsForcedToolChoice,
+} from "./decide-forced-tool-choice";
 import {
 	fitHistoryToContext,
 	omittedHistoryNote,
@@ -1583,27 +1586,40 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// even if the prompt heuristic matched. Tested by
 		// `decide-forced-tool-choice.test.ts`. The demotion is logged so
 		// operators can see in traces when the heuristic was suppressed.
+		// The force is also dropped for models that reject ANY forced
+		// tool_choice (see `modelRejectsForcedToolChoice`), on every route.
 		const thinkingEnabled = providerOptions !== undefined;
+		const forcedToolChoiceModelNames = [
+			metadata.canonicalName,
+			metadata.modelString,
+		];
 		const forcedToolChoice = decideForcedToolChoice({
 			forcedToolName: shouldUseTools ? forcedFrameToolName : undefined,
 			availableTools: shouldUseTools
 				? (allTools as Record<string, unknown>)
 				: {},
 			thinkingEnabled,
+			modelNames: forcedToolChoiceModelNames,
 		});
 		if (
 			forcedFrameToolName &&
 			forcedFrameToolName in allTools &&
-			thinkingEnabled &&
 			forcedToolChoice === "auto"
 		) {
+			const modelRejectsForce = modelRejectsForcedToolChoice(
+				forcedToolChoiceModelNames,
+			);
 			logger.info(
-				"Demoted forced tool_choice to 'auto' because Anthropic thinking is enabled (incompatible per Anthropic API). Relying on prompt routing.",
+				modelRejectsForce
+					? "Demoted forced tool_choice to 'auto' because this model rejects a forced tool_choice. Relying on prompt routing."
+					: "Demoted forced tool_choice to 'auto' because Anthropic thinking is enabled (incompatible per Anthropic API). Relying on prompt routing.",
 				{
 					forcedFrameToolName,
 					provider: metadata.provider,
 					model: metadata.modelString,
-					reason: "anthropic-thinking-vs-tool-choice-incompat",
+					reason: modelRejectsForce
+						? "model-rejects-forced-tool-choice"
+						: "anthropic-thinking-vs-tool-choice-incompat",
 				},
 			);
 		}

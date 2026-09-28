@@ -14,7 +14,7 @@ export {
 	type ParsedMessage,
 	parseMessage,
 } from "./message-parser";
-export { getAiModel } from "./model-selector";
+export { getAiModel, getAiModelWithSelection } from "./model-selector";
 export { jsonSchemaToZod } from "./schema-utils";
 export {
 	clearToolLearningCache,

@@ -1,7 +1,11 @@
+import { anthropicModelRejectsForcedToolChoice } from "@repo/agent-types";
+
 /**
- * Selects the `toolChoice` argument for the direct-chat `streamText` call.
+ * Selects the `toolChoice` argument for the direct-chat `streamText` call
+ * (and, for its frame/slideshow force, the orchestrator's
+ * `run-agent-iteration.ts`).
  *
- * Two business rules encoded here:
+ * Three business rules encoded here:
  *
  *   1. Only force a tool name that actually exists in `availableTools`.
  *      The AI SDK throws a no-tool error when the forced name is missing
@@ -16,6 +20,14 @@
  *      Vercel-AI-SDK path. The single source-of-truth for "is thinking
  *      actually enabled?" is `buildProviderOptions(...) !== undefined` —
  *      callers should pass `thinkingEnabled` as that boolean.
+ *
+ *   3. Some Claude models (`anthropicModelRejectsForcedToolChoice` in
+ *      `@repo/agent-types`: Opus 5.5, Fable 5.1, Mythos 5.1) return HTTP 400
+ *      for ANY forced `tool_choice`, whatever the thinking setting — Opus
+ *      5.5 cannot even disable thinking. For them we never force, on any
+ *      provider route. Callers pass every name that identifies the
+ *      resolved model in `modelNames` (catalog canonical name and wire
+ *      model string: a Databricks serving alias alone hides the model).
  *
  * Returns:
  *   - `undefined`              — no tools registered; omit `toolChoice` from
@@ -42,12 +54,26 @@ export interface DecideForcedToolChoiceInput {
 	 *  When `true`, we never emit a `{type:"tool"}` force regardless of
 	 *  the heuristic. */
 	thinkingEnabled: boolean;
+	/** Names identifying the resolved model (e.g. catalog canonical name and
+	 *  wire model string). When any of them names a model that rejects a
+	 *  forced `tool_choice`, we never emit a `{type:"tool"}` force. */
+	modelNames?: ReadonlyArray<string | null | undefined>;
+}
+
+/** True when any of `modelNames` rejects a forced `tool_choice`. */
+export function modelRejectsForcedToolChoice(
+	modelNames: ReadonlyArray<string | null | undefined> | undefined,
+): boolean {
+	return (modelNames ?? []).some((name) =>
+		anthropicModelRejectsForcedToolChoice(name),
+	);
 }
 
 export function decideForcedToolChoice(
 	input: DecideForcedToolChoiceInput,
 ): ForcedToolChoice {
-	const { forcedToolName, availableTools, thinkingEnabled } = input;
+	const { forcedToolName, availableTools, thinkingEnabled, modelNames } =
+		input;
 	const hasTools = Object.keys(availableTools).length > 0;
 
 	if (!hasTools) {
@@ -57,7 +83,8 @@ export function decideForcedToolChoice(
 	if (
 		forcedToolName &&
 		forcedToolName in availableTools &&
-		!thinkingEnabled
+		!thinkingEnabled &&
+		!modelRejectsForcedToolChoice(modelNames)
 	) {
 		return { type: "tool", toolName: forcedToolName };
 	}
