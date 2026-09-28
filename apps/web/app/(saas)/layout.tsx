@@ -7,6 +7,7 @@ import { organizationListQueryKey } from "@saas/organizations/lib/api";
 import { AiUsageLimitQueryErrorListener } from "@saas/payments/lib/ai-usage-limit-query-error-listener";
 import { ConfirmationAlertProvider } from "@saas/shared/components/ConfirmationAlertProvider";
 import { CopilotFetchErrorInterceptor } from "@saas/shared/components/copilot/CopilotFetchErrorInterceptor";
+import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
@@ -16,8 +17,14 @@ import { getLocale, getMessages } from "next-intl/server";
 import type { PropsWithChildren } from "react";
 
 export default async function SaaSLayout({ children }: PropsWithChildren) {
-	const [messages, locale] = await Promise.all([getMessages(), getLocale()]);
-	const session = await getSession();
+	const [messages, locale] = await Promise.all([
+		measureCatalogRequestPhase("saas_messages", getMessages),
+		measureCatalogRequestPhase("saas_locale", getLocale),
+	]);
+	const session = await measureCatalogRequestPhase(
+		"saas_session",
+		getSession,
+	);
 
 	if (!session) {
 		redirect("/auth/login");
@@ -64,7 +71,9 @@ export default async function SaaSLayout({ children }: PropsWithChildren) {
 		);
 	}
 
-	await Promise.all(prefetchPromises);
+	await measureCatalogRequestPhase("saas_prefetch", () =>
+		Promise.all(prefetchPromises),
+	);
 
 	return (
 		<NextIntlClientProvider locale={locale} messages={messages}>

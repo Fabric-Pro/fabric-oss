@@ -4,6 +4,7 @@ import { createPurchasesHelper } from "@repo/payments/lib/helper";
 import { getOrganizationList, getSession } from "@saas/auth/lib/server";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { RoleTagSnapshotProvider } from "@saas/shared/components/RoleTagSnapshotProvider";
+import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { attemptAsync } from "es-toolkit";
 import { redirect } from "next/navigation";
@@ -13,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function Layout({ children }: PropsWithChildren) {
-	const session = await getSession();
+	const session = await measureCatalogRequestPhase("app_session", getSession);
 
 	if (!session) {
 		redirect("/auth/login");
@@ -33,7 +34,10 @@ export default async function Layout({ children }: PropsWithChildren) {
 		redirect("/onboarding");
 	}
 
-	const organizations = await getOrganizationList();
+	const organizations = await measureCatalogRequestPhase(
+		"app_organizations",
+		getOrganizationList,
+	);
 
 	if (
 		config.organizations.enable &&
@@ -71,10 +75,14 @@ export default async function Layout({ children }: PropsWithChildren) {
 			? session?.session.activeOrganizationId || organizations?.at(0)?.id
 			: undefined;
 
-		const [error, data] = await attemptAsync(() =>
-			orpcClient.payments.listPurchases({
-				organizationId,
-			}),
+		const [error, data] = await measureCatalogRequestPhase(
+			"app_billing",
+			() =>
+				attemptAsync(() =>
+					orpcClient.payments.listPurchases({
+						organizationId,
+					}),
+				),
 		);
 
 		if (error) {
@@ -108,7 +116,10 @@ export default async function Layout({ children }: PropsWithChildren) {
 	// Resolved server-side (DB-backed, see @repo/database) and handed to
 	// FeatureFlagProvider below so client components can read flag values
 	// from the RSC payload with no fetch and no loading branch.
-	const featureFlags = await getAllFlags();
+	const featureFlags = await measureCatalogRequestPhase(
+		"app_feature_flags",
+		getAllFlags,
+	);
 
 	// Whether this user has any default function tags, for the blocking
 	// role-tag gate (Fizzy #2264). Read here rather than in the client so the
@@ -129,8 +140,9 @@ export default async function Layout({ children }: PropsWithChildren) {
 	let hasDefaultFunctionTags: boolean | null = null;
 	if (featureFlags.ROLE_TAG_ENFORCEMENT) {
 		try {
-			const defaultTags = await getUserDefaultFunctionTags(
-				session.user.id,
+			const defaultTags = await measureCatalogRequestPhase(
+				"app_default_function_tags",
+				() => getUserDefaultFunctionTags(session.user.id),
 			);
 			hasDefaultFunctionTags = defaultTags.length > 0;
 		} catch (error) {

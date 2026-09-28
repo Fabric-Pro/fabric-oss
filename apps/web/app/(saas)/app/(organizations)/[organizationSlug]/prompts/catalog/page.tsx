@@ -2,6 +2,10 @@ import { getSession } from "@saas/auth/lib/server";
 import { PromptCatalog } from "@saas/prompts/components/PromptCatalog";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
+import {
+	logCatalogRequestTiming,
+	measureCatalogRequestPhase,
+} from "@saas/shared/lib/catalog-request-timing";
 import { redirect } from "next/navigation";
 
 export default async function OrgPromptCatalogPage({
@@ -9,13 +13,21 @@ export default async function OrgPromptCatalogPage({
 }: {
 	params: Promise<{ organizationSlug: string }>;
 }) {
-	const session = await getSession();
+	const session = await measureCatalogRequestPhase(
+		"catalog_session",
+		getSession,
+	);
 
 	if (!session) {
 		redirect("/auth/login");
 	}
 
-	const { organizationSlug } = await params;
+	const { organizationSlug } = await measureCatalogRequestPhase(
+		"catalog_params",
+		() => params,
+	);
+
+	logCatalogRequestTiming();
 
 	return (
 		<div className="w-full space-y-6 py-6">
