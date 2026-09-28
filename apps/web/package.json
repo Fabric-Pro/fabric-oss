@@ -210,7 +210,7 @@
 	"name": "@repo/web",
 	"private": true,
 	"scripts": {
-		"build": "node scripts/build-with-memory-report.mjs -- node --max-old-space-size=6144 ./node_modules/next/dist/bin/next build && node scripts/report-function-sizes.mjs",
+		"build": "node scripts/build-with-memory-report.mjs -- node --max-old-space-size=4096 ./node_modules/next/dist/bin/next build && node scripts/report-function-sizes.mjs",
 		"dev": "next dev --hostname 0.0.0.0",
 		"e2e": "pnpm exec playwright test --ui",
 		"e2e:ci": "pnpm exec playwright install && pnpm exec playwright test",
