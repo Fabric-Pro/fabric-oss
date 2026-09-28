@@ -1211,6 +1211,7 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 	const pathname = usePathname();
 	const shortcutLabel = useShortcutLabel();
 	const [isOpen, setIsOpen] = useState(false);
+	const [hasOpened, setHasOpened] = useState(false);
 	const [launchContext, setLaunchContext] =
 		useState<FabricAgentLaunchContext | null>(null);
 	const [ambientContextEntries, setAmbientContextEntries] = useState<
@@ -1256,6 +1257,7 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 				// Re-opening without new context: apply ambient but don't reset chat
 				setLaunchContext((prev) => prev ?? normalized);
 			}
+			setHasOpened(true);
 			setIsOpen(true);
 		},
 		[ambientContext, isOpen],
@@ -1352,6 +1354,7 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 			// Bare open (no explicit context): preserve existing conversation.
 			// Only apply ambient context if there's no existing launch context.
 			setLaunchContext((prev) => prev ?? ambientContext);
+			setHasOpened(true);
 			setIsOpen(true);
 		};
 
@@ -1416,21 +1419,23 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 					<FabricLogo size={16} variant="inverse" />
 				</Button>
 			) : null}
-			<FabricAgentLauncherSheet
-				isOpen={isOpen}
-				launchContext={launchContext}
-				onOpenChange={setIsOpen}
-				onClearContext={clearContext}
-				onRemoveProject={removeLaunchProject}
-				onPrefillInput={(value) => {
-					setDraftInput(value);
-					setLauncherKey((current) => current + 1);
-				}}
-				launcherKey={launcherKey}
-				draftInput={draftInput}
-				isMobile={isMobile}
-				onExpandHandoff={setPendingExpandHandoff}
-			/>
+			{hasOpened && (
+				<FabricAgentLauncherSheet
+					isOpen={isOpen}
+					launchContext={launchContext}
+					onOpenChange={setIsOpen}
+					onClearContext={clearContext}
+					onRemoveProject={removeLaunchProject}
+					onPrefillInput={(value) => {
+						setDraftInput(value);
+						setLauncherKey((current) => current + 1);
+					}}
+					launcherKey={launcherKey}
+					draftInput={draftInput}
+					isMobile={isMobile}
+					onExpandHandoff={setPendingExpandHandoff}
+				/>
+			)}
 		</FabricAgentLauncherContext.Provider>
 	);
 }

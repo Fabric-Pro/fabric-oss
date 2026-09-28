@@ -345,6 +345,27 @@ function AmbientContextHarness() {
 }
 
 describe("FabricAgentLauncher", () => {
+	it("loads the drawer on first open and keeps its chat mounted after closing", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+
+		expect(screen.queryByLabelText("Fabric Agent")).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
+		const chat = await screen.findByTestId("drawer-chat");
+
+		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+		expectLauncherClosed();
+		expect(screen.getByTestId("drawer-chat")).toBe(chat);
+
+		fireEvent.click(screen.getByRole("button", { name: /Fabric Agent/i }));
+		expectLauncherOpen();
+		expect(screen.getByTestId("drawer-chat")).toBe(chat);
+	});
+
 	it("opens from the floating shell trigger", async () => {
 		render(
 			<FabricAgentLauncherProvider>
@@ -549,7 +570,7 @@ describe("FabricAgentLauncher", () => {
 			bubbles: true,
 		});
 
-		expectLauncherClosed();
+		expect(screen.queryByLabelText("Fabric Agent")).not.toBeInTheDocument();
 	});
 });
 
