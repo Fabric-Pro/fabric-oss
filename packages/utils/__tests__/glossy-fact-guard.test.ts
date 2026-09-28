@@ -680,12 +680,575 @@ describe("checkRewrite", () => {
 			).toEqual({ pass: true });
 		});
 
+		it("fails 'with the pilot' reversed to 'without the pilot'", () => {
+			expect(
+				violationsOf(
+					rewrite(
+						"Delivered with the pilot.",
+						"Delivered without the pilot.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "structural",
+					text: "without",
+				}),
+			]);
+		});
+
 		it("fails an added 'never' even when the source negates with 'not'", () => {
+			// The swap also drops the source's "not", which the negation
+			// check reports on its own.
 			expect(
 				kindsOf(
 					rewrite(
 						"The old warehouse is not needed after the pilot.",
 						"The old warehouse is never needed after the pilot.",
+					),
+				),
+			).toEqual(["structural", "negation"]);
+		});
+
+		it("fails a second 'not' added to a source that states one", () => {
+			// The source already uses the "not" group, so a check on group
+			// presence alone would accept this reversal of the second statement.
+			expect(
+				violationsOf(
+					rewrite(
+						"X is not in scope. Y is in scope.",
+						"X is not in scope. Y is not in scope.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({ kind: "structural", text: "not" }),
+			]);
+		});
+
+		it("counts per occurrence: 'not X and Y' to 'not X and not Y' fails", () => {
+			expect(
+				violationsOf(
+					rewrite(
+						"The pilot does not cover billing and covers reporting.",
+						"The pilot does not cover billing and does not cover reporting.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "structural",
+					text: "not",
+					message: expect.stringContaining(
+						"1 in the source, 2 in the rewrite",
+					),
+				}),
+			]);
+		});
+
+		it("fails 'not X or Y' rephrased as 'neither X nor Y': a known false positive of counting", () => {
+			// Pinned on purpose: "neither … nor" is two negating words for one
+			// negation, as the dropped count needs it to be ("not A. not B." may
+			// become "Neither A nor B"). Rejecting this only keeps the source
+			// wording.
+			expect(
+				kindsOf(
+					rewrite(
+						"The budget does not cover travel or training.",
+						"The budget covers neither travel nor training.",
+					),
+				),
+			).toEqual(["structural"]);
+		});
+
+		it.each([
+			[
+				"'no' and 'not' kept as 'no' and 'does not'",
+				"There is no contingency, and travel is not covered.",
+				"The budget has no contingency and does not cover travel.",
+			],
+			[
+				"'isn't' kept as 'is not'",
+				"A second data centre isn't planned for 2026.",
+				"A second data centre is not planned for 2026.",
+			],
+		])(
+			"passes a rewrite with as many negating words per group as its source: %s",
+			(_label, source, output) => {
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+	});
+
+	describe("negation", () => {
+		it("fails 'not in scope' rewritten as 'in scope'", () => {
+			expect(
+				violationsOf(
+					rewrite(
+						"Data migration is not in scope for Phase 1.",
+						"Data migration is in scope for Phase 1.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({ kind: "negation", text: "not" }),
+			]);
+		});
+
+		it.each([
+			[
+				"isn't",
+				"A second data centre isn't planned for 2026.",
+				"A second data centre is planned for 2026.",
+			],
+			[
+				"no longer",
+				"The nightly batch will no longer run after cutover.",
+				"The nightly batch will run after cutover.",
+			],
+			[
+				"without",
+				"The rollout starts without a pilot in Q3 2026.",
+				"The rollout starts with a pilot in Q3 2026.",
+			],
+			[
+				"won't",
+				"The vendor won't renew the support contract.",
+				"The vendor renews the support contract.",
+			],
+			[
+				"can't",
+				"The current platform can't scale past 400 users.",
+				"The current platform scales past 400 users.",
+			],
+			[
+				"don't",
+				"Branch offices don't need new hardware.",
+				"Branch offices need new hardware.",
+			],
+			[
+				"doesn't",
+				"The budget doesn't include contingency.",
+				"The budget includes contingency.",
+			],
+			[
+				"aren't",
+				"Contractors aren't covered by the licence.",
+				"Contractors are covered by the licence.",
+			],
+			[
+				"wasn't",
+				"The pilot wasn't extended past the first site.",
+				"The pilot was extended past the first site.",
+			],
+			[
+				"shouldn't",
+				"Teams shouldn't migrate before the audit.",
+				"Teams migrate before the audit.",
+			],
+			[
+				"cannot",
+				"The archive cannot move to the cloud.",
+				"The archive moves to the cloud.",
+			],
+			[
+				"never",
+				"Customer data is never stored offshore.",
+				"Customer data is stored offshore.",
+			],
+			[
+				"none",
+				"None of the three vendors meets the baseline.",
+				"All three vendors meet the baseline.",
+			],
+			[
+				"neither, nor",
+				"Neither the budget nor the timeline changes.",
+				"The budget and the timeline change.",
+			],
+		])("fails a dropped '%s'", (dropped, source, output) => {
+			expect(violationsOf(rewrite(source, output))).toEqual([
+				expect.objectContaining({ kind: "negation", text: dropped }),
+			]);
+		});
+
+		it("counts per occurrence: 'not X and not Y' to 'not X and Y' fails", () => {
+			expect(
+				kindsOf(
+					rewrite(
+						"The pilot does not cover billing and does not cover reporting.",
+						"The pilot does not cover billing and covers reporting.",
+					),
+				),
+			).toEqual(["negation"]);
+		});
+
+		it("passes a negation kept in other words", () => {
+			expect(
+				rewrite(
+					"Data migration is not in scope for Phase 1.",
+					"Data migration is not included in scope for Phase 1.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it("fails two negated statements merged under one negation, which the rewrite prompt forbids", () => {
+			expect(
+				violationsOf(
+					rewrite(
+						"Data migration is not in scope. Reporting is not in scope.",
+						"Data migration and reporting are not in scope.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "negation",
+					text: "not",
+					message: expect.stringContaining(
+						"2 in the source, 1 in the rewrite",
+					),
+				}),
+			]);
+		});
+
+		it("passes the same merge when each negation keeps its own word", () => {
+			expect(
+				rewrite(
+					"Data migration is not in scope. Reporting is not in scope.",
+					"Neither data migration nor reporting is in scope.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it("fails a negation moved to another statement (flipped from a pinned known limit): the clause check aligns the statements and compares their polarity", () => {
+			// Flipped on purpose: this once passed because the section-wide
+			// count is unchanged. Each clause now aligns with its rewrite by
+			// shared content words, so the move shows in both statements.
+			expect(
+				violationsOf(
+					rewrite(
+						"Data migration is not in scope; reporting is in scope.",
+						"Data migration is in scope; reporting is not in scope.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "negation",
+					text: "Data migration is not in scope",
+					message: expect.stringContaining(
+						'Reverses the polarity of "Data migration is not in scope"',
+					),
+				}),
+				expect.objectContaining({
+					kind: "negation",
+					text: "reporting is in scope",
+					message: expect.stringContaining(
+						'the rewrite\'s matching clause "reporting is not in scope"',
+					),
+				}),
+			]);
+		});
+
+		it.each([
+			[
+				"sentences",
+				"Data migration is not in scope. Reporting is in scope.",
+				"Data migration is in scope. Reporting is not in scope.",
+			],
+			[
+				"list items",
+				"- Data migration is not in scope\n- Reporting is in scope",
+				"- Data migration is in scope\n- Reporting is not in scope",
+			],
+			[
+				"paragraphs",
+				"Data migration is not in scope for Phase 1\n\nReporting is in scope for Phase 1",
+				"Data migration is in scope for Phase 1\n\nReporting is not in scope for Phase 1",
+			],
+		])("fails a negation moved between %s", (_label, source, output) => {
+			expect(kindsOf(rewrite(source, output))).toEqual([
+				"negation",
+				"negation",
+			]);
+		});
+
+		it("passes the same statements reordered with each negation kept", () => {
+			expect(
+				rewrite(
+					"Data migration is not in scope; reporting is in scope.",
+					"Reporting is in scope; data migration is not in scope.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it.each([
+			[
+				"a negated statement folded into a positive one",
+				"The pilot does not include billing. It covers reporting and analytics for the finance team.",
+				"The pilot covers reporting and analytics for finance, not billing.",
+			],
+			[
+				"a trailing negation turned into its own clause",
+				"The pilot covers billing, but not reporting, in Q3 2026.",
+				"The pilot does not cover reporting; it covers billing in Q3 2026.",
+			],
+		])(
+			"passes %s: only one end of the apparent move aligns",
+			(_label, source, output) => {
+				// A moved negation leaves an aligned clause and reaches another.
+				// When only one end aligns, the other clause was condensed or
+				// restructured, and the totals judge it.
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+
+		it("passes a sentence soft-wrapped across lines: a line break alone does not end a clause", () => {
+			expect(
+				rewrite(
+					"Data migration for the Phase 1 rollout is\nnot in scope.",
+					"Data migration for the Phase 1 rollout is not in scope.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it("applies only the section-wide counts to a Brief merge of two negated statements", () => {
+			// The merged clause matches both source clauses, so neither aligns
+			// and only the existing section-wide counts judge the merge.
+			const source =
+				"Data migration is not in scope. Reporting is not in scope.";
+			expect(
+				rewrite(
+					source,
+					"Neither data migration nor reporting is in scope.",
+					{
+						lengthMode: "brief",
+					},
+				),
+			).toEqual({ pass: true });
+			expect(
+				violationsOf(
+					rewrite(
+						source,
+						"Data migration and reporting are not in scope.",
+						{
+							lengthMode: "brief",
+						},
+					),
+				),
+			).toEqual([
+				expect.objectContaining({ kind: "negation", text: "not" }),
+			]);
+		});
+
+		it("passes a faithful reordered rewrite with no negation", () => {
+			expect(
+				rewrite(
+					"The migration completes in Q3 2026 and reduces licence spend. The platform team owns the cutover.",
+					"The platform team owns the cutover. The migration completes in Q3 2026 and cuts licence spend.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it("fails an added 'without disruption' (flipped from passing): the rewrite prompt forbids adding 'without', so both directions count it", () => {
+			// Flipped on purpose: this once passed because only the dropped
+			// direction counted "without". A false positive here only keeps
+			// the source wording, which is the safe side.
+			expect(
+				violationsOf(
+					rewrite(
+						"The cutover to the new platform runs over one weekend in Q3 2026.",
+						"The cutover runs over one weekend in Q3 2026 without disruption.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "structural",
+					text: "without",
+				}),
+			]);
+		});
+
+		it.each([
+			[
+				"No. of seats",
+				"Licence count: No. of seats in Phase 1 is 40.",
+				"Licence count: the number of seats in Phase 1 is 40.",
+			],
+			[
+				"No. 4471",
+				"Purchase order No. 4471 covers the Phase 1 licences.",
+				"Purchase order 4471 covers the Phase 1 licences.",
+			],
+		])(
+			"passes a dropped '%s': the abbreviation is not a negator",
+			(_label, source, output) => {
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+
+		it.each([
+			[
+				"no-code",
+				"The team builds the intake form with a no-code tool.",
+				"The team builds the intake form with a visual tool.",
+			],
+			[
+				"no-show",
+				"Each no-show is rebooked within 2 days.",
+				"Each missed session is rebooked within 2 days.",
+			],
+			[
+				"go/no-go",
+				"The go/no-go review closes Phase 1 in Q3 2026.",
+				"The launch review closes Phase 1 in Q3 2026.",
+			],
+			[
+				"yes-no",
+				"The board takes a yes-no vote in Q3 2026.",
+				"The board votes in Q3 2026.",
+			],
+			[
+				"not only",
+				"The new platform is not only faster but also cheaper.",
+				"The new platform is faster and cheaper.",
+			],
+			[
+				"no matter",
+				"The cutover happens in Q3 2026 no matter how the pilot ends.",
+				"The cutover happens in Q3 2026 whatever the pilot shows.",
+			],
+			[
+				"no doubt",
+				"There is no doubt the pilot met its 90% target.",
+				"The pilot clearly met its 90% target.",
+			],
+		])(
+			"passes a dropped '%s', which negates nothing",
+			(_label, source, output) => {
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+
+		it.each([
+			[
+				"no-code",
+				"The team builds the intake form with a visual tool.",
+				"The team builds the intake form with a no-code tool.",
+			],
+			[
+				"not only",
+				"The new platform is faster and cheaper than the current one.",
+				"The new platform is not only faster but also cheaper.",
+			],
+			[
+				"no matter",
+				"The cutover happens in Q3 2026 whatever the pilot shows.",
+				"The cutover happens in Q3 2026 no matter how the pilot ends.",
+			],
+			[
+				"no doubt",
+				"The pilot clearly met its 90% target in Q3 2026.",
+				"There is no doubt the pilot met its 90% target.",
+			],
+			[
+				"No. 4471",
+				"Purchase order 4471 covers the Phase 1 licences.",
+				"Purchase order No. 4471 covers the Phase 1 licences.",
+			],
+		])(
+			"passes an added '%s' too: both directions skip the same uses",
+			(_label, source, output) => {
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+
+		it("still fails a real 'not' dropped next to 'not only' and a 'no-' compound", () => {
+			expect(
+				violationsOf(
+					rewrite(
+						"The no-code builder is not only faster but also cheaper, and it is not hosted offshore.",
+						"The no-code builder is faster and cheaper, and it is hosted offshore.",
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "negation",
+					text: "not",
+					message: expect.stringContaining(
+						"1 in the source, 0 in the rewrite",
+					),
+				}),
+			]);
+		});
+
+		it.each([
+			[
+				"no-one",
+				"The rollout means no-one on the team needs new hardware.",
+				"The rollout means everyone on the team needs new hardware.",
+			],
+			[
+				"no-longer",
+				"The no-longer-supported client retires in Q3 2026.",
+				"The supported client retires in Q3 2026.",
+			],
+		])("still counts '%s' as a negation", (_label, source, output) => {
+			expect(violationsOf(rewrite(source, output))).toEqual([
+				expect.objectContaining({ kind: "negation", text: "no" }),
+			]);
+		});
+
+		it("still counts a 'not-' compound, which usually negates", () => {
+			expect(
+				kindsOf(
+					rewrite(
+						"Phase 2 remains not-yet-funded in Q3 2026.",
+						"Phase 2 remains funded in Q3 2026.",
+					),
+				),
+			).toEqual(["negation"]);
+		});
+
+		it("still counts a sentence-ending 'No.' as a negation", () => {
+			expect(
+				kindsOf(
+					rewrite(
+						"Is Phase 2 funded? No. The board reviews it in Q3 2026.",
+						"The board reviews Phase 2 in Q3 2026.",
+					),
+				),
+			).toEqual(["negation"]);
+		});
+
+		it.each([
+			[
+				"a link target",
+				"The [runbook](https://example.com/no-downtime) covers the Q3 2026 cutover.",
+				"The runbook covers the Q3 2026 cutover.",
+			],
+			[
+				"an image's alt text",
+				"![No change in headcount](https://example.com/chart.png)\nRevenue grows 4% in Q3 2026.",
+				"Revenue grows 4% in Q3 2026.",
+			],
+		])(
+			"ignores a negating word in %s, which a rewrite may drop",
+			(_label, source, output) => {
+				expect(rewrite(source, output)).toEqual({ pass: true });
+			},
+		);
+
+		it("passes a source and output with no negator", () => {
+			expect(
+				rewrite(
+					"The migration completes in Q3 2026 and reduces licence spend.",
+					"The migration completes in Q3 2026.",
+				),
+			).toEqual({ pass: true });
+		});
+
+		it("still reports an added negator as structural, not as a dropped negation", () => {
+			expect(
+				kindsOf(
+					rewrite(
+						"The migration completes in Q3 2026 and reduces licence spend.",
+						"The migration does not complete before Q3 2026.",
 					),
 				),
 			).toEqual(["structural"]);
@@ -882,6 +1445,29 @@ describe("untrusted input size", () => {
 			source: hostile,
 			output: hostile,
 			isKeySection: true,
+			lengthMode: "standard",
+		});
+		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	it.each([
+		[
+			"many negated clauses",
+			"Data migration is not in scope; ".repeat(20_000),
+		],
+		[
+			"clauses that all share their content words, under the clause cap",
+			"Data migration is not in scope for the platform team. ".repeat(
+				390,
+			),
+		],
+		["a long punctuation run", `It is not ${"!".repeat(20_000)}x`],
+	])("stays fast on %s, which the clause check splits", (_label, hostile) => {
+		const started = Date.now();
+		checkRewrite({
+			source: hostile,
+			output: hostile,
+			isKeySection: false,
 			lengthMode: "standard",
 		});
 		expect(Date.now() - started).toBeLessThan(2_000);

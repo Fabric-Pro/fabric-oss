@@ -11,7 +11,12 @@
  *   a qualifier in its output sentence;
  * - must-keep: a key section keeps every source figure and date;
  * - structural: the output adds no URL, email, markdown link or image, HTML,
- *   code fence, slot tag, heading, or negator the source lacks;
+ *   code fence, slot tag, or heading the source lacks, and no more negating
+ *   words per negator group than the source states;
+ * - negation: the output keeps as many negating words per negator group as
+ *   the source states, and a negation does not move between statements:
+ *   clauses are aligned by shared content words, and one aligned pair
+ *   losing a negating word while another gains it fails;
  * - length: Brief is at most the source length, Standard at most 1.25x.
  *
  * Callers pass the CLEANED source (after cleanup), so a figure that only
@@ -76,6 +81,7 @@ export type FactGuardViolationKind =
 	| "hedge"
 	| "must-keep"
 	| "structural"
+	| "negation"
 	| "length"
 	| "label";
 
@@ -1220,7 +1226,9 @@ function splitSentences(text: string): string[] {
 	const sentences: string[] = [];
 	for (const block of splitBlocks(text)) {
 		let start = 0;
-		for (const m of allMatches(block, /[.!?]+(?=\s)/g)) {
+		// Matching only at the head of a punctuation run finds the same ends
+		// and scans a long run once.
+		for (const m of allMatches(block, /(?<![.!?])[.!?]+(?=\s)/g)) {
 			const end = m.index + m[0].length;
 			if (m[0] === "." && isAbbreviation(block, m.index)) {
 				continue;
@@ -1438,8 +1446,86 @@ function addedItems(source: string[], output: string[]): string[] {
 
 const SLOT_TAG_NAME = new RegExp(String.raw`^</?${VISUAL_SLOT_TAG}\b`, "i");
 
+/**
+ * Negating words, one list for both directions: an added one fails as
+ * structural, a dropped one as negation. It holds every word the rewrite
+ * prompt's two negation rules name, so the guard enforces what the prompt
+ * states. Contractions match whole, so a finding quotes "isn't", not "n't".
+ */
 const NEGATOR =
-	/\b(?:not|no|none|nothing|nobody|nowhere|neither|nor|never|cannot)\b|n['’]t\b/gi;
+	/\b(?:no\s+longer|nothing|nobody|nowhere|neither|never|cannot|without|none|nor|not|no)\b|\b[a-z]+n['’]t\b/gi;
+
+/** What follows "No" in "No. of seats" or "No. 4": the number abbreviation. */
+const NUMBER_ABBREVIATION = /^\.\s?(?:\d|of\b)/;
+
+/** What follows "not" in "not only … but also". */
+const NOT_ONLY = /^\s+only\b/i;
+
+/** What follows "no" in "no matter how" or "no doubt". */
+const NO_MATTER_OR_DOUBT = /^\s+(?:matter|doubt)\b/i;
+
+/**
+ * A hyphen joining "no" to the next word, as in "no-code", "no-show", or
+ * "go/no-go". "No-one" and "no-longer" still negate.
+ */
+const NO_COMPOUND_AFTER = /^[-‐‑](?!one\b|longer\b)\p{L}/iu;
+
+/** A hyphen joining "no" to the previous word, as in "yes-no". */
+const NO_COMPOUND_BEFORE = /\p{L}[-‐‑]$/u;
+
+/** How far past a match the fixed-phrase checks look. */
+const PHRASE_WINDOW = 32;
+
+/**
+ * Whether a negating-word match negates anything. Neither direction counts
+ * the number abbreviation, "not only", "no matter", "no doubt", or a "no-"
+ * compound. Only "no" compounds are skipped: a "not-" or "never-" compound
+ * ("not-yet-approved") usually still negates, and counting a harmless one
+ * only keeps the source wording.
+ */
+function isNegatingUse(prose: string, m: RegExpExecArray): boolean {
+	const word = m[0].toLowerCase();
+	const end = m.index + m[0].length;
+	const after = prose.slice(end, end + PHRASE_WINDOW);
+	if (word === "not") {
+		return !NOT_ONLY.test(after);
+	}
+	if (word !== "no") {
+		return true;
+	}
+	return !(
+		NUMBER_ABBREVIATION.test(after) ||
+		NO_MATTER_OR_DOUBT.test(after) ||
+		NO_COMPOUND_AFTER.test(after) ||
+		NO_COMPOUND_BEFORE.test(prose.slice(Math.max(0, m.index - 2), m.index))
+	);
+}
+
+/**
+ * The prose the negation checks read, offsets preserved. Alt text is
+ * blanked: a rewrite carries no image (an added one fails as structural),
+ * so alt text holds no negation the output could keep. Premasking drops
+ * URLs, link targets, and tags.
+ */
+function negationProse(text: string): string {
+	return premask(blankMatches(text, MARKDOWN_IMAGE));
+}
+
+interface NegatingWord {
+	/** Lowercased, whitespace collapsed: "no longer", "isn't". */
+	word: string;
+	index: number;
+}
+
+/** Negating words in `prose`, in order, skipping uses that negate nothing. */
+function negatingWords(prose: string): NegatingWord[] {
+	return allMatches(prose, NEGATOR)
+		.filter((m) => isNegatingUse(prose, m))
+		.map((m) => ({
+			word: m[0].toLowerCase().replace(/\s+/g, " "),
+			index: m.index,
+		}));
+}
 
 function withoutLinks(text: string): string {
 	return blankMatches(
@@ -1449,9 +1535,10 @@ function withoutLinks(text: string): string {
 }
 
 /**
- * Negators by group: rephrasing "no contingency" as "does not include
- * contingency" keeps the group, while adding "never" or a first negation
- * does not.
+ * Negators by group, the unit both negation counts compare: rephrasing "no
+ * contingency" as "does not include contingency" stays in one group, while
+ * "never" is a group of its own, so swapping "not" for it adds one and drops
+ * the other.
  */
 function negatorGroup(word: string): string {
 	return word.toLowerCase() === "never" ? "never" : "not";
@@ -1459,13 +1546,12 @@ function negatorGroup(word: string): string {
 
 /**
  * Structural items per category, compared as a multiset: the output fails
- * for each item beyond the source's count of it. A category with `group`
- * compares by group presence instead.
+ * for each item beyond the source's count of it. Negating words are counted
+ * per negator group by `negationViolations` instead.
  */
 const STRUCTURAL_CATEGORIES: Array<{
 	label: string;
 	items: (text: string) => string[];
-	group?: (item: string) => string;
 }> = [
 	{
 		label: "markdown image",
@@ -1521,41 +1607,15 @@ const STRUCTURAL_CATEGORIES: Array<{
 		items: (text) =>
 			parseOutline(text).map((heading) => headingAnchor(heading.text)),
 	},
-	{
-		label: "negator",
-		items: (text) => allMatches(text, NEGATOR).map((m) => m[0]),
-		group: negatorGroup,
-	},
 ];
-
-/** Output items whose group the source never uses; the first word per group. */
-function addedGroups(
-	source: string[],
-	output: string[],
-	group: (item: string) => string,
-): string[] {
-	const seen = new Set(source.map(group));
-	const added: string[] = [];
-	for (const item of output) {
-		const key = group(item);
-		if (!seen.has(key)) {
-			seen.add(key);
-			added.push(item);
-		}
-	}
-	return added;
-}
 
 function structuralViolations(
 	source: string,
 	output: string,
 ): FactGuardViolation[] {
 	const violations: FactGuardViolation[] = [];
-	for (const { label, items, group } of STRUCTURAL_CATEGORIES) {
-		const added = group
-			? addedGroups(items(source), items(output), group)
-			: addedItems(items(source), items(output));
-		for (const item of added) {
+	for (const { label, items } of STRUCTURAL_CATEGORIES) {
+		for (const item of addedItems(items(source), items(output))) {
 			violations.push(
 				violation(
 					"structural",
@@ -1566,6 +1626,295 @@ function structuralViolations(
 		}
 	}
 	return violations;
+}
+
+function wordsInGroup(words: readonly string[], group: string): string[] {
+	return words.filter((word) => negatorGroup(word) === group);
+}
+
+/**
+ * A sentence end or semicolon closes a clause; "2.5" and "example.com" do
+ * not. The lookbehind starts a match only at the head of a punctuation run,
+ * so a long run is scanned once.
+ */
+const CLAUSE_END = /(?<![.!?])[.!?]+(?=\s|$)|;/g;
+
+/**
+ * A blank line, or a line break before a list item, table row, blockquote,
+ * or heading, also closes one. A lone line break does not, so a
+ * soft-wrapped sentence stays one clause. Read on the unmasked text, since
+ * premasking blanks the markers.
+ */
+const BLOCK_BREAK =
+	/\n[ \t]*\n|\n(?=[ \t]*(?:[-*+•][ \t]|\d{1,3}[.)][ \t]|[|>#]))/g;
+
+/** Function words too common to align two clauses on. */
+const CLAUSE_STOP_WORDS = new Set(
+	(
+		"the and for with from that this these those are was were will would " +
+		"shall should can could may might must has have had been being does " +
+		"did its our their they them your into onto than then also but all " +
+		"any each per via who whom which what when where how why there here " +
+		"only just more most very such both either over under about after " +
+		"before while within across between out off too yet still"
+	).split(" "),
+);
+
+/** Two clauses align only when they share this many content words… */
+const CLAUSE_MIN_SHARED = 2;
+/** …and their content words have at least this Jaccard similarity. */
+const CLAUSE_MIN_SIMILARITY = 0.5;
+/** Words a finding quotes from the start of a clause. */
+const CLAUSE_LEAD_WORDS = 8;
+/**
+ * Beyond this many clauses on either side the clause check is skipped and
+ * the totals alone apply: it bounds the alignment work on untrusted input,
+ * far above any one section a rewrite covers.
+ */
+const MAX_ALIGNED_CLAUSES = 400;
+
+interface Clause {
+	/** Lowercased words of 3+ letters, without negators or stop words. */
+	words: Set<string>;
+	/** The clause's negating words. */
+	negators: string[];
+	/** The clause's first words, as a finding quotes them. */
+	lead: string;
+}
+
+function clauseLead(clause: string): string {
+	const words = clause.trim().split(/\s+/).filter(Boolean);
+	const lead = words.slice(0, CLAUSE_LEAD_WORDS);
+	if (words.length > CLAUSE_LEAD_WORDS) {
+		return `${lead.join(" ")}…`;
+	}
+	let text = lead.join(" ");
+	while (text.length > 0 && ".!?;".includes(text.charAt(text.length - 1))) {
+		text = text.slice(0, -1);
+	}
+	return text;
+}
+
+/**
+ * `text` split into clauses. `prose` is its `negationProse` and `negators`
+ * its `negatingWords`, so a clause holds exactly the negating words the
+ * section-wide counts saw.
+ */
+function clausesOf(
+	text: string,
+	prose: string,
+	negators: readonly NegatingWord[],
+): Clause[] {
+	const cuts = [
+		...allMatches(prose, CLAUSE_END).map((m) => m.index + m[0].length),
+		...allMatches(text, BLOCK_BREAK).map((m) => m.index),
+		prose.length,
+	].sort((a, b) => a - b);
+	// Every negator match leaves the content words, negating or not.
+	const content = blankMatches(prose, NEGATOR);
+	const clauses: Clause[] = [];
+	let start = 0;
+	let next = 0;
+	for (const end of cuts) {
+		if (end <= start) {
+			continue;
+		}
+		const clauseNegators: string[] = [];
+		for (; next < negators.length && negators[next].index < end; next++) {
+			clauseNegators.push(negators[next].word);
+		}
+		clauses.push({
+			words: new Set(
+				allMatches(content.slice(start, end), WORD)
+					.map((m) => m[0].toLowerCase())
+					.filter(
+						(word) =>
+							word.length >= 3 && !CLAUSE_STOP_WORDS.has(word),
+					),
+			),
+			negators: clauseNegators,
+			lead: clauseLead(prose.slice(start, end)),
+		});
+		start = end;
+	}
+	return clauses;
+}
+
+/**
+ * Source and rewrite clauses that align with confidence: each is the
+ * other's only confident match. A clause that confidently matches two, as
+ * a merge or a split does, aligns with nothing, so condensing falls back
+ * to the section-wide counts.
+ */
+function alignedClauses(
+	source: readonly Clause[],
+	output: readonly Clause[],
+): Array<[Clause, Clause]> {
+	if (
+		source.length > MAX_ALIGNED_CLAUSES ||
+		output.length > MAX_ALIGNED_CLAUSES
+	) {
+		return [];
+	}
+	const holders = new Map<string, number[]>();
+	output.forEach((clause, j) => {
+		for (const word of clause.words) {
+			const list = holders.get(word);
+			if (list) {
+				list.push(j);
+			} else {
+				holders.set(word, [j]);
+			}
+		}
+	});
+	const sourceMatches = source.map((): number[] => []);
+	const outputMatches = output.map((): number[] => []);
+	source.forEach((clause, i) => {
+		const shared = new Map<number, number>();
+		for (const word of clause.words) {
+			for (const j of holders.get(word) ?? []) {
+				shared.set(j, (shared.get(j) ?? 0) + 1);
+			}
+		}
+		for (const [j, count] of shared) {
+			const union = clause.words.size + output[j].words.size - count;
+			if (
+				count >= CLAUSE_MIN_SHARED &&
+				count / union >= CLAUSE_MIN_SIMILARITY
+			) {
+				sourceMatches[i].push(j);
+				outputMatches[j].push(i);
+			}
+		}
+	});
+	return source.flatMap((clause, i): Array<[Clause, Clause]> => {
+		const matches = sourceMatches[i];
+		if (matches.length !== 1 || outputMatches[matches[0]].length !== 1) {
+			return [];
+		}
+		return [[clause, output[matches[0]]]];
+	});
+}
+
+function describeNegators(words: readonly string[]): string {
+	return words.length > 0
+		? words.map((word) => `"${word}"`).join(", ")
+		: "no negating word";
+}
+
+/**
+ * Aligned clauses whose negating words differ in a group the section-wide
+ * counts found balanced: a negation moved from one statement to another.
+ * A group whose totals differ already fails section-wide. A move shows at
+ * both ends, so a group counts as moved only when one aligned pair lost a
+ * negating word and another gained one; a single uneven pair means its
+ * partner was condensed or restructured ("does not include billing. It
+ * covers reporting." to "covers reporting, not billing"), which the totals
+ * judge.
+ */
+function movedNegationViolations(
+	sourceClauses: readonly Clause[],
+	outputClauses: readonly Clause[],
+	balancedGroups: readonly string[],
+): FactGuardViolation[] {
+	const pairs = alignedClauses(sourceClauses, outputClauses);
+	// Per pair and group: rewrite count minus source count.
+	const shift = ([from, to]: [Clause, Clause], group: string) =>
+		wordsInGroup(to.negators, group).length -
+		wordsInGroup(from.negators, group).length;
+	const movedGroups = balancedGroups.filter(
+		(group) =>
+			pairs.some((pair) => shift(pair, group) < 0) &&
+			pairs.some((pair) => shift(pair, group) > 0),
+	);
+	return pairs
+		.filter((pair) => movedGroups.some((group) => shift(pair, group) !== 0))
+		.map(([from, to]) =>
+			violation(
+				"negation",
+				from.lead,
+				`Reverses the polarity of "%s": the source states ${describeNegators(from.negators)} there, and the rewrite's matching clause "${to.lead}" states ${describeNegators(to.negators)}. Keep each statement's negation in that statement.`,
+			),
+		);
+}
+
+/**
+ * Negating words counted per negator group, in both directions. More than
+ * the source in a group fails as structural: a second "not" can reverse a
+ * statement the source left positive, and a first "never" hardens one.
+ * Fewer fails as negation: "not X and not Y" condensed to "not X and Y".
+ * Rephrasing within a group passes: "no contingency" as "does not include
+ * contingency". The rewrite prompt states both rules.
+ *
+ * Equal totals can still hide a negation moved to another statement, so
+ * each source clause is aligned with its rewrite clause by shared content
+ * words and their counts compared: "A is not in scope; B is in scope" to
+ * "A is in scope; B is not in scope" fails. Clauses that do not align with
+ * confidence (condensed, merged, dropped) are judged by the totals alone.
+ * The clause check runs only for groups whose totals balance, so it never
+ * repeats a section-wide finding. Added findings come first, as the
+ * structural ones did.
+ */
+function negationViolations(
+	source: string,
+	output: string,
+): FactGuardViolation[] {
+	const sourceProse = negationProse(source);
+	const outputProse = negationProse(output);
+	const statedWords = negatingWords(sourceProse);
+	const writtenWords = negatingWords(outputProse);
+	const stated = statedWords.map(({ word }) => word);
+	const written = writtenWords.map(({ word }) => word);
+	const counts = [...new Set([...stated, ...written].map(negatorGroup))].map(
+		(group) => ({
+			group,
+			sourceWords: wordsInGroup(stated, group),
+			outputWords: wordsInGroup(written, group),
+		}),
+	);
+	// Each finding names the words one side has more of; the counts say how many.
+	const extra = (fewer: string[], more: string[]) =>
+		[...new Set(addedItems(fewer, more))].join(", ");
+	const added = counts
+		.filter(
+			({ sourceWords, outputWords }) =>
+				outputWords.length > sourceWords.length,
+		)
+		.map(({ sourceWords, outputWords }) =>
+			violation(
+				"structural",
+				extra(sourceWords, outputWords),
+				`Adds a negation the source does not state (%s): ${sourceWords.length} in the source, ${outputWords.length} in the rewrite. Negate only what the source negates, with no more negating words than it uses.`,
+			),
+		);
+	const dropped = counts
+		.filter(
+			({ sourceWords, outputWords }) =>
+				outputWords.length < sourceWords.length,
+		)
+		.map(({ sourceWords, outputWords }) =>
+			violation(
+				"negation",
+				extra(outputWords, sourceWords),
+				`Drops a negation the source states (%s): ${sourceWords.length} in the source, ${outputWords.length} in the rewrite. Keep each negation with its own negating word, even when merging sentences.`,
+			),
+		);
+	const balancedGroups = counts
+		.filter(
+			({ sourceWords, outputWords }) =>
+				outputWords.length === sourceWords.length,
+		)
+		.map(({ group }) => group);
+	// No negator on either side leaves nothing to move, and skips the split.
+	const moved =
+		balancedGroups.length === 0
+			? []
+			: movedNegationViolations(
+					clausesOf(source, sourceProse, statedWords),
+					clausesOf(output, outputProse, writtenWords),
+					balancedGroups,
+				);
+	return [...added, ...dropped, ...moved];
 }
 
 function measuredLength(text: string): number {
@@ -1599,8 +1948,9 @@ function lengthViolations(
 
 /**
  * Check one rewritten section against its cleaned source (KTD12). Presence,
- * hedge, structural, and length always apply; must-keep applies to key
- * sections. Lengths count characters after collapsing whitespace runs.
+ * hedge, structural, negation, and length always apply; must-keep applies
+ * to key sections. Lengths count characters after collapsing whitespace
+ * runs.
  */
 export function checkRewrite(input: CheckRewriteInput): FactGuardResult {
 	const { source, output, lengthMode } = input;
@@ -1613,6 +1963,7 @@ export function checkRewrite(input: CheckRewriteInput): FactGuardResult {
 			? mustKeepViolations(sourceFacts, outputFacts)
 			: []),
 		...structuralViolations(source, output),
+		...negationViolations(source, output),
 		...lengthViolations(source, output, lengthMode),
 	]);
 }

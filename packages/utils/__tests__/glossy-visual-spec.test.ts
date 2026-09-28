@@ -126,6 +126,31 @@ describe("visualSpecSchema", () => {
 		expect(result.success).toBe(false);
 	});
 
+	it("parses a stored flow spec without lanes unchanged", () => {
+		const stored = JSON.parse(JSON.stringify(validFlow));
+		const result = visualSpecSchema.safeParse(stored);
+		expect(result.success).toBe(true);
+		expect(result.data).toStrictEqual(validFlow);
+	});
+
+	it("accepts a lane on each flow step, bounded like other short labels", () => {
+		const flow = (lane: string) => ({
+			kind: "flow",
+			steps: [
+				{ label: "Submit request", lane },
+				{ label: "Review", lane: "Legal" },
+			],
+		});
+		expect(visualSpecSchema.safeParse(flow("Sales")).success).toBe(true);
+		expect(visualSpecSchema.safeParse(flow("s".repeat(60))).success).toBe(
+			true,
+		);
+		expect(visualSpecSchema.safeParse(flow("s".repeat(61))).success).toBe(
+			false,
+		);
+		expect(visualSpecSchema.safeParse(flow("  ")).success).toBe(false);
+	});
+
 	it("rejects an org chart over the 16-node bound", () => {
 		const nodes = [
 			{ id: "root", label: "Root", parentId: null },
@@ -241,6 +266,26 @@ describe("visualSpecFacts", () => {
 		});
 	});
 
+	it("returns a flow's lanes first, once each, so they are fact-checked", () => {
+		const spec: VisualSpec = {
+			kind: "flow",
+			title: "Order process",
+			steps: [
+				{ label: "Qualify lead", lane: "Sales" },
+				{ label: "Review contract", lane: "Legal" },
+				{ label: "Sign order", lane: "Sales" },
+			],
+		};
+		expect(visualSpecFacts(spec).labels).toEqual([
+			"Order process",
+			"Sales",
+			"Legal",
+			"Qualify lead",
+			"Review contract",
+			"Sign order",
+		]);
+	});
+
 	it("does not scan existing_mermaid source for labels or figures", () => {
 		expect(visualSpecFacts(validExistingMermaid)).toEqual({
 			kind: "existing_mermaid",
@@ -275,6 +320,22 @@ describe("specHash", () => {
 	it("differs for specs with different content", () => {
 		expect(specHash(validStat)).not.toBe(specHash(validFlow));
 		expect(specHash(validTimeline)).not.toBe(specHash(validComparison));
+	});
+
+	it("changes only for flow specs that carry lanes", () => {
+		// Pinned from before lanes existed: a stored flow keeps its hash.
+		expect(specHash(visualSpecSchema.parse(validFlow))).toBe(
+			"cc94671a699cd8ce",
+		);
+		const steps = validFlow.kind === "flow" ? validFlow.steps : [];
+		const laned: VisualSpec = {
+			kind: "flow",
+			steps: steps.map((step, index) => ({
+				...step,
+				lane: index === 1 ? "Legal" : "Sales",
+			})),
+		};
+		expect(specHash(laned)).not.toBe(specHash(validFlow));
 	});
 
 	it("returns a 16-character lowercase hex string", () => {

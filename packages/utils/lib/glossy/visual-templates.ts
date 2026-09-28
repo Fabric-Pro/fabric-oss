@@ -163,9 +163,60 @@ function flowStepLabel(step: FlowVisualSpec["steps"][number]): string {
 		: step.label;
 }
 
-/** A top-to-bottom chain of rectangle nodes, one per flow step, in order. */
+function stepLane(step: FlowVisualSpec["steps"][number]): string {
+	return step.lane?.trim() ?? "";
+}
+
+/**
+ * The flow's distinct lanes in first-appearance order, or `null` when it
+ * draws as a plain chain: swimlanes need every step to name its lane, and at
+ * least two lanes, since a single lane around every step says nothing.
+ */
+function flowLanes(steps: FlowVisualSpec["steps"]): string[] | null {
+	const lanes = steps.map(stepLane);
+	if (lanes.includes("")) {
+		return null;
+	}
+	const distinct = Array.from(new Set(lanes));
+	return distinct.length >= 2 ? distinct : null;
+}
+
+/**
+ * A top-to-bottom chain of rectangle nodes, one per flow step, in order.
+ * When `flowLanes` finds swimlanes, each lane becomes a subgraph holding its
+ * steps and the edges still run step to step in order; otherwise the output
+ * is exactly the plain chain. Subgraph ids are our own generated
+ * `lane<index>` tokens, never text from the spec, and a lane's title is
+ * escaped and quoted exactly as a node label is.
+ */
 export function flowToMermaid(spec: FlowVisualSpec): string {
-	return chainToMermaid("TD", "f", spec.steps, flowStepLabel);
+	const lanes = flowLanes(spec.steps);
+	if (!lanes) {
+		return chainToMermaid("TD", "f", spec.steps, flowStepLabel);
+	}
+	const lines = ["flowchart TD"];
+	// Every node is declared inside its lane before any edge names it: Mermaid
+	// places a node in the graph where it first appears.
+	lanes.forEach((lane, laneIndex) => {
+		lines.push(`subgraph lane${laneIndex}["${escapeMermaidLabel(lane)}"]`);
+		spec.steps.forEach((step, index) => {
+			if (stepLane(step) === lane) {
+				lines.push(
+					`f${index}["${escapeMermaidLabel(flowStepLabel(step))}"]`,
+				);
+			}
+		});
+		lines.push("end");
+	});
+	spec.steps.forEach((_, index) => {
+		lines.push(
+			`style f${index} fill:${VISUAL_COLOR_PLACEHOLDERS.surface},stroke:${VISUAL_COLOR_PLACEHOLDERS.border}`,
+		);
+		if (index > 0) {
+			lines.push(`f${index - 1} --> f${index}`);
+		}
+	});
+	return lines.join("\n");
 }
 
 /**

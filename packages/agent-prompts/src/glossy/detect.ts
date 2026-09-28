@@ -55,7 +55,7 @@ export const GLOSSY_KIND_DEFINITIONS: Readonly<
 	comparison:
 		"two to four options or alternatives, or pros and cons, set against each other.",
 	stat: "one to four headline figures the section states outright (amounts, savings, percentages, counts).",
-	flow: "a described process of at least two sequential steps that is not already a diagram.",
+	flow: "a described process of at least two sequential steps that is not already a diagram, including one that says which team or role performs each step.",
 	org_chart:
 		"roles, ownership, or reporting lines that form one hierarchy under a single top role.",
 };

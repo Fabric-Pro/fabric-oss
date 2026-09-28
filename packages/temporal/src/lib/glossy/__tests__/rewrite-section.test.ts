@@ -5,6 +5,8 @@
  * keeps the cleaned original.
  */
 
+import { buildGlossyRewriteInstructions } from "@repo/agent-prompts/glossy";
+import { checkRewrite } from "@repo/utils/glossy/fact-guard";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -177,6 +179,103 @@ describe("rewriteGlossySection", () => {
 			],
 		});
 		expect(prompts()[0]).toContain("This is a key section");
+	});
+
+	it("keeps the original when a rewrite drops a negation, after a retry that names it", async () => {
+		const source = "Data migration is not in scope for Phase 1.";
+		const dropped = "Data migration is in scope for Phase 1.";
+		modelWrites(dropped, dropped);
+
+		const result = await rewriteGlossySection({
+			...context,
+			section: { ...deliverySection, markdown: source },
+			lengthMode: "brief",
+		});
+
+		expect(result).toMatchObject({
+			status: "keptOriginal",
+			markdown: source,
+			reason: "guardFailed",
+			attempts: 2,
+			violations: [
+				expect.objectContaining({ kind: "negation", text: "not" }),
+			],
+		});
+		expect(prompts()[1]).toContain(
+			"- [negation] Drops a negation the source states (not)",
+		);
+	});
+
+	it("pairs the prompt's negation rule with the guard: its merged example is retried and its kept form accepted", async () => {
+		const source = "A is not in scope. B is not in scope.";
+		const merged = "A and B are not in scope.";
+		const kept = "Neither A nor B is in scope.";
+		modelWrites(merged, kept);
+
+		const result = await rewriteGlossySection({
+			...context,
+			section: { ...deliverySection, markdown: source },
+			lengthMode: "brief",
+		});
+
+		// The instructions the model received state this exact example.
+		expect(mocks.generateText.mock.calls[0][0].instructions).toContain(
+			`"${source}" may become "${kept}" but not "${merged}"`,
+		);
+		expect(result).toEqual({
+			status: "rewritten",
+			markdown: kept,
+			attempts: 2,
+		});
+		expect(prompts()[1]).toContain("[negation]");
+	});
+
+	it("pairs each negating word the prompt's two negation rules name with the guard", () => {
+		// The word lists come from the prompt itself, so a word added to
+		// either rule must be one the guard enforces (Fizzy #2589 follow-up).
+		const instructions = buildGlossyRewriteInstructions("PROPOSAL");
+		const listIn = (rule: RegExp) =>
+			(instructions.match(rule)?.[1] ?? "")
+				.split(/,\s*/)
+				.map((word) =>
+					word.replace(/^or (?:a contraction such as )?/, ""),
+				)
+				.filter(Boolean);
+		const mustNotAdd = listIn(/Do not add a negation \(([^)]*)\)/);
+		const mustKeep = listIn(/its own explicit negating word \(([^)]*)\)/);
+		expect(mustNotAdd).toContain("without");
+		expect(mustKeep).toEqual(
+			expect.arrayContaining(["no longer", "isn't"]),
+		);
+
+		const guard = (source: string, output: string) => {
+			const result = checkRewrite({
+				source,
+				output,
+				isKeySection: false,
+				lengthMode: "standard",
+			});
+			return result.pass ? [] : result.violations;
+		};
+		const plain = "The pilot runs with the platform team.";
+		const negated = (word: string) =>
+			`The pilot runs ${word} the platform team.`;
+		for (const word of mustNotAdd) {
+			expect(
+				guard(plain, negated(word)),
+				`added "${word}"`,
+			).toContainEqual(
+				expect.objectContaining({ kind: "structural", text: word }),
+			);
+		}
+		for (const word of mustKeep) {
+			expect(
+				guard(negated(word), plain),
+				`dropped "${word}"`,
+			).toContainEqual(
+				expect.objectContaining({ kind: "negation", text: word }),
+			);
+		}
 	});
 
 	it("keeps the original when the model obeys an injected instruction in the source", async () => {

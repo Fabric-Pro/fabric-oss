@@ -1,6 +1,5 @@
 "use client";
 
-import { resolveBrandColor } from "@repo/utils/brand-colors";
 import {
 	BrandColorListField,
 	parseBrandColorList,
@@ -18,6 +17,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { GlossyEdition } from "../../hooks/use-glossy-edition";
+import { chosenBrandColor } from "../../lib/glossy/palette";
 import {
 	type RecipientBrandDraft,
 	RecipientBrandFields,
@@ -131,7 +131,10 @@ export function GlossyAlignFirstPanel({
 		headingRef.current?.focus();
 	}, []);
 
-	const defaultPrimary = resolveBrandColor(brand.preparer.brandColorName).hex;
+	// Null without a chosen theme color: the picker starts empty and an
+	// untouched one records nothing, so the edition never pins the app
+	// theme's crimson default.
+	const defaultPrimary = chosenBrandColor(brand.preparer.brandColorName);
 	const defaultAccents = brand.preparer.accentColors;
 	const overrides = lastOptions?.preparerOverrides ?? null;
 
@@ -146,9 +149,10 @@ export function GlossyAlignFirstPanel({
 			: (brand.preparer.guidance ?? "")
 		).slice(0, STYLE_DIRECTION_MAX_CHARS),
 	);
-	const [primaryColors, setPrimaryColors] = useState<string[]>(() => [
-		overrides?.primary ?? defaultPrimary,
-	]);
+	const [primaryColors, setPrimaryColors] = useState<string[]>(() => {
+		const primary = overrides?.primary ?? defaultPrimary;
+		return primary ? [primary] : [];
+	});
 	const [accentColors, setAccentColors] = useState<string[]>(() => [
 		...(overrides?.accents ?? defaultAccents),
 	]);

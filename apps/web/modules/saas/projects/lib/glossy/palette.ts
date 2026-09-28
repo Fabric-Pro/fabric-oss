@@ -1,9 +1,16 @@
 /**
  * The Glossy edition's color palette (Fizzy #2589, R35, KTD15).
  *
- * Derived in the browser at render time from the preparer's brand — the
- * organization's named brand color and its Brand kit accents, with any
- * per-edition overrides applied — so a brand change never needs a rebuild.
+ * Derived in the browser at render time from both brands — the preparer's
+ * named brand color and Brand kit accents, with any per-edition overrides
+ * applied, then the recipient's colors — so a brand change never needs a
+ * rebuild.
+ *
+ * The preparer's brand leads whenever the preparer set one: primary is the
+ * override, else the chosen theme color, else the first preparer accent,
+ * else the recipient's first color, else neutral. An organization that
+ * never chose a theme color gets neutral visuals, not the app theme's
+ * crimson default, so `resolveBrandColor` is not the source here.
  *
  * Two rules keep untrusted input out of rendered output:
  * - only a `#rrggbb` string passes; anything else, including short hex and
@@ -18,10 +25,10 @@
 
 import {
 	contrastRatio,
+	findBrandColor,
 	HEX_COLOR_PATTERN,
 	normalizeHexColor,
 	readableForegroundFor,
-	resolveBrandColor,
 	rgbToHex,
 } from "@repo/utils/brand-colors";
 
@@ -61,17 +68,22 @@ export interface GlossyPalette {
 	surface: string;
 	/** Outlines, edges, and rules: `primary` when it clears 3:1 on the page. */
 	border: string;
-	/** Accents that passed validation, in order. */
+	/**
+	 * Accents that passed validation, in order: the preparer's, then the
+	 * recipient's, each once and none equal to `primary`.
+	 */
 	accents: string[];
 	/** Twelve fills for Mermaid's `cScale0..11`: primary, accents, then tints. */
 	series: string[];
 }
 
 export interface GlossyPaletteInput {
-	/** The organization's stored brand color name; unknown or missing names resolve to the default brand. */
+	/** The organization's stored brand color name; a missing or unknown name means none was chosen. */
 	brandColorName?: string | null;
 	/** Brand kit accents. */
 	accentColors?: readonly string[] | null;
+	/** The project's recipient brand colors; they follow the preparer's. */
+	recipientColors?: readonly string[] | null;
 	/**
 	 * Per-edition preparer overrides from the Align-first panel. A supplied
 	 * override replaces the brand value; one that fails validation becomes
@@ -99,27 +111,49 @@ function tint(color: string, weight: number): string {
 	return rgbToHex(mix(channel(1)), mix(channel(3)), mix(channel(5)));
 }
 
-function resolvePrimary(input: GlossyPaletteInput): string {
-	const override = input.overrides?.primary;
-	if (override !== undefined && override !== null) {
-		return strictHexColor(override) ?? NEUTRAL_GLOSSY_COLORS.primary;
-	}
-	return (
-		strictHexColor(resolveBrandColor(input.brandColorName).hex) ??
-		NEUTRAL_GLOSSY_COLORS.primary
-	);
+/**
+ * The hex of the theme color the organization chose, or `null` when it chose
+ * none. A missing or unknown name is "not chosen" here, where the app theme
+ * (`resolveBrandColor`) falls back to crimson; both read the stored name
+ * through `findBrandColor`.
+ */
+export function chosenBrandColor(
+	name: string | null | undefined,
+): string | null {
+	return strictHexColor(findBrandColor(name)?.hex);
 }
 
-function resolveAccents(input: GlossyPaletteInput): string[] {
-	const source = input.overrides?.accents ?? input.accentColors ?? [];
+/** The colors that pass `strictHexColor`, in order; the rest are dropped. */
+function validColors(values: readonly unknown[] | null | undefined): string[] {
+	return (values ?? []).flatMap((value) => strictHexColor(value) ?? []);
+}
+
+/** Primary and accents by the brand precedence above. */
+function resolveColors(input: GlossyPaletteInput): {
+	primary: string;
+	accents: string[];
+} {
+	// Override accents replace the Brand kit's for this edition, so they are
+	// the preparer accents a missing theme color falls back to.
+	const preparerAccents = validColors(
+		input.overrides?.accents ?? input.accentColors,
+	);
+	const recipientColors = validColors(input.recipientColors);
+	const override = input.overrides?.primary;
+	const primary =
+		override !== undefined && override !== null
+			? (strictHexColor(override) ?? NEUTRAL_GLOSSY_COLORS.primary)
+			: (chosenBrandColor(input.brandColorName) ??
+				preparerAccents[0] ??
+				recipientColors[0] ??
+				NEUTRAL_GLOSSY_COLORS.primary);
 	const accents: string[] = [];
-	for (const value of source) {
-		const hex = strictHexColor(value);
-		if (hex && !accents.includes(hex)) {
-			accents.push(hex);
+	for (const color of [...preparerAccents, ...recipientColors]) {
+		if (color !== primary && !accents.includes(color)) {
+			accents.push(color);
 		}
 	}
-	return accents;
+	return { primary, accents };
 }
 
 /** Primary and accents, then rounds of lighter tints of each, to twelve colors. */
@@ -142,8 +176,7 @@ function buildSeries(primary: string, accents: readonly string[]): string[] {
 export function deriveGlossyPalette(
 	input: GlossyPaletteInput = {},
 ): GlossyPalette {
-	const primary = resolvePrimary(input);
-	const accents = resolveAccents(input);
+	const { primary, accents } = resolveColors(input);
 	const onPage = contrastRatio(primary, PAGE);
 	const ink = NEUTRAL_GLOSSY_COLORS.ink;
 	const surface = tint(primary, SURFACE_TINT);

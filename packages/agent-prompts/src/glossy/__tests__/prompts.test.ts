@@ -44,6 +44,22 @@ describe("instructions", () => {
 	});
 });
 
+describe("flow lanes", () => {
+	it("are asked for only when the section says who performs each step", () => {
+		const flowRule = buildGlossyExtractInstructions("PROPOSAL")
+			.split("\n")
+			.find((line) => line.startsWith("- flow:"));
+		expect(flowRule).toContain("lane: who performs the step");
+		expect(flowRule).toContain("(≤60)");
+		expect(flowRule).toContain(
+			"only when the section says who performs each one; otherwise every lane is null",
+		);
+		expect(buildGlossyDetectInstructions("PROPOSAL")).toContain(
+			"which team or role performs each step",
+		);
+	});
+});
+
 describe("buildGlossyDetectPrompt", () => {
 	it("puts every section inside the document block and states the limit", () => {
 		const prompt = buildGlossyDetectPrompt({
@@ -118,6 +134,27 @@ describe("buildGlossyExtractPrompt", () => {
 		expect(block(prompt, "slot_hint")).toBeNull();
 		expect(block(prompt, "style_direction")).toBeNull();
 		expect(prompt).not.toContain("Variant request");
+	});
+});
+
+describe("buildGlossyRewriteInstructions", () => {
+	it("states the negation rule the fact guard enforces", () => {
+		// This package cannot reach `@repo/utils`, so the guard half of the
+		// pair runs in @repo/temporal's rewrite-section suite, which sends
+		// this rule's own example through the real guard.
+		const instructions = buildGlossyRewriteInstructions("PROPOSAL");
+		expect(instructions).toContain(
+			"Keep every negation the source states, each with its own explicit negating word",
+		);
+		expect(instructions).toContain(
+			"including when you condense or merge sentences",
+		);
+		expect(instructions).toContain(
+			"A rewrite with fewer negating words than the source is rejected",
+		);
+		expect(instructions).toContain(
+			'"A is not in scope. B is not in scope." may become "Neither A nor B is in scope." but not "A and B are not in scope."',
+		);
 	});
 });
 

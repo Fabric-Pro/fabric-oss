@@ -3,6 +3,7 @@ import {
 	brandColorValues,
 	contrastRatio,
 	DARK_INK,
+	findBrandColor,
 	LIGHT_INK,
 	normalizeHexColor,
 	readableForegroundFor,
@@ -97,6 +98,28 @@ describe("brand color map", () => {
 		expect(resolveBrandColor("toString")).toBe(brandColorValues.red);
 		expect(resolveBrandColor("__proto__")).toBe(brandColorValues.red);
 	});
+});
+
+describe("findBrandColor", () => {
+	it("finds every stored brand by its name", () => {
+		for (const [name, value] of Object.entries(brandColorValues)) {
+			expect(findBrandColor(name)).toBe(value);
+		}
+	});
+
+	it.each([[null], [undefined], [""], ["chartreuse"], ["Teal"]])(
+		"finds nothing for %j, with no crimson fallback",
+		(name) => {
+			expect(findBrandColor(name)).toBeNull();
+		},
+	);
+
+	it.each([["constructor"], ["toString"], ["hasOwnProperty"], ["__proto__"]])(
+		"never finds the Object.prototype member %j",
+		(name) => {
+			expect(findBrandColor(name)).toBeNull();
+		},
+	);
 });
 
 describe("contrast helpers", () => {
