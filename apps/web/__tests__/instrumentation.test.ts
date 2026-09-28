@@ -17,10 +17,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	validatePartykitConfigMock,
+	initObservabilityMock,
 	initAppInsightsLogsMock,
 	ensureBucketsMock,
 } = vi.hoisted(() => ({
 	validatePartykitConfigMock: vi.fn(),
+	initObservabilityMock: vi.fn(),
 	initAppInsightsLogsMock: vi.fn(),
 	ensureBucketsMock: vi.fn(),
 }));
@@ -28,8 +30,10 @@ const {
 vi.mock("@shared/lib/partykit-config", () => ({
 	validatePartykitConfig: validatePartykitConfigMock,
 }));
-vi.mock("@repo/observability", () => ({
-	initObservability: vi.fn(),
+vi.mock("@repo/observability/init", () => ({
+	initObservability: initObservabilityMock,
+}));
+vi.mock("@repo/observability/web-startup", () => ({
 	initAppInsightsLogs: initAppInsightsLogsMock,
 	trackLog: vi.fn(),
 	trackLogException: vi.fn(),
@@ -59,6 +63,8 @@ beforeEach(() => {
 	vi.stubEnv("NEXT_RUNTIME", "nodejs");
 	vi.stubEnv("VERCEL_ENV", "production");
 	vi.stubEnv("VERCEL", "1");
+	vi.stubEnv("OTEL_ENABLED", "false");
+	vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
 });
 
 afterEach(() => {
@@ -128,6 +134,38 @@ describe("register — Application Insights log forwarding", () => {
 
 		expect(process.env.APPLICATION_INSIGHTS_NO_STATSBEAT).toBe("true");
 		expect(initAppInsightsLogsMock).toHaveBeenCalledOnce();
+	});
+});
+
+describe("register — OpenTelemetry startup", () => {
+	it("does not initialize OTel when explicitly disabled", async () => {
+		initObservabilityMock.mockClear();
+		await register();
+		expect(initObservabilityMock).not.toHaveBeenCalled();
+	});
+
+	it("initializes OTel when enabled", async () => {
+		vi.stubEnv("OTEL_ENABLED", "true");
+		initObservabilityMock.mockClear();
+		await register();
+		expect(initObservabilityMock).toHaveBeenCalledWith(
+			expect.objectContaining({ serviceName: "fabric-web" }),
+		);
+	});
+
+	it("auto-enables OTel when an endpoint is configured", async () => {
+		vi.stubEnv("OTEL_ENABLED", "");
+		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
+		initObservabilityMock.mockClear();
+		await register();
+		expect(initObservabilityMock).toHaveBeenCalledOnce();
+	});
+
+	it("honors an explicit disable even when an endpoint is configured", async () => {
+		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
+		initObservabilityMock.mockClear();
+		await register();
+		expect(initObservabilityMock).not.toHaveBeenCalled();
 	});
 });
 
