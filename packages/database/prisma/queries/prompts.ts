@@ -2050,7 +2050,8 @@ export type PromptBoundAction = {
  * than of any one version — otherwise the answer would silently narrow to
  * whichever version happened to be bound.
  *
- * TENANT ISOLATION: SYSTEM plus the caller's own tier, matching every other read.
+ * Include the caller's personal preference inside an organization: editing
+ * this body also changes actions selected by that preference.
  */
 export async function listActionsForPrompt({
 	promptId,
@@ -2064,7 +2065,8 @@ export async function listActionsForPrompt({
 	const scopeConditions: any[] = [{ scope: "SYSTEM" }];
 	if (organizationId) {
 		scopeConditions.push({ scope: "ORG", organizationId });
-	} else if (userId) {
+	}
+	if (userId) {
 		scopeConditions.push({ scope: "USER", userId });
 	}
 
