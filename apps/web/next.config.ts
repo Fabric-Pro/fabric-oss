@@ -447,7 +447,6 @@ const nextConfig: NextConfig = {
 	// Into direct imports: import X from 'lucide-react/dist/esm/icons/x'
 	// Results in 15-70% faster dev boot, 28% faster builds, 40% faster cold starts
 	experimental: {
-		inlineCss: true,
 		turbopackFileSystemCacheForDev: true,
 
 		// Page-data collection is what OOM-kills this build, not compilation.
