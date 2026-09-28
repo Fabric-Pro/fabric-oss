@@ -9,6 +9,11 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./base-url": {
+			"types": "./lib/base-url.ts",
+			"import": "./lib/base-url.ts",
+			"default": "./lib/base-url.ts"
+		},
 		"./sensitive-keys": {
 			"types": "./lib/sensitive-keys.ts",
 			"import": "./lib/sensitive-keys.ts",

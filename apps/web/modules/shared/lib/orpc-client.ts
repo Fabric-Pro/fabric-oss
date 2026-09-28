@@ -1,7 +1,7 @@
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { ApiRouterClient } from "@repo/api/orpc/router";
-import { getBaseUrl } from "@repo/utils";
+import { getBaseUrl } from "@repo/utils/base-url";
 import {
 	captureResponseCorrelationId,
 	generateClientCorrelationId,
