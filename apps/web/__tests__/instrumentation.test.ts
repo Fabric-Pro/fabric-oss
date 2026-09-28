@@ -15,12 +15,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { validatePartykitConfigMock, initAppInsightsLogsMock } = vi.hoisted(
-	() => ({
-		validatePartykitConfigMock: vi.fn(),
-		initAppInsightsLogsMock: vi.fn(),
-	}),
-);
+const {
+	validatePartykitConfigMock,
+	initAppInsightsLogsMock,
+	ensureBucketsMock,
+} = vi.hoisted(() => ({
+	validatePartykitConfigMock: vi.fn(),
+	initAppInsightsLogsMock: vi.fn(),
+	ensureBucketsMock: vi.fn(),
+}));
 
 vi.mock("@shared/lib/partykit-config", () => ({
 	validatePartykitConfig: validatePartykitConfigMock,
@@ -34,9 +37,9 @@ vi.mock("@repo/observability", () => ({
 vi.mock("@repo/utils", () => ({
 	describeEncryptionKeyMisconfiguration: vi.fn(() => null),
 }));
-vi.mock("@repo/storage", () => ({ ensureBuckets: vi.fn() }));
+vi.mock("@repo/storage", () => ({ ensureBuckets: ensureBucketsMock }));
 vi.mock("@repo/config", () => ({
-	config: { storage: { bucketNames: {} } },
+	config: { storage: { bucketNames: { documents: "documents" } } },
 }));
 
 import { register } from "../instrumentation";
@@ -51,9 +54,11 @@ let errorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
 	validatePartykitConfigMock.mockReset();
+	ensureBucketsMock.mockReset();
 	errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.stubEnv("NEXT_RUNTIME", "nodejs");
 	vi.stubEnv("VERCEL_ENV", "production");
+	vi.stubEnv("VERCEL", "1");
 });
 
 afterEach(() => {
@@ -113,5 +118,28 @@ describe("register — Application Insights log forwarding", () => {
 		expect(initAppInsightsLogsMock).toHaveBeenCalledWith({
 			cloudRoleName: "fabric.web",
 		});
+	});
+
+	it("skips Azure VM usage probes on Vercel while forwarding logs", async () => {
+		vi.stubEnv("APPLICATION_INSIGHTS_NO_STATSBEAT", "");
+		initAppInsightsLogsMock.mockClear();
+
+		await register();
+
+		expect(process.env.APPLICATION_INSIGHTS_NO_STATSBEAT).toBe("true");
+		expect(initAppInsightsLogsMock).toHaveBeenCalledOnce();
+	});
+});
+
+describe("register — storage startup", () => {
+	it("does not check buckets before serving a Vercel request", async () => {
+		await register();
+		expect(ensureBucketsMock).not.toHaveBeenCalled();
+	});
+
+	it("creates missing buckets for local MinIO", async () => {
+		vi.stubEnv("VERCEL", "");
+		await register();
+		expect(ensureBucketsMock).toHaveBeenCalledWith(["documents"]);
 	});
 });

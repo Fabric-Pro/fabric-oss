@@ -74,6 +74,11 @@ export async function register() {
 		// touches for this. The web app is the one service whose backend logs
 		// otherwise reach only Vercel runtime logs (Fizzy #2249 follow-up):
 		// every OTHER Azure service already reports to the same workspace.
+		// Vercel is not an Azure VM. The SDK's Statsbeat probe otherwise calls
+		// Azure instance metadata on every new function instance and times out.
+		if (process.env.VERCEL) {
+			process.env.APPLICATION_INSIGHTS_NO_STATSBEAT ||= "true";
+		}
 		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
 		const { addLogSink } = await import("@repo/logs");
 		// The "app-insights" id makes this idempotent across register()
@@ -129,13 +134,16 @@ export async function register() {
 			console.warn(`[env] ${encryptionProblem.message}`);
 		}
 
-		// Ensure all required storage buckets exist
-		try {
-			const { ensureBuckets } = await import("@repo/storage");
-			const { config } = await import("@repo/config");
-			await ensureBuckets(Object.values(config.storage.bucketNames));
-		} catch (e) {
-			console.error("Failed to ensure storage buckets:", e);
+		// Local MinIO starts empty. R2 buckets outlive Vercel function instances,
+		// so checking every bucket here blocks unrelated routes on cold starts.
+		if (!process.env.VERCEL) {
+			try {
+				const { ensureBuckets } = await import("@repo/storage");
+				const { config } = await import("@repo/config");
+				await ensureBuckets(Object.values(config.storage.bucketNames));
+			} catch (e) {
+				console.error("Failed to ensure storage buckets:", e);
+			}
 		}
 	}
 }
