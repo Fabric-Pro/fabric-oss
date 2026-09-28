@@ -448,24 +448,11 @@ const nextConfig: NextConfig = {
 	// Results in 15-70% faster dev boot, 28% faster builds, 40% faster cold starts
 	experimental: {
 		turbopackFileSystemCacheForDev: true,
+		// The build cache pushes clean compiles against the 16 GB builder limit.
+		turbopackFileSystemCacheForBuild: false,
 
-		// Page-data collection is what OOM-kills this build, not compilation.
-		//
-		// Measured on a failed Vercel build (16 GB container): compilation
-		// finished in 2.2 min, then "Collecting page data using 7 workers"
-		// walked memory from 2.2 GB to a peak of 15.79 GB — 99% of the
-		// container — and the platform SIGKILLed it. Each worker is a separate
-		// Node process that imports the app's server module graph, so peak
-		// memory in that phase scales with the worker count, and this app's
-		// graph is large enough that seven of them do not fit.
-		//
-		// `getNumberOfWorkers` in Next's build derives the count from the
-		// machine when this is unset. Pinning it trades a little wall-clock in
-		// one phase for a build that finishes: at ~2 GB per worker the same
-		// phase has room to spare rather than living at 99%. `next build`
-		// reports the peak on every run via scripts/build-with-memory-report.mjs,
-		// so the effect of changing this number is visible in the build log
-		// rather than inferred.
+		// A Vercel build with seven page-data workers peaked at 15.79 GB and
+		// was SIGKILLed. Three workers keep that phase within the builder limit.
 		cpus: 3,
 
 		optimizePackageImports: [
