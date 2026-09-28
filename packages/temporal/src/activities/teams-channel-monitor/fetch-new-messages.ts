@@ -2,12 +2,13 @@
  * Teams Channel Monitor — thread-aware fetch activity.
  *
  * Pulls top-level channel messages expanded with their replies, filters to
- * "mature" threads (idle for at least `quietWindowMinutes`), drops threads
- * whose root message has already been seen, and returns a normalised
- * `FetchedThread[]` along with the new cursor for the channel.
+ * "mature" threads (idle for at least `quietWindowMinutes`), keeps threads that
+ * were never analyzed plus already-analyzed threads that received a reply
+ * after their last analysis, and returns a normalised `FetchedThread[]` along
+ * with the new cursor for the channel.
  */
 
-import { getSeenMessageIds } from "@repo/database";
+import { getSeenThreadWatermarks } from "@repo/database";
 import type {
 	AttachmentWarning,
 	PendingAttachmentRef,
@@ -19,6 +20,7 @@ import {
 } from "@repo/integrations/microsoft";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { isReplyNewerThanWatermark } from "./reply-watermark";
 
 // =============================================================================
 // Types
@@ -105,6 +107,20 @@ export interface FetchedThread {
 	 * open.
 	 */
 	repliesComplete?: boolean;
+	/**
+	 * Set when this thread was analyzed before and is back because at least one
+	 * reply was created after that analysis: the ISO watermark of the previous
+	 * analysis (the thread's `threadLastActivity` then, or the seen row's
+	 * insert time for rows written before the watermark existed). Replies created strictly after it are new; the root
+	 * and older replies were already reviewed and are context only. The
+	 * analyze activity passes it back as the compare-and-swap
+	 * `expectedPrevious` when it records its own watermark.
+	 *
+	 * Optional so an activity input recorded before this field existed — an
+	 * in-flight execution's history — still deserializes. Absent means a first
+	 * analysis.
+	 */
+	previouslyAnalyzedThrough?: string;
 }
 
 export interface FetchNewChannelThreadsOutput {
@@ -190,6 +206,38 @@ interface RawThread {
 	repliesComplete?: boolean;
 }
 
+/**
+ * The `createdAt` a reply will carry on its `FetchedThreadReply` (see the
+ * projection in step 5): Graph's `createdDateTime`, or the thread's
+ * `threadLastActivity` in the malformed case where it is missing. The revisit
+ * check below runs on this same value so the fetch and analyze activities
+ * judge "new" identically — and since `threadLastActivity` is computed from
+ * valid timestamps only, a reply with no timestamp is never new on its own.
+ */
+function projectedReplyCreatedAt(
+	reply: RawThread["replies"][number],
+	threadLastActivity: string,
+): string {
+	return reply.createdDateTime ?? threadLastActivity;
+}
+
+/**
+ * True when at least one reply is new against `watermarkMs` under the shared
+ * rule in `isReplyNewerThanWatermark` (strictly later; unparseable is not new).
+ */
+function hasReplyAfter(
+	thread: RawThread,
+	threadLastActivity: string,
+	watermarkMs: number,
+): boolean {
+	return (thread.replies ?? []).some((reply) =>
+		isReplyNewerThanWatermark(
+			projectedReplyCreatedAt(reply, threadLastActivity),
+			watermarkMs,
+		),
+	);
+}
+
 // =============================================================================
 // Activity
 // =============================================================================
@@ -199,10 +247,18 @@ interface RawThread {
  *
  * Algorithm:
  * 1. Graph: `GET /teams/{teamId}/channels/{channelId}/messages?$expand=replies`
- *    with `$filter=lastModifiedDateTime gt {sinceIso}` when cursor exists.
+ *    via the `list_channel_threads` tool. No server-side filter is applied —
+ *    the cursor comparison in step 4 happens here, client-side.
  * 2. `threadLastActivity = max(root.createdDateTime, ...replies.createdDateTime)`.
  * 3. Keep only threads where `(now - threadLastActivity) >= quietWindowMinutes`.
- * 4. Drop threads whose rootId is already in the seen-message table.
+ * 4. Look up the seen-row watermark of every mature root on the page
+ *    (`analyzedThroughAt`, or `createdAt` for a legacy NULL row — see
+ *    `getSeenThreadWatermarks`). An unseen root is kept (first analysis)
+ *    only if its `threadLastActivity > sinceIso` (cursor). A seen root skips
+ *    the cursor — a lagging pre-filter set from fetched snapshots, including
+ *    ones whose analysis lost the watermark compare-and-swap — and is kept as
+ *    a revisit (carrying `previouslyAnalyzedThrough`) iff at least one reply
+ *    is strictly newer than its watermark; otherwise it is dropped.
  * 5. Map to `FetchedThread` (HTML-stripped content, preserved webLinks).
  * 6. Cursor = max(threadLastActivity across kept threads), fall back to sinceIso.
  */
@@ -245,9 +301,13 @@ export async function fetchNewChannelThreadsActivity(
 		// PAST already-seen threads instead of stopping at the first all-seen
 		// page.
 		const ACTIVITY_PAGE_LIMIT = 10; // up to 10 tool calls per tick (≤ 10k threads)
+		// Threads to analyze this tick: never-analyzed threads AND revisits
+		// (already-analyzed threads with a reply newer than their watermark).
+		// Both count toward `maxThreads` and the scan-token decision alike.
 		const unseenCollected: Array<{
 			thread: RawThread;
 			threadLastActivity: string;
+			previouslyAnalyzedThrough?: string;
 		}> = [];
 		let rawThreadCount = 0;
 		let outerCallCount = 0;
@@ -300,10 +360,13 @@ export async function fetchNewChannelThreadsActivity(
 			rawThreadCount += raw.length;
 			pageToken = graphResult.nextPageToken;
 
-			// Step 2 + 3: compute threadLastActivity, apply cursor + quiet-window.
+			// Step 2 + 3: compute threadLastActivity and apply the quiet window.
+			// The cursor check is only RECORDED here (`pastCursor`); step 4
+			// applies it to unseen roots only.
 			const matureRaw: Array<{
 				thread: RawThread;
 				threadLastActivity: string;
+				pastCursor: boolean;
 			}> = [];
 			for (const thread of raw) {
 				const allTimestamps: number[] = [];
@@ -325,31 +388,61 @@ export async function fetchNewChannelThreadsActivity(
 					continue;
 				}
 				const lastActivityMs = Math.max(...allTimestamps);
-				if (sinceMs > 0 && lastActivityMs <= sinceMs) {
-					continue;
-				}
 				if (now - lastActivityMs < quietWindowMs) {
 					continue;
 				}
 				matureRaw.push({
 					thread,
 					threadLastActivity: new Date(lastActivityMs).toISOString(),
+					pastCursor: !(sinceMs > 0 && lastActivityMs <= sinceMs),
 				});
 			}
 
-			// Step 4: belt-and-suspenders dedup via the seen-message table.
+			// Step 4: decide per thread, one watermark query per page.
+			//
+			// An UNSEEN root must pass the channel cursor, exactly as before
+			// this change.
+			//
+			// A SEEN root bypasses the cursor and is judged by its own
+			// watermark alone. The cursor is a lagging pre-filter set from
+			// fetched snapshots — including the snapshot of an analysis that
+			// lost the watermark compare-and-swap to an overlapping run. That
+			// loser's threadLastActivity can still become the cursor, so a
+			// reply the winner never saw would sit at or behind the cursor
+			// and never be looked at again. Only the per-thread watermark
+			// records what was actually analyzed. Conversely, dropping every
+			// seen root outright (the behaviour before revisits) lost any
+			// reply posted after a thread's first analysis — it was neither
+			// analyzed nor captured.
 			if (matureRaw.length > 0) {
 				const candidateRootIds = matureRaw.map((m) => m.thread.id);
-				const seenSet = await getSeenMessageIds(
+				const watermarks = await getSeenThreadWatermarks(
 					linkedChannelId,
 					candidateRootIds,
 				);
-				for (const m of matureRaw) {
-					if (!seenSet.has(m.thread.id)) {
-						unseenCollected.push(m);
-						if (unseenCollected.length >= maxThreads) {
-							break;
+				for (const { pastCursor, ...m } of matureRaw) {
+					const watermark = watermarks.get(m.thread.id);
+					if (watermark === undefined) {
+						if (!pastCursor) {
+							continue;
 						}
+						unseenCollected.push(m);
+					} else if (
+						hasReplyAfter(
+							m.thread,
+							m.threadLastActivity,
+							watermark.getTime(),
+						)
+					) {
+						unseenCollected.push({
+							...m,
+							previouslyAnalyzedThrough: watermark.toISOString(),
+						});
+					} else {
+						continue;
+					}
+					if (unseenCollected.length >= maxThreads) {
+						break;
 					}
 				}
 			}
@@ -367,8 +460,9 @@ export async function fetchNewChannelThreadsActivity(
 		// Truncate to maxThreads in case the last page push overshot.
 		const unseenRaw = unseenCollected.slice(0, maxThreads);
 
-		// Decide what to persist as scanPageToken for next tick:
-		//   - found any unseen → clear token (next tick scans from top as normal)
+		// Decide what to persist as scanPageToken for next tick (a revisit
+		// counts exactly as an unseen thread here):
+		//   - found any unseen/revisit → clear token (next tick scans from top)
 		//   - exhausted all pages → clear token (start fresh next tick)
 		//   - hit scan ceiling with 0 unseen AND pageToken exists → persist it
 		//     so next tick resumes from that point
@@ -399,7 +493,7 @@ export async function fetchNewChannelThreadsActivity(
 		// empty output arrays — existing callers that don't use the field
 		// are unaffected.
 		const threads: FetchedThread[] = unseenRaw.map(
-			({ thread, threadLastActivity }) => ({
+			({ thread, threadLastActivity, previouslyAnalyzedThrough }) => ({
 				rootMessageId: thread.id,
 				rootCreatedAt: thread.createdDateTime ?? threadLastActivity,
 				rootAuthor: thread.from,
@@ -411,13 +505,18 @@ export async function fetchNewChannelThreadsActivity(
 					messageId: r.id,
 					author: r.from,
 					fromKind: r.fromKind,
-					createdAt: r.createdDateTime ?? threadLastActivity,
+					createdAt: projectedReplyCreatedAt(r, threadLastActivity),
 					content: truncateContent(r.bodyContent, 2000),
 					webLink: r.webUrl,
 					pendingAttachments: r.pendingAttachments ?? [],
 				})),
 				threadLastActivity,
 				pendingAttachments: thread.pendingAttachments ?? [],
+				// Only set on a revisit, so a first analysis serializes exactly
+				// as it did before this field existed.
+				...(previouslyAnalyzedThrough
+					? { previouslyAnalyzedThrough }
+					: {}),
 			}),
 		);
 

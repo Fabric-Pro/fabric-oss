@@ -576,7 +576,7 @@ export type ProjectLinkedTeamsChannelScalarFieldEnum = z.infer<typeof ProjectLin
 
 // File: ProjectLinkedTeamsChannelSeenMessageScalarFieldEnum.schema.ts
 
-export const ProjectLinkedTeamsChannelSeenMessageScalarFieldEnumSchema = z.enum(['id', 'linkedChannelId', 'messageId', 'createdAt', 'pendingProposalId'])
+export const ProjectLinkedTeamsChannelSeenMessageScalarFieldEnumSchema = z.enum(['id', 'linkedChannelId', 'messageId', 'createdAt', 'pendingProposalId', 'analyzedThroughAt'])
 
 export type ProjectLinkedTeamsChannelSeenMessageScalarFieldEnum = z.infer<typeof ProjectLinkedTeamsChannelSeenMessageScalarFieldEnumSchema>;
 
@@ -5905,6 +5905,7 @@ export const ProjectLinkedTeamsChannelSeenMessageSchema = z.object({
   messageId: z.string(),
   createdAt: z.date(),
   pendingProposalId: z.string().nullish(),
+  analyzedThroughAt: z.date().nullish(),
 });
 
 export type ProjectLinkedTeamsChannelSeenMessageType = z.infer<typeof ProjectLinkedTeamsChannelSeenMessageSchema>;

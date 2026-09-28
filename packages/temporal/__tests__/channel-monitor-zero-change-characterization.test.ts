@@ -94,7 +94,7 @@ const TEAMS_INPUT = {
 	organizationId: "org_1",
 	linkedChannelId: "lc_teams_1",
 	teamId: "team-guid",
-	channelId: "19:channel@thread.tacv2",
+	channelId: "19:example-channel-id",
 	channelDisplayName: "engineering",
 	thread: {
 		rootMessageId: "1700000000000",
@@ -174,10 +174,15 @@ describe("Teams channel analyzer — zero-change return (pre-capture contract)",
 	it("marks the thread root seen and writes NO proposal transaction", async () => {
 		await analyzeChannelThreadActivity(TEAMS_INPUT);
 
+		// The fourth argument (the thread's threadLastActivity, recorded as
+		// the seen row's analyzedThroughAt watermark) was added deliberately
+		// so a reply posted after this pass sends the thread back for a
+		// revisit instead of being dropped.
 		expect(m.markTeamsMessagesAsSeen).toHaveBeenCalledWith(
 			"lc_teams_1",
 			["1700000000000"],
 			null,
+			new Date("2026-08-20T10:01:00.000Z"),
 		);
 		// The proposal transaction is the other branch — it must not run.
 		expect(m.teamsTransaction).not.toHaveBeenCalled();

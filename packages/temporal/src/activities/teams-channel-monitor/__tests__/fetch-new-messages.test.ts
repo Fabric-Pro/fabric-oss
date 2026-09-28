@@ -11,7 +11,7 @@ vi.mock("@repo/integrations/microsoft", () => ({
 
 vi.mock("@repo/database", () => ({
 	// No threads will be reported as already-seen by these tests.
-	getSeenMessageIds: vi.fn(async () => new Set<string>()),
+	getSeenThreadWatermarks: vi.fn(async () => new Map<string, Date>()),
 }));
 
 vi.mock("@repo/logs", () => ({

@@ -59,10 +59,16 @@ function toBriefStatus(status: string): BriefStatus | null {
  * Collect pending backlog proposals (Teams channel source) for the Daily Brief.
  *
  * For channel name resolution we look at the first seen-message associated
- * with the proposal — PendingBacklogProposal has no direct channel FK, but
- * every Teams-sourced proposal is linked to one or more
- * ProjectLinkedTeamsChannelSeenMessage rows that reference the originating
+ * with the proposal — PendingBacklogProposal has no direct channel FK, and a
+ * first-analysis Teams proposal is linked to the thread's
+ * ProjectLinkedTeamsChannelSeenMessage row, which references the originating
  * ProjectLinkedTeamsChannel.
+ *
+ * A proposal from a revisited thread (late replies analyzed after the thread's
+ * first pass) may have no seen row pointing at it: the thread's one row keeps
+ * the link to its earlier proposal. For those, the linked channel is resolved
+ * through `sourceMetadata.linkedChannelId`, which every Teams channel proposal
+ * records — see `resolveUnlinkedTeamsChannelNames`.
  */
 export async function collectTeamsProposals(
 	input: CollectTeamsProposalsInput,
@@ -105,6 +111,11 @@ export async function collectTeamsProposals(
 		take: MAX_PROPOSAL_ROWS,
 	});
 
+	const fallbackChannelNames = await resolveUnlinkedTeamsChannelNames(
+		projectId,
+		proposals.filter((p) => p.seenMessages.length === 0).map((p) => p.id),
+	);
+
 	const items: TeamsProposalItem[] = [];
 	for (const p of proposals) {
 		const briefStatus = toBriefStatus(p.status);
@@ -114,7 +125,9 @@ export async function collectTeamsProposals(
 		}
 
 		const channelName =
-			p.seenMessages[0]?.linkedChannel?.channelName ?? undefined;
+			p.seenMessages[0]?.linkedChannel?.channelName ??
+			fallbackChannelNames.get(p.id) ??
+			undefined;
 
 		const summary = p.summary
 			? p.summary.length > MAX_SUMMARY_CHARS
@@ -144,4 +157,61 @@ export async function collectTeamsProposals(
 	});
 
 	return items;
+}
+
+/**
+ * Channel names for Teams channel proposals that no seen-message row points
+ * at, keyed by proposal id — resolved through the `linkedChannelId` the
+ * analyzer records in every Teams channel proposal's `sourceMetadata`, so the
+ * name matches the seen-row join above (the linked channel's current
+ * `channelName`). Proposals from other sources, and links since removed,
+ * resolve to nothing.
+ *
+ * Both reads are bounded by `proposalIds`, which comes from the capped query
+ * in `collectTeamsProposals`.
+ */
+async function resolveUnlinkedTeamsChannelNames(
+	projectId: string,
+	proposalIds: string[],
+): Promise<Map<string, string>> {
+	const names = new Map<string, string>();
+	if (proposalIds.length === 0) {
+		return names;
+	}
+	const rows = await db.pendingBacklogProposal.findMany({
+		where: { id: { in: proposalIds }, projectId, source: "TEAMS_CHANNEL" },
+		select: { id: true, sourceMetadata: true },
+	});
+	const linkedChannelIdByProposal = new Map<string, string>();
+	for (const row of rows) {
+		const metadata = row.sourceMetadata;
+		if (
+			metadata &&
+			typeof metadata === "object" &&
+			!Array.isArray(metadata) &&
+			typeof metadata.linkedChannelId === "string"
+		) {
+			linkedChannelIdByProposal.set(row.id, metadata.linkedChannelId);
+		}
+	}
+	if (linkedChannelIdByProposal.size === 0) {
+		return names;
+	}
+	const channels = await db.projectLinkedTeamsChannel.findMany({
+		where: {
+			id: { in: [...new Set(linkedChannelIdByProposal.values())] },
+			projectId,
+		},
+		select: { id: true, channelName: true },
+	});
+	const channelNameById = new Map(
+		channels.map((channel) => [channel.id, channel.channelName]),
+	);
+	for (const [proposalId, linkedChannelId] of linkedChannelIdByProposal) {
+		const channelName = channelNameById.get(linkedChannelId);
+		if (channelName) {
+			names.set(proposalId, channelName);
+		}
+	}
+	return names;
 }
