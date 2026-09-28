@@ -21,8 +21,9 @@ import { heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
+import { decideForcedToolChoice } from "../../direct-chat/decide-forced-tool-choice";
 import type { OrchestratorHeartbeatDetails } from "../types";
-import { getAiModel } from "../utils";
+import { getAiModelWithSelection } from "../utils";
 import {
 	budgetImageAttachments,
 	omittedImagesNote,
@@ -666,12 +667,13 @@ export async function runAgentIteration(
 	// tool-capable model is chosen whenever any tool (caller-supplied or
 	// skill) is bound on this call.
 	const hasTools = aiSdkToolCount > 0;
-	const model = await getAiModel(
-		userId,
-		organizationId,
-		hasTools,
-		modelOverride,
-	);
+	const { model, canonicalName: modelCanonicalName } =
+		await getAiModelWithSelection(
+			userId,
+			organizationId,
+			hasTools,
+			modelOverride,
+		);
 
 	// Convert conversation history to AI SDK format
 	const messages = convertToAiSdkMessages(conversationHistory);
@@ -787,32 +789,41 @@ export async function runAgentIteration(
 		// `fabric_create_frame`). Locked by
 		// `run-agent-iteration.suppression.test.ts`.
 		//
-		// FORWARD GUARD — Anthropic thinking + tool_choice incompat: this
-		// orchestrator path currently does NOT pass `providerOptions` to
-		// `streamText` below (line ~789), so Anthropic extended thinking
-		// is never enabled here and the forced-tool path is safe. If a
-		// future commit wires `providerOptions` through (mirroring
-		// `direct-chat/ai-execution.ts`), it MUST also route the choice
-		// through `decideForcedToolChoice({ thinkingEnabled, ... })` from
-		// `packages/temporal/src/activities/direct-chat/decide-forced-tool-choice.ts`
-		// — Anthropic rejects `thinking: enabled` paired with
-		// `tool_choice: {type:"tool"}` with HTTP 400 (same root cause as
-		// PR #1177 chat-node.ts fix).
+		// The choice goes through `decideForcedToolChoice` (shared with
+		// direct chat), which never forces when:
+		//   - the name is absent from `aiSdkTools`;
+		//   - the request enables Anthropic thinking. This path passes no
+		//     `providerOptions` to `streamText`, so `thinkingEnabled` is
+		//     false here. "No providerOptions" does NOT on its own make
+		//     forcing safe, because
+		//   - the model may reject ANY forced tool_choice regardless of its
+		//     thinking settings (Opus 5.5, Fable 5.1, Mythos 5.1 — see
+		//     `anthropicModelRejectsForcedToolChoice` in `@repo/agent-types`).
+		//     The catalog canonical name identifies it even when the provider
+		//     model string is an opaque alias (a Databricks serving endpoint);
+		//     the SDK `modelId` and the requested override are checked too.
+		// FORWARD GUARD: if a future commit wires `providerOptions` through
+		// here (mirroring `direct-chat/ai-execution.ts`), it MUST pass
+		// `thinkingEnabled: providerOptions !== undefined` — Anthropic
+		// rejects `thinking: enabled` paired with `tool_choice:
+		// {type:"tool"}` with HTTP 400 (same root cause as PR #1177
+		// chat-node.ts fix).
 		const forcedFrameToolNameIsSuppressed =
 			forcedFrameToolName !== undefined &&
 			suppressedToolNameSet.has(forcedFrameToolName);
-		const toolChoice =
-			forcedFrameToolName &&
-			forcedFrameToolName in aiSdkTools &&
-			!forcedFrameToolNameIsSuppressed &&
-			!frameAlreadyCreated
-				? ({
-						type: "tool",
-						toolName: forcedFrameToolName,
-					} as const)
-				: aiSdkToolCount > 0
-					? ("auto" as const)
-					: undefined;
+		const toolChoice = decideForcedToolChoice({
+			forcedToolName:
+				!forcedFrameToolNameIsSuppressed && !frameAlreadyCreated
+					? forcedFrameToolName
+					: undefined,
+			availableTools: aiSdkTools,
+			thinkingEnabled: false,
+			modelNames: [
+				modelCanonicalName,
+				(model as { modelId?: string }).modelId,
+				modelOverride,
+			],
+		});
 
 		// Use streamText to enable real-time text delta publishing via Redis
 		// maxTokens set high to allow long outputs (e.g. full HTML pages).

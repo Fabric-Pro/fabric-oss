@@ -277,7 +277,7 @@ describe("isGatewayClaudeReasoningModel", () => {
 		expect(
 			isGatewayClaudeReasoningModel("anthropic/claude-sonnet-4-5"),
 		).toBe(true);
-		expect(isGatewayClaudeReasoningModel("anthropic/claude-opus-4.7")).toBe(
+		expect(isGatewayClaudeReasoningModel("anthropic/claude-opus-4.6")).toBe(
 			true,
 		);
 		expect(
@@ -286,7 +286,13 @@ describe("isGatewayClaudeReasoningModel", () => {
 	});
 	it("matches un-prefixed claude-sonnet-4-5 (defensive — some catalogs strip the prefix)", () => {
 		expect(isGatewayClaudeReasoningModel("claude-sonnet-4-5")).toBe(true);
-		expect(isGatewayClaudeReasoningModel("claude-opus-4.7")).toBe(true);
+		expect(isGatewayClaudeReasoningModel("claude-opus-4.6")).toBe(true);
+	});
+	it("rejects adaptive-only Opus 4.7/4.8 (they have their own family, with no budget-shaped gateway reasoning)", () => {
+		expect(isGatewayClaudeReasoningModel("anthropic/claude-opus-4.7")).toBe(
+			false,
+		);
+		expect(isGatewayClaudeReasoningModel("claude-opus-4-8")).toBe(false);
 	});
 	it("rejects Claude 3 family", () => {
 		expect(isGatewayClaudeReasoningModel("claude-3-5-sonnet")).toBe(false);
@@ -311,10 +317,23 @@ describe("getGatewayReasoningConfig", () => {
 		).toEqual({ reasoning: { enabled: true, max_tokens: 5000 } });
 		expect(
 			getGatewayReasoningConfig(
-				"anthropic/claude-opus-4.7",
+				"anthropic/claude-opus-4.6",
 				"VERCEL_AI_GATEWAY",
 			),
 		).toEqual({ reasoning: { enabled: true, max_tokens: 5000 } });
+	});
+	it("returns null for adaptive-only Claude (the budget-shaped payload is rejected by these models)", () => {
+		for (const m of [
+			"anthropic/claude-opus-4.7",
+			"anthropic/claude-opus-4.8",
+			"anthropic/claude-sonnet-5",
+			"anthropic/claude-opus-5.5",
+		]) {
+			expect(
+				getGatewayReasoningConfig(m, "VERCEL_GATEWAY"),
+				m,
+			).toBeNull();
+		}
 	});
 	it("returns null for non-Vercel gateways (OpenRouter, Cloudflare) even on Claude 4.x", () => {
 		// The `reasoning: { enabled, max_tokens }` shape is a Vercel Gateway
@@ -668,12 +687,14 @@ describe("createProviderModel — OPENAI_DIRECT reasoning integration", () => {
 		).toBeFalsy();
 	});
 
-	it("Vercel Gateway + un-prefixed claude-opus-4.7 → reasoning enrolled", () => {
+	it("Vercel Gateway + un-prefixed claude-opus-4.6 → reasoning enrolled", () => {
 		// Some catalogs may emit canonical names without provider prefix.
+		// (Opus 4.7 used to be the sample here; it is adaptive-only and now
+		// gets no budget-shaped gateway payload — covered further down.)
 		const model = createProviderModel(
 			{
 				provider: "VERCEL_GATEWAY",
-				model: "claude-opus-4.7",
+				model: "claude-opus-4.6",
 				apiKey: "test-key",
 				baseUrl: "https://ai-gateway.vercel.sh/v1",
 			},
@@ -1426,10 +1447,16 @@ describe("PR 5 — MODEL_FAMILIES table integrity", () => {
 		// Sanity check that the regex anchors didn't drift. Each family
 		// must match its representative production name.
 		const sampleMatches: Record<string, string[]> = {
+			"anthropic-claude-adaptive": [
+				"claude-opus-4-7",
+				"anthropic/claude-opus-4.8",
+				"claude-sonnet-5",
+				"claude-opus-5-5",
+			],
 			"anthropic-claude-4": [
 				"claude-sonnet-4-6",
 				"anthropic/claude-sonnet-4-6",
-				"claude-opus-4-7",
+				"claude-opus-4-6",
 			],
 			"openai-o-series": ["o3-mini", "openai/o3-mini", "o1", "o1-mini"],
 			"openai-gpt-5": [
@@ -1438,6 +1465,7 @@ describe("PR 5 — MODEL_FAMILIES table integrity", () => {
 				"openai/gpt-5.2",
 				"gpt-5.1-codex",
 			],
+			"openai-gpt-6": ["gpt-6-sol", "openai/gpt-6-astra", "gpt-6-luna"],
 			"openai-codex-mini": ["codex-mini", "openai/codex-mini"],
 		};
 		for (const family of MODEL_FAMILIES) {
@@ -1456,7 +1484,12 @@ describe("PR 5 — MODEL_FAMILIES table integrity", () => {
 		const allSamples = [
 			"claude-sonnet-4-6",
 			"anthropic/claude-sonnet-4-6",
+			"claude-opus-4-6",
 			"claude-opus-4-7",
+			"anthropic/claude-opus-4.8",
+			"claude-sonnet-5",
+			"claude-opus-5-5",
+			"gpt-6-sol",
 			"o3-mini",
 			"o1",
 			"openai/o1-mini",
@@ -1909,6 +1942,260 @@ describe("createProviderModel — maxTokensForConfig choke point", () => {
 		);
 		expect((model as unknown as { maxTokens?: number }).maxTokens).toBe(
 			base,
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Adaptive-only Claude + gpt-6 request shaping.
+//
+// Adaptive-only Claude (Opus 4.7/4.8, the 5.x generation) rejects
+// `thinking: { type: "enabled", budget_tokens }` and any non-default
+// temperature/topP/topK. `@langchain/anthropic` throws client-side for both
+// before any network call (utils/params.cjs), so these tests call the
+// model's own `invocationParams()` — the exact step that throws in
+// production — instead of only inspecting constructor fields.
+//
+// gpt-6 has the gpt-5 reasoning contract, but `@langchain/openai`'s
+// wire-level reasoning gate (utils/misc.cjs `isReasoningModel`) only knows
+// o-series and gpt-5, so a top-level `reasoning` field is silently dropped
+// for gpt-6. The Responses-API invocation params are the wire truth.
+// ---------------------------------------------------------------------------
+
+describe("createProviderModel — adaptive-only Claude and gpt-6", () => {
+	type WithInvocation = {
+		invocationParams: (opts?: unknown) => Record<string, unknown>;
+	};
+	function anthropicWire(model: unknown): Record<string, unknown> {
+		return (model as WithInvocation).invocationParams({});
+	}
+	function responsesWire(model: unknown): Record<string, unknown> {
+		const responses = (model as { responses?: WithInvocation }).responses;
+		if (!responses) {
+			throw new Error(
+				"@langchain/openai API changed: ChatOpenAI no longer exposes its `responses` delegate",
+			);
+		}
+		return responses.invocationParams({});
+	}
+	const field = (model: unknown, key: string) =>
+		(model as Record<string, unknown>)[key];
+
+	describe("ANTHROPIC_DIRECT", () => {
+		it.each([
+			"claude-sonnet-5",
+			"claude-opus-4-8",
+			"claude-opus-4-7",
+			"claude-opus-5",
+			"claude-opus-5-5",
+		])(
+			"%s → adaptive thinking, no sampling params, wire request builds",
+			(name) => {
+				const model = createProviderModel(
+					{ provider: "ANTHROPIC_DIRECT", model: name, apiKey: "k" },
+					{ temperature: 0.7, maxTokens: 4096 },
+				);
+				expect(field(model, "thinking")).toEqual({ type: "adaptive" });
+				expect(field(model, "temperature")).toBeUndefined();
+				expect(field(model, "topP")).toBeUndefined();
+				expect(field(model, "topK")).toBeUndefined();
+				// Would throw "thinking.type=enabled is not supported" or
+				// "temperature is not supported" on the unfixed factory.
+				const wire = anthropicWire(model);
+				expect(wire.thinking).toEqual({ type: "adaptive" });
+				expect(wire.temperature).toBeUndefined();
+				expect(JSON.stringify(wire)).not.toContain("budget_tokens");
+			},
+		);
+
+		it("claude-opus-4-6 keeps the budget_tokens form (not adaptive-only)", () => {
+			const model = createProviderModel(
+				{
+					provider: "ANTHROPIC_DIRECT",
+					model: "claude-opus-4-6",
+					apiKey: "k",
+				},
+				{ temperature: 0.7, maxTokens: 16000 },
+			);
+			expect(field(model, "thinking")).toEqual({
+				type: "enabled",
+				budget_tokens: 5000,
+			});
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(anthropicWire(model).thinking).toEqual({
+				type: "enabled",
+				budget_tokens: 5000,
+			});
+		});
+	});
+
+	describe("Vercel gateway", () => {
+		it.each([
+			"anthropic/claude-sonnet-5",
+			"anthropic/claude-opus-4.8",
+			"anthropic/claude-opus-4-8",
+			"anthropic/claude-opus-5.5",
+			"claude-opus-4.7",
+		])(
+			"%s → no gateway reasoning payload, temperature stripped, maxTokens kept, raw response kept",
+			(name) => {
+				const model = createProviderModel(
+					{
+						provider: "VERCEL_GATEWAY",
+						model: name,
+						apiKey: "k",
+						baseUrl: "https://ai-gateway.vercel.sh/v1",
+					},
+					{ temperature: 0.7, maxTokens: 4096 },
+				);
+				const kwargs = field(model, "modelKwargs") as
+					| Record<string, unknown>
+					| undefined;
+				// No budget-shaped `{ enabled, max_tokens }` payload: nothing in
+				// the code establishes the gateway maps it to adaptive thinking.
+				expect(kwargs?.reasoning).toBeUndefined();
+				expect(field(model, "temperature")).toBeUndefined();
+				// No thinking budget to stay under, so the output cap stays.
+				expect(field(model, "maxTokens")).toBe(4096);
+				// These models think by default (Opus 5.5 always), so the
+				// gateway can still return `choices[].message.reasoning`; only
+				// the raw envelope preserves it for the reasoning extractor.
+				expect(field(model, "__includeRawResponse")).toBe(true);
+			},
+		);
+
+		it("anthropic/claude-opus-4.6 keeps the budget-shaped gateway reasoning", () => {
+			const model = createProviderModel(
+				{
+					provider: "VERCEL_GATEWAY",
+					model: "anthropic/claude-opus-4.6",
+					apiKey: "k",
+					baseUrl: "https://ai-gateway.vercel.sh/v1",
+				},
+				{ temperature: 0.7, maxTokens: 4096 },
+			);
+			expect(
+				(field(model, "modelKwargs") as Record<string, unknown>)
+					.reasoning,
+			).toEqual({ enabled: true, max_tokens: 5000 });
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(field(model, "maxTokens")).toBeUndefined();
+		});
+
+		it("OpenRouter + anthropic/claude-sonnet-5 → temperature stripped, no reasoning payload", () => {
+			const model = createProviderModel(
+				{
+					provider: "OPENROUTER",
+					model: "anthropic/claude-sonnet-5",
+					apiKey: "k",
+					baseUrl: "https://openrouter.ai/api/v1",
+				},
+				{ temperature: 0.7, maxTokens: 4096 },
+			);
+			expect(
+				(field(model, "modelKwargs") as Record<string, unknown>)
+					?.reasoning,
+			).toBeUndefined();
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(field(model, "maxTokens")).toBe(4096);
+		});
+
+		it("openai/gpt-6-sol → gpt-5-shaped gateway reasoning and param strip", () => {
+			const model = createProviderModel(
+				{
+					provider: "VERCEL_GATEWAY",
+					model: "openai/gpt-6-sol",
+					apiKey: "k",
+					baseUrl: "https://ai-gateway.vercel.sh/v1",
+				},
+				{ temperature: 0.7, maxTokens: 4096 },
+			);
+			expect(
+				(field(model, "modelKwargs") as Record<string, unknown>)
+					.reasoning,
+			).toEqual({ effort: "medium" });
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(field(model, "maxTokens")).toBeUndefined();
+		});
+
+		it("openai/gpt-5.5 is unchanged", () => {
+			const model = createProviderModel(
+				{
+					provider: "VERCEL_GATEWAY",
+					model: "openai/gpt-5.5",
+					apiKey: "k",
+					baseUrl: "https://ai-gateway.vercel.sh/v1",
+				},
+				{ temperature: 0.7, maxTokens: 4096 },
+			);
+			expect(
+				(field(model, "modelKwargs") as Record<string, unknown>)
+					.reasoning,
+			).toEqual({ effort: "medium" });
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(field(model, "maxTokens")).toBeUndefined();
+		});
+	});
+
+	describe("OPENAI_DIRECT", () => {
+		it.each(["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"])(
+			"%s → Responses API, params stripped, reasoning reaches the wire",
+			(name) => {
+				const model = createProviderModel(
+					{ provider: "OPENAI_DIRECT", model: name, apiKey: "k" },
+					{ temperature: 0.7, maxTokens: 4096 },
+				);
+				expect(field(model, "useResponsesApi")).toBe(true);
+				expect(field(model, "temperature")).toBeUndefined();
+				expect(field(model, "maxTokens")).toBeUndefined();
+				const wire = responsesWire(model);
+				expect(wire.reasoning).toEqual({
+					effort: "medium",
+					summary: "detailed",
+				});
+				expect(wire.temperature).toBeUndefined();
+				expect(wire.max_output_tokens).toBeUndefined();
+			},
+		);
+
+		it("gpt-6-chat-latest stays excluded, like gpt-5-chat*", () => {
+			const model = createProviderModel(
+				{
+					provider: "OPENAI_DIRECT",
+					model: "gpt-6-chat-latest",
+					apiKey: "k",
+				},
+				{ temperature: 0.7 },
+			);
+			expect(field(model, "useResponsesApi")).toBe(false);
+			expect(field(model, "temperature")).toBe(0.7);
+		});
+
+		it("gpt-5.5 is unchanged", () => {
+			const model = createProviderModel(
+				{ provider: "OPENAI_DIRECT", model: "gpt-5.5", apiKey: "k" },
+				{ temperature: 0.7, maxTokens: 4096 },
+			);
+			expect(field(model, "reasoning")).toEqual({
+				effort: "medium",
+				summary: "detailed",
+			});
+			expect(field(model, "useResponsesApi")).toBe(true);
+			expect(field(model, "temperature")).toBeUndefined();
+			expect(field(model, "maxTokens")).toBeUndefined();
+			expect(responsesWire(model).reasoning).toEqual({
+				effort: "medium",
+				summary: "detailed",
+			});
+		});
+	});
+
+	it("gpt-6 counts as reasoning-capable for the output-token allowance", () => {
+		expect(reasoningOutputAllowance("gpt-6-sol")).toBe(
+			REASONING_OUTPUT_TOKEN_ALLOWANCE,
+		);
+		expect(reasoningOutputAllowance("openai/gpt-6-luna")).toBe(
+			REASONING_OUTPUT_TOKEN_ALLOWANCE,
 		);
 	});
 });

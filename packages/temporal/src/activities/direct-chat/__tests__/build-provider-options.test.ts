@@ -149,8 +149,11 @@ describe("getMaxOutputTokensForProviderOptions — Anthropic max_tokens pairing"
 		);
 		const maxOutputTokens =
 			getMaxOutputTokensForProviderOptions(providerOptions);
+		// The thinking union also has an adaptive (budget-less) arm; this
+		// model gets the budgeted one, which the finiteness check pins.
+		const thinking = providerOptions?.anthropic?.thinking;
 		const thinkingBudget =
-			providerOptions?.anthropic?.thinking?.budgetTokens ?? Number.NaN;
+			thinking?.type === "enabled" ? thinking.budgetTokens : Number.NaN;
 		expect(Number.isFinite(thinkingBudget)).toBe(true);
 		expect(maxOutputTokens).toBeDefined();
 		expect(maxOutputTokens as number).toBeGreaterThan(thinkingBudget);
@@ -285,5 +288,82 @@ describe("resolveOutputTokenBudget", () => {
 		});
 
 		expect(budget).toBeLessThan(DIRECT_CHAT_OUTPUT_TOKEN_CEILING);
+	});
+});
+
+describe("buildProviderOptions — adaptive-only Claude", () => {
+	// Adaptive-only Claude (Opus 4.7/4.8 and the 5.x generation) returns
+	// HTTP 400 for `thinking: { type: "enabled", budget_tokens }`; the only
+	// on-mode is `{ type: "adaptive" }`. `@ai-sdk/anthropic` passes a
+	// caller-supplied `budgetTokens` straight through to the wire, so the
+	// shaping has to happen here.
+	it.each([
+		["ANTHROPIC_DIRECT", "claude-sonnet-5"],
+		["ANTHROPIC_DIRECT", "claude-opus-4-8"],
+		["ANTHROPIC_DIRECT", "claude-opus-4-7"],
+		["ANTHROPIC_DIRECT", "claude-opus-5"],
+		["ANTHROPIC_DIRECT", "claude-opus-5-5"],
+		["VERCEL_GATEWAY", "anthropic/claude-sonnet-5"],
+		["VERCEL_GATEWAY", "anthropic/claude-opus-4.8"],
+		["VERCEL_GATEWAY", "anthropic/claude-opus-5.5"],
+	] as [AIProvider, string][])(
+		"%s + %s in pro mode → adaptive thinking, no budget",
+		(provider, model) => {
+			expect(buildProviderOptions(provider, model, "pro")).toEqual({
+				anthropic: { thinking: { type: "adaptive" } },
+			});
+		},
+	);
+
+	it.each([
+		["ANTHROPIC_DIRECT", "claude-opus-4-6"],
+		["VERCEL_GATEWAY", "anthropic/claude-opus-4.6"],
+		["ANTHROPIC_DIRECT", "claude-sonnet-4-6"],
+	] as [AIProvider, string][])(
+		"%s + %s in pro mode keeps the budget form",
+		(provider, model) => {
+			expect(buildProviderOptions(provider, model, "pro")).toEqual({
+				anthropic: {
+					thinking: { type: "enabled", budgetTokens: 5000 },
+				},
+			});
+		},
+	);
+
+	it.each(["lite", "balanced", undefined] as const)(
+		"adaptive-only model in %s mode → undefined (unchanged)",
+		(mode) => {
+			expect(
+				buildProviderOptions(
+					"ANTHROPIC_DIRECT",
+					"claude-sonnet-5",
+					mode,
+				),
+			).toBeUndefined();
+		},
+	);
+
+	it.each([
+		["OPENAI_DIRECT", "gpt-6-sol"],
+		["VERCEL_GATEWAY", "openai/gpt-6-sol"],
+		["OPENAI_DIRECT", "gpt-5.5"],
+	] as [AIProvider, string][])(
+		"%s + %s in pro mode → undefined (not Anthropic)",
+		(provider, model) => {
+			expect(
+				buildProviderOptions(provider, model, "pro"),
+			).toBeUndefined();
+		},
+	);
+
+	it("adaptive thinking keeps the thinking max_tokens floor (thinking still spends output budget)", () => {
+		const opts = buildProviderOptions(
+			"ANTHROPIC_DIRECT",
+			"claude-sonnet-5",
+			"pro",
+		);
+		expect(getMaxOutputTokensForProviderOptions(opts)).toBe(
+			ANTHROPIC_THINKING_MIN_MAX_TOKENS,
+		);
 	});
 });

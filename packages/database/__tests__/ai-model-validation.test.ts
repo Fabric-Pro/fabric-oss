@@ -41,6 +41,9 @@ import type { AIProvider } from "../prisma/generated/client";
 const OPENAI_DIRECT_OFFICIAL_MODELS = new Set([
 	// GPT-5 series
 	"gpt-5.5",
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 	"gpt-5.4",
 	"gpt-5.2",
 	"gpt-5-nano",
@@ -93,6 +96,8 @@ const OPENAI_DIRECT_OFFICIAL_MODELS = new Set([
 const ANTHROPIC_DIRECT_OFFICIAL_MODELS = new Set([
 	// Claude 4.8 series (current)
 	"claude-opus-4-8",
+	"claude-opus-5-5",
+	"claude-opus-5",
 	// Claude 4.7 series
 	"claude-opus-4-7",
 	// Claude 5 series
@@ -200,6 +205,9 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 
 	// OpenAI models (from Vercel dashboard)
 	"openai/gpt-5.5",
+	"openai/gpt-6-astra",
+	"openai/gpt-6-sol",
+	"openai/gpt-6-luna",
 	"openai/gpt-5.4",
 	"openai/gpt-5.2",
 	"openai/gpt-5-nano",
@@ -230,6 +238,8 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 
 	// Anthropic models (from Vercel dashboard)
 	"anthropic/claude-opus-4.8",
+	"anthropic/claude-opus-5.5",
+	"anthropic/claude-opus-5",
 	"anthropic/claude-opus-4.7",
 	"anthropic/claude-sonnet-5",
 	"anthropic/claude-sonnet-4-6",
@@ -275,6 +285,9 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 const OPENROUTER_OFFICIAL_MODELS = new Set([
 	// OpenAI
 	"openai/gpt-5.5",
+	"openai/gpt-6-astra",
+	"openai/gpt-6-sol",
+	"openai/gpt-6-luna",
 	"openai/gpt-5.4",
 	"openai/gpt-5.2",
 	"openai/gpt-5-nano",
@@ -288,6 +301,8 @@ const OPENROUTER_OFFICIAL_MODELS = new Set([
 
 	// Anthropic
 	"anthropic/claude-opus-4.8",
+	"anthropic/claude-opus-5.5",
+	"anthropic/claude-opus-5",
 	"anthropic/claude-opus-4.7",
 	"anthropic/claude-sonnet-5",
 	"anthropic/claude-sonnet-4-6",
@@ -495,6 +510,9 @@ const GOOGLE_VERTEX_AI_OFFICIAL_MODELS = new Set([
  */
 const AZURE_AI_FOUNDRY_OFFICIAL_MODELS = new Set([
 	"gpt-5.5",
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 	"gpt-5.4",
 	"gpt-5.2",
 	"gpt-5-nano",
@@ -515,6 +533,9 @@ const AZURE_AI_FOUNDRY_OFFICIAL_MODELS = new Set([
 const AWS_BEDROCK_OFFICIAL_MODELS = new Set([
 	// Anthropic
 	"anthropic.claude-opus-4-8",
+	"anthropic.claude-opus-5-5",
+	"anthropic.claude-opus-5",
+	"anthropic.claude-sonnet-4-6",
 	"anthropic.claude-opus-4-7",
 	"anthropic.claude-opus-4-6-v1",
 	"anthropic.claude-opus-4-5-20251101-v1:0",
@@ -537,6 +558,8 @@ const DATABRICKS_OFFICIAL_MODELS = new Set([
 	"system.ai.claude-sonnet-5",
 	"system.ai.claude-sonnet-4-6",
 	"system.ai.claude-sonnet-4-5",
+	"system.ai.claude-opus-5-5",
+	"system.ai.claude-opus-5",
 	"system.ai.claude-opus-4-8",
 	"system.ai.claude-opus-4-7",
 	"system.ai.claude-opus-4-6",
@@ -1033,6 +1056,44 @@ describe("AI Model Name Validation", () => {
 // ============================================================================
 // Summary Report Test
 // ============================================================================
+
+describe("Catalog deprecations", () => {
+	const deprecated = MODELS.filter((m) => m.deprecation);
+	const byName = new Map(MODELS.map((m) => [m.canonicalName, m]));
+
+	it("points every deprecated model at an active catalog model", () => {
+		const broken = deprecated
+			.filter((m) => {
+				const replacement = byName.get(m.deprecation?.replacedBy ?? "");
+				return !replacement || replacement.deprecation;
+			})
+			.map((m) => `${m.canonicalName} -> ${m.deprecation?.replacedBy}`);
+		expect(broken).toEqual([]);
+	});
+
+	it("keeps a replacement on every provider the deprecated model served", () => {
+		// resolveDeprecatedModel only forwards a saved selection when the
+		// replacement has a mapping for the same provider.
+		const gaps = deprecated.flatMap((m) => {
+			const replacement = byName.get(m.deprecation?.replacedBy ?? "");
+			const served = new Set(
+				replacement?.providerMappings.map((pm) => pm.provider) ?? [],
+			);
+			return m.providerMappings
+				.filter((pm) => !served.has(pm.provider))
+				.map((pm) => `${m.canonicalName} ${pm.provider}`);
+		});
+		expect(gaps).toEqual([]);
+	});
+
+	it("never uses a deprecated model as a task default", () => {
+		const deprecatedNames = new Set(deprecated.map((m) => m.canonicalName));
+		const offenders = TASK_DEFAULTS.filter((d) =>
+			deprecatedNames.has(d.canonicalName),
+		).map((d) => `${d.taskType}/${d.complexity}/${d.provider}`);
+		expect(offenders).toEqual([]);
+	});
+});
 
 describe("AI Model Validation Summary", () => {
 	it("should generate a complete validation report", () => {

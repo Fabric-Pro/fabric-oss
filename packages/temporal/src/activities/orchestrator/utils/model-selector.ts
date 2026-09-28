@@ -101,6 +101,10 @@ export async function getAiModelWithSelection(
 		model,
 		provider: metadata.provider,
 		modelString: metadata.modelString,
+		// Catalog name — the only reliable model identity when the provider
+		// model string is an org-defined alias (e.g. a Databricks serving
+		// endpoint name).
+		canonicalName: metadata.canonicalName,
 	};
 }
 

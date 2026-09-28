@@ -65,7 +65,12 @@ vi.mock("../../../../lib/redis-publisher", () => ({
 }));
 
 vi.mock("../../utils", () => ({
-	getAiModel: vi.fn(async () => ({ __mockModel: true })),
+	getAiModelWithSelection: vi.fn(async () => ({
+		model: { __mockModel: true },
+		provider: "ANTHROPIC_DIRECT",
+		modelString: "claude-sonnet-5",
+		canonicalName: "claude-sonnet-5",
+	})),
 }));
 
 import {

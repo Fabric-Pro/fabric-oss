@@ -48,6 +48,17 @@ export interface ModelSeedData {
 	inputCostPer1M?: number;
 	outputCostPer1M?: number;
 	suitableForTasks: AiTaskType[];
+	/**
+	 * Retires a model without deleting it. The seed deactivates it and sets
+	 * `deprecatedAt` + `replacementModelId`, so it drops out of every model
+	 * picker while saved user/org selections resolve to `replacedBy` (see
+	 * `resolveDeprecatedModel`). Deleting the entry instead would make the
+	 * seed hard-delete the row and cascade away those selections.
+	 */
+	deprecation?: {
+		/** Canonical name of an active catalog model that takes over. */
+		replacedBy: string;
+	};
 	providerMappings: Array<{
 		provider: AIProvider;
 		providerModelId: string;
@@ -265,7 +276,7 @@ export const MODELS: ModelSeedData[] = [
 		canonicalName: "gpt-5.5",
 		displayName: "GPT-5.5",
 		description:
-			"OpenAI's most capable model with 1M context, advanced reasoning, coding, and multimodal capabilities",
+			"OpenAI's GPT-5.5 with 1M context, advanced reasoning, coding, and multimodal capabilities",
 		family: "gpt",
 		vendor: "OpenAI",
 		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
@@ -290,6 +301,93 @@ export const MODELS: ModelSeedData[] = [
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-5.5" },
 			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-5.5" },
+		],
+	},
+	{
+		canonicalName: "gpt-6-astra",
+		displayName: "GPT-6 Astra",
+		description:
+			"OpenAI's most capable GPT-6 model for frontier reasoning, agentic coding, and long-horizon work",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "QUALITY",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 10,
+		outputCostPer1M: 50,
+		suitableForTasks: [
+			"REASONING",
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6-astra" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6-astra",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6-astra" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6-astra" },
+		],
+	},
+	{
+		canonicalName: "gpt-6-sol",
+		displayName: "GPT-6 Sol",
+		description:
+			"OpenAI's production GPT-6 model for agents, coding, and multi-step reasoning at mid-tier cost",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "BALANCED",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 2,
+		outputCostPer1M: 10,
+		suitableForTasks: [
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"REASONING",
+			"EVAL",
+		],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6-sol" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6-sol",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6-sol" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6-sol" },
+		],
+	},
+	{
+		canonicalName: "gpt-6-luna",
+		displayName: "GPT-6 Luna",
+		description:
+			"OpenAI's smallest and fastest GPT-6 model, optimized for high-volume simple tasks and low latency",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE"],
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "FAST",
+		qualityTier: "BASIC",
+		inputCostPer1M: 0.1,
+		outputCostPer1M: 0.5,
+		suitableForTasks: ["SIMPLE", "CHAT", "TOOL_CALLING"],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6-luna" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6-luna",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6-luna" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6-luna" },
 		],
 	},
 	{
@@ -420,8 +518,8 @@ export const MODELS: ModelSeedData[] = [
 		maxOutputTokens: 128000,
 		speedTier: "FAST",
 		qualityTier: "PREMIUM",
-		inputCostPer1M: 3,
-		outputCostPer1M: 15,
+		inputCostPer1M: 2,
+		outputCostPer1M: 10,
 		suitableForTasks: [
 			"COMPLEX",
 			"CHAT",
@@ -449,10 +547,98 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "claude-opus-5-5",
+		displayName: "Claude Opus 5.5",
+		description:
+			"Anthropic's latest flagship Opus with 1M context, 128K output, always-on adaptive thinking, and lower pricing than Opus 5",
+		family: "claude",
+		vendor: "Anthropic",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1000000,
+		maxOutputTokens: 128000,
+		speedTier: "QUALITY",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 4,
+		outputCostPer1M: 20,
+		suitableForTasks: [
+			"REASONING",
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
+		providerMappings: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				providerModelId: "claude-opus-5-5",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "anthropic/claude-opus-5.5",
+			},
+			{
+				provider: "OPENROUTER",
+				providerModelId: "anthropic/claude-opus-5.5",
+			},
+			{
+				provider: "AWS_BEDROCK",
+				providerModelId: "anthropic.claude-opus-5-5",
+			},
+			{
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.claude-opus-5-5",
+			},
+		],
+	},
+	{
+		canonicalName: "claude-opus-5",
+		displayName: "Claude Opus 5",
+		description:
+			"Anthropic's Claude 5-family Opus for agentic coding, code review, and long-horizon autonomous work",
+		family: "claude",
+		vendor: "Anthropic",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1000000,
+		maxOutputTokens: 128000,
+		speedTier: "QUALITY",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 5,
+		outputCostPer1M: 25,
+		suitableForTasks: [
+			"REASONING",
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
+		providerMappings: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				providerModelId: "claude-opus-5",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "anthropic/claude-opus-5",
+			},
+			{
+				provider: "OPENROUTER",
+				providerModelId: "anthropic/claude-opus-5",
+			},
+			{
+				provider: "AWS_BEDROCK",
+				providerModelId: "anthropic.claude-opus-5",
+			},
+			{
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.claude-opus-5",
+			},
+		],
+	},
+	{
 		canonicalName: "claude-sonnet-4-6",
 		displayName: "Claude Sonnet 4.6",
 		description:
-			"Anthropic's latest Sonnet with near-Opus intelligence, excellent coding, computer use, and long-context reasoning",
+			"Anthropic's Claude 4-family Sonnet with near-Opus intelligence, excellent coding, computer use, and long-context reasoning",
 		family: "claude",
 		vendor: "Anthropic",
 		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
@@ -483,6 +669,10 @@ export const MODELS: ModelSeedData[] = [
 				providerModelId: "anthropic/claude-sonnet-4-6",
 			},
 			{
+				provider: "AWS_BEDROCK",
+				providerModelId: "anthropic.claude-sonnet-4-6",
+			},
+			{
 				provider: "DATABRICKS",
 				providerModelId: "system.ai.claude-sonnet-4-6",
 			},
@@ -492,7 +682,7 @@ export const MODELS: ModelSeedData[] = [
 		canonicalName: "claude-opus-4-8",
 		displayName: "Claude Opus 4.8",
 		description:
-			"Anthropic's latest flagship Opus with 1M context, 128K output, adaptive thinking, and agent teams support",
+			"Anthropic's Claude 4-family flagship Opus with 1M context, 128K output, adaptive thinking, and agent teams support",
 		family: "claude",
 		vendor: "Anthropic",
 		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
@@ -553,6 +743,7 @@ export const MODELS: ModelSeedData[] = [
 			"TOOL_CALLING",
 			"EVAL",
 		],
+		deprecation: { replacedBy: "claude-opus-4-8" },
 		providerMappings: [
 			{
 				provider: "ANTHROPIC_DIRECT",
@@ -597,6 +788,7 @@ export const MODELS: ModelSeedData[] = [
 			"TOOL_CALLING",
 			"EVAL",
 		],
+		deprecation: { replacedBy: "claude-opus-4-8" },
 		providerMappings: [
 			{
 				provider: "ANTHROPIC_DIRECT",
@@ -641,6 +833,7 @@ export const MODELS: ModelSeedData[] = [
 			"REASONING",
 			"EVAL",
 		],
+		deprecation: { replacedBy: "claude-sonnet-4-6" },
 		providerMappings: [
 			{
 				provider: "ANTHROPIC_DIRECT",
@@ -717,6 +910,7 @@ export const MODELS: ModelSeedData[] = [
 		inputCostPer1M: 5,
 		outputCostPer1M: 25,
 		suitableForTasks: ["REASONING", "COMPLEX", "EVAL"],
+		deprecation: { replacedBy: "claude-opus-4-8" },
 		providerMappings: [
 			{
 				provider: "ANTHROPIC_DIRECT",

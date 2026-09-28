@@ -95,3 +95,92 @@ describe("decideForcedToolChoice", () => {
 		).toBeUndefined();
 	});
 });
+
+describe("decideForcedToolChoice — models that reject forced tool_choice", () => {
+	// claude-opus-5-5, claude-fable-5-1 and claude-mythos-5-1 return HTTP 400
+	// for `tool_choice` `{type:"any"}` / `{type:"tool"}` regardless of the
+	// thinking setting. claude-opus-5 accepts it.
+	const availableTools = { fabric_create_frame: {}, other_tool: {} };
+
+	it.each([
+		[["claude-opus-5-5"]],
+		[["anthropic/claude-opus-5.5"]],
+		[["system.ai.claude-opus-5-5"]],
+		[["claude-fable-5-1"]],
+		[["claude-mythos-5-1"]],
+		// A Databricks alias hides the model; the catalog canonical name
+		// still identifies it.
+		[["prod-chat", "claude-opus-5-5"]],
+	])("never forces for %j (auto instead)", (modelNames) => {
+		expect(
+			decideForcedToolChoice({
+				forcedToolName: "fabric_create_frame",
+				availableTools,
+				thinkingEnabled: false,
+				modelNames,
+			}),
+		).toBe("auto");
+	});
+
+	it.each([
+		[["claude-opus-5"]],
+		[["anthropic/claude-opus-5"]],
+		[["claude-sonnet-5"]],
+		[["claude-opus-4-8"]],
+		[["gpt-6-sol"]],
+		[["prod-chat", "claude-sonnet-5"]],
+	])("still forces for %j when thinking is off", (modelNames) => {
+		expect(
+			decideForcedToolChoice({
+				forcedToolName: "fabric_create_frame",
+				availableTools,
+				thinkingEnabled: false,
+				modelNames,
+			}),
+		).toEqual({ type: "tool", toolName: "fabric_create_frame" });
+	});
+
+	it("claude-opus-5 with pro-mode thinking on is still demoted (existing rule)", () => {
+		expect(
+			decideForcedToolChoice({
+				forcedToolName: "fabric_create_frame",
+				availableTools,
+				thinkingEnabled: true,
+				modelNames: ["claude-opus-5"],
+			}),
+		).toBe("auto");
+	});
+
+	it("returns undefined with no tools even for a rejecting model", () => {
+		expect(
+			decideForcedToolChoice({
+				forcedToolName: "fabric_create_frame",
+				availableTools: {},
+				thinkingEnabled: false,
+				modelNames: ["claude-opus-5-5"],
+			}),
+		).toBeUndefined();
+	});
+});
+
+describe("ai-execution wiring — model identity reaches decideForcedToolChoice", () => {
+	// `ai-execution.ts` pulls in the AI SDK, the database and agent-core, so
+	// (following `allow-system-in-messages-wiring.test.ts`) this reads the
+	// call site as source. Both the catalog canonical name and the wire model
+	// string must be passed: a Databricks serving alias alone hides the model.
+	it("passes the canonical name and the model string", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const source = readFileSync(
+			join(process.cwd(), "src/activities/direct-chat/ai-execution.ts"),
+			"utf-8",
+		);
+		expect(source).toMatch(
+			/const forcedToolChoiceModelNames = \[\s*metadata\.canonicalName,\s*metadata\.modelString,?\s*\];/,
+		);
+		const start = source.indexOf("decideForcedToolChoice({");
+		expect(start).toBeGreaterThanOrEqual(0);
+		const block = source.slice(start, source.indexOf("});", start));
+		expect(block).toContain("modelNames: forcedToolChoiceModelNames,");
+	});
+});
