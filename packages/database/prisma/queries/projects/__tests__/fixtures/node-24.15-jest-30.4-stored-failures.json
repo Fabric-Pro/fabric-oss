@@ -1,0 +1,51 @@
+{
+	"nodeVersion": "v24.15.0",
+	"jestExpectVersion": "30.4.1",
+	"storage": "collapsed JUnit message attribute plus exception stack body",
+	"captures": [
+		{
+			"name": "strict-deep-number",
+			"stored": "Expected values to be strictly deep-equal: 90 !== 80\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n\n90 !== 80\n\n    at file:///example.test.mjs:6:39\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "legacy-deep-number",
+			"stored": "Expected values to be strictly deep-equal: 90 !== 80\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n\n90 !== 80\n\n    at file:///example.test.mjs:7:39\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "legacy-equal-number",
+			"stored": "90 == 80\nAssertionError [ERR_ASSERTION]: 90 == 80\n    at file:///example.test.mjs:8:40\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "legacy-equal-string",
+			"stored": "'ninety' == 'eighty'\nAssertionError [ERR_ASSERTION]: 'ninety' == 'eighty'\n    at strict.deepStrictEqual.total (file:///example.test.mjs:9:40)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "strict-deep-object",
+			"stored": "Expected values to be strictly deep-equal: + actual - expected { + total: 90 - total: 80 }\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  {\n+   total: 90\n-   total: 80\n  }\n\n    at strict.deepStrictEqual.order.total (file:///example.test.mjs:10:39)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "strict-deep-nested-object",
+			"stored": "Expected values to be strictly deep-equal: + actual - expected { order: { + total: 90 - total: 80 } }\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  {\n    order: {\n+     total: 90\n-     total: 80\n    }\n  }\n\n    at file:///example.test.mjs:11:46\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "strict-deep-array",
+			"stored": "Expected values to be strictly deep-equal: + actual - expected [ + 90 - 80 ]\nAssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  [\n+   90\n-   80\n  ]\n\n    at legacy.deepEqual.total (file:///example.test.mjs:12:38)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "legacy-deep-object",
+			"stored": "Expected values to be loosely deep-equal: { total: 90 } should loosely deep-equal { total: 80 }\nAssertionError [ERR_ASSERTION]: Expected values to be loosely deep-equal:\n\n{\n  total: 90\n}\n\nshould loosely deep-equal\n\n{\n  total: 80\n}\n    at expect.total (file:///example.test.mjs:13:39)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "jest-equal-object",
+			"stored": "expect(received).toEqual(expected) // deep equality - Expected - 1 + Received + 1 Object { - \"total\": 80, + \"total\": 90, }\nError: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Object {\n-   \"total\": 80,\n+   \"total\": 90,\n  }\n    at expect.total (file:///example.test.mjs:14:53)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "jest-strict-object",
+			"stored": "expect(received).toStrictEqual(expected) // deep equality - Expected - 1 + Received + 1 Object { - \"total\": 80, + \"total\": 90, }\nError: expect(received).toStrictEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Object {\n-   \"total\": 80,\n+   \"total\": 90,\n  }\n    at file:///example.test.mjs:15:54\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		},
+		{
+			"name": "jest-equal-array",
+			"stored": "expect(received).toEqual(expected) // deep equality - Expected - 1 + Received + 1 Array [ - 80, + 90, ]\nError: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Array [\n-   80,\n+   90,\n  ]\n    at cases (file:///example.test.mjs:16:43)\n    at file:///example.test.mjs:22:5\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at async node:internal/modules/esm/loader:639:26\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)"
+		}
+	]
+}

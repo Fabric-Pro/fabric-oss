@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from "vitest";
 import { parseAssertionValues } from "../assertion-values";
+import nodeJestCaptures from "./fixtures/node-24.15-jest-30.4-stored-failures.json";
+import playwrightCaptures from "./fixtures/playwright-1.61.1-failures.json";
 
 describe("parseAssertionValues", () => {
 	it("reads the card's exact node:assert message — actual is on the LEFT", () => {
@@ -448,105 +450,39 @@ describe("parseAssertionValues", () => {
 	});
 
 	describe("runner-specific boundaries and syntax", () => {
-		it.each([
-			[
-				"toHaveText with a string",
-				[
-					"expect(locator).toHaveText(expected) failed",
-					"Locator: getByTestId('message')",
-					'Expected: "Welcome"',
-					'Received: "Hello"',
-					"Timeout: 1000ms",
-					"Call log:",
-					"  - waiting for getByTestId('message')",
-				].join("\n"),
-				{ expected: '"Welcome"', actual: '"Hello"' },
-			],
-			[
-				"toHaveText with a pattern",
-				[
-					"expect(locator).toHaveText(expected) failed",
-					"Locator: getByTestId('message')",
-					"Expected pattern: /welcome/i",
-					'Received string: "Hello"',
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
-				{ expected: "/welcome/i", actual: '"Hello"' },
-			],
-			[
-				"toContainText",
-				[
-					"expect(locator).toContainText(expected) failed",
-					"Locator: getByTestId('message')",
-					'Expected substring: "Welcome"',
-					'Received string: "Hello"',
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
-				{ expected: '"Welcome"', actual: '"Hello"' },
-			],
+		it("uses seven failures captured from Playwright 1.61.1", () => {
+			expect(playwrightCaptures.version).toBe("1.61.1");
+			expect(playwrightCaptures.captures).toHaveLength(7);
+		});
+
+		const expectedPlaywrightValues = new Map<
+			string,
+			{ expected: string; actual: string }
+		>([
+			["toHaveText-string", { expected: '"Welcome"', actual: '"Hello"' }],
+			["toHaveText-regex", { expected: "/welcome/i", actual: '"Hello"' }],
+			["toContainText", { expected: '"Welcome"', actual: '"Hello"' }],
 			[
 				"toHaveValue",
-				[
-					"expect(locator).toHaveValue(expected) failed",
-					"Locator: getByLabel('Email')",
-					'Expected: "dev@example.com"',
-					'Received: "test@example.com"',
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
 				{ expected: '"dev@example.com"', actual: '"test@example.com"' },
 			],
-			[
-				"toHaveCount",
-				[
-					"expect(locator).toHaveCount(expected) failed",
-					"Locator: getByRole('listitem')",
-					"Expected: 2",
-					"Received: 3",
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
-				{ expected: "2", actual: "3" },
-			],
-			[
-				"toBeVisible",
-				[
-					"expect(locator).toBeVisible() failed",
-					"Locator: getByRole('dialog')",
-					"Expected: visible",
-					"Received: hidden",
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
-				{ expected: "visible", actual: "hidden" },
-			],
+			["toHaveCount", { expected: "2", actual: "3" }],
+			["toBeVisible", { expected: "visible", actual: "hidden" }],
 			[
 				"toHaveURL",
-				[
-					"expect(page).toHaveURL(expected) failed",
-					'Expected string: "https://example.com/checkout"',
-					'Received string: "https://example.com/cart"',
-					"Timeout: 1000ms",
-					"Call log:",
-				].join("\n"),
 				{
 					expected: '"https://example.com/checkout"',
 					actual: '"https://example.com/cart"',
 				},
 			],
-		])(
-			"stops a Playwright %s value before its Timeout line",
-			(_label, message, expected) => {
-				// Arrange
-				const input = message;
+		]);
 
-				// Act
-				const result = parseAssertionValues(input);
-
-				// Assert
-				expect(result).toEqual(expected);
+		it.each(playwrightCaptures.captures)(
+			"stops a Playwright $name value before its Timeout line",
+			({ name, message }) => {
+				expect(parseAssertionValues(message)).toEqual(
+					expectedPlaywrightValues.get(name),
+				);
 			},
 		);
 
@@ -621,6 +557,34 @@ describe("parseAssertionValues", () => {
 	});
 
 	describe("Node runner output", () => {
+		it("uses eleven failures captured from Node 24.15.0 and Jest expect 30.4.1", () => {
+			expect(nodeJestCaptures.nodeVersion).toBe("v24.15.0");
+			expect(nodeJestCaptures.jestExpectVersion).toBe("30.4.1");
+			expect(nodeJestCaptures.captures).toHaveLength(11);
+		});
+
+		const supportedStoredValues = new Map<
+			string,
+			{ expected: string; actual: string }
+		>([
+			["strict-deep-number", { expected: "80", actual: "90" }],
+			["legacy-deep-number", { expected: "80", actual: "90" }],
+			["legacy-equal-number", { expected: "80", actual: "90" }],
+			[
+				"legacy-equal-string",
+				{ expected: "'eighty'", actual: "'ninety'" },
+			],
+		]);
+
+		it.each(nodeJestCaptures.captures)(
+			"parses stored $name only when its direction is supported",
+			({ name, stored }) => {
+				expect(parseAssertionValues(stored)).toEqual(
+					supportedStoredValues.get(name) ?? null,
+				);
+			},
+		);
+
 		it.each([
 			[
 				"node:assert/strict deepStrictEqual numeric message",

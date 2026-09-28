@@ -1,0 +1,33 @@
+{
+	"version": "1.61.1",
+	"captures": [
+		{
+			"name": "toHaveText-string",
+			"message": "expect(locator).toHaveText(expected) failed\n\nLocator:  getByTestId('message')\nExpected: \"Welcome\"\nReceived: \"Hello\"\nTimeout:  100ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 100ms\n  - waiting for getByTestId('message')\n    2 × locator resolved to <div data-testid=\"message\">Hello</div>\n      - unexpected value \"Hello\"\n"
+		},
+		{
+			"name": "toHaveText-regex",
+			"message": "expect(locator).toHaveText(expected) failed\n\nLocator: getByTestId('message')\nExpected pattern: /welcome/i\nReceived string:  \"Hello\"\nTimeout: 100ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 100ms\n  - waiting for getByTestId('message')\n    3 × locator resolved to <div data-testid=\"message\">Hello</div>\n      - unexpected value \"Hello\"\n"
+		},
+		{
+			"name": "toContainText",
+			"message": "expect(locator).toContainText(expected) failed\n\nLocator: getByTestId('message')\nExpected substring: \"Welcome\"\nReceived string:    \"Hello\"\nTimeout: 100ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 100ms\n  - waiting for getByTestId('message')\n    4 × locator resolved to <div data-testid=\"message\">Hello</div>\n      - unexpected value \"Hello\"\n"
+		},
+		{
+			"name": "toHaveValue",
+			"message": "expect(locator).toHaveValue(expected) failed\n\nLocator:  getByLabel('Email')\nExpected: \"dev@example.com\"\nReceived: \"test@example.com\"\nTimeout:  100ms\n\nCall log:\n  - Expect \"to.have.value\" with timeout 100ms\n  - waiting for getByLabel('Email')\n    3 × locator resolved to <input value=\"test@example.com\"/>\n      - unexpected value \"test@example.com\"\n"
+		},
+		{
+			"name": "toHaveCount",
+			"message": "expect(locator).toHaveCount(expected) failed\n\nLocator:  getByRole('listitem')\nExpected: 2\nReceived: 3\nTimeout:  100ms\n\nCall log:\n  - Expect \"to.have.count\" with timeout 100ms\n  - waiting for getByRole('listitem')\n    4 × locator resolved to 3 elements\n      - unexpected value \"3\"\n"
+		},
+		{
+			"name": "toBeVisible",
+			"message": "expect(locator).toBeVisible() failed\n\nLocator:  locator('dialog')\nExpected: visible\nReceived: hidden\nTimeout:  100ms\n\nCall log:\n  - Expect \"to.be.visible\" with timeout 100ms\n  - waiting for locator('dialog')\n    4 × locator resolved to <dialog>Hidden</dialog>\n      - unexpected value \"hidden\"\n"
+		},
+		{
+			"name": "toHaveURL",
+			"message": "expect(page).toHaveURL(expected) failed\n\nExpected: \"https://example.com/checkout\"\nReceived: \"https://example.com/cart\"\nTimeout:  100ms\n\nCall log:\n  - Expect \"to.have.url\" with timeout 100ms\n    4 × unexpected value \"https://example.com/cart\"\n"
+		}
+	]
+}
