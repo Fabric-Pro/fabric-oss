@@ -26,6 +26,16 @@
 			"types": "./lib/http-server.ts",
 			"import": "./lib/http-server.ts",
 			"default": "./lib/http-server.ts"
+		},
+		"./init": {
+			"types": "./lib/init.ts",
+			"import": "./lib/init.ts",
+			"default": "./lib/init.ts"
+		},
+		"./web-startup": {
+			"types": "./lib/web-startup.ts",
+			"import": "./lib/web-startup.ts",
+			"default": "./lib/web-startup.ts"
 		}
 	},
 	"scripts": {

@@ -54,31 +54,32 @@ export async function register() {
 		);
 		validatePartykitConfig();
 
-		const {
-			initObservability,
-			initAppInsightsLogs,
-			trackLog,
-			trackLogException,
-		} = await import("@repo/observability");
-
-		initObservability({
-			serviceName: process.env.OTEL_SERVICE_NAME || "fabric-web",
-			serviceVersion: process.env.npm_package_version || "1.0.0",
-			environment: process.env.NODE_ENV,
-			// Use 30 second metric export for better visibility
-			metricExportInterval: 30000,
-		});
-
-		// Forward warn/error/fatal logs to App Insights — independent of the
-		// `feature-burn-rate-alerts` flag `initObservability` above never
-		// touches for this. The web app is the one service whose backend logs
-		// otherwise reach only Vercel runtime logs (Fizzy #2249 follow-up):
-		// every OTHER Azure service already reports to the same workspace.
 		// Vercel is not an Azure VM. The SDK's Statsbeat probe otherwise calls
 		// Azure instance metadata on every new function instance and times out.
 		if (process.env.VERCEL) {
 			process.env.APPLICATION_INSIGHTS_NO_STATSBEAT ||= "true";
 		}
+
+		const { initAppInsightsLogs, trackLog, trackLogException } =
+			await import("@repo/observability/web-startup");
+		const otelSetting = process.env.OTEL_ENABLED;
+		if (
+			otelSetting === "true" ||
+			(otelSetting !== "false" && process.env.OTEL_EXPORTER_OTLP_ENDPOINT)
+		) {
+			const { initObservability } = await import(
+				"@repo/observability/init"
+			);
+			initObservability({
+				serviceName: process.env.OTEL_SERVICE_NAME || "fabric-web",
+				serviceVersion: process.env.npm_package_version || "1.0.0",
+				environment: process.env.NODE_ENV,
+				metricExportInterval: 30000,
+			});
+		}
+
+		// Forward warn/error/fatal logs to App Insights independently of OTel.
+		// Vercel runtime logs are otherwise the web app's only backend log sink.
 		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
 		const { addLogSink } = await import("@repo/logs");
 		// The "app-insights" id makes this idempotent across register()
