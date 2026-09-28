@@ -12,6 +12,7 @@ import {
 import { useMemo, useRef, useState } from "react";
 import type { ReactCropperElement } from "react-cropper";
 import Cropper from "react-cropper";
+import "cropperjs/dist/cropper.css";
 
 /**
  * Crop an uploaded image to a square before it is stored.

@@ -3,7 +3,6 @@ import type { Metadata } from "next";
 import { getLocale } from "next-intl/server";
 import type { PropsWithChildren } from "react";
 import "./globals.css";
-import "cropperjs/dist/cropper.css";
 // Eager-load the notification-service so its
 // `setAiUsageThresholdNotifier(fanOut.aiUsageThreshold)` self-registration
 // runs at app boot. Without this, the very first AI call after server start

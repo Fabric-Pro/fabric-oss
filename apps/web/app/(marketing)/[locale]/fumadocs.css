@@ -1,0 +1,6 @@
+@tailwind utilities source(none);
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+@reference "../../globals.css";
+@source "../../../node_modules/fumadocs-ui/dist/**/*.js";
