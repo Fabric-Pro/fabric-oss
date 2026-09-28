@@ -231,8 +231,16 @@ describe("audit.taxonomy handler", () => {
 		// request, and that scan's verdict when it is not clean; counts and
 		// rule ids only, Fizzy #2737) = 152 + 3 = 155,
 		// + 1 project.instructions.pull_request_branch_updated (a member
-		// proposal branch, Fizzy #2738) = 156.
-		expect(result.actions).toHaveLength(156);
+		// proposal branch, Fizzy #2738) = 156,
+		// + 9 Glossy Version Export (Fizzy #2589, KTD24): the build
+		// lifecycle (build_started / built / build_failed), Align-first
+		// detection (opportunities_detected), the two review actions
+		// (visual_regenerated / visual_reviewed), the recipient-brand pair
+		// (project.recipient_brand.fetched / .updated) and the one
+		// organization-scoped action, org.brand_kit.updated. The build
+		// lifecycle actions fire only when the build's guarded write actually
+		// applied, never for a superseded attempt = 165.
+		expect(result.actions).toHaveLength(165);
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);
@@ -427,6 +435,27 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.qa_webhook.rotated");
 		expect(result.actions).toContain("project.qa_webhook.expiry_updated");
 		expect(result.actions).toContain("project.qa_webhook.revoked");
+
+		// Glossy Version Export (Fizzy #2589, KTD24): build lifecycle, the two
+		// reviewable moments inside a build, the recipient-brand pair, and the
+		// one organization-scoped action.
+		expect(result.actions).toContain(
+			"project.glossy_edition.build_started",
+		);
+		expect(result.actions).toContain("project.glossy_edition.built");
+		expect(result.actions).toContain("project.glossy_edition.build_failed");
+		expect(result.actions).toContain(
+			"project.glossy_edition.opportunities_detected",
+		);
+		expect(result.actions).toContain(
+			"project.glossy_edition.visual_regenerated",
+		);
+		expect(result.actions).toContain(
+			"project.glossy_edition.visual_reviewed",
+		);
+		expect(result.actions).toContain("project.recipient_brand.fetched");
+		expect(result.actions).toContain("project.recipient_brand.updated");
+		expect(result.actions).toContain("org.brand_kit.updated");
 
 		expect(result.categories).toEqual([
 			"auth",

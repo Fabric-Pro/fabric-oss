@@ -628,6 +628,12 @@ export function DocumentGeneratorEditor({
 
 	// Effect 2: Final diff when nodeName becomes "end"
 	// Uses baselineRef instead of currentDocument state to avoid stale closure
+	//
+	// Plain `diffPartialText`, not DocumentEditor's slot-aware
+	// `diffKeepingVisualSlotsWhole`, on purpose: this editor has no
+	// persistence path and never enables visual-slot insertion (no
+	// VisualSlotControlsGate), so it holds no Glossy visual slot to keep whole
+	// (Fizzy #2589).
 	useEffect(() => {
 		if (nodeName === "end") {
 			const baseline = baselineRef.current;

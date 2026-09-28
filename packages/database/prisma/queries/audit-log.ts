@@ -498,6 +498,27 @@ export const AUDIT_ACTIONS = [
 	// customers what, when" is exactly the question an incident review asks.
 	"statusUpdate.published",
 	"statusUpdate.revised",
+	// glossyEdition (9) — Glossy Version Export (Fizzy #2589). A build attempt
+	// starting and its terminal outcomes (success/failure), which fire only
+	// when the build's guarded write actually applied, never for a superseded
+	// attempt (KTD4); Align-first detection proposing visual opportunities
+	// before a build; and the review actions on a published edition: a single
+	// visual regenerated, and a reviewer's decision on one. The recipient
+	// brand pair covers fetching a prospective client's brand from their own
+	// website (host and outcome code only, never page content) and confirming
+	// a pending upload or fetch as the project's current recipient brand.
+	// `org.brand_kit.updated` is the one organization-scoped action: the
+	// accent colors and guidance text an organization sets for its own Glossy
+	// exports, stored outside organization metadata (KTD1, KTD2).
+	"project.glossy_edition.build_started",
+	"project.glossy_edition.built",
+	"project.glossy_edition.build_failed",
+	"project.glossy_edition.opportunities_detected",
+	"project.glossy_edition.visual_regenerated",
+	"project.glossy_edition.visual_reviewed",
+	"project.recipient_brand.fetched",
+	"project.recipient_brand.updated",
+	"org.brand_kit.updated",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

@@ -53,6 +53,11 @@ export const AI_FEATURE_KEYS = [
 	 * dashboards have to learn.
 	 */
 	"publishing-suite",
+	/**
+	 * Glossy Version Export: fact/structural guard passes, visual copy and
+	 * spec generation, and per-visual regeneration during review (Fizzy #2589).
+	 */
+	"glossy-edition",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

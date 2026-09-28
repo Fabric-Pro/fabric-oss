@@ -1,7 +1,8 @@
 "use client";
 
 import { DIAGRAM_TEMPLATES } from "@saas/projects/lib/mermaid-templates";
-import { Extension } from "@tiptap/core";
+import { createVisualSlotId } from "@saas/projects/lib/tiptap-visual-slot-extension";
+import { type Editor, Extension } from "@tiptap/core";
 import { ReactRenderer } from "@tiptap/react";
 import { Suggestion } from "@tiptap/suggestion";
 import {
@@ -16,6 +17,7 @@ import {
 	type LucideIcon,
 	Minus,
 	Quote,
+	SquareDashed,
 	Table as TableIcon,
 	Upload,
 } from "lucide-react";
@@ -27,6 +29,11 @@ interface SlashCommandItem {
 	description: string;
 	icon: LucideIcon;
 	command: (props: any) => void;
+	/**
+	 * Offered only when this returns true for the editor the menu opened in.
+	 * Items without it are always offered.
+	 */
+	isAvailable?: (editor: Editor) => boolean;
 }
 
 /**
@@ -196,6 +203,29 @@ const slashCommands: SlashCommandItem[] = [
 			}
 		},
 	},
+	{
+		title: "Visual slot",
+		description: "Ask the Glossy edition for a visual here",
+		icon: SquareDashed,
+		// Same condition as the toolbar's insert control: the rollout gate is
+		// on and the document type is Glossy-eligible. `VisualSlotControlsGate`
+		// records it on the editor, so other editors never offer it.
+		isAvailable: (editor) =>
+			editor.storage.visualSlot?.insertEnabled === true,
+		// Inserted as best fit in place of the empty line, like the diagram
+		// commands below; clicking the chip sets the kind and hint.
+		command: ({ editor, range }: { editor: any; range: any }) => {
+			editor
+				.chain()
+				.focus()
+				.deleteRange(range)
+				.insertContent({
+					type: "visualSlot",
+					attrs: { slotId: createVisualSlotId() },
+				})
+				.run();
+		},
+	},
 	// Diagram commands generated from DIAGRAM_TEMPLATES
 	...DIAGRAM_TEMPLATES.map((tpl) => ({
 		title: tpl.title,
@@ -215,6 +245,18 @@ const slashCommands: SlashCommandItem[] = [
 		},
 	})),
 ];
+
+/** The commands the `/` menu offers in `editor` for `query`, in order. */
+export function filterSlashCommands(
+	query: string,
+	editor: Editor,
+): SlashCommandItem[] {
+	return slashCommands.filter(
+		(item) =>
+			(item.isAvailable?.(editor) ?? true) &&
+			item.title.toLowerCase().includes(query.toLowerCase()),
+	);
+}
 
 interface SlashCommandsListProps {
 	items: SlashCommandItem[];
@@ -333,11 +375,8 @@ export const SlashCommandsExtension = Extension.create({
 			Suggestion({
 				editor: this.editor,
 				...this.options.suggestion,
-				items: ({ query }: { query: string }) => {
-					return slashCommands.filter((item) =>
-						item.title.toLowerCase().includes(query.toLowerCase()),
-					);
-				},
+				items: ({ query, editor }: { query: string; editor: Editor }) =>
+					filterSlashCommands(query, editor),
 				render: () => {
 					let component: ReactRenderer<any>;
 					let popup: TippyInstance[];

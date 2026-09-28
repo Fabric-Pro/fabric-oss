@@ -76,6 +76,10 @@ import {
 	searchSimilarProjectContexts,
 } from "@repo/rag";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
+import {
+	hasVisualSlots,
+	preserveVisualSlots,
+} from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
@@ -554,7 +558,17 @@ export async function generateDocumentWithAgent(params: {
 	hasTeamsIntegration?: boolean;
 	/** Whether the project has Slack integration - enables search_slack_messages tool in agent */
 	hasSlackIntegration?: boolean;
-}): Promise<{ content: string; resolvedPromptVersionId?: string }> {
+}): Promise<{
+	content: string;
+	resolvedPromptVersionId?: string;
+	/**
+	 * The document version `content`'s visual slots are right for. Present only
+	 * when a slot is involved; the workflow hands it to `saveProjectDocument`,
+	 * which then writes only if the document is still at this version. See
+	 * {@link bindRegenerationBaseline}.
+	 */
+	baselineVersion?: number;
+}> {
 	const {
 		projectId,
 		documentId,
@@ -1800,9 +1814,28 @@ ${formattingRules}`;
 		// restoring that version would put the artifacts back. `saveProjectDocument`
 		// still normalizes defensively; the transform is a fixed point, so running
 		// it twice costs nothing.
+		//
+		// Visual slots are spliced back first, at the same seam and for the same
+		// reason (KTD17): a regeneration rewrites the whole body and the model may
+		// drop, move, or echo a slot tag, so only the slots of the body this run
+		// started from come back, under the same heading. With no slot on either
+		// side this is `documentContent` unchanged.
+		const content = normalizeQuoteArtifacts(
+			preserveVisualSlots(currentDocument, documentContent),
+		);
+		// Those slots are right only for the version they were lifted from, so
+		// when one is involved the save must not land on a newer version. With
+		// no slot on either side this reads nothing and returns undefined, and
+		// the result below has exactly the two keys it always had.
+		const baselineVersion = await bindRegenerationBaseline({
+			documentId,
+			currentDocument,
+			generatedContent: documentContent,
+		});
 		return {
-			content: normalizeQuoteArtifacts(documentContent),
+			content,
 			resolvedPromptVersionId,
+			...(baselineVersion !== undefined ? { baselineVersion } : {}),
 		};
 	} catch (error) {
 		const totalDuration = Date.now() - startTime;
@@ -2057,6 +2090,217 @@ export function repairMalformedMermaidFences(source: string): string {
 	return output.join("\n");
 }
 
+// =============================================================================
+// Stale regeneration guard (visual slots)
+// =============================================================================
+
+/**
+ * The failure type a regeneration is abandoned with when the document moved
+ * past the version its visual slots were lifted from.
+ *
+ * Non-retryable: a moved document stays moved, and retrying would only race
+ * the person who moved it. Not exported — what crosses the activity boundary
+ * is the serialized type STRING, and a non-function export here would be
+ * registered alongside the activities.
+ */
+const STALE_REGENERATION_FAILURE_TYPE = "DOCUMENT_GENERATION_STALE";
+
+/**
+ * Written for the person who opens the document: the workflow's existing
+ * failure path stores it as the row's `generationError`.
+ */
+const STALE_REGENERATION_MESSAGE =
+	"This document changed while it was being regenerated, so the regenerated text was discarded and the newer version was kept. Regenerate again to start from the current version.";
+
+function staleRegenerationFailure(details: {
+	documentId: string;
+	phase: "generation" | "save" | "version";
+	baselineVersion?: number;
+	actualVersion?: number;
+}): ApplicationFailure {
+	activityLogger.warn(
+		"Abandoning a stale regeneration: the document moved past the version its visual slots were lifted from",
+		details,
+	);
+	return ApplicationFailure.nonRetryable(
+		STALE_REGENERATION_MESSAGE,
+		STALE_REGENERATION_FAILURE_TYPE,
+	);
+}
+
+/**
+ * The version a regeneration's spliced body is right for, when a visual slot
+ * is involved (Fizzy #2589, KTD17).
+ *
+ * `preserveVisualSlots(currentDocument, generated)` puts back the slots of
+ * `currentDocument` — the body the API read when the run was dispatched,
+ * possibly an hour ago behind the dependency queue. Writing that body over a
+ * document a person has since changed restores the OLD slot layout: a slot
+ * they added disappears, one they deleted comes back, one they moved jumps
+ * back. So this binds the stored version to that body: the stored document
+ * must still hold exactly `currentDocument`, and its version then becomes the
+ * baseline `saveProjectDocument` writes against. A document that no longer
+ * holds it has already moved, and the run is abandoned here, before a write
+ * is ever attempted.
+ *
+ * Slot-conditional — the same rule the v1 API route applies: only when the
+ * body the slots were lifted from, or the generated body, holds a slot. With
+ * no slot on either side this returns undefined WITHOUT reading anything, so
+ * a slot-free regeneration's queries and writes are exactly today's. (The
+ * spliced result can only hold slots `currentDocument` held, since the splice
+ * strips every tag the model wrote, so these two tests cover it.)
+ *
+ * With no `currentDocument` at all nothing was lifted, so there is no body to
+ * bind: the read itself is the baseline, and the save still refuses a write
+ * that lands between it and the save.
+ */
+async function bindRegenerationBaseline(params: {
+	documentId: string | undefined;
+	currentDocument: string | undefined;
+	generatedContent: string;
+}): Promise<number | undefined> {
+	const { documentId, currentDocument, generatedContent } = params;
+	if (!documentId) {
+		return undefined;
+	}
+	if (!hasVisualSlots(currentDocument) && !hasVisualSlots(generatedContent)) {
+		return undefined;
+	}
+
+	const stored = await db.projectDocument.findUnique({
+		where: { id: documentId },
+		select: { content: true, version: true },
+	});
+	if (!stored) {
+		// The save reports a missing document the way it always has.
+		return undefined;
+	}
+	if (currentDocument !== undefined && stored.content !== currentDocument) {
+		throw staleRegenerationFailure({
+			documentId,
+			phase: "generation",
+			actualVersion: stored.version,
+		});
+	}
+	return stored.version;
+}
+
+/**
+ * Write a regeneration only if the document is still at `baselineVersion`.
+ *
+ * The same writes as the unguarded save — the pre-regeneration snapshot, then
+ * content, word count and status — but in ONE transaction, and the update is
+ * conditional on the version (`updateMany` with the version in its WHERE, the
+ * shape of `updateDocument`'s `expectedVersion` path). A person's save that
+ * lands between the read and the update makes it match no row, and the throw
+ * rolls the snapshot back with it: on a conflict nothing at all is written.
+ *
+ * The snapshot is therefore not best-effort here as it is on the unguarded
+ * path: a failed statement aborts a Postgres transaction, so it cannot be
+ * swallowed and carried past. A snapshot failure fails the attempt, which
+ * retries like any database error. The version is not bumped here — as on the
+ * unguarded path, `createDocumentVersion` does that, against the same
+ * baseline (see {@link createVersionAgainstRegenerationBaseline}) — so a
+ * retried attempt after a lost result finds the same version and rewrites the
+ * same body.
+ */
+async function saveAgainstRegenerationBaseline(params: {
+	documentId: string;
+	content: string;
+	userId: string | undefined;
+	baselineVersion: number;
+}): Promise<void> {
+	const { documentId, content, userId, baselineVersion } = params;
+	const wordCount = content
+		.split(/\s+/)
+		.filter((word) => word.length > 0).length;
+
+	await db.$transaction(async (tx) => {
+		const currentDoc = await tx.projectDocument.findUnique({
+			where: { id: documentId },
+			select: { status: true, content: true, version: true },
+		});
+		if (!currentDoc) {
+			throw new Error(`Document not found: ${documentId}`);
+		}
+		if (currentDoc.version !== baselineVersion) {
+			throw staleRegenerationFailure({
+				documentId,
+				phase: "save",
+				baselineVersion,
+				actualVersion: currentDoc.version,
+			});
+		}
+
+		if (currentDoc.content && currentDoc.content.trim().length > 0) {
+			const existingVersion = await tx.documentVersion.findFirst({
+				where: { documentId, version: currentDoc.version },
+			});
+			if (!existingVersion) {
+				await tx.documentVersion.create({
+					data: {
+						documentId,
+						version: currentDoc.version,
+						content: currentDoc.content,
+						changeDescription: "Pre-regeneration snapshot (auto)",
+						changedBy: userId,
+					},
+				});
+			}
+		}
+
+		// The unguarded save's status rule, unchanged.
+		const newStatus =
+			currentDoc.status === "DRAFT" || currentDoc.status === "GENERATING"
+				? "COMPLETE"
+				: currentDoc.status;
+		const { count } = await tx.projectDocument.updateMany({
+			where: { id: documentId, version: baselineVersion },
+			data: {
+				content,
+				wordCount,
+				status: newStatus,
+				updatedAt: new Date(),
+			},
+		});
+		if (count !== 1) {
+			const actual = await tx.projectDocument.findUnique({
+				where: { id: documentId },
+				select: { version: true },
+			});
+			throw staleRegenerationFailure({
+				documentId,
+				phase: "save",
+				baselineVersion,
+				actualVersion: actual?.version,
+			});
+		}
+
+		activityLogger.info("Project document saved against its baseline", {
+			documentId,
+			wordCount,
+			status: newStatus,
+			baselineVersion,
+		});
+	});
+}
+
+/**
+ * The body `saveProjectDocument` writes for a generated string.
+ *
+ * Normalize malformed mermaid code fences before persisting. AI models
+ * sometimes forget to close a mermaid fence before continuing with markdown
+ * headings, causing all subsequent content to be swallowed into one giant
+ * code block. We repair this at save-time so the stored document is always
+ * well-formed.
+ *
+ * The guarded version step recomputes it from the same string to tell
+ * whether the regenerated body is still the live one.
+ */
+function contentAsSaved(rawContent: string): string {
+	return normalizeQuoteArtifacts(repairMalformedMermaidFences(rawContent));
+}
+
 /**
  * Save generated document to database
  * Preserves existing status unless document is new (DRAFT)
@@ -2065,22 +2309,46 @@ export function repairMalformedMermaidFences(source: string): string {
  * of the previous content is created first. This ensures the user can
  * recover the old content from version history even if they close the page
  * before accepting/rejecting the regeneration.
+ *
+ * `options.baselineVersion` comes from `generateDocumentWithAgent`, only when
+ * a visual slot is involved. With it the write is conditional on the
+ * document still being at that version (see
+ * {@link saveAgainstRegenerationBaseline}); without it — every slot-free
+ * regeneration, and any run whose generation finished before the field
+ * existed — the save below is unchanged.
  */
 export async function saveProjectDocument(
 	documentId: string,
 	rawContent: string,
 	userId?: string,
+	options?: { baselineVersion?: number },
 ): Promise<void> {
 	activityLogger.info("Saving project document", { documentId });
 
-	// Normalize malformed mermaid code fences before persisting.
-	// AI models sometimes forget to close a mermaid fence before continuing
-	// with markdown headings, causing all subsequent content to be swallowed
-	// into one giant code block.  We repair this at save-time so the stored
-	// document is always well-formed.
-	const content = normalizeQuoteArtifacts(
-		repairMalformedMermaidFences(rawContent),
-	);
+	const content = contentAsSaved(rawContent);
+
+	if (options?.baselineVersion !== undefined) {
+		try {
+			await saveAgainstRegenerationBaseline({
+				documentId,
+				content,
+				userId,
+				baselineVersion: options.baselineVersion,
+			});
+		} catch (error) {
+			// A stale refusal was already logged as the warning it is.
+			const isStale =
+				error instanceof ApplicationFailure &&
+				error.type === STALE_REGENERATION_FAILURE_TYPE;
+			if (!isStale) {
+				activityLogger.error("Failed to save project document", error, {
+					documentId,
+				});
+			}
+			throw error;
+		}
+		return;
+	}
 
 	try {
 		// Get current document to preserve status and snapshot existing content
@@ -2270,18 +2538,183 @@ export async function runDocumentDecisionPrecheckActivity(params: {
 }
 
 /**
+ * Version a regeneration only while its body is still the live one at
+ * `baselineVersion`.
+ *
+ * The guarded save writes the regenerated body but leaves the version where
+ * it was; this step then numbers it. A person's save landing in between
+ * moves the document on, and the unguarded step would still create a row of
+ * the stale body under the next number and point the document's version at
+ * it, labelling their content with this run's version. So here, in ONE
+ * transaction: the live document must still be at the baseline AND hold
+ * exactly what the save wrote; the row is numbered from the history maximum,
+ * as the unguarded step does; and the version advances with the baseline and
+ * that body in the WHERE clause, so a write committing after the read makes
+ * the update match no row and the throw rolls the row back. On any mismatch
+ * nothing is written and the run is abandoned as stale, like the save.
+ *
+ * The row holds the body as saved, not the raw generation: it is the version
+ * of what the document now shows, and restoring it must not bring back the
+ * malformed fences the save repaired.
+ *
+ * A retry must not call its own committed attempt stale. The row and the
+ * advance commit together, so a row carrying exactly what this step writes
+ * (same body, author, prompt version and description), numbered from the
+ * baseline up to the live version, can only be that attempt's, and the retry
+ * succeeds without a second row. That holds even if a person has saved over
+ * it since: they did so after this step had succeeded.
+ */
+async function createVersionAgainstRegenerationBaseline(params: {
+	documentId: string;
+	content: string;
+	userId: string;
+	promptVersionId: string | undefined;
+	baselineVersion: number;
+}): Promise<void> {
+	const { documentId, content, userId, promptVersionId, baselineVersion } =
+		params;
+	const savedContent = contentAsSaved(content);
+
+	await db.$transaction(async (tx) => {
+		const liveDoc = await tx.projectDocument.findUnique({
+			where: { id: documentId },
+			select: { content: true, version: true },
+		});
+		if (!liveDoc) {
+			throw new Error(`Document not found: ${documentId}`);
+		}
+
+		const committedRow = await tx.documentVersion.findFirst({
+			where: {
+				documentId,
+				version: { gte: baselineVersion, lte: liveDoc.version },
+				content: savedContent,
+				changedBy: userId,
+				promptVersionId: promptVersionId ?? null,
+				changeDescription: {
+					in: ["Initial version", "Regenerated version"],
+				},
+			},
+			select: { version: true },
+		});
+		if (committedRow) {
+			activityLogger.info(
+				"Document version already created by an earlier attempt",
+				{ documentId, version: committedRow.version, baselineVersion },
+			);
+			return;
+		}
+
+		if (
+			liveDoc.version !== baselineVersion ||
+			liveDoc.content !== savedContent
+		) {
+			throw staleRegenerationFailure({
+				documentId,
+				phase: "version",
+				baselineVersion,
+				actualVersion: liveDoc.version,
+			});
+		}
+
+		const maxVersion = await tx.documentVersion.findFirst({
+			where: { documentId },
+			orderBy: { version: "desc" },
+			select: { version: true },
+		});
+		const nextVersion = maxVersion ? maxVersion.version + 1 : 1;
+
+		await tx.documentVersion.create({
+			data: {
+				documentId,
+				content: savedContent,
+				version: nextVersion,
+				changeDescription:
+					nextVersion <= 1
+						? "Initial version"
+						: "Regenerated version",
+				changedBy: userId,
+				promptVersionId,
+			},
+		});
+
+		const { count } = await tx.projectDocument.updateMany({
+			where: {
+				id: documentId,
+				version: baselineVersion,
+				content: savedContent,
+			},
+			data: { version: nextVersion },
+		});
+		if (count !== 1) {
+			const actual = await tx.projectDocument.findUnique({
+				where: { id: documentId },
+				select: { version: true },
+			});
+			throw staleRegenerationFailure({
+				documentId,
+				phase: "version",
+				baselineVersion,
+				actualVersion: actual?.version,
+			});
+		}
+
+		activityLogger.info("Document version created against its baseline", {
+			documentId,
+			version: nextVersion,
+			baselineVersion,
+		});
+	});
+}
+
+/**
  * Create document version record for the generated content.
  * Determines the correct version number based on existing versions.
  * For initial generation, creates version 1.
  * For regeneration, creates the next version after the current one.
+ *
+ * `options.baselineVersion` is the same baseline the save was given, passed
+ * only when a visual slot is involved. With it the row and the version bump
+ * happen only while the regenerated body is still live at that version (see
+ * {@link createVersionAgainstRegenerationBaseline}); without it — every
+ * slot-free run — the step below is unchanged.
  */
 export async function createDocumentVersion(
 	documentId: string,
 	content: string,
 	userId: string,
 	promptVersionId?: string,
+	options?: { baselineVersion?: number },
 ): Promise<void> {
 	activityLogger.info("Creating document version", { documentId });
+
+	if (options?.baselineVersion !== undefined) {
+		try {
+			await createVersionAgainstRegenerationBaseline({
+				documentId,
+				content,
+				userId,
+				promptVersionId,
+				baselineVersion: options.baselineVersion,
+			});
+		} catch (error) {
+			// A stale refusal was already logged as the warning it is.
+			const isStale =
+				error instanceof ApplicationFailure &&
+				error.type === STALE_REGENERATION_FAILURE_TYPE;
+			if (!isStale) {
+				activityLogger.error(
+					"Failed to create document version",
+					error,
+					{
+						documentId,
+					},
+				);
+			}
+			throw error;
+		}
+		return;
+	}
 
 	try {
 		// Use the highest existing version record to determine the next version number.

@@ -50,7 +50,11 @@ interface DocumentVersionHistoryProps {
 	documentId: string;
 	currentVersion: number;
 	currentContent: string;
-	onVersionRestored?: (restoredContent: string) => void;
+	/** `restoredVersion` is the version the restore was saved as. */
+	onVersionRestored?: (
+		restoredContent: string,
+		restoredVersion?: number,
+	) => void;
 }
 
 interface DocumentVersion {
@@ -151,7 +155,7 @@ export function DocumentVersionHistory({
 					organizationId,
 				},
 				{
-					onSuccess: () => {
+					onSuccess: (data) => {
 						toast.success(
 							`Restored to version ${restoreTarget.version}`,
 						);
@@ -174,7 +178,10 @@ export function DocumentVersionHistory({
 						const restoredContent = restoreTarget.content;
 						setRestoreTarget(null);
 						if (restoredContent) {
-							onVersionRestored?.(restoredContent);
+							onVersionRestored?.(
+								restoredContent,
+								data?.document?.version,
+							);
 						}
 					},
 				},
@@ -211,7 +218,7 @@ export function DocumentVersionHistory({
 					organizationId,
 				},
 				{
-					onSuccess: () => {
+					onSuccess: (data) => {
 						toast.success(
 							`Restored to version ${diffVersion.version}`,
 						);
@@ -231,7 +238,10 @@ export function DocumentVersionHistory({
 								}),
 						});
 						setShowDiffViewer(false);
-						onVersionRestored?.(diffVersion.content);
+						onVersionRestored?.(
+							diffVersion.content,
+							data?.document?.version,
+						);
 					},
 				},
 			);

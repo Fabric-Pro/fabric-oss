@@ -2,6 +2,7 @@
 
 import { validateImageFile } from "@saas/projects/lib/image-upload-utils";
 import { DIAGRAM_TEMPLATES } from "@saas/projects/lib/mermaid-templates";
+import { VisualSlotToolbarButton } from "@saas/projects/lib/tiptap-visual-slot-extension";
 import type { Editor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import {
@@ -81,9 +82,21 @@ const HIGHLIGHT_COLOR_SWATCHES = [
 interface EditorToolbarProps {
 	editor: Editor | null;
 	onImageUpload?: (files: FileList) => Promise<void>;
+	/**
+	 * Offer the Glossy visual-slot insert control. Off by default: this
+	 * toolbar is shared by several editors, and only the document editor
+	 * turns it on — for a Glossy-eligible document with the rollout gate on.
+	 * The node itself is registered everywhere, so existing slots load and
+	 * save whether or not this is set.
+	 */
+	visualSlots?: boolean;
 }
 
-export function EditorToolbar({ editor, onImageUpload }: EditorToolbarProps) {
+export function EditorToolbar({
+	editor,
+	onImageUpload,
+	visualSlots = false,
+}: EditorToolbarProps) {
 	const t = useTranslations("tooltips.documentEditor");
 	const tEditor = useTranslations("tooltips.editor");
 	const [linkUrl, setLinkUrl] = useState("");
@@ -645,6 +658,9 @@ export function EditorToolbar({ editor, onImageUpload }: EditorToolbarProps) {
 						})}
 					</DropdownMenuContent>
 				</DropdownMenu>
+
+				{/* Glossy visual slot — opt-in, see `visualSlots` */}
+				{visualSlots && <VisualSlotToolbarButton editor={editor} />}
 
 				<Separator
 					orientation="vertical"

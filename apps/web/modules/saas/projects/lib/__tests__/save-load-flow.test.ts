@@ -10,13 +10,28 @@
  * This ensures tables aren't lost during the editing cycle.
  */
 
-import { describe, expect, it } from "vitest";
+import {
+	parseVisualSlots,
+	serializeVisualSlot,
+} from "@repo/utils/glossy/visual-slots";
+import { Editor } from "@tiptap/core";
+import { StarterKit } from "@tiptap/starter-kit";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fromMarkdown } from "../diff-utils";
 import { createTurndownService } from "../editor-markdown-save";
 import {
 	excalidrawAwareBlankReplacement,
 	stripDiffTags,
 } from "../editor-save-utils";
+
+// The visual slot's React node view needs a mounted `EditorContent`; the
+// schema-level round trip below does not.
+vi.mock("@tiptap/react", () => ({
+	NodeViewWrapper: () => null,
+	ReactNodeViewRenderer: () => () => null,
+}));
+
+const { VisualSlot } = await import("../tiptap-visual-slot-extension");
 
 // Mirror the production save path (HTML → markdown) using the shared serializer
 // so this test exercises the real `createTurndownService` instead of a private
@@ -355,7 +370,121 @@ describe("Save/Load Flow - Excalidraw embed preservation", () => {
 	});
 });
 
+describe("Save/Load Flow - Glossy visual slot preservation (KTD18)", () => {
+	// A visual slot is atomic and text-less like the Excalidraw embed, so the
+	// same blank-node hook keeps it. It is written back with
+	// `serializeVisualSlot`, the form every server write path produces, so an
+	// untouched slot comes back byte for byte.
+	const SLOT = serializeVisualSlot({
+		id: "slot-a",
+		kind: "timeline",
+		hint: 'Cost & "benefit" by quarter',
+	});
+	const BEST_FIT = serializeVisualSlot({ id: "slot-b" });
+	const ORPHAN = serializeVisualSlot({
+		id: "slot-c",
+		kind: "stat",
+		orphanedFrom: "Implementation Phases",
+	});
+	const MARKDOWN = `## Implementation Phases\n\nPhase one, then two.\n\n${SLOT}\n\n## Risks\n\n${BEST_FIT}\n\nFew, and known.\n\n${ORPHAN}`;
+
+	let editor: Editor | null = null;
+	afterEach(() => {
+		editor?.destroy();
+		editor = null;
+	});
+
+	/** Load into a real editor carrying the slot node, then save. */
+	function loadAndSaveThroughEditor(markdown: string): string {
+		editor?.destroy();
+		editor = new Editor({
+			extensions: [StarterKit, VisualSlot],
+			content: fromMarkdown(markdown),
+		});
+		return simulateEditorSave(editor.getHTML());
+	}
+
+	it("keeps every slot, kind and hint unchanged, through a save/load round trip", () => {
+		const saved = loadAndSaveThroughEditor(MARKDOWN);
+
+		expect(saved).toBe(MARKDOWN);
+		expect(
+			parseVisualSlots(saved).map(({ line: _, ...slot }) => slot),
+		).toEqual([
+			{
+				id: "slot-a",
+				kind: "timeline",
+				hint: 'Cost & "benefit" by quarter',
+				orphanedFrom: null,
+			},
+			{ id: "slot-b", kind: null, hint: null, orphanedFrom: null },
+			{
+				id: "slot-c",
+				kind: "stat",
+				hint: null,
+				orphanedFrom: "Implementation Phases",
+			},
+		]);
+	});
+
+	it("is stable across repeated cycles", () => {
+		const once = loadAndSaveThroughEditor(MARKDOWN);
+		const twice = loadAndSaveThroughEditor(once);
+
+		expect(twice).toBe(once);
+	});
+
+	it("keeps a slot through markdown→HTML→markdown with no editor (paragraph-wrapped shape)", () => {
+		const html = fromMarkdown(MARKDOWN);
+		expect(html).toContain("<visual-slot");
+
+		const saved = simulateEditorSave(html);
+
+		for (const tag of [SLOT, BEST_FIT, ORPHAN]) {
+			expect(saved.split("\n")).toContain(tag);
+		}
+	});
+
+	it("writes a hint's line break as a character reference, keeping the tag on one line", () => {
+		const html = `<p>Body</p><visual-slot data-slot-id="slot-x" data-hint="Line one
+line two"></visual-slot>`;
+
+		const saved = simulateEditorSave(html);
+
+		expect(saved).toContain(
+			'<visual-slot data-slot-id="slot-x" data-hint="Line one&#10;line two"></visual-slot>',
+		);
+	});
+});
+
 describe("excalidrawAwareBlankReplacement (unit)", () => {
+	it("writes a visual-slot node in serializeVisualSlot's form", () => {
+		const attributes: Record<string, string> = {
+			"data-hint": "Show the phases",
+			"data-kind": "timeline",
+			"data-slot-id": "slot-a",
+		};
+		const node = {
+			nodeName: "VISUAL-SLOT",
+			getAttribute: (name: string) => attributes[name] ?? null,
+			isBlock: false,
+		} as unknown as Node;
+
+		expect(excalidrawAwareBlankReplacement("", node)).toBe(
+			`\n\n${serializeVisualSlot({ id: "slot-a", kind: "timeline", hint: "Show the phases" })}\n\n`,
+		);
+	});
+
+	it("digs embeds and slots out of one blank wrapper in document order", () => {
+		const wrapper = window.document.createElement("p");
+		wrapper.innerHTML =
+			'<visual-slot data-slot-id="s1"></visual-slot><excalidraw-embed data-checkpoint-id="k"></excalidraw-embed><visual-slot data-slot-id="s2"></visual-slot>';
+
+		expect(excalidrawAwareBlankReplacement("", wrapper)).toBe(
+			'\n\n<visual-slot data-slot-id="s1"></visual-slot>\n\n<excalidraw-embed data-checkpoint-id="k"></excalidraw-embed>\n\n<visual-slot data-slot-id="s2"></visual-slot>\n\n',
+		);
+	});
+
 	it("returns the outerHTML for an excalidraw-embed node", () => {
 		const node = {
 			nodeName: "EXCALIDRAW-EMBED",

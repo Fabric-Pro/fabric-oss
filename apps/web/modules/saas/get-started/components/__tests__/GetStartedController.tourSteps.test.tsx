@@ -294,9 +294,16 @@ const isProjectScoped = (step: (typeof ONBOARDING_STEPS)[number]) =>
 // per-organization flag is on, and the flag mock below reports every flag off —
 // production's default. So "full" here is the registry minus those.
 const FULL_TOTAL = ONBOARDING_STEPS.filter((s) => !s.runtimeGate).length;
+/**
+ * Counted over the ungated steps only: a gated project step (Fizzy #2589's
+ * Glossy edition) is already missing from FULL_TOTAL, so the collapse has
+ * nothing of it left to drop.
+ */
+const UNGATED_PROJECT_STEPS = ONBOARDING_STEPS.filter(
+	(s) => !s.runtimeGate && isProjectScoped(s),
+).length;
 /** The collapse keeps the first project-scoped step and drops the rest. */
-const COLLAPSED_TOTAL =
-	FULL_TOTAL - (ONBOARDING_STEPS.filter(isProjectScoped).length - 1);
+const COLLAPSED_TOTAL = FULL_TOTAL - (UNGATED_PROJECT_STEPS - 1);
 
 describe("GetStartedController — the viewer has a project", () => {
 	it("walks the full tour, unchanged", async () => {

@@ -3,6 +3,7 @@
 import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
+import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
@@ -11,6 +12,7 @@ import {
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { getAvatarInitials } from "@shared/lib/avatar-initials";
@@ -32,11 +34,14 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { ArrowLeftIcon, HomeIcon } from "lucide-react";
+import { ArrowLeftIcon, HomeIcon, SparklesIcon } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import type { ErrorInfo, ReactNode } from "react";
 import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import { useProjectPresence } from "../hooks";
+import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
 import { DocumentEditor, getDocumentTypeLabel } from "./DocumentEditor";
 import { DocumentEditorAiUnavailable } from "./DocumentEditorAiUnavailable";
@@ -81,6 +86,40 @@ class CopilotErrorBoundary extends Component<
 		}
 		return this.props.children;
 	}
+}
+
+/**
+ * The editor's way to the document's Glossy page (Fizzy #2589, R1). A gated
+ * masthead control like `DocumentAutoRefreshToggle`: nothing renders unless
+ * the organization has the `GLOSSY_EDITION` rollout gate on (R40) and the
+ * document type is Glossy-eligible (R2). Viewers get it too — the page shows
+ * them the preview and downloads.
+ */
+function GlossyVersionLink({
+	href,
+	documentType,
+}: {
+	/** Absent outside an organization route: the Glossy page has no other. */
+	href: string | null;
+	documentType: string | null | undefined;
+}) {
+	const enabled = useFeatureFlag("GLOSSY_EDITION");
+	if (!enabled || !href || !isGlossyEligible(documentType ?? "")) {
+		return null;
+	}
+	return <GlossyVersionLinkButton href={href} />;
+}
+
+function GlossyVersionLinkButton({ href }: { href: string }) {
+	const t = useTranslations("projects.glossyEntry");
+	return (
+		<Button variant="ghost" size="sm" asChild className="shrink-0">
+			<Link href={href}>
+				<SparklesIcon className="size-4" aria-hidden="true" />
+				{t("editorLink")}
+			</Link>
+		</Button>
+	);
 }
 
 type Props = {
@@ -326,6 +365,15 @@ export function DocumentEditorPage({
 		isDeprecatedDocumentType(document.type);
 	const isFeaturesSnapshot =
 		isProjectDocument && document.type === "USER_STORY";
+	// Only a project document has a Glossy page, and only on an org route.
+	const glossyHref =
+		isProjectDocument && organizationSlug
+			? buildGlossyEditionRoute(
+					`/app/${organizationSlug}`,
+					projectId,
+					documentId,
+				)
+			: null;
 
 	return (
 		// Page chrome shifts its right edge when the CopilotKit chat
@@ -577,6 +625,10 @@ export function DocumentEditorPage({
 				<DocumentAutoRefreshToggle
 					documentId={documentId}
 					projectId={projectId}
+				/>
+				<GlossyVersionLink
+					href={glossyHref}
+					documentType={document.type}
 				/>
 				<div className="flex-1" />
 				<div

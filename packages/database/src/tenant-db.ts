@@ -260,6 +260,17 @@ const ORG_ONLY_TABLES = new Set([
 	// and the push journal carry neither userId nor projectId.
 	"ProjectInstructionProposalRefReservation",
 	"ProjectInstructionProposalBranchOperation",
+	// Glossy editions (Fizzy #2589). These tables carry organizationId and
+	// projectId and NO userId, so they cannot be USER_OWNED_TABLES: that set's
+	// personal-context filter names a userId column Prisma would reject. Project
+	// guests reach the five project tables through PROJECT_SCOPED_TABLES below;
+	// they read the Brand kit only through getBrandKitForProject.
+	"GlossyEdition",
+	"GlossyBuild",
+	"GlossyVisualDecision",
+	"GlossySegmentCache",
+	"ProjectRecipientBrand",
+	"OrganizationBrandKit",
 ]);
 
 /**
@@ -354,6 +365,11 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	KanbanQueue: "projectId",
 	CodingRun: "projectId",
 	AiOutcomeEvent: "projectId",
+	GlossyEdition: "projectId",
+	GlossyBuild: "projectId",
+	GlossyVisualDecision: "projectId",
+	GlossySegmentCache: "projectId",
+	ProjectRecipientBrand: "projectId",
 };
 
 /**

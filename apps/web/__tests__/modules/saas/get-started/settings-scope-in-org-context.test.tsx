@@ -86,7 +86,11 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false, todoList: false }}
+				gates={{
+					publishingSuite: false,
+					todoList: false,
+					glossyEdition: false,
+				}}
 			/>,
 		);
 
@@ -103,7 +107,11 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false, todoList: false }}
+				gates={{
+					publishingSuite: false,
+					todoList: false,
+					glossyEdition: false,
+				}}
 			/>,
 		);
 
@@ -120,7 +128,11 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={onClose}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false, todoList: false }}
+				gates={{
+					publishingSuite: false,
+					todoList: false,
+					glossyEdition: false,
+				}}
 			/>,
 		);
 
@@ -155,7 +167,11 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: false, todoList: false }}
+				gates={{
+					publishingSuite: false,
+					todoList: false,
+					glossyEdition: false,
+				}}
 			/>,
 		);
 		await expandProjectGroup();
@@ -167,7 +183,11 @@ describe("get-started drawer — account settings in organization context", () =
 				onClose={vi.fn()}
 				onStartTour={vi.fn()}
 				onShowComponent={vi.fn()}
-				gates={{ publishingSuite: true, todoList: false }}
+				gates={{
+					publishingSuite: true,
+					todoList: false,
+					glossyEdition: false,
+				}}
 			/>,
 		);
 		await expandProjectGroup();

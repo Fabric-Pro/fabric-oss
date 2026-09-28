@@ -84,6 +84,10 @@
 		"./instruction-pull-requests": {
 			"types": "./src/instruction-pull-requests/index.ts",
 			"default": "./src/instruction-pull-requests/index.ts"
+		},
+		"./website-brand": {
+			"types": "./src/website-brand/index.ts",
+			"default": "./src/website-brand/index.ts"
 		}
 	},
 	"scripts": {

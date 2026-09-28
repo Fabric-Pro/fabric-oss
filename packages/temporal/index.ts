@@ -26,6 +26,40 @@ export {
 	ScheduleAlreadyRunning,
 	ScheduleNotFoundError,
 } from "@temporalio/client";
+// Glossy edition build (Fizzy #2589): what the build procedure starts
+// `glossyEditionBuildWorkflow` with on GLOSSY_EDITION_TASK_QUEUE, and the
+// progress steps and report reason codes the Glossy page reads back. Types
+// only, so the API never loads activity code through them.
+export type {
+	GlossyBuildErrorCode,
+	GlossyBuildLengthMode,
+	GlossyBuildMode,
+	GlossyBuildOptions,
+	GlossyBuildStep,
+	GlossyEditionBuildWorkflowInput,
+	GlossyEditionBuildWorkflowOutput,
+	GlossyKeptOriginalReason,
+	GlossyOpportunityRef,
+	GlossyVisualDropReason,
+} from "./src/activities/glossy-edition/types";
+// The one key plan of a source body (cleanup, section keys, whole-document
+// detection key), shared by the build's activities and the in-request
+// Align-first detect and build procedures so their keys cannot drift; and
+// the one extraction key of a visual, shared by the build's extract activity
+// and single-visual regenerate, so a regenerated visual is the one a rebuild
+// of its unchanged section reuses. The detection row's shape and reader are
+// shared the same way: the in-request detect writes the row finalize reads.
+export {
+	type GlossyDetectableSection,
+	type GlossyDetectionCacheOutput,
+	type GlossyExtractionTarget,
+	type GlossyKeyPlan,
+	type GlossyRegenerationPlan,
+	glossyVisualDropReason,
+	parseDetectionOutput,
+	planGlossyKeys,
+	planGlossyRegeneration,
+} from "./src/activities/glossy-edition/shared";
 export { executeMcpTool } from "./src/activities/orchestrator/execution/execute-mcp-tool";
 export type {
 	BulkStorySyncInput,
@@ -141,6 +175,37 @@ export {
 	EmbeddingUnavailableError,
 	runDuplicateScanCore,
 } from "./src/lib/duplicate-scan-core";
+// Glossy edition model calls (Fizzy #2589) — shared by the build activities
+// and the in-request Align-first detection and single-visual regenerate
+// procedures (KTD10), so both sides run the same prompts and guards.
+export {
+	type DetectGlossyOpportunitiesInput,
+	detectGlossyOpportunities,
+	type GlossyDetectionResult,
+	type GlossyDetectionSection,
+	type GlossyOpportunity,
+} from "./src/lib/glossy/detect-opportunities";
+export {
+	type ExtractGlossyVisualInput,
+	extractGlossyVisual,
+	type GlossyExtractableKind,
+	type GlossyExtractedVisualSpec,
+	type GlossyExtractionDropReason,
+	type GlossyExtractionResult,
+} from "./src/lib/glossy/extract-visual";
+export {
+	GLOSSY_AI_PROVIDER_NOT_CONFIGURED_MESSAGE,
+	GLOSSY_FEATURE_KEY,
+	type GlossyAiProviderNotConfigured,
+	type GlossyModelContext,
+	resolveGlossyModel,
+} from "./src/lib/glossy/model";
+export {
+	type GlossyRewriteKeptOriginalReason,
+	type GlossyRewriteResult,
+	type RewriteGlossySectionInput,
+	rewriteGlossySection,
+} from "./src/lib/glossy/rewrite-section";
 export { decodeHeartbeatDetails } from "./src/lib/heartbeat-details";
 // Lifecycle event dispatcher (shared across api + temporal callers)
 export {
@@ -244,7 +309,10 @@ export {
 	WORKFLOW_BUILDER_SCHEDULE_PREFIX,
 } from "./src/schedules/workflow-builder-schedule";
 // Task queue names — shared by the worker and every starter so they cannot drift
-export { ORCHESTRATOR_TASK_QUEUE } from "./src/task-queues";
+export {
+	GLOSSY_EDITION_TASK_QUEUE,
+	ORCHESTRATOR_TASK_QUEUE,
+} from "./src/task-queues";
 // Type exports
 export type {
 	ActivityHeartbeatDetails,

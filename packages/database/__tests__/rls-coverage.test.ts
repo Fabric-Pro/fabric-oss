@@ -428,6 +428,73 @@ describe("CLI connection nudge registration (Fizzy #2457)", () => {
 	});
 });
 
+/**
+ * Glossy editions registration (Fizzy #2589).
+ *
+ * Six new organization-scoped tables. The generic M-A1 check above would be
+ * satisfied by an EXEMPT entry, and the parity check below reads user_owned
+ * policies only, so neither notices a Glossy table missing from tenant-db.ts or
+ * registered under the wrong policy. These assertions pin both halves.
+ */
+describe("Glossy editions registration (Fizzy #2589)", () => {
+	const orgOnlyBlock =
+		tenantDbSrc.match(
+			/const ORG_ONLY_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+	const projectScopedBlock =
+		tenantDbSrc.match(
+			/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+		)?.[1] ?? "";
+
+	const projectTables = [
+		["GlossyEdition", "glossy_edition"],
+		["GlossyBuild", "glossy_build"],
+		["GlossyVisualDecision", "glossy_visual_decision"],
+		["GlossySegmentCache", "glossy_segment_cache"],
+		["ProjectRecipientBrand", "project_recipient_brand"],
+	] as const;
+
+	const allTables: readonly (readonly [string, string])[] = [
+		...projectTables,
+		["OrganizationBrandKit", "organization_brand_kit"],
+	];
+
+	it.each(allTables)(
+		"%s (%s) is a real table registered for RLS, not exempted",
+		(model, physical) => {
+			expect(physicals.has(physical)).toBe(true);
+			expect(allowlist.has(physical)).toBe(true);
+			expect(EXEMPT.has(physical)).toBe(false);
+			expect(orgOnlyBlock).toMatch(new RegExp(`"${model}",`));
+			const parsed = models.find((m) => m.name === model);
+			expect(parsed?.hasOrg).toBe(true);
+			// Organization is the only tenant: no author column to forge.
+			expect(parsed?.hasUser).toBe(false);
+		},
+	);
+
+	it.each(projectTables)(
+		"%s is project-scoped under the tenant-consistent policy",
+		(model, physical) => {
+			expect(projectScopedBlock).toMatch(
+				new RegExp(`${model}:\\s*"projectId",`),
+			);
+			expect(applySrc).toMatch(
+				new RegExp(
+					`name:\\s*"${physical}"\\s*,\\s*policy:\\s*"project_member_or_tenant_consistent"`,
+				),
+			);
+		},
+	);
+
+	it("the Brand kit is writable by its organization only, readable by project guests", () => {
+		expect(applySrc).toMatch(
+			/name:\s*"organization_brand_kit"\s*,\s*policy:\s*"org_only_with_project_guest_read"/,
+		);
+		expect(projectScopedBlock).not.toMatch(/OrganizationBrandKit:/);
+	});
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

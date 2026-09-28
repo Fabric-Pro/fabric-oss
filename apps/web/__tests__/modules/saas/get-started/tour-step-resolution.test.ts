@@ -107,7 +107,7 @@ describe("resolveTourSteps — viewer has a project", () => {
 		const steps = resolveTourSteps({
 			hasProject: true,
 			isTabVisible: allVisible,
-			gates: { todoList: true },
+			gates: { todoList: true, glossyEdition: true },
 		});
 
 		expect(ids(steps)).toEqual(ids(ONBOARDING_STEPS));
@@ -129,7 +129,7 @@ describe("resolveTourSteps — viewer has a project", () => {
 			resolveTourSteps({
 				hasProject: true,
 				isTabVisible: allVisible,
-				gates: { todoList: true },
+				gates: { todoList: true, glossyEdition: true },
 			}),
 		);
 
@@ -261,7 +261,7 @@ describe("resolveTourSteps — project existence not yet known", () => {
 			// Gates on, so the comparison is against the whole registry: this
 			// test is about the project probe, and a runtime-gated step being
 			// withheld would otherwise read as the collapse it is denying.
-			gates: { todoList: true },
+			gates: { todoList: true, glossyEdition: true },
 			isTabVisible: allVisible,
 		});
 
@@ -323,15 +323,17 @@ describe("resolveTourPosition — the viewer keeps their place", () => {
 	it("skips nothing when the same update also removes an earlier step", () => {
 		// The case a stale index gets wrong: on `documents`, with `overview`
 		// AND `documents` both gone, index 4 would select proposals and skip
-		// roadmap entirely. Registry order gives the real successor.
-		const steps = without("overview", "documents");
+		// roadmap entirely. Registry order gives the real successor. `glossy`
+		// goes too: it lives on the documents tab, so hiding that tab drops it
+		// with `documents`, the way roadmap and proposals leave together.
+		const steps = without("overview", "documents", "glossy");
 		expect(steps[resolveTourPosition(steps, "documents")].id).toBe(
 			"roadmap",
 		);
 	});
 
 	it("skips nothing when several consecutive steps go at once", () => {
-		const steps = without("overview", "documents", "roadmap");
+		const steps = without("overview", "documents", "glossy", "roadmap");
 		expect(steps[resolveTourPosition(steps, "overview")].id).toBe(
 			"proposals",
 		);

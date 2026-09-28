@@ -37,6 +37,13 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+// The recipient brand card on this page is behind the Glossy gate and has
+// its own suite (`ProjectRecipientBrandCard.test.tsx`); off, it renders
+// nothing and needs no API mock here.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 import { ProjectGeneralSettings } from "@saas/projects/components/ProjectGeneralSettings";
 
 /** A project with a retention override worth losing. */

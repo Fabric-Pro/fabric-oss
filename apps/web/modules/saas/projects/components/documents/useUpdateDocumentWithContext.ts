@@ -39,7 +39,8 @@ interface UseUpdateDocumentWithContextOptions {
 		newText: string,
 		isComplete?: boolean,
 	) => string;
-	onSaved: () => void;
+	/** Called after a confirm is saved, with the version the server answered. */
+	onSaved: (documentVersion: number) => void;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -209,7 +210,7 @@ export function useUpdateDocumentWithContext({
 					`Document updated with latest context — saved as v${response.documentVersion}`,
 				);
 			}
-			onSaved();
+			onSaved(response.documentVersion);
 
 			// Replace the diff view with the clean final content.
 			try {

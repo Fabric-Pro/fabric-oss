@@ -14,10 +14,11 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listVersions = vi.fn();
+const restoreVersion = vi.fn(async (_input: unknown): Promise<unknown> => ({}));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({ organizationId: "org-1" }),
@@ -38,7 +39,8 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					},
 					restore: {
 						mutationOptions: (opts: unknown) => ({
-							mutationFn: async () => ({}),
+							mutationFn: (input: unknown) =>
+								restoreVersion(input),
 							...(opts as Record<string, unknown>),
 						}),
 					},
@@ -71,7 +73,9 @@ const version = (overrides: Record<string, unknown> = {}) => ({
 	...overrides,
 });
 
-const renderPanel = () =>
+const renderPanel = (
+	onVersionRestored?: (content: string, version?: number) => void,
+) =>
 	render(
 		<QueryClientProvider
 			client={
@@ -87,6 +91,7 @@ const renderPanel = () =>
 				documentId="doc-1"
 				currentVersion={3}
 				currentContent="current"
+				onVersionRestored={onVersionRestored}
 			/>
 		</QueryClientProvider>,
 	);
@@ -222,5 +227,38 @@ describe("DocumentVersionHistory — author", () => {
 
 		expect(await screen.findByText("Unknown user")).toBeInTheDocument();
 		expect(renderedText()).not.toContain("clxdeleted00000000");
+	});
+});
+
+describe("DocumentVersionHistory — restore", () => {
+	// The editor guards an accepted assistant proposal with the version its
+	// body came from (Fizzy #2589, KTD17); after a restore that is the version
+	// the restore was saved as, not the one restored from.
+	it("hands the restored content and the version the restore was saved as to onVersionRestored", async () => {
+		listVersions.mockResolvedValue({
+			versions: [version({ version: 2, content: "earlier words" })],
+		});
+		restoreVersion.mockResolvedValue({
+			document: { id: "doc-1", version: 4, content: "earlier words" },
+		});
+		const onVersionRestored = vi.fn();
+
+		renderPanel(onVersionRestored);
+
+		await screen.findByText("v2");
+		fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+		const dialog = await screen.findByRole("dialog", {
+			name: "Restore to Version 2?",
+		});
+		fireEvent.click(
+			within(dialog).getByRole("button", { name: "Restore" }),
+		);
+
+		await vi.waitFor(() => {
+			expect(onVersionRestored).toHaveBeenCalledWith("earlier words", 4);
+		});
+		expect(restoreVersion).toHaveBeenCalledWith(
+			expect.objectContaining({ documentId: "doc-1", versionNumber: 2 }),
+		);
 	});
 });

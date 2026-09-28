@@ -333,6 +333,56 @@
 			"types": "./lib/agent-endpoint.ts",
 			"import": "./lib/agent-endpoint.ts",
 			"default": "./lib/agent-endpoint.ts"
+		},
+		"./glossy/eligibility": {
+			"types": "./lib/glossy/eligibility.ts",
+			"import": "./lib/glossy/eligibility.ts",
+			"default": "./lib/glossy/eligibility.ts"
+		},
+		"./glossy/outline": {
+			"types": "./lib/glossy/outline.ts",
+			"import": "./lib/glossy/outline.ts",
+			"default": "./lib/glossy/outline.ts"
+		},
+		"./glossy/cleanup": {
+			"types": "./lib/glossy/cleanup.ts",
+			"import": "./lib/glossy/cleanup.ts",
+			"default": "./lib/glossy/cleanup.ts"
+		},
+		"./glossy/keys": {
+			"types": "./lib/glossy/keys.ts",
+			"import": "./lib/glossy/keys.ts",
+			"default": "./lib/glossy/keys.ts"
+		},
+		"./glossy/fact-guard": {
+			"types": "./lib/glossy/fact-guard.ts",
+			"import": "./lib/glossy/fact-guard.ts",
+			"default": "./lib/glossy/fact-guard.ts"
+		},
+		"./glossy/visual-spec": {
+			"types": "./lib/glossy/visual-spec.ts",
+			"import": "./lib/glossy/visual-spec.ts",
+			"default": "./lib/glossy/visual-spec.ts"
+		},
+		"./glossy/visual-templates": {
+			"types": "./lib/glossy/visual-templates.ts",
+			"import": "./lib/glossy/visual-templates.ts",
+			"default": "./lib/glossy/visual-templates.ts"
+		},
+		"./glossy/visual-slots": {
+			"types": "./lib/glossy/visual-slots.ts",
+			"import": "./lib/glossy/visual-slots.ts",
+			"default": "./lib/glossy/visual-slots.ts"
+		},
+		"./glossy/edition-content": {
+			"types": "./lib/glossy/edition-content.ts",
+			"import": "./lib/glossy/edition-content.ts",
+			"default": "./lib/glossy/edition-content.ts"
+		},
+		"./brand-colors": {
+			"types": "./lib/brand-colors.ts",
+			"import": "./lib/brand-colors.ts",
+			"default": "./lib/brand-colors.ts"
 		}
 	},
 	"name": "@repo/utils",

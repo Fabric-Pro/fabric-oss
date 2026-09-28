@@ -5,6 +5,7 @@ import {
 	getAutoRefreshSettings,
 	updateDocument,
 } from "@repo/database";
+import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -63,7 +64,7 @@ export const applyDocumentAutoRefreshProposalProcedure =
 				context.session,
 			);
 
-			await loadDocumentForAutoRefresh({
+			const current = await loadDocumentForAutoRefresh({
 				documentId: input.id,
 				projectId: input.projectId,
 				userId: user.id,
@@ -93,8 +94,14 @@ export const applyDocumentAutoRefreshProposalProcedure =
 
 			let document: Awaited<ReturnType<typeof updateDocument>>;
 			try {
+				// Visual slots (KTD17) come from the CURRENT stored body, not from the
+				// proposal: the draft can sit for days, so a slot a person deleted in
+				// the meantime must not come back with it. With no slot on either side
+				// the proposal is written unchanged.
 				document = await updateDocument(input.id, {
-					content: normalizeQuoteArtifacts(pendingContent),
+					content: normalizeQuoteArtifacts(
+						preserveVisualSlots(current.content, pendingContent),
+					),
 					changeDescription: settings.pendingSummary ?? undefined,
 					// The accepting human, NOT the agent that drafted this.
 					lastEditedBy: user.id,

@@ -12,6 +12,10 @@
 		"./markdown-repair": {
 			"types": "./src/core/markdown-repair.ts",
 			"default": "./src/core/markdown-repair.ts"
+		},
+		"./glossy": {
+			"types": "./src/glossy/index.ts",
+			"default": "./src/glossy/index.ts"
 		}
 	},
 	"scripts": {

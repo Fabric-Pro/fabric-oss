@@ -2,9 +2,9 @@
  * WCAG AA coverage for the organization brand palette, which had none.
  *
  * `OrganizationThemeProvider` overrides `--primary`, `--primary-foreground` and
- * `--primary-ink-*` per organization from a table of eight brand colours. Nothing
- * measured any of it, and the values decide legibility of every primary CTA and
- * brand link inside an org.
+ * `--primary-ink-*` per organization from a table of eight brand colours (now in
+ * `@repo/utils/brand-colors`). Nothing measured any of it, and the values decide
+ * legibility of every primary CTA and brand link inside an org.
  *
  * Two different results, and the distinction matters:
  *
@@ -24,15 +24,9 @@
  * spending an afternoon on it.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { brandColorValues } from "@repo/utils/brand-colors";
 import { describe, expect, it } from "vitest";
 import { readableForegroundFor } from "../modules/saas/organizations/components/OrganizationThemeProvider";
-
-const PROVIDER_TSX = resolve(
-	__dirname,
-	"../modules/saas/organizations/components/OrganizationThemeProvider.tsx",
-);
 
 const AA_NORMAL_TEXT = 4.5;
 
@@ -75,29 +69,18 @@ interface Brand {
 }
 
 function readBrands(): Brand[] {
-	const source = readFileSync(PROVIDER_TSX, "utf8");
-	// Search for the terminator AFTER the table's start: the file now exports a
-	// helper above the table, so a bare indexOf("export") would slice backwards
-	// and silently yield nothing.
-	const start = source.indexOf("brandColorValues");
-	const table = source.slice(start, source.indexOf("export", start));
-	const pattern =
-		/(\w+):\s*\{[\s\S]*?hex:\s*"(#[0-9a-fA-F]{6})"[\s\S]*?ink:\s*"(#[0-9a-fA-F]{6})"[\s\S]*?inkDark:\s*"(#[0-9a-fA-F]{6})"/g;
-	const brands: Brand[] = [];
-	for (const [, name, hex, ink, inkDark] of table.matchAll(pattern)) {
-		if (name && hex && ink && inkDark) {
-			// The label colour is derived from the fill, not stored, so the test
-			// asks the SAME function production uses.
-			brands.push({
-				name,
-				hex,
-				foreground: readableForegroundFor(hex),
-				ink,
-				inkDark,
-			});
-		}
-	}
-	return brands;
+	// The table moved to `@repo/utils/brand-colors` (shared with the Glossy
+	// renderer), where it is exported, so it is read directly instead of being
+	// parsed out of the provider's source.
+	return Object.entries(brandColorValues).map(([name, value]) => ({
+		name,
+		hex: value.hex,
+		// The label colour is derived from the fill, not stored, so the test
+		// asks the SAME function production uses.
+		foreground: readableForegroundFor(value.hex),
+		ink: value.ink,
+		inkDark: value.inkDark,
+	}));
 }
 
 const brands = readBrands();

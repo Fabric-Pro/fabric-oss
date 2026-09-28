@@ -108,6 +108,12 @@ export type GsRuntimeGates = {
 	publishingSuite: boolean;
 	/** `TODO_LIST`, resolved for the viewer's organization (Fizzy #2340). */
 	todoList: boolean;
+	/**
+	 * `GLOSSY_EDITION`, resolved for the viewer's organization (Fizzy #2589).
+	 * Gates a single component of the Documents page tour, not a whole page:
+	 * Glossy editions are reached from a document, not from a tab of their own.
+	 */
+	glossyEdition: boolean;
 };
 
 /**
@@ -517,7 +523,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "project-settings",
 			label: "Project Settings",
 			description:
-				"Configure the project — details, PM/integration credentials, context import, deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
+				"Configure the project — details, the recipient brand its Glossy editions are prepared for, PM/integration credentials, context import, deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
 			icon: SettingsIcon,
 			projectTab: "settings",
 			anchor: anchorForProjectTab("settings"),
@@ -540,7 +546,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-general",
 			label: "General",
 			description:
-				"Your profile — name, avatar, and account basics (org name, logo, and slug in an organization).",
+				"Your profile — name, avatar, and account basics (org name, logo, slug, and the Brand kit that styles Glossy editions in an organization).",
 			icon: SettingsIcon,
 			cluster: "Account & profile",
 			href: settingsHref("general"),
@@ -715,6 +721,12 @@ type GsPageComponent = {
 	 * exist). The mini-tour skips it when the anchor isn't in the DOM.
 	 */
 	conditional?: boolean;
+	/**
+	 * Gate this one component behind a per-organization flag while the rest of
+	 * its page stays ungated. Read through `pageComponentsFor`, which drops it
+	 * when the gate is off even if something happens to render its anchor.
+	 */
+	runtimeGate?: keyof GsRuntimeGates;
 };
 
 /** A covered page and the components its detailed tour walks through. */
@@ -786,6 +798,18 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				title: "Versioned, exportable, non-destructive",
 				body: "Each card exports to Markdown/PDF/DOCX, renames inline, and regenerates without losing the old version. The rule that matters: only the one 'Active' doc per type flows into the AI.",
 				conditional: true,
+			},
+			{
+				id: "documents-glossy",
+				// On the cards whose Download menu offers the Glossy item, so
+				// it is absent until a Proposal or Business Case exists.
+				anchor: "documents-glossy",
+				title: "A Glossy edition for stakeholders",
+				body: "A Proposal or Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document.",
+				conditional: true,
+				// A per-organization rollout (#2589): `runtimeGate`, never
+				// `enabled`. Off, neither entry point renders.
+				runtimeGate: "glossyEdition",
 			},
 		],
 	},
@@ -1713,6 +1737,21 @@ export function pageForTab(
 	}
 	const page = GET_STARTED_PAGES.find((p) => p.tab === tab);
 	return page && isGsEntryEnabled(page, gates) ? page : null;
+}
+
+/**
+ * The components of `page` this viewer may be walked through: the ones whose
+ * own `runtimeGate` is on (or that have none). The single place page tours and
+ * "Show me" read components from, so a gated component cannot be spotlighted
+ * by one path while another withholds it.
+ */
+export function pageComponentsFor(
+	page: GsPage,
+	gates: GsRuntimeGates,
+): readonly GsPageComponent[] {
+	return page.components.filter((component) =>
+		isGsEntryEnabled(component, gates),
+	);
 }
 
 /**

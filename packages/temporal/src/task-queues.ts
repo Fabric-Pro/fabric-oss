@@ -36,3 +36,10 @@ export const CONTEXT_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;
  * schedule is kept off it for the same reason, `schedules.ts:710-722`).
  */
 export const INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;
+
+/**
+ * Glossy edition builds (Fizzy #2589, KTD3). Its own queue and activity
+ * slots, so a long build cannot starve the interactive `project-documents`
+ * queue; the build procedure starts `glossyEditionBuildWorkflow` here.
+ */
+export const GLOSSY_EDITION_TASK_QUEUE = "glossy-edition" as const;

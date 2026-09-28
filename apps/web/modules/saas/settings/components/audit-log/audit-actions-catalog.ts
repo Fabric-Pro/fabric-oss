@@ -1394,6 +1394,74 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"An administrator added a progress update to a published status announcement, changing what customers are told.",
 	},
+	{
+		key: "project.glossy_edition.build_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.glossy_edition.build_started",
+		description:
+			"A Glossy Version Export build was claimed and started for a Proposal or Business Case.",
+	},
+	{
+		key: "project.glossy_edition.built",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.glossy_edition.built",
+		description:
+			"A Glossy edition build finished successfully and the edition's content was published.",
+	},
+	{
+		key: "project.glossy_edition.build_failed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.glossy_edition.build_failed",
+		description:
+			"A Glossy edition build failed; the row carries a fixed error code rather than free text.",
+	},
+	{
+		key: "project.glossy_edition.opportunities_detected",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.glossy_edition.opportunities_detected",
+		description:
+			"An editor ran Align-first detection and Fabric proposed visual opportunities for a Proposal or Business Case.",
+	},
+	{
+		key: "project.glossy_edition.visual_regenerated",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.glossy_edition.visual_regenerated",
+		description:
+			"A member asked Fabric to regenerate one visual in a Glossy edition.",
+	},
+	{
+		key: "project.glossy_edition.visual_reviewed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.glossy_edition.visual_reviewed",
+		description:
+			"A member accepted or rejected one visual in a Glossy edition during review.",
+	},
+	{
+		key: "project.recipient_brand.fetched",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.recipient_brand.fetched",
+		description:
+			"Fabric fetched brand colors and a logo from a recipient's own website for a Glossy edition — the host and outcome only, never page content.",
+	},
+	{
+		key: "project.recipient_brand.updated",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.recipient_brand.updated",
+		description:
+			"A member confirmed a fetched or uploaded logo and colors as the project's recipient brand.",
+	},
+	{
+		key: "org.brand_kit.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.brand_kit.updated",
+		description:
+			"An organization's brand kit — its accent colors and guidance text for Glossy exports — was changed.",
+	},
 ];
 
 /**

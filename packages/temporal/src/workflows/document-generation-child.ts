@@ -575,7 +575,27 @@ export async function documentGenerationChildWorkflow(
 		const saveStartTime = Date.now();
 		log.info("💾 Step 4: Saving document to database", { documentId });
 
-		await saveProjectDocument(documentId, documentContent, userId);
+		// The generation reports `baselineVersion` only when a visual slot is
+		// involved: the spliced body is right only for the version its slots
+		// were lifted from, so the save must refuse a newer one. That refusal
+		// is a non-retryable failure the catch below records like any other
+		// (FAILED, with the activity's own sentence), leaving the person's
+		// newer document as it is.
+		//
+		// Replay-safe without `patched()`: both branches schedule the same
+		// single `saveProjectDocument` activity at the same point, and Temporal
+		// matches a scheduled activity by type and id, not by its input. The
+		// slot-free branch passes exactly the three arguments it always has —
+		// as does any history whose generation finished before the field
+		// existed, since its recorded result simply lacks it.
+		const { baselineVersion } = generationResult;
+		if (baselineVersion !== undefined) {
+			await saveProjectDocument(documentId, documentContent, userId, {
+				baselineVersion,
+			});
+		} else {
+			await saveProjectDocument(documentId, documentContent, userId);
+		}
 
 		log.info("✅ Step 4 complete: Document saved", {
 			documentId,
@@ -614,17 +634,44 @@ export async function documentGenerationChildWorkflow(
 		log.info("📝 Step 5: Creating document version", { documentId });
 
 		try {
-			await createDocumentVersion(
-				documentId,
-				documentContent,
-				userId,
-				effectivePromptVersionId,
-			);
+			// The same baseline the save was given, and only then: the version
+			// row and bump must land only while the regenerated body is still
+			// the live one, or a person's save that landed after Step 4 gets
+			// this run's stale body as its version. Same replay argument as
+			// Step 4 — one activity at the same point either way, and the
+			// slot-free call keeps exactly its four arguments.
+			if (baselineVersion !== undefined) {
+				await createDocumentVersion(
+					documentId,
+					documentContent,
+					userId,
+					effectivePromptVersionId,
+					{ baselineVersion },
+				);
+			} else {
+				await createDocumentVersion(
+					documentId,
+					documentContent,
+					userId,
+					effectivePromptVersionId,
+				);
+			}
 			log.info("✅ Step 5 complete: Version created", {
 				documentId,
 				durationMs: Date.now() - versionStartTime,
 			});
 		} catch (versionError) {
+			// A stale refusal is the run's verdict, not a versioning hiccup:
+			// the regenerated body is no longer the document, so the run fails
+			// like a refused save. Only the baseline-guarded call can refuse
+			// this way, so a slot-free run — and every history recorded before
+			// the guard — takes the non-fatal branch below exactly as before.
+			if (
+				baselineVersion !== undefined &&
+				isStaleRegenerationFailure(versionError)
+			) {
+				throw versionError;
+			}
 			// Non-fatal - document is already saved
 			log.warn("Failed to create document version", {
 				error:
@@ -752,6 +799,32 @@ function extractActivityError(error: unknown): string {
 		return error.message;
 	}
 	return String(error);
+}
+
+/**
+ * The failure type the document activities abandon a stale regeneration with
+ * (`STALE_REGENERATION_FAILURE_TYPE` in `project-document-generation.ts`,
+ * which keeps its constant private to the activity module).
+ */
+const STALE_REGENERATION_FAILURE_TYPE = "DOCUMENT_GENERATION_STALE";
+
+/**
+ * Did an activity abandon this run as a stale regeneration? The activity's
+ * `ApplicationFailure` reaches the workflow wrapped in an `ActivityFailure`,
+ * so the type is looked for down the cause chain.
+ */
+function isStaleRegenerationFailure(error: unknown): boolean {
+	let current: unknown = error;
+	for (let depth = 0; current != null && depth < 8; depth += 1) {
+		if (
+			current instanceof ApplicationFailure &&
+			current.type === STALE_REGENERATION_FAILURE_TYPE
+		) {
+			return true;
+		}
+		current = (current as { cause?: unknown }).cause;
+	}
+	return false;
 }
 
 /**

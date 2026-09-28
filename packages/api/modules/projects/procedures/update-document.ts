@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	buildDocumentLink,
+	DocumentVersionConflictError,
 	db,
 	hasProjectAccess,
 	IntegrationContractStatusManagedError,
@@ -58,6 +59,16 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			changeDescription: z.string().optional(),
 			/** Skip version bump when reverting a rejected regeneration */
 			skipVersionBump: z.boolean().optional(),
+			/**
+			 * Optimistic-concurrency guard (Fizzy #2589, KTD17). The in-editor
+			 * assistant accept sends it when a visual slot is involved: the
+			 * accepted body carries the editor's slots, which are right only for
+			 * the version the editor last synced with. When present, a document
+			 * no longer at this version is left untouched and the save fails
+			 * with CONFLICT. Every other save omits it and stays
+			 * last-write-wins.
+			 */
+			expectedVersion: z.number().int().nonnegative().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -136,6 +147,11 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			userId: user.id,
 			organizationId,
 			skipVersionBump: input.skipVersionBump,
+			// Only a caller that asked for the guard gets it; without it the
+			// call is exactly the unguarded one every other save makes.
+			...(input.expectedVersion !== undefined
+				? { expectedVersion: input.expectedVersion }
+				: {}),
 		}).catch((error: unknown) => {
 			// The query layer is the last line of defence for contract status
 			// (a completion may land between the pre-read above and its own
@@ -144,6 +160,14 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 				throw new ORPCError("PRECONDITION_FAILED", {
 					message: error.message,
 					data: { code: error.code },
+				});
+			}
+			// Reachable only with `expectedVersion`: someone saved between the
+			// caller's read and this write, and nothing was written.
+			if (error instanceof DocumentVersionConflictError) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"The document changed while your changes were being saved, so nothing was saved. Review the latest version and apply your changes again.",
 				});
 			}
 			throw error;

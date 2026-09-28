@@ -24,6 +24,7 @@ import mermaid from "mermaid";
 import { useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { withMermaidLock } from "./mermaid-lock";
 
 /**
  * Sanitize rendered diagram markup before it is injected as HTML.
@@ -82,6 +83,78 @@ mermaid.initialize({
 		diagramMarginY: 10,
 	},
 });
+
+/**
+ * Render diagram source with native mermaid.js, the fallback for diagram
+ * types beautiful-mermaid does not support.
+ *
+ * mermaid.js keeps one global configuration that the regular and Glossy
+ * exports also set, and `mermaid.render` yields mid-render. So this runs
+ * under the shared `withMermaidLock` and restores the configuration it
+ * replaced: an export rendering at the same moment never draws under this
+ * preview's `securityLevel: "loose"`, nor this preview under its settings.
+ */
+export async function renderNativeMermaidSvg(
+	code: string,
+	isDark: boolean,
+): Promise<string> {
+	return withMermaidLock(async () => {
+		const previous = mermaid.mermaidAPI.getSiteConfig();
+		try {
+			mermaid.initialize({
+				startOnLoad: false,
+				theme: isDark ? "dark" : "default",
+				securityLevel: "loose",
+				fontFamily: "ui-sans-serif, system-ui, sans-serif",
+				themeVariables: isDark
+					? {
+							primaryColor: "#3b3b5c",
+							primaryTextColor: "#e4e4e7",
+							primaryBorderColor: "#52525b",
+							lineColor: "#71717a",
+							secondaryColor: "#27273f",
+							tertiaryColor: "#1c1c2e",
+							background: "transparent",
+							mainBkg: "#27272a",
+							nodeBorder: "#52525b",
+							clusterBkg: "#1c1c2e",
+							titleColor: "#fafafa",
+							edgeLabelBackground: "#27272a",
+							textColor: "#e4e4e7",
+						}
+					: {
+							primaryColor: "#f4f4f5",
+							primaryTextColor: "#18181b",
+							primaryBorderColor: "#d4d4d8",
+							lineColor: "#a1a1aa",
+							secondaryColor: "#fafafa",
+							tertiaryColor: "#f4f4f5",
+							background: "transparent",
+							mainBkg: "#fafafa",
+							nodeBorder: "#d4d4d8",
+							clusterBkg: "#f4f4f5",
+							titleColor: "#18181b",
+							edgeLabelBackground: "#ffffff",
+							textColor: "#18181b",
+						},
+				flowchart: {
+					useMaxWidth: true,
+					// See `sanitizeDiagramSvg` — foreignObject labels do not survive it.
+					htmlLabels: false,
+					curve: "basis",
+				},
+				sequence: { useMaxWidth: true },
+				c4: { useMaxWidth: true },
+			});
+
+			const id = `mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+			const { svg } = await mermaid.render(id, code.trim());
+			return svg;
+		} finally {
+			mermaid.initialize(previous);
+		}
+	});
+}
 
 /**
  * Maps a DIAGRAM_TEMPLATES id to the specific Mermaid syntax keyword
@@ -600,59 +673,10 @@ Rules:
 			} catch {
 				// Fallback to native mermaid.js for unsupported diagram types
 				// (gantt, pie, mindmap, C4, timeline, etc.)
-				const isDark = resolvedTheme === "dark";
-				mermaid.initialize({
-					startOnLoad: false,
-					theme: isDark ? "dark" : "default",
-					securityLevel: "loose",
-					fontFamily: "ui-sans-serif, system-ui, sans-serif",
-					themeVariables: isDark
-						? {
-								primaryColor: "#3b3b5c",
-								primaryTextColor: "#e4e4e7",
-								primaryBorderColor: "#52525b",
-								lineColor: "#71717a",
-								secondaryColor: "#27273f",
-								tertiaryColor: "#1c1c2e",
-								background: "transparent",
-								mainBkg: "#27272a",
-								nodeBorder: "#52525b",
-								clusterBkg: "#1c1c2e",
-								titleColor: "#fafafa",
-								edgeLabelBackground: "#27272a",
-								textColor: "#e4e4e7",
-							}
-						: {
-								primaryColor: "#f4f4f5",
-								primaryTextColor: "#18181b",
-								primaryBorderColor: "#d4d4d8",
-								lineColor: "#a1a1aa",
-								secondaryColor: "#fafafa",
-								tertiaryColor: "#f4f4f5",
-								background: "transparent",
-								mainBkg: "#fafafa",
-								nodeBorder: "#d4d4d8",
-								clusterBkg: "#f4f4f5",
-								titleColor: "#18181b",
-								edgeLabelBackground: "#ffffff",
-								textColor: "#18181b",
-							},
-					flowchart: {
-						useMaxWidth: true,
-						// See `sanitizeDiagramSvg` — foreignObject labels do not survive it.
-						htmlLabels: false,
-						curve: "basis",
-					},
-					sequence: { useMaxWidth: true },
-					c4: { useMaxWidth: true },
-				});
-
-				const id = `mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-				const { svg: renderedSvg } = await mermaid.render(
-					id,
-					code.trim(),
+				enhancedSvg = await renderNativeMermaidSvg(
+					code,
+					resolvedTheme === "dark",
 				);
-				enhancedSvg = renderedSvg;
 			}
 
 			setSvg(sanitizeDiagramSvg(enhancedSvg));

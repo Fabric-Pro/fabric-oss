@@ -334,6 +334,42 @@ export const DocumentAutoRefreshSettingsScalarFieldEnumSchema = z.enum(['id', 'd
 
 export type DocumentAutoRefreshSettingsScalarFieldEnum = z.infer<typeof DocumentAutoRefreshSettingsScalarFieldEnumSchema>;
 
+// File: GlossyEditionScalarFieldEnum.schema.ts
+
+export const GlossyEditionScalarFieldEnumSchema = z.enum(['id', 'documentId', 'projectId', 'organizationId', 'content', 'publishedBuildId', 'contentRevision', 'currentBuildId', 'lastOptions', 'createdAt', 'updatedAt'])
+
+export type GlossyEditionScalarFieldEnum = z.infer<typeof GlossyEditionScalarFieldEnumSchema>;
+
+// File: GlossyBuildScalarFieldEnum.schema.ts
+
+export const GlossyBuildScalarFieldEnumSchema = z.enum(['id', 'documentId', 'projectId', 'organizationId', 'status', 'startedById', 'startedAt', 'heartbeatAt', 'finishedAt', 'workflowId', 'options', 'sourceTitle', 'sourceContent', 'sourceVersion', 'sourceContentHash', 'progressStep', 'sectionsDone', 'sectionsTotal', 'report', 'errorCode', 'errorMessage', 'createdAt', 'updatedAt'])
+
+export type GlossyBuildScalarFieldEnum = z.infer<typeof GlossyBuildScalarFieldEnumSchema>;
+
+// File: GlossyVisualDecisionScalarFieldEnum.schema.ts
+
+export const GlossyVisualDecisionScalarFieldEnumSchema = z.enum(['id', 'editionId', 'projectId', 'organizationId', 'visualKey', 'sectionKey', 'decision', 'specHash', 'decidedById', 'createdAt', 'updatedAt'])
+
+export type GlossyVisualDecisionScalarFieldEnum = z.infer<typeof GlossyVisualDecisionScalarFieldEnumSchema>;
+
+// File: GlossySegmentCacheScalarFieldEnum.schema.ts
+
+export const GlossySegmentCacheScalarFieldEnumSchema = z.enum(['id', 'documentId', 'projectId', 'organizationId', 'kind', 'cacheKey', 'sectionKey', 'output', 'lastUsedAt', 'createdAt', 'updatedAt'])
+
+export type GlossySegmentCacheScalarFieldEnum = z.infer<typeof GlossySegmentCacheScalarFieldEnumSchema>;
+
+// File: ProjectRecipientBrandScalarFieldEnum.schema.ts
+
+export const ProjectRecipientBrandScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'name', 'website', 'logoKey', 'colors', 'version', 'updatedById', 'createdAt', 'updatedAt'])
+
+export type ProjectRecipientBrandScalarFieldEnum = z.infer<typeof ProjectRecipientBrandScalarFieldEnumSchema>;
+
+// File: OrganizationBrandKitScalarFieldEnum.schema.ts
+
+export const OrganizationBrandKitScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'accentColors', 'guidance', 'updatedById', 'createdAt', 'updatedAt'])
+
+export type OrganizationBrandKitScalarFieldEnum = z.infer<typeof OrganizationBrandKitScalarFieldEnumSchema>;
+
 // File: ProjectRagSettingsScalarFieldEnum.schema.ts
 
 export const ProjectRagSettingsScalarFieldEnumSchema = z.enum(['id', 'projectId', 'chunkSize', 'chunkOverlap', 'splitMethod', 'embeddingModel', 'topK', 'similarityThreshold', 'enableReranking', 'rerankTopK', 'rerankerProvider', 'enableEpisodicMemory', 'codeSearchEnabled', 'codeSearchProvider', 'codeEmbeddingModel', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
@@ -4870,6 +4906,128 @@ export const DocumentAutoRefreshSettingsSchema = z.object({
 });
 
 export type DocumentAutoRefreshSettingsType = z.infer<typeof DocumentAutoRefreshSettingsSchema>;
+
+
+// File: GlossyEdition.schema.ts
+
+export const GlossyEditionSchema = z.object({
+  id: z.string(),
+  documentId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  content: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  publishedBuildId: z.string().nullish(),
+  contentRevision: z.number().int(),
+  currentBuildId: z.string().nullish(),
+  lastOptions: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type GlossyEditionType = z.infer<typeof GlossyEditionSchema>;
+
+
+// File: GlossyBuild.schema.ts
+
+export const GlossyBuildSchema = z.object({
+  id: z.string(),
+  documentId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  status: z.string(),
+  startedById: z.string().nullish(),
+  startedAt: z.date(),
+  heartbeatAt: z.date().nullish(),
+  finishedAt: z.date().nullish(),
+  workflowId: z.string().nullish(),
+  options: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  sourceTitle: z.string(),
+  sourceContent: z.string(),
+  sourceVersion: z.number().int(),
+  sourceContentHash: z.string(),
+  progressStep: z.string().nullish(),
+  sectionsDone: z.number().int(),
+  sectionsTotal: z.number().int().nullish(),
+  report: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  errorCode: z.string().nullish(),
+  errorMessage: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type GlossyBuildType = z.infer<typeof GlossyBuildSchema>;
+
+
+// File: GlossyVisualDecision.schema.ts
+
+export const GlossyVisualDecisionSchema = z.object({
+  id: z.string(),
+  editionId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  visualKey: z.string(),
+  sectionKey: z.string(),
+  decision: z.string(),
+  specHash: z.string().nullish(),
+  decidedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type GlossyVisualDecisionType = z.infer<typeof GlossyVisualDecisionSchema>;
+
+
+// File: GlossySegmentCache.schema.ts
+
+export const GlossySegmentCacheSchema = z.object({
+  id: z.string(),
+  documentId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  kind: z.string(),
+  cacheKey: z.string(),
+  sectionKey: z.string().nullish(),
+  output: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  lastUsedAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type GlossySegmentCacheType = z.infer<typeof GlossySegmentCacheSchema>;
+
+
+// File: ProjectRecipientBrand.schema.ts
+
+export const ProjectRecipientBrandSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  name: z.string().nullish(),
+  website: z.string().nullish(),
+  logoKey: z.string().nullish(),
+  colors: z.array(z.string()),
+  version: z.number().int().default(1),
+  updatedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectRecipientBrandType = z.infer<typeof ProjectRecipientBrandSchema>;
+
+
+// File: OrganizationBrandKit.schema.ts
+
+export const OrganizationBrandKitSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  accentColors: z.array(z.string()),
+  guidance: z.string().nullish(),
+  updatedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type OrganizationBrandKitType = z.infer<typeof OrganizationBrandKitSchema>;
 
 
 // File: ProjectRagSettings.schema.ts

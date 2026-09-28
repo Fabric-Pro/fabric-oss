@@ -5,6 +5,16 @@
  * for saving to the database, including stripping diff markers.
  */
 
+import {
+	VISUAL_SLOT_HINT_ATTR,
+	VISUAL_SLOT_ID_ATTR,
+	VISUAL_SLOT_KIND_ATTR,
+	VISUAL_SLOT_TAG,
+} from "@repo/utils/glossy/outline";
+import {
+	serializeVisualSlot,
+	VISUAL_SLOT_ORPHANED_FROM_ATTR,
+} from "@repo/utils/glossy/visual-slots";
 import type TurndownService from "turndown";
 
 /**
@@ -168,7 +178,7 @@ export function applyStrikethroughSerialization(
 
 /**
  * Turndown `blankReplacement` override that preserves `<excalidraw-embed>`
- * nodes through the HTML→Markdown save pass.
+ * and `<visual-slot>` nodes through the HTML→Markdown save pass.
  *
  * Why this is a `blankReplacement` and NOT an `addRule` (the way the
  * `mentionSpan` rule works): the `excalidrawEmbed` TipTap node is
@@ -192,8 +202,17 @@ export function excalidrawAwareBlankReplacement(
 	_content: string,
 	node: Node,
 ): string {
-	if (node.nodeName?.toLowerCase() === "excalidraw-embed") {
+	const tagName = node.nodeName?.toLowerCase();
+	if (tagName === "excalidraw-embed") {
 		return `\n\n${(node as HTMLElement).outerHTML}\n\n`;
+	}
+	// A Glossy visual slot (KTD18) is atomic and text-less too, so it reaches
+	// this hook for the same reason. It is written with `serializeVisualSlot`
+	// rather than `outerHTML`: that is the form every server write path
+	// produces, and it escapes a line break in the hint, which `outerHTML`
+	// would leave raw — splitting the one-line tag across two lines.
+	if (tagName === VISUAL_SLOT_TAG) {
+		return `\n\n${serializeSlotElement(node as Element)}\n\n`;
 	}
 	// On load, MarkdownIt wraps a lone inline `<excalidraw-embed>` in a
 	// paragraph (`<p><excalidraw-embed …></excalidraw-embed></p>`). That
@@ -203,17 +222,52 @@ export function excalidrawAwareBlankReplacement(
 	// block-level embed out of the paragraph on parse, so the editor's own
 	// `getHTML()` emits a bare embed that the branch above handles; this guards
 	// the wrapped shape too, e.g. a markdown→HTML→markdown pass with no editor.)
-	const embeds = (
-		node as unknown as {
-			querySelectorAll?: (s: string) => ArrayLike<{ outerHTML: string }>;
-		}
-	).querySelectorAll?.("excalidraw-embed");
-	if (embeds && embeds.length > 0) {
-		return `\n\n${Array.from(embeds)
-			.map((embed) => embed.outerHTML)
-			.join("\n\n")}\n\n`;
+	// Visual slots arrive in the same wrapper and are dug out the same way.
+	const preserved = preservedBlankDescendants(node);
+	if (preserved.length > 0) {
+		return `\n\n${preserved.join("\n\n")}\n\n`;
 	}
 	return (node as unknown as { isBlock?: boolean }).isBlock ? "\n\n" : "";
+}
+
+type QueryableNode = {
+	querySelectorAll?: (selector: string) => ArrayLike<Element>;
+};
+
+function serializeSlotElement(element: Element): string {
+	return serializeVisualSlot({
+		id: element.getAttribute(VISUAL_SLOT_ID_ATTR) ?? "",
+		kind: element.getAttribute(VISUAL_SLOT_KIND_ATTR),
+		hint: element.getAttribute(VISUAL_SLOT_HINT_ATTR),
+		orphanedFrom: element.getAttribute(VISUAL_SLOT_ORPHANED_FROM_ATTR),
+	});
+}
+
+/**
+ * The embeds and slots inside a blank wrapper, serialized, in document
+ * order. Each tag is queried on its own, and together only when both occur,
+ * so a wrapper holding one kind never depends on selector-list support.
+ */
+function preservedBlankDescendants(node: Node): string[] {
+	const query = (node as unknown as QueryableNode).querySelectorAll;
+	if (!query) {
+		return [];
+	}
+	const select = (selector: string) =>
+		Array.from(query.call(node, selector) ?? []);
+	const embeds = select("excalidraw-embed");
+	const slots = select(VISUAL_SLOT_TAG);
+	if (embeds.length === 0 || slots.length === 0) {
+		return [
+			...embeds.map((embed) => embed.outerHTML),
+			...slots.map(serializeSlotElement),
+		];
+	}
+	return select(`excalidraw-embed, ${VISUAL_SLOT_TAG}`).map((element) =>
+		element.nodeName.toLowerCase() === VISUAL_SLOT_TAG
+			? serializeSlotElement(element)
+			: element.outerHTML,
+	);
 }
 
 // Diff tags carry class markers so we can tell them apart from pasted bare

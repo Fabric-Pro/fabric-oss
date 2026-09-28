@@ -49,6 +49,12 @@ import {
 	type InstructionFileKind,
 	validateRelativePath,
 } from "@repo/instructions";
+// A pure leaf (string work only, no Node built-ins): the one helper every
+// body-replacing write path runs so a Glossy visual slot survives it (KTD17).
+import {
+	hasVisualSlots,
+	preserveVisualSlots,
+} from "@repo/utils/glossy/visual-slots";
 // Pure and dependency-free, with a byte-identical twin in the CLI, so the MCP
 // report and `fabric instructions doctor --format json` share one shape.
 import {
@@ -712,7 +718,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Retrieves the full markdown content of a project document, including title, type, version number, and the complete body text. " +
 			"Get the documentId from fabric_list_documents(projectId). " +
 			"Use this to read a PRD (type='PRD') for product requirements, a technical spec (type='TECHNICAL_SPEC') for implementation details, or an architecture doc (type='ARCHITECTURE') for system design. " +
-			"These documents provide the broader context that informs how features should be implemented.",
+			"These documents provide the broader context that informs how features should be implemented. " +
+			"A `<visual-slot …></visual-slot>` line is a placeholder marker where an editor asked for a visual, not prose: do not quote, summarize, or rewrite it (fabric_update_document keeps stored slots in place on its own).",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -799,7 +806,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				content: {
 					type: "string",
 					description:
-						"New document body in markdown. Replaces the entire content and bumps the version number.",
+						"New document body in markdown. Replaces the entire content and bumps the version number. " +
+						"`<visual-slot …></visual-slot>` lines are managed by Fabric: the stored document's slots are kept in place and any slot tag sent here is ignored, so omit them rather than adding, moving, or deleting one.",
 				},
 				status: {
 					type: "string",
@@ -4297,6 +4305,7 @@ async function handleUpdateDocument(
 		updateDocument,
 		getDocumentById,
 		IntegrationContractStatusManagedError,
+		DocumentVersionConflictError,
 	} = await import("@repo/database");
 
 	const documentId = args.documentId as string;
@@ -4333,15 +4342,29 @@ async function handleUpdateDocument(
 		);
 	}
 
+	// An agent rewriting the body may drop, move, or echo a Glossy visual
+	// slot. Strip whatever slot tags it sent and splice back the ones the
+	// stored body holds — the body read and authorized above, not a second
+	// read (KTD17). A body with no slot on either side passes through as is.
+	const content =
+		typeof args.content === "string"
+			? preserveVisualSlots(doc.content, args.content)
+			: (args.content as string | undefined);
+	// The spliced body is only right for the version its slots were lifted
+	// from: when a slot is involved, guard the write with it so a slot added
+	// or deleted in between is neither lost nor resurrected. Bodies with no
+	// slot on either side keep the unguarded write they had.
+	const slotsInvolved =
+		typeof args.content === "string" &&
+		(hasVisualSlots(doc.content) || hasVisualSlots(args.content));
+
 	let updated: Awaited<ReturnType<typeof updateDocument>>;
 	try {
 		updated = await updateDocument(documentId, {
 			...(args.title !== undefined
 				? { title: args.title as string }
 				: {}),
-			...(args.content !== undefined
-				? { content: args.content as string }
-				: {}),
+			...(content !== undefined ? { content } : {}),
 			...(args.status !== undefined
 				? {
 						status: args.status as
@@ -4359,12 +4382,18 @@ async function handleUpdateDocument(
 			lastEditedBy: session.userId,
 			userId: session.userId,
 			organizationId: session.organizationId ?? undefined,
+			...(slotsInvolved ? { expectedVersion: doc.version } : {}),
 		});
 	} catch (error) {
 		// Last line of defence in the query layer (a completion may land
 		// between the pre-read above and its own read).
 		if (error instanceof IntegrationContractStatusManagedError) {
 			return errorResult(error.message);
+		}
+		if (error instanceof DocumentVersionConflictError) {
+			return errorResult(
+				"The document changed while it was being updated. Read it again with fabric_get_document and retry.",
+			);
 		}
 		throw error;
 	}

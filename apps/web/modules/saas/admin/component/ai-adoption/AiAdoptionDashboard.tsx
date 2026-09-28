@@ -505,6 +505,7 @@ const FEATURE_LABELS: Record<string, string> = {
 	"bug-reevaluation": "Bug re-evaluation",
 	"duplicate-scan": "Duplicate scan",
 	"chat-agent": "Chat agents",
+	"glossy-edition": "Glossy Version Export",
 	// Embeddings resolve through a different path that cannot carry a feature
 	// key, and they are usually the bulk of the rows. Naming them keeps the
 	// genuine "not tagged yet" bucket meaningful.

@@ -595,6 +595,15 @@ export {
 	uploadToS3Activity,
 	uploadToS3Activity as uploadToS3,
 } from "./frame-export";
+// Glossy edition build activities (Fizzy #2589)
+export {
+	detectGlossyOpportunitiesActivity,
+	extractGlossyVisualActivity,
+	failGlossyBuildActivity,
+	finalizeGlossyBuildActivity,
+	prepareGlossyBuildActivity,
+	rewriteGlossySectionActivity,
+} from "./glossy-edition";
 // Goal-oriented agent activities (iterative goal achievement)
 export {
 	attemptStepRecovery,

@@ -13,12 +13,17 @@
 import {
 	canEditProject,
 	createDocument,
+	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
 	IntegrationContractStatusManagedError,
 	listDocuments,
 	updateDocument,
 } from "@repo/database";
+import {
+	hasVisualSlots,
+	preserveVisualSlots,
+} from "@repo/utils/glossy/visual-slots";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
@@ -342,7 +347,10 @@ export function registerDocumentRoutes(
 	 * PATCH /documents/:id
 	 * Updates title, content, and/or status. Each content change
 	 * automatically snapshots the prior version (handled by
-	 * updateDocument).
+	 * updateDocument). Visual slots (`<visual-slot …></visual-slot>` lines)
+	 * are managed by Fabric: the stored document's slots are kept in place
+	 * and slot tags sent in `content` are ignored, so the saved body can
+	 * differ from the one sent when the document holds a slot.
 	 */
 	app.patch("/documents/:id", requireScope("documents:write"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
@@ -418,7 +426,14 @@ export function registerDocumentRoutes(
 					400,
 				);
 			}
-			updates.content = body.content;
+			// An API-key writer may drop, move, or echo a Glossy visual slot.
+			// Strip whatever slot tags it sent and splice back the ones the
+			// stored body holds, from the read authorized above (KTD17). A
+			// body with no slot on either side passes through as is.
+			updates.content = preserveVisualSlots(
+				existing.content,
+				body.content,
+			);
 		}
 		if (body.status !== undefined) {
 			if (!isDocumentStatus(body.status)) {
@@ -458,6 +473,14 @@ export function registerDocumentRoutes(
 			return c.json(badRequest("No supported fields to update"), 400);
 		}
 
+		// When a slot is involved, the spliced body is only right for the
+		// version its slots were lifted from: guard the write with it, so a slot
+		// added or deleted in between is neither lost nor resurrected. Bodies
+		// with no slot on either side keep the unguarded write they had.
+		const slotsInvolved =
+			body.content !== undefined &&
+			(hasVisualSlots(existing.content) || hasVisualSlots(body.content));
+
 		let updated: Awaited<ReturnType<typeof updateDocument>>;
 		try {
 			updated = await updateDocument(c.req.param("id")!, {
@@ -465,6 +488,7 @@ export function registerDocumentRoutes(
 				lastEditedBy: ctx.userId,
 				userId: ctx.userId,
 				organizationId: ctx.organizationId ?? undefined,
+				...(slotsInvolved ? { expectedVersion: existing.version } : {}),
 			});
 		} catch (error) {
 			// Last line of defence in the query layer (a completion may land
@@ -472,6 +496,18 @@ export function registerDocumentRoutes(
 			if (error instanceof IntegrationContractStatusManagedError) {
 				return c.json(
 					{ error: { message: error.message, code: error.code } },
+					409,
+				);
+			}
+			if (error instanceof DocumentVersionConflictError) {
+				return c.json(
+					{
+						error: {
+							message:
+								"The document changed while it was being updated. Read it again and retry.",
+							code: "DOCUMENT_VERSION_CONFLICT",
+						},
+					},
 					409,
 				);
 			}

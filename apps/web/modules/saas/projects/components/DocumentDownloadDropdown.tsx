@@ -1,10 +1,13 @@
 "use client";
 
+import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
+import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
+	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
 import {
@@ -12,7 +15,10 @@ import {
 	FileCodeIcon,
 	FileTextIcon,
 	Loader2Icon,
+	SparklesIcon,
 } from "lucide-react";
+import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../shared/lib/orpc-client";
@@ -29,6 +35,20 @@ interface Props {
 	documentId: string;
 	title: string;
 	projectId: string;
+	/** The document's type; only a Glossy-eligible type offers the Glossy item. */
+	documentType: string;
+	/**
+	 * The route's organization, handed to the content fetch so it resolves
+	 * the same tenant as the page rather than the session's active one.
+	 */
+	organizationId: string | null;
+	/**
+	 * Where the document's Glossy page lives (Fizzy #2589, R1). The parent
+	 * passes it only when the `GLOSSY_EDITION` rollout gate is on for the
+	 * organization; this menu reads no flag itself. Absent, no Glossy item
+	 * renders.
+	 */
+	glossyHref?: string;
 	className?: string;
 }
 
@@ -89,14 +109,23 @@ export function DocumentDownloadDropdown({
 	documentId,
 	title,
 	projectId,
+	documentType,
+	organizationId,
+	glossyHref,
 	className,
 }: Props) {
+	const t = useTranslations("projects.glossyEntry");
 	const [isLoading, setIsLoading] = useState(false);
+	// The href carries the gate; the type check keeps an ineligible
+	// document from offering the item whatever the parent passes (R2).
+	const glossyItemHref =
+		glossyHref && isGlossyEligible(documentType) ? glossyHref : null;
 
 	const fetchContent = async (): Promise<string> => {
 		const res = await orpcClient.projects.documents.get({
 			projectId,
 			id: documentId,
+			organizationId,
 		});
 		let content = res.document?.content ?? "";
 		// Re-resolve S3 signed URLs so they're fresh for export
@@ -108,7 +137,10 @@ export function DocumentDownloadDropdown({
 		e.stopPropagation();
 		setIsLoading(true);
 		try {
-			let content = await fetchContent();
+			// Visual slots are Glossy layout, not content (R38). The PDF and
+			// DOCX renderers leave them out themselves; the Markdown file is
+			// written from the raw body, so it strips them here.
+			let content = stripVisualSlots(await fetchContent());
 
 			// 1. Replace mermaid code blocks with rendered diagram images
 			const mermaidBlockRe = /```mermaid\n([\s\S]*?)```/g;
@@ -250,6 +282,23 @@ export function DocumentDownloadDropdown({
 					<FileTextIcon className="mr-2 size-4" />
 					Word (.docx)
 				</DropdownMenuItem>
+				{glossyItemHref && (
+					<>
+						<DropdownMenuSeparator />
+						<DropdownMenuItem asChild>
+							<Link
+								href={glossyItemHref}
+								onClick={(e) => e.stopPropagation()}
+							>
+								<SparklesIcon
+									className="mr-2 size-4"
+									aria-hidden="true"
+								/>
+								{t("menuItem")}
+							</Link>
+						</DropdownMenuItem>
+					</>
+				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
