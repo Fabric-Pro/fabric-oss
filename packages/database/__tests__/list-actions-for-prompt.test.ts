@@ -35,7 +35,7 @@ describe("listActionsForPrompt", () => {
 		expect(whereOf().promptVersion).toEqual({ promptId: "p-1" });
 	});
 
-	it("sees SYSTEM and the org tier in organization context", () => {
+	it("sees SYSTEM, org, and the caller's personal tier in organization context", () => {
 		listActionsForPrompt({
 			promptId: "p-1",
 			userId: "u-1",
@@ -45,8 +45,10 @@ describe("listActionsForPrompt", () => {
 		const scopes = whereOf().OR.map((c: any) => c.scope);
 		expect(scopes).toContain("SYSTEM");
 		expect(scopes).toContain("ORG");
-		// A personal binding belongs to personal context and must not leak here.
-		expect(scopes).not.toContain("USER");
+		expect(scopes).toContain("USER");
+		expect(
+			whereOf().OR.find((c: { scope: string }) => c.scope === "USER"),
+		).toEqual({ scope: "USER", userId: "u-1" });
 	});
 
 	it("sees SYSTEM and the personal tier in personal context", () => {
@@ -56,6 +58,15 @@ describe("listActionsForPrompt", () => {
 		expect(scopes).toContain("SYSTEM");
 		expect(scopes).toContain("USER");
 		expect(scopes).not.toContain("ORG");
+	});
+
+	it("never reads a personal tier without a caller identity", () => {
+		listActionsForPrompt({ promptId: "p-1", organizationId: "org-1" });
+
+		expect(whereOf().OR).toEqual([
+			{ scope: "SYSTEM" },
+			{ scope: "ORG", organizationId: "org-1" },
+		]);
 	});
 
 	it("returns the action identity and tier of each binding", async () => {
