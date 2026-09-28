@@ -15,6 +15,7 @@ import { shouldEnforceOrgTwoFactor } from "@saas/organizations/lib/mfa-enforceme
 import { OrganizationGuestProvider } from "@saas/organizations/lib/organization-guest-context";
 import { AppWrapper } from "@saas/shared/components/AppWrapper";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
+import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
@@ -63,11 +64,18 @@ export default async function OrganizationLayout({
 	// organizations out. While it did not, `/app` could resolve this very slug
 	// from `lastActiveOrganizationId` and send the person straight back here.
 	// The two changes are one fix; neither is safe to revert alone.
-	if (await getOrganizationDeletedAt(organizationSlug)) {
+	if (
+		await measureCatalogRequestPhase("organization_deleted_check", () =>
+			getOrganizationDeletedAt(organizationSlug),
+		)
+	) {
 		redirect("/app");
 	}
 
-	const organization = await getActiveOrganization(organizationSlug);
+	const organization = await measureCatalogRequestPhase(
+		"organization_lookup",
+		() => getActiveOrganization(organizationSlug),
+	);
 
 	if (!organization) {
 		return notFound();
@@ -78,9 +86,14 @@ export default async function OrganizationLayout({
 	// `OrganizationGuestProvider`, so guest-aware hooks have the correct
 	// value on FIRST render — no org-shell flash and no client-side
 	// probe requests that 403 for project-scoped guests.
-	const session = await getSession();
+	const session = await measureCatalogRequestPhase(
+		"organization_session",
+		getSession,
+	);
 	const guest = session?.user
-		? await isGuestInOrg(session.user.id, organization.id)
+		? await measureCatalogRequestPhase("organization_guest_check", () =>
+				isGuestInOrg(session.user.id, organization.id),
+			)
 		: false;
 
 	// SOC 2 CC6.1 — organization-wide MFA enforcement. When an organization
@@ -96,7 +109,9 @@ export default async function OrganizationLayout({
 		!guest &&
 		!!session?.user &&
 		!userHasTwoFactor
-			? await getOrganizationRequireTwoFactor(organization.id)
+			? await measureCatalogRequestPhase("organization_mfa_check", () =>
+					getOrganizationRequireTwoFactor(organization.id),
+				)
 			: false;
 	if (
 		shouldEnforceOrgTwoFactor({
@@ -168,8 +183,12 @@ export default async function OrganizationLayout({
 	// Fetched alongside the prefetch queries above rather than after them —
 	// same async-parallel rule, independent read, no reason to serialize it.
 	const [featureFlags] = await Promise.all([
-		getAllFlagsForOrganization(organization.id),
-		Promise.all(prefetchPromises),
+		measureCatalogRequestPhase("organization_feature_flags", () =>
+			getAllFlagsForOrganization(organization.id),
+		),
+		measureCatalogRequestPhase("organization_prefetch", () =>
+			Promise.all(prefetchPromises),
+		),
 	]);
 
 	const brandColor = getOrganizationBrandColor(organization.metadata);
