@@ -1442,6 +1442,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A member accepted or rejected one visual in a Glossy edition during review.",
 	},
 	{
+		key: "project.parlume.session_started",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.session_started",
+		description:
+			"A project administrator started a Parlume meeting session with a selected project agent.",
+	},
+	{
+		key: "project.parlume.session_stopped",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.session_stopped",
+		description:
+			"A project administrator requested that Parlume leave a meeting and finalize its session.",
+	},
+	{
 		key: "project.recipient_brand.fetched",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.recipient_brand.fetched",

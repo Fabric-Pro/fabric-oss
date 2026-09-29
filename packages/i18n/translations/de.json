@@ -1355,6 +1355,10 @@
 						"restored": "Meeting wiederhergestellt",
 						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
 					},
+					"parlume": {
+						"session_started": "Parlume-Meeting-Sitzung gestartet",
+						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert"
+					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
 					},

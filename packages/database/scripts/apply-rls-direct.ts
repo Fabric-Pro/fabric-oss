@@ -344,6 +344,9 @@ async function applyRLS() {
 			{ name: "non_member_contact", policy: "org_only" }, // #2340 people without a Fabric account
 			{ name: "meeting_action_item_link", policy: "user_owned" }, // Links from meeting action items to work items (#1902)
 			{ name: "project_meeting_agenda", policy: "user_owned" }, // Generated pre-meeting agendas (#1901)
+			{ name: "parlume_meeting_session", policy: "user_owned" }, // Project-scoped Teams bot lifecycle
+			{ name: "parlume_meeting_segment", policy: "user_owned" }, // Final live transcript segments
+			{ name: "parlume_meeting_turn", policy: "user_owned" }, // Project-scoped spoken agent responses
 			{ name: "deleted_meeting_archive", policy: "user_owned" }, // 7-day recovery window for unlinked meetings (#2355)
 			{ name: "project_linked_teams_channel", policy: "user_owned" }, // Teams channels monitored for feature extraction
 			{ name: "project_linked_slack_channel", policy: "user_owned" }, // Slack channels monitored for feature extraction

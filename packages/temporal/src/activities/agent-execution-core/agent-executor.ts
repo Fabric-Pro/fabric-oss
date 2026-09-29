@@ -51,6 +51,7 @@ import {
 } from "../shared/frame-service";
 import { executeMicrosoftTeamsTool } from "../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
+import { isParlumeMeetingToolAllowed } from "./parlume-tool-policy";
 import type {
 	ExecuteAgentTurnInput,
 	ExecuteAgentTurnResult,
@@ -153,6 +154,7 @@ export async function executeAgentTurn(
 		agentInstanceId,
 		callingAgentId,
 		currentDepth,
+		meetingReadOnly = false,
 	} = input;
 
 	logger.info("[AgentExecutor] Starting agent turn", {
@@ -183,19 +185,33 @@ export async function executeAgentTurn(
 			const providerKey = resolveProviderKey(
 				configInfo.serverName || configInfo.configId,
 			);
-			const accessLevel = classifyToolAccessLevel(
-				configInfo.originalName || toolName,
-			);
+			const originalToolName = configInfo.originalName || toolName;
+			const accessLevel = classifyToolAccessLevel(originalToolName);
+			if (
+				meetingReadOnly &&
+				!isParlumeMeetingToolAllowed(originalToolName)
+			) {
+				delete tools[toolName];
+				continue;
+			}
 
 			tools[toolName] = tool({
 				description: toolDef.description || toolName,
 				inputSchema: toolDef.inputSchema,
 				execute: async (args: Record<string, unknown>) => {
+					if (
+						meetingReadOnly &&
+						!isParlumeMeetingToolAllowed(originalToolName)
+					) {
+						return {
+							error: "Parlume meetings allow project-scoped read-only tools only.",
+						};
+					}
 					// Read-only mode: block external write tools
 					// before the authority flow; the agent relays the error.
 					const readOnlyBlock = await guardToolWriteForReadOnly(
 						projectId,
-						configInfo.originalName || toolName,
+						originalToolName,
 					);
 					if (readOnlyBlock) {
 						return readOnlyBlock;
@@ -252,10 +268,24 @@ export async function executeAgentTurn(
 					oauthTool.originalName,
 					oauthTool.serverName,
 				);
+				if (
+					meetingReadOnly &&
+					!isParlumeMeetingToolAllowed(oauthTool.originalName)
+				) {
+					continue;
+				}
 				tools[oauthTool.name] = tool({
 					description: oauthTool.description,
 					inputSchema: zodSchema,
 					execute: async (args: Record<string, unknown>) => {
+						if (
+							meetingReadOnly &&
+							!isParlumeMeetingToolAllowed(oauthTool.originalName)
+						) {
+							return {
+								error: "Parlume meetings allow project-scoped read-only tools only.",
+							};
+						}
 						// Read-only mode: OAuth integration
 						// writes (Teams/GitHub) are external writes too.
 						const readOnlyBlock = await guardToolWriteForReadOnly(
@@ -320,9 +350,12 @@ export async function executeAgentTurn(
 		}
 
 		// Load built-in Fabric AI tools if configured
-		if (builtInToolNames && builtInToolNames.length > 0) {
+		const effectiveBuiltInToolNames = meetingReadOnly
+			? []
+			: builtInToolNames;
+		if (effectiveBuiltInToolNames && effectiveBuiltInToolNames.length > 0) {
 			const builtInTools = await loadBuiltInToolsForAgent(
-				builtInToolNames,
+				effectiveBuiltInToolNames,
 				userId,
 				organizationId,
 				imageRefs,

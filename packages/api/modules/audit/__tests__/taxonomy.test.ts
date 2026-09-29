@@ -239,8 +239,11 @@ describe("audit.taxonomy handler", () => {
 		// (project.recipient_brand.fetched / .updated) and the one
 		// organization-scoped action, org.brand_kit.updated. The build
 		// lifecycle actions fire only when the build's guarded write actually
-		// applied, never for a superseded attempt = 165.
-		expect(result.actions).toHaveLength(165);
+		// applied, never for a superseded attempt = 165,
+		// + 2 Parlume meeting session actions = 167.
+		expect(result.actions).toHaveLength(167);
+		expect(result.actions).toContain("project.parlume.session_started");
+		expect(result.actions).toContain("project.parlume.session_stopped");
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);

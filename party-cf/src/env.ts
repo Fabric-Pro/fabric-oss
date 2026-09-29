@@ -6,4 +6,5 @@ export interface Env {
 	Orchestrator: DurableObjectNamespace;
 	TaskAgent: DurableObjectNamespace;
 	Health: DurableObjectNamespace;
+	Parlume: DurableObjectNamespace;
 }

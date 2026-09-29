@@ -332,6 +332,9 @@ model User {
   // Meeting transcript sync relations
   linkedMeetings     ProjectLinkedMeeting[]
   meetingTranscripts ProjectMeetingTranscript[]
+  parlumeMeetingSessions ParlumeMeetingSession[]
+  parlumeMeetingSegments ParlumeMeetingSegment[]
+  parlumeMeetingTurns    ParlumeMeetingTurn[]
 
   // Teams channel monitor relations
   linkedTeamsChannels       ProjectLinkedTeamsChannel[]
@@ -801,6 +804,9 @@ model Organization {
   // Meeting transcript sync relations
   linkedMeetings     ProjectLinkedMeeting[]
   meetingTranscripts ProjectMeetingTranscript[]
+  parlumeMeetingSessions ParlumeMeetingSession[]
+  parlumeMeetingSegments ParlumeMeetingSegment[]
+  parlumeMeetingTurns    ParlumeMeetingTurn[]
 
   // Teams channel monitor relations
   linkedTeamsChannels     ProjectLinkedTeamsChannel[]
@@ -2066,6 +2072,9 @@ model Project {
   meetingTranscripts     ProjectMeetingTranscript[]
   meetingAgendas         ProjectMeetingAgenda[]
   meetingActionItemLinks MeetingActionItemLink[]
+  parlumeMeetingSessions ParlumeMeetingSession[]
+  parlumeMeetingSegments ParlumeMeetingSegment[]
+  parlumeMeetingTurns    ParlumeMeetingTurn[]
   todoItems              TodoItem[]
 
   // Teams channel monitor relations
@@ -4605,6 +4614,135 @@ model ProjectLinkedMeeting {
   @@unique([projectId, joinUrl])
   @@index([projectId])
   @@map("project_linked_meeting")
+}
+
+/// Lifecycle for a Parlume bot invited into a Teams meeting.
+enum ParlumeMeetingSessionStatus {
+  PENDING
+  JOINING
+  ACTIVE
+  FINALIZING
+  LEAVING
+  STOP_FAILED
+  ENDED
+  FAILED
+
+  @@map("parlume_meeting_session_status")
+}
+
+enum ParlumeMeetingTurnStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+
+  @@map("parlume_meeting_turn_status")
+}
+
+/// A project-scoped invitation of a Fabric Agent to one Teams meeting.
+///
+/// `agentInstanceSId` remains stable when the agent is edited. The version
+/// fields pin the configuration selected when the bot was started. Turns may
+/// use that archived snapshot only while the stable agent remains active and
+/// bound to this project.
+model ParlumeMeetingSession {
+  id                     String                      @id @default(cuid())
+  projectId              String
+  organizationId         String
+  userId                 String
+  agentInstanceSId       String
+  agentInstanceVersionId String
+  agentInstanceVersion   Int
+  providerBotId          String?                     @unique
+  streamTokenDigest      String
+  status                 ParlumeMeetingSessionStatus @default(PENDING)
+  wakePhrase             String                      @default("Hey Fabric")
+  toolsReadOnly          Boolean                     @default(true)
+  lastError              String?                     @db.Text
+  joinedAt               DateTime?
+  hardStopAt             DateTime?
+  leaveRequestedAt       DateTime?
+  captureStoppedAt       DateTime?
+  terminalCallbackAt     DateTime?
+  streamClosedAt         DateTime?
+  streamGeneration       Int                         @default(0)
+  finalizationStartedAt  DateTime?
+  finalizedAt            DateTime?
+  transcriptContextId    String?                     @unique
+  providerDataDeletedAt  DateTime?
+  activeTurnId          String?
+  endedAt                DateTime?
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  segments     ParlumeMeetingSegment[]
+  turns        ParlumeMeetingTurn[]
+
+  @@index([projectId, createdAt])
+  @@index([organizationId, status])
+  @@index([agentInstanceSId])
+  @@map("parlume_meeting_session")
+}
+
+/// One bounded response request made from a final meeting utterance.
+model ParlumeMeetingTurn {
+  id             String                    @id @default(cuid())
+  sessionId      String
+  projectId      String
+  organizationId String
+  userId         String
+  dedupeKey      String
+  speakerName    String?
+  speakerId      String?
+  requestText    String                    @db.Text
+  responseText   String?                   @db.Text
+  status         ParlumeMeetingTurnStatus  @default(PENDING)
+  error          String?                   @db.Text
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, dedupeKey])
+  @@index([sessionId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("parlume_meeting_turn")
+}
+
+/// Final live transcript segments emitted by the Parlume transcription bridge.
+/// Partial provider events are intentionally never persisted.
+model ParlumeMeetingSegment {
+  id               String   @id @default(cuid())
+  sessionId        String
+  projectId        String
+  organizationId   String
+  userId           String
+  dedupeKey        String
+  speakerName      String?
+  speakerId        String?
+  text             String   @db.Text
+  utteranceStartMs Int?
+  utteranceEndMs   Int?
+  createdAt        DateTime @default(now())
+
+  session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, dedupeKey])
+  @@index([projectId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("parlume_meeting_segment")
 }
 
 /// Recovery window for a destructively unlinked meeting (Fizzy #2355).

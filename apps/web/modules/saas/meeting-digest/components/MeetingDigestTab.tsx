@@ -24,6 +24,7 @@ import { AgendaView } from "./AgendaView";
 import { CalendarCanvas } from "./CalendarCanvas";
 import { DigestConfigPanel } from "./DigestConfigPanel";
 import { MeetingDetailSheet } from "./MeetingDetailSheet";
+import { ParlumeInviteDialog } from "./ParlumeInviteDialog";
 import { PersonalMeetingSheet } from "./PersonalMeetingSheet";
 import {
 	PersonalMeetingsConsent,
@@ -119,6 +120,7 @@ export function MeetingDigestTab({
 	const includedMeetings = meetings.filter((m) => m.includedInDigest);
 
 	const [showPicker, setShowPicker] = useState(false);
+	const [showParlume, setShowParlume] = useState(false);
 	const { confirm } = useConfirmationAlert();
 
 	// Fetched unconditionally (once canEdit) rather than gated on
@@ -227,6 +229,9 @@ export function MeetingDigestTab({
 	// button is a half-feature. As of #2143 this flag also selects the tabbed
 	// (Upcoming/Calendar) vs. untabbed calendar-only digest layout.
 	const meetingAgendaEnabled = useFeatureFlag("MEETING_AGENDA");
+	const parlumeEnabled = useFeatureFlag("PARLUME_MEETINGS");
+	const canInviteParlume =
+		canEdit && organizationId !== null && parlumeEnabled;
 
 	// #2104. Separate from PERSONAL_MEETINGS so on-device caching can be rolled
 	// back without disabling personal meetings entirely.
@@ -570,6 +575,15 @@ export function MeetingDigestTab({
 				</div>
 				{canEdit && (
 					<div className="flex items-center gap-3">
+						{canInviteParlume && (
+							<button
+								type="button"
+								className="text-sm underline"
+								onClick={() => setShowParlume(true)}
+							>
+								Invite Parlume
+							</button>
+						)}
 						{!configPanelVisible && !genericEmptyStateOnScreen && (
 							<button
 								type="button"
@@ -654,6 +668,14 @@ export function MeetingDigestTab({
 					onOpenChange={setShowPicker}
 					onLinked={refreshAfterLink}
 					existingJoinUrls={joinUrls}
+				/>
+			)}
+
+			{canInviteParlume && (
+				<ParlumeInviteDialog
+					projectId={projectId}
+					open={showParlume}
+					onOpenChange={setShowParlume}
 				/>
 			)}
 

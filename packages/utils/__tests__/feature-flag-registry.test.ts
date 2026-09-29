@@ -913,15 +913,12 @@ describe("GLOSSY_EDITION (#2589)", () => {
 		expect(FEATURE_FLAG_REGISTRY.GLOSSY_EDITION.orgScopable).toBe(true);
 	});
 
-	// The newest org-scopable entry is the tail, and PUBLISHING_SUITE stays
-	// the head that two API tests use as their fixture flag. When the next
-	// entry lands it takes over this assertion, and this block restates
-	// itself as relative order the way TODO_LIST's did above.
-	it("is appended after every existing org-scopable flag", () => {
+	// PUBLISHING_SUITE stays the head that two API tests use as their fixture.
+	it("is appended after the org-scopable flags that preceded it", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
-		expect(ORG_SCOPABLE_FLAG_KEYS[ORG_SCOPABLE_FLAG_KEYS.length - 1]).toBe(
-			"GLOSSY_EDITION",
-		);
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("GLOSSY_EDITION"),
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("LINEAR_INTEGRATION"));
 	});
 
 	it("resolves off when neither an override nor the env var is set", () => {
@@ -948,5 +945,31 @@ describe("GLOSSY_EDITION (#2589)", () => {
 				{ FABRIC_FEATURE_GLOSSY_EDITION: "true" },
 			),
 		).toEqual({ enabled: true, source: "env" });
+	});
+});
+
+describe("PARLUME_MEETINGS", () => {
+	it("is a default-off organization-scopable flag", () => {
+		expect(FEATURE_FLAG_REGISTRY.PARLUME_MEETINGS).toMatchObject({
+			envVar: "FABRIC_FEATURE_PARLUME_MEETINGS",
+			default: false,
+			orgScopable: true,
+		});
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS.at(-1)).toBe("PARLUME_MEETINGS");
+	});
+
+	it("accepts an instance-wide override while preserving organization precedence", () => {
+		expect(resolveFlag("PARLUME_MEETINGS", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+		expect(resolveFlag("PARLUME_MEETINGS", { global: true }, {})).toEqual({
+			enabled: true,
+			source: "override",
+		});
+		expect(
+			resolveFlag("PARLUME_MEETINGS", { global: true, org: false }, {}),
+		).toEqual({ enabled: false, source: "org-override" });
 	});
 });

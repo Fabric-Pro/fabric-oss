@@ -30,9 +30,17 @@ class_name = "TaskAgent"
 name = "Health"
 class_name = "Health"
 
+[[durable_objects.bindings]]
+name = "Parlume"
+class_name = "Parlume"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Document", "Orchestrator", "TaskAgent", "Health"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Parlume"]
 
 # Observability: enable Workers Logs (free) for prod debugging.
 [observability]
@@ -69,3 +77,7 @@ class_name = "TaskAgent"
 [[env.staging.durable_objects.bindings]]
 name = "Health"
 class_name = "Health"
+
+[[env.staging.durable_objects.bindings]]
+name = "Parlume"
+class_name = "Parlume"
