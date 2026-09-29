@@ -7,11 +7,12 @@
  * client, email client, etc.). Booting it inside a Vitest worker just to
  * assert two callbacks invoke `seedDefaultMcpConfigsForTenant` is fragile
  * and slow. Instead, this suite verifies the wiring statically: we read the
- * source of `auth.ts` and assert (a) the helper is imported from
- * `@repo/agent-core/backend`, (b) every required hook site contains a call
- * that passes the right tenant tuple. This catches the most common
- * regression mode — a refactor that silently deletes one of the call sites
- * — without booting the full auth instance.
+ * source of `auth.ts` and assert (a) it shares the canonical lazy helper
+ * with invite reconciliation, (b) the helper dynamically loads
+ * `@repo/agent-core/backend` only when it seeds, and (c) every required hook
+ * site contains a call that passes the right tenant tuple. This catches the
+ * most common regression mode — a refactor that silently deletes one of the
+ * call sites — without booting the full auth instance.
  *
  * The behavioral contract that "one call to `seedDefaultMcpConfigsForTenant`
  * produces exactly one row per `(userId, organizationId, mcpServerId)`
@@ -31,6 +32,8 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 let AUTH_SOURCE = "";
+let INVITE_RECONCILIATION_SOURCE = "";
+let SEED_DEFAULT_MCP_CONFIGS_SOURCE = "";
 
 beforeAll(() => {
 	// `auth.ts` lives at packages/auth/auth.ts — one level up from
@@ -39,13 +42,56 @@ beforeAll(() => {
 	const here = dirname(fileURLToPath(import.meta.url));
 	const authPath = join(here, "..", "..", "auth.ts");
 	AUTH_SOURCE = readFileSync(authPath, "utf8");
+	INVITE_RECONCILIATION_SOURCE = readFileSync(
+		join(here, "..", "invite-reconciliation.ts"),
+		"utf8",
+	);
+	SEED_DEFAULT_MCP_CONFIGS_SOURCE = readFileSync(
+		join(here, "..", "seed-default-mcp-configs.ts"),
+		"utf8",
+	);
 });
 
 describe("auth.ts hook wiring — seedDefaultMcpConfigsForTenant", () => {
-	it("imports seedDefaultMcpConfigsForTenant from @repo/agent-core/backend", () => {
-		expect(AUTH_SOURCE).toMatch(
-			/import\s+\{[^}]*seedDefaultMcpConfigsForTenant[^}]*\}\s+from\s+["']@repo\/agent-core\/backend["']/,
+	it("uses one typed lazy helper for auth and invite reconciliation", () => {
+		const backendImport =
+			/import\s+\{[^}]*seedDefaultMcpConfigsForTenant[^}]*\}\s+from\s+["']@repo\/agent-core\/backend["']/;
+
+		const sourcesWithRuntimeImports = [
+			[AUTH_SOURCE, "./lib/seed-default-mcp-configs"],
+			[INVITE_RECONCILIATION_SOURCE, "./seed-default-mcp-configs"],
+		];
+
+		for (const [source, helperPath] of sourcesWithRuntimeImports) {
+			expect(source).not.toMatch(backendImport);
+			expect(source).toMatch(
+				new RegExp(
+					`import\\s+\\{[^}]*seedDefaultMcpConfigsForTenant[^}]*\\}\\s+from\\s+["']${escapeRegex(helperPath)}["']`,
+				),
+			);
+		}
+		expect(SEED_DEFAULT_MCP_CONFIGS_SOURCE).toMatch(
+			/type\s+SeedDefaultMcpConfigsForTenant\s*=\s*typeof\s+import\(["']@repo\/agent-core\/backend["']\)\.seedDefaultMcpConfigsForTenant/,
 		);
+		expect(SEED_DEFAULT_MCP_CONFIGS_SOURCE).toMatch(
+			/await\s+import\(\s*["']@repo\/agent-core\/backend["']\s*\)/,
+		);
+	});
+
+	it("loads Temporal only during delete-user workflow cancellation", () => {
+		const deleteUserGuard =
+			'if (ctx.path.startsWith("/delete-user") && userId)';
+
+		const deleteUserGuardIndex = AUTH_SOURCE.indexOf(deleteUserGuard);
+		const temporalImport = /await\s+import\(\s*"@repo\/temporal"\s*\)/.exec(
+			AUTH_SOURCE,
+		);
+
+		expect(AUTH_SOURCE).not.toMatch(
+			/import\s+\{[^}]*getTemporalClient[^}]*\}\s+from\s+["']@repo\/temporal["']/,
+		);
+		expect(deleteUserGuardIndex).toBeGreaterThanOrEqual(0);
+		expect(temporalImport?.index).toBeGreaterThan(deleteUserGuardIndex);
 	});
 
 	// -----------------------------------------------------------------------
