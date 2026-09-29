@@ -37,11 +37,12 @@ const ADAPTIVE_ONLY_CLAUDE_RE =
 /**
  * Claude models that return HTTP 400 for a forced `tool_choice`
  * (`{type:"any"}` / `{type:"tool"}`, i.e. AI SDK `toolChoice: "required"` or
- * `{type:"tool", toolName}`) regardless of thinking settings. `claude-opus-5`
- * itself accepts a forced tool choice and is deliberately not matched.
+ * `{type:"tool", toolName}`) regardless of thinking settings: Opus 5.5,
+ * Sonnet 5.5, Fable 5.1 and Mythos 5.1. `claude-opus-5` and `claude-sonnet-5`
+ * accept a forced tool choice and are deliberately not matched.
  */
 const REJECTS_FORCED_TOOL_CHOICE_CLAUDE_RE =
-	/(?:^|[^a-z0-9])claude-(?:opus-5[.-]5|(?:fable|mythos)-5[.-]1)(?![0-9])/i;
+	/(?:^|[^a-z0-9])claude-(?:(?:opus|sonnet)-5[.-]5|(?:fable|mythos)-5[.-]1)(?![0-9])/i;
 
 /**
  * True for Claude models whose only thinking on-mode is

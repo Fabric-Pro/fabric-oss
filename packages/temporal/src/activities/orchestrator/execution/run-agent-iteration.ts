@@ -797,7 +797,7 @@ export async function runAgentIteration(
 		//     false here. "No providerOptions" does NOT on its own make
 		//     forcing safe, because
 		//   - the model may reject ANY forced tool_choice regardless of its
-		//     thinking settings (Opus 5.5, Fable 5.1, Mythos 5.1 — see
+		//     thinking settings (Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 — see
 		//     `anthropicModelRejectsForcedToolChoice` in `@repo/agent-types`).
 		//     The catalog canonical name identifies it even when the provider
 		//     model string is an opaque alias (a Databricks serving endpoint);

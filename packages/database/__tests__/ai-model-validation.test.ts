@@ -101,6 +101,7 @@ const ANTHROPIC_DIRECT_OFFICIAL_MODELS = new Set([
 	// Claude 4.7 series
 	"claude-opus-4-7",
 	// Claude 5 series
+	"claude-sonnet-5-5",
 	"claude-sonnet-5",
 	// Claude 4.6 series
 	"claude-sonnet-4-6",
@@ -241,6 +242,7 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"anthropic/claude-opus-5.5",
 	"anthropic/claude-opus-5",
 	"anthropic/claude-opus-4.7",
+	"anthropic/claude-sonnet-5.5",
 	"anthropic/claude-sonnet-5",
 	"anthropic/claude-sonnet-4-6",
 	"anthropic/claude-opus-4-6",
@@ -304,6 +306,7 @@ const OPENROUTER_OFFICIAL_MODELS = new Set([
 	"anthropic/claude-opus-5.5",
 	"anthropic/claude-opus-5",
 	"anthropic/claude-opus-4.7",
+	"anthropic/claude-sonnet-5.5",
 	"anthropic/claude-sonnet-5",
 	"anthropic/claude-sonnet-4-6",
 	"anthropic/claude-opus-4-6",
@@ -535,6 +538,7 @@ const AWS_BEDROCK_OFFICIAL_MODELS = new Set([
 	"anthropic.claude-opus-4-8",
 	"anthropic.claude-opus-5-5",
 	"anthropic.claude-opus-5",
+	"anthropic.claude-sonnet-5-5",
 	"anthropic.claude-sonnet-4-6",
 	"anthropic.claude-opus-4-7",
 	"anthropic.claude-opus-4-6-v1",
@@ -555,6 +559,7 @@ const AWS_BEDROCK_OFFICIAL_MODELS = new Set([
 // services are discovered dynamically and intentionally not enumerated here.
 const DATABRICKS_OFFICIAL_MODELS = new Set([
 	// Chat
+	"system.ai.claude-sonnet-5-5",
 	"system.ai.claude-sonnet-5",
 	"system.ai.claude-sonnet-4-6",
 	"system.ai.claude-sonnet-4-5",

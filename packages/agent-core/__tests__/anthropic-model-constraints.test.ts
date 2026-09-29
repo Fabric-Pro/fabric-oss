@@ -38,6 +38,7 @@ describe("isAnthropicAdaptiveOnlyModel", () => {
 		"claude-opus-5",
 		"claude-opus-5-5",
 		"claude-sonnet-5",
+		"claude-sonnet-5-5",
 		"claude-fable-5",
 		"claude-fable-5-1",
 		"claude-mythos-5",
@@ -85,6 +86,7 @@ describe("isAnthropicAdaptiveOnlyModel", () => {
 describe("anthropicModelRejectsForcedToolChoice", () => {
 	for (const bare of [
 		"claude-opus-5-5",
+		"claude-sonnet-5-5",
 		"claude-fable-5-1",
 		"claude-mythos-5-1",
 	]) {
@@ -94,7 +96,7 @@ describe("anthropicModelRejectsForcedToolChoice", () => {
 	}
 
 	it.each([
-		// claude-opus-5 ACCEPTS forced tool_choice.
+		// claude-opus-5 and claude-sonnet-5 ACCEPT forced tool_choice.
 		"claude-opus-5",
 		"anthropic/claude-opus-5",
 		"system.ai.claude-opus-5",
@@ -107,6 +109,7 @@ describe("anthropicModelRejectsForcedToolChoice", () => {
 		"claude-mythos-5",
 		"claude-opus-4-6",
 		"claude-opus-5-50",
+		"claude-sonnet-5-50",
 		"gpt-6-sol",
 		"",
 	])("%s → false", (model) => {
@@ -121,6 +124,7 @@ describe("anthropicModelRejectsForcedToolChoice", () => {
 	it("is a subset of adaptive-only", () => {
 		for (const m of [
 			"claude-opus-5-5",
+			"claude-sonnet-5-5",
 			"claude-fable-5-1",
 			"claude-mythos-5-1",
 		]) {
