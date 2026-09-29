@@ -390,6 +390,25 @@ export function glossyDetectionKey(
 	});
 }
 
+/** Tags, such as a slot or image line left in the text: layout, not body text. */
+const BODY_MARKUP = /<[^<>\n]{0,2000}>/g;
+const BODY_TEXT = /[\p{L}\p{N}]/u;
+
+/**
+ * Whether a section has body text of its own: a letter or digit in its
+ * cleaned body once tags are set aside (Fizzy #2589 follow-up). A heading
+ * whose content lives in its subsections, like `3) Options Considered` over
+ * `### Option 1`, has none, and neither has a section holding only anchors.
+ * Detection never proposes for such a section: the model has only the
+ * heading to go on and fills the visual with placeholders. Its key, its
+ * slots, and its place in the detection key are unchanged.
+ */
+export function hasGlossyBodyText(
+	section: Pick<GlossySection, "markdown">,
+): boolean {
+	return BODY_TEXT.test(section.markdown.replace(BODY_MARKUP, " "));
+}
+
 /** A section detection may propose a visual for, as the model call takes it. */
 export interface GlossyDetectableSection {
 	sectionKey: string;
@@ -418,7 +437,9 @@ export interface GlossyKeyPlan {
 	 * The sections a whole-document detection proposes for, in document
 	 * order. A section holding a best-fit slot is left out, as the build's
 	 * own detection leaves it out (`planGlossyVisuals`): the slot may resolve
-	 * to any kind, and two visuals of one kind side by side is the risk.
+	 * to any kind, and two visuals of one kind side by side is the risk. A
+	 * section with no body text of its own is left out too, as the build's
+	 * detect activity leaves it out (`hasGlossyBodyText`).
 	 */
 	detectable: GlossyDetectableSection[];
 }
@@ -454,7 +475,7 @@ export function planGlossyKeys(input: {
 				anchor.kind === "slot" &&
 				slotExtractKind(anchor.slotKind) === "auto",
 		);
-		if (bestFit) {
+		if (bestFit || !hasGlossyBodyText(section)) {
 			continue;
 		}
 		detectable.push({

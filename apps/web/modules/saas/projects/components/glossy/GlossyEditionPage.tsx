@@ -96,7 +96,11 @@ export function GlossyEditionPage({
 			<GlossyEditionWorkspace
 				data={data}
 				dataUpdatedAt={query.dataUpdatedAt}
-				refetch={async () => (await query.refetch()).data}
+				// Throws when the read fails, so a refusal is never mistaken
+				// for the last good answer.
+				refetch={async () =>
+					(await query.refetch({ throwOnError: true })).data
+				}
 				projectId={projectId}
 				documentId={documentId}
 				aiProvidersHref={`${basePath}/settings/ai-providers`}
@@ -210,6 +214,19 @@ function glossyPaletteInput({
 		recipientColors: brand.recipient?.colors ?? [],
 		overrides: edition?.lastOptions?.preparerOverrides ?? null,
 	};
+}
+
+/**
+ * The server answered with a refusal (any 4xx: access revoked, the rollout
+ * gate off, the document gone), not a fault that a retry or a cached copy
+ * could route around. oRPC errors carry their HTTP status; an error with only
+ * a code counts when it is one of the access refusals.
+ */
+function isRefusal(error: unknown): boolean {
+	const status = (error as { status?: unknown } | null | undefined)?.status;
+	return typeof status === "number"
+		? status >= 400 && status < 500
+		: isGlossyAccessDenied(error);
 }
 
 /** The edition with one visual's review decision replaced. */
@@ -335,7 +352,7 @@ function GlossyEditionWorkspace({
 		content?.visuals ?? null,
 		palette,
 	);
-	// What the preview shows; a download reads the query's own data instead.
+	// What the preview shows; a download makes a read of its own instead.
 	const shownUrls = useHeldSignedUrls(
 		{
 			imageUrls: data.imageUrls,
@@ -576,20 +593,67 @@ function GlossyEditionWorkspace({
 			}),
 	};
 
+	/**
+	 * The edition as a download renders it: one read of its own that asks for
+	 * the logos as `data:` URIs (Fizzy #2589 follow-up). A signed storage read
+	 * is a cross-origin fetch the renderer cannot make without CORS on the
+	 * bucket; the page's own reads, polled during a build, never ask, so they
+	 * stay small. Null when the server refuses the caller (`isRefusal`), on
+	 * this read or on the refresh below: nothing may then download. Only a
+	 * failure that is not a refusal falls back to the page's own read,
+	 * refreshed first when its signed reads are old.
+	 */
+	const readForDownload = async (): Promise<GlossyEdition | null> => {
+		try {
+			return await orpcClient.projects.glossy.get({
+				projectId,
+				documentId,
+				inlineLogos: true,
+			});
+		} catch (error) {
+			if (isRefusal(error)) {
+				// Access revoked, the rollout gate off, or the document gone: the
+				// page's copy never stands in for what the server now refuses,
+				// and the page asks again to show where the caller stands.
+				void invalidate();
+				return null;
+			}
+		}
+		// A network failure, a timeout, or a server fault: the page's own read.
+		if (Date.now() - dataUpdatedAt <= SIGNED_URL_REFRESH_MS) {
+			return data;
+		}
+		try {
+			return (await refetch()) ?? data;
+		} catch (error) {
+			return isRefusal(error) ? null : data;
+		}
+	};
+
 	const download = async (formatName: GlossyDownloadFormat) => {
 		setDownloading(formatName);
 		try {
-			// Signed reads expire; an old page asks for fresh ones first.
-			const current =
-				Date.now() - dataUpdatedAt > SIGNED_URL_REFRESH_MS
-					? ((await refetch()) ?? data)
-					: data;
-			const currentContent = current.edition?.content;
-			if (!currentContent || !current.edition) {
+			const current = await readForDownload();
+			const currentEdition = current?.edition;
+			const currentContent = currentEdition?.content;
+			if (!current || !currentEdition || !currentContent) {
+				// Refused, or the edition this page offered for download is gone.
+				toast.error(
+					t("download.failed", { format: formatName.toUpperCase() }),
+				);
+				return;
+			}
+			if (currentEdition.contentRevision !== edition?.contentRevision) {
+				// A rebuild or a regenerated visual published since the page read
+				// the edition, so what would download is not what was reviewed
+				// (Fizzy #2589 follow-up). The page reads it again, its own read
+				// with signed logos, to be reviewed before downloading.
+				void invalidate();
+				toast.info(t("download.editionChanged"));
 				return;
 			}
 			const discarded = new Set(
-				current.edition.decisions
+				currentEdition.decisions
 					.filter((entry) => entry.decision === "DISCARDED")
 					.map((entry) => entry.visualKey),
 			);
@@ -768,6 +832,7 @@ function GlossyEditionWorkspace({
 					}}
 					imageUrls={shownUrls.imageUrls}
 					renderVisual={renderVisual}
+					palette={palette}
 				/>
 			) : build.status === "failed" ? null : (
 				<EmptyState className="rounded-lg border border-border border-dashed">

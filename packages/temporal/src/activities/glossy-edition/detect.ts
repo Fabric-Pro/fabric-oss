@@ -9,6 +9,7 @@ import {
 	glossyFailure,
 	glossyModelContext,
 	guardBuild,
+	hasGlossyBodyText,
 	loadBuildSource,
 	parseDetectionOutput,
 	readGlossyCacheEntry,
@@ -44,6 +45,11 @@ export async function detectGlossyOpportunitiesActivity(
 	const wanted = new Set(input.sectionKeys);
 	const considered = source.sections.filter((entry) => wanted.has(entry.key));
 	const cacheKey = glossyDetectionKey(considered, input.documentType);
+	// Keyed over every section considered, as Align first's detection is, but
+	// never proposed for when it has no body text of its own.
+	const proposable = considered.filter(({ section }) =>
+		hasGlossyBodyText(section),
+	);
 
 	await guardBuild(input.buildId, {
 		step: "detecting",
@@ -59,7 +65,7 @@ export async function detectGlossyOpportunitiesActivity(
 	const reused = cached === undefined ? null : parseDetectionOutput(cached);
 	if (reused) {
 		return {
-			opportunities: withinBudget(reused, considered, input.limit),
+			opportunities: withinBudget(reused, proposable, input.limit),
 			cacheKey,
 			fromCache: true,
 		};
@@ -69,7 +75,7 @@ export async function detectGlossyOpportunitiesActivity(
 		detectGlossyOpportunities({
 			...glossyModelContext(input),
 			documentType: input.documentType,
-			sections: considered.map(({ key, section }) => ({
+			sections: proposable.map(({ key, section }) => ({
 				sectionKey: key,
 				heading: section.heading,
 				markdown: section.markdown,
@@ -113,7 +119,7 @@ export async function detectGlossyOpportunitiesActivity(
 	return {
 		opportunities: withinBudget(
 			output.opportunities,
-			considered,
+			proposable,
 			input.limit,
 		),
 		cacheKey,
@@ -121,14 +127,14 @@ export async function detectGlossyOpportunitiesActivity(
 	};
 }
 
-/** One per considered section, none it reserves, at most `limit`, in document order. */
+/** One per proposable section, none it reserves, at most `limit`, in document order. */
 function withinBudget(
 	opportunities: GlossyDetectionCacheOutput["opportunities"],
-	considered: readonly GlossyKeyedSection[],
+	proposable: readonly GlossyKeyedSection[],
 	limit: number,
 ): DetectGlossyOpportunitiesActivityResult["opportunities"] {
 	const byKey = new Map(
-		considered.map((entry, index) => [
+		proposable.map((entry, index) => [
 			entry.key,
 			{ index, reserved: reservedKinds(entry.section) },
 		]),

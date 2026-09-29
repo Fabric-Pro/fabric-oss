@@ -47,6 +47,33 @@ export const DOCUMENT = [
 	"Alex leads delivery. Sam owns design.",
 ].join("\n");
 
+/**
+ * Five sections, two with no text of their own: `3) Options Considered`,
+ * whose options live in their own subsections, and `4) Delivery Plan`,
+ * which holds only an author's timeline slot.
+ */
+export const OPTIONS_DOCUMENT = [
+	"# Example Business Case",
+	"",
+	"## 3) Options Considered",
+	"",
+	"### Option 1",
+	"",
+	"A managed platform that ships in one quarter.",
+	"",
+	"### Option 2",
+	"",
+	"An in-house build that gives full control.",
+	"",
+	"## 4) Delivery Plan",
+	"",
+	'<visual-slot data-slot-id="slot-9" data-kind="timeline" data-hint="phases"></visual-slot>',
+	"",
+	"## 5) Recommendation",
+	"",
+	"Choose the managed platform.",
+].join("\n");
+
 export function snapshotOf(
 	content: string = DOCUMENT,
 	overrides: Partial<GlossyBuildSnapshot> = {},

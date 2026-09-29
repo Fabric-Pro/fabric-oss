@@ -8,6 +8,7 @@ import {
 	isKeySection,
 	normalizeFact,
 } from "../lib/glossy/fact-guard";
+import { type VisualSpec, visualSpecFacts } from "../lib/glossy/visual-spec";
 
 function violationsOf(result: FactGuardResult) {
 	return result.pass ? [] : result.violations;
@@ -1424,6 +1425,240 @@ describe("checkVisualFacts (covers AE4)", () => {
 				),
 			),
 		).toEqual(["label"]);
+	});
+});
+
+describe("checkVisualFacts placeholders (Fizzy #2589 follow-up)", () => {
+	/** What extraction checks a visual against: the heading, then the body. */
+	const headingOnly = "Options Considered\n\n";
+	const options = [
+		"Options Considered",
+		"",
+		"We compared a managed platform with an in-house build.",
+		"The managed platform ships faster; the in-house build gives full control.",
+	].join("\n");
+	/** A template body: each placeholder is in the source, so no word is new. */
+	const template = [
+		"Owner Details",
+		"",
+		"Owner: [Owner Name]. Sponsor: \\[Sponsor Name\\]. Budget: TBD. Scope: TBC.",
+		"Launch: TBA. Region: N/A. Risk: unknown. Notes: placeholder.",
+		"Lorem ipsum dolor sit amet. Choose <Option X>.",
+	].join("\n");
+
+	const unknownComparison: VisualSpec = {
+		kind: "comparison",
+		title: "Options Considered",
+		items: [
+			{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+			{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+		],
+	};
+
+	it("fails a comparison of <UNKNOWN> items for a heading-only section", () => {
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					visualSpecFacts(unknownComparison),
+					headingOnly,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({ kind: "placeholder", text: "<UNKNOWN>" }),
+		]);
+	});
+
+	it("fails a comparison of <UNKNOWN> items for a section with real text", () => {
+		expect(
+			violationsOf(
+				checkVisualFacts(visualSpecFacts(unknownComparison), options),
+			),
+		).toEqual([
+			expect.objectContaining({ kind: "placeholder", text: "<UNKNOWN>" }),
+		]);
+	});
+
+	it.each([
+		"TBD",
+		"TBC",
+		"TBA",
+		"Placeholder",
+		"Lorem ipsum",
+		"Lorem ipsum dolor sit amet",
+		"[Owner Name]",
+		String.raw`\[Sponsor Name\]`,
+		"<Option X>",
+		"**TBD**",
+		"TBD.",
+	])(
+		"fails the whole-value placeholder label %j even when the source has it",
+		(label) => {
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						{ kind: "org_chart", labels: [label], figures: [] },
+						template,
+					),
+				),
+			).toEqual([
+				expect.objectContaining({ kind: "placeholder", text: label }),
+			]);
+		},
+	);
+
+	it("fails a placeholder stat value and a placeholder figure", () => {
+		const stat = visualSpecFacts({
+			kind: "stat",
+			items: [{ value: "TBD", label: "Budget" }],
+		});
+		expect(kindsOf(checkVisualFacts(stat, template))).toEqual([
+			"placeholder",
+		]);
+		expect(
+			kindsOf(
+				checkVisualFacts(
+					{ kind: "stat", labels: ["Budget"], figures: ["TBA"] },
+					template,
+				),
+			),
+		).toEqual(["placeholder"]);
+	});
+
+	describe("N/A and Unknown, which a source can state as content", () => {
+		const breakdown = [
+			"Responses by Region",
+			"",
+			"North 60%, South 15%, Unknown 25%.",
+			"The legacy connector is N/A for the new platform.",
+		].join("\n");
+
+		it("passes a stat whose source says Unknown", () => {
+			const stat = visualSpecFacts({
+				kind: "stat",
+				items: [
+					{ value: "60%", label: "North" },
+					{ value: "25%", label: "Unknown" },
+				],
+			});
+			expect(checkVisualFacts(stat, breakdown)).toEqual({ pass: true });
+		});
+
+		it("passes a comparison cell the source states as N/A", () => {
+			const comparison = visualSpecFacts({
+				kind: "comparison",
+				items: [
+					{ title: "Legacy connector", points: ["N/A"] },
+					{ title: "North", points: ["60%"] },
+				],
+			});
+			expect(checkVisualFacts(comparison, breakdown)).toEqual({
+				pass: true,
+			});
+		});
+
+		it.each(["N/A", "n/a", "**N/A**", "Unknown", "unknown"])(
+			"fails %j when the source never states it",
+			(label) => {
+				expect(
+					violationsOf(
+						checkVisualFacts(
+							{
+								kind: "comparison",
+								labels: [label],
+								figures: [],
+							},
+							options,
+						),
+					),
+				).toEqual([
+					expect.objectContaining({
+						kind: "placeholder",
+						text: label,
+					}),
+				]);
+			},
+		);
+
+		it("does not read a bracketed <Unknown> or [N/A] in the source as stating it", () => {
+			const bracketed = "Region: <Unknown>. Owner: [N/A].";
+			expect(
+				kindsOf(
+					checkVisualFacts(
+						{
+							kind: "comparison",
+							labels: ["Unknown", "N/A"],
+							figures: [],
+						},
+						bracketed,
+					),
+				),
+			).toEqual(["placeholder", "placeholder"]);
+		});
+
+		it("still fails a comparison of <UNKNOWN> items when the source says Unknown", () => {
+			const comparison = visualSpecFacts({
+				kind: "comparison",
+				items: [
+					{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+					{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+				],
+			});
+			expect(
+				violationsOf(checkVisualFacts(comparison, breakdown)),
+			).toEqual([
+				expect.objectContaining({
+					kind: "placeholder",
+					text: "<UNKNOWN>",
+				}),
+			]);
+		});
+	});
+
+	it("reads angle brackets inside a label as text, not markup", () => {
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					{
+						kind: "comparison",
+						labels: ["Managed platform <UNKNOWN>"],
+						figures: [],
+					},
+					options,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({
+				kind: "label",
+				text: "Managed platform <UNKNOWN>",
+			}),
+		]);
+	});
+
+	it("passes a real comparison of the section's options", () => {
+		const comparison: VisualSpec = {
+			kind: "comparison",
+			title: "Options Considered",
+			items: [
+				{ title: "Managed platform", points: ["Ships faster"] },
+				{ title: "In-house build", points: ["Full control"] },
+			],
+		};
+		expect(checkVisualFacts(visualSpecFacts(comparison), options)).toEqual({
+			pass: true,
+		});
+	});
+
+	it("passes a real label that only contains a placeholder word", () => {
+		expect(
+			checkVisualFacts(
+				{
+					kind: "comparison",
+					labels: ["Unknown risk", "Owner placeholder notes"],
+					figures: [],
+				},
+				template,
+			),
+		).toEqual({ pass: true });
 	});
 });
 

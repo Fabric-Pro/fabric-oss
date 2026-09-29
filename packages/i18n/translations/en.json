@@ -6820,6 +6820,7 @@
 			},
 			"download": {
 				"failed": "The {format} couldn't be created. Try again.",
+				"editionChanged": "The Glossy edition changed since you opened it. Review the updated edition, then download again.",
 				"omittedVisuals": "{count, plural, one {# visual couldn't be rendered and was left out of the download.} other {# visuals couldn't be rendered and were left out of the download.}}",
 				"omittedImages": "{count, plural, one {# image from the document couldn't be loaded and was left out.} other {# images from the document couldn't be loaded and were left out.}}"
 			}

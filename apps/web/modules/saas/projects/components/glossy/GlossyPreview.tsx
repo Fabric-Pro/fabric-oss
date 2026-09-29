@@ -13,6 +13,7 @@ import ReactMarkdown, {
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { orderGlossyAnchors } from "../../lib/glossy/glossy-document-render";
+import type { GlossyPalette } from "../../lib/glossy/palette";
 
 /** The only inline images section text may show: raster `data:` URIs (KTD16). */
 const RASTER_DATA_URL = /^data:image\/(?:png|jpe?g|gif);base64,/i;
@@ -36,7 +37,11 @@ type GlossyPreviewProps = {
 	imageUrls: Readonly<Record<string, string>>;
 	/** The card for one visual anchor, review controls included for editors. */
 	renderVisual: (visualKey: string) => ReactNode;
+	/** The download's palette, for the tile each cover logo sits on. */
+	palette: Pick<GlossyPalette, "surface" | "border">;
 };
+
+type LogoTileColors = GlossyPreviewProps["palette"];
 
 /**
  * The Glossy edition as it will download (Fizzy #2589, R26, R35, R36, R43):
@@ -48,8 +53,8 @@ type GlossyPreviewProps = {
  * is skipped, links read as their text, diagram source is dropped, and the
  * only images are inline `data:` URIs, rendered visuals, the two signed
  * logos, and the document's own uploads through the server-signed URLs.
- * Brand colors reach the page through the rasterized visuals; the preview
- * itself is styled with the app's tokens.
+ * Brand colors reach the page through the rasterized visuals and the cover
+ * logo tiles; the preview is otherwise styled with the app's tokens.
  */
 export function GlossyPreview({
 	content,
@@ -57,6 +62,7 @@ export function GlossyPreview({
 	recipient,
 	imageUrls,
 	renderVisual,
+	palette,
 }: GlossyPreviewProps) {
 	const t = useTranslations("projects.glossy.preview");
 	const format = useFormatter();
@@ -156,6 +162,7 @@ export function GlossyPreview({
 						name={preparer.name || null}
 						logoUrl={preparer.logoUrl}
 						logoAlt={t("logoOf", { name: preparer.name })}
+						tile={palette}
 					/>
 					{(recipient.name || recipient.logoUrl) && (
 						<CoverParty
@@ -167,6 +174,7 @@ export function GlossyPreview({
 									? t("logoOf", { name: recipient.name })
 									: t("recipientLogo")
 							}
+							tile={palette}
 						/>
 					)}
 				</dl>
@@ -259,23 +267,37 @@ function CoverParty({
 	name,
 	logoUrl,
 	logoAlt,
+	tile,
 }: {
 	label: string;
 	name: string | null;
 	logoUrl: string | null;
 	logoAlt: string;
+	tile: LogoTileColors;
 }) {
 	return (
 		<div className="space-y-2">
 			<dt className="text-muted-foreground text-sm">{label}</dt>
 			<dd className="flex items-center gap-3">
 				{logoUrl && (
-					// biome-ignore lint/performance/noImgElement: a short-lived signed read of the brand logo, which next/image cannot optimize
-					<img
-						src={logoUrl}
-						alt={logoAlt}
-						className="h-10 w-auto max-w-40 object-contain"
-					/>
+					// The download's light rounded tile (Fizzy #2589 follow-up), so a
+					// dark, opaque logo reads as a logo here as it does in the PDF
+					// and DOCX. Its colors are the edition's palette, known only at
+					// runtime, so they are set inline.
+					<span
+						className="flex h-16 min-w-16 shrink-0 items-center justify-center rounded-lg border p-2"
+						style={{
+							backgroundColor: tile.surface,
+							borderColor: tile.border,
+						}}
+					>
+						{/* biome-ignore lint/performance/noImgElement: a brand logo from a data: URI or a short-lived signed read, which next/image cannot optimize */}
+						<img
+							src={logoUrl}
+							alt={logoAlt}
+							className="max-h-full max-w-40 object-contain"
+						/>
+					</span>
 				)}
 				{name && <span className="font-medium">{name}</span>}
 			</dd>

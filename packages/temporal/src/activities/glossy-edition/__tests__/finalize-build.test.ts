@@ -304,6 +304,95 @@ describe("finalizeGlossyBuildActivity — assembly", () => {
 		);
 	});
 
+	// Fizzy #2589 follow-up: the header's `Title:` names the edition.
+	it("publishes the header `Title:` value over the stored title", async () => {
+		database.getGlossyBuildSnapshot.mockResolvedValue(
+			snapshotOf(
+				DOCUMENT.replace(
+					"# Example Proposal\n",
+					"# Project Proposal\n\nTitle: Example Platform — Project-Level AI\n",
+				),
+				{ title: "Project Proposal" },
+			),
+		);
+
+		await finalizeGlossyBuildActivity(input());
+
+		const content = written();
+		expect(content.title).toBe("Example Platform — Project-Level AI");
+		expect(content.provenance.sourceTitle).toBe("Project Proposal");
+		// The header block leaves the main flow; the section keys stay put.
+		expect(content.sections.map((section) => section.sectionKey)).toEqual([
+			EXEC.key,
+			APPROACH.key,
+			TEAM.key,
+		]);
+	});
+
+	it.each([
+		["the stored title", "Example Stored Title", "Example Stored Title"],
+		[
+			"the `#` heading when the stored title is blank",
+			" ",
+			"Example Proposal",
+		],
+	])(
+		"publishes %s when the document has no Title field",
+		async (_name, storedTitle, expected) => {
+			database.getGlossyBuildSnapshot.mockResolvedValue(
+				snapshotOf(DOCUMENT, { title: storedTitle }),
+			);
+
+			await finalizeGlossyBuildActivity(input());
+
+			expect(written().title).toBe(expected);
+		},
+	);
+
+	// A Proposal made from the seeded template keeps its Title in the cover.
+	it.each([
+		["field line", ["- **Title:** Example Field Service Portal"]],
+		[
+			"table row",
+			[
+				"| Field | Value |",
+				"| --- | --- |",
+				"| **Title** | Example Field Service Portal |",
+			],
+		],
+	])(
+		"publishes the Title of a Proposal Cover %s over the stored title",
+		async (_shape, coverLines) => {
+			database.getGlossyBuildSnapshot.mockResolvedValue(
+				snapshotOf(
+					DOCUMENT.replace(
+						"# Example Proposal\n",
+						[
+							"# Project Proposal",
+							"",
+							"## 1. Proposal Cover",
+							...coverLines,
+							"",
+						].join("\n"),
+					),
+					{ title: "Project Proposal" },
+				),
+			);
+
+			await finalizeGlossyBuildActivity(input());
+
+			const content = written();
+			expect(content.title).toBe("Example Field Service Portal");
+			expect(content.appendix.details).toContainEqual({
+				label: "Title",
+				value: "Example Field Service Portal",
+			});
+			expect(
+				content.sections.map((section) => section.sectionKey),
+			).toEqual([EXEC.key, APPROACH.key, TEAM.key]);
+		},
+	);
+
 	it("hands U2 every section key, the appendix's included, and the cache rows it used", async () => {
 		await finalizeGlossyBuildActivity(input());
 

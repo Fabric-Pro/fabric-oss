@@ -53,7 +53,7 @@ import { finalizeGlossyBuildActivity } from "../finalize-build";
 import { prepareGlossyBuildActivity } from "../prepare-build";
 import { GLOSSY_BUILD_FAILURE_MESSAGES, planGlossyKeys } from "../shared";
 import type { GlossyOpportunityRef } from "../types";
-import { DOCUMENT, REF, snapshotOf } from "./glossy-fixtures";
+import { DOCUMENT, OPTIONS_DOCUMENT, REF, snapshotOf } from "./glossy-fixtures";
 
 type CacheKind = "REWRITE" | "EXTRACTION" | "DETECTION";
 let cache: Record<CacheKind, Map<string, unknown>>;
@@ -319,6 +319,64 @@ describe("planGlossyKeys — parity with the build", () => {
 		expect(edited.sectionKeys.slice(0, 2)).toEqual(
 			original.sectionKeys.slice(0, 2),
 		);
+	});
+});
+
+describe("planGlossyKeys — sections with no text of their own", () => {
+	it("keys a heading-only section but leaves it out of what detection proposes for", () => {
+		const plan = requestPlan(OPTIONS_DOCUMENT);
+
+		expect(plan.sections.map(({ section }) => section.heading)).toEqual([
+			"3) Options Considered",
+			"Option 1",
+			"Option 2",
+			"4) Delivery Plan",
+			"5) Recommendation",
+		]);
+		expect(plan.detectable.map((entry) => entry.heading)).toEqual([
+			"Option 1",
+			"Option 2",
+			"5) Recommendation",
+		]);
+		expect(plan.detectable.map((entry) => entry.sectionKey)).toEqual([
+			plan.sectionKeys[1],
+			plan.sectionKeys[2],
+			plan.sectionKeys[4],
+		]);
+	});
+
+	it("proposes for a section of a single sentence", () => {
+		const plan = requestPlan(
+			["# Example Proposal", "", "## Summary", "", "One sentence."].join(
+				"\n",
+			),
+		);
+
+		expect(plan.detectable).toEqual([
+			expect.objectContaining({
+				sectionKey: plan.sectionKeys[0],
+				heading: "Summary",
+				markdown: "One sentence.",
+			}),
+		]);
+	});
+
+	it("still fills an author's slot in a section with no text of its own", async () => {
+		const plan = requestPlan(OPTIONS_DOCUMENT);
+		useSnapshotOf(OPTIONS_DOCUMENT);
+
+		const prepared = await prepareGlossyBuildActivity({
+			...REF,
+			options: { mode: "roll_the_dice", lengthMode: "brief" },
+		});
+
+		expect(prepared.slots).toEqual([
+			{
+				slotId: "slot-9",
+				sectionKey: plan.sectionKeys[3],
+				kind: "timeline",
+			},
+		]);
 	});
 });
 

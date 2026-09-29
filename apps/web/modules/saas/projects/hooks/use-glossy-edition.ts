@@ -123,8 +123,8 @@ function signedUrlsIdentity(urls: GlossySignedUrls): string {
  * browser would fetch them all again. The held set is traded for the fresh
  * one only when an image or logo is added, removed, or replaced, or once the
  * held set is older than `SIGNED_URL_REFRESH_MS`, before it expires. A
- * download does not read these: it takes the query's own data, refreshed
- * when old.
+ * download does not read these: it makes its own read with inline logos, and
+ * only if that fails falls back to the query's data, refreshed when old.
  */
 export function useHeldSignedUrls(
 	urls: GlossySignedUrls,

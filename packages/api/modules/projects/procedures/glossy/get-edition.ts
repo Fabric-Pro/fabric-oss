@@ -9,7 +9,12 @@ import {
 	getGlossyEdition,
 	getOrganizationBrandColor,
 	getRecipientBrand,
+	isRecipientLogoKeyForProject,
 } from "@repo/database";
+import {
+	LOGO_MAX_INPUT_BYTES,
+	normalizeLogo,
+} from "@repo/integrations/website-brand";
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
 import {
@@ -37,6 +42,7 @@ import {
 } from "../../lib/glossy-access";
 import {
 	presentRecipientBrand,
+	recipientBrandBucket,
 	recipientBrandOutputSchema,
 } from "../../lib/recipient-brand";
 import { requireGlossyEnabled } from "../../lib/glossy-feature";
@@ -50,6 +56,16 @@ const SIGNED_READ_TTL_SECONDS = 60 * 60;
 
 /** An edition never carries more uploaded images than this worth signing. */
 const MAX_SIGNED_IMAGES = 100;
+
+/**
+ * The largest logo inlined as it is when the caller asks for `inlineLogos`
+ * (Fizzy #2589 follow-up). The download renders in the browser, where a
+ * signed storage read is a cross-origin fetch that fails without CORS on the
+ * bucket, and the cover then goes out without its logo; an inlined logo
+ * needs no fetch. A larger one, up to `LOGO_MAX_INPUT_BYTES`, is inlined as
+ * the small PNG `normalizeLogo` makes of it.
+ */
+const MAX_INLINE_LOGO_BYTES = 256 * 1024;
 
 const buildStateSchema = z.discriminatedUnion("status", [
 	z.object({ status: z.literal("idle") }),
@@ -132,7 +148,10 @@ const outputSchema = z.object({
 	brand: z.object({
 		preparer: z.object({
 			name: z.string(),
-			/** A short-lived signed read; null without an uploaded logo. */
+			/**
+			 * A short-lived signed read, or with `inlineLogos` a `data:` URI
+			 * where the logo can be inlined; null without an uploaded logo.
+			 */
 			logoUrl: z.string().nullable(),
 			/** The organization's named brand color. */
 			brandColorName: z.string().nullable(),
@@ -167,6 +186,9 @@ const outputSchema = z.object({
  *   is allowed to use.
  * - Image anchors come from stored edition content, so each key is checked
  *   again to sit under `document-media/{projectId}/` before it is signed.
+ * - Both logos come back as signed reads, or, when the download asks with
+ *   `inlineLogos`, inline as `data:` URIs where small enough, so it needs
+ *   no cross-origin fetch.
  *
  * AUTHORIZATION: `requireGlossyEnabled` first (gate off → NOT_FOUND for every
  * caller), then `requireProjectPermission(DOCUMENT_READ)`, then the shared
@@ -188,6 +210,12 @@ export const getGlossyEditionProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			documentId: z.string(),
+			/**
+			 * Return both logos as `data:` URIs where they can be. Only the
+			 * download asks: the page's polls stay small and read no stored
+			 * bytes.
+			 */
+			inlineLogos: z.boolean().optional(),
 		}),
 	)
 	.output(outputSchema)
@@ -200,13 +228,14 @@ export const getGlossyEditionProcedure = tenantProtectedProcedure
 		});
 
 		const now = new Date();
+		const inlineLogos = input.inlineLogos === true;
 		const [edition, canEdit, preparer, recipientBrand] = await Promise.all([
 			getGlossyEdition({
 				documentId: input.documentId,
 				projectId: input.projectId,
 			}),
 			canEditProject(input.projectId, context.user.id),
-			loadPreparer(input.projectId, organizationId),
+			loadPreparer(input.projectId, organizationId, inlineLogos),
 			getRecipientBrand(input.projectId),
 		]);
 
@@ -214,9 +243,7 @@ export const getGlossyEditionProcedure = tenantProtectedProcedure
 		const [build, recipient, imageUrls] = await Promise.all([
 			readBuildState(edition, now),
 			recipientBrand
-				? presentRecipientBrand(recipientBrand, {
-						expiresIn: SIGNED_READ_TTL_SECONDS,
-					})
+				? presentRecipient(recipientBrand, input.projectId, inlineLogos)
 				: null,
 			signOwnImages(content, input.projectId, input.documentId),
 		]);
@@ -389,7 +416,11 @@ async function readBuildState(
  * comes through `getBrandKitForProject`; the organization row and its named
  * color are read by the id the gate resolved from the project.
  */
-async function loadPreparer(projectId: string, organizationId: string) {
+async function loadPreparer(
+	projectId: string,
+	organizationId: string,
+	inlineLogos: boolean,
+) {
 	const [organization, brandColorName, brandKit] = await Promise.all([
 		db.organization.findUnique({
 			where: { id: organizationId },
@@ -400,7 +431,11 @@ async function loadPreparer(projectId: string, organizationId: string) {
 	]);
 	return {
 		name: organization?.name ?? "",
-		logoUrl: await signOrganizationLogo(organization?.logo ?? null),
+		logoUrl: await organizationLogo(
+			organization?.logo ?? null,
+			organizationId,
+			inlineLogos,
+		),
 		brandColorName,
 		accentColors: brandKit?.accentColors ?? [],
 		guidance: brandKit?.guidance ?? null,
@@ -408,24 +443,134 @@ async function loadPreparer(projectId: string, organizationId: string) {
 }
 
 /**
- * A signed read of an uploaded organization logo. A logo that is a URL of
- * its own is never passed on: the Glossy render fetches no remote image
- * (KTD16), so without an upload the cover shows the name alone.
+ * The organization's uploaded logo as a signed read, or inline when asked.
+ *
+ * The stored value is only trusted as the one key the organization logo
+ * upload writes, `{organizationId}.png` in the avatars bucket (Fizzy #2589
+ * follow-up): the organization row's `logo` can be set to any string, and
+ * that bucket also holds user avatars and every other organization's logo.
+ * Anything else (a URL of its own, a nested or leading-slash path, another
+ * key) is null before storage is touched, so the cover shows the name
+ * alone; the Glossy render fetches no remote image (KTD16).
  */
-async function signOrganizationLogo(
+async function organizationLogo(
 	logo: string | null,
+	organizationId: string,
+	inline: boolean,
 ): Promise<string | null> {
-	if (!logo || /^[a-z][a-z0-9+.-]*:/i.test(logo) || logo.includes("..")) {
+	if (logo !== `${organizationId}.png`) {
 		return null;
+	}
+	const bucket = config.storage.bucketNames.avatars;
+	const inlined = inline ? await readLogoAsDataUri(logo, bucket) : null;
+	if (inlined) {
+		return inlined;
 	}
 	try {
 		return await getStorageProvider().getSignedUrl(logo, {
-			bucket: config.storage.bucketNames.avatars,
+			bucket,
 			expiresIn: SIGNED_READ_TTL_SECONDS,
 		});
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * The recipient brand with its logo signed by the shared presenter, for as
+ * long as the page's other signed reads, or inline when asked and it can
+ * be. Only a promoted logo of this very project is read on the server; the
+ * recipient brand settings keep their own short signed read.
+ */
+async function presentRecipient(
+	brand: NonNullable<Awaited<ReturnType<typeof getRecipientBrand>>>,
+	projectId: string,
+	inline: boolean,
+) {
+	const inlined =
+		inline &&
+		brand.logoKey &&
+		isRecipientLogoKeyForProject(projectId, brand.logoKey)
+			? await readLogoAsDataUri(brand.logoKey, recipientBrandBucket())
+			: null;
+	const presented = await presentRecipientBrand(
+		inlined ? { ...brand, logoKey: null } : brand,
+		{ expiresIn: SIGNED_READ_TTL_SECONDS },
+	);
+	return inlined ? { ...presented, logoUrl: inlined } : presented;
+}
+
+/**
+ * A logo as a `data:` URI (Fizzy #2589 follow-up):
+ * - a PNG, JPEG or GIF within `MAX_INLINE_LOGO_BYTES` as it is, since the
+ *   Glossy render draws those;
+ * - anything else up to `LOGO_MAX_INPUT_BYTES` (a larger logo, a WebP) as
+ *   the PNG `normalizeLogo` makes of it, at most 512 px on an edge: the same
+ *   normalization an uploaded recipient logo gets, with its byte, type, and
+ *   pixel limits.
+ * Null, so the caller falls back to a signed read, when the object is
+ * missing, above `LOGO_MAX_INPUT_BYTES` (checked before anything is
+ * downloaded), not an image normalization accepts (an SVG, a corrupt
+ * file), or unreadable. Nothing here logs the bytes or a URL. The storage
+ * provider itself logs a failed read (a missing object excepted), which can
+ * name the key.
+ */
+async function readLogoAsDataUri(
+	key: string,
+	bucket: string,
+): Promise<string | null> {
+	try {
+		const storage = getStorageProvider();
+		const metadata = await storage.getFileMetadata(key, { bucket });
+		if (
+			!metadata ||
+			metadata.size <= 0 ||
+			metadata.size > LOGO_MAX_INPUT_BYTES
+		) {
+			return null;
+		}
+		const { data } = await storage.downloadFile(key, { bucket });
+		const type =
+			data.length <= MAX_INLINE_LOGO_BYTES ? rasterImageType(data) : null;
+		if (type) {
+			return `data:${type};base64,${data.toString("base64")}`;
+		}
+		// Enforces the byte cap again: the object can be replaced between the
+		// two reads.
+		const normalized = await normalizeLogo(data);
+		return normalized.ok
+			? `data:image/png;base64,${normalized.png.toString("base64")}`
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The raster type the Glossy render draws (PNG, JPEG, GIF), read from the
+ * bytes themselves: an organization logo is uploaded under `image/png`
+ * whatever it holds, so a stored content type proves nothing.
+ */
+function rasterImageType(
+	bytes: Buffer,
+): "image/png" | "image/jpeg" | "image/gif" | null {
+	if (
+		bytes
+			.subarray(0, 8)
+			.equals(
+				Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			)
+	) {
+		return "image/png";
+	}
+	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return "image/jpeg";
+	}
+	const header = bytes.subarray(0, 6).toString("latin1");
+	if (header === "GIF87a" || header === "GIF89a") {
+		return "image/gif";
+	}
+	return null;
 }
 
 /**
