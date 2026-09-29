@@ -134,7 +134,7 @@
 		"jspdf": "^4.2.1",
 		"lowlight": "^3.3.0",
 		"lucide-react": "^0.552.0",
-		"markdown-it": "^14.2.0",
+		"markdown-it": "^14.3.1",
 		"mermaid": "^11.16.1",
 		"motion": "^12.23.24",
 		"next": "16.3.4",
