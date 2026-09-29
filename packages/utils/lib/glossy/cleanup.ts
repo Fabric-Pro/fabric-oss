@@ -13,9 +13,10 @@
  *   Index`, `(Status: …; Evidence: …)` parentheticals, standalone
  *   `Evidence:` / `Confidence:` lines, inline `Evidence: [S2] — anchor` and
  *   `Sources: [S1], [S3]` clauses, and Status / Evidence table columns.
- * - Proposal: `1. Proposal Cover`, `1A. Source Index`, `[cite]` and `[S#]`
- *   markers, and an optional Appendix section, which merges into
- *   `appendix.additionalMaterial`.
+ * - Proposal: its header field block (`**Client/Team:** …`, `**Sponsor:**
+ *   [Sponsor Name]` …), `1. Proposal Cover`, `1A. Source Index`, `[cite]`
+ *   and `[S#]` markers, labelled `(Reference 6)` citations, and an optional
+ *   Appendix section, which merges into `appendix.additionalMaterial`.
  * - Either: `(Source: …)` parentheticals, whose labelled source moves to the
  *   appendix once; footnote definitions; a `References`-family section whose
  *   entries are citation-shaped; footnote `[^1]` markers when the document
@@ -32,7 +33,9 @@
  * a `##` with `###` children keeps its own lead-in text as a section. A
  * section's heading path leaves out the document's `#` title, so renaming
  * the title keeps every section key; `parseOutline`, which slot
- * preservation keys on, still includes it.
+ * preservation keys on, still includes it. A header or cover `Title:` field
+ * is reported apart, as `headerTitle`; the `#` heading stays the anchor
+ * identity leaves out either way.
  *
  * Anchors (KTD7) — visual slots, ```mermaid fences, and the document's own
  * uploaded `<img data-s3-key>` images — are lifted out of the section text
@@ -193,6 +196,14 @@ export interface GlossyCleanupIssue {
 export interface GlossyCleanupResult {
 	/** Text of a leading `#` title heading, cleaned; `null` when there is none. */
 	title: string | null;
+	/**
+	 * The first final `Title` of the header block or the cover (a field line
+	 * or a table row), as plain text; `null` when there is none, or when it
+	 * is a template token or holds a TBD / TBC. It names the edition ahead of
+	 * the document's own title (Fizzy #2589 follow-up). Section identity
+	 * never depends on it or on `title`.
+	 */
+	headerTitle: string | null;
 	sections: GlossySection[];
 	appendix: GlossyAppendix;
 	/** No main-flow section survived cleanup. */
@@ -293,6 +304,27 @@ const NUMERIC_MARKER_CORES = new RegExp(NUMERIC_MARKER_CORE, "g");
 const NUMERIC_MARKER = new RegExp(
 	String.raw`(?<![\p{L}\p{N}\]\\])(?:\*\*${NUMERIC_MARKER_RUN}\*\*|__${NUMERIC_MARKER_RUN}__|${NUMERIC_MARKER_RUN})(?![(:[\p{L}\p{N}]|\\\[)`,
 	"gu",
+);
+
+/**
+ * One labelled reference inside a citation parenthetical: `Reference 6`,
+ * `Ref. 6`, `see References 2 and 4`, `References 1, 2, and 3`, `Refs
+ * 2–4`. At most three digits, as for `[n]`, so `(Reference 2025)` is never
+ * one.
+ */
+const REFERENCE_CITATION_ITEM = String.raw`(?:see[ \t]{1,4})?(?:references?|refs?\.?)[ \t]{0,4}\d{1,3}(?:[ \t]{0,4}(?:,[ \t]{0,4}(?:and(?=[ \t])|&)|[,&–—-]|and(?=[ \t]))[ \t]{0,4}\d{1,3}){0,20}`;
+
+/**
+ * A labelled citation parenthetical, `(Reference 6)`, `(see Reference 6)`,
+ * `(References 2, 4)` or `(Reference 6; Reference 9)`, with the spaces
+ * around it: group 1 before, group 2 after. The word Reference labels it,
+ * so it goes whether or not the document has an apparatus (Fizzy #2589
+ * follow-up). Never right after `]`, where it would be a link destination.
+ * Every quantifier is bounded, so a scan stays linear.
+ */
+const REFERENCE_CITATION = new RegExp(
+	String.raw`([ \t]{0,8})(?<!\])\([ \t]{0,4}${REFERENCE_CITATION_ITEM}(?:[ \t]{0,4}[;,][ \t]{0,4}${REFERENCE_CITATION_ITEM}){0,20}[ \t]{0,4}\)([ \t]{0,8})`,
+	"gi",
 );
 
 /** Any citation or numeric marker, to test for rather than remove. */
@@ -452,7 +484,21 @@ const ANGLE_PLACEHOLDER = /^<(?!\/?[a-z][a-z0-9-]*(?:\s|\/?>))[^<>\n]{1,80}>$/;
 
 const INLINE_TBD = /\bTB[DC]\b/g;
 
-/** Labels of a Business Case style header field block. */
+/** A TBD or TBC anywhere, which leaves a header title unfinished. */
+const TBD_WORD = /\bTB[DC]\b/i;
+
+/**
+ * Emphasis and code marks in a header title: unescaped `*` and backtick
+ * runs, and `_` runs at a word's edge (`snake_case` keeps its `_`).
+ * Bounded runs, so a long run stays linear.
+ */
+const TITLE_EMPHASIS =
+	/(?<!\\)(?:\*{1,3}|`{1,3})|(?<![\\\p{L}\p{N}_])_{1,3}|(?<![\\_])_{1,3}(?![\p{L}\p{N}_])/gu;
+
+/** A backslash escape, `\[` or `\_`; group 1 is the escaped character. */
+const MARKDOWN_ESCAPE = /\\([^\s\p{L}\p{N}])/gu;
+
+/** Labels of a header field block, matched without regard to case. */
 const HEADER_LABELS = [
 	"title",
 	"owner",
@@ -470,8 +516,34 @@ const HEADER_LABELS = [
 	"approvers",
 	"reviewers",
 ];
+
+/**
+ * The Proposal template's labels, as regex source (Fizzy #2589 follow-up).
+ * They are everyday words, so they are fields only where a header is sure:
+ * written bold (`**Client/Team:**`), or plain in the preamble under a `#`
+ * title or after an earlier field, with a header-shaped value
+ * (`isHeaderValue`).
+ */
+const PROPOSAL_HEADER_LABELS = [
+	String.raw`client[ \t]{0,2}\/[ \t]{0,2}team`,
+	"client",
+	"team",
+	"sponsor",
+];
+const PROPOSAL_HEADER_LABEL = new RegExp(
+	`^(?:${PROPOSAL_HEADER_LABELS.join("|")})$`,
+	"i",
+);
+
+/** Longest value a plain Proposal field may hold; a longer one is prose. */
+const MAX_PLAIN_HEADER_VALUE = 80;
+
+/** A value that reads as prose: it opens in lowercase or ends a sentence. */
+const PROSE_VALUE = /^\p{Ll}|[.!?](?:\s|$)/u;
+
+/** A header label; group 1 is its opening bold marker, group 2 the label. */
 const HEADER_FIELD = new RegExp(
-	String.raw`(?:^|\s)(?:\*\*|__)?(${HEADER_LABELS.join("|")})(?:\*\*|__)?\s*:(?:\*\*|__)?`,
+	String.raw`(?:^|\s)(\*\*|__)?(${[...HEADER_LABELS, ...PROPOSAL_HEADER_LABELS].join("|")})(?:\*\*|__)?\s*:(?:\*\*|__)?`,
 	"gi",
 );
 
@@ -585,6 +657,7 @@ type ScaffoldingRule =
 	| "cover"
 	| "citationMarkers"
 	| "numericCitations"
+	| "referenceCitations"
 	| "appendix";
 
 /** Which rules count as recognizing each type's template (KTD11). */
@@ -602,11 +675,13 @@ const RULES_BY_TYPE: Record<
 		"statusColumns",
 	]),
 	PROPOSAL: new Set([
+		"headerBlock",
 		"cover",
 		"sourceIndex",
 		"sourceParentheticals",
 		"citationMarkers",
 		"numericCitations",
+		"referenceCitations",
 		"appendix",
 	]),
 };
@@ -653,6 +728,8 @@ interface CleanupContext {
 	sourceEntryIds: ReadonlySet<string>;
 	/** `appendix.sources` by text key and by id plus text key, for de-duplication. */
 	listedSources: { texts: Set<string>; entries: Set<string> };
+	/** The result's `headerTitle`, set by `pushMetadata`. */
+	headerTitle: string | null;
 }
 
 /**
@@ -680,6 +757,7 @@ export function cleanupDocument(
 		footnoteMarkers: false,
 		sourceEntryIds: new Set(),
 		listedSources: { texts: new Set(), entries: new Set() },
+		headerTitle: null,
 	};
 
 	const { titleHeading, segments } = segmentDocument(markdown);
@@ -693,7 +771,7 @@ export function cleanupDocument(
 			: null;
 	}
 
-	extractHeaderBlock(segments, ctx);
+	extractHeaderBlock(segments, ctx, titleHeading !== null);
 
 	const sections: GlossySection[] = [];
 	for (const segment of segments) {
@@ -737,6 +815,7 @@ export function cleanupDocument(
 
 	return {
 		title,
+		headerTitle: ctx.headerTitle,
 		sections: mainFlow,
 		appendix: ctx.appendix,
 		nothingToPresent: mainFlow.length === 0,
@@ -1338,17 +1417,24 @@ function sourceKey(text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Move a Business Case header field block (`Title:`, `Owner: TBD`, …) out of
- * the main flow: the leading run of known-label field lines in the preamble,
- * or else in the first section. The editor joins soft-broken lines, so one
- * line may carry several fields.
+ * Move a header field block (`Title:`, `Owner: TBD`, `**Client/Team:** …`)
+ * out of the main flow: the leading run of known-label field lines in the
+ * preamble, or else in the first section, with the rules between and after
+ * them. The first unknown label ends the block. The editor joins
+ * soft-broken lines, so one line may carry several fields. `titled` is
+ * whether the document has a `#` title.
  */
-function extractHeaderBlock(segments: Segment[], ctx: CleanupContext): void {
+function extractHeaderBlock(
+	segments: Segment[],
+	ctx: CleanupContext,
+	titled: boolean,
+): void {
 	const candidates = [segments[0], segments[1]].filter(
 		(segment): segment is Segment => segment?.kind === "main",
 	);
 	for (const segment of candidates) {
 		ctx.heading = segment.cleanedHeading;
+		const preamble = segment.heading === null;
 		let moved = false;
 		let i = 0;
 		for (; i < segment.bodyLines.length; i++) {
@@ -1356,7 +1442,12 @@ function extractHeaderBlock(segments: Segment[], ctx: CleanupContext): void {
 			if (!line.trim() || THEMATIC_BREAK.test(line)) {
 				continue;
 			}
-			const fields = splitHeaderFields(line);
+			// A plain Proposal label needs evidence of a header: the preamble
+			// sits under a `#` title, or an earlier field opened the block.
+			const fields = splitHeaderFields(
+				line,
+				preamble && (titled || moved),
+			);
 			if (!fields) {
 				break;
 			}
@@ -1373,19 +1464,57 @@ function extractHeaderBlock(segments: Segment[], ctx: CleanupContext): void {
 	}
 }
 
+/**
+ * The fields of a header line, or `null` when it does not open with one. A
+ * bold Proposal label always opens a field; a plain one only where
+ * `plainProposalLabels` allows it and only with a header-shaped value
+ * (`isHeaderValue`), so `Team: we meet weekly.` stays prose. Later in the
+ * line, where the editor joined soft-broken fields, a label starts a new
+ * field only when it is written like the first one — bold after bold,
+ * plain after plain — and a Proposal label only bold, so `**Title:** Support
+ * Team: Ticket Triage` stays one title.
+ */
 function splitHeaderFields(
 	line: string,
+	plainProposalLabels: boolean,
 ): Array<{ label: string; value: string }> | null {
 	const text = line.replace(LIST_MARKER, "");
-	const matches = [...text.matchAll(HEADER_FIELD)];
-	if (matches.length === 0 || matches[0].index !== 0) {
+	const [first, ...rest] = [...text.matchAll(HEADER_FIELD)];
+	if (!first || first.index !== 0) {
 		return null;
 	}
-	return matches.map((match, i) => {
+	const bold = first[1] !== undefined;
+	const plainProposal = !bold && PROPOSAL_HEADER_LABEL.test(first[2]);
+	if (plainProposal && !plainProposalLabels) {
+		return null;
+	}
+	const matches = [
+		first,
+		...rest.filter(
+			(match) =>
+				(match[1] !== undefined) === bold &&
+				(bold || !PROPOSAL_HEADER_LABEL.test(match[2])),
+		),
+	];
+	const fields = matches.map((match, i) => {
 		const start = (match.index ?? 0) + match[0].length;
 		const stop = matches[i + 1]?.index ?? text.length;
-		return { label: match[1], value: text.slice(start, stop).trim() };
+		return { label: match[2], value: text.slice(start, stop).trim() };
 	});
+	return plainProposal && !isHeaderValue(fields[0].value) ? null : fields;
+}
+
+/**
+ * A plain Proposal field's value looks like a header value, not prose: a
+ * placeholder, or at most `MAX_PLAIN_HEADER_VALUE` characters that neither
+ * open in lowercase nor end a sentence. `Example Co.` fails too, which
+ * keeps the line in the main flow — the safe side.
+ */
+function isHeaderValue(value: string): boolean {
+	return (
+		isMetadataPlaceholder(value) ||
+		(value.length <= MAX_PLAIN_HEADER_VALUE && !PROSE_VALUE.test(value))
+	);
 }
 
 /** A metadata field goes to details, or to placeholders when it holds no value. */
@@ -1394,10 +1523,15 @@ function pushField(label: string, rawValue: string, ctx: CleanupContext): void {
 }
 
 /**
- * A metadata field or table row: its values, joined with ` · `, go
- * to details, or to placeholders when every value is empty or a
- * placeholder. A value that is only citation markers keeps them — it points
- * into the source list and is not a blank to fill.
+ * A metadata field or table row — a header block field, a cover field line
+ * or a cover table row: its values, joined with ` · `, go to details, or to
+ * placeholders when every value is empty or a placeholder. A value that is
+ * only citation markers keeps them — it points into the source list and is
+ * not a blank to fill.
+ *
+ * The first `Title` whose single value is final becomes the header title,
+ * as plain text (see `plainTitle`); the detail keeps the value as written
+ * (Fizzy #2589 follow-up).
  */
 function pushMetadata(
 	label: string | null,
@@ -1416,6 +1550,36 @@ function pushMetadata(
 		return;
 	}
 	ctx.appendix.details.push({ label, value });
+	if (
+		ctx.headerTitle === null &&
+		values.length === 1 &&
+		label !== null &&
+		/^title$/i.test(label)
+	) {
+		ctx.headerTitle = plainTitle(value);
+	}
+}
+
+/**
+ * A header title as plain text: emphasis and code marks go, backslash
+ * escapes are undone, a link keeps its text, and a labelled reference
+ * citation goes. `null` when it is not final — empty, a whole-value
+ * template token such as `[Project Name]`, or holding a TBD / TBC — so the
+ * document's own title names the edition instead. `[DRAFT] Example` is a
+ * real title: only a whole-value token is a template blank.
+ */
+function plainTitle(value: string): string | null {
+	const unmarked = value
+		.replace(TITLE_EMPHASIS, "")
+		.replace(MARKDOWN_ESCAPE, "$1")
+		.replace(MARKDOWN_LINK, "$1");
+	const text = tidy(
+		removeReferenceCitations(unmarked).text.replace(/\s+/g, " "),
+	).trim();
+	if (!text || isMetadataPlaceholder(text) || TBD_WORD.test(text)) {
+		return null;
+	}
+	return text;
 }
 
 function collectCoverFields(lines: string[], ctx: CleanupContext): void {
@@ -2016,6 +2180,13 @@ function stripScaffolding(
 			changed = true;
 			piece.text = removed.text;
 		}
+		// Last, so a marker its removal splices together is reported, not removed.
+		const references = removeReferenceCitations(piece.text);
+		if (references.count > 0) {
+			ctx.rules.add("referenceCitations");
+			changed = true;
+			piece.text = references.text;
+		}
 	}
 	return { pieces: scanned, changed };
 }
@@ -2235,6 +2406,36 @@ function removeNumericMarkers(
 			count++;
 			return "";
 		});
+	let out = "";
+	let cursor = 0;
+	for (const code of text.matchAll(INLINE_CODE)) {
+		const start = code.index ?? 0;
+		out += strip(text.slice(cursor, start)) + code[0];
+		cursor = start + code[0].length;
+	}
+	out += strip(text.slice(cursor));
+	return { text: count > 0 ? out : text, count };
+}
+
+/**
+ * Remove labelled citation parentheticals (`REFERENCE_CITATION`), never
+ * inside inline code. Mid-text the spaces before one go with it, so `case
+ * (Reference 6), “AI` reads `case, “AI`; at the start of the text its
+ * indentation stays and the spaces after it go.
+ */
+function removeReferenceCitations(text: string): {
+	text: string;
+	count: number;
+} {
+	let count = 0;
+	const strip = (chunk: string) =>
+		chunk.replace(
+			REFERENCE_CITATION,
+			(_match, before: string, after: string, offset: number) => {
+				count++;
+				return offset === 0 ? before : after;
+			},
+		);
 	let out = "";
 	let cursor = 0;
 	for (const code of text.matchAll(INLINE_CODE)) {

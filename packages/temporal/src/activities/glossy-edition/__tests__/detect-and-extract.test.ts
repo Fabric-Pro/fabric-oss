@@ -36,7 +36,13 @@ import type {
 	DetectGlossyOpportunitiesActivityInput,
 	ExtractGlossyVisualActivityInput,
 } from "../types";
-import { REF, sectionsOf, snapshotOf, verdict } from "./glossy-fixtures";
+import {
+	OPTIONS_DOCUMENT,
+	REF,
+	sectionsOf,
+	snapshotOf,
+	verdict,
+} from "./glossy-fixtures";
 
 const SECTIONS = sectionsOf();
 const [EXEC, APPROACH, TEAM] = SECTIONS;
@@ -163,6 +169,80 @@ describe("detectGlossyOpportunitiesActivity", () => {
 			},
 		);
 		expect(database.putCacheEntry).not.toHaveBeenCalled();
+	});
+
+	it("never proposes for a section with no text of its own, keyed over every named section", async () => {
+		database.getGlossyBuildSnapshot.mockResolvedValue(
+			snapshotOf(OPTIONS_DOCUMENT),
+		);
+		const sections = sectionsOf(OPTIONS_DOCUMENT);
+		const [parent, first, second, slotOnly, recommendation] = sections;
+		detect.detectGlossyOpportunities.mockResolvedValue({
+			status: "detected",
+			opportunities: [
+				{
+					sectionKey: first.key,
+					kind: "stat",
+					reason: "Delivery time",
+				},
+			],
+			discarded: 0,
+		});
+		const everyNamed = {
+			...input,
+			sectionKeys: sections.map((entry) => entry.key),
+		};
+
+		const result = await detectGlossyOpportunitiesActivity(everyNamed);
+
+		const call = detect.detectGlossyOpportunities.mock.calls[0][0];
+		expect(
+			call.sections.map(
+				(section: { sectionKey: string }) => section.sectionKey,
+			),
+		).toEqual([first.key, second.key, recommendation.key]);
+		// The key still covers every section named, as Align first's does.
+		const everyKey = glossyDetectionKey(sections, "PROPOSAL");
+		expect(result).toEqual({
+			opportunities: [{ sectionKey: first.key, kind: "stat" }],
+			cacheKey: everyKey,
+			fromCache: false,
+		});
+
+		// A cached row naming one of them is filtered again.
+		database.getCacheEntries.mockResolvedValue(
+			new Map([
+				[
+					everyKey,
+					{
+						opportunities: [
+							{
+								sectionKey: parent.key,
+								kind: "comparison",
+								reason: "a",
+							},
+							{
+								sectionKey: slotOnly.key,
+								kind: "stat",
+								reason: "b",
+							},
+							{
+								sectionKey: second.key,
+								kind: "stat",
+								reason: "c",
+							},
+						],
+					},
+				],
+			]),
+		);
+		await expect(
+			detectGlossyOpportunitiesActivity(everyNamed),
+		).resolves.toEqual({
+			opportunities: [{ sectionKey: second.key, kind: "stat" }],
+			cacheKey: everyKey,
+			fromCache: true,
+		});
 	});
 
 	it("makes no model call once the guard fails", async () => {

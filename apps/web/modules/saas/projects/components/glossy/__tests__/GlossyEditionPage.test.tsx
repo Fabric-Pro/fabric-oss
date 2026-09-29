@@ -16,6 +16,7 @@ import {
 	FEATURE_FLAG_REGISTRY,
 	type FeatureFlagKey,
 } from "@repo/utils/feature-flag-registry";
+import { ORPCError } from "@orpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -159,9 +160,13 @@ import de from "@repo/i18n/translations/de.json";
 import en from "@repo/i18n/translations/en.json";
 import { brandColorValues } from "@repo/utils/brand-colors";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
-import { NEUTRAL_GLOSSY_COLORS } from "../../../lib/glossy/palette";
+import {
+	deriveGlossyPalette,
+	NEUTRAL_GLOSSY_COLORS,
+} from "../../../lib/glossy/palette";
 import { renderGlossyVisual } from "../../../lib/glossy/visual-render";
 import { GlossyEditionPage } from "../GlossyEditionPage";
+import { GlossyPreview } from "../GlossyPreview";
 import { GLOSSY_CODED_COPY } from "../glossy-copy";
 import {
 	COMPARISON_KEY,
@@ -1945,7 +1950,16 @@ describe("GlossyEditionPage — preview and downloads", () => {
 		);
 	});
 
-	it("downloads a fresh page's edition without asking for it again", async () => {
+	/** The download's inline-logo read fails; the page's own reads still answer. */
+	const failInlineLogoReads = () =>
+		api.get.mockImplementation(async (input: { inlineLogos?: boolean }) => {
+			if (input.inlineLogos) {
+				throw new Error("network down");
+			}
+			return serverState;
+		});
+
+	it("downloads a fresh page's own edition, without asking again, when the inline-logo read fails", async () => {
 		const user = userEvent.setup();
 		renderPage(
 			glossyEdition({
@@ -1956,14 +1970,475 @@ describe("GlossyEditionPage — preview and downloads", () => {
 		);
 		await renderedCard(TIMELINE_KEY);
 		const callsBefore = api.get.mock.calls.length;
+		failInlineLogoReads();
 
 		await user.click(screen.getByRole("button", { name: "downloadPdf" }));
 		await waitFor(() => expect(api.renderPdf).toHaveBeenCalledTimes(1));
 
-		expect(api.get).toHaveBeenCalledTimes(callsBefore);
+		// Only the failed inline-logo read: the page's read is fresh enough.
+		expect(api.get).toHaveBeenCalledTimes(callsBefore + 1);
 		expect(api.renderPdf.mock.calls[0][0].imageUrls).toEqual({
 			[IMAGE_A]: "https://storage.example.com/a.png?sig=1",
 		});
+		expect(api.toast.error).not.toHaveBeenCalled();
+	});
+
+	it("refreshes a stale page's read before downloading when the inline-logo read fails", async () => {
+		const user = userEvent.setup();
+		renderPage(
+			glossyEdition({
+				imageUrls: {
+					[IMAGE_A]: "https://storage.example.com/a.png?sig=old",
+				},
+			}),
+		);
+		await renderedCard(TIMELINE_KEY);
+		serverState = {
+			...serverState,
+			imageUrls: {
+				[IMAGE_A]: "https://storage.example.com/a.png?sig=fresh",
+			},
+		};
+		const callsBefore = api.get.mock.calls.length;
+		failInlineLogoReads();
+		const later = Date.now() + 46 * 60 * 1000;
+		const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+		try {
+			await user.click(
+				screen.getByRole("button", { name: "downloadPdf" }),
+			);
+			await waitFor(() => expect(api.renderPdf).toHaveBeenCalledTimes(1));
+		} finally {
+			clock.mockRestore();
+		}
+
+		expect(api.get).toHaveBeenCalledTimes(callsBefore + 2);
+		expect(api.get.mock.calls.at(-1)?.[0]).toEqual({
+			projectId: PROJECT_ID,
+			documentId: DOCUMENT_ID,
+		});
+		expect(api.renderPdf.mock.calls[0][0].imageUrls).toEqual({
+			[IMAGE_A]: "https://storage.example.com/a.png?sig=fresh",
+		});
+	});
+
+	// A refusal is final: the page's copy never stands in for an edition the
+	// server no longer lets this caller read.
+	it.each([
+		{ refusal: "FORBIDDEN", error: () => new ORPCError("FORBIDDEN") },
+		{ refusal: "NOT_FOUND", error: () => new ORPCError("NOT_FOUND") },
+		{ refusal: "BAD_REQUEST", error: () => new ORPCError("BAD_REQUEST") },
+		{
+			refusal: "UNAUTHORIZED without a status",
+			error: () =>
+				Object.assign(new Error("Unauthorized"), {
+					code: "UNAUTHORIZED",
+				}),
+		},
+	])(
+		"downloads nothing when the download's read is refused ($refusal)",
+		async ({ error }) => {
+			const user = userEvent.setup();
+			renderPage();
+			await renderedCard(TIMELINE_KEY);
+			api.get.mockImplementation(async () => {
+				throw error();
+			});
+
+			await user.click(
+				screen.getByRole("button", { name: "downloadPdf" }),
+			);
+
+			await waitFor(() =>
+				expect(api.toast.error).toHaveBeenCalledWith(
+					"download.failed(format=PDF)",
+				),
+			);
+			expect(api.renderPdf).not.toHaveBeenCalled();
+			expect(api.renderDocx).not.toHaveBeenCalled();
+			expect(api.triggerDownload).not.toHaveBeenCalled();
+		},
+	);
+
+	it("shows a caller whose access was revoked that the edition is unavailable", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await renderedCard(TIMELINE_KEY);
+		api.get.mockImplementation(async () => {
+			throw new ORPCError("FORBIDDEN");
+		});
+
+		await user.click(screen.getByRole("button", { name: "downloadDocx" }));
+
+		expect(await screen.findByText("page.unavailable")).toBeInTheDocument();
+		expect(api.renderDocx).not.toHaveBeenCalled();
+	});
+
+	it("downloads nothing from a stale page whose refresh is refused after the inline-logo read failed", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		await renderedCard(TIMELINE_KEY);
+		api.get.mockImplementation(async (input: { inlineLogos?: boolean }) => {
+			throw input.inlineLogos
+				? new TypeError("Failed to fetch")
+				: new ORPCError("NOT_FOUND");
+		});
+		const later = Date.now() + 46 * 60 * 1000;
+		const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+		try {
+			await user.click(
+				screen.getByRole("button", { name: "downloadPdf" }),
+			);
+			await waitFor(() =>
+				expect(api.toast.error).toHaveBeenCalledWith(
+					"download.failed(format=PDF)",
+				),
+			);
+		} finally {
+			clock.mockRestore();
+		}
+		expect(api.renderPdf).not.toHaveBeenCalled();
+		expect(api.triggerDownload).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			failure: "a server fault",
+			error: () => new ORPCError("INTERNAL_SERVER_ERROR"),
+		},
+		{
+			failure: "a network failure",
+			error: () => new TypeError("Failed to fetch"),
+		},
+	])(
+		"still downloads the page's own edition after $failure on the download's read",
+		async ({ error }) => {
+			const user = userEvent.setup();
+			renderPage(
+				glossyEdition({
+					imageUrls: {
+						[IMAGE_A]: "https://storage.example.com/a.png?sig=1",
+					},
+				}),
+			);
+			await renderedCard(TIMELINE_KEY);
+			api.get.mockImplementation(
+				async (input: { inlineLogos?: boolean }) => {
+					if (input.inlineLogos) {
+						throw error();
+					}
+					return serverState;
+				},
+			);
+
+			await user.click(
+				screen.getByRole("button", { name: "downloadPdf" }),
+			);
+
+			await waitFor(() => expect(api.renderPdf).toHaveBeenCalledTimes(1));
+			expect(api.renderPdf.mock.calls[0][0].imageUrls).toEqual({
+				[IMAGE_A]: "https://storage.example.com/a.png?sig=1",
+			});
+			expect(api.toast.error).not.toHaveBeenCalled();
+		},
+	);
+});
+
+// Logos inline for the download only (Fizzy #2589 follow-up): a signed
+// storage read is a cross-origin fetch the renderer cannot make without CORS
+// on the bucket, so the download asks for `data:` logos in one read of its
+// own; the page's reads, polled during a build, never do.
+describe("GlossyEditionPage — logos for the download", () => {
+	const PREPARER_DATA = "data:image/png;base64,UFJFUEFSRVI=";
+	const RECIPIENT_DATA = "data:image/png;base64,UkVDSVBJRU5U";
+
+	function brandWithLogos(): GlossyEdition {
+		return glossyEdition({
+			brand: {
+				preparer: {
+					name: "Example Org",
+					logoUrl: "https://storage.example.com/org-logo.png?sig=1",
+					brandColorName: null,
+					accentColors: [],
+					guidance: null,
+				},
+				recipient: {
+					name: "Example Corp",
+					website: null,
+					colors: [],
+					logoUrl:
+						"https://storage.example.com/recipient-logo.png?sig=1",
+					updatedAt: new Date("2026-09-20T10:00:00.000Z"),
+				},
+				recipientVersion: 1,
+			},
+		});
+	}
+
+	/** The server's answer: `data:` logos only for a read that asks. */
+	function answerInlineLogos() {
+		api.get.mockImplementation(async (input: { inlineLogos?: boolean }) => {
+			if (!input.inlineLogos || !serverState.brand.recipient) {
+				return serverState;
+			}
+			return {
+				...serverState,
+				brand: {
+					...serverState.brand,
+					preparer: {
+						...serverState.brand.preparer,
+						logoUrl: PREPARER_DATA,
+					},
+					recipient: {
+						...serverState.brand.recipient,
+						logoUrl: RECIPIENT_DATA,
+					},
+				},
+			};
+		});
+	}
+
+	const inlineReads = () =>
+		api.get.mock.calls.filter(
+			([input]) => (input as { inlineLogos?: boolean }).inlineLogos,
+		);
+
+	it.each([
+		{ format: "PDF", button: "downloadPdf" },
+		{ format: "DOCX", button: "downloadDocx" },
+	])(
+		"downloads the $format from one read that asks for the logos inline, and renders its data: logos",
+		async ({ format, button }) => {
+			const renderer = format === "PDF" ? api.renderPdf : api.renderDocx;
+			answerInlineLogos();
+			const user = userEvent.setup();
+			renderPage(brandWithLogos());
+			await renderedCard(TIMELINE_KEY);
+			const callsBefore = api.get.mock.calls.length;
+
+			await user.click(screen.getByRole("button", { name: button }));
+			await waitFor(() => expect(renderer).toHaveBeenCalledTimes(1));
+
+			expect(api.get).toHaveBeenCalledTimes(callsBefore + 1);
+			expect(api.get.mock.calls.at(-1)?.[0]).toEqual({
+				projectId: PROJECT_ID,
+				documentId: DOCUMENT_ID,
+				inlineLogos: true,
+			});
+			const input = renderer.mock.calls[0][0];
+			expect(input.preparer).toEqual({
+				name: "Example Org",
+				logoUrl: PREPARER_DATA,
+			});
+			expect(input.recipient).toEqual({
+				name: "Example Corp",
+				logoUrl: RECIPIENT_DATA,
+			});
+			// The same brands: the preview's rendered visuals still hold.
+			expect([...input.renderedVisuals.keys()].sort()).toEqual(
+				[COMPARISON_KEY, DIAGRAM_KEY, TIMELINE_KEY].sort(),
+			);
+			// The preview keeps the page's own signed reads.
+			expect(
+				screen.getByRole("img", { name: "logoOf(name=Example Org)" }),
+			).toHaveAttribute(
+				"src",
+				"https://storage.example.com/org-logo.png?sig=1",
+			);
+		},
+	);
+
+	it("downloads nothing when the edition changed since the page read it: the page refreshes, without the inline logos, and says so", async () => {
+		answerInlineLogos();
+		const user = userEvent.setup();
+		renderPage(brandWithLogos());
+		await renderedCard(TIMELINE_KEY);
+		const edition = serverState.edition;
+		if (!edition) {
+			throw new Error("The fixture has an edition");
+		}
+		// Meanwhile a rebuild publishes a new edition.
+		serverState = {
+			...serverState,
+			edition: {
+				...edition,
+				contentRevision: edition.contentRevision + 1,
+				content: editionContent({
+					title: "Example business case, revised",
+				}),
+			},
+		};
+
+		await user.click(screen.getByRole("button", { name: "downloadPdf" }));
+
+		await waitFor(() =>
+			expect(api.toast.info).toHaveBeenCalledWith(
+				"download.editionChanged",
+			),
+		);
+		expect(api.renderPdf).not.toHaveBeenCalled();
+		expect(api.triggerDownload).not.toHaveBeenCalled();
+		// The page shows the new edition to review, from a read of its own.
+		expect(
+			await screen.findByRole("heading", {
+				name: "Example business case, revised",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("img", { name: "logoOf(name=Example Org)" }),
+		).toHaveAttribute(
+			"src",
+			"https://storage.example.com/org-logo.png?sig=1",
+		);
+		expect(en.projects.glossy.download.editionChanged).toBeTruthy();
+
+		// Once the page shows it, the edition downloads.
+		await user.click(screen.getByRole("button", { name: "downloadPdf" }));
+		await waitFor(() => expect(api.renderPdf).toHaveBeenCalledTimes(1));
+		expect(api.renderPdf.mock.calls[0][0].content.title).toBe(
+			"Example business case, revised",
+		);
+	});
+
+	it.each([
+		{ format: "PDF", button: "downloadPdf" },
+		{ format: "DOCX", button: "downloadDocx" },
+	])(
+		"draws a WebP logo the server normalized to a PNG data: URI in the real $format, fetching nothing",
+		async ({ format, button }) => {
+			// A real 1×1 PNG, as `normalizeLogo` returns it for a WebP upload.
+			const NORMALIZED =
+				"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+			const renderer = format === "PDF" ? api.renderPdf : api.renderDocx;
+			const actual = await vi.importActual<
+				typeof import("../../../lib/glossy/glossy-document-render")
+			>("../../../lib/glossy/glossy-document-render");
+			renderer.mockImplementation((input: never) =>
+				format === "PDF"
+					? actual.renderGlossyPdf(input)
+					: actual.renderGlossyDocx(input),
+			);
+			// Without CORS on the bucket, a cross-origin fetch fails.
+			const fetchSpy = vi.fn(async () => {
+				throw new TypeError("Failed to fetch");
+			});
+			vi.stubGlobal("fetch", fetchSpy);
+			vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+				null,
+			);
+			api.get.mockImplementation(
+				async (input: { inlineLogos?: boolean }) => ({
+					...serverState,
+					brand: {
+						...serverState.brand,
+						preparer: {
+							...serverState.brand.preparer,
+							logoUrl: input.inlineLogos
+								? NORMALIZED
+								: "https://storage.example.com/org-logo.webp?sig=1",
+						},
+					},
+				}),
+			);
+			try {
+				const user = userEvent.setup();
+				renderPage(
+					glossyEdition({
+						edition: {
+							content: editionContent({
+								sections: [
+									{
+										sectionKey: "section-summary",
+										headingPath: ["Executive summary"],
+										heading: "Executive summary",
+										level: 2,
+										markdown: "The programme starts in Q3.",
+										wording: "rewritten",
+										anchors: [],
+									},
+								],
+								visuals: {},
+							}),
+						},
+					}),
+				);
+				await screen.findByRole("heading", {
+					name: "Executive summary",
+				});
+
+				await user.click(screen.getByRole("button", { name: button }));
+				await waitFor(() =>
+					expect(api.triggerDownload).toHaveBeenCalled(),
+				);
+
+				expect(renderer.mock.calls[0][0].preparer.logoUrl).toBe(
+					NORMALIZED,
+				);
+				const result = await renderer.mock.results[0].value;
+				expect(result).toMatchObject({
+					omittedImages: 0,
+					omittedVisuals: 0,
+				});
+				expect(result.blob.size).toBeGreaterThan(0);
+				expect(fetchSpy).not.toHaveBeenCalled();
+				expect(api.toast.warning).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllGlobals();
+				vi.restoreAllMocks();
+			}
+		},
+	);
+
+	it("says the download failed when the download's read has no edition", async () => {
+		api.get.mockImplementation(async (input: { inlineLogos?: boolean }) =>
+			input.inlineLogos ? { ...serverState, edition: null } : serverState,
+		);
+		const user = userEvent.setup();
+		renderPage(brandWithLogos());
+		await renderedCard(TIMELINE_KEY);
+
+		await user.click(screen.getByRole("button", { name: "downloadDocx" }));
+
+		await waitFor(() =>
+			expect(api.toast.error).toHaveBeenCalledWith(
+				"download.failed(format=DOCX)",
+			),
+		);
+		expect(api.renderDocx).not.toHaveBeenCalled();
+	});
+
+	it("never asks for inline logos in the page's own reads, build polls included", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		answerInlineLogos();
+		let poll = 0;
+		const answer = api.get.getMockImplementation();
+		api.get.mockImplementation(async (input: { inlineLogos?: boolean }) => {
+			poll += 1;
+			const state = await answer?.(input);
+			return { ...state, build: buildingBuild(poll) };
+		});
+		renderPage({ ...brandWithLogos(), build: buildingBuild() });
+
+		await screen.findByText("status.progress(done=1, total=20)");
+		for (const tick of [2, 3]) {
+			await vi.advanceTimersByTimeAsync(3_000);
+			await screen.findByText(`status.progress(done=${tick}, total=20)`);
+		}
+
+		expect(api.get.mock.calls.length).toBeGreaterThanOrEqual(3);
+		for (const [input] of api.get.mock.calls) {
+			expect(input).toEqual({
+				projectId: PROJECT_ID,
+				documentId: DOCUMENT_ID,
+			});
+		}
+		expect(inlineReads()).toHaveLength(0);
+		expect(
+			screen.getByRole("img", { name: "logoOf(name=Example Org)" }),
+		).toHaveAttribute(
+			"src",
+			"https://storage.example.com/org-logo.png?sig=1",
+		);
 	});
 });
 
@@ -2108,6 +2583,79 @@ describe("GlossyEditionPage — brand colors", () => {
 			expect(input.renderedVisuals?.size ?? 0).toBe(0);
 		},
 	);
+});
+
+// The page's cover matches the download's (Fizzy #2589 follow-up): each logo
+// on a light rounded tile, so a dark, opaque logo reads as a logo.
+describe("GlossyPreview — cover logo tiles", () => {
+	it("sets each cover logo on a rounded tile in the palette's surface and border, contained with its aspect kept", () => {
+		const palette = deriveGlossyPalette({
+			overrides: { primary: "#1e3a8a" },
+		});
+		render(
+			<GlossyPreview
+				content={editionContent()}
+				palette={palette}
+				preparer={{
+					name: "Example Org",
+					logoUrl: "data:image/png;base64,UFJFUEFSRVI=",
+				}}
+				recipient={{
+					name: "Example Corp",
+					logoUrl:
+						"https://storage.example.com/recipient-logo.png?sig=1",
+				}}
+				imageUrls={{}}
+				renderVisual={() => null}
+			/>,
+		);
+
+		for (const name of [
+			"logoOf(name=Example Org)",
+			"logoOf(name=Example Corp)",
+		]) {
+			const logo = screen.getByRole("img", { name });
+			const tile = logo.parentElement as HTMLElement;
+			expect(tile).toHaveClass("rounded-lg", "border");
+			expect(tile).toHaveStyle({
+				backgroundColor: palette.surface,
+				borderColor: palette.border,
+			});
+			// Bounded by the tile, never stretched to it: the aspect holds and
+			// a small logo is not enlarged.
+			expect(logo).toHaveClass("object-contain", "max-h-full");
+			expect(logo.className).not.toMatch(/(?:^|\s)[wh]-(?:full|\d)/);
+		}
+	});
+
+	it("draws the page's tiles in the palette its visuals render with", async () => {
+		renderPage(
+			glossyEdition({
+				brand: {
+					preparer: {
+						name: "Example Org",
+						logoUrl:
+							"https://storage.example.com/org-logo.png?sig=1",
+						brandColorName: "blue",
+						accentColors: [],
+						guidance: null,
+					},
+					recipient: null,
+					recipientVersion: 0,
+				},
+			}),
+		);
+		await renderedCard(TIMELINE_KEY);
+		const palette = vi.mocked(renderGlossyVisual).mock.calls[0]?.[1];
+
+		const logo = screen.getByRole("img", {
+			name: "logoOf(name=Example Org)",
+		});
+		expect(logo.parentElement).toHaveStyle({
+			backgroundColor: palette?.surface,
+			borderColor: palette?.border,
+		});
+	});
 });
 
 describe("GlossyEditionPage — Align first", () => {

@@ -137,6 +137,34 @@ describe("extractGlossyVisual", () => {
 		});
 	});
 
+	it("drops a comparison of <UNKNOWN> placeholders for a heading-only section", async () => {
+		modelReturns({
+			kind: "comparison",
+			title: "Options Considered",
+			items: [
+				{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+				{ title: "<UNKNOWN>", points: ["<UNKNOWN>"] },
+			],
+		});
+
+		const result = await extractGlossyVisual({
+			...context,
+			section: { heading: "3) Options Considered", markdown: "" },
+			kind: "comparison",
+		});
+
+		expect(result).toMatchObject({
+			status: "dropped",
+			reason: "factCheck",
+			violations: [
+				expect.objectContaining({
+					kind: "placeholder",
+					text: "<UNKNOWN>",
+				}),
+			],
+		});
+	});
+
 	it("sends the requested kind's schema, and a union of all five for auto", async () => {
 		modelReturns(timeline("Q1 2027"));
 		await extractGlossyVisual({ ...context, section, kind: "timeline" });

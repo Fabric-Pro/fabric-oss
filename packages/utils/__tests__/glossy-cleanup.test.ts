@@ -335,6 +335,651 @@ describe("cleanupDocument — Proposal fixture", () => {
 	});
 });
 
+const PROPOSAL_TITLE = "Example Platform — Project-Level AI for Software Teams";
+
+/**
+ * A Proposal whose header block sits under its `#` title as bold `Label:`
+ * paragraphs closed by a rule, the shape a saved Proposal takes (Fizzy
+ * #2589 follow-up). Synthetic values.
+ */
+const PROPOSAL_HEADER = [
+	"# Project Proposal",
+	"",
+	`**Title:** ${PROPOSAL_TITLE}`,
+	"",
+	"**Client/Team:** Example Co",
+	"",
+	"**Sponsor:** [Sponsor Name]",
+	"",
+	"**Owner:** Example Owner",
+	"",
+	"**Date:** March 2026",
+	"",
+	"**Version:** 1.0",
+	"",
+	"**Links:** PRD · Timeline · Budget · [Repository](https://example.com/repo)",
+	"",
+	"---",
+	"",
+	"## Benefit Hypothesis",
+	"As noted in the business case (Reference 6), “AI becomes helpful when it knows the project.”",
+	"",
+	"## Scope",
+	"Intake, dispatch and reporting.",
+].join("\n");
+
+describe("cleanupDocument — Proposal header block", () => {
+	it("moves every Proposal header field to the details and `[Sponsor Name]` to the placeholders, raw and after an editor round trip", () => {
+		const direct = cleanupDocument(PROPOSAL_HEADER, "PROPOSAL");
+		const roundTripped = cleanupDocument(
+			simulateEditorRoundTrip(PROPOSAL_HEADER),
+			"PROPOSAL",
+		);
+
+		for (const cleaned of [direct, roundTripped]) {
+			expect(headings(cleaned.sections)).toEqual([
+				"Benefit Hypothesis",
+				"Scope",
+			]);
+			expect(
+				cleaned.appendix.details.map((detail) => detail.label),
+			).toEqual([
+				"Title",
+				"Client/Team",
+				"Owner",
+				"Date",
+				"Version",
+				"Links",
+			]);
+			const text = mainFlowText(cleaned);
+			for (const field of [
+				"Client/Team",
+				"Example Co",
+				"Sponsor",
+				"Example Owner",
+				"March 2026",
+				"Links",
+				"* * *",
+				"---",
+			]) {
+				expect(text).not.toContain(field);
+			}
+			expect(cleaned.scaffoldingUnrecognized).toBe(false);
+			expect(cleaned.issues).toEqual([]);
+		}
+		expect(direct.appendix.details).toEqual([
+			{ label: "Title", value: PROPOSAL_TITLE },
+			{ label: "Client/Team", value: "Example Co" },
+			{ label: "Owner", value: "Example Owner" },
+			{ label: "Date", value: "March 2026" },
+			{ label: "Version", value: "1.0" },
+			{
+				label: "Links",
+				value: "PRD · Timeline · Budget · [Repository](https://example.com/repo)",
+			},
+		]);
+		expect(direct.appendix.placeholders).toEqual([
+			{ heading: null, text: "Sponsor: [Sponsor Name]" },
+		]);
+		expect(roundTripped.appendix.placeholders.map((p) => p.text)).toEqual([
+			"Sponsor: \\[Sponsor Name\\]",
+		]);
+	});
+
+	it("splits a Proposal header whose soft-broken lines the editor joined into one", () => {
+		const source = [
+			"# Project Proposal",
+			"",
+			"**Title:** Example Platform",
+			"**Client/Team:** Example Co",
+			"**Sponsor:** [Sponsor Name]",
+			"**Owner:** Example Owner",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+		const roundTripped = simulateEditorRoundTrip(source);
+
+		expect(roundTripped).toContain(
+			"**Title:** Example Platform **Client/Team:** Example Co **Sponsor:** \\[Sponsor Name\\] **Owner:**",
+		);
+		for (const markdown of [source, roundTripped]) {
+			const result = cleanupDocument(markdown, "PROPOSAL");
+
+			expect(headings(result.sections)).toEqual(["Scope"]);
+			expect(result.appendix.details).toEqual([
+				{ label: "Title", value: "Example Platform" },
+				{ label: "Client/Team", value: "Example Co" },
+				{ label: "Owner", value: "Example Owner" },
+			]);
+			expect(result.appendix.placeholders.map((p) => p.text)).toEqual([
+				expect.stringMatching(/^Sponsor: \\?\[Sponsor Name\\?\]$/),
+			]);
+		}
+	});
+
+	it("reads Proposal labels in any case, bolded or not, and drops the rule that closes the block", () => {
+		const source = [
+			"Version: 1.0",
+			"CLIENT: Example Co",
+			"__Team__: Example Platform Group",
+			"Client / Team: Example Co",
+			"- **Prepared for:** Example Co",
+			"Sponsor: \\[Sponsor Name\\]",
+			"**Decision Needed By:** 2026-10-15",
+			"",
+			"* * *",
+			"",
+			"This proposal covers the first release.",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+		const result = cleanupDocument(source, "PROPOSAL");
+
+		expect(result.appendix.details.map((detail) => detail.label)).toEqual([
+			"Version",
+			"CLIENT",
+			"Team",
+			"Client / Team",
+			"Prepared for",
+			"Decision Needed By",
+		]);
+		expect(result.appendix.placeholders.map((p) => p.text)).toEqual([
+			"Sponsor: \\[Sponsor Name\\]",
+		]);
+		expect(result.sections[0]).toMatchObject({
+			heading: null,
+			markdown: "This proposal covers the first release.",
+		});
+	});
+
+	// Codex gate: a plain Proposal label is an everyday word, so it opens a
+	// field only with header evidence and a header-shaped value.
+	it.each([
+		["Team: we meet weekly to review the roadmap."],
+		["Client: the pilot starts in May."],
+		["Client: Example Co"],
+	])(
+		"leaves the plain line %j that opens a document with no `#` title in the main flow",
+		(line) => {
+			const source = `${line}\n\n## Scope\nIntake, dispatch and reporting.`;
+
+			for (const markdown of [source, simulateEditorRoundTrip(source)]) {
+				const result = cleanupDocument(markdown, "PROPOSAL");
+
+				expect(result.sections[0].heading).toBeNull();
+				expect(result.sections[0].markdown).toContain(line);
+				expect(result.appendix.details).toEqual([]);
+				expect(result.appendix.placeholders).toEqual([]);
+			}
+		},
+	);
+
+	it("leaves a plain Proposal line that reads as prose in the main flow, under a `#` title or after a header field", () => {
+		const titled = cleanupDocument(
+			"# Project Proposal\n\nTeam: we meet weekly to review the roadmap.\n\n## Scope\nIntake.",
+			"PROPOSAL",
+		);
+		const afterField = cleanupDocument(
+			"Title: Example Platform\n\nClient: the pilot starts in May.\n\n## Scope\nIntake.",
+			"PROPOSAL",
+		);
+
+		expect(titled.appendix.details).toEqual([]);
+		expect(titled.sections[0].markdown).toBe(
+			"Team: we meet weekly to review the roadmap.",
+		);
+		expect(afterField.appendix.details).toEqual([
+			{ label: "Title", value: "Example Platform" },
+		]);
+		expect(afterField.sections[0].markdown).toBe(
+			"Client: the pilot starts in May.",
+		);
+	});
+
+	it("moves a header block with no `#` title that opens with a Business Case label, or with a bold Proposal label", () => {
+		const plain = [
+			"Title: Example Platform",
+			"",
+			"Client/Team: Example Co",
+			"",
+			"Sponsor: [Sponsor Name]",
+			"",
+			"---",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+		const bold = [
+			"**Client/Team:** Example Co",
+			"",
+			"**Sponsor:** [Sponsor Name]",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+
+		for (const markdown of [plain, simulateEditorRoundTrip(plain)]) {
+			const result = cleanupDocument(markdown, "PROPOSAL");
+
+			expect(headings(result.sections)).toEqual(["Scope"]);
+			expect(result.appendix.details).toEqual([
+				{ label: "Title", value: "Example Platform" },
+				{ label: "Client/Team", value: "Example Co" },
+			]);
+			expect(result.appendix.placeholders.map((p) => p.text)).toEqual([
+				expect.stringMatching(/^Sponsor: \\?\[Sponsor Name\\?\]$/),
+			]);
+			expect(result.headerTitle).toBe("Example Platform");
+		}
+		for (const markdown of [bold, simulateEditorRoundTrip(bold)]) {
+			const result = cleanupDocument(markdown, "PROPOSAL");
+
+			expect(headings(result.sections)).toEqual(["Scope"]);
+			expect(result.appendix.details).toEqual([
+				{ label: "Client/Team", value: "Example Co" },
+			]);
+		}
+	});
+
+	it("stops at a label it does not know, as before", () => {
+		const source = [
+			"# Project Proposal",
+			"",
+			"**Title:** Example Platform",
+			"",
+			"**Budget Code:** EX-42",
+			"",
+			"**Owner:** Example Owner",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+		const result = cleanupDocument(source, "PROPOSAL");
+
+		expect(result.appendix.details).toEqual([
+			{ label: "Title", value: "Example Platform" },
+		]);
+		expect(result.sections[0]).toMatchObject({
+			heading: null,
+			markdown: "**Budget Code:** EX-42\n\n**Owner:** Example Owner",
+		});
+	});
+
+	it.each([
+		["Support Team: Ticket Triage"],
+		["Example Client: Portal"],
+		["Example Sponsor: Pilot Review"],
+	])(
+		"keeps the bold title %j whole: a plain label inside it is not a field",
+		(title) => {
+			const source = [
+				"# Project Proposal",
+				"",
+				`**Title:** ${title}`,
+				"",
+				"**Owner:** Example Owner",
+				"",
+				"## Scope",
+				"Intake, dispatch and reporting.",
+			].join("\n");
+
+			for (const markdown of [source, simulateEditorRoundTrip(source)]) {
+				const result = cleanupDocument(markdown, "PROPOSAL");
+
+				expect(result.appendix.details).toEqual([
+					{ label: "Title", value: title },
+					{ label: "Owner", value: "Example Owner" },
+				]);
+				expect(result.headerTitle).toBe(title);
+			}
+		},
+	);
+
+	it("splits a plain joined header at the Business Case labels, but not at a plain `Team:` inside a value", () => {
+		const source = [
+			"# Example Brief",
+			"",
+			"Title: Support Team: Ticket Triage",
+			"Status: Draft",
+			"",
+			"## Scope",
+			"Intake, dispatch and reporting.",
+		].join("\n");
+		const roundTripped = simulateEditorRoundTrip(source);
+
+		expect(roundTripped).toContain(
+			"Title: Support Team: Ticket Triage Status: Draft",
+		);
+		for (const markdown of [source, roundTripped]) {
+			expect(
+				cleanupDocument(markdown, "BUSINESS_CASE").appendix.details,
+			).toEqual([
+				{ label: "Title", value: "Support Team: Ticket Triage" },
+				{ label: "Status", value: "Draft" },
+			]);
+		}
+	});
+
+	it.each([
+		["Team: we meet weekly to review the backlog."],
+		["- Client: Example Co joins the monthly demo."],
+		["Sponsor: the steering group, which meets monthly."],
+	])(
+		"leaves a first section that opens with the plain line %j in the main flow",
+		(line) => {
+			const result = cleanupDocument(
+				`## Working Model\n${line}\nEvery change is reviewed before release.`,
+				"PROPOSAL",
+			);
+
+			expect(result.sections[0].markdown).toBe(
+				`${line}\nEvery change is reviewed before release.`,
+			);
+			expect(result.appendix.details).toEqual([]);
+			expect(result.appendix.placeholders).toEqual([]);
+		},
+	);
+
+	it("reads bold Proposal labels that open the first section of a document with no `#` title", () => {
+		const result = cleanupDocument(
+			[
+				"## Project Proposal",
+				"**Client/Team:** Example Co",
+				"**Sponsor:** [Sponsor Name]",
+				"",
+				"## Scope",
+				"Intake, dispatch and reporting.",
+			].join("\n"),
+			"PROPOSAL",
+		);
+
+		expect(headings(result.sections)).toEqual(["Scope"]);
+		expect(result.appendix.details).toEqual([
+			{ label: "Client/Team", value: "Example Co" },
+		]);
+		expect(result.appendix.placeholders.map((p) => p.text)).toEqual([
+			"Sponsor: [Sponsor Name]",
+		]);
+	});
+});
+
+describe("cleanupDocument — header title", () => {
+	it("reports the `Title:` header field as `headerTitle` beside the `#` title, raw and after an editor round trip", () => {
+		for (const markdown of [
+			PROPOSAL_HEADER,
+			simulateEditorRoundTrip(PROPOSAL_HEADER),
+		]) {
+			const result = cleanupDocument(markdown, "PROPOSAL");
+
+			expect(result.headerTitle).toBe(PROPOSAL_TITLE);
+			expect(result.title).toBe("Project Proposal");
+		}
+	});
+
+	it("keeps the `#` heading as the anchor: section keys and paths are the same with and without the Title field", () => {
+		const withoutTitle = PROPOSAL_HEADER.replace(
+			`**Title:** ${PROPOSAL_TITLE}\n\n`,
+			"",
+		);
+		const withField = cleanupDocument(PROPOSAL_HEADER, "PROPOSAL");
+		const withoutField = cleanupDocument(withoutTitle, "PROPOSAL");
+
+		expect(withoutTitle).not.toContain("**Title:**");
+		expect(withField.headerTitle).toBe(PROPOSAL_TITLE);
+		expect(withoutField.headerTitle).toBeNull();
+		expect(withoutField.title).toBe("Project Proposal");
+		expect(keysBySection(withField)).toEqual(keysBySection(withoutField));
+		expect(
+			withField.sections.map((section) => section.headingPath),
+		).toEqual([["benefit hypothesis"], ["scope"]]);
+	});
+
+	it("reads the header title of a document with no `#` title, and a cover's `Title:` field", () => {
+		const header = cleanupDocument(
+			[
+				"## Business Case",
+				"Title: Example Pilot",
+				"Status: Draft",
+				"",
+				"## 1) Summary",
+				"The pilot runs for eight weeks.",
+			].join("\n"),
+			"BUSINESS_CASE",
+		);
+		const cover = cleanupDocument(
+			[
+				"# Project Proposal",
+				"",
+				"## 1. Proposal Cover",
+				"- **Title:** Example Field Service Portal",
+				"- **Client:** Example Org",
+				"",
+				"## 2. Scope",
+				"Intake and dispatch.",
+			].join("\n"),
+			"PROPOSAL",
+		);
+
+		expect(header).toMatchObject({
+			headerTitle: "Example Pilot",
+			title: null,
+		});
+		expect(headings(header.sections)).toEqual(["1) Summary"]);
+		expect(cover).toMatchObject({
+			headerTitle: "Example Field Service Portal",
+			title: "Project Proposal",
+		});
+	});
+
+	it("reports no header title when the Title field is a placeholder", () => {
+		const result = cleanupDocument(
+			PROPOSAL_HEADER.replace(
+				`**Title:** ${PROPOSAL_TITLE}`,
+				"**Title:** [Project Title]",
+			),
+			"PROPOSAL",
+		);
+
+		expect(result.headerTitle).toBeNull();
+		expect(result.title).toBe("Project Proposal");
+		expect(result.appendix.placeholders.map((p) => p.text)).toContain(
+			"Title: [Project Title]",
+		);
+	});
+
+	it.each([
+		[
+			String.raw`\[DRAFT\] Example *Platform* for [Teams](https://example.com/teams) (Reference 2)`,
+			"[DRAFT] Example Platform for Teams",
+		],
+		[String.raw`**Example** Platform\_Suite`, "Example Platform_Suite"],
+		["`api` Example Gateway", "api Example Gateway"],
+	])(
+		"reduces the header title %j to plain text and keeps the raw value in the details",
+		(raw, plain) => {
+			const result = cleanupDocument(
+				PROPOSAL_HEADER.replace(
+					`**Title:** ${PROPOSAL_TITLE}`,
+					`**Title:** ${raw}`,
+				),
+				"PROPOSAL",
+			);
+
+			expect(result.headerTitle).toBe(plain);
+			expect(result.appendix.details[0]).toEqual({
+				label: "Title",
+				value: raw,
+			});
+		},
+	);
+
+	it.each(["Example Platform (TBD)", "Example Platform, name TBC"])(
+		"reports no header title for %j, which is not final, and takes the next Title that is",
+		(value) => {
+			const source = [
+				"# Project Proposal",
+				"",
+				`**Title:** ${value}`,
+				"",
+				"## 1. Proposal Cover",
+				"- **Title:** Example Field Service Portal",
+				"",
+				"## 2. Scope",
+				"Intake and dispatch.",
+			].join("\n");
+			const withCover = cleanupDocument(source, "PROPOSAL");
+			const withoutCover = cleanupDocument(
+				source.replace("- **Title:** Example Field Service Portal", ""),
+				"PROPOSAL",
+			);
+
+			expect(withoutCover.headerTitle).toBeNull();
+			expect(withoutCover.appendix.details).toEqual([
+				{ label: "Title", value },
+			]);
+			expect(withCover.headerTitle).toBe("Example Field Service Portal");
+		},
+	);
+
+	it("reads a cover table's `| Title | … |` row as the header title, but not a row of several values", () => {
+		const cover = (row: string) =>
+			cleanupDocument(
+				[
+					"# Project Proposal",
+					"",
+					"## 1. Proposal Cover",
+					"| Field | Value |",
+					"| --- | --- |",
+					row,
+					"| Client | Example Org |",
+					"",
+					"## 2. Scope",
+					"Intake and dispatch.",
+				].join("\n"),
+				"PROPOSAL",
+			);
+		const several = cover("| Title | Example Portal | Phase 1 |");
+
+		expect(
+			cover("| **Title** | Example Field Service Portal |").headerTitle,
+		).toBe("Example Field Service Portal");
+		expect(several.headerTitle).toBeNull();
+		expect(several.appendix.details).toContainEqual({
+			label: "Title",
+			value: "Example Portal · Phase 1",
+		});
+	});
+});
+
+describe("cleanupDocument — reference citations", () => {
+	it("removes `(Reference 6)` with no double space or dangling comma", () => {
+		const result = cleanupDocument(PROPOSAL_HEADER, "PROPOSAL");
+
+		expect(sectionByHeading(result, "Benefit Hypothesis").markdown).toBe(
+			"As noted in the business case, “AI becomes helpful when it knows the project.”",
+		);
+		expect(result.issues).toEqual([]);
+	});
+
+	it.each([
+		"(Reference 6)",
+		"(reference 6)",
+		"(Ref. 6)",
+		"(Ref 6)",
+		"(see Reference 6)",
+		"(See Ref. 6)",
+		"(References 2, 4)",
+		"(References 2–4)",
+		"(see References 2 and 4)",
+		"(References 1, 2, and 3)",
+		"(References 1, 2 & 3)",
+		"(References 1, 2, & 3)",
+		"(Reference 6; Reference 9)",
+		"( Reference 6 )",
+	])("removes %s from the main flow", (citation) => {
+		const source = [
+			"## Results",
+			`Adoption doubled ${citation} in the pilot.`,
+			"",
+			`The survey agreed ${citation}.`,
+			"",
+			`- ${citation} Teams reported fewer handoffs.`,
+			`  - Nested point ${citation}, then more.`,
+			"",
+			`${citation} Support tickets fell.`,
+			"",
+			citation,
+		].join("\n");
+		const result = cleanupDocument(source, "PROPOSAL");
+
+		expect(result.sections[0].markdown).toBe(
+			[
+				"Adoption doubled in the pilot.",
+				"",
+				"The survey agreed.",
+				"",
+				"- Teams reported fewer handoffs.",
+				"  - Nested point, then more.",
+				"",
+				"Support tickets fell.",
+			].join("\n"),
+		);
+		expect(result.scaffoldingUnrecognized).toBe(false);
+	});
+
+	it("removes a reference citation from a heading and a table cell", () => {
+		const [section] = cleanupDocument(
+			[
+				"## Results (Reference 6)",
+				"| Metric | Result |",
+				"| --- | --- |",
+				"| Adoption | Doubled (Ref. 2) |",
+			].join("\n"),
+			"PROPOSAL",
+		).sections;
+
+		expect(section.heading).toBe("Results");
+		expect(section.markdown).toBe(
+			"| Metric | Result |\n| --- | --- |\n| Adoption | Doubled |",
+		);
+	});
+
+	it("leaves a reference citation inside inline code or a fence", () => {
+		const fence = [
+			"```text",
+			"Adoption doubled (Reference 6).",
+			"```",
+		].join("\n");
+		const result = cleanupDocument(
+			[
+				"## Notes",
+				"Write `(Reference 6)` to cite a source (Reference 6).",
+				"",
+				fence,
+			].join("\n"),
+			"PROPOSAL",
+		);
+
+		expect(result.sections[0].markdown).toBe(
+			`Write \`(Reference 6)\` to cite a source.\n\n${fence}`,
+		);
+	});
+
+	it.each([
+		"The team follows the design (Reference Architecture 2).",
+		"The method is documented (see Reference 6 for the method).",
+		"Adoption doubled (Reference 2025).",
+		"Adoption doubled (References).",
+	])("keeps %j, which is more than a reference citation", (line) => {
+		expect(
+			cleanupDocument(`## Notes\n${line}`, "PROPOSAL").sections[0]
+				.markdown,
+		).toBe(line);
+	});
+});
+
 describe("cleanupDocument — qualifiers (R41)", () => {
 	// Covers AE11.
 	it("keeps an Assumed claim's qualifier next to its figure and lists it under assumptions; a Confirmed claim gets none", () => {
@@ -2108,6 +2753,38 @@ describe("cleanupDocument — cost", () => {
 		[
 			"an evidence clause before a long anchor",
 			`## A\nx. Evidence: [S1] — ${"a ".repeat(100_000)}B.`,
+		],
+		[
+			"a 100k-char line of unclosed reference citations",
+			`## A\n${"x (see References 1, 2 and 3; Ref. 4 ".repeat(2_800)}`,
+		],
+		[
+			"a reference citation longer than its bound",
+			`## A\nx (Reference ${"1, ".repeat(34_000)}1)`,
+		],
+		[
+			"a reference list of Oxford-comma joins",
+			`## A\nx (References ${"1, and ".repeat(15_000)}1)`,
+		],
+		[
+			"a header title of emphasis runs",
+			`# T\n\n**Title:** ${"*_a_".repeat(25_000)}`,
+		],
+		[
+			"a header title of underscores before a letter",
+			`# T\n\n**Title:** ${"_".repeat(100_000)}a`,
+		],
+		[
+			"a bold header title full of plain labels",
+			`# T\n\n**Title:** ${"Team: a ".repeat(12_500)}`,
+		],
+		[
+			"a long plain Proposal header value",
+			`# T\n\nClient: A${" .".repeat(50_000)}`,
+		],
+		[
+			"a space run before a reference citation",
+			`## A\nx${" ".repeat(100_000)}(Reference 1)`,
 		],
 	])("stays linear on %s", (_name, markdown) => {
 		const start = performance.now();

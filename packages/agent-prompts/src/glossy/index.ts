@@ -15,7 +15,7 @@
  * identity feed the same keys, so a change to either needs a bump too. A bump
  * also drops an existing edition's review decisions on its next rebuild.
  */
-export const GLOSSY_PIPELINE_VERSION = "2026-09-28.1";
+export const GLOSSY_PIPELINE_VERSION = "2026-09-29.1";
 
 export {
 	buildGlossyDetectInstructions,

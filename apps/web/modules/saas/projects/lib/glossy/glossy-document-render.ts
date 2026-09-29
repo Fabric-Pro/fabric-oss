@@ -7,7 +7,7 @@
  * Both formats walk one document model built here, so they carry the same
  * content in the same order:
  * - a cover with the title on a brand color band and both parties' names
- *   and logos (R35);
+ *   and logos, each logo on a light rounded tile (R35);
  * - the main-flow sections with brand-colored headings, each visual and
  *   uploaded image placed at its anchor (R19);
  * - the appendix last, ending with the provenance line (R36, R43).
@@ -200,8 +200,13 @@ interface DocumentModel {
 	omittedImages: number;
 }
 
+/**
+ * Detail labels that name the recipient. A Proposal's `Client/Team` field
+ * is one; its `Sponsor` is a person on the preparer's side, never the
+ * recipient (Fizzy #2589 follow-up).
+ */
 const CLIENT_LABEL =
-	/^(?:client|client name|customer|customer name|recipient|prepared for)$/i;
+	/^(?:client|client name|client\s*\/\s*team|customer|customer name|recipient|prepared for)$/i;
 
 async function buildDocumentModel(
 	input: GlossyDocumentRenderInput,
@@ -522,6 +527,47 @@ function fitSize(
 	return { width: image.width * scale, height: image.height * scale };
 }
 
+/** Space around a logo on its tile, as a share of the tile's height. */
+const LOGO_TILE_PADDING = 0.14;
+/** Corner radius of a logo tile, as a share of its height. */
+const LOGO_TILE_RADIUS = 0.12;
+
+interface LogoTile {
+	width: number;
+	height: number;
+	radius: number;
+	/** Where the logo sits on the tile. */
+	logo: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * A cover logo's tile (Fizzy #2589 follow-up): a light rounded backing with
+ * a hairline border, the logo contained inside with its aspect ratio kept
+ * and never enlarged. A dark, opaque logo drawn straight on the white page
+ * reads as a black block; on the tile it reads as a logo. The tile is
+ * `height` tall, at least square, and at most `maxWidth` wide, in the unit
+ * the caller draws in.
+ */
+function logoTile(
+	logo: { width: number; height: number },
+	maxWidth: number,
+	height: number,
+): LogoTile {
+	const padding = height * LOGO_TILE_PADDING;
+	const fitted = fitSize(logo, maxWidth - padding * 2, height - padding * 2);
+	const width = Math.max(height, fitted.width + padding * 2);
+	return {
+		width,
+		height,
+		radius: height * LOGO_TILE_RADIUS,
+		logo: {
+			x: (width - fitted.width) / 2,
+			y: (height - fitted.height) / 2,
+			...fitted,
+		},
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Markdown (no raw HTML, no remote images)
 // ---------------------------------------------------------------------------
@@ -744,6 +790,11 @@ const PDF_CONTENT_WIDTH = PDF_PAGE_WIDTH - PDF_MARGIN * 2;
 const PDF_HEADING_SIZES = [20, 17, 14, 12, 11, 11];
 /** CSS pixels to points. */
 const PX_TO_PT = 0.75;
+/** A cover logo tile on the PDF, in points. */
+const PDF_LOGO_TILE_HEIGHT = 72;
+const PDF_LOGO_TILE_MAX_WIDTH = 176;
+/** The tile's hairline border, in points (one CSS pixel). */
+const LOGO_TILE_LINE_PT = 0.75;
 
 function pdfText(markdown: string): string {
 	return unescapeMarkdown(stripInlineMarkdown(markdown));
@@ -844,24 +895,38 @@ async function writePdf(
 		doc.text(party.label, x, partyY);
 		partyY += 14;
 		if (party.logo) {
-			const size = fitSize(
+			const tile = logoTile(
 				{
 					width: party.logo.width * PX_TO_PT,
 					height: party.logo.height * PX_TO_PT,
 				},
-				Math.min(columnWidth, 160),
-				64,
+				Math.min(columnWidth, PDF_LOGO_TILE_MAX_WIDTH),
+				PDF_LOGO_TILE_HEIGHT,
 			);
 			try {
+				// Decoded first, so an undecodable logo leaves no empty tile.
+				doc.getImageProperties(party.logo.dataUrl);
+				doc.setFillColor(palette.surface);
+				doc.setDrawColor(palette.border);
+				doc.setLineWidth(LOGO_TILE_LINE_PT);
+				doc.roundedRect(
+					x,
+					partyY,
+					tile.width,
+					tile.height,
+					tile.radius,
+					tile.radius,
+					"FD",
+				);
 				doc.addImage(
 					party.logo.dataUrl,
 					party.logo.format,
-					x,
-					partyY,
-					size.width,
-					size.height,
+					x + tile.logo.x,
+					partyY + tile.logo.y,
+					tile.logo.width,
+					tile.logo.height,
 				);
-				partyY += size.height + 12;
+				partyY += tile.height + 12;
 			} catch {
 				// An undecodable logo is left off the cover.
 			}
@@ -1033,6 +1098,110 @@ function docxColor(hex: string): string {
 /** Word page width at the default margins, in CSS pixels (about 6 inches). */
 const DOCX_CONTENT_WIDTH = 576;
 
+/**
+ * The DOCX's own font (Fizzy #2589 follow-up). Without one Word falls back
+ * to Times New Roman; Arial is the sans-serif every Word install has, the
+ * counterpart of the PDF's Helvetica.
+ */
+const DOCX_FONT = "Arial";
+/** Body text, in half-points: 11 pt, as on the PDF. */
+const DOCX_BODY_SIZE = 22;
+/** Heading sizes in half-points, as Word's built-in heading styles set them. */
+const DOCX_HEADING_SIZES = [32, 26, 24, undefined, undefined, undefined];
+
+/** A cover logo tile in the DOCX, in CSS pixels. */
+const DOCX_LOGO_TILE_HEIGHT = 88;
+const DOCX_LOGO_TILE_MAX_WIDTH = 240;
+/** Canvas pixels per displayed pixel of a tile, so it stays sharp in print. */
+const LOGO_TILE_SCALE = 3;
+
+function decodeImage(src: string): Promise<HTMLImageElement> {
+	return new Promise((resolve, reject) => {
+		const image = new Image();
+		image.onload = () => resolve(image);
+		image.onerror = reject;
+		image.src = src;
+	});
+}
+
+function roundedRectPath(
+	context: CanvasRenderingContext2D,
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	radius: number,
+): void {
+	const r = Math.min(radius, width / 2, height / 2);
+	context.beginPath();
+	context.moveTo(x + r, y);
+	context.arcTo(x + width, y, x + width, y + height, r);
+	context.arcTo(x + width, y + height, x, y + height, r);
+	context.arcTo(x, y + height, x, y, r);
+	context.arcTo(x, y, x + width, y, r);
+	context.closePath();
+}
+
+/**
+ * A cover logo drawn onto its tile as one PNG. Word has no rounded box to
+ * set a picture on that every DOCX reader shows, so the tile is part of the
+ * image. The logo is already a `data:` URI, so the canvas stays readable.
+ * Null where no canvas can draw it; the cover then shows the logo alone.
+ */
+async function composeLogoTile(
+	logo: LoadedImage,
+	palette: GlossyPalette,
+): Promise<LoadedImage | null> {
+	try {
+		const tile = logoTile(
+			logo,
+			DOCX_LOGO_TILE_MAX_WIDTH,
+			DOCX_LOGO_TILE_HEIGHT,
+		);
+		const scale = LOGO_TILE_SCALE;
+		const canvas = document.createElement("canvas");
+		canvas.width = Math.round(tile.width * scale);
+		canvas.height = Math.round(tile.height * scale);
+		const context = canvas.getContext("2d");
+		if (!context) {
+			return null;
+		}
+		const image = await decodeImage(logo.dataUrl);
+		// One CSS pixel of border, inset by half so the stroke stays whole.
+		const line = scale;
+		roundedRectPath(
+			context,
+			line / 2,
+			line / 2,
+			canvas.width - line,
+			canvas.height - line,
+			tile.radius * scale,
+		);
+		context.fillStyle = palette.surface;
+		context.fill();
+		context.lineWidth = line;
+		context.strokeStyle = palette.border;
+		context.stroke();
+		context.imageSmoothingEnabled = true;
+		context.imageSmoothingQuality = "high";
+		context.drawImage(
+			image,
+			tile.logo.x * scale,
+			tile.logo.y * scale,
+			tile.logo.width * scale,
+			tile.logo.height * scale,
+		);
+		return {
+			dataUrl: canvas.toDataURL("image/png"),
+			format: "PNG",
+			width: tile.width,
+			height: tile.height,
+		};
+	} catch {
+		return null;
+	}
+}
+
 async function writeDocx(
 	model: DocumentModel,
 	palette: GlossyPalette,
@@ -1043,6 +1212,7 @@ async function writeDocx(
 		HeadingLevel,
 		ImageRun,
 		Packer,
+		PageBreak,
 		Paragraph,
 		ShadingType,
 		Table,
@@ -1149,8 +1319,33 @@ async function writeDocx(
 		});
 	};
 
+	// A page ends with a page-break run at the end of its last paragraph
+	// (Fizzy #2589 follow-up): the break every DOCX reader honors, where
+	// Quick Look and TextEdit ignore "page break before" and a second
+	// section left an empty paragraph between cover and body. A page never
+	// ends twice in a row, so an empty body leaves no blank page.
+	const blocks: Block[] = [];
+	let pageEnded = false;
+	const add = (...added: Block[]) => {
+		blocks.push(...added);
+		pageEnded = false;
+	};
+	const endPage = () => {
+		const last = blocks.at(-1);
+		if (pageEnded || !last) {
+			return;
+		}
+		if (last instanceof Paragraph) {
+			last.addChildElement(new PageBreak());
+		} else {
+			// A table cannot hold the break: a paragraph after it does.
+			blocks.push(new Paragraph({ children: [new PageBreak()] }));
+		}
+		pageEnded = true;
+	};
+
 	// Cover (R35): the title on a shaded brand band, then both parties.
-	const cover: Block[] = [
+	add(
 		new Paragraph({ shading: band, spacing: { before: 0, after: 0 } }),
 		new Paragraph({
 			shading: band,
@@ -1166,9 +1361,9 @@ async function writeDocx(
 		}),
 		new Paragraph({ shading: band, spacing: { before: 0, after: 0 } }),
 		new Paragraph({ spacing: { before: 480 } }),
-	];
+	);
 	for (const party of model.parties) {
-		cover.push(
+		add(
 			new Paragraph({
 				spacing: { before: 240, after: 80 },
 				children: [
@@ -1181,17 +1376,22 @@ async function writeDocx(
 			}),
 		);
 		if (party.logo) {
-			const logo = await imageParagraph(
-				party.logo,
-				fitSize(party.logo, 200, 80),
-				AlignmentType.LEFT,
-			);
+			const tile = await composeLogoTile(party.logo, palette);
+			// A tile the canvas could not encode leaves the bare logo.
+			const logo =
+				(tile &&
+					(await imageParagraph(tile, tile, AlignmentType.LEFT))) ??
+				(await imageParagraph(
+					party.logo,
+					fitSize(party.logo, 200, 80),
+					AlignmentType.LEFT,
+				));
 			if (logo) {
-				cover.push(logo);
+				add(logo);
 			}
 		}
 		if (party.name) {
-			cover.push(
+			add(
 				new Paragraph({
 					children: [
 						new TextRun({
@@ -1206,20 +1406,17 @@ async function writeDocx(
 		}
 	}
 
-	const body: Block[] = [];
+	endPage();
+
 	let listInstance = 0;
-	let breakBefore = false;
 	for (const node of model.nodes) {
-		const pageBreakBefore = breakBefore;
-		breakBefore = false;
 		switch (node.type) {
 			case "heading":
-				body.push(
+				add(
 					new Paragraph({
 						heading:
 							headingLevels[node.level - 1] ??
 							HeadingLevel.HEADING_6,
-						pageBreakBefore,
 						children: runs(node.text, {
 							bold: true,
 							color: docxColor(palette.heading),
@@ -1228,9 +1425,8 @@ async function writeDocx(
 				);
 				break;
 			case "paragraph":
-				body.push(
+				add(
 					new Paragraph({
-						pageBreakBefore,
 						children: runs(node.text),
 					}),
 				);
@@ -1238,7 +1434,7 @@ async function writeDocx(
 			case "list":
 				listInstance++;
 				for (const item of node.items) {
-					body.push(
+					add(
 						new Paragraph({
 							children: runs(item.text),
 							...(node.ordered
@@ -1255,7 +1451,7 @@ async function writeDocx(
 				}
 				break;
 			case "quote":
-				body.push(
+				add(
 					new Paragraph({
 						indent: { left: 360 },
 						children: runs(node.text, {
@@ -1267,7 +1463,7 @@ async function writeDocx(
 				break;
 			case "code":
 				for (const line of node.lines) {
-					body.push(
+					add(
 						new Paragraph({
 							children: [
 								new TextRun({
@@ -1283,7 +1479,7 @@ async function writeDocx(
 				break;
 			case "table": {
 				const columns = Math.max(...node.rows.map((row) => row.length));
-				body.push(
+				add(
 					new Table({
 						width: { size: 100, type: WidthType.PERCENTAGE },
 						rows: node.rows.map(
@@ -1322,11 +1518,11 @@ async function writeDocx(
 						),
 					}),
 				);
-				body.push(new Paragraph({}));
+				add(new Paragraph({}));
 				break;
 			}
 			case "rule":
-				body.push(
+				add(
 					new Paragraph({
 						border: {
 							bottom: {
@@ -1347,17 +1543,17 @@ async function writeDocx(
 					AlignmentType.CENTER,
 				);
 				if (paragraph) {
-					body.push(paragraph);
+					add(paragraph);
 				} else {
 					countWriteOmission(model, node);
 				}
 				break;
 			}
 			case "pageBreak":
-				breakBefore = true;
+				endPage();
 				break;
 			case "provenance":
-				body.push(
+				add(
 					new Paragraph({
 						spacing: { before: 360 },
 						children: [
@@ -1374,8 +1570,32 @@ async function writeDocx(
 		}
 	}
 
+	const heading = docxColor(palette.heading);
+	const headingStyle = (size: number | undefined) => ({
+		run: {
+			font: DOCX_FONT,
+			bold: true,
+			color: heading,
+			...(size ? { size } : {}),
+		},
+	});
 	const doc = new Document({
 		title: pdfText(model.title),
+		// Sans-serif throughout, and headings in the palette's heading color
+		// (the brand only where it clears contrast on the page), so the
+		// document reads the same where its own run colors are not applied
+		// (Fizzy #2589 follow-up).
+		styles: {
+			default: {
+				document: { run: { font: DOCX_FONT, size: DOCX_BODY_SIZE } },
+				heading1: headingStyle(DOCX_HEADING_SIZES[0]),
+				heading2: headingStyle(DOCX_HEADING_SIZES[1]),
+				heading3: headingStyle(DOCX_HEADING_SIZES[2]),
+				heading4: headingStyle(DOCX_HEADING_SIZES[3]),
+				heading5: headingStyle(DOCX_HEADING_SIZES[4]),
+				heading6: headingStyle(DOCX_HEADING_SIZES[5]),
+			},
+		},
 		numbering: {
 			config: [
 				{
@@ -1397,7 +1617,7 @@ async function writeDocx(
 				},
 			],
 		},
-		sections: [{ children: cover }, { children: body }],
+		sections: [{ children: blocks }],
 	});
 	return Packer.toBlob(doc);
 }

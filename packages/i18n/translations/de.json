@@ -4883,6 +4883,7 @@
 			},
 			"download": {
 				"failed": "Das {format} konnte nicht erstellt werden. Versuchen Sie es erneut.",
+				"editionChanged": "Die Glossy-Edition hat sich geändert, seit Sie sie geöffnet haben. Prüfen Sie die aktualisierte Edition und laden Sie sie dann erneut herunter.",
 				"omittedVisuals": "{count, plural, one {# Visual konnte nicht dargestellt werden und fehlt im Download.} other {# Visuals konnten nicht dargestellt werden und fehlen im Download.}}",
 				"omittedImages": "{count, plural, one {# Bild aus dem Dokument konnte nicht geladen werden und fehlt.} other {# Bilder aus dem Dokument konnten nicht geladen werden und fehlen.}}"
 			}

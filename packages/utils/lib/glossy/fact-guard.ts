@@ -83,7 +83,8 @@ export type FactGuardViolationKind =
 	| "structural"
 	| "negation"
 	| "length"
-	| "label";
+	| "label"
+	| "placeholder";
 
 export interface FactGuardViolation {
 	kind: FactGuardViolationKind;
@@ -1988,11 +1989,69 @@ const LABEL_FUNCTION_WORDS = new Set(
 );
 
 /**
+ * A whole value that stands in for content whatever the source says: an
+ * angle-bracket token (`<UNKNOWN>`, `<Option X>`), a bracketed template
+ * token (`[Owner Name]`, escaped or not), or TBD, TBC, TBA, placeholder, or
+ * lorem ipsum. Tested after `unwrapPlaceholder`, so `**TBD**` and `TBD.`
+ * count.
+ */
+const PLACEHOLDER_VALUE =
+	/^(?:<[^<>]{1,200}>|\\?\[[^[\]]{1,200}\\?\]|tbd|tbc|tba|placeholder|lorem ipsum\b[\s\S]*)$/i;
+
+/**
+ * N/A and Unknown can be content: an "Unknown 25%" share, a cell the
+ * document marks N/A. As a whole value each is a placeholder only when the
+ * source section never states it as a token of its own; one inside `<…>` or
+ * `[…]` in the source is a placeholder there too, so it vouches for nothing.
+ */
+const SOURCE_STATABLE_PLACEHOLDERS: ReadonlyArray<{
+	value: RegExp;
+	stated: RegExp;
+}> = [
+	{ value: /^n\/a$/i, stated: /(?<![\w<[\\/])n\/a(?![\w>\]\\/])/i },
+	{ value: /^unknown$/i, stated: /(?<![\w<[\\])unknown(?![\w>\]\\])/i },
+];
+
+/** Emphasis, quotes, and punctuation around a value, but never its brackets. */
+const PLACEHOLDER_WRAPPING = new Set(" \t\r\n*_`\"'“”‘’().,;:!?–—-");
+
+/** A value without its wrapping; a loop, so a long run cannot backtrack. */
+function unwrapPlaceholder(value: string): string {
+	let start = 0;
+	let end = value.length;
+	while (start < end && PLACEHOLDER_WRAPPING.has(value[start])) {
+		start++;
+	}
+	while (end > start && PLACEHOLDER_WRAPPING.has(value[end - 1])) {
+		end--;
+	}
+	return value.slice(start, end);
+}
+
+function isPlaceholder(value: string, sourceSection: string): boolean {
+	const bare = unwrapPlaceholder(value);
+	return (
+		PLACEHOLDER_VALUE.test(bare) ||
+		SOURCE_STATABLE_PLACEHOLDERS.some(
+			(entry) =>
+				entry.value.test(bare) && !entry.stated.test(sourceSection),
+		)
+	);
+}
+
+/**
  * Check a visual's extracted labels and figures against its source segment
  * (R18). Every figure and date must be present under the same normalizer as
  * rewrites; every other label word must appear in the segment (token-subset
  * rule, on stems), apart from function words and the kind's structural
  * words.
+ *
+ * A label or figure that is a whole-value placeholder fails (Fizzy #2589
+ * follow-up): with nothing to show, a model fills a comparison with
+ * `<UNKNOWN>`, and a template's own `[Owner Name]` or TBD vouches for no
+ * content. N/A and Unknown fail only when the source never states them.
+ * Labels are plain text, so `<…>` inside one is read as words rather than
+ * masked as an HTML tag.
  */
 export function checkVisualFacts(
 	visual: VisualFactsInput,
@@ -2004,7 +2063,19 @@ export function checkVisualFacts(
 	);
 	const structural = stemSet(VISUAL_STRUCTURAL_WORDS[visual.kind] ?? []);
 	const violations: FactGuardViolation[] = [];
-	for (const text of [...visual.figures, ...visual.labels]) {
+	for (const value of [...visual.figures, ...visual.labels]) {
+		if (isPlaceholder(value, sourceSection)) {
+			violations.push(
+				violation(
+					"placeholder",
+					value,
+					'"%s" is a placeholder, not content from the source section.',
+				),
+			);
+			continue;
+		}
+		// One-for-one, so every offset `scanNumeric` reports still holds.
+		const text = value.replace(/[<>]/g, " ");
 		const { facts, work } = scanNumeric(text);
 		for (const fact of facts) {
 			if (!fact.weak && !provided.has(fact.key)) {
@@ -2030,7 +2101,7 @@ export function checkVisualFacts(
 			violations.push(
 				violation(
 					"label",
-					text,
+					value,
 					`"%s" uses words the source section does not: ${clip(newWords.join(", "))}.`,
 				),
 			);

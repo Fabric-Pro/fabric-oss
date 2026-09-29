@@ -123,6 +123,8 @@ interface World {
 	orgProviderKeys: Set<string>;
 	/** Users with a personal AI provider key. */
 	personalProviderKeys: Set<string>;
+	/** Stored objects by `${bucket}/${key}`; none unless a test puts one. */
+	storedObjects: Map<string, { data: Buffer; contentType: string }>;
 }
 
 function createWorld(): World {
@@ -191,7 +193,8 @@ function createWorld(): World {
 				ORG_A,
 				{
 					name: "Example Org",
-					logo: "org-a/logo.png",
+					// The key the organization logo upload writes.
+					logo: "org-a.png",
 					brandColor: "ocean",
 				},
 			],
@@ -212,6 +215,7 @@ function createWorld(): World {
 		linkSources: [],
 		orgProviderKeys: new Set([ORG_A, ORG_B]),
 		personalProviderKeys: new Set(),
+		storedObjects: new Map(),
 	};
 }
 
@@ -246,6 +250,8 @@ export const mocks = {
 	getAIModel: vi.fn(),
 	enforceAiRateLimit: vi.fn(),
 	getSignedUrl: vi.fn(),
+	getFileMetadata: vi.fn(),
+	downloadFile: vi.fn(),
 };
 
 /** The real `extractGlossyVisual`, captured when `@repo/temporal` is mocked. */
@@ -283,6 +289,35 @@ export function resetMocks(): void {
 	mocks.getSignedUrl.mockImplementation(
 		async (key: string, options: { bucket: string }) =>
 			`https://storage.example.com/${options.bucket}/${key}?signed`,
+	);
+	// Like the S3 provider: a missing object is `null` metadata, and a
+	// download of one throws.
+	mocks.getFileMetadata.mockImplementation(
+		async (key: string, options: { bucket: string }) => {
+			const object = world.storedObjects.get(`${options.bucket}/${key}`);
+			return object
+				? {
+						size: object.data.length,
+						contentType: object.contentType,
+						uploadedAt: new Date("2026-09-01"),
+						pathname: key,
+						url: `https://storage.example.com/${options.bucket}/${key}`,
+					}
+				: null;
+		},
+	);
+	mocks.downloadFile.mockImplementation(
+		async (key: string, options: { bucket: string }) => {
+			const object = world.storedObjects.get(`${options.bucket}/${key}`);
+			if (!object) {
+				throw new Error("Could not download file from S3: NoSuchKey");
+			}
+			return {
+				data: Buffer.from(object.data),
+				contentType: object.contentType,
+				size: object.data.length,
+			};
+		},
 	);
 }
 
@@ -513,7 +548,11 @@ export async function storageModule() {
 		await vi.importActual<typeof import("@repo/storage")>("@repo/storage");
 	return {
 		...actual,
-		getStorageProvider: () => ({ getSignedUrl: mocks.getSignedUrl }),
+		getStorageProvider: () => ({
+			getSignedUrl: mocks.getSignedUrl,
+			getFileMetadata: mocks.getFileMetadata,
+			downloadFile: mocks.downloadFile,
+		}),
 	};
 }
 

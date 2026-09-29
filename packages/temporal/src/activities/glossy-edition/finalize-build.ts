@@ -466,7 +466,10 @@ export async function assembleEdition(
 
 	const { snapshot } = source;
 	const content: EditionContent = {
+		// A header `Title:` names the edition ahead of the document's own
+		// title, which is often the template's (Fizzy #2589 follow-up).
 		title:
+			source.cleanup.headerTitle?.trim() ||
 			snapshot.title.trim() ||
 			source.cleanup.title?.trim() ||
 			"Glossy edition",
