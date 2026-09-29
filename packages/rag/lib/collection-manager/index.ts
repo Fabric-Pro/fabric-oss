@@ -203,8 +203,8 @@ export const PROJECT_CONTEXTS_BASE_COLLECTION = "project-contexts" as const;
  * *creates* the collection it resolves — that would make "this tenant never
  * embedded anything" permanently indistinguishable from "the delete failed",
  * and would have a cleanup path conjuring collections into existence as a side
- * effect. Mirrors the check `deleteOrganizationCollections` performs before
- * dropping a collection.
+ * effect. `deleteOrganizationCollections` uses it before dropping each
+ * collection.
  *
  * A Qdrant failure PROPAGATES rather than degrading to `false`, so an
  * unreachable vector store cannot masquerade as an empty one.
@@ -538,6 +538,12 @@ export async function getCollectionLayout(
  * Delete all collections for an organization
  * Called when an organization is deleted
  *
+ * Covers every base collection in `COLLECTION_CONFIGS`, whose type forces an
+ * entry per `BaseCollectionName`, so a new collection type cannot be left
+ * behind by a hand-maintained list. Each collection is attempted even if an
+ * earlier one fails; any failure is then thrown so the caller can report the
+ * orphaned vectors instead of treating the teardown as done.
+ *
  * @param organizationId - The organization ID
  */
 export async function deleteOrganizationCollections(
@@ -547,17 +553,15 @@ export async function deleteOrganizationCollections(
 		throw new Error(`Invalid organization ID format: ${organizationId}`);
 	}
 
-	const baseCollections: BaseCollectionName[] = [
-		"chat-documents",
-		"workspace-documents",
-		"project-contexts",
-		"fabric_orchestrator_memory",
-		"fabric_capabilities",
-	];
+	const baseCollections = Object.keys(
+		COLLECTION_CONFIGS,
+	) as BaseCollectionName[];
 
 	logger.info(
 		`[CollectionManager] Deleting all collections for organization: ${organizationId}`,
 	);
+
+	const failed: string[] = [];
 
 	for (const baseCollection of baseCollections) {
 		const collectionName = getCollectionName(
@@ -566,22 +570,32 @@ export async function deleteOrganizationCollections(
 		);
 
 		try {
-			const exists = await checkCollectionExists(collectionName);
+			// Uncached: a stale "missing" answer would skip a real delete.
+			const exists = await collectionExistsUncached(collectionName);
 			if (exists) {
-				await qdrantClient.deleteCollection(collectionName);
+				const deleted =
+					await qdrantClient.deleteCollection(collectionName);
+				if (!deleted) {
+					throw new Error("Qdrant did not confirm the deletion");
+				}
 				logger.info(
 					`[CollectionManager] Deleted collection: ${collectionName}`,
 				);
-
-				// Invalidate cache
-				collectionExistsCache.delete(collectionName);
 			}
+			collectionExistsCache.delete(collectionName);
+			collectionLayoutCache.delete(collectionName);
 		} catch (error) {
 			logger.error(
 				`[CollectionManager] Failed to delete collection ${collectionName}: ${error}`,
 			);
-			// Continue with other collections, don't fail entire operation
+			failed.push(collectionName);
 		}
+	}
+
+	if (failed.length > 0) {
+		throw new Error(
+			`Failed to delete ${failed.length} collection(s) for organization ${organizationId}: ${failed.join(", ")}`,
+		);
 	}
 
 	logger.info(
