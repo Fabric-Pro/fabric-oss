@@ -82,6 +82,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		note: "Gates both the upcoming-meetings list (#1901a) and agenda generation (#1901). An upcoming list with no agenda button is a half-feature, so they share one flag.",
 	},
+	PARLUME_MEETINGS: {
+		label: "Parlume meeting agent",
+		description:
+			"Lets project administrators invite a project-bound Fabric Agent to a Teams meeting by link.",
+		envVar: "FABRIC_FEATURE_PARLUME_MEETINGS",
+		default: false,
+		orgScopable: true,
+		note: "Default-off preview. The API verifies the project, agent binding and operator-managed media bridge before it creates a bot, so enabling this flag alone never starts a meeting or creates an idle service.",
+	},
 	MEETING_ACTION_ITEM_LINKING: {
 		label: "Link meeting action items to work items",
 		description:

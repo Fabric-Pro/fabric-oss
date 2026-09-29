@@ -19,6 +19,8 @@ export const AI_JOB_TYPES = [
 	"daily-brief",
 	/** Meeting transcript sync and meeting-derived insight pipelines. */
 	"meeting-transcript-sync",
+	/** Parlume link-only meeting notes generated after transcript finalization. */
+	"parlume-meeting-notes",
 	/** Image generation (per-image billing; logged as an invocation marker). */
 	"image-generation",
 	/** Audio/video transcription (SDK exposes no tokens; marker row only). */

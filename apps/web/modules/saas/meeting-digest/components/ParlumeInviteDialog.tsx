@@ -1,0 +1,332 @@
+"use client";
+
+import { orpcClient } from "@shared/lib/orpc-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@ui/components/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@ui/components/dialog";
+import { Input } from "@ui/components/input";
+import { Label } from "@ui/components/label";
+import { Loader2Icon } from "lucide-react";
+import { useState } from "react";
+
+const SESSIONS_QUERY_KEY = "parlume-sessions";
+
+/**
+ * This is deliberately a project-admin control rather than a Teams
+ * integration setting. The selected agent must already carry this project's
+ * project-context binding; the server rechecks that binding at start.
+ */
+export function ParlumeInviteDialog({
+	projectId,
+	open,
+	onOpenChange,
+}: {
+	projectId: string;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) {
+	const queryClient = useQueryClient();
+	const [agentInstanceSId, setAgentInstanceSId] = useState("");
+	const [meetingUrl, setMeetingUrl] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [isInviting, setIsInviting] = useState(false);
+	const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(
+		null,
+	);
+	const agentsQuery = useQuery({
+		queryKey: ["parlume-agents", projectId],
+		queryFn: () => orpcClient.projects.parlume.listAgents({ projectId }),
+		enabled: open,
+		retry: false,
+	});
+	const sessionsQuery = useQuery({
+		queryKey: [SESSIONS_QUERY_KEY, projectId],
+		queryFn: () => orpcClient.projects.parlume.listSessions({ projectId }),
+		enabled: open,
+		retry: false,
+		refetchInterval: open ? 10_000 : false,
+	});
+	const agents = agentsQuery.data?.agents ?? [];
+	const operatorReady = agentsQuery.data?.operatorReady !== false;
+
+	const invite = async () => {
+		const selectedAgent = agentInstanceSId || agents[0]?.sId;
+		if (!selectedAgent) {
+			setError("Choose a project-bound Fabric Agent first.");
+			return;
+		}
+		setError(null);
+		setIsInviting(true);
+		try {
+			await orpcClient.projects.parlume.start({
+				projectId,
+				agentInstanceSId: selectedAgent,
+				meetingUrl: meetingUrl.trim(),
+			});
+			setMeetingUrl("");
+			await queryClient.invalidateQueries({
+				queryKey: [SESSIONS_QUERY_KEY, projectId],
+			});
+		} catch (inviteError) {
+			const message =
+				inviteError instanceof Error ? inviteError.message : "";
+			setError(
+				message.includes("not ready") || message.includes("voice key")
+					? "Parlume needs operator setup in this environment before it can join meetings."
+					: "Parlume could not join this meeting. Check the link and try again.",
+			);
+		} finally {
+			setIsInviting(false);
+		}
+	};
+
+	const stop = async (sessionId: string) => {
+		setError(null);
+		setStoppingSessionId(sessionId);
+		try {
+			await orpcClient.projects.parlume.stop({ projectId, sessionId });
+			await queryClient.invalidateQueries({
+				queryKey: [SESSIONS_QUERY_KEY, projectId],
+			});
+		} catch {
+			setError(
+				"Parlume could not leave the meeting. Try stopping it again.",
+			);
+		} finally {
+			setStoppingSessionId(null);
+		}
+	};
+
+	const pending = isInviting;
+
+	return (
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogContent className="sm:max-w-lg">
+				<DialogHeader>
+					<DialogTitle>Invite Parlume</DialogTitle>
+					<DialogDescription>
+						Parlume joins as an external AI guest. The organizer may
+						need to admit it from the lobby. It records and
+						transcribes meeting audio, and its replies use an
+						AI-generated voice. Any meeting attendee can say “Hey
+						Fabric” and hear answers from this project’s knowledge.
+						Voice actions are unavailable.
+					</DialogDescription>
+				</DialogHeader>
+
+				<div className="space-y-4">
+					{!operatorReady && (
+						<p
+							className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+							role="alert"
+						>
+							Parlume is not configured for invitations in this
+							environment. An operator must complete its media
+							setup before a meeting link can be used.
+						</p>
+					)}
+					<div className="space-y-2">
+						<Label htmlFor="parlume-agent">Fabric Agent</Label>
+						{agentsQuery.isLoading ? (
+							<p className="flex items-center gap-2 text-sm text-muted-foreground">
+								<Loader2Icon
+									className="size-4 animate-spin"
+									aria-hidden="true"
+								/>
+								Loading project agents…
+							</p>
+						) : agentsQuery.isError ? (
+							<p
+								className="flex items-center gap-2 text-sm text-destructive"
+								role="alert"
+							>
+								Could not load project agents.
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => agentsQuery.refetch()}
+								>
+									Retry agents
+								</Button>
+							</p>
+						) : agents.length === 0 ? (
+							<p className="text-sm text-muted-foreground">
+								No active Fabric Agent is bound to this
+								project's knowledge yet.
+							</p>
+						) : (
+							<select
+								id="parlume-agent"
+								className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+								value={agentInstanceSId || agents[0]?.sId}
+								onChange={(event) =>
+									setAgentInstanceSId(event.target.value)
+								}
+							>
+								{agents.map((agent) => (
+									<option key={agent.sId} value={agent.sId}>
+										{agent.name} (v{agent.version})
+									</option>
+								))}
+							</select>
+						)}
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="parlume-meeting-url">
+							Teams meeting link
+						</Label>
+						<Input
+							id="parlume-meeting-url"
+							type="url"
+							placeholder="https://teams.microsoft.com/l/meetup-join/..."
+							value={meetingUrl}
+							onChange={(event) =>
+								setMeetingUrl(event.target.value)
+							}
+						/>
+					</div>
+					<p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+						Parlume saves a project-scoped transcript after the
+						meeting. Its voice replies can be interrupted by another
+						speaker. Review meeting policies and tell participants
+						before inviting it.
+					</p>
+					{error && (
+						<p className="text-sm text-destructive" role="alert">
+							{error}
+						</p>
+					)}
+					{sessionsQuery.isError ? (
+						<p
+							className="flex items-center gap-2 text-sm text-destructive"
+							role="alert"
+						>
+							Could not load recent invitations.
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => sessionsQuery.refetch()}
+							>
+								Retry invitations
+							</Button>
+						</p>
+					) : sessionsQuery.data?.sessions.length ? (
+						<div className="space-y-2 border-t pt-3">
+							<p className="text-sm font-medium">
+								Recent invitations
+							</p>
+							{sessionsQuery.data.sessions.map((session) => {
+								const agentName =
+									agents.find(
+										(agent) =>
+											agent.sId ===
+											session.agentInstanceSId,
+									)?.name ?? "Fabric Agent";
+								const invitationLabel = `${agentName} invited ${new Intl.DateTimeFormat(
+									undefined,
+									{ dateStyle: "medium", timeStyle: "short" },
+								).format(new Date(session.createdAt))}`;
+
+								return (
+									<div
+										key={session.id}
+										className="space-y-2 rounded-md border p-2 text-sm"
+									>
+										<p className="font-medium">
+											{invitationLabel}
+										</p>
+										<div className="flex items-center justify-between gap-3">
+											<span className="text-muted-foreground">
+												{session.status
+													.toLowerCase()
+													.replaceAll("_", " ")}
+											</span>
+											{!["ENDED", "FAILED"].includes(
+												session.status,
+											) && (
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() =>
+														stop(session.id)
+													}
+													disabled={
+														stoppingSessionId ===
+														session.id
+													}
+													aria-label={`Stop ${invitationLabel}`}
+												>
+													{stoppingSessionId ===
+													session.id
+														? "Stopping…"
+														: "Stop"}
+												</Button>
+											)}
+										</div>
+										{session.lastError && (
+											<p className="text-destructive">
+												{session.lastError}
+											</p>
+										)}
+										{session.notes && (
+											<details>
+												<summary className="cursor-pointer font-medium">
+													Meeting notes
+												</summary>
+												<p className="mt-2 whitespace-pre-wrap text-muted-foreground">
+													{session.notes}
+												</p>
+											</details>
+										)}
+										{session.transcriptContextId &&
+											!session.notes && (
+												<p className="text-muted-foreground">
+													{session.notesStatus ===
+													"FAILED"
+														? "Meeting notes are unavailable. The transcript is saved in project Context."
+														: "Preparing meeting notes…"}
+												</p>
+											)}
+									</div>
+								);
+							})}
+						</div>
+					) : null}
+				</div>
+
+				<DialogFooter>
+					<Button
+						type="button"
+						variant="outline"
+						onClick={() => onOpenChange(false)}
+					>
+						Cancel
+					</Button>
+					<Button
+						type="button"
+						onClick={invite}
+						disabled={
+							pending ||
+							!operatorReady ||
+							agentsQuery.isError ||
+							agents.length === 0 ||
+							meetingUrl.trim() === ""
+						}
+					>
+						Invite Parlume
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
+	);
+}

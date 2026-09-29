@@ -182,6 +182,8 @@ export interface ExecuteAgentTurnInput {
 	callingAgentId?: string;
 	/** Current run-agent recursion depth */
 	currentDepth?: number;
+	/** Denies every write, delegation, and unclassified tool at execution time. */
+	meetingReadOnly?: boolean;
 }
 
 /**
