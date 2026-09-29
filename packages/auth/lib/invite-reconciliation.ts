@@ -19,7 +19,6 @@
  * Logging hygiene: invitation IDs are logged; invitation/magic-link/
  * verification TOKEN values are never logged (none are even loaded here).
  */
-import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/backend";
 import {
 	db,
 	enrollProjectMemberIfNewsletterEnabled,
@@ -29,6 +28,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { updateSeatsInOrganizationSubscription } from "./organization";
+import { seedDefaultMcpConfigsForTenant } from "./seed-default-mcp-configs";
 
 /** Which Better Auth hook fired the reconciliation run. */
 export type InviteReconciliationTrigger =

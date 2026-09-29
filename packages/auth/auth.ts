@@ -1,4 +1,3 @@
-import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/backend";
 import { config } from "@repo/config";
 import {
 	db,
@@ -13,7 +12,6 @@ import type { Locale } from "@repo/i18n";
 import { logAuditEvent, logger } from "@repo/logs";
 import { sendEmail } from "@repo/mail";
 import { cancelSubscription } from "@repo/payments";
-import { getTemporalClient } from "@repo/temporal";
 import { encryptApiKey, getBaseUrl, isEncryptedApiKey } from "@repo/utils";
 import { type BetterAuthOptions, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
@@ -54,6 +52,7 @@ import {
 	assertPasswordStrength,
 	PasswordTooWeakError,
 } from "./lib/password-strength";
+import { seedDefaultMcpConfigsForTenant } from "./lib/seed-default-mcp-configs";
 import {
 	seedSessionOrganization,
 	seedSessionOrganizationOnCreate,
@@ -1280,6 +1279,9 @@ const authOptions = {
 				// Cancel running Temporal workflows for the user (fire-and-forget)
 				if (ctx.path.startsWith("/delete-user") && userId) {
 					try {
+						const { getTemporalClient } = await import(
+							"@repo/temporal"
+						);
 						const temporalClient = await getTemporalClient();
 						const workflows = temporalClient.workflow.list({
 							query: 'ExecutionStatus="Running"',
