@@ -15,6 +15,7 @@ import {
 	renderGlossyDocx,
 	renderGlossyPdf,
 	resolveRecipientName,
+	toWinAnsiText,
 } from "../glossy-document-render";
 import { deriveGlossyPalette } from "../palette";
 
@@ -136,6 +137,8 @@ const recorder = vi.hoisted(() => ({
 		op: "text" | "image" | "addPage" | "roundedRect";
 		page: number;
 		text?: string;
+		/** `text` only: where its widest line ends, in points. */
+		right?: number;
 		box?: Box;
 		/** `roundedRect` only: its corner radius, style, and colors. */
 		radius?: number;
@@ -165,10 +168,14 @@ vi.mock("jspdf", async (importOriginal) => {
 		let fill = "";
 		let draw = "";
 		doc.text = ((value: string | string[], ...rest: unknown[]) => {
+			const lines = Array.isArray(value) ? value : [value];
 			recorder.pdf.push({
 				op: "text",
 				page: page(),
-				text: Array.isArray(value) ? value.join(" ") : value,
+				text: lines.join(" "),
+				right:
+					(rest[0] as number) +
+					Math.max(0, ...lines.map((line) => doc.getTextWidth(line))),
 			});
 			return (text as (...a: unknown[]) => typeof doc)(value, ...rest);
 		}) as typeof doc.text;
@@ -414,6 +421,11 @@ function docxPart(name: string): string {
 		entry += 46 + skip;
 	}
 	throw new Error(`The DOCX has no ${name}`);
+}
+
+/** The PDF file as written, one character per byte. */
+async function pdfSource(blob: Blob): Promise<string> {
+	return Buffer.from(await blob.arrayBuffer()).toString("latin1");
 }
 
 function pngBlob(): Blob {
@@ -713,6 +725,286 @@ describe("renderGlossyPdf", () => {
 		expect(result.omittedImages).toBe(1);
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
+
+	it("stores its images Flate-compressed (Fizzy #2589 follow-up)", async () => {
+		const result = await renderGlossyPdf({
+			content: edition(),
+			palette,
+			preparer: { name: "Example Studio", logoUrl: WIDE_LOGO_DATA_URL },
+			recipient: { name: "Example Org", logoUrl: WIDE_LOGO_DATA_URL },
+			imageUrls: { "document-media/p1/map.png": LOGO_URLS.map },
+		});
+
+		// The logos, the timeline and the map; an image drawn twice is
+		// stored once, and an alpha channel is an image of its own.
+		const images = (await pdfSource(result.blob))
+			.split("endobj")
+			.filter((object) => object.includes("/Subtype /Image"));
+		expect(images.length).toBeGreaterThanOrEqual(2);
+		for (const image of images) {
+			expect(image).toContain("/Filter /FlateDecode");
+		}
+	});
+});
+
+describe("PDF text outside Windows-1252 (Fizzy #2589 follow-up)", () => {
+	/**
+	 * What Helvetica and Courier can draw: Latin-1 and Windows-1252's
+	 * 0x80–0x9F, less the soft hyphen, which jsPDF draws as a visible hyphen.
+	 */
+	const WIN_ANSI =
+		/^[\t\n\r\x20-\x7e\xa0-\xac\xae-\xff€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]*$/;
+	const PAGE_RIGHT_MARGIN = 595.28 - 56;
+
+	it("writes common symbols in their ASCII forms", () => {
+		expect(toWinAnsiText("≥ 30%")).toBe(">= 30%");
+		expect(toWinAnsiText("a → b")).toBe("a -> b");
+		expect(toWinAnsiText("≤ ≠ ← ↔ ≈")).toBe("<= != <- <-> ~");
+		expect(toWinAnsiText("✓ ✔ ✅")).toBe("Yes Yes Yes");
+		expect(toWinAnsiText("✗ ✘ ❌")).toBe("No No No");
+	});
+
+	it("turns hyphen, minus and space variants into plain ones and drops invisible characters", () => {
+		expect(toWinAnsiText("end\u2011to\u2011end")).toBe("end-to-end");
+		expect(toWinAnsiText("\u221215%")).toBe("-15%");
+		expect(toWinAnsiText("10\u202f000")).toBe("10 000");
+		// U+26A0 is outside Windows-1252; its emoji selector U+FE0F is dropped.
+		expect(toWinAnsiText("\u26a0\ufe0f Risk")).toBe("? Risk");
+		expect(toWinAnsiText("zero\u200bwidth\ufeff")).toBe("zerowidth");
+	});
+
+	it("keeps a Latin letter outside Windows-1252 as its base letter", () => {
+		expect(toWinAnsiText("Dvořák")).toBe("Dvorák");
+		// The same name with its marks decomposed.
+		expect(toWinAnsiText("Dvor\u030ca\u0301k")).toBe("Dvorák");
+		expect(toWinAnsiText("Łukasz")).toBe("Lukasz");
+		expect(toWinAnsiText("đ Đ ı")).toBe("d D i");
+		// A mark with no precomposed letter to join is dropped the same way.
+		expect(toWinAnsiText("q\u0301 x\u0308\u0323")).toBe("q x");
+	});
+
+	it("passes every Windows-1252 character through unchanged", () => {
+		const common = "— – “ ” ‘ ’ … € × · ° é ü ß";
+		expect(toWinAnsiText(common)).toBe(common);
+		// All of Latin-1 but the soft hyphen, which is dropped (tested below).
+		const latin1 = Array.from({ length: 0x60 }, (_, i) =>
+			String.fromCharCode(0xa0 + i),
+		)
+			.filter((char) => char !== "\u00ad")
+			.join("");
+		const extras = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
+		expect(toWinAnsiText(latin1 + extras)).toBe(latin1 + extras);
+	});
+
+	it("writes anything else as one ? per code point", () => {
+		expect(toWinAnsiText("\u2605")).toBe("?");
+		expect(toWinAnsiText("日本")).toBe("??");
+		// An emoji outside the Basic Multilingual Plane is one code point.
+		expect(toWinAnsiText("Status \u{1f534}")).toBe("Status ?");
+	});
+
+	it("writes a character whose plain form is no better as ?", () => {
+		// A Hangul syllable decomposes, but into letters that are no better.
+		expect(toWinAnsiText("한")).toBe("?");
+		// A spacing accent decomposes into a space and a mark: not a stand-in.
+		expect(toWinAnsiText("a\u02ddb")).toBe("a?b");
+	});
+
+	it("writes up and down arrows as words and double arrows in ASCII", () => {
+		expect(toWinAnsiText("Revenue \u2191 20%")).toBe("Revenue up 20%");
+		expect(toWinAnsiText("\u219320%")).toBe("down 20%");
+		expect(toWinAnsiText("Churn\u2193")).toBe("Churn down");
+		expect(toWinAnsiText("\u2191\u2193")).toBe("up down");
+		expect(toWinAnsiText("a \u21d2 b \u21d0 c \u21d4 d")).toBe(
+			"a => b <= c <=> d",
+		);
+	});
+
+	it("draws bullet variants as the Windows-1252 bullet", () => {
+		expect(
+			toWinAnsiText(
+				"\u25cf one \u25aa two \u25e6 three \u25b8 four \u25ba five \u2023 six",
+			),
+		).toBe("• one • two • three • four • five • six");
+	});
+
+	it("writes primes as ASCII quotes", () => {
+		expect(toWinAnsiText("5\u2032 11\u2033")).toBe("5' 11\"");
+	});
+
+	it("writes ligatures, full-width forms, super- and subscripts in their plain forms", () => {
+		expect(toWinAnsiText("\ufb01nance \ufb02ow \ufb00 \ufb03 \ufb04")).toBe(
+			"finance flow ff ffi ffl",
+		);
+		expect(toWinAnsiText("\uff21\uff22\uff23 \uff11\uff12\uff13")).toBe(
+			"ABC 123",
+		);
+		// Subscripts flatten: they do not change a figure.
+		expect(toWinAnsiText("CO\u2082 H\u2082O")).toBe("CO2 H2O");
+		expect(toWinAnsiText("\u2116 5, 12 \u339e")).toBe("No 5, 12 km");
+		// A decomposed letter keeps a Windows-1252 letter where it can: ž.
+		expect(toWinAnsiText("\u01c5")).toBe("D\u017e");
+	});
+
+	it("writes a run of superscripts outside Windows-1252 after a caret, so the figure stays right", () => {
+		expect(toWinAnsiText("10\u2076")).toBe("10^6");
+		expect(toWinAnsiText("x\u2074")).toBe("x^4");
+		expect(toWinAnsiText("10\u207b\u00b3")).toBe("10^-3");
+		expect(toWinAnsiText("m\u2074\u2070")).toBe("m^40");
+		expect(toWinAnsiText("Ca\u00b2\u207a")).toBe("Ca^2+");
+		expect(toWinAnsiText("10\u2076 and 10\u2079 rows")).toBe(
+			"10^6 and 10^9 rows",
+		);
+		// A Windows-1252 superscript in the same run joins it.
+		expect(toWinAnsiText("10\u00b9\u2075")).toBe("10^15");
+		// A run of ¹ ² ³ alone is Windows-1252 already and stays as it is.
+		expect(toWinAnsiText("m\u00b2 m\u00b3 10\u00b9\u00b2")).toBe(
+			"m\u00b2 m\u00b3 10\u00b9\u00b2",
+		);
+		// The caret form maps to itself.
+		expect(toWinAnsiText("10^6 x^-3")).toBe("10^6 x^-3");
+	});
+
+	it("writes currencies outside Windows-1252 as their ISO codes, set off from the amount", () => {
+		expect(toWinAnsiText("\u20b9500")).toBe("INR 500");
+		expect(toWinAnsiText("\u20b9 500")).toBe("INR 500");
+		expect(toWinAnsiText("500\u20b9")).toBe("500 INR");
+		expect(toWinAnsiText("(\u20a9)")).toBe("(KRW)");
+		expect(
+			toWinAnsiText(
+				"\u20bd1 \u20b41 \u20a91 \u20aa1 \u20ba1 \u20a61 \u20ab1",
+			),
+		).toBe("RUB 1 UAH 1 KRW 1 ILS 1 TRY 1 NGN 1 VND 1");
+		// Windows-1252 currencies stay as they are.
+		expect(toWinAnsiText("€5 £5 ¥5 $5")).toBe("€5 £5 ¥5 $5");
+		// The same spacing for the other word stand-ins.
+		expect(toWinAnsiText("\u2713confirmed")).toBe("Yes confirmed");
+	});
+
+	it("drops the soft hyphen, which is invisible in text but drawn by jsPDF", () => {
+		expect(toWinAnsiText("co\u00adordinate")).toBe("coordinate");
+	});
+
+	it("maps its own output to itself", () => {
+		const sample = [
+			"Uptime ≥ 99.9% → 2026, end\u2011to\u2011end, 10\u202f000",
+			"Dvořák Łukasz Dvor\u030ca\u0301k \u01c5 \ufb01 \uff21 x\u2074 10\u00b9\u2075 m\u00b2",
+			"\u20b9500 \u2191 \u21d2 \u25cf \u2032 \u2033 co\u00adordinate",
+			"日本 한 \u{1f534} \u26a0\ufe0f zero\u200bwidth \u02dd",
+			"— – “ ” ‘ ’ … € × · ° é ü ß",
+		].join("\n");
+		const once = toWinAnsiText(sample);
+		expect(once).toMatch(WIN_ANSI);
+		expect(toWinAnsiText(once)).toBe(once);
+	});
+
+	it("maps 100k characters of CJK, Hangul, emoji and mixed text within budget", () => {
+		// Distinct code points, so no per-character shortcut hides the cost.
+		const parts: string[] = [];
+		for (let i = 0; i < 25_000; i++) {
+			parts.push(
+				String.fromCodePoint(0x4e00 + (i % 20_000)),
+				String.fromCodePoint(0xac00 + (i % 11_000)),
+				String.fromCodePoint(0x1f300 + (i % 0x300)),
+				i % 2 === 0 ? "ř" : "a",
+			);
+		}
+		const text = parts.join("");
+		expect([...text]).toHaveLength(100_000);
+
+		const start = performance.now();
+		const mapped = toWinAnsiText(text);
+		expect(performance.now() - start).toBeLessThan(500);
+		expect(mapped).toHaveLength(100_000);
+		expect(mapped).toMatch(WIN_ANSI);
+	});
+
+	/** An edition whose every drawn string carries symbols outside Windows-1252. */
+	const symbolEdition = () =>
+		edition({
+			title: "Uptime ≥ 99.9%",
+			sections: [
+				{
+					sectionKey: "targets",
+					headingPath: ["Targets → 2026"],
+					heading: "Targets → 2026",
+					level: 2,
+					markdown: [
+						"Latency drops ≥ 30% — a → b, end\u2011to\u2011end.",
+						"",
+						Array.from(
+							{ length: 30 },
+							(_, i) => `step ${i} → ≥ ${i}%`,
+						).join(" "),
+						"",
+						"- Owner ✓ confirmed",
+						"",
+						"| Metric | Target |",
+						"| --- | --- |",
+						"| Uptime | ≥ 99.9% |",
+						"",
+						"```",
+						"fetch → parse → store",
+						"```",
+					].join("\n"),
+					wording: "rewritten",
+					anchors: [],
+				},
+			],
+			visuals: {},
+		});
+
+	it("draws every string of the PDF mapped and inside the margin: cover, headings, body, lists, tables, code", async () => {
+		await renderGlossyPdf({
+			content: symbolEdition(),
+			palette,
+			preparer: { name: "Example Studio → North" },
+			recipient: { name: "Example Org ✓" },
+		});
+
+		expect(pdfTexts(1)).toEqual(
+			expect.arrayContaining([
+				"Uptime >= 99.9%",
+				"Example Studio -> North",
+				"Example Org Yes",
+			]),
+		);
+		expect(pdfTexts()).toEqual(
+			expect.arrayContaining([
+				"Targets -> 2026",
+				"Latency drops >= 30% — a -> b, end-to-end.",
+				"• Owner Yes confirmed",
+				">= 99.9%",
+				"fetch -> parse -> store",
+			]),
+		);
+		const texts = recorder.pdf.filter((event) => event.op === "text");
+		expect(texts.length).toBeGreaterThan(10);
+		for (const event of texts) {
+			expect(event.text).toMatch(WIN_ANSI);
+			expect(event.right).toBeLessThanOrEqual(PAGE_RIGHT_MARGIN + 0.01);
+		}
+	});
+
+	it("keeps the original characters in the DOCX", async () => {
+		await renderGlossyDocx({
+			content: symbolEdition(),
+			palette,
+			preparer: { name: "Example Studio → North" },
+		});
+
+		expect(recorder.docxTexts).toEqual(
+			expect.arrayContaining([
+				"Uptime ≥ 99.9%",
+				"Example Studio → North",
+				"Latency drops ≥ 30% — a → b, end\u2011to\u2011end.",
+				"fetch → parse → store",
+			]),
+		);
+		expect(docxPart("docProps/core.xml")).toContain(
+			"<dc:title>Uptime ≥ 99.9%</dc:title>",
+		);
+	});
 });
 
 describe("renderGlossyDocx", () => {
@@ -977,13 +1269,31 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 		expect(styles).toContain(`<w:color w:val="${hex(light.heading)}"/>`);
 	});
 
+	/** The `<w:p>` holding `text`, from its start tag through its end tag. */
+	const paragraphOf = (document: string, text: string) => {
+		const at = document.indexOf(`>${text}</w:t>`);
+		expect(at).toBeGreaterThan(-1);
+		return document.slice(
+			document.lastIndexOf("<w:p>", at),
+			document.indexOf("</w:p>", at) + "</w:p>".length,
+		);
+	};
+	/** A paragraph's own properties: the `<w:pPr>` it opens with. */
+	const propertiesOf = (paragraph: string) =>
+		/^<w:p><w:pPr>([\s\S]*?)<\/w:pPr>/.exec(paragraph)?.[1] ?? "";
 	/** Where the paragraph holding `text` ends, just past its `</w:p>`. */
 	const paragraphEnd = (document: string, text: string) =>
-		document.indexOf("</w:p>", document.indexOf(`>${text}</w:t>`)) +
-		"</w:p>".length;
-	const PAGE_BREAK_RUN = '<w:r><w:br w:type="page"/></w:r></w:p>';
+		document.indexOf(paragraphOf(document, text)) +
+		paragraphOf(document, text).length;
+	const BREAK_BEFORE = "<w:pageBreakBefore/>";
+	const breaks = (document: string) =>
+		document.split(BREAK_BEFORE).length - 1;
 
-	it("ends the cover with a page-break run in its last paragraph: no section break, empty paragraph, stray text, or box glyph", async () => {
+	// A page ends through "page break before" on the paragraph that opens
+	// the next one. Quick Look draws a page-break run as a box glyph and
+	// does not break there; the paragraph property breaks in Word and draws
+	// nothing where a reader ignores it.
+	it("ends the cover through page break before on the first body paragraph: no break run, section break, empty paragraph, stray text, or box glyph", async () => {
 		await renderGlossyDocx({
 			content: edition(),
 			palette,
@@ -999,24 +1309,24 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 			expect(text).not.toMatch(/[□�\f]/);
 		}
 		expect(document).not.toContain("<w:sym");
+		expect(document).not.toContain('<w:br w:type="page"/>');
+		expect(document).not.toContain("<w:br");
 		// One section for the whole document: its properties close the body.
 		expect(document.match(/<w:sectPr[\s>]/g)).toHaveLength(1);
 		expect(document.indexOf("<w:sectPr")).toBeGreaterThan(
 			document.indexOf("version 7, on 2026-09-24."),
 		);
-		// A break character every reader honors (Quick Look and TextEdit
-		// ignore "page break before"), and no paragraph property doing it too.
-		expect(document).not.toContain("<w:pageBreakBefore");
 
-		// The cover's last paragraph ends with the break, and the first
-		// heading follows it directly.
+		// The cover's last paragraph is followed directly by the first
+		// heading, which carries the break in its own properties.
 		const coverEnd = paragraphEnd(document, "Example Org");
-		expect(document.slice(0, coverEnd).endsWith(PAGE_BREAK_RUN)).toBe(true);
-		const firstHeading = document.lastIndexOf(
-			"<w:p>",
-			document.indexOf(">Goals</w:t>"),
-		);
-		expect(document.slice(coverEnd, firstHeading)).toBe("");
+		const goals = paragraphOf(document, "Goals");
+		expect(document.slice(coverEnd).startsWith(goals)).toBe(true);
+		expect(propertiesOf(goals)).toContain(BREAK_BEFORE);
+		expect(
+			propertiesOf(paragraphOf(document, "Example Org")),
+		).not.toContain(BREAK_BEFORE);
+		expect(breaks(document)).toBe(2);
 	});
 
 	it("ends the page before the appendix the same way, and breaks only once when the body is empty", async () => {
@@ -1027,12 +1337,10 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 		});
 
 		let document = docxPart("word/document.xml");
-		expect(document.match(/<w:br w:type="page"\/>/g)).toHaveLength(2);
-		const appendix = document.lastIndexOf(
-			"<w:p>",
-			document.indexOf(">Appendix</w:t>"),
+		expect(propertiesOf(paragraphOf(document, "Appendix"))).toContain(
+			BREAK_BEFORE,
 		);
-		expect(document.slice(0, appendix).endsWith(PAGE_BREAK_RUN)).toBe(true);
+		expect(breaks(document)).toBe(2);
 
 		// Nothing between the cover and the appendix: one break, no blank page.
 		await renderGlossyDocx({
@@ -1041,7 +1349,11 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 			preparer: { name: "Example Studio" },
 		});
 		document = docxPart("word/document.xml");
-		expect(document.match(/<w:br w:type="page"\/>/g)).toHaveLength(1);
+		expect(breaks(document)).toBe(1);
+		expect(propertiesOf(paragraphOf(document, "Appendix"))).toContain(
+			BREAK_BEFORE,
+		);
+		expect(document).not.toContain("<w:br");
 	});
 
 	it("breaks the page before a body that opens with a table", async () => {
@@ -1053,7 +1365,7 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 				heading: "",
 				level: 1,
 				markdown:
-					"| Area | Owner |\n| --- | --- |\n| Dispatch | Operations |",
+					"| Area | Owner |\n| --- | --- |\n| Dispatch | Operations |\n\nDispatch follows the table.",
 				wording: "original",
 				anchors: [],
 			},
@@ -1066,12 +1378,261 @@ describe("DOCX styling (Fizzy #2589 follow-up)", () => {
 		});
 
 		const document = docxPart("word/document.xml");
+		// The paragraph after the table took no second break.
+		expect(
+			propertiesOf(paragraphOf(document, "Dispatch follows the table.")),
+		).not.toContain(BREAK_BEFORE);
 		// The recipient comes from the source's client field; its paragraph
-		// ends the cover, and the table follows it directly.
+		// ends the cover. A table cannot take the break, so one empty
+		// paragraph in front of it does.
 		const coverEnd = paragraphEnd(document, "Example Org");
-		expect(document.slice(0, coverEnd).endsWith(PAGE_BREAK_RUN)).toBe(true);
-		expect(document.slice(coverEnd).startsWith("<w:tbl>")).toBe(true);
+		const before = document.slice(coverEnd, document.indexOf("<w:tbl>"));
+		expect(before.match(/<w:p>/g)).toHaveLength(1);
+		expect(propertiesOf(before)).toContain(BREAK_BEFORE);
+		expect(before).not.toContain("<w:r>");
+		expect(breaks(document)).toBe(2);
 		expect(document.match(/<w:sectPr[\s>]/g)).toHaveLength(1);
+	});
+
+	it("gives each table column widths that fill the body, so Quick Look does not squeeze its columns", async () => {
+		const table = (columns: number) => {
+			const row = (label: string) =>
+				`| ${Array.from({ length: columns }, (_, c) => `${label} ${c + 1}`).join(" | ")} |`;
+			return [
+				row("Column"),
+				`|${" --- |".repeat(columns)}`,
+				row("Value"),
+			].join("\n");
+		};
+		const content = edition();
+		content.sections = [
+			{
+				sectionKey: "tables",
+				headingPath: ["Tables"],
+				heading: "Tables",
+				level: 2,
+				markdown: `${table(2)}\n\n${table(4)}`,
+				wording: "original",
+				anchors: [],
+			},
+		];
+
+		await renderGlossyDocx({
+			content,
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		const document = docxPart("word/document.xml");
+		// The body's width, from the page the document itself declares.
+		const attribute = (tag: string, name: string) =>
+			Number(
+				new RegExp(`<w:${tag} [^>]*w:${name}="(\\d+)"`).exec(
+					document,
+				)?.[1],
+			);
+		const bodyWidth =
+			attribute("pgSz", "w") -
+			attribute("pgMar", "left") -
+			attribute("pgMar", "right");
+		expect(bodyWidth).toBeGreaterThan(0);
+		const tables = [
+			...document.matchAll(/<w:tbl>([\s\S]*?)<\/w:tbl>/g),
+		].map((match) => match[1]);
+		expect(tables).toHaveLength(2);
+		tables.forEach((xml, index) => {
+			const grid = [...xml.matchAll(/<w:gridCol w:w="(\d+)"\/>/g)].map(
+				(match) => Number(match[1]),
+			);
+			expect(grid).toHaveLength([2, 4][index]);
+			// docx's own grid, when no widths are given, is 100 twips a column.
+			expect(grid).not.toContain(100);
+			expect(grid.reduce((sum, width) => sum + width, 0)).toBe(bodyWidth);
+			expect(Math.max(...grid) - Math.min(...grid)).toBeLessThanOrEqual(
+				1,
+			);
+			expect(xml).toContain(`<w:tblW w:type="dxa" w:w="${bodyWidth}"/>`);
+			// Cell text is padded off the borders.
+			const cellMargins = xml.match(
+				/<w:tblCellMar>([\s\S]*?)<\/w:tblCellMar>/,
+			);
+			expect(cellMargins?.[1]).toMatch(
+				/<w:left w:type="dxa" w:w="100"\/>/,
+			);
+			expect(cellMargins?.[1]).toMatch(
+				/<w:right w:type="dxa" w:w="100"\/>/,
+			);
+		});
+	});
+
+	it("breaks the page before a body that opens with a visual", async () => {
+		const content = edition();
+		content.sections = [
+			{
+				sectionKey: "lead",
+				headingPath: [],
+				heading: "",
+				level: 1,
+				markdown: "The rollout runs in two steps.",
+				wording: "original",
+				anchors: [
+					{
+						blockIndex: 0,
+						ref: { type: "visual", visualKey: "rollout" },
+					},
+				],
+			},
+		];
+
+		await renderGlossyDocx({
+			content,
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		const document = docxPart("word/document.xml");
+		const coverEnd = paragraphEnd(document, "Example Org");
+		const visual = document.slice(
+			coverEnd,
+			document.indexOf("</w:p>", coverEnd) + "</w:p>".length,
+		);
+		expect(visual).toContain("<w:drawing>");
+		expect(propertiesOf(visual)).toContain(BREAK_BEFORE);
+		expect(breaks(document)).toBe(2);
+	});
+
+	it("names Arial on every text run and Courier New on code, so readers that skip the default font keep it", async () => {
+		const content = edition();
+		content.sections.push({
+			sectionKey: "build",
+			headingPath: ["Build"],
+			heading: "Build",
+			level: 2,
+			markdown:
+				"Run `pnpm build` first.\n\n> Keep the **quote** short.\n\n```\nconst answer = 42;\n```",
+			wording: "original",
+			anchors: [],
+		});
+
+		await renderGlossyDocx({
+			content,
+			palette,
+			preparer: { name: "Example Studio", logoUrl: PNG_DATA_URL },
+			recipient: { name: "Example Org", logoUrl: PNG_DATA_URL },
+			imageUrls: { "document-media/p1/map.png": LOGO_URLS.map },
+		});
+
+		const document = docxPart("word/document.xml");
+		const runs = [...document.matchAll(/<w:r>([\s\S]*?)<\/w:r>/g)].map(
+			(match) => match[1],
+		);
+		const textRuns = runs.filter((run) => run.includes("<w:t"));
+		// Image runs carry a drawing and no text or font.
+		expect(runs.filter((run) => run.includes("<w:drawing>"))).toHaveLength(
+			4,
+		);
+		expect(textRuns.length).toBeGreaterThan(20);
+		const code = ["pnpm build", "const answer = 42;"];
+		for (const run of textRuns) {
+			const text = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/.exec(run)?.[1] ?? "";
+			const font = /<w:rFonts [^>]*w:ascii="([^"]+)"/.exec(run)?.[1];
+			expect(font, text).toBe(
+				code.includes(text) ? "Courier New" : "Arial",
+			);
+		}
+	});
+
+	it("spaces body paragraphs, list items and headings, on the paragraphs and in the styles", async () => {
+		await renderGlossyDocx({
+			content: edition(),
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+
+		/** The `<w:spacing>` values in `xml`, as numbers. */
+		const spacing = (xml: string) => {
+			const attributes = /<w:spacing ([^>]*)\/>/.exec(xml)?.[1] ?? "";
+			const value = (name: string) =>
+				Number(
+					new RegExp(`w:${name}="(\\d+)"`).exec(attributes)?.[1] ?? 0,
+				);
+			return {
+				before: value("before"),
+				after: value("after"),
+				line: value("line"),
+			};
+		};
+		const document = docxPart("word/document.xml");
+		const body = spacing(
+			propertiesOf(paragraphOf(document, "Dispatch gets ")),
+		);
+		const item = spacing(
+			propertiesOf(paragraphOf(document, "Fewer handoffs")),
+		);
+		const heading = spacing(propertiesOf(paragraphOf(document, "Scope")));
+		expect(body.after).toBeGreaterThan(0);
+		expect(body.line).toBeGreaterThan(240);
+		expect(item.after).toBeGreaterThan(0);
+		expect(item.after).toBeLessThan(body.after);
+		expect(heading.before).toBeGreaterThan(body.after);
+		expect(heading.after).toBeGreaterThan(0);
+
+		const styles = docxPart("word/styles.xml");
+		const defaults =
+			/<w:pPrDefault>([\s\S]*?)<\/w:pPrDefault>/.exec(styles)?.[1] ?? "";
+		expect(spacing(defaults)).toEqual(body);
+		for (let level = 1; level <= 6; level++) {
+			const style =
+				new RegExp(
+					`<w:style [^>]*w:styleId="Heading${level}"[^>]*>([\\s\\S]*?)</w:style>`,
+				).exec(styles)?.[1] ?? "";
+			expect(spacing(style).before).toBeGreaterThan(body.after);
+		}
+
+		// Level 1 and level 3 headings carry their spacing on the paragraph
+		// too, not only level 2.
+		const content = edition();
+		content.sections.push(
+			{
+				sectionKey: "overview",
+				headingPath: ["Overview"],
+				heading: "Overview",
+				level: 1,
+				markdown: "The overview opens the second part.",
+				wording: "original",
+				anchors: [],
+			},
+			{
+				sectionKey: "overview-risks",
+				headingPath: ["Overview", "Risks"],
+				heading: "Risks",
+				level: 3,
+				markdown: "Two risks remain open.",
+				wording: "original",
+				anchors: [],
+			},
+		);
+		await renderGlossyDocx({
+			content,
+			palette,
+			preparer: { name: "Example Studio" },
+		});
+		const withLevels = docxPart("word/document.xml");
+		const levelOne = propertiesOf(paragraphOf(withLevels, "Overview"));
+		const levelThree = propertiesOf(paragraphOf(withLevels, "Risks"));
+		expect(levelOne).toContain('<w:pStyle w:val="Heading1"/>');
+		expect(levelThree).toContain('<w:pStyle w:val="Heading3"/>');
+		for (const properties of [levelOne, levelThree]) {
+			expect(spacing(properties).before).toBeGreaterThan(body.after);
+			expect(spacing(properties).after).toBeGreaterThan(0);
+			expect(spacing(properties).after).toBeLessThan(
+				spacing(properties).before,
+			);
+		}
+		// A larger heading gets at least as much room above it.
+		expect(spacing(levelOne).before).toBeGreaterThanOrEqual(
+			spacing(levelThree).before,
+		);
 	});
 });
 

@@ -88,7 +88,7 @@ const NEW_ORG_CHART = {
 	kind: "org_chart",
 	title: "Team",
 	nodes: [
-		{ id: "a", label: "Alex leads delivery", parentId: null },
+		{ id: "a", label: "Alex", parentId: null },
 		{ id: "s", label: "Sam owns design", parentId: "a" },
 	],
 } as const;
@@ -150,6 +150,7 @@ describe("projects.glossy.regenerateVisual — a fresh visual of the same kind (
 			slotHint: null,
 			styleDirection: "Calm",
 			variantNonce: expect.any(String),
+			source: "detected",
 		});
 
 		// The one cache row, under the key the build's extract activity reads.
@@ -210,6 +211,8 @@ describe("projects.glossy.regenerateVisual — a fresh visual of the same kind (
 			kind: "stat",
 			slotHint: "the budget",
 			styleDirection: "Calm",
+			// The slot asked for this kind itself.
+			source: "slot",
 		});
 		expect([...store.extractionCache.keys()]).toEqual([
 			computeExtractionKey({

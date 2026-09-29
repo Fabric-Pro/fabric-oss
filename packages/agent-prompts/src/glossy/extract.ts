@@ -60,9 +60,9 @@ export const GLOSSY_KIND_FIELD_RULES: Readonly<
 	comparison:
 		"items: 2–4 options. title: the option's name (≤60). points: 1–6 short points each (≤120), for example its pros and cons.",
 	stat: "items: 1–4 figures. value: the figure exactly as the section writes it (≤24 characters, e.g. 240k or 15%). label: what the figure measures (≤120).",
-	flow: "steps: 2–8 steps in order. label: the step (≤120). description: optional (≤240). lane: who performs the step, a team, role, or person as the section names them (≤60). Set a lane on every step only when the section says who performs each one; otherwise every lane is null.",
+	flow: "steps: 2–8 steps of the process, in the order the section gives them. Only ordered steps of a process make a flow: never turn a list of items, capabilities, questions, risks, or requirements into steps. label: the step as a short phrase of a few words (≤120), with any detail in description. description: optional (≤240). lane: who performs the step, a team, role, or person as the section names them (≤60). Set a lane on every step only when the section says who performs each one; otherwise every lane is null.",
 	org_chart:
-		"nodes: 2–16 roles. id: a short unique id (≤40). label: the role or person (≤120). parentId: the id of the node it reports to, or null for exactly one top node. No cycles.",
+		"nodes: 2–16 roles, only roles joined by a reporting line the section states (such as reports to, managed by, or led by). The top node is the role they report up to; leave out every role the section states no reporting line for. id: a short unique id (≤40). label: the role or person (≤120). parentId: the id of the node it reports to as the section states, or null for the top node only. No cycles.",
 };
 
 export function buildGlossyExtractInstructions(documentType: string): string {
@@ -75,6 +75,7 @@ export function buildGlossyExtractInstructions(documentType: string): string {
 		"- Every label, date, figure, and name must come from the section. Copy figures and dates exactly as written: do not round, convert units or currencies, compute totals, or infer dates.",
 		"- Build labels from the section's own words. You may shorten by dropping words, but never add a word the section does not use, apart from small function words (a, an, the, of, and, or, to, for, in, on, at, by, with, vs, per, from, into, via).",
 		"- Keep a qualifier such as assumed, to be confirmed, indicative, or estimated next to the figure it qualifies.",
+		"- A flow's order and an org chart's reporting lines must be stated in the section too: never draw a sequence the section does not give or a reporting line it does not state.",
 		"- No links, images, HTML, markdown, or code in any field.",
 		"- title is optional; when you set one, take it from the section's heading or wording.",
 		"",

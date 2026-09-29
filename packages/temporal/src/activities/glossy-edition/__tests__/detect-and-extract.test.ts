@@ -305,6 +305,7 @@ describe("extractGlossyVisualActivity", () => {
 				styleDirection: "Calm",
 				section: EXEC.section,
 				organizationId: "org-1",
+				source: "slot",
 			}),
 		);
 		expect(database.putCacheEntry).toHaveBeenCalledWith(
@@ -346,6 +347,9 @@ describe("extractGlossyVisualActivity", () => {
 			slotId: null,
 		});
 
+		expect(extract.extractGlossyVisual).toHaveBeenCalledWith(
+			expect.objectContaining({ source: "detected" }),
+		);
 		expect(result).toMatchObject({
 			outcome: "extracted",
 			cacheKey: computeExtractionKey({

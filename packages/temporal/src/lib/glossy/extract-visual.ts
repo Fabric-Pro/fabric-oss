@@ -12,6 +12,7 @@ import type { GlossySection } from "@repo/utils/glossy/cleanup";
 import {
 	checkVisualFacts,
 	type FactGuardViolation,
+	type VisualFactsInput,
 } from "@repo/utils/glossy/fact-guard";
 import {
 	type VisualKind,
@@ -35,7 +36,9 @@ import {
  * drives a single-visual regenerate. The result is then:
  * 1. validated against the strict `visualSpecSchema` (bounds, org chart tree),
  * 2. required to be the kind asked for (any concrete kind for `auto`),
- * 3. fact-checked: `checkVisualFacts(visualSpecFacts(spec), section)`.
+ * 3. fact-checked: `checkVisualFacts(visualFactsOf(…), section)`, which
+ *    also checks a flow's order (a flow the author's slot asked for states
+ *    its own) and an org chart's reporting lines.
  * A visual that fails any step, or whose response was truncated, is
  * `dropped` with its reason and never shown (R18). Slot callers report the
  * same outcome as an unfilled slot (R22).
@@ -170,6 +173,13 @@ export interface ExtractGlossyVisualInput extends GlossyModelContext {
 	styleDirection?: string | null;
 	/** Server-generated; set for a regenerate so the model offers a different variant. */
 	variantNonce?: string | null;
+	/**
+	 * Where the request comes from: an author's visual slot that asked for
+	 * exactly `kind`, or anything else. A slot that asks for a flow states the
+	 * order itself, so its flow skips the stated-order rule (Fizzy #2589
+	 * follow-up). Unset means detected: the stricter check.
+	 */
+	source?: "slot" | "detected";
 }
 
 export type GlossyExtractionDropReason =
@@ -199,7 +209,7 @@ const DROP_MESSAGES: Readonly<Record<GlossyExtractionDropReason, string>> = {
 	invalidSpec: "The visual's content did not form a valid spec for its kind.",
 	kindMismatch: "The visual came back as a different kind than requested.",
 	factCheck:
-		"The visual showed a label, figure, or date that is not in its section.",
+		"The visual showed a label, figure, date, or structure that is not in its section.",
 };
 
 function dropped(
@@ -223,6 +233,58 @@ function factSource(
 ): string {
 	const heading = section.heading?.trim().replace(HEADING_NUMBERING, "");
 	return heading ? `${heading}\n\n${section.markdown}` : section.markdown;
+}
+
+/**
+ * Whether the author asked for a flow: a slot whose own kind is flow. A
+ * best-fit (`auto`) slot leaves the kind to the model, so its flow is
+ * checked like a detected one.
+ */
+function isAuthorRequestedFlow(input: ExtractGlossyVisualInput): boolean {
+	return input.source === "slot" && input.kind === "flow";
+}
+
+/**
+ * What the fact check reads from a spec: its text and figures, plus the
+ * section heading, a flow's step labels and whether the author asked for
+ * it, and an org chart's drawn edges as (child label, parent label) pairs,
+ * so a flow drawn from a list or an org chart with an unstated reporting
+ * line fails (Fizzy #2589 follow-up).
+ */
+function visualFactsOf(
+	spec: GlossyExtractedVisualSpec,
+	section: Pick<GlossySection, "heading">,
+	authorRequested: boolean,
+): VisualFactsInput {
+	const facts: VisualFactsInput = {
+		...visualSpecFacts(spec),
+		heading: section.heading,
+	};
+	if (spec.kind === "flow") {
+		return {
+			...facts,
+			flowSteps: spec.steps.map((step) => step.label),
+			authorRequested,
+		};
+	}
+	if (spec.kind === "org_chart") {
+		const labelById = new Map(
+			spec.nodes.map((node) => [node.id, node.label]),
+		);
+		return {
+			...facts,
+			orgChartEdges: spec.nodes.flatMap((node) => {
+				const parent =
+					node.parentId === null
+						? undefined
+						: labelById.get(node.parentId);
+				return parent === undefined
+					? []
+					: [{ child: node.label, parent }];
+			}),
+		};
+	}
+	return facts;
 }
 
 /** Map the lenient output back to the strict spec shape: null optionals become absent. */
@@ -329,7 +391,7 @@ export async function extractGlossyVisual(
 	}
 
 	const facts = checkVisualFacts(
-		visualSpecFacts(spec),
+		visualFactsOf(spec, input.section, isAuthorRequestedFlow(input)),
 		factSource(input.section),
 	);
 	if (!facts.pass) {

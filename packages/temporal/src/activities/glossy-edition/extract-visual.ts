@@ -108,6 +108,8 @@ export async function extractGlossyVisualActivity(
 			kind: input.kind,
 			slotHint,
 			styleDirection,
+			// A best-fit slot asks for `auto`, so only a slot's own flow is lenient.
+			source: input.slotId !== null ? "slot" : "detected",
 		}),
 	);
 	if (result.status === "aiProviderNotConfigured") {

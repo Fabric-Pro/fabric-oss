@@ -57,7 +57,7 @@ const SNAPSHOT_BODY = [
 	"",
 	"## Team",
 	"",
-	"Alex leads delivery. Sam owns design.",
+	"Sam owns design and reports to Alex, who leads delivery.",
 ].join("\n");
 
 /** What the published build recorded; the style direction shapes the extraction key. */

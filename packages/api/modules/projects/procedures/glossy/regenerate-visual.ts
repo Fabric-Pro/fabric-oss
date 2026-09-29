@@ -239,6 +239,11 @@ export const regenerateGlossyVisualProcedure = tenantProtectedProcedure
 				slotHint: plan.slotHint,
 				styleDirection: plan.styleDirection,
 				variantNonce: randomUUID(),
+				// A slot's own kind, not the kind a best-fit slot resolved to.
+				source:
+					plan.slotId !== null && plan.kind === plan.requestKind
+						? "slot"
+						: "detected",
 			});
 			if (result.status === "aiProviderNotConfigured") {
 				return {
