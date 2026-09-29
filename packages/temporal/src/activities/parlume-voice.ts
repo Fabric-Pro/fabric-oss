@@ -1,0 +1,104 @@
+import { resolveOpenAiApiKey } from "@repo/ai";
+
+const MAX_SPOKEN_CHARS = 800;
+const MAX_PCM_BYTES = 6 * 1024 * 1024;
+
+function bridgeControlUrl(sessionId: string, action: "speak" | "stop"): string {
+	const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
+	if (!host) {
+		throw new Error("Parlume media host is not configured.");
+	}
+	const base = new URL(
+		host.includes("://")
+			? host
+			: (host.startsWith("localhost") ? "http://" : "https://") + host,
+	);
+	if (base.protocol !== "https:" && base.hostname !== "localhost") {
+		throw new Error("Parlume media host must use HTTPS.");
+	}
+	base.pathname = `/parties/parlume/${encodeURIComponent(sessionId)}`;
+	base.search = `?action=${action}`;
+	return base.toString();
+}
+
+export async function speakParlumeResponse(input: {
+	sessionId: string;
+	userId: string;
+	organizationId: string;
+	response: string;
+}): Promise<void> {
+	const secret = process.env.AGENT_SERVICE_SECRET;
+	if (!secret) {
+		throw new Error("Parlume media service secret is not configured.");
+	}
+	const key = await resolveOpenAiApiKey({
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+	if (!key) {
+		throw new Error("Parlume voice is not configured.");
+	}
+	const tts = await fetch("https://api.openai.com/v1/audio/speech", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${key}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			model: "gpt-4o-mini-tts",
+			voice: "alloy",
+			response_format: "pcm",
+			input: input.response.slice(0, MAX_SPOKEN_CHARS),
+		}),
+		signal: AbortSignal.timeout(60_000),
+	});
+	if (!tts.ok) {
+		throw new Error(
+			`Parlume speech generation failed (HTTP ${tts.status}).`,
+		);
+	}
+	const declaredLength = Number(tts.headers.get("content-length"));
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_PCM_BYTES) {
+		throw new Error("Parlume speech exceeded the audio limit.");
+	}
+	const pcm = await tts.arrayBuffer();
+	if (pcm.byteLength === 0 || pcm.byteLength > MAX_PCM_BYTES) {
+		throw new Error("Parlume speech exceeded the audio limit.");
+	}
+	const playback = await fetch(bridgeControlUrl(input.sessionId, "speak"), {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${secret}`,
+			"content-type": "audio/pcm",
+			"content-length": String(pcm.byteLength),
+		},
+		body: pcm,
+		signal: AbortSignal.timeout(90_000),
+	});
+	if (!playback.ok) {
+		throw new Error(
+			`Parlume audio playback failed (HTTP ${playback.status}).`,
+		);
+	}
+}
+
+/**
+ * The bridge owns durable provider-stop retries. Activities call this only
+ * after an active meeting loses its inviter's project access.
+ */
+export async function requestParlumeMeetingStop(input: {
+	sessionId: string;
+}): Promise<void> {
+	const secret = process.env.AGENT_SERVICE_SECRET;
+	if (!secret) {
+		throw new Error("Parlume media service secret is not configured.");
+	}
+	const response = await fetch(bridgeControlUrl(input.sessionId, "stop"), {
+		method: "POST",
+		headers: { Authorization: `Bearer ${secret}` },
+		signal: AbortSignal.timeout(15_000),
+	});
+	if (!response.ok) {
+		throw new Error("Parlume meeting stop request failed.");
+	}
+}
