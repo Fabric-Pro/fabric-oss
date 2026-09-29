@@ -20,6 +20,10 @@ import {
 	wrapLanguageModel,
 } from "ai";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
+import {
+	createAdaptiveClaudeSamplingMiddleware,
+	gatewayModelRejectsSampling,
+} from "./lib/adaptive-claude-sampling-middleware";
 import { createDatabricksFetch } from "./lib/databricks-compat";
 import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
@@ -258,6 +262,10 @@ export function needsReasoningExtraction(
  * the middleware extracts reasoning from <think> tags. See
  * {@link needsReasoningExtraction} for how the resolved provider + explicit
  * `isReasoningModel` signal drive the decision (Bug #1942).
+ *
+ * `viaGateway` marks a model built on the Vercel gateway client, which
+ * forwards sampling parameters unchanged; see
+ * {@link createAdaptiveClaudeSamplingMiddleware}.
  */
 function wrapWithProviderMiddleware(
 	model: LanguageModel,
@@ -265,6 +273,7 @@ function wrapWithProviderMiddleware(
 	nameProvider: string,
 	resolvedProvider?: string,
 	isReasoningModel?: boolean,
+	viaGateway = false,
 ): LanguageModel {
 	// Always applied, and a no-op on any provider that emits its tool calls
 	// correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
@@ -277,6 +286,10 @@ function wrapWithProviderMiddleware(
 		}),
 		createEmptyToolInputRepairMiddleware(),
 	];
+
+	if (viaGateway && gatewayModelRejectsSampling(modelName)) {
+		middleware.push(createAdaptiveClaudeSamplingMiddleware());
+	}
 
 	if (
 		needsReasoningExtraction(
@@ -751,6 +764,7 @@ export function getModel(
 				modelProvider,
 				provider,
 				context.isReasoningModel,
+				true,
 			);
 		}
 
@@ -773,6 +787,7 @@ export function getModel(
 				modelProvider,
 				provider,
 				context.isReasoningModel,
+				true,
 			);
 		}
 
@@ -935,6 +950,7 @@ export function getModel(
 			modelProvider,
 			undefined,
 			context?.isReasoningModel,
+			true,
 		);
 	}
 

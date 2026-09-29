@@ -1655,6 +1655,9 @@ importers:
       '@repo/agent-prompts':
         specifier: workspace:*
         version: link:../agent-prompts
+      '@repo/agent-types':
+        specifier: workspace:*
+        version: link:../agent-types
       '@repo/config':
         specifier: workspace:*
         version: link:../../config
