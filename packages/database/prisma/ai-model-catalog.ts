@@ -507,6 +507,50 @@ export const MODELS: ModelSeedData[] = [
 	// Anthropic Models
 	// ============================================================================
 	{
+		canonicalName: "claude-sonnet-5-5",
+		displayName: "Claude Sonnet 5.5",
+		description:
+			"Anthropic's latest Sonnet with 1M context, 128K output, and always-on adaptive thinking for everyday coding, agent, and enterprise work",
+		family: "claude",
+		vendor: "Anthropic",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1000000,
+		maxOutputTokens: 128000,
+		speedTier: "FAST",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 2,
+		outputCostPer1M: 10,
+		suitableForTasks: [
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"REASONING",
+			"EVAL",
+		],
+		providerMappings: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				providerModelId: "claude-sonnet-5-5",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "anthropic/claude-sonnet-5.5",
+			},
+			{
+				provider: "OPENROUTER",
+				providerModelId: "anthropic/claude-sonnet-5.5",
+			},
+			{
+				provider: "AWS_BEDROCK",
+				providerModelId: "anthropic.claude-sonnet-5-5",
+			},
+			{
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.claude-sonnet-5-5",
+			},
+		],
+	},
+	{
 		canonicalName: "claude-sonnet-5",
 		displayName: "Claude Sonnet 5",
 		description:

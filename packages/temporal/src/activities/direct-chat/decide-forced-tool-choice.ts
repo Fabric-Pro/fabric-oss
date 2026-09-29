@@ -22,10 +22,10 @@ import { anthropicModelRejectsForcedToolChoice } from "@repo/agent-types";
  *      callers should pass `thinkingEnabled` as that boolean.
  *
  *   3. Some Claude models (`anthropicModelRejectsForcedToolChoice` in
- *      `@repo/agent-types`: Opus 5.5, Fable 5.1, Mythos 5.1) return HTTP 400
- *      for ANY forced `tool_choice`, whatever the thinking setting — Opus
- *      5.5 cannot even disable thinking. For them we never force, on any
- *      provider route. Callers pass every name that identifies the
+ *      `@repo/agent-types`: Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1)
+ *      return HTTP 400 for ANY forced `tool_choice`, whatever the thinking
+ *      setting — Opus 5.5 cannot even disable thinking. For them we never
+ *      force, on any provider route. Callers pass every name that identifies the
  *      resolved model in `modelNames` (catalog canonical name and wire
  *      model string: a Databricks serving alias alone hides the model).
  *
