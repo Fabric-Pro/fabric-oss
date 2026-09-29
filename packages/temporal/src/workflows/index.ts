@@ -140,6 +140,8 @@ export {
 	type ContextEmbeddingWorkflowOutput,
 	contextEmbeddingWorkflow,
 } from "./context-embedding";
+export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
+export { parlumeNotesWorkflow } from "./parlume-notes";
 // Context Summarization scan workflow (daily auto-trigger sweep)
 export { contextSummarizationScanWorkflow } from "./context-summarization-scan-workflow";
 // Context Summarization workflow (compressed project-history digest)

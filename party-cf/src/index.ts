@@ -5,6 +5,7 @@ export { Document } from "./document";
 export { Orchestrator } from "./orchestrator";
 export { TaskAgent } from "./taskAgent";
 export { Health } from "./health";
+export { Parlume } from "./parlume";
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {

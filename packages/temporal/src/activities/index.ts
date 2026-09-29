@@ -409,6 +409,8 @@ export * from "./publishing-linkedin-post";
 export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
 export * from "./publishing-refine";
+export * from "./parlume";
+export * from "./parlume-notes";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
 export * from "./publishing-webinar-script";

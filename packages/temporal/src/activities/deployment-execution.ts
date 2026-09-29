@@ -248,8 +248,14 @@ export async function buildExecutionContext(params: {
 	input: Record<string, unknown>;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * Meetings have their own project-scoped retrieval path. Agent memory and
+	 * episodes are user/organization scoped, so callers handling an anonymous
+	 * meeting participant must opt out rather than widening that boundary.
+	 */
+	loadAgentMemory?: boolean;
 }): Promise<ExecutionContext> {
-	const { config, userId, organizationId } = params;
+	const { config, userId, organizationId, loadAgentMemory = true } = params;
 
 	logger.info("[DeploymentExecution] Building execution context");
 
@@ -277,93 +283,105 @@ export async function buildExecutionContext(params: {
 			? config.mcpConfigIds
 			: extractMcpConfigIds(agentContext.tools);
 
-	// Load agent memory if available (AGENTS.md, skills, knowledge)
+	// Load agent memory if available (AGENTS.md, skills, knowledge).
+	// Anonymous meeting turns opt out because this store is not project-scoped.
 	let memorySystemPromptAddition = "";
-	try {
-		const { loadAgentMemoryContext } = await import("@repo/database");
-		const memoryContext = await loadAgentMemoryContext({
-			agentInstanceId: config.instance.id,
-			userId,
-			organizationId,
-		});
-
-		// Build system prompt addition from memory
-		if (memoryContext.agentsMd) {
-			memorySystemPromptAddition = `\n\n## Agent Memory (Learned Instructions)\n\n${memoryContext.agentsMd}`;
-		}
-
-		// Add loaded skills
-		if (memoryContext.skills.length > 0) {
-			memorySystemPromptAddition +=
-				"\n\n## Loaded Skills\nYou have the following skills loaded. When the user's request matches a skill's purpose, you MUST follow that skill's instructions exactly, including its output format (e.g., generating HTML pages, diagrams, etc.).\n";
-			for (const skill of memoryContext.skills) {
-				const skillName = skill.path
-					.replace("skills/", "")
-					.replace("/SKILL.md", "");
-				memorySystemPromptAddition += `\n### Skill: ${skillName}\n${skill.content}\n`;
-			}
-		}
-
-		// Add knowledge context
-		if (memoryContext.knowledge.length > 0) {
-			memorySystemPromptAddition += "\n\n## Knowledge Context\n";
-			for (const knowledge of memoryContext.knowledge) {
-				const knowledgeName = knowledge.path.replace("knowledge/", "");
-				memorySystemPromptAddition += `\n### ${knowledgeName}\n${knowledge.content}\n`;
-			}
-		}
-
-		if (memorySystemPromptAddition) {
-			logger.info("[DeploymentExecution] Agent memory loaded", {
-				instanceId: config.instance.id,
-				hasAgentsMd: !!memoryContext.agentsMd,
-				skillsCount: memoryContext.skills.length,
-				knowledgeCount: memoryContext.knowledge.length,
-			});
-		}
-	} catch (error) {
-		// Memory loading is optional - continue without it
-		logger.debug("[DeploymentExecution] Agent memory not available", {
-			instanceId: config.instance.id,
-			error: error instanceof Error ? error.message : "Unknown",
-		});
-	}
-
-	// Load episodic memory (relevant past conversations)
-	try {
-		const { loadRelevantEpisodesActivity } = await import(
-			"./agent-memory/episodic-memory"
-		);
-		const userInput =
-			typeof params.input === "object" && params.input !== null
-				? (params.input as Record<string, unknown>).message ||
-					(params.input as Record<string, unknown>).query ||
-					""
-				: "";
-
-		if (typeof userInput === "string" && userInput.length > 0) {
-			const episodicResult = await loadRelevantEpisodesActivity({
+	if (loadAgentMemory) {
+		try {
+			const { loadAgentMemoryContext } = await import("@repo/database");
+			const memoryContext = await loadAgentMemoryContext({
 				agentInstanceId: config.instance.id,
-				currentQuery: userInput,
 				userId,
 				organizationId,
-				maxEpisodes: 3,
 			});
 
-			if (episodicResult.contextPrompt) {
-				memorySystemPromptAddition += `\n\n${episodicResult.contextPrompt}`;
-				logger.info("[DeploymentExecution] Episodic memory loaded", {
+			// Build system prompt addition from memory
+			if (memoryContext.agentsMd) {
+				memorySystemPromptAddition = `\n\n## Agent Memory (Learned Instructions)\n\n${memoryContext.agentsMd}`;
+			}
+
+			// Add loaded skills
+			if (memoryContext.skills.length > 0) {
+				memorySystemPromptAddition +=
+					"\n\n## Loaded Skills\nYou have the following skills loaded. When the user's request matches a skill's purpose, you MUST follow that skill's instructions exactly, including its output format (e.g., generating HTML pages, diagrams, etc.).\n";
+				for (const skill of memoryContext.skills) {
+					const skillName = skill.path
+						.replace("skills/", "")
+						.replace("/SKILL.md", "");
+					memorySystemPromptAddition += `\n### Skill: ${skillName}\n${skill.content}\n`;
+				}
+			}
+
+			// Add knowledge context
+			if (memoryContext.knowledge.length > 0) {
+				memorySystemPromptAddition += "\n\n## Knowledge Context\n";
+				for (const knowledge of memoryContext.knowledge) {
+					const knowledgeName = knowledge.path.replace(
+						"knowledge/",
+						"",
+					);
+					memorySystemPromptAddition += `\n### ${knowledgeName}\n${knowledge.content}\n`;
+				}
+			}
+
+			if (memorySystemPromptAddition) {
+				logger.info("[DeploymentExecution] Agent memory loaded", {
 					instanceId: config.instance.id,
-					relevantEpisodes: episodicResult.episodes.length,
+					hasAgentsMd: !!memoryContext.agentsMd,
+					skillsCount: memoryContext.skills.length,
+					knowledgeCount: memoryContext.knowledge.length,
 				});
 			}
+		} catch (error) {
+			// Memory loading is optional - continue without it
+			logger.debug("[DeploymentExecution] Agent memory not available", {
+				instanceId: config.instance.id,
+				error: error instanceof Error ? error.message : "Unknown",
+			});
 		}
-	} catch (error) {
-		// Episodic memory is optional - continue without it
-		logger.debug("[DeploymentExecution] Episodic memory not available", {
-			instanceId: config.instance.id,
-			error: error instanceof Error ? error.message : "Unknown",
-		});
+
+		// Load episodic memory (relevant past conversations)
+		try {
+			const { loadRelevantEpisodesActivity } = await import(
+				"./agent-memory/episodic-memory"
+			);
+			const userInput =
+				typeof params.input === "object" && params.input !== null
+					? (params.input as Record<string, unknown>).message ||
+						(params.input as Record<string, unknown>).query ||
+						""
+					: "";
+
+			if (typeof userInput === "string" && userInput.length > 0) {
+				const episodicResult = await loadRelevantEpisodesActivity({
+					agentInstanceId: config.instance.id,
+					currentQuery: userInput,
+					userId,
+					organizationId,
+					maxEpisodes: 3,
+				});
+
+				if (episodicResult.contextPrompt) {
+					memorySystemPromptAddition += `\n\n${episodicResult.contextPrompt}`;
+					logger.info(
+						"[DeploymentExecution] Episodic memory loaded",
+						{
+							instanceId: config.instance.id,
+							relevantEpisodes: episodicResult.episodes.length,
+						},
+					);
+				}
+			}
+		} catch (error) {
+			// Episodic memory is optional - continue without it
+			logger.debug(
+				"[DeploymentExecution] Episodic memory not available",
+				{
+					instanceId: config.instance.id,
+					error: error instanceof Error ? error.message : "Unknown",
+				},
+			);
+		}
 	}
 
 	// Extract built-in tool names for native Fabric AI tool loading

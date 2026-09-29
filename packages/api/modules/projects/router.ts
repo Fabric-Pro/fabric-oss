@@ -119,6 +119,12 @@ import {
 	detachProjectProcedure,
 	getConversationProjectProcedure,
 } from "./procedures/conversations";
+import {
+	listParlumeAgentsProcedure,
+	listParlumeSessionsProcedure,
+	startParlumeSessionProcedure,
+	stopParlumeSessionProcedure,
+} from "./procedures/parlume/sessions";
 import { countPendingStateChangesProcedure } from "./procedures/count-pending-state-changes";
 import { createDocumentProcedure } from "./procedures/create-document";
 import { createProjectProcedure } from "./procedures/create-project";
@@ -1121,6 +1127,16 @@ export const projectsRouter = {
 		getAgenda: getAgendaProcedure,
 		generateAgenda: generateAgendaProcedure,
 		saveAgenda: saveAgendaProcedure,
+	},
+
+	// Parlume: a default-off, project-scoped Teams invitation control plane.
+	// The live media bridge is deliberately outside the request process and
+	// will authenticate its session before reading project context.
+	parlume: {
+		listAgents: listParlumeAgentsProcedure,
+		listSessions: listParlumeSessionsProcedure,
+		start: startParlumeSessionProcedure,
+		stop: stopParlumeSessionProcedure,
 	},
 
 	// Teams channel monitor operations

@@ -188,6 +188,9 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectLinkedMeeting", // Linked meetings for transcript sync
 	"ProjectMeetingTranscript", // Synced meeting transcript tracking
 	"ProjectMeetingAgenda", // Pre-meeting agendas (#1901); RLS-registered user_owned like its siblings
+	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
+	"ParlumeMeetingSegment", // Final live transcript segment for a project bot
+	"ParlumeMeetingTurn", // Project-scoped spoken agent response
 	"MeetingActionItemLink", // Action item -> work item links (#1902); tenant XOR copied from the parent transcript
 	"ProjectPresence", // Real-time presence tracking
 	"ProjectActivity", // Activity feed
@@ -307,6 +310,9 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	DeletedMeetingArchive: "projectId",
 	ProjectMeetingTranscript: "projectId",
 	ProjectMeetingAgenda: "projectId",
+	ParlumeMeetingSession: "projectId",
+	ParlumeMeetingSegment: "projectId",
+	ParlumeMeetingTurn: "projectId",
 	DecisionType: "projectId",
 	MeetingActionItemLink: "projectId",
 	ProjectActivity: "projectId",

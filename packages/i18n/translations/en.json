@@ -1602,6 +1602,10 @@
 						"restored": "Meeting restored",
 						"sync_stopped": "Meeting syncing stopped or resumed"
 					},
+					"parlume": {
+						"session_started": "Parlume meeting session started",
+						"session_stopped": "Parlume meeting session stop requested"
+					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
 					},

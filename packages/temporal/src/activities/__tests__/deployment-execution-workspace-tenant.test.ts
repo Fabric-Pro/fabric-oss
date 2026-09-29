@@ -15,6 +15,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	getAgentDeploymentById: vi.fn(),
 	filterWorkspaceIdsForTenant: vi.fn(),
+	loadAgentMemoryContext: vi.fn(),
+	buildAgentExecutionContext: vi.fn(),
 	loggerInfo: vi.fn(),
 	loggerWarn: vi.fn(),
 	loggerError: vi.fn(),
@@ -31,6 +33,8 @@ vi.mock("@repo/database", () => ({
 		mocks.getAgentDeploymentById(...args),
 	getBuiltInToolConfig: vi.fn(),
 	getTemplateConversationMessages: vi.fn(),
+	loadAgentMemoryContext: (...args: unknown[]) =>
+		mocks.loadAgentMemoryContext(...args),
 	updateExecutionStatus: vi.fn(),
 	setAiUsageRecorder: vi.fn(),
 }));
@@ -40,7 +44,8 @@ vi.mock("@repo/database", () => ({
 // (agent-execution-core -> @repo/ai -> @repo/database) would otherwise pull
 // in the heavy AI/gateway provider setup this test does not need.
 vi.mock("../agent-execution-core", () => ({
-	buildAgentExecutionContext: vi.fn(),
+	buildAgentExecutionContext: (...args: unknown[]) =>
+		mocks.buildAgentExecutionContext(...args),
 	buildKnowledgeContextPrompt: vi.fn(),
 	buildUserInputContext: vi.fn(),
 	executeAgentTurn: vi.fn(),
@@ -60,7 +65,10 @@ vi.mock("@repo/logs", () => ({
 }));
 
 // Import AFTER the mocks so the activity captures them.
-import { loadDeploymentConfiguration } from "../deployment-execution";
+import {
+	buildExecutionContext,
+	loadDeploymentConfiguration,
+} from "../deployment-execution";
 
 // The deployment row's own tenant fields, distinct from the caller-supplied
 // params used only to look up the row — proves the filter call reads the
@@ -172,5 +180,63 @@ describe("loadDeploymentConfiguration workspace tenant filtering", () => {
 
 		expect(config?.workspaceIds).toEqual(["ws-a"]);
 		expect(mocks.loggerWarn).not.toHaveBeenCalled();
+	});
+});
+
+describe("buildExecutionContext meeting isolation", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mocks.buildAgentExecutionContext.mockReturnValue({
+			systemPrompt: "template instructions",
+			model: "test-model",
+			tools: [],
+			knowledgeSources: [],
+			workspaceIds: [],
+		});
+		mocks.loadAgentMemoryContext.mockResolvedValue({
+			agentsMd: "private agent memory",
+			skills: [],
+			knowledge: [],
+		});
+	});
+
+	it("does not load unscoped agent memory for a project meeting", async () => {
+		const config = {
+			deploymentId: "parlume-session-1",
+			template: {
+				id: "template-1",
+				name: "template",
+				slug: "template",
+				displayName: "Template",
+				description: "A template",
+				instructions: "Template instructions",
+				knowledgeSources: [],
+				tools: [],
+				suggestedModel: null,
+			},
+			instance: {
+				id: "instance-1",
+				name: "Project agent",
+				description: null,
+				customInstructions: null,
+				modelOverride: null,
+				modelConfig: null,
+			},
+			integrationConfigurations: [],
+			mcpConfigIds: [],
+			toolConnections: { "project-context": { projectId: "project-1" } },
+			workspaceIds: [],
+		};
+
+		const context = await buildExecutionContext({
+			config,
+			input: { message: "What changed?" },
+			userId: "user-1",
+			organizationId: "org-1",
+			loadAgentMemory: false,
+		});
+
+		expect(mocks.loadAgentMemoryContext).not.toHaveBeenCalled();
+		expect(context.systemPrompt).toBe("template instructions");
 	});
 });

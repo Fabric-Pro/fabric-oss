@@ -520,6 +520,24 @@ export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectI
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
 
+// File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
+
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
+
+export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
+
+// File: ParlumeMeetingTurnScalarFieldEnum.schema.ts
+
+export const ParlumeMeetingTurnScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'requestText', 'responseText', 'status', 'error', 'startedAt', 'completedAt', 'createdAt', 'updatedAt'])
+
+export type ParlumeMeetingTurnScalarFieldEnum = z.infer<typeof ParlumeMeetingTurnScalarFieldEnumSchema>;
+
+// File: ParlumeMeetingSegmentScalarFieldEnum.schema.ts
+
+export const ParlumeMeetingSegmentScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'text', 'utteranceStartMs', 'utteranceEndMs', 'createdAt'])
+
+export type ParlumeMeetingSegmentScalarFieldEnum = z.infer<typeof ParlumeMeetingSegmentScalarFieldEnumSchema>;
+
 // File: DeletedMeetingArchiveScalarFieldEnum.schema.ts
 
 export const DeletedMeetingArchiveScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'transcriptCount', 'deletedAt', 'deletedById', 'scheduledPurgeAt', 'payloadTruncated', 'payload', 'userId', 'organizationId'])
@@ -2451,6 +2469,18 @@ export type AtlasCrossEdgeDetection = z.infer<typeof AtlasCrossEdgeDetectionSche
 export const AtlasCrossLinkStatusSchema = z.enum(['PENDING', 'RUNNING', 'READY', 'FAILED'])
 
 export type AtlasCrossLinkStatus = z.infer<typeof AtlasCrossLinkStatusSchema>;
+
+// File: ParlumeMeetingSessionStatus.schema.ts
+
+export const ParlumeMeetingSessionStatusSchema = z.enum(['PENDING', 'JOINING', 'ACTIVE', 'FINALIZING', 'LEAVING', 'STOP_FAILED', 'ENDED', 'FAILED'])
+
+export type ParlumeMeetingSessionStatus = z.infer<typeof ParlumeMeetingSessionStatusSchema>;
+
+// File: ParlumeMeetingTurnStatus.schema.ts
+
+export const ParlumeMeetingTurnStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED'])
+
+export type ParlumeMeetingTurnStatus = z.infer<typeof ParlumeMeetingTurnStatusSchema>;
 
 // File: MeetingTranscriptAnalysisStatus.schema.ts
 
@@ -5657,6 +5687,86 @@ export const ProjectLinkedMeetingSchema = z.object({
 });
 
 export type ProjectLinkedMeetingType = z.infer<typeof ProjectLinkedMeetingSchema>;
+
+
+// File: ParlumeMeetingSession.schema.ts
+
+export const ParlumeMeetingSessionSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  agentInstanceSId: z.string(),
+  agentInstanceVersionId: z.string(),
+  agentInstanceVersion: z.number().int(),
+  providerBotId: z.string().nullish(),
+  streamTokenDigest: z.string(),
+  status: ParlumeMeetingSessionStatusSchema.default("PENDING"),
+  wakePhrase: z.string().default("Hey Fabric"),
+  toolsReadOnly: z.boolean().default(true),
+  lastError: z.string().nullish(),
+  joinedAt: z.date().nullish(),
+  hardStopAt: z.date().nullish(),
+  leaveRequestedAt: z.date().nullish(),
+  captureStoppedAt: z.date().nullish(),
+  terminalCallbackAt: z.date().nullish(),
+  streamClosedAt: z.date().nullish(),
+  streamGeneration: z.number().int(),
+  finalizationStartedAt: z.date().nullish(),
+  finalizedAt: z.date().nullish(),
+  transcriptContextId: z.string().nullish(),
+  providerDataDeletedAt: z.date().nullish(),
+  activeTurnId: z.string().nullish(),
+  endedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ParlumeMeetingSessionType = z.infer<typeof ParlumeMeetingSessionSchema>;
+
+
+// File: ParlumeMeetingTurn.schema.ts
+
+export const ParlumeMeetingTurnSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  dedupeKey: z.string(),
+  speakerName: z.string().nullish(),
+  speakerId: z.string().nullish(),
+  requestText: z.string(),
+  responseText: z.string().nullish(),
+  status: ParlumeMeetingTurnStatusSchema.default("PENDING"),
+  error: z.string().nullish(),
+  startedAt: z.date().nullish(),
+  completedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ParlumeMeetingTurnType = z.infer<typeof ParlumeMeetingTurnSchema>;
+
+
+// File: ParlumeMeetingSegment.schema.ts
+
+export const ParlumeMeetingSegmentSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  dedupeKey: z.string(),
+  speakerName: z.string().nullish(),
+  speakerId: z.string().nullish(),
+  text: z.string(),
+  utteranceStartMs: z.number().int().nullish(),
+  utteranceEndMs: z.number().int().nullish(),
+  createdAt: z.date(),
+});
+
+export type ParlumeMeetingSegmentType = z.infer<typeof ParlumeMeetingSegmentSchema>;
 
 
 // File: DeletedMeetingArchive.schema.ts
