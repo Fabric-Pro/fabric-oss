@@ -59,28 +59,6 @@ export const SVG_CARD_FONT_STACK =
 // ---------------------------------------------------------------------------
 
 /**
- * Characters syntax-significant to Mermaid's flowchart grammar, replaced
- * with inert full-width Unicode look-alikes so escaped text can never be
- * re-parsed as a node shape, an edge, or a `%%` comment. Applied uniformly
- * regardless of which bracket style a template below actually wraps a label
- * in, because a label's own text can independently contain any of these
- * characters as plain content (e.g. "Phase 1 (Q1)").
- */
-const MERMAID_SYNTAX_ESCAPES: ReadonlyArray<readonly [RegExp, string]> = [
-	[/"/g, "＂"], // "  ->  ＂ fullwidth quotation mark
-	[/\[/g, "［"], // [  ->  ［
-	[/\]/g, "］"], // ]  ->  ］
-	[/\(/g, "（"], // (  ->  （
-	[/\)/g, "）"], // )  ->  ）
-	[/\{/g, "｛"], // {  ->  ｛
-	[/\}/g, "｝"], // }  ->  ｝
-	[/%/g, "％"], // %  ->  ％ (defeats the `%%` comment token)
-];
-
-/** A label that, unescaped, would read as Mermaid's own `click`/`style` line directive. */
-const LEADING_DIRECTIVE_KEYWORD = /^(click|style)\b/i;
-
-/**
  * U+200B, built via `fromCharCode` rather than typed as a literal character
  * so the source file contains no actual invisible code point — an invisible
  * character sitting directly in source is easy for an editor or a future
@@ -89,28 +67,119 @@ const LEADING_DIRECTIVE_KEYWORD = /^(click|style)\b/i;
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 
 /**
+ * Sequences Mermaid acts on anywhere in a line or in the whole source, quoted
+ * or not. Each pattern matches the part that gets a U+200B inserted after it
+ * (a lookahead holds the rest), so the text still displays as typed but no
+ * longer matches:
+ * - `%%`: a `%%{init: ...}%%` directive is applied as configuration and cut
+ *   out of the text wherever it appears, and one whose JSON does not parse
+ *   discards every directive, the brand theme's included.
+ * - `#` before `word;`: `#40;` and `#lt;` are Mermaid's entity codes.
+ * - `<` before a tag name, `/`, `!`, or `?`: Mermaid rewrites `="..."` to
+ *   `='...'` between a `<tag` and the next `>`, across lines, which can turn
+ *   one label's closing quote and the next label's opening quote into `'`;
+ *   the label sanitizer would also parse and rewrite the tag.
+ * - `direction` before whitespace and `TB`, `BT`, `RL`, `LR`, or `TD`: the
+ *   flowchart lexer's direction rules start with `.*`, so they match from
+ *   the lexer's position to the end of the line, label included, and turn a
+ *   node or subgraph line into a direction statement ("Strategic direction
+ *   TBD"). Their `\s` is JavaScript's, so it also takes a tab or a
+ *   non-breaking space. The flowchart lexer's rules are case-sensitive; the
+ *   break ignores case anyway, as the same rules do in Mermaid's state, ER,
+ *   and requirement lexers, and an extra break costs one invisible character.
+ * - `C4` before `Container`, `Component`, `Dynamic`, or `Deployment`:
+ *   Mermaid's C4 diagram detector matches those words anywhere in the source
+ *   (only its `C4Context` alternative is anchored to the start) and runs
+ *   before the flowchart one, so the whole visual would be parsed as a C4
+ *   diagram and fail to render.
+ * - `ﬂ°` and `¶ß` (U+FB02 U+00B0, U+00B6 U+00DF): Mermaid's internal form of
+ *   an entity code. It turns every one in the finished SVG back into `&` or
+ *   `;`, so a label holding them would draw a decoded entity (`ﬂ°lt¶ß` as
+ *   `<`) or put a bare `&` into the SVG markup.
+ */
+const ZERO_WIDTH_BREAKS: readonly RegExp[] = [
+	/%(?=%)/g,
+	/#(?=\w+;)/g,
+	/<(?=[\w/!?])/g,
+	/direction(?=\s+(?:TB|BT|RL|LR|TD))/gi,
+	/C4(?=Container|Component|Dynamic|Deployment)/g,
+	/\uFB02(?=\u00B0)/g,
+	/\u00B6(?=\u00DF)/g,
+];
+
+/**
+ * A label that, unescaped, would read as Mermaid's own `click`/`style` line
+ * directive, or, starting with a backtick right after the opening quote,
+ * would open a Markdown string.
+ */
+const LEADING_KEYWORD_OR_BACKTICK = /^(?:(?:click|style)\b|`)/i;
+
+/**
+ * Straight double quotes as typographic ones, opening and closing in turn
+ * so a quoted phrase reads naturally; an unpaired last quote closes.
+ */
+function typographicQuotes(text: string): string {
+	const total = text.split('"').length - 1;
+	let seen = 0;
+	return text.replace(/"/g, () => {
+		seen += 1;
+		return seen % 2 === 1 && seen < total ? "“" : "”";
+	});
+}
+
+/**
  * Escape a text label for interpolation into generated Mermaid source.
- * Neutralizes every character and token Mermaid's grammar treats as syntax:
- * quotes, the bracket characters used by every node shape, the `%%` comment
- * marker, and literal newlines/carriage returns — a raw newline inside a
- * label would otherwise let its text terminate one Mermaid statement and
- * inject a second line (e.g. a label of `]\nclick A href "javascript:..."`
- * closing a node early and then issuing its own `click` directive). Because
- * a label can end up as the first token on a generated line, this also
- * breaks a label that would otherwise read as Mermaid's `click`/`style`
- * keyword by prefixing it with U+200B (zero-width space) rather than an
- * ordinary space: a line-oriented grammar's lexer commonly skips leading
- * ASCII whitespace before matching a keyword token, which would undo a
- * plain-space prefix, but U+200B is outside the `\s`/`trim()` whitespace
- * class in both JavaScript and typical lexer whitespace rules, so it is
- * never trimmed away before the keyword check runs.
+ *
+ * Every template below writes a label inside double quotes (`id["label"]`,
+ * `subgraph laneN["title"]`), and once the flowchart lexer reaches the
+ * opening `"` its string state is exclusive: up to the next `"` it reads
+ * everything as text. Quoting alone does not make a label inert, though:
+ * before that quote the lexer is in its initial state, and it tries each of
+ * that state's rules against the rest of the line, label included. Almost
+ * all of them (`click`, `style`, `classDef`, `class`, `linkStyle`,
+ * `interpolate`, `subgraph`, `end`, `accTitle`, `accDescr`, `href`, `call`,
+ * `default`) match only at the lexer's position, which is never inside a
+ * label, so brackets, parentheses, braces, `%`, `end`, and `click` inside
+ * the quotes stay literal and as typed. The exceptions are the direction
+ * rules, which start with `.*` (see `ZERO_WIDTH_BREAKS`). What can still
+ * escape a label:
+ * - a `"`, which would close the string early: replaced by typographic
+ *   quotes (“ ”);
+ * - a line break: folded to a space, because comment stripping runs line by
+ *   line before the lexer, whatever the quoting;
+ * - the sequences in `ZERO_WIDTH_BREAKS`, matched over a whole line or the
+ *   whole source before the lexer reaches the label's quotes;
+ * - a leading backtick, which would open a Markdown string: Markdown drops a
+ *   link's text and rewrites formatting, and an unterminated one swallows
+ *   the rest of the diagram.
+ * A leading backtick and a leading `click`/`style` keyword (defense in depth
+ * for a template that puts a label first on a line) are both prefixed with
+ * U+200B rather than an ordinary space: a lexer commonly skips leading ASCII
+ * whitespace, which would undo a plain-space prefix, but U+200B is outside
+ * the `\s`/`trim()` class.
+ *
+ * One escape is for display only: Mermaid's SVG-text labels drop a `>` that
+ * is not part of a `<…>` pair ("A -> B" would draw as "A - B"), so `>` is
+ * written as `&gt;`, which they decode. A `<` needs no help: it sends the
+ * label through the sanitizer, which escapes it.
+ *
+ * Fizzy #2589 follow-up: labels used to swap every syntax character for a
+ * full-width look-alike, which the diagrams drew with wide built-in padding
+ * ("leadership （Lead）", "85–90％"). Mermaid's own `#40;` entity codes are no
+ * replacement: with SVG-text labels they reach the drawing undecoded.
+ * Residual, display only: Mermaid drops the last `;` of a line matching
+ * `style…:…#…;` or `classDef…:…#…;`, so a label of that shape loses a `;`,
+ * or shows a `>` as `&gt`.
  */
 export function escapeMermaidLabel(text: string): string {
-	let escaped = text.replace(/\r\n|\r|\n/g, " ");
-	for (const [pattern, replacement] of MERMAID_SYNTAX_ESCAPES) {
-		escaped = escaped.replace(pattern, replacement);
+	let escaped = typographicQuotes(text.replace(/\r\n|\r|\n/g, " ")).replace(
+		/>/g,
+		"&gt;",
+	);
+	for (const pattern of ZERO_WIDTH_BREAKS) {
+		escaped = escaped.replace(pattern, `$&${ZERO_WIDTH_SPACE}`);
 	}
-	if (LEADING_DIRECTIVE_KEYWORD.test(escaped.trim())) {
+	if (LEADING_KEYWORD_OR_BACKTICK.test(escaped.trim())) {
 		escaped = `${ZERO_WIDTH_SPACE}${escaped}`;
 	}
 	return escaped;

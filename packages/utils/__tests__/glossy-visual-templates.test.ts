@@ -22,37 +22,50 @@ import {
 } from "../lib/glossy/visual-templates";
 
 describe("escapeMermaidLabel", () => {
+	const ZWSP = "\u200B";
+
 	it("keeps a plain label unchanged", () => {
 		expect(escapeMermaidLabel("Pilot launch")).toBe("Pilot launch");
 	});
 
-	it("neutralizes a bracket/newline/click injection attempt", () => {
+	it("leaves brackets, parentheses, braces, percent, and a lone # as typed", () => {
+		expect(escapeMermaidLabel("Phase 1 (Q1)")).toBe("Phase 1 (Q1)");
+		expect(escapeMermaidLabel("85–90%")).toBe("85–90%");
+		expect(escapeMermaidLabel("C#")).toBe("C#");
+		expect(escapeMermaidLabel("a[b]c{d}e - end")).toBe("a[b]c{d}e - end");
+		// No full-width look-alike is introduced anywhere.
+		expect(escapeMermaidLabel(`a"b[c]d(e)f{g}h%%i#j;`)).not.toMatch(
+			/[\uFF00-\uFFEF]/,
+		);
+	});
+
+	it("writes > as &gt;, which Mermaid's SVG text decodes rather than drops", () => {
+		expect(escapeMermaidLabel("A -> B")).toBe("A -&gt; B");
+		expect(escapeMermaidLabel("-->")).toBe("--&gt;");
+	});
+
+	it("turns straight double quotes into typographic ones", () => {
+		expect(escapeMermaidLabel('say "hi"')).toBe("say “hi”");
+		expect(escapeMermaidLabel('"a" and "b"')).toBe("“a” and “b”");
+		// An unpaired last quote closes.
+		expect(escapeMermaidLabel('5" screen')).toBe("5” screen");
+		expect(escapeMermaidLabel('a "b" c"')).toBe("a “b” c”");
+	});
+
+	it("neutralizes a quote/newline/click injection attempt", () => {
 		const malicious = '"]\nclick A href "javascript:alert(1)""';
 		const escaped = escapeMermaidLabel(malicious);
 
-		// No raw double quote survives (each `"` in the source became a
-		// fullwidth look-alike), so wrapping the result in our own `"..."`
-		// node-label quotes cannot be terminated early by attacker text.
+		expect(escaped).toBe("“] click A href ”javascript:alert(1)“”");
+		// No raw double quote survives, so wrapping the result in our own
+		// `"..."` label quotes cannot be terminated early by attacker text,
+		// and the `]` stays inside the quoted string.
 		expect(escaped).not.toContain('"');
-		// No raw square bracket survives, so a node shape cannot be closed early.
-		expect(escaped).not.toContain("]");
-		expect(escaped).not.toContain("[");
-		// No literal newline/carriage return survives, so the label cannot
-		// inject a second Mermaid statement line.
-		expect(escaped).not.toMatch(/[\r\n]/);
-		// The escaped text, once any leading fullwidth quote is trimmed,
-		// still does not open with a bare `click` directive keyword.
-		expect(escaped.trimStart()).not.toMatch(/^click\b/i);
-
-		// Wrapping it as our templates do must not let the quoted string
-		// close before the closing `"]` our template appends.
 		const wrapped = `n0["${escaped}"]`;
 		expect(wrapped.match(/"/g)).toHaveLength(2);
-	});
-
-	it("escapes every Mermaid-significant character", () => {
-		const escaped = escapeMermaidLabel(`a"b[c]d(e)f{g}h%%i`);
-		expect(escaped).toBe("a＂b［c］d（e）f｛g｝h％％i");
+		// No literal newline/carriage return survives, so the label cannot
+		// put its text at the start of a second Mermaid line.
+		expect(escaped).not.toMatch(/[\r\n]/);
 	});
 
 	it("collapses embedded newlines and carriage returns to a space", () => {
@@ -61,16 +74,150 @@ describe("escapeMermaidLabel", () => {
 		);
 	});
 
+	it("breaks every %% so no directive or comment can form", () => {
+		const escaped = escapeMermaidLabel(
+			`%%{init: {'securityLevel':'loose'}}%% then %%% more`,
+		);
+		expect(escaped).not.toContain("%%");
+		expect(escaped).toBe(
+			`%${ZWSP}%{init: {'securityLevel':'loose'}}%${ZWSP}% then %${ZWSP}%${ZWSP}% more`,
+		);
+		expect(escapeMermaidLabel("%% comment")).toBe(`%${ZWSP}% comment`);
+	});
+
+	it("breaks Mermaid entity codes so they display literally", () => {
+		expect(escapeMermaidLabel("#40;")).toBe(`#${ZWSP}40;`);
+		expect(escapeMermaidLabel("#lt;script#gt;")).toBe(
+			`#${ZWSP}lt;script#${ZWSP}gt;`,
+		);
+		expect(escapeMermaidLabel("##35;")).toBe(`##${ZWSP}35;`);
+		// A `#` not followed by `word;` is left alone.
+		expect(escapeMermaidLabel("C# #1 #tag")).toBe("C# #1 #tag");
+		expect(escapeMermaidLabel("#40;")).not.toMatch(/#\w+;/);
+	});
+
+	it("breaks a tag opener so neither Mermaid nor the sanitizer sees a tag", () => {
+		expect(escapeMermaidLabel("<img src=x onerror=alert(1)>")).toBe(
+			`<${ZWSP}img src=x onerror=alert(1)&gt;`,
+		);
+		expect(escapeMermaidLabel("</b><!-- x --><?pi")).toBe(
+			`<${ZWSP}/b&gt;<${ZWSP}!-- x --&gt;<${ZWSP}?pi`,
+		);
+		expect(escapeMermaidLabel("a <b")).not.toMatch(/<\w/);
+		// A `<` that opens no tag stays as typed.
+		expect(escapeMermaidLabel("a < b > c")).toBe("a < b &gt; c");
+	});
+
+	it("breaks a Mermaid direction statement the lexer would read from mid-line", () => {
+		expect(escapeMermaidLabel("Strategic direction TBD")).toBe(
+			`Strategic direction${ZWSP} TBD`,
+		);
+		for (const way of ["TB", "BT", "RL", "LR", "TD"]) {
+			expect(escapeMermaidLabel(`x direction ${way}`)).toBe(
+				`x direction${ZWSP} ${way}`,
+			);
+		}
+		// Any whitespace the lexer's `\s` takes, a folded line break included.
+		expect(escapeMermaidLabel("direction\u00A0LR")).toBe(
+			`direction${ZWSP}\u00A0LR`,
+		);
+		expect(escapeMermaidLabel("direction\tLR")).toBe(
+			`direction${ZWSP}\tLR`,
+		);
+		expect(escapeMermaidLabel("direction\nLR")).toBe(`direction${ZWSP} LR`);
+		// Inside a longer word too: the lexer's rule starts with `.*`.
+		expect(escapeMermaidLabel("redirection TB")).toBe(
+			`redirection${ZWSP} TB`,
+		);
+		// Every occurrence, in any case.
+		expect(escapeMermaidLabel("Direction lr, direction   TD")).toBe(
+			`Direction${ZWSP} lr, direction${ZWSP}   TD`,
+		);
+		// Text the lexer's rule cannot match is left alone.
+		expect(escapeMermaidLabel("direction of travel")).toBe(
+			"direction of travel",
+		);
+		expect(escapeMermaidLabel("Direction: TBD")).toBe("Direction: TBD");
+		expect(escapeMermaidLabel("directions TB")).toBe("directions TB");
+		// A generated line no longer matches the lexer's direction rules.
+		const directionRule = /^.*direction\s+(?:TB|BT|RL|LR|TD)/;
+		for (const label of ["Strategic direction TBD", "direction\u00A0LR"]) {
+			expect(`f0["${escapeMermaidLabel(label)}"]`).not.toMatch(
+				directionRule,
+			);
+		}
+	});
+
+	it("breaks the C4 keywords Mermaid's type detection finds anywhere in the source", () => {
+		for (const kind of [
+			"Container",
+			"Component",
+			"Dynamic",
+			"Deployment",
+		]) {
+			expect(escapeMermaidLabel(`Our C4${kind} map`)).toBe(
+				`Our C4${ZWSP}${kind} map`,
+			);
+		}
+		// `C4Context` only counts at the start of the source, which a label
+		// never is.
+		expect(escapeMermaidLabel("C4 model, C4Context")).toBe(
+			"C4 model, C4Context",
+		);
+	});
+
+	it("breaks Mermaid's internal entity form, which it decodes over the finished SVG", () => {
+		expect(escapeMermaidLabel("\uFB02\u00B0lt\u00B6\u00DF")).toBe(
+			`\uFB02${ZWSP}\u00B0lt\u00B6${ZWSP}\u00DF`,
+		);
+		expect(escapeMermaidLabel("\uFB02\u00B0\u00B060")).toBe(
+			`\uFB02${ZWSP}\u00B0\u00B060`,
+		);
+		// Either character on its own is left alone.
+		expect(escapeMermaidLabel("\uFB02 \u00B0 \u00B6 \u00DF")).toBe(
+			"\uFB02 \u00B0 \u00B6 \u00DF",
+		);
+	});
+
+	it("applies adjacent breaks independently of each other", () => {
+		expect(escapeMermaidLabel("%%#lt;")).toBe(`%${ZWSP}%#${ZWSP}lt;`);
+		expect(escapeMermaidLabel("<b%%")).toBe(`<${ZWSP}b%${ZWSP}%`);
+		expect(escapeMermaidLabel("<direction TB")).toBe(
+			`<${ZWSP}direction${ZWSP} TB`,
+		);
+		expect(escapeMermaidLabel("#C4Container;")).toBe(
+			`#${ZWSP}C4${ZWSP}Container;`,
+		);
+		const combined = "<b%%#lt;direction TB C4Dynamic";
+		const escaped = escapeMermaidLabel(combined);
+		expect(escaped).toBe(
+			`<${ZWSP}b%${ZWSP}%#${ZWSP}lt;direction${ZWSP} TB C4${ZWSP}Dynamic`,
+		);
+		// Only zero-width spaces were added: the text reads as typed.
+		expect(escaped.split(ZWSP).join("")).toBe(combined);
+	});
+
+	it("keeps a leading backtick from opening a Markdown string", () => {
+		expect(escapeMermaidLabel("`**x**`")).toBe(`${ZWSP}\`**x**\``);
+		expect(escapeMermaidLabel("`[link](javascript:alert(1))`")).toBe(
+			`${ZWSP}\`[link](javascript:alert(1))\``,
+		);
+		// Wrapped as our templates do, `"` is never directly followed by a backtick.
+		expect(`n0["${escapeMermaidLabel("`abc")}"]`).not.toContain('"`');
+		// A backtick later in the label is left alone.
+		expect(escapeMermaidLabel("run `make`")).toBe("run `make`");
+	});
+
 	it("breaks a label that would otherwise read as a leading click/style directive", () => {
 		const click = escapeMermaidLabel("click here to continue");
 		const style = escapeMermaidLabel("style guide review");
 
 		// Prefixed with a zero-width space, not an ordinary one: a lexer that
 		// skips leading ASCII whitespace before matching the keyword token
-		// would undo a plain-space prefix, but `​` survives both that and
+		// would undo a plain-space prefix, but U+200B survives both that and
 		// JavaScript's own `trim()` (it is not in the `\s` whitespace class).
-		expect(click.startsWith("​click")).toBe(true);
-		expect(style.startsWith("​style")).toBe(true);
+		expect(click).toBe(`${ZWSP}click here to continue`);
+		expect(style).toBe(`${ZWSP}style guide review`);
 		expect(click.trim()).not.toMatch(/^click\b/i);
 		expect(style.trim()).not.toMatch(/^style\b/i);
 
@@ -78,6 +225,80 @@ describe("escapeMermaidLabel", () => {
 		expect(escapeMermaidLabel("Please click here")).toBe(
 			"Please click here",
 		);
+	});
+});
+
+describe("Mermaid templates quote every spec string", () => {
+	const hostile = [
+		'"]\nclick A href "javascript:alert(1)"',
+		"%%{init: {'htmlLabels': true}}%%",
+		"end",
+		"--> f0",
+		"`**x**`",
+		"<b",
+		"q=",
+	];
+
+	/** Every line, with quoted text blanked, is one the template itself writes. */
+	function expectOnlyTemplateLines(source: string, grammar: RegExp): void {
+		for (const line of source.split("\n")) {
+			expect(line.replace(/"[^"]*"/g, '""')).toMatch(grammar);
+		}
+	}
+
+	it("timeline dates, labels, and descriptions", () => {
+		const source = timelineToMermaid({
+			kind: "timeline",
+			items: hostile.map((text) => ({
+				date: text,
+				label: text,
+				description: text,
+			})),
+		});
+		expectOnlyTemplateLines(
+			source,
+			/^(?:flowchart LR|t\d+\[""\]|style t\d+ fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER|t\d+ --> t\d+)$/,
+		);
+		expect(source.match(/^t\d+\["/gm)).toHaveLength(hostile.length);
+	});
+
+	it("flow labels and descriptions, in a chain and in lanes", () => {
+		const steps = hostile.map((text) => ({
+			label: text,
+			description: text,
+		}));
+		const grammar =
+			/^(?:flowchart TD|subgraph lane\d+\[""\]|f\d+\[""\]|end|style f\d+ fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER|f\d+ --> f\d+)$/;
+		expectOnlyTemplateLines(
+			flowToMermaid({ kind: "flow", steps }),
+			grammar,
+		);
+		const laned = flowToMermaid({
+			kind: "flow",
+			steps: steps.map((step, index) => ({
+				...step,
+				lane: hostile[index],
+			})),
+		});
+		expectOnlyTemplateLines(laned, grammar);
+		expect(laned.match(/^subgraph /gm)).toHaveLength(hostile.length);
+		expect(laned.match(/^end$/gm)).toHaveLength(hostile.length);
+	});
+
+	it("org chart labels, never its ids", () => {
+		const source = orgChartToMermaid({
+			kind: "org_chart",
+			nodes: hostile.map((text, index) => ({
+				id: `${text}-${index}`,
+				label: text,
+				parentId: index === 0 ? null : `${hostile[0]}-0`,
+			})),
+		});
+		expectOnlyTemplateLines(
+			source,
+			/^(?:flowchart TD|o\d+\[""\]|style o\d+ fill:GLOSSY_COLOR_SURFACE,stroke:GLOSSY_COLOR_BORDER|o\d+ --> o\d+)$/,
+		);
+		expect(source.match(/ --> /g)).toHaveLength(hostile.length - 1);
 	});
 });
 
@@ -121,7 +342,7 @@ describe("timelineToMermaid", () => {
 			],
 		});
 		expect(source).not.toContain('"Ship "v2""');
-		expect(source).toContain("＂v2＂");
+		expect(source).toContain('t0["Q1 — Ship “v2”"]');
 	});
 });
 

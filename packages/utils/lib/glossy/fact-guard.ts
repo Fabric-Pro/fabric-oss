@@ -44,6 +44,7 @@ import {
 	parseOutline,
 	VISUAL_SLOT_TAG,
 } from "./outline";
+import { visualStructureViolations } from "./visual-structure";
 
 export type FactKind =
 	| "money"
@@ -84,7 +85,11 @@ export type FactGuardViolationKind =
 	| "negation"
 	| "length"
 	| "label"
-	| "placeholder";
+	| "placeholder"
+	/** A flow whose section states no process order (Fizzy #2589 follow-up). */
+	| "flow-sequence"
+	/** An org chart edge no sentence or table row states (Fizzy #2589 follow-up). */
+	| "reporting-line";
 
 export interface FactGuardViolation {
 	kind: FactGuardViolationKind;
@@ -115,6 +120,27 @@ export interface VisualFactsInput {
 	figures: readonly string[];
 	/** The visual kind, e.g. `timeline`, `comparison`, `org_chart`. */
 	kind: string;
+	/**
+	 * The section's heading as written, numbering and decoration included.
+	 * A flow fails under a list-type heading, and a heading that names a
+	 * process counts as stating an order. Without it neither rule runs.
+	 */
+	heading?: string | null;
+	/** A flow's step labels in order; a flow of mostly questions fails. */
+	flowSteps?: readonly string[];
+	/**
+	 * Whether the author asked for this flow (a slot requesting one) rather
+	 * than detection proposing it. The author's request states the order, so
+	 * the flow skips only the rule that its section must state one; the
+	 * list-type heading and question rules still apply.
+	 */
+	authorRequested?: boolean;
+	/**
+	 * An org chart's drawn edges as (child label, parent label) pairs. Each
+	 * must be stated by one sentence or table row of the section; without
+	 * them the reporting-line check does not run.
+	 */
+	orgChartEdges?: ReadonlyArray<{ child: string; parent: string }>;
 }
 
 /** Standard output may be at most this multiple of the source length. */
@@ -690,7 +716,7 @@ const NUMERIC_PASSES: NumericPass[] = [
 ];
 
 /** All matches of `pattern` (made global) in `text`, without shared lastIndex state. */
-function allMatches(text: string, pattern: RegExp): RegExpExecArray[] {
+export function allMatches(text: string, pattern: RegExp): RegExpExecArray[] {
 	const flags = pattern.flags.includes("g")
 		? pattern.flags
 		: `${pattern.flags}g`;
@@ -790,7 +816,7 @@ interface WordToken {
 
 const WORD = /(?<![\p{L}\p{M}\p{N}_])\p{L}[\p{L}\p{M}\p{N}]*/gu;
 
-function wordTokens(text: string): WordToken[] {
+export function wordTokens(text: string): WordToken[] {
 	return allMatches(text, WORD).map((m) => ({
 		word: m[0],
 		start: m.index,
@@ -1140,7 +1166,7 @@ const STEM_SUFFIXES =
  * "approval", and "Databricks's" matches "databricks": strip one common
  * suffix, then a trailing "e".
  */
-function stem(word: string): string {
+export function stem(word: string): string {
 	const lower = word.toLowerCase();
 	for (const suffix of STEM_SUFFIXES) {
 		if (
@@ -1157,7 +1183,7 @@ function stem(word: string): string {
 	return lower;
 }
 
-function stemSet(words: Iterable<string>): Set<string> {
+export function stemSet(words: Iterable<string>): Set<string> {
 	const stems = new Set<string>();
 	for (const word of words) {
 		stems.add(stem(word));
@@ -1223,7 +1249,7 @@ function splitBlocks(text: string): string[] {
 	return blocks;
 }
 
-function splitSentences(text: string): string[] {
+export function splitSentences(text: string): string[] {
 	const sentences: string[] = [];
 	for (const block of splitBlocks(text)) {
 		let start = 0;
@@ -1297,7 +1323,7 @@ function clip(text: string): string {
 		: single;
 }
 
-function violation(
+export function violation(
 	kind: FactGuardViolationKind,
 	text: string,
 	message: string,
@@ -1508,7 +1534,7 @@ function isNegatingUse(prose: string, m: RegExpExecArray): boolean {
  * so alt text holds no negation the output could keep. Premasking drops
  * URLs, link targets, and tags.
  */
-function negationProse(text: string): string {
+export function negationProse(text: string): string {
 	return premask(blankMatches(text, MARKDOWN_IMAGE));
 }
 
@@ -1519,7 +1545,7 @@ interface NegatingWord {
 }
 
 /** Negating words in `prose`, in order, skipping uses that negate nothing. */
-function negatingWords(prose: string): NegatingWord[] {
+export function negatingWords(prose: string): NegatingWord[] {
 	return allMatches(prose, NEGATOR)
 		.filter((m) => isNegatingUse(prose, m))
 		.map((m) => ({
@@ -1974,7 +2000,7 @@ export function checkRewrite(input: CheckRewriteInput): FactGuardResult {
  * label their columns Pros and Cons, a timeline or flow may mark its Start,
  * a timeline its Phases, an org chart its Owner.
  */
-const VISUAL_STRUCTURAL_WORDS: Record<string, readonly string[]> = {
+export const VISUAL_STRUCTURAL_WORDS: Record<string, readonly string[]> = {
 	comparison: ["pros", "cons"],
 	timeline: ["phase", "start"],
 	flow: ["start"],
@@ -1982,7 +2008,7 @@ const VISUAL_STRUCTURAL_WORDS: Record<string, readonly string[]> = {
 };
 
 /** Words a label may use whether or not the source does. */
-const LABEL_FUNCTION_WORDS = new Set(
+export const LABEL_FUNCTION_WORDS = new Set(
 	"a an the of and or to for in on at by with vs per from into via".split(
 		" ",
 	),
@@ -2052,6 +2078,12 @@ function isPlaceholder(value: string, sourceSection: string): boolean {
  * content. N/A and Unknown fail only when the source never states them.
  * Labels are plain text, so `<…>` inside one is read as words rather than
  * masked as an HTML tag.
+ *
+ * Structure is checked too (Fizzy #2589 follow-up): a flow needs a section
+ * that states an order and is not a list, and an org chart edge needs a
+ * stated reporting line (see `visualStructureViolations` in
+ * `visual-structure.ts`, which reuses this module's tokenizer, stemmer,
+ * sentence splitter, and negation reader, exported for it).
  */
 export function checkVisualFacts(
 	visual: VisualFactsInput,
@@ -2107,6 +2139,7 @@ export function checkVisualFacts(
 			);
 		}
 	}
+	violations.push(...visualStructureViolations(visual, sourceSection));
 	return toResult(violations);
 }
 

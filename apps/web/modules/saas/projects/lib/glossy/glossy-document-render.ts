@@ -800,6 +800,222 @@ function pdfText(markdown: string): string {
 	return unescapeMarkdown(stripInlineMarkdown(markdown));
 }
 
+/**
+ * The characters of Windows-1252 at 0x80–0x9F: with Latin-1, all that the
+ * PDF's built-in Helvetica and Courier can draw.
+ */
+const WIN_ANSI_EXTRAS = new Set("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ");
+
+/** Readable stand-ins for common characters outside Windows-1252. */
+const WIN_ANSI_FALLBACKS: Readonly<Record<string, string>> = {
+	"≥": ">=",
+	"≤": "<=",
+	"→": "->",
+	"←": "<-",
+	"↔": "<->",
+	"⇒": "=>",
+	"⇐": "<=",
+	"⇔": "<=>",
+	"≠": "!=",
+	"≈": "~",
+	// Bullet variants: Windows-1252 has the bullet itself.
+	"●": "•",
+	"▪": "•",
+	"◦": "•",
+	"▸": "•",
+	"►": "•",
+	"‣": "•",
+	"′": "'",
+	"″": '"',
+	// Latin letters that do not decompose into a base letter and a mark.
+	ł: "l",
+	Ł: "L",
+	đ: "d",
+	Đ: "D",
+	ı: "i",
+};
+
+/**
+ * Words that stand in for a symbol. Each is set off by a space from a
+ * letter or digit beside it: `₹500` is `INR 500`, `↑20%` is `up 20%`.
+ */
+const WIN_ANSI_WORDS: Readonly<Record<string, string>> = {
+	"✓": "Yes",
+	"✔": "Yes",
+	"✅": "Yes",
+	"✗": "No",
+	"✘": "No",
+	"❌": "No",
+	"↑": "up",
+	"↓": "down",
+	// Currencies outside Windows-1252, as their ISO 4217 codes.
+	"₹": "INR",
+	"₽": "RUB",
+	"₴": "UAH",
+	"₩": "KRW",
+	"₪": "ILS",
+	"₺": "TRY",
+	"₦": "NGN",
+	"₫": "VND",
+};
+
+/**
+ * A run of superscript digits and signs: Windows-1252's ¹ ² ³, and ⁰ ⁴–⁹
+ * ⁺ ⁻, which it lacks.
+ */
+const SUPERSCRIPT_RUN = /[\u00b9\u00b2\u00b3\u2070\u2074-\u207b]+/g;
+const OUTSIDE_WIN_ANSI_SUPERSCRIPT = /[\u2070\u2074-\u207b]/;
+
+/**
+ * A superscript run holding a character Windows-1252 lacks, after a caret
+ * (Fizzy #2589 follow-up): flattened, `10⁶` would read `106`, a different
+ * figure. `10⁶` → `10^6`, `10⁻³` → `10^-3`, and `10¹⁵` → `10^15`, since
+ * ¹ belongs to the run. A run of ¹ ² ³ alone is drawn as it is. The
+ * compatibility form of `⁻` is the minus sign, which `toWinAnsiChar`
+ * writes as `-`.
+ */
+function caretSuperscripts(text: string): string {
+	return text.replace(SUPERSCRIPT_RUN, (run) =>
+		OUTSIDE_WIN_ANSI_SUPERSCRIPT.test(run)
+			? `^${run.normalize("NFKC")}`
+			: run,
+	);
+}
+
+const COMBINING_MARK = /\p{M}/gu;
+const LONE_MARK = /^\p{M}$/u;
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/** The soft hyphen: Latin-1, but invisible in text, and jsPDF draws it. */
+const SOFT_HYPHEN = 0xad;
+
+function isWinAnsi(char: string): boolean {
+	const code = char.codePointAt(0) ?? 0;
+	return (
+		code === 0x09 ||
+		code === 0x0a ||
+		code === 0x0d ||
+		(code >= 0x20 && code <= 0x7e) ||
+		(code >= 0xa0 && code <= 0xff && code !== SOFT_HYPHEN) ||
+		WIN_ANSI_EXTRAS.has(char)
+	);
+}
+
+/**
+ * The character's compatibility form, with any letter outside
+ * Windows-1252 reduced to its base letter: `ﬁ` → `fi`, `Ａ` → `A`,
+ * `₂` → `2`, `ř` → `r`, while `ǅ` keeps the `ž` Windows-1252 has. Null
+ * when that form still holds a character Windows-1252 lacks, or is only
+ * blank, as a spacing accent's space-and-mark is.
+ */
+function plainForm(char: string): string | null {
+	// Most characters with no form of their own (CJK, emoji) stop here.
+	if (char.normalize("NFKD") === char) {
+		return null;
+	}
+	let out = "";
+	for (const part of char.normalize("NFKC")) {
+		if (isWinAnsi(part)) {
+			out += part;
+			continue;
+		}
+		const fallback = WIN_ANSI_FALLBACKS[part];
+		if (fallback !== undefined) {
+			out += fallback;
+			continue;
+		}
+		const base = part.normalize("NFD").replace(COMBINING_MARK, "");
+		for (const piece of base) {
+			if (!isWinAnsi(piece)) {
+				return null;
+			}
+		}
+		out += base;
+	}
+	return out !== "" && out.trim() === "" ? null : out;
+}
+
+function toWinAnsiChar(char: string): string {
+	if (isWinAnsi(char)) {
+		return char;
+	}
+	const fallback = WIN_ANSI_FALLBACKS[char];
+	if (fallback !== undefined) {
+		return fallback;
+	}
+	const code = char.codePointAt(0) ?? 0;
+	// Hyphen and minus variants.
+	if ((code >= 0x2010 && code <= 0x2012) || code === 0x2212) {
+		return "-";
+	}
+	// Space variants, from the en quad to the ideographic space.
+	if (
+		(code >= 0x2000 && code <= 0x200a) ||
+		code === 0x202f ||
+		code === 0x205f ||
+		code === 0x3000
+	) {
+		return " ";
+	}
+	// Zero-width characters, variation selectors, and the soft hyphen.
+	if (
+		(code >= 0x200b && code <= 0x200d) ||
+		code === 0x2060 ||
+		code === 0xfeff ||
+		(code >= 0xfe00 && code <= 0xfe0f) ||
+		code === SOFT_HYPHEN
+	) {
+		return "";
+	}
+	// A mark that composition left without a letter to join is dropped,
+	// as a letter's own diacritic is.
+	if (LONE_MARK.test(char)) {
+		return "";
+	}
+	return plainForm(char) ?? "?";
+}
+
+/**
+ * Text the Glossy PDF can draw (Fizzy #2589 follow-up). jsPDF's built-in
+ * fonts draw only Windows-1252: any other character came out as two wrong
+ * glyphs (`≥` as `"e`), letter-spaced the whole string, and threw off
+ * `splitTextToSize`, so the line ran past the margin. Common symbols become
+ * their ASCII forms or a word (`↑` → `up`, `₹` → `INR`), superscript
+ * runs Windows-1252 cannot draw a caret form (`10⁶` → `10^6`), hyphen and
+ * space variants plain ones, invisible characters are dropped, ligatures,
+ * full-width and other compatibility forms take their plain form, other
+ * Latin letters lose their diacritic, and anything else, one code point at
+ * a time, becomes `?`. Its output maps to itself. The DOCX keeps the
+ * original text.
+ */
+export function toWinAnsiText(text: string): string {
+	let out = "";
+	// The last character written, and whether it ended a word stand-in.
+	let last = "";
+	let afterWord = false;
+	for (const char of caretSuperscripts(text.normalize("NFC"))) {
+		const word = WIN_ANSI_WORDS[char];
+		const mapped = word ?? toWinAnsiChar(char);
+		if (mapped === "") {
+			continue;
+		}
+		if (
+			(word !== undefined || afterWord) &&
+			LETTER_OR_DIGIT.test(last) &&
+			LETTER_OR_DIGIT.test(mapped[0])
+		) {
+			out += " ";
+		}
+		out += mapped;
+		last = mapped[mapped.length - 1];
+		afterWord = word !== undefined;
+	}
+	return out;
+}
+
+/** Text `toWinAnsiText` has mapped, which the PDF draws as it is. */
+type WinAnsiText = string & { readonly __winAnsi: true };
+
 async function writePdf(
 	model: DocumentModel,
 	palette: GlossyPalette,
@@ -809,8 +1025,28 @@ async function writePdf(
 		orientation: "portrait",
 		unit: "pt",
 		format: "a4",
+		// Flate-compresses the page streams and, by default, every image
+		// (Fizzy #2589 follow-up): uncompressed, a few screenshots made the
+		// file tens of megabytes.
+		compress: true,
 	});
 	let y = PDF_MARGIN;
+
+	// Every string reaches the page through `drawText`, which takes only
+	// text mapped by `toWinAnsiText`: `winAnsi` maps a single line and
+	// `splitText` maps before it measures, so each string is mapped once and
+	// none is drawn outside Windows-1252.
+	const winAnsi = (text: string) => toWinAnsiText(text) as WinAnsiText;
+	const splitText = (text: string, width: number): WinAnsiText[] =>
+		doc.splitTextToSize(winAnsi(text), width);
+	const drawText = (
+		text: WinAnsiText | WinAnsiText[],
+		x: number,
+		atY: number,
+		options?: { lineHeightFactor: number },
+	) => {
+		doc.text(text, x, atY, options);
+	};
 
 	const ensureSpace = (needed: number) => {
 		if (y + needed > PDF_PAGE_HEIGHT - PDF_MARGIN) {
@@ -835,13 +1071,10 @@ async function writePdf(
 		doc.setFont("helvetica", options.style ?? "normal");
 		doc.setFontSize(options.size);
 		doc.setTextColor(options.color);
-		const wrapped: string[] = doc.splitTextToSize(
-			text,
-			PDF_CONTENT_WIDTH - indent,
-		);
+		const wrapped = splitText(text, PDF_CONTENT_WIDTH - indent);
 		for (const line of wrapped) {
 			ensureSpace(lineHeight);
-			doc.text(line, PDF_MARGIN + indent, y);
+			drawText(line, PDF_MARGIN + indent, y);
 			y += lineHeight;
 		}
 		y += options.after ?? 0;
@@ -872,16 +1105,13 @@ async function writePdf(
 	doc.setFont("helvetica", "bold");
 	doc.setFontSize(28);
 	doc.setTextColor(palette.onPrimary);
-	const titleLines: string[] = doc.splitTextToSize(
-		pdfText(model.title),
-		PDF_CONTENT_WIDTH,
-	);
+	const titleLines = splitText(pdfText(model.title), PDF_CONTENT_WIDTH);
 	let titleY = Math.max(
 		PDF_MARGIN + 28,
 		bandHeight - 48 - (titleLines.length - 1) * 34,
 	);
 	for (const line of titleLines) {
-		doc.text(line, PDF_MARGIN, titleY);
+		drawText(line, PDF_MARGIN, titleY);
 		titleY += 34;
 	}
 
@@ -892,7 +1122,7 @@ async function writePdf(
 		doc.setFont("helvetica", "normal");
 		doc.setFontSize(10);
 		doc.setTextColor(palette.muted);
-		doc.text(party.label, x, partyY);
+		drawText(winAnsi(party.label), x, partyY);
 		partyY += 14;
 		if (party.logo) {
 			const tile = logoTile(
@@ -935,11 +1165,7 @@ async function writePdf(
 			doc.setFont("helvetica", "bold");
 			doc.setFontSize(14);
 			doc.setTextColor(palette.ink);
-			doc.text(
-				doc.splitTextToSize(party.name, columnWidth),
-				x,
-				partyY + 14,
-			);
+			drawText(splitText(party.name, columnWidth), x, partyY + 14);
 		}
 	});
 	doc.setFillColor(palette.primary);
@@ -994,13 +1220,13 @@ async function writePdf(
 				doc.setFontSize(9);
 				doc.setTextColor(palette.ink);
 				for (const line of node.lines) {
-					const wrapped: string[] = doc.splitTextToSize(
+					const wrapped = splitText(
 						line || " ",
 						PDF_CONTENT_WIDTH - 16,
 					);
 					for (const part of wrapped) {
 						ensureSpace(12);
-						doc.text(part, PDF_MARGIN + 8, y);
+						drawText(part, PDF_MARGIN + 8, y);
 						y += 12;
 					}
 				}
@@ -1017,10 +1243,10 @@ async function writePdf(
 					const header = rowIndex === 0;
 					doc.setFont("helvetica", header ? "bold" : "normal");
 					doc.setFontSize(9.5);
-					const cells: string[][] = Array.from(
+					const cells: WinAnsiText[][] = Array.from(
 						{ length: columns },
 						(_, c) =>
-							doc.splitTextToSize(
+							splitText(
 								pdfText(row[c] ?? ""),
 								cellWidth - padding * 2,
 							),
@@ -1044,7 +1270,7 @@ async function writePdf(
 					cells.forEach((cell, c) => {
 						const x = PDF_MARGIN + c * cellWidth;
 						if (cell.length > 0 && cell.join("").trim()) {
-							doc.text(cell, x + padding, y + padding + 9, {
+							drawText(cell, x + padding, y + padding + 9, {
 								lineHeightFactor: lineHeight / 9.5,
 							});
 						}
@@ -1097,6 +1323,26 @@ function docxColor(hex: string): string {
 
 /** Word page width at the default margins, in CSS pixels (about 6 inches). */
 const DOCX_CONTENT_WIDTH = 576;
+/**
+ * The body's width in twentieths of a point: docx's default A4 page less
+ * its one-inch margins.
+ */
+const DOCX_TEXT_WIDTH = 11906 - 1440 * 2;
+
+/**
+ * A table's column widths (Fizzy #2589 follow-up): the body's width split
+ * evenly, in whole twentieths of a point that add up to it. Without them
+ * docx writes a 100-twip grid, and Quick Look, which lays a table out by
+ * its grid, squeezed every column to a letter wide.
+ */
+function docxColumnWidths(columns: number): number[] {
+	const width = Math.floor(DOCX_TEXT_WIDTH / columns);
+	const remainder = DOCX_TEXT_WIDTH - width * columns;
+	return Array.from(
+		{ length: columns },
+		(_, column) => width + (column < remainder ? 1 : 0),
+	);
+}
 
 /**
  * The DOCX's own font (Fizzy #2589 follow-up). Without one Word falls back
@@ -1108,6 +1354,31 @@ const DOCX_FONT = "Arial";
 const DOCX_BODY_SIZE = 22;
 /** Heading sizes in half-points, as Word's built-in heading styles set them. */
 const DOCX_HEADING_SIZES = [32, 26, 24, undefined, undefined, undefined];
+const DOCX_CODE_FONT = "Courier New";
+
+/**
+ * Paragraph spacing in twentieths of a point (Fizzy #2589 follow-up). Set
+ * on each paragraph and again in the styles, since some readers apply only
+ * one of the two; without it the body read as one wall of text. `line` is
+ * in 240ths of a line: 276 is Word's 1.15.
+ */
+const DOCX_BODY_SPACING = { after: 160, line: 276 };
+const DOCX_LIST_ITEM_SPACING = { after: 80, line: 276 };
+/** Single lines and no gaps: code lines, spacers, and the cover. */
+const DOCX_TIGHT_SPACING = { before: 0, after: 0, line: 240 };
+/** Table cells, clear of their borders. */
+const DOCX_CELL_SPACING = { before: 60, after: 60, line: 240 };
+/** A table cell's left and right padding, in twentieths of a point. */
+const DOCX_CELL_MARGIN = 100;
+/** Single lines, since a line multiple also scales the space above an image. */
+const DOCX_IMAGE_SPACING = { after: 160, line: 240 };
+
+/** Room above a heading, and less below it, so it sits with its section. */
+function docxHeadingSpacing(level: number): { before: number; after: number } {
+	return level <= 2
+		? { before: 320, after: 120 }
+		: { before: 240, after: 80 };
+}
 
 /** A cover logo tile in the DOCX, in CSS pixels. */
 const DOCX_LOGO_TILE_HEIGHT = 88;
@@ -1212,7 +1483,6 @@ async function writeDocx(
 		HeadingLevel,
 		ImageRun,
 		Packer,
-		PageBreak,
 		Paragraph,
 		ShadingType,
 		Table,
@@ -1222,6 +1492,11 @@ async function writeDocx(
 		WidthType,
 	} = await import("docx");
 	type Block = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
+	type ParagraphOptions = Exclude<
+		ConstructorParameters<typeof Paragraph>[0],
+		string
+	>;
+	type RunOptions = Exclude<ConstructorParameters<typeof TextRun>[0], string>;
 
 	const headingLevels = [
 		HeadingLevel.HEADING_1,
@@ -1238,6 +1513,35 @@ async function writeDocx(
 		fill: docxColor(palette.primary),
 	};
 
+	// A page ends through "page break before" on the paragraph that opens
+	// the next one (Fizzy #2589 follow-up). Quick Look draws a page-break run
+	// as a box glyph and runs on without breaking; Word honors the paragraph
+	// property, and Quick Look and TextEdit ignore it without drawing
+	// anything. Every paragraph of the body is built through `paragraph`, so
+	// the first one after a page ends takes the break; a table takes it on
+	// an empty paragraph in front of it. A page never ends twice in a row,
+	// so an empty body leaves no blank page.
+	const blocks: Block[] = [];
+	let breakBefore = false;
+	const paragraph = (options: ParagraphOptions) => {
+		const built = new Paragraph(
+			breakBefore ? { ...options, pageBreakBefore: true } : options,
+		);
+		breakBefore = false;
+		return built;
+	};
+	const add = (...added: Block[]) => {
+		blocks.push(...added);
+	};
+	const endPage = () => {
+		breakBefore = blocks.length > 0;
+	};
+
+	// Every text run names its font (Fizzy #2589 follow-up): Quick Look
+	// ignores the document default and set the body in Times.
+	const textRun = (options: RunOptions) =>
+		new TextRun({ font: DOCX_FONT, ...options });
+
 	const runs = (
 		markdown: string,
 		options: { bold?: boolean; italics?: boolean; color?: string } = {},
@@ -1248,7 +1552,7 @@ async function writeDocx(
 			.map((part) => {
 				const color = options.color ?? ink;
 				if (part.startsWith("***") && part.endsWith("***")) {
-					return new TextRun({
+					return textRun({
 						text: unescapeMarkdown(part.slice(3, -3)),
 						bold: true,
 						italics: true,
@@ -1256,7 +1560,7 @@ async function writeDocx(
 					});
 				}
 				if (part.startsWith("**") && part.endsWith("**")) {
-					return new TextRun({
+					return textRun({
 						text: unescapeMarkdown(part.slice(2, -2)),
 						bold: true,
 						italics: options.italics,
@@ -1268,7 +1572,7 @@ async function writeDocx(
 					part.startsWith("*") &&
 					part.endsWith("*")
 				) {
-					return new TextRun({
+					return textRun({
 						text: unescapeMarkdown(part.slice(1, -1)),
 						bold: options.bold,
 						italics: true,
@@ -1276,13 +1580,13 @@ async function writeDocx(
 					});
 				}
 				if (part.startsWith("`") && part.endsWith("`")) {
-					return new TextRun({
+					return textRun({
 						text: part.slice(1, -1),
-						font: "Courier New",
+						font: DOCX_CODE_FONT,
 						color,
 					});
 				}
-				return new TextRun({
+				return textRun({
 					text: unescapeMarkdown(part),
 					bold: options.bold,
 					italics: options.italics,
@@ -1294,13 +1598,15 @@ async function writeDocx(
 		image: LoadedImage,
 		size: { width: number; height: number },
 		alignment: (typeof AlignmentType)[keyof typeof AlignmentType],
+		spacing: ParagraphOptions["spacing"],
 	) => {
 		const bytes = await tryLoadImageBytes(image.dataUrl);
 		if (!bytes) {
 			return null;
 		}
-		return new Paragraph({
+		return paragraph({
 			alignment,
+			spacing,
 			children: [
 				new ImageRun({
 					data: bytes.data,
@@ -1319,39 +1625,19 @@ async function writeDocx(
 		});
 	};
 
-	// A page ends with a page-break run at the end of its last paragraph
-	// (Fizzy #2589 follow-up): the break every DOCX reader honors, where
-	// Quick Look and TextEdit ignore "page break before" and a second
-	// section left an empty paragraph between cover and body. A page never
-	// ends twice in a row, so an empty body leaves no blank page.
-	const blocks: Block[] = [];
-	let pageEnded = false;
-	const add = (...added: Block[]) => {
-		blocks.push(...added);
-		pageEnded = false;
-	};
-	const endPage = () => {
-		const last = blocks.at(-1);
-		if (pageEnded || !last) {
-			return;
-		}
-		if (last instanceof Paragraph) {
-			last.addChildElement(new PageBreak());
-		} else {
-			// A table cannot hold the break: a paragraph after it does.
-			blocks.push(new Paragraph({ children: [new PageBreak()] }));
-		}
-		pageEnded = true;
-	};
-
-	// Cover (R35): the title on a shaded brand band, then both parties.
+	// Cover (R35): the title on a shaded brand band, then both parties. It
+	// keeps its own gaps, on single lines, whatever the body's defaults.
+	const coverSpacing = (gaps: { before?: number; after?: number } = {}) => ({
+		...DOCX_TIGHT_SPACING,
+		...gaps,
+	});
 	add(
-		new Paragraph({ shading: band, spacing: { before: 0, after: 0 } }),
-		new Paragraph({
+		paragraph({ shading: band, spacing: coverSpacing() }),
+		paragraph({
 			shading: band,
-			spacing: { before: 480, after: 480 },
+			spacing: coverSpacing({ before: 480, after: 480 }),
 			children: [
-				new TextRun({
+				textRun({
 					text: pdfText(model.title),
 					bold: true,
 					size: 56,
@@ -1359,15 +1645,15 @@ async function writeDocx(
 				}),
 			],
 		}),
-		new Paragraph({ shading: band, spacing: { before: 0, after: 0 } }),
-		new Paragraph({ spacing: { before: 480 } }),
+		paragraph({ shading: band, spacing: coverSpacing() }),
+		paragraph({ spacing: coverSpacing({ before: 480 }) }),
 	);
 	for (const party of model.parties) {
 		add(
-			new Paragraph({
-				spacing: { before: 240, after: 80 },
+			paragraph({
+				spacing: coverSpacing({ before: 240, after: 80 }),
 				children: [
-					new TextRun({
+					textRun({
 						text: party.label,
 						size: 20,
 						color: docxColor(palette.muted),
@@ -1380,11 +1666,17 @@ async function writeDocx(
 			// A tile the canvas could not encode leaves the bare logo.
 			const logo =
 				(tile &&
-					(await imageParagraph(tile, tile, AlignmentType.LEFT))) ??
+					(await imageParagraph(
+						tile,
+						tile,
+						AlignmentType.LEFT,
+						coverSpacing(),
+					))) ??
 				(await imageParagraph(
 					party.logo,
 					fitSize(party.logo, 200, 80),
 					AlignmentType.LEFT,
+					coverSpacing(),
 				));
 			if (logo) {
 				add(logo);
@@ -1392,9 +1684,10 @@ async function writeDocx(
 		}
 		if (party.name) {
 			add(
-				new Paragraph({
+				paragraph({
+					spacing: coverSpacing(),
 					children: [
-						new TextRun({
+						textRun({
 							text: party.name,
 							bold: true,
 							size: 28,
@@ -1413,10 +1706,11 @@ async function writeDocx(
 		switch (node.type) {
 			case "heading":
 				add(
-					new Paragraph({
+					paragraph({
 						heading:
 							headingLevels[node.level - 1] ??
 							HeadingLevel.HEADING_6,
+						spacing: docxHeadingSpacing(node.level),
 						children: runs(node.text, {
 							bold: true,
 							color: docxColor(palette.heading),
@@ -1426,16 +1720,22 @@ async function writeDocx(
 				break;
 			case "paragraph":
 				add(
-					new Paragraph({
+					paragraph({
+						spacing: DOCX_BODY_SPACING,
 						children: runs(node.text),
 					}),
 				);
 				break;
 			case "list":
 				listInstance++;
-				for (const item of node.items) {
+				node.items.forEach((item, index) => {
 					add(
-						new Paragraph({
+						paragraph({
+							// The last item takes the body's gap, which ends the list.
+							spacing:
+								index === node.items.length - 1
+									? DOCX_BODY_SPACING
+									: DOCX_LIST_ITEM_SPACING,
 							children: runs(item.text),
 							...(node.ordered
 								? {
@@ -1448,12 +1748,13 @@ async function writeDocx(
 								: { bullet: { level: item.depth } }),
 						}),
 					);
-				}
+				});
 				break;
 			case "quote":
 				add(
-					new Paragraph({
+					paragraph({
 						indent: { left: 360 },
+						spacing: DOCX_BODY_SPACING,
 						children: runs(node.text, {
 							italics: true,
 							color: docxColor(palette.muted),
@@ -1462,26 +1763,44 @@ async function writeDocx(
 				);
 				break;
 			case "code":
-				for (const line of node.lines) {
+				node.lines.forEach((line, index) => {
 					add(
-						new Paragraph({
+						paragraph({
+							// One block: no gaps between its lines, the body's after it.
+							spacing:
+								index === node.lines.length - 1
+									? {
+											...DOCX_TIGHT_SPACING,
+											after: DOCX_BODY_SPACING.after,
+										}
+									: DOCX_TIGHT_SPACING,
 							children: [
-								new TextRun({
+								textRun({
 									text: line,
-									font: "Courier New",
+									font: DOCX_CODE_FONT,
 									size: 18,
 									color: ink,
 								}),
 							],
 						}),
 					);
-				}
+				});
 				break;
 			case "table": {
+				if (breakBefore) {
+					// A table cannot take the break; an empty paragraph before it does.
+					add(paragraph({ spacing: DOCX_TIGHT_SPACING }));
+				}
 				const columns = Math.max(...node.rows.map((row) => row.length));
 				add(
 					new Table({
-						width: { size: 100, type: WidthType.PERCENTAGE },
+						width: { size: DOCX_TEXT_WIDTH, type: WidthType.DXA },
+						columnWidths: docxColumnWidths(columns),
+						// Word draws cell text against the borders without them.
+						margins: {
+							left: DOCX_CELL_MARGIN,
+							right: DOCX_CELL_MARGIN,
+						},
 						rows: node.rows.map(
 							(row, rowIndex) =>
 								new TableRow({
@@ -1502,6 +1821,8 @@ async function writeDocx(
 														: undefined,
 												children: [
 													new Paragraph({
+														spacing:
+															DOCX_CELL_SPACING,
 														children: runs(
 															row[c] ?? "",
 															{
@@ -1517,13 +1838,14 @@ async function writeDocx(
 								}),
 						),
 					}),
+					paragraph({ spacing: DOCX_TIGHT_SPACING }),
 				);
-				add(new Paragraph({}));
 				break;
 			}
 			case "rule":
 				add(
-					new Paragraph({
+					paragraph({
+						spacing: DOCX_BODY_SPACING,
 						border: {
 							bottom: {
 								style: "single",
@@ -1537,13 +1859,14 @@ async function writeDocx(
 				break;
 			case "image": {
 				const size = fitSize(node.image, DOCX_CONTENT_WIDTH, 700);
-				const paragraph = await imageParagraph(
+				const image = await imageParagraph(
 					node.image,
 					size,
 					AlignmentType.CENTER,
+					DOCX_IMAGE_SPACING,
 				);
-				if (paragraph) {
-					add(paragraph);
+				if (image) {
+					add(image);
 				} else {
 					countWriteOmission(model, node);
 				}
@@ -1554,10 +1877,10 @@ async function writeDocx(
 				break;
 			case "provenance":
 				add(
-					new Paragraph({
-						spacing: { before: 360 },
+					paragraph({
+						spacing: { ...DOCX_BODY_SPACING, before: 360 },
 						children: [
-							new TextRun({
+							textRun({
 								text: node.text,
 								italics: true,
 								size: 18,
@@ -1571,29 +1894,37 @@ async function writeDocx(
 	}
 
 	const heading = docxColor(palette.heading);
-	const headingStyle = (size: number | undefined) => ({
-		run: {
-			font: DOCX_FONT,
-			bold: true,
-			color: heading,
-			...(size ? { size } : {}),
-		},
-	});
+	const headingStyle = (level: number) => {
+		const size = DOCX_HEADING_SIZES[level - 1];
+		return {
+			run: {
+				font: DOCX_FONT,
+				bold: true,
+				color: heading,
+				...(size ? { size } : {}),
+			},
+			paragraph: { spacing: docxHeadingSpacing(level) },
+		};
+	};
 	const doc = new Document({
 		title: pdfText(model.title),
-		// Sans-serif throughout, and headings in the palette's heading color
-		// (the brand only where it clears contrast on the page), so the
-		// document reads the same where its own run colors are not applied
-		// (Fizzy #2589 follow-up).
+		// Sans-serif throughout, the body's and the headings' spacing, and
+		// headings in the palette's heading color (the brand only where it
+		// clears contrast on the page), so the document reads the same where
+		// its own run and paragraph properties are not applied (Fizzy #2589
+		// follow-up).
 		styles: {
 			default: {
-				document: { run: { font: DOCX_FONT, size: DOCX_BODY_SIZE } },
-				heading1: headingStyle(DOCX_HEADING_SIZES[0]),
-				heading2: headingStyle(DOCX_HEADING_SIZES[1]),
-				heading3: headingStyle(DOCX_HEADING_SIZES[2]),
-				heading4: headingStyle(DOCX_HEADING_SIZES[3]),
-				heading5: headingStyle(DOCX_HEADING_SIZES[4]),
-				heading6: headingStyle(DOCX_HEADING_SIZES[5]),
+				document: {
+					run: { font: DOCX_FONT, size: DOCX_BODY_SIZE },
+					paragraph: { spacing: DOCX_BODY_SPACING },
+				},
+				heading1: headingStyle(1),
+				heading2: headingStyle(2),
+				heading3: headingStyle(3),
+				heading4: headingStyle(4),
+				heading5: headingStyle(5),
+				heading6: headingStyle(6),
 			},
 		},
 		numbering: {

@@ -60,6 +60,60 @@ describe("flow lanes", () => {
 	});
 });
 
+describe("flow and org chart proposals (Fizzy #2589 follow-up)", () => {
+	function kindRule(instructions: string, kind: string): string | undefined {
+		return instructions
+			.split("\n")
+			.find((line) => line.startsWith(`- ${kind}:`));
+	}
+
+	it("detects a flow only for ordered steps and an org chart only for stated reporting lines", () => {
+		const instructions = buildGlossyDetectInstructions("PROPOSAL");
+		const flow = kindRule(instructions, "flow");
+		expect(flow).toContain("ordered steps of a process");
+		expect(flow).toContain(
+			"A list of items, capabilities, questions, risks, or requirements is not a flow.",
+		);
+		const orgChart = kindRule(instructions, "org_chart");
+		expect(orgChart).toContain(
+			"reporting lines the section states outright",
+		);
+		expect(orgChart).toContain(
+			"Roles, owners, or stakeholders listed without stated reporting lines are not an org chart.",
+		);
+	});
+
+	it("extracts flow steps only from a process, with short labels", () => {
+		const flow = kindRule(
+			buildGlossyExtractInstructions("PROPOSAL"),
+			"flow",
+		);
+		expect(flow).toContain(
+			"never turn a list of items, capabilities, questions, risks, or requirements into steps",
+		);
+		expect(flow).toContain(
+			"label: the step as a short phrase of a few words",
+		);
+	});
+
+	it("keeps only roles joined by a stated reporting line in an org chart", () => {
+		const instructions = buildGlossyExtractInstructions("BUSINESS_CASE");
+		const orgChart = kindRule(instructions, "org_chart");
+		expect(orgChart).toContain(
+			"only roles joined by a reporting line the section states",
+		);
+		expect(orgChart).toContain(
+			"The top node is the role they report up to",
+		);
+		expect(orgChart).toContain(
+			"leave out every role the section states no reporting line for",
+		);
+		expect(instructions).toContain(
+			"never draw a sequence the section does not give or a reporting line it does not state",
+		);
+	});
+});
+
 describe("buildGlossyDetectPrompt", () => {
 	it("puts every section inside the document block and states the limit", () => {
 		const prompt = buildGlossyDetectPrompt({

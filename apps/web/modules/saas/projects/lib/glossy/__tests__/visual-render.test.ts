@@ -91,6 +91,76 @@ function squash(text: string | null | undefined): string {
 	return (text ?? "").replace(/\s+/g, "");
 }
 
+/** The zero-width space labels use to break Mermaid syntax invisibly. */
+const ZWSP = "\u200B";
+
+/** Full-width forms, which labels no longer use as look-alikes. */
+const FULL_WIDTH = /[\uFF00-\uFFEF]/;
+
+/** What a reader sees: `squash`, minus the invisible zero-width spaces. */
+function visibleText(text: string | null | undefined): string {
+	return squash(text).split(ZWSP).join("");
+}
+
+/**
+ * Render a templated Mermaid visual (timeline, flow, org chart) and read back
+ * its SVG, text, shape counts, and theme CSS.
+ */
+async function renderDiagram(spec: VisualSpec) {
+	captured.svgs.length = 0;
+	const image = await renderGlossyVisual(spec, palette);
+	expect(image).not.toBeNull();
+	const svg = captured.svgs.at(-1) ?? "";
+	const doc = parseSvg(svg);
+	const id = doc.documentElement.getAttribute("id") ?? "";
+	const texts = (selector: string) =>
+		Array.from(doc.querySelectorAll(selector)).map(
+			(element) => element.textContent ?? "",
+		);
+	return {
+		svg,
+		doc,
+		nodeTexts: texts("g.node"),
+		laneTexts: texts("g.cluster"),
+		counts: {
+			nodes: doc.querySelectorAll("g.node").length,
+			lanes: doc.querySelectorAll("g.cluster").length,
+			edges: doc.querySelectorAll("path.flowchart-link").length,
+		},
+		// The theme CSS, scoped by the render's own id.
+		style: (doc.querySelector("style")?.textContent ?? "")
+			.split(id)
+			.join(""),
+	};
+}
+
+type RenderedDiagram = Awaited<ReturnType<typeof renderDiagram>>;
+
+/**
+ * The hostile render drew the same diagram as the benign reference: no node,
+ * lane, or edge was added, removed, or merged; no link, handler, clickable
+ * node, or HTML island was created; and no directive in the text changed the
+ * brand theme.
+ */
+function expectSameInertDiagram(
+	render: RenderedDiagram,
+	reference: RenderedDiagram,
+) {
+	expect(render.doc.querySelector("parsererror")).toBeNull();
+	expect(render.counts).toEqual(reference.counts);
+	expect(render.doc.querySelectorAll("a")).toHaveLength(0);
+	expect(render.doc.querySelectorAll(".clickable")).toHaveLength(0);
+	expect(render.doc.querySelectorAll("foreignObject")).toHaveLength(0);
+	for (const element of Array.from(render.doc.querySelectorAll("*"))) {
+		for (const attribute of Array.from(element.attributes)) {
+			expect(attribute.name.startsWith("on")).toBe(false);
+			expect(attribute.value).not.toMatch(/javascript:/i);
+		}
+	}
+	expect(render.style).toBe(reference.style);
+	expect(render.svg).not.toMatch(FULL_WIDTH);
+}
+
 describe("renderGlossyVisual", () => {
 	it("renders a timeline through Mermaid with the brand cScale0 and every label", async () => {
 		const render = vi.spyOn(mermaid, "render");
@@ -150,7 +220,7 @@ describe("renderGlossyVisual", () => {
 		// ...and its words are drawn as plain text instead.
 		const text = squash(doc.documentElement.textContent);
 		expect(text).toContain("clickAhref");
-		expect(text).toContain("javascript:alert（1）");
+		expect(text).toContain("javascript:alert(1)");
 		expect(text).toContain("Review");
 	});
 
@@ -206,9 +276,258 @@ describe("renderGlossyVisual", () => {
 		expect(doc.querySelectorAll(".clickable")).toHaveLength(0);
 		// ...and each title's words are drawn as its lane's text.
 		const titles = lanes.map((lane) => squash(lane.textContent)).join("|");
-		expect(titles).toContain("Sales＂］end");
-		expect(titles).toContain("Legal％％--");
+		expect(titles).toContain("Sales”]end");
+		expect(titles).toContain(`Legal%${ZWSP}%-->`);
 		expect(titles).toContain("clickA");
+	});
+
+	it("renders plain punctuation in labels and lane titles as typed", async () => {
+		const spec: VisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: "Phase 1 (Q1)", lane: "Sales (EMEA)" },
+				{ label: "C#", lane: "85–90%" },
+			],
+		};
+
+		const flow = await renderDiagram(spec);
+
+		expect(flow.nodeTexts.sort()).toEqual(["C#", "Phase 1 (Q1)"]);
+		expect(flow.laneTexts.sort()).toEqual(["85–90%", "Sales (EMEA)"]);
+		expect(flow.svg).not.toMatch(FULL_WIDTH);
+		// No entity code was drawn in place of a character.
+		expect(flow.svg).not.toContain("&amp;#");
+	});
+
+	describe("hostile text in both a step label and its lane title", () => {
+		const benign: VisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: "Qualify lead", lane: "Sales" },
+				{ label: "Review contract", lane: "Legal" },
+			],
+		};
+
+		/** Each input, and the text a reader sees once it is drawn. */
+		const cases: ReadonlyArray<readonly [string, string]> = [
+			['"]', "”]"],
+			[
+				']\nclick A href "javascript:alert(1)"',
+				"] click A href “javascript:alert(1)”",
+			],
+			[
+				'%%{init: {"securityLevel":"loose"}}%%',
+				"%%{init: {“securityLevel”:“loose”}}%%",
+			],
+			[
+				"%%{init: {'flowchart': {'htmlLabels': true}}}%%",
+				"%%{init: {'flowchart': {'htmlLabels': true}}}%%",
+			],
+			["%% comment", "%% comment"],
+			["end", "end"],
+			["-->", "-->"],
+			["subgraph x", "subgraph x"],
+			["click f0 call alert()", "click f0 call alert()"],
+			["style f0 fill:#f00", "style f0 fill:#f00"],
+			["<img src=x onerror=alert(1)>", "<img src=x onerror=alert(1)>"],
+			// Mermaid rewrites `="..."` after a `<tag` across lines.
+			["<b q=", "<b q="],
+			["#lt;script#gt;", "#lt;script#gt;"],
+			["`**x**`", "`**x**`"],
+			["`[link](javascript:alert(1))`", "`[link](javascript:alert(1))`"],
+			["`unterminated", "`unterminated"],
+			// Mermaid's flowchart lexer turns a whole line containing
+			// `direction` + whitespace + TB/BT/RL/LR/TD into a direction
+			// statement before it reaches the quoted label.
+			["Strategic direction TBD", "Strategic direction TBD"],
+			["x direction LR", "x direction LR"],
+			// Mermaid picks the diagram type from `C4Container`, `C4Component`,
+			// `C4Dynamic`, or `C4Deployment` anywhere in the source.
+			["Our C4Container rollout", "Our C4Container rollout"],
+			// Mermaid's internal entity form, decoded over the finished SVG.
+			["a\uFB02\u00B0b", "a\uFB02\u00B0b"],
+			["\uFB02\u00B0lt\u00B6\u00DF", "\uFB02\u00B0lt\u00B6\u00DF"],
+		];
+
+		it.each(cases)(
+			"%j draws as literal text without changing the diagram",
+			async (hostile, visible) => {
+				const reference = await renderDiagram(benign);
+				const flow = await renderDiagram({
+					kind: "flow",
+					steps: [
+						{ label: hostile, lane: hostile },
+						{ label: "Review contract", lane: "Legal" },
+					],
+				});
+
+				expectSameInertDiagram(flow, reference);
+				expect(flow.counts).toEqual({ nodes: 2, lanes: 2, edges: 1 });
+				// The text is drawn as typed, in the node and in the lane.
+				expect(visibleText(flow.nodeTexts.join("|"))).toContain(
+					visibleText(visible),
+				);
+				expect(visibleText(flow.laneTexts.join("|"))).toContain(
+					visibleText(visible),
+				);
+			},
+		);
+	});
+
+	describe("a Mermaid direction statement inside a step label or a lane title", () => {
+		const benign: VisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: "Qualify lead", lane: "Sales" },
+				{ label: "Review contract", lane: "Legal" },
+			],
+		};
+
+		/**
+		 * A case name, and the text. `\s` in the lexer's rule also matches a
+		 * non-breaking space and a tab.
+		 */
+		const texts: ReadonlyArray<readonly [string, string]> = [
+			["Strategic direction TBD", "Strategic direction TBD"],
+			["x direction LR", "x direction LR"],
+			["Strategic direction<NBSP>TBD", "Strategic direction\u00A0TBD"],
+			["x direction<NBSP>LR", "x direction\u00A0LR"],
+			["Strategic direction<TAB>TBD", "Strategic direction\tTBD"],
+			["x direction<TAB>LR", "x direction\tLR"],
+			["direction BT", "direction BT"],
+			["direction RL", "direction RL"],
+			["set direction TD later", "set direction TD later"],
+			["redirection TB", "redirection TB"],
+			[
+				"direction   TB twice direction LR",
+				"direction   TB twice direction LR",
+			],
+		];
+
+		it.each(texts)(
+			"%s as a step label keeps the flow and draws as typed",
+			async (_name, text) => {
+				const reference = await renderDiagram(benign);
+				const flow = await renderDiagram({
+					kind: "flow",
+					steps: [
+						{ label: text, lane: "Sales" },
+						{ label: "Review contract", lane: "Legal" },
+					],
+				});
+
+				expectSameInertDiagram(flow, reference);
+				expect(visibleText(flow.nodeTexts.join("|"))).toContain(
+					visibleText(text),
+				);
+				expect(flow.laneTexts.map(squash).sort()).toEqual([
+					"Legal",
+					"Sales",
+				]);
+			},
+		);
+
+		it.each(texts)(
+			"%s as a lane title keeps the flow and draws as typed",
+			async (_name, text) => {
+				const reference = await renderDiagram(benign);
+				const flow = await renderDiagram({
+					kind: "flow",
+					steps: [
+						{ label: "Qualify lead", lane: text },
+						{ label: "Review contract", lane: "Legal" },
+					],
+				});
+
+				expectSameInertDiagram(flow, reference);
+				expect(visibleText(flow.laneTexts.join("|"))).toContain(
+					visibleText(text),
+				);
+				expect(flow.nodeTexts.map(squash).sort()).toEqual([
+					"Qualifylead",
+					"Reviewcontract",
+				]);
+			},
+		);
+
+		it("draws a plain chain step with a direction statement as typed", async () => {
+			const chain = (label: string): VisualSpec => ({
+				kind: "flow",
+				steps: [{ label }, { label: "Review contract" }],
+			});
+			const reference = await renderDiagram(chain("Qualify lead"));
+
+			const flow = await renderDiagram(chain("Strategic direction TBD"));
+
+			expectSameInertDiagram(flow, reference);
+			expect(flow.counts).toEqual({ nodes: 2, lanes: 0, edges: 1 });
+			expect(visibleText(flow.nodeTexts.join("|"))).toContain(
+				"StrategicdirectionTBD",
+			);
+		});
+	});
+
+	describe("hostile text in timeline and org chart labels", () => {
+		/** Each input, and the text a reader sees once it is drawn. */
+		const cases: ReadonlyArray<readonly [string, string]> = [
+			['"]', "”]"],
+			[
+				'%%{init: {"securityLevel":"loose"}}%%',
+				"%%{init: {“securityLevel”:“loose”}}%%",
+			],
+			["click x call alert()", "click x call alert()"],
+			["<img src=x onerror=alert(1)>", "<img src=x onerror=alert(1)>"],
+			["direction TB", "direction TB"],
+			["Strategic direction TBD", "Strategic direction TBD"],
+			["Our C4Component map", "Our C4Component map"],
+		];
+
+		const timeline = (label: string): VisualSpec => ({
+			kind: "timeline",
+			items: [
+				{ date: "Q1 2026", label },
+				{ date: "Q2 2026", label: "Regional rollout" },
+			],
+		});
+
+		const orgChart = (label: string): VisualSpec => ({
+			kind: "org_chart",
+			nodes: [
+				{ id: "lead", label, parentId: null },
+				{ id: "finance", label: "Finance", parentId: "lead" },
+				{ id: "delivery", label, parentId: "lead" },
+			],
+		});
+
+		it.each(cases)(
+			"%j in a timeline label draws as literal text without changing the diagram",
+			async (hostile, visible) => {
+				const reference = await renderDiagram(timeline("Pilot launch"));
+				const render = await renderDiagram(timeline(hostile));
+
+				expectSameInertDiagram(render, reference);
+				expect(render.counts).toEqual({ nodes: 2, lanes: 0, edges: 1 });
+				expect(visibleText(render.nodeTexts.join("|"))).toContain(
+					visibleText(`Q1 2026 — ${visible}`),
+				);
+			},
+		);
+
+		it.each(cases)(
+			"%j in org chart labels draws as literal text without changing the diagram",
+			async (hostile, visible) => {
+				const reference = await renderDiagram(orgChart("Leadership"));
+				const render = await renderDiagram(orgChart(hostile));
+
+				expectSameInertDiagram(render, reference);
+				expect(render.counts).toEqual({ nodes: 3, lanes: 0, edges: 2 });
+				const drawn = render.nodeTexts.map(visibleText);
+				expect(
+					drawn.filter((text) => text === visibleText(visible)),
+				).toHaveLength(2);
+				expect(drawn).toContain("Finance");
+			},
+		);
 	});
 
 	it("restyles existing Mermaid over the diagram's own theme directive", async () => {

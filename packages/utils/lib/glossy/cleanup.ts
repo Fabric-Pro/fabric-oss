@@ -12,7 +12,10 @@
  * - Business Case: the header field block (`Owner: TBD` …), `0) Source
  *   Index`, `(Status: …; Evidence: …)` parentheticals, standalone
  *   `Evidence:` / `Confidence:` lines, inline `Evidence: [S2] — anchor` and
- *   `Sources: [S1], [S3]` clauses, and Status / Evidence table columns.
+ *   `Sources: [S1], [S3]` clauses, Status / Evidence table columns, and
+ *   the `Final Consistency Pass` self-check (or a `Quality Checks`-style
+ *   section whose entries check the document's own citations, evidence,
+ *   claims and TBDs; see `isSelfCheck`).
  * - Proposal: its header field block (`**Client/Team:** …`, `**Sponsor:**
  *   [Sponsor Name]` …), `1. Proposal Cover`, `1A. Source Index`, `[cite]`
  *   and `[S#]` markers, labelled `(Reference 6)` citations, and an optional
@@ -279,8 +282,13 @@ const STATUS_TAG_LINE =
  * `[S1–S3]`, `[cite]`, `[cite if derived]`, optionally bolded or linked.
  */
 const MARKER_CORE = String.raw`\\?\[(?:cite\b[^\]\n]{0,80}|S\d{1,4}(?:\s{0,2}[,;–—-]\s{0,2}S?\d{1,4}){0,20})\\?\](?:\([^()\s]{0,200}\))?`;
+const MARKER_UNIT = String.raw`\*\*${MARKER_CORE}\*\*|__${MARKER_CORE}__|${MARKER_CORE}`;
+/**
+ * A marker, or a range written as two markers joined by a dash, `[S1]–[S15]`,
+ * which goes with its dash (Fizzy #2589 follow-up).
+ */
 const CITATION_MARKER = new RegExp(
-	String.raw`\*\*${MARKER_CORE}\*\*|__${MARKER_CORE}__|${MARKER_CORE}`,
+	String.raw`(?:${MARKER_UNIT})(?:[ \t]{0,2}[–—-][ \t]{0,2}(?:${MARKER_UNIT}))?`,
 	"gi",
 );
 
@@ -308,11 +316,11 @@ const NUMERIC_MARKER = new RegExp(
 
 /**
  * One labelled reference inside a citation parenthetical: `Reference 6`,
- * `Ref. 6`, `see References 2 and 4`, `References 1, 2, and 3`, `Refs
- * 2–4`. At most three digits, as for `[n]`, so `(Reference 2025)` is never
- * one.
+ * `Ref. 6`, `see References 2 and 4`, `per Reference 1`, `cf. Reference
+ * 2`, `References 1, 2, and 3`, `Refs 2–4`. At most three digits, as for
+ * `[n]`, so `(Reference 2025)` is never one.
  */
-const REFERENCE_CITATION_ITEM = String.raw`(?:see[ \t]{1,4})?(?:references?|refs?\.?)[ \t]{0,4}\d{1,3}(?:[ \t]{0,4}(?:,[ \t]{0,4}(?:and(?=[ \t])|&)|[,&–—-]|and(?=[ \t]))[ \t]{0,4}\d{1,3}){0,20}`;
+const REFERENCE_CITATION_ITEM = String.raw`(?:(?:see|per|cf\.?)[ \t]{1,4})?(?:references?|refs?\.?)[ \t]{0,4}\d{1,3}(?:[ \t]{0,4}(?:,[ \t]{0,4}(?:and(?=[ \t])|&)|[,&–—-]|and(?=[ \t]))[ \t]{0,4}\d{1,3}){0,20}`;
 
 /**
  * A labelled citation parenthetical, `(Reference 6)`, `(see Reference 6)`,
@@ -364,10 +372,11 @@ const CLAUSE_LABEL =
  * One reference after a clause label: a citation marker, a numeric marker
  * (group 1, a citation only when the apparatus defines it), or `n/a`
  * (group 2). Sticky, so the references are read one after another from the
- * label.
+ * label. A dash with no space joins a range, `[S1]–[S3]`; a spaced dash
+ * after a reference is the separator before the anchor text.
  */
 const CLAUSE_REFERENCE = new RegExp(
-	String.raw`[ \t]{0,4}(?:(?:[,;]|and(?=[ \t]))[ \t]{0,4})?(?:\*\*${MARKER_CORE}\*\*|__${MARKER_CORE}__|${MARKER_CORE}|(${NUMERIC_MARKER_CORE})|(n\/a)(?![\p{L}\p{N}]))`,
+	String.raw`(?:[–—-]|[ \t]{0,4}(?:(?:[,;]|and(?=[ \t]))[ \t]{0,4})?)(?:${MARKER_UNIT}|(${NUMERIC_MARKER_CORE})|(n\/a)(?![\p{L}\p{N}]))`,
 	"iuy",
 );
 
@@ -593,6 +602,18 @@ const REFERENCE_ANCHORS = new Set([
 	"citations",
 	"works cited",
 ]);
+/**
+ * The Business Case template's authoring self-check, dropped whatever its
+ * body (Fizzy #2589 follow-up).
+ */
+const AUTHORING_CHECK_ANCHORS = new Set(["final consistency pass"]);
+/**
+ * A self-check only when its entries check the document's own apparatus
+ * (see `isSelfCheck`); a `Quality Checks` section that describes a QA
+ * process or plan stays in the main flow.
+ */
+const CHECK_ANCHOR =
+	/^(?:consistency[ -]checks?|quality[ -]checks?|self[ -]?checks?)$/;
 const COVER_ANCHORS = new Set([
 	"proposal cover",
 	"cover",
@@ -612,6 +633,29 @@ const APPENDIX_ANCHOR = /^appendix\b/;
 const LEADING_MARKER = new RegExp(
 	String.raw`^(?:\*\*|__)?(?:${MARKER_CORE}|${NUMERIC_MARKER_CORE})`,
 	"i",
+);
+
+/**
+ * A checklist line, once any list marker is stripped: an optional task box
+ * and emphasis, then a check verb (`Ensure`, `Verify`, `Confirm`, `Check`)
+ * or a citation marker (`[S1] cited in the summary`).
+ */
+const CHECKLIST_ENTRY = new RegExp(
+	String.raw`^(?:\\?\[[ xX]\\?\][ \t]{1,4})?(?:\*\*|__|\*|_)?(?:(?:ensure|verify|confirm|check)(?![\p{L}\p{N}-])|${MARKER_CORE})`,
+	"iu",
+);
+
+/**
+ * What a self-check entry checks: the document's own apparatus. A citation
+ * marker (`[S1]`, `[cite]`), or evidence, status, confidence, cite /
+ * citation, claim, source / Source Index, TBD / TBC, `this document` or
+ * `section(s) of the document`. Source code, open source and a data source
+ * are not the document's sources. Every alternative is bounded, so the
+ * unanchored scan stays linear (Fizzy #2589 follow-up).
+ */
+const APPARATUS_REFERENCE = new RegExp(
+	String.raw`${MARKER_CORE}|(?<![\p{L}\p{N}])(?:evidence|status|confidence|cit(?:es?|ed|ing|ations?)|claims?|(?<!(?:open|data)[ \t-])sources?(?![ \t-]code(?![\p{L}\p{N}]))|tb[dc]|this[ \t]{1,4}document|sections?[ \t]{1,4}of[ \t]{1,4}the[ \t]{1,4}document)(?![\p{L}\p{N}])`,
+	"iu",
 );
 
 /** A markdown link or image, `[title](https://…)`. */
@@ -658,6 +702,7 @@ type ScaffoldingRule =
 	| "citationMarkers"
 	| "numericCitations"
 	| "referenceCitations"
+	| "authoringChecks"
 	| "appendix";
 
 /** Which rules count as recognizing each type's template (KTD11). */
@@ -673,6 +718,7 @@ const RULES_BY_TYPE: Record<
 		"statusTags",
 		"evidenceClauses",
 		"statusColumns",
+		"authoringChecks",
 	]),
 	PROPOSAL: new Set([
 		"headerBlock",
@@ -692,9 +738,19 @@ const RULES_BY_TYPE: Record<
 
 /**
  * `references` is provisional: `prepareCitations` settles it as `sources`
- * or `main` before any segment is cleaned.
+ * or `main` before any segment is cleaned. `checks` is provisional too:
+ * `segmentDocument` settles it as `authoring` or `main`, once for a `##`
+ * and the `###` children that inherit its heading (see `isSelfCheck`). An
+ * `authoring` segment is dropped.
  */
-type SegmentKind = "main" | "sources" | "references" | "cover" | "appendix";
+type SegmentKind =
+	| "main"
+	| "sources"
+	| "references"
+	| "checks"
+	| "authoring"
+	| "cover"
+	| "appendix";
 
 interface Segment {
 	heading: OutlineHeading | null;
@@ -790,6 +846,11 @@ export function cleanupDocument(
 				ctx.appendix.additionalMaterial.push(
 					cleanSegment(segment, ctx),
 				);
+				break;
+			// An authoring self-check is instructions to the author: it has
+			// nothing for the reader, so no appendix entry and no assumption.
+			case "authoring":
+				ctx.rules.add("authoringChecks");
 				break;
 			default:
 				sections.push(cleanSegment(segment, ctx));
@@ -923,20 +984,23 @@ function segmentDocument(markdown: string): {
 		heading.startLine > titleHeading.startLine &&
 		heading.startLine <= titleHeading.endLine;
 	let parentAnchor: string | null = null;
+	// A self-check heading's segment and the `###` segments that inherit its
+	// kind, settled together once every body is known.
+	const checkGroups: Segment[][] = [];
+	let checkSubtree: Segment[] | null = null;
 	for (let i = first; i < boundaries.length; i++) {
 		const heading = boundaries[i];
 		const anchor =
 			heading.headingPath[heading.headingPath.length - 1] ?? "";
 		if (heading.level <= 2) {
 			parentAnchor = heading.level === 2 ? anchor : null;
+			checkSubtree = null;
 		}
-		const kind =
-			classifyAnchor(anchor) ??
-			(heading.level === 3 && parentAnchor !== null
+		const inherited =
+			heading.level === 3 && parentAnchor !== null
 				? classifyAnchor(parentAnchor)
-				: null) ??
-			"main";
-		segments.push({
+				: null;
+		const segment: Segment = {
 			heading,
 			cleanedHeading: null,
 			headingPath: underTitle(heading)
@@ -946,8 +1010,25 @@ function segmentDocument(markdown: string): {
 				heading.startLine,
 				(boundaries[i + 1]?.startLine ?? end) - 1,
 			),
-			kind,
-		});
+			kind: classifyAnchor(anchor) ?? inherited ?? "main",
+		};
+		segments.push(segment);
+		if (segment.kind !== "checks") {
+			continue;
+		}
+		if (inherited === "checks" && checkSubtree !== null) {
+			checkSubtree.push(segment);
+		} else {
+			const group = [segment];
+			checkGroups.push(group);
+			checkSubtree = heading.level === 2 ? group : null;
+		}
+	}
+	for (const group of checkGroups) {
+		const kind = isSelfCheck(group) ? "authoring" : "main";
+		for (const segment of group) {
+			segment.kind = kind;
+		}
 	}
 	return { titleHeading, segments };
 }
@@ -984,6 +1065,12 @@ function classifyAnchor(anchor: string): SegmentKind | null {
 	if (REFERENCE_ANCHORS.has(anchor)) {
 		return "references";
 	}
+	if (AUTHORING_CHECK_ANCHORS.has(anchor)) {
+		return "authoring";
+	}
+	if (CHECK_ANCHOR.test(anchor)) {
+		return "checks";
+	}
 	if (COVER_ANCHORS.has(anchor)) {
 		return "cover";
 	}
@@ -991,6 +1078,67 @@ function classifyAnchor(anchor: string): SegmentKind | null {
 		return "appendix";
 	}
 	return null;
+}
+
+/**
+ * A section headed like a self-check is one only when every one of its
+ * entries is a self-check entry (see `isSelfCheckEntry`): cleanup never
+ * deletes a statement, so a single line of reader-facing prose — a lead-in
+ * included — keeps the section. The group is a `##` segment and the `###`
+ * segments that inherit its heading, counted together and settled
+ * together, so nothing is stranded under the section before (Fizzy #2589
+ * follow-up).
+ */
+function isSelfCheck(group: readonly Segment[]): boolean {
+	let entries = 0;
+	let checks = 0;
+	for (const segment of group) {
+		const count = countSelfCheckEntries(segment.bodyLines);
+		entries += count.entries;
+		checks += count.checks;
+	}
+	return entries > 0 && checks === entries;
+}
+
+/** A body's entries (non-blank lines outside fences, breaks and anchors) and its self-check entries. */
+function countSelfCheckEntries(lines: readonly string[]): {
+	entries: number;
+	checks: number;
+} {
+	const fences = scanFences(lines);
+	let entries = 0;
+	let checks = 0;
+	lines.forEach((line, i) => {
+		if (
+			fences[i] !== null ||
+			line.trim() === "" ||
+			THEMATIC_BREAK.test(line) ||
+			isAnchorLike(line)
+		) {
+			return;
+		}
+		entries++;
+		if (isSelfCheckEntry(line)) {
+			checks++;
+		}
+	});
+	return { entries, checks };
+}
+
+/**
+ * A self-check entry is checklist-shaped — a list item or task box, or a
+ * line led by a check verb or a citation marker (`CHECKLIST_ENTRY`) — and
+ * checks the document's own apparatus (`APPARATUS_REFERENCE`): `- Every
+ * claim cites a source`, `Ensure every Confirmed claim has Evidence.` A
+ * check verb alone is not enough, since a QA plan's steps read the same
+ * (`- Verify each release in staging`), and a prose line never is one.
+ */
+function isSelfCheckEntry(line: string): boolean {
+	const text = stripListMarker(line).trim();
+	return (
+		(LIST_MARKER.test(line) || CHECKLIST_ENTRY.test(text)) &&
+		APPARATUS_REFERENCE.test(text)
+	);
 }
 
 function resolveOwnImageKey(
@@ -2262,15 +2410,33 @@ function trimSeparators(text: string): string {
 	return text.slice(start, end);
 }
 
-/** Split on `;` outside nested parentheses; a backslash escapes the next character. */
+/**
+ * Split on `;` outside nested parentheses and outside a quote, so an
+ * evidence anchor's quoted `"85–90%; 1–2 days"` stays with its label
+ * (Fizzy #2589 follow-up). A quote opens at a `"` or `“` that starts a
+ * word — at the start, or after whitespace, `(`, `:` or a dash — so the
+ * inch mark of `24"` never opens one. It closes at the nearest unescaped
+ * `"` or `”` that ends a word — before the end, whitespace, `;`, `)` or
+ * other punctuation — so a mixed `“…"` pair closes too. An opening quote
+ * with no close is an ordinary character, so it never swallows the parts
+ * after it. A backslash escapes the next character. The nearest close is
+ * precomputed right to left, so the scan stays linear.
+ */
 function splitTopLevel(content: string): string[] {
+	const nextClose = new Int32Array(content.length + 1).fill(-1);
+	for (let i = content.length - 1; i >= 0; i--) {
+		nextClose[i] = isQuoteClose(content, i) ? i : nextClose[i + 1];
+	}
 	const parts: string[] = [];
 	let depth = 0;
 	let start = 0;
 	for (let i = 0; i < content.length; i++) {
 		const ch = content[i];
+		const close = isQuoteOpen(content, i) ? nextClose[i + 1] : -1;
 		if (ch === "\\") {
 			i++;
+		} else if (close !== -1) {
+			i = close;
 		} else if (ch === "(") {
 			depth++;
 		} else if (ch === ")") {
@@ -2282,6 +2448,26 @@ function splitTopLevel(content: string): string[] {
 	}
 	parts.push(content.slice(start));
 	return parts;
+}
+
+/** What may come before a quote that opens: whitespace, `(`, `:` or a dash. */
+const QUOTE_OPEN_AFTER = /[\s(:–—-]/;
+/** What may follow a quote that closes: whitespace, `;`, `)` or punctuation. */
+const QUOTE_CLOSE_BEFORE = /[\s;),.:!?]/;
+
+function isQuoteOpen(text: string, i: number): boolean {
+	return (
+		(text[i] === '"' || text[i] === "“") &&
+		(i === 0 || QUOTE_OPEN_AFTER.test(text[i - 1]))
+	);
+}
+
+function isQuoteClose(text: string, i: number): boolean {
+	return (
+		(text[i] === '"' || text[i] === "”") &&
+		text[i - 1] !== "\\" &&
+		(i + 1 === text.length || QUOTE_CLOSE_BEFORE.test(text[i + 1]))
+	);
 }
 
 function statusOfParenthetical(content: string): GlossyClaimStatus | null {

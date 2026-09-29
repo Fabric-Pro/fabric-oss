@@ -16,7 +16,7 @@ Links: TBD
 Decision ask (one line): Approve Pilot (Status: Confirmed; Evidence: [S1] — decision section)
 What we're solving (one line): New customer onboarding takes 14 days on average (Status: Confirmed; Evidence: [S2] — cycle-time table)
 Proposed approach (1–3 bullets):
-- Automate workspace provisioning for new accounts (Status: Directionally Confirmed; Evidence: [S1] — action items, [S3] — survey comments)
+- Automate workspace provisioning for new accounts (Status: Directionally Confirmed; Evidence: [S1] — action items; [S3] — "setup took two weeks; most of it waiting on approvals")
 - Replace the manual checklist review with guided setup (Status: Assumed; Evidence: n/a)
 Expected value (1–3 bullets):
 - A 30% efficiency gain in onboarding effort (Status: Assumed; Evidence: n/a)
@@ -50,7 +50,7 @@ Risks / Constraints: support workload stays high (Status: Confirmed; Evidence: [
 
 ---
 ## 4) Recommended Option (Required)
-Recommendation: Extend the existing admin console (Status: Confirmed; Evidence: [S1] — decision section)
+Recommendation: Extend the existing admin console (per Reference 1) (Status: Confirmed; Evidence: [S1] — decision section)
 What we are explicitly NOT doing (right now): replacing the billing system (Status: Confirmed; Evidence: [S1])
 Sources: [S1], [S3]
 
@@ -92,3 +92,10 @@ Needed by: TBD
 Recommended decision: Approve Pilot (Status: Confirmed; Evidence: [S1])
 Immediate next steps: confirm the pilot cohort with support leads (Status: Confirmed; Evidence: [S1] — action items)
 What artifacts to produce next: a pilot plan (Status: Assumed; Evidence: n/a)
+
+---
+## 13) Final Consistency Pass (Required)
+Before finishing:
+- All [S1]–[S3] are cited at least once
+- Ensure the recommendation matches the options analysis.
+- Ensure every Confirmed claim has Evidence.

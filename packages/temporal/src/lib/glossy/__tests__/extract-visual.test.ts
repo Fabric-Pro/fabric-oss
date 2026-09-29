@@ -305,6 +305,247 @@ describe("extractGlossyVisual", () => {
 		});
 	});
 
+	describe("flow and org chart structure (Fizzy #2589 follow-up)", () => {
+		function flowOf(labels: string[]) {
+			return {
+				kind: "flow",
+				title: null,
+				steps: labels.map((label) => ({
+					label,
+					description: null,
+					lane: null,
+				})),
+			};
+		}
+
+		it("drops a flow drawn from an Open Questions section, checked by its heading", async () => {
+			modelReturns(
+				flowOf([
+					"Who approves the budget?",
+					"When does the pilot start?",
+				]),
+			);
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: {
+					heading: "11) Open Questions",
+					markdown:
+						"- Who approves the budget?\n- When does the pilot start?",
+				},
+				kind: "flow",
+			});
+
+			expect(result).toMatchObject({
+				status: "dropped",
+				reason: "factCheck",
+			});
+			expect(
+				result.status === "dropped" ? result.violations : [],
+			).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						kind: "flow-sequence",
+						text: "11) Open Questions",
+					}),
+					expect.objectContaining({
+						kind: "flow-sequence",
+						text: "2 of 2 steps are questions",
+					}),
+				]),
+			);
+		});
+
+		it("keeps a flow from an ordered process", async () => {
+			modelReturns(
+				flowOf([
+					"Submit the access request",
+					"Review the access request",
+				]),
+			);
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: {
+					heading: "Onboarding",
+					markdown:
+						"1. Submit the access request\n2. Review the access request",
+				},
+				kind: "flow",
+			});
+
+			expect(result).toMatchObject({ status: "extracted" });
+		});
+
+		describe("a flow the author's slot asked for", () => {
+			const overview = {
+				heading: "Platform Overview",
+				markdown: "- Submit the request\n- Review the request",
+			};
+			const steps = ["Submit the request", "Review the request"];
+
+			it("keeps it in a section that states no order", async () => {
+				modelReturns(flowOf(steps));
+
+				const result = await extractGlossyVisual({
+					...context,
+					section: overview,
+					kind: "flow",
+					source: "slot",
+					slotHint: "Show the request path",
+				});
+
+				expect(result).toMatchObject({ status: "extracted" });
+			});
+
+			it.each([
+				["a detected opportunity", { kind: "flow" as const }],
+				[
+					"a request that only carries a hint, with no slot source",
+					{
+						kind: "flow" as const,
+						slotHint: "Show the request path",
+					},
+				],
+				[
+					"a best-fit slot the model filled with a flow",
+					{ kind: "auto" as const, source: "slot" as const },
+				],
+			])(
+				"drops %s from a section that states no order",
+				async (_label, request) => {
+					modelReturns(flowOf(steps));
+
+					const result = await extractGlossyVisual({
+						...context,
+						section: overview,
+						...request,
+					});
+
+					expect(result).toMatchObject({
+						status: "dropped",
+						reason: "factCheck",
+						violations: [
+							expect.objectContaining({
+								kind: "flow-sequence",
+								text: "no numbered steps or sequencing words",
+							}),
+						],
+					});
+				},
+			);
+
+			it("still drops it under a list-type heading", async () => {
+				modelReturns(flowOf(steps));
+
+				const result = await extractGlossyVisual({
+					...context,
+					section: { ...overview, heading: "Open Questions" },
+					kind: "flow",
+					source: "slot",
+				});
+
+				expect(result).toMatchObject({
+					status: "dropped",
+					reason: "factCheck",
+					violations: [
+						expect.objectContaining({
+							kind: "flow-sequence",
+							text: "Open Questions",
+						}),
+					],
+				});
+				expect(
+					result.status === "dropped" ? result.violations : [],
+				).toHaveLength(1);
+			});
+		});
+
+		const governance = {
+			heading: "Governance",
+			markdown: "The delivery lead reports to the sponsor.",
+		};
+
+		function orgChart(parentOfLead: string | null) {
+			return {
+				kind: "org_chart",
+				title: null,
+				nodes: [
+					{
+						id: "sponsor",
+						label: "Sponsor",
+						parentId: parentOfLead === null ? "lead" : null,
+					},
+					{
+						id: "lead",
+						label: "Delivery lead",
+						parentId: parentOfLead,
+					},
+				],
+			};
+		}
+
+		it("keeps an org chart whose edge the section states", async () => {
+			modelReturns(orgChart("sponsor"));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: governance,
+				kind: "org_chart",
+			});
+
+			expect(result).toMatchObject({ status: "extracted" });
+		});
+
+		it("drops an org chart whose edge the section does not state", async () => {
+			// The sponsor drawn under the delivery lead: the reverse of the section.
+			modelReturns(orgChart(null));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: governance,
+				kind: "org_chart",
+			});
+
+			expect(result).toMatchObject({
+				status: "dropped",
+				reason: "factCheck",
+				violations: [
+					expect.objectContaining({
+						kind: "reporting-line",
+						text: "Sponsor → Delivery lead",
+					}),
+				],
+			});
+		});
+
+		it("drops an org chart built from a flat role table", async () => {
+			modelReturns(orgChart("sponsor"));
+
+			const result = await extractGlossyVisual({
+				...context,
+				section: {
+					heading: "Stakeholders",
+					markdown: [
+						"| Role | Person |",
+						"|---|---|",
+						"| Sponsor | Person A |",
+						"| Delivery lead | Person B |",
+					].join("\n"),
+				},
+				kind: "org_chart",
+			});
+
+			expect(result).toMatchObject({
+				status: "dropped",
+				reason: "factCheck",
+				violations: [
+					expect.objectContaining({ kind: "reporting-line" }),
+				],
+			});
+		});
+	});
+
 	it("drops a spec of another kind than requested", async () => {
 		modelReturns({
 			kind: "stat",

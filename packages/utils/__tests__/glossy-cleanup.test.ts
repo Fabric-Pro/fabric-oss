@@ -234,6 +234,40 @@ describe("cleanupDocument — Business Case fixture", () => {
 		expect(cleanupDocument(source, "BUSINESS_CASE")).toEqual(result);
 	});
 
+	it("leaves no quoted-anchor fragment, self-check, range dash or per-Reference citation, raw or after an editor round trip", () => {
+		expect(source).toContain('"setup took two weeks; most of it waiting');
+		expect(source).toContain("## 13) Final Consistency Pass (Required)");
+		expect(source).toContain("All [S1]–[S3] are cited");
+		expect(source).toContain("(per Reference 1)");
+
+		const roundTripped = cleanupDocument(
+			simulateEditorRoundTrip(source),
+			"BUSINESS_CASE",
+		);
+		for (const cleaned of [result, roundTripped]) {
+			const text = mainFlowText(cleaned);
+			const assumptions = JSON.stringify(cleaned.appendix.assumptions);
+
+			for (const debris of [
+				"most of it waiting",
+				"Consistency",
+				"cited at least once",
+				"Reference",
+			]) {
+				expect(text).not.toContain(debris);
+				expect(assumptions).not.toContain(debris);
+			}
+			expect(text).toContain(
+				"- Automate workspace provisioning for new accounts (indicative)\n",
+			);
+			// The round trip joins the next field onto the line.
+			expect(text).toMatch(
+				/Recommendation: Extend the existing admin console(?:\n| What)/,
+			);
+			expect(cleaned.issues).toEqual([]);
+		}
+	});
+
 	it("moves a bracketed header value such as `Owner: [Owner Name]` to the placeholders", () => {
 		const header = [
 			"## Business Case",
@@ -898,6 +932,12 @@ describe("cleanupDocument — reference citations", () => {
 		"(References 1, 2, & 3)",
 		"(Reference 6; Reference 9)",
 		"( Reference 6 )",
+		"(per Reference 1)",
+		"(Per Ref. 1)",
+		"(cf. Reference 2)",
+		"(cf Reference 2)",
+		"(CF. References 2 and 4)",
+		"(see Reference 6; per Reference 9)",
 	])("removes %s from the main flow", (citation) => {
 		const source = [
 			"## Results",
@@ -972,6 +1012,10 @@ describe("cleanupDocument — reference citations", () => {
 		"The method is documented (see Reference 6 for the method).",
 		"Adoption doubled (Reference 2025).",
 		"Adoption doubled (References).",
+		"Adoption doubled per Reference 1 of the survey.",
+		"Adoption doubled, per Reference 1.",
+		"Compare the pilot, cf. Reference 2.",
+		"The fee is set (per Reference 1 of the contract).",
 	])("keeps %j, which is more than a reference citation", (line) => {
 		expect(
 			cleanupDocument(`## Notes\n${line}`, "PROPOSAL").sections[0]
@@ -1214,6 +1258,98 @@ describe("cleanupDocument — status parentheticals", () => {
 		expect(result.sections[0].markdown).toBe(line);
 		expect(result.issues).toEqual([]);
 	});
+
+	it.each([
+		["straight", '"', '"'],
+		["curly", "“", "”"],
+	])(
+		"removes an evidence anchor's %s-quoted text whole, `;` included, and keeps the qualifier",
+		(_name, open, close) => {
+			const line = `- The platform is close to production (Status: Directionally Confirmed; Evidence: [S5] — ${open}Production readiness 85–90%; 1–2 days from full production deployment${close}; [S14] — example deployment in progress)`;
+			const result = cleanupDocument(
+				`## 2) Readiness\n${line}`,
+				"BUSINESS_CASE",
+			);
+
+			expect(result.sections[0].markdown).toBe(
+				"- The platform is close to production (indicative)",
+			);
+			expect(result.appendix.assumptions).toEqual([
+				{
+					heading: "2) Readiness",
+					text: "The platform is close to production",
+					status: "DIRECTIONALLY_CONFIRMED",
+					qualifier: "indicative",
+				},
+			]);
+			expect(JSON.stringify(result)).not.toContain("1–2 days");
+			expect(result.issues).toEqual([]);
+		},
+	);
+
+	it("keeps an unquoted unlabelled part beside a quoted evidence anchor", () => {
+		const result = cleanupDocument(
+			'## Value\nReadiness is high (Status: Assumed; Evidence: [S5] — "readiness 85–90%; 1–2 days out"; figures are rough)',
+			"BUSINESS_CASE",
+		);
+
+		expect(result.sections[0].markdown).toBe(
+			"Readiness is high (figures are rough) (assumed)",
+		);
+		expect(JSON.stringify(result)).not.toContain("1–2 days");
+	});
+
+	it.each([
+		["straight", '"'],
+		["curly", "“"],
+	])(
+		"reads an unterminated %s quote as an ordinary character, so the parts after it still split",
+		(_name, open) => {
+			const result = cleanupDocument(
+				`## Value\nReadiness is high (Status: Assumed; Evidence: [S5] — ${open}readiness 85–90%; figures are rough; [S6])`,
+				"BUSINESS_CASE",
+			);
+
+			expect(result.sections[0].markdown).toBe(
+				"Readiness is high (figures are rough) (assumed)",
+			);
+			expect(result.appendix.assumptions).toEqual([
+				expect.objectContaining({
+					text: "Readiness is high (figures are rough)",
+					status: "ASSUMED",
+				}),
+			]);
+		},
+	);
+
+	it("never pairs two inch marks as a quote, so the part between them still splits", () => {
+		const result = cleanupDocument(
+			'## Setup\nEach desk gets two screens (Status: Assumed; 24" monitors; Evidence: [S1]; 27" monitors)',
+			"BUSINESS_CASE",
+		);
+
+		expect(result.sections[0].markdown).toBe(
+			'Each desk gets two screens (24" monitors; 27" monitors) (assumed)',
+		);
+	});
+
+	it.each([
+		["curly-open, straight-close", "“", '"'],
+		["straight-open, curly-close", '"', "”"],
+	])(
+		"removes an evidence anchor's mixed %s quote whole, `;` included",
+		(_name, open, close) => {
+			const result = cleanupDocument(
+				`## Value\nReadiness is high (Status: Assumed; Evidence: [S5] — ${open}readiness 85–90%; 1–2 days out${close}; figures are rough)`,
+				"BUSINESS_CASE",
+			);
+
+			expect(result.sections[0].markdown).toBe(
+				"Readiness is high (figures are rough) (assumed)",
+			);
+			expect(JSON.stringify(result)).not.toContain("1–2 days");
+		},
+	);
 
 	it("reports a marker that a removal spliced together instead of deleting again", () => {
 		const result = cleanupDocument(
@@ -2009,6 +2145,461 @@ describe("cleanupDocument — References sections", () => {
 // kind, and only on an id with no line of its own: a real run defines each
 // id once, inside it, while a mention of another source points at an id
 // defined elsewhere.
+describe("cleanupDocument — citation marker ranges", () => {
+	it.each([
+		"[S1]–[S15]",
+		"[S1]-[S15]",
+		"[S1]—[S15]",
+		"[S1] – [S15]",
+		"\\[S1\\]–\\[S15\\]",
+		"**[S1]**–**[S15]**",
+	])("removes the range %s with its dash", (range) => {
+		const result = cleanupDocument(
+			`## Coverage\nAll ${range} are cited at least once.`,
+			"BUSINESS_CASE",
+		);
+
+		expect(result.sections[0].markdown).toBe(
+			"All are cited at least once.",
+		);
+		expect(result.issues).toEqual([]);
+	});
+
+	it.each([
+		[
+			"The key evidence: [S1]–[S3] shows a gap.",
+			"The key evidence shows a gap.",
+		],
+		[
+			"Onboarding takes 14 days. Evidence: [S1]–[S3] — cycle-time table",
+			"Onboarding takes 14 days.",
+		],
+		[
+			"Six handoffs (Status: Confirmed; Evidence: [S1]–[S3]) slow onboarding.",
+			"Six handoffs slow onboarding.",
+		],
+	])(
+		"removes a range in an evidence clause or parenthetical: %j",
+		(line, expected) => {
+			const result = cleanupDocument(
+				`## Coverage\n${line}`,
+				"BUSINESS_CASE",
+			);
+
+			expect(result.sections[0].markdown).toBe(expected);
+		},
+	);
+
+	it("keeps the dash between a marker and its anchor text", () => {
+		const result = cleanupDocument(
+			"## Coverage\nThe steering notes [S1] — and only those — set the scope.",
+			"BUSINESS_CASE",
+		);
+
+		expect(result.sections[0].markdown).toBe(
+			"The steering notes — and only those — set the scope.",
+		);
+	});
+});
+
+describe("cleanupDocument — authoring checks", () => {
+	const summary = [
+		"## 1) Summary",
+		"The pilot runs for eight weeks (Status: Assumed; Evidence: n/a).",
+	].join("\n");
+	const summaryAssumption = {
+		heading: "1) Summary",
+		text: "The pilot runs for eight weeks",
+		status: "ASSUMED",
+		qualifier: "assumed",
+	};
+
+	it("drops a `Final Consistency Pass` of `[S#]` bullets from the main flow and the assumptions, and reports nothing", () => {
+		const result = cleanupDocument(
+			[
+				summary,
+				"",
+				"## Final Consistency Pass",
+				"- All [S1]–[S15] are cited at least once",
+				"- [S3] backs every cost figure (Status: Assumed; Evidence: [S3])",
+				"- Confirmed claims carry Evidence: [S2]",
+				"- Owner: TBD",
+				"- Custom marker [R1] resolved",
+				"",
+				"### Checks by section",
+				"- Costs agree with the options (Status: TBD)",
+			].join("\n"),
+			"BUSINESS_CASE",
+		);
+
+		expect(headings(result.sections)).toEqual(["1) Summary"]);
+		expect(mainFlowText(result)).not.toMatch(/consisten|cited|Checks/i);
+		expect(result.appendix).toEqual({
+			sources: [],
+			details: [],
+			placeholders: [],
+			assumptions: [summaryAssumption],
+			additionalMaterial: [],
+		});
+		expect(result.issues).toEqual([]);
+		expect(result.scaffoldingUnrecognized).toBe(false);
+	});
+
+	it("drops the template's `## 13) Final Consistency Pass (Required)`, raw and after an editor round trip", () => {
+		const markdown = [
+			summary,
+			"",
+			"## 13) Final Consistency Pass (Required)",
+			"Before finishing:",
+			"Ensure the recommendation matches the options analysis.",
+			"Ensure every Confirmed claim has Evidence.",
+			"Ensure Source Index contains only cited sources.",
+		].join("\n");
+
+		for (const source of [markdown, simulateEditorRoundTrip(markdown)]) {
+			const result = cleanupDocument(source, "BUSINESS_CASE");
+
+			expect(headings(result.sections)).toEqual(["1) Summary"]);
+			expect(result.appendix.assumptions).toEqual([summaryAssumption]);
+			expect(result.issues).toEqual([]);
+		}
+	});
+
+	it("recognizes a Business Case by its `Final Consistency Pass` alone", () => {
+		const result = cleanupDocument(
+			[
+				"## Summary",
+				"A plain note.",
+				"",
+				"## Final Consistency Pass",
+				"- Ensure every claim has Evidence.",
+			].join("\n"),
+			"BUSINESS_CASE",
+		);
+
+		expect(headings(result.sections)).toEqual(["Summary"]);
+		expect(result.scaffoldingUnrecognized).toBe(false);
+	});
+
+	it.each([
+		[
+			"Quality Checks",
+			[
+				"- Ensure every Confirmed claim has Evidence.",
+				"- Verify every figure against the Source Index.",
+				"- [S1] cited in the executive summary",
+			],
+		],
+		[
+			"4) Quality Check (Required)",
+			["- [S1] cited in the summary", "- [S2] cited in the costs"],
+		],
+		[
+			"Self-Check",
+			[
+				"- [ ] Confirm every Assumed claim is flagged",
+				"- [x] Check that every TBD has an owner",
+			],
+		],
+		[
+			"Consistency Check",
+			[
+				"Ensure each section's Status agrees with its Evidence.",
+				"Ensure costs match the figures cited in the options.",
+			],
+		],
+	])("drops a `%s` section whose body is a checklist", (heading, body) => {
+		const markdown = [summary, "", `## ${heading}`, ...body].join("\n");
+
+		for (const source of [markdown, simulateEditorRoundTrip(markdown)]) {
+			const result = cleanupDocument(source, "BUSINESS_CASE");
+
+			expect(headings(result.sections)).toEqual(["1) Summary"]);
+			expect(result.appendix.assumptions).toEqual([summaryAssumption]);
+			expect(result.appendix.placeholders).toEqual([]);
+			expect(result.issues).toEqual([]);
+		}
+	});
+
+	it.each([
+		[
+			"a QA process in prose",
+			[
+				"Every release passes a regression suite before it ships.",
+				"Defects found in the pilot are triaged within one business day.",
+			].join(" "),
+		],
+		[
+			"a list of QA activities",
+			[
+				"- Nightly regression suite",
+				"- Weekly accessibility audit",
+				"- Verify builds on staging before each release",
+			].join("\n"),
+		],
+	])("keeps a `Quality Checks` section that describes %s", (_name, body) => {
+		const result = cleanupDocument(
+			`${summary}\n\n## Quality Checks\n${body}`,
+			"BUSINESS_CASE",
+		);
+
+		expect(headings(result.sections)).toEqual([
+			"1) Summary",
+			"Quality Checks",
+		]);
+		expect(sectionByHeading(result, "Quality Checks").markdown).toBe(body);
+	});
+
+	// A check verb alone is not a self-check: a real QA plan is written the
+	// same way (Fizzy #2589 follow-up).
+	it.each([
+		["PROPOSAL", "Quality Checks"],
+		["BUSINESS_CASE", "Quality Checks"],
+		["PROPOSAL", "Self-Check"],
+		["BUSINESS_CASE", "Consistency Checks"],
+	] as const)(
+		"keeps a %s's `%s` QA plan of Verify / Confirm / Ensure steps",
+		(type, heading) => {
+			const body = [
+				"- Verify each release in staging",
+				"- Confirm accessibility with screen readers",
+				"- Ensure load tests pass",
+			].join("\n");
+			const markdown = `## Delivery\nThe rollout runs in three waves.\n\n## ${heading}\n${body}`;
+
+			const direct = cleanupDocument(markdown, type);
+			const roundTripped = cleanupDocument(
+				simulateEditorRoundTrip(markdown),
+				type,
+			);
+
+			expect(headings(direct.sections)).toEqual(["Delivery", heading]);
+			expect(sectionByHeading(direct, heading).markdown).toBe(body);
+			expect(headings(roundTripped.sections)).toEqual([
+				"Delivery",
+				heading,
+			]);
+		},
+	);
+
+	it("keeps a QA plan written as task boxes", () => {
+		const result = cleanupDocument(
+			[
+				"## Quality Checks",
+				"- [ ] Verify each release in staging",
+				"- [x] Confirm accessibility with screen readers",
+			].join("\n"),
+			"PROPOSAL",
+		);
+
+		expect(headings(result.sections)).toEqual(["Quality Checks"]);
+		expect(result.sections[0].markdown).toContain("staging");
+		expect(result.sections[0].markdown).toContain("screen readers");
+	});
+
+	it.each([
+		[
+			"claims and evidence",
+			[
+				"- Every claim cites a source [S#]",
+				"- Ensure every Confirmed claim has Evidence",
+			],
+		],
+		[
+			"citation markers",
+			[
+				"- [S2] appears in the summary",
+				"- [cite] appears beside each figure",
+			],
+		],
+		[
+			"TBDs and sources",
+			[
+				"- [ ] Every TBD has a named owner",
+				"- [ ] No unused sources remain",
+			],
+		],
+	])(
+		"drops a `Quality Checks` list that checks the document's own %s",
+		(_name, body) => {
+			const markdown = [summary, "", "## Quality Checks", ...body].join(
+				"\n",
+			);
+
+			for (const source of [
+				markdown,
+				simulateEditorRoundTrip(markdown),
+			]) {
+				const result = cleanupDocument(source, "BUSINESS_CASE");
+
+				expect(headings(result.sections)).toEqual(["1) Summary"]);
+				expect(result.appendix.assumptions).toEqual([
+					summaryAssumption,
+				]);
+				expect(result.issues).toEqual([]);
+			}
+		},
+	);
+
+	it("does not count source code, open source or a data source as the document's sources", () => {
+		const body = [
+			"- Verify source code passes static analysis",
+			"- Confirm open-source licences with legal",
+			"- Ensure each data source refreshes nightly",
+		].join("\n");
+		const result = cleanupDocument(
+			`## Quality Checks\n${body}`,
+			"PROPOSAL",
+		);
+
+		expect(headings(result.sections)).toEqual(["Quality Checks"]);
+		expect(result.sections[0].markdown).toBe(body);
+	});
+
+	it.each([
+		[
+			"kept at one of two",
+			["- Ensure every claim has Evidence", "- Nightly regression suite"],
+			true,
+		],
+		[
+			"kept at two of four",
+			[
+				"- Ensure every claim has Evidence",
+				"- Every TBD has a named owner",
+				"- Nightly regression suite",
+				"- Weekly accessibility audit",
+			],
+			true,
+		],
+		[
+			"kept at two of three",
+			[
+				"- Ensure every claim has Evidence",
+				"- Every TBD has a named owner",
+				"- Nightly regression suite",
+			],
+			true,
+		],
+		[
+			"kept with a paragraph of prose beside two checks",
+			[
+				"Reviewers walk the client through these checks at sign-off.",
+				"",
+				"- Ensure every claim has Evidence",
+				"- Every figure matches its cited source",
+			],
+			true,
+		],
+		[
+			"dropped at three of three",
+			[
+				"- Ensure every claim has Evidence",
+				"- Every TBD has a named owner",
+				"- Every figure matches its cited source",
+			],
+			false,
+		],
+	])(
+		"drops only when every entry is a self-check, since cleanup never deletes a statement: %s",
+		(_name, body, kept) => {
+			const result = cleanupDocument(
+				[summary, "", "## Quality Checks", ...body].join("\n"),
+				"BUSINESS_CASE",
+			);
+
+			expect(headings(result.sections)).toEqual(
+				kept ? ["1) Summary", "Quality Checks"] : ["1) Summary"],
+			);
+		},
+	);
+
+	it("keeps a `Quality Checks` section whole when a line of prose stands beside its self-check `###` children", () => {
+		const markdown = [
+			summary,
+			"",
+			"## Quality Checks",
+			"The author runs these checks before submitting the case.",
+			"",
+			"### Claims",
+			"- Ensure every claim cites a source [S1]",
+			"- Verify the Source Index lists only cited sources",
+			"",
+			"### Open items",
+			"- Confirm every TBD has a named owner",
+		].join("\n");
+
+		for (const source of [markdown, simulateEditorRoundTrip(markdown)]) {
+			const result = cleanupDocument(source, "BUSINESS_CASE");
+
+			// The lead-in is a statement, so nothing in the group is dropped
+			// and nothing is stranded under the section before.
+			expect(headings(result.sections)).toEqual([
+				"1) Summary",
+				"Quality Checks",
+				"Claims",
+				"Open items",
+			]);
+			expect(mainFlowText(result)).toMatch(/runs these checks/);
+		}
+	});
+
+	it("keeps a `Quality Checks` QA process and its `###` child together", () => {
+		const accessibility = [
+			"- Verify each screen with a screen reader",
+			"- Confirm keyboard navigation on every form",
+		].join("\n");
+		const result = cleanupDocument(
+			[
+				summary,
+				"",
+				"## Quality Checks",
+				"Every release passes a regression suite before it ships.",
+				"",
+				"### Accessibility",
+				accessibility,
+			].join("\n"),
+			"BUSINESS_CASE",
+		);
+
+		expect(headings(result.sections)).toEqual([
+			"1) Summary",
+			"Quality Checks",
+			"Accessibility",
+		]);
+		expect(sectionByHeading(result, "Accessibility").markdown).toBe(
+			accessibility,
+		);
+	});
+
+	// Dropping the subtree would delete the `###` child's content; dropping
+	// only the checklist would leave the child under the previous section.
+	it("keeps a checklist `Quality Checks` whole when a `###` child under it is content", () => {
+		const result = cleanupDocument(
+			[
+				summary,
+				"",
+				"## Quality Checks",
+				"- Ensure every claim cites a source [S1]",
+				"- Ensure every Confirmed claim has Evidence",
+				"",
+				"### Test environments",
+				"Staging mirrors production and refreshes nightly.",
+			].join("\n"),
+			"BUSINESS_CASE",
+		);
+
+		expect(headings(result.sections)).toEqual([
+			"1) Summary",
+			"Quality Checks",
+			"Test environments",
+		]);
+		expect(sectionByHeading(result, "Test environments").markdown).toBe(
+			"Staging mirrors production and refreshes nightly.",
+		);
+	});
+});
+
 describe("cleanupDocument — joined source and footnote lines", () => {
 	it("splits an editor-joined run of footnote definitions into one source each", () => {
 		const result = cleanupDocument(
@@ -2785,6 +3376,43 @@ describe("cleanupDocument — cost", () => {
 		[
 			"a space run before a reference citation",
 			`## A\nx${" ".repeat(100_000)}(Reference 1)`,
+		],
+		[
+			"a 100k-char line of unclosed per and cf. reference citations",
+			`## A\n${"x (per References 1, 2 and 3; cf. Ref. 4 ".repeat(2_500)}`,
+		],
+		["a line of dash-joined markers", `## A\n${"[S1]–".repeat(25_000)}`],
+		[
+			"an evidence clause of many dash-joined markers",
+			`## A\nx. Evidence: ${"[S1]–".repeat(20_000)}a`,
+		],
+		[
+			"many mid-sentence evidence labels before ranges",
+			`## A\n${"the key evidence: [S1]–[S2]– ".repeat(4_000)}`,
+		],
+		[
+			"a line of markers each followed by a dash and spaces",
+			`## A\n${"[S1] –  x".repeat(12_500)}`,
+		],
+		[
+			"a self-check section of many checklist entries",
+			`## Quality Checks\n${"- Ensure a\n".repeat(20_000)}`,
+		],
+		[
+			"a status parenthetical of unclosed curly quotes",
+			`## A\n${"x (Status: Assumed; Evidence: [S1] “a; “b; “c; “d) ".repeat(5_000)}`,
+		],
+		[
+			"status parentheticals full of quotes that never close",
+			`## A\n${`x (Status: Assumed;${' "a"b'.repeat(75)}) `.repeat(300)}`,
+		],
+		[
+			"a self-check entry of near-miss apparatus words on one line",
+			`## Quality Checks\n- ${"[citex [S1,S1,S1 open source data sources sections of thex this  documentx ".repeat(3_000)}`,
+		],
+		[
+			"a self-check entry with a long space run inside a phrase",
+			`## Quality Checks\n- Ensure this${" ".repeat(100_000)}document sections${" ".repeat(100_000)}of`,
 		],
 	])("stays linear on %s", (_name, markdown) => {
 		const start = performance.now();

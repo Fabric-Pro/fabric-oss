@@ -55,9 +55,9 @@ export const GLOSSY_KIND_DEFINITIONS: Readonly<
 	comparison:
 		"two to four options or alternatives, or pros and cons, set against each other.",
 	stat: "one to four headline figures the section states outright (amounts, savings, percentages, counts).",
-	flow: "a described process of at least two sequential steps that is not already a diagram, including one that says which team or role performs each step.",
+	flow: "ordered steps of a process, at least two in sequence, that are not already a diagram, including a process that says which team or role performs each step. A list of items, capabilities, questions, risks, or requirements is not a flow.",
 	org_chart:
-		"roles, ownership, or reporting lines that form one hierarchy under a single top role.",
+		"reporting lines the section states outright (who reports to whom) that form one hierarchy under a single top role. Roles, owners, or stakeholders listed without stated reporting lines are not an org chart.",
 };
 
 export function buildGlossyDetectInstructions(documentType: string): string {

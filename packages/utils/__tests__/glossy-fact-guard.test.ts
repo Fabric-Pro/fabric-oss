@@ -1662,6 +1662,1240 @@ describe("checkVisualFacts placeholders (Fizzy #2589 follow-up)", () => {
 	});
 });
 
+/** What extraction checks a visual against: the heading, then the body. */
+function sectionText(heading: string, ...body: string[]): string {
+	return [heading, "", ...body].join("\n");
+}
+
+describe("checkVisualFacts flows (Fizzy #2589 follow-up)", () => {
+	/** The fact check's input for a flow, as extraction builds it. */
+	function flowFacts(
+		heading: string | null,
+		steps: ReadonlyArray<{ label: string; lane?: string }>,
+	) {
+		return {
+			...visualSpecFacts({ kind: "flow", steps: [...steps] }),
+			heading,
+			flowSteps: steps.map((step) => step.label),
+		};
+	}
+
+	it("fails a flow drawn from an Open Questions section", () => {
+		const section = sectionText(
+			"Open Questions",
+			"- Who approves the budget?",
+			"- Which vendor hosts the platform?",
+			"- When does the pilot start?",
+		);
+		const result = checkVisualFacts(
+			flowFacts("11) Open Questions", [
+				{ label: "Who approves the budget?" },
+				{ label: "Which vendor hosts the platform?" },
+				{ label: "When does the pilot start?" },
+			]),
+			section,
+		);
+		expect(violationsOf(result)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "flow-sequence",
+					text: "11) Open Questions",
+				}),
+			]),
+		);
+		expect(new Set(kindsOf(result))).toEqual(new Set(["flow-sequence"]));
+	});
+
+	it.each([
+		"In Scope",
+		"4.2 Out of Scope",
+		"Scope / In Scope / Out of Scope",
+		"**Key Risks and Assumptions**",
+		"Goals / Non-Goals",
+		"6) Deliverables (Required)",
+		"Stakeholders",
+		"Dependencies",
+		"Success Metrics",
+		"Requirements",
+		"Capabilities",
+		"Features",
+		"Questions",
+	])(
+		"fails a flow under the list-type heading %j, even with numbered steps",
+		(heading) => {
+			const section = sectionText(
+				heading,
+				"1. Discovery workshop",
+				"2. Design review",
+				"3. Pilot launch",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts(heading, [
+							{ label: "Discovery workshop" },
+							{ label: "Design review" },
+							{ label: "Pilot launch" },
+						]),
+						section,
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "flow-sequence",
+					text: heading,
+				}),
+			]);
+		},
+	);
+
+	it.each([
+		"Risk Mitigation Process",
+		"Delivery Approach",
+		"Scope Review Workflow",
+		"Next Steps",
+	])("does not read %j as a list-type heading", (heading) => {
+		const section = sectionText(
+			heading,
+			"First the team holds a discovery workshop, then a design review, and finally the pilot launch.",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts(heading, [
+					{ label: "Discovery workshop" },
+					{ label: "Design review" },
+					{ label: "Pilot launch" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it.each([
+		[
+			"questions ending in a question mark",
+			[
+				"Is the budget approved?",
+				"Is the vendor selected?",
+				"Is the launch date agreed?",
+			],
+		],
+		[
+			"Q-numbered questions",
+			[
+				"Q1: Is the budget approved",
+				"Q2: Is the vendor selected",
+				"Q3: Is the launch date agreed",
+			],
+		],
+	])("fails a flow of %s", (_label, labels) => {
+		const section = sectionText(
+			"Decision Points",
+			"First, Q1: is the budget approved? Then Q2: is the vendor selected?",
+			"Finally Q3: is the launch date agreed?",
+		);
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					flowFacts(
+						"Decision Points",
+						labels.map((label) => ({ label })),
+					),
+					section,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({
+				kind: "flow-sequence",
+				text: "3 of 3 steps are questions",
+			}),
+		]);
+	});
+
+	it("reads a quarter-labelled step as a step, not a question", () => {
+		const section = sectionText(
+			"Rollout Plan",
+			"1. Q1: Discovery",
+			"2. Q2: Design",
+			"3. Q3) Rollout",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts("Rollout Plan", [
+					{ label: "Q1: Discovery" },
+					{ label: "Q2: Design" },
+					{ label: "Q3) Rollout" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it("reads a Q-numbered label that opens with an interrogative as a question", () => {
+		const section = sectionText(
+			"Decision Points",
+			"First, Q1: which vendor hosts the platform?",
+			"Then Q2: should the pilot start early?",
+		);
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					flowFacts("Decision Points", [
+						{ label: "Q1: Which vendor hosts the platform" },
+						{ label: "Q2) Should the pilot start early" },
+					]),
+					section,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({
+				kind: "flow-sequence",
+				text: "2 of 2 steps are questions",
+			}),
+		]);
+	});
+
+	it.each([
+		"Decision Criteria",
+		"Key Evaluation Criteria",
+		"Options",
+		"Alternatives",
+		"Benefits",
+		"Constraints",
+		"Unknowns",
+		"Known Issues",
+		"Objectives",
+		"Outcomes",
+		"Metrics",
+		"KPIs",
+		"Principles",
+		"Considerations",
+		"Roles and Responsibilities",
+	])(
+		"fails a flow under the list-type heading %j, even with numbered steps",
+		(heading) => {
+			const section = sectionText(
+				heading,
+				"1. Discovery workshop",
+				"2. Design review",
+				"3. Pilot launch",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts(heading, [
+							{ label: "Discovery workshop" },
+							{ label: "Design review" },
+							{ label: "Pilot launch" },
+						]),
+						section,
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "flow-sequence",
+					text: heading,
+				}),
+			]);
+		},
+	);
+
+	it.each([
+		// A process word makes the heading a process, whatever list term it holds.
+		"Risk Process",
+		"Requirements Workflow",
+		// A word after the list term is the heading's head noun: a process.
+		"Risk Management",
+		"Issue Escalation",
+		"Implementation Steps",
+	])("reads %j as a process heading, not a list", (heading) => {
+		const section = sectionText(
+			heading,
+			"1. Discovery workshop",
+			"2. Design review",
+			"3. Pilot launch",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts(heading, [
+					{ label: "Discovery workshop" },
+					{ label: "Design review" },
+					{ label: "Pilot launch" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it.each([
+		["Approval Flow"],
+		["Onboarding journey"],
+		["Release Pipeline"],
+		["Contract Lifecycle"],
+		["Escalation Path"],
+		["Delivery Stages"],
+	])(
+		"reads the heading %j as naming a process that states an order",
+		(heading) => {
+			const section = sectionText(
+				heading,
+				"- Submit the request",
+				"- Review the request",
+				"- Grant access",
+			);
+			expect(
+				checkVisualFacts(
+					flowFacts(heading, [
+						{ label: "Submit the request" },
+						{ label: "Review the request" },
+						{ label: "Grant access" },
+					]),
+					section,
+				),
+			).toEqual({ pass: true });
+		},
+	);
+
+	it("does not read a Cash Flow heading as naming a process", () => {
+		const section = sectionText(
+			"Cash Flow",
+			"- Licence savings",
+			"- Support savings",
+			"- Hosting costs",
+		);
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					flowFacts("Cash Flow", [
+						{ label: "Licence savings" },
+						{ label: "Support savings" },
+						{ label: "Hosting costs" },
+					]),
+					section,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({
+				kind: "flow-sequence",
+				text: "no numbered steps or sequencing words",
+			}),
+		]);
+	});
+
+	it.each([
+		"The rollout runs in three phases: pilot, regional, global.",
+		"The rollout follows this sequence: pilot, regional, global.",
+	])("reads %j as sequencing language", (sentence) => {
+		expect(
+			checkVisualFacts(
+				flowFacts("Rollout", [
+					{ label: "Pilot" },
+					{ label: "Regional" },
+					{ label: "Global" },
+				]),
+				sectionText("Rollout", sentence),
+			),
+		).toEqual({ pass: true });
+	});
+
+	describe("a flow the author placed", () => {
+		const capabilities = sectionText(
+			"Platform Overview",
+			"- Automated invoice matching",
+			"- Supplier portal",
+			"- Spend analytics dashboard",
+		);
+		const capabilitySteps = [
+			{ label: "Automated invoice matching" },
+			{ label: "Supplier portal" },
+			{ label: "Spend analytics dashboard" },
+		];
+
+		it("skips the stated-order rule", () => {
+			expect(
+				checkVisualFacts(
+					{
+						...flowFacts("Platform Overview", capabilitySteps),
+						authorRequested: true,
+					},
+					capabilities,
+				),
+			).toEqual({ pass: true });
+			expect(
+				kindsOf(
+					checkVisualFacts(
+						flowFacts("Platform Overview", capabilitySteps),
+						capabilities,
+					),
+				),
+			).toEqual(["flow-sequence"]);
+		});
+
+		it("still fails under a list-type heading", () => {
+			const section = sectionText(
+				"Open Questions",
+				"- Automated invoice matching",
+				"- Supplier portal",
+				"- Spend analytics dashboard",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						{
+							...flowFacts("Open Questions", capabilitySteps),
+							authorRequested: true,
+						},
+						section,
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "flow-sequence",
+					text: "Open Questions",
+				}),
+			]);
+		});
+
+		it("still fails a flow of questions", () => {
+			const section = sectionText(
+				"Platform Overview",
+				"- Is the budget approved?",
+				"- Is the vendor selected?",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						{
+							...flowFacts("Platform Overview", [
+								{ label: "Is the budget approved?" },
+								{ label: "Is the vendor selected?" },
+							]),
+							authorRequested: true,
+						},
+						section,
+					),
+				),
+			).toEqual([
+				expect.objectContaining({
+					kind: "flow-sequence",
+					text: "2 of 2 steps are questions",
+				}),
+			]);
+		});
+	});
+
+	it("fails a flow from an unordered capability list with no sequencing language", () => {
+		const section = sectionText(
+			"Platform Overview",
+			"- Automated invoice matching",
+			"- Supplier portal",
+			"- Spend analytics dashboard",
+			"- Approval rules engine",
+		);
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					flowFacts("Platform Overview", [
+						{ label: "Automated invoice matching" },
+						{ label: "Supplier portal" },
+						{ label: "Spend analytics dashboard" },
+						{ label: "Approval rules engine" },
+					]),
+					section,
+				),
+			),
+		).toEqual([
+			expect.objectContaining({
+				kind: "flow-sequence",
+				text: "no numbered steps or sequencing words",
+			}),
+		]);
+	});
+
+	describe("reads the order from the flow's own steps", () => {
+		const noOrder = expect.objectContaining({
+			kind: "flow-sequence",
+			text: "no numbered steps or sequencing words",
+		});
+
+		it("fails a flow of bullets when only an unrelated sentence has a sequencing word", () => {
+			const section = sectionText(
+				"Market Context",
+				"- Growing demand for self-service",
+				"- Consolidation among vendors",
+				"- Pressure on licence margins",
+				"",
+				"We revisit pricing next quarter.",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts("Market Context", [
+							{ label: "Growing demand for self-service" },
+							{ label: "Consolidation among vendors" },
+							{ label: "Pressure on licence margins" },
+						]),
+						section,
+					),
+				),
+			).toEqual([noOrder]);
+		});
+
+		it("fails a flow whose steps are not the section's numbered entries", () => {
+			const section = sectionText(
+				"Delivery Model",
+				"1. Platform team",
+				"2. Data team",
+				"3. Security team",
+				"",
+				"- Weekly demos",
+				"- Shared backlog",
+				"- Joint planning",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts("Delivery Model", [
+							{ label: "Weekly demos" },
+							{ label: "Shared backlog" },
+							{ label: "Joint planning" },
+						]),
+						section,
+					),
+				),
+			).toEqual([noOrder]);
+		});
+
+		it("fails a flow that reorders the section's numbered entries", () => {
+			const section = sectionText(
+				"Onboarding",
+				"1. Submit the access request",
+				"2. Review the access request",
+				"3. Grant access",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts("Onboarding", [
+							{ label: "Grant access" },
+							{ label: "Submit the access request" },
+							{ label: "Review the access request" },
+						]),
+						section,
+					),
+				),
+			).toEqual([noOrder]);
+		});
+
+		it("fails a flow with only one step among the numbered entries", () => {
+			const section = sectionText(
+				"Onboarding",
+				"1. Submit the access request",
+				"2. Pay the invoice",
+				"",
+				"- Grant access",
+				"- Archive the ticket",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts("Onboarding", [
+							{ label: "Submit the access request" },
+							{ label: "Grant access" },
+							{ label: "Archive the ticket" },
+						]),
+						section,
+					),
+				),
+			).toEqual([noOrder]);
+		});
+
+		it("does not count a Start node as a named step", () => {
+			const section = sectionText(
+				"Market Context",
+				"- Growing demand for self-service",
+				"- Consolidation among vendors",
+				"",
+				"Price talks start next quarter.",
+			);
+			expect(
+				violationsOf(
+					checkVisualFacts(
+						flowFacts("Market Context", [
+							{ label: "Start" },
+							{ label: "Growing demand for self-service" },
+							{ label: "Consolidation among vendors" },
+						]),
+						section,
+					),
+				),
+			).toEqual([noOrder]);
+		});
+
+		it.each([
+			[
+				"a sentence that names the steps",
+				[
+					"First we submit the request, then legal reviews it, and finally sales signs.",
+				],
+				["Submit request", "Legal reviews", "Sales signs"],
+			],
+			[
+				"bullets that carry their own sequencing words",
+				[
+					"- Submit the request",
+					"- Then review the request",
+					"- Finally approve the request",
+				],
+				[
+					"Submit the request",
+					"Review the request",
+					"Approve the request",
+				],
+			],
+			[
+				"a numbered list of the steps, one soft-wrapped",
+				[
+					"1. Submit the",
+					"   access request",
+					"2) Review the access request",
+					"3. Grant access",
+				],
+				[
+					"Submit the access request",
+					"Review the access request",
+					"Grant access",
+				],
+			],
+			[
+				"a numbered list with a step before and between its entries",
+				["1. Submit the access request", "2. Grant access"],
+				["Start", "Submit the access request", "Grant access"],
+			],
+		])("passes a flow from %s", (_label, body, labels) => {
+			expect(
+				checkVisualFacts(
+					flowFacts(
+						"Contract Signature",
+						labels.map((label) => ({ label })),
+					),
+					sectionText("Contract Signature", ...body),
+				),
+			).toEqual({ pass: true });
+		});
+	});
+
+	it("passes a flow from an ordered list", () => {
+		const section = sectionText(
+			"Onboarding",
+			"1. Submit the access request",
+			"2) Review the access request",
+			"3. Grant access",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts("Onboarding", [
+					{ label: "Submit the access request" },
+					{ label: "Review the access request" },
+					{ label: "Grant access" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it('passes a flow from "First … then … finally …"', () => {
+		const section = sectionText(
+			"Rollout",
+			"First we migrate the pilot team, then we migrate the remaining teams, and finally we retire the legacy system.",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts("Rollout", [
+					{ label: "Migrate the pilot team" },
+					{ label: "Migrate the remaining teams" },
+					{ label: "Retire the legacy system" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it("passes a swimlane flow from a real process section", () => {
+		const section = sectionText(
+			"Request Handling",
+			"The account team submits the request. Then the finance team reviews the budget.",
+			"Once the budget is approved, the delivery lead schedules the kickoff.",
+		);
+		expect(
+			checkVisualFacts(
+				flowFacts("Request Handling", [
+					{ label: "Submits the request", lane: "Account team" },
+					{ label: "Reviews the budget", lane: "Finance team" },
+					{ label: "Schedules the kickoff", lane: "Delivery lead" },
+				]),
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+
+	it("reads a heading that names a process as stating an order", () => {
+		const section = sectionText(
+			"Order process",
+			"Sales qualifies the lead, Legal reviews the contract, and Sales signs the order.",
+		);
+		const steps = [
+			{ label: "Qualifies the lead", lane: "Sales" },
+			{ label: "Reviews the contract", lane: "Legal" },
+			{ label: "Signs the order", lane: "Sales" },
+		];
+		expect(
+			checkVisualFacts(flowFacts("Order process", steps), section),
+		).toEqual({ pass: true });
+		// Without the heading, nothing in the section states the order.
+		expect(
+			kindsOf(checkVisualFacts(flowFacts(null, steps), section)),
+		).toEqual(["flow-sequence"]);
+	});
+
+	it("leaves other kinds alone", () => {
+		const section = sectionText(
+			"Open Questions",
+			"Who approves the budget?",
+		);
+		expect(
+			checkVisualFacts(
+				{
+					kind: "comparison",
+					labels: ["Budget"],
+					figures: [],
+					heading: "Open Questions",
+				},
+				section,
+			),
+		).toEqual({ pass: true });
+	});
+});
+
+describe("checkVisualFacts org charts (Fizzy #2589 follow-up)", () => {
+	type Node = { id: string; label: string; parentId: string | null };
+
+	/** The fact check's input for an org chart, as extraction builds it. */
+	function orgChartFacts(nodes: Node[]) {
+		const labelById = new Map(nodes.map((node) => [node.id, node.label]));
+		return {
+			...visualSpecFacts({ kind: "org_chart", nodes }),
+			orgChartEdges: nodes.flatMap((node) => {
+				const parent =
+					node.parentId === null
+						? undefined
+						: labelById.get(node.parentId);
+				return parent === undefined
+					? []
+					: [{ child: node.label, parent }];
+			}),
+		};
+	}
+
+	const twoNodes: Node[] = [
+		{ id: "sponsor", label: "Sponsor", parentId: null },
+		{ id: "lead", label: "Delivery lead", parentId: "sponsor" },
+	];
+
+	function reportingLines(result: FactGuardResult) {
+		return violationsOf(result)
+			.filter((item) => item.kind === "reporting-line")
+			.map((item) => item.text);
+	}
+
+	it("fails an org chart built from a flat Role | Person table", () => {
+		const section = sectionText(
+			"Stakeholders",
+			"| Role | Person |",
+			"|---|---|",
+			"| Sponsor | Person A |",
+			"| Delivery Lead | Person B |",
+			"| Product Owner | Person C |",
+			"",
+			"No formal governance structure is documented.",
+		);
+		const result = checkVisualFacts(
+			orgChartFacts([
+				{ id: "sponsor", label: "Sponsor", parentId: null },
+				{ id: "lead", label: "Delivery Lead", parentId: "sponsor" },
+				{ id: "po", label: "Product Owner", parentId: "sponsor" },
+			]),
+			section,
+		);
+		expect(kindsOf(result)).toEqual(["reporting-line", "reporting-line"]);
+		expect(reportingLines(result)).toEqual([
+			"Delivery Lead → Sponsor",
+			"Product Owner → Sponsor",
+		]);
+	});
+
+	it('passes a two-node chart from "The delivery lead reports to the sponsor."', () => {
+		expect(
+			checkVisualFacts(
+				orgChartFacts(twoNodes),
+				sectionText(
+					"Governance",
+					"The delivery lead reports to the sponsor.",
+				),
+			),
+		).toEqual({ pass: true });
+	});
+
+	it("fails an eight-node chart where only one reporting line is stated", () => {
+		const section = sectionText(
+			"Team",
+			"The delivery lead reports to the sponsor.",
+			"The product owner, the architect, the QA lead, the analyst, the designer, and the engineer work on the project.",
+		);
+		const result = checkVisualFacts(
+			orgChartFacts([
+				...twoNodes,
+				{ id: "po", label: "Product owner", parentId: "lead" },
+				{ id: "arch", label: "Architect", parentId: "lead" },
+				{ id: "qa", label: "QA lead", parentId: "lead" },
+				{ id: "analyst", label: "Analyst", parentId: "po" },
+				{ id: "designer", label: "Designer", parentId: "po" },
+				{ id: "engineer", label: "Engineer", parentId: "arch" },
+			]),
+			section,
+		);
+		expect(new Set(kindsOf(result))).toEqual(new Set(["reporting-line"]));
+		expect(reportingLines(result)).toEqual([
+			"Product owner → Delivery lead",
+			"Architect → Delivery lead",
+			"QA lead → Delivery lead",
+			"Analyst → Product owner",
+			"Designer → Product owner",
+			"Engineer → Architect",
+		]);
+	});
+
+	it.each([
+		[
+			"an undefined reporting structure",
+			"Reporting lines are not yet defined.",
+		],
+		[
+			"a negated relation",
+			"The delivery lead does not report to the sponsor.",
+		],
+		[
+			"a relation left open",
+			"The delivery lead reports to the sponsor (TBD).",
+		],
+		[
+			"a relation to be confirmed",
+			"The delivery lead reports to the sponsor, to be confirmed.",
+		],
+		[
+			"a responsibility, not a hierarchy",
+			"The sponsor manages the delivery lead.",
+		],
+		[
+			"a position, not a reporting line",
+			"The delivery lead works under the sponsor.",
+		],
+	])("supports no edge from %s", (_label, sentence) => {
+		const section = sectionText(
+			"Governance",
+			"The sponsor and the delivery lead lead the project.",
+			sentence,
+		);
+		expect(
+			reportingLines(checkVisualFacts(orgChartFacts(twoNodes), section)),
+		).toEqual(["Delivery lead → Sponsor"]);
+	});
+
+	it('does not read "The product owner manages the backlog." as a reporting line', () => {
+		const section = sectionText(
+			"Ownership",
+			"The product owner manages the backlog.",
+		);
+		expect(
+			reportingLines(
+				checkVisualFacts(
+					orgChartFacts([
+						{ id: "po", label: "Product owner", parentId: null },
+						{ id: "backlog", label: "Backlog", parentId: "po" },
+					]),
+					section,
+				),
+			),
+		).toEqual(["Backlog → Product owner"]);
+	});
+
+	it("reads the edge's direction from the phrase", () => {
+		const section = sectionText(
+			"Governance",
+			"The delivery lead reports to the sponsor.",
+		);
+		expect(
+			reportingLines(
+				checkVisualFacts(
+					orgChartFacts([
+						{ id: "lead", label: "Delivery lead", parentId: null },
+						{ id: "sponsor", label: "Sponsor", parentId: "lead" },
+					]),
+					section,
+				),
+			),
+		).toEqual(["Sponsor → Delivery lead"]);
+	});
+
+	it.each([
+		"The delivery team is led by the delivery lead, who reports directly to the sponsor.",
+		"Direct reports of the sponsor: the delivery lead. The delivery team is led by the delivery lead.",
+		"The delivery team is led by the delivery lead. The delivery lead reports into the sponsor.",
+		"The delivery team is led by the delivery lead. The delivery lead reports directly into the sponsor.",
+		"The delivery team is led by the delivery lead. The delivery lead answers to the sponsor.",
+	])("passes relations stated as %j", (sentence) => {
+		expect(
+			checkVisualFacts(
+				orgChartFacts([
+					...twoNodes,
+					{ id: "team", label: "Delivery team", parentId: "lead" },
+				]),
+				sectionText("Governance", sentence),
+			),
+		).toEqual({ pass: true });
+	});
+
+	it("supports each row of a Reports to column", () => {
+		const section = sectionText(
+			"Governance",
+			"| Role | Person | Reports to |",
+			"|---|---|---|",
+			"| Sponsor | Person A | — |",
+			"| Delivery Lead | Person B | Sponsor |",
+			"| Product Owner | Person C | **Delivery Lead** |",
+			"| QA Lead | Person D | TBD |",
+		);
+		const nodes: Node[] = [
+			{ id: "sponsor", label: "Sponsor (Person A)", parentId: null },
+			{ id: "lead", label: "Delivery Lead", parentId: "sponsor" },
+			{ id: "po", label: "Product Owner", parentId: "lead" },
+		];
+		expect(checkVisualFacts(orgChartFacts(nodes), section)).toEqual({
+			pass: true,
+		});
+		expect(
+			reportingLines(
+				checkVisualFacts(
+					orgChartFacts([
+						...nodes,
+						{ id: "qa", label: "QA Lead", parentId: "lead" },
+						{
+							id: "person",
+							label: "Person C",
+							parentId: "sponsor",
+						},
+					]),
+					section,
+				),
+			),
+		).toEqual(["QA Lead → Delivery Lead", "Person C → Sponsor (Person A)"]);
+	});
+
+	describe("reads each reporting line from its own clause", () => {
+		/** A chart of `[child, parent]` edges, rooted at the first parent. */
+		function chart(edges: ReadonlyArray<readonly [string, string]>) {
+			const ids = new Map<string, string>();
+			const id = (label: string) => {
+				if (!ids.has(label)) {
+					ids.set(label, `n${ids.size}`);
+				}
+				return ids.get(label) as string;
+			};
+			const parentOf = new Map(
+				edges.map(([child, parent]) => [child, parent]),
+			);
+			const labels = new Set(edges.flat());
+			return orgChartFacts(
+				[...labels].map((label) => {
+					const parent = parentOf.get(label);
+					return {
+						id: id(label),
+						label,
+						parentId: parent === undefined ? null : id(parent),
+					};
+				}),
+			);
+		}
+
+		function unstated(
+			sentence: string,
+			edges: ReadonlyArray<readonly [string, string]>,
+		) {
+			return reportingLines(
+				checkVisualFacts(
+					chart(edges),
+					sectionText("Governance", sentence),
+				),
+			);
+		}
+
+		it.each([
+			[
+				"two clauses joined by while",
+				"The product manager reports to the CEO, while the analyst reports to the CFO.",
+				[
+					["Product manager", "CEO"],
+					["Analyst", "CFO"],
+				],
+				[
+					["Product manager", "CFO"],
+					["CEO", "CFO"],
+				],
+			],
+			[
+				"two clauses joined by a semicolon",
+				"The delivery lead reports to the sponsor; the product owner reports to the delivery lead.",
+				[
+					["Delivery lead", "Sponsor"],
+					["Product owner", "Delivery lead"],
+				],
+				[
+					["Sponsor", "Delivery lead"],
+					["Delivery lead", "Product owner"],
+				],
+			],
+			[
+				"a relative clause that holds the next reporting line",
+				"The analyst reports to the product owner, who reports to the delivery lead.",
+				[
+					["Analyst", "Product owner"],
+					["Product owner", "Delivery lead"],
+				],
+				[["Analyst", "Delivery lead"]],
+			],
+			[
+				"a second clause with a compound subject",
+				"The PM reports to the sponsor, and the tech lead and QA lead report to the PM.",
+				[
+					["PM", "Sponsor"],
+					["Tech lead", "PM"],
+					["QA lead", "PM"],
+				],
+				[
+					["Sponsor", "PM"],
+					["PM", "Tech lead"],
+				],
+			],
+			[
+				"two clauses joined by and",
+				"The analyst reports to the product owner and the designer reports to the delivery lead.",
+				[
+					["Analyst", "Product owner"],
+					["Designer", "Delivery lead"],
+				],
+				[
+					["Analyst", "Delivery lead"],
+					["Product owner", "Delivery lead"],
+				],
+			],
+			[
+				"a shared subject",
+				"The analyst is managed by the product owner and reports to the delivery lead.",
+				[
+					["Analyst", "Product owner"],
+					["Analyst", "Delivery lead"],
+				],
+				[["Product owner", "Delivery lead"]],
+			],
+			[
+				"a subject described between commas",
+				"The delivery team, managed by the delivery lead, has a reporting line to the sponsor.",
+				[
+					["Delivery team", "Delivery lead"],
+					["Delivery team", "Sponsor"],
+				],
+				[["Delivery lead", "Sponsor"]],
+			],
+			[
+				"a subject described without commas",
+				"The delivery team led by the delivery lead reports to the sponsor.",
+				[
+					["Delivery team", "Delivery lead"],
+					["Delivery team", "Sponsor"],
+				],
+				[["Delivery lead", "Sponsor"]],
+			],
+			[
+				"a relative clause that describes its antecedent, then a new clause",
+				"The analyst reports to the product owner, who leads delivery and the designer reports to the delivery lead.",
+				[
+					["Analyst", "Product owner"],
+					["Designer", "Delivery lead"],
+				],
+				[
+					["Product owner", "Delivery lead"],
+					["Analyst", "Delivery lead"],
+				],
+			],
+			[
+				"a leading subordinate clause",
+				"While the analyst reports to the product owner, the designer reports to the delivery lead.",
+				[
+					["Analyst", "Product owner"],
+					["Designer", "Delivery lead"],
+				],
+				[
+					["Analyst", "Delivery lead"],
+					["Product owner", "Delivery lead"],
+				],
+			],
+			[
+				"a subject described by two parents",
+				"The delivery team, managed by the delivery lead and the architect, reports to the sponsor.",
+				[
+					["Delivery team", "Delivery lead"],
+					["Delivery team", "Architect"],
+					["Delivery team", "Sponsor"],
+				],
+				[["Architect", "Sponsor"]],
+			],
+			[
+				"a clause that opens with its reporting phrase",
+				"The delivery lead reports to the sponsor; reporting to the delivery lead are the analyst and the designer.",
+				[
+					["Delivery lead", "Sponsor"],
+					["Analyst", "Delivery lead"],
+					["Designer", "Delivery lead"],
+				],
+				[
+					["Delivery lead", "Analyst"],
+					["Analyst", "Sponsor"],
+				],
+			],
+		] as const)(
+			"supports only the stated edges of %s",
+			(_label, sentence, stated, invented) => {
+				for (const edge of stated) {
+					expect(unstated(sentence, [edge])).toEqual([]);
+				}
+				for (const edge of invented) {
+					expect(unstated(sentence, [edge])).toEqual([
+						`${edge[0]} → ${edge[1]}`,
+					]);
+				}
+			},
+		);
+
+		it("keeps a parent's description out of the next relation", () => {
+			const sentence =
+				"The designer owns design and reports to the delivery lead, who leads delivery.";
+			expect(unstated(sentence, [["Designer", "Delivery lead"]])).toEqual(
+				[],
+			);
+		});
+
+		it("reads a list of subjects before one reporting phrase", () => {
+			const sentence =
+				"The product owner, the architect, and the QA lead report to the delivery lead.";
+			expect(
+				unstated(sentence, [
+					["Product owner", "Delivery lead"],
+					["Architect", "Delivery lead"],
+					["QA lead", "Delivery lead"],
+				]),
+			).toEqual([]);
+		});
+	});
+
+	describe("reads negation and open questions in the relation's own clause", () => {
+		it.each([
+			"The delivery lead reports to the sponsor; the board is not involved.",
+			"The board is not involved, and the delivery lead reports to the sponsor.",
+			"The delivery lead reports to the sponsor, while the board's role is TBD.",
+		])("supports the edge stated by %j", (sentence) => {
+			expect(
+				checkVisualFacts(
+					orgChartFacts(twoNodes),
+					sectionText("Governance", sentence),
+				),
+			).toEqual({ pass: true });
+		});
+
+		it.each([
+			"The delivery lead does not report to the sponsor.",
+			// The negation sits in the relation's own clause, after its parent.
+			"The delivery lead reports to the sponsor, not the board.",
+			"The analyst reports to the product owner; the delivery lead does not report to the sponsor.",
+			"The analyst reports to the delivery lead, who does not report to the sponsor.",
+		])("supports no edge from %j", (sentence) => {
+			expect(
+				reportingLines(
+					checkVisualFacts(
+						orgChartFacts(twoNodes),
+						sectionText("Governance", sentence),
+					),
+				),
+			).toEqual(["Delivery lead → Sponsor"]);
+		});
+	});
+
+	it.each([
+		"The delivery lead writes a report to the sponsor.",
+		"The delivery lead sends a weekly report to the sponsor.",
+		"The delivery lead's answers to the sponsor are due in May.",
+	])("does not read the noun in %j as a reporting line", (sentence) => {
+		expect(
+			reportingLines(
+				checkVisualFacts(
+					orgChartFacts(twoNodes),
+					sectionText("Governance", sentence),
+				),
+			),
+		).toEqual(["Delivery lead → Sponsor"]);
+	});
+
+	it.each(["Line manager", "Manager", "Reports into", "Answers to"])(
+		"supports each row of a %j column",
+		(column) => {
+			const section = sectionText(
+				"Governance",
+				`| Role | ${column} |`,
+				"|---|---|",
+				"| Sponsor | — |",
+				"| Delivery lead | Sponsor |",
+			);
+			expect(checkVisualFacts(orgChartFacts(twoNodes), section)).toEqual({
+				pass: true,
+			});
+		},
+	);
+
+	it("supports a table row that states the relation in a cell", () => {
+		const section = sectionText(
+			"Governance",
+			"| Role | Line |",
+			"|---|---|",
+			"| Delivery lead | Reports to the sponsor |",
+		);
+		expect(checkVisualFacts(orgChartFacts(twoNodes), section)).toEqual({
+			pass: true,
+		});
+	});
+
+	it("skips the edge check when a caller passes no edges", () => {
+		expect(
+			checkVisualFacts(
+				{
+					kind: "org_chart",
+					labels: ["Sponsor", "Delivery lead"],
+					figures: [],
+				},
+				sectionText("Stakeholders", "Sponsor. Delivery lead."),
+			),
+		).toEqual({ pass: true });
+	});
+});
+
 describe("untrusted input size", () => {
 	it("stays fast on long runs of markup-shaped and digit-shaped text", () => {
 		const hostile = [
@@ -1706,6 +2940,82 @@ describe("untrusted input size", () => {
 			lengthMode: "standard",
 		});
 		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	it.each([
+		[
+			"many reporting phrases in one statement",
+			"The lead reports to ".repeat(20_000),
+		],
+		[
+			"many short reporting statements",
+			"The lead reports to the sponsor. ".repeat(20_000),
+		],
+		[
+			"a long table with a Reports to column",
+			`| Role | Reports to |\n|---|---|\n${"| Lead | Sponsor |\n".repeat(20_000)}`,
+		],
+		[
+			"a long run of question marks and brackets",
+			`${"?)".repeat(20_000)}x`,
+		],
+		["a long table-separator run", `| a |\n${"-|:".repeat(20_000)}x`],
+		["a long run of numbered lines", "1. step\n".repeat(20_000)],
+	])("checks flow and org chart structure fast on %s", (_label, hostile) => {
+		const started = Date.now();
+		checkVisualFacts(
+			{
+				kind: "org_chart",
+				labels: [],
+				figures: [],
+				orgChartEdges: Array.from({ length: 15 }, (_, index) => ({
+					child: `Lead ${index}`,
+					parent: "Sponsor",
+				})),
+			},
+			hostile,
+		);
+		checkVisualFacts(
+			{
+				kind: "flow",
+				labels: [],
+				figures: [],
+				heading: hostile,
+				flowSteps: [hostile, hostile],
+			},
+			hostile,
+		);
+		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	/** Steps that each split into many parts, none named by the section. */
+	const manyPartSteps = Array.from({ length: 20 }, (_, step) =>
+		Array.from({ length: 80 }, (_, part) => `w${step}x${part}`).join(", "),
+	);
+
+	it.each([
+		["one long line of sequencing words", "then step, ".repeat(40_000)],
+		[
+			"one long line of numbered-looking text",
+			`1. ${"then step 2. ".repeat(30_000)}`,
+		],
+		["many sequenced bullets", "- then review\n".repeat(20_000)],
+		["many numbered entries", "1. then review\n".repeat(20_000)],
+		["many soft-wrapped entries", "1. then\n   review\n".repeat(10_000)],
+	])("reads a flow's step order fast on %s", (_label, hostile) => {
+		const started = Date.now();
+		const result = checkVisualFacts(
+			{
+				kind: "flow",
+				labels: [],
+				figures: [],
+				heading: "Market Context",
+				flowSteps: manyPartSteps,
+			},
+			hostile,
+		);
+		expect(Date.now() - started).toBeLessThan(2_000);
+		expect(kindsOf(result)).toEqual(["flow-sequence"]);
 	});
 });
 
