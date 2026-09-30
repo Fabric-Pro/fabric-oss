@@ -39,10 +39,16 @@ function redactedKeys(value: unknown): string[] {
 	]);
 }
 
-vi.mock("@repo/database", async (importOriginal) => ({
-	// The real parser: the run view's `limit` is what it returns.
+vi.mock("@repo/database", async () => ({
+	// The real parser, from its own module: the run view's `limit` is what it
+	// returns. Importing the whole package would load the Prisma client, which
+	// pushed this file's beforeAll toward its timeout under a busy run.
 	parseInstructionSyncLimitDetail: (
-		await importOriginal<typeof import("@repo/database")>()
+		await vi.importActual<
+			typeof import("../../../../../../../database/prisma/queries/instruction-sync-limit-detail")
+		>(
+			"../../../../../../../database/prisma/queries/instruction-sync-limit-detail",
+		)
 	).parseInstructionSyncLimitDetail,
 	getInstructionRepositorySync: m.getInstructionRepositorySync,
 	getLatestInstructionRepositorySyncRun:

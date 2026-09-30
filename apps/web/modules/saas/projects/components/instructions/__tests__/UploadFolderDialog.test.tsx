@@ -94,6 +94,7 @@ vi.mock("@repo/instructions", async (importOriginal) => {
 			...actual.SNAPSHOT_LIMITS,
 			maxFiles: 3,
 			maxTotalBytes: 64,
+			maxFileBytes: 62,
 		},
 	};
 });
@@ -385,6 +386,53 @@ describe("UploadFolderDialog", () => {
 		expect(
 			screen.getByRole("button", { name: /Upload 2 files/ }),
 		).toBeDisabled();
+	});
+
+	it("blocks an upload with a kept file over the per-file limit, naming the largest and how many others", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		// The excluded file is over the limit too but is never sent, so it
+		// is not named.
+		await user.upload(
+			screen.getByLabelText("Choose folder") as HTMLInputElement,
+			[
+				pick("repo/small.md", "x".repeat(10)),
+				pick("repo/node_modules/huge.js", "x".repeat(500)),
+			],
+		);
+		expect(
+			await screen.findByRole("button", { name: /Upload 1 files/ }),
+		).toBeEnabled();
+		expect(screen.queryByText(/each file can be at most/)).toBeNull();
+
+		await user.upload(
+			screen.getByLabelText("Choose files") as HTMLInputElement,
+			[pickRoot("CLAUDE.md", "x".repeat(63))],
+		);
+		expect(
+			await screen.findByText(
+				/CLAUDE\.md is 63 B; each file can be at most 62 B\./,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /Upload 2 files/ }),
+		).toBeDisabled();
+	});
+
+	it("names the largest of several files over the per-file limit", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await user.upload(
+			screen.getByLabelText("Choose files") as HTMLInputElement,
+			[
+				pickRoot("a.md", "x".repeat(63)),
+				pickRoot("b.md", "x".repeat(64)),
+			],
+		);
+		const notice = await screen.findByText(
+			/b\.md is 64 B; each file can be at most 62 B\./,
+		);
+		expect(notice).toHaveTextContent("Other files over the limit: 1");
 	});
 
 	it("names the clash when one name would be both a file and a folder", async () => {

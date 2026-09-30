@@ -618,6 +618,7 @@ export function InstructionsPublishedView({
 					{repositorySync ? (
 						<RepositorySyncStatus
 							state={repositorySync.state}
+							publishedVersion={published?.version ?? null}
 							onSyncNow={
 								repositorySync.state.canConfigure
 									? repositorySync.onSyncNow

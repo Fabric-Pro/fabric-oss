@@ -101,6 +101,12 @@ vi.mock("@saas/projects/components/cli-connection/ConnectCliDialog", () => ({
 
 const finalizeCalls: Array<Record<string, unknown>> = [];
 const finalizeResult = vi.hoisted(() => ({ status: "VALIDATING" }));
+// `hold` parks the next finalize call until `release` runs, so a test can
+// look at the button while a retry is in flight.
+const finalizeGate = vi.hoisted(() => ({
+	hold: false,
+	release: null as (() => void) | null,
+}));
 const toastMock = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast: toastMock }));
@@ -199,6 +205,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							finalizeCalls.push(
 								input as Record<string, unknown>,
 							);
+							if (finalizeGate.hold) {
+								finalizeGate.hold = false;
+								await new Promise<void>((resolve) => {
+									finalizeGate.release = resolve;
+								});
+							}
 							return { status: finalizeResult.status };
 						},
 					),
@@ -599,6 +611,29 @@ describe("InstructionsPublishedView", () => {
 				"Ask someone who can edit coding instructions to retry the checks",
 			);
 			expect(within(alert).queryByRole("button")).toBeNull();
+		});
+
+		it("while a retry is in flight: the button reads 'Retrying checks…', is busy, and Upload again is disabled", async () => {
+			finalizeGate.release = null;
+			finalizeGate.hold = true;
+			renderFailed("UPLOAD");
+			await userEvent.click(
+				screen.getByRole("button", { name: "Retry checks" }),
+			);
+			const busy = await screen.findByRole("button", {
+				name: "Retrying checks…",
+			});
+			expect(busy).toBeDisabled();
+			expect(busy).toHaveAttribute("aria-busy", "true");
+			expect(
+				screen.getByRole("button", { name: "Upload again" }),
+			).toBeDisabled();
+			finalizeGate.release?.();
+			await waitFor(() =>
+				expect(
+					screen.getByRole("button", { name: "Retry checks" }),
+				).toBeEnabled(),
+			);
 		});
 
 		it("tells the user to retry in a moment when the previous run is still closing", async () => {

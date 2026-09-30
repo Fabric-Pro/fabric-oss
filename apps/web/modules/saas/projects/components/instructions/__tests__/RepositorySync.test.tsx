@@ -1484,6 +1484,32 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Example Member");
 	});
 
+	it("says a CHILD_ABORTED version was retried once it is the published one", () => {
+		const aborted = run({
+			status: "FAILED",
+			error: "CHILD_ABORTED",
+			snapshotVersion: 12,
+		});
+		const { rerender } = render(
+			<RepositorySyncStatus
+				state={{ ...CONFIGURED, latestRun: aborted }}
+				publishedVersion={11}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"Checking version 12 stopped before it finished. This was not a folder-limit problem",
+		);
+		rerender(
+			<RepositorySyncStatus
+				state={{ ...CONFIGURED, latestRun: aborted }}
+				publishedVersion={12}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"its checks were retried and it is now published",
+		);
+	});
+
 	it("names what started the last run", () => {
 		render(
 			<RepositorySyncStatus

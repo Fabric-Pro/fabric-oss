@@ -74,12 +74,21 @@ export function InstructionsFailedChecksBanner({
 					<Button
 						variant="outline"
 						disabled={retrying}
+						aria-busy={retrying}
 						onClick={onRetry}
 					>
-						{t("retryChecksButton")}
+						{t(
+							retrying
+								? "retryChecksPending"
+								: "retryChecksButton",
+						)}
 					</Button>
 					{onUploadAgain ? (
-						<Button variant="ghost" onClick={onUploadAgain}>
+						<Button
+							variant="ghost"
+							disabled={retrying}
+							onClick={onUploadAgain}
+						>
 							{t("uploadAgainButton")}
 						</Button>
 					) : null}

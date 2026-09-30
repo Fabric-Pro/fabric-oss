@@ -193,6 +193,28 @@ describe("projects.instructions.begin", () => {
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 	});
 
+	it("names the file, its size and the limit when one file is over the per-file limit", async () => {
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: [
+						{
+							path: "docs/big.md",
+							size: 7_654_321,
+							sha256: "a".repeat(64),
+						},
+					],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "docs/big.md is 7.3 MB; each file can be at most 5 MB.",
+		});
+	});
+
 	// M8: `resolveOrganizationId` hands back a caller-supplied
 	// `organizationId` verbatim, so before this the snapshot and every file
 	// row it creates could be tagged with an organization that does not host
