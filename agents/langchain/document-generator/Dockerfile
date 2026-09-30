@@ -85,6 +85,8 @@ COPY --from=builder /app/packages/databricks/package.json ./packages/databricks/
 # Observability is external (not bundled) - copy full source for runtime dynamic import
 COPY --from=builder /app/packages/observability ./packages/observability/
 COPY --from=builder /app/packages/utils/package.json ./packages/utils/
+# Runtime observability imports these pure redaction helpers.
+COPY --from=builder /app/packages/utils/lib/log-redaction.ts /app/packages/utils/lib/sensitive-keys.ts ./packages/utils/lib/
 COPY --from=builder /app/packages/logs/package.json ./packages/logs/
 COPY --from=builder /app/packages/mcp/package.json ./packages/mcp/
 COPY --from=builder /app/packages/rag/package.json ./packages/rag/

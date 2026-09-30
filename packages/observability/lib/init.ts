@@ -54,6 +54,7 @@ import {
 	ATTR_SERVICE_NAME,
 	ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
+import { redactLogText } from "@repo/utils/log-redaction";
 import { shutdownAppInsights } from "./app-insights";
 import { isHttpProbe } from "./http-probes";
 // Re-export API for use in instrumentation modules
@@ -394,11 +395,19 @@ function setupConsoleInterception(serviceName: string): void {
 			try {
 				isEmitting = true;
 				const body = args
-					.map((arg) =>
-						typeof arg === "object"
+					.map((arg) => {
+						if (arg instanceof Error) {
+							// Native Error fields are non-enumerable. Export only the
+							// redacted diagnostic summary, excluding stack and extra data.
+							return JSON.stringify({
+								name: redactLogText(arg.name).text,
+								message: redactLogText(arg.message).text,
+							});
+						}
+						return typeof arg === "object"
 							? JSON.stringify(arg)
-							: String(arg),
-					)
+							: String(arg);
+					})
 					.join(" ");
 
 				logger.emit({
