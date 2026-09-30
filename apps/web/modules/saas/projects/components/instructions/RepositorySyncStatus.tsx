@@ -6,6 +6,7 @@ import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
 	type RepositorySyncState,
+	settledByRetry,
 	syncErrorMessage,
 	syncOutcomeMessage,
 	syncRunOutcome,
@@ -61,10 +62,12 @@ export function RepositorySyncStatus({
 		return null;
 	}
 	const outcome = run ? syncRunOutcome(run, running) : null;
-	const outcomeMessage = outcome ? syncOutcomeMessage(outcome) : null;
+	const settled = outcome ? settledByRetry(outcome, publishedVersion) : null;
+	const outcomeMessage =
+		settled ?? (outcome ? syncOutcomeMessage(outcome) : null);
 	const errorMessage =
-		outcome?.kind === "failed"
-			? syncErrorMessage(outcome, configuration, publishedVersion)
+		!settled && outcome?.kind === "failed"
+			? syncErrorMessage(outcome, configuration)
 			: null;
 	return (
 		<div
