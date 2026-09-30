@@ -9,7 +9,57 @@ vi.mock("@repo/database", () => ({
 import {
 	PARLUME_MEETING_BAAS_USD_PER_HOUR,
 	recordParlumeMeetingProviderUsage,
+	resolveParlumeMeetingEnd,
 } from "../parlume-usage";
+
+describe("resolveParlumeMeetingEnd", () => {
+	const terminalCallbackAt = new Date("2026-09-30T17:56:35Z");
+	const leaveRequestedAt = new Date("2026-09-30T17:55:00Z");
+	const captureStoppedAt = new Date("2026-09-30T17:54:00Z");
+	const fallback = new Date("2026-09-30T22:41:36Z");
+
+	it("prefers the provider's terminal callback over every approximation", () => {
+		expect(
+			resolveParlumeMeetingEnd(
+				{ terminalCallbackAt, leaveRequestedAt, captureStoppedAt },
+				fallback,
+			),
+		).toBe(terminalCallbackAt);
+	});
+
+	it("falls back to the leave request, then the capture stop, then the clock", () => {
+		expect(
+			resolveParlumeMeetingEnd(
+				{
+					terminalCallbackAt: null,
+					leaveRequestedAt,
+					captureStoppedAt,
+				},
+				fallback,
+			),
+		).toBe(leaveRequestedAt);
+		expect(
+			resolveParlumeMeetingEnd(
+				{
+					terminalCallbackAt: null,
+					leaveRequestedAt: null,
+					captureStoppedAt,
+				},
+				fallback,
+			),
+		).toBe(captureStoppedAt);
+		expect(
+			resolveParlumeMeetingEnd(
+				{
+					terminalCallbackAt: null,
+					leaveRequestedAt: null,
+					captureStoppedAt: null,
+				},
+				fallback,
+			),
+		).toBe(fallback);
+	});
+});
 
 beforeEach(() => {
 	mocks.logUsage.mockReset();

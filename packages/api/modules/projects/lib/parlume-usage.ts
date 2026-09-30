@@ -12,6 +12,28 @@ export const PARLUME_FEATURE_KEY = "parlume";
 export const PARLUME_MEETING_BAAS_USD_PER_HOUR = 1.45 * 0.5;
 
 /**
+ * When the bot stopped costing provider time. The provider's terminal callback
+ * is exact; a recorded leave request or capture stop approximates it when the
+ * callback never came; only a session with neither falls back to the caller's
+ * clock (finalization can run hours after the bot left).
+ */
+export function resolveParlumeMeetingEnd(
+	session: {
+		terminalCallbackAt: Date | null;
+		leaveRequestedAt: Date | null;
+		captureStoppedAt: Date | null;
+	},
+	fallback: Date,
+): Date {
+	return (
+		session.terminalCallbackAt ??
+		session.leaveRequestedAt ??
+		session.captureStoppedAt ??
+		fallback
+	);
+}
+
+/**
  * Records the meeting provider's bot time as an invocation-marker row, the
  * same shape image generation and transcription use for spend that has no
  * token count. Never throws: usage accounting must not block finalization.
