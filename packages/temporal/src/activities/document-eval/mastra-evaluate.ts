@@ -7,7 +7,7 @@ import type { Prisma, ProjectDocumentType } from "@repo/database";
 import { createDocumentEval, findBestGoldenReference } from "@repo/database";
 import { heartbeat } from "@temporalio/activity";
 import { generateContentHash, getCachedEval } from "./eval-cache";
-import { resolveEvalModel, toMastraModelConfig } from "./mastra-config";
+import { resolveEvalModel } from "./mastra-config";
 import { runLLMMetrics } from "./mastra-llm-metrics";
 import { runNLPMetrics } from "./mastra-nlp-metrics";
 
@@ -395,7 +395,7 @@ export async function evaluateDocumentWithMastra(
 				userPrompt,
 				provider: llmModel.metadata.provider,
 				model: llmModel.metadata.modelString,
-				modelConfig: toMastraModelConfig(llmModel.model),
+				languageModel: llmModel.model,
 				organizationId,
 				onUsageTracked: llmModel.trackUsage,
 			})
