@@ -6,6 +6,8 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Button } from "@ui/components/button";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ParlumeInviteDialog } from "../ParlumeInviteDialog";
 
@@ -44,19 +46,20 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function showDialog() {
+function showDialog(open = true) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, gcTime: 0 } },
 	});
 	render(
 		<QueryClientProvider client={client}>
-			<ParlumeInviteDialog
-				projectId="example-project"
-				open
-				onOpenChange={vi.fn()}
-			/>
+			<ParlumeInviteDialog projectId="example-project">
+				<Button>Open Parlume</Button>
+			</ParlumeInviteDialog>
 		</QueryClientProvider>,
 	);
+	if (open) {
+		fireEvent.click(screen.getByRole("button", { name: "Open Parlume" }));
+	}
 }
 
 async function enterMeeting() {
@@ -67,6 +70,36 @@ async function enterMeeting() {
 }
 
 describe("Parlume invitation selection", () => {
+	it.each(["Escape", "Cancel", "Close"])(
+		"returns keyboard focus to the invitation trigger after %s",
+		async (dismissal) => {
+			const user = userEvent.setup();
+			showDialog(false);
+			const trigger = screen.getByRole("button", {
+				name: "Open Parlume",
+			});
+			await user.tab();
+			expect(trigger).toHaveFocus();
+			await user.keyboard("{Enter}");
+			await screen.findByRole("option", {
+				name: "Fabric Agent — this project",
+			});
+			if (dismissal === "Escape") {
+				await user.keyboard("{Escape}");
+			} else {
+				await user.click(
+					screen.getByRole("button", { name: dismissal }),
+				);
+			}
+			await waitFor(() =>
+				expect(screen.queryByRole("dialog")).toBeNull(),
+			);
+			expect(trigger).toHaveFocus();
+			await user.keyboard("{Enter}");
+			expect(await screen.findByRole("dialog")).toBeInTheDocument();
+		},
+	);
+
 	it("defaults to the built-in agent when there are no custom agents", async () => {
 		showDialog();
 		await enterMeeting();

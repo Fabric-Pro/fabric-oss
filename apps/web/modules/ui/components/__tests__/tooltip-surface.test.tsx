@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Button } from "../button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../tooltip";
 
@@ -52,6 +52,83 @@ async function openTooltip(
 		'[data-slot="tooltip-content"]',
 	) as HTMLElement;
 }
+
+function TooltipFixture(props: React.ComponentProps<typeof Tooltip>) {
+	return (
+		<Tooltip delayDuration={0} {...props}>
+			<TooltipTrigger asChild>
+				<Button>Stateful trigger</Button>
+			</TooltipTrigger>
+			<TooltipContent>Stateful hint</TooltipContent>
+		</Tooltip>
+	);
+}
+
+describe("Tooltip state", () => {
+	it("suppresses hover and keyboard focus while disabled, then opens when enabled", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		const { rerender } = render(
+			<TooltipFixture disabled onOpenChange={onOpenChange} />,
+		);
+		const trigger = screen.getByRole("button", {
+			name: "Stateful trigger",
+		});
+		await user.hover(trigger);
+		await user.tab();
+		expect(screen.queryByRole("tooltip")).toBeNull();
+		expect(onOpenChange).not.toHaveBeenCalled();
+		await user.unhover(trigger);
+		await user.tab();
+		rerender(<TooltipFixture onOpenChange={onOpenChange} />);
+		await user.hover(trigger);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			"Stateful hint",
+		);
+		expect(onOpenChange).toHaveBeenLastCalledWith(true);
+	});
+
+	it("closes on disable without reopening stale uncontrolled state", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(<TooltipFixture />);
+		await user.tab();
+		expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+		rerender(<TooltipFixture disabled />);
+		await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+		rerender(<TooltipFixture />);
+		expect(screen.queryByRole("tooltip")).toBeNull();
+		await user.tab();
+		await user.tab();
+		expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+	});
+
+	it("preserves defaultOpen and reports dismissal", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		render(<TooltipFixture defaultOpen onOpenChange={onOpenChange} />);
+		expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+		expect(onOpenChange).toHaveBeenLastCalledWith(false);
+	});
+
+	it("leaves controlled state with its caller", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		const { rerender } = render(
+			<TooltipFixture open={false} onOpenChange={onOpenChange} />,
+		);
+		await user.tab();
+		expect(onOpenChange).toHaveBeenLastCalledWith(true);
+		expect(screen.queryByRole("tooltip")).toBeNull();
+		rerender(<TooltipFixture open onOpenChange={onOpenChange} />);
+		expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+		rerender(<TooltipFixture open disabled onOpenChange={onOpenChange} />);
+		await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+		rerender(<TooltipFixture open={false} onOpenChange={onOpenChange} />);
+		expect(screen.queryByRole("tooltip")).toBeNull();
+	});
+});
 
 describe("TooltipContent width contract", () => {
 	it("applies a default max-width so long copy cannot span the viewport", async () => {

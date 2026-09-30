@@ -46,7 +46,7 @@ export type TruncatedTextProps = {
  *
  * Composes the shared `useIsOverflowing` measurement hook with the standard
  * tooltip primitive, mirroring the established in-app pattern: the tooltip is
- * hard-disabled (`open={false}`) while the text fits, so short labels never
+ * disabled while the text fits, so short labels never
  * gain a redundant hover hint or a stray tab stop. When the text is clipped,
  * the element joins the tab order so keyboard users can focus it to read the
  * full value (WCAG 2.1 AA). The full value is also exposed as the element's
@@ -62,7 +62,7 @@ export function TruncatedText({
 	const [overflowRef, isOverflowing] = useIsOverflowing<HTMLElement>(text);
 
 	return (
-		<Tooltip open={isOverflowing ? undefined : false}>
+		<Tooltip disabled={!isOverflowing}>
 			<TooltipTrigger asChild>
 				{createElement(
 					as,

@@ -18,11 +18,37 @@ function TooltipProvider({
 }
 
 function Tooltip({
+	disabled = false,
+	open,
+	defaultOpen = false,
+	onOpenChange,
 	...props
-}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Root> & {
+	disabled?: boolean;
+}) {
+	const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
+	React.useEffect(() => {
+		if (disabled) {
+			setInternalOpen(false);
+		}
+	}, [disabled]);
+
 	return (
 		<TooltipProvider>
-			<TooltipPrimitive.Root data-slot="tooltip" {...props} />
+			<TooltipPrimitive.Root
+				data-slot="tooltip"
+				{...props}
+				open={!disabled && (open ?? internalOpen)}
+				onOpenChange={(nextOpen) => {
+					if (disabled) {
+						return;
+					}
+					if (open === undefined) {
+						setInternalOpen(nextOpen);
+					}
+					onOpenChange?.(nextOpen);
+				}}
+			/>
 		</TooltipProvider>
 	);
 }
