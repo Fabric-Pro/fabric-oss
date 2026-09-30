@@ -36,7 +36,9 @@ vi.mock("@repo/database", () => ({
 	},
 	hasProjectAccess: mocks.hasAccess,
 }));
-vi.mock("@repo/logs", () => ({ logger: { error: vi.fn() } }));
+vi.mock("@repo/logs", () => ({
+	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 vi.mock("@temporalio/activity", () => ({
 	Context: {
 		current: () => ({ cancellationSignal: new AbortController().signal }),

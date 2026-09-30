@@ -332,6 +332,7 @@ import {
 	startParlumeSessionProcedure,
 	stopParlumeSessionProcedure,
 } from "./procedures/parlume/sessions";
+import { getParlumeUsageProcedure } from "./procedures/parlume/usage";
 import { permanentDeleteProjectProcedure } from "./procedures/permanent-delete-project";
 import {
 	analyseQaFindingProcedure,
@@ -1139,6 +1140,7 @@ export const projectsRouter = {
 		listSessions: listParlumeSessionsProcedure,
 		start: startParlumeSessionProcedure,
 		stop: stopParlumeSessionProcedure,
+		usage: getParlumeUsageProcedure,
 	},
 
 	// Teams channel monitor operations

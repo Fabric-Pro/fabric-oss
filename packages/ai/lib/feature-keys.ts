@@ -58,6 +58,13 @@ export const AI_FEATURE_KEYS = [
 	 * spec generation, and per-visual regeneration during review (Fizzy #2589).
 	 */
 	"glossy-edition",
+	/**
+	 * Parlume meeting agent: every spoken turn (built-in or custom agent),
+	 * speech synthesis, post-meeting notes, and the meeting-provider bot time
+	 * recorded as an invocation-marker row at finalization. `conversationId`
+	 * carries the Parlume session id so spend rolls up per meeting.
+	 */
+	"parlume",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

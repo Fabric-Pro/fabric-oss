@@ -1204,7 +1204,13 @@ async function runDirectChatTurn({
 			modelOverride: input.modelOverride,
 			usageLogging: "aggregate",
 		},
-		{ userId, organizationId, projectId, featureKey: "chat-agent" },
+		{
+			userId,
+			organizationId,
+			projectId,
+			featureKey: input.featureKey ?? "chat-agent",
+			conversationId: input.usageConversationId ?? conversationId,
+		},
 	);
 	recordAggregateUsage = recordResolvedAggregateUsage;
 

@@ -54,6 +54,7 @@ export async function writeParlumeNotes(input: {
 				userId: session.userId,
 				organizationId: session.organizationId,
 				projectId: session.projectId,
+				featureKey: "parlume",
 				jobType: "parlume-meeting-notes",
 			},
 		);

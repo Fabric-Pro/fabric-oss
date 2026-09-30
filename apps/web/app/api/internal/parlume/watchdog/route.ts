@@ -70,6 +70,12 @@ export async function POST(request: NextRequest) {
 			return NextResponse.json({ accepted: true });
 		}
 	}
+	// A stop that was already under way keeps its own reason; only a session
+	// that reached the cap untouched ended because of it.
+	await db.parlumeMeetingSession.updateMany({
+		where: { id: session.id, endReason: null },
+		data: { endReason: "MAX_DURATION" },
+	});
 	const leaveClaimed = await db.parlumeMeetingSession.updateMany({
 		where: {
 			id: session.id,

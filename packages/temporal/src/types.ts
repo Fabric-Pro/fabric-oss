@@ -2,6 +2,7 @@
  * Shared types for Temporal workflows and activities
  */
 
+import type { AiFeatureKey } from "@repo/ai";
 import type { LimitSignal } from "@repo/ai/limits";
 
 /**
@@ -282,6 +283,18 @@ export interface DirectChatProgressEvent {
 export interface DirectChatWorkflowInput {
 	/** Unique execution ID for tracking */
 	executionId: string;
+	/**
+	 * Usage attribution for the model calls of this turn. Chat surfaces leave
+	 * it unset ("chat-agent"); Parlume runs the same built-in agent from a
+	 * meeting and must not be counted as chat.
+	 */
+	featureKey?: AiFeatureKey;
+	/**
+	 * Groups this turn's usage rows with the rest of its meeting or thread.
+	 * Distinct from `conversationId`, which also selects the authority run and
+	 * the operation-result message and so cannot double as a usage label.
+	 */
+	usageConversationId?: string;
 	/** Agent template instance ID when the chat is bound to a specific instance */
 	instanceId?: string;
 	/** User's message */

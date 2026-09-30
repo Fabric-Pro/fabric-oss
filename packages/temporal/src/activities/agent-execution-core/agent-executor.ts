@@ -5,7 +5,13 @@
  * Reuses infrastructure from orchestrator for MCP tool loading and execution.
  */
 
-import { isStepCount, resolveOpenAiApiKey, streamText, tool } from "@repo/ai";
+import {
+	type AIOperationContext,
+	isStepCount,
+	resolveOpenAiApiKey,
+	streamText,
+	tool,
+} from "@repo/ai";
 import {
 	db,
 	ensureSensitiveOperationAuthority,
@@ -152,6 +158,8 @@ export async function executeAgentTurn(
 		userId,
 		organizationId,
 		projectId,
+		featureKey,
+		conversationId,
 		maxIterations = maxStepsForDepth(input.currentDepth ?? 0),
 		conversationHistory = [],
 		executionId,
@@ -391,9 +399,27 @@ export async function executeAgentTurn(
 		);
 
 		// Get AI model - use override if provided, otherwise use dynamic selection
+		const usageContext: AgentUsageContext = {
+			userId,
+			organizationId,
+			projectId,
+			featureKey,
+			conversationId,
+		};
 		const aiModel = model
-			? await getModelWithOverride(model, userId, organizationId)
-			: await getAiModel(userId, organizationId, hasTools);
+			? await getModelWithOverride(model, usageContext)
+			: await getAiModel(
+					userId,
+					organizationId,
+					hasTools,
+					undefined,
+					undefined,
+					{
+						projectId,
+						featureKey,
+						conversationId,
+					},
+				);
 
 		// Send initial heartbeat
 		heartbeat({ phase: "executing", toolCalls: [] });
@@ -1236,17 +1262,21 @@ function isErrorResult(result: unknown): boolean {
  * When an explicit model name is provided, we use the centralized getAIModel
  * with modelOverride option to respect user's provider configuration.
  */
+type AgentUsageContext = Pick<
+	AIOperationContext,
+	"userId" | "organizationId" | "projectId" | "featureKey" | "conversationId"
+>;
+
 async function getModelWithOverride(
 	modelName: string,
-	userId: string,
-	organizationId?: string,
+	context: AgentUsageContext,
 ) {
 	const { getAIModel } = await import("@repo/ai");
 
 	// Use centralized single entry point with model override
 	return getAIModel(
 		{ taskType: "COMPLEX", modelOverride: modelName },
-		{ userId, organizationId },
+		context,
 	);
 }
 
@@ -1567,7 +1597,7 @@ export async function previewAgentTurn(
 		const messages = await buildConversationMessages([], userMessage);
 
 		const aiModel = model
-			? await getModelWithOverride(model, userId, organizationId)
+			? await getModelWithOverride(model, { userId, organizationId })
 			: await getAiModel(userId, organizationId, hasTools);
 
 		let responseText: string;

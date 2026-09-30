@@ -1,8 +1,56 @@
 import { resolveOpenAiApiKey } from "@repo/ai";
+import { logAiUsageAsync } from "@repo/database";
 import { z } from "zod";
+import { parlumeActivityLog } from "./parlume-log";
 
 const MAX_SPOKEN_CHARS = 800;
 const MAX_PCM_BYTES = 6 * 1024 * 1024;
+const TTS_MODEL = "gpt-4o-mini-tts";
+// 24 kHz, 16-bit, mono: the PCM format requested below.
+const PCM_BYTES_PER_SECOND = 24_000 * 2;
+// developers.openai.com/api/docs/models/gpt-4o-mini-tts, 2026-09-30: $0.60 per
+// 1M text input tokens, $12 per 1M audio output tokens; OpenAI's own estimate
+// is ~$0.015 per minute of audio, i.e. 1,250 audio tokens per minute.
+const TTS_USD_PER_TEXT_TOKEN = 0.6 / 1_000_000;
+const TTS_USD_PER_AUDIO_MINUTE = 0.015;
+const TTS_AUDIO_TOKENS_PER_MINUTE = 1_250;
+
+// The speech endpoint reports no token usage, so the row is derived from what
+// was sent and what came back; the same marker-row pattern transcription uses.
+function recordSpeechUsage(input: {
+	sessionId: string;
+	userId: string;
+	organizationId: string;
+	projectId: string;
+	textChars: number;
+	pcmBytes: number;
+	latencyMs: number;
+	success: boolean;
+	errorMessage?: string;
+}): void {
+	const textTokens = Math.ceil(input.textChars / 4);
+	const audioMinutes = input.pcmBytes / PCM_BYTES_PER_SECOND / 60;
+	logAiUsageAsync({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		provider: "OPENAI_DIRECT",
+		providerModelId: TTS_MODEL,
+		taskType: "AUDIO",
+		featureKey: "parlume",
+		conversationId: input.sessionId,
+		inputTokens: textTokens,
+		outputTokens: Math.round(audioMinutes * TTS_AUDIO_TOKENS_PER_MINUTE),
+		totalTokens:
+			textTokens + Math.round(audioMinutes * TTS_AUDIO_TOKENS_PER_MINUTE),
+		costUsd:
+			textTokens * TTS_USD_PER_TEXT_TOKEN +
+			audioMinutes * TTS_USD_PER_AUDIO_MINUTE,
+		latencyMs: input.latencyMs,
+		success: input.success,
+		errorMessage: input.errorMessage,
+	});
+}
 
 function bridgeControlUrl(
 	sessionId: string,
@@ -68,6 +116,7 @@ export async function speakParlumeResponse(input: {
 	sessionId: string;
 	userId: string;
 	organizationId: string;
+	projectId: string;
 	response: string;
 	voiceGeneration?: number;
 	confirmationSpeakerId?: string;
@@ -84,6 +133,8 @@ export async function speakParlumeResponse(input: {
 	if (!key) {
 		throw new Error("Parlume voice is not configured.");
 	}
+	const spoken = input.response.slice(0, MAX_SPOKEN_CHARS);
+	const startedAt = Date.now();
 	const tts = await fetch("https://api.openai.com/v1/audio/speech", {
 		method: "POST",
 		headers: {
@@ -91,16 +142,24 @@ export async function speakParlumeResponse(input: {
 			"content-type": "application/json",
 		},
 		body: JSON.stringify({
-			model: "gpt-4o-mini-tts",
+			model: TTS_MODEL,
 			voice: "alloy",
 			response_format: "pcm",
-			input: input.response.slice(0, MAX_SPOKEN_CHARS),
+			input: spoken,
 		}),
 		signal: input.signal
 			? AbortSignal.any([input.signal, AbortSignal.timeout(60_000)])
 			: AbortSignal.timeout(60_000),
 	});
 	if (!tts.ok) {
+		recordSpeechUsage({
+			...input,
+			textChars: spoken.length,
+			pcmBytes: 0,
+			latencyMs: Date.now() - startedAt,
+			success: false,
+			errorMessage: `HTTP ${tts.status}`,
+		});
 		throw new Error(
 			`Parlume speech generation failed (HTTP ${tts.status}).`,
 		);
@@ -154,18 +213,40 @@ export async function speakParlumeResponse(input: {
 		bridgeControlUrl(input.sessionId, "speak"),
 		playbackRequest,
 	);
+	// Synthesis is billed whether or not the bridge could play it.
+	recordSpeechUsage({
+		...input,
+		textChars: spoken.length,
+		pcmBytes: bytes,
+		latencyMs: Date.now() - startedAt,
+		success: playback.ok,
+		errorMessage: playback.ok ? undefined : `HTTP ${playback.status}`,
+	});
 	if (!playback.ok) {
 		throw new Error(
 			`Parlume audio playback failed (HTTP ${playback.status}).`,
 		);
 	}
-	return z
+	const result = z
 		.object({
 			played: z.boolean(),
 			interrupted: z.boolean().default(false),
 			firstAudioAt: z.number().optional(),
 		})
 		.parse(await playback.json());
+	parlumeActivityLog("info", "speech.delivered", {
+		sessionId: input.sessionId,
+		voiceGeneration: input.voiceGeneration ?? 0,
+		textChars: spoken.length,
+		pcmBytes: bytes,
+		played: result.played,
+		interrupted: result.interrupted,
+		totalMs: Date.now() - startedAt,
+		firstAudioMs: result.firstAudioAt
+			? result.firstAudioAt - startedAt
+			: null,
+	});
+	return result;
 }
 
 /**

@@ -1,7 +1,5 @@
-import {
-	getParlumeBridgeSettings,
-	leaveParlumeMeetingBot,
-} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
+import { requestParlumeLeave } from "@repo/api/modules/projects/lib/parlume-leave";
+import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db, hasProjectAccess } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -36,10 +34,15 @@ export async function POST(request: NextRequest) {
 			organizationId: true,
 			userId: true,
 			providerBotId: true,
+			streamGeneration: true,
+			endReason: true,
 			captureStoppedAt: true,
+			terminalCallbackAt: true,
 		},
 	});
-	if (!session?.providerBotId) {
+	// A recorded terminal callback means the bot has already left the meeting;
+	// the bridge should close its socket rather than keep capturing.
+	if (!session?.providerBotId || session.terminalCallbackAt) {
 		return NextResponse.json({ accepted: true, captureStopped: true });
 	}
 	const hasAccess = await hasProjectAccess(
@@ -50,34 +53,29 @@ export async function POST(request: NextRequest) {
 	if (hasAccess && !session.captureStoppedAt) {
 		return NextResponse.json({ accepted: true, captureStopped: false });
 	}
-	await db.parlumeMeetingSession.update({
-		where: { id: session.id },
-		data: {
-			status: "LEAVING",
-			captureStoppedAt: session.captureStoppedAt ?? new Date(),
-			leaveRequestedAt: new Date(),
-			lastError: "The inviter no longer has access to this project.",
-		},
-	});
-	const settings = getParlumeBridgeSettings();
-	if (!settings) {
-		await db.parlumeMeetingSession.update({
-			where: { id: session.id },
-			data: { status: "STOP_FAILED" },
+	if (!hasAccess && !session.captureStoppedAt) {
+		parlumeLog("warn", "access.revoked", {
+			sessionId: session.id,
+			botId: session.providerBotId,
 		});
-		return NextResponse.json({ error: "Unavailable" }, { status: 503 });
 	}
 	try {
-		await leaveParlumeMeetingBot({
-			settings,
-			providerBotId: session.providerBotId,
+		// Capture already stopped: this is the bridge's minute-by-minute retry
+		// of a leave the provider has not confirmed, so keep the first reason.
+		await requestParlumeLeave({
+			session: {
+				id: session.id,
+				providerBotId: session.providerBotId,
+				streamGeneration: session.streamGeneration,
+			},
+			reason: session.endReason ?? "ACCESS_REVOKED",
+			lastError: session.captureStoppedAt
+				? null
+				: "The inviter no longer has access to this project.",
+			captureStopped: true,
 		});
-		return NextResponse.json({ accepted: true, captureStopped: true });
 	} catch {
-		await db.parlumeMeetingSession.update({
-			where: { id: session.id },
-			data: { status: "STOP_FAILED" },
-		});
 		return NextResponse.json({ error: "Retry required" }, { status: 503 });
 	}
+	return NextResponse.json({ accepted: true, captureStopped: true });
 }

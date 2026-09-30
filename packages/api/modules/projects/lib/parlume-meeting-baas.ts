@@ -114,9 +114,21 @@ function callbackUrlForSession(callbackUrl: string, sessionId: string): string {
 	return url.toString();
 }
 
-function providerFailure(response: Response): Error {
+// The provider's validation message names the rejected field (a bot name Teams
+// refuses, an unknown custom_params key); without it a 400 is undiagnosable
+// from Fabric's side. Bounded, and never the request that caused it.
+async function providerFailure(response: Response): Promise<Error> {
+	let detail = "";
+	try {
+		const body = (await response.json()) as { message?: unknown };
+		if (typeof body.message === "string") {
+			detail = ` ${body.message.slice(0, 200)}`;
+		}
+	} catch {
+		// A non-JSON body carries nothing worth relaying.
+	}
 	return new Error(
-		`Meeting BaaS request failed with HTTP ${response.status}.`,
+		`Meeting BaaS request failed with HTTP ${response.status}.${detail}`,
 	);
 }
 
@@ -160,19 +172,36 @@ export async function startParlumeMeetingBot(input: {
 					input.sessionId,
 					input.streamToken,
 				),
-				transcription: { provider: "gladia", api_key: null },
+				transcription: {
+					provider: "gladia",
+					api_key: null,
+					custom_params: {
+						// Gladia's 50 ms default finalizes an utterance at every
+						// breath, splitting a spoken request from its own wake phrase.
+						endpointing: 0.3,
+						realtime_processing: {
+							custom_vocabulary: true,
+							custom_vocabulary_config: {
+								vocabulary: ["Parlume", "Fabric Parlume"],
+							},
+						},
+					},
+				},
 				audio_frequency: 24_000,
 			},
+			// Three minutes unadmitted or alone is the provider's floor for a
+			// meeting that never happened. Silence cannot go below five minutes
+			// here; the bridge's own idle rule leaves a silent meeting at three.
 			timeout_config: {
-				waiting_room_timeout: 300,
-				no_one_joined_timeout: 300,
+				waiting_room_timeout: 180,
+				no_one_joined_timeout: 180,
 				silence_timeout: 300,
 			},
 		}),
 	});
 
 	if (!response.ok) {
-		throw providerFailure(response);
+		throw await providerFailure(response);
 	}
 
 	const body = (await response.json()) as {
@@ -212,6 +241,30 @@ export async function armParlumeMeetingBridge(input: {
 	}
 }
 
+/**
+ * Tells the bridge the provider bot is gone, so it closes the transcription
+ * socket itself and reports the stream closed. Without this a session whose
+ * bot was removed from the meeting waits for a socket close the provider does
+ * not always send.
+ */
+export async function closeParlumeMeetingBridge(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+}): Promise<void> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", "close");
+	const response = await fetch(url, {
+		method: "POST",
+		headers: { Authorization: `Bearer ${input.settings.serviceSecret}` },
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) {
+		throw new Error("Parlume media bridge is unavailable.");
+	}
+}
+
 export async function deleteParlumeMeetingBotData(input: {
 	settings: ParlumeBridgeSettings;
 	providerBotId: string;
@@ -224,7 +277,7 @@ export async function deleteParlumeMeetingBotData(input: {
 		},
 	);
 	if (!response.ok) {
-		throw providerFailure(response);
+		throw await providerFailure(response);
 	}
 }
 
@@ -243,7 +296,7 @@ export async function leaveParlumeMeetingBot(input: {
 		return { kind: "LEAVE_REQUESTED" };
 	}
 	if (response.status !== 409) {
-		throw providerFailure(response);
+		throw await providerFailure(response);
 	}
 	const statusResponse = await fetch(
 		`${MEETING_BAAS_API_URL}/${encodeURIComponent(input.providerBotId)}/status`,
@@ -252,7 +305,7 @@ export async function leaveParlumeMeetingBot(input: {
 		},
 	);
 	if (!statusResponse.ok) {
-		throw providerFailure(response);
+		throw await providerFailure(response);
 	}
 	const body = (await statusResponse.json()) as {
 		data?: { bot_id?: unknown; status?: unknown };
@@ -261,7 +314,7 @@ export async function leaveParlumeMeetingBot(input: {
 		body.data?.bot_id !== input.providerBotId ||
 		(body.data?.status !== "completed" && body.data?.status !== "failed")
 	) {
-		throw providerFailure(response);
+		throw await providerFailure(response);
 	}
 	return { kind: "TERMINAL", status: body.data.status };
 }

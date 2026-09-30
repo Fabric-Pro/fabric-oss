@@ -1052,8 +1052,8 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 			{
 				id: "parlume-history",
 				anchor: "parlume-history",
-				title: "Review Parlume requests",
-				body: "Parlume history records each meeting request with its speaker and timestamp, along with proposed actions, confirmations and outcomes. Invitations are read-only by default; actions require the requester to confirm.",
+				title: "Open Parlume",
+				body: "Open Parlume to invite the voice agent into a Teams meeting, watch the live session, and review past sessions, requests, approvals and spend. Invitations are read-only by default; actions require the requester to confirm.",
 				conditional: true,
 			},
 			{

@@ -10,6 +10,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { finalizeParlumeSession } from "../../lib/parlume-finalization";
+import { parlumeLog } from "../../lib/parlume-log";
 import {
 	armParlumeMeetingBridge,
 	getParlumeBridgeSettings,
@@ -64,6 +65,7 @@ const sessionSelect = {
 	status: true,
 	wakePhrase: true,
 	toolsReadOnly: true,
+	endReason: true,
 	lastError: true,
 	joinedAt: true,
 	hardStopAt: true,
@@ -481,8 +483,20 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 					hardStopAt: hardStopAt.toISOString(),
 				},
 			});
+			parlumeLog("info", "session.started", {
+				sessionId: session.id,
+				botId: providerBotId,
+				agentKind: agent.agentKind,
+				toolsReadOnly: input.toolsReadOnly,
+				hardStopAt: hardStopAt.toISOString(),
+			});
 			return { session: started };
-		} catch {
+		} catch (error) {
+			parlumeLog("error", "start.failed", {
+				sessionId: session.id,
+				botId: providerBotId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			if (providerBotId) {
 				try {
 					await leaveParlumeMeetingBot({ settings, providerBotId });
@@ -495,6 +509,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				where: { id: session.id, status: "PENDING" },
 				data: {
 					status: "FAILED",
+					endReason: "START_FAILED",
 					lastError:
 						"Parlume could not start. Retry after checking its operator configuration.",
 					endedAt: new Date(),
@@ -565,7 +580,17 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 					],
 				},
 			},
-			data: { status: "LEAVING", leaveRequestedAt: new Date() },
+			data: {
+				status: "LEAVING",
+				endReason: "STOPPED",
+				leaveRequestedAt: new Date(),
+			},
+		});
+		parlumeLog("info", "stop.requested", {
+			sessionId: session.id,
+			botId: session.providerBotId,
+			status: session.status,
+			claimed: leaveClaimed.count > 0,
 		});
 		const leaving = await db.parlumeMeetingSession.findUniqueOrThrow({
 			where: { id: session.id },
