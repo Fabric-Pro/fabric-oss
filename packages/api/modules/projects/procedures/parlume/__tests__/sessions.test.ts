@@ -19,6 +19,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		isTeamsMeetingUrl: vi.fn(),
 		startBot: vi.fn(),
 		leaveBot: vi.fn(),
+		finalize: vi.fn(),
 		recordAudit: vi.fn(),
 	};
 	return { handlers, mocks };
@@ -65,6 +66,10 @@ vi.mock("../../../lib/parlume-meeting-baas", () => ({
 	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leaveBot(...args),
 }));
 
+vi.mock("../../../lib/parlume-finalization", () => ({
+	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
+}));
+
 vi.mock("../../../../../orpc/procedures", () => {
 	const keys = ["listAgents", "listSessions", "start", "stop"];
 	let index = 0;
@@ -98,11 +103,14 @@ const project = { id: "project-1", organizationId: "org-1" };
 const agent = {
 	id: "agent-version-2",
 	sId: "agent-stable-1",
+	name: "Release assistant",
 	version: 2,
 	toolConnections: { "project-context": { projectId: "project-1" } },
 };
 const session = {
 	id: "session-1",
+	agentKind: "TEMPLATE_INSTANCE",
+	agentLabel: "Release assistant",
 	agentInstanceSId: "agent-stable-1",
 	status: "JOINING",
 	wakePhrase: "Hey Fabric",
@@ -133,9 +141,16 @@ beforeEach(() => {
 	mocks.sessionCreate.mockResolvedValue({ id: "session-1" });
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.sessionFindUniqueOrThrow.mockResolvedValue(session);
+	mocks.sessionFindFirst.mockResolvedValue({
+		id: "session-1",
+		providerBotId: "provider-bot-1",
+		status: "ACTIVE",
+		streamClosedAt: null,
+		streamGeneration: 1,
+	});
 	mocks.sessionUpdate.mockResolvedValue(session);
 	mocks.startBot.mockResolvedValue("provider-bot-1");
-	mocks.leaveBot.mockResolvedValue(undefined);
+	mocks.leaveBot.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
 });
 
 describe("Parlume session procedures", () => {
@@ -157,6 +172,189 @@ describe("Parlume session procedures", () => {
 		})) as { operatorReady: boolean };
 
 		expect(result.operatorReady).toBe(false);
+	});
+
+	it("keeps the legacy custom-agent list shape for tabs without the built-in option", async () => {
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as {
+			agents: Array<{ sId: string; name: string; kind: string }>;
+		};
+
+		expect(result.agents).toEqual([
+			expect.objectContaining({
+				sId: "agent-stable-1",
+				name: "Release assistant",
+				kind: "TEMPLATE_INSTANCE",
+			}),
+		]);
+	});
+
+	it("finalizes a verified completed bot only after its stream has drained", async () => {
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "provider-bot-1",
+			status: "ACTIVE",
+			streamClosedAt: new Date(),
+			streamGeneration: 2,
+		});
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "completed",
+		});
+
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ streamGeneration: 2 }),
+				data: expect.objectContaining({
+					status: "LEAVING",
+					terminalCallbackAt: expect.any(Date),
+				}),
+			}),
+		);
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 2,
+		});
+	});
+
+	it("preserves a verified failed bot while finalizing its drained transcript", async () => {
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "provider-bot-1",
+			status: "ACTIVE",
+			streamClosedAt: new Date(),
+			streamGeneration: 2,
+		});
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "failed",
+		});
+
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			preserveFailure: true,
+			expectedStreamGeneration: 2,
+		});
+	});
+
+	it("does not overwrite a callback finalization that wins during provider leave", async () => {
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "provider-bot-1",
+			status: "ACTIVE",
+			streamClosedAt: new Date(),
+			streamGeneration: 2,
+		});
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "completed",
+		});
+		mocks.sessionUpdateMany
+			.mockResolvedValueOnce({ count: 1 })
+			.mockResolvedValueOnce({ count: 0 });
+		mocks.sessionFindUniqueOrThrow.mockResolvedValue({
+			...session,
+			status: "ENDED",
+		});
+
+		const result = (await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		})) as { session: { status: string } };
+
+		expect(mocks.finalize).not.toHaveBeenCalled();
+		expect(result.session.status).toBe("ENDED");
+	});
+
+	it("does not mark a finalized session as stop-failed when post-finalization work throws", async () => {
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "completed",
+		});
+		mocks.finalize.mockRejectedValue(
+			new Error("Provider cleanup failed after finalization"),
+		);
+		await expect(
+			handlers.stop({
+				input: { projectId: "project-1", sessionId: "session-1" },
+				context,
+			}),
+		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+		expect(mocks.sessionUpdateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "session-1",
+					streamGeneration: 1,
+					status: {
+						in: ["JOINING", "ACTIVE", "LEAVING", "STOP_FAILED"],
+					},
+					finalizedAt: null,
+				},
+			}),
+		);
+	});
+
+	it("rechecks stream drain after the provider responds", async () => {
+		mocks.sessionFindFirst
+			.mockResolvedValueOnce({
+				id: "session-1",
+				providerBotId: "provider-bot-1",
+				status: "ACTIVE",
+				streamClosedAt: null,
+				streamGeneration: 2,
+			})
+			.mockResolvedValueOnce({ id: "session-1" });
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "completed",
+		});
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+		expect(mocks.sessionFindFirst).toHaveBeenLastCalledWith({
+			where: {
+				id: "session-1",
+				streamGeneration: 2,
+				streamClosedAt: { not: null },
+				status: { in: ["LEAVING", "FAILED"] },
+			},
+			select: { id: true },
+		});
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 2,
+		});
+	});
+
+	it("waits for stream close when the verified terminal bot is still draining", async () => {
+		mocks.sessionFindFirst
+			.mockResolvedValueOnce({
+				id: "session-1",
+				providerBotId: "provider-bot-1",
+				status: "ACTIVE",
+				streamClosedAt: null,
+				streamGeneration: 2,
+			})
+			.mockResolvedValueOnce(null);
+		mocks.leaveBot.mockResolvedValue({
+			kind: "TERMINAL",
+			status: "completed",
+		});
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+		expect(mocks.finalize).not.toHaveBeenCalled();
 	});
 
 	it("uses the project-admin permission, which excludes editors", async () => {
@@ -236,6 +434,72 @@ describe("Parlume session procedures", () => {
 		expect(mocks.startBot).not.toHaveBeenCalled();
 	});
 
+	it("lists the built-in project Fabric Agent before custom agents", async () => {
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1", includeBuiltIn: true },
+			context,
+		})) as {
+			agents: Array<{
+				kind: string;
+				label: string;
+				agentInstanceSId: string | null;
+			}>;
+		};
+
+		expect(result.agents).toEqual([
+			expect.objectContaining({
+				kind: "FABRIC_AGENT",
+				label: "Fabric Agent — this project",
+				agentInstanceSId: null,
+			}),
+			expect.objectContaining({
+				kind: "TEMPLATE_INSTANCE",
+				label: "Release assistant",
+				agentInstanceSId: "agent-stable-1",
+			}),
+		]);
+	});
+
+	it("starts the built-in project Fabric Agent without a custom agent lookup", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		expect(mocks.agentFindFirst).not.toHaveBeenCalled();
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					agentKind: "FABRIC_AGENT",
+					agentLabel: "Fabric Agent — this project",
+					agentInstanceSId: null,
+					agentInstanceVersionId: null,
+					agentInstanceVersion: null,
+				}),
+			}),
+		);
+	});
+
+	it("rejects a mixed built-in and custom selection before creating a session", async () => {
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					agentInstanceSId: "agent-stable-1",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+	});
+
 	it("persists the stable agent reference and current version before joining", async () => {
 		await handlers.start({
 			input: {
@@ -251,6 +515,8 @@ describe("Parlume session procedures", () => {
 				data: expect.objectContaining({
 					projectId: "project-1",
 					organizationId: "org-1",
+					agentKind: "TEMPLATE_INSTANCE",
+					agentLabel: "Release assistant",
 					agentInstanceSId: "agent-stable-1",
 					agentInstanceVersionId: "agent-version-2",
 					agentInstanceVersion: 2,

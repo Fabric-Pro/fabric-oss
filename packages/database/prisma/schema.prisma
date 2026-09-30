@@ -4637,6 +4637,14 @@ enum ParlumeMeetingSessionStatus {
   @@map("parlume_meeting_session_status")
 }
 
+/// The source of configuration for a Parlume meeting agent.
+enum ParlumeMeetingAgentKind {
+  FABRIC_AGENT
+  TEMPLATE_INSTANCE
+
+  @@map("parlume_meeting_agent_kind")
+}
+
 enum ParlumeMeetingTurnStatus {
   PENDING
   RUNNING
@@ -4648,18 +4656,21 @@ enum ParlumeMeetingTurnStatus {
 
 /// A project-scoped invitation of a Fabric Agent to one Teams meeting.
 ///
-/// `agentInstanceSId` remains stable when the agent is edited. The version
-/// fields pin the configuration selected when the bot was started. Turns may
-/// use that archived snapshot only while the stable agent remains active and
-/// bound to this project.
+/// Template-instance sessions retain a stable agent reference and pin the
+/// selected version. The built-in Fabric Agent has no persisted instance.
+/// Prisma cannot express the mutually exclusive selection shape; the
+/// `parlume_meeting_session_agent_selection` CHECK in the Parlume migrations
+/// is asserted by scripts/assert-handwritten-constraints.sql.
 model ParlumeMeetingSession {
   id                     String                      @id @default(cuid())
   projectId              String
   organizationId         String
   userId                 String
-  agentInstanceSId       String
-  agentInstanceVersionId String
-  agentInstanceVersion   Int
+  agentKind              ParlumeMeetingAgentKind    @default(TEMPLATE_INSTANCE)
+  agentLabel             String                      @default("Custom Fabric Agent")
+  agentInstanceSId       String?
+  agentInstanceVersionId String?
+  agentInstanceVersion   Int?
   providerBotId          String?                     @unique
   streamTokenDigest      String
   status                 ParlumeMeetingSessionStatus @default(PENDING)

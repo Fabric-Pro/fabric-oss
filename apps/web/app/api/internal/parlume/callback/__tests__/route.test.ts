@@ -19,7 +19,11 @@ vi.mock("@repo/database", () => ({
 vi.mock("../../lib", () => ({
 	callbackSecret: () => "callback-secret",
 	constantTimeEqual: () => true,
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
 	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
+	cleanupParlumeProviderData: (...args: unknown[]) => mocks.finalize(...args),
 }));
 
 import { POST } from "../route";

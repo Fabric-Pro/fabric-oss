@@ -1,7 +1,11 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
+import {
+	authenticateParlumeStreamMessage,
+	isRecord,
+	type ParlumeStreamConnection,
+} from "./parlume-stream-auth";
 
-const MAX_EVENT_BYTES = 64 * 1024;
 const WATCHDOG_RETRY_MS = 5 * 60 * 1000;
 const ACCESS_CHECK_MS = 60 * 1000;
 const TURN_RETRY_MS = 2_000;
@@ -22,14 +26,7 @@ interface BridgeState {
 	hardStopAt: string | null;
 }
 
-interface StreamConnection {
-	sessionId: string;
-	token: string;
-	botId: string | null;
-	verified: boolean;
-	generation: number;
-	streamGeneration: number | null;
-}
+type StreamConnection = ParlumeStreamConnection;
 
 interface PendingSegment {
 	sessionId: string;
@@ -66,93 +63,6 @@ interface StreamClosed {
 interface StreamError {
 	sessionId: string;
 	botId: string;
-}
-
-interface SessionStartedEvent {
-	event: "session.started";
-	bot_id: string;
-}
-
-interface TranscriptSegmentEvent {
-	event: "transcript.segment";
-	bot_id: string;
-	data: {
-		text: string;
-		isFinal: boolean;
-		utteranceStart?: number;
-		utteranceEnd?: number;
-		speaker?: { name?: string; id?: string } | null;
-	};
-}
-
-interface StreamErrorEvent {
-	event: "error";
-	bot_id: string;
-}
-
-type StreamEvent =
-	| SessionStartedEvent
-	| TranscriptSegmentEvent
-	| StreamErrorEvent;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function parseEvent(message: string): StreamEvent | null {
-	if (message.length > MAX_EVENT_BYTES) {
-		return null;
-	}
-	let value: unknown;
-	try {
-		value = JSON.parse(message);
-	} catch {
-		return null;
-	}
-	if (
-		!isRecord(value) ||
-		typeof value.event !== "string" ||
-		typeof value.bot_id !== "string"
-	) {
-		return null;
-	}
-	if (value.event === "session.started") {
-		return { event: "session.started", bot_id: value.bot_id };
-	}
-	if (value.event === "error") {
-		return { event: "error", bot_id: value.bot_id };
-	}
-	if (value.event !== "transcript.segment" || !isRecord(value.data)) {
-		return null;
-	}
-	const { text, isFinal, utteranceStart, utteranceEnd, speaker } = value.data;
-	if (typeof text !== "string" || typeof isFinal !== "boolean") {
-		return null;
-	}
-	const parsedSpeaker = isRecord(speaker)
-		? {
-				name:
-					typeof speaker.name === "string" ? speaker.name : undefined,
-				id:
-					typeof speaker.id === "string" ||
-					typeof speaker.id === "number"
-						? String(speaker.id)
-						: undefined,
-			}
-		: null;
-	return {
-		event: "transcript.segment",
-		bot_id: value.bot_id,
-		data: {
-			text,
-			isFinal,
-			utteranceStart:
-				typeof utteranceStart === "number" ? utteranceStart : undefined,
-			utteranceEnd:
-				typeof utteranceEnd === "number" ? utteranceEnd : undefined,
-			speaker: parsedSpeaker,
-		},
-	};
 }
 
 async function secretMatches(
@@ -206,33 +116,31 @@ export class Parlume extends Server<Env> {
 	}
 
 	async onMessage(conn: Connection, message: string) {
-		const state = this.connections.get(conn);
-		const event = parseEvent(message);
-		if (!state || !event) {
-			conn.close(4002, "Invalid stream event");
+		const authenticated = await authenticateParlumeStreamMessage(
+			{
+				connections: this.connections,
+				verifyStreamWithRetry: (state, botId) =>
+					this.verifyStreamWithRetry(state, botId),
+			},
+			conn,
+			message,
+		);
+		if (!authenticated) {
 			return;
 		}
-		if (!state.verified) {
-			if (!(await this.verifyStreamWithRetry(state, event.bot_id))) {
-				conn.close(4001, "Unauthorized");
-				return;
-			}
-			state.botId = event.bot_id;
-			state.verified = true;
-		}
+		const { event, state } = authenticated;
 		if (event.event === "session.started") {
-			return;
-		}
-		if (!state.verified || state.botId !== event.bot_id) {
-			conn.close(4001, "Unauthorized");
 			return;
 		}
 		if (event.event === "error") {
 			await this.ctx.storage.put<StreamError>(STREAM_ERROR_KEY, {
 				sessionId: state.sessionId,
-				botId: state.botId,
+				botId: event.bot_id,
 			});
 			await this.reportStreamFailure();
+			return;
+		}
+		if (event.event === "transcript.incomplete") {
 			return;
 		}
 		if (!event.data.isFinal) {
@@ -259,7 +167,7 @@ export class Parlume extends Server<Env> {
 		});
 		const persist = this.queueFinalSegment({
 			sessionId: state.sessionId,
-			botId: state.botId,
+			botId: event.bot_id,
 			text: event.data.text,
 			speakerName: event.data.speaker?.name ?? null,
 			speakerId: event.data.speaker?.id ?? null,

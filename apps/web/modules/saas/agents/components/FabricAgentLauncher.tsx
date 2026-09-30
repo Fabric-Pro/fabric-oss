@@ -1,5 +1,6 @@
 "use client";
 
+import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import type { UiMode } from "@repo/database";
 import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
@@ -373,7 +374,7 @@ function buildLauncherSystemPrompt(
 	// contextless turn is exactly where the model would otherwise introduce
 	// itself with the engine default's opening line.
 	return [
-		"You are Fabric Agent, answering from the copilot panel docked to the page the user is on.",
+		`${FABRIC_AGENT_IDENTITY} You are answering from the copilot panel docked to the page the user is on.`,
 		...(details
 			? [
 					"Treat the following UI context as the active working context for this conversation.",

@@ -17,11 +17,12 @@ import { Loader2Icon } from "lucide-react";
 import { useState } from "react";
 
 const SESSIONS_QUERY_KEY = "parlume-sessions";
+const FABRIC_AGENT_KIND = "FABRIC_AGENT";
 
 /**
  * This is deliberately a project-admin control rather than a Teams
- * integration setting. The selected agent must already carry this project's
- * project-context binding; the server rechecks that binding at start.
+ * integration setting. Custom agents must carry this project's project-context
+ * binding; the server rechecks that binding at start.
  */
 export function ParlumeInviteDialog({
 	projectId,
@@ -33,7 +34,7 @@ export function ParlumeInviteDialog({
 	onOpenChange: (open: boolean) => void;
 }) {
 	const queryClient = useQueryClient();
-	const [agentInstanceSId, setAgentInstanceSId] = useState("");
+	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
@@ -42,7 +43,11 @@ export function ParlumeInviteDialog({
 	);
 	const agentsQuery = useQuery({
 		queryKey: ["parlume-agents", projectId],
-		queryFn: () => orpcClient.projects.parlume.listAgents({ projectId }),
+		queryFn: () =>
+			orpcClient.projects.parlume.listAgents({
+				projectId,
+				includeBuiltIn: true,
+			}),
 		enabled: open,
 		retry: false,
 	});
@@ -55,11 +60,15 @@ export function ParlumeInviteDialog({
 	});
 	const agents = agentsQuery.data?.agents ?? [];
 	const operatorReady = agentsQuery.data?.operatorReady !== false;
+	const selectedAgent = agents.find((agent) =>
+		agent.kind === FABRIC_AGENT_KIND
+			? agentSelection === FABRIC_AGENT_KIND
+			: agentSelection === `custom:${agent.agentInstanceSId}`,
+	);
 
 	const invite = async () => {
-		const selectedAgent = agentInstanceSId || agents[0]?.sId;
 		if (!selectedAgent) {
-			setError("Choose a project-bound Fabric Agent first.");
+			setError("Choose a Fabric Agent first.");
 			return;
 		}
 		setError(null);
@@ -67,7 +76,10 @@ export function ParlumeInviteDialog({
 		try {
 			await orpcClient.projects.parlume.start({
 				projectId,
-				agentInstanceSId: selectedAgent,
+				agentKind: selectedAgent.kind,
+				...(selectedAgent.kind === "TEMPLATE_INSTANCE"
+					? { agentInstanceSId: selectedAgent.agentInstanceSId }
+					: {}),
 				meetingUrl: meetingUrl.trim(),
 			});
 			setMeetingUrl("");
@@ -157,23 +169,32 @@ export function ParlumeInviteDialog({
 									Retry agents
 								</Button>
 							</p>
-						) : agents.length === 0 ? (
-							<p className="text-sm text-muted-foreground">
-								No active Fabric Agent is bound to this
-								project's knowledge yet.
-							</p>
 						) : (
 							<select
 								id="parlume-agent"
 								className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-								value={agentInstanceSId || agents[0]?.sId}
+								value={agentSelection}
 								onChange={(event) =>
-									setAgentInstanceSId(event.target.value)
+									setAgentSelection(event.target.value)
 								}
 							>
 								{agents.map((agent) => (
-									<option key={agent.sId} value={agent.sId}>
-										{agent.name} (v{agent.version})
+									<option
+										key={
+											agent.kind === FABRIC_AGENT_KIND
+												? FABRIC_AGENT_KIND
+												: agent.agentInstanceSId
+										}
+										value={
+											agent.kind === FABRIC_AGENT_KIND
+												? FABRIC_AGENT_KIND
+												: `custom:${agent.agentInstanceSId}`
+										}
+									>
+										{agent.label}
+										{agent.version
+											? ` (v${agent.version})`
+											: ""}
 									</option>
 								))}
 							</select>
@@ -225,13 +246,7 @@ export function ParlumeInviteDialog({
 								Recent invitations
 							</p>
 							{sessionsQuery.data.sessions.map((session) => {
-								const agentName =
-									agents.find(
-										(agent) =>
-											agent.sId ===
-											session.agentInstanceSId,
-									)?.name ?? "Fabric Agent";
-								const invitationLabel = `${agentName} invited ${new Intl.DateTimeFormat(
+								const invitationLabel = `${session.agentLabel} invited ${new Intl.DateTimeFormat(
 									undefined,
 									{ dateStyle: "medium", timeStyle: "short" },
 								).format(new Date(session.createdAt))}`;
@@ -319,7 +334,7 @@ export function ParlumeInviteDialog({
 							pending ||
 							!operatorReady ||
 							agentsQuery.isError ||
-							agents.length === 0 ||
+							!selectedAgent ||
 							meetingUrl.trim() === ""
 						}
 					>

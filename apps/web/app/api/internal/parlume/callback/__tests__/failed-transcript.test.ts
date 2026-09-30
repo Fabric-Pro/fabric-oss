@@ -13,7 +13,10 @@ describe("Parlume failed bot finalization", () => {
 				"utf8",
 			),
 			readFile(
-				path.resolve(process.cwd(), "app/api/internal/parlume/lib.ts"),
+				path.resolve(
+					process.cwd(),
+					"../../packages/api/modules/projects/lib/parlume-finalization.ts",
+				),
 				"utf8",
 			),
 		]);
