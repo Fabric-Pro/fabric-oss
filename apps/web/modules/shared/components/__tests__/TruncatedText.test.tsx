@@ -56,9 +56,27 @@ beforeEach(() => {
 afterEach(() => {
 	vi.useRealTimers();
 	vi.clearAllMocks();
+	vi.restoreAllMocks();
 });
 
 describe("TruncatedText", () => {
+	it("updates overflow on the same label without changing tooltip control mode", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		const { rerender } = render(<TruncatedText text="Resizing label" />);
+		setOverflow(true);
+		rerender(<TruncatedText text="Resizing label" />);
+		await user.tab();
+		await waitFor(() => expect(getTooltipContent()).not.toBeNull());
+		setOverflow(false);
+		rerender(<TruncatedText text="Resizing label" />);
+		await waitFor(() => expect(getTooltipContent()).toBeNull());
+		setOverflow(true);
+		rerender(<TruncatedText text="Resizing label" />);
+		expect(getTooltipContent()).toBeNull();
+		expect(warn).not.toHaveBeenCalled();
+	});
+
 	it("renders the full text", () => {
 		render(<TruncatedText text="Short label" />);
 

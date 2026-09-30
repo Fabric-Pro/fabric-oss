@@ -143,7 +143,7 @@ export function ProjectHeader({
 				</div>
 
 				{/* Presence + actions */}
-				<div className="ml-auto flex items-center gap-2">
+				<div className="ml-auto flex min-w-0 flex-wrap items-center gap-2 max-sm:w-full max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11 pointer-coarse:[&_button]:min-h-11 pointer-coarse:[&_button]:min-w-11">
 					{/* Quick-access favorite (#1694). Not gated by `canEdit` —
 					    favoriting is a per-user preference, not a project edit,
 					    so a viewer must be able to do it. Always visible here

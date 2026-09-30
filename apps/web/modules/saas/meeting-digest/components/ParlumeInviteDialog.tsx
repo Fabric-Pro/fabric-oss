@@ -10,11 +10,12 @@ import {
 	DialogFooter,
 	DialogHeader,
 	DialogTitle,
+	DialogTrigger,
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Loader2Icon } from "lucide-react";
-import { useState } from "react";
+import { type ReactElement, useState } from "react";
 
 const SESSIONS_QUERY_KEY = "parlume-sessions";
 const FABRIC_AGENT_KIND = "FABRIC_AGENT";
@@ -26,14 +27,13 @@ const FABRIC_AGENT_KIND = "FABRIC_AGENT";
  */
 export function ParlumeInviteDialog({
 	projectId,
-	open,
-	onOpenChange,
+	children,
 }: {
 	projectId: string;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
+	children: ReactElement;
 }) {
 	const queryClient = useQueryClient();
+	const [open, setOpen] = useState(false);
 	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
 	const [error, setError] = useState<string | null>(null);
@@ -119,8 +119,9 @@ export function ParlumeInviteDialog({
 	const pending = isInviting;
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="sm:max-w-lg">
+		<Dialog open={open} onOpenChange={setOpen}>
+			<DialogTrigger asChild>{children}</DialogTrigger>
+			<DialogContent className="sm:max-w-lg max-sm:[&_:is(button,input,select,summary)]:min-h-11 pointer-coarse:[&_:is(button,input,select,summary)]:min-h-11">
 				<DialogHeader>
 					<DialogTitle>Invite Parlume</DialogTitle>
 					<DialogDescription>
@@ -323,7 +324,7 @@ export function ParlumeInviteDialog({
 					<Button
 						type="button"
 						variant="outline"
-						onClick={() => onOpenChange(false)}
+						onClick={() => setOpen(false)}
 					>
 						Cancel
 					</Button>

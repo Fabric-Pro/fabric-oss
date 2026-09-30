@@ -200,7 +200,7 @@ export function DocumentTitleInlineEdit({
 	if (alwaysEditable) {
 		return (
 			<TooltipProvider>
-				<Tooltip open={showTitleTooltip ? undefined : false}>
+				<Tooltip disabled={!showTitleTooltip}>
 					<TooltipTrigger asChild>
 						<Input
 							ref={titleInputRef}

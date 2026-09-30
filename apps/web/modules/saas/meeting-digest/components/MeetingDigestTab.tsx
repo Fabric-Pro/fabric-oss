@@ -120,7 +120,6 @@ export function MeetingDigestTab({
 	const includedMeetings = meetings.filter((m) => m.includedInDigest);
 
 	const [showPicker, setShowPicker] = useState(false);
-	const [showParlume, setShowParlume] = useState(false);
 	const { confirm } = useConfirmationAlert();
 
 	// Fetched unconditionally (once canEdit) rather than gated on
@@ -563,7 +562,7 @@ export function MeetingDigestTab({
 
 	return (
 		<div className="space-y-4">
-			<div className="flex items-center justify-between">
+			<div className="flex flex-wrap items-center justify-between gap-3 max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11 pointer-coarse:[&_button]:min-h-11 pointer-coarse:[&_button]:min-w-11">
 				<div className="flex items-center gap-1.5">
 					<h2
 						data-onboarding-target="meeting-digest-header"
@@ -574,15 +573,17 @@ export function MeetingDigestTab({
 					<PageTourButton pageId="meeting-digest" />
 				</div>
 				{canEdit && (
-					<div className="flex items-center gap-3">
+					<div className="flex flex-wrap items-center gap-3">
 						{canInviteParlume && (
-							<button
-								type="button"
-								className="text-sm underline"
-								onClick={() => setShowParlume(true)}
-							>
-								Invite Parlume
-							</button>
+							<ParlumeInviteDialog projectId={projectId}>
+								<Button
+									type="button"
+									variant="link"
+									className="px-0 underline"
+								>
+									Invite Parlume
+								</Button>
+							</ParlumeInviteDialog>
 						)}
 						{!configPanelVisible && !genericEmptyStateOnScreen && (
 							<button
@@ -668,14 +669,6 @@ export function MeetingDigestTab({
 					onOpenChange={setShowPicker}
 					onLinked={refreshAfterLink}
 					existingJoinUrls={joinUrls}
-				/>
-			)}
-
-			{canInviteParlume && (
-				<ParlumeInviteDialog
-					projectId={projectId}
-					open={showParlume}
-					onOpenChange={setShowParlume}
 				/>
 			)}
 

@@ -197,7 +197,7 @@ function FacetMultiSelect<T extends string>({
 					the element out — keeping the tooltip mounted keeps the tree shape
 					stable, so toggling the first/last facet while the popover is open
 					can't remount (and re-focus) the trigger button. */}
-				<Tooltip open={activeCount > 0 ? undefined : false}>
+				<Tooltip disabled={activeCount === 0}>
 					<TooltipTrigger asChild>{trigger}</TooltipTrigger>
 					<TooltipContent>{summary}</TooltipContent>
 				</Tooltip>

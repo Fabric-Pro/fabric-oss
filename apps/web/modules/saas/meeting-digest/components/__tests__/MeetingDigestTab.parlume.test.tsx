@@ -44,7 +44,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 
 vi.mock("../ParlumeInviteDialog", () => ({
-	ParlumeInviteDialog: () => <div data-testid="parlume-dialog" />,
+	ParlumeInviteDialog: ({ children }: { children: ReactNode }) => (
+		<div data-testid="parlume-dialog">{children}</div>
+	),
 }));
 
 function renderTab(
