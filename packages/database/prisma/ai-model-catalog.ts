@@ -109,6 +109,7 @@ export const MODELS: ModelSeedData[] = [
 	// ============================================================================
 	{
 		canonicalName: "gpt-4o",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-4o",
 		description:
 			"OpenAI's flagship multimodal model with excellent reasoning and tool use capabilities",
@@ -137,6 +138,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-4o-mini",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-4o Mini",
 		description:
 			"Smaller, faster, and cheaper version of GPT-4o with vision",
@@ -162,6 +164,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-5-nano",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-5 Nano",
 		description:
 			"OpenAI's smallest and fastest GPT-5 model, optimized for simple tasks and low latency",
@@ -187,6 +190,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-5-mini",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-5 Mini",
 		description:
 			"OpenAI's efficient GPT-5 model, balancing speed and capability for everyday tasks",
@@ -212,6 +216,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-5-2",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-5.2",
 		description:
 			"OpenAI's flagship model with 400K context, strong reasoning, coding, and tool-calling",
@@ -243,6 +248,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-5.4",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-5.4",
 		description:
 			"OpenAI's frontier model with advanced reasoning, coding, and multimodal capabilities",
@@ -366,6 +372,36 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "gpt-6.1-sol",
+		displayName: "GPT-6.1 Sol",
+		description:
+			"OpenAI's production GPT-6.1 model for agents, coding, and multi-step reasoning at mid-tier cost",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "BALANCED",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 2,
+		outputCostPer1M: 10,
+		suitableForTasks: [
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"REASONING",
+			"EVAL",
+		],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6.1-sol" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6.1-sol",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-sol" },
+		],
+	},
+	{
 		canonicalName: "gpt-6-luna",
 		displayName: "GPT-6 Luna",
 		description:
@@ -392,6 +428,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-4.1-mini",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-4.1 Mini (Azure)",
 		description:
 			"Azure OpenAI deployment of GPT-4.1 Mini - fast and efficient for chat and tool use",
@@ -411,6 +448,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "gpt-4-turbo",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "GPT-4 Turbo",
 		description: "GPT-4 Turbo with vision, large context window",
 		family: "gpt",
@@ -434,6 +472,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "o1",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "OpenAI o1",
 		description:
 			"OpenAI's reasoning model with extended thinking for complex problems",
@@ -455,6 +494,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "o1-mini",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "OpenAI o1 Mini",
 		description: "Smaller reasoning model, faster and more cost-effective",
 		family: "o1",
@@ -475,6 +515,7 @@ export const MODELS: ModelSeedData[] = [
 	},
 	{
 		canonicalName: "o3-mini",
+		deprecation: { replacedBy: "gpt-5.5" },
 		displayName: "OpenAI o3 Mini",
 		description: "Next-gen reasoning model, efficient and balanced",
 		family: "o3",
@@ -2407,12 +2448,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("SIMPLE", "MEDIUM", {
 		DATABRICKS: "llama-3-3-70b",
 		VERCEL_GATEWAY: "claude-haiku-4-5",
-		OPENAI_DIRECT: "gpt-4o-mini",
+		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: "claude-haiku-4-5",
 		GROQ: "llama-3-1-8b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-1-8b",
-		AZURE_AI_FOUNDRY: "gpt-4.1-mini",
+		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "mistral-small-3",
 		XAI: "grok-3-mini",
 		COHERE: "command-r",
@@ -2427,12 +2468,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("COMPLEX", "MEDIUM", {
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-4o",
+		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
-		AZURE_AI_FOUNDRY: "gpt-4.1-mini",
+		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "mistral-large-3",
 		XAI: "grok-3",
 		COHERE: "command-a",
@@ -2446,12 +2487,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// ============================================================================
 	...createTaskDefaults("REASONING", "MEDIUM", {
 		VERCEL_GATEWAY: "claude-opus-4-8",
-		OPENAI_DIRECT: "o1",
+		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: "claude-opus-4-8",
 		GROQ: "deepseek-r1",
 		DEEPSEEK: "deepseek-r1",
 		CEREBRAS: "gpt-oss-120b",
-		AZURE_AI_FOUNDRY: "gpt-4o",
+		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "magistral-medium",
 		XAI: "grok-4",
 		COHERE: "command-a-reasoning",
@@ -2464,12 +2505,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("CHAT", "MEDIUM", {
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-4o",
+		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
-		AZURE_AI_FOUNDRY: "gpt-4.1-mini",
+		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "mistral-large-3",
 		XAI: "grok-4-1-fast",
 		COHERE: "command-a",
@@ -2487,12 +2528,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		{
 			DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 			VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-			OPENAI_DIRECT: "gpt-4o",
+			OPENAI_DIRECT: "gpt-5.5",
 			ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 			GROQ: "gpt-oss-120b",
 			DEEPSEEK: "deepseek-chat",
 			CEREBRAS: "gpt-oss-120b",
-			AZURE_AI_FOUNDRY: "gpt-4o",
+			AZURE_AI_FOUNDRY: "gpt-5.5",
 			MISTRAL_AI: "mistral-large-3",
 			XAI: "grok-4-1-fast",
 			COHERE: "command-a",
@@ -2534,12 +2575,12 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// ============================================================================
 	...createTaskDefaults("EVAL", "MEDIUM", {
 		VERCEL_GATEWAY: "claude-sonnet-5",
-		OPENAI_DIRECT: "gpt-4o-mini",
+		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: "claude-sonnet-5",
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
-		AZURE_AI_FOUNDRY: "gpt-4o-mini",
+		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "mistral-large-3",
 		XAI: "grok-4-1-fast",
 		COHERE: "command-a",
@@ -2722,8 +2763,8 @@ export const MODEL_CAPABILITIES_MAP: Record<string, ModelCapabilities> =
  * Use getProviderModelId() to get the provider-specific model ID.
  */
 export const DEFAULT_MODELS = {
-	/** Fast, cheap model for simple tasks */
-	SIMPLE: "gpt-4o-mini",
+	/** Default model for simple tasks */
+	SIMPLE: "gpt-5.5",
 	/** Capable model for complex tasks */
 	COMPLEX: DEFAULT_FABRIC_AI_MODEL,
 	/** Conversational model */
@@ -2731,11 +2772,11 @@ export const DEFAULT_MODELS = {
 	/** Model with tool calling support */
 	TOOL_CALLING: DEFAULT_FABRIC_AI_MODEL,
 	/** Reasoning model for deep analysis */
-	REASONING: "o1",
+	REASONING: "gpt-5.5",
 	/** Embedding model for RAG */
 	EMBEDDING: "text-embedding-3-small",
 	/** Evaluation model for LLM-as-judge */
-	EVAL: "gpt-4o-mini",
+	EVAL: "gpt-5.5",
 } as const;
 
 /**
@@ -2744,17 +2785,17 @@ export const DEFAULT_MODELS = {
  */
 export const MODEL_ALIASES: Record<string, string> = {
 	// OpenAI shortcuts
-	"gpt-4": "gpt-4-turbo",
-	"gpt-4o": "gpt-4o",
-	"gpt-4o-mini": "gpt-4o-mini",
-	"gpt-5": "gpt-5-2",
-	"gpt-5.2": "gpt-5-2",
-	"gpt-5-nano": "gpt-5-nano",
-	"gpt-5-mini": "gpt-5-mini",
+	"gpt-4": "gpt-5.5",
+	"gpt-4o": "gpt-5.5",
+	"gpt-4o-mini": "gpt-5.5",
+	"gpt-5": "gpt-5.5",
+	"gpt-5.2": "gpt-5.5",
+	"gpt-5-nano": "gpt-5.5",
+	"gpt-5-mini": "gpt-5.5",
 	"gpt-3.5": "gpt-3-5-turbo",
-	o1: "o1",
-	"o1-mini": "o1-mini",
-	"o3-mini": "o3-mini",
+	o1: "gpt-5.5",
+	"o1-mini": "gpt-5.5",
+	"o3-mini": "gpt-5.5",
 
 	// Anthropic shortcuts
 	claude: "claude-sonnet-5",
