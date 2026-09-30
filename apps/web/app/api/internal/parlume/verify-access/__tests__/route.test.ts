@@ -3,13 +3,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findFirst: vi.fn(),
+	updateMany: vi.fn(),
 	hasProjectAccess: vi.fn(),
 	requestLeave: vi.fn(),
+	finalize: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
-	db: { parlumeMeetingSession: { findFirst: mocks.findFirst } },
+	db: {
+		parlumeMeetingSession: {
+			findFirst: mocks.findFirst,
+			updateMany: (...args: unknown[]) => mocks.updateMany(...args),
+		},
+	},
 	hasProjectAccess: (...args: unknown[]) => mocks.hasProjectAccess(...args),
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
+	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-leave", () => ({
@@ -22,7 +33,7 @@ vi.mock("@repo/api/modules/projects/lib/parlume-log", () => ({
 
 import { POST } from "../route";
 
-function request() {
+function request(extra: Record<string, unknown> = {}) {
 	return new NextRequest(
 		"https://fabric.example/api/internal/parlume/verify-access",
 		{
@@ -31,7 +42,11 @@ function request() {
 				"content-type": "application/json",
 				"X-Agent-Service-Token": "service-secret",
 			},
-			body: JSON.stringify({ sessionId: "session-1", botId: "bot-1" }),
+			body: JSON.stringify({
+				sessionId: "session-1",
+				botId: "bot-1",
+				...extra,
+			}),
 		},
 	);
 }
@@ -42,18 +57,22 @@ const session = {
 	organizationId: "org-1",
 	userId: "user-1",
 	providerBotId: "bot-1",
+	status: "ACTIVE",
 	streamGeneration: 2,
 	endReason: null,
 	captureStoppedAt: null,
 	terminalCallbackAt: null,
+	streamClosedAt: null,
 };
 
 beforeEach(() => {
 	vi.resetAllMocks();
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	mocks.findFirst.mockResolvedValue(session);
+	mocks.updateMany.mockResolvedValue({ count: 1 });
 	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.requestLeave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
+	mocks.finalize.mockResolvedValue(undefined);
 });
 
 describe("Parlume active access verification", () => {
@@ -121,6 +140,65 @@ describe("Parlume active access verification", () => {
 		});
 		expect(mocks.hasProjectAccess).not.toHaveBeenCalled();
 		expect(mocks.requestLeave).not.toHaveBeenCalled();
+		expect(mocks.finalize).not.toHaveBeenCalled();
+	});
+
+	it("finalizes a departed bot's session when the bridge holds no stream to close", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...session,
+			status: "LEAVING",
+			terminalCallbackAt: new Date("2026-09-30T18:00:00Z"),
+		});
+
+		const response = await POST(request({ openConnections: 0 }));
+
+		expect(await response.json()).toEqual({
+			accepted: true,
+			captureStopped: true,
+		});
+		expect(mocks.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "session-1",
+				status: { in: ["ACTIVE", "LEAVING"] },
+				streamGeneration: 2,
+				finalizedAt: null,
+				streamClosedAt: null,
+			},
+			data: { streamClosedAt: expect.any(Date) },
+		});
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 2,
+		});
+	});
+
+	it("leaves finalization to the stream close while a socket is still open", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...session,
+			status: "LEAVING",
+			terminalCallbackAt: new Date("2026-09-30T18:00:00Z"),
+		});
+
+		await POST(request({ openConnections: 1 }));
+
+		expect(mocks.updateMany).not.toHaveBeenCalled();
+		expect(mocks.finalize).not.toHaveBeenCalled();
+	});
+
+	it("still reports capture stopped when finalization fails now", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...session,
+			status: "LEAVING",
+			terminalCallbackAt: new Date("2026-09-30T18:00:00Z"),
+		});
+		mocks.finalize.mockRejectedValue(new Error("provider outage"));
+
+		const response = await POST(request({ openConnections: 0 }));
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			accepted: true,
+			captureStopped: true,
+		});
 	});
 
 	it("asks the bridge to retry when the provider leave fails", async () => {
