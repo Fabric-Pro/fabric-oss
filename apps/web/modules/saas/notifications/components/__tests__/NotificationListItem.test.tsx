@@ -341,3 +341,41 @@ describe("NotificationListItem — admin-gated INCIDENT redirect", () => {
 		expect(mockToastInfo).not.toHaveBeenCalled();
 	});
 });
+
+describe("NotificationListItem — assignment glyphs", () => {
+	// Lucide stamps each glyph with a `lucide-<name>` class, which is the
+	// stable way to tell which icon the bubble drew.
+	function renderBubbleGlyph(type: string) {
+		render(
+			<NotificationListItem
+				notification={makeNotification({
+					type,
+					category: "ASSIGNMENT",
+					link: "todos",
+					title: "Assigned to you",
+				})}
+				onSelect={() => {}}
+			/>,
+		);
+		return screen.getByTestId("notification-icon-bubble");
+	}
+
+	// To-do assignments (Fizzy #2340) share the ASSIGNMENT category with story
+	// assignments but link to the To Do page, so they wear its nav glyph.
+	it.each(["TODO_ASSIGNED", "TODO_MEETING_ITEMS_ASSIGNED"])(
+		"%s renders the to-do glyph",
+		(type) => {
+			const bubble = renderBubbleGlyph(type);
+
+			expect(bubble.querySelector("svg.lucide-list-todo")).not.toBeNull();
+			expect(bubble.querySelector("svg.lucide-user-plus")).toBeNull();
+		},
+	);
+
+	it("STORY_ASSIGNED keeps the category's user-plus glyph", () => {
+		const bubble = renderBubbleGlyph("STORY_ASSIGNED");
+
+		expect(bubble.querySelector("svg.lucide-user-plus")).not.toBeNull();
+		expect(bubble.querySelector("svg.lucide-list-todo")).toBeNull();
+	});
+});

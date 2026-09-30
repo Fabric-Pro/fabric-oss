@@ -31,7 +31,12 @@ type Tab = "all" | "unread" | "mentions" | "inbound" | "conflict" | "archived";
 // tickets" tab is intentionally deferred — no drift notification type exists
 // yet (it depends on the AI Merge feature).
 const TAB_TYPES: Partial<Record<Tab, NotificationsListInput["types"]>> = {
-	inbound: ["STORY_STATUS_CHANGED", "STORY_ASSIGNED"],
+	inbound: [
+		"STORY_STATUS_CHANGED",
+		"STORY_ASSIGNED",
+		"TODO_ASSIGNED",
+		"TODO_MEETING_ITEMS_ASSIGNED",
+	],
 	conflict: ["PM_SYNC_CONFLICT"],
 };
 

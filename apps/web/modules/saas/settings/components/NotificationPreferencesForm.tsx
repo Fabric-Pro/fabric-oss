@@ -58,7 +58,7 @@ const TOGGLES: Array<{
 	{
 		key: "assignments",
 		label: "Assignments",
-		description: "When a story is assigned to you.",
+		description: "When a story or to-do is assigned to you.",
 		icon: UserPlusIcon,
 	},
 	{

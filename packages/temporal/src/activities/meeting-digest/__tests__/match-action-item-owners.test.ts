@@ -29,6 +29,7 @@ const {
 	mockBackfillItemKey,
 	mockFindManyMembers,
 	mockFindManyContacts,
+	mockCreateAssignmentNotice,
 } = vi.hoisted(() => ({
 	DB_NULL: Symbol("Prisma.DbNull"),
 	mockIsFeatureEnabled: vi.fn(),
@@ -40,6 +41,7 @@ const {
 	mockBackfillItemKey: vi.fn(),
 	mockFindManyMembers: vi.fn(),
 	mockFindManyContacts: vi.fn(),
+	mockCreateAssignmentNotice: vi.fn(),
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -50,6 +52,11 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 	ApplicationFailure: {
 		nonRetryable: (message: string, type: string) => {
+			const err = new Error(message);
+			err.name = type;
+			return err;
+		},
+		retryable: (message: string, type: string) => {
 			const err = new Error(message);
 			err.name = type;
 			return err;
@@ -71,6 +78,10 @@ vi.mock("@repo/database", async () => {
 		...binding,
 		...keys,
 		isFeatureEnabled: mockIsFeatureEnabled,
+		// The writer's own rules (freshness, dedupe, preference) are pinned by
+		// its own test in @repo/database; here it is only a recorder of who the
+		// matcher decided to tell, and with which items.
+		createTodoMeetingAssignmentNotification: mockCreateAssignmentNotice,
 		Prisma: { DbNull: DB_NULL },
 		db: {
 			projectMeetingTranscript: {
@@ -105,6 +116,7 @@ const MEETING_DATE = new Date("2026-09-10T09:00:00Z");
 const SYNCED_AT = new Date("2026-09-10T11:00:00Z");
 /** The extraction revision the matcher reads and stamps against. */
 const EXTRACTED_AT = new Date("2026-09-10T11:05:00Z");
+const MEETING_SUBJECT = "Coverage review";
 
 const baseInput = {
 	projectId: "proj-1",
@@ -185,6 +197,7 @@ function arrangeTranscript(
 		syncedAt: SYNCED_AT,
 		userId: "user-owner",
 		organizationId: "org-1",
+		meetingSubject: MEETING_SUBJECT,
 		insightsExtractedAt: EXTRACTED_AT,
 		actionItems,
 		todoItems,
@@ -264,7 +277,15 @@ beforeEach(() => {
 	mockIsFeatureEnabled.mockResolvedValue(true);
 	mockFindManyMembers.mockResolvedValue([{ user: ANNA }]);
 	mockFindManyContacts.mockResolvedValue([]);
-	mockUpsertTodo.mockResolvedValue({});
+	// The upsert selects the row's id, which the assignment notice names. Keyed
+	// off the item text so a test can say which to-do it expects without
+	// threading ids through every fixture.
+	mockUpsertTodo.mockImplementation(
+		async (args: { create: { itemTextSnapshot: string } }) => ({
+			id: `todo:${args.create.itemTextSnapshot}`,
+		}),
+	);
+	mockCreateAssignmentNotice.mockResolvedValue("created");
 	// `{ count: 1 }` is "the WHERE still matched" — the ordinary case. A test
 	// about losing a race overrides it with `{ count: 0 }`.
 	mockUpdateManyTodo.mockResolvedValue({ count: 1 });
@@ -935,5 +956,350 @@ describe("the stamp names the revision it read (#2340)", () => {
 			id: "tr-1",
 			insightsExtractedAt: EXTRACTED_AT,
 		});
+	});
+});
+
+describe("assignment notices (Fizzy #2340)", () => {
+	/** The recipients the matcher asked the writer to notify, in call order. */
+	function noticeRecipients(): string[] {
+		return mockCreateAssignmentNotice.mock.calls.map(
+			(call) => call[0].recipientUserId,
+		);
+	}
+
+	it("tells a member about a meeting once, with every item it gave them", async () => {
+		arrangeTranscript([
+			item("Send the coverage report", "Anna Petrova", 0),
+			item("Book the retro room", "Anna Petrova", 1),
+		]);
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		// One call for the meeting, not one per item: the snippet carries the
+		// count, and a bell entry per item would bury the meeting under its own
+		// detail.
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledTimes(1);
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledWith({
+			recipientUserId: "user-anna",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			transcriptId: "tr-1",
+			meetingSubject: MEETING_SUBJECT,
+			// The meeting's date, not the run's clock: the writer's freshness
+			// cut is measured from when the meeting happened.
+			sourceDate: MEETING_DATE,
+			items: [
+				{
+					todoId: "todo:Send the coverage report",
+					text: "Send the coverage report",
+				},
+				{
+					todoId: "todo:Book the retro room",
+					text: "Book the retro room",
+				},
+			],
+		});
+	});
+
+	it("tells each member separately about their own items", async () => {
+		mockFindManyMembers.mockResolvedValue([
+			{ user: ANNA },
+			{ user: SAM_MEMBER },
+		]);
+		arrangeTranscript([
+			item("Send the coverage report", "Anna Petrova", 0),
+			item("Book the retro room", "Sam Carter", 1),
+		]);
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(noticeRecipients()).toEqual(["user-anna", "user-sam"]);
+		expect(mockCreateAssignmentNotice.mock.calls[0][0].items).toEqual([
+			{
+				todoId: "todo:Send the coverage report",
+				text: "Send the coverage report",
+			},
+		]);
+		expect(mockCreateAssignmentNotice.mock.calls[1][0].items).toEqual([
+			{ todoId: "todo:Book the retro room", text: "Book the retro room" },
+		]);
+	});
+
+	it("hands the same person over again on an unchanged re-run, for the writer's dedupe to answer", async () => {
+		// Keyed on the rows' end state, not on what this run changed: a retry
+		// after a failed notice writes nothing, and only this rule still
+		// collects the person it owes. The writer's dedupe row is what keeps a
+		// person who WAS told from hearing twice.
+		await matchMeetingActionItemOwnersActivity(baseInput);
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledTimes(1);
+		const stored = storedFromCreate(createArg());
+
+		mockCreateAssignmentNotice.mockClear();
+		mockUpsertTodo.mockClear();
+		arrangeTranscript(
+			[item("Send the coverage report", "Anna Petrova")],
+			[stored],
+		);
+
+		const result = await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(result.skipped).toBe("unchanged");
+		expect(mockUpsertTodo).not.toHaveBeenCalled();
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledTimes(1);
+		expect(mockCreateAssignmentNotice.mock.calls[0][0]).toMatchObject({
+			recipientUserId: "user-anna",
+			items: [{ todoId: stored.id, text: "Send the coverage report" }],
+		});
+	});
+
+	it("does not hand over an unchanged row a person assigned by hand", async () => {
+		const text = "Send the coverage report";
+		arrangeTranscript(
+			[item(text, "Anna Petrova")],
+			[
+				todo(text, {
+					assigneeUserId: "user-anna",
+					assignedManually: true,
+				}),
+			],
+		);
+
+		const result = await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(result.skipped).toBe("unchanged");
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+	});
+
+	it("says nothing when the owner is a contact, who has no bell", async () => {
+		mockFindManyContacts.mockResolvedValue([
+			{ id: "contact-dana", name: "Dana Fox" },
+		]);
+		arrangeTranscript([item("Return the signed SOW", "Dana Fox")]);
+
+		const result = await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(result.assigned).toBe(1);
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+	});
+
+	it("says nothing about a suggestion, which assigns nobody", async () => {
+		mockFindManyMembers.mockResolvedValue([{ user: SAM_MEMBER }]);
+		arrangeTranscript([item("Book the retro room", "Sam")]);
+
+		const result = await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(result.suggested).toBe(1);
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+	});
+
+	it("says nothing about a row a person assigned by hand", async () => {
+		const text = "Send the coverage report";
+		arrangeTranscript(
+			[item(text, "Anna Petrova")],
+			[
+				todo(text, {
+					assigneeUserId: "user-someone-else",
+					assignedManually: true,
+					// A moved date forces a source write, so the frozen row is
+					// genuinely visited rather than skipped as unchanged.
+					sourceDate: new Date("2026-09-01T09:00:00Z"),
+				}),
+			],
+		);
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(assignmentCalls()).toHaveLength(0);
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+	});
+
+	it("says nothing when a person claimed the row mid-run", async () => {
+		// The guarded write matched nothing: the person's choice stood, so the
+		// matcher assigned nobody and has nobody to tell.
+		mockUpdateManyTodo.mockResolvedValue({ count: 0 });
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+	});
+
+	it("names every item the member holds, including one they already had", async () => {
+		arrangeTranscript(
+			[
+				item("Send the coverage report", "Anna Petrova", 0),
+				item("Book the retro room", "Anna Petrova", 1),
+			],
+			[
+				todo("Send the coverage report", {
+					assigneeUserId: "user-anna",
+					// Rewritten because the meeting's date moved; the guarded
+					// assignment write matches and restates the same owner.
+					sourceDate: new Date("2026-09-01T09:00:00Z"),
+				}),
+			],
+		);
+
+		const result = await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(assignmentCalls()).toHaveLength(2);
+		expect(result.assigned).toBe(2);
+		// One notice for the meeting, counting everything that is theirs in
+		// it; whether they were already told is the writer's question.
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledTimes(1);
+		expect(mockCreateAssignmentNotice.mock.calls[0][0].items).toEqual([
+			{
+				todoId: "todo:Send the coverage report",
+				text: "Send the coverage report",
+			},
+			{ todoId: "todo:Book the retro room", text: "Book the retro room" },
+		]);
+	});
+
+	it("tells a member who takes over an item from someone else", async () => {
+		mockFindManyMembers.mockResolvedValue([
+			{ user: ANNA },
+			{ user: SAM_MEMBER },
+		]);
+		const text = "Send the coverage report";
+		arrangeTranscript(
+			[item(text, "Anna Petrova")],
+			[todo(text, { id: "todo-existing", assigneeUserId: "user-sam" })],
+		);
+		// The upsert answers with the stored row's own id.
+		mockUpsertTodo.mockResolvedValueOnce({ id: "todo-existing" });
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(mockCreateAssignmentNotice).toHaveBeenCalledTimes(1);
+		expect(mockCreateAssignmentNotice.mock.calls[0][0]).toMatchObject({
+			recipientUserId: "user-anna",
+			items: [{ todoId: "todo-existing", text }],
+		});
+	});
+
+	it("settles the to-dos and the stamp, then asks for a retry, when a notice fails", async () => {
+		mockCreateAssignmentNotice.mockResolvedValue("failed");
+
+		await expect(
+			matchMeetingActionItemOwnersActivity(baseInput),
+		).rejects.toMatchObject({ name: "AssignmentNoticeFailed" });
+
+		// Everything else already happened: a failed notice costs a retry of
+		// this activity, which re-reads the same rows and tries the notice
+		// again, and nothing more.
+		expect(mockUpsertTodo).toHaveBeenCalledTimes(1);
+		expect(assignmentCalls()).toHaveLength(1);
+		expect(mockUpdateManyTranscript).toHaveBeenCalledTimes(1);
+	});
+
+	it("asks for a retry when the writer throws, and keeps who out of the log", async () => {
+		mockCreateAssignmentNotice.mockRejectedValue(
+			new Error("pool exhausted"),
+		);
+
+		await expect(
+			matchMeetingActionItemOwnersActivity(baseInput),
+		).rejects.toMatchObject({ name: "AssignmentNoticeFailed" });
+
+		expect(mockUpdateManyTranscript).toHaveBeenCalledTimes(1);
+		const { logger } = await import("@repo/logs");
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining("assignment notice threw"),
+			expect.not.objectContaining({ recipientUserId: expect.anything() }),
+		);
+	});
+
+	it("treats a terminal outcome as done, not as a failure", async () => {
+		for (const outcome of [
+			"stale",
+			"already-notified",
+			"not-a-member",
+			"preference-disabled",
+		] as const) {
+			mockCreateAssignmentNotice.mockResolvedValueOnce(outcome);
+			arrangeTranscript([
+				item("Send the coverage report", "Anna Petrova"),
+			]);
+
+			await expect(
+				matchMeetingActionItemOwnersActivity(baseInput),
+			).resolves.toMatchObject({ assigned: 1 });
+		}
+	});
+
+	it("lets the retry of a run that died mid-loop announce everything", async () => {
+		// The first attempt assigns Anna's item and then throws. It announces
+		// nothing — a partial count would stand, since the dedupe row would
+		// then answer the retry — and withholds the stamp.
+		mockFindManyMembers.mockResolvedValue([
+			{ user: ANNA },
+			{ user: SAM_MEMBER },
+		]);
+		arrangeTranscript([
+			item("Send the coverage report", "Anna Petrova", 0),
+			item("Book the retro room", "Sam Carter", 1),
+		]);
+		mockUpsertTodo
+			.mockResolvedValueOnce({ id: "todo-report" })
+			.mockRejectedValueOnce(new Error("boom"));
+
+		await expect(
+			matchMeetingActionItemOwnersActivity(baseInput),
+		).rejects.toThrow("boom");
+		expect(mockCreateAssignmentNotice).not.toHaveBeenCalled();
+		expect(mockUpdateManyTranscript).not.toHaveBeenCalled();
+
+		// The retry finds Anna's row written and unchanged, writes Sam's, and
+		// hands both of them over.
+		arrangeTranscript(
+			[
+				item("Send the coverage report", "Anna Petrova", 0),
+				item("Book the retro room", "Sam Carter", 1),
+			],
+			[
+				todo("Send the coverage report", {
+					id: "todo-report",
+					assigneeUserId: "user-anna",
+				}),
+			],
+		);
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		expect(noticeRecipients()).toEqual(["user-anna", "user-sam"]);
+		expect(mockCreateAssignmentNotice.mock.calls[0][0].items).toEqual([
+			{ todoId: "todo-report", text: "Send the coverage report" },
+		]);
+	});
+
+	it("logs how many notices it wrote, and nothing about who", async () => {
+		mockFindManyMembers.mockResolvedValue([
+			{ user: ANNA },
+			{ user: SAM_MEMBER },
+		]);
+		arrangeTranscript([
+			item("Send the coverage report", "Anna Petrova", 0),
+			item("Book the retro room", "Sam Carter", 1),
+		]);
+		// Sam already heard about this meeting; only Anna's notice is new.
+		mockCreateAssignmentNotice
+			.mockResolvedValueOnce("created")
+			.mockResolvedValueOnce("already-notified");
+
+		await matchMeetingActionItemOwnersActivity(baseInput);
+
+		const { logger } = await import("@repo/logs");
+		const complete = vi
+			.mocked(logger.info)
+			.mock.calls.find((call) =>
+				String(call[0]).includes("run complete"),
+			);
+		expect(complete?.[1]).toMatchObject({ recipientsNotified: 1 });
+		// Worker-log redaction: no name, id or item text of the recipient.
+		const logged = JSON.stringify(complete?.[1]);
+		expect(logged).not.toContain("user-anna");
+		expect(logged).not.toContain("Anna");
+		expect(logged).not.toContain("coverage");
+		expect(logged).not.toContain(MEETING_SUBJECT);
 	});
 });

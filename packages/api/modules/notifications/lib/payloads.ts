@@ -438,6 +438,34 @@ const cliConnectionRequestedPayload = z.object({
 	requestedByUserId: z.string(),
 });
 
+// TODO_ASSIGNED payload — written by `fanOut.todoAssigned` when a teammate
+// makes the recipient the assignee of a to-do (Fizzy #2340).
+//
+// Identifiers only. The assigner's name and the to-do's text live in the
+// notification's `snippet`, as `assignmentBase` keeps them out of the story
+// payload. `projectId` is nullable because a manual to-do may belong to no
+// project.
+const todoAssignedPayload = z.object({
+	todoId: z.string(),
+	projectId: z.string().nullable(),
+	assignedByUserId: z.string(),
+	previousAssigneeUserId: z.string().nullable(),
+});
+
+// TODO_MEETING_ITEMS_ASSIGNED payload — written from the Temporal worker by
+// `createTodoMeetingAssignmentNotification` in `@repo/database`, which cannot
+// import this module. Keep the two in lock-step; a test here validates the
+// writer's payload builder against this schema.
+//
+// One row per recipient per meeting, so it addresses the meeting and lists the
+// to-dos it put on the recipient. No actor: the owner matcher assigned them.
+const todoMeetingItemsAssignedPayload = z.object({
+	transcriptId: z.string(),
+	projectId: z.string(),
+	todoIds: z.array(z.string()).min(1),
+	itemCount: z.number().int().positive(),
+});
+
 const NotificationPayloadByType = {
 	[NotificationType.STORY_MENTION]: mentionLikeBase,
 	[NotificationType.TASK_MENTION]: mentionLikeBase,
@@ -495,6 +523,9 @@ const NotificationPayloadByType = {
 	[NotificationType.QUESTION_MENTIONED]: questionMentionedPayload,
 	[NotificationType.QUESTION_ANSWERED]: questionAnsweredPayload,
 	[NotificationType.CLI_CONNECTION_REQUESTED]: cliConnectionRequestedPayload,
+	[NotificationType.TODO_ASSIGNED]: todoAssignedPayload,
+	[NotificationType.TODO_MEETING_ITEMS_ASSIGNED]:
+		todoMeetingItemsAssignedPayload,
 } as const;
 
 export function validatePayload(

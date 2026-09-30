@@ -177,6 +177,14 @@ const CLI_CONNECTION_REQUESTED_TITLE =
 	"A teammate asked you to connect a coding tool to Fabric";
 
 /**
+ * Server-authored for the same reason as `CLI_CONNECTION_REQUESTED_TITLE`: any
+ * member may assign a to-do, and every member sets their own display name, so
+ * the assigner's name goes to the snippet and never to what becomes an email
+ * subject (Fizzy #2340).
+ */
+const TODO_ASSIGNED_TITLE = "You were assigned a to-do";
+
+/**
  * Write a single notification row. Self-skips when actor === recipient.
  * Dedup is enforced by a partial unique index on (userId, dedupeKey)
  * WHERE readAt IS NULL — see migration `notification_center`. The race
@@ -394,6 +402,25 @@ type AssignmentArgs = {
 	link: string;
 	itemTitle: string;
 	previousAssigneeId?: string | null;
+};
+
+/**
+ * A teammate made the recipient the assignee of a to-do (Fizzy #2340).
+ *
+ * `todoText` is the to-do's own title (manual rows) or the meeting item's text
+ * (meeting rows) — whichever the row carries. `previousAssigneeUserId` is the
+ * member who held it before, or null; a contact previously holding it reads as
+ * null, since a contact has no account to point at.
+ */
+type TodoAssignedArgs = {
+	recipientUserId: string;
+	todoId: string;
+	todoText: string | null;
+	projectId: string | null;
+	organizationId: string;
+	actorUserId: string;
+	actorName: string | null;
+	previousAssigneeUserId: string | null;
 };
 
 /**
@@ -1270,6 +1297,65 @@ export const fanOut = {
 			});
 		} catch (error) {
 			logFailure("fanOut.assigned", error);
+		}
+	},
+
+	/**
+	 * A teammate put a to-do on the recipient (Fizzy #2340).
+	 *
+	 * One row per to-do, deduped on the pair: re-assigning the same person
+	 * while they have not opened the first notice refreshes it rather than
+	 * stacking a second. Links to the To Do page, whose default view lists the
+	 * recipient's own open to-dos — there is no single-to-do route to point at.
+	 *
+	 * External delivery rides the recipient's own email/webhook opt-in through
+	 * `createNotification`, like every other assignment.
+	 */
+	async todoAssigned(args: TodoAssignedArgs): Promise<void> {
+		if (args.recipientUserId === args.actorUserId) {
+			return;
+		}
+		const actor = clampActorName(args.actorName);
+		const todoText = args.todoText?.replace(/\s+/g, " ").trim();
+		try {
+			// Asked again here, not only where the assignment was checked: the
+			// row below starts email/webhook delivery the moment it is written,
+			// and nothing downstream of that asks whether the recipient still
+			// belongs to the organization whose to-do text it carries.
+			const membership = await db.member.findFirst({
+				where: {
+					organizationId: args.organizationId,
+					userId: args.recipientUserId,
+				},
+				select: { id: true },
+			});
+			if (!membership) {
+				return;
+			}
+			await createNotification({
+				userId: args.recipientUserId,
+				organizationId: args.organizationId,
+				type: NotificationType.TODO_ASSIGNED,
+				category: NotificationCategory.ASSIGNMENT,
+				title: TODO_ASSIGNED_TITLE,
+				snippet: todoText
+					? `${actor} assigned you: ${todoText}`
+					: `${actor} assigned you a to-do.`,
+				link: "todos",
+				source: {
+					...(args.projectId ? { projectId: args.projectId } : {}),
+					actorUserId: args.actorUserId,
+				},
+				payload: {
+					todoId: args.todoId,
+					projectId: args.projectId,
+					assignedByUserId: args.actorUserId,
+					previousAssigneeUserId: args.previousAssigneeUserId,
+				},
+				dedupeKey: `todoAssigned:${args.todoId}:${args.recipientUserId}`,
+			});
+		} catch (error) {
+			logFailure("fanOut.todoAssigned", error);
 		}
 	},
 

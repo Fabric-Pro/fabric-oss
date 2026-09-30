@@ -18616,6 +18616,25 @@ enum NotificationType {
   /// actor-chooses-recipients fan-out already sits (STORY_SHARED), so the two
   /// surfaces answer to the same switch.
   CLI_CONNECTION_REQUESTED
+
+  /// A teammate made the recipient the assignee of a to-do (Fizzy #2340).
+  /// Written by `fanOut.todoAssigned` after `todos.assign` commits. One row per
+  /// to-do, so it can name what was handed over.
+  ///
+  /// Category ASSIGNMENT: a person handing work to a person, silenced by the
+  /// same `assignments` toggle as a story assignment.
+  TODO_ASSIGNED
+
+  /// The meeting-digest owner matcher assigned one or more of a meeting's
+  /// action items to the recipient (Fizzy #2340). One row per recipient per
+  /// meeting, not per item: a single meeting routinely names one person
+  /// several times, and a bell row per item would bury everything else.
+  ///
+  /// Split from TODO_ASSIGNED because nobody did the assigning — there is no
+  /// actor — and because the payload addresses a meeting rather than one
+  /// to-do. Category ASSIGNMENT, so the recipient's `assignments` toggle
+  /// silences both kinds together.
+  TODO_MEETING_ITEMS_ASSIGNED
 }
 
 model Notification {

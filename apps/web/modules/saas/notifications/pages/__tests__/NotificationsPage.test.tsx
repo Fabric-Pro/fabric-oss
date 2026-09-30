@@ -20,15 +20,18 @@ const toastMock = vi.fn();
 
 const notificationsState: {
 	status: string;
+	types: string[] | undefined;
 	items: any[];
 } = {
 	status: "all",
+	types: undefined,
 	items: [],
 };
 
 vi.mock("../../hooks/use-notifications", () => ({
-	useNotifications: (input: { status: string }) => {
+	useNotifications: (input: { status: string; types?: string[] }) => {
 		notificationsState.status = input.status;
+		notificationsState.types = input.types;
 		return {
 			data: {
 				pages: [{ items: notificationsState.items, nextCursor: null }],
@@ -105,6 +108,7 @@ vi.mock("next-intl", () => ({
 			"tabs.all": "All",
 			"tabs.unread": "Unread",
 			"tabs.mentions": "Mentions",
+			"tabs.inbound": "Inbound",
 			"tabs.archived": "Archived",
 			unreadIndicator: "Unread",
 			settings: "Notification settings",
@@ -168,6 +172,7 @@ beforeEach(() => {
 	markAllReadMutate.mockReset();
 	toastMock.mockReset();
 	notificationsState.status = "all";
+	notificationsState.types = undefined;
 	notificationsState.items = [makeNotification({ id: "n1" })];
 });
 
@@ -245,5 +250,28 @@ describe("NotificationsPage — archive flow", () => {
 		expect(
 			screen.getByRole("link", { name: "Notification settings" }),
 		).toHaveAttribute("href", "/app/settings/notifications");
+	});
+});
+
+describe("NotificationsPage — inbound tab", () => {
+	// The inbound tab filters by exact type. To-do assignments (Fizzy #2340)
+	// are assignments coming to you, so they must sit next to STORY_ASSIGNED —
+	// a type missing here never shows up in this tab.
+	it("requests story and to-do assignment types alongside status changes", async () => {
+		const user = userEvent.setup();
+		render(<NotificationsPage />);
+
+		expect(notificationsState.types).toBeUndefined();
+
+		await user.click(screen.getByRole("tab", { name: "Inbound" }));
+
+		expect(notificationsState.types).toEqual(
+			expect.arrayContaining([
+				"STORY_STATUS_CHANGED",
+				"STORY_ASSIGNED",
+				"TODO_ASSIGNED",
+				"TODO_MEETING_ITEMS_ASSIGNED",
+			]),
+		);
 	});
 });

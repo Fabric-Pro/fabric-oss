@@ -14,6 +14,7 @@ import {
 	CreditCardIcon,
 	FilePenLineIcon,
 	FlagIcon,
+	ListTodoIcon,
 	Loader2Icon,
 	MegaphoneIcon,
 	Share2Icon,
@@ -115,6 +116,16 @@ function resolveIcon(notification: {
 	}
 	if (notification.type === "CLI_CONNECTION_REQUESTED") {
 		return TerminalIcon;
+	}
+	// To-do assignments (Fizzy #2340) share the ASSIGNMENT category with story
+	// assignments for its opt-out toggle, but they link to the To Do page, so
+	// they wear that page's navigation glyph. STORY_ASSIGNED keeps the
+	// category's user-plus default.
+	if (
+		notification.type === "TODO_ASSIGNED" ||
+		notification.type === "TODO_MEETING_ITEMS_ASSIGNED"
+	) {
+		return ListTodoIcon;
 	}
 	if (notification.category === "CONTEXT_INDEXING_COMPLETED") {
 		// Defensive: notification.payload is typed Json; in practice it's
