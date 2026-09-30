@@ -18126,6 +18126,9 @@ model ProjectInstructionRepositorySyncRun {
   commitSha      String?
   /// No foreign key: the snapshot may be pruned while the run stays in History.
   snapshotId     String?
+  /// Which limit a LIMITS_EXCEEDED run hit: `{ kind, max, actual? }`, numbers
+  /// only. Null for every other outcome and for runs recorded before it existed.
+  limitDetail    Json?
   /// When the instruction reaper last claimed this unfinished receipt to ask
   /// Temporal whether its run has ended. Candidates are taken least recently
   /// checked first, so receipts whose runs stay open cannot starve later ones.

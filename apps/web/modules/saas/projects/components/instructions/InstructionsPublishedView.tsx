@@ -41,6 +41,7 @@ import {
 } from "./InstructionFindingsTable";
 import { InstructionProposals } from "./InstructionProposals";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
+import { InstructionsFailedChecksBanner } from "./InstructionsFailedChecksBanner";
 import { InstructionsHistory } from "./InstructionsHistory";
 import { InstructionsRejectedBanner } from "./InstructionsRejectedBanner";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
@@ -309,6 +310,14 @@ export function InstructionsPublishedView({
 		newest && newest.status === "FAILED" && newerThanPublished
 			? newest
 			: null;
+	// `finalize` re-checks the staged files in place, which serves an upload
+	// version in upload mode and a synced version once repository mode is
+	// confirmed. Any other pairing cannot be published, so it gets no button.
+	const canRetryFailed =
+		canEdit &&
+		failed !== null &&
+		((!repositoryBacked && failed.source === "UPLOAD") ||
+			(repositoryModeConfirmed && failed.source === "REPOSITORY"));
 	const checking =
 		newest && RECEIVING_STATUSES.has(newest.status) && newerThanPublished
 			? newest
@@ -450,7 +459,13 @@ export function InstructionsPublishedView({
 
 	const retry = useMutation(
 		orpc.projects.instructions.finalize.mutationOptions({
-			onSuccess: () => onChanged(),
+			onSuccess: (result) => {
+				// The previous execution is still closing, so nothing restarted.
+				if (result.status === "FAILED") {
+					toast.info(t("retryChecksStillClosing"));
+				}
+				onChanged();
+			},
 			onError: (error) => toast.error(error.message),
 		}),
 	);
@@ -781,36 +796,25 @@ export function InstructionsPublishedView({
 				/>
 			) : null}
 			{failed ? (
-				<div
-					role="alert"
-					className="flex flex-col gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4"
-				>
-					<h2 className="font-semibold text-destructive">
-						{t("failedTitle")}
-					</h2>
-					<p className="text-muted-foreground text-sm">
-						{t("failedBody", { version: failed.version })}
-					</p>
-					{canMutateDirect ? (
-						<div className="flex gap-2">
-							<Button
-								variant="outline"
-								disabled={retry.isPending}
-								onClick={() =>
-									retry.mutate({
-										projectId,
-										snapshotId: failed.id,
-									})
-								}
-							>
-								{t("tryAgainButton")}
-							</Button>
-							<Button variant="ghost" onClick={onReplaceClick}>
-								{t("uploadAgainButton")}
-							</Button>
-						</div>
-					) : null}
-				</div>
+				<InstructionsFailedChecksBanner
+					version={failed.version}
+					publishedVersion={published?.version ?? null}
+					mode={
+						failed.source === "REPOSITORY" ? "repository" : "upload"
+					}
+					canRetry={canRetryFailed}
+					stale={
+						(failed.source === "UPLOAD" &&
+							repositoryModeConfirmed) ||
+						(failed.source === "REPOSITORY" && !repositoryBacked)
+					}
+					canEdit={canEdit}
+					retrying={retry.isPending}
+					onRetry={() =>
+						retry.mutate({ projectId, snapshotId: failed.id })
+					}
+					onUploadAgain={canMutateDirect ? onReplaceClick : undefined}
+				/>
 			) : null}
 			{published && deferredScan === "PENDING" ? (
 				// `status`, not `alert`: the scan is running and nothing is

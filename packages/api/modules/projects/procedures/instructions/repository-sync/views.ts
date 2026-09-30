@@ -1,4 +1,7 @@
-import type { listInstructionRepositorySyncRuns } from "@repo/database";
+import {
+	type listInstructionRepositorySyncRuns,
+	parseInstructionSyncLimitDetail,
+} from "@repo/database";
 
 type SyncRunRow = Awaited<
 	ReturnType<typeof listInstructionRepositorySyncRuns>
@@ -22,6 +25,7 @@ export function toSyncRunView(run: SyncRunRow, currentSyncId: string | null) {
 		commitSha: run.commitSha,
 		snapshotId: run.snapshotId,
 		snapshotVersion: run.snapshotVersion,
+		limit: parseInstructionSyncLimitDetail(run.limitDetail),
 		userName: run.user.name,
 		fromCurrentConfiguration: run.syncId === currentSyncId,
 	};

@@ -57,6 +57,7 @@ vi.mock("../prisma/client", async () => {
 		Prisma: {
 			PrismaClientKnownRequestError: class extends Error {},
 			JsonNull: "JsonNull",
+			DbNull: "DbNull",
 			join,
 			sql: sqltag,
 		},
@@ -82,6 +83,7 @@ import {
 	instructionSyncLeaseHeld,
 	listInstructionRepositorySyncRuns,
 	listUnfinishedInstructionRepositorySyncRunReceipts,
+	parseInstructionSyncLimitDetail,
 	recordInstructionSyncCheckFailure,
 	recordPendingInstructionSyncHead,
 	settlePendingInstructionSyncHead,
@@ -975,6 +977,34 @@ describe("listUnfinishedInstructionRepositorySyncRunReceipts", () => {
 	});
 });
 
+describe("parseInstructionSyncLimitDetail", () => {
+	it("keeps a known kind with non-negative integers, and drops anything else", () => {
+		expect(
+			parseInstructionSyncLimitDetail({
+				kind: "fileCount",
+				max: 5000,
+				actual: 6000,
+			}),
+		).toEqual({ kind: "fileCount", max: 5000, actual: 6000 });
+		expect(
+			parseInstructionSyncLimitDetail({ kind: "inventory", max: 200000 }),
+		).toEqual({ kind: "inventory", max: 200000 });
+		for (const garbage of [
+			null,
+			"fileCount",
+			{},
+			{ kind: "nope", max: 1 },
+			{ kind: "fileSize", max: -1 },
+			{ kind: "fileSize", max: 1.5 },
+			{ kind: "fileSize", max: "5" },
+			{ kind: "fileSize", max: 5, actual: Number.POSITIVE_INFINITY },
+			{ kind: "fileSize", max: 5, actual: null },
+		]) {
+			expect(parseInstructionSyncLimitDetail(garbage)).toBeNull();
+		}
+	});
+});
+
 describe("completeInstructionRepositorySyncRun", () => {
 	const base = {
 		runKey: "sync_1:run_a",
@@ -992,6 +1022,60 @@ describe("completeInstructionRepositorySyncRun", () => {
 		scheduling: { kind: "success", commitSha: "c0ffee" } as const,
 		now: NOW,
 	};
+
+	describe("the limit detail", () => {
+		const limit = {
+			kind: "totalSize",
+			actual: 60_000_000,
+			max: 52_428_800,
+		} as const;
+		const limitDetailWritten = async (
+			input: Partial<
+				Parameters<typeof completeInstructionRepositorySyncRun>[0]
+			>,
+		) => {
+			m.run.updateMany.mockResolvedValue({ count: 1 });
+			m.$queryRaw.mockResolvedValueOnce([
+				{
+					generation: 3,
+					failureCount: 0,
+					automaticPausedReason: null,
+					pendingCommitSha: null,
+					now: NOW,
+				},
+			]);
+			await completeInstructionRepositorySyncRun({
+				...base,
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				scheduling: { kind: "none" },
+				...input,
+			});
+			return m.run.updateMany.mock.calls[0]?.[0].data.limitDetail;
+		};
+
+		it("is stored for a LIMITS_EXCEEDED run", async () => {
+			expect(await limitDetailWritten({ limit })).toEqual(limit);
+		});
+
+		it("is never stored for another error, even when one is passed", async () => {
+			expect(
+				await limitDetailWritten({ error: "CLONE_FAILED", limit }),
+			).toBe("DbNull");
+		});
+
+		it("is dropped when it is not a valid detail", async () => {
+			expect(
+				await limitDetailWritten({
+					limit: { kind: "fileSize", max: -3 } as never,
+				}),
+			).toBe("DbNull");
+		});
+
+		it("is null when the run carries none", async () => {
+			expect(await limitDetailWritten({})).toBe("DbNull");
+		});
+	});
 
 	it("completes the run row once, applies the scheduling fenced on the generation, and audits in the same transaction", async () => {
 		m.run.updateMany.mockResolvedValue({ count: 1 });
@@ -1047,6 +1131,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 				note: null,
 				commitSha: "c0ffee",
 				snapshotId: "snap_1",
+				limitDetail: "DbNull",
 			},
 		});
 		expect(m.sync.update).toHaveBeenCalledWith({
@@ -1276,6 +1361,7 @@ describe("completeInstructionRepositorySyncRun", () => {
 						note: null,
 						commitSha: null,
 						snapshotId: null,
+						limitDetail: "DbNull",
 					},
 				});
 				expect(m.sync.update).not.toHaveBeenCalled();

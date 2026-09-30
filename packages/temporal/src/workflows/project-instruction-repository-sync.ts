@@ -144,6 +144,7 @@ export async function projectInstructionRepositorySyncWorkflow(
 		commitSha: null,
 		error: null,
 		childResult: null,
+		limit: null,
 	};
 	let result: RecordSyncRunResult = { recorded: false, status: null };
 	try {
@@ -190,6 +191,7 @@ async function runSync(
 		state.error = failure.code;
 		state.commitSha = failure.details.commitSha ?? null;
 		state.snapshotId = failure.details.snapshotId ?? null;
+		state.limit = failure.details.limit ?? null;
 		return;
 	}
 	state.commitSha = acquired.commitSha;

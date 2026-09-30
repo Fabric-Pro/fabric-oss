@@ -231,6 +231,34 @@ describe("projects.instructions.finalize", () => {
 		expect(result).toEqual({ status: "VALIDATING" });
 	});
 
+	// Repository mode's "Retry checks": a synced version whose checks broke is
+	// re-checked in place, under the same workflow id, with no new snapshot.
+	it("re-attempts a FAILED repository-source snapshot under the same workflow id", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "snap_1",
+			status: "FAILED",
+			source: "REPOSITORY",
+		});
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(m.workflowStart).toHaveBeenCalledTimes(1);
+		const [, options] = m.workflowStart.mock.calls[0] as [
+			unknown,
+			{ workflowId: string },
+		];
+		expect(options.workflowId).toBe("project-instruction-snapshot-snap_1");
+		expect(m.startInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
 	// I3 (round 2): `markInstructionSnapshotFailed` writes FAILED from inside
 	// the workflow's boundary catch, which then RETHROWS, so the execution
 	// stays open until Temporal processes that final workflow task. A "Try

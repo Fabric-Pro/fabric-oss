@@ -39,7 +39,11 @@ function redactedKeys(value: unknown): string[] {
 	]);
 }
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async (importOriginal) => ({
+	// The real parser: the run view's `limit` is what it returns.
+	parseInstructionSyncLimitDetail: (
+		await importOriginal<typeof import("@repo/database")>()
+	).parseInstructionSyncLimitDetail,
 	getInstructionRepositorySync: m.getInstructionRepositorySync,
 	getLatestInstructionRepositorySyncRun:
 		m.getLatestInstructionRepositorySyncRun,
@@ -412,6 +416,46 @@ describe("repositorySync.listRuns", () => {
 			userName: "Example Member",
 		});
 		expect(result.runs[0]).not.toHaveProperty("user");
+	});
+
+	it("exposes a run's recorded limit as `limit`, and null for a value that is not a valid detail", async () => {
+		const run = (id: string, limitDetail: unknown) => ({
+			id,
+			syncId: "sync_1",
+			trigger: "MANUAL",
+			generation: 2,
+			startedAt: new Date("2026-09-23T10:00:00.000Z"),
+			finishedAt: new Date("2026-09-23T10:01:00.000Z"),
+			status: "FAILED",
+			error: "LIMITS_EXCEEDED",
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			limitDetail,
+			user: { id: "user_1", name: "Example Member" },
+		});
+		m.listInstructionRepositorySyncRuns.mockResolvedValue([
+			run("a", { kind: "fileCount", actual: 6000, max: 5000 }),
+			run("b", { kind: "inventory", max: 200000 }),
+			run("c", { kind: "unknown", max: 1 }),
+			run("d", { kind: "fileSize", max: "5" }),
+			run("e", { kind: "fileSize", max: 5, path: "docs/secret.md" }),
+			run("f", null),
+		]);
+		const result = (await handlers.listRuns?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as { runs: Array<{ limit: unknown }> };
+		expect(result.runs.map((r) => r.limit)).toEqual([
+			{ kind: "fileCount", actual: 6000, max: 5000 },
+			{ kind: "inventory", max: 200000 },
+			null,
+			null,
+			{ kind: "fileSize", max: 5 },
+			null,
+		]);
+		expect(result.runs[0]).not.toHaveProperty("limitDetail");
 	});
 
 	describe("runs of a switched-off configuration (Fizzy #2672)", () => {

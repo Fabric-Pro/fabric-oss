@@ -12,7 +12,7 @@
 import type { InstructionRejection } from "@repo/database";
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,6 +100,10 @@ vi.mock("@saas/projects/components/cli-connection/ConnectCliDialog", () => ({
 }));
 
 const finalizeCalls: Array<Record<string, unknown>> = [];
+const finalizeResult = vi.hoisted(() => ({ status: "VALIDATING" }));
+const toastMock = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn() }));
+
+vi.mock("sonner", () => ({ toast: toastMock }));
 
 /**
  * The file list per snapshot id, so a test can publish a new version whose
@@ -195,7 +199,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							finalizeCalls.push(
 								input as Record<string, unknown>,
 							);
-							return { status: "VALIDATING" };
+							return { status: finalizeResult.status };
 						},
 					),
 				},
@@ -260,6 +264,9 @@ beforeEach(() => {
 	compareState.error = null;
 	compareState.inputs = [];
 	proposalsProps.length = 0;
+	finalizeResult.status = "VALIDATING";
+	toastMock.info.mockClear();
+	toastMock.error.mockClear();
 });
 
 function treeFile(id: string, path: string): Record<string, unknown> {
@@ -440,49 +447,175 @@ describe("InstructionsPublishedView", () => {
 		).toBeInTheDocument();
 	});
 
-	// R30/I2: FAILED is a dead branch until something writes it, and until
-	// this banner exists there is no way back from one except re-uploading
-	// the whole folder while the stuck row stays behind.
-	it("offers 'Try again' for a FAILED newest snapshot and wires it to finalize", async () => {
-		const onChanged = vi.fn();
-		finalizeCalls.length = 0;
-		render(
-			<InstructionsPublishedView
-				projectId="p"
-				projectName="Checkout Rewrite"
-				published={null}
-				snapshots={
-					[
-						{
-							id: "s3",
-							version: 3,
-							status: "FAILED",
-							source: "UPLOAD",
-							fileCount: 0,
-							excludedCount: 0,
-							createdAt: new Date(),
-						} as never,
-					] as never
-				}
-				onReplaceClick={() => undefined}
-				onChanged={onChanged}
-				canEdit
-			/>,
-			{ wrapper: TestQueryProvider },
-		);
+	// R30/I2: FAILED is the checks breaking, not a verdict on the files, and
+	// finalize re-runs them in place, so there is a way back that is not
+	// re-uploading the whole folder while the stuck row stays behind.
+	describe("a FAILED newest version", () => {
+		const failedSnapshot = (source: "UPLOAD" | "REPOSITORY") =>
+			({
+				id: "s3",
+				version: 3,
+				status: "FAILED",
+				source,
+				fileCount: 0,
+				excludedCount: 0,
+				createdAt: new Date(),
+			}) as never;
+		const publishedV2 = {
+			id: "s2",
+			version: 2,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 1,
+			excludedCount: 0,
+			createdAt: new Date(),
+			user: { id: "u", name: "A. Member" },
+		} as never;
 
-		const alert = screen.getByRole("alert");
-		expect(alert).toHaveTextContent(
-			"We could not finish checking this upload",
-		);
-		expect(alert).toHaveTextContent("Checking version 3 stopped");
+		function renderFailed(
+			source: "UPLOAD" | "REPOSITORY",
+			props: Record<string, unknown> = {},
+			onChanged: () => void = () => undefined,
+		) {
+			return render(
+				<InstructionsPublishedView
+					projectId="p"
+					projectName="Checkout Rewrite"
+					published={null}
+					snapshots={[failedSnapshot(source)] as never}
+					onReplaceClick={() => undefined}
+					onChanged={onChanged}
+					canEdit
+					{...props}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+		}
 
-		await userEvent.click(
-			screen.getByRole("button", { name: "Try again" }),
-		);
+		it("upload mode: offers 'Retry checks' and 'Upload again', and wires retry to finalize", async () => {
+			const onChanged = vi.fn();
+			finalizeCalls.length = 0;
+			renderFailed("UPLOAD", {}, onChanged);
 
-		await waitFor(() => expect(onChanged).toHaveBeenCalled());
-		expect(finalizeCalls).toEqual([{ projectId: "p", snapshotId: "s3" }]);
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent(
+				"We could not finish checking version 3",
+			);
+			expect(alert).toHaveTextContent("not a verdict on your files");
+			expect(alert).toHaveTextContent("nothing was published");
+			expect(
+				screen.getByRole("button", { name: "Upload again" }),
+			).toBeInTheDocument();
+
+			await userEvent.click(
+				screen.getByRole("button", { name: "Retry checks" }),
+			);
+
+			await waitFor(() => expect(onChanged).toHaveBeenCalled());
+			expect(finalizeCalls).toEqual([
+				{ projectId: "p", snapshotId: "s3" },
+			]);
+			expect(toastMock.info).not.toHaveBeenCalled();
+		});
+
+		it("names the version that stays published", () => {
+			render(
+				<InstructionsPublishedView
+					projectId="p"
+					projectName="Checkout Rewrite"
+					published={publishedV2}
+					snapshots={[failedSnapshot("UPLOAD")] as never}
+					onReplaceClick={() => undefined}
+					onChanged={() => undefined}
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Version 2 stays published.",
+			);
+		});
+
+		it("repository mode: offers 'Retry checks' for a synced version, never 'Upload again', and says no new sync runs", async () => {
+			finalizeCalls.length = 0;
+			renderFailed("REPOSITORY", {
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+			});
+
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent("same commit");
+			expect(alert).toHaveTextContent("does not sync again");
+			expect(
+				screen.queryByRole("button", { name: "Upload again" }),
+			).toBeNull();
+
+			await userEvent.click(
+				screen.getByRole("button", { name: "Retry checks" }),
+			);
+			await waitFor(() =>
+				expect(finalizeCalls).toEqual([
+					{ projectId: "p", snapshotId: "s3" },
+				]),
+			);
+		});
+
+		it("repository mode: an uploaded version is stale, cannot be retried, and says syncing publishes instead", () => {
+			renderFailed("UPLOAD", {
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+			});
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent(
+				"uploaded before the repository became the source",
+			);
+			expect(alert).toHaveTextContent("published by syncing instead");
+			expect(within(alert).queryByRole("button")).toBeNull();
+		});
+
+		it("repository mode off: a synced version is stale, cannot be retried, and says uploading publishes instead", () => {
+			renderFailed("REPOSITORY", { repositoryBacked: false });
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent("no longer the source");
+			expect(alert).toHaveTextContent("published by uploading a folder");
+			expect(alert).not.toHaveTextContent("Ask someone");
+			expect(within(alert).queryByRole("button")).toBeNull();
+		});
+
+		it("an editor never sees the ask-someone copy while repository mode is unconfirmed", () => {
+			renderFailed("REPOSITORY", {
+				repositoryBacked: true,
+				repositoryConfirmed: false,
+			});
+			const alert = screen.getByRole("alert");
+			expect(alert).not.toHaveTextContent("Ask someone");
+			expect(within(alert).queryByRole("button")).toBeNull();
+		});
+
+		it("without edit rights: no buttons, and it asks someone who can edit to retry", () => {
+			renderFailed("UPLOAD", { canEdit: false });
+			const alert = screen.getByRole("alert");
+			expect(alert).toHaveTextContent(
+				"Ask someone who can edit coding instructions to retry the checks",
+			);
+			expect(within(alert).queryByRole("button")).toBeNull();
+		});
+
+		it("tells the user to retry in a moment when the previous run is still closing", async () => {
+			finalizeResult.status = "FAILED";
+			const onChanged = vi.fn();
+			renderFailed("UPLOAD", {}, onChanged);
+
+			await userEvent.click(
+				screen.getByRole("button", { name: "Retry checks" }),
+			);
+
+			await waitFor(() => expect(toastMock.info).toHaveBeenCalled());
+			expect(toastMock.info).toHaveBeenCalledWith(
+				en.projects.codingInstructions.publishedView
+					.retryChecksStillClosing,
+			);
+		});
 	});
 
 	// M7: `checking` was computed but rendered only as the third branch of a
@@ -535,7 +668,7 @@ describe("InstructionsPublishedView", () => {
 		expect(checking).toHaveAttribute("aria-live", "polite");
 	});
 
-	it("does not offer 'Try again' when the newest snapshot is READY", () => {
+	it("shows no failed-checks banner when the newest snapshot is READY", () => {
 		render(
 			<InstructionsPublishedView
 				projectId="p"
@@ -560,7 +693,9 @@ describe("InstructionsPublishedView", () => {
 			{ wrapper: TestQueryProvider },
 		);
 		expect(screen.queryByRole("alert")).toBeNull();
-		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Retry checks" }),
+		).toBeNull();
 	});
 });
 

@@ -216,6 +216,7 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 			commitSha: SHA,
 			error: null,
 			childResult: { status: "READY", published: true },
+			limit: null,
 		});
 	}, 60_000);
 
@@ -256,7 +257,17 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 				throw ApplicationFailure.create({
 					type: "LIMITS_EXCEEDED",
 					message: "Repository sync failed: LIMITS_EXCEEDED",
-					details: [{ commitSha: SHA, snapshotId: "snap_limits" }],
+					details: [
+						{
+							commitSha: SHA,
+							snapshotId: "snap_limits",
+							limit: {
+								kind: "fileCount",
+								actual: 6000,
+								max: 5000,
+							},
+						},
+					],
 				});
 			}),
 		});
@@ -269,6 +280,7 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 			error: "LIMITS_EXCEEDED",
 			commitSha: SHA,
 			snapshotId: "snap_limits",
+			limit: { kind: "fileCount", actual: 6000, max: 5000 },
 		});
 	}, 60_000);
 

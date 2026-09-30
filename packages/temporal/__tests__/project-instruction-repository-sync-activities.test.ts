@@ -146,7 +146,11 @@ vi.mock(
 	},
 );
 
-import { GitCommandError } from "../src/activities/lib/instruction-sync-git";
+import {
+	GitCommandError,
+	MAX_CLONE_BYTES,
+	MAX_INVENTORY_ENTRIES,
+} from "../src/activities/lib/instruction-sync-git";
 import {
 	acquireInstructionTreeFromRepository,
 	awaitInstructionSnapshotSettled,
@@ -930,6 +934,10 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
 		);
 		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: { kind: "inventory", max: MAX_INVENTORY_ENTRIES },
+		});
 		expect(m.sparseCheckout).not.toHaveBeenCalled();
 	});
 
@@ -947,6 +955,11 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(error.details[0]).toEqual({
 			commitSha: SHA,
 			keptCount: SNAPSHOT_LIMITS.maxFiles + 1,
+			limit: {
+				kind: "fileCount",
+				actual: SNAPSHOT_LIMITS.maxFiles + 1,
+				max: SNAPSHOT_LIMITS.maxFiles,
+			},
 		});
 		expect(m.sparseCheckout).not.toHaveBeenCalled();
 	});
@@ -962,7 +975,61 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
 		);
 		expect(error.type).toBe("LIMITS_EXCEEDED");
-		expect(error.details[0]).toEqual({ commitSha: SHA });
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: {
+				kind: "fileSize",
+				actual: SNAPSHOT_LIMITS.maxFileBytes + 1,
+				max: SNAPSHOT_LIMITS.maxFileBytes,
+			},
+		});
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("names the largest file when several are over the per-file cap, not the first", async () => {
+		serveRepo([
+			{
+				path: "a.md",
+				body: "x".repeat(SNAPSHOT_LIMITS.maxFileBytes + 10),
+			},
+			{ path: "small.md", body: "x" },
+			{
+				path: "b.md",
+				body: "x".repeat(SNAPSHOT_LIMITS.maxFileBytes + 500),
+			},
+		]);
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+		expect(error.details[0]).toMatchObject({
+			limit: {
+				kind: "fileSize",
+				actual: SNAPSHOT_LIMITS.maxFileBytes + 500,
+			},
+		});
+	});
+
+	it("reports the full total, not where the scan stopped, when the folder is over the total cap", async () => {
+		const each = SNAPSHOT_LIMITS.maxFileBytes;
+		const count = Math.floor(SNAPSHOT_LIMITS.maxTotalBytes / each) + 3;
+		serveRepo(
+			Array.from({ length: count }, (_, i) => ({
+				path: `f${i}.md`,
+				body: "x".repeat(each),
+			})),
+		);
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: {
+				kind: "totalSize",
+				actual: count * each,
+				max: SNAPSHOT_LIMITS.maxTotalBytes,
+			},
+		});
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 	});
 
@@ -1325,6 +1392,24 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
 		);
 		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
+		});
+	});
+
+	it("maps the disk watchdog after the clone to the repository-size limit too", async () => {
+		serveRepo([{ path: "a.md", body: "a" }]);
+		m.listTree.mockRejectedValue(
+			new GitCommandError("disk_limit", null, "", "ls-tree"),
+		);
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
+		});
 	});
 
 	it("never lets the token or the credentialed URL reach a result, a failure, a heartbeat or a log above debug (spec §8.3)", async () => {
@@ -1429,6 +1514,35 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 		rejection: null,
 		sourceCommitSha: SHA,
 		...overrides,
+	});
+
+	it("passes the recorded limit to the run row, and none when the run carries none", async () => {
+		m.completeInstructionRepositorySyncRun.mockResolvedValue({
+			completed: true,
+			configurationCurrent: true,
+		});
+		const limit = { kind: "fileCount", actual: 6000, max: 5000 } as const;
+		await recordInstructionRepositorySyncRun({
+			...base,
+			snapshotId: null,
+			childResult: null,
+			error: "LIMITS_EXCEEDED",
+			limit,
+		});
+		await recordInstructionRepositorySyncRun({
+			...base,
+			snapshotId: null,
+			childResult: null,
+			error: "LIMITS_EXCEEDED",
+		});
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ error: "LIMITS_EXCEEDED", limit }),
+		);
+		expect(m.completeInstructionRepositorySyncRun).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ error: "LIMITS_EXCEEDED", limit: null }),
+		);
 	});
 
 	it("writes nothing without a context or a run id (a history from before the run id was passed)", async () => {

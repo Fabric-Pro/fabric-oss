@@ -10,6 +10,7 @@
  */
 
 import { SNAPSHOT_LIMITS, validateRelativePath } from "@repo/instructions";
+import { formatBytes } from "./format-bytes";
 
 type SyncRunStatus =
 	| "SUCCEEDED"
@@ -32,6 +33,18 @@ type SyncErrorCode =
 	| "CONFIGURATION_CHANGED"
 	| "TREE_REFUSED";
 
+/** Which limit a LIMITS_EXCEEDED run hit; numbers only. `actual` is absent when the check stopped early. */
+type SyncLimitView = {
+	kind:
+		| "fileCount"
+		| "fileSize"
+		| "totalSize"
+		| "inventory"
+		| "repositorySize";
+	max: number;
+	actual?: number;
+};
+
 export type SyncRunView = {
 	id: string;
 	trigger: string;
@@ -43,6 +56,8 @@ export type SyncRunView = {
 	commitSha: string | null;
 	snapshotId: string | null;
 	snapshotVersion: number | null;
+	/** Null for every other error, and for runs recorded before it existed. */
+	limit?: SyncLimitView | null;
 	userName: string | null;
 	/**
 	 * False for a run of a sync that was switched off (or switched off and
@@ -208,7 +223,14 @@ type SyncRunOutcome =
 	  }
 	| { kind: "rejected" }
 	| { kind: "skipped" }
-	| { kind: "failed"; error: SyncErrorCode | null };
+	| ({ kind: "failed" } & SyncFailure);
+
+/** What names a failed run's error line: the code and the detail it recorded. */
+type SyncFailure = {
+	error: SyncErrorCode | null;
+	limit: SyncLimitView | null;
+	snapshotVersion: number | null;
+};
 
 /**
  * A run row as the tab reads it. An unfinished row is "running" only while a
@@ -242,7 +264,12 @@ export function syncRunOutcome(
 		case "SKIPPED":
 			return { kind: "skipped" };
 		case "FAILED":
-			return { kind: "failed", error: run.error };
+			return {
+				kind: "failed",
+				error: run.error,
+				limit: run.limit ?? null,
+				snapshotVersion: run.snapshotVersion,
+			};
 	}
 }
 
@@ -263,15 +290,55 @@ export function syncOutcomeMessage(outcome: SyncRunOutcome): SyncMessage {
 }
 
 /**
- * The line under a failed run. LIMITS_EXCEEDED states all three limits
- * (files, size per file, total size): the run row has no count columns
- * (§4.1a) and does not record which limit was hit, so naming only some of
- * them would send someone hunting in the wrong place. CLONE_FAILED promises
- * a retry only while one will actually happen: automatic sync on and not
- * paused, so the poll backs off and tries again (spec §7.3).
+ * The line under a failed run. LIMITS_EXCEEDED names the limit the run
+ * recorded and its actual value; a run without a usable detail (recorded
+ * before it existed, or a folder limit with no measured value) states all
+ * three folder limits, since naming some of them would send someone hunting
+ * in the wrong place. CHILD_ABORTED names the version when the run staged
+ * one: the checks stopped, which says nothing about the files. CLONE_FAILED
+ * promises a retry only while one will actually happen: automatic sync on
+ * and not paused, so the poll backs off and tries again (spec §7.3).
  */
+function limitMessage(limit: SyncLimitView): SyncMessage | null {
+	const max = limit.max.toLocaleString("en-US");
+	switch (limit.kind) {
+		case "fileCount":
+			return limit.actual === undefined
+				? null
+				: {
+						key: "errors.limit.fileCount",
+						values: {
+							actual: limit.actual.toLocaleString("en-US"),
+							max,
+						},
+					};
+		case "fileSize":
+		case "totalSize":
+			return limit.actual === undefined
+				? null
+				: {
+						key: `errors.limit.${limit.kind}`,
+						values: {
+							actual: formatBytes(limit.actual),
+							max: formatBytes(limit.max),
+						},
+					};
+		case "inventory":
+			return { key: "errors.limit.inventory", values: { max } };
+		case "repositorySize":
+			return {
+				key: "errors.limit.repositorySize",
+				values: { max: formatBytes(limit.max) },
+			};
+		default: {
+			const unreachable: never = limit.kind;
+			return unreachable;
+		}
+	}
+}
+
 export function syncErrorMessage(
-	error: SyncErrorCode | null,
+	{ error, limit, snapshotVersion }: SyncFailure,
 	configuration: {
 		ref: string;
 		rootPath: string;
@@ -292,18 +359,28 @@ export function syncErrorMessage(
 				values: { ref, rootPath: configuration?.rootPath ?? "" },
 			};
 		case "LIMITS_EXCEEDED":
-			return {
-				key: "errors.LIMITS_EXCEEDED",
-				values: {
-					maxFiles: SNAPSHOT_LIMITS.maxFiles.toLocaleString("en-US"),
-					maxFileMb: Math.round(
-						SNAPSHOT_LIMITS.maxFileBytes / 1_048_576,
-					),
-					maxTotalMb: Math.round(
-						SNAPSHOT_LIMITS.maxTotalBytes / 1_048_576,
-					),
-				},
-			};
+			return (
+				(limit ? limitMessage(limit) : null) ?? {
+					key: "errors.LIMITS_EXCEEDED",
+					values: {
+						maxFiles:
+							SNAPSHOT_LIMITS.maxFiles.toLocaleString("en-US"),
+						maxFileMb: Math.round(
+							SNAPSHOT_LIMITS.maxFileBytes / 1_048_576,
+						),
+						maxTotalMb: Math.round(
+							SNAPSHOT_LIMITS.maxTotalBytes / 1_048_576,
+						),
+					},
+				}
+			);
+		case "CHILD_ABORTED":
+			return snapshotVersion === null
+				? { key: "errors.CHILD_ABORTED" }
+				: {
+						key: "errors.CHILD_ABORTED_VERSION",
+						values: { version: snapshotVersion },
+					};
 		case "CLONE_FAILED":
 			return configuration?.automatic &&
 				!configuration.automaticPausedReason
