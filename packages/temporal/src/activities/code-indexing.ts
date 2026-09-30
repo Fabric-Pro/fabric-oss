@@ -249,6 +249,23 @@ export interface SelectChangedFilesFromManifestOutput {
 	count: number;
 }
 
+export interface PrepareRepositoryInput extends CloneRepositoryInput {
+	/**
+	 * Incremental runs only: the pushed changed-file list. When present, the
+	 * activity also writes the changed-subset manifest the embed phase iterates.
+	 */
+	changedFiles?: string[];
+}
+
+export interface PrepareRepositoryOutput {
+	clone: CloneRepositoryOutput;
+	scan: ScanForSecretsOutput;
+	/** Counts and the on-disk manifest path only — never a file list. */
+	tree: { manifestPath: string; totalFiles: number; skippedFiles: number };
+	/** Present only when `changedFiles` was passed. */
+	changed?: SelectChangedFilesFromManifestOutput;
+}
+
 export interface CodeIndexBatchInput {
 	files: Array<{ relativePath: string; absolutePath: string }>;
 	projectId: string;
@@ -528,13 +545,73 @@ function buildVector(
 // Activities
 // =============================================================================
 
+/** The current activity context, or null when called outside an activity. */
+function currentActivityContext(): Context | null {
+	try {
+		return Context.current();
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * How many files the secret scan and file walk process between progress
+ * checkpoints. Both phases are synchronous per-file work, so without a
+ * periodic yield a large repo would block the event loop and no heartbeat
+ * would reach the server within the heartbeat timeout.
+ */
+const PROGRESS_CHECKPOINT_EVERY = 250;
+
+/**
+ * Heartbeat, yield to the event loop so the heartbeat is flushed and any
+ * cancellation (including a heartbeat timeout) is delivered, then stop if the
+ * attempt was cancelled. A no-op outside an activity (direct unit-test calls).
+ */
+async function activityCheckpoint(details: string): Promise<void> {
+	const ctx = currentActivityContext();
+	if (!ctx) {
+		return;
+	}
+	ctx.heartbeat(details);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	if (ctx.cancellationSignal.aborted) {
+		throw ctx.cancellationSignal.reason;
+	}
+}
+
 /**
  * Clone a repository using simple-git (shallow, single-branch).
  */
 export async function cloneRepositoryActivity(
 	input: CloneRepositoryInput,
 ): Promise<CloneRepositoryOutput> {
-	const { repositoryUrl, branch, provider, workflowRunId } = input;
+	return cloneRepository(input, codeIndexClonePath(input.workflowRunId));
+}
+
+/**
+ * Host-local clone dir for a workflow run. `cloneRepositoryActivity` uses the
+ * bare run-id path (unchanged for histories recorded before
+ * `prepareRepositoryActivity`); a prepare attempt adds its attempt number so two
+ * overlapping attempts on one host never share — or delete — a checkout.
+ */
+function codeIndexClonePath(workflowRunId: string, attempt?: number): string {
+	const suffix = attempt === undefined ? "" : `-a${attempt}`;
+	return path.join(
+		os.tmpdir(),
+		`fabric-code-index-${workflowRunId}${suffix}`,
+	);
+}
+
+/**
+ * Shared clone implementation for `cloneRepositoryActivity` (histories recorded
+ * before `prepareRepositoryActivity`) and `prepareRepositoryActivity`. Clones
+ * into `clonePath`, replacing anything already there.
+ */
+async function cloneRepository(
+	input: CloneRepositoryInput,
+	clonePath: string,
+): Promise<CloneRepositoryOutput> {
+	const { repositoryUrl, branch, provider } = input;
 	const simpleGit = (await import("simple-git")).default;
 
 	// Job Hub step tracking. Every code-indexing activity targets "the open row
@@ -543,11 +620,6 @@ export async function cloneRepositoryActivity(
 	// On continueAsNew the clone re-runs against the same row and the step is
 	// simply re-marked — `running` keeps its original start time.
 	await jobStep("clone", "running");
-
-	const clonePath = path.join(
-		os.tmpdir(),
-		`fabric-code-index-${workflowRunId}`,
-	);
 
 	// One clone attempt with a given plaintext token. Re-invoked once with a
 	// freshly re-exchanged token when the first attempt fails with a git auth
@@ -728,7 +800,17 @@ export async function cloneRepositoryActivity(
 export async function scanForSecretsActivity(
 	input: ScanForSecretsInput,
 ): Promise<ScanForSecretsOutput> {
-	const { clonePath } = input;
+	return scanRepositoryForSecrets(input.clonePath);
+}
+
+/**
+ * Shared secret-scan implementation for `scanForSecretsActivity` and
+ * `prepareRepositoryActivity`. Throws ENOENT when `clonePath` does not exist on
+ * this host.
+ */
+async function scanRepositoryForSecrets(
+	clonePath: string,
+): Promise<ScanForSecretsOutput> {
 	const redactionManifest: Array<{
 		path: string;
 		type: string;
@@ -788,13 +870,22 @@ export async function scanForSecretsActivity(
 		}
 	}
 
-	Context.current().heartbeat("scanning for secrets");
+	await activityCheckpoint("scanning for secrets");
+	const toScan: Array<{ fullPath: string; relativePath: string }> = [];
 	walkDirWith(clonePath, (fullPath, relativePath) => {
 		const ext = path.extname(relativePath).toLowerCase();
 		if (!SKIP_EXTENSIONS.has(ext)) {
-			scanFile(fullPath, relativePath);
+			toScan.push({ fullPath, relativePath });
 		}
 	});
+	for (let i = 0; i < toScan.length; i++) {
+		if (i > 0 && i % PROGRESS_CHECKPOINT_EVERY === 0) {
+			await activityCheckpoint(
+				`scanning for secrets: ${i}/${toScan.length} files`,
+			);
+		}
+		scanFile(toScan[i].fullPath, toScan[i].relativePath);
+	}
 
 	logger.info(
 		`[CodeIndexing] Secret scan: ${totalSecrets} secrets found and redacted in ${redactionManifest.length} files`,
@@ -829,7 +920,23 @@ function writeFileManifest(
 ): string {
 	const manifestPath = codeIndexManifestPath(clonePath);
 	fs.writeFileSync(manifestPath, JSON.stringify(entries));
+	// Keep the read-through cache coherent: a Temporal retry of the walk on the
+	// same host rewrites this same path, and a first-run re-clone may resolve a
+	// newer branch head than the attempt that populated the cache.
+	lastReadManifest = { path: manifestPath, entries };
 	return manifestPath;
+}
+
+/** Remove the sibling on-disk manifests for a clone dir (best-effort). */
+function removeCodeIndexManifests(clonePath: string): void {
+	fs.rmSync(codeIndexManifestPath(clonePath), { force: true });
+	fs.rmSync(codeIndexChangedManifestPath(clonePath), { force: true });
+	if (
+		lastReadManifest?.path === codeIndexManifestPath(clonePath) ||
+		lastReadManifest?.path === codeIndexChangedManifestPath(clonePath)
+	) {
+		lastReadManifest = null;
+	}
 }
 
 // Single-entry read-through cache. Within a run every slice read hits the same
@@ -879,11 +986,40 @@ function hydrateManifestEntry(
 export async function walkFileTreeActivity(
 	input: WalkFileTreeInput,
 ): Promise<WalkFileTreeOutput> {
-	const { clonePath } = input;
+	return walkRepositoryFileTree(input.clonePath);
+}
+
+/** Result of a file-tree walk: the on-disk manifest path and counts only. */
+interface WalkedFileTree {
+	manifestPath: string;
+	totalFiles: number;
+	skippedFiles: number;
+}
+
+/**
+ * Shared walk implementation for `walkFileTreeActivity` and
+ * `prepareRepositoryActivity`. Throws ENOENT when `clonePath` does not exist on
+ * this host.
+ */
+async function walkRepositoryFileTree(
+	clonePath: string,
+): Promise<WalkedFileTree> {
 	const entries: FileManifestDiskEntry[] = [];
 	let skippedFiles = 0;
 
+	await activityCheckpoint("walking file tree");
+	const found: Array<{ fullPath: string; relativePath: string }> = [];
 	walkDirWith(clonePath, (fullPath, relativePath) => {
+		found.push({ fullPath, relativePath });
+	});
+
+	for (let i = 0; i < found.length; i++) {
+		if (i > 0 && i % PROGRESS_CHECKPOINT_EVERY === 0) {
+			await activityCheckpoint(
+				`walking file tree: ${i}/${found.length} files`,
+			);
+		}
+		const { fullPath, relativePath } = found[i];
 		// Canonicalize to forward slashes so the stored path matches the GitHub
 		// webhook's `changedFiles` (used by incremental selection + purge) and
 		// the SKIP_DIRS "/" split — on any host OS. No-op on the Linux workers;
@@ -892,14 +1028,14 @@ export async function walkFileTreeActivity(
 		const stats = fs.lstatSync(fullPath);
 		if (shouldSkipFile(relPath, stats.size)) {
 			skippedFiles++;
-			return;
+			continue;
 		}
 		const ext = path.extname(relPath).toLowerCase();
 		entries.push({
 			relativePath: relPath,
 			language: detectLanguageFromExt(ext),
 		});
-	});
+	}
 
 	const manifestPath = writeFileManifest(clonePath, entries);
 
@@ -941,12 +1077,80 @@ export async function readFileManifestSliceActivity(
 export async function selectChangedFilesFromManifestActivity(
 	input: SelectChangedFilesFromManifestInput,
 ): Promise<SelectChangedFilesFromManifestOutput> {
+	return selectChangedFilesFromManifest(input);
+}
+
+/**
+ * Shared changed-subset implementation for
+ * `selectChangedFilesFromManifestActivity` and `prepareRepositoryActivity`.
+ */
+async function selectChangedFilesFromManifest(
+	input: SelectChangedFilesFromManifestInput,
+): Promise<SelectChangedFilesFromManifestOutput> {
 	const entries = readFileManifest(input.manifestPath);
 	const changed = new Set(input.changedFiles);
 	const subset = entries.filter((e) => changed.has(e.relativePath));
 	const manifestPath = codeIndexChangedManifestPath(input.clonePath);
 	fs.writeFileSync(manifestPath, JSON.stringify(subset));
 	return { manifestPath, count: subset.length };
+}
+
+/**
+ * Clone, secret-scan, walk and (for an incremental run) select the changed
+ * subset in ONE activity execution.
+ *
+ * The clone lives in host-local temp (`os.tmpdir()`), so these steps must run
+ * on the same worker host. Run as separate activities, Temporal may schedule the
+ * scan or walk on a different worker container (redeploy, scale-out, a
+ * task-queue split) where the clone does not exist; the read then fails with
+ * ENOENT on every retry and the index never finishes. Returns counts and
+ * on-disk paths only — never a file list (see `WalkFileTreeOutput`).
+ *
+ * Idempotent under Temporal retry: each attempt clones into its own dir
+ * (`…-a<attempt>`), so an earlier attempt that outlived its heartbeat timeout
+ * and fails late cleans up only its own checkout, never the retry's. Any
+ * failure from clone through select removes this attempt's checkout and
+ * manifests, so an unscanned checkout is never left on disk.
+ */
+export async function prepareRepositoryActivity(
+	input: PrepareRepositoryInput,
+): Promise<PrepareRepositoryOutput> {
+	const { changedFiles, ...cloneInput } = input;
+	const attempt = currentActivityContext()?.info.attempt ?? 1;
+	const clonePath = codeIndexClonePath(input.workflowRunId, attempt);
+
+	try {
+		removeCodeIndexManifests(clonePath);
+		const clone = await cloneRepository(cloneInput, clonePath);
+
+		await activityCheckpoint("prepare: scanning for secrets");
+		const scan = await scanRepositoryForSecrets(clonePath);
+
+		await activityCheckpoint("prepare: walking file tree");
+		const tree = await walkRepositoryFileTree(clonePath);
+
+		let changed: SelectChangedFilesFromManifestOutput | undefined;
+		if (changedFiles !== undefined) {
+			await activityCheckpoint("prepare: selecting changed files");
+			changed = await selectChangedFilesFromManifest({
+				manifestPath: tree.manifestPath,
+				clonePath,
+				changedFiles,
+			});
+		}
+
+		return { clone, scan, tree, ...(changed ? { changed } : {}) };
+	} catch (error) {
+		// Don't leave an unsanitized (possibly pre-scan) checkout behind on this
+		// host; a retry re-clones from scratch anyway.
+		try {
+			fs.rmSync(clonePath, { recursive: true, force: true });
+			removeCodeIndexManifests(clonePath);
+		} catch {
+			// Best-effort — the original error is what matters.
+		}
+		throw error;
+	}
 }
 
 /**
@@ -1689,10 +1893,7 @@ export async function cleanupCloneDirActivity(
 		}
 		// Remove the sibling on-disk manifests (best-effort — absent on the
 		// legacy path, if the walk never ran, or for a full (non-incremental) run).
-		fs.rmSync(codeIndexManifestPath(input.clonePath), { force: true });
-		fs.rmSync(codeIndexChangedManifestPath(input.clonePath), {
-			force: true,
-		});
+		removeCodeIndexManifests(input.clonePath);
 	} catch (error) {
 		logger.warn(
 			`[CodeIndexing] Failed to clean up: ${error instanceof Error ? error.message : error}`,
