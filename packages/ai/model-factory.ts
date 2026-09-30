@@ -24,6 +24,7 @@ import {
 	createAdaptiveClaudeSamplingMiddleware,
 	gatewayModelRejectsSampling,
 } from "./lib/adaptive-claude-sampling-middleware";
+import { resolveAzureDeploymentTarget } from "./lib/azure-foundry-url";
 import { createDatabricksFetch } from "./lib/databricks-compat";
 import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
@@ -845,24 +846,30 @@ export function getModel(
 							`(AI Models page shows "${modelWithoutPrefix}" but Azure deployments are model-specific)`,
 					);
 				}
-				// Azure OpenAI chat endpoint format:
-				// {base-url}/openai/deployments/{deployment-name}/chat/completions?api-version=2025-01-01-preview
-				const azureChatBaseUrl = `${context.baseUrl.replace(/\/$/, "")}/openai/deployments/${azureDeploymentName}`;
+				// URL, body model and api-version come from one resolver shared
+				// with the AI Providers connection tester (see lib/azure-foundry-url).
+				const azureChatTarget = resolveAzureDeploymentTarget(
+					context.baseUrl,
+					azureDeploymentName,
+				);
 				const azureChatProvider = createOpenAI({
 					apiKey: context.apiKey,
-					baseURL: azureChatBaseUrl,
+					baseURL: azureChatTarget.baseURL,
 					headers: {
 						"api-key": context.apiKey,
 					},
-					// Azure requires api-version query parameter on all requests
+					// Classic endpoints require an api-version query parameter; the
+					// project-scoped v1 endpoint rejects it.
 					// Also remove temperature: Azure deployments (e.g., gpt-5-nano) may not support
 					// any temperature setting - let the model use its default
 					fetch: async (url, options) => {
 						const urlWithVersion = new URL(url.toString());
-						urlWithVersion.searchParams.set(
-							"api-version",
-							"2025-01-01-preview",
-						);
+						if (azureChatTarget.apiVersion) {
+							urlWithVersion.searchParams.set(
+								"api-version",
+								azureChatTarget.apiVersion,
+							);
+						}
 
 						// Patch request body for Azure deployment compatibility
 						// (temperature / max_tokens / Bug #1681 strict json_schema).
@@ -896,8 +903,7 @@ export function getModel(
 					},
 				});
 				// Use .chat() to force chat/completions API (Azure doesn't support responses API)
-				// Empty model string since deployment is in the URL
-				baseModel = azureChatProvider.chat("");
+				baseModel = azureChatProvider.chat(azureChatTarget.model);
 				break;
 			}
 			case "DATABRICKS": {
@@ -1056,23 +1062,27 @@ export function getEmbeddingModel(
 			console.log(
 				`[AI] Azure AI Foundry embeddings: Using deployment "${azureEmbeddingDeployment}" (configured: ${context.deploymentName || "not set"})`,
 			);
-			// Azure OpenAI embeddings endpoint format:
-			// {base-url}/openai/deployments/{deployment-name}/embeddings?api-version=2025-01-01-preview
-			const azureBaseUrl = `${context.baseUrl.replace(/\/$/, "")}/openai/deployments/${azureEmbeddingDeployment}`;
+			const azureEmbeddingTarget = resolveAzureDeploymentTarget(
+				context.baseUrl,
+				azureEmbeddingDeployment,
+			);
 			const azureProvider = createOpenAI({
 				apiKey: context.apiKey,
-				baseURL: azureBaseUrl,
+				baseURL: azureEmbeddingTarget.baseURL,
 				headers: {
 					"api-key": context.apiKey,
 				},
-				// Azure requires api-version query parameter on all requests
+				// Classic endpoints require an api-version query parameter; the
+				// project-scoped v1 endpoint rejects it.
 				// Also remove temperature for consistency with chat models
 				fetch: async (url, options) => {
 					const urlWithVersion = new URL(url.toString());
-					urlWithVersion.searchParams.set(
-						"api-version",
-						"2025-01-01-preview",
-					);
+					if (azureEmbeddingTarget.apiVersion) {
+						urlWithVersion.searchParams.set(
+							"api-version",
+							azureEmbeddingTarget.apiVersion,
+						);
+					}
 
 					// Remove temperature entirely for Azure deployments
 					if (options?.body && typeof options.body === "string") {
@@ -1093,8 +1103,7 @@ export function getEmbeddingModel(
 					return fetch(urlWithVersion.toString(), options);
 				},
 			});
-			// For Azure, we use an empty model string since deployment is in the URL
-			return azureProvider.embedding("");
+			return azureProvider.embedding(azureEmbeddingTarget.model);
 		}
 
 		// Databricks - OpenAI-compatible serving endpoints under the workspace host.

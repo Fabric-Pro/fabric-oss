@@ -14,6 +14,10 @@
  *     `getConfig` request to restore the saved auth mode. A slow response must
  *     not overwrite what the user has since typed, nor mutate a dialog that has
  *     closed or switched provider.
+ *
+ *  3. **Azure deployment name left out of the test.** Save sent the typed
+ *     deployment name but Test Connection did not, so the test could not
+ *     exercise the deployment Save then stored.
  */
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -49,6 +53,15 @@ vi.mock("@saas/settings/hooks/use-return-to-redirect", () => ({
 	useReturnToRedirect: () => ({ triggerReturn: vi.fn() }),
 }));
 
+// Only `OrgAiProvidersSettingsForm` reads this; the personal form ignores it.
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({
+		organizationId: "org_example",
+		organizationName: "Example Org",
+		isOrgContext: true,
+	}),
+}));
+
 vi.mock("sonner", () => ({
 	toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -59,16 +72,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { AiProvidersSettingsForm } from "../../modules/saas/settings/components/AiProvidersSettingsForm";
+import { OrgAiProvidersSettingsForm } from "../../modules/saas/settings/components/OrgAiProvidersSettingsForm";
 
 const WORKSPACE = "https://example-workspace.cloud.databricks.com";
 
-function renderForm() {
+function renderForm(Form: () => React.ReactNode = AiProvidersSettingsForm) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
 		<QueryClientProvider client={client}>
-			<AiProvidersSettingsForm />
+			<Form />
 		</QueryClientProvider>,
 	);
 }
@@ -442,5 +456,76 @@ describe("reconfigure prefill race", () => {
 		await waitFor(() =>
 			expect(screen.queryByLabelText(/^API Key$/i)).not.toBeNull(),
 		);
+	});
+});
+
+// The organization and personal forms are paired surfaces with their own copy
+// of the test and save handlers, so both are held to the same contract.
+describe.each([
+	["personal", AiProvidersSettingsForm],
+	["organization", () => <OrgAiProvidersSettingsForm />],
+])("Azure AI Foundry deployment name (%s form)", (_label, Form) => {
+	const AZURE_ENDPOINT =
+		"https://example-resource.cognitiveservices.azure.com";
+
+	async function fillAzure(deploymentName: string) {
+		renderForm(Form);
+		await openConfigureDialog("Azure AI Foundry");
+		fireEvent.change(screen.getByLabelText(/^API Key$/i), {
+			target: { value: "azure-key" },
+		});
+		fireEvent.change(screen.getByLabelText(/Gateway URL/i), {
+			target: { value: AZURE_ENDPOINT },
+		});
+		fireEvent.change(screen.getByLabelText(/Deployment Name/i), {
+			target: { value: deploymentName },
+		});
+	}
+
+	it("sends the typed deployment name to Test Connection, as Save does", async () => {
+		// Save used to send it and the test did not, so the test could never
+		// pass for a deployment that Save would then have stored.
+		await fillAzure("prod-chat");
+
+		fireEvent.click(getTestButton());
+		await waitFor(() => expect(getSaveButton().disabled).toBe(false));
+		expect(mockTestConnection).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "AZURE_AI_FOUNDRY",
+				baseUrl: AZURE_ENDPOINT,
+				deploymentName: "prod-chat",
+			}),
+		);
+
+		fireEvent.click(getSaveButton());
+		await waitFor(() =>
+			expect(mockUpsert).toHaveBeenCalledWith(
+				expect.objectContaining({ deploymentName: "prod-chat" }),
+			),
+		);
+	});
+
+	it("asks for the deployment name before testing without one", async () => {
+		await fillAzure("");
+
+		fireEvent.click(getTestButton());
+
+		expect(toast.error).toHaveBeenCalledWith(
+			"Deployment name required",
+			expect.anything(),
+		);
+		expect(mockTestConnection).not.toHaveBeenCalled();
+	});
+
+	it("re-locks Save when the deployment name is edited after a passing test", async () => {
+		await fillAzure("prod-chat");
+
+		fireEvent.click(getTestButton());
+		await waitFor(() => expect(getSaveButton().disabled).toBe(false));
+
+		fireEvent.change(screen.getByLabelText(/Deployment Name/i), {
+			target: { value: "other-deployment" },
+		});
+		expect(getSaveButton().disabled).toBe(true);
 	});
 });

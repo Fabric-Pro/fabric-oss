@@ -355,7 +355,8 @@ export const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
 			"https://azure.microsoft.com/en-us/products/ai-services/openai-service",
 		requiresBaseUrl: true,
 		baseUrlPlaceholder: "https://{resource-name}.openai.azure.com",
-		baseUrlHelp: "Your Azure OpenAI resource endpoint",
+		baseUrlHelp:
+			"Your Azure resource endpoint (.openai.azure.com, .cognitiveservices.azure.com or .services.ai.azure.com), or a project endpoint such as https://{resource}.services.ai.azure.com/api/projects/{project}/openai/v1",
 	},
 	GOOGLE_VERTEX_AI: {
 		id: "GOOGLE_VERTEX_AI",

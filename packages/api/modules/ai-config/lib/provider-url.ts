@@ -33,7 +33,15 @@ const ALLOWED_PROVIDER_DOMAINS: Record<string, string[]> = {
 	VERCEL_GATEWAY: ["ai-gateway.vercel.sh"],
 	XAI: ["api.x.ai"],
 	CEREBRAS: ["api.cerebras.ai"],
-	AZURE_AI_FOUNDRY: [".openai.azure.com"], // Suffix match for Azure
+	// Suffix match for Azure resource endpoints: the classic Azure OpenAI host,
+	// plus the two hosts the Azure portal hands out for current Azure AI
+	// Foundry resources. Allowing only the first rejected those as
+	// "Invalid provider URL" before any request reached Azure.
+	AZURE_AI_FOUNDRY: [
+		".openai.azure.com",
+		".cognitiveservices.azure.com",
+		".services.ai.azure.com",
+	],
 	DATABRICKS: [
 		".cloud.databricks.com",
 		".azuredatabricks.net",

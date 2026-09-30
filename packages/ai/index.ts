@@ -89,6 +89,10 @@ export {
 	// two types refuse to unify. Going through @repo/ai keeps both on one copy.
 	zodSchema,
 } from "ai";
+// --- Azure AI Foundry request target (from lib/azure-foundry-url) ---
+// Shared by the model factory and the AI Providers connection tester so Test
+// Connection probes the same URL, model and api-version the app uses.
+export { resolveAzureDeploymentTarget } from "./lib/azure-foundry-url";
 // --- Databricks Model Serving compatibility shim (from lib/databricks-compat) ---
 // The OpenAI-compatible-fetch wrapper reused by any inference path that talks to
 // Databricks serving endpoints through a raw OpenAI-shaped client (the @ai-sdk

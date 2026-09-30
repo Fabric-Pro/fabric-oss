@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/server";
-import { DatabricksOAuthError, getDatabricksOAuthToken } from "@repo/ai";
+import {
+	DatabricksOAuthError,
+	getDatabricksOAuthToken,
+	resolveAzureDeploymentTarget,
+} from "@repo/ai";
 import { type AIProvider, db } from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
@@ -389,13 +393,47 @@ async function testOpenRouter(apiKey: string): Promise<ConnectionTestResult> {
 	);
 }
 
+interface AzureErrorBody {
+	code?: string;
+	message?: string;
+	param?: string;
+}
+
+const AZURE_MODEL_RAN_MESSAGE =
+	/max_(?:completion_)?tokens|output limit|token limit/i;
+
 /**
- * Test Azure AI Foundry (Azure OpenAI) connection
- * Azure uses api-key header and different endpoint format
+ * True when a 400 error means the deployment processed the probe: the
+ * one-token cap was hit, or the deployment does not accept the sampling
+ * parameter the probe sent.
+ */
+function azureErrorShowsModelRan(error: AzureErrorBody | undefined): boolean {
+	if (!error) {
+		return false;
+	}
+	return (
+		error.code === "unsupported_parameter" ||
+		error.code === "unsupported_value" ||
+		error.param === "max_completion_tokens" ||
+		AZURE_MODEL_RAN_MESSAGE.test(error.message ?? "")
+	);
+}
+
+/**
+ * Test Azure AI Foundry (Azure OpenAI) connection.
+ *
+ * Probes the configured deployment with the same chat request every in-app
+ * Azure call makes (URL, body `model` and `api-version` come from
+ * `resolveAzureDeploymentTarget`, shared with the model factory), capped at
+ * one output token. The previous probe asked Azure to list deployments, which
+ * current Azure AI Foundry resources do not answer, so a working key and
+ * deployment failed the test. Both endpoint shapes route chat requests by
+ * deployment name, so it is required.
  */
 async function testAzureAIFoundry(
 	apiKey: string,
 	baseUrl?: string,
+	deploymentName?: string,
 ): Promise<ConnectionTestResult> {
 	if (!baseUrl) {
 		return {
@@ -405,15 +443,32 @@ async function testAzureAIFoundry(
 		};
 	}
 
+	const deployment = deploymentName?.trim();
+	if (!deployment) {
+		return {
+			success: false,
+			message:
+				"Azure AI Foundry requires a deployment name. Enter the name you gave the model deployment in Azure AI Foundry.",
+		};
+	}
+
 	const start = Date.now();
 	try {
-		// Azure OpenAI uses a different endpoint format and api-key header
-		// Try the deployments endpoint first (more reliable)
-		const deploymentsUrl = `${baseUrl.replace(/\/$/, "")}/openai/deployments?api-version=2025-01-01-preview`;
-		const response = await fetch(deploymentsUrl, {
+		const target = resolveAzureDeploymentTarget(baseUrl, deployment);
+		const chatUrl = target.apiVersion
+			? `${target.baseURL}/chat/completions?api-version=${target.apiVersion}`
+			: `${target.baseURL}/chat/completions`;
+		const response = await fetch(chatUrl, {
+			method: "POST",
 			headers: {
 				"api-key": apiKey,
+				"content-type": "application/json",
 			},
+			body: JSON.stringify({
+				...(target.model ? { model: target.model } : {}),
+				messages: [{ role: "user", content: "." }],
+				max_completion_tokens: 1,
+			}),
 			signal: AbortSignal.timeout(10000), // 10 second timeout
 		});
 
@@ -432,55 +487,55 @@ async function testAzureAIFoundry(
 		}
 
 		if (response.status === 404) {
-			// Try models endpoint as fallback
-			const modelsUrl = `${baseUrl.replace(/\/$/, "")}/openai/models?api-version=2025-01-01-preview`;
-			const modelsResponse = await fetch(modelsUrl, {
-				headers: {
-					"api-key": apiKey,
-				},
-				signal: AbortSignal.timeout(10000), // 10 second timeout
-			});
-
-			if (modelsResponse.status === 401) {
-				return {
-					success: false,
-					message: "Connection failed: Invalid credentials",
-				};
-			}
-
-			if (modelsResponse.ok) {
-				return {
-					success: true,
-					message: "Connected to Azure AI Foundry successfully",
-					latencyMs: Date.now() - start,
-				};
-			}
-
-			// If both fail with 404, the endpoint might be wrong
 			return {
 				success: false,
-				message:
-					"Connection failed: Could not reach Azure OpenAI API. Please verify your resource endpoint URL.",
+				message: `Connection failed: Azure found no deployment named "${deployment}" at this endpoint. Check the deployment name, and that the URL is your resource endpoint (e.g., https://{resource-name}.openai.azure.com) or your project's /openai/v1 endpoint (e.g., https://{resource-name}.services.ai.azure.com/api/projects/{project-name}/openai/v1).`,
 			};
 		}
 
-		if (!response.ok) {
+		if (response.status === 429) {
+			return {
+				success: false,
+				message:
+					"Connection failed: Azure is rate-limiting this deployment. Try again shortly.",
+			};
+		}
+
+		if (response.status === 400) {
+			// A 400 proves the deployment ran only when Azure's error says so: the
+			// one-token cap was too small for a reasoning model, or an older
+			// deployment (gpt-35-turbo, gpt-4) rejected `max_completion_tokens`.
+			// Any other 400 (wrong URL shape, malformed request) means the
+			// request never reached the model, so it fails with Azure's message.
+			const body = (await response.json().catch(() => null)) as {
+				error?: AzureErrorBody;
+			} | null;
+			const azureError = body?.error;
+			if (azureError?.code === "OperationNotSupported") {
+				return {
+					success: false,
+					message: `Connection failed: The deployment "${deployment}" does not support chat completions. Choose a chat model deployment.`,
+				};
+			}
+			if (!azureErrorShowsModelRan(azureError)) {
+				return {
+					success: false,
+					message: azureError?.message
+						? `Connection failed: Azure rejected the request: ${azureError.message}`
+						: "Connection failed: Azure rejected the request",
+				};
+			}
+		} else if (!response.ok) {
 			return {
 				success: false,
 				message: "Connection failed: Provider returned an error",
 			};
 		}
 
-		const data = (await response.json()) as {
-			data?: Array<{ id: string; model: string }>;
-		};
-		const models = data.data?.map((d) => d.model || d.id).slice(0, 20);
-
 		return {
 			success: true,
 			message: "Connected to Azure AI Foundry successfully",
 			latencyMs: Date.now() - start,
-			models,
 		};
 	} catch (error) {
 		// Check if it's a network error (invalid URL)
@@ -666,6 +721,7 @@ function getProviderTester(
 				testAzureAIFoundry(
 					apiKey,
 					config?.baseUrl as string | undefined,
+					config?.deploymentName as string | undefined,
 				);
 		case "DATABRICKS":
 			return (apiKey, config) =>
@@ -704,6 +760,9 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 				clientId: z.string().min(1).optional(),
 				clientSecret: z.string().min(1).optional(),
 				baseUrl: z.string().url().optional(),
+				// Azure AI Foundry only: the deployment the test probes. The
+				// same value `upsert` saves, so the test exercises what is saved.
+				deploymentName: z.string().optional(),
 				config: z.record(z.string(), z.unknown()).optional(),
 			})
 			.superRefine((input, ctx) => {
@@ -783,10 +842,14 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 		const tester = getProviderTester(input.provider);
 
 		try {
-			// Merge baseUrl into config for providers that need it
+			// Merge baseUrl (and Azure's deployment name) into config for
+			// providers that need them
 			const configWithBaseUrl = {
 				...input.config,
 				baseUrl: input.baseUrl,
+				...(input.deploymentName !== undefined && {
+					deploymentName: input.deploymentName,
+				}),
 			};
 			const result = await tester(bearerToken, configWithBaseUrl);
 			return result;
@@ -964,6 +1027,7 @@ export const testSavedProviderConnectionProcedure = tenantProtectedProcedure
 		try {
 			const testConfig = {
 				baseUrl: configData.baseUrl as string | undefined,
+				deploymentName: configData.deploymentName as string | undefined,
 			};
 			const result = await tester(apiKey, testConfig);
 			return result;

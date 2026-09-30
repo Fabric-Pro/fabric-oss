@@ -118,6 +118,7 @@ export function OrgAiProvidersSettingsForm({
 			clientId?: string;
 			clientSecret?: string;
 			baseUrl?: string;
+			deploymentName?: string;
 		}) => {
 			// Cast to never to satisfy API type (API validates on server)
 			return await orpcClient.aiConfig.providers.testConnection({
@@ -126,6 +127,7 @@ export function OrgAiProvidersSettingsForm({
 				clientId: data.clientId,
 				clientSecret: data.clientSecret,
 				baseUrl: data.baseUrl,
+				deploymentName: data.deploymentName,
 			});
 		},
 	});
@@ -422,6 +424,15 @@ export function OrgAiProvidersSettingsForm({
 		: { apiKey };
 
 	/**
+	 * Azure AI Foundry's deployment name. Test Connection and Save both send
+	 * this one value, so a passing test exercised the deployment that is saved.
+	 */
+	const deploymentNamePayload =
+		selectedProvider?.id === "AZURE_AI_FOUNDRY" && deploymentName
+			? deploymentName
+			: undefined;
+
+	/**
 	 * True only when the passing test covered the values currently in the form.
 	 *
 	 * Identity is tracked as a monotonic REVISION rather than a hash or
@@ -449,6 +460,12 @@ export function OrgAiProvidersSettingsForm({
 			});
 			return;
 		}
+		if (selectedProvider.id === "AZURE_AI_FOUNDRY" && !deploymentName) {
+			toast.error("Deployment name required", {
+				description: `${selectedProvider.name} needs the deployment name to test the connection.`,
+			});
+			return;
+		}
 
 		// Snapshot which revision of the form this test exercises.
 		const revisionUnderTest = formRevisionRef.current;
@@ -463,6 +480,7 @@ export function OrgAiProvidersSettingsForm({
 				baseUrl: selectedProvider.requiresBaseUrl
 					? customBaseUrl
 					: undefined,
+				deploymentName: deploymentNamePayload,
 			});
 
 			// The user may have edited a field while the request was in flight;
@@ -511,11 +529,7 @@ export function OrgAiProvidersSettingsForm({
 			baseUrl: selectedProvider.requiresBaseUrl
 				? customBaseUrl
 				: undefined,
-			// For Azure AI Foundry - pass the deployment name
-			deploymentName:
-				selectedProvider.id === "AZURE_AI_FOUNDRY" && deploymentName
-					? deploymentName
-					: undefined,
+			deploymentName: deploymentNamePayload,
 			isDefault: !configStatus?.isConfigured,
 		});
 	};
