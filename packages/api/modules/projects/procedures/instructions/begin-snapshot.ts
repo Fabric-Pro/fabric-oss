@@ -5,6 +5,7 @@ import {
 } from "@repo/database";
 import {
 	describePortableNameRefusal,
+	formatByteSize,
 	type PlanRefusal,
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
@@ -33,7 +34,7 @@ function describePlanRefusal(refusal: PlanRefusal): string {
 		case "non_portable_name":
 			return describePortableNameRefusal(refusal.path, refusal.refusal);
 		case "file_too_large":
-			return `File too large (${refusal.size} bytes): ${refusal.path}`;
+			return `${refusal.path} is ${formatByteSize(refusal.size)}; each file can be at most ${formatByteSize(SNAPSHOT_LIMITS.maxFileBytes)}.`;
 		case "nothing_kept":
 			return "Every file was excluded; nothing to upload";
 		case "too_many_files":

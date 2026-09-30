@@ -1,6 +1,6 @@
 "use client";
 
-import { SNAPSHOT_LIMITS } from "@repo/instructions";
+import { formatByteSize, SNAPSHOT_LIMITS } from "@repo/instructions";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -14,7 +14,6 @@ import {
 import { FileIcon, FolderIcon, UploadIcon, XIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { formatBytes } from "../../lib/format-bytes";
 import {
 	type FolderEntry,
 	FolderPathCollisionError,
@@ -194,6 +193,16 @@ export function UploadFolderDialog({
 	// over the limit could only fail after the person has waited for `begin`.
 	const tooManyFiles = kept.length > SNAPSHOT_LIMITS.maxFiles;
 	const tooManyBytes = keptBytes > SNAPSHOT_LIMITS.maxTotalBytes;
+	// Same rule for one file: the server refuses the whole upload on the
+	// first kept file over the per-file limit, so name the largest here.
+	const oversized = kept.filter((e) => e.size > SNAPSHOT_LIMITS.maxFileBytes);
+	const largestOversized = oversized.reduce<
+		(typeof oversized)[number] | null
+	>(
+		(largest, e) =>
+			largest === null || e.size > largest.size ? e : largest,
+		null,
+	);
 	const editingLocked =
 		reading || progress !== null || serverExcludedNotice !== null;
 
@@ -653,7 +662,7 @@ export function UploadFolderDialog({
 										{r.isDir ? `${r.count} files` : ""}
 									</span>
 									<span className="text-right text-xs">
-										{formatBytes(r.bytes)}
+										{formatByteSize(r.bytes)}
 									</span>
 								</div>
 							))}
@@ -695,7 +704,7 @@ export function UploadFolderDialog({
 						) : null}
 					</div>
 				) : null}
-				{tooManyFiles || tooManyBytes ? (
+				{tooManyFiles || tooManyBytes || largestOversized ? (
 					<div
 						role="alert"
 						className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-destructive text-sm"
@@ -705,12 +714,28 @@ export function UploadFolderDialog({
 									count: kept.length,
 									max: SNAPSHOT_LIMITS.maxFiles,
 								})
-							: t("tooManyBytes", {
-									size: formatBytes(keptBytes),
-									max: formatBytes(
-										SNAPSHOT_LIMITS.maxTotalBytes,
-									),
-								})}
+							: largestOversized
+								? t(
+										oversized.length > 1
+											? "fileTooLargeMore"
+											: "fileTooLarge",
+										{
+											path: largestOversized.path,
+											size: formatByteSize(
+												largestOversized.size,
+											),
+											max: formatByteSize(
+												SNAPSHOT_LIMITS.maxFileBytes,
+											),
+											more: oversized.length - 1,
+										},
+									)
+								: t("tooManyBytes", {
+										size: formatByteSize(keptBytes),
+										max: formatByteSize(
+											SNAPSHOT_LIMITS.maxTotalBytes,
+										),
+									})}
 					</div>
 				) : null}
 				{entries ? (
@@ -718,7 +743,7 @@ export function UploadFolderDialog({
 						<p className="font-medium">
 							{t("summary", {
 								keptCount: kept.length,
-								keptSize: formatBytes(keptBytes),
+								keptSize: formatByteSize(keptBytes),
 								excludedCount,
 							})}
 						</p>
@@ -790,6 +815,7 @@ export function UploadFolderDialog({
 										reading ||
 										tooManyFiles ||
 										tooManyBytes ||
+										largestOversized !== null ||
 										(fastPath && !acknowledged)
 									}
 								>

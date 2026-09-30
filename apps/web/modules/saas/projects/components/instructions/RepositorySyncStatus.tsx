@@ -24,8 +24,15 @@ export function RepositorySyncStatus({
 	state,
 	onSyncNow,
 	onConfigure,
+	publishedVersion = null,
 }: {
 	state: RepositorySyncState;
+	/**
+	 * The version now published. A run whose staged version was stuck in its
+	 * checks and has since been retried to publication is not a failure any
+	 * more.
+	 */
+	publishedVersion?: number | null;
 	onSyncNow?: () => void;
 	onConfigure?: () => void;
 }) {
@@ -57,7 +64,7 @@ export function RepositorySyncStatus({
 	const outcomeMessage = outcome ? syncOutcomeMessage(outcome) : null;
 	const errorMessage =
 		outcome?.kind === "failed"
-			? syncErrorMessage(outcome, configuration)
+			? syncErrorMessage(outcome, configuration, publishedVersion)
 			: null;
 	return (
 		<div

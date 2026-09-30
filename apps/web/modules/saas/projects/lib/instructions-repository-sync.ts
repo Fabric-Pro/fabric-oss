@@ -9,8 +9,11 @@
  * the components read them as the closed sets they are.
  */
 
-import { SNAPSHOT_LIMITS, validateRelativePath } from "@repo/instructions";
-import { formatBytes } from "./format-bytes";
+import {
+	formatByteSize,
+	SNAPSHOT_LIMITS,
+	validateRelativePath,
+} from "@repo/instructions";
 
 type SyncRunStatus =
 	| "SUCCEEDED"
@@ -319,8 +322,8 @@ function limitMessage(limit: SyncLimitView): SyncMessage | null {
 				: {
 						key: `errors.limit.${limit.kind}`,
 						values: {
-							actual: formatBytes(limit.actual),
-							max: formatBytes(limit.max),
+							actual: formatByteSize(limit.actual),
+							max: formatByteSize(limit.max),
 						},
 					};
 		case "inventory":
@@ -328,7 +331,7 @@ function limitMessage(limit: SyncLimitView): SyncMessage | null {
 		case "repositorySize":
 			return {
 				key: "errors.limit.repositorySize",
-				values: { max: formatBytes(limit.max) },
+				values: { max: formatByteSize(limit.max) },
 			};
 		default: {
 			const unreachable: never = limit.kind;
@@ -345,6 +348,7 @@ export function syncErrorMessage(
 		automatic?: boolean;
 		automaticPausedReason?: string | null;
 	} | null,
+	publishedVersion: number | null = null,
 ): SyncMessage | null {
 	if (error === null) {
 		return null;
@@ -375,12 +379,16 @@ export function syncErrorMessage(
 				}
 			);
 		case "CHILD_ABORTED":
-			return snapshotVersion === null
-				? { key: "errors.CHILD_ABORTED" }
-				: {
-						key: "errors.CHILD_ABORTED_VERSION",
-						values: { version: snapshotVersion },
-					};
+			if (snapshotVersion === null) {
+				return { key: "errors.CHILD_ABORTED" };
+			}
+			return {
+				key:
+					snapshotVersion === publishedVersion
+						? "errors.CHILD_ABORTED_RETRIED"
+						: "errors.CHILD_ABORTED_VERSION",
+				values: { version: snapshotVersion },
+			};
 		case "CLONE_FAILED":
 			return configuration?.automatic &&
 				!configuration.automaticPausedReason

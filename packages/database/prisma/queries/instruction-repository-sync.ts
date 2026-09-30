@@ -22,10 +22,13 @@
  */
 
 import { logger } from "@repo/logs";
-import { z } from "zod";
 import { db, Prisma } from "../client";
 import type { ProjectInstructionSyncTrigger } from "../generated/client";
 import { recordAuditTx } from "./audit-log";
+import {
+	type InstructionSyncLimitDetail,
+	parseInstructionSyncLimitDetail,
+} from "./instruction-sync-limit-detail";
 import { canCreateProjectInstructions } from "./projects/projects";
 import type {
 	ClaimedRepositorySyncRow,
@@ -67,39 +70,8 @@ export type InstructionSyncError =
 	| "CONFIGURATION_CHANGED"
 	| "TREE_REFUSED";
 export type InstructionSyncPause = "PERMISSION_REVOKED" | "REF_MISSING";
+export { type InstructionSyncLimitDetail, parseInstructionSyncLimitDetail };
 
-const instructionSyncLimitDetailSchema = z.object({
-	kind: z.enum([
-		"fileCount",
-		"fileSize",
-		"totalSize",
-		"inventory",
-		"repositorySize",
-	]),
-	max: z.number().int().nonnegative(),
-	actual: z.number().int().nonnegative().optional(),
-});
-
-/**
- * Which limit a LIMITS_EXCEEDED run hit, numbers only (the run row's
- * `limitDetail`). `actual` is absent when the check stopped before the true
- * value was known.
- */
-export type InstructionSyncLimitDetail = z.infer<
-	typeof instructionSyncLimitDetailSchema
->;
-
-/**
- * The detail as stored: a known kind and non-negative integers, unknown keys
- * dropped, anything else null. Guards the write (the value crosses a Temporal
- * payload) and the read (the column is Json).
- */
-export function parseInstructionSyncLimitDetail(
-	value: unknown,
-): InstructionSyncLimitDetail | null {
-	const parsed = instructionSyncLimitDetailSchema.safeParse(value);
-	return parsed.success ? parsed.data : null;
-}
 type SourceOfTruth = "UPLOAD" | "REPOSITORY";
 
 /**

@@ -242,14 +242,14 @@ describe("a failed run's message (§7.3)", () => {
 			{ kind: "fileSize", actual: 7_340_032, max: 5_242_880 },
 			{
 				key: "errors.limit.fileSize",
-				values: { actual: "7.0 MB", max: "5.0 MB" },
+				values: { actual: "7 MB", max: "5 MB" },
 			},
 		],
 		[
 			{ kind: "totalSize", actual: 60_000_000, max: 52_428_800 },
 			{
 				key: "errors.limit.totalSize",
-				values: { actual: "57.2 MB", max: "50.0 MB" },
+				values: { actual: "57.2 MB", max: "50 MB" },
 			},
 		],
 		[
@@ -257,10 +257,10 @@ describe("a failed run's message (§7.3)", () => {
 			{ key: "errors.limit.inventory", values: { max: "200,000" } },
 		],
 		[
-			{ kind: "repositorySize", max: 172_490_752 },
+			{ kind: "repositorySize", max: 171_966_464 },
 			{
 				key: "errors.limit.repositorySize",
-				values: { max: "164.5 MB" },
+				values: { max: "164 MB" },
 			},
 		],
 	] as const)("names the recorded limit: %j", (limit, expected) => {
@@ -303,6 +303,31 @@ describe("a failed run's message (§7.3)", () => {
 		expect(
 			syncErrorMessage(failure("CHILD_ABORTED"), configuration),
 		).toEqual({ key: "errors.CHILD_ABORTED" });
+	});
+
+	it("says a CHILD_ABORTED version was retried when it is the published one, and keeps the stopped wording otherwise", () => {
+		expect(
+			syncErrorMessage(
+				failure("CHILD_ABORTED", { snapshotVersion: 12 }),
+				configuration,
+				12,
+			),
+		).toEqual({
+			key: "errors.CHILD_ABORTED_RETRIED",
+			values: { version: 12 },
+		});
+		for (const published of [11, null]) {
+			expect(
+				syncErrorMessage(
+					failure("CHILD_ABORTED", { snapshotVersion: 12 }),
+					configuration,
+					published,
+				),
+			).toEqual({
+				key: "errors.CHILD_ABORTED_VERSION",
+				values: { version: 12 },
+			});
+		}
 	});
 
 	it("maps every other code to its own key, and no code to nothing", () => {
