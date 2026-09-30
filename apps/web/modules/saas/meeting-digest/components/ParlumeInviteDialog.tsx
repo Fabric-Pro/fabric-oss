@@ -14,6 +14,7 @@ import {
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import { Switch } from "@ui/components/switch";
 import { Loader2Icon } from "lucide-react";
 import { type ReactElement, useState } from "react";
 
@@ -36,6 +37,7 @@ export function ParlumeInviteDialog({
 	const [open, setOpen] = useState(false);
 	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
+	const [toolsReadOnly, setToolsReadOnly] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
 	const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(
@@ -81,8 +83,10 @@ export function ParlumeInviteDialog({
 					? { agentInstanceSId: selectedAgent.agentInstanceSId }
 					: {}),
 				meetingUrl: meetingUrl.trim(),
+				toolsReadOnly,
 			});
 			setMeetingUrl("");
+			setToolsReadOnly(true);
 			await queryClient.invalidateQueries({
 				queryKey: [SESSIONS_QUERY_KEY, projectId],
 			});
@@ -129,8 +133,8 @@ export function ParlumeInviteDialog({
 						need to admit it from the lobby. It records and
 						transcribes meeting audio, and its replies use an
 						AI-generated voice. Any meeting attendee can say “Hey
-						Fabric” and hear answers from this project’s knowledge.
-						Voice actions are unavailable.
+						Fabric” to use the selected agent and its connected
+						knowledge.
 					</DialogDescription>
 				</DialogHeader>
 
@@ -215,11 +219,32 @@ export function ParlumeInviteDialog({
 							}
 						/>
 					</div>
+					<div className="space-y-2 rounded-md border p-3">
+						<div className="flex items-center justify-between gap-3">
+							<Label htmlFor="parlume-read-only">Read-only</Label>
+							<Switch
+								id="parlume-read-only"
+								checked={toolsReadOnly}
+								onCheckedChange={setToolsReadOnly}
+								aria-describedby="parlume-action-mode"
+								disabled={pending}
+							/>
+						</div>
+						<p
+							id="parlume-action-mode"
+							className="text-xs text-muted-foreground"
+						>
+							{toolsReadOnly
+								? "Parlume can answer questions and look up information. It cannot make changes."
+								: "Attendees may request changes using your current permissions. Parlume describes each action and waits for that requester to confirm. If the speaker cannot be identified, the action is blocked."}
+						</p>
+					</div>
 					<p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
 						Parlume saves a project-scoped transcript after the
-						meeting. Its voice replies can be interrupted by another
-						speaker. Review meeting policies and tell participants
-						before inviting it.
+						meeting. Requests, approvals and outcomes appear in
+						Parlume history. Its voice replies can be interrupted by
+						another speaker. Review meeting policies and tell
+						participants before inviting it.
 					</p>
 					{error && (
 						<p className="text-sm text-destructive" role="alert">
@@ -259,6 +284,11 @@ export function ParlumeInviteDialog({
 									>
 										<p className="font-medium">
 											{invitationLabel}
+										</p>
+										<p className="text-xs text-muted-foreground">
+											{session.toolsReadOnly
+												? "Read-only"
+												: "Actions with confirmation"}
 										</p>
 										<div className="flex items-center justify-between gap-3">
 											<span className="text-muted-foreground">

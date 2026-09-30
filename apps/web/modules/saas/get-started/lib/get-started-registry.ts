@@ -1050,6 +1050,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				body: "AI reads each synced Teams transcript and pulls out decisions, action items and open questions — so nobody re-watches a recording. Decisions flow into your Decisions log; action items become tasks.",
 			},
 			{
+				id: "parlume-history",
+				anchor: "parlume-history",
+				title: "Review Parlume requests",
+				body: "Parlume history records each meeting request with its speaker and timestamp, along with proposed actions, confirmations and outcomes. Invitations are read-only by default; actions require the requester to confirm.",
+				conditional: true,
+			},
+			{
 				id: "meeting-digest-configure",
 				anchor: "meeting-digest-configure",
 				title: "Choose what's analyzed",

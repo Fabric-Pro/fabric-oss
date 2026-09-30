@@ -10,6 +10,7 @@ import {
 	db,
 	ensureSensitiveOperationAuthority,
 	loadProjectDatabricksKnowledgeBinding,
+	mapBuiltInKeysToFabricToolIds,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -22,6 +23,7 @@ import { Context, heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../lib/redis-publisher";
 import { getAgentMemoryTools } from "../agent-memory";
 import { createRunAgentTool } from "../agentic-loop";
+import { createBuiltInTools } from "../direct-chat/built-in-tools";
 import {
 	classifyIntegrationAccessLevel,
 	classifyToolAccessLevel,
@@ -31,6 +33,11 @@ import {
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import { getAiModel } from "../orchestrator/utils/model-selector";
+import {
+	hasExactAgentToolApproval,
+	observeAgentText,
+	prepareAgentTools,
+} from "../shared/agent-tool-runtime";
 // Deliberately from the dependency-free utils module, NOT
 // `../shared/databricks-knowledge` — that module statically imports the
 // Databricks integration client, which this file keeps out of its static
@@ -51,7 +58,6 @@ import {
 } from "../shared/frame-service";
 import { executeMicrosoftTeamsTool } from "../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
-import { isParlumeMeetingToolAllowed } from "./parlume-tool-policy";
 import type {
 	ExecuteAgentTurnInput,
 	ExecuteAgentTurnResult,
@@ -154,7 +160,6 @@ export async function executeAgentTurn(
 		agentInstanceId,
 		callingAgentId,
 		currentDepth,
-		meetingReadOnly = false,
 	} = input;
 
 	logger.info("[AgentExecutor] Starting agent turn", {
@@ -187,26 +192,11 @@ export async function executeAgentTurn(
 			);
 			const originalToolName = configInfo.originalName || toolName;
 			const accessLevel = classifyToolAccessLevel(originalToolName);
-			if (
-				meetingReadOnly &&
-				!isParlumeMeetingToolAllowed(originalToolName)
-			) {
-				delete tools[toolName];
-				continue;
-			}
 
 			tools[toolName] = tool({
 				description: toolDef.description || toolName,
 				inputSchema: toolDef.inputSchema,
 				execute: async (args: Record<string, unknown>) => {
-					if (
-						meetingReadOnly &&
-						!isParlumeMeetingToolAllowed(originalToolName)
-					) {
-						return {
-							error: "Parlume meetings allow project-scoped read-only tools only.",
-						};
-					}
 					// Read-only mode: block external write tools
 					// before the authority flow; the agent relays the error.
 					const readOnlyBlock = await guardToolWriteForReadOnly(
@@ -216,18 +206,26 @@ export async function executeAgentTurn(
 					if (readOnlyBlock) {
 						return readOnlyBlock;
 					}
-					const authority = await ensureSensitiveOperationAuthority({
+					const authority = hasExactAgentToolApproval({
 						userId,
 						organizationId,
-						providerKey,
-						accessLevel,
-						providerType: "MCP",
-						providerRefId: configInfo.configId,
-						providerDisplayName: configInfo.serverName,
-						runType: "AGENT_INSTANCE",
-						runId: executionId,
-						toolName: configInfo.originalName || toolName,
-					});
+						configId: configInfo.configId,
+						originalName: originalToolName,
+						args,
+					})
+						? { authorized: true }
+						: await ensureSensitiveOperationAuthority({
+								userId,
+								organizationId,
+								providerKey,
+								accessLevel,
+								providerType: "MCP",
+								providerRefId: configInfo.configId,
+								providerDisplayName: configInfo.serverName,
+								runType: "AGENT_INSTANCE",
+								runId: executionId,
+								toolName: configInfo.originalName || toolName,
+							});
 
 					if (!authority.authorized) {
 						return buildAuthorityRequiredResult({
@@ -268,24 +266,10 @@ export async function executeAgentTurn(
 					oauthTool.originalName,
 					oauthTool.serverName,
 				);
-				if (
-					meetingReadOnly &&
-					!isParlumeMeetingToolAllowed(oauthTool.originalName)
-				) {
-					continue;
-				}
 				tools[oauthTool.name] = tool({
 					description: oauthTool.description,
 					inputSchema: zodSchema,
 					execute: async (args: Record<string, unknown>) => {
-						if (
-							meetingReadOnly &&
-							!isParlumeMeetingToolAllowed(oauthTool.originalName)
-						) {
-							return {
-								error: "Parlume meetings allow project-scoped read-only tools only.",
-							};
-						}
 						// Read-only mode: OAuth integration
 						// writes (Teams/GitHub) are external writes too.
 						const readOnlyBlock = await guardToolWriteForReadOnly(
@@ -295,19 +279,26 @@ export async function executeAgentTurn(
 						if (readOnlyBlock) {
 							return readOnlyBlock;
 						}
-						const authority =
-							await ensureSensitiveOperationAuthority({
-								userId,
-								organizationId,
-								providerKey,
-								accessLevel,
-								providerType: "INTEGRATION",
-								providerRefId: oauthTool.configId,
-								providerDisplayName: oauthTool.serverName,
-								runType: "AGENT_INSTANCE",
-								runId: executionId,
-								toolName: oauthTool.originalName,
-							});
+						const authority = hasExactAgentToolApproval({
+							userId,
+							organizationId,
+							configId: oauthTool.configId,
+							originalName: oauthTool.originalName,
+							args,
+						})
+							? { authorized: true }
+							: await ensureSensitiveOperationAuthority({
+									userId,
+									organizationId,
+									providerKey,
+									accessLevel,
+									providerType: "INTEGRATION",
+									providerRefId: oauthTool.configId,
+									providerDisplayName: oauthTool.serverName,
+									runType: "AGENT_INSTANCE",
+									runId: executionId,
+									toolName: oauthTool.originalName,
+								});
 
 						if (!authority.authorized) {
 							return buildAuthorityRequiredResult({
@@ -350,12 +341,9 @@ export async function executeAgentTurn(
 		}
 
 		// Load built-in Fabric AI tools if configured
-		const effectiveBuiltInToolNames = meetingReadOnly
-			? []
-			: builtInToolNames;
-		if (effectiveBuiltInToolNames && effectiveBuiltInToolNames.length > 0) {
+		if (builtInToolNames && builtInToolNames.length > 0) {
 			const builtInTools = await loadBuiltInToolsForAgent(
-				effectiveBuiltInToolNames,
+				builtInToolNames,
 				userId,
 				organizationId,
 				imageRefs,
@@ -363,6 +351,7 @@ export async function executeAgentTurn(
 				callingAgentId,
 				currentDepth,
 				projectId,
+				input.workspaceIds,
 			);
 			for (const [name, def] of Object.entries(builtInTools)) {
 				tools[name] = def;
@@ -378,6 +367,10 @@ export async function executeAgentTurn(
 			});
 		}
 
+		const preparedResponse = await prepareAgentTools(tools, toolToConfig);
+		if (preparedResponse !== undefined) {
+			return { response: preparedResponse, toolCalls: [], success: true };
+		}
 		const hasTools = Object.keys(tools).length > 0;
 		logger.info("[AgentExecutor] Tools loaded", {
 			toolCount: Object.keys(tools).length,
@@ -433,6 +426,7 @@ export async function executeAgentTurn(
 					if (chunk.type !== "text-delta" || !chunk.text) {
 						return;
 					}
+					observeAgentText(chunk.text);
 					logger.info("[AgentExecutor] onChunk", {
 						chunkType: chunk.type,
 						hasText: true,
@@ -530,11 +524,11 @@ export async function executeAgentTurn(
 				}: {
 					chunk: { type: string; text?: string };
 				}) => {
-					if (
-						executionId &&
-						chunk.type === "text-delta" &&
-						chunk.text
-					) {
+					if (chunk.type !== "text-delta" || !chunk.text) {
+						return;
+					}
+					observeAgentText(chunk.text);
+					if (executionId) {
 						publishExecutionEvent(executionId, {
 							event: "execution.text_delta",
 							data: { text: chunk.text },
@@ -695,36 +689,6 @@ export async function loadMcpToolsForAgent(
 }
 
 /**
- * Built-in tool name → Fabric AI tool ID mapping
- * Matches BUILT_IN_TO_FABRIC_TOOLS in agent-templates.ts
- */
-const BUILT_IN_TOOL_MAP: Record<string, string[]> = {
-	"create-frames": [
-		"fabric_create_frame",
-		"fabric_update_frame",
-		"fabric_get_frame",
-		"fabric_list_frames",
-		"fabric_share_frame",
-		"fabric_create_slideshow",
-	],
-	"create-images": ["fabric_generate_image"],
-	"image-generation": ["fabric_generate_image"],
-	"speech-generator": ["fabric_text_to_speech"],
-	"web-search": [
-		"fabric_web_search",
-		"fabric_scrape_url",
-		"fabric_search_and_analyze",
-		"fabric_scrape_and_analyze",
-	],
-	"web-search-browse": [
-		"fabric_web_search",
-		"fabric_scrape_url",
-		"fabric_search_and_analyze",
-		"fabric_scrape_and_analyze",
-	],
-};
-
-/**
  * Load built-in Fabric AI tools for agent execution.
  *
  * These tools are not backed by MCP servers but are native capabilities
@@ -740,22 +704,24 @@ async function loadBuiltInToolsForAgent(
 	callingAgentId?: string,
 	currentDepth = 0,
 	projectId?: string,
+	workspaceIds?: string[],
 ): Promise<Record<string, unknown>> {
-	const tools: Record<string, unknown> = {};
+	const fabricToolIds = new Set(
+		mapBuiltInKeysToFabricToolIds(builtInToolNames),
+	);
+	const tools = await createBuiltInTools({
+		userId,
+		organizationId,
+		projectId,
+		workspaceIds,
+		enabledFabricToolIds: [...fabricToolIds],
+	});
 	const fabricToolDefinitions = getFabricToolDefinitionMap(
 		getAllFabricAiTools(),
 	);
 
 	// Resolve built-in names to Fabric AI tool IDs
-	const fabricToolIds = new Set<string>();
 	for (const name of builtInToolNames) {
-		const ids = BUILT_IN_TOOL_MAP[name];
-		if (ids) {
-			for (const id of ids) {
-				fabricToolIds.add(id);
-			}
-		}
-
 		if (name === "run-agent") {
 			tools.run_agent = createRunAgentTool(
 				callingAgentId || agentInstanceId || "agent",

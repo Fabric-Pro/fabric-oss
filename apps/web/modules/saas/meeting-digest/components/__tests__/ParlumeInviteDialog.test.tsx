@@ -112,6 +112,7 @@ describe("Parlume invitation selection", () => {
 				projectId: "example-project",
 				agentKind: "FABRIC_AGENT",
 				meetingUrl,
+				toolsReadOnly: true,
 			}),
 		);
 		expect(mocks.listAgents).toHaveBeenCalledWith({
@@ -137,6 +138,7 @@ describe("Parlume invitation selection", () => {
 				agentKind: "TEMPLATE_INSTANCE",
 				agentInstanceSId: "example-agent",
 				meetingUrl,
+				toolsReadOnly: true,
 			}),
 		);
 	});
@@ -155,5 +157,31 @@ describe("Parlume invitation selection", () => {
 			screen.getByRole("button", { name: "Invite Parlume" }),
 		).toBeDisabled();
 		expect(mocks.start).not.toHaveBeenCalled();
+	});
+
+	it("opts into confirmed actions and restores read-only for the next invite", async () => {
+		showDialog();
+		await enterMeeting();
+		const mode = screen.getByRole("switch", { name: "Read-only" });
+		expect(mode).toBeChecked();
+		fireEvent.click(mode);
+		expect(mode).not.toBeChecked();
+		fireEvent.click(screen.getByRole("button", { name: "Invite Parlume" }));
+		await waitFor(() =>
+			expect(mocks.start).toHaveBeenCalledWith(
+				expect.objectContaining({ toolsReadOnly: false }),
+			),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("switch", { name: "Read-only" }),
+			).toBeChecked(),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		fireEvent.click(screen.getByRole("button", { name: "Open Parlume" }));
+		expect(
+			await screen.findByRole("switch", { name: "Read-only" }),
+		).toBeChecked();
 	});
 });

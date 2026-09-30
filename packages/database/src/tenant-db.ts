@@ -191,6 +191,7 @@ const USER_OWNED_TABLES = new Set([
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
 	"ParlumeMeetingSegment", // Final live transcript segment for a project bot
 	"ParlumeMeetingTurn", // Project-scoped spoken agent response
+	"ParlumeAction",
 	"MeetingActionItemLink", // Action item -> work item links (#1902); tenant XOR copied from the parent transcript
 	"ProjectPresence", // Real-time presence tracking
 	"ProjectActivity", // Activity feed
@@ -313,6 +314,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ParlumeMeetingSession: "projectId",
 	ParlumeMeetingSegment: "projectId",
 	ParlumeMeetingTurn: "projectId",
+	ParlumeAction: "projectId",
 	DecisionType: "projectId",
 	MeetingActionItemLink: "projectId",
 	ProjectActivity: "projectId",

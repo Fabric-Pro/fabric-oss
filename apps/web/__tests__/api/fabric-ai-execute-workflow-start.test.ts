@@ -7,7 +7,7 @@
  * answers an unconfirmed start with 202 rather than a retryable 5xx.
  */
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getSession: vi.fn(),
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 	canRunOrganizationWorkflows: vi.fn(),
 	hasOrganizationTie: vi.fn(),
 	isTemporalAvailable: vi.fn(),
+	canEditProject: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
@@ -45,6 +46,7 @@ vi.mock("@repo/api/modules/workflows/lib/start-builder-execution", () => ({
 		`The workflow engine did not confirm whether execution ${executionId} started.`,
 }));
 vi.mock("@repo/database", () => ({
+	canEditProject: mocks.canEditProject,
 	getWorkflowById: mocks.getWorkflowById,
 	updateWorkflowExecution: mocks.updateWorkflowExecution,
 	markExecutionRunningIfPending: mocks.markExecutionRunningIfPending,
@@ -59,20 +61,125 @@ vi.mock("@repo/temporal", () => ({
 
 import { POST } from "@/app/api/agents/fabric-ai/execute-workflow/route";
 
-function request(body: unknown) {
+function request(body: unknown, serviceToken?: string) {
 	return new NextRequest(
 		"http://localhost/api/agents/fabric-ai/execute-workflow",
 		{
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: {
+				"content-type": "application/json",
+				...(serviceToken
+					? { "X-Agent-Service-Token": serviceToken }
+					: {}),
+			},
 			body: JSON.stringify(body),
 		},
 	);
 }
 
 describe("POST /api/agents/fabric-ai/execute-workflow", () => {
+	afterEach(() => vi.unstubAllEnvs());
+	it("rejects an untrusted service actor before resolving any user or workflow", async () => {
+		expect(
+			(
+				await POST(
+					request(
+						{ workflowId: "wf-1", serviceUserId: "other" },
+						"wrong",
+					),
+				)
+			).status,
+		).toBe(401);
+		expect(mocks.getSession).not.toHaveBeenCalled();
+		expect(mocks.getWorkflowById).not.toHaveBeenCalled();
+	});
+	it("keeps browser requests bound to their session even if they supply a service actor", async () => {
+		await POST(request({ workflowId: "wf-1", serviceUserId: "other" }));
+		expect(mocks.getWorkflowById).toHaveBeenCalledWith(
+			"wf-1",
+			"user-1",
+			"org-1",
+		);
+	});
+	it.each([
+		"outside-project",
+		"revoked-project-role",
+		"revoked-workflow-role",
+	])("refuses confirmed service execution for %s", async (change) => {
+		mocks.getWorkflowById.mockResolvedValue({
+			id: "wf-1",
+			name: "Workflow",
+			version: 1,
+			triggerType: "MANUAL",
+			status: "ACTIVE",
+			projectId: change === "outside-project" ? "other" : "project",
+		});
+		if (change === "revoked-project-role") {
+			mocks.canEditProject.mockResolvedValue(false);
+		}
+		if (change === "revoked-workflow-role") {
+			mocks.canRunOrganizationWorkflows.mockResolvedValue(false);
+		}
+		expect(
+			(
+				await POST(
+					request(
+						{
+							workflowId: "wf-1",
+							serviceUserId: "user-1",
+							organizationId: "org-1",
+							projectId: "project",
+						},
+						"synthetic-service-token",
+					),
+				)
+			).status,
+		).toBe(403);
+		expect(
+			mocks.createExecutionWithinConcurrencyCap,
+		).not.toHaveBeenCalled();
+	});
+	it("starts the confirmed project workflow through the canonical capacity and start path", async () => {
+		mocks.getWorkflowById.mockResolvedValue({
+			id: "wf-1",
+			name: "Workflow",
+			version: 1,
+			triggerType: "MANUAL",
+			status: "ACTIVE",
+			projectId: "project",
+		});
+		expect(
+			(
+				await POST(
+					request(
+						{
+							workflowId: "wf-1",
+							serviceUserId: "user-1",
+							organizationId: "org-1",
+							projectId: "project",
+						},
+						"synthetic-service-token",
+					),
+				)
+			).status,
+		).toBe(200);
+		expect(mocks.getSession).not.toHaveBeenCalled();
+		expect(mocks.canEditProject).toHaveBeenCalledWith("project", "user-1");
+		expect(
+			mocks.attemptWorkflowBuilderStart,
+		).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				workflowId: "wf-1",
+				projectId: "project",
+				userId: "user-1",
+				organizationId: "org-1",
+			}),
+		);
+	});
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.stubEnv("AGENT_SERVICE_SECRET", "synthetic-service-token");
+		mocks.canEditProject.mockResolvedValue(true);
 		mocks.getSession.mockResolvedValue({
 			user: { id: "user-1" },
 			session: { activeOrganizationId: "org-1" },

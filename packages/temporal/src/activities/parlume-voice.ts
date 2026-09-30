@@ -1,9 +1,13 @@
 import { resolveOpenAiApiKey } from "@repo/ai";
+import { z } from "zod";
 
 const MAX_SPOKEN_CHARS = 800;
 const MAX_PCM_BYTES = 6 * 1024 * 1024;
 
-function bridgeControlUrl(sessionId: string, action: "speak" | "stop"): string {
+function bridgeControlUrl(
+	sessionId: string,
+	action: "speak" | "stop" | "verify-generation",
+): string {
 	const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
 	if (!host) {
 		throw new Error("Parlume media host is not configured.");
@@ -21,12 +25,54 @@ function bridgeControlUrl(sessionId: string, action: "speak" | "stop"): string {
 	return base.toString();
 }
 
+export async function verifyParlumeVoiceGeneration(input: {
+	sessionId: string;
+	voiceGeneration: number;
+	signal?: AbortSignal;
+}): Promise<boolean> {
+	const secret = process.env.AGENT_SERVICE_SECRET;
+	if (!secret || input.signal?.aborted) {
+		return false;
+	}
+	try {
+		const response = await fetch(
+			bridgeControlUrl(input.sessionId, "verify-generation"),
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${secret}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					voiceGeneration: input.voiceGeneration,
+				}),
+				signal: input.signal
+					? AbortSignal.any([
+							input.signal,
+							AbortSignal.timeout(5_000),
+						])
+					: AbortSignal.timeout(5_000),
+			},
+		);
+		if (!response.ok) {
+			return false;
+		}
+		return z.object({ current: z.boolean() }).parse(await response.json())
+			.current;
+	} catch {
+		return false;
+	}
+}
+
 export async function speakParlumeResponse(input: {
 	sessionId: string;
 	userId: string;
 	organizationId: string;
 	response: string;
-}): Promise<void> {
+	voiceGeneration?: number;
+	confirmationSpeakerId?: string;
+	signal?: AbortSignal;
+}): Promise<{ played: boolean; interrupted: boolean; firstAudioAt?: number }> {
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret) {
 		throw new Error("Parlume media service secret is not configured.");
@@ -50,7 +96,9 @@ export async function speakParlumeResponse(input: {
 			response_format: "pcm",
 			input: input.response.slice(0, MAX_SPOKEN_CHARS),
 		}),
-		signal: AbortSignal.timeout(60_000),
+		signal: input.signal
+			? AbortSignal.any([input.signal, AbortSignal.timeout(60_000)])
+			: AbortSignal.timeout(60_000),
 	});
 	if (!tts.ok) {
 		throw new Error(
@@ -61,25 +109,63 @@ export async function speakParlumeResponse(input: {
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_PCM_BYTES) {
 		throw new Error("Parlume speech exceeded the audio limit.");
 	}
-	const pcm = await tts.arrayBuffer();
-	if (pcm.byteLength === 0 || pcm.byteLength > MAX_PCM_BYTES) {
-		throw new Error("Parlume speech exceeded the audio limit.");
+	if (!tts.body) {
+		throw new Error("Parlume speech returned no audio.");
 	}
-	const playback = await fetch(bridgeControlUrl(input.sessionId, "speak"), {
+	let bytes = 0;
+	const pcm = tts.body.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				bytes += chunk.byteLength;
+				if (bytes > MAX_PCM_BYTES) {
+					throw new Error("Parlume speech exceeded the audio limit.");
+				}
+				controller.enqueue(chunk);
+			},
+			flush() {
+				if (bytes === 0 || bytes % 2 !== 0) {
+					throw new Error(
+						"Parlume speech returned invalid PCM audio.",
+					);
+				}
+			},
+		}),
+	);
+	const playbackRequest: RequestInit & { duplex: "half" } = {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${secret}`,
 			"content-type": "audio/pcm",
-			"content-length": String(pcm.byteLength),
+			"x-parlume-voice-generation": String(input.voiceGeneration ?? 0),
+			...(input.confirmationSpeakerId
+				? {
+						"x-parlume-confirmation-speaker":
+							input.confirmationSpeakerId,
+					}
+				: {}),
 		},
 		body: pcm,
-		signal: AbortSignal.timeout(90_000),
-	});
+		duplex: "half",
+		signal: input.signal
+			? AbortSignal.any([input.signal, AbortSignal.timeout(90_000)])
+			: AbortSignal.timeout(90_000),
+	};
+	const playback = await fetch(
+		bridgeControlUrl(input.sessionId, "speak"),
+		playbackRequest,
+	);
 	if (!playback.ok) {
 		throw new Error(
 			`Parlume audio playback failed (HTTP ${playback.status}).`,
 		);
 	}
+	return z
+		.object({
+			played: z.boolean(),
+			interrupted: z.boolean().default(false),
+			firstAudioAt: z.number().optional(),
+		})
+		.parse(await playback.json());
 }
 
 /**

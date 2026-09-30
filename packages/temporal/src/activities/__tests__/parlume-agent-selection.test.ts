@@ -3,42 +3,52 @@ import { executeParlumeMeetingTurn } from "../parlume";
 
 const mocks = vi.hoisted(() => ({
 	turn: vi.fn(),
-	updateTurn: vi.fn(),
-	updateSession: vi.fn(),
-	agent: vi.fn(),
+	update: vi.fn(),
+	updateMany: vi.fn(),
+	session: vi.fn(),
 	hasAccess: vi.fn(),
-	context: vi.fn(),
-	project: vi.fn(),
-	retrieve: vi.fn(),
+	load: vi.fn(),
 	execute: vi.fn(),
+	retrieve: vi.fn(),
 	speak: vi.fn(),
 	stop: vi.fn(),
+	decision: vi.fn(),
+	proposal: vi.fn(),
+	actions: vi.fn(),
 }));
-
 vi.mock("@repo/database", () => ({
 	db: {
 		parlumeMeetingTurn: {
 			findUnique: mocks.turn,
 			findMany: vi.fn(async () => []),
-			update: mocks.updateTurn,
+			update: mocks.update,
+			updateMany: mocks.updateMany,
 		},
-		parlumeMeetingSession: { updateMany: mocks.updateSession },
+		parlumeMeetingSession: { updateMany: mocks.session },
 		parlumeMeetingSegment: {
 			findMany: vi.fn(async () => [
-				{ text: "Meeting context", speakerName: null },
+				{ text: "Meeting context", speakerName: "Alex" },
 			]),
 		},
-		agentTemplateInstance: { findFirst: mocks.agent },
+		parlumeAction: { findFirst: mocks.proposal, updateMany: mocks.actions },
 		$transaction: (operations: Promise<unknown>[]) =>
 			Promise.all(operations),
 	},
 	hasProjectAccess: mocks.hasAccess,
-	getBuiltInToolConfig: vi.fn(),
 }));
 vi.mock("@repo/logs", () => ({ logger: { error: vi.fn() } }));
-vi.mock("../agent-execution-core", () => ({ executeAgentTurn: mocks.execute }));
-vi.mock("../deployment-execution", () => ({
-	buildExecutionContext: mocks.context,
+vi.mock("@temporalio/activity", () => ({
+	Context: {
+		current: () => ({ cancellationSignal: new AbortController().signal }),
+	},
+}));
+vi.mock("../parlume-agent", () => ({
+	loadParlumeAgent: mocks.load,
+	executeParlumeAgent: mocks.execute,
+}));
+vi.mock("../parlume-actions", () => ({
+	prepareParlumeDecision: mocks.decision,
+	createParlumeToolRuntime: () => ({ invoke: vi.fn() }),
 }));
 vi.mock("../parlume-voice", () => ({
 	speakParlumeResponse: mocks.speak,
@@ -47,108 +57,125 @@ vi.mock("../parlume-voice", () => ({
 vi.mock("../project-metadata", () => ({
 	retrieveProjectContextsActivity: mocks.retrieve,
 }));
-vi.mock("../shared/project-context-block", () => ({
-	buildProjectContextBlock: mocks.project,
-}));
 
 function turn(agentKind = "FABRIC_AGENT") {
 	return {
-		id: "example-turn",
+		id: "turn",
 		status: "PENDING",
-		requestText: "What is the project plan?",
+		voiceGeneration: 3,
+		speakerId: "speaker",
+		speakerName: "Alex",
+		requestText: "What is the plan?",
 		session: {
-			id: "example-session",
-			projectId: "example-project",
-			organizationId: "example-org",
-			userId: "example-user",
+			id: "session",
+			projectId: "project",
+			organizationId: "org",
+			userId: "user",
 			agentKind,
-			agentInstanceSId:
-				agentKind === "FABRIC_AGENT" ? null : "example-agent",
-			agentInstanceVersionId:
-				agentKind === "FABRIC_AGENT" ? null : "example-version",
-			agentInstanceVersion: agentKind === "FABRIC_AGENT" ? null : 1,
 			status: "ACTIVE",
 			toolsReadOnly: true,
+			voiceGeneration: 3,
 		},
 	};
 }
-
 beforeEach(() => {
-	vi.clearAllMocks();
+	vi.resetAllMocks();
 	mocks.turn.mockResolvedValue(turn());
 	mocks.hasAccess.mockResolvedValue(true);
-	mocks.project.mockResolvedValue("Project instructions");
+	mocks.updateMany.mockResolvedValue({ count: 1 });
+	mocks.load.mockResolvedValue({
+		kind: "FABRIC_AGENT",
+		revision: "current-revision",
+	});
+	mocks.execute.mockResolvedValue({ success: true, response: "The plan." });
 	mocks.retrieve.mockResolvedValue({ context: "Project knowledge" });
-	mocks.execute.mockResolvedValue({
-		success: true,
-		response: "The project plan.",
+	mocks.decision.mockResolvedValue({});
+	mocks.speak.mockResolvedValue({
+		played: true,
+		interrupted: false,
+		firstAudioAt: new Date().toISOString(),
 	});
 });
 
-describe("Parlume agent selection at execution", () => {
-	it("runs the built-in agent with project context and tenant model selection", async () => {
-		await executeParlumeMeetingTurn({ turnId: "example-turn" });
-		expect(mocks.agent).not.toHaveBeenCalled();
-		expect(mocks.context).not.toHaveBeenCalled();
-		expect(mocks.retrieve).toHaveBeenCalledWith(
-			"What is the project plan?",
-			"example-project",
-			"example-user",
-			"example-org",
-			6,
-		);
+describe("Parlume meeting turns", () => {
+	it("uses the selected current agent, project knowledge and transcript", async () => {
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.load).toHaveBeenCalledWith(turn().session);
 		expect(mocks.execute).toHaveBeenCalledWith(
 			expect.objectContaining({
-				systemPrompt: expect.stringContaining(
-					"You are Fabric Agent.\n\nProject instructions",
-				),
-				knowledgeContext: expect.stringContaining(
-					"Project knowledge\n\n## Recent meeting transcript\nMeeting context",
-				),
-				model: undefined,
-				agentInstanceId: undefined,
-				callingAgentId: undefined,
-				projectId: "example-project",
-				organizationId: "example-org",
-				userId: "example-user",
-				mcpConfigIds: [],
-				integrationConfigurations: [],
-				meetingReadOnly: true,
+				agent: { kind: "FABRIC_AGENT", revision: "current-revision" },
+				knowledgeContext:
+					"Project knowledge\n\nRecent meeting transcript:\nAlex: Meeting context",
+				confirmation: false,
 			}),
 		);
 		expect(mocks.speak).toHaveBeenCalledWith(
-			expect.objectContaining({ response: "The project plan." }),
-		);
-		expect(mocks.updateTurn).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				data: expect.objectContaining({ status: "COMPLETED" }),
+				response: "The plan.",
+				voiceGeneration: 3,
+			}),
+		);
+		expect(mocks.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETED",
+					spokenAt: expect.any(Date),
+				}),
 			}),
 		);
 	});
-
 	it.each(["FABRIC_AGENT", "TEMPLATE_INSTANCE"])(
-		"stops %s before loading context after access is revoked",
+		"stops %s before any context or execution when access is revoked",
 		async (kind) => {
 			mocks.turn.mockResolvedValue(turn(kind));
 			mocks.hasAccess.mockResolvedValue(false);
-			await executeParlumeMeetingTurn({ turnId: "example-turn" });
-			expect(mocks.hasAccess).toHaveBeenCalledWith(
-				"example-project",
-				"example-user",
-				"example-org",
-			);
-			expect(mocks.stop).toHaveBeenCalledWith({
-				sessionId: "example-session",
-			});
-			expect(mocks.retrieve).not.toHaveBeenCalled();
-			expect(mocks.context).not.toHaveBeenCalled();
-			expect(mocks.execute).not.toHaveBeenCalled();
-			expect(mocks.speak).not.toHaveBeenCalled();
-			expect(mocks.updateTurn).toHaveBeenCalledWith(
+			await executeParlumeMeetingTurn({ turnId: "turn" });
+			expect(mocks.stop).toHaveBeenCalledWith({ sessionId: "session" });
+			expect(mocks.session).toHaveBeenCalledWith(
 				expect.objectContaining({
-					data: expect.objectContaining({ status: "FAILED" }),
+					data: expect.objectContaining({ status: "LEAVING" }),
 				}),
 			);
+			expect(mocks.load).not.toHaveBeenCalled();
+			expect(mocks.retrieve).not.toHaveBeenCalled();
+			expect(mocks.execute).not.toHaveBeenCalled();
+			expect(mocks.speak).not.toHaveBeenCalled();
 		},
 	);
+	it("does not execute a duplicate or interrupted turn", async () => {
+		mocks.updateMany.mockResolvedValue({ count: 0 });
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.load).not.toHaveBeenCalled();
+	});
+	it("bypasses retrieval for confirmations", async () => {
+		mocks.decision.mockResolvedValue({ runtime: { invoke: vi.fn() } });
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.retrieve).not.toHaveBeenCalled();
+		expect(mocks.execute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				confirmation: true,
+				history: [],
+				knowledgeContext: "",
+			}),
+		);
+	});
+	it("only enables confirmation after the complete proposal is played", async () => {
+		mocks.proposal.mockResolvedValue({
+			summary: "Please confirm the exact action.",
+			speakerId: "speaker",
+		});
+		mocks.speak.mockResolvedValue({ played: false, interrupted: true });
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.speak).toHaveBeenCalledWith(
+			expect.objectContaining({
+				response: "Please confirm the exact action.",
+				confirmationSpeakerId: "speaker",
+			}),
+		);
+		expect(mocks.actions).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ status: "CANCELLED" }),
+			}),
+		);
+	});
 });

@@ -347,6 +347,7 @@ async function applyRLS() {
 			{ name: "parlume_meeting_session", policy: "user_owned" }, // Project-scoped Teams bot lifecycle
 			{ name: "parlume_meeting_segment", policy: "user_owned" }, // Final live transcript segments
 			{ name: "parlume_meeting_turn", policy: "user_owned" }, // Project-scoped spoken agent responses
+			{ name: "parlume_action", policy: "user_owned" },
 			{ name: "deleted_meeting_archive", policy: "user_owned" }, // 7-day recovery window for unlinked meetings (#2355)
 			{ name: "project_linked_teams_channel", policy: "user_owned" }, // Teams channels monitored for feature extraction
 			{ name: "project_linked_slack_channel", policy: "user_owned" }, // Slack channels monitored for feature extraction

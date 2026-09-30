@@ -1,3 +1,4 @@
+import { isAgentServiceRequestAuthorized } from "@repo/api/lib/agent-service-auth";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -13,6 +14,7 @@ import {
 	unconfirmedStartMessage,
 } from "@repo/api/modules/workflows/lib/start-builder-execution";
 import {
+	canEditProject,
 	canRunOrganizationWorkflows,
 	getWorkflowById,
 	markExecutionRunningIfPending,
@@ -28,25 +30,56 @@ import { z } from "zod";
 const executeWorkflowSchema = z.object({
 	workflowId: z.string().min(1).max(200),
 	organizationId: z.string().max(200).nullish(),
+	serviceUserId: z.string().min(1).max(200).optional(),
+	projectId: z.string().min(1).max(200).optional(),
 });
 
 /**
  * Direct Workflow Execution API
  *
- * This endpoint is called directly by the frontend after user confirms
- * workflow execution via the Accept button. It bypasses the AI entirely.
+ * Starts workflows confirmed in the UI or by an authenticated agent service.
  */
 export async function POST(request: NextRequest) {
 	try {
-		const session = await getSession();
-		if (!session) {
+		const serviceToken = request.headers.get("X-Agent-Service-Token");
+		const serviceRequest = serviceToken !== null;
+		const session = serviceRequest ? null : await getSession();
+		if (
+			serviceRequest
+				? !isAgentServiceRequestAuthorized(serviceToken)
+				: !session
+		) {
 			return NextResponse.json(
 				{ error: "Unauthorized" },
 				{ status: 401 },
 			);
 		}
 
-		const userId = session.user.id;
+		const rawBody = await request.json();
+		const parseResult = executeWorkflowSchema.safeParse(rawBody);
+		if (!parseResult.success) {
+			return NextResponse.json(
+				{
+					error: "Invalid request body",
+					details: parseResult.error.issues,
+				},
+				{ status: 400 },
+			);
+		}
+		const userId = serviceRequest
+			? parseResult.data.serviceUserId
+			: session?.user.id;
+		if (
+			!userId ||
+			(serviceRequest &&
+				(!parseResult.data.organizationId ||
+					!parseResult.data.projectId))
+		) {
+			return NextResponse.json(
+				{ error: "A project and actor are required" },
+				{ status: 400 },
+			);
+		}
 
 		// Rate limit: 30 workflow executions per minute per user
 		const rateLimitResult = await checkRateLimit(
@@ -61,19 +94,6 @@ export async function POST(request: NextRequest) {
 					message: `Rate limit exceeded. Please try again in ${rateLimitResult.resetInSeconds} seconds.`,
 				},
 				{ status: 429 },
-			);
-		}
-
-		// Validate request body
-		const rawBody = await request.json();
-		const parseResult = executeWorkflowSchema.safeParse(rawBody);
-		if (!parseResult.success) {
-			return NextResponse.json(
-				{
-					error: "Invalid request body",
-					details: parseResult.error.issues,
-				},
-				{ status: 400 },
 			);
 		}
 
@@ -92,7 +112,7 @@ export async function POST(request: NextRequest) {
 		const resolution = await resolveRequestedOrganization({
 			userId,
 			requestedOrganizationId,
-			activeOrganizationId: session.session?.activeOrganizationId,
+			activeOrganizationId: session?.session?.activeOrganizationId,
 		});
 		if (!resolution.ok) {
 			return forbiddenOrganizationResponse(resolution);
@@ -128,6 +148,19 @@ export async function POST(request: NextRequest) {
 			return NextResponse.json(
 				{ error: "Workflow not found or you don't have access to it." },
 				{ status: 404 },
+			);
+		}
+		if (
+			serviceRequest &&
+			(workflow.projectId !== parseResult.data.projectId ||
+				!workflow.projectId ||
+				!(await canEditProject(workflow.projectId, userId)))
+		) {
+			return NextResponse.json(
+				{
+					error: "Workflow is not accessible in the confirmed project.",
+				},
+				{ status: 403 },
 			);
 		}
 

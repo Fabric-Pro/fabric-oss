@@ -4654,6 +4654,20 @@ enum ParlumeMeetingTurnStatus {
   @@map("parlume_meeting_turn_status")
 }
 
+enum ParlumeActionStatus {
+  PROPOSED
+  AWAITING_CONFIRMATION
+  EXECUTING
+  COMPLETED
+  FAILED
+  CANCELLED
+  EXPIRED
+  INVALIDATED
+  OUTCOME_UNKNOWN
+
+  @@map("parlume_action_status")
+}
+
 /// A project-scoped invitation of a Fabric Agent to one Teams meeting.
 ///
 /// Template-instance sessions retain a stable agent reference and pin the
@@ -4684,6 +4698,7 @@ model ParlumeMeetingSession {
   terminalCallbackAt     DateTime?
   streamClosedAt         DateTime?
   streamGeneration       Int                         @default(0)
+  voiceGeneration        Int                         @default(0)
   finalizationStartedAt  DateTime?
   finalizedAt            DateTime?
   transcriptContextId    String?                     @unique
@@ -4723,6 +4738,13 @@ model ParlumeMeetingTurn {
   completedAt    DateTime?
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
+  voiceGeneration Int                     @default(0)
+  agentRevision   String?
+  firstTextAt     DateTime?
+  firstAudioAt    DateTime?
+  spokenAt        DateTime?
+  interruptedAt   DateTime?
+  actions         ParlumeAction[]
 
   session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -4734,6 +4756,42 @@ model ParlumeMeetingTurn {
   @@index([projectId, createdAt])
   @@index([organizationId, createdAt])
   @@map("parlume_meeting_turn")
+}
+
+model ParlumeAction {
+  id                 String              @id @default(cuid())
+  turnId             String
+  sessionId          String
+  projectId          String
+  organizationId     String
+  userId             String
+  speakerId          String
+  speakerName        String?
+  invocationKey      String
+  toolName           String
+  toolConfigId       String              @default("builtin")
+  toolOriginalName   String              @default("")
+  toolFingerprint    String
+  agentRevision      String
+  arguments          Json
+  summary            String              @db.Text
+  status             ParlumeActionStatus @default(PROPOSED)
+  presentedAt        DateTime?
+  expiresAt          DateTime
+  confirmationTurnId String?
+  confirmedAt        DateTime?
+  completedAt        DateTime?
+  outcome            String?             @db.Text
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  turn ParlumeMeetingTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@unique([turnId, invocationKey])
+  @@index([sessionId, speakerId, status])
+  @@index([projectId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("parlume_action")
 }
 
 /// Final live transcript segments emitted by the Parlume transcription bridge.
