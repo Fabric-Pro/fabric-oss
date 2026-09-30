@@ -115,9 +115,11 @@ describe("updateCodeIndexActivity", () => {
 		} as never);
 
 		// "29/29 files indexed" is what makes the failure legible.
+		// No owner on this input, so the write is unfenced (empty fence).
 		expect(jobMocks.jobSetCounts).toHaveBeenCalledWith(
 			expect.objectContaining({ filesProcessed: 29, totalFiles: 29 }),
 			"repo-1",
+			{},
 		);
 	});
 

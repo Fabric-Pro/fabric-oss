@@ -14,6 +14,7 @@
 
 import { readFileSync } from "node:fs";
 import { Context } from "@temporalio/activity";
+import type { CodeIndexRunOwner } from "../code-indexing";
 import { jobIncrement, jobStep } from "../lib/job-progress";
 
 export interface ExtractSymbolsInput {
@@ -645,6 +646,8 @@ export interface PersistCodeSymbolsInput {
 	userId: string;
 	organizationId?: string | null;
 	symbols: ExtractedSymbol[];
+	/** Chain that owns this run's writes; fences its Job Hub writes. */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface PersistCodeSymbolsOutput {
@@ -685,8 +688,11 @@ export async function persistCodeSymbolsActivity(
 
 	const result = await createCodeSymbols(dbSymbols);
 
-	await jobStep("symbols", "completed");
-	await jobIncrement({ symbols: result.count });
+	// Fenced to this chain, so a superseded run's late persist cannot write the
+	// successor's Job Hub row (see CodeIndexRunOwner).
+	const fence = input.owner ? { runId: input.owner.runId } : {};
+	await jobStep("symbols", "completed", fence);
+	await jobIncrement({ symbols: result.count }, undefined, fence);
 
 	return {
 		deletedCount: 0, // We don't track how many were deleted

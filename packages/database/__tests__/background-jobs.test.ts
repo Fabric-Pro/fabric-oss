@@ -247,8 +247,12 @@ describe("createBackgroundJob", () => {
 		// "superseded" row for a run that is proceeding normally.
 		expect(id).toBe("already-open");
 		expect(backgroundJob.create).not.toHaveBeenCalled();
-		expect(backgroundJob.update).toHaveBeenCalledWith(
-			expect.objectContaining({ where: { id: "already-open" } }),
+		// Relabeled in one conditional UPDATE: only while no execution chain has
+		// made an ordered claim on the row (see background-jobs-run-fence).
+		expect(backgroundJob.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "already-open", runStartedAt: null },
+			}),
 		);
 	});
 });
@@ -297,7 +301,14 @@ describe("setBackgroundJobStep", () => {
 		// continueAsNew re-runs early steps; the clock must not restart.
 		await setBackgroundJobStep({ workflowId: "wf-1" }, "clone", "running");
 
-		const steps = backgroundJob.update.mock.calls[0][0].data.steps;
+		// The read's filter is repeated in the write, so a row that closed in
+		// between is left alone.
+		expect(backgroundJob.updateMany.mock.calls[0][0].where).toEqual({
+			id: "job-1",
+			status: "RUNNING",
+		});
+
+		const steps = backgroundJob.updateMany.mock.calls[0][0].data.steps;
 		expect(steps[0].startedAt).toBe("2026-01-01T00:00:00.000Z");
 	});
 
@@ -314,7 +325,7 @@ describe("setBackgroundJobStep", () => {
 			"auth denied",
 		);
 
-		const steps = backgroundJob.update.mock.calls[0][0].data.steps;
+		const steps = backgroundJob.updateMany.mock.calls[0][0].data.steps;
 		expect(steps[0].status).toBe("failed");
 		expect(steps[0].error).toBe("auth denied");
 		expect(steps[0].completedAt).toBeTruthy();
@@ -329,7 +340,7 @@ describe("setBackgroundJobStep", () => {
 			"completed",
 		);
 
-		const steps = backgroundJob.update.mock.calls[0][0].data.steps;
+		const steps = backgroundJob.updateMany.mock.calls[0][0].data.steps;
 		expect(steps).toHaveLength(1);
 		expect(steps[0].key).toBe("embed");
 	});
@@ -366,7 +377,7 @@ describe("closing jobs", () => {
 		// the steps after it COMPLETE — an incoherent picture of a run that is
 		// over. Some steps are genuinely conditional, so claiming they completed
 		// would be the other kind of lie.
-		const swept = backgroundJob.update.mock.calls.at(-1)?.[0];
+		const swept = backgroundJob.updateMany.mock.calls.at(-1)?.[0];
 		expect(swept.data.steps).toEqual([
 			{ key: "clone", status: "completed" },
 			{ key: "symbols", status: "skipped" },
@@ -454,7 +465,7 @@ describe("closing jobs", () => {
 
 		// Otherwise the step it died on keeps a spinner running on a dead row,
 		// and the ones after it read "Queued" forever.
-		const swept = backgroundJob.update.mock.calls.at(-1)?.[0];
+		const swept = backgroundJob.updateMany.mock.calls.at(-1)?.[0];
 		expect(swept.data.steps).toEqual([
 			{ key: "clone", status: "completed" },
 			{ key: "embed", status: "skipped" },

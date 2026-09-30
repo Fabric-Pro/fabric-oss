@@ -22,6 +22,7 @@
  * every writer keys on the pair and closes rows by compare-and-set.
  */
 
+import { logger } from "@repo/logs";
 import { db, Prisma } from "../client";
 import type {
 	BackgroundJobKind,
@@ -71,11 +72,39 @@ export interface BackgroundJobKey {
 	 * pipeline can report progress without being handed the integration id.
 	 */
 	sourceId?: string | null;
+	/**
+	 * Fence the write to one execution chain: when set, only a row whose
+	 * `runId` is this value, or unlabeled (NULL), is written.
+	 *
+	 * For workflows that reuse one workflow id across runs and supersede a live
+	 * run with TERMINATE_EXISTING (code indexing). The start path labels the
+	 * open row with the new chain's `firstExecutionRunId` right after
+	 * `workflow.start` (`createBackgroundJob`), and the chain then makes an
+	 * ordered claim on it (`ensureRunningBackgroundJob` with `runStartedAt`)
+	 * that no stale start request can undo. A terminated run's
+	 * still-executing activity — which Temporal does not stop — therefore
+	 * cannot fail, complete or overwrite progress on its successor's row.
+	 * Writers that read and then update repeat the fence in the UPDATE.
+	 * Undefined: no fence, the unchanged behavior every other job kind relies
+	 * on.
+	 */
+	runId?: string;
 }
 
 /** Prisma `where` fragment for the sourceId part of a job key. */
 function sourceIdWhere(sourceId: string | null | undefined) {
 	return sourceId === undefined ? {} : { sourceId };
+}
+
+/**
+ * Prisma `where` fragment for the runId fence of a job key. Wrapped in `AND`
+ * so it composes with fragments that bring their own `OR`
+ * (`completableStatus`).
+ */
+function runIdWhere(runId: string | undefined): Prisma.BackgroundJobWhereInput {
+	return runId === undefined
+		? {}
+		: { AND: [{ OR: [{ runId }, { runId: null }] }] };
 }
 
 /** Raw-SQL predicate for the sourceId part of a job key. */
@@ -86,6 +115,13 @@ function sourceIdSql(sourceId: string | null | undefined): Prisma.Sql {
 	return sourceId === null
 		? Prisma.sql`"sourceId" IS NULL`
 		: Prisma.sql`"sourceId" = ${sourceId}`;
+}
+
+/** Raw-SQL predicate for the runId fence of a job key. */
+function runIdSql(runId: string | undefined): Prisma.Sql {
+	return runId === undefined
+		? Prisma.sql`TRUE`
+		: Prisma.sql`("runId" = ${runId} OR "runId" IS NULL)`;
 }
 
 export interface CreateBackgroundJobArgs {
@@ -213,16 +249,29 @@ export async function createBackgroundJob(
 			select: { id: true },
 		});
 		if (open) {
-			await db.backgroundJob.update({
-				where: { id: open.id },
-				data: {
-					kind: args.kind,
-					title: args.title,
-					runId: args.runId ?? null,
-					sourceType: args.sourceType ?? null,
-					heartbeatAt: new Date(),
-				},
+			const metadata = {
+				kind: args.kind,
+				title: args.title,
+				sourceType: args.sourceType ?? null,
+				heartbeatAt: new Date(),
+			};
+			// Relabel only while no execution chain has made an ordered claim on
+			// the row (`runStartedAt`, see `ensureRunningBackgroundJob`). The
+			// condition sits in the UPDATE itself: a start request that stalled
+			// here must not take the row back from the newer chain that claimed it
+			// meanwhile — every fenced write of that chain would then match
+			// nothing, and the stale chain's would land. Job kinds that never
+			// claim keep `runStartedAt` NULL, so they always relabel, as before.
+			const relabeled = await db.backgroundJob.updateMany({
+				where: { id: open.id, runStartedAt: null },
+				data: { ...metadata, runId: args.runId ?? null },
 			});
+			if (relabeled.count === 0) {
+				await db.backgroundJob.update({
+					where: { id: open.id },
+					data: metadata,
+				});
+			}
 			return open.id;
 		}
 
@@ -350,9 +399,34 @@ export async function openExclusiveBackgroundJob(
  * reads "Skipped" on every step while the run is RUNNING says the opposite.
  */
 export async function ensureRunningBackgroundJob(
-	args: CreateBackgroundJobArgs & { reopenFailedWithClass?: string },
+	args: CreateBackgroundJobArgs & {
+		reopenFailedWithClass?: string;
+		/**
+		 * Make an ORDERED claim for the chain in `runId`, started at this time.
+		 * For workflows that reuse one workflow id across execution chains and
+		 * supersede a live chain with TERMINATE_EXISTING (code indexing), whose
+		 * writes are fenced on `runId` (see `BackgroundJobKey.runId`):
+		 *
+		 * - an open row is relabeled to this chain only if no chain that started
+		 *   later has claimed it (ties relabel); otherwise nothing is written and
+		 *   null is returned — never a second row;
+		 * - with no open row, a row is created only if no chain that started
+		 *   later has claimed any row for this (workflowId, sourceId), open or
+		 *   closed — so a superseded chain's late ensure cannot open a ghost
+		 *   RUNNING row after its successor closed its own.
+		 *
+		 * Omitted: the unordered behavior every other job kind relies on.
+		 */
+		runStartedAt?: Date | string;
+	},
 ): Promise<string | null> {
 	const sourceId = args.sourceId ?? null;
+	if (args.runStartedAt !== undefined && args.runId) {
+		return acquireOrderedBackgroundJob(args, {
+			runId: args.runId,
+			startedAt: new Date(args.runStartedAt),
+		});
+	}
 	try {
 		const existing = await db.backgroundJob.findFirst({
 			where: {
@@ -444,6 +518,145 @@ export async function ensureRunningBackgroundJob(
 	}
 }
 
+/** Attempts before an ordered acquisition gives up (see below). */
+const ORDERED_ACQUIRE_ATTEMPTS = 3;
+
+/**
+ * The ordered form of `ensureRunningBackgroundJob` (its `runStartedAt`
+ * argument): adopt-and-claim the open row, or create one under the
+ * newer-claim guard.
+ *
+ * A bounded loop, because both steps race other writers. The open row can
+ * close or vanish between the read and the conditional claim, and the create
+ * can lose the one-open-row race (P2002). Neither means this chain is
+ * superseded, and returning null there would leave it with no row at all —
+ * `jobEnsure` discards the result and no later ensure runs, so every fenced
+ * write of the chain would match nothing. After a claim that matched no row,
+ * the key is re-read: a newer claim (an open row claimed by a chain that
+ * started later, or with no open row, any row a later chain claimed) means
+ * superseded and returns null; anything else starts over. Gives up, logged,
+ * after `ORDERED_ACQUIRE_ATTEMPTS`.
+ *
+ * `reopenFailedWithClass` has no ordered form; no caller combines the two.
+ */
+async function acquireOrderedBackgroundJob(
+	args: CreateBackgroundJobArgs,
+	claim: { runId: string; startedAt: Date },
+): Promise<string | null> {
+	const sourceId = args.sourceId ?? null;
+	const key = { workflowId: args.workflowId, sourceId };
+
+	/** Any row for the key claimed by a chain that started later. */
+	const newerClaimExists = async (): Promise<boolean> =>
+		(await db.backgroundJob.findFirst({
+			where: { ...key, runStartedAt: { gt: claim.startedAt } },
+			select: { id: true },
+		})) !== null;
+
+	/**
+	 * Whether a claim that matched no row lost to a newer chain, as opposed
+	 * to losing its candidate (closed, deleted, or replaced by a row this
+	 * chain may still claim).
+	 */
+	const superseded = async (): Promise<boolean> => {
+		const open = await db.backgroundJob.findFirst({
+			where: { ...key, status: "RUNNING" },
+			select: { runId: true, runStartedAt: true },
+		});
+		if (open) {
+			return (
+				open.runId !== claim.runId &&
+				open.runStartedAt !== null &&
+				open.runStartedAt.getTime() > claim.startedAt.getTime()
+			);
+		}
+		return newerClaimExists();
+	};
+
+	try {
+		for (let attempt = 1; attempt <= ORDERED_ACQUIRE_ATTEMPTS; attempt++) {
+			const existing = await db.backgroundJob.findFirst({
+				where: { ...key, status: "RUNNING" },
+				select: { id: true },
+			});
+			if (existing) {
+				// The claim is one conditional UPDATE, so the ordering is
+				// re-checked against the row as committed. Ties (`lte`) relabel:
+				// the column keeps milliseconds, and refusing a successor that
+				// started in the same millisecond would leave every one of its
+				// fenced writes unmatched.
+				const { count } = await db.backgroundJob.updateMany({
+					where: {
+						id: existing.id,
+						status: "RUNNING",
+						OR: [
+							{ runStartedAt: null },
+							{ runStartedAt: { lte: claim.startedAt } },
+							{ runId: claim.runId },
+						],
+					},
+					data: {
+						runId: claim.runId,
+						runStartedAt: claim.startedAt,
+						heartbeatAt: new Date(),
+					},
+				});
+				if (count > 0) {
+					return existing.id;
+				}
+				if (await superseded()) {
+					return null;
+				}
+				continue;
+			}
+
+			// Check-then-create, so not atomic: a newer chain's claim can land
+			// between the two. That leaves at most one extra row labeled with
+			// the older chain, which the newer chain's fenced writes never touch
+			// and the watchdog closes; the partial unique index still allows
+			// only one open row, and the newer chain's own ensure then relabels
+			// it (a later start wins).
+			if (await newerClaimExists()) {
+				return null;
+			}
+			try {
+				const created = await db.backgroundJob.create({
+					data: {
+						kind: args.kind,
+						title: args.title,
+						projectId: args.projectId,
+						userId: args.userId,
+						organizationId: args.organizationId ?? null,
+						workflowId: args.workflowId,
+						runId: claim.runId,
+						runStartedAt: claim.startedAt,
+						sourceType: args.sourceType ?? null,
+						sourceId,
+						counts: (args.counts ?? {}) as Prisma.InputJsonValue,
+						steps: (args.steps ??
+							[]) as unknown as Prisma.InputJsonValue,
+					},
+					select: { id: true },
+				});
+				return created.id;
+			} catch (error) {
+				// Lost the one-open-row race: the next pass claims the winner
+				// through the ordering check.
+				if ((error as { code?: string } | null)?.code !== "P2002") {
+					throw error;
+				}
+			}
+		}
+		logger.warn(
+			`[background-jobs] Ordered claim for ${args.workflowId} gave up after ${ORDERED_ACQUIRE_ATTEMPTS} attempts; its open row kept changing`,
+		);
+		return null;
+	} catch {
+		// Best-effort, like the unordered form.
+		return null;
+	}
+}
+
 /**
  * Add to the job's counters atomically.
  *
@@ -478,6 +691,7 @@ export async function incrementBackgroundJobCounts(
 				"updatedAt" = now()
 			WHERE "workflowId" = ${key.workflowId}
 				AND ${sourceIdSql(key.sourceId)}
+				AND ${runIdSql(key.runId)}
 				AND status = 'RUNNING'
 		`);
 	} catch {
@@ -511,6 +725,7 @@ export async function setBackgroundJobCounts(
 				"updatedAt" = now()
 			WHERE "workflowId" = ${key.workflowId}
 				AND ${sourceIdSql(key.sourceId)}
+				AND ${runIdSql(key.runId)}
 				AND status = 'RUNNING'
 		`);
 	} catch {
@@ -535,6 +750,7 @@ export async function setBackgroundJobStep(
 				where: {
 					workflowId: key.workflowId,
 					...sourceIdWhere(key.sourceId),
+					...runIdWhere(key.runId),
 					status: "RUNNING",
 				},
 				select: { id: true, steps: true },
@@ -548,8 +764,16 @@ export async function setBackgroundJobStep(
 				status,
 				error,
 			);
-			await tx.backgroundJob.update({
-				where: { id: job.id },
+			// Status and fence repeated in the UPDATE: the row can close, or be
+			// relabeled to another chain, between the read and this write, and a
+			// lost race must write nothing rather than land on a row this key no
+			// longer matches.
+			await tx.backgroundJob.updateMany({
+				where: {
+					id: job.id,
+					status: "RUNNING",
+					...runIdWhere(key.runId),
+				},
 				data: {
 					steps: nextSteps as unknown as Prisma.InputJsonValue,
 					heartbeatAt: new Date(),
@@ -570,6 +794,7 @@ export async function touchBackgroundJobHeartbeat(
 			where: {
 				workflowId: key.workflowId,
 				...sourceIdWhere(key.sourceId),
+				...runIdWhere(key.runId),
 				status: "RUNNING",
 			},
 			data: { heartbeatAt: new Date() },
@@ -615,8 +840,10 @@ async function skipUnreachedSteps(where: Prisma.BackgroundJobWhereInput) {
 		if (!changed) {
 			continue;
 		}
-		await db.backgroundJob.update({
-			where: { id: row.id },
+		// The caller's filter (status, completedAt, fence) repeated in the
+		// UPDATE, so a row that changed since the read is left alone.
+		await db.backgroundJob.updateMany({
+			where: { ...where, id: row.id },
 			data: { steps: swept as unknown as Prisma.InputJsonValue },
 		});
 	}
@@ -703,6 +930,7 @@ export async function completeBackgroundJob(
 			where: {
 				workflowId: key.workflowId,
 				...sourceIdWhere(key.sourceId),
+				...runIdWhere(key.runId),
 				...completableStatus(key.sourceId),
 			},
 			data: {
@@ -716,6 +944,7 @@ export async function completeBackgroundJob(
 		await skipUnreachedSteps({
 			workflowId: key.workflowId,
 			...sourceIdWhere(key.sourceId),
+			...runIdWhere(key.runId),
 			status: "COMPLETED",
 			completedAt: now,
 		});
@@ -746,6 +975,7 @@ export async function failRunningBackgroundJobStep(
 			where: {
 				workflowId: key.workflowId,
 				...sourceIdWhere(key.sourceId),
+				...runIdWhere(key.runId),
 				status: "RUNNING",
 			},
 			select: { id: true, steps: true },
@@ -756,8 +986,14 @@ export async function failRunningBackgroundJobStep(
 			if (!running) {
 				continue;
 			}
-			await db.backgroundJob.update({
-				where: { id: row.id },
+			// Same filter as the read, repeated in the UPDATE (see
+			// `setBackgroundJobStep`).
+			await db.backgroundJob.updateMany({
+				where: {
+					id: row.id,
+					status: "RUNNING",
+					...runIdWhere(key.runId),
+				},
 				data: {
 					steps: applyStepTransition(
 						steps,
@@ -782,14 +1018,54 @@ export async function failRunningBackgroundJobStep(
  */
 export async function failBackgroundJob(
 	key: BackgroundJobKey,
-	args: { error: string; errorClass?: string },
+	args: {
+		error: string;
+		errorClass?: string;
+		/**
+		 * With `key.runId`: fail the row as an ORDERED claim, in the one
+		 * statement. Besides the plain fence (its own or an unlabeled row), the
+		 * close also takes over a row whose ordered claim (`runStartedAt`, see
+		 * `ensureRunningBackgroundJob`) started no later than this chain — and
+		 * relabels it to this chain as it fails it.
+		 *
+		 * For a chain that fails before it ever claimed the row: a successor
+		 * that terminated its predecessor and then failed before its init (no
+		 * token, feature disabled) would otherwise match nothing, because its
+		 * start path keeps the predecessor's claimed label, and the row would sit
+		 * RUNNING until the watchdog reported a timeout instead of the real
+		 * error. A row labeled by a newer chain's start path without an ordered
+		 * claim (`runStartedAt` NULL) is NOT taken over: there is no start time
+		 * to compare, and the newer chain may still be running.
+		 *
+		 * Omitted: the plain fence, unchanged for every other caller.
+		 */
+		runStartedAt?: Date | string;
+	},
 ): Promise<void> {
 	try {
 		const now = new Date();
+		const ordered =
+			key.runId !== undefined && args.runStartedAt !== undefined
+				? { runId: key.runId, startedAt: new Date(args.runStartedAt) }
+				: null;
 		await db.backgroundJob.updateMany({
 			where: {
 				workflowId: key.workflowId,
 				...sourceIdWhere(key.sourceId),
+				...(ordered
+					? {
+							OR: [
+								{ runId: ordered.runId },
+								{ runId: null },
+								{
+									runStartedAt: {
+										not: null,
+										lte: ordered.startedAt,
+									},
+								},
+							],
+						}
+					: runIdWhere(key.runId)),
 				status: "RUNNING",
 			},
 			data: {
@@ -798,14 +1074,22 @@ export async function failBackgroundJob(
 				errorClass: args.errorClass ?? null,
 				completedAt: now,
 				heartbeatAt: now,
+				...(ordered
+					? { runId: ordered.runId, runStartedAt: ordered.startedAt }
+					: {}),
 			},
 		});
 		// A failed job is just as finished as a completed one: without this the
 		// step it died on keeps spinning and the ones after it read "Queued"
 		// forever, on a row that is over.
+		//
+		// An ordered close relabeled the row it closed to this chain, so the
+		// sweep names exactly that label rather than the fence (whose NULL arm
+		// could reach another row).
 		await skipUnreachedSteps({
 			workflowId: key.workflowId,
 			...sourceIdWhere(key.sourceId),
+			...(ordered ? { runId: ordered.runId } : runIdWhere(key.runId)),
 			status: "FAILED",
 			completedAt: now,
 		});

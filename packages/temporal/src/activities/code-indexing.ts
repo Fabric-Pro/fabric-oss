@@ -171,6 +171,8 @@ export interface CloneRepositoryInput {
 	projectId?: string;
 	userId?: string;
 	organizationId?: string | null;
+	/** Chain that owns this run's writes; fences its Job Hub writes. */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface CloneRepositoryOutput {
@@ -181,6 +183,8 @@ export interface CloneRepositoryOutput {
 
 export interface ScanForSecretsInput {
 	clonePath: string;
+	/** Chain that owns this run's writes; fences its Job Hub writes. */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface ScanForSecretsOutput {
@@ -190,6 +194,8 @@ export interface ScanForSecretsOutput {
 
 export interface WalkFileTreeInput {
 	clonePath: string;
+	/** Chain that owns this run's writes; fences its Job Hub writes. */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface WalkFileTreeOutput {
@@ -266,6 +272,34 @@ export interface PrepareRepositoryOutput {
 	changed?: SelectChangedFilesFromManifestOutput;
 }
 
+/**
+ * The indexing chain a run-scoped activity acts for — the workflow's
+ * `firstExecutionRunId` (the same across continueAsNew) and the current run's
+ * start time (ISO string). The workflow id is stable per repo and a re-index
+ * terminates the previous run without stopping its in-flight activities, so
+ * the ProjectCodeIndex writers use this to keep a superseded chain's late
+ * write off its successor's row (see `CodeIndexOwner` in @repo/database).
+ *
+ * `runId` also fences every Job Hub write (`jobFence`). The Job Hub row is per
+ * repo, not per branch. Every start path labels the open row with the new
+ * chain's first run id right after `workflow.start`, and the chain's init then
+ * makes an ordered claim on it (`startedAt`; see `initCodeIndexActivity`), so
+ * a terminated chain's late write — even one whose own index row it still
+ * owns, as after a branch change — no longer matches the row.
+ *
+ * Optional: activity tasks scheduled before this field existed carry none and
+ * keep the unconditional writes.
+ */
+export interface CodeIndexRunOwner {
+	runId: string;
+	startedAt: string;
+}
+
+/** The Job Hub fence for a run-scoped activity: its chain, when known. */
+function jobFence(owner: CodeIndexRunOwner | undefined): { runId?: string } {
+	return owner ? { runId: owner.runId } : {};
+}
+
 export interface CodeIndexBatchInput {
 	files: Array<{ relativePath: string; absolutePath: string }>;
 	projectId: string;
@@ -286,6 +320,11 @@ export interface CodeIndexBatchInput {
 	branch?: string;
 	filesProcessedSoFar?: number;
 	totalFileCount?: number;
+	/**
+	 * Chain that owns this run's writes: fences the batch's Job Hub writes and
+	 * (chunk + embed) the live-progress write to the index row.
+	 */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface ChunkAndEmbedBatchOutput {
@@ -331,6 +370,8 @@ export interface UpdateCodeIndexInput {
 	workflowId?: string;
 	/** Incremental run — preserve index totals, stamp lastIncrementalAt. */
 	incremental?: boolean;
+	/** Chain that owns this run's writes; see CodeIndexRunOwner. */
+	owner?: CodeIndexRunOwner;
 }
 
 export interface CleanupCloneDirInput {
@@ -619,7 +660,8 @@ async function cloneRepository(
 	// the repo (`code-index-{project}-{integration}`), so there is exactly one.
 	// On continueAsNew the clone re-runs against the same row and the step is
 	// simply re-marked — `running` keeps its original start time.
-	await jobStep("clone", "running");
+	const fence = jobFence(input.owner);
+	await jobStep("clone", "running", fence);
 
 	// One clone attempt with a given plaintext token. Re-invoked once with a
 	// freshly re-exchanged token when the first attempt fails with a git auth
@@ -746,7 +788,7 @@ async function cloneRepository(
 
 	try {
 		const cloned = await doClone(token);
-		await jobStep("clone", "completed");
+		await jobStep("clone", "completed", fence);
 		return cloned;
 	} catch (error) {
 		// Self-heal a git auth failure: the token was dead despite reading valid.
@@ -769,7 +811,7 @@ async function cloneRepository(
 				if (fresh.token) {
 					try {
 						const cloned = await doClone(fresh.token);
-						await jobStep("clone", "completed");
+						await jobStep("clone", "completed", fence);
 						return cloned;
 					} catch {
 						// Fall through to reconnect-required — the re-exchanged token
@@ -783,6 +825,7 @@ async function cloneRepository(
 			});
 			await jobStep("clone", "failed", {
 				error: "Authentication failed — reconnect the repository to retry.",
+				...fence,
 			});
 			nonRetryable(
 				"Repository authentication failed — reconnect the repository in Settings, then re-run.",
@@ -800,7 +843,7 @@ async function cloneRepository(
 export async function scanForSecretsActivity(
 	input: ScanForSecretsInput,
 ): Promise<ScanForSecretsOutput> {
-	return scanRepositoryForSecrets(input.clonePath);
+	return scanRepositoryForSecrets(input.clonePath, input.owner);
 }
 
 /**
@@ -810,6 +853,7 @@ export async function scanForSecretsActivity(
  */
 async function scanRepositoryForSecrets(
 	clonePath: string,
+	owner?: CodeIndexRunOwner,
 ): Promise<ScanForSecretsOutput> {
 	const redactionManifest: Array<{
 		path: string;
@@ -890,7 +934,7 @@ async function scanRepositoryForSecrets(
 	logger.info(
 		`[CodeIndexing] Secret scan: ${totalSecrets} secrets found and redacted in ${redactionManifest.length} files`,
 	);
-	await jobStep("secretScan", "completed");
+	await jobStep("secretScan", "completed", jobFence(owner));
 	return { secretsFound: totalSecrets, redactionManifest };
 }
 
@@ -986,7 +1030,7 @@ function hydrateManifestEntry(
 export async function walkFileTreeActivity(
 	input: WalkFileTreeInput,
 ): Promise<WalkFileTreeOutput> {
-	return walkRepositoryFileTree(input.clonePath);
+	return walkRepositoryFileTree(input.clonePath, input.owner);
 }
 
 /** Result of a file-tree walk: the on-disk manifest path and counts only. */
@@ -1003,6 +1047,7 @@ interface WalkedFileTree {
  */
 async function walkRepositoryFileTree(
 	clonePath: string,
+	owner?: CodeIndexRunOwner,
 ): Promise<WalkedFileTree> {
 	const entries: FileManifestDiskEntry[] = [];
 	let skippedFiles = 0;
@@ -1044,8 +1089,9 @@ async function walkRepositoryFileTree(
 	);
 	// Job Hub: publish the denominator now, so the panel can show
 	// "120/3400 files" from the very first embed batch rather than a bare count.
-	await jobStep("walk", "completed");
-	await jobSetCounts({ totalFiles: entries.length });
+	const fence = jobFence(owner);
+	await jobStep("walk", "completed", fence);
+	await jobSetCounts({ totalFiles: entries.length }, undefined, fence);
 	return { manifestPath, totalFiles: entries.length, skippedFiles };
 }
 
@@ -1124,10 +1170,10 @@ export async function prepareRepositoryActivity(
 		const clone = await cloneRepository(cloneInput, clonePath);
 
 		await activityCheckpoint("prepare: scanning for secrets");
-		const scan = await scanRepositoryForSecrets(clonePath);
+		const scan = await scanRepositoryForSecrets(clonePath, input.owner);
 
 		await activityCheckpoint("prepare: walking file tree");
-		const tree = await walkRepositoryFileTree(clonePath);
+		const tree = await walkRepositoryFileTree(clonePath, input.owner);
 
 		let changed: SelectChangedFilesFromManifestOutput | undefined;
 		if (changedFiles !== undefined) {
@@ -1199,10 +1245,12 @@ export async function chunkAndEmbedBatchActivity(
 	// activity may be retried up to 5 times at 15 minutes each, and the counts
 	// are only written when a batch finishes — without a heartbeat here, a
 	// retrying batch looks dead to the watchdog for over an hour.
+	const fence = jobFence(input.owner);
 	await jobStep("embed", "running", {
 		sourceId: repositoryIntegrationId ?? null,
+		...fence,
 	});
-	await jobHeartbeat(repositoryIntegrationId ?? null);
+	await jobHeartbeat(repositoryIntegrationId ?? null, fence);
 	const errors: string[] = [];
 	let totalChunks = 0;
 
@@ -1425,6 +1473,7 @@ export async function chunkAndEmbedBatchActivity(
 						(input.filesProcessedSoFar ?? 0) + files.length,
 					totalFileCount: input.totalFileCount,
 				},
+				input.owner,
 			);
 		} catch (error) {
 			logger.warn(
@@ -1448,6 +1497,7 @@ export async function chunkAndEmbedBatchActivity(
 			...(errors.length > 0 ? { errors: errors.length } : {}),
 		},
 		repositoryIntegrationId ?? null,
+		fence,
 	);
 
 	return { chunksCreated: totalChunks, filesProcessed: files.length, errors };
@@ -1500,13 +1550,16 @@ export async function generateFileSummariesActivity(
 	// and marking it `running` on the way out left it reading `pending` for the
 	// whole time the panel most needed to show where the job was. Same retry
 	// exposure as the embed batch, so it heartbeats too.
+	const fence = jobFence(input.owner);
 	await jobStep("embed", "completed", {
 		sourceId: repositoryIntegrationId ?? null,
+		...fence,
 	});
 	await jobStep("summaries", "running", {
 		sourceId: repositoryIntegrationId ?? null,
+		...fence,
 	});
-	await jobHeartbeat(repositoryIntegrationId ?? null);
+	await jobHeartbeat(repositoryIntegrationId ?? null, fence);
 	const errors: string[] = [];
 	let summariesCreated = 0;
 
@@ -1640,7 +1693,11 @@ export async function generateFileSummariesActivity(
 	}
 
 	logger.info(`[CodeIndexing] Generated ${summariesCreated} file summaries`);
-	await jobIncrement({ summariesCreated }, repositoryIntegrationId ?? null);
+	await jobIncrement(
+		{ summariesCreated },
+		repositoryIntegrationId ?? null,
+		fence,
+	);
 	return { summariesCreated, errors };
 }
 
@@ -1735,7 +1792,7 @@ export async function updateCodeIndexActivity(
 			}))
 		: (input.fileManifest ?? []);
 
-	await updateCodeIndexStats({
+	const outcome = await updateCodeIndexStats({
 		projectId: input.projectId,
 		repositoryIntegrationId: input.repositoryIntegrationId ?? null,
 		branch: input.branch,
@@ -1746,7 +1803,19 @@ export async function updateCodeIndexActivity(
 		fileManifest,
 		redactionManifest: input.redactionManifest,
 		incremental: input.incremental,
+		owner: input.owner,
 	});
+
+	// A newer indexing chain owns the row, so this run was terminated by a
+	// re-index and its finalize arrived late. The writes below are fenced to
+	// this chain and would not land on the successor's Job Hub row anyway;
+	// returning here just saves them.
+	if (outcome === "superseded") {
+		logger.info(
+			`[CodeIndexing] Skipped stats for superseded run ${input.owner?.runId} of ${input.projectId}`,
+		);
+		return;
+	}
 
 	logger.info(
 		`[CodeIndexing] Updated code index: ${input.filesIndexed} files, ${input.chunksCreated} chunks`,
@@ -1759,8 +1828,13 @@ export async function updateCodeIndexActivity(
 	//
 	// Name the source explicitly. A bare `jobComplete()` is workflow-scoped, and
 	// this workflow id is stable per repo across runs — a superseded run's
-	// in-flight finalize would otherwise close the successor's row.
+	// in-flight finalize would otherwise close the successor's row. The chain
+	// fence covers what the source cannot: after a branch change the
+	// superseded run still owns its own branch's index row (so the stats write
+	// above lands), yet the Job Hub row it shares with its successor is the
+	// successor's.
 	const sourceId = input.repositoryIntegrationId ?? null;
+	const fence = jobFence(input.owner);
 	const counts = {
 		filesProcessed: input.filesIndexed,
 		totalFiles: input.filesIndexed,
@@ -1789,19 +1863,20 @@ export async function updateCodeIndexActivity(
 		await jobStep("embed", "failed", {
 			sourceId,
 			error: "No chunks were produced.",
+			...fence,
 		});
-		await jobSetCounts(counts, sourceId);
+		await jobSetCounts(counts, sourceId, fence);
 		await jobFail(
 			"No content was indexed — every file failed to embed. Check the AI provider key in Settings > AI Providers, then re-index.",
-			{ sourceId, errorClass: "NothingIndexed" },
+			{ sourceId, errorClass: "NothingIndexed", ...fence },
 		);
 		return;
 	}
 
-	await jobStep("embed", "completed", { sourceId });
-	await jobStep("summaries", "completed", { sourceId });
-	await jobStep("finalize", "completed", { sourceId });
-	await jobComplete({ sourceId, counts });
+	await jobStep("embed", "completed", { sourceId, ...fence });
+	await jobStep("summaries", "completed", { sourceId, ...fence });
+	await jobStep("finalize", "completed", { sourceId, ...fence });
+	await jobComplete({ sourceId, counts, ...fence });
 }
 
 /**
@@ -1817,32 +1892,69 @@ export async function initCodeIndexActivity(input: {
 	workflowId?: string;
 	/** Display name for the Job Hub row (owner/repo). */
 	repoName?: string;
+	/** Chain that owns this run's writes; see CodeIndexRunOwner. */
+	owner?: CodeIndexRunOwner;
 }): Promise<void> {
 	// Job Hub: the API pre-creates this row when a user action starts the run,
 	// so the panel shows the job the instant they click. This is the safety net
 	// for the paths that start the workflow without one (webhooks); ensure()
 	// adopts the pre-created row when it exists.
-	await jobEnsure({
-		kind: "CODE_INDEXING",
-		title: input.repoName ?? "Repository indexing",
-		projectId: input.projectId,
-		userId: input.userId,
-		organizationId: input.organizationId,
-		sourceType: JOB_SOURCE.repositoryIntegration,
-		sourceId: input.repositoryIntegrationId ?? null,
-		steps: seedJobSteps([...JOB_STEPS.codeIndexing]),
-	});
+	//
+	// With an owner it is also this chain's ORDERED claim on the row: the row
+	// is relabeled to this chain unless a chain that started later already
+	// holds it, and none is created once a later chain has claimed one. The
+	// start path's label only covers the window before this runs, and a stale
+	// start request can no longer take the row back afterwards.
+	const ensureJob = () =>
+		jobEnsure({
+			kind: "CODE_INDEXING",
+			title: input.repoName ?? "Repository indexing",
+			projectId: input.projectId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			sourceType: JOB_SOURCE.repositoryIntegration,
+			sourceId: input.repositoryIntegrationId ?? null,
+			steps: seedJobSteps([...JOB_STEPS.codeIndexing]),
+			...(input.owner
+				? {
+						runId: input.owner.runId,
+						runStartedAt: input.owner.startedAt,
+					}
+				: {}),
+		});
+	const claimRow = () =>
+		upsertProjectCodeIndex({
+			projectId: input.projectId,
+			repositoryIntegrationId: input.repositoryIntegrationId ?? null,
+			branch: input.branch,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			commitSha: input.commitSha,
+			status: "INDEXING",
+			workflowId: input.workflowId,
+			owner: input.owner,
+		});
 
-	await upsertProjectCodeIndex({
-		projectId: input.projectId,
-		repositoryIntegrationId: input.repositoryIntegrationId ?? null,
-		branch: input.branch,
-		userId: input.userId,
-		organizationId: input.organizationId,
-		commitSha: input.commitSha,
-		status: "INDEXING",
-		workflowId: input.workflowId,
-	});
+	// A task scheduled before ownership existed: the original order and the
+	// unconditional write.
+	if (!input.owner) {
+		await ensureJob();
+		await claimRow();
+		return;
+	}
+
+	// Claim the index row first. A rejected claim means a newer chain owns the
+	// row: this run was terminated by a re-index and its init arrived late, so
+	// skip the Job Hub claim too. The Job Hub claim is itself ordered, so this
+	// is a cheap early exit rather than the protection — which matters after a
+	// branch change, when this chain still owns its own branch's index row.
+	if ((await claimRow()) === "superseded") {
+		logger.info(
+			`[CodeIndexing] Skipped init for superseded run ${input.owner.runId} of ${input.projectId}`,
+		);
+		return;
+	}
+	await ensureJob();
 }
 
 /**
@@ -1853,12 +1965,24 @@ export async function failCodeIndexActivity(input: {
 	repositoryIntegrationId?: string | null;
 	branch?: string;
 	error: string;
+	/** Chain that owns this run's writes; see CodeIndexRunOwner. */
+	owner?: CodeIndexRunOwner;
 }): Promise<void> {
 	// Job Hub: every failure path in the indexing workflow routes through here,
 	// so this single call covers them all. `error` is rendered verbatim in the
-	// panel.
+	// panel. Fenced to this chain: a superseded run — including one that still
+	// owns its own branch's index row after a branch change — cannot fail the
+	// Job Hub row its successor has relabeled.
+	//
+	// Ordered (`runStartedAt`): a chain that fails before its init ever
+	// claimed the row — no token, feature disabled — would otherwise match
+	// nothing, since its start path keeps the terminated predecessor's claimed
+	// label; the close takes over a row claimed by a chain that started no
+	// later, and fails it with this run's real error.
 	await jobFail(input.error, {
 		sourceId: input.repositoryIntegrationId ?? null,
+		...jobFence(input.owner),
+		...(input.owner ? { runStartedAt: input.owner.startedAt } : {}),
 	});
 
 	try {
@@ -1870,6 +1994,7 @@ export async function failCodeIndexActivity(input: {
 			},
 			"FAILED",
 			input.error,
+			input.owner,
 		);
 	} catch {
 		logger.warn(

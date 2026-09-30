@@ -3923,6 +3923,13 @@ model ProjectCodeIndex {
   fileManifest            Json? // [{ path, sha, language }]
   redactionManifest       Json? // [{ path, type, count }] from secret scan
   workflowId              String? // Temporal workflow ID for tracking/cancellation
+  // The indexing chain (first run + its continueAsNew continuations) that last
+  // claimed this row. The workflow id is stable per repo and a re-index
+  // terminates the previous run, whose in-flight activities can still land
+  // late; a run-scoped write from another chain lands only when it started
+  // later than the owner (see prisma/queries/project-code-index.ts).
+  ownerRunId              String? // firstExecutionRunId of the owning chain
+  ownerRunStartedAt       DateTime? // Temporal start time of the claiming run
 
   // Tenant isolation
   userId         String
@@ -17080,6 +17087,11 @@ model BackgroundJob {
   // Temporal correlation
   workflowId String
   runId      String?
+  // Ordered claim on the row by an execution chain that reuses the workflow id
+  // (code indexing): the claiming chain's Temporal start time. A chain relabels
+  // runId only when it started no earlier than this; a start path's relabel
+  // applies only while it is NULL. Null for every other job kind.
+  runStartedAt DateTime?
 
   startedAt   DateTime  @default(now())
   completedAt DateTime?

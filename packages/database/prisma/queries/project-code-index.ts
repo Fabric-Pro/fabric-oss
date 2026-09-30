@@ -7,7 +7,7 @@
  */
 
 import { db } from "../client";
-import type { CodeIndexStatus } from "../generated/client";
+import type { CodeIndexStatus, Prisma } from "../generated/client";
 
 /** Identifies one repo's index row within a project. */
 export interface CodeIndexRepoKey {
@@ -17,12 +17,45 @@ export interface CodeIndexRepoKey {
 	branch?: string;
 }
 
+/**
+ * The indexing chain a run-scoped write comes from: the chain's first run id
+ * (`workflowInfo().firstExecutionRunId`, the same in every continueAsNew
+ * continuation) and the Temporal start time of the run making the write.
+ *
+ * The indexing workflow id is stable per repo, and a re-index starts with
+ * TERMINATE_EXISTING — which does not stop an activity the terminated run
+ * already has in flight. That activity can land after the successor has
+ * claimed the row. A write carrying an owner therefore lands only when the row
+ * is unclaimed, is this chain's own, or was claimed by a run that started no
+ * later (see `ownedByWhere` for ties); a write that lands claims the row.
+ * Start times all come from the one Temporal server clock, and every run of a
+ * chain — continuations included — starts before the TERMINATE_EXISTING
+ * successor that replaced it, so any run of the successor is no earlier than
+ * any run of the chain it replaced.
+ *
+ * This fences the index row, which is per branch. The Job Hub row is per repo
+ * and carries its own fence (`BackgroundJobKey.runId`).
+ */
+export interface CodeIndexOwner {
+	runId: string;
+	startedAt: Date | string;
+}
+
+/**
+ * What an owned terminal write did: `written` — it landed; `superseded` — the
+ * row belongs to a newer chain and was left untouched; `absent` — no row
+ * exists for the key. A write without an owner is never `superseded`.
+ */
+export type CodeIndexWriteOutcome = "written" | "superseded" | "absent";
+
 export interface UpsertCodeIndexInput extends CodeIndexRepoKey {
 	userId: string;
 	organizationId?: string | null;
 	commitSha: string;
 	status?: CodeIndexStatus;
 	workflowId?: string;
+	/** Omitted: the unconditional pre-ownership write (see CodeIndexOwner). */
+	owner?: CodeIndexOwner;
 }
 
 export interface UpdateCodeIndexStatsInput extends CodeIndexRepoKey {
@@ -38,6 +71,8 @@ export interface UpdateCodeIndexStatsInput extends CodeIndexRepoKey {
 	 * preserved and `lastIncrementalAt` is stamped instead of `lastFullIndexAt`.
 	 */
 	incremental?: boolean;
+	/** Omitted: the unconditional pre-ownership write (see CodeIndexOwner). */
+	owner?: CodeIndexOwner;
 }
 
 /** Where-clause for one repo's row (Prisma renders a null id as `IS NULL`). */
@@ -47,6 +82,75 @@ function repoWhere(key: CodeIndexRepoKey) {
 		repositoryIntegrationId: key.repositoryIntegrationId,
 		branch: key.branch ?? "main",
 	};
+}
+
+/**
+ * The rows `owner` may write: unclaimed, claimed by a run that started no
+ * later, or its own chain's. Part of the UPDATE's own WHERE, so Postgres
+ * re-checks it against the latest committed row version when a concurrent
+ * claim holds the row lock.
+ *
+ * `lte`, not `lt`: the column keeps milliseconds, so a successor that started
+ * within the same millisecond as the terminated chain's latest run compares
+ * equal. With `lt` every arm would reject the legitimate successor — its init
+ * and finalize silently skipped, the row stranded in the old run's state
+ * (INDEXING forever). On an exact tie both chains may write instead, which is
+ * the last-writer-wins behavior from before ownership existed; the Job Hub row
+ * stays protected by its own run-id fence.
+ */
+function ownedByWhere(owner: CodeIndexOwner) {
+	return {
+		OR: [
+			{ ownerRunStartedAt: null },
+			{ ownerRunStartedAt: { lte: new Date(owner.startedAt) } },
+			{ ownerRunId: owner.runId },
+		],
+	};
+}
+
+/** The columns a landed owned write sets, claiming the row for its chain. */
+function ownerClaim(owner: CodeIndexOwner) {
+	return {
+		ownerRunId: owner.runId,
+		ownerRunStartedAt: new Date(owner.startedAt),
+	};
+}
+
+/**
+ * Classify an owned conditional update that matched no row: the row exists
+ * (so a newer chain holds it) or there is no row for the key at all.
+ */
+async function missOutcome(
+	key: CodeIndexRepoKey,
+): Promise<"superseded" | "absent"> {
+	const row = await db.projectCodeIndex.findFirst({
+		where: repoWhere(key),
+		select: { id: true },
+	});
+	return row ? "superseded" : "absent";
+}
+
+/**
+ * Run one repo-row update, conditional on ownership when `owner` is given.
+ * Without an owner this is the unconditional pre-ownership write.
+ */
+async function writeRepoRow(
+	key: CodeIndexRepoKey,
+	data: Prisma.ProjectCodeIndexUpdateManyMutationInput,
+	owner: CodeIndexOwner | undefined,
+): Promise<CodeIndexWriteOutcome> {
+	if (!owner) {
+		const { count } = await db.projectCodeIndex.updateMany({
+			where: repoWhere(key),
+			data,
+		});
+		return count > 0 ? "written" : "absent";
+	}
+	const { count } = await db.projectCodeIndex.updateMany({
+		where: { ...repoWhere(key), ...ownedByWhere(owner) },
+		data: { ...data, ...ownerClaim(owner) },
+	});
+	return count > 0 ? "written" : missOutcome(key);
 }
 
 /**
@@ -107,9 +211,16 @@ export function aggregateCodeIndexStatus(
 /**
  * Create or update one repo's code index row. Used at the start of a repo's
  * indexing run to set status to INDEXING.
+ *
+ * With an `owner`, this is the chain's claim on the row: an update lands only
+ * under the ownership rule (see CodeIndexOwner) and a create records the
+ * owner. `superseded` means a newer chain holds the row and nothing was written.
  */
-export async function upsertProjectCodeIndex(input: UpsertCodeIndexInput) {
-	const { userId, organizationId, commitSha, status, workflowId } = input;
+export async function upsertProjectCodeIndex(
+	input: UpsertCodeIndexInput,
+): Promise<CodeIndexWriteOutcome> {
+	const { userId, organizationId, commitSha, status, workflowId, owner } =
+		input;
 
 	// A fresh (non-continuation) run starts at 0 files with an unknown total —
 	// the embed loop fills these in per batch. Resetting here means a re-index
@@ -124,18 +235,32 @@ export async function upsertProjectCodeIndex(input: UpsertCodeIndexInput) {
 		totalFileCount: null,
 	};
 
+	const updateExisting = async (
+		id: string,
+	): Promise<CodeIndexWriteOutcome> => {
+		if (!owner) {
+			await db.projectCodeIndex.update({
+				where: { id },
+				data: updateData,
+			});
+			return "written";
+		}
+		const { count } = await db.projectCodeIndex.updateMany({
+			where: { id, ...ownedByWhere(owner) },
+			data: { ...updateData, ...ownerClaim(owner) },
+		});
+		return count > 0 ? "written" : missOutcome(input);
+	};
+
 	const existing = await db.projectCodeIndex.findFirst({
 		where: repoWhere(input),
 		select: { id: true },
 	});
 	if (existing) {
-		return db.projectCodeIndex.update({
-			where: { id: existing.id },
-			data: updateData,
-		});
+		return updateExisting(existing.id);
 	}
 	try {
-		return await db.projectCodeIndex.create({
+		await db.projectCodeIndex.create({
 			data: {
 				projectId: input.projectId,
 				repositoryIntegrationId: input.repositoryIntegrationId,
@@ -148,47 +273,57 @@ export async function upsertProjectCodeIndex(input: UpsertCodeIndexInput) {
 				workflowId,
 				indexedFileCount: 0,
 				totalFileCount: null,
+				...(owner ? ownerClaim(owner) : {}),
 			},
 		});
+		return "written";
 	} catch (error) {
 		// A concurrent run created the row between our findFirst and create
-		// (unique violation on the composite key) — re-find and update instead.
+		// (unique violation on the composite key) — re-find and update instead,
+		// under the same ownership rule.
 		const raced = await db.projectCodeIndex.findFirst({
 			where: repoWhere(input),
 			select: { id: true },
 		});
 		if (raced) {
-			return db.projectCodeIndex.update({
-				where: { id: raced.id },
-				data: updateData,
-			});
+			return updateExisting(raced.id);
 		}
 		throw error;
 	}
 }
 
-/** Update one repo's index status (e.g., INDEXING -> READY, or -> FAILED). */
+/**
+ * Update one repo's index status (e.g., INDEXING -> READY, or -> FAILED).
+ * With an `owner`, lands only under the ownership rule (see CodeIndexOwner).
+ */
 export async function updateCodeIndexStatus(
 	key: CodeIndexRepoKey,
 	status: CodeIndexStatus,
 	error?: string,
-) {
-	return db.projectCodeIndex.updateMany({
-		where: repoWhere(key),
-		data: {
+	owner?: CodeIndexOwner,
+): Promise<CodeIndexWriteOutcome> {
+	return writeRepoRow(
+		key,
+		{
 			status,
 			error: error ?? null,
 			...(status === "READY" ? { lastFullIndexAt: new Date() } : {}),
 		},
-	});
+		owner,
+	);
 }
 
-/** Update one repo's index stats after a successful run. */
-export async function updateCodeIndexStats(input: UpdateCodeIndexStatsInput) {
+/**
+ * Update one repo's index stats after a successful run. With an `owner`, lands
+ * only under the ownership rule (see CodeIndexOwner).
+ */
+export async function updateCodeIndexStats(
+	input: UpdateCodeIndexStatsInput,
+): Promise<CodeIndexWriteOutcome> {
 	const now = new Date();
-	return db.projectCodeIndex.updateMany({
-		where: repoWhere(input),
-		data: {
+	return writeRepoRow(
+		input,
+		{
 			// filesIndexed + manifest are the full current file set in both modes.
 			filesIndexed: input.filesIndexed,
 			indexDurationMs: input.indexDurationMs,
@@ -207,25 +342,31 @@ export async function updateCodeIndexStats(input: UpdateCodeIndexStatsInput) {
 						lastFullIndexAt: now,
 					}),
 		},
-	});
+		input.owner,
+	);
 }
 
 /**
  * Best-effort live-progress update for one repo's index row, written per embed
  * batch so the Settings UI can render a determinate progress bar while INDEXING.
  * A no-op `updateMany` (row not yet created) is harmless; callers wrap this in
- * try/catch so a progress write never breaks the embedding loop.
+ * try/catch so a progress write never breaks the embedding loop. With an
+ * `owner`, a superseded chain's batch leaves the successor's progress alone.
  */
 export async function updateCodeIndexProgress(
 	key: CodeIndexRepoKey,
 	progress: { indexedFileCount: number; totalFileCount: number | null },
+	owner?: CodeIndexOwner,
 ) {
+	const data = {
+		indexedFileCount: progress.indexedFileCount,
+		totalFileCount: progress.totalFileCount,
+	};
 	return db.projectCodeIndex.updateMany({
-		where: repoWhere(key),
-		data: {
-			indexedFileCount: progress.indexedFileCount,
-			totalFileCount: progress.totalFileCount,
-		},
+		where: owner
+			? { ...repoWhere(key), ...ownedByWhere(owner) }
+			: repoWhere(key),
+		data: owner ? { ...data, ...ownerClaim(owner) } : data,
 	});
 }
 

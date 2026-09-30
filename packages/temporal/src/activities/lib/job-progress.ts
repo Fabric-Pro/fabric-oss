@@ -42,6 +42,20 @@ export interface BackgroundJobStep {
 
 type Counts = Record<string, number>;
 
+/**
+ * Execution-chain fence for workflows that reuse one workflow id across runs
+ * (see `BackgroundJobKey.runId` in @repo/database): when set, a write lands
+ * only on a row labeled with this chain or unlabeled. Omitted: no fence.
+ */
+export interface JobFence {
+	runId?: string;
+}
+
+/** The fence's part of a writer key — absent entirely when unfenced. */
+function fenceKey(fence: JobFence | undefined): { runId?: string } {
+	return fence?.runId === undefined ? {} : { runId: fence.runId };
+}
+
 /** Canonical `sourceType` values, so writers and the UI agree on the vocabulary. */
 export const JOB_SOURCE = {
 	teamsLinkedChannel: "teamsLinkedChannel",
@@ -113,6 +127,19 @@ export interface JobEnsureArgs {
 	 * for one-shot activities Temporal retries — see the writer's docs.
 	 */
 	reopenFailedWithClass?: string;
+	/**
+	 * The chain id to label the row with, in place of the current run id — for
+	 * fenced workflows, so later fenced writes match it. Without
+	 * `runStartedAt` it only labels a row this call creates.
+	 */
+	runId?: string;
+	/**
+	 * With `runId`: an ordered claim for that chain, started at this time (see
+	 * `ensureRunningBackgroundJob`). An open row is relabeled only if no later
+	 * chain claimed it, and no row is created once a later chain has claimed
+	 * one for this source.
+	 */
+	runStartedAt?: string;
 }
 
 /**
@@ -164,7 +191,7 @@ export async function jobEnsure(args: JobEnsureArgs): Promise<void> {
 		dbWriters.ensureRunningBackgroundJob({
 			...args,
 			workflowId: execution.workflowId,
-			runId: execution.runId,
+			runId: args.runId ?? execution.runId,
 		}),
 	);
 }
@@ -173,6 +200,7 @@ export async function jobEnsure(args: JobEnsureArgs): Promise<void> {
 export async function jobIncrement(
 	deltas: Counts,
 	sourceId?: string | null,
+	fence?: JobFence,
 ): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
@@ -180,7 +208,7 @@ export async function jobIncrement(
 	}
 	await safely(() =>
 		dbWriters.incrementBackgroundJobCounts(
-			{ workflowId: execution.workflowId, sourceId },
+			{ workflowId: execution.workflowId, sourceId, ...fenceKey(fence) },
 			deltas,
 		),
 	);
@@ -190,6 +218,7 @@ export async function jobIncrement(
 export async function jobSetCounts(
 	counts: Counts,
 	sourceId?: string | null,
+	fence?: JobFence,
 ): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
@@ -197,7 +226,7 @@ export async function jobSetCounts(
 	}
 	await safely(() =>
 		dbWriters.setBackgroundJobCounts(
-			{ workflowId: execution.workflowId, sourceId },
+			{ workflowId: execution.workflowId, sourceId, ...fenceKey(fence) },
 			counts,
 		),
 	);
@@ -207,7 +236,7 @@ export async function jobSetCounts(
 export async function jobStep(
 	key: string,
 	status: BackgroundJobStepStatus,
-	opts?: { sourceId?: string | null; error?: string },
+	opts?: { sourceId?: string | null; error?: string } & JobFence,
 ): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
@@ -215,7 +244,11 @@ export async function jobStep(
 	}
 	await safely(() =>
 		dbWriters.setBackgroundJobStep(
-			{ workflowId: execution.workflowId, sourceId: opts?.sourceId },
+			{
+				workflowId: execution.workflowId,
+				sourceId: opts?.sourceId,
+				...fenceKey(opts),
+			},
 			key,
 			status,
 			opts?.error,
@@ -236,6 +269,7 @@ export async function jobStep(
 export async function jobFailRunningStep(
 	error: string,
 	sourceId?: string | null,
+	fence?: JobFence,
 ): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
@@ -243,14 +277,17 @@ export async function jobFailRunningStep(
 	}
 	await safely(() =>
 		dbWriters.failRunningBackgroundJobStep(
-			{ workflowId: execution.workflowId, sourceId },
+			{ workflowId: execution.workflowId, sourceId, ...fenceKey(fence) },
 			error,
 		),
 	);
 }
 
 /** Keep a slow-but-alive job out of the watchdog's reach. */
-export async function jobHeartbeat(sourceId?: string | null): Promise<void> {
+export async function jobHeartbeat(
+	sourceId?: string | null,
+	fence?: JobFence,
+): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
 		return;
@@ -259,22 +296,29 @@ export async function jobHeartbeat(sourceId?: string | null): Promise<void> {
 		dbWriters.touchBackgroundJobHeartbeat({
 			workflowId: execution.workflowId,
 			sourceId,
+			...fenceKey(fence),
 		}),
 	);
 }
 
 /** Close one source's job as COMPLETED. */
-export async function jobComplete(opts?: {
-	sourceId?: string | null;
-	counts?: Counts;
-}): Promise<void> {
+export async function jobComplete(
+	opts?: {
+		sourceId?: string | null;
+		counts?: Counts;
+	} & JobFence,
+): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
 		return;
 	}
 	await safely(() =>
 		dbWriters.completeBackgroundJob(
-			{ workflowId: execution.workflowId, sourceId: opts?.sourceId },
+			{
+				workflowId: execution.workflowId,
+				sourceId: opts?.sourceId,
+				...fenceKey(opts),
+			},
 			{ counts: opts?.counts },
 		),
 	);
@@ -303,16 +347,32 @@ export async function jobCompleteAll(counts?: Counts): Promise<void> {
  */
 export async function jobFail(
 	error: string,
-	opts?: { sourceId?: string | null; errorClass?: string },
+	opts?: {
+		sourceId?: string | null;
+		errorClass?: string;
+		/**
+		 * With the fence's `runId`: fail as an ordered claim, taking over a row
+		 * claimed by a chain that started no later (see `failBackgroundJob`).
+		 */
+		runStartedAt?: string;
+	} & JobFence,
 ): Promise<void> {
 	const execution = currentExecution();
 	if (!execution) {
 		return;
 	}
+	const ordered =
+		opts?.runId !== undefined && opts.runStartedAt !== undefined
+			? { runStartedAt: opts.runStartedAt }
+			: {};
 	await safely(() =>
 		dbWriters.failBackgroundJob(
-			{ workflowId: execution.workflowId, sourceId: opts?.sourceId },
-			{ error, errorClass: opts?.errorClass },
+			{
+				workflowId: execution.workflowId,
+				sourceId: opts?.sourceId,
+				...fenceKey(opts),
+			},
+			{ error, errorClass: opts?.errorClass, ...ordered },
 		),
 	);
 }
