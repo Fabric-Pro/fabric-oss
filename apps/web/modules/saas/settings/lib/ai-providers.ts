@@ -58,6 +58,8 @@ export interface ProviderMetadata {
 	keyPlaceholder: string;
 	docsUrl: string;
 	requiresBaseUrl: boolean;
+	/** Overrides the default "Gateway URL" label of the base URL field. */
+	baseUrlLabel?: string;
 	baseUrlPlaceholder?: string;
 	baseUrlHelp?: string;
 	/**
@@ -358,9 +360,11 @@ const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
 		docsUrl:
 			"https://azure.microsoft.com/en-us/products/ai-services/openai-service",
 		requiresBaseUrl: true,
-		baseUrlPlaceholder: "https://{resource-name}.openai.azure.com",
+		baseUrlLabel: "Endpoint URL",
+		baseUrlPlaceholder:
+			"https://{resource}.services.ai.azure.com/api/projects/{project}/openai/v1",
 		baseUrlHelp:
-			"Your Azure resource endpoint (.openai.azure.com, .cognitiveservices.azure.com or .services.ai.azure.com), or a project endpoint such as https://{resource}.services.ai.azure.com/api/projects/{project}/openai/v1",
+			"Paste the endpoint from Azure AI Foundry: a project endpoint or a resource endpoint on .services.ai.azure.com, .openai.azure.com or .cognitiveservices.azure.com. A pasted request URL works too; only its resource and API style are used.",
 	},
 	GOOGLE_VERTEX_AI: {
 		id: "GOOGLE_VERTEX_AI",

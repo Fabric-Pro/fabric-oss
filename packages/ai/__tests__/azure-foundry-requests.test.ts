@@ -29,6 +29,7 @@ const embeddingReply = {
 function lastRequest() {
 	const [url, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
 	return {
+		redirect: init.redirect,
 		url: new URL(url),
 		headers: new Headers(init.headers),
 		body: JSON.parse(init.body as string) as Record<string, unknown>,
@@ -66,7 +67,8 @@ describe("Azure AI Foundry chat requests", () => {
 			prompt: "hi",
 		});
 
-		const { url, headers, body } = lastRequest();
+		const { url, headers, body, redirect } = lastRequest();
+		expect(redirect).toBe("error");
 		expect(`${url.origin}${url.pathname}`).toBe(
 			`${resourceV1}/chat/completions`,
 		);
@@ -88,7 +90,8 @@ describe("Azure AI Foundry chat requests", () => {
 			prompt: "hi",
 		});
 
-		const { url, body } = lastRequest();
+		const { url, body, redirect } = lastRequest();
+		expect(redirect).toBe("error");
 		expect(url.pathname).toBe(
 			"/openai/deployments/prod-chat/chat/completions",
 		);
@@ -114,7 +117,8 @@ describe("Azure AI Foundry embedding requests", () => {
 			value: "hi",
 		});
 
-		const { url, body } = lastRequest();
+		const { url, body, redirect } = lastRequest();
+		expect(redirect).toBe("error");
 		expect(`${url.origin}${url.pathname}`).toBe(`${resourceV1}/embeddings`);
 		expect(url.searchParams.has("api-version")).toBe(false);
 		expect(body.model).toBe("prod-embed");
@@ -133,7 +137,8 @@ describe("Azure AI Foundry embedding requests", () => {
 			value: "hi",
 		});
 
-		const { url } = lastRequest();
+		const { url, redirect } = lastRequest();
+		expect(redirect).toBe("error");
 		expect(url.pathname).toBe("/openai/deployments/prod-embed/embeddings");
 		expect(url.searchParams.get("api-version")).toBe("2025-01-01-preview");
 	});

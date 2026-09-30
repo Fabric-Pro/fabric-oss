@@ -474,7 +474,13 @@ describe.each([
 		fireEvent.change(screen.getByLabelText(/^API Key$/i), {
 			target: { value: "azure-key" },
 		});
-		fireEvent.change(screen.getByLabelText(/Gateway URL/i), {
+		expect(screen.queryByLabelText(/Gateway URL/i)).toBeNull();
+		const endpointInput = screen.getByLabelText(/Endpoint URL/i);
+		expect(endpointInput).toHaveAttribute(
+			"placeholder",
+			"https://{resource}.services.ai.azure.com/api/projects/{project}/openai/v1",
+		);
+		fireEvent.change(endpointInput, {
 			target: { value: AZURE_ENDPOINT },
 		});
 		fireEvent.change(screen.getByLabelText(/Deployment Name/i), {

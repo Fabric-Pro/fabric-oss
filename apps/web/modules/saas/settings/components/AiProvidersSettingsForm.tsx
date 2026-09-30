@@ -1919,7 +1919,10 @@ export function AiProvidersSettingsForm() {
 						{/* Base URL Input (for providers that require custom base URL) */}
 						{selectedProvider?.requiresBaseUrl && (
 							<div className="space-y-2">
-								<Label htmlFor="baseUrl">Gateway URL</Label>
+								<Label htmlFor="baseUrl">
+									{selectedProvider.baseUrlLabel ??
+										"Gateway URL"}
+								</Label>
 								<Input
 									id="baseUrl"
 									type="text"

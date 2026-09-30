@@ -1,11 +1,12 @@
 import type { ChatAnthropic } from "@langchain/anthropic";
 import { HumanMessage } from "@langchain/core/messages";
-import { ChatOpenAI } from "@langchain/openai";
+import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
 import {
 	hoistRawStopReason,
 	isOutputTruncated,
 	resolveStopReason,
 } from "@repo/agent-core/output-truncation";
+import { AZURE_OPENAI_API_VERSION } from "@repo/agent-types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProviderConfig } from "../src/services/langchain-models";
 import {
@@ -2198,4 +2199,53 @@ describe("createProviderModel — adaptive-only Claude and gpt-6", () => {
 			REASONING_OUTPUT_TOKEN_ALLOWANCE,
 		);
 	});
+});
+
+describe("createProviderModel — AZURE_AI_FOUNDRY endpoint shapes", () => {
+	const origin = "https://example-resource.services.ai.azure.com";
+	const field = (model: unknown, name: string) =>
+		(model as Record<string, unknown>)[name];
+	const azure = (baseUrl: string) =>
+		createProviderModel({
+			provider: "AZURE_AI_FOUNDRY",
+			model: "gpt-4.1-mini",
+			deploymentName: "prod-chat",
+			apiKey: "azure-key",
+			baseUrl,
+		});
+
+	it.each([
+		[`${origin}/api/projects/example-project/openai/v1`],
+		[`${origin}/api/projects/example-project/openai/v1/chat/completions`],
+		[`${origin}/OpenAI/V1/`],
+	])("v1 URL %s → ChatOpenAI on the resource-level v1 base", (baseUrl) => {
+		const model = azure(baseUrl);
+
+		expect(model).toBeInstanceOf(ChatOpenAI);
+		expect(model).not.toBeInstanceOf(AzureChatOpenAI);
+		expect(field(model, "model")).toBe("prod-chat");
+		expect(
+			(field(model, "clientConfig") as { baseURL?: string }).baseURL,
+		).toBe(`${origin}/openai/v1`);
+	});
+
+	it.each([
+		[`${origin}`],
+		[`${origin}/openai/deployments/other/chat/completions?api-version=x`],
+		[`${origin}/openai`],
+	])(
+		"classic URL %s → AzureChatOpenAI on the origin with the shared api-version",
+		(baseUrl) => {
+			const model = azure(baseUrl);
+
+			expect(model).toBeInstanceOf(AzureChatOpenAI);
+			expect(field(model, "azureOpenAIEndpoint")).toBe(origin);
+			expect(field(model, "azureOpenAIApiVersion")).toBe(
+				AZURE_OPENAI_API_VERSION,
+			);
+			expect(field(model, "azureOpenAIApiDeploymentName")).toBe(
+				"prod-chat",
+			);
+		},
+	);
 });

@@ -473,6 +473,7 @@ async function testAzureAIFoundry(
 				messages: [{ role: "user", content: "." }],
 				max_completion_tokens: 1,
 			}),
+			redirect: "error",
 			signal: AbortSignal.timeout(10000), // 10 second timeout
 		});
 
@@ -545,6 +546,19 @@ async function testAzureAIFoundry(
 			latencyMs: Date.now() - start,
 		};
 	} catch (error) {
+		// Azure answered with a redirect, which is never followed: replaying the
+		// request would forward the API key to the redirect target.
+		if (
+			error instanceof TypeError &&
+			error.cause instanceof Error &&
+			/redirect/i.test(error.cause.message)
+		) {
+			return {
+				success: false,
+				message:
+					"Connection failed: Azure redirected the request. Use your resource endpoint or project endpoint URL exactly as shown in Azure AI Foundry.",
+			};
+		}
 		// Check if it's a network error (invalid URL)
 		if (error instanceof TypeError && error.message.includes("fetch")) {
 			return {

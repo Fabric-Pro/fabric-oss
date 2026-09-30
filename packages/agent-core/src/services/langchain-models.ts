@@ -15,7 +15,12 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatGroq } from "@langchain/groq";
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
 import { createSecurityHeaders } from "@repo/agent-runtime";
-import { isAnthropicAdaptiveOnlyModel } from "@repo/agent-types";
+import {
+	AZURE_OPENAI_API_VERSION,
+	isAnthropicAdaptiveOnlyModel,
+	normalizeAzureEndpoint,
+	resolveAzureDeploymentTarget,
+} from "@repo/agent-types";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import {
 	createDatabricksFetch,
@@ -1405,30 +1410,32 @@ function createUninstrumentedProviderModel(
 		const effectiveDeploymentName =
 			config.deploymentName || modelName || model;
 
-		// Azure AI Foundry exposes TWO endpoint shapes:
-		//   1. Legacy Azure OpenAI: https://{resource}.openai.azure.com
+		// Azure AI Foundry exposes TWO endpoint shapes, told apart (and reduced
+		// to the resource origin) by the shared resolver in `@repo/agent-types`:
+		//   1. Classic Azure OpenAI: <origin>/openai/deployments/{name}/...
 		//      - Requires `?api-version=...` query parameter
-		//      - Uses AzureChatOpenAI client (path: /openai/deployments/{name}/...)
-		//   2. Project-scoped v1 Responses API: https://{resource}.services.ai.azure.com/api/projects/{project}/openai/v1
+		//      - Uses AzureChatOpenAI client
+		//   2. v1 API: <origin>/openai/v1
 		//      - REJECTS `api-version` query parameter
-		//      - OpenAI-compatible (path: /v1/chat/completions or /v1/responses)
-		//      - Use plain ChatOpenAI with the URL as a custom baseURL
-		// Detect shape (2) by the `/openai/v1` path marker and route to the
-		// OpenAI-compatible client instead of AzureChatOpenAI.
-		const isFoundryV1Endpoint = /\/openai\/v1(?:\/|$)/.test(baseUrl);
-		if (isFoundryV1Endpoint) {
+		//      - OpenAI-compatible; use plain ChatOpenAI with it as baseURL
+		const azureEndpoint = normalizeAzureEndpoint(baseUrl);
+		if (azureEndpoint.isV1) {
+			const target = resolveAzureDeploymentTarget(
+				baseUrl,
+				effectiveDeploymentName,
+			);
 			console.log(
-				`[LangChainModels] Creating Azure AI Foundry v1 (OpenAI-compatible) model: deployment=${effectiveDeploymentName} via ${baseUrl}`,
+				`[LangChainModels] Creating Azure AI Foundry v1 (OpenAI-compatible) model: deployment=${effectiveDeploymentName} via ${target.baseURL}`,
 			);
 			return new ChatOpenAI({
-				model: effectiveDeploymentName,
+				model: target.model,
 				apiKey,
 				temperature,
 				maxTokens,
 				maxRetries,
 				timeout: GATEWAY_TIMEOUT_MS,
 				configuration: {
-					baseURL: baseUrl,
+					baseURL: target.baseURL,
 					// Azure AI Foundry's v1 endpoint expects the API key in
 					// `api-key` header rather than `Authorization: Bearer`.
 					defaultHeaders: { "api-key": apiKey },
@@ -1475,8 +1482,8 @@ function createUninstrumentedProviderModel(
 			return new AzureChatOpenAI({
 				azureOpenAIApiKey: apiKey,
 				azureOpenAIApiDeploymentName: effectiveDeploymentName,
-				azureOpenAIEndpoint: baseUrl,
-				azureOpenAIApiVersion: "2024-10-21",
+				azureOpenAIEndpoint: azureEndpoint.origin,
+				azureOpenAIApiVersion: AZURE_OPENAI_API_VERSION,
 				maxRetries,
 				// NOTE: maxTokens and temperature intentionally omitted for reasoning models
 				// - maxTokens: These models use max_completion_tokens which LangChain doesn't directly support
@@ -1487,9 +1494,8 @@ function createUninstrumentedProviderModel(
 		return new AzureChatOpenAI({
 			azureOpenAIApiKey: apiKey,
 			azureOpenAIApiDeploymentName: effectiveDeploymentName,
-			azureOpenAIEndpoint: baseUrl,
-			// Default API version - Azure requires this
-			azureOpenAIApiVersion: "2024-10-21",
+			azureOpenAIEndpoint: azureEndpoint.origin,
+			azureOpenAIApiVersion: AZURE_OPENAI_API_VERSION,
 			temperature,
 			maxTokens,
 			maxRetries,

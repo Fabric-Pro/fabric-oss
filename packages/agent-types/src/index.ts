@@ -11,6 +11,15 @@ export {
 	isAnthropicAdaptiveOnlyModel,
 } from "./anthropic-model-constraints";
 export type {
+	AzureDeploymentTarget,
+	AzureEndpoint,
+} from "./azure-foundry-url";
+export {
+	AZURE_OPENAI_API_VERSION,
+	normalizeAzureEndpoint,
+	resolveAzureDeploymentTarget,
+} from "./azure-foundry-url";
+export type {
 	DecisionConflictFinding,
 	DecisionPrecheckResult,
 } from "./decision-precheck";

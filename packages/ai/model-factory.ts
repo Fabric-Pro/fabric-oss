@@ -891,6 +891,7 @@ export function getModel(
 								) {
 									return fetch(urlWithVersion.toString(), {
 										...options,
+										redirect: "error",
 										body: JSON.stringify(body),
 									});
 								}
@@ -899,7 +900,10 @@ export function getModel(
 							}
 						}
 
-						return fetch(urlWithVersion.toString(), options);
+						return fetch(urlWithVersion.toString(), {
+							...options,
+							redirect: "error",
+						});
 					},
 				});
 				// Use .chat() to force chat/completions API (Azure doesn't support responses API)
@@ -1092,6 +1096,7 @@ export function getEmbeddingModel(
 								delete body.temperature;
 								return fetch(urlWithVersion.toString(), {
 									...options,
+									redirect: "error",
 									body: JSON.stringify(body),
 								});
 							}
@@ -1100,7 +1105,10 @@ export function getEmbeddingModel(
 						}
 					}
 
-					return fetch(urlWithVersion.toString(), options);
+					return fetch(urlWithVersion.toString(), {
+						...options,
+						redirect: "error",
+					});
 				},
 			});
 			return azureProvider.embedding(azureEmbeddingTarget.model);
