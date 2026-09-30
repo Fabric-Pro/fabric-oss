@@ -156,10 +156,49 @@ describe("Azure AI Foundry probe", () => {
 			"https://example-resource.cognitiveservices.azure.com/openai/deployments/prod-chat/chat/completions?api-version=2025-01-01-preview",
 		);
 		expect(init.method).toBe("POST");
+		expect(init.redirect).toBe("error");
 		expect(init.headers).toMatchObject({ "api-key": "azure-key" });
 		expect(JSON.parse(init.body as string)).toMatchObject({
 			max_completion_tokens: 1,
 		});
+	});
+
+	it("reports a redirect instead of following it with the api key", async () => {
+		fetchMock.mockRejectedValue(
+			new TypeError("fetch failed", {
+				cause: new Error("unexpected redirect"),
+			}),
+		);
+
+		const result = await testNew({ baseUrl, deploymentName: "prod-chat" });
+
+		expect(result.success).toBe(false);
+		expect(result.message).toMatch(/Azure redirected the request/);
+	});
+
+	it("still reports an unreachable host as a connection failure", async () => {
+		fetchMock.mockRejectedValue(
+			new TypeError("fetch failed", { cause: new Error("getaddrinfo") }),
+		);
+
+		const result = await testNew({ baseUrl, deploymentName: "prod-chat" });
+
+		expect(result.success).toBe(false);
+		expect(result.message).toMatch(/Could not connect to Azure/);
+	});
+
+	it("probes the resource origin when a full request URL is pasted", async () => {
+		azureResponds(200);
+
+		await testNew({
+			baseUrl:
+				"https://example-resource.cognitiveservices.azure.com/openai/deployments/other/chat/completions?api-version=2024-10-21",
+			deploymentName: "prod-chat",
+		});
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"https://example-resource.cognitiveservices.azure.com/openai/deployments/prod-chat/chat/completions?api-version=2025-01-01-preview",
+		);
 	});
 
 	it("never asks Azure to list deployments", async () => {
