@@ -134,6 +134,12 @@ test("reports a meeting idle for three minutes once, then leaves the session alo
 
 	await instance.onAlarm();
 
+	const access = requests.find((r) => r.path.endsWith("/verify-access"));
+	assert.deepEqual(access?.body, {
+		sessionId: "session-1",
+		botId: "bot-1",
+		openConnections: 0,
+	});
 	const idle = requests.filter((r) => r.path.endsWith("/idle"));
 	assert.equal(idle.length, 1);
 	assert.deepEqual(
