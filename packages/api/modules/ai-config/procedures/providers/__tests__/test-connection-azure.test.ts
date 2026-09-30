@@ -233,15 +233,26 @@ describe("Azure AI Foundry probe", () => {
 		);
 	});
 
-	it("fails a deployment that cannot serve chat", async () => {
+	it("fails a deployment that cannot serve chat, from Azure's real code-less body", async () => {
 		azureResponds(400, {
-			error: { code: "OperationNotSupported", message: "..." },
+			error: { message: "The requested operation is unsupported." },
 		});
 
 		const result = await testNew({
 			baseUrl,
 			deploymentName: "embeddings",
 		});
+
+		expect(result.success).toBe(false);
+		expect(result.message).toMatch(/does not support chat completions/);
+	});
+
+	it("still recognises the OperationNotSupported code", async () => {
+		azureResponds(400, {
+			error: { code: "OperationNotSupported", message: "Not supported" },
+		});
+
+		const result = await testNew({ baseUrl, deploymentName: "embeddings" });
 
 		expect(result.success).toBe(false);
 		expect(result.message).toMatch(/does not support chat completions/);
@@ -274,7 +285,7 @@ describe("Azure AI Foundry project-scoped v1 endpoint", () => {
 
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe(
-			"https://example-resource.services.ai.azure.com/api/projects/example-project/openai/v1/chat/completions",
+			"https://example-resource.services.ai.azure.com/openai/v1/chat/completions",
 		);
 		expect(init.headers).toMatchObject({ "api-key": "azure-key" });
 		expect(JSON.parse(init.body as string)).toMatchObject({

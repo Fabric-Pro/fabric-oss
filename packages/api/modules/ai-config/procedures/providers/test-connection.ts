@@ -399,6 +399,10 @@ interface AzureErrorBody {
 	param?: string;
 }
 
+// Azure answers a chat request to a non-chat deployment (embeddings, image)
+// with a 400 whose body carries only this message and no `code`.
+const AZURE_OPERATION_UNSUPPORTED = /operation is unsupported/i;
+
 const AZURE_MODEL_RAN_MESSAGE =
 	/max_(?:completion_)?tokens|output limit|token limit/i;
 
@@ -511,7 +515,10 @@ async function testAzureAIFoundry(
 				error?: AzureErrorBody;
 			} | null;
 			const azureError = body?.error;
-			if (azureError?.code === "OperationNotSupported") {
+			if (
+				azureError?.code === "OperationNotSupported" ||
+				AZURE_OPERATION_UNSUPPORTED.test(azureError?.message ?? "")
+			) {
 				return {
 					success: false,
 					message: `Connection failed: The deployment "${deployment}" does not support chat completions. Choose a chat model deployment.`,

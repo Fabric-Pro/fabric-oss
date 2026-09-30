@@ -44,22 +44,23 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-const v1Endpoint =
+const projectEndpoint =
 	"https://example-resource.services.ai.azure.com/api/projects/example-project/openai/v1";
+const resourceV1 = "https://example-resource.services.ai.azure.com/openai/v1";
 const classicEndpoint = "https://example-resource.openai.azure.com";
 
 describe("Azure AI Foundry chat requests", () => {
 	const respond = () =>
 		fetchMock.mockImplementation(async () => Response.json(chatReply));
 
-	it("sends a project-scoped v1 endpoint to /chat/completions with the deployment as model and no api-version", async () => {
+	it("sends a project endpoint to the resource-level /chat/completions with the deployment as model and no api-version", async () => {
 		respond();
 
 		await generateText({
 			model: getModel("azure-ai-foundry/gpt-4o", {
 				provider: "AZURE_AI_FOUNDRY",
 				apiKey: "azure-key",
-				baseUrl: `${v1Endpoint}/`,
+				baseUrl: `${projectEndpoint}/`,
 				deploymentName: "prod-chat",
 			}),
 			prompt: "hi",
@@ -67,7 +68,7 @@ describe("Azure AI Foundry chat requests", () => {
 
 		const { url, headers, body } = lastRequest();
 		expect(`${url.origin}${url.pathname}`).toBe(
-			`${v1Endpoint}/chat/completions`,
+			`${resourceV1}/chat/completions`,
 		);
 		expect(url.searchParams.has("api-version")).toBe(false);
 		expect(headers.get("api-key")).toBe("azure-key");
@@ -100,21 +101,21 @@ describe("Azure AI Foundry embedding requests", () => {
 	const respond = () =>
 		fetchMock.mockImplementation(async () => Response.json(embeddingReply));
 
-	it("sends a v1 endpoint to /embeddings with the deployment as model and no api-version", async () => {
+	it("sends a project endpoint to the resource-level /embeddings with the deployment as model and no api-version", async () => {
 		respond();
 
 		await embed({
 			model: getEmbeddingModel("text-embedding-3-small", {
 				provider: "AZURE_AI_FOUNDRY",
 				apiKey: "azure-key",
-				baseUrl: v1Endpoint,
+				baseUrl: projectEndpoint,
 				deploymentName: "prod-embed",
 			}),
 			value: "hi",
 		});
 
 		const { url, body } = lastRequest();
-		expect(`${url.origin}${url.pathname}`).toBe(`${v1Endpoint}/embeddings`);
+		expect(`${url.origin}${url.pathname}`).toBe(`${resourceV1}/embeddings`);
 		expect(url.searchParams.has("api-version")).toBe(false);
 		expect(body.model).toBe("prod-embed");
 	});
