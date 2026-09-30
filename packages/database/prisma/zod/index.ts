@@ -522,7 +522,7 @@ export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMe
 
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
 
@@ -2469,6 +2469,12 @@ export type AtlasCrossEdgeDetection = z.infer<typeof AtlasCrossEdgeDetectionSche
 export const AtlasCrossLinkStatusSchema = z.enum(['PENDING', 'RUNNING', 'READY', 'FAILED'])
 
 export type AtlasCrossLinkStatus = z.infer<typeof AtlasCrossLinkStatusSchema>;
+
+// File: ParlumeMeetingAgentKind.schema.ts
+
+export const ParlumeMeetingAgentKindSchema = z.enum(['FABRIC_AGENT', 'TEMPLATE_INSTANCE'])
+
+export type ParlumeMeetingAgentKind = z.infer<typeof ParlumeMeetingAgentKindSchema>;
 
 // File: ParlumeMeetingSessionStatus.schema.ts
 
@@ -5698,9 +5704,11 @@ export const ParlumeMeetingSessionSchema = z.object({
   projectId: z.string(),
   organizationId: z.string(),
   userId: z.string(),
-  agentInstanceSId: z.string(),
-  agentInstanceVersionId: z.string(),
-  agentInstanceVersion: z.number().int(),
+  agentKind: ParlumeMeetingAgentKindSchema.default("TEMPLATE_INSTANCE"),
+  agentLabel: z.string().default("Custom Fabric Agent"),
+  agentInstanceSId: z.string().nullish(),
+  agentInstanceVersionId: z.string().nullish(),
+  agentInstanceVersion: z.number().int().nullish(),
   providerBotId: z.string().nullish(),
   streamTokenDigest: z.string(),
   status: ParlumeMeetingSessionStatusSchema.default("PENDING"),

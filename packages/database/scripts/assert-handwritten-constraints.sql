@@ -1,8 +1,9 @@
 -- Hand-written constraints whose shape Prisma cannot express, asserted
 -- against a database built from the migration chain.
 --
--- schema.prisma declares each of these as an @ignore'd relation so that
--- `prisma migrate dev` keeps it, but Prisma compares neither MATCH FULL nor
+-- schema.prisma documents each constraint because Prisma cannot represent all
+-- of their shapes. For @ignore'd relations, `prisma migrate dev` keeps them but
+-- compares neither MATCH FULL nor
 -- an ON DELETE SET NULL column list. Editing one of those relation lines
 -- makes `migrate dev` recreate the constraint without them, and Postgres
 -- accepts that DDL silently: a lost column list only surfaces when a delete
@@ -17,7 +18,8 @@ DECLARE
   expected CONSTANT text[][] := ARRAY[
     ['project_context_conversation_bundle_owner_fkey', 'MATCH FULL'],
     ['project_context_conversation_claim_owner_fkey', 'MATCH FULL'],
-    ['publishing_topic_working_draft_source_draft_fkey', 'ON DELETE SET NULL ("sourceDraftId")']
+    ['publishing_topic_working_draft_source_draft_fkey', 'ON DELETE SET NULL ("sourceDraftId")'],
+    ['parlume_meeting_session_agent_selection', 'CHECK']
   ];
   definition text;
 BEGIN
