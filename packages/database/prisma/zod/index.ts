@@ -522,15 +522,21 @@ export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMe
 
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingTurnScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingTurnScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'requestText', 'responseText', 'status', 'error', 'startedAt', 'completedAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingTurnScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'requestText', 'responseText', 'status', 'error', 'startedAt', 'completedAt', 'createdAt', 'updatedAt', 'voiceGeneration', 'agentRevision', 'firstTextAt', 'firstAudioAt', 'spokenAt', 'interruptedAt'])
 
 export type ParlumeMeetingTurnScalarFieldEnum = z.infer<typeof ParlumeMeetingTurnScalarFieldEnumSchema>;
+
+// File: ParlumeActionScalarFieldEnum.schema.ts
+
+export const ParlumeActionScalarFieldEnumSchema = z.enum(['id', 'turnId', 'sessionId', 'projectId', 'organizationId', 'userId', 'speakerId', 'speakerName', 'invocationKey', 'toolName', 'toolConfigId', 'toolOriginalName', 'toolFingerprint', 'agentRevision', 'arguments', 'summary', 'status', 'presentedAt', 'expiresAt', 'confirmationTurnId', 'confirmedAt', 'completedAt', 'outcome', 'createdAt', 'updatedAt'])
+
+export type ParlumeActionScalarFieldEnum = z.infer<typeof ParlumeActionScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingSegmentScalarFieldEnum.schema.ts
 
@@ -2487,6 +2493,12 @@ export type ParlumeMeetingSessionStatus = z.infer<typeof ParlumeMeetingSessionSt
 export const ParlumeMeetingTurnStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED'])
 
 export type ParlumeMeetingTurnStatus = z.infer<typeof ParlumeMeetingTurnStatusSchema>;
+
+// File: ParlumeActionStatus.schema.ts
+
+export const ParlumeActionStatusSchema = z.enum(['PROPOSED', 'AWAITING_CONFIRMATION', 'EXECUTING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'OUTCOME_UNKNOWN'])
+
+export type ParlumeActionStatus = z.infer<typeof ParlumeActionStatusSchema>;
 
 // File: MeetingTranscriptAnalysisStatus.schema.ts
 
@@ -5722,6 +5734,7 @@ export const ParlumeMeetingSessionSchema = z.object({
   terminalCallbackAt: z.date().nullish(),
   streamClosedAt: z.date().nullish(),
   streamGeneration: z.number().int(),
+  voiceGeneration: z.number().int(),
   finalizationStartedAt: z.date().nullish(),
   finalizedAt: z.date().nullish(),
   transcriptContextId: z.string().nullish(),
@@ -5754,9 +5767,48 @@ export const ParlumeMeetingTurnSchema = z.object({
   completedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
+  voiceGeneration: z.number().int(),
+  agentRevision: z.string().nullish(),
+  firstTextAt: z.date().nullish(),
+  firstAudioAt: z.date().nullish(),
+  spokenAt: z.date().nullish(),
+  interruptedAt: z.date().nullish(),
 });
 
 export type ParlumeMeetingTurnType = z.infer<typeof ParlumeMeetingTurnSchema>;
+
+
+// File: ParlumeAction.schema.ts
+
+export const ParlumeActionSchema = z.object({
+  id: z.string(),
+  turnId: z.string(),
+  sessionId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  speakerId: z.string(),
+  speakerName: z.string().nullish(),
+  invocationKey: z.string(),
+  toolName: z.string(),
+  toolConfigId: z.string().default("builtin"),
+  toolOriginalName: z.string(),
+  toolFingerprint: z.string(),
+  agentRevision: z.string(),
+  arguments: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  summary: z.string(),
+  status: ParlumeActionStatusSchema.default("PROPOSED"),
+  presentedAt: z.date().nullish(),
+  expiresAt: z.date(),
+  confirmationTurnId: z.string().nullish(),
+  confirmedAt: z.date().nullish(),
+  completedAt: z.date().nullish(),
+  outcome: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ParlumeActionType = z.infer<typeof ParlumeActionSchema>;
 
 
 // File: ParlumeMeetingSegment.schema.ts

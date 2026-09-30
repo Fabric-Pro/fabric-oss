@@ -84,7 +84,7 @@ describe("explicitly attached MCP servers", () => {
 	 */
 	it("are loaded regardless of the keyword heuristic", () => {
 		expect(aiExecutionSource).toMatch(
-			/const shouldForceLoadAttachedMcpTools =\s*\n?\s*Boolean\(instanceId\) \|\|\s*\n?\s*\(Array\.isArray\(enabledMcpConfigIds\) &&\s*\n?\s*enabledMcpConfigIds\.length > 0\)/,
+			/const shouldForceLoadAttachedMcpTools =\s*\n?\s*Boolean\(requiredAgentTool\(\)\) \|\|\s*\n?\s*Boolean\(instanceId\) \|\|\s*\n?\s*\(Array\.isArray\(enabledMcpConfigIds\) &&\s*\n?\s*enabledMcpConfigIds\.length > 0\)/,
 		);
 	});
 

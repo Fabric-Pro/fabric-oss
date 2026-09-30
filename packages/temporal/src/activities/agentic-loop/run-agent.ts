@@ -26,6 +26,10 @@ import { db } from "@repo/database";
 import { generateText, isStepCount, type ModelMessage, tool } from "ai";
 import { z } from "zod";
 import { loadMcpToolsForAgent } from "../agent-execution-core";
+import {
+	agentToolAbortSignal,
+	prepareAgentTools,
+} from "../shared/agent-tool-runtime";
 import { makeInFlightToolCompactor } from "./in-flight-tool-compaction";
 
 // =============================================================================
@@ -201,9 +205,10 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 				where: {
 					id: agentId,
 					OR: [
-						{ userId, organizationId: null },
-						{ organizationId: organizationId ?? undefined },
-						{ scope: "SYSTEM" },
+						organizationId
+							? { organizationId }
+							: { userId, organizationId: null },
+						{ scope: "SYSTEM", organizationId: null },
 					],
 				},
 			});
@@ -351,7 +356,7 @@ async function executeDelegateMode(
 			tools,
 			stopWhen: isStepCount(10),
 			prepareStep: makeInFlightToolCompactor(),
-			abortSignal: controller.signal,
+			abortSignal: agentToolAbortSignal(controller.signal),
 		});
 
 		clearTimeout(timeoutId);
@@ -441,7 +446,7 @@ async function executeInlineMode(
 			tools,
 			stopWhen: isStepCount(5), // Fewer steps for inline mode
 			prepareStep: makeInFlightToolCompactor(),
-			abortSignal: controller.signal,
+			abortSignal: agentToolAbortSignal(controller.signal),
 		});
 
 		clearTimeout(timeoutId);
@@ -487,6 +492,10 @@ async function buildSubAgentTools(
 	mcpConfigIds: string[],
 ) {
 	const tools: Record<string, any> = {};
+	let toolSources: Record<
+		string,
+		{ configId: string; originalName: string }
+	> = {};
 
 	// Add run_agent tool if depth allows
 	if (newDepth < MAX_RECURSION_DEPTH) {
@@ -503,14 +512,16 @@ async function buildSubAgentTools(
 	// as the parent agent. This mirrors Dust's toolsetsToAdd pattern where
 	// the parent passes MCP server IDs to the child conversation.
 	if (mcpConfigIds.length > 0) {
-		const { tools: mcpTools } = await loadMcpToolsForAgent(
+		const { tools: mcpTools, toolToConfig } = await loadMcpToolsForAgent(
 			mcpConfigIds,
 			userId,
 			organizationId,
 		);
 		Object.assign(tools, mcpTools);
+		toolSources = toolToConfig;
 	}
 
+	await prepareAgentTools(tools, toolSources);
 	return tools;
 }
 
@@ -541,7 +552,7 @@ export function createRunAgentTool(
 			),
 	});
 
-	return tool({
+	const definition = tool({
 		description: `Delegate a task to another specialized agent. Use "delegate" mode for complex tasks that need full context, or "inline" mode for quick lookups.
 
 Available agents can be discovered by asking the user or checking your instructions.
@@ -576,6 +587,7 @@ Max delegation depth: ${MAX_RECURSION_DEPTH - currentDepth} more levels allowed.
 			};
 		},
 	});
+	return { ...definition, approvalBoundary: "delegation" as const };
 }
 
 // =============================================================================

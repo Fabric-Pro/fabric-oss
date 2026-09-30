@@ -16,6 +16,7 @@ const bodySchema = z.object({
 	speakerId: z.string().trim().min(1).max(256).nullable(),
 	utteranceStartMs: z.number().int().min(0).max(14_400_000).nullable(),
 	utteranceEndMs: z.number().int().min(0).max(14_400_000).nullable(),
+	voiceGeneration: z.number().int().min(0).default(0),
 });
 
 export async function POST(request: NextRequest) {
@@ -42,9 +43,13 @@ export async function POST(request: NextRequest) {
 			organizationId: true,
 			userId: true,
 			activeTurnId: true,
+			voiceGeneration: true,
 		},
 	});
 	if (!session) {
+		return NextResponse.json({ accepted: false });
+	}
+	if (parsed.data.voiceGeneration < session.voiceGeneration) {
 		return NextResponse.json({ accepted: false });
 	}
 	if (session.activeTurnId) {
@@ -61,6 +66,7 @@ export async function POST(request: NextRequest) {
 			requestText: parsed.data.text,
 			speakerName: parsed.data.speakerName,
 			speakerId: parsed.data.speakerId,
+			voiceGeneration: parsed.data.voiceGeneration,
 		},
 		skipDuplicates: true,
 	});
@@ -95,8 +101,16 @@ export async function POST(request: NextRequest) {
 		}
 	}
 	const claimed = await db.parlumeMeetingSession.updateMany({
-		where: { id: session.id, status: "ACTIVE", activeTurnId: null },
-		data: { activeTurnId: turn.id },
+		where: {
+			id: session.id,
+			status: "ACTIVE",
+			activeTurnId: null,
+			voiceGeneration: { lte: parsed.data.voiceGeneration },
+		},
+		data: {
+			activeTurnId: turn.id,
+			voiceGeneration: parsed.data.voiceGeneration,
+		},
 	});
 	if (claimed.count === 0) {
 		await db.parlumeMeetingTurn.update({

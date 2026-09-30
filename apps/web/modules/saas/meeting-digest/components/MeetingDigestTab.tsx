@@ -24,6 +24,7 @@ import { AgendaView } from "./AgendaView";
 import { CalendarCanvas } from "./CalendarCanvas";
 import { DigestConfigPanel } from "./DigestConfigPanel";
 import { MeetingDetailSheet } from "./MeetingDetailSheet";
+import { ParlumeHistoryDialog } from "./ParlumeHistoryDialog";
 import { ParlumeInviteDialog } from "./ParlumeInviteDialog";
 import { PersonalMeetingSheet } from "./PersonalMeetingSheet";
 import {
@@ -572,6 +573,9 @@ export function MeetingDigestTab({
 					</h2>
 					<PageTourButton pageId="meeting-digest" />
 				</div>
+				{parlumeEnabled && organizationId && (
+					<ParlumeHistoryDialog projectId={projectId} />
+				)}
 				{canEdit && (
 					<div className="flex flex-wrap items-center gap-3">
 						{canInviteParlume && (

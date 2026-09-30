@@ -74,7 +74,7 @@ const sessionSelect = {
 	updatedAt: true,
 } as const;
 
-async function requireParlumeProject(projectId: string) {
+export async function requireParlumeProject(projectId: string) {
 	const project = await db.project.findFirst({
 		where: { id: projectId },
 		select: { id: true, organizationId: true },
@@ -137,6 +137,7 @@ const startSessionInput = projectInput
 			.optional(),
 		agentInstanceSId: z.string().optional(),
 		meetingUrl: z.string().url(),
+		toolsReadOnly: z.boolean().default(true),
 	})
 	.superRefine((input, context) => {
 		const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
@@ -398,6 +399,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				agentInstanceVersionId: agent.agentInstanceVersionId,
 				agentInstanceVersion: agent.agentInstanceVersion,
 				streamTokenDigest: digestStreamToken(streamToken),
+				toolsReadOnly: input.toolsReadOnly,
 				hardStopAt,
 			},
 			select: { id: true },
@@ -475,7 +477,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 									agent.agentInstanceVersion,
 							}
 						: {}),
-					toolsReadOnly: true,
+					toolsReadOnly: input.toolsReadOnly,
 					hardStopAt: hardStopAt.toISOString(),
 				},
 			});

@@ -97,6 +97,16 @@ const EXPECTED_KEYS = [
 ];
 
 describe("ACTION_CATALOG", () => {
+	it("describes a confirmed Parlume action", () => {
+		expect(
+			describeAction("project.parlume.action_confirmed"),
+		).toMatchObject({
+			label: "Parlume action confirmed",
+			defaultSeverity: "info",
+			category: "project",
+		});
+	});
+
 	it("covers every closed-taxonomy key (46 success + 8 error + 6 incident = 60)", () => {
 		// 8 auth + 12 org + 10 project + 7 story + 6 document_assistant +
 		// 3 audit = 46 success keys, plus 8 open-namespace error keys (D16)

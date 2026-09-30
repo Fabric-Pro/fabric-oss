@@ -72,6 +72,14 @@ import {
 } from "../orchestrator/execution/vision-image-attachments";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import {
+	agentToolAbortSignal,
+	hasExactAgentToolApproval,
+	observeAgentText,
+	prepareAgentTools,
+	requiredAgentTool,
+} from "../shared/agent-tool-runtime";
+import { executeApprovedWorkflow } from "../shared/confirmed-workflow";
+import {
 	buildDatabricksKnowledgeToolDefinition,
 	databricksKnowledgeToolName,
 	executeDatabricksKnowledgeSearchSafe,
@@ -629,6 +637,14 @@ function createWorkflowTools(
 			inputSchema: executeWorkflowSchema as any,
 			execute: async (params: { workflowId: string }) => {
 				try {
+					const confirmed = await executeApprovedWorkflow({
+						args: params,
+						userId,
+						organizationId,
+					});
+					if (confirmed) {
+						return confirmed;
+					}
 					const workflow = await getWorkflowById(
 						params.workflowId,
 						userId,
@@ -799,6 +815,7 @@ async function runDirectChatTurn({
 	// then told "No tools connected. Suggest the user connect tools in
 	// Settings." — which is exactly what it went on to tell the user.
 	const shouldForceLoadAttachedMcpTools =
+		Boolean(requiredAgentTool()) ||
 		Boolean(instanceId) ||
 		(Array.isArray(enabledMcpConfigIds) && enabledMcpConfigIds.length > 0);
 
@@ -807,9 +824,13 @@ async function runDirectChatTurn({
 		(shouldForceLoadAttachedMcpTools || toolAnalysis.needsTools)
 	) {
 		// Determine which servers to load
-		const serversToLoad =
-			!shouldForceLoadAttachedMcpTools &&
-			toolAnalysis.matchedServers.length > 0
+		const requiredTool = requiredAgentTool();
+		const serversToLoad = requiredTool
+			? mcpToolInfo.filter(
+					(server) => server.configId === requiredTool.configId,
+				)
+			: !shouldForceLoadAttachedMcpTools &&
+					toolAnalysis.matchedServers.length > 0
 				? toolAnalysis.matchedServers
 				: mcpToolInfo; // Fallback to all if keywords matched but no specific server
 
@@ -880,20 +901,27 @@ async function runDirectChatTurn({
 									);
 									return readOnlyBlock;
 								}
-								const authority =
-									await ensureSensitiveOperationAuthority({
-										userId,
-										organizationId,
-										providerKey,
-										accessLevel,
-										providerType: "MCP",
-										providerRefId: serverInfo.configId,
-										providerDisplayName:
-											serverInfo.serverName,
-										runType: "AGENT_INSTANCE",
-										runId: authorityRunId,
-										toolName: serverInfo.originalName,
-									});
+								const authority = hasExactAgentToolApproval({
+									userId,
+									organizationId,
+									configId: serverInfo.configId,
+									originalName: serverInfo.originalName,
+									args,
+								})
+									? { authorized: true }
+									: await ensureSensitiveOperationAuthority({
+											userId,
+											organizationId,
+											providerKey,
+											accessLevel,
+											providerType: "MCP",
+											providerRefId: serverInfo.configId,
+											providerDisplayName:
+												serverInfo.serverName,
+											runType: "AGENT_INSTANCE",
+											runId: authorityRunId,
+											toolName: serverInfo.originalName,
+										});
 
 								if (!authority.authorized) {
 									logger.info(
@@ -1124,6 +1152,25 @@ async function runDirectChatTurn({
 		...skillTools,
 		...databricksKnowledgeTools,
 	};
+	const preparedResponse = await prepareAgentTools(
+		allTools,
+		toolToServerMap,
+	).catch(async (error) => {
+		for (const client of mcpClients) {
+			await closeMcpClientSafe(client);
+		}
+		throw error;
+	});
+	if (preparedResponse !== undefined) {
+		for (const client of mcpClients) {
+			await closeMcpClientSafe(client);
+		}
+		return {
+			success: true,
+			responseText: preparedResponse,
+			durationMs: Date.now() - startTime,
+		};
+	}
 	const mcpToolNames = Object.keys(mcpTools);
 	const hasTools = Object.keys(allTools).length > 0;
 	const toolsEnabled = hasTools && !input.forceDisableTools;
@@ -1645,6 +1692,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				? { allowSystemInMessages: true }
 				: {}),
 			...(shouldUseTools ? { tools: allTools as any } : {}),
+			abortSignal: agentToolAbortSignal(),
 			...(forcedToolChoice ? { toolChoice: forcedToolChoice } : {}),
 			...(providerOptions ? { providerOptions } : {}),
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
@@ -1776,6 +1824,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			}
 
 			if (part.type === "text-delta") {
+				observeAgentText(part.text || "");
 				textPartCount++;
 				responseText += part.text || "";
 				// Send heartbeat periodically during text streaming

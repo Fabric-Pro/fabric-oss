@@ -73,6 +73,7 @@ export interface UpdateFrameInput {
 	id: string;
 	userId: string;
 	organizationId?: string;
+	projectId?: string;
 	title?: string;
 	description?: string;
 	blocks?: FrameBlock[];
@@ -288,6 +289,7 @@ export async function updateFrame(input: UpdateFrameInput) {
 			id: input.id,
 			userId: input.userId,
 			organizationId: input.organizationId ?? null,
+			projectId: input.projectId,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
@@ -310,7 +312,7 @@ export async function updateFrame(input: UpdateFrameInput) {
 	const content = JSON.stringify(nextDocument, null, 2);
 
 	const updated = await db.agentWorkspaceFile.update({
-		where: { id: existing.id },
+		where: { id: existing.id, projectId: input.projectId },
 		data: {
 			name: `${nextDocument.title}.frame.json`,
 			content,
@@ -327,12 +329,14 @@ export async function publishFrame(input: {
 	id: string;
 	userId: string;
 	organizationId?: string;
+	projectId?: string;
 }) {
 	const existing = await db.agentWorkspaceFile.findFirst({
 		where: {
 			id: input.id,
 			userId: input.userId,
 			organizationId: input.organizationId ?? null,
+			projectId: input.projectId,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
@@ -340,7 +344,7 @@ export async function publishFrame(input: {
 		return null;
 	}
 	const updated = await db.agentWorkspaceFile.update({
-		where: { id: existing.id },
+		where: { id: existing.id, projectId: input.projectId },
 		data: {
 			isPublic: true,
 			shareToken: existing.shareToken || randomUUID(),

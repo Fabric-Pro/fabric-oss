@@ -7,10 +7,12 @@ import {
 	getFrameByShareToken,
 	listFrames,
 	publishFrame,
+	updateFrame,
 } from "../prisma/queries/frames";
 
 const USER_ID = "test-frame-user";
 const ORG_ID = "test-frame-org";
+const PROJECT_ID = "test-frame-parlume-project";
 
 beforeAll(async () => {
 	const now = new Date();
@@ -24,6 +26,19 @@ beforeAll(async () => {
 		VALUES (${ORG_ID}, ${"Test Frames Org"}, ${ORG_ID}, ${now})
 		ON CONFLICT (id) DO NOTHING
 	`);
+	await db.project.upsert({
+		where: { id: PROJECT_ID },
+		create: {
+			id: PROJECT_ID,
+			name: "Frame project",
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			techStack: [],
+			features: [],
+			tags: [],
+		},
+		update: {},
+	});
 });
 
 beforeEach(async () => {
@@ -42,9 +57,53 @@ afterAll(async () => {
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
+	await db.project.deleteMany({ where: { id: PROJECT_ID, userId: USER_ID } });
 });
 
 describe("first-class frames queries", () => {
+	it("restricts voice-scoped frame updates and publishing to the meeting project", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			projectId: PROJECT_ID,
+			title: "Project frame",
+			blocks: [{ id: "block", type: "markdown", content: "Review" }],
+		});
+		expect(
+			await updateFrame({
+				id: frame.id,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				projectId: "other-project",
+				title: "Wrong project",
+			}),
+		).toBeNull();
+		expect(
+			await publishFrame({
+				id: frame.id,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				projectId: "other-project",
+			}),
+		).toBeNull();
+		expect(
+			await updateFrame({
+				id: frame.id,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				projectId: PROJECT_ID,
+				title: "Approved",
+			}),
+		).toMatchObject({ title: "Approved" });
+		expect(
+			await publishFrame({
+				id: frame.id,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				projectId: PROJECT_ID,
+			}),
+		).toMatchObject({ isPublic: true });
+	});
 	it("creates and retrieves a frame in personal context", async () => {
 		const frame = await createFrame({
 			userId: USER_ID,

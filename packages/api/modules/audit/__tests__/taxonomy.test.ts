@@ -241,12 +241,14 @@ describe("audit.taxonomy handler", () => {
 		// lifecycle actions fire only when the build's guarded write actually
 		// applied, never for a superseded attempt = 165,
 		// + 2 Parlume meeting session actions = 167.
-		// + 12 AI provider configuration actions (6 org + 6 account) = 179.
-		expect(result.actions).toHaveLength(179);
+		// + 12 AI provider configuration actions (6 org + 6 account) and
+		// 1 confirmed Parlume action = 180.
+		expect(result.actions).toHaveLength(180);
 		expect(result.actions).toContain("org.ai_provider.configured");
 		expect(result.actions).toContain("account.ai_provider.deleted");
 		expect(result.actions).toContain("project.parlume.session_started");
 		expect(result.actions).toContain("project.parlume.session_stopped");
+		expect(result.actions).toContain("project.parlume.action_confirmed");
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);

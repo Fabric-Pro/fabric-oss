@@ -12,6 +12,7 @@ import {
 } from "@repo/database";
 import { Context, heartbeat } from "@temporalio/activity";
 import { streamText } from "ai";
+import { agentToolProjectScope } from "./agent-tool-runtime";
 
 export type FrameOutputFormat = "html" | "json" | "mermaid" | "markdown";
 
@@ -680,6 +681,7 @@ export async function createFirstClassFrame(input: {
 		userId: input.userId,
 		organizationId: input.organizationId,
 		conversationId: input.conversationId,
+		projectId: agentToolProjectScope()?.projectId,
 		title: validated.value.title,
 		description: validated.value.description,
 		kind: validated.value.kind,
@@ -688,9 +690,9 @@ export async function createFirstClassFrame(input: {
 		sourceRunId: input.sourceRunId,
 		authoritySessionId: input.authoritySessionId,
 		providerKeys: input.providerKeys,
-		// Always make frames public so shareUrl is always valid.
-		// shareOnCreate: true by default unless explicitly disabled.
-		isPublic: true,
+		isPublic: agentToolProjectScope()
+			? validated.value.shareOnCreate
+			: true,
 	});
 	const frameUrl = buildInternalFrameUrl(frame.id, input.organizationId);
 	const embedUrl = buildInternalFrameEmbedUrl(frame.id, input.organizationId);
@@ -738,6 +740,7 @@ export async function updateFirstClassFrame(input: {
 		id: validated.value.frameId,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		projectId: agentToolProjectScope()?.projectId,
 		title: validated.value.title,
 		description: validated.value.description,
 		blocks: validated.value.blocks,
@@ -866,6 +869,7 @@ export async function shareFirstClassFrame(input: {
 		id: frameId,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		projectId: agentToolProjectScope()?.projectId,
 	});
 	if (!frame || !frame.shareToken) {
 		return { error: "Frame not found." };
