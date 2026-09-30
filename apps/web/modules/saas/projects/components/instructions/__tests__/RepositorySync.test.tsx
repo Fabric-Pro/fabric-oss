@@ -1484,7 +1484,7 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Example Member");
 	});
 
-	it("says a CHILD_ABORTED version was retried once it is the published one", () => {
+	it("reports a CHILD_ABORTED run as a publication, with no error line, once its version was retried and published", () => {
 		const aborted = run({
 			status: "FAILED",
 			error: "CHILD_ABORTED",
@@ -1505,9 +1505,13 @@ describe("RepositorySyncStatus (§7.3)", () => {
 				publishedVersion={12}
 			/>,
 		);
-		expect(screen.getByRole("status")).toHaveTextContent(
-			"its checks were retried and it is now published",
+		const status = screen.getByRole("status");
+		expect(status).toHaveTextContent(
+			"published version 12 after its checks were retried",
 		);
+		expect(status).not.toHaveTextContent("failed");
+		expect(status).not.toHaveTextContent("stopped before it finished");
+		expect(status.querySelector(".text-destructive")).toBeNull();
 	});
 
 	it("names what started the last run", () => {

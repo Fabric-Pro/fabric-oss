@@ -293,6 +293,26 @@ export function syncOutcomeMessage(outcome: SyncRunOutcome): SyncMessage {
 }
 
 /**
+ * A run whose checks stopped (CHILD_ABORTED) on a version that has since been
+ * retried and published is settled, so the status line reports the
+ * publication instead of a failure. History still lists the run as it ran.
+ */
+export function settledByRetry(
+	outcome: SyncRunOutcome,
+	publishedVersion: number | null,
+): SyncMessage | null {
+	return outcome.kind === "failed" &&
+		outcome.error === "CHILD_ABORTED" &&
+		outcome.snapshotVersion !== null &&
+		outcome.snapshotVersion === publishedVersion
+		? {
+				key: "outcomes.retriedPublished",
+				values: { version: outcome.snapshotVersion },
+			}
+		: null;
+}
+
+/**
  * The line under a failed run. LIMITS_EXCEEDED names the limit the run
  * recorded and its actual value; a run without a usable detail (recorded
  * before it existed, or a folder limit with no measured value) states all
@@ -348,7 +368,6 @@ export function syncErrorMessage(
 		automatic?: boolean;
 		automaticPausedReason?: string | null;
 	} | null,
-	publishedVersion: number | null = null,
 ): SyncMessage | null {
 	if (error === null) {
 		return null;
@@ -383,10 +402,7 @@ export function syncErrorMessage(
 				return { key: "errors.CHILD_ABORTED" };
 			}
 			return {
-				key:
-					snapshotVersion === publishedVersion
-						? "errors.CHILD_ABORTED_RETRIED"
-						: "errors.CHILD_ABORTED_VERSION",
+				key: "errors.CHILD_ABORTED_VERSION",
 				values: { version: snapshotVersion },
 			};
 		case "CLONE_FAILED":

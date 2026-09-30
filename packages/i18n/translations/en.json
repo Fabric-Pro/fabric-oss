@@ -5919,6 +5919,7 @@
 					"interrupted": "stopped before it finished",
 					"published": "published version {version}",
 					"publishedNoVersion": "published a new version",
+					"retriedPublished": "published version {version} after its checks were retried",
 					"unchanged": "no changes since the published version",
 					"notPublished": {
 						"configuration_changed": "not published, because the sync settings changed while it ran",
@@ -5940,7 +5941,6 @@
 					"CLONE_FAILED_RETRYING": "Could not fetch the repository; retrying automatically.",
 					"STORAGE_FAILED": "The files could not be stored. Try Sync now again.",
 					"CHILD_ABORTED": "Checking the synced files stopped before it finished. Try Sync now again.",
-					"CHILD_ABORTED_RETRIED": "Checking version {version} stopped before it finished; its checks were retried and it is now published.",
 					"CHILD_ABORTED_VERSION": "Checking version {version} stopped before it finished. This was not a folder-limit problem, and nothing was published.",
 					"limit": {
 						"fileCount": "The folder has {actual} files after the ignore rules; the limit is {max}.",

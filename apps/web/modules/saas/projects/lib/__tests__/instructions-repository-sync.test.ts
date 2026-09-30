@@ -16,6 +16,7 @@ import {
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
 	type SyncRunView,
+	settledByRetry,
 	shortCommit,
 	syncErrorMessage,
 	syncNowResultMessage,
@@ -305,29 +306,36 @@ describe("a failed run's message (§7.3)", () => {
 		).toEqual({ key: "errors.CHILD_ABORTED" });
 	});
 
-	it("says a CHILD_ABORTED version was retried when it is the published one, and keeps the stopped wording otherwise", () => {
-		expect(
-			syncErrorMessage(
-				failure("CHILD_ABORTED", { snapshotVersion: 12 }),
-				configuration,
-				12,
-			),
-		).toEqual({
-			key: "errors.CHILD_ABORTED_RETRIED",
+	it("settles a CHILD_ABORTED run whose version was retried to publication, and nothing else", () => {
+		const aborted = {
+			kind: "failed" as const,
+			...failure("CHILD_ABORTED", { snapshotVersion: 12 }),
+		};
+		expect(settledByRetry(aborted, 12)).toEqual({
+			key: "outcomes.retriedPublished",
 			values: { version: 12 },
 		});
 		for (const published of [11, null]) {
-			expect(
-				syncErrorMessage(
-					failure("CHILD_ABORTED", { snapshotVersion: 12 }),
-					configuration,
-					published,
-				),
-			).toEqual({
-				key: "errors.CHILD_ABORTED_VERSION",
-				values: { version: 12 },
-			});
+			expect(settledByRetry(aborted, published)).toBeNull();
 		}
+		expect(
+			settledByRetry(
+				{ kind: "failed", ...failure("CHILD_ABORTED") },
+				null,
+			),
+		).toBeNull();
+		expect(
+			settledByRetry(
+				{
+					kind: "failed",
+					...failure("CLONE_FAILED", { snapshotVersion: 12 }),
+				},
+				12,
+			),
+		).toBeNull();
+		expect(
+			settledByRetry({ kind: "published", version: 12 }, 12),
+		).toBeNull();
 	});
 
 	it("maps every other code to its own key, and no code to nothing", () => {
