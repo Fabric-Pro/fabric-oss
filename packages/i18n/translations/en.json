@@ -1619,6 +1619,7 @@
 						"sync_stopped": "Meeting syncing stopped or resumed"
 					},
 					"parlume": {
+						"action_confirmed": "Parlume action confirmed",
 						"session_started": "Parlume meeting session started",
 						"session_stopped": "Parlume meeting session stop requested"
 					},

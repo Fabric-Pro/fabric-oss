@@ -1,5 +1,6 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
+import { playParlumePcm } from "./parlume-pcm";
 import {
 	authenticateParlumeStreamMessage,
 	isRecord,
@@ -15,10 +16,10 @@ const STREAM_CLOSED_KEY = "streamClosed";
 const STREAM_ERROR_KEY = "streamError";
 const WAKE_ARM_KEY = "wakeArm";
 const PENDING_TURNS_KEY = "pendingTurns";
+const PENDING_INTERRUPT_KEY = "pendingInterrupt";
 const MAX_PENDING_SEGMENTS = 1_000;
 const MAX_SEGMENTS_PER_FLUSH = 25;
 const MAX_SPEECH_BYTES = 6 * 1024 * 1024;
-const SPEECH_FRAME_BYTES = 1_920;
 
 interface BridgeState {
 	sessionId: string;
@@ -37,9 +38,11 @@ interface PendingSegment {
 	utteranceStartMs: number | null;
 	utteranceEndMs: number | null;
 	turnText?: string;
+	voiceGeneration?: number;
 }
 
 interface PendingTurn {
+	voiceGeneration: number;
 	sessionId: string;
 	botId: string;
 	text: string;
@@ -52,6 +55,12 @@ interface PendingTurn {
 interface WakeArm {
 	speakerKey: string;
 	expiresAt: number;
+}
+
+interface PendingInterrupt {
+	sessionId: string;
+	botId: string | null;
+	voiceGeneration: number;
 }
 
 interface StreamClosed {
@@ -93,6 +102,56 @@ export class Parlume extends Server<Env> {
 	private connectionGeneration = 0;
 	private playbackEpoch = 0;
 	private playbackActive = false;
+	private responsePending = false;
+
+	async onStart() {
+		this.playbackEpoch =
+			(await this.ctx.storage.get<number>("voiceGeneration")) ?? 0;
+		this.responsePending =
+			(await this.ctx.storage.get<boolean>("responsePending")) ?? false;
+	}
+
+	private async interruptResponse(state: StreamConnection): Promise<void> {
+		this.playbackEpoch++;
+		this.playbackActive = false;
+		this.responsePending = false;
+		await this.ctx.storage.put({
+			voiceGeneration: this.playbackEpoch,
+			responsePending: false,
+		});
+		await this.ctx.storage.put<PendingInterrupt>(PENDING_INTERRUPT_KEY, {
+			sessionId: state.sessionId,
+			botId: state.botId,
+			voiceGeneration: this.playbackEpoch,
+		});
+		await this.flushPendingInterrupt();
+	}
+
+	private async flushPendingInterrupt(): Promise<boolean> {
+		const pending = await this.ctx.storage.get<PendingInterrupt>(
+			PENDING_INTERRUPT_KEY,
+		);
+		if (!pending) {
+			return true;
+		}
+		if (
+			!(await this.postToFabric(
+				"/api/internal/parlume/interrupt",
+				pending,
+			))
+		) {
+			await this.ctx.storage.setAlarm(Date.now() + TURN_RETRY_MS);
+			return false;
+		}
+		const latest = await this.ctx.storage.get<PendingInterrupt>(
+			PENDING_INTERRUPT_KEY,
+		);
+		if (latest?.voiceGeneration === pending.voiceGeneration) {
+			await this.ctx.storage.delete(PENDING_INTERRUPT_KEY);
+			return true;
+		}
+		return false;
+	}
 
 	async onConnect(conn: Connection, ctx: ConnectionContext) {
 		const url = new URL(ctx.request.url);
@@ -145,26 +204,32 @@ export class Parlume extends Server<Env> {
 		}
 		if (!event.data.isFinal) {
 			if (
-				this.playbackActive &&
+				(this.playbackActive || this.responsePending) &&
 				!this.isBotSpeaker(event.data.speaker?.name)
 			) {
-				this.playbackEpoch++;
-				this.playbackActive = false;
+				await this.interruptResponse(state);
 			}
 			return;
 		}
 		if (
-			this.playbackActive &&
+			(this.playbackActive || this.responsePending) &&
 			!this.isBotSpeaker(event.data.speaker?.name)
 		) {
-			this.playbackEpoch++;
-			this.playbackActive = false;
+			await this.interruptResponse(state);
 		}
 		const turnText = await this.resolveWakeTurn({
 			text: event.data.text,
 			speakerName: event.data.speaker?.name ?? null,
 			speakerId: event.data.speaker?.id ?? null,
 		});
+		if (turnText) {
+			this.playbackEpoch++;
+			this.responsePending = true;
+			await this.ctx.storage.put({
+				voiceGeneration: this.playbackEpoch,
+				responsePending: true,
+			});
+		}
 		const persist = this.queueFinalSegment({
 			sessionId: state.sessionId,
 			botId: event.bot_id,
@@ -176,6 +241,7 @@ export class Parlume extends Server<Env> {
 			),
 			utteranceEndMs: this.secondsToMilliseconds(event.data.utteranceEnd),
 			turnText: turnText ?? undefined,
+			voiceGeneration: turnText ? this.playbackEpoch : undefined,
 		});
 		this.inFlightFinalSegments.add(persist);
 		try {
@@ -188,8 +254,6 @@ export class Parlume extends Server<Env> {
 	async onClose(conn: Connection) {
 		const state = this.connections.get(conn);
 		this.connections.delete(conn);
-		this.playbackEpoch++;
-		this.playbackActive = false;
 		if (state?.verified && state.botId && state.streamGeneration !== null) {
 			const hasReplacementConnection = [
 				...this.connections.values(),
@@ -201,6 +265,7 @@ export class Parlume extends Server<Env> {
 			if (hasReplacementConnection) {
 				return;
 			}
+			await this.interruptResponse(state);
 			await Promise.all(this.inFlightFinalSegments);
 			// A replacement can connect while final segments drain. Its onConnect
 			// advances this generation before verification clears close markers, so
@@ -241,6 +306,15 @@ export class Parlume extends Server<Env> {
 		}
 		if (action === "stop") {
 			return this.stop(request);
+		}
+		if (action === "verify-generation") {
+			const body: unknown = await request.json();
+			return Response.json({
+				current:
+					isRecord(body) &&
+					body.voiceGeneration === this.playbackEpoch &&
+					this.responsePending,
+			});
 		}
 		let body: unknown;
 		try {
@@ -307,43 +381,46 @@ export class Parlume extends Server<Env> {
 				{ status: 409 },
 			);
 		}
-		const pcm = new Uint8Array(await request.arrayBuffer());
-		if (
-			pcm.length === 0 ||
-			pcm.length > MAX_SPEECH_BYTES ||
-			pcm.length % 2 !== 0 ||
-			(length !== null && pcm.length !== length)
-		) {
+		const epoch = Number(
+			request.headers.get("x-parlume-voice-generation") ??
+				this.playbackEpoch,
+		);
+		if (epoch !== this.playbackEpoch) {
+			return Response.json({ played: false, interrupted: true });
+		}
+		if (!request.body) {
 			return Response.json(
-				{ error: "Invalid PCM length" },
+				{ error: "Missing PCM body" },
 				{ status: 400 },
 			);
 		}
-		const epoch = ++this.playbackEpoch;
 		this.playbackActive = true;
-		let interrupted = false;
 		try {
-			for (
-				let offset = 0;
-				offset < pcm.length;
-				offset += SPEECH_FRAME_BYTES
-			) {
-				if (
-					epoch !== this.playbackEpoch ||
-					!this.connections.has(connection)
-				) {
-					interrupted = true;
-					break;
-				}
-				connection.send(pcm.slice(offset, offset + SPEECH_FRAME_BYTES));
-				await new Promise((resolve) => setTimeout(resolve, 40));
+			const result = await playParlumePcm({
+				body: request.body,
+				declaredLength: length,
+				isCurrent: () =>
+					epoch === this.playbackEpoch &&
+					this.connections.has(connection),
+				send: (frame) => connection.send(frame),
+			});
+			const confirmationSpeakerId = request.headers.get(
+				"x-parlume-confirmation-speaker",
+			);
+			if (result.played && confirmationSpeakerId) {
+				await this.ctx.storage.put<WakeArm>(WAKE_ARM_KEY, {
+					speakerKey: confirmationSpeakerId,
+					expiresAt: Date.now() + 120_000,
+				});
 			}
+			return Response.json(result);
 		} finally {
 			if (epoch === this.playbackEpoch) {
 				this.playbackActive = false;
+				this.responsePending = false;
+				await this.ctx.storage.put("responsePending", false);
 			}
 		}
-		return Response.json({ played: !interrupted, interrupted });
 	}
 
 	private async stop(_request: Request): Promise<Response> {
@@ -365,6 +442,9 @@ export class Parlume extends Server<Env> {
 	async onAlarm() {
 		const bridge = await this.ctx.storage.get<BridgeState>("bridge");
 		if (!bridge) {
+			return;
+		}
+		if (!(await this.flushPendingInterrupt())) {
 			return;
 		}
 		if (await this.reportStreamFailure()) {
@@ -656,10 +736,14 @@ export class Parlume extends Server<Env> {
 	}
 
 	private async dispatchTurn(segment: PendingSegment): Promise<void> {
-		if (!segment.turnText) {
+		if (
+			!segment.turnText ||
+			segment.voiceGeneration !== this.playbackEpoch
+		) {
 			return;
 		}
 		const turn: PendingTurn = {
+			voiceGeneration: segment.voiceGeneration ?? this.playbackEpoch,
 			sessionId: segment.sessionId,
 			botId: segment.botId,
 			text: segment.turnText,
@@ -668,7 +752,11 @@ export class Parlume extends Server<Env> {
 			utteranceStartMs: segment.utteranceStartMs,
 			utteranceEndMs: segment.utteranceEndMs,
 		};
-		if (await this.postToFabric("/api/internal/parlume/turns", turn)) {
+		if (
+			(await this.flushPendingInterrupt()) &&
+			turn.voiceGeneration === this.playbackEpoch &&
+			(await this.postToFabric("/api/internal/parlume/turns", turn))
+		) {
 			return;
 		}
 		const pending =
@@ -691,6 +779,9 @@ export class Parlume extends Server<Env> {
 	}
 
 	private async flushPendingTurns(): Promise<boolean> {
+		if (!(await this.flushPendingInterrupt())) {
+			return false;
+		}
 		const pending =
 			(await this.ctx.storage.get<PendingTurn[]>(PENDING_TURNS_KEY)) ??
 			[];
@@ -701,6 +792,9 @@ export class Parlume extends Server<Env> {
 		const limit = Math.min(pending.length, MAX_SEGMENTS_PER_FLUSH);
 		for (; index < limit; index++) {
 			const turn = pending[index];
+			if (turn && turn.voiceGeneration !== this.playbackEpoch) {
+				continue;
+			}
 			if (
 				!turn ||
 				!(await this.postToFabric("/api/internal/parlume/turns", turn))

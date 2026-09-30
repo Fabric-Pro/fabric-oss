@@ -1544,6 +1544,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A project administrator requested that Parlume leave a meeting and finalize its session.",
 	},
 	{
+		key: "project.parlume.action_confirmed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.action_confirmed",
+		description:
+			"A meeting requester confirmed a Parlume action using the inviter's current permissions. The result is recorded in Parlume history.",
+	},
+	{
 		key: "project.recipient_brand.fetched",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.recipient_brand.fetched",

@@ -119,12 +119,6 @@ import {
 	detachProjectProcedure,
 	getConversationProjectProcedure,
 } from "./procedures/conversations";
-import {
-	listParlumeAgentsProcedure,
-	listParlumeSessionsProcedure,
-	startParlumeSessionProcedure,
-	stopParlumeSessionProcedure,
-} from "./procedures/parlume/sessions";
 import { countPendingStateChangesProcedure } from "./procedures/count-pending-state-changes";
 import { createDocumentProcedure } from "./procedures/create-document";
 import { createProjectProcedure } from "./procedures/create-project";
@@ -331,6 +325,13 @@ import {
 	publishOutcomesProcedure,
 	revokeOutcomesProcedure,
 } from "./procedures/outcomes";
+import { listParlumeHistoryProcedure } from "./procedures/parlume/history";
+import {
+	listParlumeAgentsProcedure,
+	listParlumeSessionsProcedure,
+	startParlumeSessionProcedure,
+	stopParlumeSessionProcedure,
+} from "./procedures/parlume/sessions";
 import { permanentDeleteProjectProcedure } from "./procedures/permanent-delete-project";
 import {
 	analyseQaFindingProcedure,
@@ -1133,6 +1134,7 @@ export const projectsRouter = {
 	// The live media bridge is deliberately outside the request process and
 	// will authenticate its session before reading project context.
 	parlume: {
+		history: listParlumeHistoryProcedure,
 		listAgents: listParlumeAgentsProcedure,
 		listSessions: listParlumeSessionsProcedure,
 		start: startParlumeSessionProcedure,

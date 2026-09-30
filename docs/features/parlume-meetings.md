@@ -1,5 +1,8 @@
 # Parlume meeting preview
 
+- **Audience**: Project administrators and operators
+- **Owner**: Engineering team
+
 Parlume is a default-off, project-scoped way to invite the built-in Fabric Agent or a project-bound custom agent to a Microsoft Teams meeting by link. The control is in the project's Meeting Digest for project administrators. The bot appears as **Fabric Parlume (AI recording)**, transcribes final speech segments, responds to “Hey Fabric,” and saves a transcript and generated notes to the project. The join URL is sent to the meeting provider but is not stored in Fabric.
 
 ## Operator setup
@@ -15,8 +18,12 @@ For a smoke test, use a disposable meeting with consenting participants. Confirm
 ## Boundaries
 
 - The inviter must have project administration permission. Any attendee able to speak in the meeting can request a spoken answer from the selected project's knowledge; the bot cannot verify each attendee's Fabric identity.
-- The built-in agent uses the shared Fabric Agent identity and the inviter's current model selection within the organization. Custom agents use the selected version's instructions and model. Both use project RAG and project-bound context. User and agent memory, episodes, and workspace knowledge are excluded. External MCP/OAuth tools and content-changing actions are disabled in this preview. A later release needs an authenticated participant and per-action approval flow before those tools can be exposed.
-- Interruption stops queued playback when live transcription identifies a speaker other than the Parlume bot, including an unknown speaker. Unknown segments can still contain bot echo, so barge-in is best-effort.
+- Parlume is a voice adapter around the selected agent's normal execution path. Each request reloads the current active custom-agent version or the built-in agent's preferences. Configured instructions, knowledge, tools, models and permission checks remain owned by that agent. Agent changes apply to subsequent requests; pending proposals are invalidated when the agent or tool definition changes.
+- Invitations default to **Read-only**. Turning it off lets attendees request changes using the inviter's current project permissions. Parlume describes one proposed action, waits until that description has finished playing, then accepts an explicit “confirm” or “cancel” from the same provider speaker. Missing speaker attribution prevents voice approval. A provider speaker label is continuity information, not a verified Fabric identity; people sharing a microphone may share that label.
+- Confirmation authorizes the persisted tool arguments for one action. Proposals expire after two minutes. A new request from that speaker cancels their pending proposal. Concurrent confirmations claim an action once; uncertain external outcomes are recorded without automatic retry. Check the destination before requesting an uncertain action again.
+- Configured built-in actions use the shared agent tool mapping and implementations. Confirmed workflow starts use the same execution API as chat, including current organization and project permissions, workflow state, and concurrency limits. Changing a connected tool's destination invalidates pending proposals.
+- **Parlume history** in Meeting Digest is available to project readers. It records questions, requester labels, timestamps, responses, exact proposed action details, confirmation and cancellation status, and outcomes. It does not create a personal attendee profile.
+- PCM audio streams to the bridge as synthesis produces it. Confirmations bypass retrieval and model planning. Interruption invalidates queued responses and playback when live transcription identifies a speaker other than the Parlume bot, including an unknown speaker. Unknown segments can still contain bot echo, so barge-in is best-effort. Model generation, provider transcription and network latency still affect response time; live meeting latency has not been verified.
 - Full transcript text is retained as project context and notes are generated asynchronously. Meeting BaaS artifacts are deleted after finalization when its API succeeds. Failed cleanup is left visible for operator recovery.
 - The hard stop is four hours; a provider bot can incur charges while waiting in a lobby. Meeting BaaS, live transcription, speech synthesis, and the agent's configured model accrue costs only during meeting work.
 

@@ -6,8 +6,9 @@
  * magic link, invitation, forgot password, and protected routes.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // All vi.mock factories are hoisted — no references to outer variables allowed
@@ -67,7 +68,7 @@ vi.mock("next/server", () => ({
 import { config as appConfig } from "@repo/config";
 import { getSessionCookie } from "better-auth/cookies";
 // Import after mocks are set up (hoisted by vitest)
-import proxy, { pathsWithoutLocale } from "../../proxy";
+import proxy, { pathsWithoutLocale, config as proxyConfig } from "../../proxy";
 
 const mockGetSessionCookie = vi.mocked(getSessionCookie);
 const mockAppConfig = appConfig as {
@@ -775,6 +776,21 @@ describe("emailed links bypass the intl middleware", () => {
 		return found;
 	}
 
+	it("excludes API calls while still matching unlisted page paths", () => {
+		expect(
+			unstable_doesMiddlewareMatch({
+				config: proxyConfig,
+				url: "/api/agents/fabric-ai/execute-workflow",
+			}),
+		).toBe(false);
+		expect(
+			unstable_doesMiddlewareMatch({
+				config: proxyConfig,
+				url: "/unlisted-confirmation",
+			}),
+		).toBe(true);
+	});
+
 	it("covers every path the server mails out on its own base URL", () => {
 		const found = emailedPaths();
 
@@ -785,6 +801,10 @@ describe("emailed links bypass the intl middleware", () => {
 
 		const uncovered = found.filter(
 			({ path }) =>
+				unstable_doesMiddlewareMatch({
+					config: proxyConfig,
+					url: path,
+				}) &&
 				!HANDLED_BEFORE_LOCALE.some((prefix) =>
 					path.startsWith(prefix),
 				) &&

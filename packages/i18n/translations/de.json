@@ -1372,6 +1372,7 @@
 						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
 					},
 					"parlume": {
+						"action_confirmed": "Parlume-Aktion bestätigt",
 						"session_started": "Parlume-Meeting-Sitzung gestartet",
 						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert"
 					},

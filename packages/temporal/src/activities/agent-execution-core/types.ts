@@ -176,14 +176,13 @@ export interface ExecuteAgentTurnInput {
 	}>;
 	/** Built-in tool names to load (e.g., "image-generation") */
 	builtInToolNames?: string[];
+	workspaceIds?: string[];
 	/** Agent instance ID for capabilities that need scoped state (e.g. memory) */
 	agentInstanceId?: string;
 	/** Calling agent ID for run-agent delegation loop protection */
 	callingAgentId?: string;
 	/** Current run-agent recursion depth */
 	currentDepth?: number;
-	/** Denies every write, delegation, and unclassified tool at execution time. */
-	meetingReadOnly?: boolean;
 }
 
 /**
