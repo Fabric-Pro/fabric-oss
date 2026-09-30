@@ -210,6 +210,7 @@ function baseState(
 		configured: null,
 		latestRun: null,
 		lastAppliedRun: null,
+		latestFinishedRun: null,
 		managedCount: 0,
 		awaitingIndexCount: 0,
 		cleanupPending: 0,
@@ -840,5 +841,282 @@ describe("ContextRepositorySyncStatus — paused automatic sync", () => {
 		expect(
 			screen.queryByRole("button", { name: `${NS}.reEnableButton` }),
 		).not.toBeInTheDocument();
+	});
+});
+
+function finishedRun(
+	overrides: Partial<NonNullable<ContextSyncState["latestFinishedRun"]>> = {},
+): NonNullable<ContextSyncState["latestFinishedRun"]> {
+	return {
+		id: "sync_1:run_b",
+		trigger: "POLL",
+		startedAt: "2026-09-23T11:00:00.000Z",
+		finishedAt: "2026-09-23T11:01:00.000Z",
+		status: "FAILED",
+		error: "CLONE_FAILED",
+		limitDetail: null,
+		commitSha: null,
+		...overrides,
+	};
+}
+
+describe("ContextRepositorySyncStatus — a failed run (Fizzy #2784)", () => {
+	const failureLine = () => screen.getByTestId("context-sync-failure");
+	/** The line the widget builds: the time, the trigger, and the detail's own words. */
+	const lineWith = (detail: string, trigger = "POLL") =>
+		`${NS}.failure.line${JSON.stringify({
+			time: "3 minutes",
+			trigger: `${NS}.triggers.${trigger}`,
+			detail,
+		})}`;
+
+	it("says so beside the applied line when a run failed before it applied anything", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				lastAppliedRun: emptyRun(),
+				latestFinishedRun: finishedRun(),
+			}),
+		});
+
+		expect(
+			screen.getByTestId("context-sync-status-line"),
+		).toBeInTheDocument();
+		expect(failureLine()).toHaveTextContent(
+			lineWith(`${NS}.failure.CLONE_FAILED`),
+		);
+	});
+
+	it.each([
+		[
+			"a file count over the limit, with what was measured",
+			{ kind: "fileCount" as const, actual: 6_000, max: 5_000 },
+			"failure.limit.fileCount",
+			{ actual: "6,000", max: "5,000" },
+		],
+		[
+			"a total size over the limit, with what was measured, in bytes words",
+			{ kind: "totalSize" as const, actual: 60_000_000, max: 52_428_800 },
+			"failure.limit.totalSize",
+			{ actual: "57.2 MB", max: "50 MB" },
+		],
+		[
+			"a total size with no measured value",
+			{ kind: "totalSize" as const, max: 52_428_800 },
+			"failure.limit.totalSizeUnknown",
+			{ max: "50 MB" },
+		],
+		[
+			"an inventory over its cap",
+			{ kind: "inventory" as const, max: 200_000 },
+			"failure.limit.inventory",
+			{ max: "200,000" },
+		],
+		[
+			"the repository's own size budget",
+			{ kind: "repositorySize" as const, max: 164 * 1024 * 1024 },
+			"failure.limit.repositorySize",
+			{ max: "164 MB" },
+		],
+	])("names the exact limit for %s", (_name, limitDetail, key, values) => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun({
+					error: "LIMITS_EXCEEDED",
+					limitDetail,
+				}),
+			}),
+		});
+
+		expect(failureLine()).toHaveTextContent(
+			lineWith(`${NS}.${key}${JSON.stringify(values)}`),
+		);
+	});
+
+	it("names the line of a .contextignore rule the sync refused", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun({
+					error: "IGNORE_RULE_REJECTED",
+					limitDetail: {
+						kind: "doubleStarGroups",
+						max: 2,
+						actual: 3,
+						line: 4,
+					},
+				}),
+			}),
+		});
+
+		expect(failureLine()).toHaveTextContent(
+			lineWith(
+				`${NS}.failure.limit.doubleStarGroups${JSON.stringify({
+					line: 4,
+					actual: 3,
+					max: 2,
+				})}`,
+			),
+		);
+	});
+
+	it("falls back to the generic limit line when the run recorded no detail", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun({ error: "LIMITS_EXCEEDED" }),
+			}),
+		});
+
+		expect(failureLine()).toHaveTextContent(
+			lineWith(`${NS}.failure.LIMITS_EXCEEDED`),
+		);
+	});
+
+	it("names the branch for a REF_MISSING failure", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun({ error: "REF_MISSING" }),
+			}),
+		});
+
+		expect(failureLine()).toHaveTextContent(
+			lineWith(
+				`${NS}.failure.REF_MISSING${JSON.stringify({ ref: "main" })}`,
+			),
+		);
+	});
+
+	it("shows nothing for a finished run that did not fail", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun({
+					status: "SUCCEEDED",
+					error: null,
+				}),
+			}),
+		});
+
+		expect(screen.queryByTestId("context-sync-failure")).toBeNull();
+	});
+
+	it("hides the failure while a newer run is open, so the running line stands alone", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				running: true,
+				latestFinishedRun: finishedRun(),
+			}),
+		});
+
+		expect(screen.getByTestId("context-sync-running")).toBeInTheDocument();
+		expect(screen.queryByTestId("context-sync-failure")).toBeNull();
+	});
+
+	it("keeps the failure in the status region, which stays mounted, so its appearance is announced", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				latestFinishedRun: finishedRun(),
+			}),
+		});
+
+		expect(screen.getByRole("status")).toContainElement(failureLine());
+	});
+});
+
+describe("ContextRepositorySyncStatus — a failed read (Fizzy #2784)", () => {
+	it("says the state could not be read, with Retry, instead of rendering nothing", async () => {
+		const onRetry = vi.fn();
+		const user = userEvent.setup();
+		renderStatus({ state: undefined, readFailed: true, onRetry });
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			`${NS}.loadError.message`,
+		);
+		expect(screen.queryByTestId("context-sync-from-repository")).toBeNull();
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.loadError.retry` }),
+		);
+		expect(onRetry).toHaveBeenCalledTimes(1);
+	});
+
+	it("still renders nothing while the first read is simply in flight", () => {
+		const { container } = wrap(
+			<ContextRepositorySyncStatus
+				projectId="proj_1"
+				organizationId="org_1"
+				state={undefined}
+				onChanged={vi.fn()}
+			/>,
+		);
+
+		expect(container).toBeEmptyDOMElement();
+	});
+});
+
+describe("ContextRepositorySyncStatus — failed actions (Fizzy #2784)", () => {
+	beforeEach(() => {
+		syncNowMock.mockReset();
+		disableMock.mockReset();
+		vi.mocked(toast.error).mockReset();
+	});
+
+	it("tells a failed Sync now in the widget's own words, never the server's message", async () => {
+		syncNowMock.mockRejectedValue(new Error("upstream said no"));
+		const user = userEvent.setup();
+		renderStatus({ state: baseState({ configured: CONFIGURED_BASE }) });
+
+		await user.click(screen.getByTestId("context-sync-now"));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				`${NS}.actionErrors.syncNow`,
+			),
+		);
+		expect(toast.error).not.toHaveBeenCalledWith("upstream said no");
+	});
+
+	it("tells a failed disconnect in the widget's own words, never the server's message", async () => {
+		disableMock.mockRejectedValue(new Error("upstream said no"));
+		const user = userEvent.setup();
+		renderStatus({ state: baseState({ configured: CONFIGURED_BASE }) });
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		await user.click(await screen.findByTestId("context-sync-disconnect"));
+		await user.click(screen.getByTestId("context-sync-disconnect-confirm"));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				`${NS}.actionErrors.disable`,
+			),
+		);
+		expect(toast.error).not.toHaveBeenCalledWith("upstream said no");
+	});
+
+	it("maps a typed refusal to its own copy, as configure does", async () => {
+		syncNowMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "REPOSITORY_UNAVAILABLE" },
+		});
+		const user = userEvent.setup();
+		renderStatus({ state: baseState({ configured: CONFIGURED_BASE }) });
+
+		await user.click(screen.getByTestId("context-sync-now"));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				`${NS}.configureDialog.errors.REPOSITORY_UNAVAILABLE${JSON.stringify(
+					{
+						path: "",
+						withPath: "",
+						managedCount: 0,
+					},
+				)}`,
+			),
+		);
 	});
 });

@@ -11,6 +11,7 @@
  * snapshot version.
  */
 
+import { formatByteSize } from "@repo/instructions";
 import {
 	contextSyncPathSpellingProblem,
 	defaultRuleForDirectlySelectedFile,
@@ -33,7 +34,8 @@ type ContextSyncErrorCode =
 	| "STORE_FAILED"
 	| "CONFIGURATION_CHANGED"
 	| "SUPERSEDED"
-	| "INTERRUPTED";
+	| "INTERRUPTED"
+	| "IGNORE_RULE_REJECTED";
 
 /** §7.3: the reasons an attention item (apply, plan or prune) can carry. */
 export type ContextSyncAttentionReason =
@@ -76,6 +78,41 @@ export type ContextSyncRunView = {
 	} | null;
 	applyAttention: Array<{ key: string; reason: "conflict" | "path-in-use" }>;
 	pruneConflicts: { keys: string[]; overflow: number };
+};
+
+/**
+ * Which limit a LIMITS_EXCEEDED run hit: numbers only. `actual` is absent
+ * when the check stopped before the true value was known. The shape the
+ * coding-instructions sync stores, and the one its status line words.
+ */
+type ContextSyncLimitView = {
+	kind:
+		| "fileCount"
+		| "fileSize"
+		| "totalSize"
+		| "inventory"
+		| "repositorySize"
+		| "doubleStarGroups";
+	max: number;
+	actual?: number;
+	/** 1-based line of the `.contextignore` rule a `doubleStarGroups` names. */
+	line?: number;
+};
+
+/**
+ * The newest finished run when it is newer than the last applied one: what
+ * the status line reports when a run failed before it reached a plan and so
+ * left the applied line untouched.
+ */
+export type ContextSyncFinishedRunView = {
+	id: string;
+	trigger: string;
+	startedAt: string | Date;
+	finishedAt: string | Date;
+	status: ContextSyncRunStatus | null;
+	error: ContextSyncErrorCode | null;
+	limitDetail: ContextSyncLimitView | null;
+	commitSha: string | null;
 };
 
 export type ContextSyncIntegration = {
@@ -124,6 +161,7 @@ export type ContextSyncState = {
 	configured: ContextSyncConfiguration | null;
 	latestRun: ContextSyncRunView | null;
 	lastAppliedRun: ContextSyncRunView | null;
+	latestFinishedRun: ContextSyncFinishedRunView | null;
 	managedCount: number;
 	awaitingIndexCount: number;
 	cleanupPending: number;
@@ -155,6 +193,32 @@ export function offersSyncFromRepository(
 		state.canConfigure &&
 		state.configured === null &&
 		activeContextSyncIntegrations(state.availableIntegrations).length > 0
+	);
+}
+
+/**
+ * Whether the Context tab shows its Living Memory section: something is
+ * synced, a sync is configured, a configurer can set one up, or the state
+ * could not be read. The last case keeps the section up so the failure has a
+ * place to say so: without it a failed read looks exactly like a project that
+ * has nothing to configure.
+ */
+export function showsLivingMemorySection(input: {
+	folderCount: number;
+	state: ContextSyncState | undefined;
+	readFailed: boolean;
+}): boolean {
+	return (
+		input.folderCount > 0 ||
+		input.readFailed ||
+		Boolean(input.state?.configured) ||
+		offersSyncFromRepository(
+			input.state ?? {
+				canConfigure: false,
+				configured: null,
+				availableIntegrations: [],
+			},
+		)
 	);
 }
 
@@ -319,6 +383,109 @@ export function contextSyncLastAppliedMessage(
 /** `projects.contexts.livingMemory.repositorySync.attention.<reason>`. */
 export function contextSyncAttentionMessageKey(reason: string): string {
 	return `attention.${reason}`;
+}
+
+// ── A failed run (Fizzy #2784) ─────────────────────────────────────────────
+
+function limitMessage(limit: ContextSyncLimitView): ContextSyncMessage {
+	const max = limit.max.toLocaleString("en-US");
+	switch (limit.kind) {
+		case "fileCount":
+			return limit.actual === undefined
+				? { key: "failure.limit.fileCountUnknown", values: { max } }
+				: {
+						key: "failure.limit.fileCount",
+						values: {
+							actual: limit.actual.toLocaleString("en-US"),
+							max,
+						},
+					};
+		case "fileSize":
+		case "totalSize":
+			return limit.actual === undefined
+				? {
+						key: `failure.limit.${limit.kind}Unknown`,
+						values: { max: formatByteSize(limit.max) },
+					}
+				: {
+						key: `failure.limit.${limit.kind}`,
+						values: {
+							actual: formatByteSize(limit.actual),
+							max: formatByteSize(limit.max),
+						},
+					};
+		case "inventory":
+			return { key: "failure.limit.inventory", values: { max } };
+		case "repositorySize":
+			return {
+				key: "failure.limit.repositorySize",
+				values: { max: formatByteSize(limit.max) },
+			};
+		case "doubleStarGroups":
+			return limit.line === undefined || limit.actual === undefined
+				? { key: "failure.IGNORE_RULE_REJECTED" }
+				: {
+						key: "failure.limit.doubleStarGroups",
+						values: {
+							line: limit.line,
+							actual: limit.actual,
+							max: limit.max,
+						},
+					};
+		default: {
+			const unreachable: never = limit.kind;
+			return unreachable;
+		}
+	}
+}
+
+/**
+ * Why the newest finished run failed, in words that match its error code:
+ * LIMITS_EXCEEDED names the limit it recorded and what it measured, so a
+ * person can see whether the selection, the size or the repository is the
+ * problem. `null` for a run that did not fail. The switch is exhaustive over
+ * the error codes; a code this client does not know reads as a failed sync.
+ */
+export function contextSyncFailureMessage(
+	run: Pick<ContextSyncFinishedRunView, "status" | "error" | "limitDetail">,
+	configuration: { ref: string } | null,
+): ContextSyncMessage | null {
+	if (run.status !== "FAILED" || run.error === null) {
+		return null;
+	}
+	switch (run.error) {
+		case "LIMITS_EXCEEDED":
+			return run.limitDetail
+				? limitMessage(run.limitDetail)
+				: { key: "failure.LIMITS_EXCEEDED" };
+		case "IGNORE_RULE_REJECTED":
+			return run.limitDetail
+				? limitMessage(run.limitDetail)
+				: { key: "failure.IGNORE_RULE_REJECTED" };
+		case "REF_MISSING":
+			return {
+				key: "failure.REF_MISSING",
+				values: { ref: configuration?.ref ?? "" },
+			};
+		case "NOT_CONFIGURED":
+		case "INTEGRATION_UNAVAILABLE":
+		case "PERMISSION_DENIED":
+		case "RUN_IN_PROGRESS":
+		case "PATHS_MISSING":
+		case "CLONE_FAILED":
+		case "STORE_FAILED":
+		case "CONFIGURATION_CHANGED":
+		case "SUPERSEDED":
+		case "INTERRUPTED":
+			return { key: `failure.${run.error}` };
+		default:
+			return unknownFailure(run.error);
+	}
+}
+
+/** Compile-time exhaustiveness for `contextSyncFailureMessage`; at run time, the generic line. */
+function unknownFailure(_error: never): ContextSyncMessage {
+	return { key: "failure.unknown" };
 }
 
 // ── Polling (§7.1) ──────────────────────────────────────────────────────────
@@ -494,6 +661,24 @@ export function contextSyncConfigureErrorMessage(error: unknown): {
 		field: null,
 		values,
 	};
+}
+
+export type ContextSyncAction = "syncNow" | "disable";
+
+/**
+ * The message for a failed sync action: the typed code's own words where
+ * `contextSyncConfigureErrorMessage` has them, else a translated generic line
+ * naming the action. The server's `error.message` is never shown: it is not
+ * translated, and it can carry a provider's or a proxy's text.
+ */
+export function contextSyncActionErrorMessage(
+	error: unknown,
+	action: ContextSyncAction,
+): ContextSyncMessage {
+	const mapped = contextSyncConfigureErrorMessage(error);
+	return mapped.key === "configureDialog.errors.generic"
+		? { key: `actionErrors.${action}` }
+		: { key: mapped.key, values: mapped.values };
 }
 
 /**

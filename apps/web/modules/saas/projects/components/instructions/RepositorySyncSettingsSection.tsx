@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import {
 	configureErrorMessage,
 	type RepositorySyncState,
+	syncActionErrorKey,
 } from "../../lib/instructions-repository-sync";
 import { instructionsSettingsSummary } from "../repository-sync/lib/instructions-selection";
 import { translateSelectionMessage } from "../repository-sync/lib/selection-row";
@@ -72,7 +73,10 @@ export function RepositorySyncSettingsSection({
 				toast.success(t("switched"));
 				await onChanged();
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) =>
+				toast.error(
+					tSync(syncActionErrorKey(error, "disable"), { ref: "" }),
+				),
 		}),
 	);
 	const configure = useMutation(
@@ -106,7 +110,15 @@ export function RepositorySyncSettingsSection({
 					);
 					await onChanged();
 				},
-				onError: (error) => toast.error(error.message),
+				onError: (error) =>
+					toast.error(
+						tSync(
+							syncActionErrorKey(error, "updateProposalSettings"),
+							{
+								ref: "",
+							},
+						),
+					),
 			},
 		),
 	);

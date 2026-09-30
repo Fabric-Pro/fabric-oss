@@ -11,7 +11,6 @@ import {
 	markInstructionSnapshotReady,
 	markInstructionSnapshotRejected,
 	publishInstructionSnapshot,
-	recordAudit,
 	recordInstructionDeferredScanOutcome,
 	updateInstructionFileMetadata,
 } from "@repo/database";
@@ -19,6 +18,7 @@ import {
 	buildIgnoreMatcher,
 	classifyPath,
 	computeSnapshotDigest,
+	decodeFabricIgnore,
 	FABRIC_IGNORE_FILE,
 	isSecretFileName,
 	isStagingKey,
@@ -869,6 +869,23 @@ function missingIgnoreFileRejection(
 }
 
 /**
+ * A root `.fabricignore` whose bytes are not valid UTF-8 text cannot have
+ * frozen the rules the snapshot carries (every surface that freezes them
+ * decodes with `decodeFabricIgnore`), so it is refused for what it is rather
+ * than as a provenance `ignore_mismatch`. Root path only, like the check
+ * below it.
+ */
+function fabricIgnoreEncodingRejection(
+	path: string,
+	data: Buffer,
+): InstructionRejection | null {
+	if (path !== FABRIC_IGNORE_FILE || decodeFabricIgnore(data).ok) {
+		return null;
+	}
+	return { path: FABRIC_IGNORE_FILE, reason: "ignore_encoding" };
+}
+
+/**
  * The present-file provenance check as both verifying passes apply it: to the
  * root `.fabricignore` only (a nested `docs/.fabricignore` is content), and
  * skipped with a warning — never failed — when `settingsFrozen` is not the
@@ -1055,8 +1072,11 @@ export async function verifyAndScanInstructionFiles(
 	// Bounded while it fills: a dense secret-bearing file is one hit per line,
 	// and none past the cap is ever allocated (`BoundedRejections`).
 	const rejections = new BoundedRejections();
-	for (const f of files) {
-		heartbeat({ path: f.path });
+	// Heartbeat details are COUNTERS, never a path: they are recorded in the
+	// workflow's history and shown by the Temporal UI, and a path is user
+	// content that can name a client or a person.
+	for (const [index, f] of files.entries()) {
+		heartbeat({ phase: "verify", file: index + 1, of: files.length });
 		// Steps 1–4: name, location, both lengths, hash (see `readVerifiedFile`).
 		const read = await readVerifiedFile(
 			storage,
@@ -1067,6 +1087,11 @@ export async function verifyAndScanInstructionFiles(
 		);
 		if ("rejection" in read) {
 			rejections.push(read.rejection);
+			continue;
+		}
+		const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
+		if (encoding) {
+			rejections.push(encoding);
 			continue;
 		}
 		// A buffer that does not decode is genuinely binary: nothing in it can
@@ -1161,8 +1186,8 @@ export async function finalizeInstructionSnapshot(
 	);
 	const rejections: InstructionRejection[] = [];
 	let storedBytes = 0;
-	for (const f of files) {
-		heartbeat({ path: f.path });
+	for (const [index, f] of files.entries()) {
+		heartbeat({ phase: "promote", file: index + 1, of: files.length });
 		const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
 		// The source key is RECONSTRUCTED and compared before anything reads
 		// it. Promotion writes whatever it reads into the immutable prefix of
@@ -1362,8 +1387,12 @@ export async function promoteUnscannedInstructionSnapshot(
 			? missingIgnoreFileRejection(frozen)
 			: null;
 	const rejections: InstructionRejection[] = [];
-	for (const f of files) {
-		heartbeat({ path: f.path });
+	for (const [index, f] of files.entries()) {
+		heartbeat({
+			phase: "promote-unscanned",
+			file: index + 1,
+			of: files.length,
+		});
 		const read = await readVerifiedFile(
 			storage,
 			ref,
@@ -1373,6 +1402,11 @@ export async function promoteUnscannedInstructionSnapshot(
 		);
 		if ("rejection" in read) {
 			rejections.push(read.rejection);
+			continue;
+		}
+		const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
+		if (encoding) {
+			rejections.push(encoding);
 			continue;
 		}
 		// No `scanTextForSecrets` here: that is the step this path defers.
@@ -1491,7 +1525,13 @@ function summarizeRejections(rejections: InstructionRejection[]): {
 export async function rejectInstructionSnapshot(
 	input: SnapshotRef & { rejections: InstructionRejection[] },
 ): Promise<void> {
-	const snapshot = await loadVerifiedSnapshot(input);
+	// The tenant half only, like the deferred scan: a rejection is cleanup of
+	// an upload that must not stay in the bucket, not work done on the
+	// uploader's behalf. Requiring the uploader to still hold access made an
+	// uploader removed between the gate and this activity fail it non-retryably,
+	// leaving the staged bytes that just failed the secret scan in storage with
+	// no verdict and no audit row.
+	const snapshot = await loadTenantVerifiedSnapshot(input);
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
 		input.snapshotId,
@@ -1648,8 +1688,7 @@ export async function publishInstructionSnapshotActivity(
 	// from. That also means a retry arriving after some other version took the
 	// pointer now reports `published: true` with `changed: false`, where it
 	// used to report the `older_than_current` refusal: the same "nothing left
-	// to do", and the `changed` gate below keeps it out of the audit log
-	// either way.
+	// to do", and the query writes no audit row for it.
 	//
 	// A snapshot the publish-first promotion made READY (Fizzy #2737) — its
 	// `deferredScanStatus` is set — publishes through the same fast-forward,
@@ -1662,72 +1701,59 @@ export async function publishInstructionSnapshotActivity(
 	// warmed here: that re-reads every file and would hold up the scan that
 	// follows, so `recordDeferredScanOutcome` warms it instead.
 	const unscanned = (snapshot.deferredScanStatus ?? null) !== null;
+	const resource = {
+		type: "project_instruction_snapshot",
+		id: ref.snapshotId,
+		name: `v${snapshot.version}`,
+	};
+	// The publication's audit row is written by the query, INSIDE the publish
+	// transaction and only when the pointer actually moved: the pointer never
+	// moves without the record that it moved, and a retry of this activity
+	// after the commit finds `publishedAt` set and writes nothing, where a
+	// best-effort row written after the call could be lost or repeated.
+	//
+	// The ordinary publish has to be audited: what every coding agent on the
+	// project now reads is a security-relevant mutation and needs a record of
+	// who published what. The publish-first path's row names the member who
+	// acknowledged the risk, at warning severity.
 	const r = await publishInstructionSnapshot({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
 		requireBaseUnmoved: true,
-		...(unscanned
+		audit: unscanned
 			? {
-					audit: {
-						action: "project.instructions.published_unscanned",
-						category: "project",
-						severity: "warning" as const,
-						actor: {
-							type: "user" as const,
-							userId: snapshot.userId,
-						},
-						organizationId: ref.organizationId,
-						projectId: ref.projectId,
-						resource: {
-							type: "project_instruction_snapshot",
-							id: ref.snapshotId,
-							name: `v${snapshot.version}`,
-						},
-						metadata: {
-							version: snapshot.version,
-							fileCount: snapshot.fileCount,
-							source: "auto_publish_before_scan",
-						},
+					action: "project.instructions.published_unscanned",
+					category: "project",
+					severity: "warning" as const,
+					actor: { type: "user" as const, userId: snapshot.userId },
+					organizationId: ref.organizationId,
+					projectId: ref.projectId,
+					resource,
+					metadata: {
+						version: snapshot.version,
+						fileCount: snapshot.fileCount,
+						source: "auto_publish_before_scan",
 					},
 				}
-			: {}),
+			: {
+					action: "project.instructions.published",
+					category: "project",
+					actor: { type: "user" as const, userId: ref.userId },
+					organizationId: ref.organizationId,
+					projectId: ref.projectId,
+					resource,
+					metadata: {
+						version: snapshot.version,
+						fileCount: snapshot.fileCount,
+						source: "auto_publish_on_ready",
+					},
+				},
 	});
 	if (unscanned) {
 		return r.published
 			? { published: true }
 			: { published: false, reason: r.reason };
-	}
-	// `publishOnReady` defaults to true, so THIS is the ordinary publish —
-	// the manual oRPC `publish` procedure audits, this path did not, and the
-	// common upload therefore left an audit trail that stopped at
-	// "upload_started". What every coding agent on the project now reads is a
-	// security-relevant mutation and needs a record of who published what.
-	//
-	// Gated on `changed`, not on `published`: the query reports `published:
-	// true` for the idempotent case too (this snapshot is ALREADY the
-	// pointer), which is exactly what a Temporal retry of this activity
-	// produces. Auditing on `published` would write a fresh row per retry for
-	// a publication that happened once. Fire-and-forget for the same reason
-	// as the rejection row above.
-	if (r.changed) {
-		recordAudit({
-			action: "project.instructions.published",
-			category: "project",
-			actor: { type: "user", userId: ref.userId },
-			organizationId: ref.organizationId,
-			projectId: ref.projectId,
-			resource: {
-				type: "project_instruction_snapshot",
-				id: ref.snapshotId,
-				name: `v${snapshot.version}`,
-			},
-			metadata: {
-				version: snapshot.version,
-				fileCount: snapshot.fileCount,
-				source: "auto_publish_on_ready",
-			},
-		});
 	}
 	if (r.published) {
 		// Pre-build the download archive for the version that just became
@@ -1849,8 +1875,12 @@ export async function scanPublishedInstructionSnapshot(
 		Context.current().info.attempt >= DEFERRED_SCAN_MAX_ATTEMPTS;
 	const findings = new BoundedRejections();
 	let unreadable = 0;
-	for (const f of files) {
-		heartbeat({ phase: "deferred-scan", path: f.path });
+	for (const [index, f] of files.entries()) {
+		heartbeat({
+			phase: "deferred-scan",
+			file: index + 1,
+			of: files.length,
+		});
 		const own = snapshotKey(ref.projectId, ref.snapshotId, f.id);
 		if (f.storageKey !== own) {
 			findings.push({ path: f.path, reason: "missing" });

@@ -58,7 +58,11 @@ export function RepositorySyncStatus({
 		configuration?.automatic && configuration.automaticPausedReason
 			? configuration.automaticPausedReason
 			: null;
-	if (!running && !run && !paused) {
+	// Mounted for as long as a sync is configured, even with nothing to say:
+	// a live region that appears already holding its text is often not
+	// announced, so the run starting, finishing or failing has to land in a
+	// region that was already there.
+	if (configuration === null && !run) {
 		return null;
 	}
 	const outcome = run ? syncRunOutcome(run, running) : null;
@@ -73,7 +77,9 @@ export function RepositorySyncStatus({
 		<div
 			role="status"
 			aria-live="polite"
-			className="flex flex-col gap-1 text-sm"
+			// `empty:sr-only`: with nothing inside it takes no room and adds no
+			// gap, but stays in the accessibility tree (`hidden` would not).
+			className="flex flex-col gap-1 text-sm empty:sr-only"
 		>
 			{running ? (
 				<p className="inline-flex items-center gap-1.5 text-primary">

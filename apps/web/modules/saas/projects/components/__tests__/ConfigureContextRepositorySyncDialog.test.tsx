@@ -530,6 +530,48 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 		);
 	});
 
+	it("ignores Escape while the save is in flight, and closes once it has settled", async () => {
+		let finish: (value: unknown) => void = () => {};
+		configureMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		syncNowMock.mockResolvedValue({ started: true });
+		const { user, onOpenChange } = await renderAndSelectDocs();
+		await user.click(saveButton());
+
+		await user.keyboard("{Escape}");
+
+		expect(onOpenChange).not.toHaveBeenCalled();
+		finish({ syncId: "sync_1", generation: 1 });
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+	});
+
+	it("closes on Escape when nothing is in flight", async () => {
+		const { onOpenChange } = renderDialog();
+		const user = userEvent.setup();
+
+		await user.keyboard("{Escape}");
+
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("tells a failed first sync in the dialog's own words, never the server's message, and still saves and closes", async () => {
+		configureMock.mockResolvedValue({ syncId: "sync_1", generation: 1 });
+		syncNowMock.mockRejectedValue(new Error("upstream said no"));
+		const { user, onOpenChange, onSaved } = await renderAndSelectDocs();
+		vi.mocked(toast.error).mockReset();
+
+		await user.click(saveButton());
+
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(toast.error).toHaveBeenCalledWith(`${NS}.actionErrors.syncNow`);
+		expect(toast.error).not.toHaveBeenCalledWith("upstream said no");
+		expect(onSaved).toHaveBeenCalled();
+	});
+
 	it("renders a server error code inline, attached to the branch field, and does not start syncNow", async () => {
 		configureMock.mockRejectedValue({
 			message: "server message",

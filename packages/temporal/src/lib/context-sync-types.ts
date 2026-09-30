@@ -25,6 +25,7 @@ const CONTEXT_SYNC_ERROR_CODES = [
 	"CONFIGURATION_CHANGED",
 	"SUPERSEDED",
 	"INTERRUPTED",
+	"IGNORE_RULE_REJECTED",
 ] as const;
 export type ProjectContextSyncError = (typeof CONTEXT_SYNC_ERROR_CODES)[number];
 
@@ -209,6 +210,25 @@ export type BeginContextSyncRunResult =
 export const CONTEXT_SYNC_BEGIN_MAX_ATTEMPTS = 5;
 
 /**
+ * Which limit a LIMITS_EXCEEDED run hit, numbers only: the shape of the coding
+ * instructions sync's `SyncLimitDetail`, which is what the run row's
+ * `limitDetail` stores for both. `actual` is absent when the check stopped
+ * before the true value was known.
+ */
+export type ContextSyncLimitDetail = {
+	kind:
+		| "fileCount"
+		| "totalSize"
+		| "inventory"
+		| "repositorySize"
+		| "doubleStarGroups";
+	max: number;
+	actual?: number;
+	/** 1-based line of the `.contextignore` rule a `doubleStarGroups` names. */
+	line?: number;
+};
+
+/**
  * `ApplicationFailure.details[0]` of every typed sync failure (§5.5): the
  * pinned commit when there is one, and plain counts. No path, no URL, no
  * stderr, no content.
@@ -217,6 +237,8 @@ export type ContextSyncFailureDetails = {
 	commitSha?: string;
 	/** Named counters (entries seen, keys kept, bytes read, …). */
 	counts?: Record<string, number>;
+	/** Set on a LIMITS_EXCEEDED failure: the limit, and what was measured. */
+	limit?: ContextSyncLimitDetail;
 };
 
 /**
@@ -251,6 +273,8 @@ export type RecordContextSyncRunInput = {
 	cancelled: boolean;
 	/** The commit the sync answered with or named in its failure details. */
 	commitSha: string | null;
+	/** The limit a LIMITS_EXCEEDED failure named; kept on the receipt only with that error. */
+	limit?: ContextSyncLimitDetail | null;
 };
 
 /**

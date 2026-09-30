@@ -6,6 +6,7 @@ import {
 } from "@repo/database";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -19,7 +20,7 @@ const FILE_BODY_DEFAULT_MAX = 50_000;
 const FILE_BODY_MAX = 200_000;
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * Reads one file's body (paged, text only) or a short-lived signed URL
  * (binaries). Bytes are only ever served from a READY snapshot (R11):
@@ -30,6 +31,7 @@ const FILE_BODY_MAX = 200_000;
  * row to fetch bytes but never appears on the response.
  */
 export const getFileProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

@@ -446,6 +446,7 @@ describe("ProjectContextsList — the Context card's idle poll (Fizzy #2713)", (
 			},
 			latestRun: run,
 			lastAppliedRun: run,
+			latestFinishedRun: null,
 			managedCount: 1,
 			awaitingIndexCount: 0,
 			cleanupPending: 0,
@@ -558,4 +559,197 @@ describe("ProjectContextsList — the Context card's idle poll (Fizzy #2713)", (
 			expect(repositorySyncGetMock).toHaveBeenCalledTimes(1);
 		},
 	);
+});
+
+describe("ProjectContextsList — a failed sync state read (Fizzy #2784)", () => {
+	const SYNC = "projects.contexts.livingMemory.repositorySync";
+
+	beforeEach(() => {
+		contextsListMock.mockReset();
+		// One synced file, so the tab lists something and shows its Living
+		// Memory section.
+		contextsListMock.mockResolvedValue(
+			listOf([syncedContext("ctx_plain", "docs/api.md")]),
+		);
+		repositorySyncGetMock.mockReset();
+	});
+
+	afterEach(() => {
+		repositorySyncGetMock.mockReset();
+		repositorySyncGetMock.mockImplementation(async () => null);
+	});
+
+	it("says the sync status could not be read, with Retry, instead of showing nothing configured", async () => {
+		repositorySyncGetMock.mockRejectedValue(new Error("boom"));
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		expect(
+			await screen.findByTestId("context-sync-read-error"),
+		).toHaveTextContent(`${SYNC}.loadError.message`);
+		expect(
+			screen.queryByTestId("context-sync-from-repository"),
+		).not.toBeInTheDocument();
+	});
+
+	it("re-reads on Retry and shows the state once it loads", async () => {
+		repositorySyncGetMock.mockRejectedValueOnce(new Error("boom"));
+		repositorySyncGetMock.mockResolvedValue({
+			canConfigure: true,
+			running: false,
+			configured: null,
+			latestRun: null,
+			lastAppliedRun: null,
+			latestFinishedRun: null,
+			managedCount: 0,
+			awaitingIndexCount: 0,
+			cleanupPending: 0,
+			availableIntegrations: [
+				{
+					id: "int_1",
+					provider: "GITHUB",
+					repositoryOwner: "example-org",
+					repositoryName: "memory",
+					defaultBranch: "main",
+					status: "ACTIVE",
+				},
+			],
+		});
+		const user = userEvent.setup();
+		wrap(<ProjectContextsList projectId="proj_1" />);
+		await screen.findByTestId("context-sync-read-error");
+
+		await user.click(
+			screen.getByRole("button", { name: `${SYNC}.loadError.retry` }),
+		);
+
+		expect(
+			await screen.findByTestId("context-sync-from-repository"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByTestId("context-sync-read-error"),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders no Living Memory section while the first read is merely in flight", async () => {
+		repositorySyncGetMock.mockImplementation(() => new Promise(() => {}));
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		expect(
+			screen.queryByTestId("context-sync-read-error"),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("ProjectContextsList — the Living Memory section on a project with no context (Fizzy #2784)", () => {
+	const SYNC = "projects.contexts.livingMemory.repositorySync";
+	const INTEGRATION = {
+		id: "int_1",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "memory",
+		defaultBranch: "main",
+		status: "ACTIVE",
+	};
+	const CONFIGURED = {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		ref: "main",
+		paths: ["docs"],
+		excludedPaths: [],
+		automatic: false,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		nextCheckAt: null,
+		failureCount: 1,
+		lastAppliedCommitSha: null,
+		configuredByName: "Example Member",
+		createdAt: "2026-09-23T09:00:00.000Z",
+		updatedAt: "2026-09-23T09:00:00.000Z",
+		integration: {
+			provider: "GITHUB",
+			repositoryOwner: "example-org",
+			repositoryName: "memory",
+			status: "ACTIVE",
+		},
+	};
+	const idle = (
+		overrides: Partial<ContextSyncState> = {},
+	): ContextSyncState => ({
+		canConfigure: true,
+		running: false,
+		configured: null,
+		latestRun: null,
+		lastAppliedRun: null,
+		latestFinishedRun: null,
+		managedCount: 0,
+		awaitingIndexCount: 0,
+		cleanupPending: 0,
+		availableIntegrations: [INTEGRATION],
+		...overrides,
+	});
+
+	beforeEach(() => {
+		contextsListMock.mockReset();
+		contextsListMock.mockResolvedValue(listOf([]));
+		repositorySyncGetMock.mockReset();
+	});
+
+	afterEach(() => {
+		repositorySyncGetMock.mockReset();
+		repositorySyncGetMock.mockImplementation(async () => null);
+	});
+
+	it("shows a configured sync's failure with the exact limit beside the empty state", async () => {
+		repositorySyncGetMock.mockResolvedValue(
+			idle({
+				configured: CONFIGURED,
+				latestFinishedRun: {
+					id: "sync_1:run_b",
+					trigger: "POLL",
+					startedAt: "2026-09-30T11:50:00.000Z",
+					finishedAt: "2026-09-30T11:51:00.000Z",
+					status: "FAILED",
+					error: "LIMITS_EXCEEDED",
+					limitDetail: { kind: "fileCount", max: 5000, actual: 6123 },
+					commitSha: null,
+				},
+			}),
+		);
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		const failure = await screen.findByTestId("context-sync-failure");
+		expect(failure).toHaveTextContent(`${SYNC}.failure.limit.fileCount`);
+		expect(failure).toHaveTextContent("6,123");
+		expect(failure).toHaveTextContent("5,000");
+		expect(screen.getByTestId("context-living-memory")).toBeInTheDocument();
+		expect(screen.getByText("No context yet")).toBeInTheDocument();
+	});
+
+	it("offers Sync from repository to a configurer with nothing configured", async () => {
+		repositorySyncGetMock.mockResolvedValue(idle());
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		expect(
+			await screen.findByTestId("context-sync-from-repository"),
+		).toBeInTheDocument();
+		expect(screen.getByText("No context yet")).toBeInTheDocument();
+	});
+
+	it("shows only the empty state when nothing is configured and there is no offer", async () => {
+		repositorySyncGetMock.mockResolvedValue(
+			idle({ canConfigure: false, availableIntegrations: [] }),
+		);
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		expect(await screen.findByText("No context yet")).toBeInTheDocument();
+		await waitFor(() => expect(repositorySyncGetMock).toHaveBeenCalled());
+		expect(
+			screen.queryByTestId("context-living-memory"),
+		).not.toBeInTheDocument();
+	});
 });

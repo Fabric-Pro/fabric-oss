@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pullRequestContextSchema } from "../src/pull-request-context";
-import { renderPullRequestText } from "../src/pull-request-text";
+import {
+	neutraliseMentions,
+	renderPullRequestText,
+} from "../src/pull-request-text";
 import * as secrets from "../src/secrets";
 
 // The real scanner, wrapped so one case can simulate a rule no current
@@ -197,6 +200,86 @@ describe("renderPullRequestText (spec §5.2)", () => {
 		expect(text.title).toBe("Indented");
 		expect(text.body.startsWith("code\nmore\n")).toBe(true);
 		expect(text.message).toBe("  Indented\n\n    code\n\tmore");
+	});
+
+	it("puts a zero-width space after an @ that could start a mention in the title and description, so no provider reads one", () => {
+		const text = ok(
+			render({
+				note: {
+					title: "Thanks @example-user",
+					body: "cc @example-user and @example-org/example-team, or <@example-id>",
+				},
+			}),
+		);
+
+		for (const field of [text.title, text.body]) {
+			expect(field).toContain("@");
+			expect(field).not.toMatch(/(?<![A-Za-z0-9_])@(?=[A-Za-z0-9_<])/);
+		}
+		expect(text.body.replaceAll("\u200b", "")).toContain(
+			"cc @example-user and @example-org/example-team, or \\<@example-id\\>",
+		);
+	});
+
+	it.each([
+		["a leading @x", "@example-user thanks", "@\u200bexample-user thanks"],
+		[
+			"(@org/team)",
+			"cc (@example-org/example-team)",
+			"cc (@\u200bexample-org/example-team)",
+		],
+		[
+			"an @x after a newline",
+			"first\n@example-user",
+			"first\n@\u200bexample-user",
+		],
+		[
+			"an @x after punctuation",
+			"thanks,@example-user",
+			"thanks,@\u200bexample-user",
+		],
+	])("neutralises %s", (_name, input, expected) => {
+		expect(neutraliseMentions(input)).toBe(expected);
+	});
+
+	it.each([
+		"dev@example.com",
+		"a@b",
+		"write to first.last@example.com or other_one@example.org",
+		"user+tag@example.com",
+		"a bare @ and a trailing @",
+		"@ followed by a space",
+	])("leaves %j byte-identical", (input) => {
+		expect(neutraliseMentions(input)).toBe(input);
+	});
+
+	it("keeps an email address in the rendered title and body copyable", () => {
+		const text = ok(
+			render({
+				note: {
+					title: "Ask dev@example.com",
+					body: "Contact dev@example.com, or @example-user",
+				},
+			}),
+		);
+
+		expect(text.title).toBe("Ask dev@example.com");
+		expect(text.body).toContain(
+			"Contact dev@example.com, or @\u200bexample-user",
+		);
+	});
+
+	it("leaves the commit message as the plain text it was written as", () => {
+		const text = ok(
+			render({
+				note: {
+					title: "Thanks @example-user",
+					body: "cc @example-team",
+				},
+			}),
+		);
+
+		expect(text.message).toBe("Thanks @example-user\n\ncc @example-team");
 	});
 
 	it("keeps the footer free of any URL or address", () => {

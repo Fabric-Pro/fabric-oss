@@ -107,6 +107,7 @@ import {
 	failInstructionSnapshot,
 	failStaleValidatingInstructionSnapshot,
 	getInstructionFileByPath,
+	getInstructionSnapshot,
 	listAbandonedReceivingInstructionSnapshots,
 	listInstructionFiles,
 	listInstructionSnapshots,
@@ -177,6 +178,53 @@ describe("listInstructionSnapshots proposal visibility", () => {
 						{ userId: "reader" },
 					],
 				},
+			}),
+		);
+	});
+
+	it("limits a non-reviewer's single read of a snapshot to the same rows the list shows", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue(null);
+
+		await getInstructionSnapshot("s1", "p", "org_1", {
+			viewerUserId: "reader",
+			canReviewProposals: false,
+		});
+
+		expect(mocks.snapshot.findFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "s1",
+					projectId: "p",
+					organizationId: "org_1",
+					OR: [
+						{ proposalStatus: null },
+						{ proposalStatus: "APPROVED" },
+						{ userId: "reader" },
+					],
+				},
+			}),
+		);
+	});
+
+	it("keeps a reviewer's single read, and a server-side read, tenant-only", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue(null);
+
+		await getInstructionSnapshot("s1", "p", "org_1", {
+			viewerUserId: "editor",
+			canReviewProposals: true,
+		});
+		await getInstructionSnapshot("s1", "p", "org_1");
+
+		expect(mocks.snapshot.findFirst).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				where: { id: "s1", projectId: "p", organizationId: "org_1" },
+			}),
+		);
+		expect(mocks.snapshot.findFirst).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				where: { id: "s1", projectId: "p", organizationId: "org_1" },
 			}),
 		);
 	});

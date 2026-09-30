@@ -31,6 +31,12 @@ const m = vi.hoisted(() => ({
 	requestedPermission: undefined as string | undefined,
 }));
 
+// The stub builder below calls each middleware with the handler's arguments,
+// not oRPC's `(options, input)`; visibility has its own file
+// (`core-visibility.test.ts`).
+vi.mock("../../../../../orpc/middleware/project-visibility", () => ({
+	projectNotFoundUnlessVisible: async () => undefined,
+}));
 vi.mock("@repo/database", () => ({
 	countInFlightDerivedSnapshots: (...a: unknown[]) =>
 		m.countInFlightDerivedSnapshots(...a),
@@ -378,20 +384,35 @@ describe("projects.instructions.delete", () => {
 		m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
 		// Two pages, and a stale wall-clock-stamped object from before the
 		// key became deterministic — the prefix finds both shapes.
-		m.listObjects
-			.mockResolvedValueOnce({
-				objects: [
-					{ key: "projects/p/instructions/exports/s-digest.zip" },
-				],
-				nextContinuationToken: "page2",
-			})
-			.mockResolvedValueOnce({
-				objects: [
-					{
-						key: "projects/p/instructions/exports/s-1757000000000.zip",
-					},
-				],
-			});
+		m.listObjects.mockImplementation(
+			async ({
+				prefix,
+				continuationToken,
+			}: {
+				prefix: string;
+				continuationToken?: string;
+			}) => {
+				if (prefix !== "projects/p/instructions/exports/s-") {
+					return { objects: [] };
+				}
+				return continuationToken === undefined
+					? {
+							objects: [
+								{
+									key: "projects/p/instructions/exports/s-digest.zip",
+								},
+							],
+							nextContinuationToken: "page2",
+						}
+					: {
+							objects: [
+								{
+									key: "projects/p/instructions/exports/s-1757000000000.zip",
+								},
+							],
+						};
+			},
+		);
 
 		await m.handlers.delete!({ input: baseInput, context: ctx });
 
@@ -409,6 +430,33 @@ describe("projects.instructions.delete", () => {
 			{ bucket: "skills" },
 		);
 	});
+	it("also sweeps the snapshot's staging and promoted prefixes for objects no row names", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "s",
+			version: 2,
+			status: "READY",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
+		m.listInstructionFiles.mockResolvedValue([]);
+		m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
+		m.listObjects.mockImplementation(
+			async ({ prefix }: { prefix: string }) => ({
+				objects: [{ key: `${prefix}orphan` }],
+			}),
+		);
+
+		await m.handlers.delete!({ input: baseInput, context: ctx });
+
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/staging/s/orphan"],
+			{ bucket: "skills" },
+		);
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/snapshots/s/orphan"],
+			{ bucket: "skills" },
+		);
+	});
+
 	/**
 	 * Fizzy #2546. A derived snapshot's inherited rows point at the BASE's
 	 * promoted objects until its own promotion rewrites them. Deleting a

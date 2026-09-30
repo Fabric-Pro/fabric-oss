@@ -150,6 +150,18 @@ describe("the Coding Instructions reaper schedule", () => {
 		for (const name of constants) {
 			expect(Object.keys(activities)).not.toContain(name);
 		}
+		// The Living Memory twin of that pass (Fizzy #2784), which rides this
+		// tick: registered, and it alone, so its module exports nothing else
+		// for the worker to register.
+		expect(Object.keys(activities)).toContain(
+			"reapStrandedContextSyncReceipts",
+		);
+		const contextReceiptPass = await import(
+			"../src/activities/project-context-sync-receipt-reaper"
+		);
+		expect(Object.keys(contextReceiptPass)).toEqual([
+			"reapStrandedContextSyncReceipts",
+		]);
 	});
 
 	it("runs on a queue a worker is actually listening to", async () => {

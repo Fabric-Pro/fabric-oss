@@ -13,6 +13,7 @@ import {
 } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -57,7 +58,7 @@ function notReceiving() {
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_CREATE).
  *
  * Mints signed PUT URLs for up to 200 already-registered staging files.
  * The snapshot id used to scope every downstream query comes from a
@@ -78,6 +79,7 @@ function notReceiving() {
 // below then requires CREATE for direct versions, or READ plus proposer
 // ownership for a pending proposal.
 export const createUploadUrlsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",

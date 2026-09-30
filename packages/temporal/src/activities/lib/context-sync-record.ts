@@ -9,9 +9,12 @@
  * schedulable activity.
  */
 import {
+	type ContextRepositorySyncRunLedger,
 	type ContextSyncOutcomes,
 	type ContextSyncPlan,
 	type ContextSyncPruneConflicts,
+	completeContextRepositorySyncRun,
+	getContextSyncIntegration,
 	type InstructionSyncSchedulingEffect,
 	type Prisma,
 	recordAuditTx,
@@ -177,6 +180,9 @@ export function deriveContextSyncScheduling(input: {
 	}
 	switch (input.error) {
 		case "LIMITS_EXCEEDED":
+		// A folder's `.contextignore` the matcher cannot evaluate fails the same
+		// head every time, until the file changes and the head with it.
+		case "IGNORE_RULE_REJECTED":
 			return input.commitSha
 				? { kind: "suppress", commitSha: input.commitSha }
 				: backoff;
@@ -244,4 +250,56 @@ export async function recordContextSyncCompletedAudit(
 			counts: { ...input.counts },
 		},
 	});
+}
+
+/**
+ * Completes a receipt whose execution can never record it, and writes the
+ * audit row every completed receipt gets: `begin`'s reconciliation of a
+ * predecessor whose workflow ended, and the stranded-receipt reaper. FAILED
+ * with INTERRUPTED (it stopped before it finished), or CONFIGURATION_CHANGED
+ * when the receipt's configuration is no longer the project's.
+ *
+ * The caller holds the run's lock (`getContextRepositorySyncRunForUpdate`),
+ * and lock 1 when the configuration still exists. `false` when something
+ * finished the receipt first, in which case nothing is audited: the row is
+ * written only by the call that completed it, so a retry, an overlapping
+ * `record` or the next reaper tick never writes it twice.
+ */
+export async function completeInterruptedContextSyncRun(
+	tx: Prisma.TransactionClient,
+	input: {
+		run: ContextRepositorySyncRunLedger;
+		error: "INTERRUPTED" | "CONFIGURATION_CHANGED";
+		now?: Date;
+	},
+): Promise<boolean> {
+	const { run } = input;
+	const completed = await completeContextRepositorySyncRun(tx, run.id, {
+		status: "FAILED",
+		error: input.error,
+		...(input.now ? { now: input.now } : {}),
+	});
+	if (!completed.completed) {
+		return false;
+	}
+	const integration = await getContextSyncIntegration(tx, {
+		repositoryIntegrationId: run.context.repositoryIntegrationId,
+		projectId: run.projectId,
+	});
+	await recordContextSyncCompletedAudit(tx, {
+		projectId: run.projectId,
+		organizationId: run.organizationId,
+		syncId: run.syncId,
+		runKey: run.id,
+		actingUserId: run.userId,
+		trigger: run.trigger,
+		repository: integration
+			? `${integration.repositoryOwner}/${integration.repositoryName}`
+			: null,
+		status: "FAILED",
+		error: input.error,
+		commitSha: run.commitSha,
+		counts: tallyContextSyncRun(run),
+	});
+	return true;
 }

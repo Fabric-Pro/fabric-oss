@@ -50,6 +50,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...actual,
+		hasProjectAccess: async () => true,
 		db: {
 			organization: { findFirst: m.findOrganization },
 			user: { findUnique: m.findUser },

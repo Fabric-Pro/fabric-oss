@@ -2871,6 +2871,10 @@ enum ProjectContextSyncError {
   CONFIGURATION_CHANGED
   SUPERSEDED
   INTERRUPTED
+  /// A selected folder's `.contextignore` holds a rule with more `**` groups
+  /// than the matcher can evaluate in bounded time. The run fails rather than
+  /// drop the rule; `limitDetail` carries the rule's line.
+  IGNORE_RULE_REJECTED
 }
 
 /// A project's Living Memory repository sync configuration: at most one per
@@ -2981,11 +2985,26 @@ model ProjectContextRepositorySyncRun {
   removedCount   Int                          @default(0)
   /// { keys: string[] (at most 100), overflow: number }.
   pruneConflicts Json                         @default("{}")
+  /// Which limit a LIMITS_EXCEEDED run hit: `{ kind, max, actual? }`, numbers
+  /// only (the shape of the coding-instructions run's `limitDetail`). Null for
+  /// every other outcome and for runs recorded before it existed.
+  limitDetail    Json?
+  /// When the stranded-receipt reaper last claimed this unfinished receipt to
+  /// ask Temporal whether its run has ended. Candidates are taken least
+  /// recently checked first, so receipts whose runs stay open cannot starve
+  /// later ones. Null until first claimed; irrelevant once `finishedAt` is set.
+  reapCheckedAt  DateTime?
 
   project      Project      @relation("ProjectContextRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation("ContextRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
 
+  // A FIFTH index exists that Prisma cannot express: the partial
+  // `project_context_sync_run_reap_due_idx` on ("reapCheckedAt" NULLS FIRST,
+  // "startedAt", "id") WHERE "finishedAt" IS NULL AND the key is a workflow
+  // run's `<syncId>:<run id>`, added in migration 20260930195400. It serves
+  // the stranded-receipt reaper's unscoped candidate claim. Documented here
+  // because a shadow-database diff can read it as drift and try to DROP it.
   @@index([projectId, startedAt])
   @@index([syncId, finishedAt])
   @@index([organizationId])

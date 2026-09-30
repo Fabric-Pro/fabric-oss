@@ -1,5 +1,6 @@
 import { listInstructionSnapshots } from "@repo/database";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -9,13 +10,14 @@ import { requireHostingOrganizationId } from "./hosting-organization";
 import { canReviewInstructionProposals } from "./proposal-authorization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * Lists every coding-instructions snapshot for a project (newest version
  * first), tenant-scoped by construction: `listInstructionSnapshots` filters
  * on `projectId` AND `organizationId`.
  */
 export const listSnapshotsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

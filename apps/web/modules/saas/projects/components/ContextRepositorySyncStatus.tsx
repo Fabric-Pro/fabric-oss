@@ -29,8 +29,10 @@ import {
 	type ContextSyncAttentionReason,
 	type ContextSyncNowResult,
 	type ContextSyncState,
+	contextSyncActionErrorMessage,
 	contextSyncAttentionMessageKey,
 	contextSyncConfigureErrorMessage,
+	contextSyncFailureMessage,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
 	contextSyncNowResultMessage,
@@ -82,12 +84,21 @@ export function ContextRepositorySyncStatus({
 	projectId,
 	organizationId,
 	state,
+	readFailed = false,
+	onRetry,
 	onChanged,
 }: {
 	projectId: string;
 	organizationId: string | null;
-	/** `undefined` while the first read of `repositorySync.get` is in flight. */
+	/** `undefined` while the first read of `repositorySync.get` is in flight, or after it failed. */
 	state: ContextSyncState | undefined;
+	/**
+	 * The read failed and there is no earlier answer to show. Says so, with a
+	 * way to try again, instead of looking like a project with nothing
+	 * configured.
+	 */
+	readFailed?: boolean;
+	onRetry?: () => void;
 	/** A run finished, indexing progressed, or the configuration changed. */
 	onChanged: () => void;
 }) {
@@ -104,7 +115,10 @@ export function ContextRepositorySyncStatus({
 				toast[announced.tone](t(announced.key));
 				onChanged();
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) => {
+				const mapped = contextSyncActionErrorMessage(error, "syncNow");
+				toast.error(t(mapped.key, mapped.values));
+			},
 		}),
 	);
 	const disable = useMutation(
@@ -113,7 +127,10 @@ export function ContextRepositorySyncStatus({
 				toast.success(t("disconnectConfirm.disconnected"));
 				onChanged();
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) => {
+				const mapped = contextSyncActionErrorMessage(error, "disable");
+				toast.error(t(mapped.key, mapped.values));
+			},
 		}),
 	);
 	const configure = useMutation(
@@ -137,7 +154,20 @@ export function ContextRepositorySyncStatus({
 	const busy = configure.isPending || disable.isPending;
 
 	if (!state) {
-		return null;
+		return readFailed ? (
+			<div
+				role="alert"
+				className="flex flex-col items-start gap-2 text-sm"
+				data-testid="context-sync-read-error"
+			>
+				<p className="text-destructive">{t("loadError.message")}</p>
+				{onRetry ? (
+					<Button size="sm" variant="outline" onClick={onRetry}>
+						{t("loadError.retry")}
+					</Button>
+				) : null}
+			</div>
+		) : null;
 	}
 
 	const configured = state.configured;
@@ -191,6 +221,11 @@ export function ContextRepositorySyncStatus({
 				}
 			: statusMessage.values;
 
+	const finished = state.latestFinishedRun;
+	const failure =
+		!state.running && finished
+			? contextSyncFailureMessage(finished, configured)
+			: null;
 	const attentionItems = attentionItemsOf(state.lastAppliedRun);
 	const canManage = offersSyncNow(state);
 	const trigger =
@@ -269,6 +304,24 @@ export function ContextRepositorySyncStatus({
 						{trigger ? ` · ${trigger}` : null}
 					</p>
 				)}
+				{failure && finished ? (
+					<p
+						className="text-destructive"
+						data-testid="context-sync-failure"
+					>
+						{t("failure.line", {
+							time: formatDistanceToNow(
+								typeof finished.finishedAt === "string"
+									? new Date(finished.finishedAt)
+									: finished.finishedAt,
+							),
+							trigger: t(
+								contextSyncTriggerLabelKey(finished.trigger),
+							),
+							detail: t(failure.key, failure.values),
+						})}
+					</p>
+				) : null}
 				{state.awaitingIndexCount > 0 ? (
 					<p
 						className="text-muted-foreground"

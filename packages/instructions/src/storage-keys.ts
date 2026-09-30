@@ -53,6 +53,29 @@ export function exportKey(
 	return `${exportKeyPrefix(projectId, snapshotId)}${stamp}.zip`;
 }
 
+/**
+ * Every prefix this snapshot's own writes land under: its staging objects, its
+ * promoted objects and its export zips. Sweeping these by prefix, rather than
+ * deleting the keys its file rows name, also collects the objects no row
+ * references any more: a staged file of an upload that was replaced, or a
+ * promoted object whose row was never written because the activity died
+ * between the copy and the insert.
+ *
+ * Safe to sweep for a snapshot whose row is gone: a derived snapshot points at
+ * its base's promoted keys only while it is in flight, and deleting the base
+ * is refused for exactly that time.
+ */
+export function snapshotOwnedPrefixes(
+	projectId: string,
+	snapshotId: string,
+): string[] {
+	return [
+		stagingPrefix(projectId, snapshotId),
+		snapshotPrefix(projectId, snapshotId),
+		exportKeyPrefix(projectId, snapshotId),
+	];
+}
+
 export function isStagingKey(key: string): boolean {
 	return key.includes("/instructions/staging/");
 }
@@ -82,9 +105,7 @@ export function isKeyOwnedBySnapshot(
 	projectId: string,
 	snapshotId: string,
 ): boolean {
-	return (
-		key.startsWith(stagingPrefix(projectId, snapshotId)) ||
-		key.startsWith(snapshotPrefix(projectId, snapshotId)) ||
-		key.startsWith(exportKeyPrefix(projectId, snapshotId))
+	return snapshotOwnedPrefixes(projectId, snapshotId).some((prefix) =>
+		key.startsWith(prefix),
 	);
 }

@@ -18,6 +18,7 @@ import {
 	db,
 	getContextRepositorySync,
 	getContextRepositorySyncRun,
+	getLatestFinishedContextRepositorySyncRun,
 	getNewestContextRepositorySyncRun,
 	listProjectRepoIntegrations,
 } from "@repo/database";
@@ -30,7 +31,11 @@ import {
 } from "../../../../../orpc/procedures";
 import { isContextRepositorySyncRunning } from "../../../lib/context-repository-sync-workflow";
 import { resolveContextSyncAccess } from "./access";
-import { toContextSyncConfigurationView, toContextSyncRunView } from "./views";
+import {
+	toContextSyncConfigurationView,
+	toContextSyncFinishedRunView,
+	toContextSyncRunView,
+} from "./views";
 
 export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 	// Visibility before permission: see the file comment.
@@ -77,6 +82,7 @@ export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 				configured: null,
 				latestRun: null,
 				lastAppliedRun: null,
+				latestFinishedRun: null,
 				managedCount: 0,
 				awaitingIndexCount: 0,
 				cleanupPending: 0,
@@ -88,6 +94,7 @@ export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 			running,
 			latestRun,
 			lastAppliedRun,
+			latestFinishedRun,
 			managedCount,
 			awaitingIndexCount,
 		] = await Promise.all([
@@ -96,6 +103,7 @@ export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 			sync.lastAppliedRunId
 				? getContextRepositorySyncRun(sync.lastAppliedRunId, scope)
 				: Promise.resolve<ContextRepositorySyncRunReceipt | null>(null),
+			getLatestFinishedContextRepositorySyncRun(sync.id, scope),
 			countManagedContexts(db, scope, sync.id),
 			countAwaitingIndexContexts(scope, sync.id),
 		]);
@@ -113,6 +121,10 @@ export const getContextRepositorySyncProcedure = tenantProtectedProcedure
 			lastAppliedRun: lastAppliedRun
 				? toContextSyncRunView(lastAppliedRun)
 				: null,
+			latestFinishedRun: toContextSyncFinishedRunView(
+				latestFinishedRun,
+				lastAppliedRun,
+			),
 			managedCount,
 			awaitingIndexCount,
 			cleanupPending,

@@ -7,7 +7,10 @@ import {
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
 } from "@repo/database";
-import { exportKeyPrefix, isKeyOwnedBySnapshot } from "@repo/instructions";
+import {
+	isKeyOwnedBySnapshot,
+	snapshotOwnedPrefixes,
+} from "@repo/instructions";
 import {
 	type DeleteObjectsResult,
 	getStorageProvider,
@@ -15,6 +18,7 @@ import {
 } from "@repo/storage";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -88,7 +92,7 @@ async function deleteObjectsUnderPrefix(
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_DELETE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_DELETE).
  *
  * Deletes one coding-instructions snapshot: its database rows first, then its
  * files' storage objects. Tenant-scoped via `getInstructionSnapshot(id,
@@ -105,6 +109,7 @@ async function deleteObjectsUnderPrefix(
  * unscoped query, so nothing beyond that id crosses a tenant boundary.
  */
 export const deleteSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_DELETE))
 	.route({
 		method: "DELETE",
@@ -259,16 +264,20 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 				await storage.deleteObjects(keys, { bucket: BUCKET }),
 			);
 		}
-		// The export zips built from this snapshot, which the file rows do
-		// not know about. Someone deleting a version because it held
-		// something they did not want stored would otherwise leave a full
-		// copy of its contents in the bucket for every Download and every
-		// `fabric_get_project_instruction_bundle` call ever made against it.
-		// Found by prefix rather than by a recorded key, so pre-existing
+		// Everything else under the snapshot's own prefixes, which the file
+		// rows do not know about: the export zips built from it, and any
+		// staged or promoted object no row names. Someone deleting a version
+		// because it held something they did not want stored would otherwise
+		// leave a full copy of its contents in the bucket for every Download
+		// and every `fabric_get_project_instruction_bundle` call ever made
+		// against it, or a staged copy of an upload that was replaced. Found
+		// by prefix rather than by a recorded key, so pre-existing
 		// wall-clock-stamped objects are collected too.
-		await deleteObjectsUnderPrefix(
-			storage,
-			exportKeyPrefix(input.projectId, snapshot.id),
-		);
+		for (const prefix of snapshotOwnedPrefixes(
+			input.projectId,
+			snapshot.id,
+		)) {
+			await deleteObjectsUnderPrefix(storage, prefix);
+		}
 		return { deleted: true as const };
 	});

@@ -24,11 +24,15 @@
  * No transaction here calls Temporal or any network (§4.5).
  */
 
-import { db, type Prisma } from "../../client";
+import { db, Prisma } from "../../client";
 import type {
 	ProjectContextSyncPause,
 	ProjectContextSyncTrigger,
 } from "../../generated/client";
+import {
+	type InstructionSyncLimitDetail,
+	parseInstructionSyncLimitDetail,
+} from "../instruction-sync-limit-detail";
 import { firstExcludedPathOutsideSelection } from "./context-repository-sync-selection";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import {
@@ -69,7 +73,8 @@ export type ContextSyncError =
 	| "STORE_FAILED"
 	| "CONFIGURATION_CHANGED"
 	| "SUPERSEDED"
-	| "INTERRUPTED";
+	| "INTERRUPTED"
+	| "IGNORE_RULE_REJECTED";
 
 /** What one apply batch decided for one storage key (§4.3, §5.3.1 step 7). */
 export type ContextSyncApplyOutcome =
@@ -954,6 +959,7 @@ const receiptSelect = {
 	outcomes: true,
 	removedCount: true,
 	pruneConflicts: true,
+	limitDetail: true,
 } satisfies Prisma.ProjectContextRepositorySyncRunSelect;
 
 /**
@@ -969,6 +975,12 @@ export async function completeContextRepositorySyncRun(
 	result: {
 		status: ContextSyncRunStatus;
 		error: ContextSyncError | null;
+		/**
+		 * Which limit a LIMITS_EXCEEDED run hit, or which `.contextignore` rule
+		 * an IGNORE_RULE_REJECTED run refused. Kept only with those errors, and
+		 * only when it parses, so a stray value never outlives its meaning.
+		 */
+		limit?: InstructionSyncLimitDetail | null;
 		now?: Date;
 	},
 ) {
@@ -978,6 +990,11 @@ export async function completeContextRepositorySyncRun(
 			finishedAt: result.now ?? new Date(),
 			status: result.status,
 			error: result.error,
+			limitDetail:
+				(result.error === "LIMITS_EXCEEDED" ||
+				result.error === "IGNORE_RULE_REJECTED"
+					? parseInstructionSyncLimitDetail(result.limit)
+					: null) ?? Prisma.DbNull,
 		},
 	});
 	const run = await tx.projectContextRepositorySyncRun.findUnique({
@@ -1571,6 +1588,8 @@ export interface ContextRepositorySyncRunReceipt {
 	outcomes: ContextSyncOutcomes;
 	removedCount: number;
 	pruneConflicts: ContextSyncPruneConflicts;
+	/** The limit or rule a LIMITS_EXCEEDED or IGNORE_RULE_REJECTED run named; null otherwise. */
+	limitDetail: InstructionSyncLimitDetail | null;
 	/** The acting member's display name; never their id. */
 	userName: string | null;
 }
@@ -1592,6 +1611,7 @@ function toReceipt(row: ReceiptViewRow): ContextRepositorySyncRunReceipt {
 		outcomes: parseOutcomes(row.outcomes),
 		removedCount: row.removedCount,
 		pruneConflicts: parsePruneConflicts(row.pruneConflicts),
+		limitDetail: parseInstructionSyncLimitDetail(row.limitDetail),
 		userName: row.user?.name ?? null,
 	};
 }
@@ -1615,6 +1635,96 @@ export async function getNewestContextRepositorySyncRun(
 		select: receiptViewSelect,
 	});
 	return row ? toReceipt(row) : null;
+}
+
+/**
+ * The newest FINISHED receipt of a configuration, or `null`. The newest
+ * receipt of all may be a run still going, and that must not hide the failure
+ * of the one before it: the tab shows this beside the last applied run.
+ * Bound to the project and organization the caller resolved. No lock.
+ */
+export async function getLatestFinishedContextRepositorySyncRun(
+	syncId: string,
+	scope: { projectId: string; organizationId: string },
+): Promise<ContextRepositorySyncRunReceipt | null> {
+	const row = await db.projectContextRepositorySyncRun.findFirst({
+		where: {
+			syncId,
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			finishedAt: { not: null },
+		},
+		orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+		select: receiptViewSelect,
+	});
+	return row ? toReceipt(row) : null;
+}
+
+/**
+ * Unfinished receipts old enough that their workflow run may have ended
+ * without `record` completing them, for the stranded-receipt reaper; the
+ * Living Memory twin of `claimStrandedInstructionSyncRunReceipts`, and read
+ * with it.
+ *
+ * `record` is the fast path that completes a receipt, not the only one it
+ * needs: a terminated workflow never runs it, and a `begin` attempt that
+ * timed out while its insert was in flight can commit its receipt after
+ * `record` has swept. Such a receipt stays open, unaudited, for good.
+ *
+ * Claiming stamps `reapCheckedAt = checkedAt` on every row it returns before
+ * the caller describes any of them, and a row is due again only once its
+ * stamp is older than `checkedBefore`: ordered by age alone, a full batch of
+ * receipts whose runs stay open was re-selected every tick and a later
+ * receipt whose run had ended was never examined. A completed receipt leaves
+ * the candidate set through `finishedAt`. `FOR UPDATE SKIP LOCKED` keeps two
+ * overlapping claims disjoint.
+ *
+ * UNSCOPED by design: tenant context comes only from each row, and the
+ * completion is bound to that row's own project and organization. Only the
+ * workflow's receipts (`<syncId>:<workflow run id>`, two segments): a poll
+ * check's receipt has three and is written already finished.
+ */
+export function claimStrandedContextSyncRunReceipts(input: {
+	startedBefore: Date;
+	checkedBefore: Date;
+	checkedAt: Date;
+	limit: number;
+}) {
+	return db.$queryRaw<
+		Array<{
+			id: string;
+			syncId: string;
+			projectId: string;
+			organizationId: string;
+			userId: string;
+			generation: number;
+			trigger: ContextSyncTrigger;
+		}>
+	>`
+		WITH "due" AS (
+			SELECT "id", "reapCheckedAt" AS "previousCheckedAt"
+			FROM "project_context_repository_sync_run"
+			WHERE "finishedAt" IS NULL
+				AND "id" ~ '^[^:]+:[^:]+$'
+				AND "startedAt" < ${input.startedBefore}
+				AND ("reapCheckedAt" IS NULL OR "reapCheckedAt" < ${input.checkedBefore})
+			ORDER BY "reapCheckedAt" ASC NULLS FIRST, "startedAt" ASC, "id" ASC
+			LIMIT ${input.limit}
+			FOR UPDATE SKIP LOCKED
+		), "claimed" AS (
+			UPDATE "project_context_repository_sync_run" AS "run"
+			SET "reapCheckedAt" = ${input.checkedAt}
+			FROM "due"
+			WHERE "run"."id" = "due"."id"
+			RETURNING "run"."id", "run"."syncId", "run"."projectId",
+				"run"."organizationId", "run"."userId", "run"."generation",
+				"run"."trigger", "run"."startedAt", "due"."previousCheckedAt"
+		)
+		SELECT "id", "syncId", "projectId", "organizationId", "userId",
+			"generation", "trigger"
+		FROM "claimed"
+		ORDER BY "previousCheckedAt" ASC NULLS FIRST, "startedAt" ASC, "id" ASC
+	`;
 }
 
 /**

@@ -97,6 +97,36 @@ describe("readFolderFiles", () => {
 	});
 
 	// Root-anchored and exact, the same as the server: a nested
+	it("reads a .fabricignore byte-order mark away, as the gate and the sync do", async () => {
+		const { fabricIgnoreText } = await readFolderFiles([
+			folder("example-skills", [
+				file("example-skills/.fabricignore", "\ufeffdocs/\n"),
+			]),
+		]);
+
+		expect(fabricIgnoreText).toBe("docs/\n");
+	});
+
+	it("freezes no rules from a .fabricignore that is not UTF-8 text, and still uploads the file for the gate to refuse", async () => {
+		const utf16 = new File(
+			[new Uint8Array(Buffer.from("\ufeffdocs/\n", "utf16le"))],
+			".fabricignore",
+		);
+		Object.defineProperty(utf16, "webkitRelativePath", {
+			value: "example-skills/.fabricignore",
+		});
+
+		const { entries, fabricIgnoreText } = await readFolderFiles([
+			folder("example-skills", [file("example-skills/docs/a.md"), utf16]),
+		]);
+
+		expect(fabricIgnoreText).toBeNull();
+		expect(entries.map((e) => [e.path, e.excluded])).toEqual([
+			["docs/a.md", null],
+			[".fabricignore", null],
+		]);
+	});
+
 	// `.fabricignore` is content, so a kept folder name demotes it.
 	it("reads .fabricignore only at the composed root", async () => {
 		const nested = await readFolderFiles([

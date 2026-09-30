@@ -27,6 +27,7 @@ import {
 	ALWAYS_IGNORE_GLOBS,
 	classifyPath,
 	compileIgnore,
+	decodeFabricIgnore,
 	FABRIC_IGNORE_FILE,
 	fileTypingFor,
 	type InstructionFileKind,
@@ -72,6 +73,7 @@ import { INSTRUCTIONS_BUCKET } from "./lib/instruction-prune";
 import {
 	credentialFreeUrl,
 	fetchPinnedCommit,
+	GitCommandError,
 	listTree,
 	MAX_CLONE_BYTES,
 	MAX_INVENTORY_ENTRIES,
@@ -479,16 +481,14 @@ async function acquireOnce(input: {
 				git,
 			});
 
-	await git(
-		() =>
-			sparseCheckout({
-				dir,
-				repoPaths: planned.plan.map((f) => f.repoPath),
-				env,
-				signal,
-			}),
+	await checkoutKeptFiles({
+		dir,
+		plan: planned.plan,
+		env,
+		signal,
 		details,
-	);
+		git,
+	});
 	progress.phase = "checked_out";
 	progress.kept = planned.plan.length;
 	safeHeartbeat(progress);
@@ -788,7 +788,11 @@ async function planFresh(input: {
 			candidates = candidates.filter((f) => f !== ignoreEntry);
 			dropped = 1;
 		} else {
-			fabricIgnoreText = bytes.toString("utf8");
+			// Not valid UTF-8: no rules are frozen from it, and the file stays
+			// in the set so the gate refuses it as `ignore_encoding`, the same
+			// verdict the browser's upload gets.
+			const decoded = decodeFabricIgnore(bytes);
+			fabricIgnoreText = decoded.ok ? decoded.text : null;
 		}
 	}
 	const settings = await getProjectInstructionSettings(
@@ -871,6 +875,85 @@ function planAdopted(
 			},
 		};
 	});
+}
+
+/**
+ * Spec §5.3.2 step 8: check out exactly the kept files.
+ *
+ * The disk watchdog cannot tell whose bytes it counted: the clone, or the
+ * kept files being checked out beside it. A kept set past the snapshot's own
+ * limits trips it long before `measure` could judge them, and it was then
+ * reported as a `repositorySize` overflow, sending the person to shrink a
+ * repository that was never the problem. The listing carries no sizes (a
+ * blobless clone would fetch every blob to give them), so when the watchdog
+ * trips the kept files that reached the disk are measured instead: a file
+ * past the per-file limit, or a total past the total limit, is that limit.
+ * `actual` is left out, because the checkout was stopped and the files on
+ * disk are a lower bound, not the size. Anything else is a genuine
+ * repository-budget overflow and keeps `repositorySize`.
+ */
+async function checkoutKeptFiles(input: {
+	dir: string;
+	plan: readonly PlannedSyncFile[];
+	env: NodeJS.ProcessEnv;
+	signal: AbortSignal;
+	details: SyncFailureDetails;
+	git: <T>(fn: () => Promise<T>, details: SyncFailureDetails) => Promise<T>;
+}): Promise<void> {
+	const { dir, plan, details } = input;
+	const exceeded: { limit: SyncLimitDetail | null } = { limit: null };
+	try {
+		await input.git(async () => {
+			try {
+				await sparseCheckout({
+					dir,
+					repoPaths: plan.map((f) => f.repoPath),
+					env: input.env,
+					signal: input.signal,
+				});
+			} catch (error) {
+				if (
+					error instanceof GitCommandError &&
+					error.kind === "disk_limit"
+				) {
+					exceeded.limit = await keptSetLimit(dir, plan);
+				}
+				throw error;
+			}
+		}, details);
+	} catch (error) {
+		if (exceeded.limit) {
+			throw syncFailure("LIMITS_EXCEEDED", {
+				...details,
+				limit: exceeded.limit,
+			});
+		}
+		throw error;
+	}
+}
+
+async function keptSetLimit(
+	dir: string,
+	plan: readonly PlannedSyncFile[],
+): Promise<SyncLimitDetail | null> {
+	let total = 0;
+	let largest = 0;
+	for (const file of plan) {
+		const stat = await lstat(path.join(dir, file.repoPath)).catch(
+			() => null,
+		);
+		if (stat?.isFile()) {
+			total += stat.size;
+			largest = Math.max(largest, stat.size);
+		}
+	}
+	if (largest > SNAPSHOT_LIMITS.maxFileBytes) {
+		return { kind: "fileSize", max: SNAPSHOT_LIMITS.maxFileBytes };
+	}
+	if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
+		return { kind: "totalSize", max: SNAPSHOT_LIMITS.maxTotalBytes };
+	}
+	return null;
 }
 
 /** Spec §5.3.2 step 9: sizes from `lstat`, byte caps, then hashes. */

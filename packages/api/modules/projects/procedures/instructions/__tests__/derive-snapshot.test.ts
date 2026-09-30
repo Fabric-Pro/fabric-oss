@@ -33,6 +33,12 @@ const m = vi.hoisted(() => ({
 	assertProjectPermission: vi.fn(),
 }));
 
+// The stub builder below calls each middleware with the handler's arguments,
+// not oRPC's `(options, input)`; visibility has its own file
+// (`core-visibility.test.ts`).
+vi.mock("../../../../../orpc/middleware/project-visibility", () => ({
+	projectNotFoundUnlessVisible: async () => undefined,
+}));
 vi.mock("@repo/database", () => ({
 	createDerivedInstructionSnapshot: (...a: unknown[]) =>
 		m.createDerivedInstructionSnapshot(...a),

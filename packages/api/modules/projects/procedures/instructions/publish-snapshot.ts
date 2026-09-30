@@ -3,6 +3,7 @@ import { publishInstructionSnapshot } from "@repo/database";
 import { warmInstructionSnapshotExport } from "@repo/instructions/export";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -12,7 +13,7 @@ import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_UPDATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_UPDATE).
  *
  * Publishes a READY snapshot as the project's pointer. Delegates the actual
  * pointer move to `publishInstructionSnapshot`, which is atomic and
@@ -32,6 +33,7 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * rollback it was never written to refuse.
  */
 export const publishSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "POST",

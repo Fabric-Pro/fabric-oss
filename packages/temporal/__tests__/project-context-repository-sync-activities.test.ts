@@ -699,6 +699,29 @@ describe("beginContextRepositorySyncRun", () => {
 				removedCount: 2,
 			});
 			expect(runRow(PREDECESSOR)?.finishedAt).not.toBeNull();
+			// The receipt `record` will never complete gets the audit row every
+			// completed receipt gets, once (Fizzy #2784).
+			expect(committed().audit).toEqual([
+				expect.objectContaining({
+					action: "project.context.repository_sync_completed",
+					severity: "warning",
+					outcome: "failure",
+					resource: expect.objectContaining({
+						id: SYNC,
+						name: "example-org/handbook",
+					}),
+					metadata: expect.objectContaining({
+						runId: PREDECESSOR,
+						status: "FAILED",
+						error: "INTERRUPTED",
+						counts: expect.objectContaining({
+							created: 1,
+							conflict: 1,
+							removed: 2,
+						}),
+					}),
+				}),
+			]);
 			expect(result).toEqual({ ok: true, context: context() });
 			expect(syncRow()?.activeRunKey).toBe(RUN);
 			// Configuration first, then the run rows.
@@ -1872,6 +1895,74 @@ describe("recordContextRepositorySyncRun, automatic sync", () => {
 				effect: { kind: "suppress", commitSha: SHA },
 			},
 		]);
+	});
+
+	it("hands the limit a LIMITS_EXCEEDED run named to the receipt's completion", async () => {
+		seedSync({ activeRunKey: RUN });
+		seedIntegration();
+		seedRun({ trigger: "MANUAL", commitSha: SHA });
+		const limit = { kind: "fileCount" as const, actual: 5_001, max: 5_000 };
+
+		await recordContextRepositorySyncRun(
+			recordInput({ error: "LIMITS_EXCEEDED", limit }),
+		);
+
+		expect(h.api.completeContextRepositorySyncRun).toHaveBeenCalledWith(
+			h.TX,
+			RUN,
+			expect.objectContaining({
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				limit,
+			}),
+		);
+	});
+
+	it("hands the rule an IGNORE_RULE_REJECTED run named, with its line, to the receipt's completion", async () => {
+		seedSync({ activeRunKey: RUN });
+		seedIntegration();
+		seedRun({ trigger: "MANUAL", commitSha: SHA });
+		const limit = {
+			kind: "doubleStarGroups" as const,
+			max: 2,
+			actual: 3,
+			line: 4,
+		};
+
+		const result = await recordContextRepositorySyncRun(
+			recordInput({ error: "IGNORE_RULE_REJECTED", limit }),
+		);
+
+		expect(result).toEqual({
+			recorded: true,
+			status: "FAILED",
+			error: "IGNORE_RULE_REJECTED",
+		});
+		expect(h.api.completeContextRepositorySyncRun).toHaveBeenCalledWith(
+			h.TX,
+			RUN,
+			expect.objectContaining({
+				status: "FAILED",
+				error: "IGNORE_RULE_REJECTED",
+				limit,
+			}),
+		);
+	});
+
+	it("passes no limit when the run did not name one", async () => {
+		seedSync({ activeRunKey: RUN });
+		seedIntegration();
+		seedRun({ trigger: "MANUAL", commitSha: SHA });
+
+		await recordContextRepositorySyncRun(
+			recordInput({ error: "CLONE_FAILED" }),
+		);
+
+		expect(h.api.completeContextRepositorySyncRun).toHaveBeenCalledWith(
+			h.TX,
+			RUN,
+			expect.objectContaining({ limit: null }),
+		);
 	});
 
 	it("writes no schedule when the configuration is gone", async () => {

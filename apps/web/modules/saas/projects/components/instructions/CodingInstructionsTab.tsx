@@ -17,6 +17,7 @@ import {
 	type RepositorySyncState,
 	repositorySyncPollInterval,
 	type SyncNowResult,
+	syncActionErrorKey,
 	syncNowResultMessage,
 	syncRunEnded,
 } from "../../lib/instructions-repository-sync";
@@ -26,6 +27,10 @@ import {
 	InstructionsPublishedView,
 	type InstructionsSnapshot,
 } from "./InstructionsPublishedView";
+import {
+	InstructionsLoadError,
+	InstructionsTabSkeleton,
+} from "./InstructionsTabState";
 import { UploadFolderDialog } from "./UploadFolderDialog";
 
 /**
@@ -190,7 +195,10 @@ export function CodingInstructionsTab({
 				toast[announced.tone](tSync(announced.key));
 				queryClient.invalidateQueries({ queryKey: syncQuery.queryKey });
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) =>
+				toast.error(
+					tSync(syncActionErrorKey(error, "syncNow"), { ref: "" }),
+				),
 		}),
 	);
 
@@ -381,9 +389,33 @@ export function CodingInstructionsTab({
 	});
 
 	if (published.isLoading || latest.isLoading) {
-		return null;
+		return <InstructionsTabSkeleton />;
 	}
 	const snapshots = latest.data ?? [];
+	// A failed read is not an empty project. `latest` failing leaves no list at
+	// all; `published` failing with an empty list leaves neither a pointer nor
+	// a version to show. Either would fall through to the empty state below,
+	// which invites an upload over a published version nobody could see. (A
+	// failed pointer with a list to show is handled by the view:
+	// `publishedUnknown`.)
+	if (
+		latest.isError ||
+		(published.isError && !published.data && snapshots.length === 0)
+	) {
+		return (
+			<InstructionsLoadError
+				retrying={published.isFetching || latest.isFetching}
+				onRetry={() => {
+					if (published.isError) {
+						void published.refetch();
+					}
+					if (latest.isError) {
+						void latest.refetch();
+					}
+				}}
+			/>
+		);
+	}
 	const dialog = (
 		<UploadFolderDialog
 			projectId={projectId}

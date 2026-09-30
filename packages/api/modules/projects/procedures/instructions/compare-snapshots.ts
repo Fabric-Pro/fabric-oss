@@ -5,6 +5,7 @@ import {
 	listInstructionFiles,
 } from "@repo/database";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -14,7 +15,7 @@ import { requireHostingOrganizationId } from "./hosting-organization";
 import { isInstructionSnapshotContentReadable } from "./proposal-authorization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * What changed between two of a project's coding-instruction versions, as a
  * PATH manifest only — no bytes are read and no storage location is served.
@@ -33,6 +34,7 @@ import { isInstructionSnapshotContentReadable } from "./proposal-authorization";
  * the response, for the reason spelled out on `list-files.ts`.
  */
 export const compareSnapshotsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",
