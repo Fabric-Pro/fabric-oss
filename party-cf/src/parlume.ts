@@ -1028,9 +1028,16 @@ export class Parlume extends Server<Env> {
 		if (!bridge.botId) {
 			return "active";
 		}
+		// The open-socket count lets Fabric finalize a session whose bot is
+		// already gone when no stream is left to close (a worker restart drops
+		// sockets without an onClose), instead of waiting for the hard stop.
 		const response = await this.requestFabric(
 			"/api/internal/parlume/verify-access",
-			{ sessionId: bridge.sessionId, botId: bridge.botId },
+			{
+				sessionId: bridge.sessionId,
+				botId: bridge.botId,
+				openConnections: this.connections.size,
+			},
 		);
 		if (!response?.ok) {
 			await this.schedulePendingRetry(
