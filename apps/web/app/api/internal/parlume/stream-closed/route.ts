@@ -1,10 +1,8 @@
+import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import {
-	finalizeParlumeSession,
-	isParlumeServiceRequestAuthorized,
-} from "../lib";
+import { isParlumeServiceRequestAuthorized } from "../lib";
 
 const bodySchema = z.object({
 	sessionId: z.string().min(1).max(128),

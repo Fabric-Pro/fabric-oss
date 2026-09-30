@@ -1,5 +1,9 @@
 const MEETING_BAAS_API_URL = "https://api.meetingbaas.com/v2/bots";
 
+export type ParlumeMeetingBotLeaveResult =
+	| { kind: "LEAVE_REQUESTED" }
+	| { kind: "TERMINAL"; status: "completed" | "failed" };
+
 export interface ParlumeBridgeSettings {
 	apiKey: string;
 	bridgeUrl: string;
@@ -227,7 +231,7 @@ export async function deleteParlumeMeetingBotData(input: {
 export async function leaveParlumeMeetingBot(input: {
 	settings: ParlumeBridgeSettings;
 	providerBotId: string;
-}): Promise<void> {
+}): Promise<ParlumeMeetingBotLeaveResult> {
 	const response = await fetch(
 		`${MEETING_BAAS_API_URL}/${encodeURIComponent(input.providerBotId)}/leave`,
 		{
@@ -235,9 +239,31 @@ export async function leaveParlumeMeetingBot(input: {
 			headers: { "x-meeting-baas-api-key": input.settings.apiKey },
 		},
 	);
-	if (!response.ok) {
+	if (response.ok) {
+		return { kind: "LEAVE_REQUESTED" };
+	}
+	if (response.status !== 409) {
 		throw providerFailure(response);
 	}
+	const statusResponse = await fetch(
+		`${MEETING_BAAS_API_URL}/${encodeURIComponent(input.providerBotId)}/status`,
+		{
+			headers: { "x-meeting-baas-api-key": input.settings.apiKey },
+		},
+	);
+	if (!statusResponse.ok) {
+		throw providerFailure(response);
+	}
+	const body = (await statusResponse.json()) as {
+		data?: { bot_id?: unknown; status?: unknown };
+	};
+	if (
+		body.data?.bot_id !== input.providerBotId ||
+		(body.data?.status !== "completed" && body.data?.status !== "failed")
+	) {
+		throw providerFailure(response);
+	}
+	return { kind: "TERMINAL", status: body.data.status };
 }
 
 export function isTeamsMeetingUrl(value: string): boolean {

@@ -27,7 +27,7 @@ vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({
 	getParlumeBridgeSettings: mocks.getSettings,
 }));
 
-import { finalizeParlumeSession } from "../lib";
+import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
 
 beforeEach(() => {
 	vi.resetAllMocks();

@@ -1,3 +1,4 @@
+import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import { db, getBuiltInToolConfig, hasProjectAccess } from "@repo/database";
 import { logger } from "@repo/logs";
 import { executeAgentTurn } from "./agent-execution-core";
@@ -61,6 +62,48 @@ function asToolConnections(
 	);
 }
 
+type ParlumeTurnAgentSelection =
+	| { kind: "FABRIC_AGENT" }
+	| {
+			kind: "TEMPLATE_INSTANCE";
+			agentInstanceSId: string;
+			agentInstanceVersionId: string;
+			agentInstanceVersion: number;
+	  };
+
+function assertNever(value: never): never {
+	throw new Error(`Unsupported Parlume agent kind: ${value}`);
+}
+
+function resolveParlumeTurnAgentSelection(input: {
+	agentKind: "FABRIC_AGENT" | "TEMPLATE_INSTANCE";
+	agentInstanceSId: string | null;
+	agentInstanceVersionId: string | null;
+	agentInstanceVersion: number | null;
+}): ParlumeTurnAgentSelection | null {
+	switch (input.agentKind) {
+		case "FABRIC_AGENT":
+			return input.agentInstanceSId === null &&
+				input.agentInstanceVersionId === null &&
+				input.agentInstanceVersion === null
+				? { kind: input.agentKind }
+				: null;
+		case "TEMPLATE_INSTANCE":
+			return input.agentInstanceSId !== null &&
+				input.agentInstanceVersionId !== null &&
+				input.agentInstanceVersion !== null
+				? {
+						kind: input.agentKind,
+						agentInstanceSId: input.agentInstanceSId,
+						agentInstanceVersionId: input.agentInstanceVersionId,
+						agentInstanceVersion: input.agentInstanceVersion,
+					}
+				: null;
+		default:
+			return assertNever(input.agentKind);
+	}
+}
+
 export async function executeParlumeMeetingTurn(params: {
 	turnId: string;
 }): Promise<void> {
@@ -76,8 +119,10 @@ export async function executeParlumeMeetingTurn(params: {
 					projectId: true,
 					organizationId: true,
 					userId: true,
+					agentKind: true,
 					agentInstanceSId: true,
 					agentInstanceVersionId: true,
+					agentInstanceVersion: true,
 					status: true,
 					toolsReadOnly: true,
 				},
@@ -139,99 +184,122 @@ export async function executeParlumeMeetingTurn(params: {
 		return;
 	}
 
-	const instance = await db.agentTemplateInstance.findFirst({
-		where: {
-			id: turn.session.agentInstanceVersionId,
-			sId: turn.session.agentInstanceSId,
-			organizationId: turn.session.organizationId,
-			status: { in: ["ACTIVE", "ARCHIVED"] },
-		},
-		include: {
-			template: true,
-			mcpServerConfigurations: {
-				where: { isEnabled: true },
-				select: { mcpConfigId: true },
-			},
-			integrationConfigurations: {
-				where: { isEnabled: true },
-				select: {
-					integrationId: true,
-					integrationType: true,
-					allowedResources: true,
+	const agentSelection = resolveParlumeTurnAgentSelection(turn.session);
+	if (!agentSelection) {
+		await fail("The selected Parlume agent configuration is invalid.");
+		return;
+	}
+
+	let config: DeploymentConfig | null = null;
+	switch (agentSelection.kind) {
+		case "FABRIC_AGENT":
+			break;
+		case "TEMPLATE_INSTANCE": {
+			const instance = await db.agentTemplateInstance.findFirst({
+				where: {
+					id: agentSelection.agentInstanceVersionId,
+					sId: agentSelection.agentInstanceSId,
+					organizationId: turn.session.organizationId,
+					status: { in: ["ACTIVE", "ARCHIVED"] },
 				},
-			},
-		},
-	});
-	if (!instance || instance.userId !== turn.session.userId) {
-		await fail(
-			"The selected Parlume agent version is no longer available.",
-		);
-		return;
-	}
-	const activeAgent = await db.agentTemplateInstance.findFirst({
-		where: {
-			sId: turn.session.agentInstanceSId,
-			organizationId: turn.session.organizationId,
-			userId: turn.session.userId,
-			status: "ACTIVE",
-		},
-		orderBy: { version: "desc" },
-		select: { toolConnections: true },
-	});
-	if (
-		!activeAgent ||
-		getBuiltInToolConfig(
-			asToolConnections(activeAgent.toolConnections),
-			"project-context",
-		)?.projectId !== turn.session.projectId
-	) {
-		await fail("The selected agent is no longer active in this project.");
-		return;
-	}
+				include: {
+					template: true,
+					mcpServerConfigurations: {
+						where: { isEnabled: true },
+						select: { mcpConfigId: true },
+					},
+					integrationConfigurations: {
+						where: { isEnabled: true },
+						select: {
+							integrationId: true,
+							integrationType: true,
+							allowedResources: true,
+						},
+					},
+				},
+			});
+			if (!instance || instance.userId !== turn.session.userId) {
+				await fail(
+					"The selected Parlume agent version is no longer available.",
+				);
+				return;
+			}
+			const activeAgent = await db.agentTemplateInstance.findFirst({
+				where: {
+					sId: agentSelection.agentInstanceSId,
+					organizationId: turn.session.organizationId,
+					userId: turn.session.userId,
+					status: "ACTIVE",
+				},
+				orderBy: { version: "desc" },
+				select: { toolConnections: true },
+			});
+			if (
+				!activeAgent ||
+				getBuiltInToolConfig(
+					asToolConnections(activeAgent.toolConnections),
+					"project-context",
+				)?.projectId !== turn.session.projectId
+			) {
+				await fail(
+					"The selected agent is no longer active in this project.",
+				);
+				return;
+			}
 
-	const toolConnections = asToolConnections(instance.toolConnections);
-	const projectBinding = getBuiltInToolConfig(
-		toolConnections,
-		"project-context",
-	)?.projectId;
-	if (projectBinding !== turn.session.projectId) {
-		await fail("The selected agent is no longer bound to this project.");
-		return;
-	}
+			const toolConnections = asToolConnections(instance.toolConnections);
+			const projectBinding = getBuiltInToolConfig(
+				toolConnections,
+				"project-context",
+			)?.projectId;
+			if (projectBinding !== turn.session.projectId) {
+				await fail(
+					"The selected agent is no longer bound to this project.",
+				);
+				return;
+			}
 
-	const config: DeploymentConfig = {
-		deploymentId: `parlume-${turn.session.id}`,
-		template: {
-			id: instance.template.id,
-			name: instance.template.name,
-			slug: instance.template.slug,
-			displayName: instance.template.displayName,
-			description: instance.template.description,
-			instructions: instance.template.instructions,
-			knowledgeSources: [],
-			tools: [],
-			suggestedModel: instance.template.suggestedModel,
-		},
-		instance: {
-			id: instance.id,
-			name: instance.name,
-			description: instance.description,
-			customInstructions: instance.customInstructions as Record<
-				string,
-				unknown
-			> | null,
-			modelOverride: instance.modelOverride,
-			modelConfig: instance.modelConfig as Record<string, unknown> | null,
-		},
-		integrationConfigurations: instance.integrationConfigurations,
-		mcpConfigIds: instance.mcpServerConfigurations.map(
-			({ mcpConfigId }) => mcpConfigId,
-		),
-		toolConnections,
-		// Workspace RAG and agent memory are not project-scoped. Parlume uses
-		// only the project retrieval below for an anonymous meeting attendee.
-		workspaceIds: [],
-	};
+			config = {
+				deploymentId: `parlume-${turn.session.id}`,
+				template: {
+					id: instance.template.id,
+					name: instance.template.name,
+					slug: instance.template.slug,
+					displayName: instance.template.displayName,
+					description: instance.template.description,
+					instructions: instance.template.instructions,
+					knowledgeSources: [],
+					tools: [],
+					suggestedModel: instance.template.suggestedModel,
+				},
+				instance: {
+					id: instance.id,
+					name: instance.name,
+					description: instance.description,
+					customInstructions: instance.customInstructions as Record<
+						string,
+						unknown
+					> | null,
+					modelOverride: instance.modelOverride,
+					modelConfig: instance.modelConfig as Record<
+						string,
+						unknown
+					> | null,
+				},
+				integrationConfigurations: instance.integrationConfigurations,
+				mcpConfigIds: instance.mcpServerConfigurations.map(
+					({ mcpConfigId }) => mcpConfigId,
+				),
+				toolConnections,
+				// Workspace RAG and agent memory are not project-scoped. Parlume uses
+				// only the project retrieval below for an anonymous meeting attendee.
+				workspaceIds: [],
+			};
+			break;
+		}
+		default:
+			assertNever(agentSelection);
+	}
 
 	await db.parlumeMeetingTurn.update({
 		where: { id: turn.id },
@@ -241,13 +309,15 @@ export async function executeParlumeMeetingTurn(params: {
 	try {
 		const [context, projectBlock, projectRag, recentSegments] =
 			await Promise.all([
-				buildExecutionContext({
-					config,
-					input: { message: turn.requestText },
-					userId: turn.session.userId,
-					organizationId: turn.session.organizationId,
-					loadAgentMemory: false,
-				}),
+				config
+					? buildExecutionContext({
+							config,
+							input: { message: turn.requestText },
+							userId: turn.session.userId,
+							organizationId: turn.session.organizationId,
+							loadAgentMemory: false,
+						})
+					: Promise.resolve(null),
 				buildProjectContextBlock(turn.session.projectId, {
 					userId: turn.session.userId,
 					organizationId: turn.session.organizationId,
@@ -273,7 +343,7 @@ export async function executeParlumeMeetingTurn(params: {
 					take: 200,
 				}),
 			]);
-		if (context.projectId !== turn.session.projectId) {
+		if (context && context.projectId !== turn.session.projectId) {
 			await fail(
 				"The agent execution context is not bound to this project.",
 			);
@@ -322,7 +392,7 @@ export async function executeParlumeMeetingTurn(params: {
 
 		const result = await executeAgentTurn({
 			systemPrompt: [
-				context.systemPrompt,
+				context?.systemPrompt ?? FABRIC_AGENT_IDENTITY,
 				projectBlock,
 				"You are replying aloud in a project meeting. Be concise. Voice actions that change content or external systems are unavailable; participants must perform those actions in Fabric separately.",
 			]
@@ -339,15 +409,15 @@ export async function executeParlumeMeetingTurn(params: {
 				.join("\n\n"),
 			mcpConfigIds: [],
 			integrationConfigurations: [],
-			model: context.model,
+			model: context?.model,
 			userId: turn.session.userId,
 			organizationId: turn.session.organizationId,
 			projectId: turn.session.projectId,
 			maxIterations: 4,
 			conversationHistory,
 			executionId: `parlume-${turn.id}`,
-			agentInstanceId: context.agentInstanceId,
-			callingAgentId: context.agentInstanceId,
+			agentInstanceId: context?.agentInstanceId,
+			callingAgentId: context?.agentInstanceId,
 			currentDepth: 0,
 			meetingReadOnly: true,
 		});

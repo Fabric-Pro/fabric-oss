@@ -17,8 +17,11 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("../../lib", () => ({
-	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
 	isParlumeServiceRequestAuthorized: () => true,
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
+	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
 }));
 
 import { POST } from "../route";

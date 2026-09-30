@@ -9,6 +9,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { finalizeParlumeSession } from "../../lib/parlume-finalization";
 import {
 	armParlumeMeetingBridge,
 	getParlumeBridgeSettings,
@@ -19,6 +20,31 @@ import {
 
 const projectInput = z.object({ projectId: z.string() });
 const PARLUME_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+const FABRIC_AGENT_KIND = "FABRIC_AGENT";
+const TEMPLATE_INSTANCE_KIND = "TEMPLATE_INSTANCE";
+const FABRIC_AGENT_LABEL = "Fabric Agent — this project";
+
+type ParlumeAgentOption = {
+	label: string;
+	description: string | null;
+} & (
+	| {
+			kind: typeof FABRIC_AGENT_KIND;
+			agentInstanceSId: null;
+			version: null;
+	  }
+	| {
+			kind: typeof TEMPLATE_INSTANCE_KIND;
+			agentInstanceSId: string;
+			version: number;
+			sId: string;
+			name: string;
+	  }
+);
+
+function assertNever(value: never): never {
+	throw new Error(`Unsupported Parlume agent kind: ${value}`);
+}
 
 function digestStreamToken(token: string): string {
 	return createHash("sha256").update(token).digest("hex");
@@ -32,6 +58,8 @@ function callbackSecret(serviceSecret: string, sessionId: string): string {
 
 const sessionSelect = {
 	id: true,
+	agentKind: true,
+	agentLabel: true,
 	agentInstanceSId: true,
 	status: true,
 	wakePhrase: true,
@@ -89,6 +117,7 @@ async function requireProjectAgent(input: {
 		select: {
 			id: true,
 			sId: true,
+			name: true,
 			version: true,
 			toolConnections: true,
 		},
@@ -101,6 +130,81 @@ async function requireProjectAgent(input: {
 	return agent;
 }
 
+const startSessionInput = projectInput
+	.extend({
+		agentKind: z
+			.enum([FABRIC_AGENT_KIND, TEMPLATE_INSTANCE_KIND])
+			.optional(),
+		agentInstanceSId: z.string().optional(),
+		meetingUrl: z.string().url(),
+	})
+	.superRefine((input, context) => {
+		const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
+		if (agentKind === FABRIC_AGENT_KIND && input.agentInstanceSId) {
+			context.addIssue({
+				code: "custom",
+				path: ["agentInstanceSId"],
+				message:
+					"The built-in Fabric Agent cannot be combined with a custom agent.",
+			});
+		}
+		if (agentKind === TEMPLATE_INSTANCE_KIND && !input.agentInstanceSId) {
+			context.addIssue({
+				code: "custom",
+				path: ["agentInstanceSId"],
+				message: "Choose a custom Fabric Agent.",
+			});
+		}
+	});
+
+async function resolveParlumeAgentSelection(input: {
+	projectId: string;
+	organizationId: string;
+	userId: string;
+	agentKind?: typeof FABRIC_AGENT_KIND | typeof TEMPLATE_INSTANCE_KIND;
+	agentInstanceSId?: string;
+}) {
+	const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
+	switch (agentKind) {
+		case FABRIC_AGENT_KIND:
+			if (input.agentInstanceSId) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"The built-in Fabric Agent cannot be combined with a custom agent.",
+				});
+			}
+			return {
+				agentKind,
+				agentLabel: FABRIC_AGENT_LABEL,
+				agentInstanceSId: null,
+				agentInstanceVersionId: null,
+				agentInstanceVersion: null,
+			};
+		case TEMPLATE_INSTANCE_KIND: {
+			if (!input.agentInstanceSId) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "Choose a custom Fabric Agent.",
+				});
+			}
+			const agent = await requireProjectAgent({
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				agentInstanceSId: input.agentInstanceSId,
+				userId: input.userId,
+			});
+			return {
+				agentKind,
+				agentLabel: agent.name,
+				agentInstanceSId: agent.sId,
+				agentInstanceVersionId: agent.id,
+				agentInstanceVersion: agent.version,
+			};
+		}
+		default:
+			return assertNever(agentKind);
+	}
+}
+
 export const listParlumeAgentsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_MEMBERS_MANAGE))
 	.route({
@@ -109,7 +213,7 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Parlume"],
 		summary: "List project-bound Fabric Agents eligible for Parlume",
 	})
-	.input(projectInput)
+	.input(projectInput.extend({ includeBuiltIn: z.boolean().optional() }))
 	.handler(async ({ input, context }) => {
 		const project = await requireParlumeProject(input.projectId);
 		const candidates = await db.agentTemplateInstance.findMany({
@@ -131,26 +235,13 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 			},
 			orderBy: { version: "desc" },
 		});
-		const agents = new Map<
-			string,
-			{
-				sId: string;
-				name: string;
-				description: string | null;
-				version: number;
-			}
-		>();
+		const agents = new Map<string, (typeof candidates)[number]>();
 		for (const candidate of candidates) {
 			if (
 				isBoundToProject(candidate.toolConnections, input.projectId) &&
 				!agents.has(candidate.sId)
 			) {
-				agents.set(candidate.sId, {
-					sId: candidate.sId,
-					name: candidate.name,
-					description: candidate.description,
-					version: candidate.version,
-				});
+				agents.set(candidate.sId, candidate);
 			}
 		}
 
@@ -162,8 +253,29 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 					organizationId: project.organizationId,
 				}),
 			);
+		const customAgents = [...agents.values()].map<ParlumeAgentOption>(
+			(agent) => ({
+				kind: TEMPLATE_INSTANCE_KIND,
+				label: agent.name,
+				name: agent.name,
+				description: agent.description,
+				agentInstanceSId: agent.sId,
+				sId: agent.sId,
+				version: agent.version,
+			}),
+		);
+		const builtInAgent: ParlumeAgentOption = {
+			kind: FABRIC_AGENT_KIND,
+			label: FABRIC_AGENT_LABEL,
+			description:
+				"Uses this project's current knowledge and Fabric Agent behavior.",
+			agentInstanceSId: null,
+			version: null,
+		};
 		return {
-			agents: [...agents.values()],
+			agents: input.includeBuiltIn
+				? [builtInAgent, ...customAgents]
+				: customAgents,
 			operatorReady,
 		};
 	});
@@ -238,12 +350,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Parlume"],
 		summary: "Invite Parlume to a Teams meeting by link",
 	})
-	.input(
-		projectInput.extend({
-			agentInstanceSId: z.string(),
-			meetingUrl: z.string().url(),
-		}),
-	)
+	.input(startSessionInput)
 	.handler(async ({ input, context }) => {
 		const project = await requireParlumeProject(input.projectId);
 		if (!isTeamsMeetingUrl(input.meetingUrl)) {
@@ -260,9 +367,10 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const agent = await requireProjectAgent({
+		const agent = await resolveParlumeAgentSelection({
 			projectId: input.projectId,
 			organizationId: project.organizationId,
+			agentKind: input.agentKind,
 			agentInstanceSId: input.agentInstanceSId,
 			userId: context.user.id,
 		});
@@ -284,9 +392,11 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				organizationId: project.organizationId,
 				userId: context.user.id,
-				agentInstanceSId: agent.sId,
-				agentInstanceVersionId: agent.id,
-				agentInstanceVersion: agent.version,
+				agentKind: agent.agentKind,
+				agentLabel: agent.agentLabel,
+				agentInstanceSId: agent.agentInstanceSId,
+				agentInstanceVersionId: agent.agentInstanceVersionId,
+				agentInstanceVersion: agent.agentInstanceVersion,
 				streamTokenDigest: digestStreamToken(streamToken),
 				hardStopAt,
 			},
@@ -356,8 +466,15 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				resource: { type: "parlume_meeting_session", id: session.id },
 				metadata: {
-					agentInstanceSId: agent.sId,
-					agentInstanceVersion: agent.version,
+					agentKind: agent.agentKind,
+					agentLabel: agent.agentLabel,
+					...(agent.agentInstanceSId
+						? {
+								agentInstanceSId: agent.agentInstanceSId,
+								agentInstanceVersion:
+									agent.agentInstanceVersion,
+							}
+						: {}),
 					toolsReadOnly: true,
 					hardStopAt: hardStopAt.toISOString(),
 				},
@@ -410,7 +527,13 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 		const project = await requireParlumeProject(input.projectId);
 		const session = await db.parlumeMeetingSession.findFirst({
 			where: { id: input.sessionId, projectId: input.projectId },
-			select: { id: true, providerBotId: true, status: true },
+			select: {
+				id: true,
+				providerBotId: true,
+				status: true,
+				streamClosedAt: true,
+				streamGeneration: true,
+			},
 		});
 		if (!session) {
 			throw new ORPCError("NOT_FOUND", {
@@ -426,12 +549,27 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 			};
 		}
 
-		const leaving = await db.parlumeMeetingSession.update({
-			where: { id: session.id },
+		const leaveClaimed = await db.parlumeMeetingSession.updateMany({
+			where: {
+				id: session.id,
+				streamGeneration: session.streamGeneration,
+				status: {
+					in: [
+						"PENDING",
+						"JOINING",
+						"ACTIVE",
+						"LEAVING",
+						"STOP_FAILED",
+					],
+				},
+			},
 			data: { status: "LEAVING", leaveRequestedAt: new Date() },
+		});
+		const leaving = await db.parlumeMeetingSession.findUniqueOrThrow({
+			where: { id: session.id },
 			select: sessionSelect,
 		});
-		if (!session.providerBotId) {
+		if (leaveClaimed.count === 0 || !session.providerBotId) {
 			// The start request can still be waiting for Meeting BaaS. It sees
 			// LEAVING, leaves the newly-created bot, then marks this row ENDED.
 			return { session: leaving };
@@ -441,13 +579,58 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 			if (!settings) {
 				throw new Error("Parlume bridge configuration is unavailable.");
 			}
-			await leaveParlumeMeetingBot({
+			const leaveResult = await leaveParlumeMeetingBot({
 				settings,
 				providerBotId: session.providerBotId,
 			});
-			const stopped = await db.parlumeMeetingSession.update({
+			const terminalFailure =
+				leaveResult.kind === "TERMINAL" &&
+				leaveResult.status === "failed";
+			const terminalCompleted =
+				leaveResult.kind === "TERMINAL" &&
+				leaveResult.status === "completed";
+			const terminalMarked = await db.parlumeMeetingSession.updateMany({
+				where: {
+					id: session.id,
+					streamGeneration: session.streamGeneration,
+					status: {
+						in: ["JOINING", "ACTIVE", "LEAVING", "STOP_FAILED"],
+					},
+				},
+				data: terminalFailure
+					? {
+							status: "FAILED",
+							lastError: "Parlume meeting bot failed.",
+							terminalCallbackAt: new Date(),
+						}
+					: {
+							status: "LEAVING",
+							lastError: null,
+							...(terminalCompleted
+								? { terminalCallbackAt: new Date() }
+								: {}),
+						},
+			});
+			const drained =
+				terminalMarked.count > 0 && leaveResult.kind === "TERMINAL"
+					? await db.parlumeMeetingSession.findFirst({
+							where: {
+								id: session.id,
+								streamGeneration: session.streamGeneration,
+								streamClosedAt: { not: null },
+								status: { in: ["LEAVING", "FAILED"] },
+							},
+							select: { id: true },
+						})
+					: null;
+			if (drained) {
+				await finalizeParlumeSession(session.id, {
+					...(terminalFailure ? { preserveFailure: true } : {}),
+					expectedStreamGeneration: session.streamGeneration,
+				});
+			}
+			const stopped = await db.parlumeMeetingSession.findUniqueOrThrow({
 				where: { id: session.id },
-				data: { status: "LEAVING", lastError: null },
 				select: sessionSelect,
 			});
 			recordAuditFromRequest(context, {
@@ -459,8 +642,15 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 			});
 			return { session: stopped };
 		} catch {
-			await db.parlumeMeetingSession.update({
-				where: { id: session.id },
+			await db.parlumeMeetingSession.updateMany({
+				where: {
+					id: session.id,
+					streamGeneration: session.streamGeneration,
+					status: {
+						in: ["JOINING", "ACTIVE", "LEAVING", "STOP_FAILED"],
+					},
+					finalizedAt: null,
+				},
 				data: {
 					status: "STOP_FAILED",
 					lastError:

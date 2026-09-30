@@ -1,12 +1,11 @@
+import {
+	cleanupParlumeProviderData,
+	finalizeParlumeSession,
+} from "@repo/api/modules/projects/lib/parlume-finalization";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import {
-	callbackSecret,
-	cleanupParlumeProviderData,
-	constantTimeEqual,
-	finalizeParlumeSession,
-} from "../lib";
+import { callbackSecret, constantTimeEqual } from "../lib";
 
 const callbackSchema = z.object({
 	event: z.enum(["bot.completed", "bot.failed"]),

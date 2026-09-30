@@ -3,6 +3,7 @@ import {
 	armParlumeMeetingBridge,
 	deleteParlumeMeetingBotData,
 	getParlumeBridgeSettings,
+	leaveParlumeMeetingBot,
 	startParlumeMeetingBot,
 } from "../parlume-meeting-baas";
 
@@ -127,5 +128,73 @@ describe("startParlumeMeetingBot", () => {
 				headers: { "x-meeting-baas-api-key": "operator-key" },
 			}),
 		);
+	});
+});
+
+describe("leaveParlumeMeetingBot", () => {
+	it("recovers a terminal bot only after the provider verifies its identity and state", async () => {
+		fetchMock
+			.mockResolvedValueOnce(new Response(null, { status: 409 }))
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						success: true,
+						data: { bot_id: "bot-1", status: "completed" },
+					}),
+					{ status: 200 },
+				),
+			);
+
+		await expect(
+			leaveParlumeMeetingBot({ settings, providerBotId: "bot-1" }),
+		).resolves.toEqual({ kind: "TERMINAL", status: "completed" });
+		expect(fetchMock).toHaveBeenNthCalledWith(
+			1,
+			"https://api.meetingbaas.com/v2/bots/bot-1/leave",
+			expect.objectContaining({ method: "POST" }),
+		);
+		expect(fetchMock).toHaveBeenNthCalledWith(
+			2,
+			"https://api.meetingbaas.com/v2/bots/bot-1/status",
+			expect.objectContaining({
+				headers: { "x-meeting-baas-api-key": "operator-key" },
+			}),
+		);
+	});
+
+	it("fails closed when a conflict cannot be verified as a terminal bot", async () => {
+		fetchMock
+			.mockResolvedValueOnce(new Response(null, { status: 409 }))
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						success: true,
+						data: { bot_id: "other-bot", status: "completed" },
+					}),
+					{ status: 200 },
+				),
+			);
+
+		await expect(
+			leaveParlumeMeetingBot({ settings, providerBotId: "bot-1" }),
+		).rejects.toThrow("HTTP 409");
+	});
+
+	it("reports a verified provider failure distinctly from a completed bot", async () => {
+		fetchMock
+			.mockResolvedValueOnce(new Response(null, { status: 409 }))
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						success: true,
+						data: { bot_id: "bot-1", status: "failed" },
+					}),
+					{ status: 200 },
+				),
+			);
+
+		await expect(
+			leaveParlumeMeetingBot({ settings, providerBotId: "bot-1" }),
+		).resolves.toEqual({ kind: "TERMINAL", status: "failed" });
 	});
 });
