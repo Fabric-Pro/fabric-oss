@@ -64,7 +64,7 @@ describe("startParlumeMeetingBot", () => {
 					"x-meeting-baas-api-key": "operator-key",
 				}),
 				body: JSON.stringify({
-					bot_name: "Fabric Parlume (AI recording)",
+					bot_name: "Fabric Parlume",
 					meeting_url:
 						"https://teams.microsoft.com/l/meetup-join/example",
 					recording_mode: "audio_only",

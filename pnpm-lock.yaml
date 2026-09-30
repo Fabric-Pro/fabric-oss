@@ -10,7 +10,7 @@ overrides:
   proto3-json-serializer: 2.0.0
   fast-xml-parser@^4.0.0: ^4.5.5
   fast-xml-parser@^5.0.0: ^5.11.1
-  '@grpc/grpc-js@^1.14.0': ^1.14.4
+  '@grpc/grpc-js@^1.14.0': ^1.14.5
   shell-quote@^1.8.0: ^1.9.0
   handlebars@^4.0.0: ^4.7.9
   protobufjs@^7.0.0: ^7.6.5
@@ -58,7 +58,7 @@ overrides:
   shell-quote: ^1.9.0
   form-data: ^4.0.6
   ws: ^8.21.0
-  '@grpc/grpc-js': ^1.14.4
+  '@grpc/grpc-js': ^1.14.5
   tmp: ^0.2.6
   deepmerge-ts: ^8.0.2
   toml: ^4.3.0
@@ -6093,8 +6093,8 @@ packages:
     resolution: {integrity: sha512-ZpJxMqB+Qfe3rp6uszCQoag4nSw42icURnBRfFYSOmTgEeOe4rD0vYlbA8spvCu2TlCesNTlEN9BLWtQqLxabA==}
     engines: {node: '>=18.0.0'}
 
-  '@grpc/grpc-js@1.14.4':
-    resolution: {integrity: sha512-k9Dj3DV/itK9D06Y8f190Qgop7/Ui+D0njFV3LHMPwPT75DpXLQohE9Wmz0QElrJnzsjB7KPWiKJbOl7IPDArQ==}
+  '@grpc/grpc-js@1.14.5':
+    resolution: {integrity: sha512-7VZM+SVdEcUUqSQeNI3zM8Qs/BhQKZndPo2h5VkYkAM8Iz0wJIa8mKV5ekQGqG8UUsnkQ0NMxIxwkIHYvj0qOw==}
     engines: {node: '>=12.10.0'}
 
   '@grpc/proto-loader@0.8.1':
@@ -22356,7 +22356,7 @@ snapshots:
       '@repeaterjs/repeater': 3.0.6
       tslib: 2.8.1
 
-  '@grpc/grpc-js@1.14.4':
+  '@grpc/grpc-js@1.14.5':
     dependencies:
       '@grpc/proto-loader': 0.8.1
       '@js-sdsl/ordered-map': 4.4.2
@@ -23763,7 +23763,7 @@ snapshots:
 
   '@opentelemetry/exporter-logs-otlp-grpc@0.217.0(@opentelemetry/api@1.9.1)':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/otlp-exporter-base': 0.217.0(@opentelemetry/api@1.9.1)
@@ -23793,7 +23793,7 @@ snapshots:
 
   '@opentelemetry/exporter-metrics-otlp-grpc@0.217.0(@opentelemetry/api@1.9.1)':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/exporter-metrics-otlp-http': 0.217.0(@opentelemetry/api@1.9.1)
@@ -23832,7 +23832,7 @@ snapshots:
 
   '@opentelemetry/exporter-trace-otlp-grpc@0.217.0(@opentelemetry/api@1.9.1)':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/otlp-exporter-base': 0.217.0(@opentelemetry/api@1.9.1)
@@ -24233,7 +24233,7 @@ snapshots:
 
   '@opentelemetry/otlp-grpc-exporter-base@0.217.0(@opentelemetry/api@1.9.1)':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/otlp-exporter-base': 0.217.0(@opentelemetry/api@1.9.1)
@@ -27433,7 +27433,7 @@ snapshots:
 
   '@temporalio/client@1.23.0':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@temporalio/common': 1.23.0
       '@temporalio/proto': 1.23.0
       abort-controller: 3.0.0
@@ -27451,7 +27451,7 @@ snapshots:
 
   '@temporalio/core-bridge@1.23.0':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@temporalio/common': 1.23.0
 
   '@temporalio/interceptors-opentelemetry-v2@1.23.0(@temporalio/common@1.23.0)(@temporalio/workflow@1.23.0)':
@@ -27510,7 +27510,7 @@ snapshots:
 
   '@temporalio/worker@1.23.0(@swc/helpers@0.5.23)(esbuild@0.28.2)(lightningcss@1.30.2)(postcss@8.5.26)(sharp@0.35.4(@types/node@22.19.0))(uglify-js@3.19.3)':
     dependencies:
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@swc/core': 1.15.30(@swc/helpers@0.5.23)
       '@temporalio/activity': 1.23.0
       '@temporalio/client': 1.23.0

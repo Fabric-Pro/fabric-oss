@@ -134,7 +134,7 @@ export async function startParlumeMeetingBot(input: {
 			"x-meeting-baas-api-key": input.settings.apiKey,
 		},
 		body: JSON.stringify({
-			bot_name: "Fabric Parlume (AI recording)",
+			bot_name: "Fabric Parlume",
 			meeting_url: input.meetingUrl,
 			recording_mode: "audio_only",
 			allow_multiple_bots: false,

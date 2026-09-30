@@ -3,7 +3,7 @@
 - **Audience**: Project administrators and operators
 - **Owner**: Engineering team
 
-Parlume is a default-off, project-scoped way to invite the built-in Fabric Agent or a project-bound custom agent to a Microsoft Teams meeting by link. The control is in the project's Meeting Digest for project administrators. The bot appears as **Fabric Parlume (AI recording)**, transcribes final speech segments, responds to “Hey Fabric,” and saves a transcript and generated notes to the project. The join URL is sent to the meeting provider but is not stored in Fabric.
+Parlume is a default-off, project-scoped way to invite the built-in Fabric Agent or a project-bound custom agent to a Microsoft Teams meeting by link. The control is in the project's Meeting Digest for project administrators. The bot appears as **Fabric Parlume**, records and transcribes meeting audio, responds to “Hey Fabric,” “Hey Parlume,” or “Hey Fabric Parlume,” and saves a transcript and generated notes to the project. The join URL is sent to the meeting provider but is not stored in Fabric.
 
 ## Operator setup
 
@@ -13,7 +13,7 @@ Parlume is a default-off, project-scoped way to invite the built-in Fabric Agent
 4. Enable `PARLUME_MEETINGS` for the test organization. It defaults off. The default choice is **Fabric Agent — this project**, which uses the project's current knowledge and Fabric Agent behavior. Custom agents remain available when owned by the inviter and bound to the project through `project-context`.
 5. Paste an ordinary Teams meeting link. The bot joins as an anonymous external guest. The organizer may have to admit it from the lobby. A meeting that requires signed-in or tenant-only guests cannot be joined through this preview without changing that meeting's policy.
 
-For a smoke test, use a disposable meeting with consenting participants. Confirm the bot joins, appears with the recording label, captures final segments, answers “Hey Fabric” aloud, stops on request, and leaves a project transcript and notes. Check that a flagged-off organization cannot invoke the API. The current implementation has not had a live Teams/Meeting BaaS test.
+For a smoke test, use a disposable meeting with consenting participants. Confirm the bot joins as **Fabric Parlume**, captures final segments, answers each of the three wake phrases aloud, stops on request, and leaves a project transcript and notes. Check that a flagged-off organization cannot invoke the API. The current implementation has not had a live Teams/Meeting BaaS test.
 
 ## Boundaries
 
