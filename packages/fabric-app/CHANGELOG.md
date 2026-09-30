@@ -1,5 +1,43 @@
 # fabric-app
 
+## 1.16.15
+
+### Patch Changes
+
+- a46bf49: Saving, changing or deleting an AI provider configuration is now recorded in the audit log, without the API key or client secret.
+- fe74a27: Azure AI Foundry can now be connected in AI Providers settings, including project /openai/v1 endpoints, and Test Connection checks your deployment.
+- 9224661: Azure AI Foundry accepts any of its endpoint URLs, including a copied request URL, and AI agents now use the same Azure endpoint handling as chat.
+- 55af83d: Embeddings now work when Azure AI Foundry is configured with a project endpoint, and Test Connection names deployments that cannot serve chat.
+- cb4082e: Update brace-expansion and engine.io to releases that fix newly published high-severity advisories.
+- 9cd51fb: Measure root locale and server startup time to identify slow catalog responses on staging.
+- 586ca4e: Claude Sonnet 5.5 is now available in AI model settings through Anthropic, Vercel AI Gateway, OpenRouter, AWS Bedrock and Databricks.
+- 33f9038: Preserve error names and redacted error messages in exported console telemetry so failed MCP calls retain useful diagnostic details.
+- f95a263: Repository code indexing no longer fails, or stays stuck as "indexing", when a different worker picks up the job between cloning a repository and scanning it.
+- 2e74d25: Re-indexing a repository no longer lets the replaced indexing run overwrite the new run's result: a late write from the superseded run can no longer mark a finished index as failed, reset it to indexing, or close the new run's Job Hub entry.
+- d601b49: Repository code indexing now reconstructs and scans the pinned repository inside each processing activity, so changing workers no longer loses the checkout or file manifest during indexing.
+- cffbfea: Once a synced version's checks are retried and it publishes, the Coding instructions sync line reports the publication instead of a red failure.
+- 09383cf: Coding instructions can now retry a version whose checks could not finish, including in repository mode, and a failed sync names the limit it hit.
+- b8bbeab: The coding instructions upload names an oversized file before uploading, sizes read as "5 MB", and a retried check no longer looks failed.
+- 8d48e53: The Temporal worker can now be limited to a subset of its task queues, so CPU-heavy repository analysis and code indexing can run in a separate worker process and no longer stall every other background job while they work.
+- 32fa005: Restore document LLM evaluation metrics for current AI SDK model implementations and make GPT-6 Luna selectable for document evaluations.
+- 0f90b4f: Update fast-uri to 3.1.8, which fixes inconsistent host case normalization for percent-encoded hostnames (GHSA-hrr3-gc8f-f4qj).
+- 4acbf86: Requests to Claude Sonnet 5 and 5.5, Opus 4.7, 4.8, 5 and 5.5 through Vercel AI Gateway, OpenRouter or Cloudflare AI no longer send a temperature, top-p or top-k value, which those models reject.
+- bcd11c3: Restore keyboard focus after closing Parlume invitations, improve mobile dialog controls and project action layout, and keep tooltips stable when text resizes.
+- 3764980: Bound the GitHub workflow-integration token refresh so a stalled exchange can no longer outlive its refresh lock and strand a rotated refresh token.
+- d245159: Glossy editions now move a Proposal's header fields out of the main text, put the document's own title on the cover, drop labelled reference citations, leave out visuals made of placeholder values, embed the cover logo reliably, and give DOCX downloads a sans-serif font with brand-colored headings.
+- fc3ebca: Glossy edition PDFs no longer garble or cut off lines that contain symbols such as `≥` or `→`, and they embed images compressed. DOCX downloads now break pages without a stray box character, use a sans-serif font in every viewer, and space their paragraphs and headings. Glossy cleanup now keeps quoted evidence anchors out of the text, drops the Business Case self-check section and `(per Reference N)` citations, and visuals no longer draw flows from plain lists or org charts with reporting lines the document does not state.
+- d9447e4: Add GPT-6.1 Sol to the AI model catalog and retire proprietary OpenAI chat models older than GPT-5.5 with automatic replacements for saved task preferences and updated task defaults.
+- 429dd60: Load MCP seeding and Temporal account deletion modules only when their auth write hooks run, reducing server startup work for authenticated page reads.
+- 875805d: Document rendering now uses markdown-it 14.3.2, which keeps a hard line break after a backslash followed by trailing spaces, treats lowercase HTML declarations such as `<!doctype html>` as HTML blocks, and bounds the work smart-quote conversion does on quote-heavy input.
+- 695370a: Deleting an organization now also removes its conversation memory from the vector store, and a partial vector cleanup is reported as a failure instead of being treated as complete.
+- 2afbcf1: Parlume can invite the built-in project Fabric Agent to Teams meetings without creating a custom agent, while preserving existing custom-agent invitations.
+- b80e47e: Parlume follows the selected agent's current capabilities, supports optional actions with spoken confirmation, and keeps project request history with streamed voice replies.
+- 56e28d6: Add the default-off Parlume project meeting preview. Project administrators can invite an existing project-bound Fabric Agent to a Teams meeting by link, with scoped session controls, live transcript capture, spoken answers and project meeting notes.
+- bf3f4dc: Fix Teams invitations by using the meeting name Fabric Parlume and support the wake phrases Hey Fabric, Hey Parlume, and Hey Fabric Parlume. gRPC is updated to a patched version to address a newly disclosed security advisory.
+- 5552602: Update DOMPurify to improve HTML and SVG sanitization and correct module declarations.
+- 46a1ff6: You now get a notification when a to-do is assigned to you, whether a teammate picks you on the To Do page or a meeting's action items are matched to you.
+- 51a78a8: Raise the undici and ip-address dependency floors to their patched releases, closing a WebSocket decompression denial-of-service advisory in undici and IPv6 link-local and NAT64 misclassification advisories in ip-address.
+
 ## 1.16.14
 
 ### Patch Changes
