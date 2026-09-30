@@ -55,6 +55,7 @@
 		"@opentelemetry/sdk-metrics": "2.7.1",
 		"@opentelemetry/sdk-node": "0.217.0",
 		"@opentelemetry/semantic-conventions": "1.40.0",
+		"@repo/utils": "workspace:*",
 		"applicationinsights": "^3.15.0",
 		"cockatiel": "^3.2.1",
 		"prom-client": "^15.1.3"
