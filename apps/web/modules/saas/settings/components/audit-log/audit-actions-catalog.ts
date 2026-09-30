@@ -315,6 +315,49 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Integration configuration changed (channel mappings, scopes, webhook URLs, etc.). Captured even when the connection itself is unchanged.",
 	},
 	{
+		key: "org.ai_provider.configured",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.ai_provider.configured",
+		description:
+			"An AI provider credential was saved for the first time. The key itself is never recorded, only that one was supplied, with the endpoint, deployment and default flags it was saved with.",
+	},
+	{
+		key: "org.ai_provider.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.ai_provider.updated",
+		description:
+			"An existing AI provider configuration was overwritten. The row records what changed (endpoint, deployment, credential mode, default flags) before and after, and whether a new key was supplied; the key is never recorded.",
+	},
+	{
+		key: "org.ai_provider.default_changed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.ai_provider.default_changed",
+		description:
+			"The provider that serves AI requests by default was switched. The row names the previous default and how many model preferences were cleared as a result.",
+	},
+	{
+		key: "org.ai_provider.embedding_changed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.ai_provider.embedding_changed",
+		description:
+			"The provider used for document embeddings was switched. Changing it affects which vectors new documents are indexed with; the row names the previous provider.",
+	},
+	{
+		key: "org.ai_provider.enabled_providers_changed",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.ai_provider.enabled_providers_changed",
+		description:
+			"The list of sub-providers enabled behind an AI gateway was changed. The row records the list before and after.",
+	},
+	{
+		key: "org.ai_provider.deleted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.ai_provider.deleted",
+		description:
+			"An AI provider configuration and its stored credential were deleted. The row records the endpoint and flags it had, and which provider became the default afterwards, if any.",
+	},
+	{
 		key: "org.todo.created",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.todo.created",
@@ -397,6 +440,51 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.account.api_key.rotated",
 		description:
 			"Personal API key rotated. Old key honored through the configured grace window.",
+	},
+	{
+		key: "account.ai_provider.configured",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.ai_provider.configured",
+		description:
+			"An AI provider credential was saved for the first time. The key itself is never recorded, only that one was supplied, with the endpoint, deployment and default flags it was saved with.",
+	},
+	{
+		key: "account.ai_provider.updated",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.ai_provider.updated",
+		description:
+			"An existing AI provider configuration was overwritten. The row records what changed (endpoint, deployment, credential mode, default flags) before and after, and whether a new key was supplied; the key is never recorded.",
+	},
+	{
+		key: "account.ai_provider.default_changed",
+		categoryId: "account",
+		labelKey:
+			"settings.auditLog.actions.account.ai_provider.default_changed",
+		description:
+			"The provider that serves AI requests by default was switched. The row names the previous default and how many model preferences were cleared as a result.",
+	},
+	{
+		key: "account.ai_provider.embedding_changed",
+		categoryId: "account",
+		labelKey:
+			"settings.auditLog.actions.account.ai_provider.embedding_changed",
+		description:
+			"The provider used for document embeddings was switched. Changing it affects which vectors new documents are indexed with; the row names the previous provider.",
+	},
+	{
+		key: "account.ai_provider.enabled_providers_changed",
+		categoryId: "account",
+		labelKey:
+			"settings.auditLog.actions.account.ai_provider.enabled_providers_changed",
+		description:
+			"The list of sub-providers enabled behind an AI gateway was changed. The row records the list before and after.",
+	},
+	{
+		key: "account.ai_provider.deleted",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.ai_provider.deleted",
+		description:
+			"An AI provider configuration and its stored credential were deleted. The row records the endpoint and flags it had, and which provider became the default afterwards, if any.",
 	},
 	// ---- Project --------------------------------------------------------
 	{
