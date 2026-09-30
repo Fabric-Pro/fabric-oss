@@ -420,7 +420,7 @@ export type ScanFindingGroupingScalarFieldEnum = z.infer<typeof ScanFindingGroup
 
 // File: ProjectCodeIndexScalarFieldEnum.schema.ts
 
-export const ProjectCodeIndexScalarFieldEnumSchema = z.enum(['id', 'projectId', 'repositoryIntegrationId', 'branch', 'commitSha', 'filesIndexed', 'chunksCreated', 'summariesCreated', 'indexedFileCount', 'totalFileCount', 'indexedAt', 'indexDurationMs', 'status', 'error', 'lastFullIndexAt', 'lastIncrementalAt', 'fileManifest', 'redactionManifest', 'workflowId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectCodeIndexScalarFieldEnumSchema = z.enum(['id', 'projectId', 'repositoryIntegrationId', 'branch', 'commitSha', 'filesIndexed', 'chunksCreated', 'summariesCreated', 'indexedFileCount', 'totalFileCount', 'indexedAt', 'indexDurationMs', 'status', 'error', 'lastFullIndexAt', 'lastIncrementalAt', 'fileManifest', 'redactionManifest', 'workflowId', 'ownerRunId', 'ownerRunStartedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ProjectCodeIndexScalarFieldEnum = z.infer<typeof ProjectCodeIndexScalarFieldEnumSchema>;
 
@@ -1902,7 +1902,7 @@ export type DataSyncJobScalarFieldEnum = z.infer<typeof DataSyncJobScalarFieldEn
 
 // File: BackgroundJobScalarFieldEnum.schema.ts
 
-export const BackgroundJobScalarFieldEnumSchema = z.enum(['id', 'kind', 'status', 'title', 'sourceType', 'sourceId', 'counts', 'steps', 'error', 'errorClass', 'workflowId', 'runId', 'startedAt', 'completedAt', 'heartbeatAt', 'projectId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const BackgroundJobScalarFieldEnumSchema = z.enum(['id', 'kind', 'status', 'title', 'sourceType', 'sourceId', 'counts', 'steps', 'error', 'errorClass', 'workflowId', 'runId', 'runStartedAt', 'startedAt', 'completedAt', 'heartbeatAt', 'projectId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type BackgroundJobScalarFieldEnum = z.infer<typeof BackgroundJobScalarFieldEnumSchema>;
 
@@ -5295,6 +5295,8 @@ export const ProjectCodeIndexSchema = z.object({
   fileManifest: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   redactionManifest: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   workflowId: z.string().nullish(),
+  ownerRunId: z.string().nullish(),
+  ownerRunStartedAt: z.date().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
   createdAt: z.date(),
@@ -10960,6 +10962,7 @@ export const BackgroundJobSchema = z.object({
   errorClass: z.string().nullish(),
   workflowId: z.string(),
   runId: z.string().nullish(),
+  runStartedAt: z.date().nullish(),
   startedAt: z.date(),
   completedAt: z.date().nullish(),
   heartbeatAt: z.date(),

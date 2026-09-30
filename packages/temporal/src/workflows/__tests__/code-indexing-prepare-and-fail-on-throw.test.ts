@@ -67,6 +67,8 @@ async function runWorkflow(
 	calls: Call[];
 	result?: CodeIndexingWorkflowOutput;
 	error?: unknown;
+	workflowId: string;
+	firstExecutionRunId: string;
 }> {
 	const calls: Call[] = [];
 	const base: Overrides = {
@@ -178,17 +180,20 @@ async function runWorkflow(
 		activities,
 	});
 
+	const workflowId = `${taskQueue}-wf`;
+	const handle = await env.client.workflow.start(WORKFLOW_NAME, {
+		args: [input],
+		taskQueue,
+		workflowId,
+	});
+	const ids = { workflowId, firstExecutionRunId: handle.firstExecutionRunId };
 	try {
 		const result = (await worker.runUntil(
-			env.client.workflow.execute(WORKFLOW_NAME, {
-				args: [input],
-				taskQueue,
-				workflowId: `${taskQueue}-wf`,
-			}),
+			handle.result(),
 		)) as CodeIndexingWorkflowOutput;
-		return { calls, result };
+		return { calls, result, ...ids };
 	} catch (error) {
-		return { calls, error };
+		return { calls, error, ...ids };
 	}
 }
 
@@ -314,4 +319,229 @@ describe("codeIndexingWorkflow — nothing leaves the row in INDEXING", () => {
 		// Cleanup still runs after the failed write.
 		expect(named(calls, "cleanupCloneDirActivity")).toHaveLength(1);
 	});
+});
+
+/**
+ * Every ProjectCodeIndex write carries the indexing chain that owns it.
+ *
+ * The workflow id is stable per repo and a re-index starts with
+ * TERMINATE_EXISTING, which does not stop an activity the terminated run has
+ * in flight. The activities keep such a late write off the successor's row by
+ * the chain's first run id and start time, so every init / fail / finalize /
+ * embed call must carry them — including continueAsNew continuations, which
+ * belong to the same chain.
+ */
+describe("codeIndexingWorkflow — the chain owns its writes", () => {
+	// Every activity that writes the index row or the Job Hub row.
+	const OWNED = [
+		"initCodeIndexActivity",
+		"failCodeIndexActivity",
+		"updateCodeIndexActivity",
+		"chunkAndEmbedBatchActivity",
+		"prepareRepositoryActivity",
+		"generateFileSummariesActivity",
+	];
+
+	function owners(calls: Call[]) {
+		return calls
+			.filter((c) => OWNED.includes(c.name))
+			.map((c) => ({
+				name: c.name,
+				owner: (c.args[0] as { owner?: unknown }).owner,
+			}));
+	}
+
+	/**
+	 * Every owned call names the chain's first run. The start time is the
+	 * current run's (a continuation reports its own, later one), so it only
+	 * ever moves forward along the chain — the ordering the query layer needs.
+	 */
+	function expectChainOwner(
+		calls: Call[],
+		firstExecutionRunId: string,
+		expectedNames: string[],
+	): string[] {
+		const owned = owners(calls);
+		expect(owned.map((o) => o.name).sort()).toEqual(
+			[...expectedNames].sort(),
+		);
+		const startedAts = owned.map((o) => {
+			expect(o.owner).toEqual({
+				runId: firstExecutionRunId,
+				startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
+			});
+			return (o.owner as { startedAt: string }).startedAt;
+		});
+		expect([...startedAts].sort()).toEqual(startedAts);
+		return startedAts;
+	}
+
+	it("a successful run passes the owner to init, embed and finalize", async () => {
+		const { calls, result, firstExecutionRunId } = await runWorkflow();
+
+		expect(result?.success).toBe(true);
+		const startedAts = expectChainOwner(calls, firstExecutionRunId, [
+			"initCodeIndexActivity",
+			"initCodeIndexActivity",
+			"prepareRepositoryActivity",
+			"chunkAndEmbedBatchActivity",
+			"generateFileSummariesActivity",
+			"updateCodeIndexActivity",
+		]);
+		// One run: one start time.
+		expect(new Set(startedAts).size).toBe(1);
+	});
+
+	it("the feature-disabled failure carries the owner", async () => {
+		const { calls, firstExecutionRunId } = await runWorkflow({
+			checkCodeIndexingEnabledActivity: async () => false,
+		});
+
+		expectChainOwner(calls, firstExecutionRunId, ["failCodeIndexActivity"]);
+	});
+
+	it("the no-token failure carries the owner", async () => {
+		const { calls, firstExecutionRunId } = await runWorkflow(
+			{
+				resolveRepoTokenActivity: async () => ({
+					token: null,
+					authMethod: null,
+				}),
+			},
+			{ token: undefined },
+		);
+
+		expectChainOwner(calls, firstExecutionRunId, ["failCodeIndexActivity"]);
+	});
+
+	it("the prepare failure carries the owner", async () => {
+		const { calls, firstExecutionRunId } = await runWorkflow({
+			prepareRepositoryActivity: async () => fail("clone refused"),
+		});
+
+		expectChainOwner(calls, firstExecutionRunId, [
+			"initCodeIndexActivity",
+			"prepareRepositoryActivity",
+			"failCodeIndexActivity",
+		]);
+	});
+
+	it("the fail-on-throw guard carries the owner", async () => {
+		const { calls, error, firstExecutionRunId } = await runWorkflow({
+			getCodeEmbeddingModelActivity: async () =>
+				fail("project settings unavailable"),
+		});
+
+		expect(error).toBeDefined();
+		expectChainOwner(calls, firstExecutionRunId, [
+			"initCodeIndexActivity",
+			"failCodeIndexActivity",
+		]);
+	});
+
+	it("a failed stats write marks the row failed as the same owner", async () => {
+		const { calls, firstExecutionRunId } = await runWorkflow({
+			updateCodeIndexActivity: async () => fail("database unavailable"),
+		});
+
+		expectChainOwner(calls, firstExecutionRunId, [
+			"initCodeIndexActivity",
+			"initCodeIndexActivity",
+			"prepareRepositoryActivity",
+			"chunkAndEmbedBatchActivity",
+			"generateFileSummariesActivity",
+			"updateCodeIndexActivity",
+			"failCodeIndexActivity",
+		]);
+	});
+
+	it("continueAsNew continuations keep the first run's id", async () => {
+		const { calls, error, firstExecutionRunId } = await runWorkflow({
+			chunkAndEmbedBatchActivity: async () =>
+				fail("embedding provider down"),
+		});
+
+		expect(error).toBeDefined();
+		// First run + 3 recovery continuations, each a new run of the chain.
+		expect(named(calls, "prepareRepositoryActivity")).toHaveLength(4);
+		expectChainOwner(calls, firstExecutionRunId, [
+			"initCodeIndexActivity",
+			"initCodeIndexActivity",
+			...Array(4).fill("prepareRepositoryActivity"),
+			...Array(4).fill("chunkAndEmbedBatchActivity"),
+			"failCodeIndexActivity",
+		]);
+	});
+});
+
+/**
+ * Adding `owner` changes only activity arguments — no command is added or
+ * reordered — so no patch marker guards it. This records runs with the new
+ * code, strips `owner` from every recorded activity input (the shape a run
+ * recorded before this change has), and replays them.
+ */
+describe("codeIndexingWorkflow — replaying histories recorded without an owner", () => {
+	type History = Awaited<
+		ReturnType<
+			ReturnType<typeof env.client.workflow.getHandle>["fetchHistory"]
+		>
+	>;
+
+	function stripOwner(history: History): number {
+		let stripped = 0;
+		for (const event of history.events ?? []) {
+			const payload =
+				event.activityTaskScheduledEventAttributes?.input
+					?.payloads?.[0];
+			if (!payload?.data) {
+				continue;
+			}
+			const input = JSON.parse(Buffer.from(payload.data).toString());
+			if (input && typeof input === "object" && "owner" in input) {
+				delete input.owner;
+				payload.data = Buffer.from(JSON.stringify(input));
+				stripped += 1;
+			}
+		}
+		return stripped;
+	}
+
+	it("replays a successful run", async () => {
+		const { result, workflowId, firstExecutionRunId } = await runWorkflow();
+		expect(result?.success).toBe(true);
+
+		const history = await env.client.workflow
+			.getHandle(workflowId, firstExecutionRunId)
+			.fetchHistory();
+		// init x2, prepare, embed, summaries, finalize.
+		expect(stripOwner(history)).toBe(6);
+
+		await expect(
+			Worker.runReplayHistory({ workflowBundle }, history, workflowId),
+		).resolves.toBeUndefined();
+	}, 120_000);
+
+	it("replays a run that continued-as-new and one of its continuations", async () => {
+		const { workflowId, firstExecutionRunId } = await runWorkflow({
+			chunkAndEmbedBatchActivity: async () =>
+				fail("embedding provider down"),
+		});
+
+		const first = await env.client.workflow
+			.getHandle(workflowId, firstExecutionRunId)
+			.fetchHistory();
+		expect(stripOwner(first)).toBeGreaterThan(0);
+		await expect(
+			Worker.runReplayHistory({ workflowBundle }, first, workflowId),
+		).resolves.toBeUndefined();
+
+		// The latest run of the chain: a continuation that failed the row.
+		const last = await env.client.workflow
+			.getHandle(workflowId)
+			.fetchHistory();
+		expect(stripOwner(last)).toBeGreaterThan(0);
+		await expect(
+			Worker.runReplayHistory({ workflowBundle }, last, workflowId),
+		).resolves.toBeUndefined();
+	}, 120_000);
 });

@@ -42,6 +42,7 @@ import type * as activities from "../activities";
 import type {
 	CloneRepositoryInput,
 	CloneRepositoryOutput,
+	CodeIndexRunOwner,
 	FileManifestEntry,
 	PrepareRepositoryOutput,
 	ScanForSecretsOutput,
@@ -198,17 +199,43 @@ export async function codeIndexingWorkflow(
 	}
 }
 
+/**
+ * The indexing chain this run belongs to, for the ProjectCodeIndex writers and
+ * the Job Hub fence.
+ *
+ * The workflow id is stable per repo and a re-index starts with
+ * TERMINATE_EXISTING, which does not stop an activity the terminated run has
+ * in flight; the activities use this to keep such a late write off the
+ * successor's index row and Job Hub row. Every activity that writes either
+ * one gets it. `firstExecutionRunId` is the same in every continueAsNew
+ * continuation. `startTime` is NOT: despite its SDK doc comment, each run of
+ * the chain reports its own start (observed with @temporalio 1.23 against the
+ * test server). The ordering stays sound, because every run of a chain starts
+ * before the TERMINATE_EXISTING successor that replaced it. Both come from
+ * history, so replay reads the same values. Only activity arguments carry
+ * them — no command is added or reordered.
+ */
+function codeIndexOwner(): CodeIndexRunOwner {
+	const info = workflowInfo();
+	return {
+		runId: info.firstExecutionRunId,
+		startedAt: info.startTime.toISOString(),
+	};
+}
+
 /** Best-effort terminal FAILED for this run's row; never masks the caller's error. */
 async function markCodeIndexFailed(
 	input: CodeIndexingWorkflowInput,
 	error: string,
 ): Promise<void> {
+	const owner = codeIndexOwner();
 	try {
 		await shortRunning.failCodeIndexActivity({
 			projectId: input.projectId,
 			repositoryIntegrationId: input.integrationId ?? null,
 			branch: input.branch,
 			error,
+			owner,
 		});
 	} catch {
 		// The activity already exhausted its retries; nothing more to do here.
@@ -220,6 +247,7 @@ async function runCodeIndexing(
 ): Promise<CodeIndexingWorkflowOutput> {
 	const wfInfo = workflowInfo();
 	const workflowId = wfInfo.workflowId;
+	const owner = codeIndexOwner();
 	const isContinuation = !!input._cursor;
 	const startTime = input._cursor?.startTime ?? Date.now();
 
@@ -242,6 +270,7 @@ async function runCodeIndexing(
 			repositoryIntegrationId,
 			branch,
 			error: "Code indexing disabled (FEATURE_CODE_INDEXING != true)",
+			owner,
 		});
 		return {
 			success: false,
@@ -272,6 +301,7 @@ async function runCodeIndexing(
 			repositoryIntegrationId,
 			branch,
 			error: "No repository token available",
+			owner,
 		});
 		return {
 			success: false,
@@ -312,6 +342,7 @@ async function runCodeIndexing(
 				organizationId: input.organizationId,
 				commitSha: "pending",
 				workflowId,
+				owner,
 			});
 		} catch {
 			// Non-fatal
@@ -347,6 +378,7 @@ async function runCodeIndexing(
 		projectId: input.projectId,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		owner,
 	};
 	const prepareRepo = patched("code-index-prepare-repo-v1");
 	let prepared: PrepareRepositoryOutput | undefined;
@@ -370,6 +402,7 @@ async function runCodeIndexing(
 			repositoryIntegrationId,
 			branch,
 			error: failure,
+			owner,
 		});
 		return {
 			success: false,
@@ -392,6 +425,7 @@ async function runCodeIndexing(
 			organizationId: input.organizationId,
 			commitSha: cloneResult.commitSha,
 			workflowId,
+			owner,
 		});
 	}
 
@@ -410,6 +444,7 @@ async function runCodeIndexing(
 		// =====================================================================
 		scanResult = await longRunning.scanForSecretsActivity({
 			clonePath: cloneResult.clonePath,
+			owner,
 		});
 
 		// =====================================================================
@@ -417,6 +452,7 @@ async function runCodeIndexing(
 		// =====================================================================
 		treeResult = await longRunning.walkFileTreeActivity({
 			clonePath: cloneResult.clonePath,
+			owner,
 		});
 	}
 	const redactionManifest = scanResult.redactionManifest;
@@ -430,6 +466,7 @@ async function runCodeIndexing(
 			repositoryIntegrationId,
 			branch,
 			error: "No indexable files found",
+			owner,
 		});
 		return {
 			success: false,
@@ -465,6 +502,7 @@ async function runCodeIndexing(
 				repositoryIntegrationId,
 				branch,
 				error: "File manifest missing after walk",
+				owner,
 			});
 			return {
 				success: false,
@@ -608,6 +646,7 @@ async function runCodeIndexing(
 						branch,
 						filesProcessedSoFar: batchIndex * BATCH_SIZE,
 						totalFileCount: embedTotal,
+						owner,
 					});
 			} catch (error) {
 				// The clone-read + embed activities already exhausted their own
@@ -685,6 +724,7 @@ async function runCodeIndexing(
 						organizationId: input.organizationId,
 						repoName: input.repoName,
 						codeEmbeddingModel,
+						owner,
 					});
 				summariesCreated += summaryResult.summariesCreated;
 			}
@@ -710,6 +750,7 @@ async function runCodeIndexing(
 				manifestPath,
 				redactionManifest,
 				incremental,
+				owner,
 			});
 		} catch (error) {
 			errorCount++;
@@ -843,6 +884,7 @@ async function runCodeIndexing(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						symbols: allExtractedSymbols,
+						owner,
 					});
 				totalSymbols = persistResult.insertedCount;
 			}
@@ -893,6 +935,7 @@ async function runCodeIndexing(
 				organizationId: input.organizationId,
 				repoName: input.repoName,
 				codeEmbeddingModel,
+				owner,
 			});
 
 		totalChunks += batchResult.chunksCreated;
@@ -941,6 +984,7 @@ async function runCodeIndexing(
 					organizationId: input.organizationId,
 					repoName: input.repoName,
 					codeEmbeddingModel,
+					owner,
 				});
 			summariesCreated += summaryResult.summariesCreated;
 		}
@@ -973,6 +1017,7 @@ async function runCodeIndexing(
 			fileManifest,
 			redactionManifest,
 			incremental,
+			owner,
 		});
 	} catch (error) {
 		errorCount++;
