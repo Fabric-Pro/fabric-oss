@@ -13,6 +13,9 @@
  * 7. Update ProjectCodeIndex with stats
  * 8. Clean up temp clone directory
  *
+ * Steps 1-3 run as one activity (`prepareRepositoryActivity`) so the host-local
+ * clone is only read on the worker host that made it.
+ *
  * continueAsNew strategy: pass only a lightweight cursor (batchIndex,
  * accumulated stats). On resumption, re-clone and re-walk to reconstruct
  * file paths — avoids serializing the full file list and depending on
@@ -28,15 +31,21 @@
  */
 
 import {
+	ContinueAsNew,
 	continueAsNew,
+	isCancellation,
 	patched,
 	proxyActivities,
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import type {
+	CloneRepositoryInput,
 	CloneRepositoryOutput,
 	FileManifestEntry,
+	PrepareRepositoryOutput,
+	ScanForSecretsOutput,
+	WalkFileTreeOutput,
 } from "../activities/code-indexing";
 import type { ExtractedSymbol } from "../activities/code-indexing/extract-symbols";
 import {
@@ -47,6 +56,20 @@ import {
 // Long-running activities (clone, chunk+embed) get generous timeouts
 const longRunning = proxyActivities<typeof activities>({
 	startToCloseTimeout: "10 minutes",
+	heartbeatTimeout: "2 minutes",
+	retry: {
+		initialInterval: "2s",
+		maximumInterval: "60s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+	},
+});
+
+// Clone + secret scan + walk in one activity (`prepareRepositoryActivity`), so
+// the host-local clone is only ever read on the host that made it. Longer
+// start-to-close than `longRunning` because it covers all three steps.
+const preparing = proxyActivities<typeof activities>({
+	startToCloseTimeout: "30 minutes",
 	heartbeatTimeout: "2 minutes",
 	retry: {
 		initialInterval: "2s",
@@ -134,7 +157,65 @@ const BATCHES_BEFORE_CONTINUE_AS_NEW = 20;
  */
 const MAX_RECOVERY_ATTEMPTS = 3;
 
+/**
+ * The most informative message in an error's cause chain. An activity failure
+ * reaches the workflow as an `ActivityFailure` whose own message is the fixed
+ * "Activity task failed"; the reason a user can act on is in `cause`.
+ */
+function failureMessage(error: unknown): string {
+	let current: unknown = error;
+	let best: string | null = null;
+	for (let depth = 0; depth < 8 && current != null; depth++) {
+		const message =
+			current instanceof Error ? current.message : String(current);
+		if (message && !/^Activity task failed\.?$/i.test(message)) {
+			best = message;
+		}
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	return best ?? String(error);
+}
+
 export async function codeIndexingWorkflow(
+	input: CodeIndexingWorkflowInput,
+): Promise<CodeIndexingWorkflowOutput> {
+	try {
+		return await runCodeIndexing(input);
+	} catch (error) {
+		// continueAsNew() works by throwing ContinueAsNew — never intercept it.
+		// A cancellation is finalized by the cancel procedure, which owns the row.
+		if (error instanceof ContinueAsNew || isCancellation(error)) {
+			throw error;
+		}
+		// Any other error escaping the body would otherwise fail the workflow and
+		// leave the ProjectCodeIndex row in INDEXING forever. Patched because it
+		// adds commands to the failure path of histories recorded before it; the
+		// marker is only written when a failure actually reaches here.
+		if (patched("code-index-fail-on-throw-v1")) {
+			await markCodeIndexFailed(input, failureMessage(error));
+		}
+		throw error;
+	}
+}
+
+/** Best-effort terminal FAILED for this run's row; never masks the caller's error. */
+async function markCodeIndexFailed(
+	input: CodeIndexingWorkflowInput,
+	error: string,
+): Promise<void> {
+	try {
+		await shortRunning.failCodeIndexActivity({
+			projectId: input.projectId,
+			repositoryIntegrationId: input.integrationId ?? null,
+			branch: input.branch,
+			error,
+		});
+	} catch {
+		// The activity already exhausted its retries; nothing more to do here.
+	}
+}
+
+async function runCodeIndexing(
 	input: CodeIndexingWorkflowInput,
 ): Promise<CodeIndexingWorkflowOutput> {
 	const wfInfo = workflowInfo();
@@ -248,28 +329,47 @@ export async function codeIndexingWorkflow(
 	// Step 2: Clone repository
 	// On continuation, pin to the original commitSha so all batches index
 	// the same revision. On first run, clone the branch head.
+	//
+	// Patched: clone + secret scan + walk (+ the incremental changed subset)
+	// run as ONE activity, because the clone is host-local temp and a separate
+	// scan/walk activity scheduled on another worker host fails with ENOENT on
+	// every retry. Unpatched (histories recorded before it): today's separate
+	// clone → scan → walk activities.
 	// =========================================================================
+	const cloneInput: CloneRepositoryInput = {
+		repositoryUrl: input.repositoryUrl,
+		branch: input.branch,
+		token,
+		provider: input.provider,
+		workflowRunId: wfInfo.runId,
+		commitSha: input._cursor?.commitSha,
+		integrationId: input.integrationId,
+		projectId: input.projectId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+	};
+	const prepareRepo = patched("code-index-prepare-repo-v1");
+	let prepared: PrepareRepositoryOutput | undefined;
 	let cloneResult: CloneRepositoryOutput;
 	try {
-		cloneResult = await longRunning.cloneRepositoryActivity({
-			repositoryUrl: input.repositoryUrl,
-			branch: input.branch,
-			token,
-			provider: input.provider,
-			workflowRunId: wfInfo.runId,
-			commitSha: input._cursor?.commitSha,
-			integrationId: input.integrationId,
-			projectId: input.projectId,
-			userId: input.userId,
-			organizationId: input.organizationId,
-		});
+		if (prepareRepo) {
+			prepared = await preparing.prepareRepositoryActivity({
+				...cloneInput,
+				...(incremental ? { changedFiles } : {}),
+			});
+			cloneResult = prepared.clone;
+		} else {
+			cloneResult = await longRunning.cloneRepositoryActivity(cloneInput);
+		}
 	} catch (error) {
-		const errMsg = error instanceof Error ? error.message : String(error);
+		const failure = prepareRepo
+			? `Repository preparation failed: ${failureMessage(error)}`
+			: `Clone failed: ${error instanceof Error ? error.message : String(error)}`;
 		await shortRunning.failCodeIndexActivity({
 			projectId: input.projectId,
 			repositoryIntegrationId,
 			branch,
-			error: `Clone failed: ${errMsg}`,
+			error: failure,
 		});
 		return {
 			success: false,
@@ -278,7 +378,7 @@ export async function codeIndexingWorkflow(
 			summariesCreated: 0,
 			totalSymbols: 0,
 			indexDurationMs: Date.now() - startTime,
-			error: `Clone failed: ${errMsg}`,
+			error: failure,
 		};
 	}
 
@@ -295,22 +395,31 @@ export async function codeIndexingWorkflow(
 		});
 	}
 
-	// =========================================================================
-	// Step 3: Scan for secrets — always run, even on continuation.
-	// The re-cloned checkout has unsanitized content; skipping would index
-	// raw secrets into Qdrant.
-	// =========================================================================
-	const scanResult = await longRunning.scanForSecretsActivity({
-		clonePath: cloneResult.clonePath,
-	});
-	const redactionManifest = scanResult.redactionManifest;
+	let scanResult: ScanForSecretsOutput;
+	let treeResult: WalkFileTreeOutput;
+	if (prepared) {
+		// prepareRepositoryActivity already scanned (on every run, continuation
+		// included) and walked the clone it made, on the same host.
+		scanResult = prepared.scan;
+		treeResult = prepared.tree;
+	} else {
+		// =====================================================================
+		// Step 3: Scan for secrets — always run, even on continuation.
+		// The re-cloned checkout has unsanitized content; skipping would index
+		// raw secrets into Qdrant.
+		// =====================================================================
+		scanResult = await longRunning.scanForSecretsActivity({
+			clonePath: cloneResult.clonePath,
+		});
 
-	// =========================================================================
-	// Step 4: Walk file tree (always — paths are host-local)
-	// =========================================================================
-	const treeResult = await longRunning.walkFileTreeActivity({
-		clonePath: cloneResult.clonePath,
-	});
+		// =====================================================================
+		// Step 4: Walk file tree (always — paths are host-local)
+		// =====================================================================
+		treeResult = await longRunning.walkFileTreeActivity({
+			clonePath: cloneResult.clonePath,
+		});
+	}
+	const redactionManifest = scanResult.redactionManifest;
 
 	if (treeResult.totalFiles === 0) {
 		await shortRunning.cleanupCloneDirActivity({
@@ -343,9 +452,11 @@ export async function codeIndexingWorkflow(
 	// =========================================================================
 	if (patched("code-index-ondisk-manifest-v1")) {
 		const manifestPath = treeResult.manifestPath;
-		if (!manifestPath) {
-			// A new run always writes a manifest; its absence is a walk-contract
-			// break. Fail cleanly rather than silently indexing nothing.
+		if (!manifestPath || (prepared && incremental && !prepared.changed)) {
+			// A new run always writes a manifest (and, when prepared for an
+			// incremental run, the changed-subset manifest); its absence is a
+			// walk-contract break. Fail cleanly rather than silently indexing
+			// nothing.
 			await shortRunning.cleanupCloneDirActivity({
 				clonePath: cloneResult.clonePath,
 			});
@@ -392,12 +503,14 @@ export async function codeIndexingWorkflow(
 		let embedManifestPath = manifestPath;
 		let embedTotal = totalFiles;
 		if (incremental) {
+			// Prepared runs already wrote the subset on the clone's own host.
 			const selected =
-				await longRunning.selectChangedFilesFromManifestActivity({
+				prepared?.changed ??
+				(await longRunning.selectChangedFilesFromManifestActivity({
 					manifestPath,
 					clonePath,
 					changedFiles,
-				});
+				}));
 			embedManifestPath = selected.manifestPath;
 			embedTotal = selected.count;
 		}
@@ -598,8 +711,17 @@ export async function codeIndexingWorkflow(
 				redactionManifest,
 				incremental,
 			});
-		} catch {
+		} catch (error) {
 			errorCount++;
+			// The stats write is what moves the row out of INDEXING; when it
+			// exhausts its retries, mark the row FAILED instead of leaving it
+			// "indexing" forever. Same patch as the whole-body guard above.
+			if (patched("code-index-fail-on-throw-v1")) {
+				await markCodeIndexFailed(
+					input,
+					`Could not record index results: ${failureMessage(error)}`,
+				);
+			}
 		}
 
 		// Step 9: cleanup.
@@ -852,8 +974,17 @@ export async function codeIndexingWorkflow(
 			redactionManifest,
 			incremental,
 		});
-	} catch {
+	} catch (error) {
 		errorCount++;
+		// Same as the manifest branch: a stats write that exhausted its retries
+		// must not leave the row "indexing" forever. Evaluated lazily, so a
+		// replayed pre-patch failure takes the original path.
+		if (patched("code-index-fail-on-throw-v1")) {
+			await markCodeIndexFailed(
+				input,
+				`Could not record index results: ${failureMessage(error)}`,
+			);
+		}
 	}
 
 	// =========================================================================
