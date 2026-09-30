@@ -56,6 +56,7 @@ import {
 	type RecordSyncRunResult,
 	type SnapshotChildResult,
 	type SyncFailureDetails,
+	type SyncLimitDetail,
 	type SyncRunContext,
 } from "../lib/instruction-sync-types";
 import {
@@ -72,6 +73,7 @@ import {
 	credentialFreeUrl,
 	fetchPinnedCommit,
 	listTree,
+	MAX_CLONE_BYTES,
 	MAX_INVENTORY_ENTRIES,
 	readBlobCapped,
 	revParseHead,
@@ -119,6 +121,34 @@ function syncFailure(
 		details: [details],
 		...(nonRetryable === undefined ? {} : { nonRetryable }),
 	});
+}
+
+/**
+ * The disk watchdog watches the whole run directory (the blobless clone, its
+ * file listing and the checkout), not the folder, so its limit is the sync's
+ * download and disk budget.
+ */
+const REPOSITORY_SIZE_LIMIT: SyncLimitDetail = {
+	kind: "repositorySize",
+	max: MAX_CLONE_BYTES,
+};
+
+/**
+ * `syncFailure` for a code a git step produced: LIMITS_EXCEEDED from git can
+ * only be the disk watchdog, which carries the repository-size limit.
+ */
+function gitSyncFailure(
+	code: InstructionSyncErrorCode,
+	details: SyncFailureDetails,
+	nonRetryable?: boolean,
+): ApplicationFailure {
+	return syncFailure(
+		code,
+		code === "LIMITS_EXCEEDED"
+			? { ...details, limit: REPOSITORY_SIZE_LIMIT }
+			: details,
+		nonRetryable,
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +450,10 @@ async function acquireOnce(input: {
 		details,
 	);
 	if (!listed.ok) {
-		throw syncFailure("LIMITS_EXCEEDED", details);
+		throw syncFailure("LIMITS_EXCEEDED", {
+			...details,
+			limit: { kind: "inventory", max: MAX_INVENTORY_ENTRIES },
+		});
 	}
 	const inventory = listed.summary;
 	if (context.rootPath !== "" && inventory.underRoot === 0) {
@@ -677,7 +710,7 @@ async function gitStep<T>(
 		return await fn();
 	} catch (error) {
 		logGitFailure(error, secrets, INSTRUCTION_SYNC_GIT_LOG);
-		throw syncFailure(gitStepFailureCode(error), details);
+		throw gitSyncFailure(gitStepFailureCode(error), details);
 	}
 }
 
@@ -711,7 +744,7 @@ function cloneWithAuthRecovery(input: {
 			"Repository authentication failed during a coding-instructions sync; reconnect required.",
 		// Retrying cannot help once a forced re-exchange failed (plan Decision 16).
 		fail: (code, nonRetryable) =>
-			syncFailure(code, input.details, nonRetryable),
+			gitSyncFailure(code, input.details, nonRetryable),
 	});
 }
 
@@ -775,6 +808,11 @@ async function planFresh(input: {
 			throw syncFailure("LIMITS_EXCEEDED", {
 				...details,
 				keptCount: result.refusal.count,
+				limit: {
+					kind: "fileCount",
+					actual: result.refusal.count,
+					max: result.refusal.max,
+				},
 			});
 		}
 		throw syncFailure("TREE_REFUSED", {
@@ -842,7 +880,10 @@ async function measure(
 	details: SyncFailureDetails,
 ): Promise<MeasuredFile[]> {
 	let total = 0;
+	let largest = 0;
 	const sized: Array<PlannedSyncFile & { size: number; full: string }> = [];
+	// Every file is sized before a limit is judged, so the failure can name
+	// the largest file and the full total instead of where a scan stopped.
 	for (const file of plan) {
 		const full = path.join(dir, file.repoPath);
 		const stat = await lstat(full).catch(() => null);
@@ -855,14 +896,29 @@ async function measure(
 				refusal: "not_regular_file",
 			});
 		}
-		if (stat.size > SNAPSHOT_LIMITS.maxFileBytes) {
-			throw syncFailure("LIMITS_EXCEEDED", details);
-		}
 		total += stat.size;
-		if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
-			throw syncFailure("LIMITS_EXCEEDED", details);
-		}
+		largest = Math.max(largest, stat.size);
 		sized.push({ ...file, size: stat.size, full });
+	}
+	if (largest > SNAPSHOT_LIMITS.maxFileBytes) {
+		throw syncFailure("LIMITS_EXCEEDED", {
+			...details,
+			limit: {
+				kind: "fileSize",
+				actual: largest,
+				max: SNAPSHOT_LIMITS.maxFileBytes,
+			},
+		});
+	}
+	if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
+		throw syncFailure("LIMITS_EXCEEDED", {
+			...details,
+			limit: {
+				kind: "totalSize",
+				actual: total,
+				max: SNAPSHOT_LIMITS.maxTotalBytes,
+			},
+		});
 	}
 	const measured: MeasuredFile[] = [];
 	for (const file of sized) {
@@ -1210,6 +1266,7 @@ export async function recordInstructionRepositorySyncRun(
 		commitSha,
 		snapshotId: snapshot ? snapshotId : null,
 		scheduling: outcome.scheduling,
+		limit: input.limit ?? null,
 	});
 
 	// A `begin` attempt that inserted a receipt under an earlier

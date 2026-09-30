@@ -9,6 +9,7 @@
  */
 import type {
 	ClaimedRepositorySyncRow,
+	InstructionSyncLimitDetail,
 	InstructionSyncTrigger,
 	RepositorySyncSubjectKind,
 } from "@repo/database";
@@ -156,6 +157,12 @@ export type AcquireTreeResult =
 	| { outcome: "staged"; snapshotId: string; commitSha: string | null };
 
 /**
+ * Which limit a LIMITS_EXCEEDED failure hit. Numbers only: `actual` is
+ * absent when the check stops before the true value is known.
+ */
+export type SyncLimitDetail = InstructionSyncLimitDetail;
+
+/**
  * `ApplicationFailure.details[0]` of every typed acquisition failure. No
  * user content: no path, no URL, no stderr (spec §8.3).
  */
@@ -165,6 +172,7 @@ export type SyncFailureDetails = {
 	keptCount?: number;
 	/** A planner refusal code, e.g. `duplicate_path`. Never the path. */
 	refusal?: string;
+	limit?: SyncLimitDetail;
 };
 
 export type AwaitSnapshotSettledInput = {
@@ -212,6 +220,8 @@ export type RecordSyncRunInput = {
 	commitSha: string | null;
 	error: InstructionSyncErrorCode | null;
 	childResult: SnapshotChildResult | null;
+	/** Optional only for histories started before it existed. */
+	limit?: SyncLimitDetail | null;
 };
 
 export type RecordSyncRunResult = {

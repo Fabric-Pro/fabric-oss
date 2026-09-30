@@ -1986,7 +1986,7 @@ export type ProjectInstructionRepositorySyncScalarFieldEnum = z.infer<typeof Pro
 
 // File: ProjectInstructionRepositorySyncRunScalarFieldEnum.schema.ts
 
-export const ProjectInstructionRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'note', 'commitSha', 'snapshotId', 'reapCheckedAt'])
+export const ProjectInstructionRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'note', 'commitSha', 'snapshotId', 'limitDetail', 'reapCheckedAt'])
 
 export type ProjectInstructionRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectInstructionRepositorySyncRunScalarFieldEnumSchema>;
 
@@ -11375,6 +11375,7 @@ export const ProjectInstructionRepositorySyncRunSchema = z.object({
   note: z.string().nullish(),
   commitSha: z.string().nullish(),
   snapshotId: z.string().nullish(),
+  limitDetail: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   reapCheckedAt: z.date().nullish(),
 });
 

@@ -25,6 +25,18 @@ import {
 	triggerLabelKey,
 } from "../instructions-repository-sync";
 
+const failure = (
+	error: Parameters<typeof syncErrorMessage>[0]["error"],
+	extra: {
+		limit?: NonNullable<Parameters<typeof syncErrorMessage>[0]["limit"]>;
+		snapshotVersion?: number;
+	} = {},
+) => ({
+	error,
+	limit: extra.limit ?? null,
+	snapshotVersion: extra.snapshotVersion ?? null,
+});
+
 const IDLE: RepositorySyncState = {
 	sourceOfTruth: "UPLOAD",
 	canConfigure: true,
@@ -148,7 +160,12 @@ describe("a run's outcome (§7.3)", () => {
 		[
 			run({ status: "FAILED", error: "REF_MISSING" }),
 			false,
-			{ kind: "failed", error: "REF_MISSING" },
+			{
+				kind: "failed",
+				error: "REF_MISSING",
+				limit: null,
+				snapshotVersion: 4,
+			},
 		],
 		[run({ finishedAt: null, status: null }), true, { kind: "running" }],
 		// Decision 24: an unfinished row with no workflow open was interrupted.
@@ -184,18 +201,24 @@ describe("a failed run's message (§7.3)", () => {
 	const configuration = { ref: "main", rootPath: "agents" };
 
 	it("names the branch for REF_MISSING and the folder for ROOT_MISSING", () => {
-		expect(syncErrorMessage("REF_MISSING", configuration)).toEqual({
-			key: "errors.REF_MISSING",
-			values: { ref: "main" },
-		});
-		expect(syncErrorMessage("ROOT_MISSING", configuration)).toEqual({
+		expect(syncErrorMessage(failure("REF_MISSING"), configuration)).toEqual(
+			{
+				key: "errors.REF_MISSING",
+				values: { ref: "main" },
+			},
+		);
+		expect(
+			syncErrorMessage(failure("ROOT_MISSING"), configuration),
+		).toEqual({
 			key: "errors.ROOT_MISSING",
 			values: { ref: "main", rootPath: "agents" },
 		});
 	});
 
-	it("states all three limits for LIMITS_EXCEEDED, since the run row carries no counts", () => {
-		expect(syncErrorMessage("LIMITS_EXCEEDED", configuration)).toEqual({
+	it("states all three limits for a LIMITS_EXCEEDED run recorded before the detail existed", () => {
+		expect(
+			syncErrorMessage(failure("LIMITS_EXCEEDED"), configuration),
+		).toEqual({
 			key: "errors.LIMITS_EXCEEDED",
 			values: {
 				maxFiles: SNAPSHOT_LIMITS.maxFiles.toLocaleString("en-US"),
@@ -207,11 +230,88 @@ describe("a failed run's message (§7.3)", () => {
 		});
 	});
 
+	it.each([
+		[
+			{ kind: "fileCount", actual: 6000, max: 5000 },
+			{
+				key: "errors.limit.fileCount",
+				values: { actual: "6,000", max: "5,000" },
+			},
+		],
+		[
+			{ kind: "fileSize", actual: 7_340_032, max: 5_242_880 },
+			{
+				key: "errors.limit.fileSize",
+				values: { actual: "7.0 MB", max: "5.0 MB" },
+			},
+		],
+		[
+			{ kind: "totalSize", actual: 60_000_000, max: 52_428_800 },
+			{
+				key: "errors.limit.totalSize",
+				values: { actual: "57.2 MB", max: "50.0 MB" },
+			},
+		],
+		[
+			{ kind: "inventory", max: 200_000 },
+			{ key: "errors.limit.inventory", values: { max: "200,000" } },
+		],
+		[
+			{ kind: "repositorySize", max: 172_490_752 },
+			{
+				key: "errors.limit.repositorySize",
+				values: { max: "164.5 MB" },
+			},
+		],
+	] as const)("names the recorded limit: %j", (limit, expected) => {
+		expect(
+			syncErrorMessage(
+				failure("LIMITS_EXCEEDED", { limit }),
+				configuration,
+			),
+		).toEqual(expected);
+	});
+
+	it.each([
+		{ kind: "fileCount", max: 5000 },
+		{ kind: "fileSize", max: 5_242_880 },
+		{ kind: "totalSize", max: 52_428_800 },
+	] as const)(
+		"falls back to the three folder limits when a folder limit has no measured value: %j",
+		(limit) => {
+			expect(
+				syncErrorMessage(
+					failure("LIMITS_EXCEEDED", { limit }),
+					configuration,
+				),
+			).toEqual(
+				syncErrorMessage(failure("LIMITS_EXCEEDED"), configuration),
+			);
+		},
+	);
+
+	it("names the version a CHILD_ABORTED run staged, and keeps the plain wording when it is unknown", () => {
+		expect(
+			syncErrorMessage(
+				failure("CHILD_ABORTED", { snapshotVersion: 12 }),
+				configuration,
+			),
+		).toEqual({
+			key: "errors.CHILD_ABORTED_VERSION",
+			values: { version: 12 },
+		});
+		expect(
+			syncErrorMessage(failure("CHILD_ABORTED"), configuration),
+		).toEqual({ key: "errors.CHILD_ABORTED" });
+	});
+
 	it("maps every other code to its own key, and no code to nothing", () => {
-		expect(syncErrorMessage("CLONE_FAILED", configuration)).toEqual({
+		expect(
+			syncErrorMessage(failure("CLONE_FAILED"), configuration),
+		).toEqual({
 			key: "errors.CLONE_FAILED",
 		});
-		expect(syncErrorMessage(null, configuration)).toBeNull();
+		expect(syncErrorMessage(failure(null), configuration)).toBeNull();
 	});
 });
 
@@ -334,27 +434,27 @@ describe("automatic sync copy (§7.3, PR 2)", () => {
 	it("says a failed fetch is being retried only while automatic sync is on and not paused", () => {
 		const base = { ref: "main", rootPath: "agents" };
 		expect(
-			syncErrorMessage("CLONE_FAILED", {
+			syncErrorMessage(failure("CLONE_FAILED"), {
 				...base,
 				automatic: true,
 				automaticPausedReason: null,
 			}),
 		).toEqual({ key: "errors.CLONE_FAILED_RETRYING" });
 		expect(
-			syncErrorMessage("CLONE_FAILED", {
+			syncErrorMessage(failure("CLONE_FAILED"), {
 				...base,
 				automatic: false,
 				automaticPausedReason: null,
 			}),
 		).toEqual({ key: "errors.CLONE_FAILED" });
 		expect(
-			syncErrorMessage("CLONE_FAILED", {
+			syncErrorMessage(failure("CLONE_FAILED"), {
 				...base,
 				automatic: true,
 				automaticPausedReason: "PERMISSION_REVOKED",
 			}),
 		).toEqual({ key: "errors.CLONE_FAILED" });
-		expect(syncErrorMessage("CLONE_FAILED", null)).toEqual({
+		expect(syncErrorMessage(failure("CLONE_FAILED"), null)).toEqual({
 			key: "errors.CLONE_FAILED",
 		});
 	});

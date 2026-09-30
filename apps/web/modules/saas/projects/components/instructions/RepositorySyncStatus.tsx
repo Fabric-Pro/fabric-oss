@@ -57,7 +57,7 @@ export function RepositorySyncStatus({
 	const outcomeMessage = outcome ? syncOutcomeMessage(outcome) : null;
 	const errorMessage =
 		outcome?.kind === "failed"
-			? syncErrorMessage(outcome.error, configuration)
+			? syncErrorMessage(outcome, configuration)
 			: null;
 	return (
 		<div

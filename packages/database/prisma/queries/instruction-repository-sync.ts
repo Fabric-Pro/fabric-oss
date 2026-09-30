@@ -22,6 +22,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { z } from "zod";
 import { db, Prisma } from "../client";
 import type { ProjectInstructionSyncTrigger } from "../generated/client";
 import { recordAuditTx } from "./audit-log";
@@ -66,6 +67,39 @@ export type InstructionSyncError =
 	| "CONFIGURATION_CHANGED"
 	| "TREE_REFUSED";
 export type InstructionSyncPause = "PERMISSION_REVOKED" | "REF_MISSING";
+
+const instructionSyncLimitDetailSchema = z.object({
+	kind: z.enum([
+		"fileCount",
+		"fileSize",
+		"totalSize",
+		"inventory",
+		"repositorySize",
+	]),
+	max: z.number().int().nonnegative(),
+	actual: z.number().int().nonnegative().optional(),
+});
+
+/**
+ * Which limit a LIMITS_EXCEEDED run hit, numbers only (the run row's
+ * `limitDetail`). `actual` is absent when the check stopped before the true
+ * value was known.
+ */
+export type InstructionSyncLimitDetail = z.infer<
+	typeof instructionSyncLimitDetailSchema
+>;
+
+/**
+ * The detail as stored: a known kind and non-negative integers, unknown keys
+ * dropped, anything else null. Guards the write (the value crosses a Temporal
+ * payload) and the read (the column is Json).
+ */
+export function parseInstructionSyncLimitDetail(
+	value: unknown,
+): InstructionSyncLimitDetail | null {
+	const parsed = instructionSyncLimitDetailSchema.safeParse(value);
+	return parsed.success ? parsed.data : null;
+}
 type SourceOfTruth = "UPLOAD" | "REPOSITORY";
 
 /**
@@ -1679,6 +1713,8 @@ export async function completeInstructionRepositorySyncRun(input: {
 	commitSha: string | null;
 	snapshotId: string | null;
 	scheduling: InstructionSyncSchedulingEffect;
+	/** Kept only when the recorded error is LIMITS_EXCEEDED. */
+	limit?: InstructionSyncLimitDetail | null;
 	classifyStaleAsConfigurationChanged?: boolean;
 	now?: Date;
 }): Promise<{ completed: boolean; configurationCurrent: boolean }> {
@@ -1736,6 +1772,10 @@ export async function completeInstructionRepositorySyncRun(input: {
 					note: outcome.note,
 					commitSha: input.commitSha,
 					snapshotId: input.snapshotId,
+					limitDetail:
+						(outcome.error === "LIMITS_EXCEEDED"
+							? parseInstructionSyncLimitDetail(input.limit)
+							: null) ?? Prisma.DbNull,
 				},
 			});
 		if (count === 0) {
@@ -1814,6 +1854,7 @@ const runSelect = {
 	note: true,
 	commitSha: true,
 	snapshotId: true,
+	limitDetail: true,
 	user: { select: { id: true, name: true } },
 } satisfies Prisma.ProjectInstructionRepositorySyncRunSelect;
 

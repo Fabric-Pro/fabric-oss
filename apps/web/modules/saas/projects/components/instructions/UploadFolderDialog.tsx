@@ -14,6 +14,7 @@ import {
 import { FileIcon, FolderIcon, UploadIcon, XIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { formatBytes } from "../../lib/format-bytes";
 import {
 	type FolderEntry,
 	FolderPathCollisionError,
@@ -36,16 +37,6 @@ type Row = {
 
 /** Offending paths listed in full before the notice switches to a count. */
 const MAX_LISTED_REJECTIONS = 10;
-
-function formatBytes(n: number): string {
-	if (n < 1024) {
-		return `${n} B`;
-	}
-	if (n < 1024 * 1024) {
-		return `${Math.round(n / 1024)} KB`;
-	}
-	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 const EXCLUDED_REASON_KEY: Record<string, string> = {
 	fabricignore: "excludedFabricignore",
