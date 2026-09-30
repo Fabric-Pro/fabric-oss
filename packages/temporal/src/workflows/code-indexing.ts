@@ -14,7 +14,9 @@
  * 8. Clean up temp clone directory
  *
  * Steps 1-3 run as one activity (`prepareRepositoryActivity`) so the host-local
- * clone is only read on the worker host that made it.
+ * clone is only read on the worker host that made it. New runs reconstruct the
+ * pinned commit and redact it inside each symbol/embed/summary/finalize activity,
+ * then dispose its private checkout. Only batch offsets cross workflow history.
  *
  * continueAsNew strategy: pass only a lightweight cursor (batchIndex,
  * accumulated stats). On resumption, re-clone and re-walk to reconstruct
@@ -45,6 +47,7 @@ import type {
 	CodeIndexRunOwner,
 	FileManifestEntry,
 	PrepareRepositoryOutput,
+	RepositoryMaterializationInput,
 	ScanForSecretsOutput,
 	WalkFileTreeOutput,
 } from "../activities/code-indexing";
@@ -77,6 +80,28 @@ const preparing = proxyActivities<typeof activities>({
 		maximumInterval: "60s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
+	},
+});
+
+// New consumers include a pinned clone and scan before their existing work.
+const materializing = proxyActivities<typeof activities>({
+	startToCloseTimeout: "30 minutes",
+	heartbeatTimeout: "2 minutes",
+	retry: {
+		initialInterval: "2s",
+		maximumInterval: "60s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+	},
+});
+const materializingEmbeddings = proxyActivities<typeof activities>({
+	startToCloseTimeout: "30 minutes",
+	heartbeatTimeout: "3 minutes",
+	retry: {
+		initialInterval: "5s",
+		maximumInterval: "120s",
+		backoffCoefficient: 3,
+		maximumAttempts: 5,
 	},
 });
 
@@ -136,6 +161,8 @@ export interface CodeIndexingWorkflowInput {
 		 * index instead of looping forever. Additive/optional for replay-safety.
 		 */
 		recoveryAttempts?: number;
+		/** Keep pre-materialization continuation cursors on their original ordering. */
+		workerLocalRepository?: boolean;
 	};
 }
 
@@ -380,12 +407,17 @@ async function runCodeIndexing(
 		organizationId: input.organizationId,
 		owner,
 	};
+	const workerLocalRepository =
+		patched("code-index-worker-local-consumers-v1") &&
+		(!input._cursor || input._cursor.workerLocalRepository === true);
 	const prepareRepo = patched("code-index-prepare-repo-v1");
 	let prepared: PrepareRepositoryOutput | undefined;
 	let cloneResult: CloneRepositoryOutput;
 	try {
 		if (prepareRepo) {
-			prepared = await preparing.prepareRepositoryActivity({
+			prepared = await (workerLocalRepository
+				? preparing.prepareRepositoryMetadataActivity
+				: preparing.prepareRepositoryActivity)({
 				...cloneInput,
 				...(incremental ? { changedFiles } : {}),
 			});
@@ -516,6 +548,25 @@ async function runCodeIndexing(
 		}
 
 		const clonePath = cloneResult.clonePath;
+		const repository: RepositoryMaterializationInput | undefined =
+			workerLocalRepository
+				? {
+						...cloneInput,
+						commitSha: cloneResult.commitSha,
+						branch: cloneResult.branch,
+					}
+				: undefined;
+		const batchMaterialization = (startIndex: number, changed = false) =>
+			repository
+				? {
+						repository,
+						repositoryBatch: {
+							startIndex,
+							count: BATCH_SIZE,
+							...(changed && incremental ? { changedFiles } : {}),
+						},
+					}
+				: {};
 		const totalFiles = treeResult.totalFiles;
 
 		// Durable-resume gate (evaluated once). When true, checkpoint more often
@@ -560,6 +611,10 @@ async function runCodeIndexing(
 			manifestSlicePath: string,
 			startIndex: number,
 		): Promise<FileManifestEntry[]> => {
+			// New consumers reconstruct and slice within their own invocation.
+			if (repository) {
+				return [];
+			}
 			const slice = await longRunning.readFileManifestSliceActivity({
 				manifestPath: manifestSlicePath,
 				clonePath,
@@ -582,13 +637,16 @@ async function runCodeIndexing(
 					// Per-batch try/catch: one failing batch shouldn't abort the
 					// rest of symbol extraction (it self-heals on the next reindex).
 					try {
-						const persisted =
-							await longRunning.extractAndPersistSymbolsActivity({
-								files: batch,
-								projectId: input.projectId,
-								userId: input.userId,
-								organizationId: input.organizationId,
-							});
+						const persisted = await (repository
+							? materializing.extractAndPersistMaterializedSymbolsActivity
+							: longRunning.extractAndPersistSymbolsActivity)({
+							...batchMaterialization(i),
+							files: batch,
+							projectId: input.projectId,
+							userId: input.userId,
+							organizationId: input.organizationId,
+							owner,
+						});
 						totalSymbols += persisted.insertedCount;
 					} catch (_error) {
 						errorCount++;
@@ -631,23 +689,25 @@ async function runCodeIndexing(
 					batchIndex * BATCH_SIZE,
 				);
 
-				batchResult =
-					await embeddingActivities.chunkAndEmbedBatchActivity({
-						files: batchFiles,
-						projectId: input.projectId,
-						repositoryIntegrationId,
-						userId: input.userId,
-						organizationId: input.organizationId,
-						repoName: input.repoName,
-						codeEmbeddingModel,
-						// Live-progress inputs (additive, replay-safe — no new
-						// workflow command). The activity writes
-						// indexedFileCount / totalFileCount best-effort.
-						branch,
-						filesProcessedSoFar: batchIndex * BATCH_SIZE,
-						totalFileCount: embedTotal,
-						owner,
-					});
+				batchResult = await (repository
+					? materializingEmbeddings.chunkAndEmbedMaterializedBatchActivity
+					: embeddingActivities.chunkAndEmbedBatchActivity)({
+					...batchMaterialization(batchIndex * BATCH_SIZE, true),
+					files: batchFiles,
+					projectId: input.projectId,
+					repositoryIntegrationId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					repoName: input.repoName,
+					codeEmbeddingModel,
+					// Live-progress inputs (additive, replay-safe — no new
+					// workflow command). The activity writes
+					// indexedFileCount / totalFileCount best-effort.
+					branch,
+					filesProcessedSoFar: batchIndex * BATCH_SIZE,
+					totalFileCount: embedTotal,
+					owner,
+				});
 			} catch (error) {
 				// The clone-read + embed activities already exhausted their own
 				// Temporal retries. The likeliest reason they still failed on this
@@ -671,6 +731,9 @@ async function runCodeIndexing(
 							commitSha: cloneResult.commitSha,
 							startTime,
 							recoveryAttempts: recoveryAttempts + 1,
+							...(workerLocalRepository
+								? { workerLocalRepository: true }
+								: {}),
 						},
 					});
 				}
@@ -705,6 +768,9 @@ async function runCodeIndexing(
 						// the unpatched checkpoint cursor is byte-identical to pre-patch
 						// histories (belt-and-suspenders for continueAsNew replay).
 						...(durableResume ? { recoveryAttempts } : {}),
+						...(workerLocalRepository
+							? { workerLocalRepository: true }
+							: {}),
 					},
 				});
 			}
@@ -715,17 +781,19 @@ async function runCodeIndexing(
 		try {
 			for (let i = 0; i < embedTotal; i += BATCH_SIZE) {
 				const batch = await loadBatch(embedManifestPath, i);
-				const summaryResult =
-					await embeddingActivities.generateFileSummariesActivity({
-						files: batch,
-						projectId: input.projectId,
-						repositoryIntegrationId,
-						userId: input.userId,
-						organizationId: input.organizationId,
-						repoName: input.repoName,
-						codeEmbeddingModel,
-						owner,
-					});
+				const summaryResult = await (repository
+					? materializingEmbeddings.generateMaterializedFileSummariesActivity
+					: embeddingActivities.generateFileSummariesActivity)({
+					...batchMaterialization(i, true),
+					files: batch,
+					projectId: input.projectId,
+					repositoryIntegrationId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					repoName: input.repoName,
+					codeEmbeddingModel,
+					owner,
+				});
 				summariesCreated += summaryResult.summariesCreated;
 			}
 		} catch (_error) {
@@ -736,7 +804,10 @@ async function runCodeIndexing(
 		// build the stored file manifest, so it too stays off the payload boundary.
 		const indexDurationMs = Date.now() - startTime;
 		try {
-			await shortRunning.updateCodeIndexActivity({
+			await (repository
+				? materializing.updateMaterializedCodeIndexActivity
+				: shortRunning.updateCodeIndexActivity)({
+				...(repository ? { repository } : {}),
 				projectId: input.projectId,
 				repositoryIntegrationId,
 				branch,
@@ -852,6 +923,7 @@ async function runCodeIndexing(
 								projectId: input.projectId,
 								userId: input.userId,
 								organizationId: input.organizationId,
+								owner,
 							});
 						totalSymbols += persisted.insertedCount;
 					} catch (_error) {

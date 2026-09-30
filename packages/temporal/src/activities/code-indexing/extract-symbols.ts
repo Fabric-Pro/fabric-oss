@@ -705,6 +705,8 @@ export async function persistCodeSymbolsActivity(
 // =============================================================================
 
 export interface ExtractAndPersistSymbolsInput {
+	repository?: import("../code-indexing").RepositoryMaterializationInput;
+	repositoryBatch?: import("../code-indexing").RepositoryBatchSlice;
 	files: Array<{
 		relativePath: string;
 		absolutePath: string;
@@ -713,6 +715,7 @@ export interface ExtractAndPersistSymbolsInput {
 	projectId: string;
 	userId: string;
 	organizationId?: string | null;
+	owner?: CodeIndexRunOwner;
 }
 
 /**
@@ -727,6 +730,19 @@ export interface ExtractAndPersistSymbolsInput {
 export async function extractAndPersistSymbolsActivity(
 	input: ExtractAndPersistSymbolsInput,
 ): Promise<{ insertedCount: number; filesProcessed: number }> {
+	if (input.repository) {
+		const { withMaterializedRepositoryBatch } = await import(
+			"../code-indexing"
+		);
+		return withMaterializedRepositoryBatch(input, (files) =>
+			extractAndPersistSymbolsActivity({
+				...input,
+				repository: undefined,
+				repositoryBatch: undefined,
+				files,
+			}),
+		);
+	}
 	const { files, projectId, userId, organizationId } = input;
 	const symbols: ExtractedSymbol[] = [];
 
@@ -789,6 +805,20 @@ export async function extractAndPersistSymbolsActivity(
 	);
 
 	return { insertedCount: result.count, filesProcessed: files.length };
+}
+
+/** New name keeps old workers from treating an empty metadata batch as success. */
+export async function extractAndPersistMaterializedSymbolsActivity(
+	input: ExtractAndPersistSymbolsInput,
+): Promise<{ insertedCount: number; filesProcessed: number }> {
+	if (!input.repository || !input.repositoryBatch) {
+		const { ApplicationFailure } = await import("@temporalio/common");
+		throw ApplicationFailure.nonRetryable(
+			"Materialized activity requires repository and batch descriptors",
+			"INVALID_INPUT",
+		);
+	}
+	return extractAndPersistSymbolsActivity(input);
 }
 
 /**

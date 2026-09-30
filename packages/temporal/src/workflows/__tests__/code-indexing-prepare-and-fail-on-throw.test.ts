@@ -13,7 +13,8 @@
  * final stats write that exhausted its retries.
  */
 
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { ApplicationFailure } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
@@ -32,6 +33,7 @@ const WORKFLOW_NAME = "codeIndexingWorkflow";
 
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
+let legacyBundle: WorkflowBundleWithSourceMap;
 let taskQueueSeq = 0;
 
 beforeAll(async () => {
@@ -39,6 +41,26 @@ beforeAll(async () => {
 	workflowBundle = await bundleWorkflowCode({
 		workflowsPath: WORKFLOWS_PATH,
 	});
+	// Record genuine activity histories with the new patch disabled. These retain
+	// the old preparation, slice commands and short finalization timeout.
+	const dir = mkdtempSync(join(WORKFLOWS_PATH, ".code-index-replay-"));
+	try {
+		const source = readFileSync(
+			join(WORKFLOWS_PATH, "code-indexing.ts"),
+			"utf8",
+		)
+			.replace('patched("code-index-worker-local-consumers-v1")', "false")
+			.replace(
+				'"./code-indexing-incremental"',
+				'"../code-indexing-incremental"',
+			);
+		writeFileSync(join(dir, "workflow.ts"), source);
+		legacyBundle = await bundleWorkflowCode({
+			workflowsPath: join(dir, "workflow.ts"),
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }, 180_000);
 
 afterAll(async () => {
@@ -63,10 +85,16 @@ function fail(message: string): never {
 async function runWorkflow(
 	overrides: Overrides = {},
 	inputOverrides: Partial<CodeIndexingWorkflowInput> = {},
+	bundle = workflowBundle,
 ): Promise<{
 	calls: Call[];
 	result?: CodeIndexingWorkflowOutput;
 	error?: unknown;
+	history?: Awaited<
+		ReturnType<
+			ReturnType<typeof env.client.workflow.getHandle>["fetchHistory"]
+		>
+	>;
 	workflowId: string;
 	firstExecutionRunId: string;
 }> {
@@ -149,6 +177,40 @@ async function runWorkflow(
 		failCodeIndexActivity: async () => undefined,
 	};
 
+	// Both generations are registered during rollout. Old workers understand
+	// only file lists, so any metadata-only invocation of an old name must fail.
+	for (const [newName, oldName] of [
+		["prepareRepositoryMetadataActivity", "prepareRepositoryActivity"],
+		[
+			"chunkAndEmbedMaterializedBatchActivity",
+			"chunkAndEmbedBatchActivity",
+		],
+		[
+			"generateMaterializedFileSummariesActivity",
+			"generateFileSummariesActivity",
+		],
+		[
+			"extractAndPersistMaterializedSymbolsActivity",
+			"extractAndPersistSymbolsActivity",
+		],
+		["updateMaterializedCodeIndexActivity", "updateCodeIndexActivity"],
+	]) {
+		base[newName] = base[oldName];
+	}
+	for (const name of [
+		"chunkAndEmbedBatchActivity",
+		"generateFileSummariesActivity",
+		"extractAndPersistSymbolsActivity",
+	]) {
+		const old = base[name];
+		base[name] = async (...args) => {
+			if (!(args[0] as { files: unknown[] }).files.length) {
+				fail("Legacy activity received an empty metadata batch");
+			}
+			return old(...args);
+		};
+	}
+
 	const activities = Object.fromEntries(
 		Object.entries({ ...base, ...overrides }).map(([name, impl]) => [
 			name,
@@ -176,7 +238,7 @@ async function runWorkflow(
 	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue,
-		workflowBundle,
+		workflowBundle: bundle,
 		activities,
 	});
 
@@ -191,7 +253,8 @@ async function runWorkflow(
 		const result = (await worker.runUntil(
 			handle.result(),
 		)) as CodeIndexingWorkflowOutput;
-		return { calls, result, ...ids };
+		const history = await handle.fetchHistory();
+		return { calls, result, history, ...ids };
 	} catch (error) {
 		return { calls, error, ...ids };
 	}
@@ -214,13 +277,24 @@ describe("codeIndexingWorkflow — one prepare activity", () => {
 		expect(error).toBeUndefined();
 		expect(result?.success).toBe(true);
 		expect(result?.filesIndexed).toBe(2);
-		expect(named(calls, "prepareRepositoryActivity")).toHaveLength(1);
+		expect(named(calls, "prepareRepositoryMetadataActivity")).toHaveLength(
+			1,
+		);
+		for (const name of [
+			"prepareRepositoryActivity",
+			"chunkAndEmbedBatchActivity",
+			"generateFileSummariesActivity",
+			"extractAndPersistSymbolsActivity",
+			"updateCodeIndexActivity",
+		]) {
+			expect(named(calls, name)).toHaveLength(0);
+		}
 		for (const name of SPLIT_ACTIVITIES) {
 			expect(named(calls, name)).toHaveLength(0);
 		}
 		// Full run: no changed-file list crosses into prepare.
 		expect(
-			named(calls, "prepareRepositoryActivity")[0].args[0],
+			named(calls, "prepareRepositoryMetadataActivity")[0].args[0],
 		).not.toHaveProperty("changedFiles");
 		// First run records the resolved commit after prepare.
 		const inits = named(calls, "initCodeIndexActivity").map(
@@ -228,6 +302,20 @@ describe("codeIndexingWorkflow — one prepare activity", () => {
 		);
 		expect(inits).toEqual(["pending", "abc123"]);
 		expect(named(calls, "failCodeIndexActivity")).toHaveLength(0);
+		expect(named(calls, "readFileManifestSliceActivity")).toHaveLength(0);
+		expect(
+			named(calls, "prepareRepositoryMetadataActivity")[0].args[0],
+		).not.toHaveProperty("disposeAfterPrepare");
+		for (const name of [
+			"extractAndPersistMaterializedSymbolsActivity",
+			"chunkAndEmbedMaterializedBatchActivity",
+			"generateMaterializedFileSummariesActivity",
+			"updateMaterializedCodeIndexActivity",
+		]) {
+			expect(named(calls, name)[0].args[0]).toMatchObject({
+				repository: { commitSha: "abc123", branch: "main" },
+			});
+		}
 	});
 
 	it("an incremental run gets its changed subset from prepare, not a separate activity", async () => {
@@ -237,21 +325,31 @@ describe("codeIndexingWorkflow — one prepare activity", () => {
 		);
 
 		expect(result?.success).toBe(true);
-		const prepareInput = named(calls, "prepareRepositoryActivity")[0]
-			.args[0] as { changedFiles?: string[] };
+		const prepareInput = named(
+			calls,
+			"prepareRepositoryMetadataActivity",
+		)[0].args[0] as { changedFiles?: string[] };
 		expect(prepareInput.changedFiles).toEqual(["src/a.ts"]);
 		expect(
 			named(calls, "selectChangedFilesFromManifestActivity"),
 		).toHaveLength(0);
-		const embedSlices = named(calls, "readFileManifestSliceActivity").map(
-			(c) => (c.args[0] as { manifestPath: string }).manifestPath,
-		);
-		expect(embedSlices).toContain(CHANGED_MANIFEST_PATH);
+		expect(named(calls, "readFileManifestSliceActivity")).toHaveLength(0);
+		expect(
+			named(calls, "chunkAndEmbedMaterializedBatchActivity")[0].args[0],
+		).toMatchObject({
+			files: [],
+			repository: { commitSha: "abc123" },
+			repositoryBatch: {
+				startIndex: 0,
+				count: 50,
+				changedFiles: ["src/a.ts"],
+			},
+		});
 	});
 
 	it("a prepare failure marks the row failed with the activity's own reason", async () => {
 		const { calls, result } = await runWorkflow({
-			prepareRepositoryActivity: async () =>
+			prepareRepositoryMetadataActivity: async () =>
 				fail("ENOENT: no such file or directory, scandir"),
 		});
 
@@ -284,15 +382,18 @@ describe("codeIndexingWorkflow — nothing leaves the row in INDEXING", () => {
 
 	it("lets continueAsNew recovery through untouched and fails the row once the budget is spent", async () => {
 		const { calls, error } = await runWorkflow({
-			chunkAndEmbedBatchActivity: async () =>
+			chunkAndEmbedMaterializedBatchActivity: async () =>
 				fail("embedding provider down"),
 		});
 
 		expect(error).toBeDefined();
 		// First run + MAX_RECOVERY_ATTEMPTS (3) continuations, each re-preparing
 		// at the pinned commit — no failCodeIndex on any continueAsNew.
-		const prepares = named(calls, "prepareRepositoryActivity");
+		const prepares = named(calls, "prepareRepositoryMetadataActivity");
 		expect(prepares).toHaveLength(4);
+		for (const prepare of prepares) {
+			expect(prepare.args[0]).not.toHaveProperty("disposeAfterPrepare");
+		}
 		for (const continuation of prepares.slice(1)) {
 			expect(
 				(continuation.args[0] as { commitSha?: string }).commitSha,
@@ -307,7 +408,8 @@ describe("codeIndexingWorkflow — nothing leaves the row in INDEXING", () => {
 
 	it("marks the row failed when the final stats write fails", async () => {
 		const { calls, result } = await runWorkflow({
-			updateCodeIndexActivity: async () => fail("database unavailable"),
+			updateMaterializedCodeIndexActivity: async () =>
+				fail("database unavailable"),
 		});
 
 		expect(result?.success).toBe(false);
@@ -336,10 +438,11 @@ describe("codeIndexingWorkflow — the chain owns its writes", () => {
 	const OWNED = [
 		"initCodeIndexActivity",
 		"failCodeIndexActivity",
-		"updateCodeIndexActivity",
-		"chunkAndEmbedBatchActivity",
-		"prepareRepositoryActivity",
-		"generateFileSummariesActivity",
+		"updateMaterializedCodeIndexActivity",
+		"extractAndPersistMaterializedSymbolsActivity",
+		"chunkAndEmbedMaterializedBatchActivity",
+		"prepareRepositoryMetadataActivity",
+		"generateMaterializedFileSummariesActivity",
 	];
 
 	function owners(calls: Call[]) {
@@ -365,6 +468,16 @@ describe("codeIndexingWorkflow — the chain owns its writes", () => {
 		expect(owned.map((o) => o.name).sort()).toEqual(
 			[...expectedNames].sort(),
 		);
+		for (const call of calls) {
+			const descriptor = (
+				call.args[0] as { repository?: { owner?: unknown } } | undefined
+			)?.repository;
+			if (descriptor) {
+				expect(descriptor.owner).toEqual(
+					(call.args[0] as { owner?: unknown }).owner,
+				);
+			}
+		}
 		const startedAts = owned.map((o) => {
 			expect(o.owner).toEqual({
 				runId: firstExecutionRunId,
@@ -383,10 +496,11 @@ describe("codeIndexingWorkflow — the chain owns its writes", () => {
 		const startedAts = expectChainOwner(calls, firstExecutionRunId, [
 			"initCodeIndexActivity",
 			"initCodeIndexActivity",
-			"prepareRepositoryActivity",
-			"chunkAndEmbedBatchActivity",
-			"generateFileSummariesActivity",
-			"updateCodeIndexActivity",
+			"prepareRepositoryMetadataActivity",
+			"extractAndPersistMaterializedSymbolsActivity",
+			"chunkAndEmbedMaterializedBatchActivity",
+			"generateMaterializedFileSummariesActivity",
+			"updateMaterializedCodeIndexActivity",
 		]);
 		// One run: one start time.
 		expect(new Set(startedAts).size).toBe(1);
@@ -416,12 +530,13 @@ describe("codeIndexingWorkflow — the chain owns its writes", () => {
 
 	it("the prepare failure carries the owner", async () => {
 		const { calls, firstExecutionRunId } = await runWorkflow({
-			prepareRepositoryActivity: async () => fail("clone refused"),
+			prepareRepositoryMetadataActivity: async () =>
+				fail("clone refused"),
 		});
 
 		expectChainOwner(calls, firstExecutionRunId, [
 			"initCodeIndexActivity",
-			"prepareRepositoryActivity",
+			"prepareRepositoryMetadataActivity",
 			"failCodeIndexActivity",
 		]);
 	});
@@ -441,34 +556,39 @@ describe("codeIndexingWorkflow — the chain owns its writes", () => {
 
 	it("a failed stats write marks the row failed as the same owner", async () => {
 		const { calls, firstExecutionRunId } = await runWorkflow({
-			updateCodeIndexActivity: async () => fail("database unavailable"),
+			updateMaterializedCodeIndexActivity: async () =>
+				fail("database unavailable"),
 		});
 
 		expectChainOwner(calls, firstExecutionRunId, [
 			"initCodeIndexActivity",
 			"initCodeIndexActivity",
-			"prepareRepositoryActivity",
-			"chunkAndEmbedBatchActivity",
-			"generateFileSummariesActivity",
-			"updateCodeIndexActivity",
+			"prepareRepositoryMetadataActivity",
+			"extractAndPersistMaterializedSymbolsActivity",
+			"chunkAndEmbedMaterializedBatchActivity",
+			"generateMaterializedFileSummariesActivity",
+			"updateMaterializedCodeIndexActivity",
 			"failCodeIndexActivity",
 		]);
 	});
 
 	it("continueAsNew continuations keep the first run's id", async () => {
 		const { calls, error, firstExecutionRunId } = await runWorkflow({
-			chunkAndEmbedBatchActivity: async () =>
+			chunkAndEmbedMaterializedBatchActivity: async () =>
 				fail("embedding provider down"),
 		});
 
 		expect(error).toBeDefined();
 		// First run + 3 recovery continuations, each a new run of the chain.
-		expect(named(calls, "prepareRepositoryActivity")).toHaveLength(4);
+		expect(named(calls, "prepareRepositoryMetadataActivity")).toHaveLength(
+			4,
+		);
 		expectChainOwner(calls, firstExecutionRunId, [
 			"initCodeIndexActivity",
 			"initCodeIndexActivity",
-			...Array(4).fill("prepareRepositoryActivity"),
-			...Array(4).fill("chunkAndEmbedBatchActivity"),
+			"extractAndPersistMaterializedSymbolsActivity",
+			...Array(4).fill("prepareRepositoryMetadataActivity"),
+			...Array(4).fill("chunkAndEmbedMaterializedBatchActivity"),
 			"failCodeIndexActivity",
 		]);
 	});
@@ -507,14 +627,18 @@ describe("codeIndexingWorkflow — replaying histories recorded without an owner
 	}
 
 	it("replays a successful run", async () => {
-		const { result, workflowId, firstExecutionRunId } = await runWorkflow();
+		const { result, workflowId, firstExecutionRunId } = await runWorkflow(
+			{},
+			{},
+			legacyBundle,
+		);
 		expect(result?.success).toBe(true);
 
 		const history = await env.client.workflow
 			.getHandle(workflowId, firstExecutionRunId)
 			.fetchHistory();
-		// init x2, prepare, embed, summaries, finalize.
-		expect(stripOwner(history)).toBe(6);
+		// init x2, prepare, symbols, embed, summaries, finalize.
+		expect(stripOwner(history)).toBe(7);
 
 		await expect(
 			Worker.runReplayHistory({ workflowBundle }, history, workflowId),
@@ -522,10 +646,14 @@ describe("codeIndexingWorkflow — replaying histories recorded without an owner
 	}, 120_000);
 
 	it("replays a run that continued-as-new and one of its continuations", async () => {
-		const { workflowId, firstExecutionRunId } = await runWorkflow({
-			chunkAndEmbedBatchActivity: async () =>
-				fail("embedding provider down"),
-		});
+		const { workflowId, firstExecutionRunId } = await runWorkflow(
+			{
+				chunkAndEmbedBatchActivity: async () =>
+					fail("embedding provider down"),
+			},
+			{},
+			legacyBundle,
+		);
 
 		const first = await env.client.workflow
 			.getHandle(workflowId, firstExecutionRunId)
@@ -544,4 +672,53 @@ describe("codeIndexingWorkflow — replaying histories recorded without an owner
 			Worker.runReplayHistory({ workflowBundle }, last, workflowId),
 		).resolves.toBeUndefined();
 	}, 120_000);
+});
+
+describe("codeIndexingWorkflow — compatibility", () => {
+	it("replays recorded full and incremental histories without the materialization patch", async () => {
+		for (const input of [
+			{},
+			{ incremental: true, changedFiles: ["src/a.ts"] },
+		]) {
+			const recorded = await runWorkflow({}, input, legacyBundle);
+			expect(recorded.error).toBeUndefined();
+			expect(recorded.result?.success).toBe(true);
+			expect(
+				named(recorded.calls, "readFileManifestSliceActivity").length,
+			).toBeGreaterThan(0);
+			if (!recorded.history) {
+				throw new Error("Recorded history missing");
+			}
+			await Worker.runReplayHistory(
+				{ workflowBundle },
+				recorded.history,
+				recorded.workflowId,
+			);
+		}
+	}, 60_000);
+	it("keeps old continuation cursors on their original file ordering", async () => {
+		const { calls, result } = await runWorkflow(
+			{},
+			{
+				_cursor: {
+					batchIndex: 0,
+					totalChunks: 0,
+					totalSymbols: 0,
+					errorCount: 0,
+					commitSha: "abc123",
+					startTime: 1,
+				},
+			},
+		);
+		expect(result?.success).toBe(true);
+		expect(
+			named(calls, "prepareRepositoryActivity")[0].args[0],
+		).not.toHaveProperty("sortManifest");
+		expect(
+			named(calls, "readFileManifestSliceActivity").length,
+		).toBeGreaterThan(0);
+		expect(
+			named(calls, "chunkAndEmbedBatchActivity")[0].args[0],
+		).not.toHaveProperty("repository");
+	});
 });
