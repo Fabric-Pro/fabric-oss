@@ -175,6 +175,17 @@ export interface CloneRepositoryInput {
 	owner?: CodeIndexRunOwner;
 }
 
+/** Reconstruct a sanitized pinned checkout inside the consuming activity. */
+export interface RepositoryMaterializationInput extends CloneRepositoryInput {
+	commitSha: string;
+}
+
+export interface RepositoryBatchSlice {
+	startIndex: number;
+	count: number;
+	changedFiles?: string[];
+}
+
 export interface CloneRepositoryOutput {
 	clonePath: string;
 	commitSha: string;
@@ -256,6 +267,10 @@ export interface SelectChangedFilesFromManifestOutput {
 }
 
 export interface PrepareRepositoryInput extends CloneRepositoryInput {
+	/** New worker-local consumers recreate their own checkout; dispose on its owner. */
+	disposeAfterPrepare?: boolean;
+	/** Stable ordering for independently reconstructed batches. */
+	sortManifest?: boolean;
 	/**
 	 * Incremental runs only: the pushed changed-file list. When present, the
 	 * activity also writes the changed-subset manifest the embed phase iterates.
@@ -301,6 +316,8 @@ function jobFence(owner: CodeIndexRunOwner | undefined): { runId?: string } {
 }
 
 export interface CodeIndexBatchInput {
+	repository?: RepositoryMaterializationInput;
+	repositoryBatch?: RepositoryBatchSlice;
 	files: Array<{ relativePath: string; absolutePath: string }>;
 	projectId: string;
 	userId: string;
@@ -344,6 +361,7 @@ export type ChunkAndEmbedBatchInput = CodeIndexBatchInput;
 export type GenerateFileSummariesInput = CodeIndexBatchInput;
 
 export interface UpdateCodeIndexInput {
+	repository?: RepositoryMaterializationInput;
 	projectId: string;
 	repositoryIntegrationId?: string | null;
 	branch?: string;
@@ -608,7 +626,11 @@ const PROGRESS_CHECKPOINT_EVERY = 250;
  * cancellation (including a heartbeat timeout) is delivered, then stop if the
  * attempt was cancelled. A no-op outside an activity (direct unit-test calls).
  */
-async function activityCheckpoint(details: string): Promise<void> {
+async function activityCheckpoint(
+	details: string,
+	repositoryHeartbeat?: () => void,
+): Promise<void> {
+	repositoryHeartbeat?.();
 	const ctx = currentActivityContext();
 	if (!ctx) {
 		return;
@@ -651,6 +673,7 @@ function codeIndexClonePath(workflowRunId: string, attempt?: number): string {
 async function cloneRepository(
 	input: CloneRepositoryInput,
 	clonePath: string,
+	reportProgress = true,
 ): Promise<CloneRepositoryOutput> {
 	const { repositoryUrl, branch, provider } = input;
 	const simpleGit = (await import("simple-git")).default;
@@ -661,7 +684,9 @@ async function cloneRepository(
 	// On continueAsNew the clone re-runs against the same row and the step is
 	// simply re-marked — `running` keeps its original start time.
 	const fence = jobFence(input.owner);
-	await jobStep("clone", "running", fence);
+	if (reportProgress) {
+		await jobStep("clone", "running", fence);
+	}
 
 	// One clone attempt with a given plaintext token. Re-invoked once with a
 	// freshly re-exchanged token when the first attempt fails with a git auth
@@ -788,7 +813,9 @@ async function cloneRepository(
 
 	try {
 		const cloned = await doClone(token);
-		await jobStep("clone", "completed", fence);
+		if (reportProgress) {
+			await jobStep("clone", "completed", fence);
+		}
 		return cloned;
 	} catch (error) {
 		// Self-heal a git auth failure: the token was dead despite reading valid.
@@ -811,7 +838,9 @@ async function cloneRepository(
 				if (fresh.token) {
 					try {
 						const cloned = await doClone(fresh.token);
-						await jobStep("clone", "completed", fence);
+						if (reportProgress) {
+							await jobStep("clone", "completed", fence);
+						}
 						return cloned;
 					} catch {
 						// Fall through to reconnect-required — the re-exchanged token
@@ -823,10 +852,12 @@ async function cloneRepository(
 				integrationId: input.integrationId,
 				reason: "Repository authentication failed during code indexing; reconnect required.",
 			});
-			await jobStep("clone", "failed", {
-				error: "Authentication failed — reconnect the repository to retry.",
-				...fence,
-			});
+			if (reportProgress) {
+				await jobStep("clone", "failed", {
+					error: "Authentication failed — reconnect the repository to retry.",
+					...fence,
+				});
+			}
 			nonRetryable(
 				"Repository authentication failed — reconnect the repository in Settings, then re-run.",
 				"REAUTH_REQUIRED",
@@ -854,6 +885,8 @@ export async function scanForSecretsActivity(
 async function scanRepositoryForSecrets(
 	clonePath: string,
 	owner?: CodeIndexRunOwner,
+	reportProgress = true,
+	repositoryHeartbeat?: () => void,
 ): Promise<ScanForSecretsOutput> {
 	const redactionManifest: Array<{
 		path: string;
@@ -914,7 +947,7 @@ async function scanRepositoryForSecrets(
 		}
 	}
 
-	await activityCheckpoint("scanning for secrets");
+	await activityCheckpoint("scanning for secrets", repositoryHeartbeat);
 	const toScan: Array<{ fullPath: string; relativePath: string }> = [];
 	walkDirWith(clonePath, (fullPath, relativePath) => {
 		const ext = path.extname(relativePath).toLowerCase();
@@ -926,6 +959,7 @@ async function scanRepositoryForSecrets(
 		if (i > 0 && i % PROGRESS_CHECKPOINT_EVERY === 0) {
 			await activityCheckpoint(
 				`scanning for secrets: ${i}/${toScan.length} files`,
+				repositoryHeartbeat,
 			);
 		}
 		scanFile(toScan[i].fullPath, toScan[i].relativePath);
@@ -934,7 +968,9 @@ async function scanRepositoryForSecrets(
 	logger.info(
 		`[CodeIndexing] Secret scan: ${totalSecrets} secrets found and redacted in ${redactionManifest.length} files`,
 	);
-	await jobStep("secretScan", "completed", jobFence(owner));
+	if (reportProgress) {
+		await jobStep("secretScan", "completed", jobFence(owner));
+	}
 	return { secretsFound: totalSecrets, redactionManifest };
 }
 
@@ -1048,11 +1084,14 @@ interface WalkedFileTree {
 async function walkRepositoryFileTree(
 	clonePath: string,
 	owner?: CodeIndexRunOwner,
+	reportProgress = true,
+	sortManifest = false,
+	repositoryHeartbeat?: () => void,
 ): Promise<WalkedFileTree> {
 	const entries: FileManifestDiskEntry[] = [];
 	let skippedFiles = 0;
 
-	await activityCheckpoint("walking file tree");
+	await activityCheckpoint("walking file tree", repositoryHeartbeat);
 	const found: Array<{ fullPath: string; relativePath: string }> = [];
 	walkDirWith(clonePath, (fullPath, relativePath) => {
 		found.push({ fullPath, relativePath });
@@ -1062,6 +1101,7 @@ async function walkRepositoryFileTree(
 		if (i > 0 && i % PROGRESS_CHECKPOINT_EVERY === 0) {
 			await activityCheckpoint(
 				`walking file tree: ${i}/${found.length} files`,
+				repositoryHeartbeat,
 			);
 		}
 		const { fullPath, relativePath } = found[i];
@@ -1082,6 +1122,15 @@ async function walkRepositoryFileTree(
 		});
 	}
 
+	if (sortManifest) {
+		entries.sort((a, b) =>
+			a.relativePath < b.relativePath
+				? -1
+				: a.relativePath > b.relativePath
+					? 1
+					: 0,
+		);
+	}
 	const manifestPath = writeFileManifest(clonePath, entries);
 
 	logger.info(
@@ -1089,9 +1138,11 @@ async function walkRepositoryFileTree(
 	);
 	// Job Hub: publish the denominator now, so the panel can show
 	// "120/3400 files" from the very first embed batch rather than a bare count.
-	const fence = jobFence(owner);
-	await jobStep("walk", "completed", fence);
-	await jobSetCounts({ totalFiles: entries.length }, undefined, fence);
+	if (reportProgress) {
+		const fence = jobFence(owner);
+		await jobStep("walk", "completed", fence);
+		await jobSetCounts({ totalFiles: entries.length }, undefined, fence);
+	}
 	return { manifestPath, totalFiles: entries.length, skippedFiles };
 }
 
@@ -1161,7 +1212,8 @@ async function selectChangedFilesFromManifest(
 export async function prepareRepositoryActivity(
 	input: PrepareRepositoryInput,
 ): Promise<PrepareRepositoryOutput> {
-	const { changedFiles, ...cloneInput } = input;
+	const { changedFiles, disposeAfterPrepare, sortManifest, ...cloneInput } =
+		input;
 	const attempt = currentActivityContext()?.info.attempt ?? 1;
 	const clonePath = codeIndexClonePath(input.workflowRunId, attempt);
 
@@ -1173,7 +1225,12 @@ export async function prepareRepositoryActivity(
 		const scan = await scanRepositoryForSecrets(clonePath, input.owner);
 
 		await activityCheckpoint("prepare: walking file tree");
-		const tree = await walkRepositoryFileTree(clonePath, input.owner);
+		const tree = await walkRepositoryFileTree(
+			clonePath,
+			input.owner,
+			true,
+			sortManifest,
+		);
 
 		let changed: SelectChangedFilesFromManifestOutput | undefined;
 		if (changedFiles !== undefined) {
@@ -1196,7 +1253,242 @@ export async function prepareRepositoryActivity(
 			// Best-effort — the original error is what matters.
 		}
 		throw error;
+	} finally {
+		if (disposeAfterPrepare) {
+			await cleanupCloneDirActivity({ clonePath });
+		}
 	}
+}
+
+/** Validate nested coordinates before resolving credentials or reading tenant data. */
+function assertRepositoryIdentity(
+	repository: RepositoryMaterializationInput,
+	owner: {
+		projectId: string;
+		userId: string;
+		organizationId?: string | null;
+	},
+): void {
+	if (
+		!owner.organizationId ||
+		repository.projectId !== owner.projectId ||
+		repository.userId !== owner.userId ||
+		repository.organizationId !== owner.organizationId
+	) {
+		nonRetryable(
+			"Repository materialization context mismatch",
+			"INVALID_INPUT",
+		);
+	}
+}
+
+/** A private checkout per invocation, including overlapping timed-out attempts. */
+async function withMaterializedRepository<T>(
+	repository: RepositoryMaterializationInput,
+	consume: (clonePath: string, repositoryHeartbeat: () => void) => Promise<T>,
+): Promise<T> {
+	if (!/^[a-f0-9]{40,64}$/i.test(repository.commitSha)) {
+		nonRetryable(
+			"Repository materialization requires a pinned commit",
+			"INVALID_INPUT",
+		);
+	}
+	const clonePath = fs.mkdtempSync(
+		path.join(os.tmpdir(), "fabric-code-index-consumer-"),
+	);
+	// Temporal heartbeats must not wait for progress telemetry. A connected DB
+	// can stall indefinitely: keep one best-effort touch pending without blocking
+	// reconstruction, cancellation checkpoints or private-checkout cleanup.
+	const context = currentActivityContext();
+	let heartbeatPending = false;
+	const pulse = (): void => {
+		try {
+			context?.heartbeat("materializing repository");
+		} catch {
+			// Cancellation is observed by activityCheckpoint, independently of telemetry.
+		}
+		if (!heartbeatPending) {
+			heartbeatPending = true;
+			void Promise.resolve()
+				.then(() =>
+					jobHeartbeat(
+						repository.integrationId ?? null,
+						jobFence(repository.owner),
+					),
+				)
+				.catch(() => {
+					/* Progress never masks the operation. */
+				})
+				.finally(() => {
+					heartbeatPending = false;
+				});
+		}
+	};
+	const timer = setInterval(() => {
+		void pulse();
+	}, 60_000);
+	timer.unref();
+	try {
+		pulse();
+		await cloneRepository(repository, clonePath, false);
+		await scanRepositoryForSecrets(
+			clonePath,
+			repository.owner,
+			false,
+			pulse,
+		);
+		await activityCheckpoint("repository materialized", pulse);
+		return await consume(clonePath, pulse);
+	} finally {
+		clearInterval(timer);
+		await cleanupCloneDirActivity({ clonePath });
+	}
+}
+
+/** Never hydrate paths outside the sanitized checkout, including through symlinks. */
+function localRepositoryFile(clonePath: string, relativePath: string): string {
+	if (
+		!relativePath ||
+		path.posix.isAbsolute(relativePath) ||
+		path.win32.isAbsolute(relativePath) ||
+		relativePath.includes("\\") ||
+		relativePath
+			.split("/")
+			.some((part) => part === ".." || part === "." || !part)
+	) {
+		nonRetryable("Invalid repository-relative file path", "INVALID_INPUT");
+	}
+	let component = clonePath;
+	for (const part of relativePath.split("/")) {
+		component = path.join(component, part);
+		if (fs.lstatSync(component).isSymbolicLink()) {
+			nonRetryable(
+				"Invalid repository-relative file path",
+				"INVALID_INPUT",
+			);
+		}
+	}
+	const absolutePath = path.join(clonePath, relativePath);
+	const resolved = fs.realpathSync(absolutePath);
+	if (!resolved.startsWith(`${fs.realpathSync(clonePath)}${path.sep}`)) {
+		nonRetryable("Invalid repository-relative file path", "INVALID_INPUT");
+	}
+	return absolutePath;
+}
+
+/** Rebuild and slice the manifest inside the consumer; no file list crosses history. */
+export async function withMaterializedRepositoryBatch<T>(
+	input: {
+		repository?: RepositoryMaterializationInput;
+		repositoryBatch?: RepositoryBatchSlice;
+		files: Array<{
+			relativePath: string;
+			absolutePath: string;
+			language?: string | null;
+		}>;
+		projectId: string;
+		userId: string;
+		organizationId?: string | null;
+	},
+	consume: (files: FileManifestEntry[]) => Promise<T>,
+): Promise<T> {
+	const repository = input.repository;
+	if (!repository) {
+		nonRetryable("Repository materialization missing", "INVALID_INPUT");
+	}
+	assertRepositoryIdentity(repository, input);
+	return withMaterializedRepository(repository, async (clonePath, pulse) => {
+		let entries: FileManifestDiskEntry[];
+		if (input.repositoryBatch) {
+			const { startIndex, count, changedFiles } = input.repositoryBatch;
+			if (
+				!Number.isSafeInteger(startIndex) ||
+				startIndex < 0 ||
+				!Number.isSafeInteger(count) ||
+				count < 1 ||
+				count > 50
+			) {
+				nonRetryable("Invalid repository batch slice", "INVALID_INPUT");
+			}
+			const tree = await walkRepositoryFileTree(
+				clonePath,
+				repository.owner,
+				false,
+				true,
+				pulse,
+			);
+			entries = readFileManifest(tree.manifestPath);
+			if (changedFiles !== undefined) {
+				const changed = new Set(changedFiles);
+				entries = entries.filter((entry) =>
+					changed.has(entry.relativePath),
+				);
+			}
+			entries = entries.slice(startIndex, startIndex + count);
+		} else {
+			entries = input.files.map((file) => ({
+				relativePath: file.relativePath,
+				language: file.language ?? null,
+			}));
+		}
+		return consume(
+			entries.map((entry) => ({
+				...entry,
+				absolutePath: localRepositoryFile(
+					clonePath,
+					entry.relativePath,
+				),
+			})),
+		);
+	});
+}
+
+/** Distinct names prevent older workers from accepting new metadata-only inputs. */
+export async function prepareRepositoryMetadataActivity(
+	input: PrepareRepositoryInput,
+): Promise<PrepareRepositoryOutput> {
+	return prepareRepositoryActivity({
+		...input,
+		disposeAfterPrepare: true,
+		sortManifest: true,
+	});
+}
+
+export function requireMaterializedRepositoryBatch(
+	input: CodeIndexBatchInput,
+): void {
+	if (!input.repository || !input.repositoryBatch) {
+		nonRetryable(
+			"Materialized activity requires repository and batch descriptors",
+			"INVALID_INPUT",
+		);
+	}
+}
+
+export async function chunkAndEmbedMaterializedBatchActivity(
+	input: CodeIndexBatchInput,
+): Promise<ChunkAndEmbedBatchOutput> {
+	requireMaterializedRepositoryBatch(input);
+	return chunkAndEmbedBatchActivity(input);
+}
+
+export async function generateMaterializedFileSummariesActivity(
+	input: CodeIndexBatchInput,
+): Promise<GenerateFileSummariesOutput> {
+	requireMaterializedRepositoryBatch(input);
+	return generateFileSummariesActivity(input);
+}
+
+export async function updateMaterializedCodeIndexActivity(
+	input: UpdateCodeIndexInput,
+): Promise<void> {
+	if (!input.repository || input.repository.commitSha !== input.commitSha) {
+		nonRetryable(
+			"Materialized finalization requires the indexed repository revision",
+			"INVALID_INPUT",
+		);
+	}
+	return updateCodeIndexActivity(input);
 }
 
 /**
@@ -1231,6 +1523,16 @@ export async function runWithConcurrency<T>(
 export async function chunkAndEmbedBatchActivity(
 	input: ChunkAndEmbedBatchInput,
 ): Promise<ChunkAndEmbedBatchOutput> {
+	if (input.repository) {
+		return withMaterializedRepositoryBatch(input, (files) =>
+			chunkAndEmbedBatchActivity({
+				...input,
+				repository: undefined,
+				repositoryBatch: undefined,
+				files,
+			}),
+		);
+	}
 	const {
 		files,
 		projectId,
@@ -1537,6 +1839,16 @@ export async function deleteChangedCodeVectorsActivity(input: {
 export async function generateFileSummariesActivity(
 	input: GenerateFileSummariesInput,
 ): Promise<GenerateFileSummariesOutput> {
+	if (input.repository) {
+		return withMaterializedRepositoryBatch(input, (files) =>
+			generateFileSummariesActivity({
+				...input,
+				repository: undefined,
+				repositoryBatch: undefined,
+				files,
+			}),
+		);
+	}
 	const {
 		files,
 		projectId,
@@ -1782,6 +2094,27 @@ export async function checkCodeIndexingEnabledActivity(): Promise<boolean> {
 export async function updateCodeIndexActivity(
 	input: UpdateCodeIndexInput,
 ): Promise<void> {
+	if (input.repository) {
+		const repository = input.repository;
+		assertRepositoryIdentity(repository, input);
+		return withMaterializedRepository(
+			repository,
+			async (clonePath, pulse) => {
+				const tree = await walkRepositoryFileTree(
+					clonePath,
+					repository.owner,
+					false,
+					true,
+					pulse,
+				);
+				await updateCodeIndexActivity({
+					...input,
+					repository: undefined,
+					manifestPath: tree.manifestPath,
+				});
+			},
+		);
+	}
 	// New path passes `manifestPath`; read the file list off disk so it never
 	// crosses the payload boundary. Legacy path passes `fileManifest` inline.
 	const fileManifest = input.manifestPath
@@ -2061,6 +2394,7 @@ export {
 	type ExtractAndPersistSymbolsInput,
 	type ExtractSymbolsActivityInput,
 	type ExtractSymbolsActivityOutput,
+	extractAndPersistMaterializedSymbolsActivity,
 	extractAndPersistSymbolsActivity,
 	extractSymbolsActivity,
 	type PersistCodeSymbolsInput,
