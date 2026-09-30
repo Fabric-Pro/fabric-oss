@@ -5,7 +5,7 @@
  * Uses the centralized getAIModel from @repo/ai.
  */
 
-import type { AiJobKey } from "@repo/ai";
+import type { AIOperationContext, AiJobKey } from "@repo/ai";
 import { getAIModelWithMetadata, getSystemRAGProviderConfig } from "@repo/ai";
 
 /**
@@ -34,13 +34,17 @@ export async function getAiModel(
 	hasTools = false,
 	modelOverride?: string,
 	jobType?: AiJobKey,
+	attribution?: Pick<
+		AIOperationContext,
+		"projectId" | "featureKey" | "conversationId"
+	>,
 ) {
 	// Determine the task type based on whether tools are needed
 	const taskType = hasTools ? "TOOL_CALLING" : "COMPLEX";
 
 	// Use centralized single entry point. The orchestrator is a chat surface
 	// too — a message sent from Fabric AI in orchestrator mode generates here
-	// (Fizzy #2230).
+	// (Fizzy #2230). Callers that are not chat (Parlume) override the key.
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{
 			taskType,
@@ -48,7 +52,13 @@ export async function getAiModel(
 			requiresToolCalling: hasTools,
 			modelOverride,
 		},
-		{ userId, organizationId, featureKey: "chat-agent", jobType },
+		{
+			userId,
+			organizationId,
+			featureKey: "chat-agent",
+			jobType,
+			...attribution,
+		},
 	);
 
 	console.log(

@@ -3,23 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findFirst: vi.fn(),
-	update: vi.fn(),
-	leave: vi.fn(),
-	settings: vi.fn(),
+	requestLeave: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
-	db: {
-		parlumeMeetingSession: {
-			findFirst: mocks.findFirst,
-			update: mocks.update,
-		},
-	},
+	db: { parlumeMeetingSession: { findFirst: mocks.findFirst } },
 }));
 
-vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({
-	getParlumeBridgeSettings: () => mocks.settings(),
-	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leave(...args),
+vi.mock("@repo/api/modules/projects/lib/parlume-leave", () => ({
+	requestParlumeLeave: (...args: unknown[]) => mocks.requestLeave(...args),
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-log", () => ({
+	parlumeLog: () => undefined,
 }));
 
 import { POST } from "../route";
@@ -41,38 +37,61 @@ function request() {
 beforeEach(() => {
 	vi.resetAllMocks();
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
-	mocks.settings.mockReturnValue({ apiKey: "operator-key" });
 	mocks.findFirst.mockResolvedValue({
 		id: "session-1",
 		providerBotId: "bot-1",
 		status: "STOP_FAILED",
+		streamGeneration: 2,
+		endReason: "STOPPED",
 	});
-	mocks.update.mockResolvedValue(undefined);
 });
 
 describe("Parlume stream-error leave retry", () => {
-	it("retries a prior failed provider leave instead of accepting it as terminal", async () => {
-		mocks.leave.mockResolvedValue(undefined);
+	it("retries a prior failed provider leave without relabelling why it stopped", async () => {
+		mocks.requestLeave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
 
 		const response = await POST(request());
 
 		expect(response.status).toBe(200);
-		expect(mocks.leave).toHaveBeenCalledWith({
-			settings: { apiKey: "operator-key" },
-			providerBotId: "bot-1",
+		expect(mocks.requestLeave).toHaveBeenCalledWith({
+			session: {
+				id: "session-1",
+				providerBotId: "bot-1",
+				streamGeneration: 2,
+			},
+			reason: "STOPPED",
+			lastError: null,
+			captureStopped: false,
 		});
 	});
 
+	it("records a stream error for a healthy session", async () => {
+		mocks.findFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "bot-1",
+			status: "ACTIVE",
+			streamGeneration: 2,
+			endReason: null,
+		});
+		mocks.requestLeave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
+
+		await POST(request());
+
+		expect(mocks.requestLeave).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "STREAM_ERROR",
+				lastError: "Parlume transcription stream failed.",
+			}),
+		);
+	});
+
 	it("keeps the bridge error marker retryable when the provider leave fails", async () => {
-		mocks.leave.mockRejectedValue(new Error("temporary provider outage"));
+		mocks.requestLeave.mockRejectedValue(
+			new Error("temporary provider outage"),
+		);
 
 		const response = await POST(request());
 
 		expect(response.status).toBe(503);
-		expect(mocks.update).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				data: expect.objectContaining({ status: "STOP_FAILED" }),
-			}),
-		);
 	});
 });

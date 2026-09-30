@@ -3,28 +3,31 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import {
-	Dialog,
-	DialogContent,
-	DialogDescription,
-	DialogHeader,
-	DialogTitle,
-	DialogTrigger,
-} from "@ui/components/dialog";
+import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
+import { Label } from "@ui/components/label";
 import { useState } from "react";
+import {
+	formatTimestamp,
+	modeLabel,
+	type ParlumeSession,
+} from "../lib/parlume-format";
+import { HISTORY_QUERY_KEY } from "../lib/query-keys";
 
-function timestamp(value: Date | string): string {
-	return new Intl.DateTimeFormat(undefined, {
-		dateStyle: "medium",
-		timeStyle: "short",
-	}).format(new Date(value));
-}
+const ALL_SESSIONS = "all";
 
-export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
-	const [open, setOpen] = useState(false);
+export function ParlumeRequestsList({
+	projectId,
+	sessions,
+}: {
+	projectId: string;
+	sessions: ParlumeSession[];
+}) {
+	const [sessionFilter, setSessionFilter] = useState(ALL_SESSIONS);
+	const sessionId =
+		sessionFilter === ALL_SESSIONS ? undefined : sessionFilter;
 	const firstPage: { id: string; createdAt: Date } | undefined = undefined;
 	const history = useInfiniteQuery({
-		queryKey: ["parlume-history", projectId],
+		queryKey: [HISTORY_QUERY_KEY, projectId, sessionId ?? ALL_SESSIONS],
 		initialPageParam: firstPage,
 		queryFn: ({
 			pageParam,
@@ -33,38 +36,44 @@ export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
 		}) =>
 			orpcClient.projects.parlume.history({
 				projectId,
+				sessionId,
 				before: pageParam,
 			}),
 		getNextPageParam: (page) => page.nextCursor ?? undefined,
-		enabled: open,
 		retry: false,
 	});
 	const items = history.data?.pages.flatMap((page) => page.items) ?? [];
+
 	return (
-		<Dialog open={open} onOpenChange={setOpen}>
-			<DialogTrigger asChild>
-				<Button
-					type="button"
-					variant="link"
-					className="px-0 underline"
-					data-onboarding-target="parlume-history"
-				>
-					Parlume history
-				</Button>
-			</DialogTrigger>
-			<DialogContent className="sm:max-w-2xl max-sm:[&_:is(button,summary)]:min-h-11 pointer-coarse:[&_:is(button,summary)]:min-h-11">
-				<DialogHeader>
-					<DialogTitle>Parlume history</DialogTitle>
-					<DialogDescription>
-						Review meeting questions, requested actions, approvals
-						and results. Speaker labels come from the meeting
-						provider.
-					</DialogDescription>
-				</DialogHeader>
-				<div className="flex items-center justify-between gap-3">
-					<p className="text-sm text-muted-foreground">
-						Newest requests first
-					</p>
+		<Card>
+			<CardHeader className="space-y-1.5 p-6 pb-4">
+				<CardTitle className="text-base">Requests</CardTitle>
+				<p className="text-sm text-muted-foreground">
+					Review meeting questions, requested actions, approvals and
+					results. Speaker labels come from the meeting provider.
+				</p>
+			</CardHeader>
+			<CardContent className="space-y-4 p-6 pt-0">
+				<div className="flex flex-wrap items-end justify-between gap-3">
+					<div className="space-y-2">
+						<Label htmlFor="parlume-session-filter">Session</Label>
+						<select
+							id="parlume-session-filter"
+							className="h-9 w-full rounded-md border bg-background px-3 text-sm sm:w-72"
+							value={sessionFilter}
+							onChange={(event) =>
+								setSessionFilter(event.target.value)
+							}
+						>
+							<option value={ALL_SESSIONS}>All sessions</option>
+							{sessions.map((session) => (
+								<option key={session.id} value={session.id}>
+									{session.agentLabel} ·{" "}
+									{formatTimestamp(session.createdAt)}
+								</option>
+							))}
+						</select>
+					</div>
 					<Button
 						type="button"
 						variant="outline"
@@ -76,10 +85,12 @@ export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
 					</Button>
 				</div>
 				{history.isLoading ? (
-					<output>Loading history…</output>
+					<output className="block text-sm text-muted-foreground">
+						Loading requests…
+					</output>
 				) : history.isError ? (
 					<p role="alert" className="text-sm text-destructive">
-						Could not load Parlume history. Try refreshing.
+						Could not load Parlume requests. Try refreshing.
 					</p>
 				) : items.length === 0 ? (
 					<p className="py-6 text-center text-sm text-muted-foreground">
@@ -103,15 +114,13 @@ export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
 											turn.createdAt,
 										).toISOString()}
 									>
-										{timestamp(turn.createdAt)}
+										{formatTimestamp(turn.createdAt)}
 									</time>
 								</div>
 								<p className="text-xs text-muted-foreground">
 									{turn.session.agentLabel} ·{" "}
-									{turn.session.toolsReadOnly
-										? "Read-only"
-										: "Actions with confirmation"}{" "}
-									· {turn.status.toLowerCase()}
+									{modeLabel(turn.session.toolsReadOnly)} ·{" "}
+									{turn.status.toLowerCase()}
 								</p>
 								<p className="whitespace-pre-wrap break-words">
 									{turn.requestText}
@@ -148,12 +157,14 @@ export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
 											</p>
 											<p className="text-xs text-muted-foreground">
 												Requested{" "}
-												{timestamp(action.createdAt)}
+												{formatTimestamp(
+													action.createdAt,
+												)}
 												{action.confirmedAt
-													? ` · Confirmed ${timestamp(action.confirmedAt)}`
+													? ` · Confirmed ${formatTimestamp(action.confirmedAt)}`
 													: ""}
 												{action.completedAt
-													? ` · Finished ${timestamp(action.completedAt)}`
+													? ` · Finished ${formatTimestamp(action.completedAt)}`
 													: ""}
 											</p>
 											<section aria-label="Exact action details">
@@ -189,7 +200,7 @@ export function ParlumeHistoryDialog({ projectId }: { projectId: string }) {
 							: "Load older requests"}
 					</Button>
 				)}
-			</DialogContent>
-		</Dialog>
+			</CardContent>
+		</Card>
 	);
 }

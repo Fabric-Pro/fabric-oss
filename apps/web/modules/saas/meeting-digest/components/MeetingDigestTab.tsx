@@ -2,6 +2,7 @@
 
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useQueryClient } from "@tanstack/react-query";
@@ -9,6 +10,7 @@ import { Button } from "@ui/components/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { addMonths, format, subMonths } from "date-fns";
 import { PlusIcon } from "lucide-react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -24,8 +26,6 @@ import { AgendaView } from "./AgendaView";
 import { CalendarCanvas } from "./CalendarCanvas";
 import { DigestConfigPanel } from "./DigestConfigPanel";
 import { MeetingDetailSheet } from "./MeetingDetailSheet";
-import { ParlumeHistoryDialog } from "./ParlumeHistoryDialog";
-import { ParlumeInviteDialog } from "./ParlumeInviteDialog";
 import { PersonalMeetingSheet } from "./PersonalMeetingSheet";
 import {
 	PersonalMeetingsConsent,
@@ -230,8 +230,7 @@ export function MeetingDigestTab({
 	// (Upcoming/Calendar) vs. untabbed calendar-only digest layout.
 	const meetingAgendaEnabled = useFeatureFlag("MEETING_AGENDA");
 	const parlumeEnabled = useFeatureFlag("PARLUME_MEETINGS");
-	const canInviteParlume =
-		canEdit && organizationId !== null && parlumeEnabled;
+	const { basePath } = useOrganizationContext();
 
 	// #2104. Separate from PERSONAL_MEETINGS so on-device caching can be rolled
 	// back without disabling personal meetings entirely.
@@ -574,21 +573,16 @@ export function MeetingDigestTab({
 					<PageTourButton pageId="meeting-digest" />
 				</div>
 				{parlumeEnabled && organizationId && (
-					<ParlumeHistoryDialog projectId={projectId} />
+					<Link
+						href={`${basePath}/projects/${projectId}/parlume`}
+						className="text-sm underline"
+						data-onboarding-target="parlume-history"
+					>
+						Open Parlume
+					</Link>
 				)}
 				{canEdit && (
 					<div className="flex flex-wrap items-center gap-3">
-						{canInviteParlume && (
-							<ParlumeInviteDialog projectId={projectId}>
-								<Button
-									type="button"
-									variant="link"
-									className="px-0 underline"
-								>
-									Invite Parlume
-								</Button>
-							</ParlumeInviteDialog>
-						)}
 						{!configPanelVisible && !genericEmptyStateOnScreen && (
 							<button
 								type="button"

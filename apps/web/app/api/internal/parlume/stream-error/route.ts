@@ -1,7 +1,5 @@
-import {
-	getParlumeBridgeSettings,
-	leaveParlumeMeetingBot,
-} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
+import { requestParlumeLeave } from "@repo/api/modules/projects/lib/parlume-leave";
+import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -33,39 +31,40 @@ export async function POST(request: NextRequest) {
 			// durable bridge marker until Meeting BaaS accepts the leave request.
 			status: { in: ["JOINING", "ACTIVE", "LEAVING", "STOP_FAILED"] },
 		},
-		select: { id: true, providerBotId: true, status: true },
+		select: {
+			id: true,
+			providerBotId: true,
+			status: true,
+			streamGeneration: true,
+			endReason: true,
+		},
 	});
 	if (!session?.providerBotId) {
 		return NextResponse.json({ accepted: true });
 	}
-	await db.parlumeMeetingSession.update({
-		where: { id: session.id },
-		data: {
-			status: "LEAVING",
-			...(session.status === "ACTIVE"
-				? { lastError: "Parlume transcription stream failed." }
-				: {}),
-			leaveRequestedAt: new Date(),
-		},
-	});
-	const settings = getParlumeBridgeSettings();
-	if (!settings) {
-		await db.parlumeMeetingSession.update({
-			where: { id: session.id },
-			data: { status: "STOP_FAILED" },
+	if (session.status === "ACTIVE") {
+		parlumeLog("error", "stream.error", {
+			sessionId: session.id,
+			botId: session.providerBotId,
 		});
-		return NextResponse.json({ error: "Unavailable" }, { status: 503 });
 	}
 	try {
-		await leaveParlumeMeetingBot({
-			settings,
-			providerBotId: session.providerBotId,
+		await requestParlumeLeave({
+			session: {
+				id: session.id,
+				providerBotId: session.providerBotId,
+				streamGeneration: session.streamGeneration,
+			},
+			// A stop already under way (user, idle, revocation) keeps its reason;
+			// only a failure of a healthy session is a stream error.
+			reason: session.endReason ?? "STREAM_ERROR",
+			lastError:
+				session.status === "ACTIVE"
+					? "Parlume transcription stream failed."
+					: null,
+			captureStopped: false,
 		});
 	} catch {
-		await db.parlumeMeetingSession.update({
-			where: { id: session.id },
-			data: { status: "STOP_FAILED" },
-		});
 		return NextResponse.json({ error: "Retry required" }, { status: 503 });
 	}
 	return NextResponse.json({ accepted: true });

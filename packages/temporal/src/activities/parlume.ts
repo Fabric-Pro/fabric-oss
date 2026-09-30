@@ -8,6 +8,7 @@ import {
 	prepareParlumeDecision,
 } from "./parlume-actions";
 import { executeParlumeAgent, loadParlumeAgent } from "./parlume-agent";
+import { parlumeActivityLog } from "./parlume-log";
 import {
 	requestParlumeMeetingStop,
 	speakParlumeResponse,
@@ -119,6 +120,16 @@ export async function executeParlumeMeetingTurn(params: {
 	if (claimed.count === 0) {
 		return;
 	}
+	const startedAt = Date.now();
+	parlumeActivityLog("info", "turn.started", {
+		sessionId: session.id,
+		turnId: turn.id,
+		voiceGeneration: turn.voiceGeneration,
+		toolsReadOnly: session.toolsReadOnly,
+		agentKind: session.agentKind,
+		requestChars: turn.requestText.length,
+		queuedMs: startedAt - new Date(turn.createdAt).getTime(),
+	});
 	try {
 		const agent = await loadParlumeAgent(session);
 		const actionContext: ParlumeActionContext = {
@@ -256,6 +267,7 @@ export async function executeParlumeMeetingTurn(params: {
 			sessionId: session.id,
 			userId: session.userId,
 			organizationId: session.organizationId,
+			projectId: session.projectId,
 			response,
 			voiceGeneration: turn.voiceGeneration,
 			confirmationSpeakerId: proposal?.speakerId,
@@ -295,9 +307,26 @@ export async function executeParlumeMeetingTurn(params: {
 						},
 			}),
 		]);
-	} catch (error) {
-		logger.error("[Parlume] Meeting turn failed", {
+		parlumeActivityLog("info", "turn.completed", {
+			sessionId: session.id,
 			turnId: turn.id,
+			voiceGeneration: turn.voiceGeneration,
+			played: playback.played,
+			interrupted: playback.interrupted,
+			proposedAction: proposal !== null,
+			responseChars: response.length,
+			firstTextMs: firstTextAt ? firstTextAt.getTime() - startedAt : null,
+			firstAudioMs: playback.firstAudioAt
+				? playback.firstAudioAt - startedAt
+				: null,
+			totalMs: Date.now() - startedAt,
+		});
+	} catch (error) {
+		parlumeActivityLog("error", "turn.failed", {
+			sessionId: session.id,
+			turnId: turn.id,
+			voiceGeneration: turn.voiceGeneration,
+			totalMs: Date.now() - startedAt,
 			error: error instanceof Error ? error.name : "Unknown error",
 		});
 		await fail("Parlume agent execution failed.");

@@ -81,7 +81,6 @@ const PAGE_COVERAGE_EXEMPT = new Set<string>();
 // at. New page anchors must live in one of these (extend the list if a covered
 // component moves to a new file).
 const inPageSource = [
-	"apps/web/modules/saas/meeting-digest/components/ParlumeHistoryDialog.tsx",
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/stories/StoriesRoadmap.tsx",
