@@ -1,9 +1,6 @@
 /**
- * Mastra evaluation configuration helpers.
+ * Document evaluation configuration helpers.
  */
-
-import { Mastra } from "@mastra/core";
-import type { MastraModelConfig } from "@mastra/core/llm";
 import {
 	type AIModelMetadata,
 	AIProviderNotConfiguredError,
@@ -35,10 +32,6 @@ export async function resolveEvalModel(params: {
 	}
 }
 
-export function createMastraInstance(): Mastra {
-	return new Mastra({ logger: false });
-}
-
 /**
  * Remove temperature from model call options.
  * Some models (especially Azure deployments like gpt-5-nano) don't support
@@ -67,7 +60,7 @@ function removeTemperatureFromOptions(options: unknown): unknown {
  * Uses a Proxy to intercept calls while preserving the original model's
  * private fields and non-enumerable instance state.
  */
-function wrapModelWithoutTemperature(model: LanguageModel): LanguageModel {
+export function withoutEvalTemperature(model: LanguageModel): LanguageModel {
 	// If model is a string (model name), return as-is - can't wrap strings
 	if (typeof model === "string") {
 		return model;
@@ -88,31 +81,6 @@ function wrapModelWithoutTemperature(model: LanguageModel): LanguageModel {
 			return value;
 		},
 	}) as LanguageModel;
-}
-
-/**
- * Convert an AI SDK LanguageModel to a Mastra-compatible config.
- *
- * Mastra's resolveModelConfig expects one of:
- * 1. A string like "openai/gpt-4o"
- * 2. An OpenAICompatibleObjectConfig with url, apiKey, model
- * 3. An AI SDK model object with specificationVersion
- *
- * We pass the AI SDK model object directly, which should work if it has
- * the correct specificationVersion.
- *
- * IMPORTANT: For eval workflows, we wrap the model to remove temperature
- * from all requests. Some models (e.g., Azure gpt-5-nano) don't support
- * temperature settings and will error if any value is provided.
- */
-export function toMastraModelConfig(model: LanguageModel): MastraModelConfig {
-	// Wrap the model to remove temperature from eval requests
-	// This ensures compatibility with models that don't support temperature settings
-	const wrappedModel = wrapModelWithoutTemperature(model);
-
-	// Mastra expects AI SDK provider types - our model should be compatible
-	// but Azure AI Foundry uses a custom fetch wrapper which might cause issues
-	return wrappedModel as unknown as MastraModelConfig;
 }
 
 // EVAL_VERSION 3: Evidence-based calibration with score deflation

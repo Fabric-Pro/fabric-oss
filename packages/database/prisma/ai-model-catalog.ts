@@ -415,7 +415,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "BASIC",
 		inputCostPer1M: 0.1,
 		outputCostPer1M: 0.5,
-		suitableForTasks: ["SIMPLE", "CHAT", "TOOL_CALLING"],
+		suitableForTasks: ["SIMPLE", "CHAT", "TOOL_CALLING", "EVAL"],
 		providerMappings: [
 			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6-luna" },
 			{
