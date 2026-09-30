@@ -21,6 +21,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		leaveBot: vi.fn(),
 		finalize: vi.fn(),
 		recordAudit: vi.fn(),
+		contextFindMany: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -43,6 +44,9 @@ vi.mock("@repo/database", () => ({
 			update: (...args: unknown[]) => mocks.sessionUpdate(...args),
 			updateMany: (...args: unknown[]) =>
 				mocks.sessionUpdateMany(...args),
+		},
+		projectContext: {
+			findMany: (...args: unknown[]) => mocks.contextFindMany(...args),
 		},
 	},
 	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
@@ -125,6 +129,7 @@ const session = {
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	mocks.contextFindMany.mockResolvedValue([]);
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.resolveVoiceKey.mockResolvedValue("test-voice-key");
@@ -364,6 +369,56 @@ describe("Parlume session procedures", () => {
 		expect(source).toContain(
 			"requireProjectPermission(Permissions.PROJECT_MEMBERS_MANAGE)",
 		);
+	});
+
+	it("finalizes a stranded session past its hard stop when listing", async () => {
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([
+				{ id: "stale-1", status: "LEAVING", streamGeneration: 2 },
+			])
+			.mockResolvedValueOnce([]);
+		mocks.finalize.mockResolvedValue(undefined);
+
+		await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		});
+
+		expect(mocks.sessionFindMany).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				where: expect.objectContaining({
+					projectId: "project-1",
+					terminalCallbackAt: { not: null },
+					finalizedAt: null,
+					hardStopAt: { lt: expect.any(Date) },
+				}),
+				take: 5,
+			}),
+		);
+		expect(mocks.finalize).toHaveBeenCalledWith("stale-1", {
+			expectedStreamGeneration: 2,
+		});
+	});
+
+	it("still lists sessions when a sweep finalization fails", async () => {
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([
+				{ id: "stale-1", status: "FAILED", streamGeneration: 1 },
+			])
+			.mockResolvedValueOnce([]);
+		mocks.finalize.mockRejectedValue(new Error("provider outage"));
+
+		await expect(
+			handlers.listSessions({
+				input: { projectId: "project-1" },
+				context,
+			}),
+		).resolves.toEqual({ sessions: [] });
+		expect(mocks.finalize).toHaveBeenCalledWith("stale-1", {
+			expectedStreamGeneration: 1,
+			preserveFailure: true,
+		});
 	});
 
 	it("does not expose a foreign project to a guest session", async () => {

@@ -18,6 +18,7 @@ import {
 	leaveParlumeMeetingBot,
 	startParlumeMeetingBot,
 } from "../../lib/parlume-meeting-baas";
+import { sweepOverdueParlumeSessions } from "../../lib/parlume-sweep";
 
 const projectInput = z.object({ projectId: z.string() });
 const PARLUME_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
@@ -294,6 +295,7 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 	.input(projectInput)
 	.handler(async ({ input }) => {
 		await requireParlumeProject(input.projectId);
+		await sweepOverdueParlumeSessions(input.projectId);
 		const sessions = await db.parlumeMeetingSession.findMany({
 			where: { projectId: input.projectId },
 			select: sessionSelect,
