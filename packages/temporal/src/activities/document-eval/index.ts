@@ -35,7 +35,7 @@ export {
 	type SaveEvalResultOutput,
 	saveEvalResult,
 } from "./eval-storage";
-export { resolveEvalModel, toMastraModelConfig } from "./mastra-config";
+export { resolveEvalModel } from "./mastra-config";
 export type { MastraEvalInput, MastraEvalResult } from "./mastra-evaluate";
 // Legacy activity (for backwards compatibility)
 export { evaluateDocumentWithMastra } from "./mastra-evaluate";

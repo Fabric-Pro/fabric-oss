@@ -737,6 +737,18 @@ function levenshteinDistance(a: string, b: string): number {
 // ============================================================================
 
 describe("AI Model Name Validation", () => {
+	it("offers GPT-6 Luna for EVAL tasks", () => {
+		const luna = MODELS.find(
+			(model) => model.canonicalName === "gpt-6-luna",
+		);
+
+		expect(
+			luna,
+			"GPT-6 Luna must be present in the model catalog",
+		).toBeDefined();
+		expect(luna?.suitableForTasks).toContain("EVAL");
+	});
+
 	it("catalogs Jev only for typed decision evaluation through Vercel AI Gateway", () => {
 		const jev = MODELS.find(
 			(model) => model.canonicalName === "typesafe-ai-jev",

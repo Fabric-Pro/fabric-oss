@@ -1,5 +1,5 @@
 /**
- * LLM-as-judge evaluation metrics built with Mastra scorers.
+ * LLM-as-judge evaluation metrics built with AI SDK structured output.
  *
  * EVAL_VERSION 3 Improvements:
  * - Document-type specific rubrics for quality scoring
@@ -8,12 +8,15 @@
  * - Metric-specific calibration
  */
 
-import { createScorer } from "@mastra/core/evals";
-import type { MastraModelConfig } from "@mastra/core/llm";
 import { heartbeat } from "@temporalio/activity";
+import { generateText, type LanguageModel, Output } from "ai";
 import { z } from "zod";
 import { estimateEvalCost, isOverBudget, recordEvalCost } from "./cost-tracker";
-import { calibrateScore } from "./mastra-config";
+import {
+	calibrateScore,
+	resolveEvalModel,
+	withoutEvalTemperature,
+} from "./mastra-config";
 
 /**
  * Safe heartbeat wrapper that handles non-activity contexts gracefully
@@ -26,14 +29,6 @@ function safeHeartbeat(details?: unknown): void {
 		// Silently ignore - this is expected behavior for non-activity contexts
 	}
 }
-
-const evalInputSchema = z.object({
-	documentType: z.string(),
-	expectedSections: z.array(z.string()).optional(),
-	userPrompt: z.string().optional(),
-});
-
-const evalOutputSchema = z.string();
 
 /**
  * Flexible string array schema that tolerates LLM output quirks.
@@ -370,46 +365,20 @@ function getQualityRubric(docType: string): string {
 	return QUALITY_RUBRICS[docType.toLowerCase()] ?? QUALITY_RUBRICS.general;
 }
 
-// ============================================================================
-// PHASE 2.1: Enhanced Quality Scorer with Rubrics
-// ============================================================================
+function buildQualityPrompt(params: {
+	documentContent: string;
+	documentType: string;
+	expectedSections: string[];
+}): string {
+	return `You are evaluating a ${params.documentType} document.
 
-function createQualityScorer(params: {
-	model: MastraModelConfig;
-	provider: string;
-}) {
-	return createScorer({
-		id: "document-quality",
-		name: "Document Quality",
-		description:
-			"Evaluates clarity, completeness, and actionability with strict rubrics.",
-		type: { input: evalInputSchema, output: evalOutputSchema },
-	})
-		.analyze({
-			description: "Assess document quality using specific rubrics.",
-			outputSchema: qualitySchema,
-			judge: {
-				model: params.model,
-				instructions: `You are a STRICT document evaluator. 
-Be critical and identify real issues. Do NOT give high scores to mediocre content.
-Average documents should score 60-70, not 80-90.
-Only exceptional documents with all required elements should score above 85.
-Return valid JSON matching the schema.`,
-			},
-			createPrompt: ({ run }) => {
-				const docType = run.input?.documentType ?? "general";
-				const rubric = getQualityRubric(docType);
-				const expectedSections = run.input?.expectedSections ?? [];
+${getQualityRubric(params.documentType)}
 
-				return `You are evaluating a ${docType} document.
-
-${rubric}
-
-EXPECTED SECTIONS: ${expectedSections.join(", ") || "N/A"}
+EXPECTED SECTIONS: ${params.expectedSections.join(", ") || "N/A"}
 
 DOCUMENT TO EVALUATE:
 ---
-${run.output.slice(0, MAX_DOCUMENT_CHARS)}
+${params.documentContent.slice(0, MAX_DOCUMENT_CHARS)}
 ---
 
 EVALUATION INSTRUCTIONS:
@@ -419,49 +388,13 @@ EVALUATION INSTRUCTIONS:
 4. Be STRICT - only well-crafted documents should score above 80
 
 Return JSON with: score (0-100), reasoning, strengths[], weaknesses[]`;
-			},
-		})
-		.generateScore(({ results }) => {
-			const rawScore = results.analyzeStepResult?.score ?? 0;
-			// Apply stricter calibration with metric-specific factor
-			return calibrateScore(rawScore, params.provider, "quality");
-		});
 }
 
-// ============================================================================
-// PHASE 2.2: Enhanced Coherence Scorer with Issue-First Analysis
-// ============================================================================
-
-function createCoherenceScorer(params: {
-	model: MastraModelConfig;
-	provider: string;
-}) {
-	return createScorer({
-		id: "document-coherence",
-		name: "Document Coherence",
-		description:
-			"Evaluates flow, consistency, and structure using issue-first analysis.",
-		type: { input: evalInputSchema, output: evalOutputSchema },
-	})
-		.analyze({
-			description: "First identify issues, then score based on severity.",
-			outputSchema: coherenceSchema,
-			judge: {
-				model: params.model,
-				instructions: `You are a CRITICAL document reviewer.
-First identify ALL issues, then calculate score by deducting points.
-Start at 100 and subtract:
-- Major flow issues: -20 each
-- Inconsistent terminology: -10 each
-- Abrupt transitions: -5 each
-- Missing logical connections: -10 each
-- Contradictory statements: -15 each`,
-			},
-			createPrompt: ({
-				run,
-			}) => `Evaluate the logical flow and coherence of this ${
-				run.input?.documentType ?? "document"
-			}.
+function buildCoherencePrompt(params: {
+	documentContent: string;
+	documentType: string;
+}): string {
+	return `Evaluate the logical flow and coherence of this ${params.documentType}.
 
 COHERENCE CHECKLIST:
 1. Does the document flow logically from introduction to conclusion?
@@ -481,55 +414,26 @@ SCORING (start at 100, deduct for issues):
 
 DOCUMENT:
 ---
-${run.output.slice(0, MAX_DOCUMENT_CHARS)}
+${params.documentContent.slice(0, MAX_DOCUMENT_CHARS)}
 ---
 
-Return JSON with: score (0-100), reasoning, issues[]`,
-		})
-		.generateScore(({ results }) => {
-			const rawScore = results.analyzeStepResult?.score ?? 0;
-			return calibrateScore(rawScore, params.provider, "coherence");
-		});
+Return JSON with: score (0-100), reasoning, issues[]`;
 }
 
-// ============================================================================
-// PHASE 2.2: Enhanced Alignment Scorer with Specific Criteria
-// ============================================================================
-
-function createAlignmentScorer(params: {
-	model: MastraModelConfig;
-	provider: string;
-}) {
-	return createScorer({
-		id: "document-alignment",
-		name: "Prompt Alignment",
-		description: "Evaluates alignment with the original user prompt.",
-		type: { input: evalInputSchema, output: evalOutputSchema },
-	})
-		.analyze({
-			description: "Assess alignment with the user's original request.",
-			outputSchema: alignmentSchema,
-			judge: {
-				model: params.model,
-				instructions: `You are a strict evaluator checking if the document matches the user's request.
-Be critical - partial alignment should score 60-75, not 80-90.
-Return valid JSON matching the schema.`,
-			},
-			createPrompt: ({ run }) => {
-				if (!run.input?.userPrompt) {
-					return 'Return {"score":100,"reasoning":"No user prompt provided."}';
-				}
-
-				return `Compare the document to the user's original request.
+function buildAlignmentPrompt(params: {
+	documentContent: string;
+	userPrompt: string;
+}): string {
+	return `Compare the document to the user's original request.
 
 USER REQUEST:
 ---
-${run.input.userPrompt.slice(0, 2000)}
+${params.userPrompt.slice(0, 2000)}
 ---
 
 GENERATED DOCUMENT:
 ---
-${run.output.slice(0, MAX_DOCUMENT_CHARS)}
+${params.documentContent.slice(0, MAX_DOCUMENT_CHARS)}
 ---
 
 ALIGNMENT CRITERIA:
@@ -546,12 +450,25 @@ SCORING:
 - 0-49: Does not adequately address the request
 
 Return JSON with: score (0-100), reasoning, addressedRequirements[], missedRequirements[]`;
-			},
-		})
-		.generateScore(({ results }) => {
-			const rawScore = results.analyzeStepResult?.score ?? 0;
-			return calibrateScore(rawScore, params.provider, "alignment");
-		});
+}
+
+async function generateMetric<
+	T extends { score: number; reasoning: string },
+>(params: {
+	model: LanguageModel;
+	instructions: string;
+	prompt: string;
+	schema: z.ZodType<T>;
+}): Promise<T> {
+	const result = await generateText({
+		model: params.model,
+		instructions: params.instructions,
+		prompt: params.prompt,
+		output: Output.object({ schema: params.schema }),
+		providerOptions: { openai: { strictJsonSchema: false } },
+	});
+
+	return result.output;
 }
 
 // ============================================================================
@@ -565,7 +482,7 @@ export async function runLLMMetrics(params: {
 	userPrompt?: string;
 	provider: string;
 	model: string;
-	modelConfig: MastraModelConfig;
+	languageModel: LanguageModel;
 	organizationId?: string;
 	onUsageTracked?: () => void;
 }): Promise<LLMEvalResult | null> {
@@ -589,60 +506,57 @@ export async function runLLMMetrics(params: {
 	}, HEARTBEAT_INTERVAL_MS);
 
 	try {
-		// Log model config details for debugging (especially Azure)
-		const modelInfo = params.modelConfig as unknown as {
-			provider?: string;
-			modelId?: string;
-			specificationVersion?: string;
-		};
-		console.log("[LLM Metrics] Creating scorers with model config:", {
+		console.log("[LLM Metrics] Running structured metric generation:", {
 			provider: params.provider,
 			model: params.model,
-			configProvider: modelInfo?.provider,
-			configModelId: modelInfo?.modelId,
-			specificationVersion: modelInfo?.specificationVersion,
 			documentType: params.documentType,
 			contentLength: params.documentContent?.length,
 			hasUserPrompt: !!params.userPrompt,
 		});
 
-		const qualityScorer = createQualityScorer({
-			model: params.modelConfig,
-			provider: params.provider,
-		});
-		const coherenceScorer = createCoherenceScorer({
-			model: params.modelConfig,
-			provider: params.provider,
-		});
-		const alignmentScorer = createAlignmentScorer({
-			model: params.modelConfig,
-			provider: params.provider,
-		});
+		const model = withoutEvalTemperature(params.languageModel);
 
-		const runInput = {
-			documentType: params.documentType,
-			expectedSections: params.expectedSections,
-			userPrompt: params.userPrompt,
-		};
-
-		// Run all scorers with Promise.allSettled for consistent error handling
+		// Run all metrics with Promise.allSettled so one provider failure does not
+		// discard the remaining completed judge results.
 		const scorerPromises: Promise<unknown>[] = [
-			qualityScorer.run({
-				input: runInput,
-				output: params.documentContent,
+			generateMetric({
+				model,
+				instructions: `You are a STRICT document evaluator.
+Be critical and identify real issues. Do NOT give high scores to mediocre content.
+Average documents should score 60-70, not 80-90.
+Only exceptional documents with all required elements should score above 85.
+Return valid JSON matching the schema.`,
+				prompt: buildQualityPrompt(params),
+				schema: qualitySchema,
 			}),
-			coherenceScorer.run({
-				input: runInput,
-				output: params.documentContent,
+			generateMetric({
+				model,
+				instructions: `You are a CRITICAL document reviewer.
+First identify ALL issues, then calculate score by deducting points.
+Start at 100 and subtract:
+- Major flow issues: -20 each
+- Inconsistent terminology: -10 each
+- Abrupt transitions: -5 each
+- Missing logical connections: -10 each
+- Contradictory statements: -15 each`,
+				prompt: buildCoherencePrompt(params),
+				schema: coherenceSchema,
 			}),
 		];
 
-		// Only run alignment scorer if userPrompt is provided
+		// Only run alignment metric if userPrompt is provided.
 		if (params.userPrompt) {
 			scorerPromises.push(
-				alignmentScorer.run({
-					input: runInput,
-					output: params.documentContent,
+				generateMetric({
+					model,
+					instructions: `You are a strict evaluator checking if the document matches the user's request.
+Be critical - partial alignment should score 60-75, not 80-90.
+Return valid JSON matching the schema.`,
+					prompt: buildAlignmentPrompt({
+						documentContent: params.documentContent,
+						userPrompt: params.userPrompt,
+					}),
+					schema: alignmentSchema,
 				}),
 			);
 		}
@@ -722,19 +636,23 @@ async function buildLLMEvalResult(args: {
 			});
 			return null;
 		}
-		const value = result.value as {
-			score?: number;
-			analyzeStepResult?: Record<string, unknown>;
-		};
-		const details = value.analyzeStepResult ?? {};
+		const details = result.value as Record<string, unknown>;
 		// Log successful score for debugging
 		console.log(`[LLM Metrics] ${name} scorer completed:`, {
-			score: value.score ?? 0,
+			score: calibrateScore(
+				(details.score as number) ?? 0,
+				params.provider,
+				name as "quality" | "coherence" | "alignment",
+			),
 			hasDetails: Object.keys(details).length > 0,
 		});
 		return {
 			name,
-			score: value.score ?? 0,
+			score: calibrateScore(
+				(details.score as number) ?? 0,
+				params.provider,
+				name as "quality" | "coherence" | "alignment",
+			),
 			reasoning: (details.reasoning as string) ?? "",
 			details,
 		};
@@ -785,8 +703,6 @@ async function buildLLMEvalResult(args: {
 // =============================================================================
 // Workflow-friendly wrapper activity
 // =============================================================================
-
-import { resolveEvalModel, toMastraModelConfig } from "./mastra-config";
 
 /**
  * Input for the workflow-friendly LLM metrics activity
@@ -851,7 +767,7 @@ export async function runLLMMetricsActivity(
 		userPrompt,
 		provider: llmModel.metadata.provider,
 		model: llmModel.metadata.modelString,
-		modelConfig: toMastraModelConfig(llmModel.model),
+		languageModel: llmModel.model,
 		organizationId,
 		onUsageTracked: llmModel.trackUsage,
 	});
