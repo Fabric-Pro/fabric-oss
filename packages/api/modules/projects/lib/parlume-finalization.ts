@@ -5,7 +5,10 @@ import {
 	deleteParlumeMeetingBotData,
 	getParlumeBridgeSettings,
 } from "./parlume-meeting-baas";
-import { recordParlumeMeetingProviderUsage } from "./parlume-usage";
+import {
+	recordParlumeMeetingProviderUsage,
+	resolveParlumeMeetingEnd,
+} from "./parlume-usage";
 
 const MAX_PARLUME_TRANSCRIPT_CHARS = 1_000_000;
 
@@ -58,6 +61,9 @@ export async function finalizeParlumeSession(
 			status: true,
 			endReason: true,
 			joinedAt: true,
+			terminalCallbackAt: true,
+			leaveRequestedAt: true,
+			captureStoppedAt: true,
 			transcriptContextId: true,
 		},
 	});
@@ -173,7 +179,7 @@ export async function finalizeParlumeSession(
 		}
 	}
 	if (finalizedNow) {
-		const endedAt = new Date();
+		const endedAt = resolveParlumeMeetingEnd(session, new Date());
 		recordParlumeMeetingProviderUsage({
 			sessionId: session.id,
 			userId: session.userId,
