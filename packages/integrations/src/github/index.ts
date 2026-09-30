@@ -68,6 +68,20 @@ class GitHubApiError extends Error {
 	}
 }
 
+/**
+ * The token endpoint answered a refresh with a failure. Carries the OAuth
+ * error code so a caller can tell a rejected grant from a transient failure.
+ */
+class GitHubTokenRefreshError extends Error {
+	constructor(
+		message: string,
+		public readonly errorCode: string,
+	) {
+		super(message);
+		this.name = "GitHubTokenRefreshError";
+	}
+}
+
 async function githubFetch(
 	token: string,
 	path: string,
@@ -305,6 +319,17 @@ async function getGitHubClientCredentials(
 }
 
 /**
+ * Deadline for one GitHub token exchange, covering the whole request. Both
+ * refresh paths — workflow integrations and project repositories — run the
+ * exchange inside a refresh lock's transaction, and start it only when this
+ * plus database headroom still fits what is left of that transaction's
+ * timeout. Unbounded, a stalled exchange outlives the transaction: Prisma rolls
+ * back and releases the lock while GitHub may still rotate the single-use
+ * refresh token, leaving nothing to persist the replacement.
+ */
+const GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
+
+/**
  * Perform the actual GitHub token refresh via OAuth endpoint.
  * Separated from refreshTokenIfNeeded so it can be reused by the 401 retry path.
  */
@@ -348,10 +373,14 @@ async function performTokenRefresh(
 		refreshToken: refreshTokenValue,
 		clientId,
 		clientSecret,
+		timeoutMs: GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	});
 
 	if (!result.ok) {
-		throw new Error(`GitHub token refresh failed: ${result.errorMessage}`);
+		throw new GitHubTokenRefreshError(
+			`GitHub token refresh failed: ${result.errorMessage}`,
+			result.errorCode,
+		);
 	}
 
 	// Store refreshed credentials. Reuse the existing refresh token when
@@ -461,13 +490,6 @@ export async function refreshProjectRepoGitHubToken(input: {
 }): Promise<string | null> {
 	return (await refreshProjectRepoGitHubTokenWithOutcome(input)).token;
 }
-
-/**
- * Deadline for one project-repo token exchange with GitHub, covering the
- * whole request. The exchange runs inside the refresh lock's transaction,
- * which starts it only when this plus database headroom still fits.
- */
-const GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
 
 /**
  * {@link refreshProjectRepoGitHubToken}, but reporting WHY a null token came
@@ -824,36 +846,45 @@ async function refreshTokenWithLock(
 							"or reconnect your GitHub account.",
 					);
 				}
-				return withRefreshLock(`wfint:${integrationId}`, async (tx) => {
-					// Re-read inside the lock: a winner may have rotated the token while
-					// we queued, in which case theirs is the live one and exchanging
-					// again would burn it.
-					const fresh = await tx.workflowIntegration.findUnique({
-						where: { id: integrationId },
-						select: { credentials: true },
-					});
-					if (fresh?.credentials) {
-						const parsed = safeParseCredentials(
-							decryptApiKey(fresh.credentials),
-						);
-						if (parsed && !isTokenExpired(parsed)) {
-							return extractAccessToken(
+				return withRefreshLock(
+					`wfint:${integrationId}`,
+					async (tx, assertBudget) => {
+						// Re-read inside the lock: a winner may have rotated the token while
+						// we queued, in which case theirs is the live one and exchanging
+						// again would burn it.
+						const fresh = await tx.workflowIntegration.findUnique({
+							where: { id: integrationId },
+							select: { credentials: true },
+						});
+						if (fresh?.credentials) {
+							const parsed = safeParseCredentials(
 								decryptApiKey(fresh.credentials),
 							);
+							if (parsed && !isTokenExpired(parsed)) {
+								return extractAccessToken(
+									decryptApiKey(fresh.credentials),
+								);
+							}
+							if (parsed?.refresh_token) {
+								refreshTokenValue = parsed.refresh_token;
+							}
 						}
-						if (parsed?.refresh_token) {
-							refreshTokenValue = parsed.refresh_token;
-						}
-					}
-					return performTokenRefresh(
-						integration,
-						refreshTokenValue,
-						userId,
-						organizationId,
-						tx,
-						creds,
-					);
-				});
+						// Gated here, after the return that sends nothing, so a
+						// caller that queued behind the winner is never rejected
+						// for the wait. A throw rolls back before anything is
+						// sent, and callers handle it like any failed refresh:
+						// they keep the current token and persist nothing.
+						assertBudget(GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS);
+						return performTokenRefresh(
+							integration,
+							refreshTokenValue,
+							userId,
+							organizationId,
+							tx,
+							creds,
+						);
+					},
+				);
 			})
 			.finally(() => {
 				refreshInProgress.delete(integrationId);
@@ -1815,17 +1846,29 @@ export async function executeGitHubTool(
 						userId,
 						organizationId,
 					);
-					return await handler(accessToken, args);
 				} catch (refreshError) {
 					console.error(
 						"[GitHub] Token refresh after 401 failed:",
 						refreshError,
 					);
+					// Only GitHub rejecting the grant justifies a reconnect. A
+					// timed-out exchange, a spent lock budget or a platform
+					// fault says nothing about the customer's connection.
+					if (
+						refreshError instanceof GitHubTokenRefreshError &&
+						isGrantRejected(refreshError.errorCode)
+					) {
+						throw new Error(
+							"GitHub access token expired and refresh failed. " +
+								"Please reconnect your GitHub account in Settings > Integrations.",
+						);
+					}
 					throw new Error(
-						"GitHub access token expired and refresh failed. " +
-							"Please reconnect your GitHub account in Settings > Integrations.",
+						"GitHub access token expired and could not be refreshed right now. " +
+							"Please try again shortly.",
 					);
 				}
+				return await handler(accessToken, args);
 			}
 		}
 
