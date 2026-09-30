@@ -47,6 +47,14 @@
  * to-do, which stores an id, and not into the audit row. The log is
  * append-only, so either would outlive the erasure `org.contact.redacted`
  * records.
+ *
+ * The one text-bearing write is the new assignee's notification: its snippet
+ * names the member who assigned the to-do and carries the to-do's text, so
+ * they can tell what landed on them without opening the page. That row is
+ * not a ledger — it is mutable, belongs to its recipient, and cascades with
+ * them and with the project. It is written only for a member; a contact has no
+ * account to notify, so the person whose erasure the paragraph above protects
+ * never appears in one.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -55,8 +63,10 @@ import {
 	isAssignableOrganizationMember,
 	setTodoAssignee,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
+import { fanOut } from "../../../lib/notification-service";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -204,6 +214,46 @@ export const assignTodoProcedure = tenantProtectedProcedure
 				previousAssigneeContactId: todo.assigneeContactId,
 			},
 		});
+
+		// Tell the member the to-do now belongs to them (Fizzy #2340). Only a
+		// CHANGE of member notifies: re-saving the current assignee is not news,
+		// unassigning or handing the item to a contact leaves nobody with an
+		// account to tell, and taking an item yourself tells you nothing.
+		//
+		// Awaited, not fire-and-forget: on Vercel a promise left running after
+		// the response returns is not guaranteed to finish, and the write it
+		// would lose is the whole point. The fan-out logs and swallows its own
+		// failures; the catch is for anything that escapes it, so a failed
+		// notice can never undo an assignment that has already committed.
+		if (
+			assigneeUserId &&
+			assigneeUserId !== todo.assigneeUserId &&
+			assigneeUserId !== context.user.id
+		) {
+			await fanOut
+				.todoAssigned({
+					recipientUserId: assigneeUserId,
+					todoId: todo.id,
+					todoText: todo.title ?? todo.itemTextSnapshot,
+					projectId: todo.projectId,
+					organizationId,
+					actorUserId: context.user.id,
+					actorName: context.user.name,
+					previousAssigneeUserId: todo.assigneeUserId,
+				})
+				.catch((error: unknown) => {
+					logger.warn(
+						"[todos.assign] assignment notification failed",
+						{
+							todoId: todo.id,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						},
+					);
+				});
+		}
 
 		return {
 			todoId: todo.id,

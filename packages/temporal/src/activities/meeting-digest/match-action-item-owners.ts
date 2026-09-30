@@ -43,17 +43,25 @@
  * skipped outright when the row already holds what this run would write. A
  * Temporal retry, or a second run over unchanged text, therefore issues no
  * database writes at all.
+ *
+ * A member holding items this activity assigned gets ONE in-app notice for the
+ * meeting, written through `createTodoMeetingAssignmentNotification`; the
+ * comment above the item loop says why it is collected the way it is. The
+ * unchanged re-run above collects the same people again and writes no notice,
+ * because the writer finds the one it already wrote.
  */
 
 import {
 	type BindableActionItem,
 	type BindableTodo,
 	bindActionItemsToTodos,
+	createTodoMeetingAssignmentNotification,
 	db,
 	isFeatureEnabled,
 	normalizeItemText,
 	Prisma,
 	TODO_BINDING_VERSION,
+	type TodoMeetingAssignmentItem,
 	todoBindingWhere,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -353,6 +361,9 @@ export async function matchMeetingActionItemOwnersActivity(
 			syncedAt: true,
 			userId: true,
 			organizationId: true,
+			// Read only to quote in the assignment notice's snippet — never in
+			// a log line, and never in the notice's title.
+			meetingSubject: true,
 			// The revision this run is about to act on. The stamp at the end is
 			// conditioned on it, so a re-extraction that lands mid-run cannot be
 			// reported as matched by a run that never saw its items.
@@ -466,6 +477,29 @@ export async function matchMeetingActionItemOwnersActivity(
 	let suggested = 0;
 	let assignmentsRefused = 0;
 
+	// Who holds this meeting's items because the MATCHER put them there, as of
+	// the end of this run — so each of them hears about it once per MEETING,
+	// not once per item (Fizzy #2340). A meeting routinely hands one person
+	// three or four items; a bell entry per item would bury the notice about
+	// the meeting under its own detail, and the snippet already carries the
+	// count.
+	//
+	// Read from the rows' end state, never from "what this run changed". A
+	// run that dies after its assignment writes — or whose notice insert hits
+	// a transient failure — is retried, and the retry finds those rows
+	// unchanged and writes nothing. A rule keyed on change would collect
+	// nobody then, and the person would never hear. Keyed on the end state,
+	// the retry collects the same people, and "already told" is answered by
+	// the writer's dedupe row, which is written exactly when the telling
+	// happened. A person's own choice (`assignedManually`) is not the
+	// matcher's to announce: `todos.assign` tells that assignee itself.
+	const heldByMatcher = new Map<string, TodoMeetingAssignmentItem[]>();
+	const holdFor = (userId: string, todoId: string, text: string) => {
+		const items = heldByMatcher.get(userId) ?? [];
+		items.push({ todoId, text });
+		heldByMatcher.set(userId, items);
+	};
+
 	for (const [index, entry] of live.entries()) {
 		if (index % HEARTBEAT_EVERY_ITEMS === 0) {
 			heartbeat(
@@ -500,6 +534,9 @@ export async function matchMeetingActionItemOwnersActivity(
 		};
 
 		if (existing && !todoNeedsWrite(existing, desired)) {
+			if (!existing.assignedManually && existing.assigneeUserId) {
+				holdFor(existing.assigneeUserId, existing.id, entry.item.text);
+			}
 			continue;
 		}
 
@@ -531,8 +568,10 @@ export async function matchMeetingActionItemOwnersActivity(
 		// Upsert rather than create-or-update-by-id: a Temporal retry that lost
 		// its answer halfway through must land on the same row, and the compound
 		// unique is the only address that survives extraction deleting and
-		// recreating the action item rows underneath it.
-		await db.todoItem.upsert({
+		// recreating the action item rows underneath it. Its id is read back
+		// because a row this run created has no snapshot to take one from, and
+		// the assignment notice names the to-dos it is about.
+		const upserted = await db.todoItem.upsert({
 			where: todoBindingWhere(transcript.id, entry),
 			create: {
 				source: "MEETING_DIGEST",
@@ -550,6 +589,7 @@ export async function matchMeetingActionItemOwnersActivity(
 				...assignmentColumns,
 			},
 			update: sourceColumns,
+			select: { id: true },
 		});
 
 		// Re-checked by Postgres in the WHERE, not in JavaScript against the
@@ -593,12 +633,29 @@ export async function matchMeetingActionItemOwnersActivity(
 			assignmentsRefused += 1;
 		}
 
+		// Same rule as `assigned` above — rows, not intentions — narrowed to a
+		// member, since a contact has no bell. A write that matched nothing
+		// means a person claimed the row mid-run, so it is theirs, not ours.
+		if (assignmentApplied > 0 && verdict.assignee?.kind === "user") {
+			holdFor(verdict.assignee.id, upserted.id, entry.item.text);
+		}
+
 		if (existing) {
 			todosUpdated += 1;
 		} else {
 			todosCreated += 1;
 		}
 	}
+
+	const notices = await announceAssignments({
+		heldByMatcher,
+		organizationId,
+		projectId: transcript.projectId,
+		transcriptId: transcript.id,
+		meetingSubject: transcript.meetingSubject,
+		sourceDate,
+		transcriptCuid,
+	});
 
 	const orphansRewritten = await carryOrphanedAssignments(
 		binding.orphaned,
@@ -625,6 +682,10 @@ export async function matchMeetingActionItemOwnersActivity(
 		// Worth its own number: a support question about a historical meeting
 		// looking orphaned is answered by whether this repair ran for it.
 		keysBackfilled,
+		// Notices actually written, which is fewer than the people holding items
+		// whenever a meeting is past the age cutoff, a person already heard about
+		// it, or they switched Assignments off.
+		recipientsNotified: notices.created,
 	});
 
 	const wroteNothing =
@@ -676,6 +737,19 @@ export async function matchMeetingActionItemOwnersActivity(
 		});
 	}
 
+	// Last, after the to-dos and the stamp are settled, so a notice that could
+	// not be written costs a retry of THIS activity and nothing else. The retry
+	// re-reads the same end state, skips everyone the dedupe row says was
+	// told, and tries the rest again; the rows and the stamp it rewrites are
+	// idempotent. Terminal outcomes — stale meeting, already told, Assignments
+	// off — are not failures and never land here.
+	if (notices.failed > 0) {
+		throw ApplicationFailure.retryable(
+			`${LOG_PREFIX} ${notices.failed} of ${heldByMatcher.size} assignment notice(s) not written (transcript ${transcriptCuid})`,
+			"AssignmentNoticeFailed",
+		);
+	}
+
 	return {
 		itemsConsidered: live.length,
 		todosCreated,
@@ -725,6 +799,73 @@ async function loadOwnerCandidates(
 			}),
 		),
 	];
+}
+
+/**
+ * One in-app notice per person holding matcher-assigned items of this meeting
+ * (Fizzy #2340).
+ *
+ * Never throws: a notice is never a reason to lose the to-dos this run wrote.
+ * The writer already never throws; the catch below is for the case where that
+ * stops being true. Freshness, "already told" and the Assignments preference
+ * are the writer's to decide — this delivers the batch and reports what was
+ * written and what failed, and the caller turns failures into a retry.
+ *
+ * Awaited one recipient at a time rather than fanned out: a meeting assigns a
+ * handful of people at most, and sequential writes keep the connection pool
+ * free for the matcher's own statements.
+ */
+async function announceAssignments(args: {
+	heldByMatcher: ReadonlyMap<string, readonly TodoMeetingAssignmentItem[]>;
+	organizationId: string;
+	projectId: string;
+	transcriptId: string;
+	meetingSubject: string | null;
+	sourceDate: Date;
+	/** For log lines only. */
+	transcriptCuid: string;
+}): Promise<{ created: number; failed: number }> {
+	let created = 0;
+	let failed = 0;
+
+	for (const [recipientUserId, items] of args.heldByMatcher) {
+		try {
+			const outcome = await createTodoMeetingAssignmentNotification({
+				recipientUserId,
+				organizationId: args.organizationId,
+				projectId: args.projectId,
+				transcriptId: args.transcriptId,
+				meetingSubject: args.meetingSubject,
+				sourceDate: args.sourceDate,
+				items,
+			});
+			if (outcome === "created") {
+				created += 1;
+			} else if (outcome === "failed") {
+				failed += 1;
+			}
+		} catch (err) {
+			failed += 1;
+			logger.warn(`${LOG_PREFIX} assignment notice threw`, {
+				projectId: args.projectId,
+				transcriptCuid: args.transcriptCuid,
+				err: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	if (failed > 0) {
+		// Counts only: which person missed a notice is not worth a name in a
+		// worker log. The caller retries the activity for them.
+		logger.warn(`${LOG_PREFIX} some assignment notices were not written`, {
+			projectId: args.projectId,
+			transcriptCuid: args.transcriptCuid,
+			failed,
+			recipients: args.heldByMatcher.size,
+		});
+	}
+
+	return { created, failed };
 }
 
 /**

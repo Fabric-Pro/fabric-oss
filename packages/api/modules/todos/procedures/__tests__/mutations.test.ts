@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => ({
 		projectUserFunctionTag: { findMany: vi.fn() },
 	},
 	recordAuditFromRequest: vi.fn(),
+	todoAssigned: vi.fn(),
 	captured: {} as Record<
 		string,
 		(args: { context: any; input: any }) => Promise<any>
@@ -88,6 +89,15 @@ vi.mock("@repo/database", async (importOriginal) => {
 vi.mock("../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...args: unknown[]) =>
 		mocks.recordAuditFromRequest(...args),
+}));
+
+// The real module loads mail, payments and Temporal. What `assign` owes the
+// notification layer is WHETHER it asks and with what; the row the fan-out
+// writes is pinned in `lib/__tests__/notification-service-todoAssigned.test.ts`.
+vi.mock("../../../../lib/notification-service", () => ({
+	fanOut: {
+		todoAssigned: (...args: unknown[]) => mocks.todoAssigned(...args),
+	},
 }));
 
 vi.mock("../../../../orpc/procedures", () => {
@@ -392,11 +402,13 @@ beforeEach(() => {
 		mocks.dbMock.project.findMany,
 		mocks.dbMock.projectUserFunctionTag.findMany,
 		mocks.recordAuditFromRequest,
+		mocks.todoAssigned,
 	]) {
 		fn.mockReset();
 	}
 
 	mocks.isFeatureEnabled.mockResolvedValue(true);
+	mocks.todoAssigned.mockResolvedValue(undefined);
 	// `todos.create` verifies a NAMED project with the read's predicate; the
 	// tests that care flip it.
 	mocks.dbMock.project.findFirst.mockResolvedValue({ id: PROJECT });
@@ -1210,6 +1222,155 @@ describe("todos.assign", () => {
 		const serialized = JSON.stringify(row);
 		expect(serialized).not.toContain(CONTACT.name);
 		expect(serialized).not.toContain(CONTACT.email);
+	});
+
+	describe("telling the new assignee (Fizzy #2340)", () => {
+		it("notifies the member the to-do now belongs to", async () => {
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-meeting",
+					assigneeUserId: OTHER_MEMBER,
+				},
+			});
+
+			expect(mocks.todoAssigned).toHaveBeenCalledTimes(1);
+			expect(mocks.todoAssigned).toHaveBeenCalledWith({
+				recipientUserId: OTHER_MEMBER,
+				todoId: "todo-meeting",
+				// A meeting row carries its text in the snapshot, not a title.
+				todoText: "Send the revised scope",
+				projectId: PROJECT,
+				organizationId: ORG,
+				actorUserId: VIEWER,
+				actorName: "Dana",
+				previousAssigneeUserId: null,
+			});
+		});
+
+		it("names the member who held it before, and a manual row's own title", async () => {
+			// The viewer's own project-less manual to-do (arm 5), currently on
+			// them, handed to a colleague.
+			mocks.loadTodoForMutation.mockResolvedValue(
+				foreignProjectlessManualTodo({
+					id: "todo-mine",
+					userId: VIEWER,
+					assigneeUserId: VIEWER,
+				}),
+			);
+
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-mine",
+					assigneeUserId: OTHER_MEMBER,
+				},
+			});
+
+			expect(mocks.todoAssigned).toHaveBeenCalledWith(
+				expect.objectContaining({
+					recipientUserId: OTHER_MEMBER,
+					todoId: "todo-mine",
+					todoText: "Book the flights",
+					projectId: null,
+					previousAssigneeUserId: VIEWER,
+				}),
+			);
+		});
+
+		it("stays quiet when the choice changes nothing", async () => {
+			mocks.loadTodoForMutation.mockResolvedValue(
+				meetingTodo({ assigneeUserId: VIEWER }),
+			);
+
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-meeting",
+					assigneeUserId: VIEWER,
+				},
+			});
+
+			expect(mocks.setTodoAssignee).toHaveBeenCalled();
+			expect(mocks.todoAssigned).not.toHaveBeenCalled();
+		});
+
+		it("does not notify you about a to-do you took yourself", async () => {
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-meeting",
+					assigneeUserId: VIEWER,
+				},
+			});
+
+			expect(mocks.setTodoAssignee).toHaveBeenCalled();
+			expect(mocks.todoAssigned).not.toHaveBeenCalled();
+		});
+
+		it("has nobody to tell when the to-do goes to a contact or to nobody", async () => {
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-meeting",
+					assigneeContactId: CONTACT.id,
+				},
+			});
+			await mocks.captured.assign({
+				context: baseCtx,
+				input: { organizationId: ORG, todoId: "todo-meeting" },
+			});
+
+			expect(mocks.setTodoAssignee).toHaveBeenCalledTimes(2);
+			expect(mocks.todoAssigned).not.toHaveBeenCalled();
+		});
+
+		it("notifies nobody when the write was refused", async () => {
+			mocks.setTodoAssignee.mockResolvedValue({
+				assigned: false,
+				reason: "todo_not_found",
+			});
+
+			await expect(
+				mocks.captured.assign({
+					context: baseCtx,
+					input: {
+						organizationId: ORG,
+						todoId: "todo-meeting",
+						assigneeUserId: OTHER_MEMBER,
+					},
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+			expect(mocks.todoAssigned).not.toHaveBeenCalled();
+		});
+
+		it("keeps the assignment when the notice fails", async () => {
+			// The write has committed by now. A notification that cannot be
+			// written is a lost nudge, not a reason to tell the caller their
+			// assignment failed.
+			mocks.todoAssigned.mockRejectedValue(new Error("db down"));
+
+			const result = await mocks.captured.assign({
+				context: baseCtx,
+				input: {
+					organizationId: ORG,
+					todoId: "todo-meeting",
+					assigneeUserId: OTHER_MEMBER,
+				},
+			});
+
+			expect(result).toMatchObject({
+				assigneeUserId: OTHER_MEMBER,
+				assigneeKind: "member",
+			});
+			expect(auditCalls()).toHaveLength(1);
+		});
 	});
 });
 

@@ -46,6 +46,7 @@ function toAbsoluteLink(link: string | null): string | null {
 type DeliveryNotification = {
 	id: string;
 	userId: string;
+	organizationId: string | null;
 	type: NotificationType;
 	category: NotificationCategory;
 	title: string;
@@ -69,6 +70,7 @@ async function loadNotification(
 		select: {
 			id: true,
 			userId: true,
+			organizationId: true,
 			type: true,
 			category: true,
 			title: true,
@@ -84,6 +86,55 @@ async function loadNotification(
 			actor: { select: { id: true, name: true } },
 		},
 	});
+}
+
+/**
+ * Whether the recipient still belongs to the organization whose content the
+ * notification carries — asked at SEND time, not only when the row was
+ * written.
+ *
+ * A row is written the moment its event happens and delivered later, by a
+ * workflow that can sit in a queue, retry, or run on a worker that was
+ * mid-deploy. A person removed from the organization in between would
+ * otherwise still get its title and snippet — a to-do's text, a comment, a
+ * story title — in their personal inbox or at their own endpoint, after the
+ * app itself has stopped showing it to them. A row with no organization is
+ * account-level (a usage limit, a system incident) and carries nobody's
+ * tenant content, so it has nothing to re-check.
+ *
+ * Bounded best-effort, not a fence: an external send cannot join a database
+ * transaction, so a removal that commits between this read and the send can
+ * still lose the race. The window is that gap alone — every retry runs this
+ * activity from the top and asks again — where before this check it spanned
+ * the whole queue.
+ */
+async function recipientStillBelongs(
+	notification: DeliveryNotification,
+	channel: "email" | "webhook",
+): Promise<boolean> {
+	if (!notification.organizationId) {
+		return true;
+	}
+	const membership = await db.member.findFirst({
+		where: {
+			organizationId: notification.organizationId,
+			userId: notification.userId,
+		},
+		select: { id: true },
+	});
+	if (membership) {
+		return true;
+	}
+	logger.info(
+		{
+			channel,
+			notificationId: notification.id,
+			type: notification.type,
+			timestamp: new Date().toISOString(),
+		},
+		"[notification-delivery] skipped — recipient is no longer a member of the organization",
+	);
+	return false;
 }
 
 /**
@@ -154,6 +205,9 @@ export async function sendNotificationEmailActivity(
 	if (!notification) {
 		return { delivered: false, reason: "notification-not-found" };
 	}
+	if (!(await recipientStillBelongs(notification, "email"))) {
+		return { delivered: false, reason: "recipient-not-a-member" };
+	}
 
 	const user = await db.user.findUnique({
 		where: { id: notification.userId },
@@ -213,6 +267,11 @@ export async function sendNotificationWebhookActivity(
 	const notification = await loadNotification(input.notificationId);
 	if (!notification) {
 		return { delivered: false, reason: "notification-not-found" };
+	}
+	// Not thrown: a departed member is a settled answer, and a retry would
+	// only ask the same question again.
+	if (!(await recipientStillBelongs(notification, "webhook"))) {
+		return { delivered: false, reason: "recipient-not-a-member" };
 	}
 
 	const prefs = await getDeliveryPreferences(notification.userId);

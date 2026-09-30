@@ -13,12 +13,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	findNotification,
 	findUser,
+	findMember,
 	getDeliveryPrefs,
 	sendEmail,
 	unsafeReason,
 } = vi.hoisted(() => ({
 	findNotification: vi.fn(),
 	findUser: vi.fn(),
+	findMember: vi.fn(),
 	getDeliveryPrefs: vi.fn(),
 	sendEmail: vi.fn(),
 	unsafeReason: vi.fn(),
@@ -28,6 +30,7 @@ vi.mock("@repo/database", () => ({
 	db: {
 		notification: { findUnique: findNotification },
 		user: { findUnique: findUser },
+		member: { findFirst: findMember },
 	},
 	getDeliveryPreferences: getDeliveryPrefs,
 }));
@@ -61,6 +64,7 @@ import {
 const NOTIFICATION = {
 	id: "n1",
 	userId: "u1",
+	organizationId: "org-1",
 	type: "STORY_MENTION",
 	category: "MENTION",
 	title: "You were mentioned",
@@ -80,6 +84,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	findNotification.mockResolvedValue({ ...NOTIFICATION });
 	findUser.mockResolvedValue({ email: "user@example.com" });
+	findMember.mockResolvedValue({ id: "member-1" });
 	getDeliveryPrefs.mockResolvedValue({
 		emailEnabled: true,
 		webhookEnabled: true,
@@ -204,5 +209,53 @@ describe("sendNotificationWebhookActivity", () => {
 			reason: "webhook-not-configured",
 		});
 		expect(global.fetch).not.toHaveBeenCalled();
+	});
+});
+
+describe("a recipient who has left the organization (Fizzy #2340)", () => {
+	it("sends no email, and says why", async () => {
+		findMember.mockResolvedValue(null);
+
+		const result = await sendNotificationEmailActivity({
+			notificationId: "n1",
+		});
+
+		expect(findMember).toHaveBeenCalledWith({
+			where: { organizationId: "org-1", userId: "u1" },
+			select: { id: true },
+		});
+		expect(result).toEqual({
+			delivered: false,
+			reason: "recipient-not-a-member",
+		});
+		expect(sendEmail).not.toHaveBeenCalled();
+	});
+
+	it("posts no webhook, and does not throw for a retry", async () => {
+		findMember.mockResolvedValue(null);
+
+		const result = await sendNotificationWebhookActivity({
+			notificationId: "n1",
+		});
+
+		expect(result).toEqual({
+			delivered: false,
+			reason: "recipient-not-a-member",
+		});
+		expect(global.fetch).not.toHaveBeenCalled();
+	});
+
+	it("still delivers an account-level notification, which has no organization to leave", async () => {
+		findNotification.mockResolvedValue({
+			...NOTIFICATION,
+			organizationId: null,
+		});
+
+		const result = await sendNotificationEmailActivity({
+			notificationId: "n1",
+		});
+
+		expect(findMember).not.toHaveBeenCalled();
+		expect(result).toEqual({ delivered: true });
 	});
 });
