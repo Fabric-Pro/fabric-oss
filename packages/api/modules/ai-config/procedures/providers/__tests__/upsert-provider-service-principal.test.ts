@@ -57,6 +57,10 @@ vi.mock("@repo/database", () => ({
 	canProviderSupportEmbeddings: vi.fn(() => true),
 }));
 
+vi.mock("../../../../../lib/audit", () => ({
+	recordAuditFromRequest: vi.fn(),
+}));
+
 vi.mock("@repo/utils", () => ({
 	encryptApiKey: vi.fn((key: string) => `encrypted:${key}`),
 }));

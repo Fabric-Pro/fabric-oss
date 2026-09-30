@@ -78,6 +78,15 @@ export const AUDIT_ACTIONS = [
 	"org.integration.connected",
 	"org.integration.disconnected",
 	"org.integration.config_updated",
+	// AI provider credential configuration: which endpoint receives tenant
+	// prompts and which key authenticates them. Metadata never carries the
+	// key or client secret, only whether a new one was supplied.
+	"org.ai_provider.configured",
+	"org.ai_provider.updated",
+	"org.ai_provider.default_changed",
+	"org.ai_provider.embedding_changed",
+	"org.ai_provider.enabled_providers_changed",
+	"org.ai_provider.deleted",
 	// The non-member contact register (#2340): people with no Fabric account
 	// whom the organization tracks deliverables against. Security-relevant
 	// because the register holds names and contact details of client staff
@@ -135,6 +144,12 @@ export const AUDIT_ACTIONS = [
 	"account.api_key.created",
 	"account.api_key.revoked",
 	"account.api_key.rotated",
+	"account.ai_provider.configured",
+	"account.ai_provider.updated",
+	"account.ai_provider.default_changed",
+	"account.ai_provider.embedding_changed",
+	"account.ai_provider.enabled_providers_changed",
+	"account.ai_provider.deleted",
 	// project (32)
 	"project.ci_run.triggered",
 	// Fabric dispatched a browser-driving test run against one of the project's
@@ -903,6 +918,18 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 			return "ADMIN_INTEGRATION_ADDED";
 		case "org.integration.disconnected":
 			return "ADMIN_INTEGRATION_REMOVED";
+		case "org.ai_provider.deleted":
+		case "account.ai_provider.deleted":
+			return "DATA_DELETE";
+		case "org.ai_provider.updated":
+		case "org.ai_provider.default_changed":
+		case "org.ai_provider.embedding_changed":
+		case "org.ai_provider.enabled_providers_changed":
+		case "account.ai_provider.updated":
+		case "account.ai_provider.default_changed":
+		case "account.ai_provider.embedding_changed":
+		case "account.ai_provider.enabled_providers_changed":
+			return "DATA_UPDATE";
 		case "audit.viewed":
 		case "userActivity.viewed":
 			return "DATA_READ";

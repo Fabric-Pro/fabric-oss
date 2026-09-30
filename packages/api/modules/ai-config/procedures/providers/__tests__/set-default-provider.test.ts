@@ -64,6 +64,10 @@ vi.mock("@repo/database", () => ({
 	getProviderDisplayName: vi.fn((p: string) => p),
 }));
 
+vi.mock("../../../../../lib/audit", () => ({
+	recordAuditFromRequest: vi.fn(),
+}));
+
 vi.mock("@repo/utils", () => ({
 	encryptApiKey: vi.fn((key: string) => `encrypted:${key}`),
 }));

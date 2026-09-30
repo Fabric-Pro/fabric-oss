@@ -1279,6 +1279,14 @@
 						"disconnected": "Integration getrennt",
 						"config_updated": "Integrationskonfiguration aktualisiert"
 					},
+					"ai_provider": {
+						"configured": "KI-Anbieter konfiguriert",
+						"updated": "KI-Anbieter aktualisiert",
+						"default_changed": "Standard-KI-Anbieter geändert",
+						"embedding_changed": "Embedding-KI-Anbieter geändert",
+						"enabled_providers_changed": "Aktivierte Anbieter eines KI-Anbieters geändert",
+						"deleted": "KI-Anbieter gelöscht"
+					},
 					"restored": "Organisation wiederhergestellt",
 					"purged": "Organisation endgültig gelöscht",
 					"todo": {
@@ -1303,6 +1311,14 @@
 						"created": "Persönlicher API-Schlüssel erstellt",
 						"revoked": "Persönlicher API-Schlüssel widerrufen",
 						"rotated": "Persönlicher API-Schlüssel rotiert"
+					},
+					"ai_provider": {
+						"configured": "KI-Anbieter konfiguriert",
+						"updated": "KI-Anbieter aktualisiert",
+						"default_changed": "Standard-KI-Anbieter geändert",
+						"embedding_changed": "Embedding-KI-Anbieter geändert",
+						"enabled_providers_changed": "Aktivierte Anbieter eines KI-Anbieters geändert",
+						"deleted": "KI-Anbieter gelöscht"
 					}
 				},
 				"project": {

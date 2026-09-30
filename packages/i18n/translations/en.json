@@ -1526,6 +1526,14 @@
 						"disconnected": "Integration disconnected",
 						"config_updated": "Integration config updated"
 					},
+					"ai_provider": {
+						"configured": "AI provider configured",
+						"updated": "AI provider updated",
+						"default_changed": "Default AI provider changed",
+						"embedding_changed": "Embedding AI provider changed",
+						"enabled_providers_changed": "AI gateway allowed providers changed",
+						"deleted": "AI provider deleted"
+					},
 					"restored": "Organization restored",
 					"purged": "Organization permanently deleted",
 					"todo": {
@@ -1550,6 +1558,14 @@
 						"created": "Personal API key created",
 						"revoked": "Personal API key revoked",
 						"rotated": "Personal API key rotated"
+					},
+					"ai_provider": {
+						"configured": "AI provider configured",
+						"updated": "AI provider updated",
+						"default_changed": "Default AI provider changed",
+						"embedding_changed": "Embedding AI provider changed",
+						"enabled_providers_changed": "AI gateway allowed providers changed",
+						"deleted": "AI provider deleted"
 					}
 				},
 				"project": {

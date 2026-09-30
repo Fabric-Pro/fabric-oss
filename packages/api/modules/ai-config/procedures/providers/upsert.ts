@@ -26,6 +26,13 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
+import {
+	type ProviderAuditSnapshot,
+	recordProviderConfigured,
+	recordProviderDeleted,
+	recordProviderSettingChanged,
+	snapshotProviderRow,
+} from "../../lib/provider-audit";
 import { refineProviderCredentials } from "../../lib/provider-credentials";
 // Shared with `providers/test-connection.ts` so the SSRF rules applied when
 // TESTING a URL are identical to those applied when STORING one.
@@ -67,6 +74,19 @@ function buildCredentialFields(input: {
 	};
 }
 
+interface UpsertOutcome {
+	result: {
+		success: boolean;
+		id: string;
+		provider: string;
+		displayName: string | null;
+		isDefault: boolean;
+	};
+	/** Row state before the write (null when created) and after it. */
+	before: ProviderAuditSnapshot | null;
+	after: ProviderAuditSnapshot;
+}
+
 /**
  * Upsert organization-level provider configuration
  * Saves to cloud_provider_config table for organization-wide access
@@ -80,13 +100,7 @@ async function upsertOrganizationProvider(
 	enabledProviders?: string[],
 	baseUrl?: string,
 	deploymentName?: string, // For Azure AI Foundry - the deployment name (user-defined)
-): Promise<{
-	success: boolean;
-	id: string;
-	provider: string;
-	displayName: string | null;
-	isDefault: boolean;
-}> {
+): Promise<UpsertOutcome> {
 	// Use transaction to ensure atomicity of all reads and writes
 	// This prevents race conditions that could leave no default or multiple defaults
 	return await db.$transaction(async (tx) => {
@@ -163,11 +177,15 @@ async function upsertOrganizationProvider(
 			});
 
 			return {
-				success: true,
-				id: updated.id,
-				provider: updated.provider,
-				displayName: updated.displayName,
-				isDefault: updated.isDefault,
+				result: {
+					success: true,
+					id: updated.id,
+					provider: updated.provider,
+					displayName: updated.displayName,
+					isDefault: updated.isDefault,
+				},
+				before: snapshotProviderRow(existing),
+				after: snapshotProviderRow(updated),
 			};
 		}
 
@@ -198,11 +216,15 @@ async function upsertOrganizationProvider(
 		);
 
 		return {
-			success: true,
-			id: created.id,
-			provider: created.provider,
-			displayName: created.displayName,
-			isDefault: created.isDefault,
+			result: {
+				success: true,
+				id: created.id,
+				provider: created.provider,
+				displayName: created.displayName,
+				isDefault: created.isDefault,
+			},
+			before: null,
+			after: snapshotProviderRow(created),
 		};
 	});
 }
@@ -258,12 +280,14 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 			isDefault: z.boolean(),
 		}),
 	)
-	.handler(async ({ context: { user, session }, input }) => {
+	.handler(async ({ context, input }) => {
+		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			session,
 		);
 		const provider = input.provider as AIProvider;
+		const keyChanged = Boolean(input.apiKey || input.clientSecret);
 
 		// Enforce the `requiresBaseUrl` invariant at the persistence boundary.
 		// The client forms already block an empty base URL for these providers,
@@ -326,7 +350,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				});
 			}
 
-			return await upsertOrganizationProvider(
+			const outcome = await upsertOrganizationProvider(
 				organizationId,
 				provider,
 				displayName,
@@ -336,69 +360,115 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				input.baseUrl,
 				input.deploymentName,
 			);
+			recordProviderConfigured(
+				context,
+				{ kind: "org", organizationId },
+				outcome.result,
+				{ before: outcome.before, after: outcome.after, keyChanged },
+			);
+			return outcome.result;
 		}
 
 		// Otherwise, save to user-level config
 		// Use transaction to ensure atomicity of all reads and writes
 		// This prevents race conditions that could leave no default or multiple defaults
-		return await db.$transaction(async (tx) => {
-			// Check if this provider already exists for this user
-			const existing = await tx.userCloudProviderConfig.findUnique({
-				where: {
-					userId_provider: {
-						userId: user.id,
-						provider,
-					},
-				},
-			});
-
-			// Determine if this should be default (first provider or explicitly set)
-			// All reads must be inside transaction to prevent race conditions
-			const otherEnabledProvider =
-				await tx.userCloudProviderConfig.findFirst({
+		const outcome = await db.$transaction(
+			async (tx): Promise<UpsertOutcome> => {
+				// Check if this provider already exists for this user
+				const existing = await tx.userCloudProviderConfig.findUnique({
 					where: {
-						userId: user.id,
-						enabled: true,
-						...(existing ? { id: { not: existing.id } } : {}),
+						userId_provider: {
+							userId: user.id,
+							provider,
+						},
 					},
 				});
-			// Check if there's another provider that IS default (not just enabled)
-			const otherDefaultProvider =
-				await tx.userCloudProviderConfig.findFirst({
-					where: {
-						userId: user.id,
-						enabled: true,
-						isDefault: true,
-						...(existing ? { id: { not: existing.id } } : {}),
-					},
-				});
-			// Logic:
-			// 1. If explicitly set to true, use that
-			// 2. If no other providers exist, this MUST be default
-			// 3. If other providers exist but none are default, this MUST be default
-			// 4. Only respect explicit false if there's another default provider
-			const shouldBeDefault =
-				input.isDefault === true ||
-				!otherEnabledProvider ||
-				!otherDefaultProvider;
 
-			// Clear existing defaults if this provider will become default
-			if (shouldBeDefault) {
-				await tx.userCloudProviderConfig.updateMany({
-					where: { userId: user.id, isDefault: true },
-					data: { isDefault: false },
-				});
-			}
+				// Determine if this should be default (first provider or explicitly set)
+				// All reads must be inside transaction to prevent race conditions
+				const otherEnabledProvider =
+					await tx.userCloudProviderConfig.findFirst({
+						where: {
+							userId: user.id,
+							enabled: true,
+							...(existing ? { id: { not: existing.id } } : {}),
+						},
+					});
+				// Check if there's another provider that IS default (not just enabled)
+				const otherDefaultProvider =
+					await tx.userCloudProviderConfig.findFirst({
+						where: {
+							userId: user.id,
+							enabled: true,
+							isDefault: true,
+							...(existing ? { id: { not: existing.id } } : {}),
+						},
+					});
+				// Logic:
+				// 1. If explicitly set to true, use that
+				// 2. If no other providers exist, this MUST be default
+				// 3. If other providers exist but none are default, this MUST be default
+				// 4. Only respect explicit false if there's another default provider
+				const shouldBeDefault =
+					input.isDefault === true ||
+					!otherEnabledProvider ||
+					!otherDefaultProvider;
 
-			if (existing) {
-				// Update existing - merge with existing config
-				const existingConfig =
-					(existing.config as Record<string, unknown>) || {};
-				// Store API key in dedicated encrypted column, remove from JSON config
+				// Clear existing defaults if this provider will become default
+				if (shouldBeDefault) {
+					await tx.userCloudProviderConfig.updateMany({
+						where: { userId: user.id, isDefault: true },
+						data: { isDefault: false },
+					});
+				}
+
+				if (existing) {
+					// Update existing - merge with existing config
+					const existingConfig =
+						(existing.config as Record<string, unknown>) || {};
+					// Store API key in dedicated encrypted column, remove from JSON config
+					const newConfig = {
+						...existingConfig,
+						// Remove apiKey from config (now stored in encryptedApiKey column)
+						apiKey: undefined,
+						...(input.enabledProviders !== undefined && {
+							enabledProviders: input.enabledProviders,
+						}),
+						...(input.baseUrl !== undefined && {
+							baseUrl: input.baseUrl,
+						}),
+						...(input.deploymentName !== undefined && {
+							deploymentName: input.deploymentName,
+						}),
+					};
+
+					const updated = await tx.userCloudProviderConfig.update({
+						where: { id: existing.id },
+						data: {
+							config: newConfig as any,
+							...credentials,
+							displayName,
+							enabled: true,
+							isDefault: shouldBeDefault,
+							updatedAt: new Date(),
+						},
+					});
+
+					return {
+						result: {
+							success: true,
+							id: updated.id,
+							provider: updated.provider,
+							displayName: updated.displayName,
+							isDefault: updated.isDefault,
+						},
+						before: snapshotProviderRow(existing),
+						after: snapshotProviderRow(updated),
+					};
+				}
+
+				// Create new
 				const newConfig = {
-					...existingConfig,
-					// Remove apiKey from config (now stored in encryptedApiKey column)
-					apiKey: undefined,
 					...(input.enabledProviders !== undefined && {
 						enabledProviders: input.enabledProviders,
 					}),
@@ -410,63 +480,40 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 					}),
 				};
 
-				const updated = await tx.userCloudProviderConfig.update({
-					where: { id: existing.id },
+				const created = await tx.userCloudProviderConfig.create({
 					data: {
-						config: newConfig as any,
+						id: `ucpc_${crypto.randomUUID()}`,
+						userId: user.id,
+						provider,
 						...credentials,
+						config: newConfig as any,
 						displayName,
 						enabled: true,
 						isDefault: shouldBeDefault,
+						priority: 1,
 						updatedAt: new Date(),
 					},
 				});
 
 				return {
-					success: true,
-					id: updated.id,
-					provider: updated.provider,
-					displayName: updated.displayName,
-					isDefault: updated.isDefault,
+					result: {
+						success: true,
+						id: created.id,
+						provider: created.provider,
+						displayName: created.displayName,
+						isDefault: created.isDefault,
+					},
+					before: null,
+					after: snapshotProviderRow(created),
 				};
-			}
-
-			// Create new
-			const newConfig = {
-				...(input.enabledProviders !== undefined && {
-					enabledProviders: input.enabledProviders,
-				}),
-				...(input.baseUrl !== undefined && {
-					baseUrl: input.baseUrl,
-				}),
-				...(input.deploymentName !== undefined && {
-					deploymentName: input.deploymentName,
-				}),
-			};
-
-			const created = await tx.userCloudProviderConfig.create({
-				data: {
-					id: `ucpc_${crypto.randomUUID()}`,
-					userId: user.id,
-					provider,
-					...credentials,
-					config: newConfig as any,
-					displayName,
-					enabled: true,
-					isDefault: shouldBeDefault,
-					priority: 1,
-					updatedAt: new Date(),
-				},
-			});
-
-			return {
-				success: true,
-				id: created.id,
-				provider: created.provider,
-				displayName: created.displayName,
-				isDefault: created.isDefault,
-			};
+			},
+		);
+		recordProviderConfigured(context, { kind: "account" }, outcome.result, {
+			before: outcome.before,
+			after: outcome.after,
+			keyChanged,
 		});
+		return outcome.result;
 	});
 
 export const deleteUserProviderProcedure = tenantProtectedProcedure
@@ -490,7 +537,8 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 			success: z.boolean(),
 		}),
 	)
-	.handler(async ({ context: { user, session }, input }) => {
+	.handler(async ({ context, input }) => {
+		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			session,
@@ -513,11 +561,15 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 			}
 
 			// Use transaction to ensure atomicity of delete + potential default reassignment
-			await db.$transaction(async (tx) => {
+			const deleted = await db.$transaction(async (tx) => {
+				const existing = await tx.cloudProviderConfig.findFirst({
+					where: { organizationId, provider },
+				});
 				// Delete from organization-level config
 				await tx.cloudProviderConfig.deleteMany({
 					where: { organizationId, provider },
 				});
+				let defaultReassignedTo: string | null = null;
 
 				// After deletion, check if ANY default provider exists
 				// This is more robust than checking the deleted row's state (which could be stale)
@@ -536,19 +588,36 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 							where: { id: anotherProvider.id },
 							data: { isDefault: true },
 						});
+						defaultReassignedTo = anotherProvider.provider;
 						console.log(
 							`[AI Config] Set ${anotherProvider.provider} as new default after deleting ${provider}`,
 						);
 					}
 				}
+				return existing && { existing, defaultReassignedTo };
 			});
+			if (deleted) {
+				recordProviderDeleted(
+					context,
+					{ kind: "org", organizationId },
+					deleted.existing,
+					{
+						before: snapshotProviderRow(deleted.existing),
+						defaultReassignedTo: deleted.defaultReassignedTo,
+					},
+				);
+			}
 		} else {
 			// Use transaction to ensure atomicity of delete + potential default reassignment
-			await db.$transaction(async (tx) => {
+			const deleted = await db.$transaction(async (tx) => {
+				const existing = await tx.userCloudProviderConfig.findFirst({
+					where: { userId: user.id, provider },
+				});
 				// Delete from user-level config
 				await tx.userCloudProviderConfig.deleteMany({
 					where: { userId: user.id, provider },
 				});
+				let defaultReassignedTo: string | null = null;
 
 				// After deletion, check if ANY default provider exists
 				// This is more robust than checking the deleted row's state (which could be stale)
@@ -572,12 +641,25 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 							where: { id: anotherProvider.id },
 							data: { isDefault: true },
 						});
+						defaultReassignedTo = anotherProvider.provider;
 						console.log(
 							`[AI Config] Set ${anotherProvider.provider} as new default after deleting ${provider}`,
 						);
 					}
 				}
+				return existing && { existing, defaultReassignedTo };
 			});
+			if (deleted) {
+				recordProviderDeleted(
+					context,
+					{ kind: "account" },
+					deleted.existing,
+					{
+						before: snapshotProviderRow(deleted.existing),
+						defaultReassignedTo: deleted.defaultReassignedTo,
+					},
+				);
+			}
 		}
 
 		return { success: true };
@@ -605,7 +687,8 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 			preferencesCleared: z.number(),
 		}),
 	)
-	.handler(async ({ context: { user, session }, input }) => {
+	.handler(async ({ context, input }) => {
+		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			session,
@@ -631,6 +714,9 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 			// Get current default provider to check if it's changing
 			const currentDefault = await db.cloudProviderConfig.findFirst({
 				where: { organizationId, isDefault: true },
+			});
+			const target = await db.cloudProviderConfig.findFirst({
+				where: { organizationId, provider },
 			});
 
 			// Only clear preferences if provider is actually changing
@@ -692,10 +778,28 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 					data: { isDefault: true },
 				});
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "org", organizationId },
+				"default_changed",
+				{ id: target?.id ?? provider, provider },
+				{
+					before: { isDefault: target?.isDefault ?? false },
+					after: { isDefault: true },
+					details: {
+						previousDefaultProvider:
+							currentDefault?.provider ?? null,
+						preferencesCleared,
+					},
+				},
+			);
 		} else {
 			// Get current default provider to check if it's changing
 			const currentDefault = await db.userCloudProviderConfig.findFirst({
 				where: { userId: user.id, isDefault: true },
+			});
+			const target = await db.userCloudProviderConfig.findFirst({
+				where: { userId: user.id, provider },
 			});
 
 			// Only clear preferences if provider is actually changing
@@ -744,6 +848,21 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 					data: { isDefault: true },
 				});
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "account" },
+				"default_changed",
+				{ id: target?.id ?? provider, provider },
+				{
+					before: { isDefault: target?.isDefault ?? false },
+					after: { isDefault: true },
+					details: {
+						previousDefaultProvider:
+							currentDefault?.provider ?? null,
+						preferencesCleared,
+					},
+				},
+			);
 		}
 
 		return { success: true, preferencesCleared };
@@ -771,7 +890,8 @@ export const updateEnabledProvidersProcedure = tenantProtectedProcedure
 			enabledProviders: z.array(z.string()),
 		}),
 	)
-	.handler(async ({ context: { user, session }, input }) => {
+	.handler(async ({ context, input }) => {
+		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			session,
@@ -823,6 +943,19 @@ export const updateEnabledProvidersProcedure = tenantProtectedProcedure
 					updatedAt: new Date(),
 				},
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "org", organizationId },
+				"enabled_providers_changed",
+				existing,
+				{
+					before: {
+						enabledProviders:
+							snapshotProviderRow(existing).enabledProviders,
+					},
+					after: { enabledProviders: input.enabledProviders },
+				},
+			);
 		} else {
 			// Update user-level config
 			const existing = await db.userCloudProviderConfig.findUnique({
@@ -852,6 +985,19 @@ export const updateEnabledProvidersProcedure = tenantProtectedProcedure
 					updatedAt: new Date(),
 				},
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "account" },
+				"enabled_providers_changed",
+				existing,
+				{
+					before: {
+						enabledProviders:
+							snapshotProviderRow(existing).enabledProviders,
+					},
+					after: { enabledProviders: input.enabledProviders },
+				},
+			);
 		}
 
 		return {
@@ -881,7 +1027,8 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 			success: z.boolean(),
 		}),
 	)
-	.handler(async ({ context: { user, session }, input }) => {
+	.handler(async ({ context, input }) => {
+		const { user, session } = context;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			session,
@@ -910,6 +1057,12 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 				});
 			}
 
+			const previous = await db.cloudProviderConfig.findFirst({
+				where: { organizationId, isEmbeddingProvider: true },
+			});
+			const target = await db.cloudProviderConfig.findFirst({
+				where: { organizationId, provider },
+			});
 			// Use transaction to ensure atomicity of clearing + setting embedding provider
 			await db.$transaction(async (tx) => {
 				await tx.cloudProviderConfig.updateMany({
@@ -921,7 +1074,29 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 					data: { isEmbeddingProvider: true },
 				});
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "org", organizationId },
+				"embedding_changed",
+				{ id: target?.id ?? provider, provider },
+				{
+					before: {
+						isEmbeddingProvider:
+							target?.isEmbeddingProvider ?? false,
+					},
+					after: { isEmbeddingProvider: true },
+					details: {
+						previousEmbeddingProvider: previous?.provider ?? null,
+					},
+				},
+			);
 		} else {
+			const previous = await db.userCloudProviderConfig.findFirst({
+				where: { userId: user.id, isEmbeddingProvider: true },
+			});
+			const target = await db.userCloudProviderConfig.findFirst({
+				where: { userId: user.id, provider },
+			});
 			// Use transaction to ensure atomicity of clearing + setting embedding provider
 			await db.$transaction(async (tx) => {
 				await tx.userCloudProviderConfig.updateMany({
@@ -933,6 +1108,22 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 					data: { isEmbeddingProvider: true },
 				});
 			});
+			recordProviderSettingChanged(
+				context,
+				{ kind: "account" },
+				"embedding_changed",
+				{ id: target?.id ?? provider, provider },
+				{
+					before: {
+						isEmbeddingProvider:
+							target?.isEmbeddingProvider ?? false,
+					},
+					after: { isEmbeddingProvider: true },
+					details: {
+						previousEmbeddingProvider: previous?.provider ?? null,
+					},
+				},
+			);
 		}
 
 		console.log(

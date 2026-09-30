@@ -36,6 +36,18 @@ const EXPECTED_KEYS = [
 	"org.integration.connected",
 	"org.integration.disconnected",
 	"org.integration.config_updated",
+	"org.ai_provider.configured",
+	"org.ai_provider.updated",
+	"org.ai_provider.default_changed",
+	"org.ai_provider.embedding_changed",
+	"org.ai_provider.enabled_providers_changed",
+	"org.ai_provider.deleted",
+	"account.ai_provider.configured",
+	"account.ai_provider.updated",
+	"account.ai_provider.default_changed",
+	"account.ai_provider.embedding_changed",
+	"account.ai_provider.enabled_providers_changed",
+	"account.ai_provider.deleted",
 	// project (10)
 	"project.created",
 	"project.meeting_digest.inclusion_changed",
@@ -95,8 +107,9 @@ describe("ACTION_CATALOG", () => {
 		// `project.member.function_tags_confirmed`; the roadmap Priority
 		// feature adds `story.reprioritized` (one row per AI run); Fizzy #2304
 		// adds `story.pm_status_synced` (one row per status move the PM
-		// status sync applies).
-		expect(EXPECTED_KEYS.length).toBe(60);
+		// status sync applies). The 12 `*.ai_provider.*` keys record AI
+		// provider credential configuration.
+		expect(EXPECTED_KEYS.length).toBe(72);
 		for (const key of EXPECTED_KEYS) {
 			expect(ACTION_CATALOG[key]).toBeDefined();
 		}
