@@ -1,9 +1,11 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingSessionStatus } from "@repo/database/prisma/generated/enums";
+import { parlumeLog } from "./parlume-log";
 import {
 	deleteParlumeMeetingBotData,
 	getParlumeBridgeSettings,
 } from "./parlume-meeting-baas";
+import { recordParlumeMeetingProviderUsage } from "./parlume-usage";
 
 const MAX_PARLUME_TRANSCRIPT_CHARS = 1_000_000;
 
@@ -54,6 +56,8 @@ export async function finalizeParlumeSession(
 			userId: true,
 			providerBotId: true,
 			status: true,
+			endReason: true,
+			joinedAt: true,
 			transcriptContextId: true,
 		},
 	});
@@ -62,6 +66,7 @@ export async function finalizeParlumeSession(
 	}
 
 	let transcriptContextId = session.transcriptContextId;
+	let finalizedNow = false;
 	if (!transcriptContextId && session.status !== "ENDED") {
 		const claimed = await db.parlumeMeetingSession.updateMany({
 			where: {
@@ -89,6 +94,7 @@ export async function finalizeParlumeSession(
 		if (claimed.count === 0) {
 			throw new Error("Parlume finalization is already in progress.");
 		}
+		finalizedNow = true;
 
 		const segments = await db.parlumeMeetingSegment.findMany({
 			where: { sessionId: session.id },
@@ -165,6 +171,28 @@ export async function finalizeParlumeSession(
 				return context.id;
 			});
 		}
+	}
+	if (finalizedNow) {
+		const endedAt = new Date();
+		recordParlumeMeetingProviderUsage({
+			sessionId: session.id,
+			userId: session.userId,
+			organizationId: session.organizationId,
+			projectId: session.projectId,
+			joinedAt: session.joinedAt,
+			endedAt,
+			success: !options.preserveFailure,
+		});
+		parlumeLog("info", "session.finalized", {
+			sessionId: session.id,
+			botId: session.providerBotId,
+			endReason: session.endReason,
+			failed: Boolean(options.preserveFailure),
+			transcriptSaved: transcriptContextId !== null,
+			meetingMs: session.joinedAt
+				? endedAt.getTime() - session.joinedAt.getTime()
+				: null,
+		});
 	}
 	if (transcriptContextId) {
 		const { getTemporalClient } = await import("@repo/temporal");

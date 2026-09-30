@@ -2,6 +2,11 @@ import {
 	cleanupParlumeProviderData,
 	finalizeParlumeSession,
 } from "@repo/api/modules/projects/lib/parlume-finalization";
+import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
+import {
+	closeParlumeMeetingBridge,
+	getParlumeBridgeSettings,
+} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -12,20 +17,71 @@ const callbackSchema = z.object({
 	data: z.object({ bot_id: z.string().min(1).max(256) }),
 });
 
+// The provider retries a rejected callback for hours. Naming the event and
+// the missing piece is what lets an operator tell a stale bot from a wrong
+// secret; the secret value itself is never logged.
+function describeRejected(raw: string): { event: string | null } {
+	try {
+		const body: unknown = JSON.parse(raw);
+		return {
+			event:
+				typeof body === "object" &&
+				body !== null &&
+				"event" in body &&
+				typeof body.event === "string"
+					? body.event
+					: null,
+		};
+	} catch {
+		return { event: null };
+	}
+}
+
+// Best effort: the alarm-driven access check closes the stream within a
+// minute anyway once the terminal callback is recorded.
+async function closeBridge(sessionId: string): Promise<void> {
+	const settings = getParlumeBridgeSettings();
+	if (!settings) {
+		return;
+	}
+	try {
+		await closeParlumeMeetingBridge({ settings, sessionId });
+	} catch (error) {
+		parlumeLog("warn", "callback.bridge_close_failed", {
+			sessionId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
 export async function POST(request: NextRequest) {
 	const sessionId = request.nextUrl.searchParams.get("sessionId");
-	if (!sessionId) {
-		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-	}
-	const expected = callbackSecret(sessionId);
+	const raw = await request.text();
+	const expected = sessionId ? callbackSecret(sessionId) : null;
 	if (
+		!sessionId ||
 		!expected ||
 		!constantTimeEqual(request.headers.get("x-mb-secret"), expected)
 	) {
+		parlumeLog("warn", "callback.rejected", {
+			sessionId,
+			...describeRejected(raw),
+			hasSecretHeader: request.headers.has("x-mb-secret"),
+		});
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
-	const parsed = callbackSchema.safeParse(await request.json());
+	let json: unknown;
+	try {
+		json = JSON.parse(raw);
+	} catch {
+		json = null;
+	}
+	const parsed = callbackSchema.safeParse(json);
 	if (!parsed.success) {
+		parlumeLog("warn", "callback.invalid", {
+			sessionId,
+			...describeRejected(raw),
+		});
 		return NextResponse.json(
 			{ error: "Invalid callback" },
 			{ status: 400 },
@@ -36,18 +92,32 @@ export async function POST(request: NextRequest) {
 		select: {
 			id: true,
 			status: true,
+			endReason: true,
 			streamClosedAt: true,
 			streamGeneration: true,
 		},
 	});
 	if (!session) {
+		parlumeLog("warn", "callback.unknown_session", {
+			sessionId,
+			botId: parsed.data.data.bot_id,
+			event: parsed.data.event,
+		});
 		return NextResponse.json({ error: "Unknown session" }, { status: 404 });
 	}
+	parlumeLog("info", "callback.received", {
+		sessionId: session.id,
+		botId: parsed.data.data.bot_id,
+		event: parsed.data.event,
+		status: session.status,
+		streamClosed: session.streamClosedAt !== null,
+	});
 	if (parsed.data.event === "bot.failed") {
 		await db.parlumeMeetingSession.updateMany({
 			where: { id: session.id, status: { not: "ENDED" } },
 			data: {
 				status: "FAILED",
+				endReason: session.endReason ?? "PROVIDER_FAILED",
 				lastError: "Parlume meeting bot failed.",
 				endedAt: new Date(),
 			},
@@ -69,6 +139,7 @@ export async function POST(request: NextRequest) {
 		// an outage. Keep the failure visible, then let stream close or the hard
 		// stop claim finalization after those segments have reached Fabric.
 		if (!session.streamClosedAt) {
+			await closeBridge(session.id);
 			return NextResponse.json({ accepted: true });
 		}
 		try {
@@ -89,6 +160,7 @@ export async function POST(request: NextRequest) {
 			where: { id: session.id },
 			data: {
 				status: "FAILED",
+				endReason: session.endReason ?? "START_FAILED",
 				lastError:
 					"Parlume completed without an authenticated transcription stream.",
 				endedAt: new Date(),
@@ -108,6 +180,9 @@ export async function POST(request: NextRequest) {
 		where: { id: session.id, streamGeneration: session.streamGeneration },
 		data: {
 			status: session.status === "ACTIVE" ? "LEAVING" : session.status,
+			// A completed bot that Fabric never asked to leave was removed by
+			// the host or outlived the meeting.
+			endReason: session.endReason ?? "REMOVED",
 			terminalCallbackAt: new Date(),
 		},
 	});
@@ -115,6 +190,7 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ accepted: true, stale: true });
 	}
 	if (!session.streamClosedAt) {
+		await closeBridge(session.id);
 		return NextResponse.json({ accepted: true });
 	}
 	try {

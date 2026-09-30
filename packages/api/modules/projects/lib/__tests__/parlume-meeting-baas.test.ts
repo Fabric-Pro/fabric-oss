@@ -82,12 +82,27 @@ describe("startParlumeMeetingBot", () => {
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
 						input_url:
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
-						transcription: { provider: "gladia", api_key: null },
+						transcription: {
+							provider: "gladia",
+							api_key: null,
+							custom_params: {
+								endpointing: 0.3,
+								realtime_processing: {
+									custom_vocabulary: true,
+									custom_vocabulary_config: {
+										vocabulary: [
+											"Parlume",
+											"Fabric Parlume",
+										],
+									},
+								},
+							},
+						},
 						audio_frequency: 24_000,
 					},
 					timeout_config: {
-						waiting_room_timeout: 300,
-						no_one_joined_timeout: 300,
+						waiting_room_timeout: 180,
+						no_one_joined_timeout: 180,
 						silence_timeout: 300,
 					},
 				}),

@@ -354,7 +354,7 @@ describe("Agent Execution Context Builder", () => {
 				"../src/activities/agent-execution-core/agent-executor.ts",
 			);
 			expect(executor).toMatch(
-				/model\s*\?\s*await getModelWithOverride\(model, userId, organizationId\)\s*:\s*await getAiModel\(userId, organizationId, hasTools\)/,
+				/model\s*\?\s*await getModelWithOverride\(model, usageContext\)\s*:\s*await getAiModel\(\s*userId,\s*organizationId,\s*hasTools,/,
 			);
 			const selector = src(
 				"../src/activities/orchestrator/utils/model-selector.ts",

@@ -1028,6 +1028,11 @@ export interface AIOperationContext {
 	 * Use a key from AI_JOB_TYPES.
 	 */
 	jobType?: AiJobKey;
+	/**
+	 * Groups the rows of one conversation or meeting (an AgentConversation id,
+	 * a Parlume session id). Recorded verbatim on `AiUsageLog.conversationId`.
+	 */
+	conversationId?: string;
 }
 
 /**
@@ -1495,6 +1500,7 @@ export async function getAIModelWithMetadata(
 		featureKey: context.featureKey,
 		promptVersionId: context.promptVersionId,
 		jobType: context.jobType,
+		conversationId: context.conversationId,
 	};
 	const trackedModel =
 		usageLogging === "aggregate"

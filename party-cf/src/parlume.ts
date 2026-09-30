@@ -6,6 +6,7 @@ import {
 	isRecord,
 	type ParlumeStreamConnection,
 } from "./parlume-stream-auth";
+import { ParlumeTurnEndpoint } from "./parlume-turn-endpoint";
 import { parseParlumeWake } from "./parlume-wake";
 
 const WATCHDOG_RETRY_MS = 5 * 60 * 1000;
@@ -21,6 +22,11 @@ const PENDING_INTERRUPT_KEY = "pendingInterrupt";
 const MAX_PENDING_SEGMENTS = 1_000;
 const MAX_SEGMENTS_PER_FLUSH = 25;
 const MAX_SPEECH_BYTES = 6 * 1024 * 1024;
+// Nobody has spoken for this long and Parlume is silent: treat the meeting
+// as over. The provider's own silence timeout cannot go below five minutes.
+const IDLE_LEAVE_MS = 3 * 60 * 1000;
+const LAST_ACTIVITY_KEY = "lastActivityAt";
+const IDLE_REPORTED_KEY = "idleReported";
 
 interface BridgeState {
 	sessionId: string;
@@ -38,8 +44,6 @@ interface PendingSegment {
 	speakerId: string | null;
 	utteranceStartMs: number | null;
 	utteranceEndMs: number | null;
-	turnText?: string;
-	voiceGeneration?: number;
 }
 
 interface PendingTurn {
@@ -75,6 +79,27 @@ interface StreamError {
 	botId: string;
 }
 
+function parlumeSpeakerKey(
+	speakerId: string | null,
+	speakerName: string | null,
+): string {
+	return speakerId ?? speakerName?.toLowerCase() ?? "unknown";
+}
+
+// Workers Logs keep these as structured fields. Ids only: never the meeting
+// URL, the stream token, or transcript text.
+function log(
+	level: "info" | "warn" | "error",
+	event: string,
+	meta: Record<string, unknown>,
+): void {
+	console[level](`[Parlume] ${event}`, {
+		component: "parlume-bridge",
+		event: `parlume.bridge.${event}`,
+		...meta,
+	});
+}
+
 async function secretMatches(
 	candidate: string | null,
 	expected: string | undefined,
@@ -104,15 +129,33 @@ export class Parlume extends Server<Env> {
 	private playbackEpoch = 0;
 	private playbackActive = false;
 	private responsePending = false;
+	private turnEndpoint = new ParlumeTurnEndpoint<PendingTurn>((turn) => {
+		void this.dispatchTurn(turn);
+	});
+	private lastActivityAt = Date.now();
 
 	async onStart() {
 		this.playbackEpoch =
 			(await this.ctx.storage.get<number>("voiceGeneration")) ?? 0;
 		this.responsePending =
 			(await this.ctx.storage.get<boolean>("responsePending")) ?? false;
+		// A restart loses the in-memory clock; the stored value is refreshed on
+		// every final segment, so the idle window resumes rather than restarts.
+		this.lastActivityAt =
+			(await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY)) ??
+			Date.now();
+	}
+
+	private closeStream(reason: string): number {
+		const open = [...this.connections.keys()];
+		for (const connection of open) {
+			connection.close(1000, reason);
+		}
+		return open.length;
 	}
 
 	private async interruptResponse(state: StreamConnection): Promise<void> {
+		this.turnEndpoint.cancel();
 		this.playbackEpoch++;
 		this.playbackActive = false;
 		this.responsePending = false;
@@ -203,47 +246,59 @@ export class Parlume extends Server<Env> {
 		if (event.event === "transcript.incomplete") {
 			return;
 		}
+		const speakerName = event.data.speaker?.name ?? null;
+		const speakerId = event.data.speaker?.id ?? null;
+		const fromBot = this.isBotSpeaker(speakerName ?? undefined);
+		const speakerKey = parlumeSpeakerKey(speakerId, speakerName);
+		if (!fromBot) {
+			this.lastActivityAt = Date.now();
+			if (event.data.isFinal) {
+				await this.ctx.storage.put(
+					LAST_ACTIVITY_KEY,
+					this.lastActivityAt,
+				);
+			}
+		}
+		// Speech only barges in while Parlume is audible. While a request is
+		// being endpointed or answered, its speaker's continued speech extends it.
 		if (!event.data.isFinal) {
 			if (
-				(this.playbackActive || this.responsePending) &&
-				!this.isBotSpeaker(event.data.speaker?.name)
+				!fromBot &&
+				!this.turnEndpoint.hold(speakerKey) &&
+				this.playbackActive
 			) {
 				await this.interruptResponse(state);
 			}
 			return;
 		}
-		if (
-			(this.playbackActive || this.responsePending) &&
-			!this.isBotSpeaker(event.data.speaker?.name)
-		) {
-			await this.interruptResponse(state);
-		}
-		const turnText = await this.resolveWakeTurn({
-			text: event.data.text,
-			speakerName: event.data.speaker?.name ?? null,
-			speakerId: event.data.speaker?.id ?? null,
-		});
-		if (turnText) {
-			this.playbackEpoch++;
-			this.responsePending = true;
-			await this.ctx.storage.put({
-				voiceGeneration: this.playbackEpoch,
-				responsePending: true,
-			});
-		}
-		const persist = this.queueFinalSegment({
+		const segment: PendingSegment = {
 			sessionId: state.sessionId,
 			botId: event.bot_id,
 			text: event.data.text,
-			speakerName: event.data.speaker?.name ?? null,
-			speakerId: event.data.speaker?.id ?? null,
+			speakerName,
+			speakerId,
 			utteranceStartMs: this.secondsToMilliseconds(
 				event.data.utteranceStart,
 			),
 			utteranceEndMs: this.secondsToMilliseconds(event.data.utteranceEnd),
-			turnText: turnText ?? undefined,
-			voiceGeneration: turnText ? this.playbackEpoch : undefined,
-		});
+		};
+		if (
+			!fromBot &&
+			!this.turnEndpoint.append(
+				speakerKey,
+				segment.text,
+				segment.utteranceEndMs,
+			)
+		) {
+			await this.beginWakeTurn(state, segment, speakerKey);
+		} else if (!fromBot) {
+			log("info", "turn.extended", {
+				sessionId: state.sessionId,
+				botId: event.bot_id,
+				speakerId,
+			});
+		}
+		const persist = this.queueFinalSegment(segment);
 		this.inFlightFinalSegments.add(persist);
 		try {
 			await persist;
@@ -252,9 +307,17 @@ export class Parlume extends Server<Env> {
 		}
 	}
 
-	async onClose(conn: Connection) {
+	async onClose(conn: Connection, code?: number, reason?: string) {
 		const state = this.connections.get(conn);
 		this.connections.delete(conn);
+		log("info", "stream.closed", {
+			sessionId: this.name,
+			botId: state?.botId ?? null,
+			verified: state?.verified ?? false,
+			code,
+			reason,
+			remainingConnections: this.connections.size,
+		});
 		if (state?.verified && state.botId && state.streamGeneration !== null) {
 			const hasReplacementConnection = [
 				...this.connections.values(),
@@ -307,6 +370,18 @@ export class Parlume extends Server<Env> {
 		}
 		if (action === "stop") {
 			return this.stop(request);
+		}
+		if (action === "close") {
+			// Fabric learned from the provider that the bot is gone (removed by
+			// the host, meeting ended). Closing the socket here lets onClose
+			// drain buffered segments and report the stream closed, instead of
+			// waiting for a close the provider may never send.
+			const closed = this.closeStream("meeting ended");
+			log("info", "stream.close_requested", {
+				sessionId: this.name,
+				closed,
+			});
+			return Response.json({ closed });
 		}
 		if (action === "verify-generation") {
 			const body: unknown = await request.json();
@@ -396,6 +471,7 @@ export class Parlume extends Server<Env> {
 			);
 		}
 		this.playbackActive = true;
+		const startedAt = Date.now();
 		try {
 			const result = await playParlumePcm({
 				body: request.body,
@@ -414,6 +490,14 @@ export class Parlume extends Server<Env> {
 					expiresAt: Date.now() + 120_000,
 				});
 			}
+			log("info", "speech.played", {
+				sessionId: this.name,
+				voiceGeneration: epoch,
+				played: result.played,
+				interrupted: result.interrupted,
+				declaredBytes: length,
+				playbackMs: Date.now() - startedAt,
+			});
 			return Response.json(result);
 		} finally {
 			if (epoch === this.playbackEpoch) {
@@ -454,15 +538,22 @@ export class Parlume extends Server<Env> {
 		const access = await this.verifyInviterAccess(bridge);
 		if (access !== "active") {
 			const hardStopAt = new Date(bridge.hardStopAt ?? 0).getTime();
-			if (
-				access === "stopped" &&
-				Number.isFinite(hardStopAt) &&
-				Date.now() < hardStopAt
-			) {
-				await this.ctx.storage.setAlarm(hardStopAt);
+			if (access === "stopped") {
+				// Capture is over on Fabric's side; close now so the stream-closed
+				// report and finalization do not wait for the provider.
+				const closed = this.closeStream("capture stopped");
+				log("info", "access.stopped", {
+					sessionId: bridge.sessionId,
+					botId: bridge.botId,
+					closed,
+				});
+				if (Number.isFinite(hardStopAt) && Date.now() < hardStopAt) {
+					await this.ctx.storage.setAlarm(hardStopAt);
+				}
 			}
 			return;
 		}
+		await this.reportIdleMeeting(bridge);
 		const [flushed, turnsFlushed] = await Promise.all([
 			this.flushPendingSegments(),
 			this.flushPendingTurns(),
@@ -493,6 +584,36 @@ export class Parlume extends Server<Env> {
 			return;
 		}
 		await this.ctx.storage.delete("bridge");
+	}
+
+	// Runs on the access-check cadence, so a silent meeting is reported within
+	// one minute of crossing the idle window. Fabric asks the provider to leave;
+	// the terminal callback then ends the session as usual.
+	private async reportIdleMeeting(bridge: BridgeState): Promise<void> {
+		const idleMs = Date.now() - this.lastActivityAt;
+		if (
+			!bridge.botId ||
+			this.playbackActive ||
+			this.responsePending ||
+			idleMs < IDLE_LEAVE_MS ||
+			(await this.ctx.storage.get<boolean>(IDLE_REPORTED_KEY))
+		) {
+			return;
+		}
+		const reported = await this.postToFabric("/api/internal/parlume/idle", {
+			sessionId: bridge.sessionId,
+			botId: bridge.botId,
+			idleMs,
+		});
+		log(reported ? "info" : "warn", "idle.reported", {
+			sessionId: bridge.sessionId,
+			botId: bridge.botId,
+			idleMs,
+			accepted: Boolean(reported),
+		});
+		if (reported) {
+			await this.ctx.storage.put(IDLE_REPORTED_KEY, true);
+		}
 	}
 
 	private secondsToMilliseconds(value: number | undefined): number | null {
@@ -570,6 +691,15 @@ export class Parlume extends Server<Env> {
 				Math.min(hardStopAt.getTime(), Date.now() + ACCESS_CHECK_MS),
 			);
 		}
+		this.lastActivityAt = Date.now();
+		await this.ctx.storage.put(LAST_ACTIVITY_KEY, this.lastActivityAt);
+		await this.ctx.storage.delete(IDLE_REPORTED_KEY);
+		log("info", "stream.verified", {
+			sessionId: state.sessionId,
+			botId,
+			streamGeneration: data.streamGeneration,
+			hardStopAt: data.hardStopAt,
+		});
 		return data.streamGeneration;
 	}
 
@@ -607,7 +737,6 @@ export class Parlume extends Server<Env> {
 		if (
 			await this.postToFabric("/api/internal/parlume/segments", segment)
 		) {
-			await this.dispatchTurn(segment);
 			return;
 		}
 		const pending =
@@ -663,7 +792,6 @@ export class Parlume extends Server<Env> {
 			) {
 				break;
 			}
-			await this.dispatchTurn(segment);
 		}
 		if (index === pending.length) {
 			await this.ctx.storage.delete(PENDING_SEGMENTS_KEY);
@@ -697,6 +825,46 @@ export class Parlume extends Server<Env> {
 		}
 	}
 
+	private async beginWakeTurn(
+		state: StreamConnection,
+		segment: PendingSegment,
+		speakerKey: string,
+	): Promise<void> {
+		if (this.playbackActive) {
+			await this.interruptResponse(state);
+		}
+		const turnText = await this.resolveWakeTurn(segment);
+		if (!turnText) {
+			return;
+		}
+		if (this.responsePending) {
+			await this.interruptResponse(state);
+		}
+		this.playbackEpoch++;
+		this.responsePending = true;
+		await this.ctx.storage.put({
+			voiceGeneration: this.playbackEpoch,
+			responsePending: true,
+		});
+		log("info", "wake.detected", {
+			sessionId: segment.sessionId,
+			botId: segment.botId,
+			speakerId: segment.speakerId,
+			voiceGeneration: this.playbackEpoch,
+			requestChars: turnText.length,
+		});
+		this.turnEndpoint.begin(speakerKey, {
+			voiceGeneration: this.playbackEpoch,
+			sessionId: segment.sessionId,
+			botId: segment.botId,
+			text: turnText,
+			speakerName: segment.speakerName,
+			speakerId: segment.speakerId,
+			utteranceStartMs: segment.utteranceStartMs,
+			utteranceEndMs: segment.utteranceEndMs,
+		});
+	}
+
 	private async resolveWakeTurn(input: {
 		text: string;
 		speakerName: string | null;
@@ -705,8 +873,10 @@ export class Parlume extends Server<Env> {
 		if (input.speakerName?.toLowerCase().includes("parlume")) {
 			return null;
 		}
-		const speakerKey =
-			input.speakerId ?? input.speakerName?.toLowerCase() ?? "unknown";
+		const speakerKey = parlumeSpeakerKey(
+			input.speakerId,
+			input.speakerName,
+		);
 		const afterWake = parseParlumeWake(input.text);
 		if (afterWake !== null) {
 			if (afterWake) {
@@ -733,30 +903,36 @@ export class Parlume extends Server<Env> {
 		return input.text;
 	}
 
-	private async dispatchTurn(segment: PendingSegment): Promise<void> {
-		if (
-			!segment.turnText ||
-			segment.voiceGeneration !== this.playbackEpoch
-		) {
+	private async dispatchTurn(turn: PendingTurn): Promise<void> {
+		// The request's segments reach Fabric first, so the turn sees them as
+		// meeting context.
+		await this.finalSegmentChain;
+		if (turn.voiceGeneration !== this.playbackEpoch) {
+			log("info", "turn.superseded", {
+				sessionId: turn.sessionId,
+				botId: turn.botId,
+				voiceGeneration: turn.voiceGeneration,
+			});
 			return;
 		}
-		const turn: PendingTurn = {
-			voiceGeneration: segment.voiceGeneration ?? this.playbackEpoch,
-			sessionId: segment.sessionId,
-			botId: segment.botId,
-			text: segment.turnText,
-			speakerName: segment.speakerName,
-			speakerId: segment.speakerId,
-			utteranceStartMs: segment.utteranceStartMs,
-			utteranceEndMs: segment.utteranceEndMs,
-		};
 		if (
 			(await this.flushPendingInterrupt()) &&
 			turn.voiceGeneration === this.playbackEpoch &&
 			(await this.postToFabric("/api/internal/parlume/turns", turn))
 		) {
+			log("info", "turn.dispatched", {
+				sessionId: turn.sessionId,
+				botId: turn.botId,
+				voiceGeneration: turn.voiceGeneration,
+				requestChars: turn.text.length,
+			});
 			return;
 		}
+		log("warn", "turn.deferred", {
+			sessionId: turn.sessionId,
+			botId: turn.botId,
+			voiceGeneration: turn.voiceGeneration,
+		});
 		const pending =
 			(await this.ctx.storage.get<PendingTurn[]>(PENDING_TURNS_KEY)) ??
 			[];
