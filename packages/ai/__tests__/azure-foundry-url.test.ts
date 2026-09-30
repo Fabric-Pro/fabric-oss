@@ -48,16 +48,31 @@ describe("resolveAzureDeploymentTarget", () => {
 	});
 
 	describe("project-scoped v1 endpoint", () => {
-		const v1 =
+		const projectV1 =
 			"https://example-resource.services.ai.azure.com/api/projects/example-project/openai/v1";
+		const resourceV1 =
+			"https://example-resource.services.ai.azure.com/openai/v1";
 
-		it.each([v1, `${v1}/`, ` ${v1}// `])(
-			"uses the endpoint itself, the deployment as model, and no api-version for %j",
+		it.each([projectV1, `${projectV1}/`, ` ${projectV1}// `])(
+			"collapses a project URL to the resource-level base with the deployment as model and no api-version for %j",
 			(baseUrl) => {
 				expect(
 					resolveAzureDeploymentTarget(baseUrl, " prod-chat "),
 				).toEqual({
-					baseURL: v1,
+					baseURL: resourceV1,
+					model: "prod-chat",
+					apiVersion: null,
+				});
+			},
+		);
+
+		it.each([resourceV1, `${resourceV1}/`])(
+			"leaves a resource-level v1 URL as it is for %j",
+			(baseUrl) => {
+				expect(
+					resolveAzureDeploymentTarget(baseUrl, "prod-chat"),
+				).toEqual({
+					baseURL: resourceV1,
 					model: "prod-chat",
 					apiVersion: null,
 				});
