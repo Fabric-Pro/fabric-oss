@@ -46,9 +46,10 @@ export * from "./refresh-lock-key";
  * aborted every project-repo token refresh silently.
  *
  * `fn` receives a SECOND argument, `assertBudget`, a ready-made closure with
- * `lockStartedAt` baked in. It is OPTIONAL to call — every GitHub caller
- * ignores it today, deliberately: this guard is scoped to GitLab for now —
- * but calling it is the only correct way to enforce a budget, because only
+ * `lockStartedAt` baked in. It is OPTIONAL to call, but a caller that starts
+ * provider HTTP work under the lock should — the GitLab and GitHub
+ * workflow-integration refreshes both do — and calling it is the only correct
+ * way to enforce a budget, because only
  * `fn` knows where its own short-circuits are. A caller that queues behind a
  * winner and finds (via its own in-lock re-read) that there is no bounded
  * HTTP work left to do must be able to return without ever calling
