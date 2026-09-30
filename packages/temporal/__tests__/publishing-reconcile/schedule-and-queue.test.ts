@@ -139,8 +139,16 @@ describe("the schedule and the worker cannot disagree on the task queue", () => 
 	it("adds the worker to the drain list", () => {
 		// activeWorkers is what the SIGTERM handler drains and what
 		// workersRunning awaits. A worker created but not listed is one that is
-		// never awaited and never drained.
-		expect(workerSource).toContain("publishingReconcileWorker,");
+		// never awaited and never drained. Workers are created in one loop that
+		// pushes each onto activeWorkers as it is created, so the queue only has
+		// to be declared; worker-bootstrap.test.ts checks behaviourally that the
+		// run and drain list is exactly the created workers.
+		expect(workerSource).toMatch(
+			/taskQueue:\s*PUBLISHING_RECONCILE_TASK_QUEUE,\s*maxConcurrentActivityTaskExecutions:\s*ACTIVITY_SLOTS\.publishingReconcile/,
+		);
+		expect(workerSource).toMatch(
+			/activeWorkers\.push\(\s*await Worker\.create\(/,
+		);
 	});
 
 	it("pins the two identifiers a create-only registration freezes", () => {
