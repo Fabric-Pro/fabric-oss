@@ -170,6 +170,7 @@ async function runSync(
 		const failure = typedFailure(error, "CLONE_FAILED");
 		state.error = failure.code;
 		state.commitSha = failure.details.commitSha ?? null;
+		state.limit = failure.details.limit ?? null;
 	}
 }
 

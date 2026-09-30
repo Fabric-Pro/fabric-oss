@@ -306,7 +306,7 @@ export type ProjectContextRepositorySyncScalarFieldEnum = z.infer<typeof Project
 
 // File: ProjectContextRepositorySyncRunScalarFieldEnum.schema.ts
 
-export const ProjectContextRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'context', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'commitSha', 'plan', 'outcomes', 'removedCount', 'pruneConflicts'])
+export const ProjectContextRepositorySyncRunScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'generation', 'context', 'trigger', 'startedAt', 'finishedAt', 'status', 'error', 'commitSha', 'plan', 'outcomes', 'removedCount', 'pruneConflicts', 'limitDetail', 'reapCheckedAt'])
 
 export type ProjectContextRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncRunScalarFieldEnumSchema>;
 
@@ -2334,7 +2334,7 @@ export type ProjectContextSyncRunStatus = z.infer<typeof ProjectContextSyncRunSt
 
 // File: ProjectContextSyncError.schema.ts
 
-export const ProjectContextSyncErrorSchema = z.enum(['NOT_CONFIGURED', 'INTEGRATION_UNAVAILABLE', 'PERMISSION_DENIED', 'RUN_IN_PROGRESS', 'REF_MISSING', 'PATHS_MISSING', 'LIMITS_EXCEEDED', 'CLONE_FAILED', 'STORE_FAILED', 'CONFIGURATION_CHANGED', 'SUPERSEDED', 'INTERRUPTED'])
+export const ProjectContextSyncErrorSchema = z.enum(['NOT_CONFIGURED', 'INTEGRATION_UNAVAILABLE', 'PERMISSION_DENIED', 'RUN_IN_PROGRESS', 'REF_MISSING', 'PATHS_MISSING', 'LIMITS_EXCEEDED', 'CLONE_FAILED', 'STORE_FAILED', 'CONFIGURATION_CHANGED', 'SUPERSEDED', 'INTERRUPTED', 'IGNORE_RULE_REJECTED'])
 
 export type ProjectContextSyncError = z.infer<typeof ProjectContextSyncErrorSchema>;
 
@@ -4848,6 +4848,8 @@ export const ProjectContextRepositorySyncRunSchema = z.object({
   outcomes: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
   removedCount: z.number().int(),
   pruneConflicts: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
+  limitDetail: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  reapCheckedAt: z.date().nullish(),
 });
 
 export type ProjectContextRepositorySyncRunType = z.infer<typeof ProjectContextRepositorySyncRunSchema>;

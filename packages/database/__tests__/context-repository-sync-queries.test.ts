@@ -496,7 +496,7 @@ const h = vi.hoisted(() => {
 
 vi.mock("../prisma/client", () => ({
 	db: h.db,
-	Prisma: { sql: vi.fn(), join: vi.fn() },
+	Prisma: { sql: vi.fn(), join: vi.fn(), DbNull: "DbNull" },
 }));
 // Imported by the coding-instructions module the disconnect releases
 // through; neither is reached by the release itself.
@@ -521,6 +521,7 @@ import {
 	getContextRepositorySyncRun,
 	getContextRepositorySyncRunForUpdate,
 	getContextSyncIntegration,
+	getLatestFinishedContextRepositorySyncRun,
 	getNewestContextRepositorySyncRun,
 	insertContextRepositorySyncRun,
 	listContextRepositorySyncAwaitingIndex,
@@ -1778,6 +1779,167 @@ describe("run receipts", () => {
 				finishedAt: new Date("2026-09-23T12:05:00Z"),
 			},
 		});
+	});
+});
+
+describe("the limit a LIMITS_EXCEEDED run named (Fizzy #2784)", () => {
+	const limit = {
+		kind: "totalSize" as const,
+		max: 52_428_800,
+		actual: 60_000_000,
+	};
+	const complete = (
+		result: Parameters<typeof completeContextRepositorySyncRun>[2],
+	) =>
+		inTx((tx) =>
+			completeContextRepositorySyncRun(tx as never, RUN, result),
+		);
+
+	// A transaction commits a copy of the tables, so the seeded row is read
+	// back from what was committed.
+	const storedLimit = (id: string) =>
+		committed().run.find((row) => row.id === id)?.limitDetail;
+
+	it("keeps the limit with LIMITS_EXCEEDED", async () => {
+		seedRun();
+
+		await complete({ status: "FAILED", error: "LIMITS_EXCEEDED", limit });
+
+		expect(storedLimit(RUN)).toEqual(limit);
+	});
+
+	it("keeps the rule's line with IGNORE_RULE_REJECTED", async () => {
+		seedRun();
+		const rule = {
+			kind: "doubleStarGroups" as const,
+			max: 2,
+			actual: 3,
+			line: 4,
+		};
+
+		await complete({
+			status: "FAILED",
+			error: "IGNORE_RULE_REJECTED",
+			limit: rule,
+		});
+
+		expect(storedLimit(RUN)).toEqual(rule);
+	});
+
+	it("stores null for every other error, whatever limit was passed", async () => {
+		seedRun();
+
+		await complete({ status: "FAILED", error: "CLONE_FAILED", limit });
+
+		expect(storedLimit(RUN)).toBe("DbNull");
+	});
+
+	it("stores null when LIMITS_EXCEEDED came with no limit, or one that does not parse", async () => {
+		const none = seedRun({ id: `${SYNC}:none` });
+		const junk = seedRun({ id: `${SYNC}:junk` });
+
+		await inTx((tx) =>
+			completeContextRepositorySyncRun(tx as never, none.id as string, {
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+			}),
+		);
+		await inTx((tx) =>
+			completeContextRepositorySyncRun(tx as never, junk.id as string, {
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				limit: { kind: "bogus", max: -1 } as never,
+			}),
+		);
+
+		expect(storedLimit(none.id as string)).toBe("DbNull");
+		expect(storedLimit(junk.id as string)).toBe("DbNull");
+	});
+});
+
+describe("the newest finished receipt (Fizzy #2784)", () => {
+	const scope = { projectId: PROJECT, organizationId: ORG };
+
+	it("skips a run still going, so its failure-free present does not hide the failure before it", async () => {
+		seedRun({
+			id: `${SYNC}:failed`,
+			startedAt: new Date("2026-09-23T10:00:00Z"),
+			finishedAt: new Date("2026-09-23T10:01:00Z"),
+			status: "FAILED",
+			error: "LIMITS_EXCEEDED",
+			limitDetail: { kind: "inventory", max: 200_000, extra: "dropped" },
+		});
+		seedRun({
+			id: `${SYNC}:open`,
+			startedAt: new Date("2026-09-23T11:00:00Z"),
+		});
+
+		const finished = await getLatestFinishedContextRepositorySyncRun(
+			SYNC,
+			scope,
+		);
+
+		expect(finished).toMatchObject({
+			id: `${SYNC}:failed`,
+			status: "FAILED",
+			error: "LIMITS_EXCEEDED",
+			limitDetail: { kind: "inventory", max: 200_000 },
+		});
+		expect(finished?.limitDetail).not.toHaveProperty("extra");
+	});
+
+	it("takes the newest of several finished runs", async () => {
+		seedRun({
+			id: `${SYNC}:old`,
+			startedAt: new Date("2026-09-23T09:00:00Z"),
+			finishedAt: new Date("2026-09-23T09:01:00Z"),
+			status: "SUCCEEDED",
+		});
+		seedRun({
+			id: `${SYNC}:new`,
+			startedAt: new Date("2026-09-23T10:00:00Z"),
+			finishedAt: new Date("2026-09-23T10:01:00Z"),
+			status: "FAILED",
+			error: "CLONE_FAILED",
+		});
+
+		expect(
+			await getLatestFinishedContextRepositorySyncRun(SYNC, scope),
+		).toMatchObject({ id: `${SYNC}:new`, limitDetail: null });
+	});
+
+	it("reads a stored limit that is not a limit as none", async () => {
+		seedRun({
+			finishedAt: new Date("2026-09-23T10:01:00Z"),
+			status: "FAILED",
+			error: "LIMITS_EXCEEDED",
+			limitDetail: { kind: "bogus" },
+		});
+
+		expect(
+			await getLatestFinishedContextRepositorySyncRun(SYNC, scope),
+		).toMatchObject({ limitDetail: null });
+	});
+
+	it("never reads another organization's or project's receipt", async () => {
+		seedRun({
+			finishedAt: new Date("2026-09-23T10:01:00Z"),
+			status: "FAILED",
+			error: "CLONE_FAILED",
+		});
+
+		expect(
+			await getLatestFinishedContextRepositorySyncRun(SYNC, {
+				projectId: PROJECT,
+				organizationId: "org-2",
+			}),
+		).toBeNull();
+		expect(
+			await getLatestFinishedContextRepositorySyncRun(SYNC, {
+				projectId: "proj-2",
+				organizationId: ORG,
+			}),
+		).toBeNull();
 	});
 });
 

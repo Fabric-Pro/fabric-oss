@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { getPublishedInstructionSnapshot } from "@repo/database";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -9,7 +10,7 @@ import {
 import { requireHostingOrganizationId } from "./hosting-organization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * Reads the project's currently published coding-instructions snapshot.
  * `getPublishedInstructionSnapshot(projectId)` is UNSCOPED by design (the
@@ -20,6 +21,7 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * existence.
  */
 export const getPublishedSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

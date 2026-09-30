@@ -113,9 +113,20 @@ vi.mock(
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitCommandError } from "../src/activities/lib/instruction-sync-git";
+import {
+	MAX_CONTEXT_SYNC_KEPT,
+	MAX_CONTEXT_SYNC_TOTAL_BYTES,
+} from "../src/activities/lib/context-sync-plan";
+import {
+	GitCommandError,
+	MAX_CLONE_BYTES,
+	MAX_INVENTORY_ENTRIES,
+} from "../src/activities/lib/instruction-sync-git";
 import { syncContextTreeFromRepository } from "../src/activities/project-context-repository-sync";
-import type { ContextSyncFrozenContext } from "../src/lib/context-sync-types";
+import {
+	type ContextSyncFrozenContext,
+	NON_RETRYABLE_CONTEXT_SYNC_ERRORS,
+} from "../src/lib/context-sync-types";
 import {
 	committed,
 	contextRow,
@@ -664,6 +675,51 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		},
 	);
 
+	it("fails the run with IGNORE_RULE_REJECTED, naming the rule's line, for a .contextignore rule over the cap, and never evaluates or drops it", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [
+			{
+				path: "docs/.contextignore",
+				body: "# policy\n\ndrafts/\n**/a/**/a/**/a/c\n",
+			},
+			{ path: "docs/drafts/x.md", body: "meant to stay out" },
+			{ path: "docs/a.md", body: "a" },
+		]);
+
+		const started = performance.now();
+		const error = await failed(ctx);
+		const elapsed = performance.now() - started;
+
+		expect(error.type).toBe("IGNORE_RULE_REJECTED");
+		// Final for the run: the workflow's retry policy does not retry it.
+		expect(NON_RETRYABLE_CONTEXT_SYNC_ERRORS).toContain(error.type);
+		expect(error.details[0]).toEqual({
+			commitSha: SHA_A,
+			limit: { kind: "doubleStarGroups", max: 2, actual: 3, line: 4 },
+		});
+		// Nothing was planned, checked out or written: the rule is not dropped
+		// (which would sync docs/drafts/x.md) and the run does not go on.
+		expect(m.sparseCheckout).not.toHaveBeenCalled();
+		expect(runRow().plan).toBeNull();
+		expect(contextRow("docs/drafts/x.md")).toBeUndefined();
+		expect(contextRow("docs/a.md")).toBeUndefined();
+		expect(elapsed).toBeLessThan(2_000);
+	});
+
+	it("applies a .contextignore whose rules all fit the cap", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [
+			{ path: "docs/.contextignore", body: "**/drafts/**\n" },
+			{ path: "docs/drafts/x.md", body: "out" },
+			{ path: "docs/a.md", body: "a" },
+		]);
+
+		await sync(ctx);
+
+		expect(contextRow("docs/a.md")).toBeDefined();
+		expect(contextRow("docs/drafts/x.md")).toBeUndefined();
+	});
+
 	it("refuses more than 5 000 kept files with LIMITS_EXCEEDED before checking anything out", async () => {
 		const ctx = configure(["docs"]);
 		serve(
@@ -680,6 +736,11 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		expect(error.details[0]).toEqual({
 			commitSha: SHA_A,
 			counts: { kept: 5_001 },
+			limit: {
+				kind: "fileCount",
+				actual: 5_001,
+				max: MAX_CONTEXT_SYNC_KEPT,
+			},
 		});
 		expect(m.sparseCheckout).not.toHaveBeenCalled();
 		expect(runRow().plan).toBeNull();
@@ -698,6 +759,15 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		const error = await failed(ctx);
 
 		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			commitSha: SHA_A,
+			counts: { kept: 26, bytes: 25 * 2 * 1024 * 1024 + 1 },
+			limit: {
+				kind: "totalSize",
+				actual: 25 * 2 * 1024 * 1024 + 1,
+				max: MAX_CONTEXT_SYNC_TOTAL_BYTES,
+			},
+		});
 		expect(m.reads.filter((p) => p.includes("/repo/"))).toEqual([]);
 		expect(runRow().plan).toBeNull();
 	});
@@ -707,7 +777,41 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		serve(SHA_A, [{ path: "docs/a.md", body: "a" }]);
 		m.listContextInventory.mockResolvedValueOnce({ ok: false });
 
-		expect((await failed(ctx)).type).toBe("LIMITS_EXCEEDED");
+		const error = await failed(ctx);
+
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toMatchObject({
+			limit: { kind: "inventory", max: MAX_INVENTORY_ENTRIES },
+		});
+	});
+
+	it("names the repository-size budget when the disk watchdog stops the checkout", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [{ path: "docs/a.md", body: "a" }]);
+		m.sparseCheckout.mockRejectedValueOnce(
+			new GitCommandError("disk_limit", null, "", "checkout"),
+		);
+
+		const error = await failed(ctx);
+
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toMatchObject({
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
+		});
+	});
+
+	it("names the repository-size budget when the disk watchdog stops the clone", async () => {
+		const ctx = configure(["docs"]);
+		m.cloneTreeless.mockRejectedValue(
+			new GitCommandError("disk_limit", null, "", "clone"),
+		);
+
+		const error = await failed(ctx);
+
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
+		});
 	});
 });
 
@@ -1375,6 +1479,26 @@ describe("syncContextTreeFromRepository — prune, permission and index", () => 
 		await sync(ctx);
 
 		expect(m.start).toHaveBeenCalledTimes(2);
+		// One id per row, joining a pass from an earlier run that is still
+		// open rather than repeating its delete-and-embed.
+		expect(
+			m.start.mock.calls.map(([, options]) => ({
+				workflowId: options.workflowId,
+				conflictPolicy: options.workflowIdConflictPolicy,
+				reusePolicy: options.workflowIdReusePolicy,
+			})),
+		).toEqual([
+			{
+				workflowId: `context-embedding-${contextRow("docs/a.md")?.id}`,
+				conflictPolicy: "USE_EXISTING",
+				reusePolicy: "ALLOW_DUPLICATE",
+			},
+			{
+				workflowId: `context-embedding-${contextRow("docs/b.md")?.id}`,
+				conflictPolicy: "USE_EXISTING",
+				reusePolicy: "ALLOW_DUPLICATE",
+			},
+		]);
 		const started = m.start.mock.calls.map(([type, options]) => ({
 			type,
 			taskQueue: options.taskQueue,

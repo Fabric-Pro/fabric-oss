@@ -25,6 +25,7 @@ import {
 	type ContextSyncConfiguration,
 	type ContextSyncIntegration,
 	type ContextSyncNowResult,
+	contextSyncActionErrorMessage,
 	contextSyncAutomaticInput,
 	contextSyncConfigureErrorMessage,
 	contextSyncNowResultMessage,
@@ -273,11 +274,8 @@ export function ConfigureContextRepositorySyncDialog({
 			const announced = contextSyncNowResultMessage(result);
 			toast[announced.tone](t(announced.key));
 		} catch (error) {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: t("configureDialog.errors.generic"),
-			);
+			const mapped = contextSyncActionErrorMessage(error, "syncNow");
+			toast.error(t(mapped.key, mapped.values));
 		}
 		onSaved();
 		onOpenChange(false);
@@ -308,7 +306,18 @@ export function ConfigureContextRepositorySyncDialog({
 		path === "" ? "dir" : (treeIndex?.nodes.get(path)?.type ?? null);
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
+		<Dialog
+			open={open}
+			// Escape, the overlay and the close button are ignored while a save
+			// or the sync it starts is in flight: closing would drop the result
+			// of a write the person is still waiting on.
+			onOpenChange={(next) => {
+				if (pending && !next) {
+					return;
+				}
+				onOpenChange(next);
+			}}
+		>
 			<DialogContent className="max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>{t("configureDialog.title")}</DialogTitle>

@@ -83,6 +83,13 @@ export function InstructionsTree({
 	const [query, setQuery] = useState("");
 	const [kindFilter, setKindFilter] = useState<string | null>(null);
 	const [open, setOpen] = useState<Set<string>>(() => new Set());
+	// While a search or kind filter is on, every folder with a match is open
+	// unless it was closed during THAT search. Kept apart from `open` so
+	// clearing the search gives back the folders as the person left them.
+	const [searchCollapsed, setSearchCollapsed] = useState<{
+		key: string;
+		paths: ReadonlySet<string>;
+	}>({ key: "", paths: new Set() });
 	const kindsPresent = useMemo(
 		() => [...new Set(files.map((f) => f.kind))].sort(),
 		[files],
@@ -108,8 +115,21 @@ export function InstructionsTree({
 	// auto-expand every folder that still has a match rather than requiring
 	// the user to also click open every ancestor folder by hand.
 	const searching = query.trim().length > 0 || kindFilter !== null;
+	const searchKey = `${query.trim()}\u0000${kindFilter ?? ""}`;
 
-	const toggle = (path: string) =>
+	const toggle = (path: string) => {
+		if (searching) {
+			setSearchCollapsed((prev) => {
+				const next = new Set(prev.key === searchKey ? prev.paths : []);
+				if (next.has(path)) {
+					next.delete(path);
+				} else {
+					next.add(path);
+				}
+				return { key: searchKey, paths: next };
+			});
+			return;
+		}
 		setOpen((s) => {
 			const n = new Set(s);
 			if (n.has(path)) {
@@ -119,6 +139,7 @@ export function InstructionsTree({
 			}
 			return n;
 		});
+	};
 
 	const renderNode = (node: Node, depth: number): React.ReactNode => {
 		if (node.file) {
@@ -143,7 +164,12 @@ export function InstructionsTree({
 				</button>
 			);
 		}
-		const isOpen = searching || open.has(node.path);
+		const isOpen = searching
+			? !(
+					searchCollapsed.key === searchKey &&
+					searchCollapsed.paths.has(node.path)
+				)
+			: open.has(node.path);
 		return (
 			<div key={node.path}>
 				<button
@@ -186,7 +212,7 @@ export function InstructionsTree({
 				{/* Visual grouping only — the input below carries its own
 				`aria-label`, so a `<label>` wrapper here would just be a
 				second, unassociated label for the same control. */}
-				<div className="flex h-9 items-center gap-2 rounded-md border border-input px-2.5 text-muted-foreground">
+				<div className="flex h-9 items-center gap-2 rounded-md border border-input px-2.5 text-muted-foreground focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
 					<SearchIcon className="size-4" aria-hidden="true" />
 					<Input
 						type="search"
@@ -231,6 +257,18 @@ export function InstructionsTree({
 			</div>
 			<div className="flex flex-col gap-px overflow-auto p-2">
 				{sortedChildren(tree).map((c) => renderNode(c, 0))}
+				{/* Always mounted, so the change from results to none is
+				    announced: a live region inserted already holding its text
+				    is often missed. */}
+				<output
+					className={
+						searching && visible.length === 0
+							? "block px-2.5 py-1 text-muted-foreground text-xs"
+							: "sr-only"
+					}
+				>
+					{searching && visible.length === 0 ? t("noMatches") : null}
+				</output>
 			</div>
 		</div>
 	);

@@ -108,6 +108,39 @@ describe("the default exclusions (the canonical module's)", () => {
 	});
 });
 
+describe(".contextignore rules the matcher could not evaluate in time (Fizzy #2784)", () => {
+	const adversarial = "**/a/**/a/**/a/**/a/**/c";
+
+	it("is never handed a rule over the cap, whoever asks", () => {
+		expect(() =>
+			buildContextIgnoreRules({
+				contextIgnore: `drafts/\n${adversarial}\n`,
+			}),
+		).toThrow(/line 2 has 5 .* groups; at most 2/);
+	});
+
+	it("still builds rules for a file within the cap", () => {
+		const rules = buildContextIgnoreRules({
+			contextIgnore: "docs/**/drafts/**\n**/node_modules/**\n",
+		});
+
+		expect(rules.ignoresFile("docs/a/drafts/x.md")).toBe(true);
+		expect(rules.ignoresFile("docs/a/kept.md")).toBe(false);
+	});
+
+	it("does not evaluate a path the sync could never store, which is what bounds the matcher's time by depth", () => {
+		const rules = buildContextIgnoreRules({ contextIgnore: "**/a/**" });
+		const deep = "a/".repeat(2_000);
+
+		const start = performance.now();
+		const match = matchContextEntry(rules, `${deep}x.md`, "100644");
+		const elapsed = performance.now() - start;
+
+		expect(match).toBe("unmatchable");
+		expect(elapsed).toBeLessThan(50);
+	});
+});
+
 describe(".contextignore", () => {
 	it("applies with gitignore semantics", () => {
 		// CLI: "applies .contextignore with gitignore semantics"

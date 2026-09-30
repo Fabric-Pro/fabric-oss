@@ -1,3 +1,4 @@
+import en from "@repo/i18n/translations/en.json";
 import { describe, expect, it } from "vitest";
 import {
 	activeContextSyncIntegrations,
@@ -8,9 +9,11 @@ import {
 	CONTEXT_SYNC_RUNNING_POLL_MS,
 	type ContextSyncRunView,
 	type ContextSyncState,
+	contextSyncActionErrorMessage,
 	contextSyncAttentionMessageKey,
 	contextSyncAutomaticInput,
 	contextSyncConfigureErrorMessage,
+	contextSyncFailureMessage,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
 	contextSyncLatestRunChanged,
@@ -25,6 +28,7 @@ import {
 	offersSyncFromRepository,
 	offersSyncNow,
 	shortCommit,
+	showsLivingMemorySection,
 	tallyContextDeleteOutcomes,
 	validateContextSyncPathAddition,
 } from "../context-repository-sync";
@@ -35,6 +39,7 @@ const IDLE: ContextSyncState = {
 	configured: null,
 	latestRun: null,
 	lastAppliedRun: null,
+	latestFinishedRun: null,
 	managedCount: 0,
 	awaitingIndexCount: 0,
 	cleanupPending: 0,
@@ -840,5 +845,279 @@ describe("contextSyncTreeErrorMessage", () => {
 		expect(contextSyncTreeErrorMessage(error, "main")).toEqual({
 			key: "tree.error",
 		});
+	});
+});
+
+describe("a failed run's message (Fizzy #2784)", () => {
+	const failed = (
+		error: NonNullable<ContextSyncState["latestFinishedRun"]>["error"],
+		limitDetail: NonNullable<
+			ContextSyncState["latestFinishedRun"]
+		>["limitDetail"] = null,
+	) => ({ status: "FAILED" as const, error, limitDetail });
+
+	it("has nothing to say for a run that did not fail", () => {
+		expect(
+			contextSyncFailureMessage(
+				{ status: "SUCCEEDED", error: null, limitDetail: null },
+				null,
+			),
+		).toBeNull();
+		expect(
+			contextSyncFailureMessage(
+				{ status: "UNCHANGED", error: null, limitDetail: null },
+				null,
+			),
+		).toBeNull();
+	});
+
+	it.each([
+		"NOT_CONFIGURED",
+		"INTEGRATION_UNAVAILABLE",
+		"PERMISSION_DENIED",
+		"RUN_IN_PROGRESS",
+		"PATHS_MISSING",
+		"CLONE_FAILED",
+		"STORE_FAILED",
+		"CONFIGURATION_CHANGED",
+		"SUPERSEDED",
+		"INTERRUPTED",
+	] as const)("words %s by its own code", (code) => {
+		expect(contextSyncFailureMessage(failed(code), null)).toEqual({
+			key: `failure.${code}`,
+		});
+	});
+
+	it("names the branch for REF_MISSING, and leaves it blank with no configuration", () => {
+		expect(
+			contextSyncFailureMessage(failed("REF_MISSING"), { ref: "main" }),
+		).toEqual({ key: "failure.REF_MISSING", values: { ref: "main" } });
+		expect(contextSyncFailureMessage(failed("REF_MISSING"), null)).toEqual({
+			key: "failure.REF_MISSING",
+			values: { ref: "" },
+		});
+	});
+
+	it.each([
+		[
+			{ kind: "fileCount", actual: 6_000, max: 5_000 },
+			{
+				key: "failure.limit.fileCount",
+				values: { actual: "6,000", max: "5,000" },
+			},
+		],
+		[
+			{ kind: "fileCount", max: 5_000 },
+			{ key: "failure.limit.fileCountUnknown", values: { max: "5,000" } },
+		],
+		[
+			{ kind: "totalSize", actual: 60_000_000, max: 52_428_800 },
+			{
+				key: "failure.limit.totalSize",
+				values: { actual: "57.2 MB", max: "50 MB" },
+			},
+		],
+		[
+			{ kind: "fileSize", actual: 6_291_456, max: 5_242_880 },
+			{
+				key: "failure.limit.fileSize",
+				values: { actual: "6 MB", max: "5 MB" },
+			},
+		],
+		[
+			{ kind: "inventory", max: 200_000 },
+			{ key: "failure.limit.inventory", values: { max: "200,000" } },
+		],
+		[
+			{ kind: "repositorySize", max: 171_966_464 },
+			{
+				key: "failure.limit.repositorySize",
+				values: { max: "164 MB" },
+			},
+		],
+	] as const)("words the limit %j exactly", (limit, message) => {
+		expect(
+			contextSyncFailureMessage(failed("LIMITS_EXCEEDED", limit), null),
+		).toEqual(message);
+	});
+
+	it("names the line and the count for a rejected .contextignore rule", () => {
+		expect(
+			contextSyncFailureMessage(
+				failed("IGNORE_RULE_REJECTED", {
+					kind: "doubleStarGroups",
+					max: 2,
+					actual: 3,
+					line: 4,
+				}),
+				null,
+			),
+		).toEqual({
+			key: "failure.limit.doubleStarGroups",
+			values: { line: 4, actual: 3, max: 2 },
+		});
+	});
+
+	it("falls back to the generic rejected-rule line when the run kept no line", () => {
+		expect(
+			contextSyncFailureMessage(failed("IGNORE_RULE_REJECTED"), null),
+		).toEqual({ key: "failure.IGNORE_RULE_REJECTED" });
+		expect(
+			contextSyncFailureMessage(
+				failed("IGNORE_RULE_REJECTED", {
+					kind: "doubleStarGroups",
+					max: 2,
+				}),
+				null,
+			),
+		).toEqual({ key: "failure.IGNORE_RULE_REJECTED" });
+	});
+
+	it("falls back to the generic limit line when no detail was recorded", () => {
+		expect(
+			contextSyncFailureMessage(failed("LIMITS_EXCEEDED"), null),
+		).toEqual({ key: "failure.LIMITS_EXCEEDED" });
+	});
+});
+
+describe("the Living Memory section's visibility (Fizzy #2784)", () => {
+	it("stays up when the state could not be read, so the failure has somewhere to be said", () => {
+		expect(
+			showsLivingMemorySection({
+				folderCount: 0,
+				state: undefined,
+				readFailed: true,
+			}),
+		).toBe(true);
+	});
+
+	it("stays down for a project with nothing to show and nothing to configure", () => {
+		expect(
+			showsLivingMemorySection({
+				folderCount: 0,
+				state: undefined,
+				readFailed: false,
+			}),
+		).toBe(false);
+		expect(
+			showsLivingMemorySection({
+				folderCount: 0,
+				state: { ...IDLE, canConfigure: false },
+				readFailed: false,
+			}),
+		).toBe(false);
+	});
+
+	it("is up for synced folders, a configuration, or a configurer with a repository to pick", () => {
+		expect(
+			showsLivingMemorySection({
+				folderCount: 2,
+				state: undefined,
+				readFailed: false,
+			}),
+		).toBe(true);
+		expect(
+			showsLivingMemorySection({
+				folderCount: 0,
+				state: CONFIGURED,
+				readFailed: false,
+			}),
+		).toBe(true);
+		expect(
+			showsLivingMemorySection({
+				folderCount: 0,
+				state: IDLE,
+				readFailed: false,
+			}),
+		).toBe(true);
+	});
+});
+
+describe("a failed sync action's message (Fizzy #2784)", () => {
+	it("names the action for an error with no typed code", () => {
+		expect(
+			contextSyncActionErrorMessage(new Error("upstream"), "syncNow"),
+		).toEqual({ key: "actionErrors.syncNow" });
+		expect(
+			contextSyncActionErrorMessage(new Error("upstream"), "disable"),
+		).toEqual({ key: "actionErrors.disable" });
+	});
+
+	it("keeps a typed code's own copy", () => {
+		expect(
+			contextSyncActionErrorMessage(
+				{ data: { code: "REPOSITORY_UNAVAILABLE" } },
+				"syncNow",
+			).key,
+		).toBe("configureDialog.errors.REPOSITORY_UNAVAILABLE");
+	});
+});
+
+describe("the copy the failure messages ask for exists (Fizzy #2784)", () => {
+	const copy = en.projects.contexts.livingMemory.repositorySync;
+	const lookup = (key: string): unknown =>
+		key
+			.split(".")
+			.reduce<unknown>(
+				(node, part) =>
+					node && typeof node === "object"
+						? (node as Record<string, unknown>)[part]
+						: undefined,
+				copy,
+			);
+
+	it.each([
+		"NOT_CONFIGURED",
+		"INTEGRATION_UNAVAILABLE",
+		"PERMISSION_DENIED",
+		"RUN_IN_PROGRESS",
+		"REF_MISSING",
+		"PATHS_MISSING",
+		"LIMITS_EXCEEDED",
+		"CLONE_FAILED",
+		"STORE_FAILED",
+		"CONFIGURATION_CHANGED",
+		"SUPERSEDED",
+		"INTERRUPTED",
+		"IGNORE_RULE_REJECTED",
+	] as const)("has a line for %s", (error) => {
+		const message = contextSyncFailureMessage(
+			{ status: "FAILED", error, limitDetail: null },
+			{ ref: "main" },
+		);
+
+		expect(typeof lookup(message?.key ?? "missing")).toBe("string");
+	});
+
+	it.each([
+		{ kind: "fileCount", actual: 1, max: 2 },
+		{ kind: "fileCount", max: 2 },
+		{ kind: "fileSize", actual: 1, max: 2 },
+		{ kind: "fileSize", max: 2 },
+		{ kind: "totalSize", actual: 1, max: 2 },
+		{ kind: "totalSize", max: 2 },
+		{ kind: "inventory", max: 2 },
+		{ kind: "repositorySize", max: 2 },
+		{ kind: "doubleStarGroups", max: 2, actual: 3, line: 4 },
+	] as const)("has a line for the limit %j", (limitDetail) => {
+		const message = contextSyncFailureMessage(
+			{ status: "FAILED", error: "LIMITS_EXCEEDED", limitDetail },
+			null,
+		);
+
+		expect(typeof lookup(message?.key ?? "missing")).toBe("string");
+	});
+
+	it("has the wrapper, read-failure and action lines", () => {
+		for (const key of [
+			"failure.line",
+			"failure.unknown",
+			"loadError.message",
+			"loadError.retry",
+			"actionErrors.syncNow",
+			"actionErrors.disable",
+		]) {
+			expect(typeof lookup(key), key).toBe("string");
+		}
 	});
 });

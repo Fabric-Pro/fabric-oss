@@ -60,6 +60,10 @@ import { logger } from "@repo/logs";
 import type { Client } from "@temporalio/client";
 import { getTemporalClient } from "../client";
 import { safeHeartbeat } from "./lib/activity-liveness";
+import {
+	describeExecution,
+	workflowRunIdOf,
+} from "./lib/stranded-sync-receipts";
 
 /**
  * How old an unfinished receipt must be before the reaper looks at it: far
@@ -81,17 +85,6 @@ export const STRANDED_SYNC_RECEIPT_DESCRIBE_TIMEOUT_MS = 5_000;
 /** Wall clock for one pass, inside the activity's five-minute start-to-close. */
 const RUN_TIME_BUDGET_MS = 4 * 60 * 1000;
 
-const CLOSED_STATUSES: ReadonlySet<string> = new Set([
-	"COMPLETED",
-	"FAILED",
-	"CANCELLED",
-	"TERMINATED",
-	"TIMED_OUT",
-	"CONTINUED_AS_NEW",
-]);
-
-type ExecutionState = "running" | "closed" | "not-found" | "unknown";
-
 export type StrandedSyncReceiptReapResult = {
 	candidates: number;
 	/** Receipts this pass completed, each with its own audit row. */
@@ -106,55 +99,6 @@ export type StrandedSyncReceiptReapResult = {
 	/** The batch was full, so more candidates may be waiting. */
 	hitCap: boolean;
 };
-
-class DescribeTimeout extends Error {}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new DescribeTimeout()), ms);
-	});
-	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-/**
- * The workflow run id a receipt key names: `<syncId>:<workflow run id>`.
- * `null` for a key of any other shape, which is never described.
- */
-function workflowRunIdOf(receipt: { id: string; syncId: string }) {
-	const prefix = `${receipt.syncId}:`;
-	const runId = receipt.id.startsWith(prefix)
-		? receipt.id.slice(prefix.length)
-		: "";
-	return runId.length > 0 && !runId.includes(":") ? runId : null;
-}
-
-async function describeExecution(
-	client: Pick<Client, "workflow">,
-	projectId: string,
-	runId: string,
-): Promise<ExecutionState> {
-	try {
-		const description = await withTimeout(
-			client.workflow
-				.getHandle(
-					instructionRepositorySyncWorkflowId(projectId),
-					runId,
-				)
-				.describe(),
-			STRANDED_SYNC_RECEIPT_DESCRIBE_TIMEOUT_MS,
-		);
-		const status = description.status.name;
-		if (status === "RUNNING") {
-			return "running";
-		}
-		return CLOSED_STATUSES.has(status) ? "closed" : "unknown";
-	} catch (error) {
-		return error instanceof Error && error.name === "WorkflowNotFoundError"
-			? "not-found"
-			: "unknown";
-	}
-}
 
 export async function reapStrandedInstructionSyncReceipts(): Promise<StrandedSyncReceiptReapResult> {
 	const startedAtMs = Date.now();
@@ -209,7 +153,12 @@ export async function reapStrandedInstructionSyncReceipts(): Promise<StrandedSyn
 			result.unknown++;
 			continue;
 		}
-		const state = await describeExecution(client, receipt.projectId, runId);
+		const state = await describeExecution(
+			client,
+			instructionRepositorySyncWorkflowId(receipt.projectId),
+			runId,
+			STRANDED_SYNC_RECEIPT_DESCRIBE_TIMEOUT_MS,
+		);
 		if (state === "running") {
 			result.stillRunning++;
 			continue;

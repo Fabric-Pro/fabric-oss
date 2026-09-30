@@ -364,6 +364,35 @@ describe("verifyAndScanInstructionFiles", () => {
 		expect(activityMocks.heartbeat).toHaveBeenCalled();
 	});
 
+	it("heartbeats counters, never a file path", async () => {
+		await stage([
+			{
+				id: "f1",
+				path: "clients/example-org/CLAUDE.md",
+				data: Buffer.from("a"),
+			},
+			{
+				id: "f2",
+				path: "docs/example-person-notes.md",
+				data: Buffer.from("b"),
+			},
+		]);
+
+		await verifyAndScanInstructionFiles(snap);
+
+		const details = activityMocks.heartbeat.mock.calls
+			.map(([d]) => d)
+			.filter((d) => d.phase === "verify");
+		expect(details).toEqual([
+			{ phase: "verify", file: 1, of: 2 },
+			{ phase: "verify", file: 2, of: 2 },
+		]);
+		expect(
+			JSON.stringify(activityMocks.heartbeat.mock.calls),
+		).not.toContain("example");
+		expect(JSON.stringify(details)).not.toContain("example");
+	});
+
 	it("hashes and scans the SAME buffer, with exactly one download per file (C1)", async () => {
 		await stage([
 			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
@@ -795,6 +824,47 @@ describe("the .fabricignore provenance check (Fizzy #2549)", () => {
 			expect.anything(),
 			expect.anything(),
 		);
+	});
+
+	it.each([
+		[
+			"UTF-16LE with a byte-order mark",
+			Buffer.from("\ufeffdocs/**\n", "utf16le"),
+		],
+		["a NUL byte", Buffer.from("docs/**\n\0")],
+		[
+			"an invalid UTF-8 sequence",
+			Buffer.from([0x64, 0x6f, 0x63, 0x73, 0x2f, 0xff, 0x0a]),
+		],
+	])(
+		"rejects a .fabricignore with %s as not UTF-8 text, never as a mismatch",
+		async (_name, data) => {
+			freezeIgnoreSettings({ layer: "fabricignore", ignoreGlobs: GLOBS });
+			await stage([{ id: "ign", path: ".fabricignore", data }]);
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r).toEqual({
+				ok: false,
+				rejections: [
+					{ path: ".fabricignore", reason: "ignore_encoding" },
+				],
+			});
+			expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		},
+	);
+
+	it("accepts a UTF-8 .fabricignore with a byte-order mark, the rules the freeze read", async () => {
+		freezeIgnoreSettings({ layer: "fabricignore", ignoreGlobs: GLOBS });
+		await stage([
+			ignoreFile("\ufeffdocs/**\n*.log\n"),
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
 	});
 
 	it("rejects a rule-bearing .fabricignore when the frozen layer is not fabricignore", async () => {
@@ -1484,6 +1554,9 @@ describe("publishInstructionSnapshotActivity", () => {
 			projectId: "p",
 			organizationId: "o",
 			requireBaseUnmoved: true,
+			audit: expect.objectContaining({
+				action: "project.instructions.published",
+			}),
 		});
 	});
 
@@ -1636,7 +1709,7 @@ describe("publishInstructionSnapshotActivity", () => {
 // `project.instructions.rejected` had no writer at all.
 // ---------------------------------------------------------------------------
 describe("R29: audit rows from the workflow activities", () => {
-	it("records project.instructions.published once, for the call that actually moved the pointer", async () => {
+	it("hands project.instructions.published to the publish query, which writes it in the publish transaction", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: true,
 			changed: true,
@@ -1644,24 +1717,49 @@ describe("R29: audit rows from the workflow activities", () => {
 
 		await publishInstructionSnapshotActivity(snap);
 
-		expect(m.recordAudit).toHaveBeenCalledTimes(1);
-		expect(m.recordAudit).toHaveBeenCalledWith({
-			action: "project.instructions.published",
-			category: "project",
-			actor: { type: "user", userId: "u" },
-			organizationId: "o",
-			projectId: "p",
-			resource: {
-				type: "project_instruction_snapshot",
-				id: "s",
-				name: "v7",
-			},
-			metadata: {
-				version: 7,
-				fileCount: 3,
-				source: "auto_publish_on_ready",
-			},
-		});
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledTimes(1);
+		expect(m.publishInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				audit: {
+					action: "project.instructions.published",
+					category: "project",
+					actor: { type: "user", userId: "u" },
+					organizationId: "o",
+					projectId: "p",
+					resource: {
+						type: "project_instruction_snapshot",
+						id: "s",
+						name: "v7",
+					},
+					metadata: {
+						version: 7,
+						fileCount: 3,
+						source: "auto_publish_on_ready",
+					},
+				},
+			}),
+		);
+		// A best-effort row after the call is how the record could be lost, or
+		// written again by a retry after the commit.
+		expect(m.recordAudit).not.toHaveBeenCalled();
+	});
+
+	it("writes no audit row of its own on a retry after the commit, however the query answers", async () => {
+		m.publishInstructionSnapshot
+			.mockResolvedValueOnce({ published: true, changed: true })
+			.mockResolvedValueOnce({ published: true, changed: false });
+
+		await publishInstructionSnapshotActivity(snap);
+		await publishInstructionSnapshotActivity(snap);
+
+		expect(m.recordAudit).not.toHaveBeenCalled();
+		const audits = m.publishInstructionSnapshot.mock.calls.map(
+			([call]) => call.audit?.action,
+		);
+		expect(audits).toEqual([
+			"project.instructions.published",
+			"project.instructions.published",
+		]);
 	});
 
 	it("records nothing for the idempotent republish a Temporal retry produces (published: true, changed: false)", async () => {
@@ -1762,6 +1860,29 @@ describe("R29: audit rows from the workflow activities", () => {
 		expect(serialized).not.toContain("acme");
 		expect(serialized).not.toContain("app.conf");
 		expect(serialized).not.toContain("docs/a.md");
+	});
+
+	it("still deletes the staged bytes and records the rejection when the uploader has since lost access", async () => {
+		m.canReadProjectInstructions.mockResolvedValue(false);
+		m.listInstructionFiles.mockResolvedValue([
+			{ id: "f1", path: "a.md", storageKey: "k1", size: 1 },
+		]);
+		m.listObjects.mockResolvedValue({
+			objects: [{ key: "projects/p/instructions/staging/s/f1", size: 1 }],
+		});
+
+		await rejectInstructionSnapshot({
+			...snap,
+			rejections: [
+				{ path: "a.md", reason: "secret", detail: "aws-access-key" },
+			],
+		});
+
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/staging/s/f1"],
+			{ bucket: "skills" },
+		);
+		expect(m.markInstructionSnapshotRejected).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -1867,25 +1988,60 @@ describe("pruneInstructionSnapshots", () => {
 		m.listPrunableInstructionSnapshots.mockResolvedValue([
 			{ id: "old-1", storageKeys: [] },
 		]);
-		// A prefix that never stops paginating.
-		m.listObjects.mockImplementation(async () => ({
-			objects: [
-				{
-					key: "projects/p/instructions/exports/old-1-digest.zip",
-					size: 10,
-				},
-			],
-			nextContinuationToken: "more",
-		}));
+		// An export prefix that never stops paginating; the snapshot's other
+		// two prefixes are empty.
+		m.listObjects.mockImplementation(
+			async ({ prefix }: { prefix: string }) =>
+				prefix.includes("/exports/")
+					? {
+							objects: [
+								{
+									key: "projects/p/instructions/exports/old-1-digest.zip",
+									size: 10,
+								},
+							],
+							nextContinuationToken: "more",
+						}
+					: { objects: [] },
+		);
 
 		const r = await pruneInstructionSnapshots(snap);
 
 		// MAX_PREFIX_PAGES, and then it stops rather than running forever.
-		expect(m.listObjects).toHaveBeenCalledTimes(20);
+		const exportListings = m.listObjects.mock.calls.filter(([arg]) =>
+			arg.prefix.includes("/exports/"),
+		);
+		expect(exportListings).toHaveLength(20);
 		// The row still counts as pruned — rows go before storage, and the
 		// row is gone. What is left under the prefix is the bucket-lifecycle
 		// rule's work, which the flag is there to make visible.
 		expect(r).toEqual({ deleted: 1, storageTruncated: true });
+	});
+
+	it("also sweeps each pruned snapshot's staging and promoted prefixes for objects no row names", async () => {
+		m.listPrunableInstructionSnapshots.mockResolvedValue([
+			{ id: "old-1", storageKeys: [] },
+		]);
+		m.listObjects.mockImplementation(
+			async ({ prefix }: { prefix: string }) => ({
+				objects: [{ key: `${prefix}orphan`, size: 1 }],
+			}),
+		);
+
+		await pruneInstructionSnapshots(snap);
+
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/staging/old-1/orphan"],
+			{ bucket: "skills" },
+		);
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/snapshots/old-1/orphan"],
+			{ bucket: "skills" },
+		);
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			["projects/p/instructions/exports/old-1-orphan"],
+			{ bucket: "skills" },
+		);
 	});
 
 	// R32/I4: the export zips are not in `storageKeys` — nothing records
@@ -3103,6 +3259,32 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 					reason: "ignore_mismatch",
 				}),
 			]);
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("rejects a stored .fabricignore that is not UTF-8 text as ignore_encoding", async () => {
+			fastRow({
+				settingsFrozen: {
+					layer: "fabricignore",
+					ignoreGlobs: ["docs/**"],
+				},
+			});
+			await stageForPromotion([
+				{
+					id: "ign",
+					path: ".fabricignore",
+					data: Buffer.from("docs/**\n\0"),
+				},
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r).toEqual({
+				ok: false,
+				rejections: [
+					{ path: ".fabricignore", reason: "ignore_encoding" },
+				],
+			});
 			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
 		});
 

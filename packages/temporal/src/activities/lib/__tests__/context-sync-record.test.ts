@@ -138,6 +138,23 @@ describe("deriveContextSyncScheduling (§11.1)", () => {
 			{ kind: "suppress", commitSha: SHA },
 		],
 		["POLL", "FAILED", "LIMITS_EXCEEDED", null, { kind: "backoff" }],
+		// A rule the matcher cannot evaluate fails the same head every time:
+		// not retried at that head until the file, and so the head, changes.
+		[
+			"POLL",
+			"FAILED",
+			"IGNORE_RULE_REJECTED",
+			SHA,
+			{ kind: "suppress", commitSha: SHA },
+		],
+		["POLL", "FAILED", "IGNORE_RULE_REJECTED", null, { kind: "backoff" }],
+		[
+			"MANUAL",
+			"FAILED",
+			"IGNORE_RULE_REJECTED",
+			SHA,
+			{ kind: "suppress", commitSha: SHA },
+		],
 		[
 			"POLL",
 			"FAILED",

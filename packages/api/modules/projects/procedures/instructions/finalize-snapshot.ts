@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { getInstructionSnapshot } from "@repo/database";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	assertProjectPermission,
 	Permissions,
@@ -13,7 +14,7 @@ import { unwrapInstructionWorkflowError } from "./instruction-workflow-start";
 import { assertInstructionSnapshotMutationAccess } from "./proposal-authorization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_CREATE).
  *
  * Finishes an upload: starts `projectInstructionSnapshotWorkflow` and only
  * THEN flips the snapshot to VALIDATING. The snapshot lookup is tenant-scoped
@@ -36,6 +37,7 @@ import { assertInstructionSnapshotMutationAccess } from "./proposal-authorizatio
 // below then requires CREATE for direct versions, or READ plus proposer
 // ownership for a pending proposal.
 export const finalizeSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "POST",

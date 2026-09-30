@@ -17,8 +17,9 @@
  * file tree, the settings dialog and the folder picker for no added coverage.
  */
 
+import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -49,6 +50,11 @@ const state = vi.hoisted(() => ({
 	listRunsCalls: 0,
 	/** While set, `repositorySync.get` waits for it before answering. */
 	syncGate: null as Promise<void> | null,
+	/** While set, `list` waits for it before answering. */
+	listGate: null as Promise<void> | null,
+	/** Reads that reject while set. */
+	listFails: false,
+	publishedFails: false,
 	/** How many `onChanged` promises the published-view stub saw resolve. */
 	changedSettled: 0,
 }));
@@ -73,12 +79,21 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				list: {
 					queryOptions: queryOptionsStub("list", async () => {
 						state.listCalls++;
+						if (state.listGate) {
+							await state.listGate;
+						}
+						if (state.listFails) {
+							throw new Error("list unavailable");
+						}
 						return state.snapshots;
 					}),
 				},
 				getPublished: {
 					queryOptions: queryOptionsStub("getPublished", async () => {
 						state.publishedCalls++;
+						if (state.publishedFails) {
+							throw new Error("pointer unavailable");
+						}
 						return state.published;
 					}),
 				},
@@ -255,6 +270,9 @@ beforeEach(() => {
 	state.syncCalls = 0;
 	state.listRunsCalls = 0;
 	state.syncGate = null;
+	state.listGate = null;
+	state.listFails = false;
+	state.publishedFails = false;
 	state.changedSettled = 0;
 });
 
@@ -754,5 +772,109 @@ describe("CodingInstructionsTab deferred secret scan", () => {
 		await tick(10);
 		expect(state.listCalls).toBe(2);
 		expect(state.publishedCalls).toBe(2);
+	});
+});
+
+/**
+ * The tab's first reads. A blank panel while they are in flight, and above all
+ * an empty state over a FAILED read, both let someone act on a project whose
+ * published version they have not seen: the empty state invites an upload that
+ * replaces it.
+ */
+describe("CodingInstructionsTab loading and failed reads", () => {
+	function mount() {
+		return render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+	}
+
+	it("shows a polite loading skeleton, not nothing, while the first reads are in flight", async () => {
+		let open: () => void = () => undefined;
+		state.listGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+
+		mount();
+		await tick(0);
+
+		const region = screen.getByRole("status");
+		expect(region).toHaveAttribute("aria-busy", "true");
+		expect(region).toHaveTextContent("loading");
+		expect(screen.queryByTestId("empty")).not.toBeInTheDocument();
+		open();
+		await tick(0);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		expect(screen.getByTestId("published-id")).toHaveTextContent("snap_1");
+	});
+
+	it("shows an error with Retry, never the empty state, when the version list cannot be read", async () => {
+		state.listFails = true;
+		state.published = null;
+		state.snapshots = [];
+
+		mount();
+		await tick(0);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("errorTitle");
+		expect(screen.queryByTestId("empty")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("published-id")).not.toBeInTheDocument();
+	});
+
+	it("shows the error rather than the empty state when the pointer cannot be read and there is no list to fall back on", async () => {
+		state.publishedFails = true;
+		state.published = null;
+		state.snapshots = [];
+
+		mount();
+		await tick(0);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("errorTitle");
+		expect(screen.queryByTestId("empty")).not.toBeInTheDocument();
+	});
+
+	it("keeps the published view when only the pointer fails but versions are listed", async () => {
+		state.publishedFails = true;
+		state.published = null;
+		state.snapshots = [snapshot("snap_2", "READY")];
+
+		mount();
+		await tick(0);
+
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByTestId("published-id")).toHaveTextContent("none");
+	});
+
+	it("re-reads only the failed queries on Retry and recovers", async () => {
+		state.listFails = true;
+		mount();
+		await tick(0);
+		const before = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		state.listFails = false;
+
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "retry" }));
+		});
+		await tick(0);
+
+		expect(state.listCalls).toBe(before.list + 1);
+		expect(state.publishedCalls).toBe(before.published);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.getByTestId("published-id")).toHaveTextContent("snap_1");
+	});
+
+	it("has the copy it asks for", () => {
+		const copy = en.projects.codingInstructions.loadState;
+
+		expect(copy.loading).toBeTruthy();
+		expect(copy.errorTitle).toBeTruthy();
+		expect(copy.errorBody).toBeTruthy();
+		expect(copy.retry).toBeTruthy();
 	});
 });

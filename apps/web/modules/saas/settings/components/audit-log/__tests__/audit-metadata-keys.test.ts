@@ -44,7 +44,11 @@ const SKIP_DIRS = new Set([
 	"__tests__",
 	"__mocks__",
 ]);
-const WRITES_AUDIT = /[rR]ecordAudit/;
+// A file writes audit rows when it calls a writer, or when it hands an
+// `audit:` input to a query that writes it inside its own transaction (the
+// Coding Instructions activities publish and reject that way). Matching only
+// the writer's name skipped the second kind, and with it their metadata keys.
+const WRITES_AUDIT = /[rR]ecordAudit|\baudit\s*:/;
 
 function sourceFiles(dir: string, out: string[]): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {

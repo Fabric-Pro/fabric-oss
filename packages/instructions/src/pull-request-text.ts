@@ -45,6 +45,31 @@ export function escapeMarkdown(s: string): string {
 	return s.replace(/[\\`*_#>[\]<|]/g, "\\$&").replace(/^[ \t]+/gm, "");
 }
 
+/**
+ * Stops an `@name`, `@org/team` or `@<id>` in a pull request's title or
+ * description from notifying anyone: a proposer's note is opened in the
+ * repository under the Fabric app's identity, and a mention in it would page
+ * a person or a whole team on the proposer's say-so.
+ *
+ * A zero-width space after an `@` that could start a mention, and only that one.
+ * GitHub, GitLab and Azure DevOps read `@` as a mention at the start of the text
+ * or after a character outside `[A-Za-z0-9_]`, and only when a name (or, for
+ * Azure DevOps, `<id>`) follows; an address such as `dev@example.com` is not a
+ * mention, and a space inside it would break copying it and its `mailto:`
+ * link, so it stays byte-identical. The space is what all three providers need and
+ * the other candidates are not: each recognises a mention by the characters
+ * that follow the `@` in the rendered text, so a character between them ends
+ * it, and the text still reads as a literal `@`. A backslash escape
+ * (`\@`) and an entity (`&#64;`) both render to a plain `@` before the
+ * provider looks for mentions, so GitHub and GitLab still notify; a code span
+ * would change how the note looks. Applied after the secret scan, like
+ * `escapeMarkdown`, and to the title and description only: the commit message
+ * stays plain text.
+ */
+export function neutraliseMentions(s: string): string {
+	return s.replace(/(?<![A-Za-z0-9_])@(?=[A-Za-z0-9_<])/g, "@\u200b");
+}
+
 const MAIL_DOMAIN = /^[a-z0-9.-]+\.[a-z]{2,}$/i;
 
 /**
@@ -142,8 +167,8 @@ export function renderPullRequestText(input: {
 		ok: true,
 		author: { name: proposerName, email },
 		committer: { name: PULL_REQUEST_COMMITTER_NAME, email },
-		title: escapeMarkdown(title),
-		body: escapeMarkdown(body),
+		title: escapeMarkdown(neutraliseMentions(title)),
+		body: escapeMarkdown(neutraliseMentions(body)),
 		message,
 	};
 }

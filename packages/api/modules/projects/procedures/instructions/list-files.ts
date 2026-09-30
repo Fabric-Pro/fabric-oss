@@ -5,6 +5,7 @@ import {
 	type InstructionFileKind,
 } from "@repo/instructions";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -19,7 +20,7 @@ import {
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * Lists the files of one snapshot, tenant-scoped via a preceding
  * `getInstructionSnapshot(id, projectId, organizationId)` (R11) before the
@@ -38,6 +39,7 @@ const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
  * may still be mid-upload and their metadata is not yet final.
  */
 export const listFilesProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

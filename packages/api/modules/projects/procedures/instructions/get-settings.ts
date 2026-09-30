@@ -1,6 +1,7 @@
 import { getProjectInstructionSettings } from "@repo/database";
 import { DEFAULT_IGNORE_GLOBS } from "@repo/instructions";
 import { z } from "zod";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -9,7 +10,7 @@ import {
 import { requireHostingOrganizationId } from "./hosting-organization";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_READ).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
  * Reads a project's coding-instructions settings: its ignore-glob override
  * (`null` when the project has never set one), the built-in default globs
@@ -17,6 +18,7 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * `.fabricignore`, and the resolved source of truth.
  */
 export const getSettingsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))
 	.route({
 		method: "GET",

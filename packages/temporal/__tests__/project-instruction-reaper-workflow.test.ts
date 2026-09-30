@@ -1,9 +1,10 @@
 /**
  * Behavioural test for `projectInstructionReaperWorkflow` on a time-skipping
  * test server, bundling the REAL workflows barrel. Each hourly tick reaps
- * snapshots as before and then, behind a `patched()` gate that keeps the
- * histories already recorded replayable, the sync-run receipts whose
- * workflow run ended without completing them (Fizzy #2672).
+ * snapshots as before and then, each behind a `patched()` gate that keeps
+ * the histories already recorded replayable, the Coding Instructions
+ * sync-run receipts whose workflow run ended without completing them
+ * (Fizzy #2672) and the Living Memory ones (Fizzy #2784).
  *
  * Run with:
  *   pnpm --filter @repo/temporal test __tests__/project-instruction-reaper-workflow.test.ts
@@ -35,7 +36,7 @@ afterAll(async () => {
 });
 
 describe("projectInstructionReaperWorkflow", () => {
-	it("reaps snapshots, then stranded sync receipts, and returns both results", async () => {
+	it("reaps snapshots, then stranded sync receipts of both syncs, and returns every result", async () => {
 		const taskQueue = `instruction-reaper-${Date.now()}`;
 		const order: string[] = [];
 		const snapshots = { rejected: 1, snapshotsPruned: 2 };
@@ -48,6 +49,11 @@ describe("projectInstructionReaperWorkflow", () => {
 			errorCount: 0,
 			hitCap: false,
 		};
+		const contextSyncReceipts = {
+			...syncReceipts,
+			candidates: 2,
+			completed: 2,
+		};
 		const activities = {
 			reapInstructionSnapshots: vi.fn(async () => {
 				order.push("snapshots");
@@ -56,6 +62,10 @@ describe("projectInstructionReaperWorkflow", () => {
 			reapStrandedInstructionSyncReceipts: vi.fn(async () => {
 				order.push("syncReceipts");
 				return syncReceipts;
+			}),
+			reapStrandedContextSyncReceipts: vi.fn(async () => {
+				order.push("contextSyncReceipts");
+				return contextSyncReceipts;
 			}),
 		};
 		const worker = await Worker.create({
@@ -73,7 +83,15 @@ describe("projectInstructionReaperWorkflow", () => {
 			}),
 		);
 
-		expect(order).toEqual(["snapshots", "syncReceipts"]);
-		expect(result).toEqual({ ...snapshots, syncReceipts });
+		expect(order).toEqual([
+			"snapshots",
+			"syncReceipts",
+			"contextSyncReceipts",
+		]);
+		expect(result).toEqual({
+			...snapshots,
+			syncReceipts,
+			contextSyncReceipts,
+		});
 	}, 60_000);
 });

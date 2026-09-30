@@ -16,7 +16,10 @@ import {
 	deleteInstructionSnapshot,
 	listPrunableInstructionSnapshots,
 } from "@repo/database";
-import { exportKeyPrefix, isKeyOwnedBySnapshot } from "@repo/instructions";
+import {
+	isKeyOwnedBySnapshot,
+	snapshotOwnedPrefixes,
+} from "@repo/instructions";
 import type {
 	DeleteObjectsResult,
 	StorageProviderInterface,
@@ -266,16 +269,19 @@ export async function pruneProjectInstructionSnapshots(
 				budget.remaining -= keys.length;
 			}
 		}
-		// The export zips built from this snapshot. Nothing records which
-		// ones exist — the file rows only know their own keys — so they are
-		// found by prefix, which also collects objects an earlier
-		// wall-clock-stamped build wrote.
-		const sweep = await deleteObjectsUnderPrefix(
-			storage,
-			exportKeyPrefix(projectId, s.id),
-			budget,
-		);
-		storageTruncated ||= sweep.truncated;
+		// Everything else under the snapshot's own prefixes: the export zips
+		// built from it (nothing records which exist, and an earlier
+		// wall-clock-stamped build wrote more), and any staging or promoted
+		// object no row names — an upload that was replaced, or an object
+		// copied before the row that would have recorded it was written.
+		for (const prefix of snapshotOwnedPrefixes(projectId, s.id)) {
+			const sweep = await deleteObjectsUnderPrefix(
+				storage,
+				prefix,
+				budget,
+			);
+			storageTruncated ||= sweep.truncated;
+		}
 	}
 	return { deleted, storageTruncated };
 }

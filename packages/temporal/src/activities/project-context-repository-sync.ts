@@ -52,6 +52,7 @@ import {
 	writeContextRepositorySyncRunPlan,
 	writeContextRepositorySyncScheduling,
 } from "@repo/database";
+import { findContextIgnoreProblem } from "@repo/instructions/context-sync-rules";
 import { logger } from "@repo/logs";
 import { emitContextChange } from "@repo/utils/realtime-emit";
 import {
@@ -67,6 +68,7 @@ import {
 	CONTEXT_SYNC_BEGIN_MAX_ATTEMPTS,
 	type ContextSyncFailureDetails,
 	type ContextSyncFrozenContext,
+	type ContextSyncLimitDetail,
 	type ContextSyncTrigger,
 	contextSyncRunKey,
 	isAutomaticContextSyncTrigger,
@@ -106,6 +108,7 @@ import {
 	selectedPathShapes,
 } from "./lib/context-sync-plan";
 import {
+	completeInterruptedContextSyncRun,
 	deriveContextSyncRunVerdict,
 	deriveContextSyncScheduling,
 	EMPTY_CONTEXT_SYNC_RUN_COUNTS,
@@ -120,6 +123,7 @@ import {
 import {
 	credentialFreeUrl,
 	fetchPinnedCommit,
+	MAX_CLONE_BYTES,
 	MAX_INVENTORY_ENTRIES,
 	readBlobCapped,
 	redactSecrets,
@@ -521,8 +525,10 @@ async function beginUnderLock(
 			// this pass did not see.
 			throw new BeginStateChanged();
 		}
-		await completeContextRepositorySyncRun(tx, predecessor, {
-			status: "FAILED",
+		// With its completion audit row, like every receipt `record` completes:
+		// this receipt's own execution never will.
+		await completeInterruptedContextSyncRun(tx, {
+			run: lock.run,
 			error: "INTERRUPTED",
 		});
 		if (activeRunKey === predecessor) {
@@ -701,6 +707,34 @@ function contextSyncFailure(
 	});
 }
 
+/**
+ * The disk watchdog watches the whole run directory (the clone, its file
+ * listing and the checkout), so its limit is the sync's download and disk
+ * budget, not the selected files' own.
+ */
+const REPOSITORY_SIZE_LIMIT: ContextSyncLimitDetail = {
+	kind: "repositorySize",
+	max: MAX_CLONE_BYTES,
+};
+
+/**
+ * `contextSyncFailure` for a code a git step produced: LIMITS_EXCEEDED from
+ * git can only be the disk watchdog, which carries the repository-size limit.
+ */
+function gitContextSyncFailure(
+	code: ProjectContextSyncError,
+	details: ContextSyncFailureDetails,
+	nonRetryable?: boolean,
+): ApplicationFailure {
+	return contextSyncFailure(
+		code,
+		code === "LIMITS_EXCEEDED"
+			? { ...details, limit: REPOSITORY_SIZE_LIMIT }
+			: details,
+		nonRetryable,
+	);
+}
+
 /** Heartbeat details: counters only. */
 type SyncProgress = {
 	phase: string;
@@ -810,7 +844,7 @@ export async function syncContextTreeFromRepository(
 						reauthReason:
 							"Repository authentication failed during a Living Memory sync; reconnect required.",
 						fail: (code, nonRetryable) =>
-							contextSyncFailure(code, {}, nonRetryable),
+							gitContextSyncFailure(code, {}, nonRetryable),
 					});
 				} catch (error) {
 					throwIfCancelled(signal);
@@ -936,6 +970,7 @@ async function readInventory(
 		throw contextSyncFailure("LIMITS_EXCEEDED", {
 			...run.details,
 			counts: { entryLimit: MAX_INVENTORY_ENTRIES },
+			limit: { kind: "inventory", max: MAX_INVENTORY_ENTRIES },
 		});
 	}
 	run.progress.entries = listed.entries.length;
@@ -979,6 +1014,11 @@ async function planFromInventory(
 		throw contextSyncFailure("LIMITS_EXCEEDED", {
 			...run.details,
 			counts: { kept: tree.candidates.length },
+			limit: {
+				kind: "fileCount",
+				actual: tree.candidates.length,
+				max: MAX_CONTEXT_SYNC_KEPT,
+			},
 		});
 	}
 	await checkout(
@@ -1008,6 +1048,11 @@ async function planFromInventory(
 		throw contextSyncFailure("LIMITS_EXCEEDED", {
 			...run.details,
 			counts: { kept: readable.length, bytes: totalBytes },
+			limit: {
+				kind: "totalSize",
+				actual: totalBytes,
+				max: MAX_CONTEXT_SYNC_TOTAL_BYTES,
+			},
 		});
 	}
 	// Then the bytes, one file at a time; only the verdict is kept.
@@ -1083,7 +1128,25 @@ async function readIgnorePolicies(
 				maxBytes: MAX_CONTEXT_IGNORE_BYTES,
 			}),
 		);
-		policies.set(folder, ignorePolicyFromBytes(bytes));
+		const fromBytes = ignorePolicyFromBytes(bytes);
+		if (fromBytes.kind === "file") {
+			// A rule the matcher cannot evaluate in bounded time fails the run,
+			// naming its line, and is never evaluated. It is not dropped:
+			// that would sync files the rule was meant to exclude.
+			const problem = findContextIgnoreProblem(fromBytes.text);
+			if (problem) {
+				throw contextSyncFailure("IGNORE_RULE_REJECTED", {
+					...run.details,
+					limit: {
+						kind: "doubleStarGroups",
+						max: problem.max,
+						actual: problem.groups,
+						line: problem.line,
+					},
+				});
+			}
+		}
+		policies.set(folder, fromBytes);
 	}
 	return policies;
 }
@@ -1360,6 +1423,13 @@ async function drainPruneCleanup(
  * Step 9: one embedding start per managed row still unindexed, each awaited.
  * Every batch has committed; a failed start fails the attempt `STORE_FAILED`
  * and its retry repeats only this step.
+ *
+ * A row whose pass from an earlier run is still open is joined, not started
+ * again (`dedupe`, see `startContextEmbeddingWorkflow`): a sync that lands
+ * while a large repository is still embedding would otherwise repeat every
+ * open row's delete-and-embed. The row stays unindexed until the pass it
+ * joined marks it, so a later run starts any pass that could not see the
+ * content that arrived after it had finished.
  */
 async function startPendingIndexing(run: SyncAttempt): Promise<void> {
 	const { context } = run;
@@ -1382,15 +1452,19 @@ async function startPendingIndexing(run: SyncAttempt): Promise<void> {
 		);
 		for (const row of page) {
 			await storeStep(run.details, run.secrets, () =>
-				startContextEmbeddingWorkflow(client, {
-					contextId: row.id,
-					projectId: context.projectId,
-					userId: context.actingUserId,
-					organizationId: context.organizationId,
-					sourcePath: row.sourcePath,
-					title: row.title,
-					reembed: true,
-				}),
+				startContextEmbeddingWorkflow(
+					client,
+					{
+						contextId: row.id,
+						projectId: context.projectId,
+						userId: context.actingUserId,
+						organizationId: context.organizationId,
+						sourcePath: row.sourcePath,
+						title: row.title,
+						reembed: true,
+					},
+					{ dedupe: true },
+				),
 			);
 			run.progress.indexed++;
 		}
@@ -1525,7 +1599,7 @@ async function gitStep<T>(run: SyncAttempt, fn: () => Promise<T>): Promise<T> {
 	} catch (error) {
 		throwIfCancelled(run.signal);
 		logGitFailure(error, run.secrets, CONTEXT_SYNC_GIT_LOG);
-		throw contextSyncFailure(gitStepFailureCode(error), run.details);
+		throw gitContextSyncFailure(gitStepFailureCode(error), run.details);
 	}
 }
 
@@ -1751,6 +1825,7 @@ async function recordUnderLock(
 	const completed = await completeContextRepositorySyncRun(tx, run.id, {
 		status: verdict.status,
 		error: verdict.error ? toStoredError(verdict.error) : null,
+		limit: input.limit ?? null,
 		...(sync?.now ? { now: sync.now } : {}),
 	});
 

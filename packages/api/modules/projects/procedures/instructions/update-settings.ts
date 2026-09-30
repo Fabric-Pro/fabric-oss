@@ -1,6 +1,7 @@
 import { updateProjectInstructionSettings } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -10,7 +11,7 @@ import { requireHostingOrganizationId } from "./hosting-organization";
 import { projectIgnoreGlobsSchema } from "./ignore-globs-input";
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_UPDATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_UPDATE).
  *
  * Updates the project's coding-instructions ignore-glob override.
  * `ignoreGlobs: null` clears the override so future uploads fall back to
@@ -18,6 +19,7 @@ import { projectIgnoreGlobsSchema } from "./ignore-globs-input";
  * outranks both).
  */
 export const updateSettingsProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_UPDATE))
 	.route({
 		method: "PUT",

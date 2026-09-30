@@ -27,6 +27,7 @@ import {
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
 	type SyncNowResult,
+	syncActionErrorKey,
 	syncNowResultMessage,
 } from "../../lib/instructions-repository-sync";
 import {
@@ -439,9 +440,7 @@ export function ConfigureRepositorySyncDialog({
 			toast[announced.tone](t(announced.key));
 		} catch (error) {
 			toast.error(
-				error instanceof Error
-					? error.message
-					: t("configureDialog.errors.generic"),
+				t(syncActionErrorKey(error, "syncNow"), { ref: branch }),
 			);
 		}
 		onSaved();
@@ -479,7 +478,18 @@ export function ConfigureRepositorySyncDialog({
 	const typedPath = offersTypedPath(listing);
 
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
+		<Dialog
+			open={open}
+			// Escape, the overlay and the close button are ignored while a save
+			// or the sync it starts is in flight: closing would drop the result
+			// of a write the person is still waiting on.
+			onOpenChange={(next) => {
+				if (pending && !next) {
+					return;
+				}
+				onOpenChange(next);
+			}}
+		>
 			<DialogContent className="max-w-2xl">
 				<DialogHeader>
 					<DialogTitle>{t("configureDialog.title")}</DialogTitle>
