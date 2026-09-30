@@ -293,3 +293,66 @@ export function createContextDefaultRules(): ContextDefaultRules {
 		},
 	};
 }
+
+/**
+ * The most `**` groups one `.contextignore` rule may hold.
+ *
+ * `ignore` turns each `**` into a nested repetition, so a rule's matching
+ * time grows with the path's depth to the power of its `**` count, whatever
+ * the path's content. Measured with `ignore@7.0.9`, worst case, a rule of K `**` groups each
+ * followed by an `a` segment and ending in `c`, against `a/` repeated:
+ *
+ *   K = 2   9 ms at 256 segments (the deepest path a sync can store: 512
+ *           characters), 62 ms at 512 segments
+ *   K = 3   500 ms at 256 segments, 7.9 s at 512 segments
+ *
+ * The run does not evaluate a path longer than a sync can store
+ * (`matchContextEntry`), so 256 segments is the deepest the matcher is given.
+ * Two is the largest count that stays under 50 ms there;
+ * a `docs` rule with two `**` groups around `drafts`, and the usual
+ * `node_modules` rule, both fit. A rule over it is never evaluated and never
+ * dropped: the sync fails the run and names its line, because dropping it
+ * would sync files the rule was meant to exclude.
+ */
+export const MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS = 2;
+
+/** A `.contextignore` rule the matcher must not be given. */
+export type ContextIgnoreProblem = {
+	kind: "too-many-double-stars";
+	/** 1-based, as an editor numbers the file. */
+	line: number;
+	/** How many `**` groups the rule holds. */
+	groups: number;
+	max: number;
+};
+
+/**
+ * The first `.contextignore` rule `ignore` cannot evaluate in bounded time,
+ * or `null`. The one check for every reader of a policy file (the run, and
+ * any browser path that evaluates one), so they cannot drift: call it before
+ * `ignore().add(text)` and do not add the text when it returns a problem.
+ *
+ * Reads the file as `ignore` does: blank lines and lines starting with `#`
+ * are not rules; every other line is, negations included (a `!` rule is
+ * compiled like any other). A run of two or more `*` is one group.
+ */
+export function findContextIgnoreProblem(
+	text: string,
+): ContextIgnoreProblem | null {
+	const lines = text.split(/\r?\n/);
+	for (const [index, line] of lines.entries()) {
+		if (line.startsWith("#")) {
+			continue;
+		}
+		const groups = (line.match(/\*{2,}/g) ?? []).length;
+		if (groups > MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS) {
+			return {
+				kind: "too-many-double-stars",
+				line: index + 1,
+				groups,
+				max: MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS,
+			};
+		}
+	}
+	return null;
+}

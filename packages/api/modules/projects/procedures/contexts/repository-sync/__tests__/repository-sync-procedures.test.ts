@@ -22,6 +22,7 @@ const m = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	getContextRepositorySync: vi.fn(),
 	getNewestContextRepositorySyncRun: vi.fn(),
+	getLatestFinishedContextRepositorySyncRun: vi.fn(),
 	getContextRepositorySyncRun: vi.fn(),
 	countManagedContexts: vi.fn(),
 	countAwaitingIndexContexts: vi.fn(),
@@ -58,6 +59,8 @@ vi.mock("@repo/database", async () => {
 		grantProjectAccess: m.grantProjectAccess,
 		getContextRepositorySync: m.getContextRepositorySync,
 		getNewestContextRepositorySyncRun: m.getNewestContextRepositorySyncRun,
+		getLatestFinishedContextRepositorySyncRun:
+			m.getLatestFinishedContextRepositorySyncRun,
 		getContextRepositorySyncRun: m.getContextRepositorySyncRun,
 		countManagedContexts: m.countManagedContexts,
 		countAwaitingIndexContexts: m.countAwaitingIndexContexts,
@@ -321,6 +324,7 @@ beforeEach(() => {
 	});
 	m.getContextRepositorySync.mockResolvedValue({ ...syncRow });
 	m.getNewestContextRepositorySyncRun.mockResolvedValue(null);
+	m.getLatestFinishedContextRepositorySyncRun.mockResolvedValue(null);
 	m.getContextRepositorySyncRun.mockResolvedValue(null);
 	m.countManagedContexts.mockResolvedValue(0);
 	m.countAwaitingIndexContexts.mockResolvedValue(0);
@@ -608,6 +612,7 @@ describe("repositorySync.get", () => {
 				],
 				pruneConflicts: { keys: ["docs/old.md"], overflow: 1 },
 			},
+			latestFinishedRun: null,
 			managedCount: 12,
 			awaitingIndexCount: 3,
 			cleanupPending: 1,
@@ -731,6 +736,87 @@ describe("repositorySync.get", () => {
 			cleanupPending: 0,
 		});
 		expect(m.isContextRepositorySyncRunning).not.toHaveBeenCalled();
+	});
+
+	describe("the latest finished run", () => {
+		const failed = (overrides: Record<string, unknown> = {}) =>
+			receipt({
+				id: "sync-1:run-1",
+				startedAt: new Date("2026-09-23T11:00:00.000Z"),
+				finishedAt: new Date("2026-09-23T11:01:00.000Z"),
+				status: "FAILED",
+				error: "LIMITS_EXCEEDED",
+				limitDetail: {
+					kind: "totalSize",
+					max: 52_428_800,
+					actual: 60_000_000,
+				},
+				...overrides,
+			});
+
+		it("shows a failure newer than the last applied run, with the limit it hit and nothing else of the run", async () => {
+			m.getContextRepositorySyncRun.mockResolvedValue(receipt());
+			m.getLatestFinishedContextRepositorySyncRun.mockResolvedValue(
+				failed(),
+			);
+
+			const result = await call("get", inputs.get);
+
+			expect(result).toMatchObject({
+				latestFinishedRun: {
+					id: "sync-1:run-1",
+					trigger: "MANUAL",
+					finishedAt: new Date("2026-09-23T11:01:00.000Z"),
+					status: "FAILED",
+					error: "LIMITS_EXCEEDED",
+					limitDetail: {
+						kind: "totalSize",
+						max: 52_428_800,
+						actual: 60_000_000,
+					},
+				},
+			});
+			expect(result.latestFinishedRun).not.toHaveProperty("plan");
+			expect(result.latestFinishedRun).not.toHaveProperty("outcomes");
+			expect(
+				m.getLatestFinishedContextRepositorySyncRun,
+			).toHaveBeenCalledWith("sync-1", {
+				projectId: "proj-1",
+				organizationId: "org-host",
+			});
+		});
+
+		it("shows a failure when nothing has ever applied", async () => {
+			m.getContextRepositorySync.mockResolvedValue({
+				...syncRow,
+				lastAppliedRunId: null,
+				lastAppliedCommitSha: null,
+			});
+			m.getLatestFinishedContextRepositorySyncRun.mockResolvedValue(
+				failed({ error: "CLONE_FAILED", limitDetail: null }),
+			);
+
+			expect(await call("get", inputs.get)).toMatchObject({
+				latestFinishedRun: { error: "CLONE_FAILED", limitDetail: null },
+			});
+		});
+
+		it("drops a failure that is not newer than the last applied run", async () => {
+			m.getContextRepositorySyncRun.mockResolvedValue(receipt());
+			m.getLatestFinishedContextRepositorySyncRun.mockResolvedValue(
+				failed({ startedAt: new Date("2026-09-23T09:00:00.000Z") }),
+			);
+
+			expect(await call("get", inputs.get)).toMatchObject({
+				latestFinishedRun: null,
+			});
+		});
+
+		it("reports none when no run has finished", async () => {
+			expect(await call("get", inputs.get)).toMatchObject({
+				latestFinishedRun: null,
+			});
+		});
 	});
 
 	it("reads no applied receipt and reports no cleanup before a run has applied", async () => {

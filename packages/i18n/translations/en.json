@@ -2631,6 +2631,42 @@
 						"partial": "Partially applied commit {sha} · {count, plural, one {# file kept an older version} other {# files kept an older version}}",
 						"failed": "Sync failed part-way at commit {sha} · previous content remains"
 					},
+					"failure": {
+						"line": "Last sync attempt failed {time} ago ({trigger}): {detail}",
+						"unknown": "the sync failed",
+						"NOT_CONFIGURED": "nothing is set up to sync.",
+						"INTEGRATION_UNAVAILABLE": "the repository connection needs attention. Reconnect it, then sync again.",
+						"PERMISSION_DENIED": "the member it acted as can no longer add context to this project.",
+						"RUN_IN_PROGRESS": "another sync was already running.",
+						"REF_MISSING": "branch {ref} no longer exists.",
+						"PATHS_MISSING": "none of the selected folders or files exist on the branch any more, so nothing was changed.",
+						"LIMITS_EXCEEDED": "the selection is over the sync's limits on files, size or repository size.",
+						"CLONE_FAILED": "the repository could not be fetched. Try Sync now again.",
+						"STORE_FAILED": "the files could not be stored in Living Memory. Try Sync now again.",
+						"CONFIGURATION_CHANGED": "the sync settings changed while it ran, so nothing was applied.",
+						"SUPERSEDED": "a newer sync took its place.",
+						"INTERRUPTED": "it stopped before it finished.",
+						"IGNORE_RULE_REJECTED": "a .contextignore file has a rule with too many ** groups to evaluate safely, so nothing was synced. Simplify that rule and sync again.",
+						"limit": {
+							"doubleStarGroups": "line {line} of a .contextignore file has {actual} ** groups; at most {max} can be evaluated safely, so nothing was synced. Simplify that rule and sync again.",
+							"fileCount": "the selected paths hold {actual} files after the ignore rules; Living Memory syncs at most {max}.",
+							"fileCountUnknown": "the selected paths hold more files than the limit of {max}.",
+							"fileSize": "a file is {actual}; each file can be at most {max}.",
+							"fileSizeUnknown": "a file is larger than the limit of {max}.",
+							"totalSize": "the selected files add up to {actual}; the limit is {max} in total.",
+							"totalSizeUnknown": "the selected files add up to more than the limit of {max} in total.",
+							"inventory": "the selected paths hold more than {max} entries, which is too many to read. Select narrower paths.",
+							"repositorySize": "downloading from the repository needed more than {max} of space, the most a sync may use. The repository's file listing counts toward it as well as the selected files."
+						}
+					},
+					"loadError": {
+						"message": "Couldn't load the repository sync status. Nothing has been disconnected; try again.",
+						"retry": "Try again"
+					},
+					"actionErrors": {
+						"syncNow": "Couldn't start the sync. Try again in a moment.",
+						"disable": "Couldn't disconnect the repository sync. Try again in a moment."
+					},
 					"awaitingIndex": "{count, plural, one {# file awaiting indexing} other {# files awaiting indexing}}",
 					"cleanupPending": "{count, plural, one {# removed file still being cleaned up} other {# removed files still being cleaned up}}",
 					"pausedLine": "Automatic sync paused: {reason}",
@@ -5618,6 +5654,12 @@
 			}
 		},
 		"codingInstructions": {
+			"loadState": {
+				"loading": "Loading coding instructions…",
+				"errorTitle": "Couldn't load the coding instructions",
+				"errorBody": "The published version or the version list couldn't be read. That doesn't mean nothing is published, so uploading is held back until this loads. Try again.",
+				"retry": "Try again"
+			},
 			"emptyState": {
 				"title": "Coding instructions",
 				"description": "The skills, agents, rules and setup files your coding agents use on this project. Keep one copy here so every developer and agent works from the same version.",
@@ -5689,7 +5731,8 @@
 				"searchLabel": "Search files",
 				"searchPlaceholder": "Search by path, name or description",
 				"kindFilterLabel": "Filter by kind",
-				"allKinds": "All kinds"
+				"allKinds": "All kinds",
+				"noMatches": "No files match this search or filter."
 			},
 			"fileView": {
 				"copyMcpCall": "Copy MCP call",
@@ -5789,6 +5832,7 @@
 					"missing": "File never arrived",
 					"scan_failed": "Could not be checked",
 					"ignore_mismatch": "The .fabricignore file differs from the rules applied to this upload",
+					"ignore_encoding": "The .fabricignore file is not valid UTF-8 text (for example UTF-16, or it contains NUL bytes). Save it as UTF-8 and upload again",
 					"abandoned": "Upload was never finished"
 				}
 			},
@@ -5951,6 +5995,11 @@
 					},
 					"CONFIGURATION_CHANGED": "The sync settings changed while it ran, so nothing was published.",
 					"TREE_REFUSED": "The folder cannot be stored as coding instructions: every file is excluded, or a name is invalid, differs from another only in case, is both a file and a folder, or cannot be written on Windows. Fix it in the repository and sync again."
+				},
+				"actionErrors": {
+					"syncNow": "Couldn't start the sync. Try again in a moment.",
+					"disable": "Couldn't turn repository sync off. Try again in a moment.",
+					"updateProposalSettings": "Couldn't change whether readers can suggest changes. Try again in a moment."
 				},
 				"providers": {
 					"GITHUB": "GitHub",

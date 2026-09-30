@@ -490,6 +490,21 @@ export function configureErrorMessage(error: unknown): {
 	return { key: "configureDialog.errors.generic", inline: false };
 }
 
+export type SyncAction = "syncNow" | "disable" | "updateProposalSettings";
+
+/**
+ * The message key for a failed sync action: the typed code's own words where
+ * `configureErrorMessage` has them, else a translated generic line naming the
+ * action. The server's `error.message` is never shown: it is not translated,
+ * and it can carry a provider's or a proxy's text.
+ */
+export function syncActionErrorKey(error: unknown, action: SyncAction): string {
+	const mapped = configureErrorMessage(error);
+	return mapped.key === "configureDialog.errors.generic"
+		? `actionErrors.${action}`
+		: mapped.key;
+}
+
 /**
  * `listTree`'s refusal (Fizzy #2725) in the configure dialog's own words:
  * `listTree` throws `configure`'s codes for the same outcome, so they read

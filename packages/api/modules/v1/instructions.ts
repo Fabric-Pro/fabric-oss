@@ -24,6 +24,7 @@ import {
 	db,
 	getInstructionManifestDiff,
 	getPublishedInstructionSnapshot,
+	hasProjectAccess,
 	listInstructionFiles,
 	resolveCurrentInstructionSource,
 	resolveInstructionSnapshotSource,
@@ -152,6 +153,13 @@ async function resolveInstructionProject(
 	// and heard 403, which told it the project exists (Fizzy #2639). Same
 	// rule as `assertProjectPermission` on the oRPC twin.
 	if (!access || access.source === "none") {
+		return { error: notFound("Project").error, status: 404 };
+	}
+	// An organization member with no tie to this project passes the check
+	// above through the org-role fallback but cannot discover the project, so
+	// they hear the same 404 as for an unknown id (the oRPC twin composes
+	// `projectNotFoundUnlessVisible` for the same reason).
+	if (!(await hasProjectAccess(projectId, apiCtx.userId))) {
 		return { error: notFound("Project").error, status: 404 };
 	}
 

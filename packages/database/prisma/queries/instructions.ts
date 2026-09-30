@@ -1528,13 +1528,49 @@ export function getInstructionSnapshotById(id: string) {
 	});
 }
 
+export type InstructionSnapshotVisibility = {
+	viewerUserId: string;
+	canReviewProposals: boolean;
+};
+
+/**
+ * Which snapshots a viewer may see: everything for a reviewer; for anyone else
+ * the direct and approved versions, and a proposer's own rows in every status,
+ * so a REPOSITORY proposal stays in its proposer's History once its pull
+ * request is MERGED or CLOSED (Fizzy #2563). The list and the single read share
+ * it so a snapshot the list hides cannot be fetched by id.
+ */
+function snapshotVisibilityFilter(visibility: InstructionSnapshotVisibility) {
+	if (visibility.canReviewProposals) {
+		return {};
+	}
+	return {
+		OR: [
+			{ proposalStatus: null },
+			{ proposalStatus: "APPROVED" as const },
+			{ userId: visibility.viewerUserId },
+		],
+	};
+}
+
+/**
+ * With `visibility`, a proposal the viewer may not see is null exactly as a
+ * missing snapshot is. Callers that load a snapshot for a server-side purpose
+ * (the workflow, the publish gate) omit it and keep the tenant-only read.
+ */
 export function getInstructionSnapshot(
 	id: string,
 	projectId: string,
 	organizationId: string,
+	visibility?: InstructionSnapshotVisibility,
 ) {
 	return db.projectInstructionSnapshot.findFirst({
-		where: { id, projectId, organizationId },
+		where: {
+			id,
+			projectId,
+			organizationId,
+			...(visibility ? snapshotVisibilityFilter(visibility) : {}),
+		},
 		select: summarySelect,
 	});
 }
@@ -1542,25 +1578,13 @@ export function getInstructionSnapshot(
 export function listInstructionSnapshots(
 	projectId: string,
 	organizationId: string,
-	visibility: { viewerUserId: string; canReviewProposals: boolean },
+	visibility: InstructionSnapshotVisibility,
 ) {
 	return db.projectInstructionSnapshot.findMany({
 		where: {
 			projectId,
 			organizationId,
-			...(visibility.canReviewProposals
-				? {}
-				: {
-						// Direct and approved versions for everyone; a
-						// proposer's own rows in every status, so a REPOSITORY
-						// proposal stays in its proposer's History once its
-						// pull request is MERGED or CLOSED (Fizzy #2563).
-						OR: [
-							{ proposalStatus: null },
-							{ proposalStatus: "APPROVED" as const },
-							{ userId: visibility.viewerUserId },
-						],
-					}),
+			...snapshotVisibilityFilter(visibility),
 		},
 		orderBy: { version: "desc" },
 		select: summarySelect,

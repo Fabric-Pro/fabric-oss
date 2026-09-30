@@ -4,6 +4,7 @@ import {
 	buildIgnoreMatcher,
 	compileIgnore,
 	DEFAULT_IGNORE_GLOBS,
+	decodeFabricIgnore,
 	parseFabricIgnore,
 	resolveIgnoreGlobs,
 } from "../src/ignore";
@@ -316,5 +317,30 @@ describe(".guild/ is local Guild state, never instructions (spec §5.8)", () => 
 	it("stays root-anchored like the other file-specific always-rules", () => {
 		const m = buildIgnoreMatcher(resolveIgnoreGlobs({}));
 		expect(m("docs/.guild/notes.md")).toBeNull();
+	});
+});
+
+describe("decodeFabricIgnore", () => {
+	const bytes = (text: string) => new TextEncoder().encode(text);
+
+	it("decodes valid UTF-8 and drops a leading byte-order mark", () => {
+		expect(decodeFabricIgnore(bytes("docs/**\n"))).toEqual({
+			ok: true,
+			text: "docs/**\n",
+		});
+		expect(decodeFabricIgnore(bytes("\ufeffdocs/**\n"))).toEqual({
+			ok: true,
+			text: "docs/**\n",
+		});
+	});
+
+	it("refuses UTF-16, a NUL byte and an invalid sequence", () => {
+		const utf16 = new Uint8Array(Buffer.from("\ufeffdocs/**\n", "utf16le"));
+		const withNul = new Uint8Array([0x64, 0x00, 0x0a]);
+		const invalid = new Uint8Array([0x64, 0xff, 0x0a]);
+
+		expect(decodeFabricIgnore(utf16)).toEqual({ ok: false });
+		expect(decodeFabricIgnore(withNul)).toEqual({ ok: false });
+		expect(decodeFabricIgnore(invalid)).toEqual({ ok: false });
 	});
 });

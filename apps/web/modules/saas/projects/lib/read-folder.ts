@@ -2,6 +2,7 @@ import {
 	buildIgnoreMatcher,
 	classifyPath,
 	createTreeCollisionGuard,
+	decodeFabricIgnore,
 	FABRIC_IGNORE_FILE,
 	type InstructionFileKind,
 	isSecretFileName,
@@ -186,7 +187,14 @@ export async function readFolderFiles(
 		throw new FolderPathCollisionError("duplicate", FABRIC_IGNORE_FILE);
 	}
 	const ignoreFile = ignoreFiles[0];
-	const fabricIgnoreText = ignoreFile ? await ignoreFile.file.text() : null;
+	const decodedIgnore = ignoreFile
+		? decodeFabricIgnore(
+				new Uint8Array(await ignoreFile.file.arrayBuffer()),
+			)
+		: null;
+	// A file that is not valid UTF-8 freezes no rules; it is still uploaded,
+	// and the gate refuses it as `ignore_encoding` rather than as a mismatch.
+	const fabricIgnoreText = decodedIgnore?.ok ? decodedIgnore.text : null;
 	const isIgnored = buildIgnoreMatcher(
 		resolveIgnoreGlobs({ fabricIgnoreText, projectGlobs }),
 	);

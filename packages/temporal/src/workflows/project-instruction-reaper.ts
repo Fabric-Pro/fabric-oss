@@ -9,9 +9,13 @@
  * run ended without completing them: a receipt outlives its configuration,
  * so nothing else ever would.
  *
- * The second step is behind `patched()`: a history recorded before it
- * existed completed right after the first activity, and must replay that
- * way.
+ * Then `reapStrandedContextSyncReceipts` (Fizzy #2784), the same pass for
+ * the Living Memory repository sync's receipts, which has no schedule of its
+ * own: it runs on this hourly tick, after the Coding Instructions passes.
+ *
+ * The second and third steps are each behind `patched()`: a history recorded
+ * before one existed completed right after the step before it, and must
+ * replay that way.
  *
  * The body is deterministic — no `Date.now()`, no env reads, no IO — so
  * replay stays clean. The clock reads, the queries, the Temporal describes
@@ -19,6 +23,7 @@
  */
 
 import { patched, proxyActivities } from "@temporalio/workflow";
+import type * as contextReceiptActivities from "../activities/project-context-sync-receipt-reaper";
 import type * as syncReceiptActivities from "../activities/project-instruction-sync-receipt-reaper";
 import type * as activities from "../activities/project-instructions-reaper";
 
@@ -57,18 +62,40 @@ const { reapStrandedInstructionSyncReceipts } = proxyActivities<
 	},
 });
 
+const { reapStrandedContextSyncReceipts } = proxyActivities<
+	typeof contextReceiptActivities
+>({
+	// The same bounds as the pass above: its own four-minute run budget stops
+	// it first, it heartbeats per receipt, and every completion is idempotent.
+	startToCloseTimeout: "5 minutes",
+	heartbeatTimeout: "1 minute",
+	retry: {
+		initialInterval: "30 seconds",
+		maximumInterval: "2 minutes",
+		backoffCoefficient: 2,
+		maximumAttempts: 2,
+	},
+});
+
 type SnapshotReapResult = Awaited<ReturnType<typeof reapInstructionSnapshots>>;
 type SyncReceiptReapResult = Awaited<
 	ReturnType<typeof reapStrandedInstructionSyncReceipts>
 >;
 
 export async function projectInstructionReaperWorkflow(): Promise<
-	SnapshotReapResult & { syncReceipts?: SyncReceiptReapResult }
+	SnapshotReapResult & {
+		syncReceipts?: SyncReceiptReapResult;
+		contextSyncReceipts?: SyncReceiptReapResult;
+	}
 > {
 	const snapshots = await reapInstructionSnapshots();
 	if (!patched("instruction-reaper-stranded-sync-receipts")) {
 		return snapshots;
 	}
 	const syncReceipts = await reapStrandedInstructionSyncReceipts();
-	return { ...snapshots, syncReceipts };
+	if (!patched("instruction-reaper-stranded-context-sync-receipts")) {
+		return { ...snapshots, syncReceipts };
+	}
+	const contextSyncReceipts = await reapStrandedContextSyncReceipts();
+	return { ...snapshots, syncReceipts, contextSyncReceipts };
 }

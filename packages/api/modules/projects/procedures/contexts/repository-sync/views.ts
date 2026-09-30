@@ -84,6 +84,36 @@ export function toContextSyncRunView(run: ContextRepositorySyncRunReceipt) {
 }
 
 /**
+ * The newest finished run, for the failure line beside the last applied one:
+ * what the run ended as, and for a limit failure which limit it hit. `null`
+ * when that run is not newer than the last applied run, since the applied
+ * line already says what the tab holds, and a failure older than it is
+ * history. Status, error, limit and time only; counts, plan and keys stay in
+ * the run view.
+ */
+export function toContextSyncFinishedRunView(
+	finished: ContextRepositorySyncRunReceipt | null,
+	lastApplied: ContextRepositorySyncRunReceipt | null,
+) {
+	if (!finished || !finished.finishedAt) {
+		return null;
+	}
+	if (lastApplied && finished.startedAt <= lastApplied.startedAt) {
+		return null;
+	}
+	return {
+		id: finished.id,
+		trigger: finished.trigger,
+		startedAt: finished.startedAt,
+		finishedAt: finished.finishedAt,
+		status: finished.status,
+		error: finished.error,
+		limitDetail: finished.limitDetail,
+		commitSha: finished.commitSha,
+	};
+}
+
+/**
  * The configuration minus internals, with its integration summary and its
  * automatic-sync state (§11.1): whether the poll and the push webhook start
  * runs, why they stopped if they did, when the poll next looks, and how

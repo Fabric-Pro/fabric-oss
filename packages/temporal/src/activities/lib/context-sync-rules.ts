@@ -23,9 +23,13 @@ import {
 	ContextSourcePathError,
 	normalizeContextSourcePath,
 } from "@repo/database";
+// The constant from its pure module, not the package entry: a test that replaces
+// the entry with a few exports still gets the real bound.
+import { MAX_CONTEXT_SOURCE_PATH_LENGTH } from "@repo/database/prisma/queries/projects/context-source-path";
 import {
 	CONTEXT_IGNORE_FILENAME,
 	createContextDefaultRules,
+	findContextIgnoreProblem,
 	hasContextTextExtension,
 	isExcludedDirectlySelectedFile,
 	isInContextSyncFabricDirectory,
@@ -69,6 +73,14 @@ export function buildContextIgnoreRules(
 	const defaults = createContextDefaultRules();
 	const user: Ignore = ignore();
 	if (input.contextIgnore) {
+		// The run refuses such a file before it gets here (`readIgnorePolicies`);
+		// this keeps the matcher from ever being handed one, whoever calls.
+		const problem = findContextIgnoreProblem(input.contextIgnore);
+		if (problem) {
+			throw new Error(
+				`.contextignore line ${problem.line} has ${problem.groups} \`**\` groups; at most ${problem.max} can be evaluated`,
+			);
+		}
 		user.add(input.contextIgnore);
 	}
 	const ignores = (candidate: string) =>
@@ -113,6 +125,12 @@ export function matchContextEntry(
 	relativePath: string,
 	mode: string,
 ): ContextEntryMatch {
+	// A path the sync could never store is not evaluated: the matcher's time
+	// grows with a path's depth, and this bounds it by what a sync can hold.
+	// It is reported as `invalid-path`, which is what it is.
+	if (relativePath.length > MAX_CONTEXT_SOURCE_PATH_LENGTH) {
+		return "unmatchable";
+	}
 	try {
 		const ignored = isRegularFileMode(mode)
 			? rules.ignoresFile(relativePath)

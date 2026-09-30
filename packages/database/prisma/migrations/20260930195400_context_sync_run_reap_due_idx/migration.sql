@@ -1,0 +1,23 @@
+-- The Living Memory reaper's candidate claim (Fizzy #2784): unfinished sync
+-- run receipts keyed `<syncId>:<workflow run id>`, least recently checked
+-- first. The claim is unscoped by design, and this table gains a row on every
+-- poll check for good, so without this index every hourly tick scans the whole
+-- receipt table. Partial on exactly the claim's fixed predicates so it holds
+-- only the open receipts, and ordered to match the claim's ORDER BY
+-- ("reapCheckedAt" ASC NULLS FIRST, "startedAt", "id") so the LIMIT stops
+-- early. Prisma cannot express a partial index; the schema model documents it
+-- above its index block. The twin of
+-- project_instruction_sync_run_reap_due_idx (migration 20260924180100).
+--
+-- CONCURRENTLY because the receipt table is populated and a plain build
+-- takes a write lock on it for the length of the build. NO `IF NOT EXISTS`:
+-- a failed concurrent build leaves an invalid index behind under this name,
+-- and the clause would then skip the rebuild and record the migration as
+-- applied with no index. Recovery per docs/database-promotion.md: find it
+-- with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_context_sync_run_reap_due_idx" ON "project_context_repository_sync_run" ("reapCheckedAt" ASC NULLS FIRST, "startedAt", "id") WHERE "finishedAt" IS NULL AND "id" ~ '^[^:]+:[^:]+$';

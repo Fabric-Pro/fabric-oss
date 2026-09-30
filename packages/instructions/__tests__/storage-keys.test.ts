@@ -5,6 +5,7 @@ import {
 	isKeyOwnedBySnapshot,
 	isStagingKey,
 	snapshotKey,
+	snapshotOwnedPrefixes,
 	stagingKey,
 } from "../src/storage-keys";
 
@@ -56,6 +57,14 @@ describe("storage keys", () => {
 		]) {
 			expect(isKeyOwnedBySnapshot(key, "p1", "s1")).toBe(true);
 		}
+	});
+
+	it("lists exactly the three prefixes a snapshot's own writes land under", () => {
+		expect(snapshotOwnedPrefixes("p1", "s1")).toEqual([
+			"projects/p1/instructions/staging/s1/",
+			"projects/p1/instructions/snapshots/s1/",
+			"projects/p1/instructions/exports/s1-",
+		]);
 	});
 
 	it("disowns another snapshot's keys, including a base it inherits from", () => {

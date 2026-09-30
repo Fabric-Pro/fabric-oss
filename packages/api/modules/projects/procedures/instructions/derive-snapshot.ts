@@ -7,6 +7,7 @@ import {
 import { SNAPSHOT_LIMITS, snapshotPrefix } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	assertProjectPermission,
 	Permissions,
@@ -84,6 +85,7 @@ import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
  * derive is a proposal.
  */
 export const deriveSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	// Every proposal author needs READ. Direct derives retain CREATE through
 	// the dynamic check in the handler below.
 	.use(requireProjectPermission(Permissions.INSTRUCTION_READ))

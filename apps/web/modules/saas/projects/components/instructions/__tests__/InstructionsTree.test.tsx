@@ -226,4 +226,106 @@ describe("InstructionsTree", () => {
 			screen.queryByRole("button", { name: "CLAUDE.md" }),
 		).not.toBeInTheDocument();
 	});
+	// Every folder with a match opens while searching, and a person must still
+	// be able to close one: the old `searching || open` left a folder open
+	// with a button that did nothing and an `aria-expanded` that lied.
+	it("lets a folder be collapsed while searching, and says so truthfully", async () => {
+		render(
+			<InstructionsTree
+				files={[...files]}
+				selectedPath={null}
+				onSelect={() => undefined}
+			/>,
+		);
+		await userEvent.type(
+			screen.getByRole("searchbox", { name: "Search files" }),
+			"qa",
+		);
+		const claude = screen.getByRole("button", { name: /\.claude/ });
+		expect(claude).toHaveAttribute("aria-expanded", "true");
+		expect(
+			screen.getByRole("button", { name: "qa-lead.md" }),
+		).toBeInTheDocument();
+
+		await userEvent.click(claude);
+
+		expect(claude).toHaveAttribute("aria-expanded", "false");
+		expect(
+			screen.queryByRole("button", { name: "qa-lead.md" }),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(claude);
+
+		expect(claude).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("forgets a folder collapsed during one search when the search changes, and keeps the browse state apart", async () => {
+		render(
+			<InstructionsTree
+				files={[...files]}
+				selectedPath={null}
+				onSelect={() => undefined}
+			/>,
+		);
+		const search = screen.getByRole("searchbox", { name: "Search files" });
+		await userEvent.type(search, "qa");
+		await userEvent.click(screen.getByRole("button", { name: /\.claude/ }));
+		expect(
+			screen.getByRole("button", { name: /\.claude/ }),
+		).toHaveAttribute("aria-expanded", "false");
+
+		await userEvent.clear(search);
+		// Back to browsing: collapsed by default, as it was before the search.
+		expect(
+			screen.getByRole("button", { name: /\.claude/ }),
+		).toHaveAttribute("aria-expanded", "false");
+		await userEvent.type(search, "qa-lead");
+
+		expect(
+			screen.getByRole("button", { name: /\.claude/ }),
+		).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("says, politely and in the tree's own words, when nothing matches", async () => {
+		render(
+			<InstructionsTree
+				files={[...files]}
+				selectedPath={null}
+				onSelect={() => undefined}
+			/>,
+		);
+		const region = screen.getByRole("status");
+		expect(region).toBeEmptyDOMElement();
+
+		await userEvent.type(
+			screen.getByRole("searchbox", { name: "Search files" }),
+			"zzz-no-such-file",
+		);
+
+		// The same region, now holding the message: it was mounted beforehand,
+		// which is what lets a screen reader announce the change.
+		expect(screen.getByRole("status")).toBe(region);
+		expect(region).toHaveTextContent(
+			"No files match this search or filter.",
+		);
+	});
+
+	it("gives the search wrapper a visible focus ring, since the input's own is removed", () => {
+		render(
+			<InstructionsTree
+				files={[...files]}
+				selectedPath={null}
+				onSelect={() => undefined}
+			/>,
+		);
+		const wrapper = screen.getByRole("searchbox", {
+			name: "Search files",
+		}).parentElement;
+
+		expect(wrapper).toHaveClass(
+			"focus-within:border-ring",
+			"focus-within:ring-1",
+			"focus-within:ring-ring",
+		);
+	});
 });

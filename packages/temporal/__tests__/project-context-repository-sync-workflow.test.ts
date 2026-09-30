@@ -357,6 +357,47 @@ describe("projectContextRepositorySyncWorkflow", () => {
 		});
 	}, 60_000);
 
+	it("records the limit a LIMITS_EXCEEDED failure names, and no limit for any other failure", async () => {
+		const limit = {
+			kind: "totalSize",
+			actual: 60_000_000,
+			max: 52_428_800,
+		};
+		const limited = syncMocks({
+			syncContextTreeFromRepository: vi.fn(async () => {
+				throw ApplicationFailure.create({
+					type: "LIMITS_EXCEEDED",
+					message: "Repository sync failed: LIMITS_EXCEEDED",
+					details: [{ commitSha: SHA, limit }],
+					nonRetryable: true,
+				});
+			}),
+		});
+		const other = syncMocks({
+			syncContextTreeFromRepository: vi.fn(async () => {
+				throw ApplicationFailure.create({
+					type: "REF_MISSING",
+					message: "Repository sync failed: REF_MISSING",
+					details: [{ commitSha: SHA }],
+					nonRetryable: true,
+				});
+			}),
+		});
+
+		await run(limited);
+		await run(other);
+
+		expect(recorded(limited)).toMatchObject({
+			error: "LIMITS_EXCEEDED",
+			commitSha: SHA,
+			limit,
+		});
+		expect(recorded(other)).toMatchObject({
+			error: "REF_MISSING",
+			limit: null,
+		});
+	}, 60_000);
+
 	it("records a cancellation as cancelled — never as CLONE_FAILED — only after the sync activity stopped, and ends CANCELLED", async () => {
 		let syncExited = false;
 		let syncExitedWhenRecorded: boolean | null = null;

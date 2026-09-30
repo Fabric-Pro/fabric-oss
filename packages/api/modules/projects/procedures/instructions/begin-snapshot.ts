@@ -14,6 +14,7 @@ import {
 } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
 	assertProjectPermission,
 	Permissions,
@@ -45,7 +46,7 @@ function describePlanRefusal(refusal: PlanRefusal): string {
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + requireProjectPermission(INSTRUCTION_CREATE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_CREATE).
  *
  * Registers a coding-instructions upload: validates every relative path,
  * applies the project's (or the upload's own `.fabricignore`) ignore rules
@@ -65,6 +66,7 @@ function describePlanRefusal(refusal: PlanRefusal): string {
  * starts the workflow from the row, never from a later request.
  */
 export const beginSnapshotProcedure = tenantProtectedProcedure
+	.use(projectNotFoundUnlessVisible)
 	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 	.route({
 		method: "POST",

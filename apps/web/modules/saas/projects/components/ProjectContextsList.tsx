@@ -88,7 +88,7 @@ import {
 	contextSyncLatestRunFingerprint,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
-	offersSyncFromRepository,
+	showsLivingMemorySection,
 	tallyContextDeleteOutcomes,
 } from "../lib/context-repository-sync";
 import {
@@ -96,7 +96,6 @@ import {
 	renderMarkdownToPdf,
 	triggerBlobDownload,
 } from "../lib/markdown-to-document";
-import { ContextRepositorySyncStatus } from "./ContextRepositorySyncStatus";
 import {
 	ContextSourceDetailsDialog,
 	ContextSourceMetaLine,
@@ -111,6 +110,7 @@ import {
 	type LinkContextRefreshMode,
 	type LinkContextScope,
 } from "./LinkContextManagePanel";
+import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 
@@ -1601,16 +1601,21 @@ export function ProjectContextsList({ projectId }: Props) {
 			}).queryKey,
 		});
 	};
-	const showLivingMemorySection =
-		livingMemoryFolders.length > 0 ||
-		Boolean(repositorySyncState?.configured) ||
-		offersSyncFromRepository(
-			repositorySyncState ?? {
-				canConfigure: false,
-				configured: null,
-				availableIntegrations: [],
-			},
-		);
+	const repositorySyncReadFailed =
+		repositorySyncQuery.isError && !repositorySyncState;
+	const livingMemoryProps = {
+		projectId,
+		organizationId,
+		state: repositorySyncState,
+		readFailed: repositorySyncReadFailed,
+		onRetry: () => void repositorySyncQuery.refetch(),
+		onChanged: onRepositorySyncChanged,
+	};
+	const showLivingMemorySection = showsLivingMemorySection({
+		folderCount: livingMemoryFolders.length,
+		state: repositorySyncState,
+		readFailed: repositorySyncReadFailed,
+	});
 
 	// Per-viewer Teams access (Fizzy #2450): a linked Teams chat/channel is
 	// read under the VIEWING user's own Microsoft token, so a Graph 403 for
@@ -2387,31 +2392,38 @@ export function ProjectContextsList({ projectId }: Props) {
 
 			{/* Contexts list */}
 			{contexts.length === 0 ? (
-				<div className="flex flex-col items-center justify-center rounded-[28px] border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
-					<div className="mb-4 rounded-2xl border border-primary/15 bg-primary/10 p-4 text-primary">
-						<FolderIcon className="size-8 text-primary" />
+				<div className="space-y-6">
+					{/* A sync whose runs all fail leaves no file to list, so its
+					    failure and the offer to set one up show here too. */}
+					{showLivingMemorySection && (
+						<LivingMemorySection {...livingMemoryProps} />
+					)}
+					<div className="flex flex-col items-center justify-center rounded-[28px] border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
+						<div className="mb-4 rounded-2xl border border-primary/15 bg-primary/10 p-4 text-primary">
+							<FolderIcon className="size-8 text-primary" />
+						</div>
+						<p className="mb-2 font-medium text-foreground/70">
+							No context yet
+						</p>
+						<p className="mb-6 max-w-md text-center text-foreground/50 text-sm">
+							Add files, links, or text to provide context for
+							your project. This helps generate better, more
+							accurate documents.
+						</p>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									onClick={() => setUploaderOpen(true)}
+									className="gap-2 border border-primary/20 bg-primary/12 text-primary hover:bg-primary/18"
+									variant="ghost"
+								>
+									<SparklesIcon className="size-4" />
+									Add First Context
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>{t("addContext")}</TooltipContent>
+						</Tooltip>
 					</div>
-					<p className="mb-2 font-medium text-foreground/70">
-						No context yet
-					</p>
-					<p className="mb-6 max-w-md text-center text-foreground/50 text-sm">
-						Add files, links, or text to provide context for your
-						project. This helps generate better, more accurate
-						documents.
-					</p>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								onClick={() => setUploaderOpen(true)}
-								className="gap-2 border border-primary/20 bg-primary/12 text-primary hover:bg-primary/18"
-								variant="ghost"
-							>
-								<SparklesIcon className="size-4" />
-								Add First Context
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent>{t("addContext")}</TooltipContent>
-					</Tooltip>
 				</div>
 			) : (
 				<div className="space-y-4">
@@ -3282,34 +3294,7 @@ export function ProjectContextsList({ projectId }: Props) {
 					    configuration, or a configurer's "Sync from
 					    repository" offer). */}
 					{showLivingMemorySection && (
-						<section
-							aria-labelledby={`${livingMemoryId}-title`}
-							className="space-y-3"
-							data-testid="context-living-memory"
-						>
-							<div className="flex flex-wrap items-start justify-between gap-3">
-								<div>
-									<h3
-										id={`${livingMemoryId}-title`}
-										className="flex items-center gap-2 font-semibold text-sm"
-									>
-										<FolderSyncIcon
-											className="size-4 shrink-0 text-primary"
-											aria-hidden="true"
-										/>
-										{tLivingMemory("title")}
-									</h3>
-									<p className="mt-1 text-foreground/50 text-xs">
-										{tLivingMemory("description")}
-									</p>
-								</div>
-								<ContextRepositorySyncStatus
-									projectId={projectId}
-									organizationId={organizationId}
-									state={repositorySyncState}
-									onChanged={onRepositorySyncChanged}
-								/>
-							</div>
+						<LivingMemorySection {...livingMemoryProps}>
 							{livingMemoryFolders.map((folder, folderIndex) => {
 								const slug = livingMemoryFolderSlug(
 									folder.path,
@@ -3400,7 +3385,7 @@ export function ProjectContextsList({ projectId }: Props) {
 									</div>
 								);
 							})}
-						</section>
+						</LivingMemorySection>
 					)}
 
 					{/* Other context items */}

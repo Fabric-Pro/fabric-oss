@@ -12,9 +12,14 @@ const instructionSyncLimitDetailSchema = z.object({
 		"totalSize",
 		"inventory",
 		"repositorySize",
+		// A Living Memory `.contextignore` rule with too many `**` groups:
+		// `max` is the cap, `actual` the rule's count, `line` where it is.
+		"doubleStarGroups",
 	]),
 	max: z.number().int().nonnegative(),
 	actual: z.number().int().nonnegative().optional(),
+	/** 1-based line of the rule a `doubleStarGroups` detail names. */
+	line: z.number().int().positive().optional(),
 });
 
 /**

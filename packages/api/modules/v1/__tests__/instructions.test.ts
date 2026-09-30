@@ -21,6 +21,7 @@ const { mocks } = vi.hoisted(() => ({
 		resolveInstructionSnapshotSource: vi.fn(),
 		resolveCurrentInstructionSource: vi.fn(),
 		resolveEffectiveProjectPermissions: vi.fn(),
+		hasProjectAccess: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
 		submitInstructionChange: vi.fn(),
 		getProposalPullRequestStatus: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock("@repo/database", () => ({
 	getPublishedInstructionSnapshot: mocks.getPublishedInstructionSnapshot,
 	getInstructionManifestDiff: mocks.getInstructionManifestDiff,
 	getProjectInstructionSettings: mocks.getProjectInstructionSettings,
+	hasProjectAccess: mocks.hasProjectAccess,
 	listInstructionFiles: mocks.listInstructionFiles,
 	getInstructionProposal: mocks.getInstructionProposal,
 	resolveInstructionSnapshotSource: mocks.resolveInstructionSnapshotSource,
@@ -290,6 +292,7 @@ beforeEach(() => {
 		source: "org",
 		organizationId: ORG,
 	});
+	mocks.hasProjectAccess.mockResolvedValue(true);
 	mocks.getProjectInstructionSettings.mockResolvedValue({
 		ignoreGlobs: null,
 		sourceOfTruth: null,
@@ -498,6 +501,24 @@ describe("authorization", () => {
 		await expect(response.json()).resolves.toEqual({
 			error: { message: "Project not found" },
 		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("answers an organization member with no project tie exactly as a missing project, though the org role grants read", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["instruction:read"],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+
+		expect(response.status).toBe(404);
+		await expect(response.json()).resolves.toEqual({
+			error: { message: "Project not found" },
+		});
+		expect(mocks.hasProjectAccess).toHaveBeenCalled();
 		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
 	});
 

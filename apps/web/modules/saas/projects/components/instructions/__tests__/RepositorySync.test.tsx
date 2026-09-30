@@ -575,8 +575,39 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		await pickAgents(user);
 		await user.click(submit());
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-		expect(m.toastError).toHaveBeenCalledWith("boom");
+		// The mapper's own copy, never the server's untranslated message.
+		expect(m.toastError).toHaveBeenCalledWith(copy.actionErrors.syncNow);
 		expect(onSaved).toHaveBeenCalled();
+	});
+
+	it("ignores Escape while the save is in flight, and closes once it has settled", async () => {
+		let finish: (value: unknown) => void = () => {};
+		m.configure.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog();
+		await pickAgents(user);
+		await user.click(submit());
+
+		await user.keyboard("{Escape}");
+
+		expect(onOpenChange).not.toHaveBeenCalled();
+		finish({ syncId: "sync_1", generation: 1 });
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+	});
+
+	it("closes on Escape when nothing is in flight", async () => {
+		const user = userEvent.setup();
+		const { onOpenChange } = renderDialog();
+		await screen.findByRole("list", { name: copy.tree.label });
+
+		await user.keyboard("{Escape}");
+
+		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
 	it("toasts when syncNow reports the repository connection is unavailable", async () => {
@@ -1739,9 +1770,34 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByText(/Automatic sync paused/)).toBeInTheDocument();
 	});
 
-	it("renders nothing with no run, no pause and nothing running", () => {
-		const { container } = render(
+	it("keeps an empty, room-free status region mounted for a configured sync with nothing to say", () => {
+		render(<RepositorySyncStatus state={CONFIGURED} />);
+
+		const region = screen.getByRole("status");
+
+		expect(region).toBeEmptyDOMElement();
+		expect(region).toHaveClass("empty:sr-only");
+	});
+
+	it("announces into the same status region when a run starts, rather than mounting a new one", () => {
+		const { rerender } = render(
 			<RepositorySyncStatus state={CONFIGURED} />,
+		);
+		const region = screen.getByRole("status");
+
+		rerender(
+			<RepositorySyncStatus state={{ ...CONFIGURED, running: true }} />,
+		);
+
+		expect(screen.getByRole("status")).toBe(region);
+		expect(region).toHaveTextContent(copy.running);
+	});
+
+	it("renders nothing for a sync that is not configured and has no run", () => {
+		const { container } = render(
+			<RepositorySyncStatus
+				state={{ ...CONFIGURED, configured: null }}
+			/>,
 		);
 		expect(container).toBeEmptyDOMElement();
 	});
@@ -2234,9 +2290,27 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 			}),
 		);
 		await waitFor(() =>
-			expect(m.toastError).toHaveBeenCalledWith("Not configured"),
+			expect(m.toastError).toHaveBeenCalledWith(
+				copy.actionErrors.updateProposalSettings,
+			),
 		);
 		expect(onChanged).not.toHaveBeenCalled();
+	});
+
+	it("reports a failed switch to upload mode in the tab's own words, never the server's", async () => {
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		m.disable.mockRejectedValue(new Error("upstream said no"));
+		const user = userEvent.setup();
+		renderSection(CONFIGURED);
+		await user.click(
+			screen.getByRole("button", { name: copy.settings.switchToUpload }),
+		);
+		await waitFor(() =>
+			expect(m.toastError).toHaveBeenCalledWith(
+				copy.actionErrors.disable,
+			),
+		);
+		expect(m.toastError).not.toHaveBeenCalledWith("upstream said no");
 	});
 
 	it("disables every settings action while the reader-proposal toggle saves (Decision 40)", async () => {

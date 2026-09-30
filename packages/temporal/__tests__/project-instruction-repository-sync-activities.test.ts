@@ -1123,6 +1123,24 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(created.excludedCount).toBe(1);
 	});
 
+	it("freezes no rules from a .fabricignore that is not UTF-8 text, and keeps the file for the gate to refuse", async () => {
+		serveRepo([
+			{ path: ".fabricignore", body: "drafts/**\n" },
+			{ path: "CLAUDE.md", body: "keep" },
+			{ path: "drafts/x.md", body: "kept: no rules were read" },
+		]);
+		m.readBlobCapped.mockResolvedValue(Buffer.from("drafts/**\n\0"));
+
+		await acquireInstructionTreeFromRepository(CONTEXT);
+
+		const created = m.createInstructionSnapshot.mock.calls[0]?.[0];
+		expect(created.settingsFrozen.layer).toBe("default");
+		expect(
+			created.files.map((f: { path: string }) => f.path).sort(),
+		).toEqual([".fabricignore", "CLAUDE.md", "drafts/x.md"]);
+		expect(created.excludedCount).toBe(0);
+	});
+
 	it("an adopted row that is no longer RECEIVING is returned at once: the child owns it", async () => {
 		m.getInstructionSnapshotBySyncRunKey.mockResolvedValue({
 			id: "snap_9",
@@ -1393,6 +1411,74 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		);
 		expect(error.type).toBe("LIMITS_EXCEEDED");
 		expect(error.details[0]).toEqual({
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
+		});
+	});
+
+	/**
+	 * The watchdog counts the clone and the checkout together, so a kept set
+	 * past the snapshot's limits trips it mid-checkout. Serve the repository
+	 * as usual, let the checkout write what it got to, then trip the watchdog.
+	 */
+	function tripWatchdogAfterCheckout() {
+		const writeKept = m.sparseCheckout.getMockImplementation();
+		m.sparseCheckout.mockImplementation(async (input: unknown) => {
+			await writeKept?.(input);
+			throw new GitCommandError("disk_limit", null, "", "checkout");
+		});
+	}
+
+	it("reports a kept file over the per-file cap that trips the disk watchdog as a file size, not a repository size", async () => {
+		serveRepo([
+			{
+				path: "big.md",
+				body: "x".repeat(SNAPSHOT_LIMITS.maxFileBytes + 1),
+			},
+		]);
+		tripWatchdogAfterCheckout();
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: { kind: "fileSize", max: SNAPSHOT_LIMITS.maxFileBytes },
+		});
+	});
+
+	it("reports a kept set over the total cap that trips the disk watchdog as a total size, not a repository size", async () => {
+		const each = SNAPSHOT_LIMITS.maxFileBytes;
+		const count = Math.floor(SNAPSHOT_LIMITS.maxTotalBytes / each) + 3;
+		serveRepo(
+			Array.from({ length: count }, (_, i) => ({
+				path: `f${i}.md`,
+				body: "x".repeat(each),
+			})),
+		);
+		tripWatchdogAfterCheckout();
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: { kind: "totalSize", max: SNAPSHOT_LIMITS.maxTotalBytes },
+		});
+	});
+
+	it("keeps the repository-size limit when the watchdog trips with a small kept set", async () => {
+		serveRepo([{ path: "a.md", body: "a" }]);
+		tripWatchdogAfterCheckout();
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
 			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
 		});
 	});
