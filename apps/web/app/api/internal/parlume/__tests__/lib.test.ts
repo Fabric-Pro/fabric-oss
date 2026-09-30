@@ -20,6 +20,7 @@ vi.mock("@repo/database", () => ({
 			findMany: mocks.segmentFindMany,
 		},
 	},
+	logAiUsageAsync: () => undefined,
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({

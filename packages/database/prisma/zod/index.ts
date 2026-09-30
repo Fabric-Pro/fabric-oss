@@ -522,7 +522,7 @@ export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMe
 
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
 
@@ -2487,6 +2487,12 @@ export type ParlumeMeetingAgentKind = z.infer<typeof ParlumeMeetingAgentKindSche
 export const ParlumeMeetingSessionStatusSchema = z.enum(['PENDING', 'JOINING', 'ACTIVE', 'FINALIZING', 'LEAVING', 'STOP_FAILED', 'ENDED', 'FAILED'])
 
 export type ParlumeMeetingSessionStatus = z.infer<typeof ParlumeMeetingSessionStatusSchema>;
+
+// File: ParlumeMeetingEndReason.schema.ts
+
+export const ParlumeMeetingEndReasonSchema = z.enum(['STOPPED', 'REMOVED', 'IDLE', 'ACCESS_REVOKED', 'STREAM_ERROR', 'MAX_DURATION', 'PROVIDER_FAILED', 'START_FAILED'])
+
+export type ParlumeMeetingEndReason = z.infer<typeof ParlumeMeetingEndReasonSchema>;
 
 // File: ParlumeMeetingTurnStatus.schema.ts
 
@@ -5726,6 +5732,7 @@ export const ParlumeMeetingSessionSchema = z.object({
   status: ParlumeMeetingSessionStatusSchema.default("PENDING"),
   wakePhrase: z.string().default("Hey Fabric"),
   toolsReadOnly: z.boolean().default(true),
+  endReason: ParlumeMeetingEndReasonSchema.nullish(),
   lastError: z.string().nullish(),
   joinedAt: z.date().nullish(),
   hardStopAt: z.date().nullish(),

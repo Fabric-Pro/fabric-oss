@@ -4637,6 +4637,29 @@ enum ParlumeMeetingSessionStatus {
   @@map("parlume_meeting_session_status")
 }
 
+/// Why a Parlume session ended. Set by the path that first decides the
+/// meeting is over; `lastError` keeps the human-readable detail.
+enum ParlumeMeetingEndReason {
+  /// A project administrator pressed Stop.
+  STOPPED
+  /// The meeting host removed the bot, or the meeting ended around it.
+  REMOVED
+  /// Nobody spoke for the idle window while Parlume was silent.
+  IDLE
+  /// The inviter lost project access mid-meeting.
+  ACCESS_REVOKED
+  /// The live transcription stream failed and could not recover.
+  STREAM_ERROR
+  /// The hard four-hour cap was reached.
+  MAX_DURATION
+  /// The meeting provider reported the bot as failed.
+  PROVIDER_FAILED
+  /// The bot never joined: provider, bridge, or database failure at start.
+  START_FAILED
+
+  @@map("parlume_meeting_end_reason")
+}
+
 /// The source of configuration for a Parlume meeting agent.
 enum ParlumeMeetingAgentKind {
   FABRIC_AGENT
@@ -4690,6 +4713,7 @@ model ParlumeMeetingSession {
   status                 ParlumeMeetingSessionStatus @default(PENDING)
   wakePhrase             String                      @default("Hey Fabric")
   toolsReadOnly          Boolean                     @default(true)
+  endReason              ParlumeMeetingEndReason?
   lastError              String?                     @db.Text
   joinedAt               DateTime?
   hardStopAt             DateTime?

@@ -260,6 +260,8 @@ export async function executeParlumeAgent(input: {
 		const result = await executeDirectChatActivity(
 			{
 				executionId: `parlume-${input.turnId}`,
+				featureKey: "parlume",
+				usageConversationId: session.id,
 				message: input.message,
 				history: input.history,
 				userId: session.userId,
@@ -318,6 +320,8 @@ export async function executeParlumeAgent(input: {
 		userId: session.userId,
 		organizationId: session.organizationId,
 		projectId: session.projectId,
+		featureKey: "parlume",
+		conversationId: session.id,
 		conversationHistory: input.history,
 		executionId: `parlume-${input.turnId}`,
 		agentInstanceId: context.agentInstanceId,

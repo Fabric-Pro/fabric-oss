@@ -43,10 +43,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
-vi.mock("../ParlumeInviteDialog", () => ({
-	ParlumeInviteDialog: ({ children }: { children: ReactNode }) => (
-		<div data-testid="parlume-dialog">{children}</div>
-	),
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ basePath: "/app/acme" }),
 }));
 
 function renderTab(
@@ -83,33 +81,34 @@ function renderTab(
 }
 
 describe("MeetingDigestTab — Parlume feature flag", () => {
-	it("keeps the invitation control and dialog unmounted when the flag is off", () => {
+	it("keeps the Parlume link unmounted when the flag is off", () => {
 		renderTab(false);
 		expect(
-			screen.queryByRole("button", { name: "Invite Parlume" }),
+			screen.queryByRole("link", { name: "Open Parlume" }),
 		).not.toBeInTheDocument();
-		expect(screen.queryByTestId("parlume-dialog")).not.toBeInTheDocument();
 	});
 
-	it("shows the project-admin invitation control when the flag is on", () => {
+	it("links to the project Parlume page when the flag is on", () => {
 		renderTab(true);
-		expect(
-			screen.getByRole("button", { name: "Invite Parlume" }),
-		).toBeInTheDocument();
-		expect(screen.getByTestId("parlume-dialog")).toBeInTheDocument();
+		const link = screen.getByRole("link", { name: "Open Parlume" });
+		expect(link).toHaveAttribute("href", "/app/acme/projects/p1/parlume");
+		expect(link).toHaveAttribute(
+			"data-onboarding-target",
+			"parlume-history",
+		);
 	});
 
-	it("does not render Parlume for a viewer", () => {
+	it("shows the link to viewers too, since the page is read-only for them", () => {
 		renderTab(true, false);
 		expect(
-			screen.queryByRole("button", { name: "Invite Parlume" }),
-		).not.toBeInTheDocument();
+			screen.getByRole("link", { name: "Open Parlume" }),
+		).toBeInTheDocument();
 	});
 
 	it("does not render Parlume for a personal project", () => {
 		renderTab(true, true, null);
 		expect(
-			screen.queryByRole("button", { name: "Invite Parlume" }),
+			screen.queryByRole("link", { name: "Open Parlume" }),
 		).not.toBeInTheDocument();
 	});
 });

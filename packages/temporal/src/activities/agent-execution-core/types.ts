@@ -4,6 +4,8 @@
  * Shared type definitions for agent execution across workflows.
  */
 
+import type { AiFeatureKey } from "@repo/ai";
+
 /**
  * Knowledge source configuration
  */
@@ -159,6 +161,14 @@ export interface ExecuteAgentTurnInput {
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
+	/**
+	 * Feature attribution for AI usage rows. Unset means the chat surface
+	 * ("chat-agent"); Parlume passes its own key so meeting turns are not
+	 * counted as chat.
+	 */
+	featureKey?: AiFeatureKey;
+	/** Groups this turn's usage rows with the rest of its conversation or meeting. */
+	conversationId?: string;
 	/** Max tool iterations */
 	maxIterations?: number;
 	/** Conversation history */

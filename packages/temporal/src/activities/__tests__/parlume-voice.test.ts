@@ -6,13 +6,29 @@ import {
 } from "../parlume-voice";
 
 const resolveOpenAiApiKey = vi.hoisted(() => vi.fn());
+const logAiUsageAsync = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/ai", () => ({
 	resolveOpenAiApiKey,
 }));
 
+vi.mock("@repo/database", () => ({
+	logAiUsageAsync,
+}));
+
+vi.mock("../parlume-log", () => ({
+	parlumeActivityLog: () => undefined,
+}));
+
 const originalHost = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
 const originalSecret = process.env.AGENT_SERVICE_SECRET;
+
+const speaker = {
+	sessionId: "session-1",
+	userId: "user-1",
+	organizationId: "org-1",
+	projectId: "project-1",
+};
 
 beforeEach(() => {
 	process.env.NEXT_PUBLIC_PARTYKIT_HOST = "bridge.example.com";
@@ -128,9 +144,7 @@ describe("Parlume spoken responses", () => {
 		vi.stubGlobal("fetch", fetchMock);
 		await expect(
 			speakParlumeResponse({
-				sessionId: "session",
-				userId: "user",
-				organizationId: "org",
+				...speaker,
 				response: "Hello",
 				voiceGeneration: 3,
 			}),
@@ -152,9 +166,7 @@ describe("Parlume spoken responses", () => {
 		vi.stubGlobal("fetch", fetchMock);
 		await expect(
 			speakParlumeResponse({
-				sessionId: "session",
-				userId: "user",
-				organizationId: "org",
+				...speaker,
 				response: "Hello",
 				voiceGeneration: 3,
 				signal: controller.signal,
@@ -181,9 +193,7 @@ describe("Parlume spoken responses", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		await speakParlumeResponse({
-			sessionId: "session-1",
-			userId: "user-1",
-			organizationId: "org-1",
+			...speaker,
 			response: "The project decision is recorded.",
 			voiceGeneration: 3,
 		});
@@ -213,6 +223,76 @@ describe("Parlume spoken responses", () => {
 		);
 	});
 
+	it("records synthesized speech as Parlume usage priced by text and audio length", async () => {
+		// 48,000 bytes = one second of 24 kHz 16-bit mono audio. The bridge
+		// consumes the whole stream before answering, which is when the byte
+		// count the usage row is priced from becomes final.
+		const pcm = new Uint8Array(48_000);
+		const fetchMock = vi.fn(async (url: string, request?: RequestInit) => {
+			if (url.includes("api.openai.com")) {
+				return new Response(pcm, { status: 200 });
+			}
+			if (!(request?.body instanceof ReadableStream)) {
+				throw new Error("Expected streaming body");
+			}
+			const reader = request.body.getReader();
+			while (!(await reader.read()).done) {
+				// drain
+			}
+			return new Response('{"played":true}', { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const response = "x".repeat(40);
+
+		await speakParlumeResponse({
+			...speaker,
+			response,
+			voiceGeneration: 3,
+		});
+
+		const audioTokens = Math.round((1 / 60) * 1_250);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				organizationId: "org-1",
+				projectId: "project-1",
+				provider: "OPENAI_DIRECT",
+				providerModelId: "gpt-4o-mini-tts",
+				taskType: "AUDIO",
+				featureKey: "parlume",
+				conversationId: "session-1",
+				inputTokens: 10,
+				outputTokens: audioTokens,
+				totalTokens: 10 + audioTokens,
+				success: true,
+			}),
+		);
+		const { costUsd } = logAiUsageAsync.mock.calls[0][0];
+		expect(costUsd).toBeCloseTo(
+			10 * (0.6 / 1_000_000) + (1 / 60) * 0.015,
+			9,
+		);
+	});
+
+	it("records a failed synthesis so the attempt is still visible in usage", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValueOnce(new Response(null, { status: 429 })),
+		);
+
+		await expect(
+			speakParlumeResponse({ ...speaker, response: "Hello" }),
+		).rejects.toThrow("HTTP 429");
+		expect(logAiUsageAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				success: false,
+				errorMessage: "HTTP 429",
+				outputTokens: 0,
+			}),
+		);
+	});
+
 	it("does not generate speech without a voice key", async () => {
 		resolveOpenAiApiKey.mockResolvedValue(null);
 		const fetchMock = vi.fn();
@@ -220,14 +300,13 @@ describe("Parlume spoken responses", () => {
 
 		await expect(
 			speakParlumeResponse({
-				sessionId: "session-1",
-				userId: "user-1",
-				organizationId: "org-1",
+				...speaker,
 				response: "Hello",
 				voiceGeneration: 3,
 			}),
 		).rejects.toThrow("voice is not configured");
 		expect(fetchMock).not.toHaveBeenCalled();
+		expect(logAiUsageAsync).not.toHaveBeenCalled();
 	});
 
 	it("asks the durable bridge to stop capture when the inviter loses access", async () => {
