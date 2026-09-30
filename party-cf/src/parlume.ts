@@ -6,6 +6,7 @@ import {
 	isRecord,
 	type ParlumeStreamConnection,
 } from "./parlume-stream-auth";
+import { parseParlumeWake } from "./parlume-wake";
 
 const WATCHDOG_RETRY_MS = 5 * 60 * 1000;
 const ACCESS_CHECK_MS = 60 * 1000;
@@ -706,11 +707,8 @@ export class Parlume extends Server<Env> {
 		}
 		const speakerKey =
 			input.speakerId ?? input.speakerName?.toLowerCase() ?? "unknown";
-		const wakeMatch = /\bhey\s+fabric\b/i.exec(input.text);
-		if (wakeMatch) {
-			const afterWake = input.text
-				.slice(wakeMatch.index + wakeMatch[0].length)
-				.trim();
+		const afterWake = parseParlumeWake(input.text);
+		if (afterWake !== null) {
 			if (afterWake) {
 				return afterWake;
 			}

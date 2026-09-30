@@ -133,8 +133,8 @@ export function ParlumeInviteDialog({
 						need to admit it from the lobby. It records and
 						transcribes meeting audio, and its replies use an
 						AI-generated voice. Any meeting attendee can say “Hey
-						Fabric” to use the selected agent and its connected
-						knowledge.
+						Fabric,” “Hey Parlume,” or “Hey Fabric Parlume” to use
+						the selected agent and its connected knowledge.
 					</DialogDescription>
 				</DialogHeader>
 
