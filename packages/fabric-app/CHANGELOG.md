@@ -1,5 +1,17 @@
 # fabric-app
 
+## 1.16.16
+
+### Patch Changes
+
+- aa9afe2: Coding Instructions and Living Memory repository syncs are faster on hostile input, hide their data from organization members with no project tie, and report failed syncs with the exact limit they hit.
+- dd563c9: A Parlume session whose bot has already left the meeting now finalizes at the next access check when no transcription stream is open, instead of waiting for the four-hour cap.
+- 24884bc: Parlume gets a dedicated project page for invitations, live status, sessions, requests, and spend. A session now ends on its own when the bot is removed from the meeting or nobody has spoken for three minutes, and records why it ended. Parlume spend is attributed in project AI usage, and every step emits a structured log event.
+- 76f9746: Listing a project's Parlume sessions now finalizes any session that outlived its hard stop after the meeting provider reported its bot gone, so a lost bridge alarm no longer strands a session.
+- 24884bc: Parlume now waits for the requester to finish speaking before answering, so a request split across transcript segments is no longer cut off by its own continuation. Only speech while Parlume is audible interrupts it, and live transcription recognizes the Parlume name.
+- c9c187f: Parlume's meeting-provider usage row now ends at the moment the bot left the call rather than at finalization, and meeting-notes usage carries the session id so per-meeting spend is complete.
+- 7df8ed5: Release preparation now supports private staging validation and QA-approved batch promotion before public publication.
+
 ## 1.16.15
 
 ### Patch Changes
