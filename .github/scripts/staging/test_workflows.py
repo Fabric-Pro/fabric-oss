@@ -1,5 +1,9 @@
 """Security and admission contracts for the private staging pipeline."""
+import json
+import os
 import pathlib
+import subprocess
+import tempfile
 import unittest
 import yaml
 
@@ -69,6 +73,40 @@ class StagingWorkflowContracts(unittest.TestCase):
             for step in job['steps']:
                 self.assertNotIn('actions/checkout', step.get('uses', ''))
                 self.assertNotIn('download-artifact', step.get('uses', ''))
+
+    def test_completed_snapshot_wake_uses_producer_sha_without_build_wait(self):
+        data = workflow('private-staging-notify.yml')
+        self.assertEqual(data['on']['workflow_run']['types'], ['completed'])
+        self.assertEqual(data['on']['workflow_run']['workflows'], ['Private Staging Images'])
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", data['jobs']['notify']['if'])
+        step = next(step for step in data['jobs']['notify']['steps'] if 'Dispatch private staging' in step.get('name', ''))
+        producer_sha = 'a' * 40
+        with tempfile.TemporaryDirectory() as directory:
+            temp = pathlib.Path(directory)
+            payload = temp / 'payload.json'
+            arguments = temp / 'arguments.txt'
+            gh = temp / 'gh'
+            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$DISPATCH_ARGUMENTS"\ncat > "$DISPATCH_PAYLOAD"\n')
+            gh.chmod(0o755)
+            result = subprocess.run(['bash', '-c', step['run']], env={
+                'PATH': directory + os.pathsep + os.environ['PATH'],
+                'GH_TOKEN': 'synthetic-dispatch-token',
+                'EVENT_NAME': 'workflow_run',
+                'EVENT_REF': 'refs/heads/master',
+                'EVENT_SHA': 'b' * 40,
+                'RUN_SHA': producer_sha,
+                'DISPATCH_PAYLOAD': str(payload),
+                'DISPATCH_ARGUMENTS': str(arguments),
+            }, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(payload.read_text()), {
+                'ref': 'ops', 'inputs': {
+                    'sha': producer_sha, 'source_mode': 'private',
+                    'source_ref': 'refs/heads/staging', 'promotion_id': '',
+                    'wait': 'false',
+                },
+            })
+            self.assertIn('repos/Fabric-Pro/fabric/actions/workflows/ops-reconcile-dev.yml/dispatches', arguments.read_text().splitlines())
 
     def test_public_version_pr_path_disabled_in_batch_mode(self):
         cut = workflow('scheduled-release-cut.yml')
