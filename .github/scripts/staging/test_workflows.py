@@ -27,8 +27,38 @@ class StagingWorkflowContracts(unittest.TestCase):
         text = (ROOT / '.github/workflows/private-staging-images.yml').read_text()
         self.assertNotIn('fabric-oss-snapshots', text)
         self.assertNotIn('fabric-oss-buildcache', text)
-        privacy = next(step for step in data['jobs']['build']['steps'] if step.get('name') == 'Verify private package visibility')
-        self.assertIn('visibility == "private"', privacy['run'])
+        build = data['jobs']['build']
+        steps = build['steps']
+        helper = 'node .github/actions/oss-snapshot/package-registry-manifest.mjs'
+        privacy_steps = [step for step in steps if helper in step.get('run', '')]
+        self.assertEqual(len(privacy_steps), 1)
+        privacy = privacy_steps[0]
+        expected_env = {
+            'GH_TOKEN': '${{ github.token }}',
+            'COMPONENT': '${{ matrix.component }}',
+            'PRIVATE_STAGING_PACKAGE_BINDINGS': '${{ vars.PRIVATE_STAGING_PACKAGE_BINDINGS }}',
+            'SOURCE_REPOSITORY': '${{ github.repository }}',
+            'SOURCE_REPOSITORY_ID': '${{ github.repository_id }}',
+        }
+        for key, value in expected_env.items():
+            with self.subTest(env=key):
+                self.assertEqual(privacy['env'].get(key), value)
+        self.assertIn('set -euo pipefail', privacy['run'])
+        self.assertIn('for namespace in fabric-dev-snapshots fabric-dev-buildcache; do', privacy['run'])
+        self.assertIn('PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")', privacy['run'])
+        self.assertIn('"${namespace}/${COMPONENT}" <<<"$PACKAGE"', privacy['run'])
+        self.assertNotIn('|| true', privacy['run'])
+        self.assertNotIn('continue-on-error', privacy)
+        self.assertNotIn('if', privacy)
+        privacy_index = steps.index(privacy)
+        login_index = next(index for index, step in enumerate(steps) if step.get('uses', '').startswith('docker/login-action@'))
+        publish_index = next(index for index, step in enumerate(steps) if step.get('id') == 'build')
+        self.assertLess(privacy_index, login_index)
+        self.assertLess(privacy_index, publish_index)
+        # The validator unit cases prove live private visibility and exact identity;
+        # this contract proves that the publishing workflow runs those checks.
+        self.assertEqual(build['needs'], 'policy-tests')
+        self.assertTrue(any(step.get('run') == 'node --test .github/actions/oss-snapshot/*manifest.test.mjs' for step in data['jobs']['policy-tests']['steps']))
 
     def test_notifier_never_executes_product_content(self):
         data = workflow('private-staging-notify.yml')
