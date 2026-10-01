@@ -59,7 +59,7 @@ jobs:
                 gh api --method POST repos/Fabric-Pro/fabric/actions/workflows/ops-release-promotion.yml/dispatches --input -
               ;;
             refs/heads/staging)
-              jq -n --arg sha "$SHA" '{ref:"ops",inputs:{sha:$sha,source_mode:"private",source_ref:"refs/heads/staging",promotion_id:"",wait:"true"}}' |
+              jq -n --arg sha "$SHA" '{ref:"ops",inputs:{sha:$sha,source_mode:"private",source_ref:"refs/heads/staging",promotion_id:"",wait:"false"}}' |
                 gh api --method POST repos/Fabric-Pro/fabric/actions/workflows/ops-reconcile-dev.yml/dispatches --input -
               ;;
             *) echo "::error::Unexpected staging wake ref"; exit 1 ;;
