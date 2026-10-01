@@ -45,7 +45,7 @@ name: Docker Build Check
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, staging]
     paths:
       - 'packages/temporal/Dockerfile'
       - 'packages/temporal/package.json'
@@ -68,15 +68,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Not in the private staging repo: fabric-oss builds this same image from the
-  # same tree on the relayed pull request, so running it here only duplicated
-  # the build. The guard names fabric-dev rather than allow-listing fabric-oss
-  # so every other copy of this tree still builds. They use the standard
-  # runner: free in the public repository, and the 45-minute timeout leaves
-  # room for the smaller machine anywhere else this tree is built.
   temporal-worker:
     name: build temporal worker image
-    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -104,7 +97,6 @@ jobs:
   # builds the identical image on the relayed change.
   sandbox-worker:
     name: build sandbox worker image
-    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -134,7 +126,6 @@ jobs:
   # on the relayed change.
   mcp-stdio-wrapper:
     name: build mcp stdio wrapper image
-    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -152,11 +143,8 @@ jobs:
           cache-from: type=gha,scope=mcp-stdio-wrapper-pr
           cache-to: type=gha,scope=mcp-stdio-wrapper-pr,mode=max
 
-  # Repo-gated like the jobs above: the public repo builds the identical image
-  # on the relayed change.
   migration-runner:
     name: build migration runner image
-    if: github.repository != 'Fabric-Pro/fabric-dev'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -174,12 +162,11 @@ jobs:
           cache-from: type=gha,scope=migration-runner-pr
           cache-to: type=gha,scope=migration-runner-pr,mode=max
 
-  # Repo-gated like the jobs above: the public repo builds the identical image
-  # on the relayed change.
   web:
     name: build web image
-    if: github.repository != 'Fabric-Pro/fabric-dev'
-    runs-on: ubuntu-latest
+    # The web Dockerfile grants Node a 12 GiB heap. Private standard runners
+    # cannot fit that build; use the larger native x64 tier for private PRs.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core' || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

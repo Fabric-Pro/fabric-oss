@@ -1,0 +1,66 @@
+name: Private Staging Wake
+
+# Staging wakes execute default-branch workflow_run code, never staging YAML.
+# Trusted identifier-only wakeups. Ops resolves all live source and ledger
+# state again. This workflow never checks out or executes product content.
+on:
+  push:
+    branches: [master]
+  workflow_run:
+    workflows: [Private Staging Images]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'push' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == 'staging'))
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    environment: oss-relay-notifier
+    steps:
+      - name: Mint ops dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.OSS_RELAY_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.OSS_RELAY_DISPATCH_APP_PRIVATE_KEY }}
+          owner: Fabric-Pro
+          repositories: fabric
+          permission-actions: write
+      - name: Dispatch private staging or master audit
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?missing scoped dispatch token}"
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            SHA="$RUN_SHA"
+            SOURCE_REF=refs/heads/staging
+          else
+            SHA="$EVENT_SHA"
+            SOURCE_REF="$EVENT_REF"
+          fi
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          case "$SOURCE_REF" in
+            refs/heads/master)
+              jq -n --arg sha "$SHA" '{ref:"ops",inputs:{action:"audit",source_sha:$sha}}' |
+                gh api --method POST repos/Fabric-Pro/fabric/actions/workflows/ops-release-promotion.yml/dispatches --input -
+              ;;
+            refs/heads/staging)
+              jq -n --arg sha "$SHA" '{ref:"ops",inputs:{sha:$sha,source_mode:"private",source_ref:"refs/heads/staging",promotion_id:"",wait:"true"}}' |
+                gh api --method POST repos/Fabric-Pro/fabric/actions/workflows/ops-reconcile-dev.yml/dispatches --input -
+              ;;
+            *) echo "::error::Unexpected staging wake ref"; exit 1 ;;
+          esac

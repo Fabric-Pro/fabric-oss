@@ -1,6 +1,6 @@
 name: Code Quality
 
-# Runs Biome format + lint on every PR to the canonical branch (`master`).
+# Runs Biome format + lint on private staging and canonical master PRs.
 #
 # Rationale: formatting/lint were previously enforced only by a local
 # pre-PR hook, never in CI — so violations drifted onto master unchecked
@@ -22,7 +22,7 @@ name: Code Quality
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, staging]
   workflow_dispatch:
 
 permissions:
@@ -35,10 +35,6 @@ concurrency:
 jobs:
   biome:
     name: Biome (format + lint)
-    # The public relay PR runs this same required check on the identical
-    # commit, so a skip here (which counts as passing for the relay gate)
-    # costs nothing and saves a redundant standard-runner run in fabric-dev.
-    if: github.repository != 'Fabric-Pro/fabric-dev' || github.event_name == 'workflow_dispatch'
     # arm64: every step here is architecture-neutral (JS actions, pnpm/node
     # commands, Biome — @biomejs/cli-linux-arm64 ships in pnpm-lock.yaml).
     runs-on: ubuntu-24.04-arm
@@ -71,6 +67,12 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+      - name: Staging pipeline contract tests
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+          python3 .github/scripts/staging/test_workflows.py
+          node --test .github/actions/oss-snapshot/*manifest.test.mjs
 
       - name: Agent guidance
         run: pnpm guidance:check

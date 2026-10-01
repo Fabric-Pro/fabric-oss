@@ -68,6 +68,27 @@ See `deployment/azure/README.md` for:
 
 Production deploys are driven by Git tags (`v*.*.*`); branch pushes to `master` continue to deploy to dev. Tags are produced automatically from [changesets](https://github.com/changesets/changesets) — developers do not tag manually. Implemented in `.github/workflows/deploy-azure-container-apps.yml` and `.github/workflows/release.yml`.
 
+### Private staging batch mode
+
+When `STAGING_RELEASE_ENABLED=true`, internal feature PRs target protected
+private `staging` and execute checks before private snapshot deployment. The
+trusted private ops pipeline freezes a twice-weekly batch, composes it onto
+canonical master, performs changeset versioning, and validates the pinned
+candidate before public publication. OSS receives one sanitized squash commit
+per approved batch; the private master synchronizes to that exact public result.
+
+In this mode `release.yml` publishes already-versioned approved content and
+refuses unconsumed changesets. The public scheduled Version-PR cutting path is
+disabled. Public image, release artifact, BOM and production provenance checks
+remain in force. The private ops release-cycle runbook is the internal developer
+contract. The Version-PR flow below remains the fallback while batch mode is
+disabled.
+
+Private web image checks require access to the larger native x64 `ubuntu-8core` runner. The web Dockerfile grants Node a 12 GiB
+heap, which exceeds the standard private Linux runner's memory. Verify the
+repository's runner-group access before activation; public image checks keep
+using standard runners. See [GitHub runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
 ### How a release happens
 
 1. **Per PR:** the author runs `pnpm changeset` and commits the generated `.changeset/<name>.md` describing what changed and at what semver level. CI (`changeset-check.yml`) fails the PR if no changeset is present. Opt out via the `skip-changeset` label for docs-only / CI-only PRs.

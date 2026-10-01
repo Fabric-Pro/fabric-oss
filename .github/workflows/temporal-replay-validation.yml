@@ -45,7 +45,7 @@ on:
     types: [opened, synchronize, reopened]
     # Canonical upstream branch is `master` (post-cutover); see
     # docs/deployment.md § Branch cutover checklist.
-    branches: [master]
+    branches: [master, staging]
   # Manual trigger for validating plumbing changes (the test, fetch script, or
   # the workflow itself) without needing a PR that touches workflow code.
   workflow_dispatch:

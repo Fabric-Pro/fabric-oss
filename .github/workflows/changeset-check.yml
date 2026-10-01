@@ -12,7 +12,7 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # Canonical upstream branch is `master` (post-cutover); see
     # COLLABORATION.md and docs/deployment.md § Branch cutover checklist.
-    branches: [master]
+    branches: [master, staging]
 
 permissions:
   contents: read
@@ -42,6 +42,15 @@ jobs:
     if: >-
       ${{
         !contains(github.event.pull_request.labels.*.name, 'skip-changeset') &&
+        !(
+          vars.STAGING_RELEASE_ENABLED == 'true' &&
+          github.repository == 'Fabric-Pro/fabric-dev' &&
+          vars.OSS_RELAY_APP_LOGIN != '' &&
+          github.event.pull_request.user.login == vars.OSS_RELAY_APP_LOGIN &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.event.pull_request.head.ref, 'promotion/') &&
+          github.event.pull_request.base.ref == 'master'
+        ) &&
         !(
           vars.RELEASE_APP_LOGIN != '' &&
           github.event.pull_request.user.login == vars.RELEASE_APP_LOGIN &&

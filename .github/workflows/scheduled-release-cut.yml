@@ -62,7 +62,7 @@ concurrency: scheduled-release-cut
 jobs:
   cut:
     name: Merge the Version PR
-    if: github.repository == 'Fabric-Pro/fabric-oss'
+    if: github.repository == 'Fabric-Pro/fabric-oss' && vars.STAGING_RELEASE_ENABLED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

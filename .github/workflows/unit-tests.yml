@@ -3,27 +3,8 @@ name: Unit Tests
 # Runs Vitest unit tests on every PR to the upstream canonical branch
 # (`master` — see docs/deployment.md § Branch cutover checklist).
 #
-# WHERE THIS RUNS — the public mirror, not the private staging repo.
-# Every job below carries `github.repository != 'Fabric-Pro/fabric-dev'`,
-# the same guard shape knip.yml uses: it names the staging repo rather than
-# allow-listing one mirror, so any other copy of this tree still runs the
-# suite. Three reasons, in order of weight:
-#
-#   * Cost. GitHub gives PUBLIC repositories unlimited free standard runners
-#     at 4 CPU / 16 GB. Larger runners are billed everywhere, and the private
-#     staging repo has no free tier at all — so running the identical commit
-#     in both repos paid twice for one verdict.
-#   * The relay gate treats a job skipped by a job-level `if:` as passing, so
-#     skipping here cannot wedge a staging PR. (A workflow filtered out by
-#     `on.paths` would instead leave a required check pending forever — do
-#     NOT "simplify" this guard into a trigger filter.)
-#   * The mirror's own `unit-tests` check is the authority: nothing lands
-#     publicly without it, and the two masters are kept ref-equal, so a green
-#     verdict there is a green verdict for the staging commit it came from.
-#
-# `workflow_dispatch` is exempt from the guard on every job, so the whole
-# pipeline — detector, planner, shards, aggregate — can still be exercised in
-# the staging repo before a change to this file lands.
+# Private staging and promotion PRs execute real tests before deployment or
+# publication. Public PRs retain the same required validation.
 #
 # Branch-protection note: this workflow always runs on PRs to the canonical
 # branch so the `unit-tests` status check is reported on every PR. The
@@ -85,9 +66,9 @@ on:
   pull_request:
     # Canonical upstream branch is `master` (post-cutover); see
     # docs/deployment.md § Branch cutover checklist.
-    branches: [master]
+    branches: [master, staging]
   push:
-    branches: [master]
+    branches: [master, staging]
   workflow_dispatch:
 
 permissions:
@@ -113,11 +94,9 @@ jobs:
   changes:
     name: Detect changed paths
     # Not needed for the cache-warming run on master (see header), and not
-    # run in the staging repo at all except on workflow_dispatch.
+    # relevant for PRs and explicit full validation runs.
     if: >-
-      github.event_name != 'push' &&
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch')
+      github.event_name != 'push'
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -183,8 +162,6 @@ jobs:
     name: Plan shards
     needs: changes
     if: >-
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch') &&
       (github.event_name == 'workflow_dispatch' ||
        needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
@@ -351,8 +328,6 @@ jobs:
     # keeps the shards from starting when the plan failed, and the plan is
     # itself skipped on push and on PRs with no code changes.
     if: >-
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch') &&
       needs.plan.outputs.has_shards == 'true'
     strategy:
       # Every shard reports independently; one red package must not hide the
@@ -450,7 +425,7 @@ jobs:
     # at 4 CPU / 16 GB. The private staging repo used to run the same sweep on
     # a paid 16-core arm64 label; it no longer runs this workflow at all (see
     # the header), so no job in this file needs a provisioned label.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       # Placeholder so @repo/database's prisma singleton, which throws at
@@ -612,8 +587,6 @@ jobs:
     name: Browser relay security (real Chromium)
     needs: changes
     if: >-
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch') &&
       github.event_name != 'push' &&
       (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
     runs-on: ubuntu-latest
@@ -684,8 +657,6 @@ jobs:
     name: Migration drift
     needs: changes
     if: >-
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch') &&
       github.event_name != 'push' &&
       (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true')
     runs-on: ubuntu-latest
@@ -761,15 +732,14 @@ jobs:
 
   # Seeds the caches a relay PR's one and only run restores (see header).
   # Installs and generates; runs no tests, so it takes minutes rather than
-  # the sweep's wall clock. Not run in the staging repo: nothing there
-  # restores these caches any more. workflow_dispatch needs no exemption
+  # the sweep's wall clock. Private staging pushes also seed their own cache.
+  # workflow_dispatch needs no exemption
   # here — a dispatch is never a push, so this job is not part of the manual
   # validation path.
   warm-caches:
     name: Warm caches
     if: >-
-      github.event_name == 'push' &&
-      github.repository != 'Fabric-Pro/fabric-dev'
+      github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -830,11 +800,9 @@ jobs:
     # Not on push: the master run warms caches and runs no tests, so it has
     # no verdict to report (and `changes` is skipped there, which the
     # fail-closed check below would otherwise flag). Skipped entirely in the
-    # staging repo, where a skipped job is what the relay gate expects.
+    # private staging and promotion PRs use the same fail-closed aggregate.
     if: >-
-      always() && github.event_name != 'push' &&
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch')
+      always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     env:
       EVENT_NAME: ${{ github.event_name }}

@@ -78,7 +78,7 @@ function requireString(value, field) {
 	return value;
 }
 
-export function validateSnapshotFragments(fragments, expected) {
+export function validateSnapshotFragments(fragments, expected, policy = {}) {
 	if (!Array.isArray(fragments)) {
 		fail("fragments must be an array");
 	}
@@ -97,7 +97,7 @@ export function validateSnapshotFragments(fragments, expected) {
 	}
 
 	const expectedSource = `${expected.serverUrl}/${expected.repository}`;
-	const signerWorkflow = `${expected.repository}/${SNAPSHOT_WORKFLOW}`;
+	const signerWorkflow = `${expected.repository}/${policy.workflow ?? SNAPSHOT_WORKFLOW}`;
 	const expectedByComponent = new Map(
 		SNAPSHOT_IMAGES.map((image) => [image.component, image]),
 	);
@@ -130,7 +130,7 @@ export function validateSnapshotFragments(fragments, expected) {
 			fail(`${component} must use the repository root build context`);
 		}
 
-		const expectedImage = `${SNAPSHOT_NAMESPACE}/${component}`;
+		const expectedImage = `${policy.namespace ?? SNAPSHOT_NAMESPACE}/${component}`;
 		if (fragment.image !== expectedImage) {
 			fail(`${component} has unexpected image coordinates`);
 		}
@@ -181,11 +181,11 @@ export function validateSnapshotFragments(fragments, expected) {
 	);
 }
 
-export function createAggregateManifest(fragments, expected) {
-	const images = validateSnapshotFragments(fragments, expected);
+export function createAggregateManifest(fragments, expected, policy = {}) {
+	const images = validateSnapshotFragments(fragments, expected, policy);
 	return {
 		schemaVersion: "1.0.0",
-		kind: "fabric-oss-snapshot-set",
+		kind: policy.kind ?? "fabric-oss-snapshot-set",
 		sourceRepository: expected.repository,
 		sourceSha: expected.sourceSha,
 		sourceRef: expected.sourceRef,
