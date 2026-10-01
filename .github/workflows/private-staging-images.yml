@@ -108,17 +108,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      - name: Verify private package visibility
+      - name: Verify private package identity and visibility
         env:
           GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ matrix.component }}
+          PRIVATE_STAGING_PACKAGE_BINDINGS: ${{ vars.PRIVATE_STAGING_PACKAGE_BINDINGS }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           # Both published images and intermediate layer caches must remain private.
           for namespace in fabric-dev-snapshots fabric-dev-buildcache; do
             PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")
-            jq -e '.visibility == "private" and .repository.full_name == "Fabric-Pro/fabric-dev"' <<<"$PACKAGE" >/dev/null \
-              || { echo "::error::Private staging package privacy/linkage is not configured"; exit 1; }
+            node .github/actions/oss-snapshot/package-registry-manifest.mjs \
+              "${namespace}/${COMPONENT}" <<<"$PACKAGE"
           done
 
       - name: Log in to GHCR
