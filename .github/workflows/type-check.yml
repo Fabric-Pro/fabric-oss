@@ -4,31 +4,9 @@ name: Type Check
 # plus a full sweep on every push to `master` there to seed the caches those
 # PR runs restore.
 #
-# WHERE THIS RUNS. The private staging repo (`Fabric-Pro/fabric-dev`) runs no
-# type-check job on `pull_request` at all, and none on `push` either. Every
-# fabric-dev PR lands through the OSS relay, which opens a public PR on the
-# same commit in the mirror, and that public PR's `type-check` run is the
-# required gate — see AGENTS.md § Changesets and delivery. Running the
-# sweep in fabric-dev too would only pay twice (it used to, on a paid 8-core
-# arm64 runner) for a verdict the public PR already gives. `workflow_dispatch`
-# is exempt from that: a manual dispatch in the staging repo still runs the
-# full plan/shard pipeline below, on the `ubuntu-8core-arm` label (that
-# repo's standard runner, 2 CPU / 7 GB, cannot hold the type-check heap), so
-# a change to this workflow file can be validated before it reaches the
-# public mirror.
-#
-# Everywhere else — the public mirror, forks, any other copy of this tree —
-# the sweep is split across several standard runners, which GitHub provides
-# free and unlimited to public repositories at 4 CPU / 16 GB. Larger runners
-# are billed even on public repositories.
-#
-# The `type-check` job at the bottom carries the status-check name and does
-# nothing but report. Configure THAT as the required check: the shards are
-# conditional and their names and count depend on what the PR touched, and
-# the whole pipeline is skipped outright in the staging repo outside
-# `workflow_dispatch` (a job skipped by a job-level `if:` counts as passing
-# for the relay gate — see unit-tests.yml's header for the full reasoning,
-# which applies here unchanged).
+# Private staging and promotion PRs run the same real checks as public PRs.
+# Private heavy shards use the configured larger runner; public shards keep
+# standard runners. Require the stable type-check aggregate on both branches.
 #
 # WHY SHARD. A standard runner cannot host two of the heavy packages at once
 # — apps/web caps its own tsc at 10 GiB and several packages need ~8 GB — so
@@ -114,17 +92,14 @@ name: Type Check
 # only through quoted environment variables and become `--filter=` arguments,
 # never shell code.
 #
-# VALIDATING A CHANGE TO THIS FILE. `pull_request` and `push` run nothing in
-# the staging repo (see WHERE THIS RUNS above), so `workflow_dispatch` is the
-# only way to exercise this workflow there — it runs the full
-# plan / shard / aggregate pipeline on the `ubuntu-8core-arm` label, because
-# that repo's standard runner (2 CPU / 7 GB) cannot hold the heap.
+# Validate changes with private PR CI or workflow_dispatch and focused
+# staging workflow contract tests.
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, staging]
   push:
-    branches: [master]
+    branches: [master, staging]
   workflow_dispatch:
 
 permissions:
@@ -156,9 +131,6 @@ jobs:
   # `<NONEXISTENT>` and are dropped below.
   plan:
     name: Plan shards
-    if: >-
-      github.repository != 'Fabric-Pro/fabric-dev' ||
-      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -321,8 +293,6 @@ jobs:
     # No `always()`/`!cancelled()`: the implicit success() on `needs` is what
     # keeps the shards from starting when the plan failed.
     if: >-
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch') &&
       needs.plan.outputs.has_shards == 'true'
     strategy:
       # Every shard reports independently; one red package must not hide the
@@ -336,7 +306,7 @@ jobs:
     # queued for 24 hours rather than failing, so this stays `ubuntu-latest`
     # — except on the manual validation path in the staging repo, whose
     # standard runner (2 CPU / 7 GB) cannot hold the heap below.
-    runs-on: ${{ (github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'workflow_dispatch') && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.repository == 'Fabric-Pro/fabric-dev') && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       # Placeholder so @repo/database's prisma singleton (throws at module
@@ -442,21 +412,16 @@ jobs:
           pnpm turbo run type-check --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
 
   # Stable status check name reported on every PR to `master` in the public
-  # mirror. Skipped entirely in the staging repo outside a manual
-  # `workflow_dispatch` (see WHERE THIS RUNS in the header — a job skipped by
-  # a job-level `if:` counts as passing for the relay gate). Configure THIS
+  # mirror and private staging repository. Configure THIS
   # as the required check — not the shards, whose names and count depend on
   # what the PR touched.
   type-check:
     name: type-check
     needs: [plan, shard]
     # Not on push: a master run has no PR to report on, and an aggregate job
-    # per push is billed Actions minutes for nothing. Skipped in the staging
-    # repo outside workflow_dispatch, same guard as `plan` and `shard`.
+    # per push adds no useful verdict. Private PRs execute this aggregate.
     if: >-
-      always() && github.event_name != 'push' &&
-      (github.repository != 'Fabric-Pro/fabric-dev' ||
-       github.event_name == 'workflow_dispatch')
+      always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     env:
       PLAN_RESULT: ${{ needs.plan.result }}

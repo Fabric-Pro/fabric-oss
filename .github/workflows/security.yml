@@ -38,7 +38,7 @@ on:
     # check, and a job that never registers because its workflow was filtered
     # out stays pending forever. Per-scan relevance is decided by the
     # paths-filter STEP below, which reports a skip as a pass.
-    branches: [master]
+    branches: [master, staging]
   workflow_dispatch:
   schedule:
     # Weekly scan to catch rule-pack drift on stable code paths that no PR

@@ -159,7 +159,23 @@ jobs:
       # missing, a custom publish script makes the action WARN and create no
       # tags or releases; the positive control after this step turns that
       # into a failure.
+      - name: Validate approved batch release policy
+        id: batch-policy
+        env:
+          STAGING_RELEASE_ENABLED: ${{ vars.STAGING_RELEASE_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [[ "$STAGING_RELEASE_ENABLED" == true ]]; then
+            # Versioning happens privately before candidate QA. Never create a
+            # second public Version PR with edits QA has not approved.
+            if find .changeset -maxdepth 1 -type f -name '*.md' ! -name README.md -print -quit | grep -q .; then
+              echo "::error::unexpected unconsumed changesets in approved batch"
+              exit 1
+            fi
+          fi
+
       - name: Create release PR or publish to npm
+        if: vars.STAGING_RELEASE_ENABLED != 'true'
         id: changesets
         uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
@@ -190,6 +206,18 @@ jobs:
           # from private repos with E422 "Only public source repositories are
           # supported" — so this line lands only once the repository is public.
           # If the repository ever goes private again, set the STRING "false".
+          NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Publish the approved versioned batch
+        if: vars.STAGING_RELEASE_ENABLED == 'true'
+        id: batch-changesets
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        with:
+          publish-script: pnpm release
+          create-github-releases: true
+          github-token: ${{ steps.version-pr-token.outputs.token }}
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
           NPM_CONFIG_PROVENANCE: "true"
 
       # Positive control for the publish path. changesets/action v2 learns

@@ -10,7 +10,7 @@ name: Temporal Replay Credential-Free Gate
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [master]
+    branches: [master, staging]
 
 permissions: {}
 

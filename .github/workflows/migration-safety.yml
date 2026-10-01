@@ -19,7 +19,7 @@ name: Migration Safety
 # The scoping moved inside the job instead.
 on:
   pull_request:
-    branches: [master]
+    branches: [master, staging]
 
 permissions:
   contents: read
