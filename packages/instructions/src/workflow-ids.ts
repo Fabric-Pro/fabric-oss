@@ -55,3 +55,23 @@ export function instructionRepositorySyncWorkflowId(projectId: string): string {
 /** The one proposal pull-request sweeper (spec §9), started by its schedule. */
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID =
 	"instruction-proposal-pull-request-sweep";
+
+/** Which repository sync a queued follow-up run belongs to. */
+export type RepositorySyncFollowUpSubject = "instructions" | "context";
+
+/**
+ * The deterministic Temporal workflow id of a project's queued follow-up
+ * sync: the run a member asked for by changing what is synced while another
+ * run was still open. One per subject and project, so a second change while
+ * one is waiting replaces it (the API starts it with
+ * `workflowIdConflictPolicy: "TERMINATE_EXISTING"`) rather than queueing
+ * behind it. It is a different id from the sync's own, which is what lets it
+ * wait for that run to close and then start the next one under the sync's
+ * id with `FAIL`.
+ */
+export function repositorySyncFollowUpWorkflowId(
+	subject: RepositorySyncFollowUpSubject,
+	projectId: string,
+): string {
+	return `repository-sync-follow-up-${subject}-${projectId}`;
+}

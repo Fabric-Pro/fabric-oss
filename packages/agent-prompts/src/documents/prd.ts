@@ -47,7 +47,7 @@ CRITICAL SECTIONS TO ALWAYS INCLUDE (in order):
 8. Dependencies/Risks - Teams, APIs, vendors + Risk mitigation
 9. Stakeholders - All roles involved
 
-AVOID: Lengthy prose when tables work better. Optional sections like "Market Analysis" or "Appendices" should only be included if specifically relevant.`,
+AVOID: Lengthy prose when tables work better.`,
 
 	sections: [
 		{

@@ -23,10 +23,20 @@ export const DIRECT_CHAT_RESPONSE_GUIDELINES = `RESPONSE GUIDELINES:
 - Be concise but complete
 - Cite sources when using document context or web search results`;
 
-export const DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT = [
-	DIRECT_CHAT_IDENTITY,
+/**
+ * The stable prefix for a turn whose caller brought its own persona (the
+ * Fabric Agent drawer, a mention reply, a voice session). Prepending Advisor's
+ * identity to that persona would hand the model two names — the conflict
+ * `orchestratorBasePrompt` already avoids on the other engine.
+ */
+export const DIRECT_CHAT_CACHEABLE_GUIDELINES = [
 	DIRECT_CHAT_TOOL_USAGE_GUIDELINES,
 	DIRECT_CHAT_RESPONSE_GUIDELINES,
+].join("\n\n");
+
+export const DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT = [
+	DIRECT_CHAT_IDENTITY,
+	DIRECT_CHAT_CACHEABLE_GUIDELINES,
 ].join("\n\n");
 
 interface LegacyDirectChatSystemInput {
@@ -34,6 +44,8 @@ interface LegacyDirectChatSystemInput {
 	webSearchInstructions: string;
 	frameOutputInstructions: string;
 	currentDateContext: string;
+	/** False when the caller's system prompt already names the assistant. */
+	includeIdentity?: boolean;
 }
 
 /**
@@ -46,10 +58,9 @@ export function buildLegacyDirectChatSystemInstructions({
 	webSearchInstructions,
 	frameOutputInstructions,
 	currentDateContext,
+	includeIdentity = true,
 }: LegacyDirectChatSystemInput): string {
-	return `${DIRECT_CHAT_IDENTITY}
-
-${capabilitiesInstructions}
+	return `${includeIdentity ? `${DIRECT_CHAT_IDENTITY}\n\n` : ""}${capabilitiesInstructions}
 
 ${DIRECT_CHAT_TOOL_USAGE_GUIDELINES}
 ${webSearchInstructions ? `\n${webSearchInstructions}\n` : ""}
@@ -64,6 +75,8 @@ interface DirectChatPromptCacheInput<Message> {
 	rollingHistoryEnabled: boolean;
 	systemPrompt: string;
 	messages: readonly Message[];
+	/** False when the caller's system prompt already names the assistant. */
+	includeIdentity?: boolean;
 }
 
 interface VariableSystemMessage {
@@ -95,6 +108,7 @@ export function buildDirectChatPromptCacheRequest<Message>({
 	rollingHistoryEnabled,
 	systemPrompt,
 	messages,
+	includeIdentity = true,
 }: DirectChatPromptCacheInput<Message>): DirectChatPromptCacheRequest<Message> {
 	if (!promptCacheEnabled) {
 		return {
@@ -107,12 +121,12 @@ export function buildDirectChatPromptCacheRequest<Message>({
 		role: "system" as const,
 		content: systemPrompt,
 	};
+	const stablePrefix = includeIdentity
+		? DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT
+		: DIRECT_CHAT_CACHEABLE_GUIDELINES;
 	if (!rollingHistoryEnabled) {
 		return {
-			system: [
-				cacheableSystem(DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT),
-				variableSystemMessage,
-			],
+			system: [cacheableSystem(stablePrefix), variableSystemMessage],
 			messages: [...messages],
 		};
 	}
@@ -123,7 +137,7 @@ export function buildDirectChatPromptCacheRequest<Message>({
 	const markedHistory = withRollingCacheBreakpoint(history) as Message[];
 
 	return {
-		system: cacheableSystem(DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT),
+		system: cacheableSystem(stablePrefix),
 		messages: [
 			...markedHistory,
 			...(currentMessage === undefined ? [] : [currentMessage]),

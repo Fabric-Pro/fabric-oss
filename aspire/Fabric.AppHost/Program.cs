@@ -1692,7 +1692,7 @@ if (!isPublishMode)
 
     // Web App (deployed to Vercel in production)
     // Use HTTP protocol for OTLP to avoid gRPC credentials issues with self-signed certs
-#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is experimental in 13.5
+#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is still experimental in 13.6
     // The canonical origin the web app derives absolute URLs from (Better Auth
     // baseURL, OAuth redirect URIs, magic links, webhook targets). Localhost
     // unless the opt-in public tunnel is on.

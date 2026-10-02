@@ -1084,11 +1084,14 @@ describe("createDerivedInstructionSnapshot", () => {
 	});
 
 	/**
-	 * Same read-then-write version allocation as `createInstructionSnapshot`,
-	 * so the same P2002 retry has to be around it: two edits started on one
-	 * project at the same moment both read version N.
+	 * Same optimistic read-then-insert version allocation as
+	 * `createInstructionSnapshot`, with the same bounded, jittered retry:
+	 * two edits started on one project at the same moment both read
+	 * version N. The real-Postgres proof is
+	 * `instruction-version-allocation.integration.test.ts`.
 	 */
 	it("retries the insert when two derivations collide on the same version", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(0);
 		mocks.snapshot.findFirst.mockReset();
 		mocks.snapshot.findFirst
 			.mockResolvedValueOnce({
@@ -1118,6 +1121,34 @@ describe("createDerivedInstructionSnapshot", () => {
 
 		expect(result).toMatchObject({ ok: true, version: 9 });
 		expect(mocks.snapshot.create).toHaveBeenCalledTimes(2);
+		vi.restoreAllMocks();
+	});
+
+	it("gives up after eight attempts with a typed error, never the raw P2002", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		mocks.file.findMany.mockResolvedValue([baseFile("bf1", "CLAUDE.md")]);
+		mocks.snapshot.create.mockRejectedValue(
+			new FakePrismaKnownRequestError("P2002"),
+		);
+
+		const error = await createDerivedInstructionSnapshot(
+			input([put("a.md")]),
+		).catch((e: unknown) => e);
+
+		expect((error as Error).name).toBe("InstructionVersionContentionError");
+		expect(mocks.snapshot.create).toHaveBeenCalledTimes(8);
+		vi.restoreAllMocks();
+	});
+
+	it("takes the project lock, before the pointer comparison and the insert, only for a pointer-claiming derivation", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		await createDerivedInstructionSnapshot(input([put("a.md")]));
+
+		expect(mocks.$queryRaw).toHaveBeenCalledTimes(1);
+		expect(mocks.$queryRaw.mock.invocationCallOrder[0]!).toBeLessThan(
+			mocks.snapshot.create.mock.invocationCallOrder[0]!,
+		);
 	});
 });
 

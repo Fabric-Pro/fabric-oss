@@ -33,8 +33,47 @@ Install or update the CLI before running the coding-instructions commands:
 npm install -g @fabricorg/cli
 ```
 
-Then authenticate against the deployment that hosts the project. The Connect
-dialog supplies the key and exact deployment URL:
+Then sign in to the deployment that hosts the project. The Connect dialog
+supplies the exact deployment URL:
+
+```bash
+fabric auth login --base-url https://example.com
+```
+
+With no key, `login` signs in through the browser (OAuth 2.1, authorization
+code with PKCE S256):
+
+1. It reads the gateway's protected-resource metadata
+   (`/.well-known/oauth-protected-resource/api/mcp-gateway`) and the
+   authorization server's metadata, and refuses either when the issuer does not
+   match or an endpoint points at another origin.
+2. It registers itself as a public client named "Fabric CLI" with a
+   `http://127.0.0.1:<port>/callback` redirect, once per profile and
+   deployment. A later login reuses that client on any port, and registers a
+   new one only when the server no longer knows it.
+3. It opens the browser (and prints the URL in case it cannot), where you
+   choose the organization and approve the CLI. The approval lists exactly
+   what the CLI may do: read the organization's projects and context, read
+   coding instructions, and suggest changes to them for review. It never
+   publishes.
+4. It waits up to five minutes for the callback, checks its `state`, and
+   exchanges the code for tokens bound to `<deployment>/api/v1`.
+
+The profile keeps the access token, the refresh token and their expiry, in the
+same owner-only (`0600`) config file that holds a key. The access token lives
+an hour; the CLI renews it when it expires within 60 seconds or the server
+answers 401. Refresh tokens rotate, and the server ends the whole sign-in if a
+spent one is presented again, so a renewal holds a lock file beside the profile
+(`<config>.refresh.lock`, taken over after 30 seconds if its holder died) and
+re-reads the profile once it has the lock: two session-start hooks that start
+together renew once, not twice.
+
+`fabric auth logout` revokes the refresh token and the access token at the
+server, then clears the profile. A sign-in shows under **Account → Connected
+agents**, where revoking it ends every token issued under it at once.
+
+For CI and machines with no browser, sign in with an organization API key
+instead (the Connect dialog's "Use an API key instead" section mints one):
 
 ```bash
 fabric auth login --key <api-key> --base-url https://example.com
@@ -42,7 +81,8 @@ fabric auth login --key <api-key> --base-url https://example.com
 
 An explicit `--base-url` is stored with the active CLI profile, so later
 commands and generated hooks use the same deployment. `FABRIC_BASE_URL` remains
-an execution-time override when it is set.
+an execution-time override when it is set, and `FABRIC_API_KEY` takes
+precedence over anything stored.
 
 ## The commands
 
@@ -78,6 +118,19 @@ edited, and reports which is which:
 | kept, renamed in the published snapshot | the lock names it under one spelling and the manifest under another that means the same file — the write covers it, so the old spelling is left alone |
 
 `--dry-run` prints that plan and downloads nothing.
+
+**A sync downloads only what it writes.** A plan with up to 100 writes asks
+`POST .../instructions/published/files` for a signed URL per written file and
+downloads just those, eight at a time, so changing one file of a thousand
+costs one download rather than the whole archive. Each file is checked against
+the manifest entry the plan was made from — the manifest's size bounds the
+read and its sha256 must match — and a mismatch refuses the run before
+anything is written, the same rule the archive path applies. A plan with more
+than 100 writes (a first sync, `--repair` of a wrecked tree) takes the archive
+as before. If the published version moves after the plan was made, the route
+answers 409 `PUBLISHED_CHANGED` before signing anything; the CLI then reads a
+fresh manifest once, plans again, and takes the archive of what is published
+now. It does not retry further.
 
 A `sync` never accepts the server's "unchanged" on its own, and the ledger it
 checks is validated before it is read: a lock naming `../outside`, a reserved
@@ -524,7 +577,7 @@ whether or not a declaration also names them.
 
 | Check | What it verifies | Evidence | Proposed fix |
 |---|---|---|---|
-| API key (`auth`) | A key is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type, its prefix and the scope that satisfied the check. | server | `fabric auth login --key <api-key>`. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. |
+| API key (`auth`) | A key or a browser sign-in is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type and prefix, or "signed-in session", and the scope that satisfied the check. | server | `fabric auth login` (browser), or `--key <api-key>` for CI. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. |
 | Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
 | Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count, and — for a repository-mirrored snapshot — the commit and branch it was published from (`source.commitSha`/`source.ref`, the snapshot's OWN provenance). Nothing published is a warning. The check also carries the project's CURRENT repository host, path, branch and root path (`repository`, `null` for an upload-sourced or disconnected project — no commit here, since that is per-snapshot, not the project's present configuration), and, for the snapshot's own provenance, whether it still matches that current configuration (`source.current`). | server | Publish a version from the project's Coding Instructions tab. |
 | Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
@@ -1027,7 +1080,7 @@ Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
-| `instructions:read` | `GET .../instructions/published`, `POST .../published/download` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open` — the open-proposal check `push` makes before sending | `INSTRUCTION_READ` |
+| `instructions:read` | `GET .../instructions/published`, `POST .../published/download`, `POST .../published/files` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open` — the open-proposal check `push` makes before sending | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 
@@ -1084,8 +1137,10 @@ of content. It computes each file's size and sha256 itself; a client-supplied
 hash would only ever be a way to make the stored row disagree with the stored
 object. Everything after that is the tab's own path: the same derived-snapshot
 query, the same staging keys, the same validation workflow — whose publish
-step this route never enables — so the secret gate reads every file including
-the inherited ones. A refusal carries a
+step this route never enables. The secret gate decides every file, but an
+inherited file is read again only when its source version was not cleared by
+the scan rule set now in force, so a one-file change checks and saves one file
+(the unchanged ones are copied inside storage, never downloaded). A refusal carries a
 `code` the CLI branches on — `PULL_FIRST`, `REPOSITORY_SOURCE_OF_TRUTH`,
 `NOTHING_PUBLISHED`, `PROPOSAL_PROPOSER_LIMIT`, `PROPOSAL_PROJECT_LIMIT`.
 

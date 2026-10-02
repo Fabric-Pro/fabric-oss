@@ -129,9 +129,10 @@ export const WEB_SCRAPER_DISPLAY_NAMES: Record<WebScraperProviderName, string> =
 
 /**
  * Provider names that can scrape a single URL. Used by the picker
- * (`get-web-scraper.ts`) and the UI pre-flight (`ContextUploaderDialog.tsx`)
- * to filter `searchProviders.get*Providers()` rows. `parallel` is excluded —
- * see the file header.
+ * (`get-web-scraper.ts`); the UI pre-flight (`use-url-source-form.ts`)
+ * mirrors it in `context-sources/lib/url-source.ts` to filter
+ * `searchProviders.get*Providers()` rows. `parallel` is excluded — see the
+ * file header.
  */
 export const SCRAPE_CAPABLE_PROVIDERS: readonly WebScraperProviderName[] = [
 	"firecrawl",

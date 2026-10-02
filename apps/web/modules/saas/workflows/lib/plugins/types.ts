@@ -177,6 +177,12 @@ export interface IntegrationAction {
 export interface IntegrationSettingsProps {
 	apiKey: string;
 	hasKey?: boolean;
+	/**
+	 * True when the page's saved-integrations list holds a persisted credential
+	 * for this plugin. Unlike `hasKey`, it is not set by text typed into the
+	 * form but not saved yet.
+	 */
+	hasPersistedCredential?: boolean;
 	onApiKeyChange: (value: string) => void;
 	config?: Record<string, unknown>;
 	onConfigChange?: (config: Record<string, unknown>) => void;
@@ -228,6 +234,19 @@ export interface IntegrationPlugin {
 	SettingsComponent?: ComponentType<IntegrationSettingsProps>;
 	/** Optional custom settings component (lowercase for backward compatibility) */
 	settingsComponent?: ComponentType<IntegrationSettingsProps>;
+
+	/**
+	 * Set when the plugin's settings component renders its own Disconnect that
+	 * runs the provider-specific disconnect (OAuth revocation, MCP tokens,
+	 * data connections, ...). The workflow integration settings page then omits
+	 * its generic footer Disconnect for this plugin: that button only deletes
+	 * the stored WorkflowIntegration rows, so showing both leaves one button
+	 * that does not actually disconnect the provider.
+	 *
+	 * Leave unset for plugins whose settings are plain form fields, and for a
+	 * settings component that has no disconnect of its own.
+	 */
+	ownsDisconnect?: boolean;
 
 	/** Lazy-loaded test function (preferred - avoids bundling server code) */
 	testConfig?: {

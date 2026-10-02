@@ -311,6 +311,39 @@
 		}
 	},
 	"auth": {
+		"oauth": {
+			"consent": {
+				"label": "Authorize an agent",
+				"title": "{client} wants to access Fabric",
+				"unnamedClient": "An unnamed application",
+				"selfAsserted": "This name was chosen by the application itself. Fabric has not verified it.",
+				"redirectsTo": "After you decide, you are sent back to {host}.",
+				"organizationLabel": "Organization",
+				"noOrganization": "Choose an organization before authorizing an agent.",
+				"scopesLabel": "If you allow this, it can",
+				"allow": "Allow",
+				"deny": "Deny",
+				"working": "One moment…",
+				"failed": "The request could not be completed. Start again from your agent.",
+				"signInRequired": "Sign in to continue.",
+				"scopes": {
+					"mcp:read": "Read this organization's projects and context.",
+					"instructions:read": "Read coding instructions.",
+					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
+					"offline_access": "Stay signed in until you revoke it."
+				},
+				"revokeHint": "You can revoke this at any time under Connected agents in your account settings."
+			},
+			"organization": {
+				"label": "Authorize an agent",
+				"title": "Choose an organization",
+				"description": "The agent will work inside the organization you choose, and nowhere else.",
+				"continue": "Continue",
+				"working": "One moment…",
+				"failed": "The organization could not be selected. Try again.",
+				"empty": "You do not belong to an organization yet."
+			}
+		},
 		"errors": {
 			"invalidEmailOrPassword": "The credentials you entered are invalid. Please check them and try again.",
 			"unknown": "Something went wrong. Please try again.",
@@ -887,7 +920,7 @@
 					"title": "First, add an AI provider key"
 				},
 				"apiKey": {
-					"body": "Create an API key under Settings → API Keys to let an external AI or command-line tool work with this organization over MCP — your projects, documents, and roadmap, from wherever you already work.",
+					"body": "Connect an external AI or command-line tool to this organization over MCP by signing in from the tool — your projects, documents, and roadmap, from wherever you already work. For CI and headless use, create an API key under Settings → API Keys.",
 					"title": "Connect your own tools"
 				},
 				"assistant": {
@@ -1551,6 +1584,9 @@
 					},
 					"brand_kit": {
 						"updated": "Brand kit updated"
+					},
+					"company_context": {
+						"metadata_updated": "Company context source details updated"
 					}
 				},
 				"account": {
@@ -1558,6 +1594,10 @@
 						"created": "Personal API key created",
 						"revoked": "Personal API key revoked",
 						"rotated": "Personal API key rotated"
+					},
+					"oauth": {
+						"consent_granted": "Coding agent connected",
+						"consent_revoked": "Coding agent revoked"
 					},
 					"ai_provider": {
 						"configured": "AI provider configured",
@@ -2349,6 +2389,7 @@
 		"menu": {
 			"account": {
 				"billing": "Billing",
+				"connectedAgents": "Connected agents",
 				"dangerZone": "Danger zone",
 				"general": "General",
 				"security": "Security",
@@ -2360,10 +2401,25 @@
 				"general": "General",
 				"members": "Members",
 				"title": "Org",
-				"dangerZone": "Danger zone"
+				"dangerZone": "Danger zone",
+				"companyContext": "Company context"
 			}
 		},
 		"save": "Save",
+		"connectedAgents": {
+			"title": "Connected agents",
+			"description": "Coding agents you have signed in to Fabric. Each one works inside the organization you approved it for, with only the access listed here. Revoking one signs it out at once.",
+			"empty": "No agents are connected. Connect one from a project's Connect your coding agent dialog.",
+			"unnamedClient": "Unnamed application",
+			"organization": "Organization",
+			"access": "Access",
+			"connected": "Connected {date}",
+			"revoke": "Revoke",
+			"revoking": "Revoking…",
+			"revoked": "Agent revoked",
+			"revokeFailed": "The agent could not be revoked. Try again.",
+			"loadFailed": "Connected agents could not be loaded."
+		},
 		"brandKit": {
 			"title": "Brand kit",
 			"description": "Accent colors and brand guidance for Glossy editions. The logo and theme color above are part of the kit too. Without a theme color or accent colors, Glossy visuals stay neutral or use the recipient's brand colors.",
@@ -2386,6 +2442,112 @@
 			"saved": "Brand kit saved",
 			"saveFailed": "Couldn't save the Brand kit",
 			"fixColors": "Fix the highlighted colors before saving."
+		},
+		"companyContext": {
+			"title": "Company context",
+			"description": "What your company says about itself — capabilities, case studies and positioning — maintained once for every Proposal and Business Case.",
+			"usage": {
+				"title": "Where this is used",
+				"body": "Proposals and Business Cases draw on these sources to describe your company and its past work, and may quote them word for word. Those documents go to clients, so add only material you're comfortable sharing with a client.",
+				"scope": "Other document types don't use company context, and it never appears in a project's own Context tab."
+			},
+			"readOnly": "An organization admin manages company context. You can view and download its sources; ask an admin to add, change or remove them.",
+			"list": {
+				"title": "Sources",
+				"summary": "{ready} of {total} ready",
+				"add": "Add source",
+				"reprocessAll": "Re-process stale sources",
+				"loading": "Loading company context…",
+				"loadFailed": "Couldn't load company context.",
+				"retry": "Try again",
+				"emptyTitle": "No company context yet",
+				"emptyAdmin": "Add case studies, capability statements, your website or anything else that describes your company.",
+				"emptyMember": "No sources have been added yet."
+			},
+			"model": {
+				"missing": "No embedding provider is configured, so Proposals and Business Cases can't use these sources yet. Configure an AI provider with embedding support.",
+				"unsupported": "Your organization's embedding model can't be used for company context, so these sources can't be searched until it changes.",
+				"openProviders": "Open AI Providers",
+				"stale": "{count, plural, one {# source was indexed} other {# sources were indexed}} with an earlier embedding model and won't be used until re-processed."
+			},
+			"types": {
+				"FILE": "File",
+				"TEXT": "Text",
+				"LINK": "Website"
+			},
+			"status": {
+				"pending": "Pending",
+				"processing": "Processing…",
+				"indexing": "Indexing…",
+				"ready": "Ready",
+				"needsReprocessing": "Needs re-processing",
+				"notSearchable": "Not searchable",
+				"failed": "Failed",
+				"cancelled": "Cancelled"
+			},
+			"row": {
+				"added": "Added {date}",
+				"lastSynced": "Last synced {date}",
+				"pageCount": "{count, plural, one {# page} other {# pages}}",
+				"refresh": {
+					"ONCE": "No automatic refresh",
+					"DAILY": "Refreshes daily",
+					"WEEKLY": "Refreshes weekly",
+					"MONTHLY": "Refreshes monthly",
+					"LIVE": "Refreshes live"
+				}
+			},
+			"actions": {
+				"more": "More actions for {name}",
+				"download": "Download {name}",
+				"downloadFailed": "Couldn't download this source.",
+				"showPages": "Show pages of {name}",
+				"hidePages": "Hide pages of {name}",
+				"sync": "Sync now",
+				"syncStarted": "Sync started",
+				"cancelCrawl": "Cancel processing",
+				"cancelRequested": "Cancelling processing…",
+				"reprocess": "Re-process",
+				"reprocessStarted": "Re-processing started",
+				"reprocessAllStarted": "{count, plural, =0 {Nothing to re-process} one {Re-processing # source} other {Re-processing # sources}}",
+				"reprocessAllSkipped": "{count, plural, one {# source couldn't start re-processing} other {# sources couldn't start re-processing}}",
+				"delete": "Delete",
+				"deleteBlocked": "Cancel processing to delete",
+				"deleted": "Source removed",
+				"failed": "That didn't work. Try again."
+			},
+			"deleteDialog": {
+				"title": "Remove this source?",
+				"description": "“{name}” will be removed from your company context. Proposals and Business Cases generated from now on won't use it.",
+				"cancel": "Cancel",
+				"confirm": "Remove source",
+				"deleting": "Removing…"
+			},
+			"pages": {
+				"label": "Pages crawled from {name}",
+				"loading": "Loading pages…",
+				"loadFailed": "Couldn't load pages.",
+				"empty": "No pages crawled yet.",
+				"shown": "Showing {shown} of {total}",
+				"loadMore": "Load more",
+				"status": {
+					"PENDING": "Pending",
+					"EXTRACTING": "Processing…",
+					"COMPLETED": "Indexed",
+					"FAILED": "Failed",
+					"CANCELLED": "Cancelled"
+				}
+			},
+			"addDialog": {
+				"title": "Add company context",
+				"description": "Upload files, add websites or paste text about your company. Proposals and Business Cases may quote anything you add here.",
+				"tabsLabel": "Source type",
+				"tabs": {
+					"file": "File",
+					"link": "Link",
+					"text": "Text"
+				}
+			}
 		}
 	},
 	"start": {
@@ -2622,6 +2784,13 @@
 				"repositorySync": {
 					"entry": "Sync from repository",
 					"running": "Syncing…",
+					"fetching": "Fetching the repository…",
+					"applying": "Applying {done} of {total} files",
+					"applyingPhase": "Applying files",
+					"pruning": "Removing files no longer in the repository ({removed} so far)",
+					"pruningPhase": "Removing files no longer in the repository",
+					"indexing": "{indexed} of {managed} files indexed",
+					"indexingPhase": "Indexing files",
 					"repositoryLine": "{repository} @ {ref}",
 					"repositoryBadge": "Repository",
 					"syncNow": "Sync now",
@@ -2653,6 +2822,8 @@
 							"fileCountUnknown": "the selected paths hold more files than the limit of {max}.",
 							"fileSize": "a file is {actual}; each file can be at most {max}.",
 							"fileSizeUnknown": "a file is larger than the limit of {max}.",
+							"fileSizeAtLeast": "a file is at least {actual}; each file can be at most {max}.",
+							"totalSizeAtLeast": "the selected files add up to at least {actual}; the limit is {max} in total.",
 							"totalSize": "the selected files add up to {actual}; the limit is {max} in total.",
 							"totalSizeUnknown": "the selected files add up to more than the limit of {max} in total.",
 							"inventory": "the selected paths hold more than {max} entries, which is too many to read. Select narrower paths.",
@@ -2716,6 +2887,7 @@
 					"syncNowResult": {
 						"started": "Sync started.",
 						"already_running": "A sync is already running.",
+						"queued": "The current sync is stopping. Your new selection syncs next.",
 						"not_configured": "Nothing is configured to sync.",
 						"integration_unavailable": "This repository connection needs attention before it can be synced from."
 					},
@@ -5654,6 +5826,13 @@
 			}
 		},
 		"codingInstructions": {
+			"actionErrors": {
+				"forbidden": "You don't have permission to do that.",
+				"notFound": "That no longer exists. Refresh and try again.",
+				"conflict": "This changed while you were working. Refresh and try again.",
+				"tooManyRequests": "Too many requests. Wait a moment and try again.",
+				"generic": "That didn't work. Try again."
+			},
 			"loadState": {
 				"loading": "Loading coding instructions…",
 				"errorTitle": "Couldn't load the coding instructions",
@@ -5675,7 +5854,7 @@
 				"historyTitle": "History folders stay out",
 				"historyDescription": "Folders like <tasksDir>tasks/</tasksDir> and log files are skipped by default. Add a <fabricignore>.fabricignore</fabricignore> to the folder to decide yourself.",
 				"developersTitle": "Developers stay current",
-				"developersDescription": "Coding agents read the published files over the Fabric MCP server. A CLI sync command follows in a later release.",
+				"developersDescription": "Coding agents read the published files over the Fabric MCP server, and the Fabric CLI keeps a local checkout current.",
 				"connectButton": "Connect your agent"
 			},
 			"uploadDialog": {
@@ -5713,6 +5892,10 @@
 				"summary": "{keptCount} files, {keptSize} will be uploaded. {excludedCount} files will be left out.",
 				"publishOnReady": "Publish as soon as the upload passes checks",
 				"progress": "Uploading {done} of {total} files",
+				"reading": "Reading {done} of {total} files",
+				"readingPhase": "Reading files",
+				"uploadingPhase": "Uploading files",
+				"startingChecks": "Starting checks…",
 				"cancel": "Cancel",
 				"uploadButton": "Upload {count} files",
 				"genericError": "Upload failed",
@@ -5852,6 +6035,9 @@
 				"deleteAction": "Delete",
 				"publishConfirm": "Publish version {version} as the project's coding instructions?",
 				"rollbackConfirm": "Roll back to version {version}? Later versions stay in History and can be published again.",
+				"rollbackPendingNote": "{count, plural, one {# upload or sync is still being checked and will publish when it finishes, replacing this rollback.} other {# uploads or syncs are still being checked and will publish when they finish, replacing this rollback.}}",
+				"publishedChanged": "Version {version} was published since you opened this page. Review it, then try again.",
+				"publishedChangedUnknown": "The published version changed since you opened this page. Review it, then try again.",
 				"publishedUnknown": "The published version could not be loaded, so publishing and rolling back are unavailable. Reload the tab and try again.",
 				"deleteConfirm": "Delete version {version}? This cannot be undone.",
 				"anonymousUser": "a member",
@@ -5887,6 +6073,13 @@
 				"publishedBadge": "Version {version} is published",
 				"publishedSummary": "Uploaded by {name} {time} from {source}. {fileCount} files stored, {excludedCount} left out {reason}. Coding agents read this version through Fabric MCP.",
 				"checkingSummary": "Checking your upload. This takes a moment.",
+				"checkingFiles": "Checking {done} of {total} files",
+				"savingFiles": "Saving {done} of {total} files",
+				"scanningFiles": "Scanning {done} of {total} files",
+				"checkingPhase": "Checking files",
+				"savingPhase": "Saving files",
+				"scanningPhase": "Scanning files",
+				"publishing": "Publishing…",
 				"emptySummary": "Nothing is published yet.",
 				"failedTitle": "We could not finish checking version {version}",
 				"failedBodyUpload": "The checks did not finish, so nothing was published. This is not a verdict on your files or the folder limits. Your uploaded files are still here: retry the checks, or upload the folder once more.",
@@ -5942,6 +6135,10 @@
 			},
 			"repositorySync": {
 				"running": "Syncing from the repository…",
+				"fetching": "Fetching the repository…",
+				"preparing": "Preparing the files…",
+				"copying": "Copying {done} of {total} files",
+				"copyingPhase": "Copying files",
 				"lastRun": "Last sync {time} ({trigger}): {outcome}",
 				"lastRunBy": "Last sync {time} by {name} ({trigger}): {outcome}",
 				"syncAgainButton": "Sync again",
@@ -5990,6 +6187,8 @@
 						"fileCount": "The folder has {actual} files after the ignore rules; the limit is {max}.",
 						"fileSize": "A file in the folder is {actual}; each file can be at most {max}.",
 						"totalSize": "The folder's files add up to {actual}; the limit is {max} in total.",
+						"fileSizeAtLeast": "A file in the folder is at least {actual}; each file can be at most {max}.",
+						"totalSizeAtLeast": "The folder's files add up to at least {actual}; the limit is {max} in total.",
 						"inventory": "The folder has more than {max} files and folders, counting ignored ones, which is too many to read. Sync a smaller folder.",
 						"repositorySize": "Downloading from the repository needed more than {max} of space, the most a sync may use. The repository's file listing counts toward it as well as the folder's files, so a large repository can reach it even when the folder is small."
 					},
@@ -6088,7 +6287,8 @@
 						"ignoreFileLoading": "Reading this folder's .fabricignore file…",
 						"ignoreFileError": "Couldn't read this folder's .fabricignore file, so what the sync leaves out can't be shown or changed here. Try again later.",
 						"fabricignore": "This folder's .fabricignore file replaces the project's ignore rules, so the sync leaves out what it lists. Edit that file in the repository to change what is left out.",
-						"ignoreFileTooLarge": "This folder's .fabricignore file is larger than 64 KiB, so the sync ignores it and applies the project's rules."
+						"ignoreFileTooLarge": "This folder's .fabricignore file is larger than 64 KiB, so the sync ignores it and applies the project's rules.",
+						"ignoreFileEncoding": "This folder's .fabricignore file isn't UTF-8 text (it may be saved as UTF-16), so a sync of this folder is refused until the file is saved as UTF-8."
 					}
 				},
 				"summary": {
@@ -6108,6 +6308,7 @@
 				"syncNowResult": {
 					"started": "Sync started.",
 					"already_running": "A sync is already running.",
+					"queued": "The current sync is stopping. Your new selection syncs next.",
 					"not_configured": "Set up repository sync first.",
 					"integration_unavailable": "The repository connection needs attention before it can be synced from."
 				},
@@ -6428,6 +6629,17 @@
 				"FAILED": "Failed",
 				"SUPERSEDED": "Superseded"
 			}
+		},
+		"companyContextNotice": {
+			"empty": {
+				"title": "No company context yet",
+				"body": "Proposals and Business Cases can also draw on material your organization keeps about your company, such as case studies, services and credentials. None has been added yet, so this draft will use the project's context only."
+			},
+			"notReady": {
+				"title": "Company context is still processing",
+				"body": "Your organization's company sources are not ready yet, so this draft will use the project's context only. Drafts started after they finish processing can draw on them."
+			},
+			"openSettings": "Open company context"
 		},
 		"capabilityGates": {
 			"reason": {
@@ -7988,7 +8200,7 @@
 			},
 			"apiKeyForCli": {
 				"name": "Organization connected over MCP",
-				"description": "Connect a coding tool to Fabric with an API key, so it can read this project's context. Reports the ORGANIZATION, not this project — once anyone connects, it completes on every project.",
+				"description": "Connect a coding tool to Fabric by signing in from the tool, so it can read this project's context. Reports the ORGANIZATION, not this project — once anyone connects, it completes on every project.",
 				"tooltip": "A connected CLI lets Fabric feed project context into the coding tools your team already uses, over MCP, instead of asking them to work somewhere else. This item reports the organization rather than this project, so once anyone connects it reads complete on every project."
 			},
 			"businessCase": {

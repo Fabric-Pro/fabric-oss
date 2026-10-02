@@ -49,6 +49,48 @@ export const DEFAULT_CONTEXT_IGNORE_PATTERNS: readonly string[] = [
 	CONTEXT_IGNORE_FILENAME,
 ];
 
+/**
+ * The most `**` groups one rule may hold. The `ignore` package compiles a
+ * rule to a regular expression whose matching time grows polynomially with
+ * the number of those groups, so a rule with more is refused rather than
+ * evaluated. The canonical copy is `MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS`
+ * in `packages/instructions/src/context-sync-rules.ts`.
+ */
+export const MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS = 2;
+
+export interface ContextIgnoreProblem {
+	/** 1-based, as an editor numbers the file. */
+	line: number;
+	/** How many `**` groups the rule holds. */
+	groups: number;
+	max: number;
+}
+
+/**
+ * The first rule `ignore` cannot evaluate in bounded time, or `null`. Reads
+ * the text as `ignore` does: blank lines and lines starting with `#` are not
+ * rules; every other line is. A run of two or more `*` is one group.
+ */
+export function findContextIgnoreProblem(
+	text: string,
+): ContextIgnoreProblem | null {
+	const lines = text.split(/\r?\n/);
+	for (const [index, line] of lines.entries()) {
+		if (line.startsWith("#")) {
+			continue;
+		}
+		const groups = (line.match(/\*{2,}/g) ?? []).length;
+		if (groups > MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS) {
+			return {
+				line: index + 1,
+				groups,
+				max: MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS,
+			};
+		}
+	}
+	return null;
+}
+
 export interface ContextIgnoreRules {
 	/** Is this file (relative, `/`-separated) left out? */
 	ignoresFile(relativePath: string): boolean;

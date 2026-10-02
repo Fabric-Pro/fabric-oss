@@ -577,6 +577,12 @@ async function applyRLS() {
 				name: "organization_brand_kit",
 				policy: "org_only_with_project_guest_read",
 			},
+			// Company context (Fizzy #2719). Organization-owned material a
+			// project guest must never read, so plain `org_only` — deliberately
+			// NOT the Brand kit's guest-read policy above. Neither table has a
+			// userId; organizationId is NOT NULL on both.
+			{ name: "company_context_source", policy: "org_only" },
+			{ name: "company_context_url_page", policy: "org_only" },
 			{ name: "discovery_run", policy: "user_owned" }, // Discovery runs (integration contracts)
 			{ name: "project_success_metric", policy: "user_owned" }, // Customer success metrics
 			// Parent-scoped: no tenant columns of their own, tenancy is

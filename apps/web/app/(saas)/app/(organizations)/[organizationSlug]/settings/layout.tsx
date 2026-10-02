@@ -3,6 +3,7 @@ import {
 	isOrganizationOwner,
 } from "@repo/auth/lib/helper";
 import { config } from "@repo/config";
+import { isFeatureEnabled } from "@repo/database";
 import {
 	getActiveOrganization,
 	getSession,
@@ -19,7 +20,9 @@ import {
 	ActivityIcon,
 	BarChart3Icon,
 	BellIcon,
+	BotIcon,
 	BrainCircuitIcon,
+	Building2Icon,
 	ClipboardListIcon,
 	CreditCardIcon,
 	FileTextIcon,
@@ -86,6 +89,14 @@ export default async function SettingsLayout({
 		session?.user?.email ?? null,
 	);
 
+	// Company context (Fizzy #2719) exists only while its rollout gate is on
+	// for THIS organization: off, there is no entry and the page
+	// 404s. Every member sees the entry; the page is read-only for non-admins.
+	const companyContextEnabled = await isFeatureEnabled(
+		"COMPANY_CONTEXT",
+		organization.id,
+	);
+
 	const organizationSettingsBasePath = `/app/${organizationSlug}/settings`;
 
 	// All menu items are visible to all members
@@ -136,6 +147,19 @@ export default async function SettingsLayout({
 					href: `${organizationSettingsBasePath}/ai-memory`,
 					icon: <HistoryIcon className="size-4 opacity-50" />,
 				},
+				...(companyContextEnabled
+					? [
+							{
+								title: t(
+									"settings.menu.organization.companyContext",
+								),
+								href: `${organizationSettingsBasePath}/company-context`,
+								icon: (
+									<Building2Icon className="size-4 opacity-50" />
+								),
+							},
+						]
+					: []),
 				{
 					title: "RAG Providers",
 					href: `${organizationSettingsBasePath}/rag-providers`,
@@ -302,6 +326,11 @@ export default async function SettingsLayout({
 					title: "Personal AI Providers",
 					href: `${organizationSettingsBasePath}/account/ai-providers`,
 					icon: <BrainCircuitIcon className="size-4 opacity-50" />,
+				},
+				{
+					title: t("settings.menu.account.connectedAgents"),
+					href: `${organizationSettingsBasePath}/account/connected-agents`,
+					icon: <BotIcon className="size-4 opacity-50" />,
 				},
 				{
 					title: t("settings.menu.account.dangerZone"),

@@ -15,6 +15,22 @@ import {
 	getBrandKitProcedure,
 	updateBrandKitProcedure,
 } from "./procedures/brand-kit";
+import {
+	cancelCompanyContextUrlSourceCrawlProcedure,
+	createCompanyContextDownloadUrlProcedure,
+	createCompanyContextTextProcedure,
+	createCompanyContextUploadUrlProcedure,
+	deleteCompanyContextSourceProcedure,
+	getCompanyContextNoticeStateProcedure,
+	getCompanyContextSourceProcedure,
+	listCompanyContextSourcesProcedure,
+	listCompanyContextUrlPagesProcedure,
+	processCompanyContextFileProcedure,
+	processCompanyContextLinkProcedure,
+	reprocessCompanyContextProcedure,
+	resyncCompanyContextUrlSourceProcedure,
+	updateCompanyContextMetadataProcedure,
+} from "./procedures/company-context";
 import { createLogoUploadUrl } from "./procedures/create-logo-upload-url";
 import {
 	getOrganizationDelegationSettingProcedure,
@@ -68,6 +84,26 @@ export const organizationsRouter = {
 	brandKit: {
 		get: getBrandKitProcedure,
 		update: updateBrandKitProcedure,
+	},
+	// Company context (Fizzy #2719): the material an organization maintains
+	// once about itself for Proposals and Business Cases. Brand kit
+	// permissions: members read, admins and owners write, behind the
+	// COMPANY_CONTEXT gate.
+	companyContext: {
+		list: listCompanyContextSourcesProcedure,
+		get: getCompanyContextSourceProcedure,
+		createUploadUrl: createCompanyContextUploadUrlProcedure,
+		processFile: processCompanyContextFileProcedure,
+		createText: createCompanyContextTextProcedure,
+		processLink: processCompanyContextLinkProcedure,
+		updateMetadata: updateCompanyContextMetadataProcedure,
+		resyncUrlSource: resyncCompanyContextUrlSourceProcedure,
+		cancelUrlSourceCrawl: cancelCompanyContextUrlSourceCrawlProcedure,
+		listUrlPages: listCompanyContextUrlPagesProcedure,
+		delete: deleteCompanyContextSourceProcedure,
+		createDownloadUrl: createCompanyContextDownloadUrlProcedure,
+		noticeState: getCompanyContextNoticeStateProcedure,
+		reprocess: reprocessCompanyContextProcedure,
 	},
 	delegationSettings: {
 		get: getOrganizationDelegationSettingProcedure,

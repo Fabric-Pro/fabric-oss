@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.5.3">
+<Project Sdk="Aspire.AppHost.Sdk/13.6.0">
 
   <PropertyGroup>
     <!-- Emits packages.lock.json so the NuGet graph is scannable by the
@@ -14,11 +14,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.5.3" />
-    <PackageReference Include="Aspire.Hosting.Redis" Version="13.5.3" />
-    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.5.3" />
-    <!-- Preview channel: Browsers is still gated behind ASPIREBROWSERLOGS001 in 13.5.x -->
-    <PackageReference Include="Aspire.Hosting.Browsers" Version="13.5.3-preview.1.26425.3" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.6.0" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.6.0" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.6.0" />
+    <!-- Preview channel: Browsers is still gated behind ASPIREBROWSERLOGS001 in 13.6.x -->
+    <PackageReference Include="Aspire.Hosting.Browsers" Version="13.6.0-preview.1.26479.8" />
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
   </ItemGroup>
 

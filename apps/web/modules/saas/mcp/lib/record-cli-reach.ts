@@ -82,7 +82,8 @@ import { runInBackground } from "@repo/api/modules/weave/lib/run-in-background";
  */
 export type McpKeyIdentity =
 	| { credentialKind: "USER_API_KEY"; credentialId: string }
-	| { credentialKind: "ORGANIZATION_API_KEY"; credentialId: string };
+	| { credentialKind: "ORGANIZATION_API_KEY"; credentialId: string }
+	| { credentialKind: "OAUTH_CLIENT"; credentialId: string };
 
 /**
  * The funnel event R25 asks for: an organization reached MCP for the first
@@ -154,6 +155,15 @@ export function toOrganizationKeyIdentity(
 	credentialId: string,
 ): McpKeyIdentity {
 	return { credentialKind: "ORGANIZATION_API_KEY", credentialId };
+}
+
+/**
+ * Which signed-in agent proved the request. The client row, not the token: a
+ * token is replaced every hour, and a record per token would grow without
+ * bound while naming nothing a person recognises.
+ */
+export function toOAuthClientIdentity(clientRowId: string): McpKeyIdentity {
+	return { credentialKind: "OAUTH_CLIENT", credentialId: clientRowId };
 }
 
 /**

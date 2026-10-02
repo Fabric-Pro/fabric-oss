@@ -64,7 +64,7 @@ export interface FabricApiKeyCreated extends FabricApiKey {
 
 export interface WhoamiResult {
 	user: FabricUser;
-	keyType: "personal" | "organization";
+	keyType: "personal" | "organization" | "oauth";
 	keyPrefix: string;
 	scopes: string[];
 	organizationContext?: string;

@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	verifyOrganizationApiKey: vi.fn(),
 	verifyUserApiKey: vi.fn(),
+	verifyOAuthAccessToken: vi.fn(),
 	canExecuteOrganizationAgents: vi.fn(),
 	canRunOrganizationWorkflows: vi.fn(),
 }));
@@ -28,6 +29,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 	return {
 		...actual,
 		verifyOrganizationApiKey: mocks.verifyOrganizationApiKey,
+		verifyOAuthAccessToken: mocks.verifyOAuthAccessToken,
 		canExecuteOrganizationAgents: mocks.canExecuteOrganizationAgents,
 		canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
 	};
@@ -68,6 +70,7 @@ function orgKeyWith(scopes: string[]) {
 beforeEach(() => {
 	mocks.verifyOrganizationApiKey.mockReset();
 	mocks.verifyUserApiKey.mockReset();
+	mocks.verifyOAuthAccessToken.mockReset();
 	mocks.canExecuteOrganizationAgents.mockReset().mockResolvedValue(true);
 	mocks.canRunOrganizationWorkflows.mockReset().mockResolvedValue(true);
 });
@@ -230,5 +233,95 @@ describe("where the role gate deliberately does not reach", () => {
 
 		expect(res.status).toBe(200);
 		expect(mocks.canExecuteOrganizationAgents).not.toHaveBeenCalled();
+	});
+});
+
+describe("a signed-in agent's access token", () => {
+	const ACCESS_TOKEN = "fat_example-access-token";
+
+	function validToken(scopes: string[]) {
+		return {
+			valid: true,
+			tokenId: "token-row-1",
+			clientRowId: "client-row-1",
+			clientName: "Example Agent",
+			userId: "user-signed-in",
+			userName: "Dev",
+			email: "dev@example.com",
+			role: "user",
+			organizationId: "org-bound-at-consent",
+			scopes,
+		};
+	}
+
+	function appEchoingContext() {
+		const app = new Hono<{ Variables: ExternalApiVariables }>();
+		app.use("*", requireApiKey());
+		app.get("/thing", requireScope("instructions:read"), (c) =>
+			c.json(c.get("externalApiContext")),
+		);
+		return app;
+	}
+
+	it("is bound to the organization chosen at consent and names the agent, not the token", async () => {
+		mocks.verifyOAuthAccessToken.mockResolvedValue(
+			validToken(["mcp:read", "instructions:read"]),
+		);
+
+		const res = await call(appEchoingContext(), ACCESS_TOKEN);
+
+		expect(res.status).toBe(200);
+		expect(mocks.verifyOAuthAccessToken).toHaveBeenCalledWith(ACCESS_TOKEN);
+		expect(await res.json()).toEqual({
+			keyType: "oauth",
+			keyId: "client-row-1",
+			keyPrefix: "fat_client-r",
+			userId: "user-signed-in",
+			organizationId: "org-bound-at-consent",
+			scopes: ["mcp:read", "instructions:read"],
+		});
+		expect(mocks.verifyOrganizationApiKey).not.toHaveBeenCalled();
+		expect(mocks.verifyUserApiKey).not.toHaveBeenCalled();
+	});
+
+	it("answers a dead token like any other bad credential", async () => {
+		// Expired, revoked, departed member, disabled client: the verifier
+		// settles all of them and the caller sees one 401.
+		mocks.verifyOAuthAccessToken.mockResolvedValue({
+			valid: false,
+			reason: "not_a_member",
+		});
+
+		const res = await call(appEchoingContext(), ACCESS_TOKEN);
+
+		expect(res.status).toBe(401);
+	});
+
+	it("refuses a scope the agent was not granted", async () => {
+		mocks.verifyOAuthAccessToken.mockResolvedValue(
+			validToken(["mcp:read"]),
+		);
+
+		const res = await call(appEchoingContext(), ACCESS_TOKEN);
+
+		expect(res.status).toBe(403);
+		expect((await res.json()).error).toBe(
+			"Missing required scope: instructions:read",
+		);
+	});
+
+	it("still asks about the owner's role for a gated scope", async () => {
+		mocks.verifyOAuthAccessToken.mockResolvedValue(
+			validToken(["agents:execute"]),
+		);
+		mocks.canExecuteOrganizationAgents.mockResolvedValue(false);
+
+		const res = await call(appRequiring("agents:execute"), ACCESS_TOKEN);
+
+		expect(res.status).toBe(403);
+		expect(mocks.canExecuteOrganizationAgents).toHaveBeenCalledWith(
+			"user-signed-in",
+			"org-bound-at-consent",
+		);
 	});
 });

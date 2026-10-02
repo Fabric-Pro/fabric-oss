@@ -67,6 +67,43 @@ minimumReleaseAgeStrict: true
 # PNPM_CONFIG_MINIMUM_RELEASE_AGE=0 overrides the policy for a single command.
 minimumReleaseAgeExcludePrune: true
 
+# Refuse a version published with weaker trust evidence than an earlier
+# release of the same package — provenance or trusted publishing that has
+# disappeared. That can be a hijacked maintainer account publishing from a
+# laptop, though a legitimate manual release looks the same. minimumReleaseAge
+# only delays a release; this one stops it for review. Like that policy, it is
+# checked against every existing lockfile entry on each pnpm install, so a
+# frozen CI install fails with ERR_PNPM_TRUST_DOWNGRADE too. It does not cover
+# packages installed with `npm install -g` in the Dockerfiles.
+trustPolicy: no-downgrade
+
+# Reviewed legacy exceptions: versions already in the lockfile that the policy
+# rejected when it was turned on. Each was published without provenance by an
+# account that maintains the package, and has been on the registry for months.
+# That makes a takeover unlikely, not impossible: a stolen maintainer account
+# keeps the maintainer's name.
+# semver@6.3.1 is npm's own 6.x backport, published by the npm CLI team before
+# that package moved to trusted publishing.
+#
+# Add a version here only after the same check: who published it, whether that
+# account maintains the package, and why the release lacks the evidence its
+# predecessors carried. Pin a version, never a bare name or a pattern, and say
+# why in the PR. Prune drops an entry once `pnpm add`, `update` or `remove`
+# leaves the lockfile without it.
+trustPolicyExclude:
+  - "chokidar@4.0.3"
+  - "eslint-import-resolver-typescript@3.10.1"
+  - "exa-js@2.0.12"
+  - "langium@3.3.1"
+  - "pdf-parse@1.1.4"
+  - "pino@9.14.0"
+  - "react-redux@9.2.0"
+  - "reselect@5.1.1"
+  - "semver@6.3.1"
+  - "undici-types@6.19.8"
+  - "undici-types@6.21.0"
+trustPolicyExcludePrune: true
+
 # pnpm 11 defaults this to `install`, which runs an install before `pnpm run` /
 # `pnpm exec` whenever it judges node_modules stale. Our shipped images run pnpm
 # scripts as a non-root user with no build toolchain and a filtered install
@@ -162,6 +199,13 @@ overrides:
   "brace-expansion@^2.0.0": "^2.1.6"
   "brace-expansion@^5.0.0": "^5.0.11"
   "engine.io@^6.0.0": "^6.6.10"
+  # GHSA-86w9-cpqp-85rv (node-forge <= 1.4.0, no patched release). node-forge
+  # reaches the tree only through gtoken 6's optional `google-p12-pem`
+  # (@copilotkit/runtime -> @langchain/google-gauth 0.1 -> google-auth-library 8
+  # -> gtoken 6). gtoken 7 drops `google-p12-pem` and with it node-forge; its
+  # only breaking change for google-auth-library 8 is that `.p12` key files are
+  # no longer read, and nothing here authenticates with one.
+  "gtoken@^6.0.0": "^7.1.0"
   # ProseMirror single-copy floors — dedupe, not an advisory. `@tiptap/pm` pins
   # prosemirror-model/-view/-transform at its own release line, while the other
   # prosemirror packages (state, commands, tables, schema-list, …) declare

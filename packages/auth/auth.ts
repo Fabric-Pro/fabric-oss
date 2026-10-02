@@ -43,6 +43,13 @@ import {
 	syncSeatsAfterDeparture,
 } from "./lib/member-offboarding";
 import { notifySignupAttempt } from "./lib/notify-signup-attempt";
+import { emitOAuthConsentAudit } from "./lib/oauth-audit";
+import {
+	createOAuthProviderPlugin,
+	OAUTH_DISABLED_PATHS,
+	resolveConsentOrganizationId,
+} from "./lib/oauth-provider";
+import { enforceRegistrationPolicy } from "./lib/oauth-registration-policy";
 import { updateSeatsInOrganizationSubscription } from "./lib/organization";
 import {
 	createPasskeyPlugin,
@@ -186,6 +193,7 @@ const authOptions = {
 	database: prismaAdapter(db, {
 		provider: "postgresql",
 	}),
+	disabledPaths: [...OAUTH_DISABLED_PATHS],
 	advanced: {
 		database: {
 			generateId: false,
@@ -483,6 +491,27 @@ const authOptions = {
 			// the audit emission above so a store failure cannot suppress the
 			// audit record for the same request.
 			await recordStepUpVerificationOutcome(ctx, stepUpLockoutDeps);
+
+			// An agent was approved. Never throws: an audit gap must not turn
+			// an approval that already committed into an error page.
+			if (ctx.path === "/oauth2/consent") {
+				try {
+					const consenting = ctx.context.session?.user;
+					const organizationId = consenting
+						? await resolveConsentOrganizationId(
+								consenting.id,
+								ctx.context.session?.session
+									.activeOrganizationId,
+							).catch(() => null)
+						: null;
+					emitOAuthConsentAudit(ctx, organizationId);
+				} catch (error) {
+					logger.error(
+						"[Auth] Failed to audit OAuth consent:",
+						error,
+					);
+				}
+			}
 
 			// Step-up grant for the 2FA MANAGEMENT endpoints (issue #2827):
 			// mint one when this request was a successful step-up
@@ -993,6 +1022,13 @@ const authOptions = {
 			// ./lib/two-factor-step-up-lockout.ts for why this cannot live in
 			// `hooks.after` alongside the sign-in lockout's logger.
 			await enforceStepUpLockout(ctx, stepUpLockoutDeps);
+
+			// Dynamic client registration is open to anyone, so what an
+			// anonymous caller may register is decided here; see
+			// ./lib/oauth-registration-policy.ts.
+			if (ctx.path === "/oauth2/register") {
+				enforceRegistrationPolicy(ctx.body);
+			}
 
 			// Server-enforced step-up for the 2FA MANAGEMENT endpoints
 			// (issue #2827): disable / enable / generate-backup-codes /
@@ -1896,6 +1932,7 @@ const authOptions = {
 		openAPI(),
 		invitationOnlyPlugin(),
 		createTwoFactorPlugin(),
+		createOAuthProviderPlugin(appUrl),
 	],
 	onAPIError: {
 		onError(error, ctx) {

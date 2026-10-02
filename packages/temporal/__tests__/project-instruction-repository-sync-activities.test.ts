@@ -11,6 +11,12 @@ const TOKEN = ["tok", "placeholder", "123"].join("-");
 const SHA = "c".repeat(40);
 const OLD_SHA = "b".repeat(40);
 
+// The error `createInstructionSnapshot` throws when an inherited source is
+// refused; the real class lives in `@repo/database`, which is mocked here.
+const databaseErrors = vi.hoisted(() => ({
+	InstructionInheritedSourceError: class InstructionInheritedSourceError extends Error {},
+}));
+
 const m = vi.hoisted(() => ({
 	getInstructionRepositorySyncForRun: vi.fn(),
 	listUnfinishedInstructionRepositorySyncRunReceipts: vi.fn(),
@@ -22,6 +28,7 @@ const m = vi.hoisted(() => ({
 	getProjectInstructionSettings: vi.fn(),
 	createInstructionSnapshot: vi.fn(),
 	claimInstructionFileStagingKey: vi.fn(),
+	recordInstructionSyncRunProgress: vi.fn(),
 	recordAudit: vi.fn(),
 	getInstructionSnapshotWithPublishedPointer: vi.fn(),
 	rejectAbandonedInstructionSnapshot: vi.fn(),
@@ -42,6 +49,8 @@ const m = vi.hoisted(() => ({
 	cloneTreeless: vi.fn(),
 	fetchPinnedCommit: vi.fn(),
 	revParseHead: vi.fn(),
+	revParseRootTree: vi.fn(),
+	readRepositoryBlobSizes: vi.fn(),
 	listTree: vi.fn(),
 	readBlobCapped: vi.fn(),
 	sparseCheckout: vi.fn(),
@@ -49,6 +58,8 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	InstructionInheritedSourceError:
+		databaseErrors.InstructionInheritedSourceError,
 	getInstructionRepositorySyncForRun: m.getInstructionRepositorySyncForRun,
 	listUnfinishedInstructionRepositorySyncRunReceipts:
 		m.listUnfinishedInstructionRepositorySyncRunReceipts,
@@ -60,6 +71,7 @@ vi.mock("@repo/database", () => ({
 	getProjectInstructionSettings: m.getProjectInstructionSettings,
 	createInstructionSnapshot: m.createInstructionSnapshot,
 	claimInstructionFileStagingKey: m.claimInstructionFileStagingKey,
+	recordInstructionSyncRunProgress: m.recordInstructionSyncRunProgress,
 	recordAudit: m.recordAudit,
 	getInstructionSnapshotWithPublishedPointer:
 		m.getInstructionSnapshotWithPublishedPointer,
@@ -71,6 +83,9 @@ vi.mock("@repo/database", () => ({
 		m.completeInstructionRepositorySyncRun,
 	deleteInstructionSnapshot: m.deleteInstructionSnapshot,
 	listPrunableInstructionSnapshots: m.listPrunableInstructionSnapshots,
+}));
+vi.mock("@repo/connectors", () => ({
+	readRepositoryBlobSizes: m.readRepositoryBlobSizes,
 }));
 vi.mock("@repo/integrations", () => ({
 	resolveFreshRepoToken: m.resolveFreshRepoToken,
@@ -139,6 +154,7 @@ vi.mock(
 			cloneTreeless: m.cloneTreeless,
 			fetchPinnedCommit: m.fetchPinnedCommit,
 			revParseHead: m.revParseHead,
+			revParseRootTree: m.revParseRootTree,
 			listTree: m.listTree,
 			readBlobCapped: m.readBlobCapped,
 			sparseCheckout: m.sparseCheckout,
@@ -256,6 +272,8 @@ beforeEach(() => {
 		status: "ACTIVE",
 	});
 	m.resolveFreshRepoToken.mockResolvedValue({ token: TOKEN });
+	m.readRepositoryBlobSizes.mockResolvedValue({ ok: false });
+	m.revParseRootTree.mockResolvedValue("t".repeat(40));
 	m.getPublishedInstructionTree.mockResolvedValue(null);
 	m.getProjectInstructionSettings.mockResolvedValue({
 		ignoreGlobs: null,
@@ -264,11 +282,14 @@ beforeEach(() => {
 	m.createInstructionSnapshot.mockImplementation(
 		async ({
 			files,
+			validationAttemptId,
 		}: {
 			files: Array<{ path: string; storageKey: string }>;
+			validationAttemptId?: string;
 		}) => ({
 			id: "snap_1",
 			version: 4,
+			validationAttemptId: validationAttemptId ?? null,
 			files: files.map((f, i) => ({
 				id: `file_${i}`,
 				path: f.path,
@@ -276,6 +297,7 @@ beforeEach(() => {
 			})),
 		}),
 	);
+	m.recordInstructionSyncRunProgress.mockResolvedValue({ changed: true });
 	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
 	m.uploadFile.mockResolvedValue(undefined);
 	m.listObjects.mockResolvedValue({ objects: [] });
@@ -641,6 +663,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			outcome: "staged",
 			snapshotId: "snap_1",
 			commitSha: SHA,
+			validationAttemptId: expect.any(String),
 		});
 		expect(m.sparseCheckout).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -656,7 +679,9 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			sourceRef: "main",
 			sourceCommitSha: SHA,
 			syncRunKey: "sync_1:run_a",
+			validationAttemptId: expect.any(String),
 			publishOnReady: true,
+			promotedKeyFor: expect.any(Function),
 			excludedCount: 0,
 			settingsFrozen: {
 				ignoreGlobs: expect.any(Array),
@@ -825,6 +850,220 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			commitSha: SHA,
 		});
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * A sync that changed one file of N stages one file. The unchanged ones
+	 * are INHERITED from the published version: same bytes, so the new
+	 * snapshot's rows point at the published promoted objects and nothing is
+	 * uploaded or re-downloaded for them.
+	 */
+	describe("a changed tree inherits what did not change", () => {
+		const publishedRow = (
+			id: string,
+			filePath: string,
+			body: string,
+			mode: number | null = null,
+		) => ({
+			id,
+			path: filePath,
+			sha256: sha256(body),
+			mode,
+			size: Buffer.byteLength(body),
+			mimeType: "text/markdown",
+			isText: true,
+			storageKey: `projects/proj_1/instructions/snapshots/snap_0/${id}`,
+		});
+
+		function publish(
+			files: ReturnType<typeof publishedRow>[],
+			overrides: Record<string, unknown> = {},
+		) {
+			m.getPublishedInstructionTree.mockResolvedValue({
+				snapshotId: "snap_0",
+				...PUBLISHED_HERE,
+				sourceCommitSha: OLD_SHA,
+				settingsFrozen: { syncId: "sync_1", syncGeneration: 3 },
+				files,
+				...overrides,
+			});
+		}
+
+		const unchangedFiles = Array.from({ length: 6 }, (_, i) => ({
+			path: `rules/r${i}.md`,
+			body: `# rule ${i}`,
+		}));
+
+		it("uploads exactly one object to staging when one of seven files changed, and the snapshot still holds all seven", async () => {
+			serveRepo([
+				...unchangedFiles,
+				{ path: "CLAUDE.md", body: "# edited" },
+			]);
+			publish([
+				...unchangedFiles.map((f, i) =>
+					publishedRow(`pub_${i}`, f.path, f.body),
+				),
+				publishedRow("pub_claude", "CLAUDE.md", "# before"),
+			]);
+
+			const result = await acquireInstructionTreeFromRepository(CONTEXT);
+
+			expect(result.outcome).toBe("staged");
+			expect(m.uploadFile).toHaveBeenCalledTimes(1);
+			expect(m.uploadFile).toHaveBeenCalledWith(
+				expect.stringContaining("/instructions/staging/snap_1/"),
+				Buffer.from("# edited"),
+				expect.objectContaining({ bucket: "skills" }),
+			);
+			const created = m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+				files: Array<{
+					path: string;
+					storageKey: string;
+					inheritedFromFileId?: string;
+					sha256: string;
+				}>;
+			};
+			expect(created.files).toHaveLength(7);
+			const inherited = created.files.filter(
+				(f) => f.inheritedFromFileId,
+			);
+			expect(inherited).toHaveLength(6);
+			for (const f of inherited) {
+				expect(f.storageKey).toBe(
+					`projects/proj_1/instructions/snapshots/snap_0/${f.inheritedFromFileId}`,
+				);
+			}
+			expect(
+				created.files.find((f) => f.path === "CLAUDE.md")
+					?.inheritedFromFileId,
+			).toBeUndefined();
+		});
+
+		it("never sets a base on a sync snapshot: the tab reads that as 'edited from vN'", async () => {
+			serveRepo([
+				...unchangedFiles,
+				{ path: "CLAUDE.md", body: "# new" },
+			]);
+			publish(
+				unchangedFiles.map((f, i) =>
+					publishedRow(`pub_${i}`, f.path, f.body),
+				),
+			);
+
+			await acquireInstructionTreeFromRepository(CONTEXT);
+
+			const created = m.createInstructionSnapshot.mock.calls[0]?.[0];
+			expect(created).not.toHaveProperty("baseSnapshotId");
+			expect(created).not.toHaveProperty("baseVersion");
+		});
+
+		it("stages a file whose bytes match but whose mode changed", async () => {
+			serveRepo([
+				{ path: "run.sh", body: "#!/bin/sh\n", mode: "100755" },
+				{ path: "CLAUDE.md", body: "# edited" },
+			]);
+			publish([
+				publishedRow("pub_run", "run.sh", "#!/bin/sh\n", 0o644),
+				publishedRow("pub_claude", "CLAUDE.md", "# before"),
+			]);
+
+			await acquireInstructionTreeFromRepository(CONTEXT);
+
+			expect(m.uploadFile).toHaveBeenCalledTimes(2);
+		});
+
+		it("inherits nothing from a published version another source produced", async () => {
+			serveRepo([
+				...unchangedFiles,
+				{ path: "CLAUDE.md", body: "# new" },
+			]);
+			publish(
+				unchangedFiles.map((f, i) =>
+					publishedRow(`pub_${i}`, f.path, f.body),
+				),
+				{ sourceRef: "release" },
+			);
+
+			await acquireInstructionTreeFromRepository(CONTEXT);
+
+			expect(m.uploadFile).toHaveBeenCalledTimes(7);
+			const created = m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+				files: Array<{ inheritedFromFileId?: string }>;
+			};
+			expect(created.files.some((f) => f.inheritedFromFileId)).toBe(
+				false,
+			);
+		});
+
+		it("stages the whole tree instead when the database refuses an inherited source", async () => {
+			serveRepo([
+				{ path: "rules/a.md", body: "# a" },
+				{ path: "CLAUDE.md", body: "# edited" },
+			]);
+			publish([
+				publishedRow("pub_a", "rules/a.md", "# a"),
+				publishedRow("pub_claude", "CLAUDE.md", "# before"),
+			]);
+			const real = m.createInstructionSnapshot.getMockImplementation();
+			m.createInstructionSnapshot.mockRejectedValueOnce(
+				new databaseErrors.InstructionInheritedSourceError(),
+			);
+			m.createInstructionSnapshot.mockImplementation(
+				real as NonNullable<typeof real>,
+			);
+
+			const result = await acquireInstructionTreeFromRepository(CONTEXT);
+
+			expect(result.outcome).toBe("staged");
+			expect(m.createInstructionSnapshot).toHaveBeenCalledTimes(2);
+			expect(m.uploadFile).toHaveBeenCalledTimes(2);
+		});
+
+		it("an adopted retry stages only the rows that are not inherited", async () => {
+			serveRepo([
+				{ path: "rules/a.md", body: "# a" },
+				{ path: "CLAUDE.md", body: "# edited" },
+			]);
+			m.revParseHead.mockResolvedValue(OLD_SHA);
+			m.getInstructionSnapshotBySyncRunKey.mockResolvedValue({
+				id: "snap_9",
+				version: 9,
+				status: "RECEIVING",
+				sourceCommitSha: OLD_SHA,
+				files: [
+					{
+						id: "file_a",
+						path: "rules/a.md",
+						sha256: sha256("# a"),
+						mode: 0o644,
+						size: 3,
+						storageKey:
+							"projects/proj_1/instructions/snapshots/snap_0/pub_a",
+						mimeType: "text/markdown",
+						inheritedFromFileId: "pub_a",
+					},
+					{
+						id: "file_c",
+						path: "CLAUDE.md",
+						sha256: sha256("# edited"),
+						mode: 0o644,
+						size: 8,
+						storageKey: stagingKey("proj_1", "snap_9", "file_c"),
+						mimeType: "text/markdown",
+						inheritedFromFileId: null,
+					},
+				],
+			});
+
+			await acquireInstructionTreeFromRepository(CONTEXT);
+
+			expect(m.uploadFile).toHaveBeenCalledTimes(1);
+			expect(m.uploadFile).toHaveBeenCalledWith(
+				stagingKey("proj_1", "snap_9", "file_c"),
+				Buffer.from("# edited"),
+				expect.anything(),
+			);
+		});
 	});
 
 	/**
@@ -1141,6 +1380,82 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(created.excludedCount).toBe(0);
 	});
 
+	it("hands the child workflow the token the staged row carries, a new row's and an adopted one's", async () => {
+		serveRepo([{ path: "CLAUDE.md", body: "x" }]);
+		const created = await acquireInstructionTreeFromRepository(CONTEXT);
+		const token = (
+			m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+				validationAttemptId: string;
+			}
+		).validationAttemptId;
+		expect(created).toMatchObject({ validationAttemptId: token });
+
+		m.getInstructionSnapshotBySyncRunKey.mockResolvedValue({
+			id: "snap_9",
+			version: 9,
+			status: "VALIDATING",
+			sourceCommitSha: SHA,
+			validationAttemptId: "attempt_adopted",
+			files: [],
+		});
+		expect(await acquireInstructionTreeFromRepository(CONTEXT)).toEqual({
+			outcome: "staged",
+			snapshotId: "snap_9",
+			commitSha: SHA,
+			validationAttemptId: "attempt_adopted",
+		});
+	});
+
+	it("reports the run's phases: fetching, preparing, then the copy counted in files uploaded", async () => {
+		serveRepo([
+			{ path: "CLAUDE.md", body: "# rules\n" },
+			{ path: "AGENTS.md", body: "# agents\n" },
+		]);
+
+		await acquireInstructionTreeFromRepository(CONTEXT);
+
+		const written = m.recordInstructionSyncRunProgress.mock.calls.map(
+			([input]) => input,
+		);
+		expect(written[0]).toEqual({
+			runKey: "sync_1:run_a",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			phase: "FETCHING",
+			done: null,
+			total: null,
+		});
+		expect(written[1]).toMatchObject({
+			phase: "PREPARING",
+			done: null,
+			total: null,
+		});
+		const copying = written.filter((w) => w.phase === "COPYING");
+		expect(copying[0]).toMatchObject({ done: 0, total: 2 });
+		expect(copying.at(-1)).toMatchObject({ done: 2, total: 2 });
+		expect(written.map((w) => w.phase)).toEqual(
+			[...written.map((w) => w.phase)].sort(
+				(a, b) =>
+					["FETCHING", "PREPARING", "COPYING"].indexOf(a) -
+					["FETCHING", "PREPARING", "COPYING"].indexOf(b),
+			),
+		);
+	});
+
+	it("never counts a file whose upload failed, and a failed progress write does not fail the acquisition", async () => {
+		serveRepo([
+			{ path: "CLAUDE.md", body: "# rules\n" },
+			{ path: "AGENTS.md", body: "# agents\n" },
+		]);
+		m.recordInstructionSyncRunProgress.mockRejectedValue(
+			new Error("database unavailable"),
+		);
+
+		await expect(
+			acquireInstructionTreeFromRepository(CONTEXT),
+		).resolves.toMatchObject({ outcome: "staged" });
+	});
+
 	it("an adopted row that is no longer RECEIVING is returned at once: the child owns it", async () => {
 		m.getInstructionSnapshotBySyncRunKey.mockResolvedValue({
 			id: "snap_9",
@@ -1444,7 +1759,91 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(error.type).toBe("LIMITS_EXCEEDED");
 		expect(error.details[0]).toEqual({
 			commitSha: SHA,
-			limit: { kind: "fileSize", max: SNAPSHOT_LIMITS.maxFileBytes },
+			limit: {
+				kind: "fileSize",
+				max: SNAPSHOT_LIMITS.maxFileBytes,
+				actual: SNAPSHOT_LIMITS.maxFileBytes + 1,
+				atLeast: true,
+			},
+		});
+	});
+
+	it("reports the exact size of the largest kept file when the provider's tree lists it", async () => {
+		serveRepo([
+			{
+				path: "big.md",
+				body: "x".repeat(SNAPSHOT_LIMITS.maxFileBytes + 1),
+			},
+			{ path: "small.md", body: "s" },
+		]);
+		tripWatchdogAfterCheckout();
+		m.readRepositoryBlobSizes.mockResolvedValue({
+			ok: true,
+			complete: true,
+			sizes: new Map([
+				["agents/big.md", SNAPSHOT_LIMITS.maxFileBytes + 1024],
+				["agents/small.md", 1],
+			]),
+		});
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: {
+				kind: "fileSize",
+				max: SNAPSHOT_LIMITS.maxFileBytes,
+				actual: SNAPSHOT_LIMITS.maxFileBytes + 1024,
+			},
+		});
+		expect(m.readRepositoryBlobSizes).toHaveBeenCalledWith(
+			expect.objectContaining({ commitSha: SHA, token: TOKEN }),
+		);
+	});
+
+	it("falls back to the lower bound, marked as one, when the provider's listing is truncated", async () => {
+		serveRepo([
+			{
+				path: "big.md",
+				body: "x".repeat(SNAPSHOT_LIMITS.maxFileBytes + 1),
+			},
+		]);
+		tripWatchdogAfterCheckout();
+		m.readRepositoryBlobSizes.mockResolvedValue({
+			ok: true,
+			complete: false,
+			sizes: new Map([
+				["agents/big.md", SNAPSHOT_LIMITS.maxFileBytes + 1],
+			]),
+		});
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.details[0]).toMatchObject({
+			limit: { kind: "fileSize", atLeast: true },
+		});
+	});
+
+	it("keeps the repository-size limit when the provider's exact sizes are within the snapshot limits", async () => {
+		serveRepo([{ path: "a.md", body: "a" }]);
+		tripWatchdogAfterCheckout();
+		m.readRepositoryBlobSizes.mockResolvedValue({
+			ok: true,
+			complete: true,
+			sizes: new Map([["agents/a.md", 1]]),
+		});
+
+		const error = failureOf(
+			await acquireInstructionTreeFromRepository(CONTEXT).catch((e) => e),
+		);
+
+		expect(error.details[0]).toEqual({
+			commitSha: SHA,
+			limit: { kind: "repositorySize", max: MAX_CLONE_BYTES },
 		});
 	});
 
@@ -1465,7 +1864,12 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 
 		expect(error.details[0]).toEqual({
 			commitSha: SHA,
-			limit: { kind: "totalSize", max: SNAPSHOT_LIMITS.maxTotalBytes },
+			limit: {
+				kind: "totalSize",
+				max: SNAPSHOT_LIMITS.maxTotalBytes,
+				actual: each * count,
+				atLeast: true,
+			},
 		});
 	});
 

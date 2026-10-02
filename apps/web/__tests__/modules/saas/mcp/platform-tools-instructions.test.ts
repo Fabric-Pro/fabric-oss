@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
+	resolveEffectiveProjectPermissions: vi.fn(),
 	submitInstructionChange: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 	getPublishedInstructionSummariesForProjects: vi.fn(),
@@ -29,6 +30,9 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	hasPermission: (permissions: readonly string[], permission: string) =>
+		permissions.includes(permission),
+	Permissions: { INSTRUCTION_READ: "instruction:read" },
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getPublishedInstructionSummariesForProjects:
@@ -40,6 +44,11 @@ vi.mock("@repo/database", () => ({
 	getProjectSummaryById: m.getProjectSummaryById,
 	resolveInstructionSnapshotSource: m.resolveInstructionSnapshotSource,
 	resolveCurrentInstructionRepository: m.resolveCurrentInstructionRepository,
+}));
+
+vi.mock("@repo/api/lib/effective-project-permissions", () => ({
+	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
+		m.resolveEffectiveProjectPermissions(...a),
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -92,6 +101,11 @@ beforeEach(() => {
 	for (const fn of Object.values(m)) {
 		fn.mockReset();
 	}
+	m.resolveEffectiveProjectPermissions.mockResolvedValue({
+		permissions: ["instruction:read"],
+		source: "project-member",
+		organizationId: "org_1",
+	});
 	// Fizzy #2709: every existing fixture here describes an UPLOAD snapshot
 	// (no repository-sync fields), so this is the shared default; the tests
 	// that cover a REPOSITORY-published snapshot override it explicitly.
@@ -315,6 +329,149 @@ describe("fabric_get_project_instruction", () => {
 			truncated: true,
 			nextOffset: 5,
 		});
+	});
+});
+
+/**
+ * Discovery is not the permission. The v1 route and the oRPC twin require the
+ * caller's LIVE `INSTRUCTION_READ`, and a key never grants more than its
+ * creator holds, so each read tool resolves the effective permissions itself
+ * rather than relying on every role that can discover a project holding it.
+ */
+describe("the live INSTRUCTION_READ check", () => {
+	const published = {
+		id: "s",
+		version: 7,
+		status: "READY",
+		digest: "d",
+		fileCount: 1,
+		projectId: "proj_1",
+		organizationId: "org_1",
+	};
+
+	function discoveredWithoutRead() {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue(published);
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["project:read"],
+			source: "org",
+			organizationId: "org_1",
+		});
+	}
+
+	it.each([
+		["fabric_list_project_instructions", { projectId: "proj_1" }],
+		[
+			"fabric_get_project_instruction",
+			{ projectId: "proj_1", path: "AGENTS.md" },
+		],
+		["fabric_get_project_instruction_bundle", { projectId: "proj_1" }],
+	])(
+		"%s refuses a caller who discovers the project but lacks INSTRUCTION_READ, in the words for an inaccessible project",
+		async (tool, args) => {
+			discoveredWithoutRead();
+
+			const r = await executePlatformTool(tool, args, session);
+
+			expect(r.isError).toBe(true);
+			expect(JSON.parse(r.content[0]!.text)).toEqual({
+				error: "Project not found or access denied",
+			});
+			expect(m.resolveEffectiveProjectPermissions).toHaveBeenCalledWith(
+				"proj_1",
+				"user_1",
+			);
+			expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a caller whose effective permissions cannot be resolved", async () => {
+		discoveredWithoutRead();
+		m.resolveEffectiveProjectPermissions.mockResolvedValue(null);
+
+		const r = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_1" },
+			session,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("refuses a wildcard-scope key whose creator lacks the permission", async () => {
+		discoveredWithoutRead();
+
+		const r = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_1" },
+			{
+				userId: "user_1",
+				organizationId: "org_1",
+				scopes: ["*"],
+			} as never,
+		);
+
+		expect(r.isError).toBe(true);
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("still serves a normal member who holds INSTRUCTION_READ", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue(published);
+		m.listInstructionFiles.mockResolvedValue([]);
+
+		const r = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: "proj_1" },
+			session,
+		);
+
+		expect(r.isError).toBeFalsy();
+		expect(m.resolveEffectiveProjectPermissions).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves the proposal tool's gate unchanged: it does not resolve the permission", async () => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue({
+			snapshotId: "snap_new",
+			version: 8,
+			baseSnapshotId: "snap_1",
+			baseVersion: 7,
+			fileCount: 1,
+			inheritedCount: 0,
+			putCount: 1,
+			deleteCount: 0,
+			proposalStatus: "PENDING",
+			mode: "proposal",
+			status: "VALIDATING",
+		});
+
+		const r = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{
+				projectId: "proj_1",
+				changes: [
+					{ op: "put", path: "AGENTS.md", content: "# Updated\n" },
+				],
+				baseSnapshotId: "snap_1",
+			},
+			writeSession,
+		);
+
+		expect(r.isError).toBeFalsy();
+		expect(m.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
 	});
 });
 

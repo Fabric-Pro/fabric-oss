@@ -14,6 +14,16 @@
  * The activity heartbeats so the workflow timer doesn't fire mid-scan in
  * orgs with thousands of contexts. Idempotent: re-running on a clean DB
  * makes zero changes.
+ *
+ * Company website sources (Fizzy #2719) use the same schedule id scheme, keyed
+ * by their `CompanyContextSource` id. When no `ProjectContext` row matches a
+ * schedule's context id, the source table is checked, and the schedule is
+ * classified against whichever row exists — so a live company schedule is
+ * kept, and one whose source is gone (deleted, or cascaded away with its
+ * organization) is removed. Context ids are cuids, unique across both tables.
+ * A company source that refreshes on a schedule but records no schedule id is
+ * one whose schedule is being created, or whose id could not be recorded: it
+ * still wants that schedule, so it is kept.
  */
 
 import { Context } from "@temporalio/activity";
@@ -37,20 +47,27 @@ export interface ReconcileUrlSourceSchedulesActivityOutput {
 	dryRun: boolean;
 }
 
-type ProjectContextFetcher = (contextId: string) => Promise<{
+/** The schedule bookkeeping of the row a schedule id names. */
+export interface UrlSourceScheduleRow {
 	urlRefreshMode: string | null;
 	urlScheduleId: string | null;
-} | null>;
+	/** Set when the row is a company source, not a project context. */
+	company?: true;
+}
+
+type ProjectContextFetcher = (
+	contextId: string,
+) => Promise<UrlSourceScheduleRow | null>;
 
 /**
- * Default fetcher: pulls the row from `@repo/database` directly. Exported
- * as a parameter on the activity so unit tests can stub it without a
- * Prisma round-trip.
+ * Default fetcher: pulls the row from `@repo/database` directly — the
+ * `ProjectContext`, or failing that the company source with the same id.
+ * Exported so unit tests can exercise the lookup order; the activity takes
+ * a fetcher parameter so tests can also stub it without a Prisma round-trip.
  */
-async function defaultProjectContextFetcher(contextId: string): Promise<{
-	urlRefreshMode: string | null;
-	urlScheduleId: string | null;
-} | null> {
+export async function fetchUrlSourceScheduleRow(
+	contextId: string,
+): Promise<UrlSourceScheduleRow | null> {
 	const { db } = await import("@repo/database/prisma/client");
 	const row = await db.projectContext.findUnique({
 		where: { id: contextId },
@@ -60,11 +77,38 @@ async function defaultProjectContextFetcher(contextId: string): Promise<{
 		},
 	});
 	if (!row) {
-		return null;
+		return fetchCompanyContextSource(contextId);
 	}
 	return {
 		urlRefreshMode: row.urlRefreshMode ?? null,
 		urlScheduleId: row.urlScheduleId ?? null,
+	};
+}
+
+/**
+ * The schedule bookkeeping of a company source, by id alone. This sweep has
+ * no tenant: the schedule id carries only the context id, and the worker's
+ * connection is not bound by row-level security. It reads the two schedule
+ * columns and nothing else.
+ */
+async function fetchCompanyContextSource(
+	contextId: string,
+): Promise<UrlSourceScheduleRow | null> {
+	const { db } = await import("@repo/database/prisma/client");
+	const source = await db.companyContextSource.findUnique({
+		where: { id: contextId },
+		select: {
+			urlRefreshMode: true,
+			urlScheduleId: true,
+		},
+	});
+	if (!source) {
+		return null;
+	}
+	return {
+		urlRefreshMode: source.urlRefreshMode ?? null,
+		urlScheduleId: source.urlScheduleId ?? null,
+		company: true,
 	};
 }
 
@@ -79,7 +123,7 @@ const SCHEDULED_MODES = new Set(["DAILY", "WEEKLY", "MONTHLY"]);
  */
 export function classifyScheduleOrphan(args: {
 	scheduleId: string;
-	row: { urlRefreshMode: string | null; urlScheduleId: string | null } | null;
+	row: UrlSourceScheduleRow | null;
 }): "missing-row" | "non-scheduled-mode" | "id-mismatch" | null {
 	if (!args.row) {
 		return "missing-row";
@@ -91,6 +135,12 @@ export function classifyScheduleOrphan(args: {
 		return "non-scheduled-mode";
 	}
 	if (args.row.urlScheduleId !== args.scheduleId) {
+		// A company source still wants its schedule while the id is not
+		// recorded (see the top of this file). The row was looked up by the
+		// id this schedule names, so this is the schedule it would record.
+		if (args.row.company && args.row.urlScheduleId === null) {
+			return null;
+		}
 		return "id-mismatch";
 	}
 	return null;
@@ -164,7 +214,7 @@ export async function reconcileUrlSourceSchedulesActivity(
 		deleteSchedule: async (scheduleId) => {
 			await deleteUrlSourceSchedule({ scheduleId }, scheduleClient);
 		},
-		fetchContext: defaultProjectContextFetcher,
+		fetchContext: fetchUrlSourceScheduleRow,
 		dryRun: input.dryRun,
 		heartbeat: (details) => {
 			try {

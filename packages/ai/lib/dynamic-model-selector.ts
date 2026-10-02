@@ -19,6 +19,7 @@ import {
 	getAiProviderApiKeyByProvider,
 	getEmbeddingProviderConfig,
 	getModelForTask,
+	getOrganizationSystemAiProviderApiKey,
 	getProviderModelIdForCanonical,
 	getSystemAiProviderApiKey,
 	getTaskDefaultModel,
@@ -40,6 +41,15 @@ export interface ModelResolutionContext {
 	userId: string;
 	organizationId?: string;
 	agentId?: string;
+	/**
+	 * Resolve from the organization's own configuration only, never the
+	 * acting user's personal provider: its embedding provider, else its
+	 * default provider, else the deployment's gateway. For an index the whole
+	 * organization shares (company context, Fizzy #2719), whose vectors must
+	 * come from the same model whoever writes or searches them. EMBEDDING
+	 * only, and requires `organizationId`. Absent keeps today's resolution.
+	 */
+	organizationOnly?: boolean;
 }
 
 /** Options for model selection */
@@ -618,6 +628,14 @@ export async function resolveModelWithProvider(
 	const dbTaskType = mapTaskTypeToDb(taskType as string);
 	assertLanguageModelTask(dbTaskType);
 	const isEmbeddingTask = dbTaskType === "EMBEDDING";
+	if (
+		context.organizationOnly &&
+		(!isEmbeddingTask || !context.organizationId)
+	) {
+		throw new Error(
+			"[ModelSelector] organizationOnly resolution applies to EMBEDDING with an organizationId",
+		);
+	}
 
 	// Step 1: Get the appropriate provider configuration
 	// For EMBEDDING tasks, use the dedicated embedding provider (if configured)
@@ -635,6 +653,12 @@ export async function resolveModelWithProvider(
 
 		if (embeddingProvider.provider) {
 			providerConfig = embeddingProvider;
+		} else if (context.organizationOnly && context.organizationId) {
+			// The same fallback minus the personal rung, so every member
+			// resolves the one model the organization's index is written in.
+			providerConfig = await getOrganizationSystemAiProviderApiKey({
+				organizationId: context.organizationId,
+			});
 		} else {
 			// Fall back to default provider if no embedding provider is configured.
 			// SYSTEM entry point on purpose: embedding is indexing work —
@@ -1010,6 +1034,11 @@ export interface AIOperationContext {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	/**
+	 * Embedding only: resolve from the organization's configuration, never
+	 * the user's personal provider (`ModelResolutionContext.organizationOnly`).
+	 */
+	organizationOnly?: boolean;
 	/**
 	 * Which user-facing AI feature this call belongs to (Fizzy #2230). Recorded
 	 * on the AiUsageLog row by the usage interceptor. Optional — untagged
@@ -1451,6 +1480,7 @@ export async function getAIModelWithMetadata(
 		isReasoningModel: isReasoningModelName(
 			modelOverride || config.canonicalName,
 		),
+		canonicalModelName: modelOverride || config.canonicalName,
 	});
 
 	// Step 6: Build metadata
@@ -1564,6 +1594,7 @@ export async function getAIEmbeddingModelWithMetadata(
 	const config = await resolveModelWithProvider("EMBEDDING", {
 		userId: context.userId,
 		organizationId: context.organizationId,
+		...(context.organizationOnly ? { organizationOnly: true } : {}),
 	});
 
 	// Log embedding model selection for debugging

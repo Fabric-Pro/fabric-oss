@@ -4,24 +4,47 @@
  * Combined pipeline: Download → Extract → Chunk → Embed → Store
  * Similar pattern to wizard-context-processing.ts but for ProjectContext records
  * (post-creation uploads)
+ *
+ * The same activities process an organization's company context files
+ * (Fizzy #2719). Each resolves the owner on its input once and hands a
+ * company owner to `./company-context-processing`; a missing owner is the
+ * project owner, whose run is unchanged.
  */
 
 import { getSystemRAGProviderConfig } from "@repo/ai";
 import {
 	db,
 	type ExtractionStatus,
-	markContextAsEmbedded,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import {
 	chunkProjectContent,
-	extractionFactory,
 	generateEmbeddings,
 	storeProjectContext,
 	type TextChunk,
 } from "@repo/rag";
-import { downloadFile } from "@repo/storage";
 import { heartbeat } from "@temporalio/activity";
+import {
+	type ContextOwner,
+	companyContextOwnerOf,
+	type ProjectContextOwner,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import {
+	companyContextRowStore,
+	projectContextRowStore,
+} from "../lib/context-row-store";
+import {
+	processCompanySource,
+	retryCompanySource,
+	setCompanySourceStatus,
+} from "./company-context-processing";
+import {
+	CHUNKING_THRESHOLD,
+	DEFAULT_CHUNK_OVERLAP,
+	DEFAULT_CHUNK_SIZE,
+	downloadAndExtractText,
+} from "./lib/context-file-text";
 import {
 	JOB_SOURCE,
 	JOB_STEPS,
@@ -31,11 +54,6 @@ import {
 	jobStep,
 	seedJobSteps,
 } from "./lib/job-progress";
-
-// Chunking thresholds (same as wizard processing)
-const CHUNKING_THRESHOLD = 2048;
-const DEFAULT_CHUNK_SIZE = 2048;
-const DEFAULT_CHUNK_OVERLAP = 200;
 
 /**
  * Heartbeat phase → Job Hub step key. The pipeline's phases and the panel's
@@ -69,29 +87,6 @@ async function advanceContextJobSteps(step: string): Promise<void> {
 }
 
 /**
- * Sanitize text content by removing null bytes and other problematic characters
- */
-function sanitizeTextForStorage(text: string): string {
-	return Array.from(text)
-		.filter((char) => {
-			const codePoint = char.codePointAt(0);
-			if (codePoint === undefined) {
-				return false;
-			}
-
-			return (
-				codePoint !== 0 &&
-				codePoint !== 0xfffd &&
-				!(codePoint >= 0x01 && codePoint <= 0x08) &&
-				codePoint !== 0x0b &&
-				codePoint !== 0x0c &&
-				!(codePoint >= 0x0e && codePoint <= 0x1f)
-			);
-		})
-		.join("");
-}
-
-/**
  * Read the current extractionStatus of a project context.
  *
  * Used by the workflow's outer catch as a defense-in-depth check (bug #1039):
@@ -100,7 +95,12 @@ function sanitizeTextForStorage(text: string): string {
  */
 export async function getProjectContextStatus(
 	contextId: string,
+	owner?: ContextOwner,
 ): Promise<ExtractionStatus | null> {
+	const company = companyContextOwnerOf(owner);
+	if (company) {
+		return companyContextRowStore(company).getStatus(contextId);
+	}
 	const row = await db.projectContext.findUnique({
 		where: { id: contextId },
 		select: { extractionStatus: true },
@@ -115,10 +115,16 @@ export async function updateProjectContextStatus(
 	contextId: string,
 	status: ExtractionStatus,
 	error?: string,
+	owner?: ContextOwner,
 ): Promise<void> {
 	console.log(
 		`[ProjectContextProcessing] Updating context status: ${contextId} -> ${status}`,
 	);
+
+	const company = companyContextOwnerOf(owner);
+	if (company) {
+		return setCompanySourceStatus(company, contextId, status, error);
+	}
 
 	// Job Hub: both the activity's own failure path and the workflow's
 	// defense-in-depth catch route through here, so one hook covers every way a
@@ -177,17 +183,40 @@ interface ProcessProjectContextResult {
  * to close its row left the job RUNNING until the watchdog stamped it "Timed
  * out", reporting a failure for a document the user can actually search.
  * Closing here means a future early return cannot reintroduce that.
+ *
+ * A company owner is told apart here, once, and processed by
+ * `processCompanySource`, which opens no Job Hub row.
  */
 export async function processProjectContext(
 	contextId: string,
-	projectId: string,
+	/** The context's project; absent for a company source. */
+	projectId: string | undefined,
 	userId: string,
 	organizationId: string | undefined,
 	extractionStrategy = "local-only",
+	/**
+	 * Trailing and optional, so recorded project histories and their
+	 * positional arguments stay valid: absent is the project owner.
+	 */
+	owner?: ContextOwner,
 ): Promise<ProcessProjectContextResult> {
+	const resolvedOwner = resolveContextOwner({
+		projectId,
+		organizationId,
+		owner,
+	});
+	if (resolvedOwner.kind === "company") {
+		return processCompanySource(
+			contextId,
+			userId,
+			extractionStrategy,
+			resolvedOwner,
+		);
+	}
+
 	const result = await runProjectContextPipeline(
 		contextId,
-		projectId,
+		resolvedOwner,
 		userId,
 		organizationId,
 		extractionStrategy,
@@ -210,11 +239,13 @@ export async function processProjectContext(
 
 async function runProjectContextPipeline(
 	contextId: string,
-	projectId: string,
+	owner: ProjectContextOwner,
 	userId: string,
 	organizationId: string | undefined,
-	extractionStrategy = "local-only",
+	extractionStrategy: string,
 ): Promise<ProcessProjectContextResult> {
+	const { projectId } = owner;
+	const rows = projectContextRowStore(owner, { userId, organizationId });
 	console.log(
 		`[ProjectContextProcessing] Processing project context: ${contextId}`,
 	);
@@ -257,17 +288,7 @@ async function runProjectContextPipeline(
 		// before starting the workflow, so we don't filter by userId here (any org member
 		// with project access can process/retry contexts).
 		// For personal contexts: We include userId to ensure only the owner can process.
-		const orgFilter = organizationId
-			? { organizationId }
-			: { organizationId: null, userId };
-
-		const context = await db.projectContext.findFirst({
-			where: {
-				id: contextId,
-				projectId,
-				...orgFilter,
-			},
-		});
+		const context = await rows.loadSource(contextId);
 
 		if (!context) {
 			throw new Error(`Project context not found: ${contextId}`);
@@ -318,66 +339,17 @@ async function runProjectContextPipeline(
 		// Step 2: Update status to EXTRACTING
 		await updateProjectContextStatus(contextId, "EXTRACTING");
 
-		// Step 3: Download from storage
-		safeHeartbeat("downloading");
-		console.log("[ProjectContextProcessing] Downloading from storage");
-		if (!context.s3Bucket) {
-			throw new Error(`No S3 bucket for context: ${contextId}`);
-		}
-		const downloadResult = await downloadFile(context.s3Path, {
-			bucket: context.s3Bucket,
-		});
-		const buffer = downloadResult.data;
-		console.log(
-			`[ProjectContextProcessing] Downloaded ${context.originalFilename} (${buffer.length} bytes)`,
+		// Steps 3 and 4: Download from storage and extract text
+		const { extractedText, extractorUsed } = await downloadAndExtractText(
+			{ ...context, s3Path: context.s3Path },
+			{
+				contextId,
+				extractionStrategy,
+				userId,
+				organizationId,
+				safeHeartbeat,
+			},
 		);
-
-		// Step 4: Extract text
-		safeHeartbeat("extracting");
-		console.log("[ProjectContextProcessing] Extracting text");
-		let extractedText: string;
-		let extractorUsed: string | undefined;
-
-		try {
-			const extractionResult = await extractionFactory.extract(
-				buffer,
-				context.originalFilename || "unknown",
-				context.mimeType || "application/octet-stream",
-				{
-					strategy: extractionStrategy as
-						| "local-only"
-						| "external-only"
-						| "prefer-external"
-						| "cost-optimized"
-						| "quality-optimized",
-					userId,
-					organizationId,
-				},
-			);
-			extractedText = sanitizeTextForStorage(extractionResult.text);
-			extractorUsed = extractionResult.extractorUsed;
-			console.log(
-				`[ProjectContextProcessing] Extracted ${extractedText.length} chars using ${extractorUsed}`,
-			);
-		} catch (extractionError) {
-			// Fallback for plain text
-			if (
-				context.mimeType === "text/plain" ||
-				context.mimeType === "text/markdown"
-			) {
-				extractedText = sanitizeTextForStorage(
-					buffer.toString("utf-8"),
-				);
-				extractorUsed = "direct-text";
-				console.log(
-					`[ProjectContextProcessing] Fallback to direct text: ${extractedText.length} chars`,
-				);
-			} else {
-				throw new Error(
-					`Failed to extract text: ${extractionError instanceof Error ? extractionError.message : "Unknown error"}`,
-				);
-			}
-		}
 
 		// A document that parsed cleanly but yielded no text is not a healthy
 		// context, and must not be recorded as one (#1684). Persisting "" as
@@ -409,7 +381,7 @@ async function runProjectContextPipeline(
 		}
 
 		// Step 5: Update DB with extracted content
-		await updateContextExtractionStatus(contextId, "COMPLETED", {
+		await rows.setStatus(contextId, "COMPLETED", {
 			content: extractedText,
 		});
 
@@ -658,7 +630,7 @@ async function runProjectContextPipeline(
 
 		// Step 10: Update embedding status in DB (only if ALL chunks succeeded)
 		if (qdrantIds.length > 0) {
-			await markContextAsEmbedded(contextId, qdrantIds[0]);
+			await rows.markEmbedded(contextId, { qdrantId: qdrantIds[0] });
 		}
 
 		console.log(
@@ -729,10 +701,13 @@ async function runProjectContextPipeline(
  */
 export async function retryProjectContext(
 	contextId: string,
-	projectId: string,
+	/** The context's project; absent for a company source. */
+	projectId: string | undefined,
 	userId: string,
 	organizationId: string | undefined,
 	extractionStrategy = "local-only",
+	/** Trailing and optional, as on `processProjectContext`. */
+	owner?: ContextOwner,
 ): Promise<{
 	success: boolean;
 	chunkCount: number;
@@ -750,6 +725,20 @@ export async function retryProjectContext(
 	console.log(
 		`[ProjectContextProcessing] Retrying project context: ${contextId}`,
 	);
+
+	const resolvedOwner = resolveContextOwner({
+		projectId,
+		organizationId,
+		owner,
+	});
+	if (resolvedOwner.kind === "company") {
+		return retryCompanySource(
+			contextId,
+			userId,
+			extractionStrategy,
+			resolvedOwner,
+		);
+	}
 
 	try {
 		// Clean up any existing Qdrant data

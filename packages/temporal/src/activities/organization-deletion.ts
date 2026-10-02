@@ -12,7 +12,7 @@
  * each has an activity here:
  *
  *   - vectors, in Qdrant, in per-organization collections;
- *   - objects, in S3/R2, under org-prefixed keys in three buckets;
+ *   - objects, in S3/R2, under org-prefixed keys in four buckets;
  *   - the payment-provider subscription, which bills whether or not the tenant
  *     that bought it still exists.
  *
@@ -24,6 +24,14 @@
  * organization's vectors and files while its rows sat safely in Postgres —
  * which is the worst outcome available here, because it is silent.
  *
+ * COMPANY WEBSITE SCHEDULES follow the same order (Fizzy #2719). The refresh
+ * schedules of the organization's company website sources live in Temporal,
+ * named by `CompanyContextSource` rows the cascade removes, so the hard delete
+ * reads their ids first and deletes the schedules only after the guarded
+ * delete succeeded. A restore that makes the guard miss leaves them running
+ * for the restored organization. A schedule delete that fails afterwards is
+ * swept by the URL-source schedule reconciler, which finds its source gone.
+ *
  * `@repo/*` barrels are imported STATICALLY. The worker bundles activities at
  * build time; a dynamic import resolves at runtime against a module graph the
  * bundler never walked.
@@ -31,10 +39,12 @@
 
 import { config } from "@repo/config";
 import {
+	companyContextStoragePrefix,
 	db,
 	getOrganizationsNeedingPurgeReminder,
 	getOrganizationsReadyForPurge,
 	getPurchasesByOrganizationId,
+	listCompanyContextUrlScheduleIds,
 	markOrganizationPurgeReminderSent,
 	ORGANIZATION_RETENTION_DAYS,
 	permanentDeleteOrganization,
@@ -46,6 +56,9 @@ import { deleteOrganizationCollections } from "@repo/rag/lib/collection-manager"
 import { deleteObjects, listObjects } from "@repo/storage";
 import { getBaseUrl } from "@repo/utils";
 import { heartbeat } from "@temporalio/activity";
+import type { ScheduleClient } from "@temporalio/client";
+import { getScheduleClient } from "../client";
+import { deleteUrlSourceSchedule } from "../schedules/url-source-schedule";
 
 // ============================================================================
 // Types
@@ -417,11 +430,21 @@ export async function permanentDeleteOrganizationFromDbActivity(
 ): Promise<PermanentDeleteOrganizationFromDbOutput> {
 	const { organizationId } = input;
 
+	// Read before the delete: the cascade removes the rows that name them.
+	const companySchedules =
+		await listCompanyContextUrlScheduleIds(organizationId);
+
 	try {
 		await permanentDeleteOrganization(organizationId);
 
 		logger.info(
 			`[OrgDeletion] Permanently deleted organization ${organizationId} from the database`,
+		);
+
+		// Only now: a guard that missed (a restore) leaves them in place.
+		await deleteCompanyContextUrlSchedules(
+			organizationId,
+			companySchedules,
 		);
 
 		return { success: true };
@@ -463,6 +486,58 @@ export async function permanentDeleteOrganizationFromDbActivity(
 		);
 		return { success: true };
 	}
+}
+
+/**
+ * Delete the refresh schedules of the organization's company website sources,
+ * after its guarded delete succeeded (see the top of this file).
+ *
+ * Best-effort, and it never throws: the organization row is already gone, so a
+ * retry of the hard delete could not find these ids again. What is left
+ * behind is a schedule whose source row no longer exists, which the URL-source
+ * schedule reconciler removes; until then its crawls exit at their gate
+ * without calling the crawler.
+ */
+async function deleteCompanyContextUrlSchedules(
+	organizationId: string,
+	schedules: readonly { id: string; urlScheduleId: string }[],
+): Promise<void> {
+	if (schedules.length === 0) {
+		return;
+	}
+
+	let scheduleClient: ScheduleClient;
+	try {
+		scheduleClient = await getScheduleClient();
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		logger.warn(
+			`[OrgDeletion] Could not reach Temporal to delete ${schedules.length} company website schedule(s) of organization ${organizationId}; the URL-source reconciler will remove them: ${errorMsg}`,
+		);
+		return;
+	}
+
+	let deleted = 0;
+	for (const schedule of schedules) {
+		safeStorageHeartbeat();
+		try {
+			await deleteUrlSourceSchedule(
+				{ scheduleId: schedule.urlScheduleId },
+				scheduleClient,
+			);
+			deleted++;
+		} catch (error) {
+			const errorMsg =
+				error instanceof Error ? error.message : String(error);
+			logger.warn(
+				`[OrgDeletion] Failed to delete company website schedule ${schedule.urlScheduleId} of organization ${organizationId}; the URL-source reconciler will remove it: ${errorMsg}`,
+			);
+		}
+	}
+
+	logger.info(
+		`[OrgDeletion] Deleted ${deleted}/${schedules.length} company website schedule(s) of organization ${organizationId}`,
+	);
 }
 
 /**
@@ -638,9 +713,13 @@ function safeStorageHeartbeat(): void {
  * drawn from the same cuid space and never collide, so a key under this prefix
  * belongs to this organization and to nothing else.
  *
- * Two prefixes and one exact key, which is every org-scoped path that exists:
+ * Three prefixes and one exact key, which is every org-scoped path that exists:
  *   - chat-documents: `{orgId}/workspace-files/...`
  *   - qa-run-evidence: `{orgId}/qa-runs/...`
+ *   - project-contexts: `{orgId}/company-context/...`, the organization's
+ *     company context files (Fizzy #2719). Only that sub-prefix: project
+ *     context files share the bucket under `projects/{projectId}/`, which is
+ *     the project purge's job.
  *   - avatars: `{orgId}.png`, the organization logo — a single object, not a
  *     prefix, because that is how the logo upload URL is minted.
  *
@@ -680,6 +759,10 @@ export async function deleteOrganizationObjectsFromStorageActivity(
 		{
 			bucket: config.storage.bucketNames.qaRunEvidence,
 			prefix: `${organizationId}/`,
+		},
+		{
+			bucket: config.storage.bucketNames.projectContexts,
+			prefix: companyContextStoragePrefix(organizationId),
 		},
 	];
 

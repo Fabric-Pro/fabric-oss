@@ -3,20 +3,17 @@
 # apps/web/vercel.json; runs with cwd = the project Root Directory, apps/web).
 #
 # Exit semantics (Vercel): exit 0 -> SKIP the build, exit 1 -> BUILD.
-# Every failure path here exits 1 (fail open to building).
+# Ordinary preview detection failures exit 1 (fail open to building).
+# Promotion refs require an exact marker, otherwise they skip.
 #
 # Decision ladder:
 #  1. Preserve the legacy guard: a ref literally named "production" never
 #     builds (carried over from the old dashboard Ignored Build Step).
-#  2. `master` ALWAYS builds. The ops dev reconciler promotes the staging
-#     domain to the production deployment whose commit sha equals the
-#     admitted master tip exactly — by policy it never falls back to an
-#     older commit — so a skipped master commit (e.g. a version-bump-only
-#     release commit whose whole diff is inert paths under rule 5) has no
-#     promotable deployment, ever, and every reconcile cycle fails until
-#     the tip moves. Master commits are relayed squashes that already
-#     passed CI, so the skip rules below save little there anyway; the
-#     savings cases (previews, the Version PR refs) keep them.
+#  2. `master` and `staging` ALWAYS build for the exact-revision reconciler.
+#     Automatic `promotion/*` previews skip, including versioned pushes.
+#     Trusted ops requests a fresh Preview only when deployment reuse fails,
+#     with a deployment-scoped marker equal to the full Git commit SHA.
+#     This marker admits a build; ops still owns deployment and QA authority.
 #  3. The bot-managed Version PR never builds (not even its first
 #     deployment), on EITHER of the two refs it reaches Vercel on:
 #       - `changeset-release/*` — the auto-generated Version Packages PR
@@ -55,7 +52,17 @@
 #     @repo/web or anything it depends on changed since the last successful
 #     deployment of this branch (errors fail open to building).
 [ "$VERCEL_GIT_COMMIT_REF" = "production" ] && exit 0
-[ "$VERCEL_GIT_COMMIT_REF" = "master" ] && exit 1
+case "$VERCEL_GIT_COMMIT_REF" in master|staging) exit 1 ;; esac
+case "$VERCEL_GIT_COMMIT_REF" in
+  promotion/*)
+    case "$FABRIC_PRIVATE_PROMOTION_BUILD_SHA" in
+      ''|*[!0-9a-f]*) exit 0 ;;
+    esac
+    [ "${#FABRIC_PRIVATE_PROMOTION_BUILD_SHA}" -eq 40 ] \
+      && [ "$FABRIC_PRIVATE_PROMOTION_BUILD_SHA" = "$VERCEL_GIT_COMMIT_SHA" ] && exit 1
+    exit 0
+    ;;
+esac
 case "$VERCEL_GIT_COMMIT_REF" in changeset-release/*|changesets-ghcommit-temp/*) exit 0 ;; esac
 [ -z "$VERCEL_GIT_PREVIOUS_SHA" ] && exit 1
 CHANGED=$(git diff --name-only "$VERCEL_GIT_PREVIOUS_SHA" HEAD) || exit 1

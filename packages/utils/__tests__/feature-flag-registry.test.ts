@@ -956,7 +956,9 @@ describe("PARLUME_MEETINGS", () => {
 			orgScopable: true,
 		});
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
-		expect(ORG_SCOPABLE_FLAG_KEYS.at(-1)).toBe("PARLUME_MEETINGS");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("PARLUME_MEETINGS"),
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("GLOSSY_EDITION"));
 	});
 
 	it("accepts an instance-wide override while preserving organization precedence", () => {
@@ -971,5 +973,55 @@ describe("PARLUME_MEETINGS", () => {
 		expect(
 			resolveFlag("PARLUME_MEETINGS", { global: true, org: false }, {}),
 		).toEqual({ enabled: false, source: "org-override" });
+	});
+});
+
+describe("COMPANY_CONTEXT (#2719)", () => {
+	// Default OFF and per organization: one gate for the company context
+	// page, retrieval and the empty-context notice, rolled out through the
+	// per-organization override so the web tier and the worker agree.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("COMPANY_CONTEXT")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.COMPANY_CONTEXT).toMatchObject({
+			envVar: "FABRIC_FEATURE_COMPANY_CONTEXT",
+			default: false,
+			orgScopable: true,
+		});
+	});
+
+	it("is appended after every org-scopable flag that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS.at(-1)).toBe("COMPANY_CONTEXT");
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("COMPANY_CONTEXT", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	it("lets one organization be enabled while the deployment stays off", () => {
+		expect(
+			resolveFlag("COMPANY_CONTEXT", { org: true, global: false }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	it("lets an org override of false beat a truthy env var", () => {
+		expect(
+			resolveFlag(
+				"COMPANY_CONTEXT",
+				{ org: false },
+				{ FABRIC_FEATURE_COMPANY_CONTEXT: "true" },
+			),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+
+	it("does not share its env var with any other entry", () => {
+		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
+			([, definition]) =>
+				definition.envVar === "FABRIC_FEATURE_COMPANY_CONTEXT",
+		);
+		expect(owners.map(([key]) => key)).toEqual(["COMPANY_CONTEXT"]);
 	});
 });

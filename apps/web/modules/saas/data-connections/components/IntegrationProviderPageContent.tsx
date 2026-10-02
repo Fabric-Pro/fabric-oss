@@ -30,6 +30,10 @@ import { toast } from "sonner";
 import { useProviderHealth } from "../hooks/useProviderHealth";
 import { mapDataConnectionProviderToActionProvider } from "../lib/action-provider-mapping";
 import {
+	GITLAB_STATUS_QUERY_KEY,
+	gitlabStatusQueryOptions,
+} from "../lib/gitlab-status-query";
+import {
 	type DataConnectionProvider,
 	getProviderMetadata,
 } from "../lib/providers";
@@ -86,15 +90,11 @@ export function IntegrationProviderPageContent({
 
 	// GitLab-specific: fetch transport-mode probe data (only when provider is GITLAB)
 	const isGitLab = provider === "GITLAB";
+	// An error leaves `gitlabStatus` undefined, which renders as an unknown
+	// transport, same as before the shared options.
 	const { data: gitlabStatus } = useQuery({
-		queryKey: ["gitlab-oauth-status", organizationId],
-		queryFn: async () => {
-			return orpcClient.integrations.gitlab.status({
-				organizationId: organizationId ?? null,
-			});
-		},
+		...gitlabStatusQueryOptions(organizationId),
 		enabled: isGitLab,
-		staleTime: 30000,
 	});
 
 	const recheckMutation = useMutation({
@@ -108,7 +108,7 @@ export function IntegrationProviderPageContent({
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({
-				queryKey: ["gitlab-oauth-status", organizationId],
+				queryKey: [GITLAB_STATUS_QUERY_KEY],
 			});
 		},
 		onError: (error) => {
@@ -118,7 +118,7 @@ export function IntegrationProviderPageContent({
 			// immediately, instead of staying on the stale "Connected via …"
 			// label until the next navigation.
 			queryClient.invalidateQueries({
-				queryKey: ["gitlab-oauth-status", organizationId],
+				queryKey: [GITLAB_STATUS_QUERY_KEY],
 			});
 			toast.error(
 				error instanceof Error

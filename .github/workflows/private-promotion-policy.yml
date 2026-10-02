@@ -1,0 +1,31 @@
+name: Classify private promotion
+
+on:
+  workflow_call:
+    outputs:
+      reduced:
+        value: ${{ jobs.classify.outputs.reduced }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 3
+    outputs:
+      reduced: ${{ steps.policy.outputs.reduced }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Authenticate using protected policy code, never a proposed PR helper.
+          ref: staging
+          persist-credentials: false
+      - name: Authenticate exact live promotion identity
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE_ENABLED: ${{ vars.STAGING_RELEASE_ENABLED }}
+          PROMOTION_BOT_LOGIN: ${{ vars.OSS_RELAY_APP_LOGIN }}
+        run: node .github/scripts/staging/promotion-policy.mjs

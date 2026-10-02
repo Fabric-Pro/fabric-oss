@@ -227,6 +227,74 @@ describe("InstructionsResource.createDownloadUrl", () => {
 	});
 });
 
+describe("InstructionsResource.createFileDownloadUrls", () => {
+	it("POSTs the digest and paths and returns the signed files", async () => {
+		const { client, captured } = buildClient({
+			responseBody: {
+				snapshotId: "snap-2",
+				digest: "abc",
+				files: [
+					{
+						path: "AGENTS.md",
+						sha256: "a".repeat(64),
+						size: 12,
+						mode: 33188,
+						url: "https://storage.example.com/files/AGENTS.md?sig=x",
+					},
+				],
+				expiresInSeconds: 600,
+			},
+		});
+
+		const result = await client.instructions.createFileDownloadUrls(
+			"project-1",
+			{ digest: "abc", paths: ["AGENTS.md"] },
+		);
+
+		const req = lastRequest(captured);
+		expect(req.method).toBe("POST");
+		expect(req.url).toBe(
+			"https://test.fabric/api/v1/projects/project-1/instructions/published/files",
+		);
+		expect(req.body).toEqual({ digest: "abc", paths: ["AGENTS.md"] });
+		expect(req.headers["idempotency-key"]).toBeTruthy();
+		expect(result.files[0]?.url).toContain("AGENTS.md");
+	});
+
+	it("passes an explicit org through", async () => {
+		const { client, captured } = buildClient();
+
+		await client.instructions.createFileDownloadUrls(
+			"project-1",
+			{ digest: "abc", paths: ["AGENTS.md"] },
+			{ org: "example-org" },
+		);
+
+		expect(lastRequest(captured).url).toBe(
+			"https://test.fabric/api/v1/projects/project-1/instructions/published/files?org=example-org",
+		);
+	});
+
+	it("surfaces a moved published version as a 409 with its code", async () => {
+		const { client } = buildClient({
+			status: 409,
+			rawBody: {
+				error: {
+					message: "The published version changed",
+					code: "PUBLISHED_CHANGED",
+				},
+			},
+		});
+
+		await expect(
+			client.instructions.createFileDownloadUrls("project-1", {
+				digest: "abc",
+				paths: ["AGENTS.md"],
+			}),
+		).rejects.toMatchObject({ status: 409, code: "PUBLISHED_CHANGED" });
+	});
+});
+
 /**
  * The route does not honour `Idempotency-Key`, and a retry of a request that
  * is still building the archive on the server does not wait for that build —

@@ -9,6 +9,7 @@
 import { decryptApiKey } from "@repo/utils";
 import { db } from "../../client";
 import type { WorkflowIntegrationProvider } from "../../generated/enums";
+import { OAUTH_APP_ROW_NAMES } from "../lib/oauth-app-row";
 
 /**
  * Mapped credentials ready for use in step execution
@@ -313,6 +314,7 @@ export async function fetchCredentialsByProvider(
 		const orgIntegration = await db.workflowIntegration.findFirst({
 			where: {
 				provider,
+				NOT: { name: `${provider}_OAUTH_APP` },
 				organizationId,
 				isActive: true,
 			},
@@ -338,6 +340,7 @@ export async function fetchCredentialsByProvider(
 	const userIntegration = await db.workflowIntegration.findFirst({
 		where: {
 			provider,
+			NOT: { name: `${provider}_OAUTH_APP` },
 			userId,
 			organizationId: null,
 			workflowId: null,
@@ -357,6 +360,7 @@ export async function fetchCredentialsByProvider(
 	const workflowIntegration = await db.workflowIntegration.findFirst({
 		where: {
 			provider,
+			NOT: { name: `${provider}_OAUTH_APP` },
 			userId,
 			organizationId: null,
 			isActive: true,
@@ -443,6 +447,8 @@ export async function getConfiguredIntegrations(
 			userId,
 			...orgFilter,
 			isActive: true,
+			// Stored OAuth app credentials are not configured integrations.
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 		},
 		select: {
 			provider: true,

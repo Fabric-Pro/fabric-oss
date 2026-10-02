@@ -495,6 +495,58 @@ describe("Glossy editions registration (Fizzy #2589)", () => {
 	});
 });
 
+/**
+ * Company context registration (Fizzy #2719).
+ *
+ * Two organization-owned tables. Project guests must never read them, so the
+ * policy is plain `org_only` — the Brand kit's guest-read variant would hand
+ * a guest the organization's sales material — and neither table is
+ * project-scoped in tenant-db.ts, which would OR a guest's invited projects
+ * into the filter.
+ */
+describe("Company context registration (Fizzy #2719)", () => {
+	const orgOnlyBlock =
+		tenantDbSrc.match(
+			/const ORG_ONLY_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+	const projectScopedBlock =
+		tenantDbSrc.match(
+			/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+		)?.[1] ?? "";
+
+	const tables = [
+		["CompanyContextSource", "company_context_source"],
+		["CompanyContextUrlPage", "company_context_url_page"],
+	] as const;
+
+	it("sanity: the tenant-db table sets parsed", () => {
+		expect(orgOnlyBlock).not.toBe("");
+		expect(projectScopedBlock).not.toBe("");
+	});
+
+	it.each(tables)(
+		"%s (%s) is a real table under org_only RLS, not exempted",
+		(model, physical) => {
+			expect(physicals.has(physical)).toBe(true);
+			expect(allowlist.has(physical)).toBe(true);
+			expect(EXEMPT.has(physical)).toBe(false);
+			expect(applySrc).toMatch(
+				new RegExp(
+					`name:\\s*"${physical}"\\s*,\\s*policy:\\s*"org_only"\\s*}`,
+				),
+			);
+			expect(orgOnlyBlock).toMatch(new RegExp(`"${model}",`));
+			expect(projectScopedBlock).not.toMatch(new RegExp(`\\b${model}:`));
+			const parsed = models.find((m) => m.name === model);
+			expect(parsed?.hasOrg).toBe(true);
+			// Organization is the only tenant: no userId, and no projectId
+			// that could route a project carve-out to these rows.
+			expect(parsed?.hasUser).toBe(false);
+			expect(parsed?.hasProject).toBe(false);
+		},
+	);
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

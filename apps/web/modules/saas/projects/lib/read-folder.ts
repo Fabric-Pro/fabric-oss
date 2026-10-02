@@ -169,6 +169,12 @@ function composePath(source: PickedSource, file: File): string {
 export async function readFolderFiles(
 	sources: PickedSource[],
 	projectGlobs?: string[] | null,
+	/**
+	 * Called after each kept file has been read and hashed, with how many have
+	 * been and how many there are. Counts finished reads only: an excluded file
+	 * is never read, so it is in neither number.
+	 */
+	onProgress?: (done: number, total: number) => void,
 ): Promise<{ entries: FolderEntry[]; fabricIgnoreText: string | null }> {
 	const candidates: Array<{ file: File; path: string }> = [];
 	for (const source of sources) {
@@ -222,12 +228,19 @@ export async function readFolderFiles(
 	}
 
 	const entries: FolderEntry[] = [];
+	const keptTotal = judged.filter((c) => !c.excluded).length;
+	let hashed = 0;
 	for (const { file, path, excluded } of judged) {
+		let sha256: string | null = null;
+		if (!excluded) {
+			sha256 = await hashFile(file);
+			onProgress?.(++hashed, keptTotal);
+		}
 		entries.push({
 			path,
 			file,
 			size: file.size,
-			sha256: excluded ? null : await hashFile(file),
+			sha256,
 			kind: classifyPath(path),
 			excluded,
 			secretRule: isSecretFileName(path),

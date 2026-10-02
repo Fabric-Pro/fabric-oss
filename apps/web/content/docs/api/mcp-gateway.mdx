@@ -17,8 +17,14 @@ Include one of the following:
 
 | Method | Header | Format |
 |---|---|---|
-| API Key (recommended) | `Authorization` | `Bearer fab_xxxx_xxxxxxxxxx` |
-| Organization context | `X-Organization-Id` | Organization ID string |
+| Signed-in agent (recommended) | `Authorization` | `Bearer fat_…`, an OAuth 2.1 access token the client obtains by signing in |
+| API Key | `Authorization` | `Bearer fab_xxxx_xxxxxxxxxx` or `Bearer org_…` |
+| Organization context | `X-Organization-Id` | Organization ID string (not honoured for a signed-in agent, which is bound to the organization chosen when it was approved) |
+
+Without valid credentials the gateway answers `401` with
+`WWW-Authenticate: Bearer resource_metadata="https://your-fabric.com/.well-known/oauth-protected-resource/api/mcp-gateway", scope="mcp:read instructions:read instructions:write offline_access"`,
+which is how an MCP client discovers that it can sign in. See
+[Fabric MCP Gateway](/docs/integrations/mcp-gateway) for the setup.
 
 ## MCP Protocol Methods
 

@@ -36,7 +36,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: dco-${{ github.event.pull_request.number }}
+  group: dco-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -78,6 +78,7 @@ jobs:
       }}
     steps:
       - name: Verify Signed-off-by on every commit
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

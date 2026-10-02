@@ -663,3 +663,139 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 		});
 	});
 });
+
+/**
+ * What the dialog says while it works: reading the kept files one by one, the
+ * count of files uploaded, and, once every file is up, that the checks are
+ * starting. Only the step is announced; the count is aria-hidden.
+ */
+describe("UploadFolderDialog: progress while it works", () => {
+	beforeEach(() => {
+		uploadSnapshot.mockClear();
+	});
+
+	it("says how many of the kept files the preview has read, then drops the line", async () => {
+		// The second file's bytes arrive only when the test lets them, so the
+		// read is observable half-way.
+		let release!: () => void;
+		const second = pick("repo/docs.md", "y");
+		Object.defineProperty(second, "arrayBuffer", {
+			value: () =>
+				new Promise<ArrayBuffer>((resolve) => {
+					release = () =>
+						resolve(new TextEncoder().encode("y").buffer);
+				}),
+		});
+		render(
+			<UploadFolderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={() => undefined}
+				onUploaded={vi.fn()}
+			/>,
+		);
+
+		const picked = userEvent.upload(
+			screen.getByLabelText("Choose folder") as HTMLInputElement,
+			[pick("repo/CLAUDE.md", "# x"), second],
+		);
+
+		const line = await screen.findByText("Reading 1 of 2 files");
+		expect(line).toHaveAttribute("aria-hidden", "true");
+		expect(screen.getByText(uploadDialogCopy.readingPhase)).toHaveClass(
+			"sr-only",
+		);
+		act(() => release());
+		await picked;
+		await waitFor(() =>
+			expect(
+				screen.getByText(/2 files, .* will be uploaded/),
+			).toBeInTheDocument(),
+		);
+		expect(screen.queryByText(/^Reading \d+ of \d+ files$/)).toBeNull();
+	});
+
+	it("announces the step and hides the count while files upload", async () => {
+		let report!: (done: number, total: number) => void;
+		let release!: () => void;
+		uploadSnapshot.mockImplementationOnce(
+			(input: { onProgress: typeof report }) => {
+				report = input.onProgress;
+				return new Promise((resolve) => {
+					release = () =>
+						resolve({
+							snapshotId: "snap_1",
+							serverExcludedPaths: [],
+						});
+				});
+			},
+		);
+		render(
+			<UploadFolderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={() => undefined}
+				onUploaded={vi.fn()}
+			/>,
+		);
+		await userEvent.upload(
+			screen.getByLabelText("Choose folder") as HTMLInputElement,
+			[pick("repo/CLAUDE.md", "# x")],
+		);
+		await userEvent.click(
+			await screen.findByRole("button", { name: /Upload 1 files/ }),
+		);
+		await waitFor(() => expect(report).toBeDefined());
+
+		act(() => report(1, 4));
+
+		expect(screen.getByText("Uploading 1 of 4 files")).toHaveAttribute(
+			"aria-hidden",
+			"true",
+		);
+		expect(screen.getByText(uploadDialogCopy.uploadingPhase)).toHaveClass(
+			"sr-only",
+		);
+		act(() => release());
+	});
+
+	it("says the checks are starting while the call that starts them is in flight", async () => {
+		let finalizing!: () => void;
+		let release!: () => void;
+		uploadSnapshot.mockImplementationOnce(
+			(input: { onFinalizing: () => void }) => {
+				finalizing = input.onFinalizing;
+				return new Promise((resolve) => {
+					release = () =>
+						resolve({
+							snapshotId: "snap_1",
+							serverExcludedPaths: [],
+						});
+				});
+			},
+		);
+		render(
+			<UploadFolderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={() => undefined}
+				onUploaded={vi.fn()}
+			/>,
+		);
+		await userEvent.upload(
+			screen.getByLabelText("Choose folder") as HTMLInputElement,
+			[pick("repo/CLAUDE.md", "# x")],
+		);
+		await userEvent.click(
+			await screen.findByRole("button", { name: /Upload 1 files/ }),
+		);
+		await waitFor(() => expect(finalizing).toBeDefined());
+
+		act(() => finalizing());
+
+		expect(
+			screen.getAllByText(uploadDialogCopy.startingChecks).length,
+		).toBeGreaterThan(0);
+		act(() => release());
+	});
+});

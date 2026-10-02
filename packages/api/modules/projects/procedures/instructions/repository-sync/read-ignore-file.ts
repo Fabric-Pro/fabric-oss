@@ -31,9 +31,13 @@
  *
  * At most `MAX_FABRICIGNORE_BYTES` are read, the limit the sync reads the
  * blob with: a longer file is `tooLarge`, which the sync drops, so its rules
- * are never returned. The rules are parsed here by the sync's own
- * `parseFabricIgnore`; a file that parses to no rules is `state: "rules"`
- * with none, which the sync treats as no file at all.
+ * are never returned. The bytes are decoded here by the sync's own
+ * `decodeFabricIgnore` and parsed by its `parseFabricIgnore`. A file that is
+ * not UTF-8 text is `state: "encoding"`: the sync refuses it outright
+ * (`ignore_encoding`) rather than reading rules from it, so the dialog says
+ * so instead of showing rules the sync would never apply. A file that parses
+ * to no rules is `state: "rules"` with none, which the sync treats as no
+ * file at all.
  *
  * Not audited: it returns the rules of one file the sync of this folder
  * would read anyway and writes nothing — as `listTree` is not. Not cached:
@@ -42,6 +46,7 @@
 import { ORPCError } from "@orpc/client";
 import { isRepositoryTreeProvider, readRepositoryFile } from "@repo/connectors";
 import {
+	decodeFabricIgnore,
 	FABRIC_IGNORE_FILE,
 	MAX_FABRICIGNORE_BYTES,
 	parseFabricIgnore,
@@ -65,7 +70,7 @@ import {
 
 type ReadIgnoreFileResult = {
 	supported: boolean;
-	state: "absent" | "rules" | "tooLarge";
+	state: "absent" | "rules" | "tooLarge" | "encoding";
 	rules: string[];
 };
 
@@ -157,10 +162,14 @@ export const readInstructionRepositoryIgnoreFileProcedure =
 				});
 			}
 			if (result.state === "found") {
+				const decoded = decodeFabricIgnore(result.bytes);
+				if (!decoded.ok) {
+					return { supported: true, state: "encoding", rules: [] };
+				}
 				return {
 					supported: true,
 					state: "rules",
-					rules: parseFabricIgnore(result.text),
+					rules: parseFabricIgnore(decoded.text),
 				};
 			}
 			return { supported: true, state: result.state, rules: [] };

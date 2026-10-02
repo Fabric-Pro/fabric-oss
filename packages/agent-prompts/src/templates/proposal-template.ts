@@ -265,11 +265,92 @@ export const PROPOSAL_FORBIDDEN_SECTIONS = [
 ] as const;
 
 /**
+ * The one section a Proposal may add for the vendor — the organization writing
+ * it — when the organization's company context reached this run (Fizzy #2719).
+ * Company context arrives as vendor-marked retrieved entries; without them
+ * there is nothing to fill the section with, and the template is unchanged.
+ */
+export const PROPOSAL_VENDOR_SECTION =
+	"Vendor Qualifications & Relevant Experience";
+
+/**
+ * Forbidden entries that name the vendor section's subject. When vendor
+ * material is present the vendor section takes their place, so they leave the
+ * forbidden list — the prompt must not permit the section and forbid it in the
+ * same breath. Every other entry stays forbidden.
+ */
+const PROPOSAL_SECTIONS_REPLACED_BY_VENDOR_SECTION: readonly string[] = [
+	"Company Overview",
+	"About Us",
+	"Vendor Overview",
+];
+
+export interface ProposalTemplateOptions {
+	/** True when vendor-marked company context is among the retrieved entries. */
+	hasVendorContext?: boolean;
+}
+
+/**
+ * The forbidden-section list for this run: the full list, less the entries
+ * the vendor section replaces when vendor material is present.
+ */
+export function getProposalForbiddenSections(
+	options: ProposalTemplateOptions = {},
+): readonly string[] {
+	if (!options.hasVendorContext) {
+		return PROPOSAL_FORBIDDEN_SECTIONS;
+	}
+	return PROPOSAL_FORBIDDEN_SECTIONS.filter(
+		(section) =>
+			!PROPOSAL_SECTIONS_REPLACED_BY_VENDOR_SECTION.includes(section),
+	);
+}
+
+/**
  * Format forbidden sections for prompt
  */
-export function formatProposalForbiddenSections(): string {
-	return PROPOSAL_FORBIDDEN_SECTIONS.map((section) => `- "${section}"`).join(
-		"\n",
+export function formatProposalForbiddenSections(
+	options: ProposalTemplateOptions = {},
+): string {
+	return getProposalForbiddenSections(options)
+		.map((section) => `- "${section}"`)
+		.join("\n");
+}
+
+/**
+ * What the model is told about the vendor section. Only for runs with vendor
+ * material; a custom Proposal prompt never receives it — the user's template
+ * decides its own sections, and gets the labeled material unchanged.
+ */
+export function getProposalVendorSectionInstructions(): string {
+	return `## ✅ ONE PERMITTED VENDOR SECTION
+
+Some reference context starts with "[Vendor profile: ...]". That material is about us, the organization writing this proposal — not about the client or this project. Because it is present, you MAY add exactly ONE section beyond the mandatory list, placed immediately before \`### **Stakeholders**\`:
+
+\`### **${PROPOSAL_VENDOR_SECTION}**\` - our relevant capabilities and past work from the vendor profile material, each tied to what this client needs.
+
+- Present vendor material only as our own experience, never as a fact about the client or this project.
+- Follow the source guidance that comes with vendor material (for example, anonymizing a past client's name).
+- Do not add any other section; every other rule here still applies.`;
+}
+
+/**
+ * The one-line restatement for the reminders at the end of the prompt, which
+ * list the sections again — without it the last word the model reads would
+ * leave the vendor section out.
+ */
+export function getProposalVendorSectionReminder(): string {
+	return `✅ Vendor profile material is present: you may add ONE \`### **${PROPOSAL_VENDOR_SECTION}**\` section, immediately before \`### **Stakeholders**\`, drawn only from that material.`;
+}
+
+function proposalTemplateWithVendorSection(): string {
+	return PROPOSAL_TEMPLATE.replace(
+		"### **Stakeholders**",
+		`### **${PROPOSAL_VENDOR_SECTION}**
+
+- [Relevant capability or past project, tied to this client's needs]
+
+### **Stakeholders**`,
 	);
 }
 
@@ -278,8 +359,19 @@ export function formatProposalForbiddenSections(): string {
  *
  * CRITICAL: This must be placed at the VERY BEGINNING of the prompt
  * to ensure the LLM follows the template instead of RAG context structure
+ *
+ * With `hasVendorContext`, the instructions permit the one vendor section and
+ * show it in the template; without it they are unchanged.
  */
-export function getProposalOverrideInstructions(): string {
+export function getProposalOverrideInstructions(
+	options: ProposalTemplateOptions = {},
+): string {
+	const vendorSection = options.hasVendorContext
+		? `\n\n${getProposalVendorSectionInstructions()}`
+		: "";
+	const template = options.hasVendorContext
+		? proposalTemplateWithVendorSection()
+		: PROPOSAL_TEMPLATE;
 	return `# 🛑 CRITICAL: YOUR FIRST LINE MUST BE "### **Project Proposal**"
 
 **YOU MUST USE THE PM STANDARD V2 PROPOSAL TEMPLATE. NO EXCEPTIONS.**
@@ -319,7 +411,7 @@ After the header block, include ONLY these sections:
 7. \`### **Dependencies / Risks**\` - Dependencies and Risks bullet groups
 8. \`### **Stakeholders**\` - All roles with names
 9. \`### **Open Questions**\` - Unresolved items
-10. \`### **Release Notes**\` - Plain language summary
+10. \`### **Release Notes**\` - Plain language summary${vendorSection}
 
 ## 🚫 FORBIDDEN - INSTANT FAILURE IF YOU USE ANY OF THESE:
 
@@ -358,7 +450,7 @@ Your output MUST follow the PM Standard v2 template above, regardless of how the
 
 ## EXACT TEMPLATE TO FOLLOW:
 
-${PROPOSAL_TEMPLATE}
+${template}
 
 ---
 

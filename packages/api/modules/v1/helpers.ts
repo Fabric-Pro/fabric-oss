@@ -2,7 +2,10 @@
  * Shared helpers for v1 API routes
  */
 import { db, resolveUserOrganization } from "@repo/database";
-import type { ExternalApiContext } from "../external-api/types";
+import {
+	type ExternalApiContext,
+	isOrganizationBoundKey,
+} from "../external-api/types";
 
 export interface V1TenantContext {
 	userId: string;
@@ -36,17 +39,18 @@ export async function resolveV1Context(
 	orgSlug?: string,
 	personal?: boolean,
 ): Promise<V1TenantContext | { error: string; status: 400 | 403 | 404 }> {
-	// An organization key names its own tenant, so asking for another context
-	// with it is incoherent however it is asked. Kept as it was.
-	if (personal && apiCtx.keyType === "organization") {
+	// An organization key, or an agent that signed in for one organization,
+	// names its own tenant, so asking for another context with it is incoherent
+	// however it is asked. Kept as it was.
+	if (personal && isOrganizationBoundKey(apiCtx)) {
 		return {
-			error: "Cannot use personal context with an organization API key",
+			error: "Cannot use personal context with an organization-bound credential",
 			status: 403,
 		};
 	}
 
-	// Org key always scopes to that org.
-	if (apiCtx.keyType === "organization" && apiCtx.organizationId) {
+	// An organization-bound credential always scopes to its organization.
+	if (isOrganizationBoundKey(apiCtx) && apiCtx.organizationId) {
 		return { userId: apiCtx.userId, organizationId: apiCtx.organizationId };
 	}
 

@@ -68,6 +68,11 @@ export type UploadSnapshotInput = {
 	publishBeforeScan?: boolean;
 	onProgress?: (done: number, total: number) => void;
 	/**
+	 * Fired once every file has been uploaded, just before the call that starts
+	 * the checks, so a caller can say so while that call is in flight.
+	 */
+	onFinalizing?: () => void;
+	/**
 	 * Fired as soon as the upload's snapshot id is known (right after
 	 * `begin`, or immediately for a resumed upload) so a caller can retry a
 	 * partial failure against the SAME snapshot instead of starting a new
@@ -206,6 +211,7 @@ export async function uploadSnapshot(
 			}),
 		);
 	}
+	input.onFinalizing?.();
 	await orpcClient.projects.instructions.finalize({
 		projectId: input.projectId,
 		snapshotId,

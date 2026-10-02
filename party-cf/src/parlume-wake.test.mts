@@ -29,6 +29,26 @@ test("accepts transcription punctuation after hey and variable spacing", () => {
 	assert.equal(parseParlumeWake("hey   parlume — summarize."), "summarize.");
 });
 
+test("accepts the spellings live transcription produces for the names", () => {
+	for (const text of [
+		"Hey Fabrik, what is the name of the project?",
+		"Hey Fabrique, what is the name of the project?",
+		"Hey Fabrick what is the name of the project?",
+		"Hey Parlum, what is the name of the project?",
+		"Hey Parloom, what is the name of the project?",
+		"Hey Fabrik Parlum, what is the name of the project?",
+		// Verbatim from staging transcripts on 2026-10-01.
+		"Hey, Perlman, what is the name of the project?",
+		"Hey Pearlman, what is the name of the project?",
+		"Hi Fabric, what is the name of the project?",
+	]) {
+		assert.equal(
+			parseParlumeWake(text),
+			"what is the name of the project?",
+		);
+	}
+});
+
 test("does not wake for partial words or ordinary mentions", () => {
 	for (const text of [
 		"Hey Fabrication",
@@ -36,6 +56,10 @@ test("does not wake for partial words or ordinary mentions", () => {
 		"They Fabric",
 		"Fabric Parlume",
 		"Please summarize.",
+		"Hey Parliament, order please.",
+		"Hey, problem with the build.",
+		"Hey team, what is the name of the project?",
+		"Hi everyone.",
 	]) {
 		assert.equal(parseParlumeWake(text), null);
 	}

@@ -275,6 +275,10 @@ const ORG_ONLY_TABLES = new Set([
 	"GlossySegmentCache",
 	"ProjectRecipientBrand",
 	"OrganizationBrandKit",
+	// Company context (Fizzy #2719). Organization-owned with no userId, and
+	// NOT project-scoped: a project guest never reaches these rows.
+	"CompanyContextSource",
+	"CompanyContextUrlPage",
 ]);
 
 /**

@@ -163,7 +163,7 @@ read one vocabulary rather than restating it.
 
 | Surface | Component | Vocabulary |
 | --- | --- | --- |
-| Project context | `apps/web/modules/saas/projects/components/ContextUploaderDialog.tsx` | `packages/utils/lib/context-upload.ts` |
+| Project context | `apps/web/modules/saas/context-sources/components/FileSourceTabContent.tsx` | `packages/utils/lib/context-upload.ts` |
 | Project wizard | `apps/web/modules/saas/projects/components/wizard/WizardFileUploader.tsx` | `packages/utils/lib/context-upload.ts` |
 | Workspace documents | `apps/web/modules/saas/workspaces/components/DocumentUploader.tsx` | `packages/utils/lib/workspace-document-upload.ts` |
 

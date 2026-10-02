@@ -15,8 +15,11 @@
  * Nothing about that shortens the checks. It is the SAME
  * `createDerivedInstructionSnapshot` the tab uses, the same payload validation
  * (`change-set.ts`), the same `projectInstructionSnapshotWorkflow`, and so the
- * same verify → scan → publish gate reads every file — inherited ones
- * included. What is skipped is the TRANSFER, not a gate.
+ * same verify → scan → publish gate decides every file. An inherited file is
+ * read and scanned again unless its source version was cleared by the scan
+ * rule set now in force, in which case the same immutable bytes are not
+ * re-read. What is skipped is the TRANSFER and a repeat of a passed check,
+ * never a gate.
  *
  * ## Repeating a call is safe
  *
@@ -144,6 +147,7 @@ import {
 	readProposalPullRequest,
 	startAdmittedProposalPullRequest,
 } from "./proposal-pull-request";
+import { versionContentionAsConflict } from "./version-contention";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts), imported the way
 // `create-upload-urls.ts` does.
@@ -554,7 +558,7 @@ export async function submitInstructionChange(
 					),
 				}
 			: {}),
-	});
+	}).catch(versionContentionAsConflict);
 
 	if (!created.ok) {
 		// Reported, never taken over: no upload, no finalize, no audit row. The

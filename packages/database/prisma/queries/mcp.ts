@@ -2436,6 +2436,7 @@ export async function listAvailablePmTools({
 			where: {
 				...tenantFilter,
 				provider: "GITLAB",
+				NOT: { name: "GITLAB_OAUTH_APP" },
 				isActive: true,
 			},
 			select: { id: true },
@@ -2460,6 +2461,7 @@ export async function listAvailablePmTools({
 						organizationId: null,
 						userId,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						isActive: true,
 						OR: [
 							// Settings field is missing entirely (legacy row).

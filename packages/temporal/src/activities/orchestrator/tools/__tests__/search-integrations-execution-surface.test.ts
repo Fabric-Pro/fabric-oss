@@ -6,6 +6,7 @@
  * (analyzeAndRoute) must keep seeing every configured integration — the step
  * path executes providers chat cannot.
  */
+import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { findManyMock, generateEmbeddingMock, generateEmbeddingsMock } =
@@ -149,6 +150,7 @@ describe("executionSurface: LOOM_CHAT", () => {
 		expect(findManyMock.mock.calls[0]?.[0]?.where).toEqual({
 			organizationId: "org-1",
 			isActive: true,
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			provider: { in: ["NHTSA_VPIC", "DATABRICKS_VECTOR_SEARCH"] },
 		});
 
@@ -162,6 +164,7 @@ describe("executionSurface: LOOM_CHAT", () => {
 			userId: "member-b",
 			organizationId: null,
 			isActive: true,
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			provider: { in: ["NHTSA_VPIC", "DATABRICKS_VECTOR_SEARCH"] },
 		});
 	});
@@ -240,6 +243,7 @@ describe("default (planner) surface", () => {
 		expect(findManyMock.mock.calls[0]?.[0]?.where).toEqual({
 			organizationId: "org-1",
 			isActive: true,
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 		});
 		expect(result.results.map((r) => r.provider)).toEqual(["SLACK"]);
 	});
@@ -320,6 +324,7 @@ describe("default (planner) surface", () => {
 		expect(omittedWhere.where).toEqual({
 			organizationId: "org-1",
 			isActive: true,
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 		});
 	});
 
@@ -373,5 +378,41 @@ describe("provider metadata", () => {
 		expect(
 			INTEGRATION_PROVIDER_METADATA.SLACK.operations.length,
 		).toBeGreaterThan(0);
+	});
+});
+
+describe("OAuth app-row exclusion", () => {
+	/** Applies the query's name exclusion the way Postgres would. */
+	function excludedByName(name: string, filter: unknown): boolean {
+		const condition = filter as { in?: string[]; endsWith?: string };
+		if (condition?.in) {
+			return condition.in.includes(name);
+		}
+		if (condition?.endsWith) {
+			return name.endsWith(condition.endsWith);
+		}
+		return false;
+	}
+
+	it("excludes only the reserved app-row names, so a connection whose name ends in _OAUTH_APP is still searched", async () => {
+		const rows = [
+			integration("i1", "SLACK", "Slack: example_OAUTH_APP"),
+			integration("i2", "SLACK", "SLACK_OAUTH_APP"),
+		];
+		findManyMock.mockImplementation(
+			async ({ where }: { where: { NOT?: { name?: unknown } } }) =>
+				rows.filter(
+					(row) => !excludedByName(row.name, where.NOT?.name),
+				),
+		);
+
+		const result = await searchAvailableIntegrations({
+			query: "post to slack",
+			userId: "u1",
+			organizationId: "org-1",
+			minConfidence: 0,
+		});
+
+		expect(result.results.map((r) => r.integrationId)).toEqual(["i1"]);
 	});
 });

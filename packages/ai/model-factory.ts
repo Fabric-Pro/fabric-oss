@@ -29,6 +29,10 @@ import { createDatabricksFetch } from "./lib/databricks-compat";
 import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
+import {
+	createPromptSteeredStructuredOutputMiddleware,
+	databricksModelNeedsPromptSteeredStructuredOutput,
+} from "./lib/prompt-steered-structured-output-middleware";
 
 /**
  * Reasoning model patterns that need middleware extraction
@@ -267,6 +271,10 @@ export function needsReasoningExtraction(
  * `viaGateway` marks a model built on the Vercel gateway client, which
  * forwards sampling parameters unchanged; see
  * {@link createAdaptiveClaudeSamplingMiddleware}.
+ *
+ * `promptSteerStructuredOutput` marks a Databricks-served Claude model that
+ * rejects Databricks' forced-tool structured-output translation; see
+ * {@link createPromptSteeredStructuredOutputMiddleware}.
  */
 function wrapWithProviderMiddleware(
 	model: LanguageModel,
@@ -275,6 +283,7 @@ function wrapWithProviderMiddleware(
 	resolvedProvider?: string,
 	isReasoningModel?: boolean,
 	viaGateway = false,
+	promptSteerStructuredOutput = false,
 ): LanguageModel {
 	// Always applied, and a no-op on any provider that emits its tool calls
 	// correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
@@ -290,6 +299,10 @@ function wrapWithProviderMiddleware(
 
 	if (viaGateway && gatewayModelRejectsSampling(modelName)) {
 		middleware.push(createAdaptiveClaudeSamplingMiddleware());
+	}
+
+	if (promptSteerStructuredOutput) {
+		middleware.push(createPromptSteeredStructuredOutputMiddleware());
 	}
 
 	if (
@@ -739,6 +752,12 @@ export function getModel(
 		 * (Bug #1942 review).
 		 */
 		isReasoningModel?: boolean;
+		/**
+		 * The model's canonical catalog name (e.g. `claude-sonnet-5-5`), resolved
+		 * by the caller. Databricks model strings are serving-endpoint names that
+		 * can be opaque aliases, so capability gates prefer this when present.
+		 */
+		canonicalModelName?: string | null;
 	},
 ): LanguageModel {
 	if (!modelName) {
@@ -937,6 +956,12 @@ export function getModel(
 			modelProvider,
 			provider,
 			context.isReasoningModel,
+			false,
+			provider === "DATABRICKS" &&
+				databricksModelNeedsPromptSteeredStructuredOutput(
+					modelWithoutPrefix,
+					context.canonicalModelName,
+				),
 		);
 	}
 
@@ -1000,6 +1025,20 @@ export function getEvaluationModel(
 	}
 
 	return getGatewayProvider(context.apiKey, context.headers).evaluationModel(
+		modelName,
+	);
+}
+
+/**
+ * Get a speech (text-to-speech) model through Vercel AI Gateway. Same shape as
+ * `getEvaluationModel`: speech models exist only on the gateway's typed
+ * surface, so the tenant's gateway credential and billing headers are reused.
+ */
+export function getGatewaySpeechModel(
+	modelName: string,
+	context: { apiKey: string; headers?: Record<string, string> },
+) {
+	return getGatewayProvider(context.apiKey, context.headers).speechModel(
 		modelName,
 	);
 }

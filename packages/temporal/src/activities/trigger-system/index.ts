@@ -840,7 +840,13 @@ async function resolveChannelCredentials(
 		? { organizationId, isActive: true }
 		: { userId, organizationId: null, isActive: true };
 	const integration = await db.workflowIntegration.findFirst({
-		where: { ...where, provider: providerKey as unknown as ProviderEnum },
+		where: {
+			...where,
+			provider: providerKey as unknown as ProviderEnum,
+			// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
+			// not a connection.
+			NOT: { name: `${providerKey}_OAUTH_APP` },
+		},
 		orderBy: { lastUsedAt: "desc" },
 	});
 	if (!integration) {

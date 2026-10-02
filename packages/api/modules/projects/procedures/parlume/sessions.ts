@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
-import { resolveOpenAiApiKey } from "@repo/ai";
+import { getAISpeechModel, resolveOpenAiApiKey } from "@repo/ai";
 import { db, getBuiltInToolConfig, isFeatureEnabled } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -46,6 +46,18 @@ type ParlumeAgentOption = {
 
 function assertNever(value: never): never {
 	throw new Error(`Unsupported Parlume agent kind: ${value}`);
+}
+
+// Speech goes through the organization's AI Gateway when it has one, and falls
+// back to its direct OpenAI key; either makes Parlume able to answer aloud.
+async function hasParlumeVoice(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return (
+		(await getAISpeechModel({ userId, organizationId })) !== null ||
+		Boolean(await resolveOpenAiApiKey({ userId, organizationId }))
+	);
 }
 
 function digestStreamToken(token: string): string {
@@ -251,12 +263,7 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 
 		const operatorReady =
 			Boolean(getParlumeBridgeSettings()) &&
-			Boolean(
-				await resolveOpenAiApiKey({
-					userId: context.user.id,
-					organizationId: project.organizationId,
-				}),
-			);
+			(await hasParlumeVoice(context.user.id, project.organizationId));
 		const customAgents = [...agents.values()].map<ParlumeAgentOption>(
 			(agent) => ({
 				kind: TEMPLATE_INSTANCE_KIND,
@@ -379,15 +386,10 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 			agentInstanceSId: input.agentInstanceSId,
 			userId: context.user.id,
 		});
-		if (
-			!(await resolveOpenAiApiKey({
-				userId: context.user.id,
-				organizationId: project.organizationId,
-			}))
-		) {
+		if (!(await hasParlumeVoice(context.user.id, project.organizationId))) {
 			throw new ORPCError("CONFLICT", {
 				message:
-					"Parlume needs a Fabric OpenAI voice key before it can join. Ask an operator to configure speech for this organization.",
+					"Parlume needs a voice before it can join: configure a Vercel AI Gateway or OpenAI Direct provider for this organization.",
 			});
 		}
 		const streamToken = randomBytes(32).toString("base64url");

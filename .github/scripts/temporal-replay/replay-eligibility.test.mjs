@@ -39,7 +39,13 @@ const basePullRequest = {
 };
 
 function normalizeExpression(expression) {
-	return expression.replaceAll(/\s+/g, " ").trim();
+	// Promotion routing is evaluated separately against live REST metadata.
+	// Retain the existing exact pin on the original replay authorization.
+	const guarded = expression.match(
+		/^\s*always\(\) && (?:!cancelled\(\) && )?\(needs\.promotion_policy\.result != 'success' \|\| needs\.promotion_policy\.outputs\.reduced != 'true'\) && (?:needs\.[a-z_]+\.result == 'success' && )*\(([\s\S]*)\)\s*$/,
+	);
+	const original = guarded ? guarded[1] : expression;
+	return original.replaceAll(/\s+/g, " ").trim();
 }
 
 function jobBody(workflow, name, nextName) {
@@ -89,7 +95,7 @@ test("secret-bearing execution uses only trusted default-branch workflow code", 
 	assert.match(trustedWorkflow, /^permissions: \{\}$/m);
 });
 
-test("credential-free producer is pull_request-only and has no private execution surface", () => {
+test("credential-free producer runs on pull_request only and has no private execution surface", () => {
 	assert.match(credentialFreeWorkflow, /^ {2}pull_request:$/m);
 	assert.doesNotMatch(credentialFreeWorkflow, /^ {2}pull_request_target:$/m);
 	assert.match(credentialFreeWorkflow, /^permissions: \{\}$/m);
@@ -97,8 +103,9 @@ test("credential-free producer is pull_request-only and has no private execution
 	assert.doesNotMatch(credentialFreeWorkflow, /^ {4}environment:/m);
 	assert.doesNotMatch(
 		credentialFreeWorkflow,
-		/actions\/checkout|pnpm install|fetch:replay-histories|test:replay/,
+		/pnpm install|fetch:replay-histories|test:replay/,
 	);
+	assert.doesNotMatch(credentialFreeWorkflow, /actions\/checkout/);
 	assert.doesNotMatch(credentialFreeWorkflow, /statuses: write/);
 	assert.doesNotMatch(
 		credentialFreeWorkflow,
@@ -111,7 +118,7 @@ test("dynamic automatic CheckRun name exactly matches tested producer routing", 
 		normalizeExpression(blockExpression(credentialCheckJob, "needs")),
 		normalizeExpression(CREDENTIAL_FREE_JOB_NAME_EXPRESSION),
 	);
-	assert.match(credentialCheckJob, /if: always\(\)/);
+	assert.match(credentialCheckJob, /if: >-\n {6}always\(\)/);
 });
 
 test("trusted replay gate exactly matches the tested eligibility policy", () => {
@@ -127,7 +134,7 @@ test("trusted denial gate exactly matches the tested blocking policy", () => {
 		normalizeExpression(blockExpression(denialJob, "runs-on")),
 		normalizeExpression(TRUSTED_DENIAL_JOB_CONDITION),
 	);
-	assert.match(denialJob, /needs: authorize/);
+	assert.match(denialJob, /needs: \[authorize, promotion_policy\]/);
 });
 
 test("pending and final replay statuses run only for eligible relevant PRs or manual dispatch", () => {
@@ -138,7 +145,7 @@ test("pending and final replay statuses run only for eligible relevant PRs or ma
 			/needs\.authorize\.outputs\.secret_eligible == 'true'/,
 		);
 	}
-	assert.match(initializeJob, /needs: authorize/);
+	assert.match(initializeJob, /needs: \[authorize, promotion_policy\]/);
 	assert.match(publishJob, /if: >-\n {6}always\(\)/);
 	assert.equal(
 		[...trustedWorkflow.matchAll(/statuses\/\$PR_HEAD_SHA/g)].length,
@@ -518,7 +525,11 @@ test("policy files are workflow-relevant and every action is SHA-pinned", () => 
 		for (const [, reference] of workflow.matchAll(
 			/^\s+uses: ([^\s#]+)/gm,
 		)) {
-			assert.match(reference, /@[0-9a-f]{40}$/);
+			if (
+				reference !== "./.github/workflows/private-promotion-policy.yml"
+			) {
+				assert.match(reference, /@[0-9a-f]{40}$/);
+			}
 		}
 	}
 });

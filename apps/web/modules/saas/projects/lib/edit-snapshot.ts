@@ -32,14 +32,17 @@ export type EditInstructionSnapshotResult = {
  * asking would fail the whole save.
  *
  * `finalize` then starts the same validation workflow an upload starts, which
- * is the point of the whole design: the secret gate reads every file
- * (inherited ones included), the digest is recomputed, and the tab's existing
+ * is the point of the whole design: the secret gate decides every file (an
+ * inherited one is read again only when its source version was not cleared by
+ * the scan rule set now in force), the digest is recomputed, and the tab's existing
  * polling shows the new version being checked, published, or rejected with the
  * banner it already has.
  *
  * Hashes are computed here, client-side, from the same bytes that are sent.
  * The server re-hashes what actually arrives (twice — at the gate and again at
  * promotion), so a wrong hash is a rejected version, never a published one.
+ * Only the uploaded files are hashed that way: an inherited file is the
+ * source's already-hashed object, copied inside storage.
  */
 export async function editInstructionSnapshot(input: {
 	projectId: string;

@@ -40,6 +40,7 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		getPublished: vi.fn(),
 		createDownloadUrl: vi.fn(),
+		createFileDownloadUrls: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
 		getDefaultContext: vi.fn<() => unknown>(),
@@ -61,6 +62,7 @@ vi.mock("../src/lib/client.js", () => {
 		instructions: {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: mocks.createDownloadUrl,
+			createFileDownloadUrls: mocks.createFileDownloadUrls,
 		},
 		// The real `FabricClient.withoutContext()` returns a sibling with no
 		// ambient org/personal default. Here it returns the same stub and
@@ -143,14 +145,14 @@ describe("fabric instructions sync", () => {
 			"AGENTS.md",
 		]);
 		expect(result.stdout).toContain("2 added");
-		// TWO clients, deliberately. The manifest read keeps the sync budget;
-		// the download-link request gets the bundle budget and NO retries,
-		// because a timed-out retry of that POST does not wait for the build
-		// already running on the server, it starts another one.
+		// One client: two writes are fetched by name, and signing a URL for a
+		// named file builds nothing, so it shares the manifest read's budget
+		// and retries. The archive route's own client (bundle budget, NO
+		// retries) is pinned in `instructions-sync-per-file.test.ts`.
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
 			{ timeoutMs: 15_000 },
-			{ timeoutMs: 60_000, retry: { maxRetries: 0 } },
 		]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
 
 	it("writes nothing and downloads nothing on --dry-run", async () => {
@@ -1131,11 +1133,11 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"published\n",
 		);
-		// Hook mode's ONE absolute deadline still bounds the download-link
-		// request — it does not get the 60-second bundle budget — and retries
-		// stay off, as they are for every hook-mode call.
+		// Hook mode's ONE absolute deadline bounds every request — none gets
+		// the 60-second bundle budget — and retries stay off, as they are for
+		// every hook-mode call. The one write is fetched by name, so there is
+		// no separate download-link client.
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
-			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
 			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
 		]);
 	});

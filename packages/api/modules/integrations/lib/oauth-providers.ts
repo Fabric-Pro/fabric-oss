@@ -6,21 +6,10 @@
  * along with required scopes and user info fetching logic.
  */
 
-export type OAuthProviderType =
-	| "AIRTABLE"
-	| "BITBUCKET"
-	| "HUBSPOT"
-	| "INTERCOM"
-	| "LINEAR"
-	| "ASANA"
-	| "DROPBOX"
-	| "GITHUB"
-	| "GMAIL"
-	| "GITLAB"
-	| "GOOGLE_DRIVE"
-	| "MICROSOFT_GRAPH"
-	| "SLACK"
-	| "NOTION";
+import type { OAuthAppProvider } from "@repo/database/prisma/queries/lib/oauth-app-row";
+
+/** Every provider with an OAuth app, and so a reserved `<PROVIDER>_OAUTH_APP` row name. */
+export type OAuthProviderType = OAuthAppProvider;
 
 export interface OAuthTokenResponse {
 	access_token: string;

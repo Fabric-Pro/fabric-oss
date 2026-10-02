@@ -24,6 +24,13 @@ export interface ProjectContextEmbeddingInput {
 		id: string;
 		type: string;
 		content: string;
+		/**
+		 * The content version copied with `content`, so the stamp after the
+		 * embed can tell whether the row changed meanwhile. Optional for an
+		 * execution started before it existed.
+		 */
+		contentHash?: string | null;
+		updatedAt?: string;
 	}>;
 }
 
@@ -90,8 +97,17 @@ export async function projectContextEmbeddingWorkflow(
 
 		// Step 3: Update database with Qdrant IDs and embeddedAt timestamp
 		await updateContextEmbeddingStatus({
+			projectId: input.projectId,
 			contextIds: validContexts.map((c) => c.id),
 			qdrantIds,
+			...(validContexts.every((c) => c.updatedAt !== undefined)
+				? {
+						versions: validContexts.map((c) => ({
+							contentHash: c.contentHash ?? null,
+							updatedAt: c.updatedAt as string,
+						})),
+					}
+				: {}),
 		});
 
 		return {

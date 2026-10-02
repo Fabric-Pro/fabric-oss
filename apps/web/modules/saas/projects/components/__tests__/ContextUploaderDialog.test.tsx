@@ -450,4 +450,39 @@ describe("ContextUploaderDialog — editorial cleanup", () => {
 			refreshMode: "ONCE",
 		});
 	});
+
+	it("does not close on Escape while a submit is in flight", async () => {
+		// Deferred so the submit stays "in flight" until we resolve it below —
+		// gives Escape a real mid-submit window to fire into.
+		let resolveProcessLink: (() => void) | undefined;
+		processLinkMock.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveProcessLink = resolve;
+				}),
+		);
+		const onOpenChange = vi.fn();
+		const user = userEvent.setup();
+
+		wrap(
+			<ContextUploaderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={onOpenChange}
+			/>,
+		);
+
+		await user.click(getTabTrigger("link"));
+		await user.type(screen.getByLabelText("URL"), "https://example.com/");
+		await user.click(
+			screen.getByRole("button", { name: /^Add Context$/i }),
+		);
+		await waitFor(() => expect(processLinkMock).toHaveBeenCalledTimes(1));
+
+		await user.keyboard("{Escape}");
+		expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+		resolveProcessLink?.();
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+	});
 });

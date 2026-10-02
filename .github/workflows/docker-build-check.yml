@@ -68,7 +68,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   temporal-worker:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: build temporal worker image
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -76,7 +92,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -84,18 +100,22 @@ jobs:
           context: .
           file: packages/temporal/Dockerfile
           push: false
-          # GitHub's cache pool is hard-capped at 10 GB and the deploy
-          # pipeline's thirteen images already exceed it, which is why that
-          # pipeline caches to ACR instead. This gate builds ONE image and has
-          # no registry credentials on a pull request (a fork PR must not get
-          # them), so a scoped GHA cache is the right trade: it fits, and a cold
-          # miss costs time rather than correctness.
-          cache-from: type=gha,scope=temporal-worker-pr
-          cache-to: type=gha,scope=temporal-worker-pr,mode=max
+          # No external layer-cache import or export in any job of this
+          # workflow. A GitHub Actions cache written by a pull_request run is
+          # confined to that PR's merge ref, and nothing seeds a shared branch
+          # cache here: every BuildKit entry measured was PR-scoped. Observed
+          # cold builds spent 4.5-10 minutes exporting mode=max caches, and one
+          # PR's export (7.9 GB) took the repository over its 10 GB cache
+          # budget, risking eviction of the base-branch Type Check caches that
+          # PRs restore. A registry export would need write credentials that
+          # must not reach fork PRs.
 
   # Repo-gated for the same reason as temporal-worker above: the public repo
   # builds the identical image on the relayed change.
   sandbox-worker:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: build sandbox worker image
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -103,18 +123,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           # The image installs everything itself; it needs no workspace files, so
-          # the narrow context keeps the build fast and the cache small.
+          # the narrow context keeps the build fast.
           context: services/sandbox-worker
           file: services/sandbox-worker/Dockerfile
           push: false
-          cache-from: type=gha,scope=sandbox-worker-pr
-          cache-to: type=gha,scope=sandbox-worker-pr,mode=max
 
   # These were built by nothing on a pull request. The web and wrapper images ship
   # only through the self-hosted GitLab pipeline and the migration runner only on
@@ -125,6 +143,9 @@ jobs:
   # Repo-gated like the two above: the public repo builds the identical image
   # on the relayed change.
   mcp-stdio-wrapper:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: build mcp stdio wrapper image
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -132,7 +153,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -140,10 +161,11 @@ jobs:
           context: .
           file: packages/mcp-stdio-wrapper/Dockerfile
           push: false
-          cache-from: type=gha,scope=mcp-stdio-wrapper-pr
-          cache-to: type=gha,scope=mcp-stdio-wrapper-pr,mode=max
 
   migration-runner:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: build migration runner image
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -151,7 +173,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -159,10 +181,11 @@ jobs:
           context: .
           file: packages/database/Dockerfile.migrate
           push: false
-          cache-from: type=gha,scope=migration-runner-pr
-          cache-to: type=gha,scope=migration-runner-pr,mode=max
 
   web:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: build web image
     # The web Dockerfile grants Node a 12 GiB heap. Private standard runners
     # cannot fit that build; use the larger native x64 tier for private PRs.
@@ -172,7 +195,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -180,5 +203,3 @@ jobs:
           context: .
           file: apps/web/Dockerfile
           push: false
-          cache-from: type=gha,scope=web-pr
-          cache-to: type=gha,scope=web-pr,mode=max

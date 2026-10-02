@@ -135,16 +135,35 @@ describe("image load fallback", () => {
 	});
 
 	it("clears the message when a refreshed src loads", () => {
-		// Both editors re-resolve expired story-media signed URLs shortly after
-		// mount, so error → fresh src → load is the common sequence.
+		// Both editors re-resolve expired signed URLs after mount by rewriting
+		// the <img>'s DOM `src` — never the document, which keeps the URL signed
+		// at upload time. So the `load` arrives under a src the document has
+		// never held. Keying on that src left the expired one marked broken
+		// forever: the picture loaded behind `display: none` and every image
+		// older than an hour read "Image unavailable" (Fizzy #2800).
 		const editor = createEditor(`<img src="${BROKEN}" alt="shot.png">`);
 		const img = brokenImage(editor);
 
 		img.dispatchEvent(new Event("error"));
 		expect(fallbacks(editor)).toHaveLength(1);
+		img.setAttribute("src", "https://example.invalid/shot.png?sig=fresh");
 		img.dispatchEvent(new Event("load"));
 
 		expect(fallbacks(editor)).toHaveLength(0);
+		expect(img.closest(".image-load-failed")).toBeNull();
+
+		editor.destroy();
+	});
+
+	it("labels the image again when the refreshed src fails too", () => {
+		// The object was deleted from storage: the refresher's URL 404s as well.
+		const editor = createEditor(`<img src="${BROKEN}" alt="shot.png">`);
+		const img = brokenImage(editor);
+
+		img.setAttribute("src", "https://example.invalid/shot.png?sig=fresh");
+		img.dispatchEvent(new Event("error"));
+
+		expect(fallbacks(editor)).toHaveLength(1);
 
 		editor.destroy();
 	});

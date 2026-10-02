@@ -4,8 +4,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { authClient } from "@repo/auth/client";
 import { config } from "@repo/config";
 import { useAuthErrorMessages } from "@saas/auth/hooks/errors-messages";
-import { safeRelativePath } from "@shared/lib/safe-redirect";
+import { isServerNavigationPath } from "@saas/auth/lib/oauth-continuation";
 import { useRouter } from "@shared/hooks/router";
+import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { Alert, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import {
@@ -72,6 +73,12 @@ export function OtpForm() {
 				throw error;
 			}
 
+			// An agent's authorization resumes at a route handler, which needs a
+			// real navigation rather than a client-side route change.
+			if (isServerNavigationPath(redirectPath)) {
+				window.location.assign(redirectPath);
+				return;
+			}
 			router.replace(redirectPath);
 		} catch (e) {
 			form.setError("root", {

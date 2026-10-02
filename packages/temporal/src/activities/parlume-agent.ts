@@ -90,6 +90,9 @@ async function loadConnectionBindings(
 											provider:
 												"MICROSOFT_GRAPH" as const,
 											isActive: true,
+											NOT: {
+												name: "MICROSOFT_GRAPH_OAUTH_APP",
+											},
 										},
 									]
 								: []),

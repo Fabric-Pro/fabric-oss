@@ -10,6 +10,7 @@
  */
 import { ORPCError } from "@orpc/client";
 import {
+	claimInstructionValidationAttempt,
 	getInstructionSnapshot,
 	type InstructionSnapshotStatus,
 	startInstructionSnapshotValidation,
@@ -56,9 +57,10 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * `WorkflowExecutionAlreadyStartedError` from that re-attempt means an earlier
  * call's start actually succeeded (only the subsequent status write failed or
  * never ran), so it is treated as success rather than re-thrown — EXCEPT when
- * the pre-read status was FAILED, where it means the previous execution is
- * still closing and no new run exists to move the row for; that case returns
- * FAILED and writes nothing. Any other start failure propagates unchanged and
+ * the pre-read status was FAILED, where it means either the previous
+ * execution is still closing (no new run exists to move the row for) or a
+ * second press of "Try again" landed on the run the first press started; that
+ * case writes nothing and returns the row's status as read again. Any other start failure propagates unchanged and
  * leaves the snapshot exactly where it was (RECEIVING or FAILED), for the next
  * finalize call to retry.
  *
@@ -81,6 +83,13 @@ function isWorkflowAlreadyStartedError(error: unknown): boolean {
  * allows, and the snapshot's staging objects are still there
  * (`markInstructionSnapshotFailed` deliberately leaves them), so the new run's
  * integrity/secret gate has the bytes it needs.
+ *
+ * Before the start, the row is given the ownership token the run carries
+ * (`claimInstructionValidationAttempt`), passed to the workflow as
+ * `validationAttemptId`. Every write the run makes names it, so a stale
+ * attempt of an earlier run matches nothing, and the run's own claim can move
+ * a FAILED row it owns to VALIDATING when this handler's status write below
+ * was lost.
  *
  * `snapshot.publishBeforeScan` (Fizzy #2737) is read off the row the caller
  * loaded and handed to the workflow, which takes its publish-first path only
@@ -112,14 +121,32 @@ export async function finalizeInstructionSnapshot(input: {
 
 	// Wrapped so a caller that has just created a snapshot row can tell "no
 	// workflow exists" from "a workflow may exist" — see
-	// `instruction-workflow-start.ts`. Only client ACQUISITION is wrapped:
-	// everything below either IS the start or follows it, and a start that
-	// was called is ambiguous by construction.
+	// `instruction-workflow-start.ts`. Only the work BEFORE the start is
+	// wrapped (the token claim and client acquisition): everything below
+	// either IS the start or follows it, and a start that was called is
+	// ambiguous by construction.
+	//
+	// The token is written to the row BEFORE the run starts, so every write
+	// the run makes can name it and a stale attempt of an earlier run cannot
+	// touch the row (see `claimInstructionValidationAttempt`).
+	let validationAttemptId: string | null;
 	let temporalClient: Awaited<ReturnType<typeof getTemporalClient>>;
 	try {
+		validationAttemptId = await claimInstructionValidationAttempt({
+			snapshotId: snapshot.id,
+			projectId,
+			organizationId,
+		});
 		temporalClient = await getTemporalClient();
 	} catch (error) {
 		throw instructionWorkflowNotStarted(error);
+	}
+	if (validationAttemptId === null) {
+		// The row left RECEIVING/FAILED since the caller read it: a run
+		// already owns it or has reached a verdict. Report what is there.
+		return {
+			status: await currentStatus(snapshot.id, projectId, organizationId),
+		};
 	}
 	let alreadyStarted = false;
 	try {
@@ -128,7 +155,8 @@ export async function finalizeInstructionSnapshot(input: {
 			withCorrelationMemo({
 				// Its own queue, not "project-documents": these activities
 				// are long and I/O-bound (the gate hashes and scans up
-				// to 50 MB, and promotion re-hashes and re-writes it), so
+				// to 50 MB, and promotion re-hashes and re-writes what was
+				// uploaded and copies the rest inside storage), so
 				// sharing the 5 slots that serve a human waiting on a
 				// document generation let three uploads hold 60% of it.
 				// Registered in `packages/temporal/src/worker.ts`.
@@ -145,6 +173,7 @@ export async function finalizeInstructionSnapshot(input: {
 						projectId,
 						organizationId,
 						userId,
+						validationAttemptId,
 						...(snapshot.publishBeforeScan === true
 							? { publishBeforeScan: true }
 							: {}),
@@ -159,8 +188,8 @@ export async function finalizeInstructionSnapshot(input: {
 		alreadyStarted = true;
 	}
 
-	// A FAILED row plus `AlreadyStarted` is the one combination where
-	// nothing new is running and nothing should move.
+	// A FAILED row plus `AlreadyStarted` has two possible meanings, and the
+	// row, read again, tells them apart.
 	//
 	// `markInstructionSnapshotFailed` writes FAILED from inside the
 	// workflow's boundary catch, which then RETHROWS; the execution stays
@@ -169,17 +198,22 @@ export async function finalizeInstructionSnapshot(input: {
 	// old, still-closing run — not from a new one. Transitioning on that
 	// would move FAILED to VALIDATING with no execution behind it, and the
 	// old run would close moments later having already written its verdict,
-	// leaving the snapshot VALIDATING forever with the tab polling it.
+	// leaving the snapshot VALIDATING forever with the tab polling it. The
+	// row is still FAILED then, so the status is reported and nothing moves.
 	//
-	// So the status is preserved and reported, and the user retries once
-	// the previous run has closed (Temporal's default id-reuse policy
-	// allows the same workflow id again at that point). RECEIVING keeps
-	// the existing tolerance: there `AlreadyStarted` means an earlier
-	// attempt's start genuinely succeeded and only its status write was
-	// lost, so the transition is the repair. VALIDATING never reaches
+	// The other meaning is a second press of "Try again": the first press
+	// started a fresh run, and this one read the row before the first
+	// press's VALIDATING write landed. That run is live, and the row, read
+	// again, is no longer FAILED, so what is actually there is the answer.
+	//
+	// RECEIVING keeps the existing tolerance: there `AlreadyStarted` means an
+	// earlier attempt's start genuinely succeeded and only its status write
+	// was lost, so the transition is the repair. VALIDATING never reaches
 	// this line — it returned above.
 	if (alreadyStarted && snapshot.status === "FAILED") {
-		return { status: "FAILED" as const };
+		return {
+			status: await currentStatus(snapshot.id, projectId, organizationId),
+		};
 	}
 
 	// Conditional, because the workflow races this write. It is started
@@ -193,6 +227,7 @@ export async function finalizeInstructionSnapshot(input: {
 		snapshotId: snapshot.id,
 		projectId,
 		organizationId,
+		validationAttemptId,
 	});
 	if (started.changed) {
 		return { status: "VALIDATING" as const };
@@ -200,13 +235,23 @@ export async function finalizeInstructionSnapshot(input: {
 	// The conditional write matched nothing: either the workflow has
 	// already produced a terminal status, or the row was already
 	// VALIDATING. Report what is actually there rather than asserting.
+	return {
+		status: await currentStatus(snapshot.id, projectId, organizationId),
+	};
+}
+
+async function currentStatus(
+	snapshotId: string,
+	projectId: string,
+	organizationId: string,
+): Promise<InstructionSnapshotStatus> {
 	const current = await getInstructionSnapshot(
-		snapshot.id,
+		snapshotId,
 		projectId,
 		organizationId,
 	);
 	if (!current) {
 		throw new ORPCError("NOT_FOUND", { message: "Upload not found" });
 	}
-	return { status: current.status };
+	return current.status;
 }

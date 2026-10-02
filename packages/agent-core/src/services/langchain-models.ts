@@ -22,6 +22,7 @@ import {
 	resolveAzureDeploymentTarget,
 } from "@repo/agent-types";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
+import { isRetryableError } from "../retry";
 import {
 	createDatabricksFetch,
 	isReasoningModelName,
@@ -127,9 +128,15 @@ interface UserPreferenceResponse {
  * Fetch AI configuration from the API using tenant context.
  * This is used when AI config is not passed directly through CopilotKit.
  *
+ * A transient lookup failure (5xx, 408/425/429, or a network fault, per
+ * {@link isRetryableError}) is thrown rather than returned as null: null makes
+ * the caller report "No AI provider configured", which agent nodes correctly
+ * treat as permanent, so an API blip would end the run with the wrong advice.
+ *
  * @param userId - Tenant user ID
  * @param organizationId - Optional organization ID
  * @returns Provider config or null if not available
+ * @throws The lookup failure, when it is transient
  */
 async function fetchAiConfigFromApi(
 	userId: string,
@@ -151,8 +158,9 @@ async function fetchAiConfigFromApi(
 		return null;
 	}
 
+	let response: Response;
 	try {
-		const response = await fetch(`${apiUrl}/api/agents/ai-config`, {
+		response = await fetch(`${apiUrl}/api/agents/ai-config`, {
 			method: "GET",
 			headers: {
 				"Content-Type": "application/json",
@@ -162,16 +170,36 @@ async function fetchAiConfigFromApi(
 				}),
 			},
 		});
-
-		if (!response.ok) {
-			const error = await response.json().catch(() => ({}));
-			console.error(
-				`[LangChainModels] Failed to fetch AI config: ${response.status}`,
-				error,
-			);
-			return null;
+	} catch (error) {
+		console.error(
+			"[LangChainModels] Error fetching AI config from API:",
+			error,
+		);
+		if (isRetryableError(error)) {
+			throw error;
 		}
+		return null;
+	}
 
+	if (!response.ok) {
+		const body = await response.json().catch(() => ({}));
+		console.error(
+			`[LangChainModels] Failed to fetch AI config: ${response.status}`,
+			body,
+		);
+		const failure = Object.assign(
+			new Error(
+				`[LangChainModels] AI config lookup failed with HTTP ${response.status}`,
+			),
+			{ status: response.status },
+		);
+		if (isRetryableError(failure)) {
+			throw failure;
+		}
+		return null;
+	}
+
+	try {
 		const data = (await response.json()) as AiConfigResponse;
 
 		console.log(
@@ -191,9 +219,12 @@ async function fetchAiConfigFromApi(
 		};
 	} catch (error) {
 		console.error(
-			"[LangChainModels] Error fetching AI config from API:",
+			"[LangChainModels] Error reading AI config from API:",
 			error,
 		);
+		if (isRetryableError(error)) {
+			throw error;
+		}
 		return null;
 	}
 }

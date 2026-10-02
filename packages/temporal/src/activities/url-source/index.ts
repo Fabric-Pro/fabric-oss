@@ -12,6 +12,11 @@ export {
 	bulkInitUrlPagesActivity,
 } from "./bulk-init-url-pages-activity";
 export {
+	type CompanyUrlCrawlGateActivityInput,
+	type CompanyUrlCrawlGateActivityOutput,
+	companyUrlCrawlGateActivity,
+} from "./company-gate-activity";
+export {
 	type EmbedUrlPageActivityInput,
 	type EmbedUrlPageActivityOutput,
 	embedUrlPageActivity,

@@ -2694,6 +2694,17 @@ export async function listAvailablePromptsForAgent({
 										scope: true,
 									},
 								},
+								// The newest version, for `latestVersion` and the
+								// preview below.
+								versions: {
+									orderBy: { version: "desc" },
+									take: 1,
+									select: {
+										id: true,
+										version: true,
+										content: true,
+									},
+								},
 							},
 						},
 					},
@@ -2725,7 +2736,14 @@ export async function listAvailablePromptsForAgent({
 		// Map bindings to prompt format
 		const prompts = bindings.map((binding) => {
 			const prompt = binding.promptVersion.prompt;
-			const content = binding.promptVersion.content ?? "";
+			// The prompt's newest version, not the one this binding pins: it is
+			// what document generation renders, and what the picker previews and
+			// hands to generation and to "Bind as Default". A new version
+			// re-points only bindings at the prompt's own scope, so the same
+			// prompt bound at another tier would otherwise arrive with an older
+			// "latest" and an older preview on that row (Fizzy #2807).
+			const newest = prompt.versions[0] ?? binding.promptVersion;
+			const content = newest.content ?? "";
 			return {
 				id: prompt.id,
 				key: prompt.key,
@@ -2741,10 +2759,7 @@ export async function listAvailablePromptsForAgent({
 					content.length > 200
 						? `${content.slice(0, 200)}...`
 						: content,
-				latestVersion: {
-					id: binding.promptVersion.id,
-					version: binding.promptVersion.version,
-				},
+				latestVersion: { id: newest.id, version: newest.version },
 			};
 		});
 

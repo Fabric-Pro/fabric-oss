@@ -255,10 +255,7 @@ export function buildExecutionContext(
 
 		cachedResultsContext = `
 === CACHED DATA FROM PREVIOUS STEPS ===
-**CRITICAL: Use this data instead of making redundant API calls!**
-- DO NOT call get_identity/get_accounts again - use the cached identity below
-- DO NOT call get_boards again - use the cached boards list below
-- Extract account_id, board_id, and other IDs from this cached data
+Use this data instead of calling the tools below again: take account, board, project and other IDs from it.
 
 ${cachedItems}
 `;
@@ -348,14 +345,9 @@ ${cachedItems}
 
 		iterationContext = `
 === BULK/ITERATION OPERATION ===
-**YOU MUST PROCESS ALL ITEMS - DO NOT STOP EARLY**
-
-This step requires iteration over ${estimatedItems > 0 ? `${estimatedItems} items` : "all items"}.
-- Call the tool ONCE for EACH item in the list
-- Do NOT stop after 2-3 items - process the ENTIRE list
-- If there are 10 items, make 10 tool calls
-- If there are 50 items, make 50 tool calls
-- Report progress: "Processing item X of Y..."
+Process every item required by this step (about ${estimatedItems > 0 ? `${estimatedItems} items` : "all items"}).
+- If the step requires per-item reads or changes, make every required call for every item; do not stop after the first few.
+- Use one call only when it returns all information required for every item or performs all required actions. A list of item names or IDs is not sufficient when details must be fetched separately.
 `;
 	}
 
@@ -371,9 +363,14 @@ This step requires iteration over ${estimatedItems > 0 ? `${estimatedItems} item
 			: "";
 
 	// Step rules
-	const stepRules = isResearchStep
-		? `Rules: Execute ONLY this step. You MUST use the available tools to gather NEW information specific to "${input.step.description}". Do not assume previous step data covers this topic - each research step has a unique focus.`
-		: "Rules: Execute ONLY this step. Use cached data if available.";
+	// The no-tools fallback reuses this context with an empty tool set, so a
+	// research step must not be told to gather data with tools it lacks.
+	const hasTools = Object.keys(filteredTools).length > 0;
+	const stepRules = !isResearchStep
+		? "Rules: Execute ONLY this step. Use cached data if available."
+		: hasTools
+			? `Rules: Execute ONLY this step. You MUST use the available tools to gather NEW information specific to "${input.step.description}". Do not assume previous step data covers this topic - each research step has a unique focus.`
+			: "Rules: Execute ONLY this step. No tools are available to gather new information. Use only the information supplied here, say which parts come from earlier steps, and explain what cannot be verified. Do not invent findings or claim to have used tools.";
 
 	// Tool usage guidelines
 	const toolUsageGuidelines = `
@@ -392,7 +389,7 @@ This step requires iteration over ${estimatedItems > 0 ? `${estimatedItems} item
 
 **3. PROCESSING TOOL RESULTS**
 - Parse JSON responses carefully to extract the data you need
-- If a tool returns a list, that single call contains ALL the data - do not call it again
+- Reuse data already returned. A list may contain only names or IDs; fetch any additional details this step requires
 - Use IDs from results when making follow-up tool calls
 
 **4. PRESENTING RESULTS TO USER**
@@ -404,24 +401,9 @@ This step requires iteration over ${estimatedItems > 0 ? `${estimatedItems} item
 - Present results in a clear, organized format (use markdown lists or tables)
 
 **5. EFFICIENCY**
-- A single tool call that returns a list is sufficient - do NOT call the same tool multiple times for the same data
-- Do NOT iterate by calling a tool once per item when a single call returns all items
-- Cache and reuse results from previous steps when relevant
-
-**6. CHARTS AND VISUALIZATIONS**
-- When the user asks for a chart, call the create_chart tool with RAW data - the tool handles aggregation
-- **Pass raw API data directly** - DO NOT try to count or aggregate yourself
-- **The tool will count/sum/aggregate** - just tell it how via the 'aggregation' parameter
-- Example: If API returned [{board_name: "A", ...}, {board_name: "B", ...}, {board_name: "A", ...}]
-  Call: create_chart(data: <raw_api_response>, groupBy: "board_name", aggregation: "count", chartType: "pie")
-  The tool will count: A=2, B=1 and create the chart
-- **Parameters:**
-  - data: Pass the RAW array from API response (don't modify it)
-  - groupBy: Field to categorize by (e.g., "board_name", "status", "type", "assignee")
-  - aggregation: "count" (count items), "sum" (total a field), "average", or "none"
-  - valueField: Only needed for "sum" or "average" - the numeric field to aggregate
-- **WRONG:** Trying to count items yourself, making up numbers, writing markdown about charts
-- **RIGHT:** Pass raw data array + aggregation instructions, let the tool do the math`;
+- Do not repeat a call for data already retrieved
+- Skip per-item calls only when a single call supplies all required information for every item or performs all required actions
+- Cache and reuse results from previous steps when relevant`;
 
 	// Final step instructions
 	const isFinalStep = input.stepIndex === input.totalSteps;

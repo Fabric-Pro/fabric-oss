@@ -51,6 +51,9 @@ const {
 	toastSuccess,
 	toastError,
 	toastWarning,
+	noticeState,
+	isGuestInOrg,
+	gateOverride,
 } = vi.hoisted(() => ({
 	getAiConfigStatus: vi.fn(),
 	createDocument: vi.fn(),
@@ -66,6 +69,20 @@ const {
 	toastSuccess: vi.fn(),
 	toastError: vi.fn(),
 	toastWarning: vi.fn(),
+	// The company context notice's own read (Fizzy #2719).
+	noticeState: vi.fn(),
+	isGuestInOrg: vi.fn(() => false),
+	/**
+	 * A gate to show in place of the real selection, for the one test that
+	 * needs the thin-context banner on screen. `null` leaves the real hooks in
+	 * charge, which is what every other test in this file has always run on.
+	 */
+	gateOverride: {
+		current: null as null | {
+			selection: unknown;
+			gates: unknown;
+		},
+	},
 }));
 
 vi.mock("next-intl", () => ({
@@ -90,9 +107,45 @@ vi.mock("next/navigation", () => ({
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: null,
+		// Read only by the company context notice's settings link; every
+		// project route below is still built from `basePath`.
+		organizationSlug: "example-org",
 		basePath: "/app",
 	}),
 }));
+
+vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
+	useIsGuestInOrg: () => isGuestInOrg(),
+}));
+
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) => key === "COMPANY_CONTEXT",
+}));
+
+vi.mock(
+	"@saas/projects/components/capability-gates/useCapabilityGates",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/projects/components/capability-gates/useCapabilityGates")
+			>();
+		return {
+			...actual,
+			// The real hooks always run, so hook order never depends on
+			// whether a test installed an override; only the result does.
+			useCapabilityGate: (key: string) => {
+				const real = actual.useCapabilityGate(key);
+				return gateOverride.current
+					? gateOverride.current.selection
+					: real;
+			},
+			useCapabilityGates: () => {
+				const real = actual.useCapabilityGates();
+				return gateOverride.current ? gateOverride.current.gates : real;
+			},
+		};
+	},
+);
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -120,6 +173,19 @@ vi.mock("@shared/lib/orpc-client", () => ({
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
+		organizations: {
+			companyContext: {
+				noticeState: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"organizations.companyContext.noticeState",
+							input,
+						],
+						queryFn: () => noticeState(input),
+					}),
+				},
+			},
+		},
 		projects: {
 			documents: {
 				create: {
@@ -163,6 +229,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { CreateDocumentDialog } from "../CreateDocumentDialog";
+import { gateLinkFor } from "../capability-gates/gate-destinations";
 
 type DialogProps = React.ComponentProps<typeof CreateDocumentDialog>;
 
@@ -1691,5 +1758,282 @@ describe("CreateDocumentDialog — attaching a file", () => {
 			),
 		);
 		expect(processFile).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The empty company context notice (Fizzy #2719).
+ *
+ * Proposal and Business Case generation also draws on the organization's
+ * company context, so starting one says when that context has nothing ready.
+ * The notice is advice: it never gates Create, it has no dismissal, and it sits
+ * beside the thin-context banner without either one changing the other.
+ */
+describe("CreateDocumentDialog — company context notice", () => {
+	const pickType = async (
+		user: ReturnType<typeof userEvent.setup>,
+		name: RegExp,
+	) => {
+		await user.click(screen.getByRole("combobox", { name: /typeLabel/i }));
+		await user.click(await screen.findByRole("option", { name }));
+	};
+
+	const notice = () => screen.queryByTestId("company-context-notice");
+
+	/** One macrotask, so a query that was going to start has started. */
+	const settle = () =>
+		act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+	beforeEach(() => {
+		// Restated, as the sibling describes do, rather than inherited.
+		vi.clearAllMocks();
+		toastLoading.mockReturnValue("toast-id-1");
+		availablePrompts.mockResolvedValue({ prompts: [] });
+		createDocument.mockResolvedValue({
+			document: { id: "doc-1" },
+			generation: { outcome: "started" },
+			displacedActive: false,
+			suppliedTextOutcome: null,
+		});
+		getAiConfigStatus.mockResolvedValue(aiAvailable());
+		noticeState.mockResolvedValue({ state: "empty" });
+		isGuestInOrg.mockReturnValue(false);
+		gateOverride.current = null;
+	});
+
+	it("an empty company context shows the notice, generation proceeds, and reopening shows it again", async () => {
+		const user = userEvent.setup();
+		const { reopenWith } = renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+
+		const region = await screen.findByRole("note", {
+			name: "empty.title",
+		});
+		expect(region).toHaveTextContent("empty.body");
+		expect(
+			screen.getByRole("link", { name: "openSettings" }),
+		).toHaveAttribute("href", "/app/example-org/settings/company-context");
+		expect(noticeState).toHaveBeenCalledWith({ projectId: "project-1" });
+
+		// Non-blocking: Create is available and the run is requested as usual.
+		const submit = screen.getByRole("button", { name: /submitWithAi/i });
+		expect(submit).not.toBeDisabled();
+		await user.click(submit);
+		await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+		expect(createDocument.mock.calls[0][0]).toMatchObject({
+			type: "PROPOSAL",
+			generateWithAi: true,
+		});
+
+		// Nothing was remembered, so the next start says it again.
+		reopenWith(makeProps({ open: false }));
+		reopenWith(makeProps({ open: true }));
+		await screen.findByRole("checkbox");
+		await pickType(user, /Project Proposal/);
+		expect(
+			await screen.findByRole("note", { name: "empty.title" }),
+		).toBeInTheDocument();
+	});
+
+	it("shows the not-ready copy for a Business Case whose sources are still processing", async () => {
+		const user = userEvent.setup();
+		noticeState.mockResolvedValue({ state: "notReady" });
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Business Case/);
+
+		const region = await screen.findByRole("note", {
+			name: "notReady.title",
+		});
+		expect(region).toHaveTextContent("notReady.body");
+		expect(region).not.toHaveTextContent("empty.body");
+	});
+
+	it("shows nothing when the server answers hidden", async () => {
+		const user = userEvent.setup();
+		noticeState.mockResolvedValue({ state: "hidden" });
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
+		await settle();
+
+		expect(notice()).toBeNull();
+	});
+
+	it("renders nothing until the notice-state read answers, then shows the notice", async () => {
+		const user = userEvent.setup();
+		let answer: (value: { state: string }) => void = () => {};
+		noticeState.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					answer = resolve;
+				}),
+		);
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
+
+		// No flash: an unanswered read is not read as `empty`, and it holds
+		// nothing else up either.
+		expect(notice()).toBeNull();
+		expect(
+			screen.getByRole("button", { name: /submitWithAi/i }),
+		).not.toBeDisabled();
+
+		await act(async () => {
+			answer({ state: "empty" });
+		});
+		expect(
+			await screen.findByRole("note", { name: "empty.title" }),
+		).toBeInTheDocument();
+	});
+
+	it("renders nothing when the notice-state read fails, and generation proceeds", async () => {
+		const user = userEvent.setup();
+		noticeState.mockRejectedValue(new Error("notice state unavailable"));
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
+		await settle();
+		expect(notice()).toBeNull();
+
+		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
+		await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+		expect(createDocument.mock.calls[0][0]).toMatchObject({
+			type: "PROPOSAL",
+			generateWithAi: true,
+		});
+	});
+
+	it("never asks about company context for a project guest", async () => {
+		const user = userEvent.setup();
+		isGuestInOrg.mockReturnValue(true);
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+		await settle();
+
+		expect(noticeState).not.toHaveBeenCalled();
+		expect(notice()).toBeNull();
+	});
+
+	it("shows no notice for a PRD", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Product Requirements Document/);
+		await settle();
+
+		expect(noticeState).not.toHaveBeenCalled();
+		expect(notice()).toBeNull();
+	});
+
+	it("shows no notice once Generate with AI is turned off", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+		expect(
+			await screen.findByRole("note", { name: "empty.title" }),
+		).toBeInTheDocument();
+
+		// A document written by hand draws on no context at all.
+		await user.click(screen.getByRole("checkbox"));
+		expect(notice()).toBeNull();
+	});
+
+	it("renders beside the thin-context banner, each with its own action", async () => {
+		const user = userEvent.setup();
+		const thinContextView = {
+			capabilityKey: "documents.generate-proposal",
+			state: "WARNING",
+			reasonKey: "context.thin",
+			tone: "warning",
+			title: "reason.context.thin.title",
+			body: "reason.context.thin.body",
+			params: { dependency: "project context" },
+			ctaLabel: "remedy.addContext",
+			ctaKind: "navigate",
+			ctaTarget: "context",
+			blocksAction: false,
+			dismissible: true,
+			retry: {
+				supported: false,
+				permitted: false,
+				available: false,
+				targetId: null,
+			},
+		};
+		gateOverride.current = {
+			selection: {
+				gate: null,
+				view: thinContextView,
+				blocked: false,
+				hidden: false,
+			},
+			gates: {
+				projectId: "project-1",
+				enabled: true,
+				isLoading: false,
+				gates: new Map(),
+				suppressedCount: 0,
+				isSessionDismissed: () => false,
+				linkFor: (target: Parameters<typeof gateLinkFor>[0]) =>
+					gateLinkFor(target, {
+						projectId: "project-1",
+						basePath: "/app",
+					}),
+				codebaseRetryFor: () => undefined,
+				codebaseRetrying: false,
+				suppress: vi.fn(),
+				restore: vi.fn(),
+				refetch: vi.fn(),
+			},
+		};
+		renderDialog();
+		await screen.findByRole("checkbox");
+
+		await pickType(user, /Project Proposal/);
+
+		const companyNotice = await screen.findByRole("note", {
+			name: "empty.title",
+		});
+		expect(
+			screen.getByText("reason.context.thin.title"),
+		).toBeInTheDocument();
+
+		// Each keeps its own action: the banner's remedy goes to the project's
+		// Context tab, the notice's link to the company context page, and only
+		// the banner's warning can be dismissed.
+		expect(
+			screen.getByRole("link", { name: "remedy.addContext" }),
+		).toHaveAttribute("href", expect.stringContaining("?tab=context"));
+		expect(
+			screen.getByRole("link", { name: "openSettings" }),
+		).toHaveAttribute("href", "/app/example-org/settings/company-context");
+		expect(
+			screen.getByRole("button", { name: "dismiss.action" }),
+		).toBeInTheDocument();
+		expect(companyNotice.querySelectorAll("button")).toHaveLength(0);
+
+		// Neither blocks the other's path: a warning never disables Create,
+		// and nor does the notice.
+		expect(
+			screen.getByRole("button", { name: /submitWithAi/i }),
+		).not.toBeDisabled();
 	});
 });

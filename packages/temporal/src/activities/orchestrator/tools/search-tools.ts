@@ -744,12 +744,15 @@ async function syncOAuthToolsIfNeeded(
 	try {
 		let syncPerformed = false;
 
-		// Check Microsoft Teams integration
+		// Check the caller's own Microsoft Teams connection (org arm filters by
+		// userId too, never a teammate's)
 		const msIntegration = organizationId
 			? await db.workflowIntegration.findFirst({
 					where: {
+						userId,
 						organizationId,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				})
@@ -758,6 +761,7 @@ async function syncOAuthToolsIfNeeded(
 						userId,
 						organizationId: null,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				});
@@ -784,12 +788,15 @@ async function syncOAuthToolsIfNeeded(
 			}
 		}
 
-		// Check GitHub integration (with tenant isolation)
+		// Check the caller's own GitHub connection (org arm filters by userId
+		// too, never a teammate's)
 		const ghIntegration = organizationId
 			? await db.workflowIntegration.findFirst({
 					where: {
+						userId,
 						organizationId,
 						provider: "GITHUB",
+						NOT: { name: "GITHUB_OAUTH_APP" },
 						isActive: true,
 					},
 				})
@@ -798,6 +805,7 @@ async function syncOAuthToolsIfNeeded(
 						userId,
 						organizationId: null,
 						provider: "GITHUB",
+						NOT: { name: "GITHUB_OAUTH_APP" },
 						isActive: true,
 					},
 				});

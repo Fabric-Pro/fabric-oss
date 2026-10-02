@@ -42,6 +42,13 @@
  * flags say which it was, and `excludedPathCount` how many paths are left
  * out — never the paths themselves.
  *
+ * A change to what is synced made while a run is open fences that run, and
+ * "Sync now" is refused until it closes, so the new selection would not sync
+ * on its own. In that case a follow-up run is queued
+ * (`queueRepositorySyncFollowUp`), which starts it as soon as the open one
+ * closes, and the answer says so with `syncQueued: true`: the client then
+ * does not call `syncNow`. Absent otherwise, and when queueing failed.
+ *
  * Refusals are `BAD_REQUEST` with `data.code` (and `data.path` naming the
  * offending path where there is one): for `paths`, `INVALID_PATH`,
  * `EXCLUDED_PATH`, `TOO_MANY_PATHS`, `PATH_PREFIX_OVERLAP`; for
@@ -62,6 +69,8 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { isContextRepositorySyncRunning } from "../../../lib/context-repository-sync-workflow";
+import { queueRepositorySyncFollowUp } from "../../../lib/repository-sync-follow-up";
 import { resolveContextSyncAccess } from "./access";
 import {
 	canonicalizeContextSyncExcludedPaths,
@@ -244,5 +253,30 @@ export const configureContextRepositorySyncProcedure = tenantProtectedProcedure
 				generation: written.sync.generation,
 			},
 		});
-		return { syncId: written.sync.id, generation: written.sync.generation };
+		// Only a change to what is synced fences an open run; the automatic
+		// toggle and "Re-enable" leave it to finish.
+		const selectionChanged =
+			written.previous !== null &&
+			(written.previous.repositoryIntegrationId !==
+				written.sync.repositoryIntegrationId ||
+				written.previous.ref !== written.sync.ref ||
+				!samePaths(written.previous.paths, written.sync.paths) ||
+				!samePaths(
+					written.previous.excludedPaths,
+					written.sync.excludedPaths,
+				));
+		const syncQueued =
+			selectionChanged &&
+			(await isContextRepositorySyncRunning(input.projectId)) &&
+			(await queueRepositorySyncFollowUp({
+				subject: "context",
+				projectId: input.projectId,
+				organizationId,
+				requesterUserId: context.user.id,
+			}));
+		return {
+			syncId: written.sync.id,
+			generation: written.sync.generation,
+			...(syncQueued ? { syncQueued: true as const } : {}),
+		};
 	});

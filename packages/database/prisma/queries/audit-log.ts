@@ -144,6 +144,9 @@ export const AUDIT_ACTIONS = [
 	"account.api_key.created",
 	"account.api_key.revoked",
 	"account.api_key.rotated",
+	// A person approved, or later revoked, a coding agent signing in as them.
+	"account.oauth.consent_granted",
+	"account.oauth.consent_revoked",
 	"account.ai_provider.configured",
 	"account.ai_provider.updated",
 	"account.ai_provider.default_changed",
@@ -537,6 +540,13 @@ export const AUDIT_ACTIONS = [
 	"project.recipient_brand.fetched",
 	"project.recipient_brand.updated",
 	"org.brand_kit.updated",
+	// Company context (Fizzy #2719): a company source's type label or
+	// AI instructions changed. Those two fields steer every Proposal and
+	// Business Case the organization generates, so the edit records both
+	// values before and after, as `project.context_source.metadata_updated`
+	// does for a project source. Adding and removing sources is captured
+	// under `activity.organizations.companyContext.*`.
+	"org.company_context.metadata_updated",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

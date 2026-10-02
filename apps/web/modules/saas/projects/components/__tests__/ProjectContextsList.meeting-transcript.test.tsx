@@ -610,7 +610,9 @@ describe("ProjectContextsList — a row that failed to index but has its content
 					extractionError:
 						"Search indexing failed: The API deployment for this resource does not exist.",
 					embeddedAt: null,
-					content: "Alice: morning\nBob: morning",
+					// The list carries a preview and the length, never the body.
+					contentPreview: "Alice: morning\nBob: morning",
+					contentLength: 27,
 				}),
 			],
 			total: 1,
@@ -636,7 +638,9 @@ describe("ProjectContextsList — a row that failed to index but has its content
 					extractionError:
 						"Search indexing failed: The API deployment for this resource does not exist.",
 					embeddedAt: null,
-					content: "Alice: morning\nBob: morning",
+					// The list carries a preview and the length, never the body.
+					contentPreview: "Alice: morning\nBob: morning",
+					contentLength: 27,
 				}),
 			],
 			total: 1,
@@ -659,7 +663,9 @@ describe("ProjectContextsList — a row that failed to index but has its content
 					extractionStatus: "COMPLETED",
 					extractionError: null,
 					embeddedAt: new Date("2026-08-18T10:00:00Z"),
-					content: "Alice: morning\nBob: morning",
+					// The list carries a preview and the length, never the body.
+					contentPreview: "Alice: morning\nBob: morning",
+					contentLength: 27,
 				}),
 			],
 			total: 1,
@@ -682,7 +688,8 @@ describe("ProjectContextsList — a row that failed to index but has its content
 					extractionStatus: "FAILED",
 					extractionError: "Transcript fetch returned nothing",
 					embeddedAt: null,
-					content: "",
+					contentPreview: "",
+					contentLength: 0,
 				}),
 			],
 			total: 1,

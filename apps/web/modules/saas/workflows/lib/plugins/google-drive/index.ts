@@ -25,6 +25,7 @@ const googleDrivePlugin: IntegrationPlugin = {
 
 	// Custom settings component for OAuth flow
 	SettingsComponent: GoogleDriveSettings,
+	ownsDisconnect: true,
 
 	// OAuth integrations use server-side token validation
 	testConfig: {

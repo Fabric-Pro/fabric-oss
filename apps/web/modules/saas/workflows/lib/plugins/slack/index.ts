@@ -23,6 +23,7 @@ export const slackPlugin: IntegrationPlugin = {
 
 	// Custom settings component for OAuth flow
 	SettingsComponent: SlackSettings,
+	ownsDisconnect: true,
 
 	// OAuth integrations use server-side token validation
 	testConfig: {

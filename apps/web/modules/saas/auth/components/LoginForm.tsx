@@ -6,9 +6,13 @@ import { config } from "@repo/config";
 import { useAuthErrorMessages } from "@saas/auth/hooks/errors-messages";
 import { sessionQueryKey } from "@saas/auth/lib/api";
 import { isInviteAccountMismatch } from "@saas/auth/lib/invite-account-mismatch";
-import { safeRelativePath } from "@shared/lib/safe-redirect";
+import {
+	isServerNavigationPath,
+	oauthContinuationPath,
+} from "@saas/auth/lib/oauth-continuation";
 import { OrganizationInvitationAlert } from "@saas/organizations/components/OrganizationInvitationAlert";
 import { useRouter } from "@shared/hooks/router";
+import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
@@ -119,9 +123,21 @@ export function LoginForm({
 		},
 	});
 
+	// An agent sent this person here to sign in; whichever way they do, the
+	// way back is the authorization request it started (see the helper).
+	const oauthPath = oauthContinuationPath(searchParams);
+
 	const redirectPath = invitationId
 		? `/organization-invitation/${invitationId}`
-		: (redirectTo ?? config.auth.redirectAfterSignIn);
+		: (oauthPath ?? redirectTo ?? config.auth.redirectAfterSignIn);
+
+	const navigateAfterSignIn = (path: string) => {
+		if (isServerNavigationPath(path)) {
+			window.location.assign(path);
+			return;
+		}
+		router.replace(path);
+	};
 
 	const inviteAccountMismatch = isInviteAccountMismatch(user?.email, email);
 
@@ -160,7 +176,7 @@ export function LoginForm({
 			user &&
 			!isInviteAccountMismatch(user.email, email)
 		) {
-			router.replace(redirectPath);
+			navigateAfterSignIn(redirectPath);
 		}
 	}, [user, sessionLoaded, email, redirectPath]);
 
@@ -196,7 +212,7 @@ export function LoginForm({
 					queryKey: sessionQueryKey,
 				});
 
-				router.replace(redirectPath);
+				navigateAfterSignIn(redirectPath);
 			} else {
 				const { error } = await authClient.signIn.magicLink({
 					...values,
@@ -249,7 +265,7 @@ export function LoginForm({
 				throw result.error;
 			}
 
-			router.replace(redirectPath);
+			navigateAfterSignIn(redirectPath);
 		} catch (e) {
 			const errorCode =
 				e && typeof e === "object" && "code" in e

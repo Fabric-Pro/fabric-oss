@@ -14,6 +14,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		sessionUpdateMany: vi.fn(),
 		isFeatureEnabled: vi.fn(),
 		resolveVoiceKey: vi.fn(),
+		speechModel: vi.fn(),
 		getSettings: vi.fn(),
 		armBridge: vi.fn(),
 		isTeamsMeetingUrl: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	getAISpeechModel: (...args: unknown[]) => mocks.speechModel(...args),
 	resolveOpenAiApiKey: (...args: unknown[]) => mocks.resolveVoiceKey(...args),
 }));
 
@@ -133,6 +135,7 @@ beforeEach(() => {
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.resolveVoiceKey.mockResolvedValue("test-voice-key");
+	mocks.speechModel.mockResolvedValue(null);
 	mocks.getSettings.mockReturnValue({
 		apiKey: "test-key",
 		bridgeUrl: "wss://bridge.example.com/live",
@@ -177,6 +180,22 @@ describe("Parlume session procedures", () => {
 		})) as { operatorReady: boolean };
 
 		expect(result.operatorReady).toBe(false);
+	});
+
+	it("is ready with gateway speech even without a direct OpenAI key", async () => {
+		mocks.resolveVoiceKey.mockResolvedValue(null);
+		mocks.speechModel.mockResolvedValue({ modelId: "openai/tts-1" });
+
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as { operatorReady: boolean };
+
+		expect(result.operatorReady).toBe(true);
+		expect(mocks.speechModel).toHaveBeenCalledWith({
+			userId: context.user.id,
+			organizationId: "org-1",
+		});
 	});
 
 	it("keeps the legacy custom-agent list shape for tabs without the built-in option", async () => {

@@ -33,7 +33,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   biome:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: Biome (format + lint)
     # arm64: every step here is architecture-neutral (JS actions, pnpm/node
     # commands, Biome — @biomejs/cli-linux-arm64 ships in pnpm-lock.yaml).
@@ -46,7 +62,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -73,6 +89,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
           python3 .github/scripts/staging/test_workflows.py
           node --test .github/actions/oss-snapshot/*manifest.test.mjs
+          node --test .github/scripts/staging/promotion-*.test.mjs
 
       - name: Agent guidance
         run: pnpm guidance:check

@@ -19,6 +19,7 @@ import {
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
 	CONTEXT_SYNC_UNFINISHED_RUNS_LIMIT,
 	type ContextRepositorySyncRunLedger,
+	confirmUnchangedRepositoryContext,
 	type ContextSyncError,
 	type ContextSyncPlan,
 	canCreateProjectContexts,
@@ -37,6 +38,7 @@ import {
 	insertContextRepositorySyncRun,
 	type LockedContextRepositorySync,
 	listContextRepositorySyncAwaitingIndex,
+	listManagedContextBlobStates,
 	listPruneCandidates,
 	listUnfinishedContextRepositorySyncRuns,
 	mergeContextRepositorySyncRunOutcomes,
@@ -103,6 +105,7 @@ import {
 	MAX_CONTEXT_SYNC_KEPT,
 	MAX_CONTEXT_SYNC_TOTAL_BYTES,
 	planContextTree,
+	blobOidsForKeys,
 	repositoryPathsForKeys,
 	type SelectedPathShape,
 	selectedPathShapes,
@@ -912,9 +915,15 @@ async function runSyncAttempt(
 	let plan = pinned.plan;
 	let inventory: ContextInventoryEntry[] | null = null;
 	let contentPaths: ReadonlyMap<string, string> = new Map();
+	// Planned keys whose row already holds the commit's blob: never checked out
+	// or read. Key -> git blob id.
+	const unchanged = new Map<string, string>();
 	if (!plan) {
 		inventory = await readInventory(run, commitSha);
 		const planned = await planFromInventory(run, inventory);
+		for (const [key, oid] of planned.unchanged) {
+			unchanged.set(key, oid);
+		}
 		// If another attempt of this run wrote a plan first, that one is the
 		// membership, whatever this attempt planned.
 		plan = (
@@ -929,20 +938,42 @@ async function runSyncAttempt(
 		contentPaths = planned.contentPaths;
 	}
 	const pending = plan.keptKeys.filter((key) => !run.decided.has(key));
-	if (pending.some((key) => !contentPaths.has(key))) {
+	const unresolved = pending.filter(
+		(key) => !contentPaths.has(key) && !unchanged.has(key),
+	);
+	if (unresolved.length > 0) {
 		// A stored plan: its keys, not a recomputed set, are what this attempt
-		// applies; their content comes from the pinned commit again (§4.3).
+		// applies; their content comes from the pinned commit again (§4.3) —
+		// except a key whose row already holds the commit's blob, which is
+		// confirmed under the lock instead of read.
 		inventory ??= await readInventory(run, commitSha);
-		const paths = repositoryPathsForKeys(pending, inventory);
-		if (!paths) {
-			throw contextSyncFailure("CLONE_FAILED", run.details);
+		for (const [key, held] of await readUnchangedBlobs(
+			run,
+			unresolved,
+			inventory,
+		)) {
+			unchanged.set(key, held.oid);
 		}
-		await checkout(run, [...paths.values()]);
-		contentPaths = paths;
+		const toRead = unresolved.filter((key) => !unchanged.has(key));
+		if (toRead.length > 0) {
+			const paths = repositoryPathsForKeys(toRead, inventory);
+			if (!paths) {
+				throw contextSyncFailure("CLONE_FAILED", run.details);
+			}
+			await checkout(run, [...paths.values()]);
+			contentPaths = new Map([...contentPaths, ...paths]);
+		}
 	}
 	run.progress.kept = plan.keptCount;
 
-	await applyPlannedKeys(run, pending, contentPaths);
+	// The blob each file to be read was read from, stamped on its row so the
+	// next run can skip it. Every pending key is in the inventory here: the
+	// planning path read it, and a stored plan's keys were resolved above.
+	const blobOids =
+		pending.length === 0 || inventory === null
+			? new Map<string, string>()
+			: blobOidsForKeys(pending, inventory);
+	await applyPlannedKeys(run, pending, contentPaths, unchanged, blobOids);
 	await pruneManagedRows(run, plan);
 	await startPendingIndexing(run);
 
@@ -991,6 +1022,8 @@ async function planFromInventory(
 ): Promise<{
 	plan: ContextSyncPlan;
 	contentPaths: Map<string, string>;
+	/** Kept keys whose row already holds the commit's blob: key -> blob id. */
+	unchanged: Map<string, string>;
 }> {
 	const { paths } = run.context;
 	// Presence is judged on the unfiltered inventory (Fizzy #2750 §5.5): a
@@ -1021,9 +1054,21 @@ async function planFromInventory(
 			},
 		});
 	}
+	// A candidate whose row already holds the blob the commit lists for it is
+	// not checked out, sized or read: the bytes are the ones already stored.
+	// It stays in the plan as a kept key, so it is never pruned, and counts
+	// toward the total with its stored length.
+	const held = await readUnchangedBlobs(
+		run,
+		tree.candidates.map((candidate) => candidate.key),
+		entries,
+	);
+	const toCheckOut = tree.candidates.filter(
+		(candidate) => !held.has(candidate.key),
+	);
 	await checkout(
 		run,
-		tree.candidates.map((candidate) => candidate.repoPath),
+		toCheckOut.map((candidate) => candidate.repoPath),
 	);
 
 	const attention = [...tree.attention];
@@ -1035,7 +1080,10 @@ async function planFromInventory(
 	// Sizes first, from the checkout: an oversized file is never read.
 	const readable: ContextSyncCandidate[] = [];
 	let totalBytes = 0;
-	for (const candidate of tree.candidates) {
+	for (const state of held.values()) {
+		totalBytes += state.bytes;
+	}
+	for (const candidate of toCheckOut) {
 		const size = await checkedOutSize(run, candidate.repoPath);
 		if (size > MAX_CONTEXT_FILE_BYTES) {
 			holdBack(candidate.key, "too-large");
@@ -1070,7 +1118,7 @@ async function planFromInventory(
 	setPhase(run, "planned");
 	return {
 		plan: buildContextSyncPlan({
-			keptKeys: [...contentPaths.keys()],
+			keptKeys: [...contentPaths.keys(), ...held.keys()],
 			excludedCount: tree.excludedCount,
 			attention,
 			protectedKeys,
@@ -1079,7 +1127,44 @@ async function planFromInventory(
 			excludedKeys: tree.excludedKeys,
 		}),
 		contentPaths,
+		unchanged: new Map([...held].map(([key, state]) => [key, state.oid])),
 	};
+}
+
+/**
+ * The keys among `keys` whose row this sync manages and whose recorded blob id
+ * equals the one the pinned commit lists, with the stored content's length.
+ * One bounded query for the whole set. Rows with no recorded blob id are not
+ * among them, so they are read once and stamped.
+ */
+async function readUnchangedBlobs(
+	run: SyncAttempt,
+	keys: readonly string[],
+	entries: readonly ContextInventoryEntry[],
+): Promise<Map<string, { oid: string; bytes: number }>> {
+	const oids = blobOidsForKeys(keys, entries);
+	if (oids.size === 0) {
+		return new Map();
+	}
+	const { context } = run;
+	const states = await storeStep(run.details, run.secrets, () =>
+		listManagedContextBlobStates(
+			{
+				projectId: context.projectId,
+				organizationId: context.organizationId,
+			},
+			context.syncId,
+			[...oids.keys()],
+		),
+	);
+	const held = new Map<string, { oid: string; bytes: number }>();
+	for (const [key, oid] of oids) {
+		const state = states.get(key);
+		if (state?.sourceBlobOid === oid) {
+			held.set(key, { oid, bytes: state.bytes });
+		}
+	}
+	return held;
 }
 
 /**
@@ -1202,6 +1287,7 @@ async function readPlannedFile(
 	run: SyncAttempt,
 	key: string,
 	repoPath: string | undefined,
+	sourceBlobOid: string | undefined,
 ): Promise<RepositoryContextFile> {
 	if (repoPath === undefined) {
 		throw contextSyncFailure("CLONE_FAILED", run.details);
@@ -1217,6 +1303,7 @@ async function readPlannedFile(
 		storageKey: key,
 		content: verdict.content,
 		contentHash: hashContextContent(verdict.content),
+		...(sourceBlobOid ? { sourceBlobOid } : {}),
 	};
 }
 
@@ -1230,6 +1317,8 @@ async function applyPlannedKeys(
 	run: SyncAttempt,
 	pending: readonly string[],
 	contentPaths: ReadonlyMap<string, string>,
+	unchanged: ReadonlyMap<string, string>,
+	blobOids: ReadonlyMap<string, string>,
 ): Promise<void> {
 	const { context } = run;
 	setPhase(run, "applying");
@@ -1242,21 +1331,46 @@ async function applyPlannedKeys(
 			continue;
 		}
 		const files: RepositoryContextFile[] = [];
+		const confirmed: Array<{ storageKey: string; sourceBlobOid: string }> =
+			[];
 		for (const key of keys) {
-			files.push(await readPlannedFile(run, key, contentPaths.get(key)));
+			const held = unchanged.get(key);
+			if (held !== undefined) {
+				// Not read: confirmed under the lock, below.
+				confirmed.push({ storageKey: key, sourceBlobOid: held });
+				continue;
+			}
+			files.push(
+				await readPlannedFile(
+					run,
+					key,
+					contentPaths.get(key),
+					blobOids.get(key),
+				),
+			);
 		}
 		const batch = await fenced(run, async (tx, locked) => {
 			if (!run.applyPermissionChecked) {
 				await requireContextCreate(run, tx);
 			}
-			const outcomes = await applyRepositoryContextBatch(tx, {
-				projectId: context.projectId,
-				organizationId: context.organizationId,
-				syncId: context.syncId,
-				actingUserId: context.actingUserId,
-				files,
-				decided: new Set(Object.keys(locked.run.outcomes)),
-			});
+			const decided = new Set(Object.keys(locked.run.outcomes));
+			const outcomes = {
+				...(await confirmUnchangedRepositoryContext(tx, {
+					projectId: context.projectId,
+					organizationId: context.organizationId,
+					syncId: context.syncId,
+					entries: confirmed,
+					decided,
+				})),
+				...(await applyRepositoryContextBatch(tx, {
+					projectId: context.projectId,
+					organizationId: context.organizationId,
+					syncId: context.syncId,
+					actingUserId: context.actingUserId,
+					files,
+					decided,
+				})),
+			};
 			const ledger = await mergeContextRepositorySyncRunOutcomes(
 				tx,
 				context.runKey,

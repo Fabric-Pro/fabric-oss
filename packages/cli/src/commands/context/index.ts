@@ -177,10 +177,7 @@ async function run(
  */
 function contextClient(opts: { hook?: boolean }): FabricClient {
 	if (!getApiKey()) {
-		throw new CliFailure(
-			"Not authenticated. Run: fabric auth login --key <api-key>",
-			3,
-		);
+		throw new CliFailure("Not authenticated. Run: fabric auth login", 3);
 	}
 	return getClient(
 		opts.hook

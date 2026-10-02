@@ -1,6 +1,9 @@
 "use client";
 
 import type { InstructionRejection } from "@repo/database";
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
+import { publishedChanged } from "@saas/projects/lib/instructions-action-error";
+import { countPendingPublishes } from "@saas/projects/lib/instructions-pending-publishes";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
@@ -125,6 +128,8 @@ export type HistorySnapshot = {
 		| "INCOMPLETE"
 		| null;
 	deferredScanFindings?: InstructionRejection[] | null;
+	/** Whether this version meant to publish itself when its checks passed. */
+	publishOnReady?: boolean;
 };
 
 /**
@@ -160,6 +165,7 @@ export function InstructionsHistory({
 	canPublish,
 	repositoryBacked = false,
 	syncRuns,
+	syncRunPendingPublish = false,
 	onChanged,
 }: {
 	projectId: string;
@@ -189,8 +195,14 @@ export function InstructionsHistory({
 	repositoryBacked?: boolean;
 	/** The repository's "Sync runs" list, when the project syncs (§7.3). */
 	syncRuns?: ReactNode;
+	/**
+	 * A repository sync run is open and has not staged its snapshot yet, so no
+	 * row in `snapshots` stands for the publish it will make when it finishes.
+	 */
+	syncRunPendingPublish?: boolean;
 	onChanged: () => void;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.history");
 	// "See why" shows the same rejection rows as the banner, so it reads the
 	// banner's own label maps rather than a second copy: a new scan rule then
@@ -217,6 +229,33 @@ export function InstructionsHistory({
 		scanStatus: "ISSUES_FOUND" | "INCOMPLETE";
 	} | null>(null);
 	const publishAllowed = canPublish ?? canMutate;
+	// Checks still running that will publish themselves when they finish: a
+	// rollback made now is replaced by whichever of them finishes last.
+	const pendingPublishes = countPendingPublishes({
+		snapshots,
+		syncRunPending: syncRunPendingPublish,
+		now: Date.now(),
+	});
+
+	// Says which published version this page is showing, so the server can
+	// refuse a choice made against a page that has since gone stale. Left out
+	// when the pointer could not be read at all: those buttons are withheld.
+	const publishInput = (snapshotId: string) => ({
+		projectId,
+		snapshotId,
+		...(publishedUnknown
+			? {}
+			: { expectedPublishedSnapshotId: publishedId }),
+	});
+
+	function confirmText(version: number, rollback: boolean) {
+		const lead = t(rollback ? "rollbackConfirm" : "publishConfirm", {
+			version,
+		});
+		return rollback && pendingPublishes > 0
+			? `${lead} ${t("rollbackPendingNote", { count: pendingPublishes })}`
+			: lead;
+	}
 
 	const publish = useMutation(
 		orpc.projects.instructions.publish.mutationOptions({
@@ -224,19 +263,40 @@ export function InstructionsHistory({
 				onChanged();
 				setFlaggedPublish(null);
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) => {
+				const moved = publishedChanged(error);
+				if (moved === null) {
+					toast.error(actionError(error));
+					return;
+				}
+				// Nothing was written. Reload what is published now and tell
+				// the person which version it is, so the choice is made again
+				// against what they can see.
+				toast.error(
+					moved.publishedVersion === null
+						? t("publishedChangedUnknown")
+						: t("publishedChanged", {
+								version: moved.publishedVersion,
+							}),
+				);
+				setFlaggedPublish(null);
+				onChanged();
+			},
 		}),
 	);
 	const remove = useMutation(
 		orpc.projects.instructions.delete.mutationOptions({
 			onSuccess: () => onChanged(),
-			onError: (error) => toast.error(error.message),
+			onError: (error) => {
+				toast.error(actionError(error));
+				onChanged();
+			},
 		}),
 	);
 	const download = useMutation(
 		orpc.projects.instructions.createDownloadUrl.mutationOptions({
 			onSuccess: (data) => window.open(data.url, "_blank", "noopener"),
-			onError: (error) => toast.error(error.message),
+			onError: (error) => toast.error(actionError(error)),
 		}),
 	);
 
@@ -476,25 +536,20 @@ export function InstructionsHistory({
 														}
 														if (
 															window.confirm(
-																t(
+																confirmText(
+																	s.version,
 																	isRollback(
 																		s.version,
 																		publishedVersion,
-																	)
-																		? "rollbackConfirm"
-																		: "publishConfirm",
-																	{
-																		version:
-																			s.version,
-																	},
+																	),
 																),
 															)
 														) {
-															publish.mutate({
-																projectId,
-																snapshotId:
+															publish.mutate(
+																publishInput(
 																	s.id,
-															});
+																),
+															);
 														}
 													}}
 												>
@@ -681,11 +736,11 @@ export function InstructionsHistory({
 					version={flaggedPublish.version}
 					rollback={flaggedPublish.rollback}
 					scanStatus={flaggedPublish.scanStatus}
+					pendingPublishes={pendingPublishes}
 					pending={publish.isPending}
 					onConfirm={() =>
 						publish.mutate({
-							projectId,
-							snapshotId: flaggedPublish.id,
+							...publishInput(flaggedPublish.id),
 							publishBeforeScan: true,
 						})
 					}

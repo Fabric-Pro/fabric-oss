@@ -64,6 +64,11 @@ export type {
 } from "./repository-access-status";
 export { integrationStatusForRepoAccess } from "./repository-access-status";
 export type {
+	ReadRepositoryBlobSizesInput,
+	ReadRepositoryBlobSizesResult,
+} from "./repository-blob-sizes";
+export { readRepositoryBlobSizes } from "./repository-blob-sizes";
+export type {
 	BranchVerifyOutcome,
 	ListRepositoryBranchesInput,
 	ListRepositoryBranchesResult,

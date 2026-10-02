@@ -4,6 +4,17 @@
 
 import { db, type Prisma } from "../../client";
 import type { WorkflowIntegrationProvider } from "../../generated/enums";
+import { OAUTH_APP_ROW_NAMES } from "../lib/oauth-app-row";
+
+/**
+ * Excludes the `<PROVIDER>_OAUTH_APP` rows, which hold a provider's stored
+ * OAuth client credentials rather than a connection. They share provider, user
+ * and organization with the connection rows, so every connection listing and
+ * every delete-by-type has to leave them out by their exact reserved name.
+ */
+const EXCLUDE_OAUTH_APP_ROWS = {
+	NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
+} satisfies Prisma.WorkflowIntegrationWhereInput;
 
 /**
  * Create a workflow integration
@@ -99,6 +110,7 @@ export async function listWorkflowIntegrations(options: {
 			...(workflowId ? { workflowId } : {}),
 			...(provider ? { provider } : {}),
 			isActive: true,
+			...EXCLUDE_OAUTH_APP_ROWS,
 		},
 		orderBy: { createdAt: "desc" },
 	});
@@ -125,6 +137,7 @@ export async function listWorkflowIntegrationsInTenant(options: {
 			...(workflowId ? { workflowId } : {}),
 			...(provider ? { provider } : {}),
 			isActive: true,
+			...EXCLUDE_OAUTH_APP_ROWS,
 		},
 		orderBy: { createdAt: "desc" },
 	});
@@ -216,6 +229,7 @@ export async function getIntegrationsByProvider(
 			userId,
 			...orgFilter,
 			isActive: true,
+			...EXCLUDE_OAUTH_APP_ROWS,
 		},
 		orderBy: { lastUsedAt: "desc" },
 	});
@@ -236,12 +250,16 @@ export async function deleteWorkflowIntegrationByType(
 		? { organizationId }
 		: { organizationId: null };
 
-	// Delete all matching integrations
+	// Delete all matching connection rows. Never the stored OAuth app
+	// credentials: removing a connection must not switch OAuth off for the
+	// whole organization (`gitlab.disconnect` and `oauth.disconnect` keep them
+	// the same way).
 	const result = await db.workflowIntegration.deleteMany({
 		where: {
 			provider,
 			userId,
 			...orgFilter,
+			...EXCLUDE_OAUTH_APP_ROWS,
 		},
 	});
 

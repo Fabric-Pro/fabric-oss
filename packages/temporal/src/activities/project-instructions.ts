@@ -12,6 +12,7 @@ import {
 	markInstructionSnapshotRejected,
 	publishInstructionSnapshot,
 	recordInstructionDeferredScanOutcome,
+	recordInstructionSnapshotScanRulesVersion,
 	updateInstructionFileMetadata,
 } from "@repo/database";
 import {
@@ -31,6 +32,7 @@ import {
 	stagingPrefix,
 } from "@repo/instructions";
 import { warmInstructionSnapshotExport } from "@repo/instructions/export";
+import { INSTRUCTION_SCAN_RULES_VERSION } from "@repo/instructions/scan-rules-version";
 import { logger } from "@repo/logs";
 import {
 	getStorageProvider,
@@ -38,6 +40,15 @@ import {
 } from "@repo/storage";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import { DEFERRED_SCAN_MAX_ATTEMPTS } from "../lib/instruction-deferred-scan-retry";
+import {
+	clearedInheritedIds,
+	copyInheritedFiles,
+	type InheritedSources,
+	loadInheritedSources,
+	resolveInheritedFile,
+} from "../lib/instruction-inherited-sources";
+import { createSnapshotProgress } from "../lib/instruction-progress";
+import { forEachPrefetched } from "../lib/ordered-prefetch";
 import {
 	assertAllDeleted,
 	INSTRUCTIONS_BUCKET as BUCKET,
@@ -52,6 +63,15 @@ import {
  * so it must stay bounded regardless of how badly an upload fails.
  */
 const MAX_REJECTIONS = 100;
+
+/**
+ * How many files' storage round trips (HEAD, download, and for promotion the
+ * upload) a pass keeps in flight. Each one waits on the network, so a pass
+ * over a thousand files done one at a time spent minutes waiting; this is
+ * also the cap on buffers held at once, at most `SNAPSHOT_LIMITS.maxFileBytes`
+ * each. The same width the repository sync already uploads with.
+ */
+const FILE_PREFETCH = 8;
 
 function capRejections(
 	rejections: InstructionRejection[],
@@ -185,6 +205,14 @@ export type SnapshotRef = {
 	projectId: string;
 	organizationId: string;
 	userId: string;
+	/**
+	 * The ownership token of the run these activities belong to, written to
+	 * the row by the API before it started the workflow. When present, every
+	 * write an attempt makes names it and an attempt whose token the row no
+	 * longer carries stops (`loadTenantVerifiedSnapshot`). Absent for a run
+	 * started before the token existed, which behaves as it always did.
+	 */
+	validationAttemptId?: string;
 };
 export type GateResult = { ok: boolean; rejections: InstructionRejection[] };
 
@@ -231,7 +259,10 @@ async function loadVerifiedSnapshot(ref: SnapshotRef) {
  * Deliberately NOT exported, for the same reason as `loadVerifiedSnapshot`.
  */
 async function loadTenantVerifiedSnapshot(
-	ref: Pick<SnapshotRef, "snapshotId" | "projectId" | "organizationId">,
+	ref: Pick<
+		SnapshotRef,
+		"snapshotId" | "projectId" | "organizationId" | "validationAttemptId"
+	>,
 ) {
 	const snapshot = await getInstructionSnapshotById(ref.snapshotId);
 	if (
@@ -242,6 +273,21 @@ async function loadTenantVerifiedSnapshot(
 		throw ApplicationFailure.nonRetryable(
 			`Instruction snapshot ${ref.snapshotId} does not belong to project ${ref.projectId} in organization ${ref.organizationId}`,
 			"INSTRUCTION_SNAPSHOT_TENANT_MISMATCH",
+		);
+	}
+	// A superseded attempt stops here, before it touches storage or the row:
+	// the run that started it failed (its marker cleared the token) or a "Try
+	// again" gave the row a newer one. Non-retryable, because retrying reads
+	// the same newer token; the workflow's boundary catch then writes its
+	// FAILED marker, which is conditional on the same token and so leaves the
+	// newer run's row alone.
+	if (
+		ref.validationAttemptId !== undefined &&
+		snapshot.validationAttemptId !== ref.validationAttemptId
+	) {
+		throw ApplicationFailure.nonRetryable(
+			`Instruction snapshot ${ref.snapshotId} is owned by a different validation run; this attempt has been superseded`,
+			"INSTRUCTION_SNAPSHOT_ATTEMPT_SUPERSEDED",
 		);
 	}
 	return snapshot;
@@ -327,14 +373,14 @@ function assertNotAlreadyRejected(
  *  - FAILED or RECEIVING: this run has no claim on the row. RETRYABLE, and the
  *    retry is the recovery: on a "Try again" run the API's post-start
  *    transition is what moves FAILED -> VALIDATING, so the activity simply
- *    retries until it sees VALIDATING. The consequence, accepted knowingly: a
- *    FAILED-retry whose API status write is lost entirely is NOT recovered
- *    automatically — the activity keeps seeing FAILED and the run ends in the
- *    same FAILED row, leaving the tab's "Try again" as the path back. Fixing
- *    that automatically needs an ownership token on the row (a validation
- *    generation the claim and the failure marker both bind to), because
- *    without one a stale attempt and a freshly started retry are
- *    indistinguishable once both see FAILED.
+ *    retries until it sees VALIDATING. A run that carries an ownership token
+ *    (`ref.validationAttemptId`) does not wait on that write: the claim itself
+ *    moves a FAILED row that names its token to VALIDATING, so a lost API
+ *    status write no longer ends the run in the same FAILED row. A stale
+ *    attempt cannot take that arm, because the failure marker clears the token
+ *    and `loadTenantVerifiedSnapshot` stops an attempt whose token the row no
+ *    longer carries. A run without a token (started before the token existed)
+ *    keeps the wait-and-retry behaviour.
  *  - a row that has since disappeared: `loadVerifiedSnapshot` fails it
  *    non-retryably, the same as any other tenant mismatch.
  */
@@ -349,6 +395,7 @@ async function claimSnapshotForValidation(
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
+		validationAttemptId: ref.validationAttemptId,
 	});
 	if (changed) {
 		return;
@@ -369,6 +416,23 @@ async function claimSnapshotForValidation(
 		`Instruction snapshot ${ref.snapshotId} is ${current.status}, not claimed by this run; waiting for the transition that hands it over`,
 		"INSTRUCTION_SNAPSHOT_AWAITING_FINALIZE",
 	);
+}
+
+/**
+ * A verdict write that matched nothing is either a retry finding its own
+ * verdict already written (fine) or an attempt whose token the row no longer
+ * carries (not fine). The re-read tells them apart: it throws the
+ * non-retryable superseded failure for the second and returns for the first.
+ *
+ * Deliberately NOT exported, for the same reason as `loadVerifiedSnapshot`.
+ */
+async function assertAttemptNotSuperseded(
+	ref: SnapshotRef,
+	write: { changed: boolean },
+): Promise<void> {
+	if (!write.changed) {
+		await loadTenantVerifiedSnapshot(ref);
+	}
 }
 
 /**
@@ -497,17 +561,15 @@ function decodeUtf8Text(data: Buffer): string | null {
  * ever wrote it to.
  *
  * A DERIVED snapshot adds one more legitimate location, and exactly one: an
- * inherited row sits at the BASE's immutable promoted key until this
- * snapshot's own promotion re-writes it. That key is outside this snapshot's
+ * inherited row sits at its SOURCE row's immutable promoted key until this
+ * snapshot's own promotion moves it. That key is outside this snapshot's
  * staging prefix, so it is not in the staging listing and its existence and
  * length come from the HEAD the caller makes next rather than from that
- * listing. It is RECONSTRUCTED from `(projectId, baseSnapshotId,
- * inheritedFromFileId)` and compared, never trusted as stored: the row's
- * `storageKey` is a column, and accepting whatever it holds would let any key
- * in the bucket be read — and then promoted into a published snapshot — by a
- * row that claimed to be inherited. Both halves of that triple have to be
- * there; a row claiming inheritance on a snapshot with no base resolves to
- * nothing and is refused.
+ * listing. It is reconstructed from the source row's own ids and compared,
+ * never trusted as stored (`resolveInheritedFile`): the row's `storageKey` is
+ * a column, and accepting whatever it holds would let any key in the bucket
+ * be read — and then promoted into a published snapshot — by a row that
+ * claimed to be inherited.
  */
 function resolveReadableKey(
 	ref: SnapshotRef,
@@ -515,11 +577,12 @@ function resolveReadableKey(
 		id: string;
 		path: string;
 		size: number;
+		sha256: string;
 		storageKey: string;
 		inheritedFromFileId?: string | null;
 	},
 	staged: Map<string, number>,
-	baseSnapshotId: string | null,
+	sources: InheritedSources,
 ): { key: string } | { rejection: InstructionRejection } {
 	if (isStagingKey(file.storageKey)) {
 		const size = staged.get(file.storageKey);
@@ -542,33 +605,30 @@ function resolveReadableKey(
 	) {
 		return { key: file.storageKey };
 	}
-	if (
-		file.inheritedFromFileId &&
-		baseSnapshotId &&
-		file.storageKey ===
-			snapshotKey(ref.projectId, baseSnapshotId, file.inheritedFromFileId)
-	) {
-		return { key: file.storageKey };
+	const inherited = resolveInheritedFile(ref, file, sources);
+	if (inherited !== null) {
+		return "rejection" in inherited ? inherited : { key: inherited.key };
 	}
 	return { rejection: { path: file.path, reason: "missing" } };
 }
 
 /**
- * Refuses a file row whose `storageKey` is not one of the THREE locations an
- * activity in this module could legitimately have written it to, for
- * promotion's benefit.
+ * Refuses a file row whose `storageKey` is not one of the TWO locations this
+ * module's own writes put a row at, for promotion's benefit: this snapshot's
+ * staging key or its own promoted key. (An inherited row's third location, its
+ * source's promoted key, never reaches here: promotion copies those server-side
+ * and only the other rows are read.)
  *
  * The gate answers the same question through `resolveReadableKey`, which also
  * has to consult the staging listing; promotion does not, so this is the
  * comparison on its own. Both reconstruct every acceptable key from ids —
- * `(projectId, snapshotId, fileId)` for this snapshot's staging and promoted
- * objects, `(projectId, baseSnapshotId, inheritedFromFileId)` for an inherited
- * row — rather than trusting the column, because promotion writes what it
- * reads into an immutable prefix that may be published seconds later.
+ * `(projectId, snapshotId, fileId)` — rather than trusting the column, because
+ * promotion writes what it reads into an immutable prefix that may be
+ * published seconds later.
  *
- * `missing` rather than a new reason: a key that is not one of those three is
- * not a place this snapshot's bytes are, which is the same thing the caller
- * would report if the object were simply absent.
+ * `missing` rather than a new reason: a key that is not one of those is not a
+ * place this snapshot's bytes are, which is the same thing the caller would
+ * report if the object were simply absent.
  *
  * Deliberately NOT exported: every export from this module becomes a
  * schedulable Temporal activity.
@@ -579,22 +639,11 @@ function unexpectedSourceKey(
 		id: string;
 		path: string;
 		storageKey: string;
-		inheritedFromFileId?: string | null;
 	},
-	baseSnapshotId: string | null,
 ): InstructionRejection | null {
 	const acceptable = [
 		stagingKey(ref.projectId, ref.snapshotId, file.id),
 		snapshotKey(ref.projectId, ref.snapshotId, file.id),
-		...(file.inheritedFromFileId && baseSnapshotId
-			? [
-					snapshotKey(
-						ref.projectId,
-						baseSnapshotId,
-						file.inheritedFromFileId,
-					),
-				]
-			: []),
 	];
 	return acceptable.includes(file.storageKey)
 		? null
@@ -944,6 +993,12 @@ function fabricIgnoreProvenanceRejection(
  * `key` is where the verified bytes were read from, so a caller that writes
  * them elsewhere can tell whether they are already there.
  *
+ * An inherited file is read from its source's promoted key like any other, and
+ * only when the caller could not skip it: a source cleared by the current scan
+ * rule set needs no read at all (`clearedInheritedIds`), so what arrives here
+ * is a file whose bytes are new, or whose source was cleared under an older
+ * rule set, or never.
+ *
  * Deliberately NOT exported: every export from this module becomes a
  * schedulable Temporal activity.
  */
@@ -959,7 +1014,7 @@ async function readVerifiedFile(
 		inheritedFromFileId?: string | null;
 	},
 	staged: Map<string, number>,
-	baseSnapshotId: string | null,
+	sources: InheritedSources,
 ): Promise<
 	{ rejection: InstructionRejection } | { key: string; data: Buffer }
 > {
@@ -973,7 +1028,7 @@ async function readVerifiedFile(
 			},
 		};
 	}
-	const located = resolveReadableKey(ref, f, staged, baseSnapshotId);
+	const located = resolveReadableKey(ref, f, staged, sources);
 	if ("rejection" in located) {
 		return located;
 	}
@@ -1020,6 +1075,13 @@ async function readVerifiedFile(
  * what the rule set reads is what produced the digest comparison, byte for
  * byte. `finalizeInstructionSnapshot` closes the remaining window by
  * re-hashing at promotion time and writing the bytes it hashed.
+ *
+ * An inherited file is the one thing it does not read: when its source
+ * snapshot was cleared under the CURRENT scan rule set (`scanRulesVersion`),
+ * its bytes are the same immutable bytes that already passed the same rules,
+ * so only its name is checked. A source cleared under an older rule set, or
+ * never, is read and scanned in full, so tightening a rule still reaches every
+ * inherited file once.
  *
  * Order, in cost order:
  *  1. `isSecretFileName` on the path — a credential file is refused on its
@@ -1072,57 +1134,82 @@ export async function verifyAndScanInstructionFiles(
 	// Bounded while it fills: a dense secret-bearing file is one hit per line,
 	// and none past the cap is ever allocated (`BoundedRejections`).
 	const rejections = new BoundedRejections();
-	// Heartbeat details are COUNTERS, never a path: they are recorded in the
-	// workflow's history and shown by the Temporal UI, and a path is user
-	// content that can name a client or a person.
-	for (const [index, f] of files.entries()) {
-		heartbeat({ phase: "verify", file: index + 1, of: files.length });
-		// Steps 1–4: name, location, both lengths, hash (see `readVerifiedFile`).
-		const read = await readVerifiedFile(
-			storage,
-			ref,
-			f,
-			staged,
-			snapshot.baseSnapshotId,
-		);
-		if ("rejection" in read) {
-			rejections.push(read.rejection);
-			continue;
+	// An inherited file whose source the CURRENT rule set already cleared is not
+	// read again: same bytes, same rules. Its name still goes through
+	// `isSecretFileName` (no I/O), and the passes below see only the rest, so a
+	// one-file edit of a 1,000-file tree checks one file.
+	const sources = await loadInheritedSources(ref, files);
+	const cleared = clearedInheritedIds(ref, files, sources);
+	for (const f of files) {
+		const secretName = cleared.has(f.id) ? isSecretFileName(f.path) : null;
+		if (secretName) {
+			rejections.push({
+				path: f.path,
+				reason: "secret",
+				detail: `filename:${secretName}`,
+			});
 		}
-		const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
-		if (encoding) {
-			rejections.push(encoding);
-			continue;
-		}
-		// A buffer that does not decode is genuinely binary: nothing in it can
-		// be a recognizable text credential, and it has no frontmatter, so it
-		// passes AS binary and is classified on its path alone.
-		const text = decodeUtf8Text(read.data);
-		if (text !== null && collectSecretHits(rejections, f.path, text) > 0) {
-			// No metadata for a rejected file: `name`/`description` are
-			// served over MCP and the API listings, and these bytes are the
-			// ones the rule set just refused. Decided on the hit COUNT, so a
-			// file whose hits all fell past the cap is refused all the same.
-			continue;
-		}
-		// Provenance for the ONE file whose content decided this snapshot's
-		// exclusions. Rejected exactly like a secret hit — the whole snapshot
-		// is REJECTED and nothing durable is stored — because a snapshot whose
-		// frozen rules do not come from its own stored `.fabricignore` cannot
-		// be explained to the person reading the tab. Root path only, and an
-		// unreadable `settingsFrozen` skips it: see the helper.
-		const mismatch = fabricIgnoreProvenanceRejection(
-			ref,
-			f.path,
-			frozen,
-			text,
-		);
-		if (mismatch) {
-			rejections.push(mismatch);
-			continue;
-		}
-		await persistVerifiedFileMetadata(ref, f, text);
 	}
+	const toRead = files.filter((f) => !cleared.has(f.id));
+	// Steps 1–4 (name, location, both lengths, hash; see `readVerifiedFile`)
+	// are storage round trips, so they run ahead of the loop; the scan, every
+	// rejection and the metadata write still happen one file at a time, in
+	// manifest order, on the buffer that was hashed.
+	const progress = createSnapshotProgress(ref, "CHECKING", toRead.length);
+	await progress.begin();
+	await forEachPrefetched(
+		toRead,
+		FILE_PREFETCH,
+		(f) => readVerifiedFile(storage, ref, f, staged, sources),
+		async (read, f, index) => {
+			// Heartbeat details are COUNTERS, never a path: they are recorded in
+			// the workflow's history and shown by the Temporal UI, and a path is
+			// user content that can name a client or a person.
+			heartbeat({ phase: "verify", file: index + 1, of: toRead.length });
+			if ("rejection" in read) {
+				rejections.push(read.rejection);
+				return;
+			}
+			const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
+			if (encoding) {
+				rejections.push(encoding);
+				return;
+			}
+			// A buffer that does not decode is genuinely binary: nothing in it
+			// can be a recognizable text credential, and it has no frontmatter,
+			// so it passes AS binary and is classified on its path alone.
+			const text = decodeUtf8Text(read.data);
+			if (
+				text !== null &&
+				collectSecretHits(rejections, f.path, text) > 0
+			) {
+				// No metadata for a rejected file: `name`/`description` are
+				// served over MCP and the API listings, and these bytes are the
+				// ones the rule set just refused. Decided on the hit COUNT, so a
+				// file whose hits all fell past the cap is refused all the same.
+				return;
+			}
+			// Provenance for the ONE file whose content decided this snapshot's
+			// exclusions. Rejected exactly like a secret hit — the whole
+			// snapshot is REJECTED and nothing durable is stored — because a
+			// snapshot whose frozen rules do not come from its own stored
+			// `.fabricignore` cannot be explained to the person reading the
+			// tab. Root path only, and an unreadable `settingsFrozen` skips it:
+			// see the helper.
+			const mismatch = fabricIgnoreProvenanceRejection(
+				ref,
+				f.path,
+				frozen,
+				text,
+			);
+			if (mismatch) {
+				rejections.push(mismatch);
+				return;
+			}
+			await persistVerifiedFileMetadata(ref, f, text);
+		},
+		progress.advance,
+	);
 	// Provenance for a `.fabricignore` that was never uploaded. The loop
 	// above never runs for a file the manifest does not carry, so this is
 	// the one place the omission can be refused; an unreadable
@@ -1133,10 +1220,86 @@ export async function verifyAndScanInstructionFiles(
 			rejections.push(missing);
 		}
 	}
+	if (rejections.count() === 0) {
+		// Written here, by the activity that ran the rules, with the version it
+		// imported: a later activity (finalize) may run on a worker deployed
+		// with other rules and must not claim this verdict as its own. A stamp
+		// on a snapshot that is then REJECTED or FAILED is harmless, because
+		// only a READY snapshot is ever read as a source.
+		await recordInstructionSnapshotScanRulesVersion({
+			snapshotId: ref.snapshotId,
+			projectId: ref.projectId,
+			organizationId: ref.organizationId,
+			scanRulesVersion: INSTRUCTION_SCAN_RULES_VERSION,
+			statuses: ["RECEIVING", "VALIDATING"],
+			validationAttemptId: ref.validationAttemptId,
+		});
+	}
 	return {
 		ok: rejections.count() === 0,
 		rejections: rejections.toList(),
 	};
+}
+
+/**
+ * One file of `finalizeInstructionSnapshot`'s promotion: the reconstructed
+ * source key, the stored length, one download re-hashed, and those bytes
+ * written to the file's immutable snapshot key. Returns the file's rejection,
+ * or none once its bytes are at that key. Storage errors propagate, for the
+ * reason on the activity.
+ *
+ * Deliberately NOT exported: every export from this module becomes a
+ * schedulable Temporal activity.
+ */
+async function promoteVerifiedFile(
+	storage: StorageProviderInterface,
+	ref: SnapshotRef,
+	f: Awaited<ReturnType<typeof listInstructionFiles>>[number],
+): Promise<{ rejection: InstructionRejection | null }> {
+	const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
+	// The source key is RECONSTRUCTED and compared before anything reads it.
+	// Promotion writes whatever it reads into the immutable prefix of a
+	// snapshot that may publish seconds later, so "read the key the row
+	// happens to hold" is the one thing it must not do.
+	const unexpected = unexpectedSourceKey(ref, f);
+	if (unexpected) {
+		return { rejection: unexpected };
+	}
+	// Same two length checks as the gate, for the same reason: the key is
+	// still writable, so promotion must not be the step that buffers and
+	// stores an object larger than the client registered.
+	const oversized = await rejectionFromStoredSize(storage, f.storageKey, f);
+	if (oversized) {
+		return { rejection: oversized };
+	}
+	// Download failures propagate for the same reason they do in the gate: an
+	// infrastructure error must retry, never reject a valid upload and never
+	// pass an unverified one.
+	const { data } = await storage.downloadFile(f.storageKey, {
+		bucket: BUCKET,
+	});
+	if (data.length !== f.size) {
+		return { rejection: sizeMismatch(f.path, data.length, f.size) };
+	}
+	if (createHash("sha256").update(data).digest("hex") !== f.sha256) {
+		// The caller keeps going rather than stopping here, so the rejection
+		// list names every bad path instead of only the first. Nothing more is
+		// written for this file, and the snapshot never reaches READY.
+		return { rejection: { path: f.path, reason: "hash_mismatch" } };
+	}
+	if (f.storageKey !== dest) {
+		await storage.uploadFile(dest, data, {
+			bucket: BUCKET,
+			contentType: f.mimeType,
+		});
+		await updateInstructionFileMetadata(f.id, ref.organizationId, {
+			kind: f.kind,
+			name: f.name,
+			description: f.description,
+			storageKey: dest,
+		});
+	}
+	return { rejection: null };
 }
 
 /**
@@ -1150,12 +1313,12 @@ export async function verifyAndScanInstructionFiles(
  * secret-bearing content could be swapped in after the gate and land in the
  * immutable prefix under a digest computed from the declared hashes.
  *
- * So this downloads each object, recomputes sha256, and PUTS the buffer it
- * hashed. Never a server-side copy: the copy and the hash would be reading
- * the key twice, and the window is exactly the gap between those two reads.
- * A mismatch rejects the WHOLE snapshot with the same `hash_mismatch` shape
- * the gate produces, so the caller sees one consistent verdict rather than a
- * half-promoted version.
+ * So this downloads each STAGED object, recomputes sha256, and PUTS the buffer
+ * it hashed. Never a server-side copy of a staging key: the copy and the hash
+ * would be reading the key twice, and the window is exactly the gap between
+ * those two reads. A mismatch rejects the WHOLE snapshot with the same
+ * `hash_mismatch` shape the gate produces, so the caller sees one consistent
+ * verdict rather than a half-promoted version.
  *
  * Idempotent under retry: a re-run re-downloads, re-hashes and re-puts the
  * same bytes onto the same destination key. A row already at its snapshot key
@@ -1164,15 +1327,21 @@ export async function verifyAndScanInstructionFiles(
  *
  * `storedBytes` and the digest are both derived from the rows, and the digest
  * from the per-file hashes this pass has just re-confirmed against the actual
- * bytes at the destination.
+ * bytes at the destination (or, for an inherited file, the source row's own
+ * hash, which the derived row was checked equal to).
  *
- * A DERIVED snapshot's inherited row starts at the BASE's immutable promoted
- * key, so for those files this is a re-hash of bytes that were already checked
- * once, written into this snapshot's own prefix. It is not a copy the row can
- * steer: `assertExpectedSourceKey` reconstructs every acceptable source key
- * from ids and refuses anything else, and the base's object is only ever READ
- * — never moved, never deleted. The same full gate ran over it a moment ago,
- * so an inherited file is not trusted because it was trusted before.
+ * A DERIVED snapshot's inherited row is the one case where a server-side copy
+ * is both safe and the right tool. Its bytes live at ANOTHER snapshot's
+ * promoted key, and a promoted key is immutable: it was written by a promotion
+ * that hashed the buffer it stored, and nothing signs a write to it. The
+ * window that forbids copying a staging key (a signed PUT that stays valid)
+ * does not exist there. The source is validated from its own row
+ * (`resolveInheritedFile`: READY snapshot, key reconstructed from ids, same
+ * hash and size) rather than trusted from the derived row, then copied
+ * (`copyInheritedFiles`) with no download and no upload, and the rows are
+ * moved onto their own keys in bulk. The source object is only ever READ —
+ * never moved, never deleted — and a row whose source is gone is refused as
+ * `missing`.
  */
 export async function finalizeInstructionSnapshot(
 	ref: SnapshotRef,
@@ -1186,63 +1355,66 @@ export async function finalizeInstructionSnapshot(
 	);
 	const rejections: InstructionRejection[] = [];
 	let storedBytes = 0;
-	for (const [index, f] of files.entries()) {
-		heartbeat({ phase: "promote", file: index + 1, of: files.length });
-		const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
-		// The source key is RECONSTRUCTED and compared before anything reads
-		// it. Promotion writes whatever it reads into the immutable prefix of
-		// a snapshot that may publish seconds later, so "read the key the row
-		// happens to hold" is the one thing it must not do — and a derived
-		// snapshot is the first case where a legitimate source key is outside
-		// this snapshot's own prefixes at all.
-		const unexpected = unexpectedSourceKey(ref, f, snapshot.baseSnapshotId);
-		if (unexpected) {
-			rejections.push(unexpected);
-			continue;
+	// An inherited row still waiting on its source is COPIED; every other row
+	// (staged, or already at its own key from a previous attempt) is read,
+	// re-hashed and written. A row whose source fails validation is refused
+	// here, before any storage work.
+	const sources = await loadInheritedSources(ref, files);
+	const toCopy: Array<{ id: string; path: string; sourceKey: string }> = [];
+	const toWrite: typeof files = [];
+	let copySize = 0;
+	for (const f of files) {
+		const inherited = resolveInheritedFile(ref, f, sources);
+		if (inherited === null) {
+			toWrite.push(f);
+		} else if ("rejection" in inherited) {
+			rejections.push(inherited.rejection);
+		} else {
+			toCopy.push({ id: f.id, path: f.path, sourceKey: inherited.key });
+			copySize += f.size;
 		}
-		// Same two length checks as the gate, for the same reason: the key is
-		// still writable, so promotion must not be the step that buffers and
-		// stores an object larger than the client registered.
-		const oversized = await rejectionFromStoredSize(
-			storage,
-			f.storageKey,
-			f,
-		);
-		if (oversized) {
-			rejections.push(oversized);
-			continue;
-		}
-		// Download failures propagate for the same reason they do in the
-		// gate: an infrastructure error must retry, never reject a valid
-		// upload and never pass an unverified one.
-		const { data } = await storage.downloadFile(f.storageKey, {
-			bucket: BUCKET,
-		});
-		if (data.length !== f.size) {
-			rejections.push(sizeMismatch(f.path, data.length, f.size));
-			continue;
-		}
-		if (createHash("sha256").update(data).digest("hex") !== f.sha256) {
-			// Keep going rather than returning here, so the rejection list
-			// names every bad path instead of only the first. Nothing more is
-			// written for this file, and the snapshot never reaches READY.
-			rejections.push({ path: f.path, reason: "hash_mismatch" });
-			continue;
-		}
-		if (f.storageKey !== dest) {
-			await storage.uploadFile(dest, data, {
-				bucket: BUCKET,
-				contentType: f.mimeType,
-			});
-			await updateInstructionFileMetadata(f.id, ref.organizationId, {
-				kind: f.kind,
-				name: f.name,
-				description: f.description,
-				storageKey: dest,
-			});
-		}
-		storedBytes += f.size;
 	}
+	// Each file's promotion depends on no other file's (a refused file does
+	// not stop the others from being written, below), so the whole of it runs
+	// ahead of the loop; only the verdicts are gathered in manifest order. The
+	// pass is counted over every file: a copy is real work, only fast.
+	const progress = createSnapshotProgress(ref, "SAVING", files.length);
+	await progress.begin();
+	const copied = await copyInheritedFiles({
+		storage,
+		bucket: BUCKET,
+		scope: ref,
+		files: toCopy,
+		onChunk: async (decided) => {
+			heartbeat({
+				phase: "promote-copy",
+				file: decided,
+				of: files.length,
+			});
+			await progress.advance(rejections.length + decided);
+		},
+	});
+	rejections.push(...copied.rejections);
+	storedBytes += copySize;
+	const decidedBeforeWrites = rejections.length + copied.copied;
+	await forEachPrefetched(
+		toWrite,
+		FILE_PREFETCH,
+		(f) => promoteVerifiedFile(storage, ref, f),
+		(promoted, f, index) => {
+			heartbeat({
+				phase: "promote",
+				file: decidedBeforeWrites + index + 1,
+				of: files.length,
+			});
+			if (promoted.rejection) {
+				rejections.push(promoted.rejection);
+				return;
+			}
+			storedBytes += f.size;
+		},
+		(consumed) => progress.advance(decidedBeforeWrites + consumed),
+	);
 	if (rejections.length > 0) {
 		// The caller rejects the snapshot, which deletes its staging objects.
 		// Objects already written under the snapshot prefix for the files
@@ -1295,7 +1467,7 @@ export async function finalizeInstructionSnapshot(
 	// nothing and returns the same success the first attempt returned — which is
 	// what the workflow needs, since the publish and prune steps that follow are
 	// themselves idempotent.
-	await markInstructionSnapshotReady({
+	const ready = await markInstructionSnapshotReady({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
@@ -1304,7 +1476,9 @@ export async function finalizeInstructionSnapshot(
 		digest,
 		// Read once per attempt, here: the only clock read on this path.
 		readyAt: new Date(),
+		validationAttemptId: ref.validationAttemptId,
 	});
+	await assertAttemptNotSuperseded(ref, ready);
 	return { ok: true, rejections: [] };
 }
 
@@ -1327,10 +1501,14 @@ export async function finalizeInstructionSnapshot(
  * runs it afterwards over the promoted objects, not over staging.
  *
  * ONE download per file, and the buffer that was hashed is the buffer that is
- * written to the immutable snapshot key — never a server-side copy, for the
- * reason on `finalizeInstructionSnapshot`: staged bytes stay mutable while
- * the client's signed PUT lives, and a second read is a second, unhashed
- * answer. Frontmatter metadata comes from that same buffer, and is written
+ * written to the immutable snapshot key — never a server-side copy of a
+ * staging key, for the reason on `finalizeInstructionSnapshot`: staged bytes
+ * stay mutable while the client's signed PUT lives, and a second read is a
+ * second, unhashed answer. The exception is an inherited file whose source the
+ * current scan rule set already cleared: its bytes sit at an immutable
+ * promoted key, so it is neither read nor scanned again and is copied
+ * server-side once nothing else was refused. Frontmatter metadata comes from
+ * that same buffer, and is written
  * together with the row's move to its snapshot key (`persistVerifiedFileMetadata`).
  * Once any file is refused nothing more is written: the pass keeps verifying
  * so the rejection names every bad path, but an object promoted before the
@@ -1387,57 +1565,99 @@ export async function promoteUnscannedInstructionSnapshot(
 			? missingIgnoreFileRejection(frozen)
 			: null;
 	const rejections: InstructionRejection[] = [];
-	for (const [index, f] of files.entries()) {
-		heartbeat({
-			phase: "promote-unscanned",
-			file: index + 1,
-			of: files.length,
-		});
-		const read = await readVerifiedFile(
-			storage,
-			ref,
-			f,
-			staged,
-			snapshot.baseSnapshotId,
-		);
-		if ("rejection" in read) {
-			rejections.push(read.rejection);
-			continue;
-		}
-		const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
-		if (encoding) {
-			rejections.push(encoding);
-			continue;
-		}
-		// No `scanTextForSecrets` here: that is the step this path defers.
-		const text = decodeUtf8Text(read.data);
-		const mismatch = fabricIgnoreProvenanceRejection(
-			ref,
-			f.path,
-			frozen,
-			text,
-		);
-		if (mismatch) {
-			rejections.push(mismatch);
-			continue;
-		}
-		if (rejections.length > 0 || missingIgnore !== null) {
-			continue;
-		}
-		const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
-		if (read.key !== dest) {
-			await storage.uploadFile(dest, read.data, {
-				bucket: BUCKET,
-				contentType: f.mimeType,
+	// Inherited files whose source the current rule set cleared are not read:
+	// their name is still checked, they are copied server-side once nothing
+	// else was refused, and the progress total is the files that need a read.
+	const sources = await loadInheritedSources(ref, files);
+	const cleared = clearedInheritedIds(ref, files, sources);
+	const clearedFiles = files.filter((f) => cleared.has(f.id));
+	for (const f of clearedFiles) {
+		const secretName = isSecretFileName(f.path);
+		if (secretName) {
+			rejections.push({
+				path: f.path,
+				reason: "secret",
+				detail: `filename:${secretName}`,
 			});
 		}
-		await persistVerifiedFileMetadata(ref, f, text, dest);
 	}
+	const toRead = files.filter((f) => !cleared.has(f.id));
+	// The reads run ahead of the loop; the writes stay in it, in manifest
+	// order, because "nothing more is written once any file is refused"
+	// depends on which files came before.
+	const progress = createSnapshotProgress(ref, "CHECKING", toRead.length);
+	await progress.begin();
+	await forEachPrefetched(
+		toRead,
+		FILE_PREFETCH,
+		(f) => readVerifiedFile(storage, ref, f, staged, sources),
+		async (read, f, index) => {
+			heartbeat({
+				phase: "promote-unscanned",
+				file: index + 1,
+				of: toRead.length,
+			});
+			if ("rejection" in read) {
+				rejections.push(read.rejection);
+				return;
+			}
+			const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
+			if (encoding) {
+				rejections.push(encoding);
+				return;
+			}
+			// No `scanTextForSecrets` here: that is the step this path defers.
+			const text = decodeUtf8Text(read.data);
+			const mismatch = fabricIgnoreProvenanceRejection(
+				ref,
+				f.path,
+				frozen,
+				text,
+			);
+			if (mismatch) {
+				rejections.push(mismatch);
+				return;
+			}
+			if (rejections.length > 0 || missingIgnore !== null) {
+				return;
+			}
+			const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
+			if (read.key !== dest) {
+				await storage.uploadFile(dest, read.data, {
+					bucket: BUCKET,
+					contentType: f.mimeType,
+				});
+			}
+			await persistVerifiedFileMetadata(ref, f, text, dest);
+		},
+		progress.advance,
+	);
 	if (missingIgnore !== null) {
 		rejections.push(missingIgnore);
 	}
 	if (rejections.length > 0) {
 		return { ok: false, rejections: capRejections(rejections) };
+	}
+	const copied = await copyInheritedFiles({
+		storage,
+		bucket: BUCKET,
+		scope: ref,
+		files: clearedFiles
+			.filter(
+				(f) =>
+					f.storageKey !==
+					snapshotKey(ref.projectId, ref.snapshotId, f.id),
+			)
+			.map((f) => ({ id: f.id, path: f.path, sourceKey: f.storageKey })),
+		onChunk: (decided) =>
+			heartbeat({
+				phase: "promote-unscanned-copy",
+				file: decided,
+				of: clearedFiles.length,
+			}),
+	});
+	if (copied.rejections.length > 0) {
+		return { ok: false, rejections: capRejections(copied.rejections) };
 	}
 	const promoted = await listInstructionFiles(
 		ref.snapshotId,
@@ -1467,7 +1687,7 @@ export async function promoteUnscannedInstructionSnapshot(
 		ref,
 		promoted.map((f) => f.id),
 	);
-	await markInstructionSnapshotReady({
+	const ready = await markInstructionSnapshotReady({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
@@ -1476,7 +1696,9 @@ export async function promoteUnscannedInstructionSnapshot(
 		digest,
 		readyAt: new Date(),
 		deferredScan: true,
+		validationAttemptId: ref.validationAttemptId,
 	});
+	await assertAttemptNotSuperseded(ref, ready);
 	return { ok: true, rejections: [] };
 }
 
@@ -1576,11 +1798,12 @@ export async function rejectInstructionSnapshot(
 	// attempt that dies on the delete commits nothing, so the verdict is
 	// recorded by the attempt that actually finished the job, however many
 	// retries that took.
-	await markInstructionSnapshotRejected({
+	const rejected = await markInstructionSnapshotRejected({
 		snapshotId: input.snapshotId,
 		projectId: input.projectId,
 		organizationId: input.organizationId,
 		rejections: input.rejections,
+		validationAttemptId: input.validationAttemptId,
 		audit: {
 			action: "project.instructions.rejected",
 			category: "project",
@@ -1597,6 +1820,7 @@ export async function rejectInstructionSnapshot(
 			metadata: summarizeRejections(input.rejections),
 		},
 	});
+	await assertAttemptNotSuperseded(input, rejected);
 }
 
 /**
@@ -1646,6 +1870,7 @@ export async function markInstructionSnapshotFailed(
 		snapshotId: input.snapshotId,
 		projectId: input.projectId,
 		organizationId: input.organizationId,
+		validationAttemptId: input.validationAttemptId,
 	});
 	if (!changed) {
 		return { marked: false };
@@ -1850,6 +2075,12 @@ export async function publishInstructionSnapshotActivity(
  * the last resort for an attempt that cannot return at all, and names no
  * file because it has none to name.
  */
+/** What the deferred scan's read of one published file produced. */
+type PublishedRead =
+	| { finding: InstructionRejection }
+	| { unreadable: unknown }
+	| { data: Buffer };
+
 export async function scanPublishedInstructionSnapshot(
 	ref: SnapshotRef,
 ): Promise<{
@@ -1875,78 +2106,113 @@ export async function scanPublishedInstructionSnapshot(
 		Context.current().info.attempt >= DEFERRED_SCAN_MAX_ATTEMPTS;
 	const findings = new BoundedRejections();
 	let unreadable = 0;
-	for (const [index, f] of files.entries()) {
-		heartbeat({
-			phase: "deferred-scan",
-			file: index + 1,
-			of: files.length,
+	// An inherited file whose source the current rule set cleared holds the
+	// same bytes the same rules already passed, so it is not scanned again; the
+	// progress total is the files that are.
+	const sources = await loadInheritedSources(ref, files);
+	const cleared = clearedInheritedIds(ref, files, sources);
+	const toScan = files.filter((f) => !cleared.has(f.id));
+	// The reads run ahead of the loop. A read error is carried to the file's
+	// turn as a value on the final attempt (where it becomes a finding) and
+	// thrown otherwise, so findings keep manifest order either way.
+	const progress = createSnapshotProgress(ref, "SCANNING", toScan.length);
+	await progress.begin();
+	await forEachPrefetched(
+		toScan,
+		FILE_PREFETCH,
+		async (f): Promise<PublishedRead> => {
+			const own = snapshotKey(ref.projectId, ref.snapshotId, f.id);
+			if (f.storageKey !== own) {
+				return { finding: { path: f.path, reason: "missing" } };
+			}
+			try {
+				const stored = await rejectionFromStoredSize(storage, own, f);
+				if (stored) {
+					return { finding: stored };
+				}
+				const { data } = await storage.downloadFile(own, {
+					bucket: BUCKET,
+				});
+				return { data };
+			} catch (error) {
+				if (!finalAttempt) {
+					throw error;
+				}
+				return { unreadable: error };
+			}
+		},
+		(read, f, index) => {
+			heartbeat({
+				phase: "deferred-scan",
+				file: index + 1,
+				of: toScan.length,
+			});
+			if ("finding" in read) {
+				findings.push(read.finding);
+				return;
+			}
+			if ("unreadable" in read) {
+				unreadable++;
+				// Named in the findings, so the member sees WHICH files went
+				// unchecked rather than only that some did. The path is what
+				// every finding already shows the member; the log below still
+				// carries neither it nor the error's message. `pushKept`, so a
+				// dense file that filled the list earlier cannot hide it.
+				findings.pushKept({ path: f.path, reason: "scan_failed" });
+				logger.warn(
+					{
+						event: "project.instructions.deferred_scan_file_unreadable",
+						snapshotId: ref.snapshotId,
+						projectId: ref.projectId,
+						organizationId: ref.organizationId,
+						// The error's CLASS, never its message or the path: a
+						// storage message can carry the key, and the key and
+						// the path both name user content.
+						failure:
+							read.unreadable instanceof Error
+								? read.unreadable.constructor.name
+								: "unknown",
+					},
+					"[CodingInstructions] Deferred secret scan could not read a published file on its last attempt",
+				);
+				return;
+			}
+			const { data } = read;
+			if (data.length !== f.size) {
+				findings.push(sizeMismatch(f.path, data.length, f.size));
+				return;
+			}
+			if (createHash("sha256").update(data).digest("hex") !== f.sha256) {
+				findings.push({ path: f.path, reason: "hash_mismatch" });
+				return;
+			}
+			// Binary content passes AS binary, as it does in the gate.
+			const text = decodeUtf8Text(data);
+			if (text === null) {
+				return;
+			}
+			collectSecretHits(findings, f.path, text);
+		},
+		progress.advance,
+	);
+	const outcome: InstructionDeferredScanOutcome =
+		unreadable > 0
+			? "INCOMPLETE"
+			: findings.count() > 0
+				? "ISSUES_FOUND"
+				: "PASSED";
+	if (outcome === "PASSED") {
+		// Stamped here, by the activity that ran the rules, for the reason on
+		// the gate's own stamp. Only a clean scan clears the snapshot.
+		await recordInstructionSnapshotScanRulesVersion({
+			snapshotId: ref.snapshotId,
+			projectId: ref.projectId,
+			organizationId: ref.organizationId,
+			scanRulesVersion: INSTRUCTION_SCAN_RULES_VERSION,
+			statuses: ["READY"],
 		});
-		const own = snapshotKey(ref.projectId, ref.snapshotId, f.id);
-		if (f.storageKey !== own) {
-			findings.push({ path: f.path, reason: "missing" });
-			continue;
-		}
-		let data: Buffer;
-		try {
-			const stored = await rejectionFromStoredSize(storage, own, f);
-			if (stored) {
-				findings.push(stored);
-				continue;
-			}
-			({ data } = await storage.downloadFile(own, { bucket: BUCKET }));
-		} catch (error) {
-			if (!finalAttempt) {
-				throw error;
-			}
-			unreadable++;
-			// Named in the findings, so the member sees WHICH files went
-			// unchecked rather than only that some did. The path is what
-			// every finding already shows the member; the log below still
-			// carries neither it nor the error's message. `pushKept`, so a
-			// dense file that filled the list earlier cannot hide it.
-			findings.pushKept({ path: f.path, reason: "scan_failed" });
-			logger.warn(
-				{
-					event: "project.instructions.deferred_scan_file_unreadable",
-					snapshotId: ref.snapshotId,
-					projectId: ref.projectId,
-					organizationId: ref.organizationId,
-					// The error's CLASS, never its message or the path: a
-					// storage message can carry the key, and the key and
-					// the path both name user content.
-					failure:
-						error instanceof Error
-							? error.constructor.name
-							: "unknown",
-				},
-				"[CodingInstructions] Deferred secret scan could not read a published file on its last attempt",
-			);
-			continue;
-		}
-		if (data.length !== f.size) {
-			findings.push(sizeMismatch(f.path, data.length, f.size));
-			continue;
-		}
-		if (createHash("sha256").update(data).digest("hex") !== f.sha256) {
-			findings.push({ path: f.path, reason: "hash_mismatch" });
-			continue;
-		}
-		// Binary content passes AS binary, as it does in the gate.
-		const text = decodeUtf8Text(data);
-		if (text === null) {
-			continue;
-		}
-		collectSecretHits(findings, f.path, text);
 	}
-	return {
-		outcome:
-			unreadable > 0
-				? "INCOMPLETE"
-				: findings.count() > 0
-					? "ISSUES_FOUND"
-					: "PASSED",
-		findings: findings.toList(),
-	};
+	return { outcome, findings: findings.toList() };
 }
 
 /**

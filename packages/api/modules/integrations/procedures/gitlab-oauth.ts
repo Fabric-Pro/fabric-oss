@@ -687,6 +687,14 @@ export const gitlabOAuthProcedures = {
 		.output(
 			z.object({
 				connected: z.boolean(),
+				/**
+				 * True only when `connected` is false but a live GitLab token
+				 * is stored on the MCP registry's `gitlab` config with no
+				 * WorkflowIntegration behind it. Not a usable connection (PM
+				 * sync and repository browsing need the WorkflowIntegration);
+				 * it exists so the settings page can offer Disconnect.
+				 */
+				partialConnection: z.boolean().optional(),
 				username: z.string().optional(),
 				name: z.string().nullable().optional(),
 				avatarUrl: z.string().optional(),
@@ -733,6 +741,7 @@ export const gitlabOAuthProcedures = {
 				where: {
 					userId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -741,7 +750,39 @@ export const gitlabOAuthProcedures = {
 			});
 
 			if (!integration) {
-				return { connected: false };
+				// No active WorkflowIntegration, so GitLab is NOT connected in the
+				// sense every caller of `connected` relies on (repository
+				// browsing, PM sync and the like need the WorkflowIntegration).
+				// But a connection made through the MCP registry lives only on
+				// the MCPConfig row until `reconcile` backfills the other store,
+				// and that token is live: agents and `loadGitLabToken` use it. The
+				// same goes for an official GitLab MCP server connected from the
+				// MCP Servers page, which `disconnect` also clears. Say so in a
+				// separate field, so the settings page can offer
+				// Disconnect for it without any other screen treating GitLab as
+				// connected. A disconnected row keeps its MCPConfig but has the
+				// token nulled, so it does not match here.
+				const mcpOnly = await db.mCPConfig.findFirst({
+					where: {
+						userId,
+						...(organizationId
+							? { organizationId }
+							: { organizationId: null }),
+						mcpServer: {
+							key: { in: ["gitlab", "gitlab-official"] },
+						},
+						encryptedAccessToken: { not: null },
+					},
+					select: { needsReauth: true },
+				});
+				if (!mcpOnly) {
+					return { connected: false };
+				}
+				return {
+					connected: false,
+					partialConnection: true,
+					needsReauth: mcpOnly.needsReauth || undefined,
+				};
 			}
 
 			const settings = integration.settings as Record<
@@ -847,11 +888,13 @@ export const gitlabOAuthProcedures = {
 					? input.organizationId
 					: context.session.activeOrganizationId;
 
-			// Revoke the token with GitLab
+			// Revoke the token with GitLab. Never the GITLAB_OAUTH_APP row: it
+			// holds the OAuth client credentials, not a token.
 			const integrations = await db.workflowIntegration.findMany({
 				where: {
 					userId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -918,10 +961,15 @@ export const gitlabOAuthProcedures = {
 				}
 			}
 
+			// Deactivate the connection rows only. The GITLAB_OAUTH_APP row
+			// holds the OAuth client credentials saved by saveAppCredentials;
+			// deactivating it switches OAuth off for the whole organization.
+			// The generic oauth.disconnect excludes it the same way.
 			await db.workflowIntegration.updateMany({
 				where: {
 					userId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					...(organizationId
 						? { organizationId }
 						: { organizationId: null }),
@@ -947,18 +995,23 @@ export const gitlabOAuthProcedures = {
 				},
 			});
 
-			// Dual-disconnect: null out tokens on the corresponding MCPConfig
-			// row so the GitLab MCP shim's `resolveUserFromBearer` stops
-			// matching the revoked token. The MCPConfig row itself is kept
-			// (preserves displayName, enabled flag, scopes) — a future
-			// reconnect updates it in place via persistGitLabToken.
+			// Dual-disconnect: null out tokens on BOTH GitLab MCPConfig rows, the
+			// `gitlab` shim and the `gitlab-official` server (however it was
+			// connected, including directly from the MCP Servers page), so
+			// nothing keeps using the user's GitLab after Disconnect: the GitLab
+			// MCP shim's `resolveUserFromBearer` stops matching the revoked
+			// token, and the official-MCP, PM-sync and tool-loading readers
+			// find no token. Rows are kept (displayName, enabled flag, scopes and
+			// the dynamic client registration stay), so a reconnect updates them
+			// in place and reuses the registration. `needsReauth: true` marks
+			// them as awaiting a fresh grant, which only a reconnect clears.
 			await db.mCPConfig.updateMany({
 				where: {
 					userId,
 					...(organizationId
 						? { organizationId }
 						: { organizationId: null }),
-					mcpServer: { key: "gitlab" },
+					mcpServer: { key: { in: ["gitlab", "gitlab-official"] } },
 				},
 				data: {
 					encryptedAccessToken: null,
@@ -1036,6 +1089,7 @@ export const gitlabOAuthProcedures = {
 				where: {
 					userId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -1129,6 +1183,7 @@ export const gitlabOAuthProcedures = {
 				where: {
 					userId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -1219,6 +1274,7 @@ export const gitlabOAuthProcedures = {
 				where: {
 					userId: context.user.id,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					...(orgIdForQuery
 						? { organizationId: orgIdForQuery }
 						: { organizationId: null }),
@@ -1332,6 +1388,7 @@ export const gitlabOAuthProcedures = {
 					where: {
 						userId: context.user.id,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						...(orgIdForQuery
 							? { organizationId: orgIdForQuery }
 							: { organizationId: null }),
@@ -1449,6 +1506,7 @@ export const gitlabOAuthProcedures = {
 					where: {
 						userId: context.user.id,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						...(orgIdForQuery
 							? { organizationId: orgIdForQuery }
 							: { organizationId: null }),

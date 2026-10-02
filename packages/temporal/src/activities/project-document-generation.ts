@@ -13,11 +13,18 @@ import {
 	type DocumentSection,
 	getDocumentSections,
 	getMarkdownFormattingRulesPrompt,
+	getProposalForbiddenSections,
+	getProposalVendorSectionInstructions,
+	getProposalVendorSectionReminder,
 	PRD_FORBIDDEN_SECTIONS,
-	PROPOSAL_FORBIDDEN_SECTIONS,
 	validateDocument,
 } from "@repo/agent-prompts";
-import type { DocumentType } from "@repo/agent-types";
+import {
+	type DocumentType,
+	defuseVendorContextMarker,
+	hasProjectContextEntries,
+	hasVendorContextEntries,
+} from "@repo/agent-types";
 import {
 	DEFAULT_BASE_URLS,
 	embed,
@@ -82,6 +89,7 @@ import {
 } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
+import { retrieveCompanyContextEntries } from "../lib/company-context-retrieval";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
 import { activityLogger } from "./lib/activity-logger";
@@ -185,13 +193,7 @@ function safeHeartbeat(details?: unknown): void {
 // Temporal activities and API procedures. See @repo/rag for the canonical source.
 // Import: buildDocumentRetrievalQuery (combines intent + user prompt)
 
-/**
- * Retrieve relevant project contexts from Qdrant using Hybrid Query Expansion
- *
- * Combines enterprise-grade intent queries with user custom instructions
- * to maximize RAG retrieval accuracy.
- */
-export async function retrieveProjectContexts(params: {
+interface RetrieveProjectContextsParams {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
@@ -210,7 +212,51 @@ export async function retrieveProjectContexts(params: {
 	 * nothing to post-filter on.
 	 */
 	excludeContextId?: string;
-}): Promise<string[]> {
+}
+
+/**
+ * Retrieve relevant project contexts from Qdrant using Hybrid Query Expansion
+ *
+ * Combines enterprise-grade intent queries with user custom instructions
+ * to maximize RAG retrieval accuracy.
+ *
+ * For Proposal and Business Case, the organization's company context follows
+ * the project's entries, each marked as vendor material (Fizzy #2719). It is
+ * appended here, once the project retrieval returns, so it follows every exit
+ * that returns — the no-hits early return included — and every workflow that
+ * generates these documents picks it up without a new activity command. The
+ * two retrievals run side by side: the company half reads nothing the
+ * project half returns. See `retrieveCompanyContextEntries` for who gets it
+ * and whose. A project retrieval that throws still fails the activity; a
+ * company-side failure never does. The result stays `string[]`, so the
+ * marker is the only label: a project entry carrying it is defused before it
+ * leaves.
+ */
+export async function retrieveProjectContexts(
+	params: RetrieveProjectContextsParams,
+): Promise<string[]> {
+	const [projectEntries, vendorEntries] = await Promise.all([
+		// Only company entries may carry the vendor marker: an exact copy in
+		// the project's own text is rewritten, so it cannot pass for vendor
+		// material.
+		retrieveProjectContextEntries(params).then((entries) =>
+			entries.map(defuseVendorContextMarker),
+		),
+		// Never rejects: a company-side failure yields no entries.
+		retrieveCompanyContextEntries({
+			projectId: params.projectId,
+			userId: params.userId,
+			documentType: params.documentType,
+		}),
+	]);
+	return vendorEntries.length > 0
+		? [...projectEntries, ...vendorEntries]
+		: projectEntries;
+}
+
+async function retrieveProjectContextEntries(
+	params: RetrieveProjectContextsParams,
+): Promise<string[]> {
 	const {
 		projectId,
 		userId,
@@ -560,7 +606,14 @@ export async function generateDocumentWithAgent(params: {
 	hasSlackIntegration?: boolean;
 }): Promise<{
 	content: string;
-	resolvedPromptVersionId?: string;
+	/**
+	 * The prompt version this run rendered, or `null` when none did (no bound
+	 * prompt, or a custom prompt that failed to render and fell back to the
+	 * built-in instructions). Always set by this activity; optional only
+	 * because results recorded by workers before Fizzy #2807 lack the key, and
+	 * the workflow tells those apart by its absence.
+	 */
+	resolvedPromptVersionId?: string | null;
 	/**
 	 * The document version `content`'s visual slots are right for. Present only
 	 * when a slot is involved; the workflow hands it to `saveProjectDocument`,
@@ -585,8 +638,9 @@ export async function generateDocumentWithAgent(params: {
 		hasSlackIntegration = false,
 	} = params;
 
-	// Track the resolved prompt version ID for attribution
-	let resolvedPromptVersionId: string | undefined;
+	// Track the resolved prompt version ID for attribution. `null`, never
+	// undefined: the result must carry the key even when no prompt version ran.
+	let resolvedPromptVersionId: string | null = null;
 
 	// Normalize document type from database format (uppercase) to agent format (lowercase)
 	// Use direct function instead of import to avoid module resolution issues in Temporal worker
@@ -730,8 +784,13 @@ export async function generateDocumentWithAgent(params: {
 				});
 
 				systemPrompt = rendered.rendered;
+				// The version that actually ran. Left unset, the workflow
+				// attributes the run to the client's promptVersionId — a stale
+				// pin when the prompt is bound at several tiers (Fizzy #2807).
+				resolvedPromptVersionId = rendered.versionId;
 				activityLogger.info("Custom prompt rendered successfully", {
 					promptId,
+					promptVersion: rendered.version,
 					promptLength: systemPrompt.length,
 				});
 
@@ -854,7 +913,7 @@ export async function generateDocumentWithAgent(params: {
 				userId,
 				organizationId,
 				featureKey: "document-generation",
-				promptVersionId: resolvedPromptVersionId,
+				promptVersionId: resolvedPromptVersionId ?? undefined,
 			},
 		);
 
@@ -983,13 +1042,26 @@ export async function generateDocumentWithAgent(params: {
 
 		// CRITICAL: When RAG contexts exist (from vector search), they define the product scope
 		// Don't inject wizard features as they override the actual product content from RAG
-		// Use explicit flag if provided, otherwise fall back to checking contexts length
-		// This distinction is important: fallback contexts (project description) should NOT suppress features
-		const hasRagContexts = explicitHasRagContexts ?? contexts.length > 0;
+		// Use explicit flag if provided, otherwise fall back to checking for the project's own contexts
+		// This distinction is important: fallback contexts (project description) should NOT suppress features,
+		// and neither does vendor-marked company context (Fizzy #2719)
+		const hasRagContexts =
+			explicitHasRagContexts ?? hasProjectContextEntries(contexts);
 		const featuresLine =
 			!hasRagContexts && project.features.length > 0
 				? `Features to cover: ${project.features.join(", ")}`
 				: "";
+
+		// Company context (Fizzy #2719): with vendor-marked entries present the
+		// default Proposal permits one vendor section, so its lists below drop
+		// the entries that section replaces and say where it goes. The agent's
+		// system prompt says the same; the two must not disagree. Without
+		// vendor entries every line is unchanged.
+		const proposalHasVendorContext =
+			documentType === "proposal" && hasVendorContextEntries(contexts);
+		const proposalForbiddenSections = getProposalForbiddenSections({
+			hasVendorContext: proposalHasVendorContext,
+		}).join(", ");
 
 		const DEFAULT_PROMPTS: Record<string, string> = {
 			prd: `${regenerationPrefix}Create a PRD following the PM Standard v2 format for ${project.name}.
@@ -1048,7 +1120,7 @@ Your response MUST start with this EXACT header (each field on its own line):
 ### **Dependencies / Risks** - Dependencies with owners/timing, Risks with mitigations
 ### **Stakeholders** - All roles with names
 ### **Open Questions** - Unresolved items
-### **Release Notes** - Plain language summary
+### **Release Notes** - Plain language summary${proposalHasVendorContext ? `\n\n${getProposalVendorSectionInstructions()}` : ""}
 
 ## 🚫 FORBIDDEN (INSTANT FAILURE):
 
@@ -1065,7 +1137,7 @@ DO NOT create ANY of these sections:
 ${featuresLine}
 Tech Stack: ${project.techStack.join(", ")}
 
-❌ FULL FORBIDDEN LIST: ${PROPOSAL_FORBIDDEN_SECTIONS.join(", ")}
+❌ FULL FORBIDDEN LIST: ${proposalForbiddenSections}
 
 🚨 START YOUR RESPONSE WITH: ### **Project Proposal**`,
 			design_system: `${regenerationPrefix}Create or update a complete Design System Markdown document (design.md) for ${project.name} using only the supplied project context.
@@ -1254,11 +1326,11 @@ For Proposal documents:
 - START with ### **Project Proposal** header block (Title, Client/Team, Sponsor, Owner, Date, Version, Links)
 - THEN ### **Benefit Hypothesis** ("If we deliver [solution], then [impact] improves by [metric] because [reason]")
 - THEN ### **Overview** (Current state, Proposed solution, Outcome)
-- Continue with Scope (In/Out), Deliverables, Plan (Phases), Success Metrics, Dependencies/Risks, Stakeholders, Open Questions, Release Notes
+- Continue with Scope (In/Out), Deliverables, Plan (Phases), Success Metrics, Dependencies/Risks, Stakeholders, Open Questions, Release Notes${proposalHasVendorContext ? `\n- ${getProposalVendorSectionReminder()}` : ""}
 
 ❌ PRD FORBIDDEN SECTIONS (NEVER USE): ${PRD_FORBIDDEN_SECTIONS.join(", ")}
 
-❌ PROPOSAL FORBIDDEN SECTIONS (NEVER USE): ${PROPOSAL_FORBIDDEN_SECTIONS.join(", ")}
+❌ PROPOSAL FORBIDDEN SECTIONS (NEVER USE): ${proposalForbiddenSections}
 
 For Feature documents:
 - START with # EPIC-001: [Epic Title] (Epic → Feature → Feature Item hierarchy)

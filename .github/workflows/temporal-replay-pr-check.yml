@@ -1,8 +1,10 @@
 name: Temporal Replay Credential-Free Gate
 
 # This pull_request workflow is intentionally incapable of private replay. It
-# contains no environment, secret reference, checkout, dependency install, or
-# PR-code execution. It supplies the stable automatic CheckRun for PRs that do
+# contains no replay environment or secret reference. Its optional identity
+# classifier reads protected staging policy with a read-only token; it never
+# checks out contributor code. The automatic check producer installs nothing
+# and executes no PR code. It supplies the stable automatic CheckRun for PRs that do
 # not enter trusted replay. For an eligible workflow-changing PR, its job name
 # changes so the pull_request_target workflow is the sole producer of the
 # required `replay-validation` context.
@@ -15,11 +17,27 @@ on:
 permissions: {}
 
 concurrency:
-  group: temporal-replay-unprivileged-${{ github.event.pull_request.number }}
+  group: temporal-replay-unprivileged-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   changes:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: Detect Temporal replay changes (credential-free)
     # arm64: dorny/paths-filter is a JS action reading the Pulls API — no
     # checkout, no compiled binaries.
@@ -32,6 +50,7 @@ jobs:
       # On pull_request, paths-filter reads the changed-file list from the
       # Pulls API. There is deliberately no checkout of contributor code.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        if: github.event_name == 'pull_request'
         id: filter
         with:
           filters: |
@@ -40,6 +59,8 @@ jobs:
               - 'packages/temporal/__tests__/replay-validation.test.ts'
               - 'packages/temporal/scripts/fetch-replay-histories.ts'
               - '.github/scripts/temporal-replay/**'
+              - '.github/scripts/staging/promotion-policy.mjs'
+              - '.github/workflows/private-promotion-policy.yml'
               - '.github/workflows/temporal-replay-pr-check.yml'
               - '.github/workflows/temporal-replay-validation.yml'
 
@@ -57,11 +78,11 @@ jobs:
             github.event.pull_request.user.login == 'fabric-relay[bot]' &&
             startsWith(github.event.pull_request.head.ref, 'relay/'))) &&
           'replay-validation-unprivileged' || 'replay-validation' }}
-    needs: changes
-    if: always()
-    # arm64: pure shell against env vars — no checkout, no PR code execution.
+    needs: [changes, promotion_policy]
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always())
+    # arm64: pure shell against env vars; no contributor code execution.
     runs-on: ubuntu-24.04-arm
-    permissions: {}
     env:
       REPOSITORY: ${{ github.repository }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -71,6 +92,7 @@ jobs:
       WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
     steps:
       - name: Report credential-free replay policy
+        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
 

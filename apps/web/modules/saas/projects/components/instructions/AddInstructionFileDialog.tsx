@@ -9,6 +9,7 @@ import {
 	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -184,6 +185,7 @@ export function AddInstructionFileDialog({
 	canPublishBeforeScan?: boolean;
 	onAdded: () => void;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [file, setFile] = useState<File | null>(null);
@@ -267,7 +269,7 @@ export function AddInstructionFileDialog({
 			toast.error(
 				data?.reason && ADMISSION_REFUSALS.has(data.reason)
 					? t(`refusals.${data.reason}`)
-					: error.message,
+					: actionError(error),
 			);
 		},
 	});

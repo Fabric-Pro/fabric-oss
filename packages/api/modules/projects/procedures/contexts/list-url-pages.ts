@@ -12,12 +12,7 @@
  * Callers fetch full content lazily via `getUrlPageContent`.
  */
 import { ORPCError } from "@orpc/server";
-import {
-	db,
-	type ExtractionStatus,
-	getContextById,
-	hasProjectAccess,
-} from "@repo/database";
+import { db, getContextById, hasProjectAccess } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -25,9 +20,12 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 50;
+import {
+	URL_PAGES_DEFAULT_LIMIT,
+	URL_PAGES_MAX_LIMIT,
+	urlPageListFilter,
+	urlPageListPage,
+} from "./lib/url-page-listing";
 
 export const listUrlPagesProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_READ))
@@ -49,8 +47,8 @@ export const listUrlPagesProcedure = tenantProtectedProcedure
 				.number()
 				.int()
 				.min(1)
-				.max(MAX_LIMIT)
-				.default(DEFAULT_LIMIT),
+				.max(URL_PAGES_MAX_LIMIT)
+				.default(URL_PAGES_DEFAULT_LIMIT),
 			/**
 			 * Filter rows by lifecycle bucket. "all" returns everything;
 			 * "indexed" → COMPLETED; "processing" → PENDING + EXTRACTING;
@@ -111,52 +109,15 @@ export const listUrlPagesProcedure = tenantProtectedProcedure
 			? { organizationId, userId: user.id }
 			: { organizationId: null, userId: user.id };
 
-		// Status-bucket filter expands to the underlying enum set. Kept
-		// here (not at the schema layer) because the bucketing is a UX
-		// concept — PENDING + EXTRACTING are functionally indistinguishable
-		// to the user but distinct in the workflow.
-		// Map values typed as ExtractionStatus[] (Prisma enum) so the
-		// `extractionStatus: { in: ... }` filter compiles strictly.
-		const statusBucket: Record<
-			"all" | "indexed" | "processing" | "failed",
-			ExtractionStatus[] | null
-		> = {
-			all: null,
-			indexed: ["COMPLETED"],
-			processing: ["PENDING", "EXTRACTING"],
-			failed: ["FAILED"],
-		};
-		const statusValues = statusBucket[input.statusFilter];
-
-		// Case-insensitive substring match against both `pageTitle` and
-		// `pageUrl`. The free-text search OR-merges the two columns so
-		// users can paste a URL fragment OR an article title and both work.
-		const trimmedSearch = input.search?.trim();
-		const searchFilter =
-			trimmedSearch && trimmedSearch.length > 0
-				? {
-						OR: [
-							{
-								pageTitle: {
-									contains: trimmedSearch,
-									mode: "insensitive" as const,
-								},
-							},
-							{
-								pageUrl: {
-									contains: trimmedSearch,
-									mode: "insensitive" as const,
-								},
-							},
-						],
-					}
-				: null;
-
+		// Status-bucket filter expands to the underlying enum set here, not
+		// at the schema layer: the bucketing is a UX concept (see
+		// `URL_PAGE_STATUS_BUCKETS`). The free-text search matches
+		// `pageTitle` OR `pageUrl`, case-insensitively, so users can paste a
+		// URL fragment OR an article title and both work.
 		const whereBase = {
 			parentContextId: input.parentContextId,
 			...tenantFilter,
-			...(statusValues ? { extractionStatus: { in: statusValues } } : {}),
-			...(searchFilter ?? {}),
+			...urlPageListFilter(input),
 		};
 
 		// Fetch limit + 1 to know whether there is a next page. Sort
@@ -181,10 +142,7 @@ export const listUrlPagesProcedure = tenantProtectedProcedure
 			orderBy: { pageUrl: "asc" },
 		});
 
-		const hasNext = rows.length > input.limit;
-		const items = hasNext ? rows.slice(0, -1) : rows;
-		const nextCursor =
-			hasNext && items.length > 0 ? items[items.length - 1].id : null;
+		const { items, nextCursor } = urlPageListPage(rows, input.limit);
 
 		// Total is cheap (indexed on parentContextId) and the drawer header
 		// surfaces it as "X pages indexed". This reflects the FILTERED

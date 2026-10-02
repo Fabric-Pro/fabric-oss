@@ -82,7 +82,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return {
 		...real,
 		readFile: vi.fn((...args: Parameters<typeof real.readFile>) => {
-			m.reads.push(String(args[0]));
+			// Recorded with `/` on every platform, as the assertions spell paths.
+			m.reads.push(String(args[0]).split(path.sep).join("/"));
 			return real.readFile(...args);
 		}),
 	};
@@ -1618,6 +1619,9 @@ describe("syncContextTreeFromRepository — integration and credential", () => {
 			new GitCommandError("exit", 128, leak, "clone"),
 		);
 		const cloneFailure = await failed(ctx);
+		// The file is checked out only when its row does not already hold its
+		// blob; clearing the id (a member's edit does) makes this run need it.
+		(contextRow("docs/a.md") as Row).sourceBlobOid = null;
 		m.sparseCheckout.mockRejectedValueOnce(
 			new GitCommandError("exit", 128, leak, "checkout"),
 		);
@@ -1649,5 +1653,238 @@ describe("syncContextTreeFromRepository — integration and credential", () => {
 			expect.objectContaining({ event: "context.sync.git_failed" }),
 			expect.any(String),
 		);
+	});
+});
+
+// =============================================================================
+// A run reads only the blobs that changed
+// =============================================================================
+
+/**
+ * The inventory already carries every entry's git blob id. A row this sync
+ * wrote records the blob it read, so a later run whose inventory shows the same
+ * blob for the path checks out and reads nothing for it, however many files
+ * the selection holds. Each count below is what the old code did for EVERY
+ * file, so each fails on it.
+ */
+describe("syncContextTreeFromRepository — an unchanged blob is not read again", () => {
+	const files = (changed?: string): RepoFile[] => [
+		{ path: "docs/a.md", body: "alpha" },
+		{ path: "docs/b.md", body: "beta" },
+		{ path: "docs/c.md", body: changed ?? "gamma" },
+		{ path: "docs/d.md", body: "delta" },
+		{ path: "docs/e.md", body: "epsilon" },
+	];
+
+	/** A second run of the same sync: a fresh run row, the same configuration. */
+	function nextRun(ctx: ContextSyncFrozenContext): void {
+		committed().run.length = 0;
+		seedRun({ context: { paths: ctx.paths, ref: "main" } });
+		m.reads = [];
+		m.sparseCheckout.mockClear();
+		db.applyRepositoryContextBatch.mockClear();
+		store.log.length = 0;
+		store.fenceCalls = 0;
+	}
+
+	// The distinct files read: a changed file is read once to plan it and once
+	// more when it is applied, and an unchanged one not at all.
+	const readFiles = () => [
+		...new Set(m.reads.filter((p) => p.endsWith(".md"))),
+	];
+	const checkedOut = () =>
+		m.sparseCheckout.mock.calls.flatMap(
+			([arg]) => (arg as { repoPaths: string[] }).repoPaths,
+		);
+
+	it("stamps the blob it read on every row it writes", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+
+		await sync(ctx);
+
+		for (const file of files()) {
+			expect(contextRow(file.path)?.sourceBlobOid).toBe(oidOf(file));
+		}
+	});
+
+	it("checks out and reads exactly the one file whose blob changed, and writes exactly one row", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		serve(SHA_B, files("gamma, revised"));
+
+		expect(await sync(ctx)).toEqual({
+			outcome: "applied",
+			commitSha: SHA_B,
+		});
+
+		expect(checkedOut()).toEqual(["docs/c.md"]);
+		expect(readFiles()).toHaveLength(1);
+		expect(readFiles()[0]).toMatch(/docs\/c\.md$/);
+		expect(
+			store.log.filter((l) => /^(create|update|adopt):/.test(l)),
+		).toEqual(["update:docs/c.md"]);
+		expect(contextRow("docs/c.md")).toMatchObject({
+			content: "gamma, revised",
+			sourceBlobOid: oidOf({ path: "docs/c.md", body: "gamma, revised" }),
+		});
+	});
+
+	it("keeps the unchanged keys in the plan, records them as unchanged, and prunes nothing", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		serve(SHA_B, files("gamma, revised"));
+
+		await sync(ctx);
+
+		expect(plan().keptCount).toBe(5);
+		expect(plan().keptKeys).toEqual(files().map((f) => f.path));
+		expect(outcomes()).toEqual({
+			"docs/a.md": "unchanged",
+			"docs/b.md": "unchanged",
+			"docs/c.md": "updated",
+			"docs/d.md": "unchanged",
+			"docs/e.md": "unchanged",
+		});
+		expect(managedKeys()).toEqual(files().map((f) => f.path));
+		expect(runRow().removedCount).toBe(0);
+	});
+
+	it("reports the same final counts as a run that read everything would", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		// Same commit again: nothing changed, every key is decided as unchanged.
+		serve(SHA_B, files());
+
+		await sync(ctx);
+
+		expect(Object.values(outcomes())).toEqual([
+			"unchanged",
+			"unchanged",
+			"unchanged",
+			"unchanged",
+			"unchanged",
+		]);
+		expect(checkedOut()).toEqual([]);
+		expect(readFiles()).toEqual([]);
+		expect(plan().keptCount).toBe(5);
+	});
+
+	it("reads a row with no recorded blob once, stamps it, and skips it the run after", async () => {
+		const ctx = configure(["docs"]);
+		// Rows as a run before the column existed left them: content, no blob.
+		for (const file of files()) {
+			seedContext(file.path, String(file.body));
+		}
+		serve(SHA_A, files());
+
+		await sync(ctx);
+
+		expect(checkedOut()).toHaveLength(5);
+		expect(outcomes()).toEqual({
+			"docs/a.md": "unchanged",
+			"docs/b.md": "unchanged",
+			"docs/c.md": "unchanged",
+			"docs/d.md": "unchanged",
+			"docs/e.md": "unchanged",
+		});
+		for (const file of files()) {
+			expect(contextRow(file.path)?.sourceBlobOid).toBe(oidOf(file));
+		}
+
+		nextRun(ctx);
+		serve(SHA_B, files());
+		await sync(ctx);
+
+		expect(checkedOut()).toEqual([]);
+		expect(readFiles()).toEqual([]);
+	});
+
+	it("does not trust a row whose blob was cleared by a member's edit: it is read again", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		// A non-sync write clears the blob id (the writer's `sourceBlobOid: null`).
+		(contextRow("docs/b.md") as Row).sourceBlobOid = null;
+		serve(SHA_B, files());
+
+		await sync(ctx);
+
+		expect(checkedOut()).toEqual(["docs/b.md"]);
+		expect(contextRow("docs/b.md")?.sourceBlobOid).toBe(
+			oidOf({ path: "docs/b.md", body: "beta" }),
+		);
+	});
+
+	it("counts an unchanged file's stored bytes toward the total limit", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		// A stored body far past the total cap: the next run must still refuse.
+		(contextRow("docs/a.md") as Row).content = "x".repeat(
+			MAX_CONTEXT_SYNC_TOTAL_BYTES + 1,
+		);
+		serve(SHA_B, files());
+
+		const error = await failed(ctx);
+
+		expect(error.type).toBe("LIMITS_EXCEEDED");
+	});
+
+	it("a retry from a stored plan checks out only the keys whose blob changed", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		serve(SHA_B, files("gamma, revised"));
+		// Fences: 1 pin, 2 plan, 3 the first apply batch.
+		store.beforeFence = (call) => {
+			if (call === 3) {
+				throw new Error("connection reset");
+			}
+		};
+		expect((await failed(ctx)).type).toBe("STORE_FAILED");
+		expect(plan().keptKeys).toHaveLength(5);
+		m.reads = [];
+		m.sparseCheckout.mockClear();
+		store.beforeFence = null;
+		db.writeContextRepositorySyncRunPlan.mockClear();
+
+		await sync(ctx);
+
+		expect(db.writeContextRepositorySyncRunPlan).not.toHaveBeenCalled();
+		expect(checkedOut()).toEqual(["docs/c.md"]);
+		expect(readFiles()).toHaveLength(1);
+		expect(contextRow("docs/c.md")?.content).toBe("gamma, revised");
+		expect(Object.values(outcomes())).toHaveLength(5);
+	});
+
+	it("records a conflict, never a read, for an unchanged key whose row was taken before the apply", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, files());
+		await sync(ctx);
+		nextRun(ctx);
+		serve(SHA_B, files());
+		// Between planning (fence 2) and the apply batch (fence 3) a member's
+		// edit clears one blob id.
+		store.beforeFence = (call) => {
+			if (call === 3) {
+				(contextRow("docs/d.md") as Row).sourceBlobOid = null;
+			}
+		};
+
+		await sync(ctx);
+
+		expect(outcomes()["docs/d.md"]).toBe("conflict");
+		expect(outcomes()["docs/a.md"]).toBe("unchanged");
+		expect(readFiles()).toEqual([]);
 	});
 });

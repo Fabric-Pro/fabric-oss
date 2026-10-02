@@ -25,6 +25,7 @@ const microsoftTeamsPlugin: IntegrationPlugin = {
 
 	// Custom settings component for OAuth flow
 	SettingsComponent: MicrosoftTeamsSettings,
+	ownsDisconnect: true,
 
 	// OAuth integrations use server-side token validation
 	testConfig: {

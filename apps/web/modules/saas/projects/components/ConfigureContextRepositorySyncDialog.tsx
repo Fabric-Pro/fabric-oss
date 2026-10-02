@@ -234,8 +234,9 @@ export function ConfigureContextRepositorySyncDialog({
 
 	async function submit() {
 		clearInlineError();
+		let saved: Awaited<ReturnType<typeof configure.mutateAsync>>;
 		try {
-			await configure.mutateAsync({
+			saved = await configure.mutateAsync({
 				projectId,
 				organizationId,
 				repositoryIntegrationId: integrationId,
@@ -264,7 +265,17 @@ export function ConfigureContextRepositorySyncDialog({
 			}
 			return;
 		}
-		// Saved. The first sync starts now (§7.2); a refusal to start is
+		// Saved. A change made while a run was open is already queued behind
+		// it, by the server: that run stops at its next fence and the new
+		// selection syncs next, so there is nothing to start from here, and
+		// "Sync now" would only be refused.
+		if ("syncQueued" in saved) {
+			toast.info(t("syncNowResult.queued"));
+			onSaved();
+			onOpenChange(false);
+			return;
+		}
+		// Otherwise the first sync starts now (§7.2); a refusal to start is
 		// reported, and the configuration stands either way.
 		try {
 			const result = (await syncNow.mutateAsync({

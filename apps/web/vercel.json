@@ -1,7 +1,7 @@
 {
 	"$schema": "https://openapi.vercel.sh/vercel.json",
 	"buildCommand": "cd ../.. && export DOCKER_BUILD=true NEXT_TYPECHECK_SPLIT=true && pnpm turbo type-check --filter=@repo/web && pnpm turbo build --filter=@repo/web",
-	"installCommand": "cd ../.. && pnpm install",
+	"installCommand": "cd ../.. && pnpm install --filter @repo/web... --filter .",
 	"ignoreCommand": "sh scripts/vercel-ignore.sh",
 	"framework": "nextjs",
 	"outputDirectory": ".next",

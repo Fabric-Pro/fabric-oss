@@ -36,6 +36,7 @@ import { selectTaskQueues } from "./lib/worker-task-queue-selection";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
+	COMPANY_CONTEXT_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
 } from "./task-queues";
@@ -114,6 +115,13 @@ export const ACTIVITY_SLOTS = {
 	// the two-minute build target: the calls are provider-bound, not
 	// slot-bound. Through the half-the-slots rule this adds two connections.
 	glossyEdition: 4,
+	// Company context ingestion (Fizzy #2719): an organization's uploaded
+	// files, pasted text and crawled websites, on their own queue so no
+	// worker without company support can take them. Background work nobody
+	// waits on second by second — an administrator loads the material once —
+	// so three slots drain a batch of uploads steadily. Through the
+	// half-the-slots rule this adds two connections.
+	companyContext: 3,
 	// Coding-instructions snapshot validation. Deliberately tiny, and for a
 	// different reason than most: these activities are the most I/O-bound
 	// tenant of any queue here. One upload downloads and hashes every byte
@@ -204,6 +212,18 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 	{
 		taskQueue: GLOSSY_EDITION_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.glossyEdition,
+		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	// Company context ingestion gets its OWN queue (Fizzy #2719). The
+	// workflows and activities are the shared ingestion ones, told apart by
+	// the owner on their input; the queue is what guarantees that only a
+	// worker which understands that owner ever runs a company job. A worker
+	// from before company context polls the project queues alone, so it can
+	// never mistake a company source for a project context, and during a
+	// rollback company jobs wait here rather than fail.
+	{
+		taskQueue: COMPANY_CONTEXT_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.companyContext,
 		maxConcurrentWorkflowTaskExecutions: 5,
 	},
 	// Coding-instructions snapshot validation gets its OWN queue, for the
@@ -355,7 +375,7 @@ const SELECTED_TASK_QUEUE_WORKERS = selectTaskQueueWorkers();
  * Size the database pool against the work this process actually admits.
  *
  * `pg` defaults to 10 connections. That default was silently governing a
- * process that admits 86 concurrent activities — the sum of `ACTIVITY_SLOTS`
+ * process that admits 89 concurrent activities — the sum of `ACTIVITY_SLOTS`
  * above, so re-add it whenever a key is added or changed rather than trusting
  * this figure — so the pool saturated under ordinary scheduled bursts and,
  * because `connectionTimeoutMillis` also bounds queued callers, surfaced as

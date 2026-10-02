@@ -1,14 +1,17 @@
 /**
  * API Key Authentication Middleware
  *
- * Validates both personal (fab_*) and organization (org_*) API keys,
- * resolves tenant context, checks scopes, and injects ExternalApiContext.
+ * Validates personal (fab_*) and organization (org_*) API keys and OAuth
+ * access tokens (fat_*) from signed-in agents, resolves tenant context, checks
+ * scopes, and injects ExternalApiContext.
  */
 
 import { createHash } from "node:crypto";
 import {
 	canExecuteOrganizationAgents,
 	canRunOrganizationWorkflows,
+	OAUTH_ACCESS_TOKEN_PREFIX,
+	verifyOAuthAccessToken,
 	verifyOrganizationApiKey,
 } from "@repo/database";
 import type { Context, Next } from "hono";
@@ -133,8 +136,9 @@ export function requireApiKey(requiredScope?: string) {
 		const apiKey = authHeader.slice(7);
 		const isUserKey = apiKey.startsWith("fab_");
 		const isOrgKey = apiKey.startsWith("org_");
+		const isOAuthToken = apiKey.startsWith(OAUTH_ACCESS_TOKEN_PREFIX);
 
-		if (!isUserKey && !isOrgKey) {
+		if (!isUserKey && !isOrgKey && !isOAuthToken) {
 			return c.json(
 				{
 					error: "Invalid API key format. Keys must start with fab_ or org_",
@@ -145,7 +149,37 @@ export function requireApiKey(requiredScope?: string) {
 
 		let ctx: ExternalApiContext;
 
-		if (isUserKey) {
+		if (isOAuthToken) {
+			// A coding agent that signed in. The verifier settles every way a
+			// token can be dead — expired, revoked, client disabled, owner
+			// banned or no longer a member of the organization it was bound to —
+			// and all of them answer like any other bad credential.
+			const token = await verifyOAuthAccessToken(apiKey);
+			if (!token.valid) {
+				return c.json(
+					{ error: "Invalid or expired access token" },
+					401,
+				);
+			}
+
+			if (requiredScope && !hasScope(token.scopes, requiredScope)) {
+				return c.json(
+					{ error: `Missing required scope: ${requiredScope}` },
+					403,
+				);
+			}
+
+			// The agent, not the hour-long token, is what usage, rate limits
+			// and attribution name: the client row outlives every rotation.
+			ctx = {
+				keyType: "oauth",
+				keyId: token.clientRowId,
+				keyPrefix: `${OAUTH_ACCESS_TOKEN_PREFIX}${token.clientRowId.slice(0, 8)}`,
+				userId: token.userId,
+				organizationId: token.organizationId,
+				scopes: token.scopes,
+			};
+		} else if (isUserKey) {
 			const result = await verifyUserApiKey(apiKey);
 			if (
 				!result.valid ||

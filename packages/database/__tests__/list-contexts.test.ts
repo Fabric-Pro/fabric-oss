@@ -21,6 +21,8 @@ type ContextRow = {
 
 const findManyMock = vi.fn();
 const countMock = vi.fn();
+// The preview + length query that replaces each row's body.
+const queryRawMock = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -28,6 +30,7 @@ vi.mock("../prisma/client", () => ({
 			findMany: (args: unknown) => findManyMock(args),
 			count: (args: unknown) => countMock(args),
 		},
+		$queryRaw: (...args: unknown[]) => queryRawMock(...args),
 	},
 	Prisma: { sql: vi.fn() },
 }));
@@ -61,6 +64,8 @@ describe("listContexts", () => {
 	beforeEach(() => {
 		findManyMock.mockReset();
 		countMock.mockReset();
+		queryRawMock.mockReset();
+		queryRawMock.mockResolvedValue([]);
 	});
 
 	it('returns every row when limit is "none" (Fizzy #1023 regression)', async () => {
@@ -106,10 +111,11 @@ describe("listContexts", () => {
 
 	// Living Memory repository sync (design 2026-09-23 §7.3): the Context tab
 	// badges a managed row and hides its Delete from `repositorySyncId`, which
-	// reaches it only because this query reads whole rows. A `select` or
-	// `omit` here would drop the column without any type error downstream,
-	// since the list procedure spreads each row.
-	it("reads whole rows, so repositorySyncId reaches the Context tab", async () => {
+	// reaches it only because this query reads every column but the body. A
+	// `select`, or an `omit` wider than `content`, would drop the column
+	// without any type error downstream, since the list procedure spreads
+	// each row.
+	it("omits only the body, so repositorySyncId reaches the Context tab", async () => {
 		findManyMock.mockResolvedValue([
 			{
 				id: "ctx-managed",
@@ -120,6 +126,9 @@ describe("listContexts", () => {
 			},
 		]);
 		countMock.mockResolvedValue(1);
+		queryRawMock.mockResolvedValue([
+			{ id: "ctx-managed", preview: "First line", length: 1200 },
+		]);
 
 		const result = await listContexts({
 			projectId: "proj-1",
@@ -131,11 +140,15 @@ describe("listContexts", () => {
 			unknown
 		>;
 		expect(findManyArgs).not.toHaveProperty("select");
-		expect(findManyArgs).not.toHaveProperty("omit");
+		expect(findManyArgs.omit).toEqual({ content: true });
 		// Typed: the returned row type carries the column.
 		const owner: string | null =
 			result.contexts[0]?.repositorySyncId ?? null;
 		expect(owner).toBe("sync-1");
+		// The body is replaced by a bounded preview and its length.
+		expect(result.contexts[0]).not.toHaveProperty("content");
+		expect(result.contexts[0]?.contentPreview).toBe("First line");
+		expect(result.contexts[0]?.contentLength).toBe(1200);
 	});
 
 	it("defaults to 50-row pagination for batching callers", async () => {

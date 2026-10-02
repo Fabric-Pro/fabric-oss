@@ -66,6 +66,7 @@ const active = {
 	id: "session-1",
 	status: "ACTIVE",
 	endReason: null,
+	leaveRequestedAt: null,
 	streamClosedAt: null,
 	streamGeneration: 2,
 };
@@ -97,6 +98,34 @@ describe("Parlume callback authentication", () => {
 		const logged = JSON.stringify(mocks.log.mock.calls);
 		expect(logged).not.toContain("stale-secret");
 		expect(logged).not.toContain("callback-secret");
+	});
+});
+
+describe("Parlume failed bot callback after a leave Fabric requested", () => {
+	it("records a normal end with the requested reason instead of a failure", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...active,
+			status: "LEAVING",
+			endReason: "IDLE",
+			leaveRequestedAt: new Date("2026-10-01T18:07:20Z"),
+		});
+
+		const response = await POST(request("bot.failed"));
+
+		expect(await response.json()).toEqual({ accepted: true });
+		expect(mocks.updateMany).toHaveBeenCalledWith({
+			where: { id: "session-1", streamGeneration: 2 },
+			data: {
+				status: "LEAVING",
+				endReason: "IDLE",
+				terminalCallbackAt: expect.any(Date),
+			},
+		});
+		expect(mocks.updateMany).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ status: "FAILED" }),
+			}),
+		);
 	});
 });
 

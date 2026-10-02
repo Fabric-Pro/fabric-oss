@@ -6,7 +6,24 @@
 
 import { logExternalApiUsage } from "@repo/database";
 import type { Context, Next } from "hono";
-import type { ExternalApiVariables } from "../types";
+import type { ExternalApiContext, ExternalApiVariables } from "../types";
+
+function usageKeyType(
+	keyType: ExternalApiContext["keyType"],
+): "USER" | "ORGANIZATION" | "OAUTH" {
+	switch (keyType) {
+		case "personal":
+			return "USER";
+		case "organization":
+			return "ORGANIZATION";
+		case "oauth":
+			return "OAUTH";
+		default: {
+			const unreachable: never = keyType;
+			return unreachable;
+		}
+	}
+}
 
 /**
  * Middleware that logs usage after the handler completes.
@@ -31,7 +48,7 @@ export function usageLogger() {
 		const endpoint = c.req.routePath || `${c.req.method} ${c.req.path}`;
 
 		logExternalApiUsage({
-			apiKeyType: ctx.keyType === "personal" ? "USER" : "ORGANIZATION",
+			apiKeyType: usageKeyType(ctx.keyType),
 			apiKeyId: ctx.keyId,
 			apiKeyPrefix: ctx.keyPrefix,
 			instanceId: c.req.param("instanceId") || undefined,

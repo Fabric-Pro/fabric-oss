@@ -202,6 +202,7 @@ export { AgentRegistry, globalAgentRegistry } from "./registry";
 // SDK per-request retry in ./services/langchain-models.ts)
 export {
 	calculateRetryDelay,
+	isContextOverflowError,
 	isJsonParseError,
 	isRetryableError,
 	MAX_NODE_RETRIES,

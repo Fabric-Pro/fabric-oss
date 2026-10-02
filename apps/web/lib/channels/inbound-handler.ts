@@ -34,6 +34,9 @@ async function resolveCredentials(
 		where: {
 			provider: providerKey as unknown as ProviderEnum,
 			isActive: true,
+			// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
+			// not a connection.
+			NOT: { name: `${providerKey}_OAUTH_APP` },
 		},
 		orderBy: { lastUsedAt: "desc" },
 	});

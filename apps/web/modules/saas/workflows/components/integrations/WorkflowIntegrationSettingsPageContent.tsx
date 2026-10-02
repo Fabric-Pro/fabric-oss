@@ -239,20 +239,11 @@ export function WorkflowIntegrationSettingsPageContent({
 	});
 
 	const disconnectMutation = useMutation({
+		// Only reachable for plugins that do not own their disconnect (see
+		// `ownsDisconnect` on the plugin type). Plugins that do own it, the
+		// OAuth providers included, disconnect through their own settings
+		// component, so no provider-specific disconnect belongs here.
 		mutationFn: async (type: IntegrationType) => {
-			if (isOAuthIntegration(type)) {
-				await orpcClient.integrations.oauth.disconnect({
-					provider: type as
-						| "ASANA"
-						| "GITHUB"
-						| "GOOGLE_DRIVE"
-						| "LINEAR"
-						| "MICROSOFT_GRAPH"
-						| "SLACK"
-						| "NOTION",
-					organizationId,
-				});
-			}
 			return await orpcClient.workflows.integrations.disconnectByType({
 				type: type as WorkflowIntegrationProvider,
 				organizationId,
@@ -298,10 +289,20 @@ export function WorkflowIntegrationSettingsPageContent({
 			{ hasCredentials: boolean; lastUsedAt?: Date }
 		> = {};
 		if (configuredData && Array.isArray(configuredData)) {
+			// A provider can have several rows (newest first). Any row with
+			// credentials makes it configured; a later empty or undecryptable
+			// row must not erase that, or the GitLab settings lose the
+			// persisted evidence they offer Disconnect from.
 			for (const integration of configuredData) {
+				const previous = map[integration.provider];
 				map[integration.provider] = {
-					hasCredentials: integration.hasCredentials,
-					lastUsedAt: integration.lastUsedAt ?? undefined,
+					hasCredentials:
+						(previous?.hasCredentials ?? false) ||
+						integration.hasCredentials,
+					lastUsedAt:
+						previous?.lastUsedAt ??
+						integration.lastUsedAt ??
+						undefined,
 				};
 			}
 		}
@@ -809,6 +810,11 @@ export function WorkflowIntegrationSettingsPageContent({
 														activePlugin.type
 													]?.apiKey
 												}
+												hasPersistedCredential={
+													configuredMap[
+														activePlugin.type
+													]?.hasCredentials ?? false
+												}
 												onApiKeyChange={(
 													value: string,
 												) =>
@@ -903,8 +909,7 @@ export function WorkflowIntegrationSettingsPageContent({
 									)}
 									{isConfiguredInWorkflow(
 										activePlugin.type,
-									) &&
-									!isOAuthIntegration(activePlugin.type) ? (
+									) && !activePlugin.ownsDisconnect ? (
 										<AlertDialog>
 											<AlertDialogTrigger asChild>
 												<Button

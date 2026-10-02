@@ -91,6 +91,9 @@ const h = vi.hoisted(() => {
 			if ("not" in c) {
 				return (actual ?? null) !== c.not;
 			}
+			if ("in" in c) {
+				return (c.in as unknown[]).includes(actual);
+			}
 			if ("gt" in c) {
 				return actual != null && String(actual) > String(c.gt);
 			}
@@ -509,6 +512,7 @@ import {
 	acquireContextRepositorySyncRunKey,
 	applyRepositoryContextBatch,
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
+	confirmUnchangedRepositoryContext,
 	type ContextSyncPlan,
 	type ContextSyncRunFence,
 	completeContextRepositorySyncRun,
@@ -2095,6 +2099,190 @@ const file = (
 	contentHash,
 	content: `content of ${storageKey} at ${contentHash}`,
 	...extra,
+});
+
+describe("applyRepositoryContextBatch — the blob a row was read from", () => {
+	it("stamps the blob on a created row", async () => {
+		await applyBatch([
+			file("docs/new.md", "h-new", { sourceBlobOid: "oid-1" }),
+		]);
+
+		expect(
+			committed().context.find((row) => row.sourcePath === "docs/new.md"),
+		).toMatchObject({ sourceBlobOid: "oid-1" });
+	});
+
+	it("writes the new blob with an updated row's content", async () => {
+		seedContext({
+			sourcePath: "docs/a.md",
+			contentHash: "h-old",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-old",
+		});
+
+		const outcomes = await applyBatch([
+			file("docs/a.md", "h-new", { sourceBlobOid: "oid-new" }),
+		]);
+
+		expect(outcomes).toEqual({ "docs/a.md": "updated" });
+		expect(committed().context[0]).toMatchObject({
+			contentHash: "h-new",
+			sourceBlobOid: "oid-new",
+		});
+	});
+
+	it("an update without a blob CLEARS it: a content write never keeps a stale one", async () => {
+		seedContext({
+			sourcePath: "docs/a.md",
+			contentHash: "h-old",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-old",
+		});
+
+		await applyBatch([file("docs/a.md", "h-new")]);
+
+		expect(committed().context[0]?.sourceBlobOid).toBeNull();
+	});
+
+	it("stamps an unchanged row that has no blob recorded, writing nothing else", async () => {
+		const seeded = seedContext({
+			sourcePath: "docs/a.md",
+			contentHash: "h-same",
+			repositorySyncId: SYNC,
+			sourceBlobOid: null,
+		});
+
+		const outcomes = await applyBatch([
+			file("docs/a.md", "h-same", { sourceBlobOid: "oid-1" }),
+		]);
+
+		expect(outcomes).toEqual({ "docs/a.md": "unchanged" });
+		// Only the blob (and the row's own `updatedAt`) moves: the content, its
+		// hash, who wrote it and the embedding state are as they were.
+		expect(committed().context[0]).toMatchObject({
+			...seeded,
+			sourceBlobOid: "oid-1",
+		});
+	});
+
+	it("leaves an unchanged row that already holds the blob exactly as it is", async () => {
+		const seeded = seedContext({
+			sourcePath: "docs/a.md",
+			contentHash: "h-same",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-1",
+		});
+
+		await applyBatch([
+			file("docs/a.md", "h-same", { sourceBlobOid: "oid-1" }),
+		]);
+
+		expect(committed().context[0]).toEqual(seeded);
+	});
+
+	it("records the blob when it adopts a row", async () => {
+		seedContext({
+			sourcePath: "docs/pushed.md",
+			contentHash: "h-pushed",
+			repositorySyncId: null,
+		});
+
+		const outcomes = await applyBatch([
+			file("docs/pushed.md", "h-pushed", { sourceBlobOid: "oid-9" }),
+		]);
+
+		expect(outcomes).toEqual({ "docs/pushed.md": "adopted" });
+		expect(committed().context[0]).toMatchObject({
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-9",
+		});
+	});
+});
+
+describe("confirmUnchangedRepositoryContext — an unchanged key is decided without a read", () => {
+	const confirm = (
+		entries: Array<{ storageKey: string; sourceBlobOid: string }>,
+		decided: string[] = [],
+	) =>
+		inTx((tx) =>
+			confirmUnchangedRepositoryContext(tx as never, {
+				projectId: PROJECT,
+				organizationId: ORG,
+				syncId: SYNC,
+				entries,
+				decided: new Set(decided),
+			}),
+		);
+
+	it("answers unchanged when the row still holds the blob the plan saw, and conflict when it does not", async () => {
+		seedContext({
+			sourcePath: "docs/a.md",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-a",
+		});
+		seedContext({
+			sourcePath: "docs/b.md",
+			repositorySyncId: SYNC,
+			// A member's edit cleared it between the plan and now.
+			sourceBlobOid: null,
+		});
+		seedContext({
+			sourcePath: "docs/c.md",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-moved",
+		});
+
+		const outcomes = await confirm([
+			{ storageKey: "docs/a.md", sourceBlobOid: "oid-a" },
+			{ storageKey: "docs/b.md", sourceBlobOid: "oid-b" },
+			{ storageKey: "docs/c.md", sourceBlobOid: "oid-c" },
+			{ storageKey: "docs/gone.md", sourceBlobOid: "oid-g" },
+		]);
+
+		expect(outcomes).toEqual({
+			"docs/a.md": "unchanged",
+			"docs/b.md": "conflict",
+			"docs/c.md": "conflict",
+			"docs/gone.md": "conflict",
+		});
+	});
+
+	it("never trusts a row this sync does not manage, or another tenant's", async () => {
+		seedContext({
+			sourcePath: "docs/a.md",
+			repositorySyncId: null,
+			sourceBlobOid: "oid-a",
+		});
+		seedContext({
+			sourcePath: "docs/b.md",
+			repositorySyncId: SYNC,
+			organizationId: "org-other",
+			sourceBlobOid: "oid-b",
+		});
+
+		expect(
+			await confirm([
+				{ storageKey: "docs/a.md", sourceBlobOid: "oid-a" },
+				{ storageKey: "docs/b.md", sourceBlobOid: "oid-b" },
+			]),
+		).toEqual({ "docs/a.md": "conflict", "docs/b.md": "conflict" });
+	});
+
+	it("skips decided keys and writes nothing", async () => {
+		const seeded = seedContext({
+			sourcePath: "docs/a.md",
+			repositorySyncId: SYNC,
+			sourceBlobOid: "oid-a",
+		});
+
+		const outcomes = await confirm(
+			[{ storageKey: "docs/a.md", sourceBlobOid: "oid-a" }],
+			["docs/a.md"],
+		);
+
+		expect(outcomes).toEqual({});
+		expect(committed().context[0]).toEqual(seeded);
+	});
 });
 
 describe("applyRepositoryContextBatch — the outcome table (§5.3.1 step 7)", () => {

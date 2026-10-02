@@ -7,51 +7,60 @@ export interface ParlumeStreamConnection {
 	streamGeneration: number | null;
 }
 
-interface SessionStartedEvent {
-	event: "session.started";
-	bot_id: string;
+export interface ParlumeSpeakerUpdate {
+	name: string;
+	id: string | null;
+	timestamp: number;
+	isSpeaking: boolean;
 }
 
-interface TranscriptSegmentEvent {
-	event: "transcript.segment";
-	bot_id: string;
-	data: {
-		text: string;
-		isFinal: boolean;
-		utteranceStart?: number;
-		utteranceEnd?: number;
-		speaker?: { name?: string; id?: string } | null;
-	};
-}
-
-interface IncompleteTranscriptSegmentEvent {
-	event: "transcript.incomplete";
-	bot_id: string;
-}
-
-interface StreamErrorEvent {
-	event: "error";
-	bot_id: string;
-}
-
-export type ParlumeStreamEvent =
-	| SessionStartedEvent
-	| TranscriptSegmentEvent
-	| IncompleteTranscriptSegmentEvent
-	| StreamErrorEvent;
+/**
+ * Text messages of the provider's audio stream. Binary messages carry the
+ * mixed meeting audio and are handled separately.
+ */
+export type ParlumeStreamMessage =
+	| {
+			kind: "handshake";
+			botId: string;
+			sampleRate: number;
+			startTime: number | null;
+	  }
+	| { kind: "speakers"; updates: ParlumeSpeakerUpdate[] };
 
 interface ClosableStreamConnection {
 	close(code: number, reason: string): void;
 }
 
-const MAX_EVENT_BYTES = 64 * 1024;
+const MAX_MESSAGE_BYTES = 64 * 1024;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function parseEvent(message: string): ParlumeStreamEvent | null {
-	if (message.length > MAX_EVENT_BYTES) {
+function parseSpeakerUpdate(value: unknown): ParlumeSpeakerUpdate | null {
+	if (
+		!isRecord(value) ||
+		typeof value.name !== "string" ||
+		typeof value.timestamp !== "number" ||
+		typeof value.isSpeaking !== "boolean"
+	) {
+		return null;
+	}
+	return {
+		name: value.name,
+		id:
+			typeof value.id === "string" || typeof value.id === "number"
+				? String(value.id)
+				: null,
+		timestamp: value.timestamp,
+		isSpeaking: value.isSpeaking,
+	};
+}
+
+export function parseParlumeStreamMessage(
+	message: string,
+): ParlumeStreamMessage | null {
+	if (message.length > MAX_MESSAGE_BYTES) {
 		return null;
 	}
 	let value: unknown;
@@ -60,56 +69,38 @@ function parseEvent(message: string): ParlumeStreamEvent | null {
 	} catch {
 		return null;
 	}
+	if (Array.isArray(value)) {
+		return {
+			kind: "speakers",
+			updates: value
+				.map(parseSpeakerUpdate)
+				.filter((update) => update !== null),
+		};
+	}
 	if (
 		!isRecord(value) ||
-		typeof value.event !== "string" ||
 		typeof value.bot_id !== "string" ||
-		value.bot_id.length === 0
+		value.bot_id.length === 0 ||
+		typeof value.sample_rate !== "number" ||
+		!Number.isInteger(value.sample_rate) ||
+		value.sample_rate <= 0
 	) {
 		return null;
 	}
-	if (value.event === "session.started") {
-		return { event: "session.started", bot_id: value.bot_id };
-	}
-	if (value.event === "error") {
-		return { event: "error", bot_id: value.bot_id };
-	}
-	if (value.event !== "transcript.segment") {
-		return null;
-	}
-	if (!isRecord(value.data)) {
-		return { event: "transcript.incomplete", bot_id: value.bot_id };
-	}
-	const { text, isFinal, utteranceStart, utteranceEnd, speaker } = value.data;
-	if (typeof text !== "string" || typeof isFinal !== "boolean") {
-		return { event: "transcript.incomplete", bot_id: value.bot_id };
-	}
-	const parsedSpeaker = isRecord(speaker)
-		? {
-				name:
-					typeof speaker.name === "string" ? speaker.name : undefined,
-				id:
-					typeof speaker.id === "string" ||
-					typeof speaker.id === "number"
-						? String(speaker.id)
-						: undefined,
-			}
-		: null;
 	return {
-		event: "transcript.segment",
-		bot_id: value.bot_id,
-		data: {
-			text,
-			isFinal,
-			utteranceStart:
-				typeof utteranceStart === "number" ? utteranceStart : undefined,
-			utteranceEnd:
-				typeof utteranceEnd === "number" ? utteranceEnd : undefined,
-			speaker: parsedSpeaker,
-		},
+		kind: "handshake",
+		botId: value.bot_id,
+		sampleRate: value.sample_rate,
+		startTime:
+			typeof value.start_time === "number" ? value.start_time : null,
 	};
 }
 
+/**
+ * The provider's handshake names its bot; Fabric verifies that bot against
+ * the session before the stream is trusted. Unknown message kinds from a
+ * verified stream are ignored so a provider addition cannot end the meeting.
+ */
 export async function authenticateParlumeStreamMessage<
 	TConnection extends ClosableStreamConnection,
 >(
@@ -123,26 +114,36 @@ export async function authenticateParlumeStreamMessage<
 	connection: TConnection,
 	message: string,
 ): Promise<{
-	event: ParlumeStreamEvent;
+	message: ParlumeStreamMessage;
 	state: ParlumeStreamConnection;
 } | null> {
 	const state = host.connections.get(connection);
-	const event = parseEvent(message);
-	if (!state || !event) {
+	const parsed = parseParlumeStreamMessage(message);
+	if (!state || (!parsed && !state.verified)) {
 		connection.close(4002, "Invalid stream event");
 		return null;
 	}
-	if (!state.verified) {
-		if (!(await host.verifyStreamWithRetry(state, event.bot_id))) {
+	if (!parsed) {
+		return null;
+	}
+	if (parsed.kind === "speakers") {
+		if (!state.verified) {
 			connection.close(4001, "Unauthorized");
 			return null;
 		}
-		state.botId = event.bot_id;
+		return { message: parsed, state };
+	}
+	if (!state.verified) {
+		if (!(await host.verifyStreamWithRetry(state, parsed.botId))) {
+			connection.close(4001, "Unauthorized");
+			return null;
+		}
+		state.botId = parsed.botId;
 		state.verified = true;
 	}
-	if (state.botId !== event.bot_id) {
+	if (state.botId !== parsed.botId) {
 		connection.close(4001, "Unauthorized");
 		return null;
 	}
-	return { event, state };
+	return { message: parsed, state };
 }

@@ -69,6 +69,14 @@ import type {
 } from "./types";
 
 /**
+ * Appended to the system prompt of the no-tools fallback call. The step's
+ * prompt may still ask for a chart, and without `create_chart` in this call
+ * the model would otherwise invent chart data or claim an artifact exists.
+ */
+const NO_TOOLS_STEP_NOTE =
+	"No tools are available in this step. If a chart is requested, do not invent chart data or claim to have created a chart artifact. Explain that chart creation is unavailable in this step.";
+
+/**
  * Deduplicate tool calls by operation (name + args) to prevent showing duplicate
  * tool calls during streaming when the AI retries a tool call.
  *
@@ -1565,7 +1573,7 @@ export class McpToolHandler implements StepHandler {
 
 		const response = await generateText({
 			model,
-			instructions: executionContext.systemPrompt,
+			instructions: `${executionContext.systemPrompt}\n\n${NO_TOOLS_STEP_NOTE}`,
 			prompt: `${input.step.description}${fallbackNote}\n\nProvide a detailed response.`,
 		});
 

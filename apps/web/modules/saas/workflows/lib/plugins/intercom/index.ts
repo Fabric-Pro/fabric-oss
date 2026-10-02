@@ -12,6 +12,7 @@ const intercomPlugin: IntegrationPlugin = {
 	color: "text-sky-500",
 	brandColor: "#1F8DED",
 	SettingsComponent: IntercomSettings,
+	ownsDisconnect: true,
 	formFields: [
 		{
 			id: "apiKey",

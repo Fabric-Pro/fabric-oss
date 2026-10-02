@@ -1,62 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import { loadParlumeModule } from "./parlume-test-runtime.mts";
 
-// The Durable Object depends on partyserver's runtime; the class is loaded
-// through a transpiled CommonJS shim with just enough of that runtime to
-// drive the alarm, the same way the wake-phrase fixture does.
 function load(path: string): Record<string, unknown> {
-	const exports: Record<string, unknown> = {};
-	const source = ts.transpileModule(
-		readFileSync(new URL(path, import.meta.url), "utf8"),
-		{
-			compilerOptions: {
-				module: ts.ModuleKind.CommonJS,
-				target: ts.ScriptTarget.ES2022,
-			},
-		},
-	).outputText;
-	const require = (id: string) => {
-		if (id === "partyserver") {
-			return {
-				Server: class {
-					ctx: unknown;
-					env: unknown;
-					name = "session-1";
-					constructor(ctx: unknown, env: unknown) {
-						this.ctx = ctx;
-						this.env = env;
-					}
-				},
-			};
-		}
-		if (id === "./parlume-wake") {
-			return load("./parlume-wake.ts");
-		}
-		if (id === "./parlume-turn-endpoint") {
-			return load("./parlume-turn-endpoint.ts");
-		}
-		if (id === "./parlume-pcm" || id === "./parlume-stream-auth") {
-			return {
-				isRecord: (v: unknown) => typeof v === "object" && v !== null,
-			};
-		}
-		throw new Error(`Unexpected import: ${id}`);
-	};
-	runInNewContext(source, {
-		exports,
-		require,
-		Date,
-		Response,
-		URL,
-		fetch: (...args: unknown[]) => calls.fetch(...args),
-		console: { info() {}, warn() {}, error() {}, log() {} },
-		setTimeout,
-		clearTimeout,
-	});
-	return exports;
+	return loadParlumeModule(path, (...args) => calls.fetch(...args));
 }
 
 const calls: { fetch: (...args: unknown[]) => Promise<Response> } = {

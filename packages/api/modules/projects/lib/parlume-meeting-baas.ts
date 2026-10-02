@@ -139,6 +139,11 @@ export async function startParlumeMeetingBot(input: {
 	streamToken: string;
 	callbackSecret: string;
 }): Promise<string> {
+	const bridgeUrl = bridgeUrlForSession(
+		input.settings.bridgeUrl,
+		input.sessionId,
+		input.streamToken,
+	);
 	const response = await fetch(MEETING_BAAS_API_URL, {
 		method: "POST",
 		headers: {
@@ -160,33 +165,14 @@ export async function startParlumeMeetingBot(input: {
 				secret: input.callbackSecret,
 			},
 			streaming_enabled: true,
+			// Raw audio both ways on one socket: the bot streams the mixed
+			// meeting audio to the bridge and plays whatever the bridge sends
+			// back. The provider's transcription mode never plays returned
+			// audio, so the bridge transcribes the meeting itself.
 			streaming_config: {
-				mode: "transcription",
-				output_url: bridgeUrlForSession(
-					input.settings.bridgeUrl,
-					input.sessionId,
-					input.streamToken,
-				),
-				input_url: bridgeUrlForSession(
-					input.settings.bridgeUrl,
-					input.sessionId,
-					input.streamToken,
-				),
-				transcription: {
-					provider: "gladia",
-					api_key: null,
-					custom_params: {
-						// Gladia's 50 ms default finalizes an utterance at every
-						// breath, splitting a spoken request from its own wake phrase.
-						endpointing: 0.3,
-						realtime_processing: {
-							custom_vocabulary: true,
-							custom_vocabulary_config: {
-								vocabulary: ["Parlume", "Fabric Parlume"],
-							},
-						},
-					},
-				},
+				mode: "audio",
+				output_url: bridgeUrl,
+				input_url: bridgeUrl,
 				audio_frequency: 24_000,
 			},
 			// Three minutes unadmitted or alone is the provider's floor for a
@@ -262,6 +248,33 @@ export async function closeParlumeMeetingBridge(input: {
 	});
 	if (!response.ok) {
 		throw new Error("Parlume media bridge is unavailable.");
+	}
+}
+
+/**
+ * Posts a message into the meeting chat as the bot. The provider accepts it
+ * only while the bot is in the call, and refuses (422) when the meeting has
+ * chat disabled; both surface as errors for the caller to report.
+ */
+export async function sendParlumeMeetingChat(input: {
+	settings: ParlumeBridgeSettings;
+	providerBotId: string;
+	message: string;
+}): Promise<void> {
+	const response = await fetch(
+		`${MEETING_BAAS_API_URL}/${encodeURIComponent(input.providerBotId)}/send-chat-message`,
+		{
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-meeting-baas-api-key": input.settings.apiKey,
+			},
+			body: JSON.stringify({ message: input.message.slice(0, 4_096) }),
+			signal: AbortSignal.timeout(10_000),
+		},
+	);
+	if (!response.ok) {
+		throw await providerFailure(response);
 	}
 }
 

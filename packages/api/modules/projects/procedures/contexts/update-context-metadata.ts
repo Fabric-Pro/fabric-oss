@@ -34,11 +34,11 @@ import { buildContextMetadataAuditEvent } from "../../lib/context-metadata-audit
 
 /** Upper bound for a custom source type label. The six presets are far
  * shorter; this only stops an unbounded string reaching prompt headers. */
-const MAX_SOURCE_TYPE_LENGTH = 80;
-const MAX_INSTRUCTIONS_LENGTH = 500;
+export const MAX_SOURCE_TYPE_LENGTH = 80;
+export const MAX_INSTRUCTIONS_LENGTH = 500;
 /** Ceiling on each `expected` value: generous, so a stored value that
  * predates today's bounds is still expressible, but never unbounded. */
-const MAX_EXPECTED_LENGTH = 2000;
+export const MAX_EXPECTED_LENGTH = 2000;
 
 export const updateContextMetadataProcedure = tenantProtectedProcedure
 	// SOC 2 input-org ratchet: the caller-supplied organizationId must name

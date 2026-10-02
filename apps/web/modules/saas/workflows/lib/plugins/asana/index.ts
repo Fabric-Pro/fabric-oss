@@ -16,6 +16,7 @@ const asanaPlugin: IntegrationPlugin = {
 	color: "text-pink-500",
 	brandColor: "#F06A6A",
 	SettingsComponent: AsanaSettings,
+	ownsDisconnect: true,
 
 	formFields: [
 		{

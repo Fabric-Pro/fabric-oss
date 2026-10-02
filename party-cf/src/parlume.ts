@@ -1,11 +1,17 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
 import { playParlumePcm } from "./parlume-pcm";
+import { ParlumeSpeakerTimeline } from "./parlume-speakers";
 import {
 	authenticateParlumeStreamMessage,
 	isRecord,
 	type ParlumeStreamConnection,
+	type ParlumeStreamMessage,
 } from "./parlume-stream-auth";
+import {
+	ParlumeTranscriber,
+	type ParlumeTranscript,
+} from "./parlume-transcriber";
 import { ParlumeTurnEndpoint } from "./parlume-turn-endpoint";
 import { parseParlumeWake } from "./parlume-wake";
 
@@ -121,8 +127,19 @@ async function secretMatches(
 	return mismatch === 0;
 }
 
+// The provider's audio clock for one bot socket: its handshake's capture start
+// plus the samples received since, so transcripts line up with speaker updates.
+interface MeetingAudio {
+	transcriber: ParlumeTranscriber;
+	sampleRate: number;
+	startTime: number;
+	samples: number;
+}
+
 export class Parlume extends Server<Env> {
 	private connections = new Map<Connection, StreamConnection>();
+	private audio = new Map<Connection, MeetingAudio>();
+	private speakers = new ParlumeSpeakerTimeline();
 	private inFlightFinalSegments = new Set<Promise<void>>();
 	private finalSegmentChain = Promise.resolve();
 	private connectionGeneration = 0;
@@ -218,7 +235,14 @@ export class Parlume extends Server<Env> {
 		});
 	}
 
-	async onMessage(conn: Connection, message: string) {
+	async onMessage(
+		conn: Connection,
+		message: string | ArrayBuffer | ArrayBufferView,
+	) {
+		if (typeof message !== "string") {
+			this.receiveAudio(conn, message);
+			return;
+		}
 		const authenticated = await authenticateParlumeStreamMessage(
 			{
 				connections: this.connections,
@@ -231,28 +255,119 @@ export class Parlume extends Server<Env> {
 		if (!authenticated) {
 			return;
 		}
-		const { event, state } = authenticated;
-		if (event.event === "session.started") {
+		if (authenticated.message.kind === "speakers") {
+			this.speakers.update(authenticated.message.updates);
 			return;
 		}
-		if (event.event === "error") {
-			await this.ctx.storage.put<StreamError>(STREAM_ERROR_KEY, {
-				sessionId: state.sessionId,
-				botId: event.bot_id,
-			});
-			await this.reportStreamFailure();
+		this.startMeetingAudio(
+			conn,
+			authenticated.state,
+			authenticated.message,
+		);
+	}
+
+	// The provider sends its handshake again once audio capture starts, before
+	// the first chunk; that second one only fixes the clock's starting point.
+	private startMeetingAudio(
+		conn: Connection,
+		state: StreamConnection,
+		handshake: Extract<ParlumeStreamMessage, { kind: "handshake" }>,
+	): void {
+		const existing = this.audio.get(conn);
+		if (existing?.sampleRate === handshake.sampleRate) {
+			if (existing.samples === 0 && handshake.startTime !== null) {
+				existing.startTime = handshake.startTime;
+			}
 			return;
 		}
-		if (event.event === "transcript.incomplete") {
+		existing?.transcriber.close();
+		const meta = { sessionId: state.sessionId, botId: state.botId };
+		this.audio.set(conn, {
+			sampleRate: handshake.sampleRate,
+			startTime: handshake.startTime ?? Date.now(),
+			samples: 0,
+			transcriber: new ParlumeTranscriber({
+				connect: () => this.openTranscription(handshake.sampleRate),
+				onTranscript: (transcript) => {
+					void this.handleTranscript(conn, state, transcript);
+				},
+				onStatus: (status, detail) =>
+					log(
+						status === "connected" ? "info" : "warn",
+						`transcriber.${status}`,
+						{
+							...meta,
+							detail,
+						},
+					),
+			}),
+		});
+		log("info", "audio.started", {
+			...meta,
+			sampleRate: handshake.sampleRate,
+		});
+	}
+
+	private receiveAudio(
+		conn: Connection,
+		message: ArrayBuffer | ArrayBufferView,
+	): void {
+		const audio = this.audio.get(conn);
+		if (!audio || !this.connections.get(conn)?.verified) {
 			return;
 		}
-		const speakerName = event.data.speaker?.name ?? null;
-		const speakerId = event.data.speaker?.id ?? null;
+		const chunk =
+			message instanceof ArrayBuffer
+				? message
+				: new Uint8Array(
+						message.buffer,
+						message.byteOffset,
+						message.byteLength,
+					).slice().buffer;
+		const epochMs =
+			audio.startTime + (audio.samples / audio.sampleRate) * 1000;
+		audio.samples += Math.floor(chunk.byteLength / 2);
+		audio.transcriber.send(chunk, epochMs);
+	}
+
+	private async openTranscription(sampleRate: number) {
+		const response = await this.env.AI.run(
+			"@cf/deepgram/flux",
+			{
+				encoding: "linear16",
+				sample_rate: String(sampleRate),
+				keyterm: "Parlume",
+			},
+			{ websocket: true },
+		);
+		if (!response.webSocket) {
+			throw new Error(
+				`Workers AI returned HTTP ${response.status} instead of a transcription stream.`,
+			);
+		}
+		return response.webSocket;
+	}
+
+	private async handleTranscript(
+		conn: Connection,
+		state: StreamConnection,
+		transcript: ParlumeTranscript,
+	): Promise<void> {
+		const audio = this.audio.get(conn);
+		if (!state.botId || !audio) {
+			return;
+		}
+		const speaker = this.speakers.attribute(
+			transcript.startMs,
+			transcript.endMs,
+		);
+		const speakerName = speaker?.name ?? null;
+		const speakerId = speaker?.id ?? null;
 		const fromBot = this.isBotSpeaker(speakerName ?? undefined);
 		const speakerKey = parlumeSpeakerKey(speakerId, speakerName);
 		if (!fromBot) {
 			this.lastActivityAt = Date.now();
-			if (event.data.isFinal) {
+			if (transcript.isFinal) {
 				await this.ctx.storage.put(
 					LAST_ACTIVITY_KEY,
 					this.lastActivityAt,
@@ -261,7 +376,7 @@ export class Parlume extends Server<Env> {
 		}
 		// Speech only barges in while Parlume is audible. While a request is
 		// being endpointed or answered, its speaker's continued speech extends it.
-		if (!event.data.isFinal) {
+		if (!transcript.isFinal) {
 			if (
 				!fromBot &&
 				!this.turnEndpoint.hold(speakerKey) &&
@@ -273,14 +388,19 @@ export class Parlume extends Server<Env> {
 		}
 		const segment: PendingSegment = {
 			sessionId: state.sessionId,
-			botId: event.bot_id,
-			text: event.data.text,
+			botId: state.botId,
+			text: transcript.text,
 			speakerName,
 			speakerId,
-			utteranceStartMs: this.secondsToMilliseconds(
-				event.data.utteranceStart,
+			// Fabric stores whole milliseconds from the start of capture.
+			utteranceStartMs: Math.max(
+				0,
+				Math.round(transcript.startMs - audio.startTime),
 			),
-			utteranceEndMs: this.secondsToMilliseconds(event.data.utteranceEnd),
+			utteranceEndMs: Math.max(
+				0,
+				Math.round(transcript.endMs - audio.startTime),
+			),
 		};
 		if (
 			!fromBot &&
@@ -294,7 +414,7 @@ export class Parlume extends Server<Env> {
 		} else if (!fromBot) {
 			log("info", "turn.extended", {
 				sessionId: state.sessionId,
-				botId: event.bot_id,
+				botId: state.botId,
 				speakerId,
 			});
 		}
@@ -308,6 +428,8 @@ export class Parlume extends Server<Env> {
 	}
 
 	async onClose(conn: Connection, code?: number, reason?: string) {
+		this.audio.get(conn)?.transcriber.close();
+		this.audio.delete(conn);
 		const state = this.connections.get(conn);
 		this.connections.delete(conn);
 		log("info", "stream.closed", {
@@ -383,6 +505,9 @@ export class Parlume extends Server<Env> {
 			});
 			return Response.json({ closed });
 		}
+		if (action === "chat") {
+			return this.chat(request);
+		}
 		if (action === "verify-generation") {
 			const body: unknown = await request.json();
 			return Response.json({
@@ -420,6 +545,36 @@ export class Parlume extends Server<Env> {
 		return Response.json({ armed: true });
 	}
 
+	// A reply that could not be spoken is posted to the meeting chat instead.
+	// The bridge knows the session's provider bot; Fabric holds the provider key.
+	private async chat(request: Request): Promise<Response> {
+		let message: unknown;
+		try {
+			message = ((await request.json()) as { message?: unknown }).message;
+		} catch {
+			message = null;
+		}
+		if (typeof message !== "string" || message.trim() === "") {
+			return Response.json({ error: "Invalid message" }, { status: 400 });
+		}
+		const bridge = await this.ctx.storage.get<BridgeState>("bridge");
+		if (!bridge?.botId) {
+			return Response.json({ sent: false });
+		}
+		const sent = await this.postToFabric("/api/internal/parlume/chat", {
+			sessionId: bridge.sessionId,
+			botId: bridge.botId,
+			message,
+		});
+		log(sent ? "info" : "warn", "chat.forwarded", {
+			sessionId: bridge.sessionId,
+			botId: bridge.botId,
+			chars: message.length,
+			sent: Boolean(sent),
+		});
+		return Response.json({ sent: Boolean(sent) });
+	}
+
 	private isBotSpeaker(name: string | undefined): boolean {
 		return Boolean(name && /^Fabric Parlume\b/i.test(name));
 	}
@@ -448,6 +603,8 @@ export class Parlume extends Server<Env> {
 		) {
 			return Response.json({ error: "Meeting ended" }, { status: 409 });
 		}
+		// One bidirectional socket: the bot plays what it receives on the same
+		// socket that carries the meeting audio.
 		const connection = [...this.connections].find(
 			([, state]) => state.verified && state.botId,
 		)?.[0];
@@ -614,13 +771,6 @@ export class Parlume extends Server<Env> {
 		if (reported) {
 			await this.ctx.storage.put(IDLE_REPORTED_KEY, true);
 		}
-	}
-
-	private secondsToMilliseconds(value: number | undefined): number | null {
-		if (!Number.isFinite(value) || value === undefined || value < 0) {
-			return null;
-		}
-		return Math.round(value * 1000);
 	}
 
 	private async verifyStreamWithRetry(

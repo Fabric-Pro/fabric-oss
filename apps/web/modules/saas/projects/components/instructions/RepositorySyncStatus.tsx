@@ -5,13 +5,20 @@ import { Button } from "@ui/components/button";
 import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
+	checkPhaseMessageKey,
+	checkProgressMessageKey,
+} from "../../lib/instructions-check-progress";
+import {
 	type RepositorySyncState,
+	type SyncRunProgress,
 	settledByRetry,
 	syncErrorMessage,
 	syncOutcomeMessage,
 	syncRunOutcome,
+	syncRunProgress,
 	triggerLabelKey,
 } from "../../lib/instructions-repository-sync";
+import { SyncProgressLine } from "../repository-sync/SyncProgressLine";
 
 /**
  * The last repository sync, under the tab's summary: outcome, trigger and
@@ -38,6 +45,10 @@ export function RepositorySyncStatus({
 	onConfigure?: () => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.repositorySync");
+	// The snapshot's own check phases are worded where an upload's are.
+	const tChecks = useTranslations(
+		"projects.codingInstructions.publishedView",
+	);
 	// A run of a sync that was switched off belongs to History, not to the
 	// line about this configuration: after a switch to upload mode it would
 	// describe a sync that no longer exists and offer to run it again.
@@ -54,6 +65,7 @@ export function RepositorySyncStatus({
 		state.running &&
 		configuration !== null &&
 		state.latestRun?.fromCurrentConfiguration !== false;
+	const progress = running ? syncRunProgress(state) : null;
 	const paused =
 		configuration?.automatic && configuration.automaticPausedReason
 			? configuration.automaticPausedReason
@@ -81,10 +93,19 @@ export function RepositorySyncStatus({
 			// gap, but stays in the accessibility tree (`hidden` would not).
 			className="flex flex-col gap-1 text-sm empty:sr-only"
 		>
-			{running ? (
+			{running && progress ? (
+				// Only the phase is announced; the count beside it is not read
+				// out on every poll (`SyncProgressLine`).
+				<div className="text-primary">
+					<SyncProgressLine
+						{...progressLine(progress, t, tChecks)}
+						testId="repository-sync-progress"
+					/>
+				</div>
+			) : running ? (
 				<p className="inline-flex items-center gap-1.5 text-primary">
 					<Loader2Icon
-						className="size-3.5 animate-spin"
+						className="size-3.5 motion-safe:animate-spin"
 						aria-hidden="true"
 					/>
 					{t("running")}
@@ -131,4 +152,51 @@ export function RepositorySyncStatus({
 			) : null}
 		</div>
 	);
+}
+
+type Translate = (
+	key: string,
+	values?: Record<string, string | number>,
+) => string;
+
+/**
+ * The words for where an open run is: its own phase until the copy is done,
+ * then the snapshot's check pass. The phase is the step's name alone (what a
+ * screen reader hears); the text is the same step with its count.
+ */
+function progressLine(
+	progress: SyncRunProgress,
+	t: Translate,
+	tChecks: Translate,
+) {
+	switch (progress.kind) {
+		case "fetching":
+			return { phase: t("fetching"), text: t("fetching") };
+		case "preparing":
+			return { phase: t("preparing"), text: t("preparing") };
+		case "copying":
+			return {
+				phase: t("copyingPhase"),
+				text: t("copying", {
+					done: progress.done,
+					total: progress.total,
+				}),
+				done: progress.done,
+				total: progress.total,
+			};
+		case "checking":
+			return {
+				phase: tChecks(checkPhaseMessageKey(progress.phase)),
+				text: tChecks(checkProgressMessageKey(progress.phase), {
+					done: progress.done,
+					total: progress.total,
+				}),
+				done: progress.done,
+				total: progress.total,
+			};
+		default: {
+			const unreachable: never = progress;
+			return unreachable;
+		}
+	}
 }

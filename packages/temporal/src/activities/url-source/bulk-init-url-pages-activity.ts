@@ -21,16 +21,29 @@
  * (will be set on the upsert that follows scrape).
  *
  * Sets up the per-page row lifecycle.
+ *
+ * A company owner (Fizzy #2719) creates the rows in `CompanyContextUrlPage`
+ * under the owner's organization instead; a missing owner is the project
+ * owner, unchanged.
  */
 import { db } from "@repo/database/prisma/client";
+import {
+	type CompanyContextOwner,
+	type ContextOwner,
+	resolveContextOwner,
+} from "../../lib/context-owner";
+import { companyLinkCrawlStore } from "../../lib/context-row-store";
 import { activityLogger } from "../lib/activity-logger";
 
 export interface BulkInitUrlPagesActivityInput {
 	parentContextId: string;
-	projectId: string;
+	/** The parent's project; absent for a company source. */
+	projectId?: string;
 	urls: string[];
 	userId: string | null;
 	organizationId: string | null;
+	/** Who owns the parent; absent is the project owner (`../../lib/context-owner`). */
+	owner?: ContextOwner;
 }
 
 export interface BulkInitUrlPagesActivityOutput {
@@ -45,7 +58,13 @@ export interface BulkInitUrlPagesActivityOutput {
 export async function bulkInitUrlPagesActivity(
 	input: BulkInitUrlPagesActivityInput,
 ): Promise<BulkInitUrlPagesActivityOutput> {
-	const { parentContextId, projectId, urls, userId, organizationId } = input;
+	const owner = resolveContextOwner(input);
+	if (owner.kind === "company") {
+		return bulkInitCompanyUrlPages(input, owner);
+	}
+
+	const { parentContextId, urls, userId, organizationId } = input;
+	const { projectId } = owner;
 
 	activityLogger.info("Bulk init url pages start", {
 		parentContextId,
@@ -110,4 +129,30 @@ export async function bulkInitUrlPagesActivity(
 		createdCount: result.count,
 		existingCount: existingSet.size,
 	};
+}
+
+/** The company owner's bulk init: the same PENDING rows, on the company table. */
+async function bulkInitCompanyUrlPages(
+	input: BulkInitUrlPagesActivityInput,
+	owner: CompanyContextOwner,
+): Promise<BulkInitUrlPagesActivityOutput> {
+	const { parentContextId, urls } = input;
+
+	activityLogger.info("Bulk init company url pages start", {
+		parentContextId,
+		organizationId: owner.organizationId,
+		urlCount: urls.length,
+	});
+
+	const { createdCount, existingCount } = await companyLinkCrawlStore(
+		owner,
+	).createPages(parentContextId, urls);
+
+	activityLogger.info("Bulk init company url pages success", {
+		parentContextId,
+		createdCount,
+		existingCount,
+	});
+
+	return { totalCount: urls.length, createdCount, existingCount };
 }

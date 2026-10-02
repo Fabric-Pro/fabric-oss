@@ -90,6 +90,13 @@ import {
 } from "./synthesis-history";
 
 /**
+ * Gates the prompt-audit corrections to the search_tools examples, the
+ * focused-agent tool list and the empty-args rule, so pre-patch histories
+ * replay with the prompt bytes they recorded.
+ */
+const PROMPT_AUDIT_PATCH = "orch-prompt-audit-v1";
+
+/**
  * Build a `TokenBudgetStatus` snapshot from the current `iterationCosts`.
  * Used when we emit an `internal_budget` LimitSignal so the UI's
  * TokenBudgetCard can render the exact numbers that tripped the budget.
@@ -313,6 +320,10 @@ function formatToolsForLLM(
  * These enable dynamic capability discovery without loading all tools upfront
  */
 function getMetaTools(): Record<string, unknown> {
+	// The pre-patch examples steered towards Excalidraw, against
+	// DIAGRAM_RENDERING_GUIDANCE. `patched()` keeps pre-patch histories'
+	// prompt bytes, as the other prompt gates in this file do.
+	const neutralExamples = patched(PROMPT_AUDIT_PATCH);
 	return {
 		search_tools: {
 			description: `Search for available MCP tools, capabilities, and AI agents that can help with your task.
@@ -320,9 +331,15 @@ Use this BEFORE attempting to call any tool you're not familiar with.
 Returns matching tools with their inputSchema — always call tools exactly as their schema specifies.
 
 Tips for effective queries:
-- Include the service/server name when you know it (e.g., "Excalidraw create diagram", "GitHub create issue", "Jira create ticket")
+${
+	neutralExamples
+		? `- Include the service/server name when you know it (e.g., "GitHub create issue", "Jira create ticket", "Slack send message")
 - Describe the action you want to perform (e.g., "create a card", "send a message", "query data")
-- Be specific — "create Excalidraw architecture diagram" finds better results than "create diagram"
+- Be specific — "Jira create bug ticket" finds better results than "create ticket"`
+		: `- Include the service/server name when you know it (e.g., "Excalidraw create diagram", "GitHub create issue", "Jira create ticket")
+- Describe the action you want to perform (e.g., "create a card", "send a message", "query data")
+- Be specific — "create Excalidraw architecture diagram" finds better results than "create diagram"`
+}
 
 IMPORTANT: Always call this when you need to interact with external systems,
 databases, project management tools, or any capability you're uncertain about.`,
@@ -331,8 +348,9 @@ databases, project management tools, or any capability you're uncertain about.`,
 				properties: {
 					query: {
 						type: "string",
-						description:
-							"Natural language description of what you need to do. Include the service name when known (e.g., 'create Excalidraw diagram', 'GitHub create issue', 'send Slack message')",
+						description: neutralExamples
+							? "Natural language description of what you need to do. Include the service name when known (e.g., 'GitHub create issue', 'Jira create ticket', 'send Slack message')"
+							: "Natural language description of what you need to do. Include the service name when known (e.g., 'create Excalidraw diagram', 'GitHub create issue', 'send Slack message')",
 					},
 					category: {
 						type: "string",
@@ -1889,8 +1907,15 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		// visibility of catalog tools whose schemas it hasn't yet pulled via
 		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
 		// eager-schema path would have spent.
+		//
+		// The project tools are registered only when a project is attached
+		// (see the `input.projectId` block that seeds `discoveredTools`), so
+		// the patched prompt names them only then.
+		const promptAuditApplied = patched(PROMPT_AUDIT_PATCH);
+		const projectToolsListed =
+			!promptAuditApplied || Boolean(input.projectId);
 		if (preloadedToolCatalog) {
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, project_rag_query, fabric_list_meeting_transcripts, ${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}search_slack_messages, search_teams_messages, OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			iteration === 1 &&
 			preloadedServerNames.length > 0 &&
@@ -1918,7 +1943,7 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		// Catches cases where a tool parameter is typed as "string" but requires
 		// a JSON-encoded value (the model must JSON.stringify before passing).
 		if (Object.keys(discoveredTools).length > 0) {
-			iterationSystemPrompt += `\n\nTool usage: call every tool exactly as its inputSchema specifies. If a parameter is typed as "string" but its description says it expects JSON or an array, JSON.stringify() the value before passing it. Never call a tool with empty args {}.
+			iterationSystemPrompt += `\n\nTool usage: call every tool exactly as its inputSchema specifies. If a parameter is typed as "string" but its description says it expects JSON or an array, JSON.stringify() the value before passing it. Never call a tool with empty args {}${promptAuditApplied ? " when its inputSchema lists required parameters" : ""}.
 
 CRITICAL: NEVER fill tool parameters with placeholder or example values (e.g. "your-repo-owner", "example-org", "my-repo", "YOUR_VALUE", "<owner>"). When required information like a repository owner, repo name, channel ID, or similar identifier is not explicitly stated by the user:
 1. FIRST try to discover it using available tools (e.g. use "search_commits" with the commit SHA to find owner/repo, use "get_authenticated_user" to find the current user's GitHub login, use "list_repositories" to list available repos).

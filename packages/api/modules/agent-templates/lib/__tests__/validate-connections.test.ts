@@ -28,6 +28,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 import {
+	createWorkflowIntegrationStore,
+	type StoredRow,
+} from "../../../integrations/__tests__/procedures/workflow-integration-store";
+import {
 	validateAllConnections,
 	validateKnowledgeConnections,
 } from "../validate-connections";
@@ -121,6 +125,59 @@ describe("validateKnowledgeConnections", () => {
 
 		expect(result.valid).toBe(true);
 		expect(mockGetWorkflowIntegrationByIdInTenant).not.toHaveBeenCalled();
+	});
+
+	// An OAuth connection is personal to the member who made it. The "oauth"
+	// marker must be satisfied by the CALLER's own connection, never a
+	// teammate's. Rows are seeded in an in-memory store (teammate first) so a
+	// lookup without userId in the organization arm would match the teammate.
+	describe("OAuth marker: connection owner", () => {
+		const notionRow = (id: string, userId: string): StoredRow => ({
+			id,
+			userId,
+			organizationId: "org-example",
+			provider: "NOTION",
+			name: "NOTION",
+			isActive: true,
+			credentials: "{}",
+		});
+		const teammateNotion = notionRow("wi-notion-teammate", "user-1");
+		const callerNotion = notionRow("wi-notion-caller", "user-2");
+
+		function seed(rows: StoredRow[]) {
+			const store = createWorkflowIntegrationStore();
+			store.rows.push(...rows);
+			mockDb.workflowIntegration.findFirst.mockImplementation(
+				store.delegate.findFirst,
+			);
+		}
+
+		it("org context: rejects the marker when only a teammate is connected", async () => {
+			seed([teammateNotion]);
+
+			const result = await validateKnowledgeConnections(
+				{ NOTION: "oauth" },
+				"user-2",
+				"org-example",
+			);
+
+			expect(result.valid).toBe(false);
+			expect(result.errors[0]).toMatch(
+				/OAuth connection for NOTION is not established/,
+			);
+		});
+
+		it("org context: accepts the marker from the caller's own connection", async () => {
+			seed([teammateNotion, callerNotion]);
+
+			const result = await validateKnowledgeConnections(
+				{ NOTION: "oauth" },
+				"user-2",
+				"org-example",
+			);
+
+			expect(result.valid).toBe(true);
+		});
 	});
 });
 

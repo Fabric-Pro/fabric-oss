@@ -117,11 +117,19 @@ import {
 } from "../lib/document-pipeline";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
-import { uploadImage } from "../lib/image-upload-utils";
+import {
+	extractDocumentS3KeyFromImgSrc,
+	keyWithinPrefix,
+	uploadImage,
+} from "../lib/image-upload-utils";
 import {
 	type MentionActiveIds,
 	MentionStatusContext,
 } from "../lib/mention-status-context";
+import {
+	createSignedMediaUrlRefresher,
+	type SignedMediaUrlRefresher,
+} from "../lib/signed-media-url-refresher";
 import { createCollaborativeExtensions } from "../lib/tiptap-extensions";
 import { createAdvancedExtensions } from "../lib/tiptap-extensions-advanced";
 import {
@@ -1850,6 +1858,10 @@ function DocumentEditorInner({
 		null,
 	);
 
+	// Keeps uploaded images on a live signed URL; the upload handler hands it
+	// the URL it just signed.
+	const mediaUrlRefresherRef = useRef<SignedMediaUrlRefresher | null>(null);
+
 	// Track if regeneration was triggered to prevent duplicate triggers
 	const regenerationTriggeredRef = useRef(false);
 
@@ -3163,60 +3175,43 @@ function DocumentEditorInner({
 	};
 
 	// Broken images render a readable message instead of the browser's native
-	// broken-image icon (Fizzy #2027) — e.g. a signed URL that expired before
-	// the refresher below could re-resolve it. That lives in the
-	// ImageLoadFallback extension, as a decoration, so the message can never
-	// reach the saved document.
+	// broken-image icon (Fizzy #2027) — e.g. an image whose storage object is
+	// gone. That lives in the ImageLoadFallback extension, as a decoration, so
+	// the message can never reach the saved document.
 
-	// Re-resolve expired S3 signed URLs when the editor loads content.
-	// Signed URLs expire after 1 hour — this refreshes them on every page load.
+	// Uploaded images are stored with the URL signed at upload time, which
+	// expires after an hour. Re-sign them on load AND whenever an image is
+	// re-rendered from the document (resize, caption, remount), which brings
+	// that expired URL back (Fizzy #2800).
 	useEffect(() => {
 		if (!editor) {
 			return;
 		}
-		const resolveUrls = async () => {
-			const editorDom = editor.view.dom;
-			const images = editorDom.querySelectorAll("img[src]");
-			// Collect S3 keys from src URLs containing document-media/
-			const keyMap = new Map<string, HTMLImageElement[]>();
-			for (const img of images) {
-				const src = img.getAttribute("src") || "";
-				const match = src.match(/\/(document-media\/[^?"]+)/);
-				if (match) {
-					const key = match[1];
-					if (!keyMap.has(key)) {
-						keyMap.set(key, []);
-					}
-					keyMap.get(key)?.push(img as HTMLImageElement);
-				}
-			}
-			if (keyMap.size === 0) {
-				return;
-			}
-			try {
+		const ownKeys = `document-media/${projectId}/${documentId}/`;
+		const refresher = createSignedMediaUrlRefresher({
+			editor,
+			keyFromImageSrc: (src) =>
+				keyWithinPrefix(extractDocumentS3KeyFromImgSrc(src), ownKeys),
+			keyFromStoredKey: (key) => keyWithinPrefix(key, ownKeys),
+			resolve: async (s3Keys) => {
 				const { urls } =
 					await orpcClient.projects.documents.resolveMediaUrls({
 						projectId,
 						documentId,
-						s3Keys: [...keyMap.keys()],
+						organizationId,
+						s3Keys,
 					});
-				for (const [key, imgEls] of keyMap) {
-					const freshUrl = urls[key];
-					if (!freshUrl) {
-						continue;
-					}
-					for (const img of imgEls) {
-						img.setAttribute("src", freshUrl);
-					}
-				}
-			} catch (e) {
-				console.error("[DocumentEditor] Failed to resolve S3 URLs:", e);
-			}
+				return urls;
+			},
+			onError: (e) =>
+				console.error("[DocumentEditor] Failed to resolve S3 URLs:", e),
+		});
+		mediaUrlRefresherRef.current = refresher;
+		return () => {
+			refresher.destroy();
+			mediaUrlRefresherRef.current = null;
 		};
-		// Delay slightly to ensure editor content is rendered
-		const timer = setTimeout(resolveUrls, 500);
-		return () => clearTimeout(timer);
-	}, [editor, projectId, documentId]);
+	}, [editor, projectId, documentId, organizationId]);
 
 	// Handle image upload from toolbar or drag-drop
 	const handleImageUpload = async (files: FileList) => {
@@ -3269,6 +3264,7 @@ function DocumentEditorInner({
 				// wouldn't target the newly inserted image.
 				editor.commands.removeImageUpload(uploadId);
 				if (signedUrl) {
+					mediaUrlRefresherRef.current?.remember(s3Key, signedUrl);
 					editor
 						.chain()
 						.focus()

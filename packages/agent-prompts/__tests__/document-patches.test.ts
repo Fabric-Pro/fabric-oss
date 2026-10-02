@@ -1082,6 +1082,38 @@ describe("applyPatches — shape validation", () => {
 		expect(success).toBe(false);
 		expect(errors[0]).toMatchObject({ code: "unsupported_op" });
 	});
+
+	// Model-generated arguments are untyped at runtime; these shapes used to
+	// throw instead of returning an error the model can be asked to correct.
+	it.each([
+		["null", null],
+		["a string", "## Overview"],
+		["an array", []],
+	])("errors instead of throwing when a patch is %s", (_label, patch) => {
+		const patches = [patch] as unknown as DocumentPatch[];
+		const { success, errors } = applyPatches(SIMPLE_DOC, patches);
+		expect(success).toBe(false);
+		expect(errors[0]).toMatchObject({
+			patchIndex: 0,
+			code: "malformed_patch",
+		});
+	});
+
+	it("errors instead of throwing when the anchor is not a string", () => {
+		const patches = [
+			{ op: "replace_section", anchor: 2, content: "new" },
+		] as unknown as DocumentPatch[];
+		const { success, errors } = applyPatches(SIMPLE_DOC, patches);
+		expect(success).toBe(false);
+		expect(errors[0]).toMatchObject({ code: "malformed_anchor" });
+	});
+
+	it("validatePatches reports a null patch instead of throwing", () => {
+		const result = validatePatches(SIMPLE_DOC, [
+			null,
+		] as unknown as DocumentPatch[]);
+		expect(result.errors[0]).toMatchObject({ code: "malformed_patch" });
+	});
 });
 
 // =============================================================================

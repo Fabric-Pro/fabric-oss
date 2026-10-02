@@ -3,20 +3,43 @@
  *
  * Activities for deleting project contexts (Notion pages, uploaded files, etc.)
  * from Qdrant and database. Provides durable deletion with retries.
+ *
+ * Also deletes an organization's company context sources (Fizzy #2719) when
+ * the input names a company owner. A missing owner is the project owner,
+ * unchanged.
  */
 
-import { deleteUnmanagedContextRow, getContextById } from "@repo/database";
-import { deleteProjectContext, deleteUrlSourceChunks } from "@repo/rag";
-import { getTemporalClient } from "../client";
+import {
+	companyContextStoragePrefix,
+	deleteUnmanagedContextRow,
+	getContextById,
+} from "@repo/database";
+import {
+	deleteCompanyContextSourcePoints,
+	deleteProjectContext,
+	deleteUrlSourceChunks,
+} from "@repo/rag";
+import { deleteFile } from "@repo/storage";
+import { getScheduleClient, getTemporalClient } from "../client";
 import { startContextEmbeddingWorkflow } from "../lib/context-embedding-start";
+import {
+	type CompanyContextOwner,
+	type ContextOwner,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import { companyContextRowStore } from "../lib/context-row-store";
+import { deleteUrlSourceSchedule } from "../schedules/url-source-schedule";
 import { activityLogger } from "./lib/activity-logger";
 
 export interface DeleteSingleContextInput {
 	contextId: string;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string;
 	organizationId?: string;
 	qdrantId?: string;
+	/** Who owns the row; absent is the project owner (`../lib/context-owner`). */
+	owner?: ContextOwner;
 }
 
 export interface DeleteSingleContextOutput {
@@ -54,7 +77,13 @@ export interface DeleteSingleContextOutput {
 export async function deleteSingleContextActivity(
 	input: DeleteSingleContextInput,
 ): Promise<DeleteSingleContextOutput> {
-	const { contextId, projectId, userId, organizationId, qdrantId } = input;
+	const owner = resolveContextOwner(input);
+	if (owner.kind === "company") {
+		return deleteCompanySource(input.contextId, owner);
+	}
+
+	const { contextId, userId, organizationId, qdrantId } = input;
+	const { projectId } = owner;
 
 	activityLogger.info("Deleting project context", {
 		contextId,
@@ -355,5 +384,169 @@ async function requestReembed(
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return false;
+	}
+}
+
+/**
+ * Delete a company context source (Fizzy #2719): its vectors, then its stored
+ * file, then its row — in that order, so a failure at any step leaves the row,
+ * and with it every id a retry needs — then its vectors once more, for what
+ * an embed in flight wrote meanwhile.
+ *
+ * A website source first loses its refresh schedule, so it cannot fire again
+ * against a source being deleted, and the crawl the row records is
+ * cancelled. Both are best-effort and safe to repeat: a schedule or crawl
+ * already gone is what the delete needs, and one that could not be stopped
+ * does not keep the source. A schedule left behind is removed by the
+ * URL-source schedule reconciler once the row is gone; a crawl left running
+ * finds its source gone and writes nothing that stays.
+ *
+ * The vectors are every point whose `originalContextId` is the source — its
+ * own chunks and every crawled page's, including those of an embed that
+ * stopped partway — in the organization's company collection, resolved by
+ * name and never created: an organization that never embedded anything has
+ * none, which is a success. The file is deleted only from under the
+ * organization's own company-context prefix.
+ *
+ * Throws on a Qdrant or storage failure so Temporal retries; every step is
+ * safe to repeat. A source already gone still has its points removed.
+ */
+async function deleteCompanySource(
+	contextId: string,
+	owner: CompanyContextOwner,
+): Promise<DeleteSingleContextOutput> {
+	const { organizationId } = owner;
+	const rows = companyContextRowStore(owner);
+
+	activityLogger.info("Deleting company context source", {
+		contextId,
+		organizationId,
+	});
+
+	const source = await rows.loadSource(contextId);
+
+	if (source?.type === "LINK") {
+		await stopCompanySourceCrawls(source);
+	}
+
+	const { collectionExists } = await deleteCompanyContextSourcePoints({
+		organizationId,
+		sourceId: contextId,
+	});
+
+	if (!source) {
+		activityLogger.info(
+			"Company context source not found, may have been deleted already",
+			{ contextId },
+		);
+		return {
+			success: true,
+			qdrantDeleted: collectionExists,
+			dbDeleted: false,
+		};
+	}
+
+	if (source.s3Path) {
+		if (
+			source.s3Bucket &&
+			source.s3Path.startsWith(
+				companyContextStoragePrefix(organizationId),
+			)
+		) {
+			await deleteFile(source.s3Path, { bucket: source.s3Bucket });
+		} else {
+			// No bucket to address it in, or not a key this organization's
+			// company context owns: leave it. Organization deletion sweeps
+			// the organization's prefix.
+			activityLogger.warn(
+				"Company context file has no bucket or is outside its organization's prefix; not deleting it",
+				{ contextId },
+			);
+		}
+	}
+
+	const deleted = await rows.deleteSource(contextId);
+
+	// An embed already running when the vectors above were removed can still
+	// write points and mark the row embedded before the row delete, leaving
+	// them orphaned. Sweep once more now the row is gone (an embed finishing
+	// after this finds no row and removes its own points). Retrieval keeps
+	// only hits whose source row is ready, so orphans never surface: this is
+	// storage hygiene. A failure throws, and the retry takes the row-gone
+	// path above, which sweeps again.
+	await deleteCompanyContextSourcePoints({
+		organizationId,
+		sourceId: contextId,
+	});
+
+	activityLogger.info(
+		deleted
+			? "Company context source deleted"
+			: "Company context source row already deleted",
+		{ contextId, qdrantDeleted: collectionExists },
+	);
+	return {
+		success: true,
+		qdrantDeleted: collectionExists,
+		dbDeleted: deleted !== null,
+	};
+}
+
+/**
+ * Delete a website source's refresh schedule and cancel the crawl its row
+ * records, each best-effort: not-found is success, and any other failure is
+ * logged, not thrown, so it never keeps a source its owner deleted.
+ */
+async function stopCompanySourceCrawls(source: {
+	id: string;
+	urlScheduleId: string | null;
+	urlActiveWorkflowId: string | null;
+}): Promise<void> {
+	if (source.urlScheduleId) {
+		try {
+			await deleteUrlSourceSchedule(
+				{ scheduleId: source.urlScheduleId },
+				await getScheduleClient(),
+			);
+		} catch (error) {
+			activityLogger.warn(
+				"Failed to delete a company website source's refresh schedule; the reconciler removes it",
+				{
+					contextId: source.id,
+					scheduleId: source.urlScheduleId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				},
+			);
+		}
+	}
+
+	if (source.urlActiveWorkflowId) {
+		try {
+			const client = await getTemporalClient();
+			await client.workflow
+				.getHandle(source.urlActiveWorkflowId)
+				.cancel();
+		} catch (error) {
+			// Not found: the crawl already finished.
+			if (
+				!(
+					error instanceof Error &&
+					error.name === "WorkflowNotFoundError"
+				)
+			) {
+				activityLogger.warn(
+					"Failed to cancel a company website source's crawl",
+					{
+						contextId: source.id,
+						workflowId: source.urlActiveWorkflowId,
+						error:
+							error instanceof Error
+								? error.message
+								: String(error),
+					},
+				);
+			}
+		}
 	}
 }

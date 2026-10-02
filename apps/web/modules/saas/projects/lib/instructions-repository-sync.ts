@@ -11,9 +11,14 @@
 
 import {
 	formatByteSize,
+	formatByteSizeOver,
 	SNAPSHOT_LIMITS,
 	validateRelativePath,
 } from "@repo/instructions";
+import {
+	type SnapshotCheckPhase,
+	snapshotCheckProgress,
+} from "./instructions-check-progress";
 
 type SyncRunStatus =
 	| "SUCCEEDED"
@@ -46,6 +51,8 @@ type SyncLimitView = {
 		| "repositorySize";
 	max: number;
 	actual?: number;
+	/** `actual` is a lower bound: the check could not learn the size. */
+	atLeast?: true;
 };
 
 export type SyncRunView = {
@@ -61,6 +68,12 @@ export type SyncRunView = {
 	snapshotVersion: number | null;
 	/** Null for every other error, and for runs recorded before it existed. */
 	limit?: SyncLimitView | null;
+	/**
+	 * Where an open run has got. Only the copy carries a count; the phases
+	 * before it carry none. Null once the run is recorded, and for runs that
+	 * started before progress existed.
+	 */
+	progress?: SyncRunProgressView | null;
 	userName: string | null;
 	/**
 	 * False for a run of a sync that was switched off (or switched off and
@@ -68,6 +81,27 @@ export type SyncRunView = {
 	 * it; the status line leaves it out.
 	 */
 	fromCurrentConfiguration: boolean;
+};
+
+type SyncRunProgressView = {
+	phase: "FETCHING" | "PREPARING" | "COPYING";
+	done: number | null;
+	total: number | null;
+};
+
+/**
+ * The snapshot an open run created, found by the run's key: the run's progress
+ * continues into this snapshot's own checks once the copy is done.
+ */
+type SyncInFlightSnapshotView = {
+	status: string;
+	version: number;
+	scanPending: boolean;
+	progress: {
+		phase: SnapshotCheckPhase;
+		done: number | null;
+		total: number | null;
+	} | null;
 };
 
 export type RepositorySyncIntegration = {
@@ -113,6 +147,8 @@ export type RepositorySyncState = {
 	running: boolean;
 	configured: RepositorySyncConfiguration | null;
 	latestRun: SyncRunView | null;
+	/** Set while the latest run is open and has already created its snapshot. */
+	inFlightSnapshot?: SyncInFlightSnapshotView | null;
 	availableIntegrations: RepositorySyncIntegration[];
 };
 
@@ -197,6 +233,74 @@ export function latestSyncRunChanged(
 /** The poll saw a run close: its outcome, whatever it was, is now readable. */
 export function syncRunEnded(wasRunning: boolean, running: boolean): boolean {
 	return wasRunning && !running;
+}
+
+/** What an open sync run is doing right now, as the status line words it. */
+export type SyncRunProgress =
+	| { kind: "fetching" }
+	| { kind: "preparing" }
+	| { kind: "copying"; done: number; total: number }
+	| {
+			kind: "checking";
+			phase: SnapshotCheckPhase;
+			done: number;
+			total: number;
+	  };
+
+/**
+ * Where the open run is: its own phase until the copy is done, then the
+ * snapshot's checks once the snapshot reports a pass (`inFlightSnapshot`).
+ * `null` says nothing is known yet, and the line keeps its plain "Syncing"
+ * wording: there is no phase to name and no number to make up.
+ *
+ * The run's COPYING count is only reported when it adds up (`done` within
+ * `total`); a snapshot's pass is the same `snapshotCheckProgress` the upload
+ * pill reads, so a sync's checks and an upload's read identically.
+ */
+export function syncRunProgress(
+	state: Pick<RepositorySyncState, "latestRun" | "inFlightSnapshot">,
+): SyncRunProgress | null {
+	const run = state.latestRun;
+	if (!run || run.finishedAt !== null) {
+		return null;
+	}
+	const snapshot = state.inFlightSnapshot;
+	if (snapshot) {
+		const checking = snapshotCheckProgress({
+			status: snapshot.status,
+			deferredScanStatus: snapshot.scanPending ? "PENDING" : null,
+			progressPhase: snapshot.progress?.phase,
+			progressDone: snapshot.progress?.done,
+			progressTotal: snapshot.progress?.total,
+		});
+		if (checking) {
+			return { kind: "checking", ...checking };
+		}
+	}
+	const progress = run.progress;
+	if (!progress) {
+		return null;
+	}
+	switch (progress.phase) {
+		case "FETCHING":
+			return { kind: "fetching" };
+		case "PREPARING":
+			return { kind: "preparing" };
+		case "COPYING":
+			return progress.done !== null &&
+				progress.total !== null &&
+				progress.done <= progress.total
+				? {
+						kind: "copying",
+						done: progress.done,
+						total: progress.total,
+					}
+				: { kind: "preparing" };
+		default: {
+			const unreachable: never = progress.phase;
+			return unreachable;
+		}
+	}
 }
 
 export function offersSyncFromRepository(state: RepositorySyncState): boolean {
@@ -340,9 +444,11 @@ function limitMessage(limit: SyncLimitView): SyncMessage | null {
 			return limit.actual === undefined
 				? null
 				: {
-						key: `errors.limit.${limit.kind}`,
+						key: limit.atLeast
+							? `errors.limit.${limit.kind}AtLeast`
+							: `errors.limit.${limit.kind}`,
 						values: {
-							actual: formatByteSize(limit.actual),
+							actual: formatByteSizeOver(limit.actual, limit.max),
 							max: formatByteSize(limit.max),
 						},
 					};

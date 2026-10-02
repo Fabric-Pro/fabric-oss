@@ -39,6 +39,7 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		getPublished: vi.fn(),
 		createDownloadUrl: vi.fn(),
+		createFileDownloadUrls: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
 		getDefaultContext: vi.fn<() => unknown>(),
@@ -68,6 +69,7 @@ vi.mock("../src/lib/client.js", () => {
 		instructions: {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: mocks.createDownloadUrl,
+			createFileDownloadUrls: mocks.createFileDownloadUrls,
 		},
 		// The real `FabricClient.withoutContext()` returns a sibling with no
 		// ambient org/personal default. Here it returns the same stub and
@@ -258,17 +260,18 @@ describe("fabric instructions init", () => {
 		expect(result.stdout).toContain("1 added");
 		expect(result.stdout).toContain("does not edit .gitignore");
 		// Init makes more than one manifest client (its own eligibility read,
-		// then the sync's), so this asserts the two shapes rather than the
-		// sequence: manifest budget with the SDK's default retries, and the
-		// download link on the bundle budget with retries off.
+		// then the sync's): manifest budget with the SDK's default retries.
+		// The one file is fetched by name, so the archive's separate client
+		// (bundle budget, retries off) is never built.
 		const clientOptions = mocks.getClient.mock.calls.map(
 			([options]) => options,
 		);
 		expect(clientOptions).toContainEqual({ timeoutMs: 15_000 });
-		expect(clientOptions).toContainEqual({
+		expect(clientOptions).not.toContainEqual({
 			timeoutMs: 60_000,
 			retry: { maxRetries: 0 },
 		});
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
 
 	it("does not write a hook when the first published sync fails", async () => {

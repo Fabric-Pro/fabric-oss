@@ -77,6 +77,22 @@ export async function buildPathPrefixMarkdown(
 		orderBy: { pageUrl: "asc" },
 	});
 
+	return joinCrawledPagesMarkdown(pages);
+}
+
+/**
+ * The page-joining half of `buildPathPrefixMarkdown`, for crawled pages the
+ * caller has already loaded in reading order. Company context's website
+ * sources (Fizzy #2719) keep their pages in their own table and export
+ * through this, so both kinds of source download in the same shape.
+ */
+export function joinCrawledPagesMarkdown(
+	pages: ReadonlyArray<{
+		pageUrl: string;
+		pageTitle: string | null;
+		content: string | null;
+	}>,
+): string {
 	const sections = pages
 		.filter((p) => typeof p.content === "string" && p.content.length > 0)
 		.map((p) => {

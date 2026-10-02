@@ -1120,3 +1120,115 @@ describe("ContextRepositorySyncStatus — failed actions (Fizzy #2784)", () => {
 		);
 	});
 });
+
+describe("ContextRepositorySyncStatus — progress while a run is open", () => {
+	const counts = {
+		created: 0,
+		updated: 0,
+		adopted: 0,
+		unchanged: 0,
+		conflict: 0,
+		pathInUse: 0,
+		removed: 0,
+		pruneConflicts: 0,
+	};
+	const plan = {
+		keptCount: 10,
+		excludedCount: 0,
+		attentionCount: 0,
+		attention: [],
+		missingPaths: [],
+		protectedPrefixes: [],
+	};
+	const openRun = (
+		overrides: Partial<NonNullable<ContextSyncState["latestRun"]>> = {},
+	): NonNullable<ContextSyncState["latestRun"]> => ({
+		...emptyRun(),
+		finishedAt: null,
+		status: null,
+		counts,
+		...overrides,
+	});
+	const running = (
+		overrides: Partial<ContextSyncState> = {},
+	): ContextSyncState =>
+		baseState({
+			configured: CONFIGURED_BASE,
+			running: true,
+			latestRun: openRun(),
+			...overrides,
+		});
+
+	it("names fetching, with no count and no bar, until the plan is written", () => {
+		renderStatus({ state: running() });
+
+		const line = screen.getByTestId("context-sync-progress");
+		expect(line).toHaveTextContent(`${NS}.fetching`);
+		expect(
+			screen.queryByTestId("sync-progress-bar"),
+		).not.toBeInTheDocument();
+	});
+
+	it("counts the files its committed batches decided, out of the files the plan keeps", () => {
+		renderStatus({
+			state: running({
+				latestRun: openRun({
+					plan,
+					counts: {
+						...counts,
+						created: 5,
+						unchanged: 2,
+						conflict: 1,
+					},
+				}),
+			}),
+		});
+
+		expect(screen.getByTestId("context-sync-progress")).toHaveTextContent(
+			`${NS}.applying${JSON.stringify({ done: 8, total: 10 })}`,
+		);
+		expect(screen.getByTestId("sync-progress-bar")).toBeInTheDocument();
+	});
+
+	it("says 'so far' for the removals, whose total is not known", () => {
+		renderStatus({
+			state: running({
+				latestRun: openRun({
+					plan,
+					counts: { ...counts, created: 10, removed: 3 },
+				}),
+			}),
+		});
+
+		expect(screen.getByTestId("context-sync-progress")).toHaveTextContent(
+			`${NS}.pruning${JSON.stringify({ removed: 3 })}`,
+		);
+		expect(
+			screen.queryByTestId("sync-progress-bar"),
+		).not.toBeInTheDocument();
+	});
+
+	it("reports indexed out of managed while rows await indexing after the run", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				managedCount: 20,
+				awaitingIndexCount: 5,
+			}),
+		});
+
+		expect(
+			screen.getByTestId("context-sync-awaiting-index"),
+		).toHaveTextContent(
+			`${NS}.indexing${JSON.stringify({ indexed: 15, managed: 20 })}`,
+		);
+	});
+
+	it("keeps the plain running line when the run has reported nothing to count", () => {
+		renderStatus({ state: running({ latestRun: null }) });
+
+		expect(screen.getByTestId("context-sync-running")).toHaveTextContent(
+			`${NS}.running`,
+		);
+	});
+});

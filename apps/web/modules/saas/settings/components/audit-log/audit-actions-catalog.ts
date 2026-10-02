@@ -442,6 +442,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Personal API key rotated. Old key honored through the configured grace window.",
 	},
 	{
+		key: "account.oauth.consent_granted",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.oauth.consent_granted",
+		description:
+			"User approved a coding agent to sign in as them for one organization. The scopes granted are in the metadata; the agent holds no key, only tokens that expire.",
+	},
+	{
+		key: "account.oauth.consent_revoked",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.oauth.consent_revoked",
+		description:
+			"User revoked a connected coding agent — its consent and every token issued under it were deleted, so its next request is refused.",
+	},
+	{
 		key: "account.ai_provider.configured",
 		categoryId: "account",
 		labelKey: "settings.auditLog.actions.account.ai_provider.configured",
@@ -1570,6 +1584,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.org.brand_kit.updated",
 		description:
 			"An organization's brand kit — its accent colors and guidance text for Glossy exports — was changed.",
+	},
+	{
+		key: "org.company_context.metadata_updated",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.company_context.metadata_updated",
+		description:
+			"An admin changed the type label or AI instructions of a company context source — guidance every Proposal and Business Case the organization generates follows. Both values are recorded before and after.",
 	},
 ];
 

@@ -47,7 +47,11 @@ function scopeFromKey(key: ApiKeyRestVariables["verifiedKey"]) {
 export function createSystemHealthRestRoutes() {
 	const app = new Hono<{ Variables: ApiKeyRestVariables }>();
 
-	app.use("*", apiKeyRestAuth());
+	// Scoped to this surface's own paths, not "*": mounted at `/v1` beside the
+	// public v1 API, a "*" middleware here would run for every `/v1` request
+	// (see the audit-log routes for what that broke).
+	app.use("/system-health/*", apiKeyRestAuth());
+	app.use("/status-updates/*", apiKeyRestAuth());
 
 	app.get("/system-health", async (c) => {
 		const key = c.get("verifiedKey");

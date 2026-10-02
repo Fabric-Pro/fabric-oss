@@ -208,6 +208,7 @@ export async function resolveGitLabSource(
 			userId: opts.userId,
 			organizationId: opts.organizationId,
 			provider: "GITLAB",
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { settings: true },
 	});

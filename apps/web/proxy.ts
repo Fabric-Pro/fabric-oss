@@ -170,6 +170,27 @@ export default async function proxy(req: NextRequest) {
 			return NextResponse.redirect(new URL("/", origin));
 		}
 
+		// The agent consent and organization screens grant access with one
+		// click, so no other page may frame them (RFC 9700 section 4.16).
+		if (pathname.startsWith("/auth/oauth/")) {
+			// Someone who has to change their password first may not authorize
+			// an agent either: the same gate as /app. The authorization server
+			// refuses on its own too (`consentReferenceId`), since an agent can
+			// reach it without passing through these pages.
+			if (mustChangePassword(req)) {
+				return NextResponse.redirect(
+					new URL("/change-password", origin),
+				);
+			}
+			const consentRes = NextResponse.next();
+			consentRes.headers.set("X-Frame-Options", "DENY");
+			consentRes.headers.set(
+				"Content-Security-Policy",
+				"frame-ancestors 'none'",
+			);
+			return consentRes;
+		}
+
 		return NextResponse.next();
 	}
 
@@ -199,6 +220,6 @@ export default async function proxy(req: NextRequest) {
 
 export const config = {
 	matcher: [
-		"/((?!api|mcp|image-proxy|images|integrations|fonts|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		"/((?!api|mcp|\\.well-known|image-proxy|images|integrations|fonts|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
 	],
 };

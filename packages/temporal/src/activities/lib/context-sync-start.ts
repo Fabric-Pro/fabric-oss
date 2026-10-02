@@ -93,3 +93,39 @@ export async function startAutomaticContextSync(
 	const open = await client.workflow.getHandle(workflowId).describe();
 	return reached("already_running", open.runId);
 }
+
+/**
+ * A MANUAL start on a member's behalf, for the follow-up run a configure
+ * queued while another run was open (the twin of `startManualInstructionSync`).
+ * The same workflow type, queue, id and `FAIL` conflict policy as the API's
+ * `startContextRepositorySync`, so this start and a "Sync now" collapse onto
+ * one run; `false` is `already_running`.
+ */
+export async function startManualContextSync(input: {
+	projectId: string;
+	organizationId: string;
+	requesterUserId: string;
+}): Promise<boolean> {
+	const client = await getTemporalClient();
+	try {
+		await client.workflow.start(CONTEXT_REPOSITORY_SYNC_WORKFLOW_TYPE, {
+			taskQueue: CONTEXT_REPOSITORY_SYNC_WORKFLOW_TASK_QUEUE,
+			workflowId: contextRepositorySyncWorkflowId(input.projectId),
+			workflowIdConflictPolicy: "FAIL",
+			args: [
+				{
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					trigger: "MANUAL",
+					requesterUserId: input.requesterUserId,
+				},
+			],
+		});
+		return true;
+	} catch (error) {
+		if (error instanceof WorkflowExecutionAlreadyStartedError) {
+			return false;
+		}
+		throw error;
+	}
+}

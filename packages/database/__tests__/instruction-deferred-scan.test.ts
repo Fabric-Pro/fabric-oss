@@ -762,6 +762,10 @@ describe("recordInstructionDeferredScanOutcome", () => {
 				deferredScanStatus: "PENDING",
 			},
 			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
 				deferredScanStatus: "ISSUES_FOUND",
 				deferredScanFindings: findings,
 				deferredScanCompletedAt: expect.any(Date),
@@ -903,6 +907,10 @@ describe("markStaleDeferredScanIncomplete", () => {
 				updatedAt: observedUpdatedAt,
 			},
 			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
 				deferredScanStatus: "INCOMPLETE",
 				deferredScanFindings: "JsonNull",
 				deferredScanCompletedAt: expect.any(Date),

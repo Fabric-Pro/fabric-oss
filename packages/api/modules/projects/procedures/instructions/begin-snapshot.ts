@@ -6,6 +6,7 @@ import {
 import {
 	describePortableNameRefusal,
 	formatByteSize,
+	formatByteSizeOver,
 	type PlanRefusal,
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
@@ -22,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { versionContentionAsConflict } from "./version-contention";
 
 /** The sentence a person reads for each planner refusal. Unchanged from the inline loop it replaced. */
 function describePlanRefusal(refusal: PlanRefusal): string {
@@ -35,7 +37,7 @@ function describePlanRefusal(refusal: PlanRefusal): string {
 		case "non_portable_name":
 			return describePortableNameRefusal(refusal.path, refusal.refusal);
 		case "file_too_large":
-			return `${refusal.path} is ${formatByteSize(refusal.size)}; each file can be at most ${formatByteSize(SNAPSHOT_LIMITS.maxFileBytes)}.`;
+			return `${refusal.path} is ${formatByteSizeOver(refusal.size, SNAPSHOT_LIMITS.maxFileBytes)}; each file can be at most ${formatByteSize(SNAPSHOT_LIMITS.maxFileBytes)}.`;
 		case "nothing_kept":
 			return "Every file was excluded; nothing to upload";
 		case "too_many_files":
@@ -204,7 +206,7 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			excludedCount,
 			files: kept,
-		});
+		}).catch(versionContentionAsConflict);
 
 		recordAuditFromRequest(context, {
 			action: "project.instructions.upload_started",

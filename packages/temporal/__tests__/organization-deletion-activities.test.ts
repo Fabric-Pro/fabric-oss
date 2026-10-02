@@ -14,6 +14,9 @@
  *     gone", and the two want opposite answers.
  *   - The object sweep refuses to run against an organization that still exists,
  *     and covers every org-scoped key including the logo.
+ *   - Company website refresh schedules (Fizzy #2719) are read before the
+ *     guarded delete and deleted only after it succeeded, so a restore keeps
+ *     them.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,8 +30,16 @@ const queryMocks = vi.hoisted(() => ({
 	getOrganizationsNeedingPurgeReminder: vi.fn(),
 	getOrganizationsReadyForPurge: vi.fn(),
 	getPurchasesByOrganizationId: vi.fn(),
+	listCompanyContextUrlScheduleIds: vi.fn(),
 	markOrganizationPurgeReminderSent: vi.fn(),
 	permanentDeleteOrganization: vi.fn(),
+}));
+
+/** Temporal's schedule client, as the company schedule teardown reaches it. */
+const scheduleMocks = vi.hoisted(() => ({
+	getScheduleClient: vi.fn(),
+	deleteSchedule: vi.fn(),
+	getHandle: vi.fn(),
 }));
 
 const sendEmail = vi.hoisted(() => vi.fn());
@@ -42,6 +53,9 @@ const storageMocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	db: dbMock,
 	ORGANIZATION_RETENTION_DAYS: 30,
+	// The prefix's exact shape is pinned by the database package's own test.
+	companyContextStoragePrefix: (organizationId: string) =>
+		`${organizationId}/company-context/`,
 	...queryMocks,
 }));
 vi.mock("@repo/logs", () => ({
@@ -62,6 +76,7 @@ vi.mock("@repo/config", () => ({
 			bucketNames: {
 				avatars: "avatars",
 				chatDocuments: "chat-documents",
+				projectContexts: "project-contexts",
 				qaRunEvidence: "qa-run-evidence",
 			},
 		},
@@ -71,6 +86,9 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: () => {
 		throw new Error("not in an activity context");
 	},
+}));
+vi.mock("../src/client", () => ({
+	getScheduleClient: scheduleMocks.getScheduleClient,
 }));
 
 import {
@@ -121,6 +139,17 @@ beforeEach(() => {
 	dbMock.organization.findUnique.mockResolvedValue(null);
 	storageMocks.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
 	emptyBucket();
+	queryMocks.listCompanyContextUrlScheduleIds.mockResolvedValue([]);
+	for (const stub of Object.values(scheduleMocks)) {
+		stub.mockReset();
+	}
+	scheduleMocks.deleteSchedule.mockResolvedValue(undefined);
+	scheduleMocks.getHandle.mockImplementation(() => ({
+		delete: scheduleMocks.deleteSchedule,
+	}));
+	scheduleMocks.getScheduleClient.mockResolvedValue({
+		getHandle: scheduleMocks.getHandle,
+	});
 });
 
 describe("getOrganizationsNeedingPurgeReminderActivity", () => {
@@ -357,6 +386,145 @@ describe("permanentDeleteOrganizationFromDbActivity", () => {
 	});
 });
 
+describe("permanentDeleteOrganizationFromDbActivity — company website schedules", () => {
+	const SCHEDULES = [
+		{ id: "src-1", urlScheduleId: "url-source-schedule-src-1" },
+		{ id: "src-2", urlScheduleId: "url-source-schedule-src-2" },
+	];
+
+	/**
+	 * The cascade removes the source rows that name the schedules, so their
+	 * ids are read BEFORE the delete — and the schedules go only AFTER it.
+	 */
+	it("deletes the schedules after the guarded delete succeeds", async () => {
+		queryMocks.listCompanyContextUrlScheduleIds.mockResolvedValue(
+			SCHEDULES,
+		);
+		queryMocks.permanentDeleteOrganization.mockResolvedValue({
+			id: "org-1",
+		});
+
+		const result = await permanentDeleteOrganizationFromDbActivity({
+			organizationId: "org-1",
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(
+			queryMocks.listCompanyContextUrlScheduleIds,
+		).toHaveBeenCalledWith("org-1");
+		expect(scheduleMocks.getHandle.mock.calls.map(([id]) => id)).toEqual([
+			"url-source-schedule-src-1",
+			"url-source-schedule-src-2",
+		]);
+		expect(scheduleMocks.deleteSchedule).toHaveBeenCalledTimes(2);
+
+		const readAt =
+			queryMocks.listCompanyContextUrlScheduleIds.mock
+				.invocationCallOrder[0];
+		const deletedOrgAt =
+			queryMocks.permanentDeleteOrganization.mock.invocationCallOrder[0];
+		const firstScheduleAt =
+			scheduleMocks.deleteSchedule.mock.invocationCallOrder[0];
+		expect(readAt).toBeLessThan(deletedOrgAt);
+		expect(deletedOrgAt).toBeLessThan(firstScheduleAt);
+	});
+
+	/**
+	 * A restore landing between the schedule-id read and the guarded delete
+	 * makes the guard miss. The purge aborts and the restored organization's
+	 * website refreshes keep running.
+	 */
+	it("keeps a restored organization's schedules", async () => {
+		queryMocks.listCompanyContextUrlScheduleIds.mockResolvedValue(
+			SCHEDULES,
+		);
+		queryMocks.permanentDeleteOrganization.mockRejectedValue(
+			prismaNotFound(),
+		);
+		dbMock.organization.findUnique.mockResolvedValue({ id: "org-1" });
+
+		const result = await permanentDeleteOrganizationFromDbActivity({
+			organizationId: "org-1",
+		});
+
+		expect(result.restored).toBe(true);
+		expect(scheduleMocks.getScheduleClient).not.toHaveBeenCalled();
+		expect(scheduleMocks.deleteSchedule).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The organization row is gone by then, so a retry could never find these
+	 * ids again: a schedule that will not delete is left to the reconciler,
+	 * and the purge still reports success.
+	 */
+	it("does not fail the purge when a schedule will not delete", async () => {
+		queryMocks.listCompanyContextUrlScheduleIds.mockResolvedValue(
+			SCHEDULES,
+		);
+		queryMocks.permanentDeleteOrganization.mockResolvedValue({
+			id: "org-1",
+		});
+		scheduleMocks.deleteSchedule
+			.mockRejectedValueOnce(new Error("temporal unavailable"))
+			.mockResolvedValueOnce(undefined);
+
+		const result = await permanentDeleteOrganizationFromDbActivity({
+			organizationId: "org-1",
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(scheduleMocks.deleteSchedule).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not fail the purge when Temporal cannot be reached", async () => {
+		queryMocks.listCompanyContextUrlScheduleIds.mockResolvedValue(
+			SCHEDULES,
+		);
+		queryMocks.permanentDeleteOrganization.mockResolvedValue({
+			id: "org-1",
+		});
+		scheduleMocks.getScheduleClient.mockRejectedValue(
+			new Error("connection refused"),
+		);
+
+		const result = await permanentDeleteOrganizationFromDbActivity({
+			organizationId: "org-1",
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(scheduleMocks.deleteSchedule).not.toHaveBeenCalled();
+	});
+
+	it("does not reach Temporal when the organization has no company website schedules", async () => {
+		queryMocks.permanentDeleteOrganization.mockResolvedValue({
+			id: "org-1",
+		});
+
+		await permanentDeleteOrganizationFromDbActivity({
+			organizationId: "org-1",
+		});
+
+		expect(scheduleMocks.getScheduleClient).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * A failed read aborts before the delete: the purge retries with the ids
+	 * still readable, instead of destroying the only record of them.
+	 */
+	it("does not delete the organization when the schedule ids cannot be read", async () => {
+		queryMocks.listCompanyContextUrlScheduleIds.mockRejectedValue(
+			new Error("connection reset"),
+		);
+
+		await expect(
+			permanentDeleteOrganizationFromDbActivity({
+				organizationId: "org-1",
+			}),
+		).rejects.toThrow("connection reset");
+		expect(queryMocks.permanentDeleteOrganization).not.toHaveBeenCalled();
+	});
+});
+
 describe("deleteOrganizationVectorsActivity", () => {
 	it("drops the organization's collections", async () => {
 		deleteOrganizationCollections.mockResolvedValue(undefined);
@@ -409,8 +577,8 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 			organizationId: "org-1",
 		});
 
-		// Two prefix sweeps, one page each.
-		expect(result.pages).toBe(2);
+		// Three prefix sweeps, one page each.
+		expect(result.pages).toBe(3);
 		expect(storageMocks.listObjects).toHaveBeenCalledWith(
 			expect.objectContaining({
 				bucket: "chat-documents",
@@ -420,6 +588,21 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 		expect(storageMocks.listObjects).toHaveBeenCalledWith(
 			expect.objectContaining({
 				bucket: "qa-run-evidence",
+				prefix: "org-1/",
+			}),
+		);
+		// Company context files (Fizzy #2719): only the organization's
+		// company-context sub-prefix. Project context files share the bucket
+		// under `projects/`, which is the project purge's job.
+		expect(storageMocks.listObjects).toHaveBeenCalledWith(
+			expect.objectContaining({
+				bucket: "project-contexts",
+				prefix: "org-1/company-context/",
+			}),
+		);
+		expect(storageMocks.listObjects).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				bucket: "project-contexts",
 				prefix: "org-1/",
 			}),
 		);

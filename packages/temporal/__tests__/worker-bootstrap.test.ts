@@ -15,7 +15,9 @@
  * Pins the Glossy edition registration (Fizzy #2589, KTD3): a worker polls
  * `glossy-edition` with four activity slots, the active-worker list that
  * startup, the run loop, and shutdown share includes it, and the pool grows
- * by the half-the-slots rule.
+ * by the half-the-slots rule. The company context queue (Fizzy #2719) is
+ * pinned the same way: its worker carries the shared workflows and
+ * activities, since company ingestion runs the project pipeline's own code.
  *
  * Run with: pnpm --filter @repo/temporal test -- worker-bootstrap
  */
@@ -160,6 +162,24 @@ describe("worker bootstrap", () => {
 		);
 	});
 
+	it("creates a worker polling company-context with the shared ingestion workflows and activities", () => {
+		const company = mocks.create.mock.calls.find(
+			([options]) => options.taskQueue === "company-context",
+		);
+		expect(company).toBeDefined();
+		expect(company?.[0]).toMatchObject({
+			namespace: "default",
+			maxConcurrentActivityTaskExecutions: 3,
+			reuseV8Context: true,
+		});
+		expect(company?.[0].activities).toBe(
+			mocks.create.mock.calls[0][0].activities,
+		);
+		expect(company?.[0].workflowBundle).toBe(
+			mocks.create.mock.calls[0][0].workflowBundle,
+		);
+	});
+
 	it("runs every created worker, the Glossy one included", async () => {
 		const created = await Promise.all(
 			mocks.create.mock.results.map((result) => result.value),
@@ -171,6 +191,9 @@ describe("worker bootstrap", () => {
 		expect(new Set(active)).toEqual(new Set(created));
 		expect(active.map((entry) => entry.options.taskQueue)).toContain(
 			"glossy-edition",
+		);
+		expect(active.map((entry) => entry.options.taskQueue)).toContain(
+			"company-context",
 		);
 		expect(new Set(createdQueues()).size).toBe(createdQueues().length);
 	});
@@ -184,12 +207,16 @@ describe("activity slots and the database pool", () => {
 		expect(worker.ACTIVITY_SLOTS.glossyEdition).toBe(4);
 	});
 
+	it("gives company context ingestion three slots", () => {
+		expect(worker.ACTIVITY_SLOTS.companyContext).toBe(3);
+	});
+
 	it("sizes the pool at half the slot total, rounded up", () => {
-		expect(total()).toBe(86);
+		expect(total()).toBe(89);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
 			String(Math.ceil(total() / 2)),
 		);
-		expect(process.env.DATABASE_POOL_MAX).toBe("43");
+		expect(process.env.DATABASE_POOL_MAX).toBe("45");
 	});
 
 	it("gives every slot entry to exactly one created worker", () => {
@@ -207,7 +234,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(15);
+		expect(createdQueues()).toHaveLength(16);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());

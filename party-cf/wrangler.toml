@@ -10,6 +10,10 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 PARTYKIT_ENV = "production"
 
+# Workers AI: Parlume transcribes meeting audio with Deepgram Flux.
+[ai]
+binding = "AI"
+
 # Durable Object bindings. The binding `name` is what
 # routePartykitRequest matches against the URL segment after /parties/
 # (kebab-cased). The `class_name` references the exported class.
@@ -61,6 +65,9 @@ name = "fabric-collab-staging"
 
 [env.staging.vars]
 PARTYKIT_ENV = "production"
+
+[env.staging.ai]
+binding = "AI"
 
 [[env.staging.durable_objects.bindings]]
 name = "Main"

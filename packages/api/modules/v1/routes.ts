@@ -275,6 +275,12 @@ export function createPublicV1Routes() {
 				403,
 			);
 		}
+		if (ctx.keyType === "oauth") {
+			return c.json(
+				err("A signed-in agent cannot create personal API keys"),
+				403,
+			);
+		}
 
 		if (
 			body.expiresInDays !== undefined &&

@@ -22,11 +22,15 @@
  * in plugin state keyed by `src` and fed by `error`/`load` listeners. `error`
  * does not bubble, so they are registered in the CAPTURE phase on the editor
  * root — one pair of listeners covers every current and future image.
+ *
+ * The key is the src the DOCUMENT holds, not the one on the `<img>`. The
+ * signed-URL refreshers point the `<img>` at a fresh URL without touching the
+ * document, so the two differ for every image older than an hour (Fizzy #2800).
  */
 
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { buildMediaUnavailableMessage } from "./media-unavailable-message";
 
 /** Marker attribute on the rendered message (also the test hook). */
@@ -71,6 +75,27 @@ function describeImage(src: string, alt?: string | null): string {
 
 function fallbackMessage(name: string): string {
 	return name ? `Image unavailable: ${name}` : "Image unavailable";
+}
+
+/**
+ * The `src` the document stores for the image node this `<img>` renders.
+ *
+ * That is the key decorations are built from, and it is NOT the `<img>`'s own
+ * `src` once a signed-URL refresher has pointed the element at a fresh URL:
+ * keyed on the element, the fresh URL's `load` never cleared the expired one's
+ * `error`, so the picture loaded hidden behind the message. An `<img>` that is
+ * no image node's (or cannot be placed) falls back to its own `src`.
+ */
+function documentSrcOf(view: EditorView, img: HTMLImageElement): string {
+	try {
+		const node = view.state.doc.nodeAt(view.posAtDOM(img, 0));
+		if (node?.type.name === "image" && typeof node.attrs.src === "string") {
+			return node.attrs.src;
+		}
+	} catch {
+		// Not inside the document's DOM.
+	}
+	return img.getAttribute("src") ?? "";
 }
 
 function buildDecorations(
@@ -163,7 +188,10 @@ export const ImageLoadFallback = Extension.create({
 						if (img.classList.contains("ProseMirror-separator")) {
 							return;
 						}
-						const src = img.getAttribute("src");
+						if (!img.getAttribute("src")) {
+							return;
+						}
+						const src = documentSrcOf(view, img);
 						if (!src) {
 							return;
 						}

@@ -4,7 +4,10 @@
  */
 
 import { getMarkdownFormattingRulesPrompt } from "@repo/agent-prompts";
-import type { ProjectContext } from "@repo/agent-types";
+import {
+	hasProjectContextEntries,
+	type ProjectContext,
+} from "@repo/agent-types";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
 
 interface FetchPromptForAgentInput {
@@ -39,6 +42,9 @@ interface RenderPromptWithContextInput {
 interface RenderPromptWithContextOutput {
 	rendered: string;
 	version: number;
+	/** The id of the version rendered — the only honest attribution for the
+	 *  run, since a binding or a client can name an older one (Fizzy #2807). */
+	versionId: string;
 	format: string;
 }
 
@@ -157,7 +163,10 @@ export async function renderPromptWithContext(
 		// CRITICAL: When RAG contexts exist, they define the product scope - don't inject features
 		// to avoid the AI building a PRD about generic wizard features instead of RAG content
 		if (projectContext) {
-			const hasRagContexts = ragContexts && ragContexts.length > 0;
+			// The project's own context only: vendor-marked company entries
+			// do not describe this product, so they must not push its wizard
+			// features out (Fizzy #2719).
+			const hasRagContexts = hasProjectContextEntries(ragContexts);
 			const contextStr = `
 Project Context:
 - Name: ${projectContext.name}
@@ -218,6 +227,7 @@ ${currentDocument}
 		return {
 			rendered: finalRendered,
 			version: version.version,
+			versionId: version.id,
 			format: prompt.format,
 		};
 	} catch (error) {
@@ -274,7 +284,10 @@ export async function fetchAndRenderPrompt(input: {
 		rendered: rendered.rendered,
 		promptId: prompt.promptId,
 		promptName: prompt.promptName,
-		promptVersionId: prompt.promptVersionId,
+		// What was rendered, not what the binding pins: the renderer takes the
+		// prompt's newest version, and the pin lags it whenever the prompt is
+		// also bound at another tier (FR6 re-points same-scope bindings only).
+		promptVersionId: rendered.versionId,
 		scope: prompt.scope,
 	};
 }
@@ -347,7 +360,10 @@ export async function fetchAndRenderPromptByKey(input: {
 		// CRITICAL: When RAG contexts exist, they define the product scope - don't inject features
 		// to avoid the AI building a PRD about generic wizard features instead of RAG content
 		if (projectContext) {
-			const hasRagContexts = ragContexts && ragContexts.length > 0;
+			// The project's own context only: vendor-marked company entries
+			// do not describe this product, so they must not push its wizard
+			// features out (Fizzy #2719).
+			const hasRagContexts = hasProjectContextEntries(ragContexts);
 			const contextStr = `
 
 Project Context:

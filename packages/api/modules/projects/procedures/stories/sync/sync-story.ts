@@ -151,6 +151,7 @@ export const syncStoryProcedure = tenantProtectedProcedure
 					where: {
 						...tenantFilter,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						isActive: true,
 					},
 					select: { id: true },

@@ -1,5 +1,5 @@
 import { sqltag } from "@prisma/client/runtime/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolvedPullRequestOperation } from "../prisma/queries/instruction-proposal-pull-requests";
 
 // Declared inside `vi.hoisted` because `vi.mock` factories are hoisted above
@@ -108,6 +108,7 @@ import {
 	failStaleValidatingInstructionSnapshot,
 	getInstructionFileByPath,
 	getInstructionSnapshot,
+	InstructionVersionContentionError,
 	listAbandonedReceivingInstructionSnapshots,
 	listInstructionFiles,
 	listInstructionSnapshots,
@@ -608,16 +609,17 @@ describe("createInstructionSnapshot", () => {
 			id: "snap_7",
 			version: 7,
 			files: [{ id: "f1", path: "CLAUDE.md", storageKey: "k1" }],
+			validationAttemptId: null,
 		});
 	});
 
 	/**
-	 * The version is allocated read-then-write inside the transaction, which
-	 * READ COMMITTED does not serialize: two uploads starting on one project
-	 * at the same moment both read version N and both insert N + 1, and
-	 * `@@unique([projectId, version])` fails the loser with P2002. Without a
-	 * retry that surfaced at `begin` as a raw Prisma error — a 500 with a
-	 * driver message — for an ordinary "two people uploaded together".
+	 * The version is allocated inside a transaction that first takes the
+	 * project row's write lock, so two uploads starting on one project at the
+	 * same moment run one after the other and the second reads the version
+	 * the first committed. READ COMMITTED alone does not serialize the
+	 * read-then-write; the real-Postgres proof of eight simultaneous begins
+	 * is `instruction-version-allocation.integration.test.ts`.
 	 */
 	describe("concurrent version allocation", () => {
 		const input = {
@@ -641,9 +643,28 @@ describe("createInstructionSnapshot", () => {
 			],
 		};
 
+		beforeEach(() => {
+			// The shortest jitter, so exhaustion does not take seconds.
+			vi.spyOn(Math, "random").mockReturnValue(0);
+		});
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
+		it("takes no project row lock: waiters would sit inside a 5 s transaction", async () => {
+			mocks.snapshot.findFirst.mockResolvedValue({ version: 6 });
+			mocks.snapshot.create.mockResolvedValue({
+				id: "snap_7",
+				version: 7,
+			});
+			mocks.file.findMany.mockResolvedValue([]);
+
+			await createInstructionSnapshot(input);
+
+			expect(mocks.$queryRaw).not.toHaveBeenCalled();
+		});
+
 		it("re-reads the winning version and retries after a P2002 collision", async () => {
-			// First attempt sees version 6 and loses the insert; the retry
-			// re-reads and finds the winner committed at 7.
 			mocks.snapshot.findFirst
 				.mockResolvedValueOnce({ version: 6 })
 				.mockResolvedValueOnce({ version: 7 });
@@ -663,16 +684,36 @@ describe("createInstructionSnapshot", () => {
 			expect(result.version).toBe(8);
 		});
 
-		it("gives up after the attempt budget and rethrows the collision", async () => {
+		it("waits a growing, jittered delay between attempts", async () => {
+			const timeout = vi.spyOn(globalThis, "setTimeout");
+			mocks.snapshot.findFirst.mockResolvedValue({ version: 6 });
+			mocks.snapshot.create
+				.mockRejectedValueOnce(new FakePrismaKnownRequestError("P2002"))
+				.mockRejectedValueOnce(new FakePrismaKnownRequestError("P2002"))
+				.mockResolvedValueOnce({ id: "snap_9", version: 9 });
+			mocks.file.findMany.mockResolvedValue([]);
+
+			await createInstructionSnapshot(input);
+
+			// Math.random() = 0 gives the 20 ms floor times the attempt.
+			const delays = timeout.mock.calls
+				.map(([, ms]) => ms)
+				.filter((ms): ms is number => ms === 20 || ms === 40);
+			expect(delays).toEqual([20, 40]);
+		});
+
+		it("gives up after eight attempts with a typed error, never the raw P2002", async () => {
 			mocks.snapshot.findFirst.mockResolvedValue({ version: 6 });
 			mocks.snapshot.create.mockRejectedValue(
 				new FakePrismaKnownRequestError("P2002"),
 			);
 
-			await expect(createInstructionSnapshot(input)).rejects.toThrow(
-				/P2002/,
+			const error = await createInstructionSnapshot(input).catch(
+				(e: unknown) => e,
 			);
-			expect(mocks.snapshot.create).toHaveBeenCalledTimes(3);
+
+			expect(error).toBeInstanceOf(InstructionVersionContentionError);
+			expect(mocks.snapshot.create).toHaveBeenCalledTimes(8);
 		});
 
 		it("rethrows any other Prisma error immediately, without retrying", async () => {
@@ -720,7 +761,9 @@ describe("createInstructionSnapshot", () => {
 		};
 
 		it("writes the repository columns, the run key and each file's git mode", async () => {
-			mocks.snapshot.findFirst.mockResolvedValue({ version: 1 });
+			mocks.snapshot.findFirst
+				.mockResolvedValueOnce(null) // nothing under the run key yet
+				.mockResolvedValueOnce({ version: 1 });
 			mocks.snapshot.create.mockResolvedValue({
 				id: "snap_2",
 				version: 2,
@@ -747,10 +790,43 @@ describe("createInstructionSnapshot", () => {
 			});
 		});
 
-		it("returns the row a concurrent attempt of the SAME run created instead of allocating another version", async () => {
+		it("returns the row an earlier attempt of the SAME run created instead of allocating another version", async () => {
+			mocks.snapshot.findFirst.mockResolvedValueOnce({
+				id: "snap_winner",
+				version: 2,
+				validationAttemptId: "attempt_1",
+			}); // lookup by run key, in the transaction
+			mocks.file.findMany.mockResolvedValueOnce([
+				{ id: "f1", path: "run.sh", storageKey: "k1" },
+			]);
+
+			expect(await createInstructionSnapshot(syncInput)).toEqual({
+				id: "snap_winner",
+				version: 2,
+				files: [{ id: "f1", path: "run.sh", storageKey: "k1" }],
+				validationAttemptId: "attempt_1",
+				existing: true,
+			});
+			expect(mocks.snapshot.create).not.toHaveBeenCalled();
+			expect(mocks.snapshot.findFirst).toHaveBeenCalledWith({
+				where: {
+					syncRunKey: "sync_1:run_a",
+					projectId: "proj_1",
+					organizationId: "org_1",
+				},
+				select: { id: true, version: true, validationAttemptId: true },
+			});
+		});
+
+		it("returns the row a concurrent attempt of the SAME run created when its insert hit a unique violation", async () => {
 			mocks.snapshot.findFirst
+				.mockResolvedValueOnce(null) // in-transaction pre-check: nothing yet
 				.mockResolvedValueOnce({ version: 1 }) // version read in the losing transaction
-				.mockResolvedValueOnce({ id: "snap_winner", version: 2 }); // lookup by run key
+				.mockResolvedValueOnce({
+					id: "snap_winner",
+					version: 2,
+					validationAttemptId: null,
+				}); // re-check by run key after the P2002
 			mocks.snapshot.create.mockRejectedValueOnce(
 				new FakePrismaKnownRequestError("P2002"),
 			);
@@ -762,34 +838,55 @@ describe("createInstructionSnapshot", () => {
 				id: "snap_winner",
 				version: 2,
 				files: [{ id: "f1", path: "run.sh", storageKey: "k1" }],
+				validationAttemptId: null,
 				existing: true,
 			});
 			expect(mocks.snapshot.create).toHaveBeenCalledTimes(1);
-			expect(mocks.snapshot.findFirst).toHaveBeenLastCalledWith({
-				where: {
-					syncRunKey: "sync_1:run_a",
-					projectId: "proj_1",
-					organizationId: "org_1",
-				},
-				select: { id: true, version: true },
-			});
 		});
 
 		it("treats a P2002 with no row under the run key as an ordinary version collision and retries", async () => {
+			vi.spyOn(Math, "random").mockReturnValue(0);
 			mocks.snapshot.findFirst
+				.mockResolvedValueOnce(null)
 				.mockResolvedValueOnce({ version: 1 })
 				.mockResolvedValueOnce(null) // nothing under the run key
+				.mockResolvedValueOnce(null) // retry pre-check
 				.mockResolvedValueOnce({ version: 2 });
 			mocks.snapshot.create
 				.mockRejectedValueOnce(new FakePrismaKnownRequestError("P2002"))
 				.mockResolvedValueOnce({ id: "snap_3", version: 3 });
 			mocks.file.findMany.mockResolvedValue([]);
 
-			expect(await createInstructionSnapshot(syncInput)).toEqual({
+			expect(await createInstructionSnapshot(syncInput)).toMatchObject({
 				id: "snap_3",
 				version: 3,
-				files: [],
 			});
+			vi.restoreAllMocks();
+		});
+
+		it("writes the ownership token it was given with the row", async () => {
+			mocks.snapshot.findFirst
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce({ version: 1 });
+			mocks.snapshot.create.mockResolvedValue({
+				id: "snap_2",
+				version: 2,
+			});
+			mocks.file.findMany.mockResolvedValue([]);
+
+			const created = await createInstructionSnapshot({
+				...syncInput,
+				validationAttemptId: "attempt_2",
+			});
+
+			expect(mocks.snapshot.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						validationAttemptId: "attempt_2",
+					}),
+				}),
+			);
+			expect(created.validationAttemptId).toBe("attempt_2");
 		});
 	});
 });
@@ -1767,8 +1864,33 @@ describe("startInstructionSnapshotValidation", () => {
 				organizationId: "org_1",
 				status: { in: ["RECEIVING", "FAILED"] },
 			},
-			data: { status: "VALIDATING" },
+			data: {
+				status: "VALIDATING",
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
+			},
 		});
+	});
+
+	it("names the run's token in the write when it carries one", async () => {
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await startInstructionSnapshotValidation({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
+		});
+
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					validationAttemptId: "attempt_1",
+				}),
+			}),
+		);
 	});
 
 	it("reports changed: false when the conditional write matched nothing", async () => {
@@ -1810,7 +1932,35 @@ describe("claimInstructionSnapshotValidation", () => {
 				organizationId: "org_1",
 				status: "RECEIVING",
 			},
-			data: { status: "VALIDATING" },
+			data: {
+				status: "VALIDATING",
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
+			},
+		});
+	});
+
+	it("with a token, also claims a FAILED row that names it, and only that token's", async () => {
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await claimInstructionSnapshotValidation({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
+		});
+
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
+			where: {
+				id: "s",
+				projectId: "p",
+				organizationId: "org_1",
+				status: { in: ["RECEIVING", "FAILED"] },
+				validationAttemptId: "attempt_1",
+			},
+			data: expect.objectContaining({ status: "VALIDATING" }),
 		});
 	});
 
@@ -1866,6 +2016,10 @@ describe("markInstructionSnapshotReady", () => {
 				status: { notIn: ["READY", "REJECTED"] },
 			},
 			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
 				status: "READY",
 				fileCount: 3,
 				storedBytes: 42,
@@ -1874,6 +2028,25 @@ describe("markInstructionSnapshotReady", () => {
 				rejection: "JsonNull",
 			},
 		});
+	});
+
+	it("names the run's token in both its read and its write, so a stale attempt matches nothing", async () => {
+		mocks.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+
+		await markInstructionSnapshotReady({
+			...input,
+			validationAttemptId: "attempt_1",
+		});
+
+		for (const call of [
+			mocks.snapshot.findFirst.mock.calls[0]![0],
+			mocks.snapshot.updateMany.mock.calls[0]![0],
+		]) {
+			expect(call.where).toMatchObject({
+				validationAttemptId: "attempt_1",
+			});
+		}
 	});
 
 	it("reports changed: false — and writes nothing more — when the row is already READY", async () => {
@@ -1966,7 +2139,14 @@ describe("markInstructionSnapshotRejected", () => {
 				organizationId: "org_1",
 				status: { notIn: ["READY", "REJECTED"] },
 			},
-			data: { status: "REJECTED", rejection: rejections },
+			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
+				status: "REJECTED",
+				rejection: rejections,
+			},
 		});
 		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
 			where: {
@@ -2145,9 +2325,37 @@ describe("failInstructionSnapshot", () => {
 				organizationId: "org_1",
 				status: { in: ["RECEIVING", "VALIDATING"] },
 			},
-			data: { status: "FAILED", rejection: "JsonNull" },
+			// The token goes with the run, so a stale attempt of it can no
+			// longer claim the row back and the next "Try again" starts from
+			// none.
+			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
+				status: "FAILED",
+				rejection: "JsonNull",
+				validationAttemptId: null,
+			},
 		});
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("matches only the run's own token when it carries one", async () => {
+		mocks.snapshot.updateMany.mockResolvedValue({ count: 0 });
+
+		await failInstructionSnapshot({
+			...input,
+			validationAttemptId: "attempt_1",
+		});
+
+		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					validationAttemptId: "attempt_1",
+				}),
+			}),
+		);
 	});
 
 	it("reports changed: false when the row already holds a verdict", async () => {
@@ -2198,7 +2406,15 @@ describe("failStaleValidatingInstructionSnapshot", () => {
 			// Byte-for-byte what `failInstructionSnapshot` writes: the row the
 			// workflow's own boundary catch would have produced, which "Try
 			// again" then reads.
-			data: { status: "FAILED", rejection: "JsonNull" },
+			data: {
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
+				status: "FAILED",
+				rejection: "JsonNull",
+				validationAttemptId: null,
+			},
 		});
 		expect(mocks.snapshot.update).not.toHaveBeenCalled();
 	});

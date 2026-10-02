@@ -45,6 +45,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
+import { CompanyContextNotice } from "./CompanyContextNotice";
 import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
@@ -74,6 +75,15 @@ const CAPABILITY_BY_DOCUMENT_TYPE: Partial<Record<DocumentType, string>> = {
 	API_SPEC: "documents.generate-api-spec",
 	QA_STRATEGY: "documents.generate-qa-strategy",
 };
+
+/**
+ * The document types whose generation also draws on the organization's company
+ * context (Fizzy #2719), and so the only ones that say when it is empty.
+ */
+const COMPANY_CONTEXT_DOCUMENT_TYPES: ReadonlySet<DocumentType> = new Set([
+	"PROPOSAL",
+	"BUSINESS_CASE",
+]);
 
 /**
  * Whether this tenant can generate at all.
@@ -330,7 +340,8 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const t = useTranslations("projects.documents.create");
 	const router = useRouter();
 	const queryClient = useQueryClient();
-	const { organizationId, basePath } = useOrganizationContext();
+	const { organizationId, organizationSlug, basePath } =
+		useOrganizationContext();
 
 	const [title, setTitle] = useState(
 		documentTypeLabel(DEFAULT_DOCUMENT_TYPE),
@@ -1265,6 +1276,26 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 				 */}
 				{generateWithAI && (
 					<>
+						{/*
+						 * Whether this draft has any company context to draw on
+						 * (Fizzy #2719). Advice, never a gate: it cannot disable
+						 * Create and has no dismissal, and it sits above the gate
+						 * banner so that banner stays next to the button it
+						 * explains. Each keeps its own action.
+						 */}
+						{COMPANY_CONTEXT_DOCUMENT_TYPES.has(type) && (
+							<CompanyContextNotice
+								projectId={projectId}
+								organizationSlug={organizationSlug}
+								onNavigate={() => {
+									// Same rule as the dialog's own
+									// dismissal paths: never close mid-submit.
+									if (!isSubmitting) {
+										onOpenChange(false);
+									}
+								}}
+							/>
+						)}
 						{/*
 						 * Not while pasted text answers the block — the banner
 						 * would ask for a source the person is looking at.

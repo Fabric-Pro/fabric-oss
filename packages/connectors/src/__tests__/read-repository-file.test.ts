@@ -154,7 +154,7 @@ describe("readRepositoryFile — GitHub", () => {
 		expect(await readRepositoryFile(githubInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "build/\n# note\n",
+			bytes: new Uint8Array(Buffer.from("build/\n# note\n")),
 		});
 		const [url, init] = mockFetch.mock.calls[0] as [
 			string,
@@ -170,24 +170,24 @@ describe("readRepositoryFile — GitHub", () => {
 		expect(init.signal).toBeInstanceOf(AbortSignal);
 	});
 
-	it("decodes as the sync does, keeping a byte-order mark and replacing invalid UTF-8", async () => {
+	it("returns the file's bytes undecoded, so the caller decodes them as the sync does", async () => {
 		const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0xff, 0x0a]);
 		mockFetch.mockResolvedValue(jsonResponse(200, gitHubFile(bytes)));
 
 		expect(await readRepositoryFile(githubInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: Buffer.from(bytes).toString("utf8"),
+			bytes,
 		});
 	});
 
-	it("reads an empty file as found with no text", async () => {
+	it("reads an empty file as found with no bytes", async () => {
 		mockFetch.mockResolvedValue(jsonResponse(200, gitHubFile("")));
 
 		expect(await readRepositoryFile(githubInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "",
+			bytes: new Uint8Array(Buffer.from("")),
 		});
 	});
 
@@ -202,7 +202,7 @@ describe("readRepositoryFile — GitHub", () => {
 		expect(await readRepositoryFile(githubInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "dist/\n",
+			bytes: new Uint8Array(Buffer.from("dist/\n")),
 		});
 	});
 
@@ -484,7 +484,7 @@ describe("readRepositoryFile — Azure DevOps", () => {
 		expect(await readRepositoryFile(adoInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "dist/**\n",
+			bytes: new Uint8Array(Buffer.from("dist/**\n")),
 		});
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 		const [itemUrl, itemInit] = mockFetch.mock.calls[0] as [
@@ -533,13 +533,13 @@ describe("readRepositoryFile — Azure DevOps", () => {
 		}
 	});
 
-	it("reads an empty file as found with no text", async () => {
+	it("reads an empty file as found with no bytes", async () => {
 		adoAnswers(textResponse(200, ""));
 
 		expect(await readRepositoryFile(adoInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "",
+			bytes: new Uint8Array(Buffer.from("")),
 		});
 	});
 
@@ -611,7 +611,7 @@ describe("readRepositoryFile — Azure DevOps", () => {
 
 		expect(result).toMatchObject({ ok: true, state: "found" });
 		expect(
-			result.ok && result.state === "found" && result.text,
+			result.ok && result.state === "found" && result.bytes,
 		).toHaveLength(MAX);
 	});
 
@@ -652,7 +652,7 @@ describe("readRepositoryFile — Azure DevOps", () => {
 		expect(await readRepositoryFile(adoInput)).toEqual({
 			ok: true,
 			state: "found",
-			text: "dist/**\n",
+			bytes: new Uint8Array(Buffer.from("dist/**\n")),
 		});
 	});
 

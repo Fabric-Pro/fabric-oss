@@ -22,6 +22,7 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const tsc = require.resolve("typescript/lib/tsc.js");
+const GENERATED_TSC_HEAP_MB = 6144;
 const run = (cmd: string) => execSync(cmd, { stdio: "inherit" });
 
 // 1. Start from a clean generated dir.
@@ -34,7 +35,12 @@ run("prisma generate --no-hints --schema=./prisma/schema.prisma");
 run("tsx ./scripts/fix-zod-imports.ts");
 
 // 4. Compile the self-contained generated client to .js + .d.ts (the memory fix).
-run(`node "${tsc}" -p prisma/tsconfig.generated.json`);
+// Its own heap ceiling: the generated types grow with every model and relation,
+// and Node's default heap (about 2 GB on CI runners and in the image builds) ran
+// out at 350 models. A ceiling, not a reservation.
+run(
+	`node --max-old-space-size=${GENERATED_TSC_HEAP_MB} "${tsc}" -p prisma/tsconfig.generated.json`,
+);
 
 // 5. Drop the now-redundant .ts source; keep the compiled .js and .d.ts.
 const stripTsSource = (dir: string): void => {

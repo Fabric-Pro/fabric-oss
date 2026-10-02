@@ -235,6 +235,7 @@ export const databaseMock = {
 					storageKey: string;
 					content: string;
 					contentHash: string;
+					sourceBlobOid?: string;
 				}>;
 				decided: ReadonlySet<string>;
 			},
@@ -261,6 +262,7 @@ export const databaseMock = {
 						contentHash: file.contentHash,
 						metadata: { title: basename(key), sourcePath: key },
 						repositorySyncId: input.syncId,
+						sourceBlobOid: file.sourceBlobOid ?? null,
 						embeddedAt: null,
 					});
 					store.log.push(`create:${key}`);
@@ -273,12 +275,20 @@ export const databaseMock = {
 				}
 				if (row.repositorySyncId === input.syncId) {
 					if (row.contentHash === file.contentHash) {
+						if (
+							file.sourceBlobOid &&
+							row.sourceBlobOid !== file.sourceBlobOid
+						) {
+							row.sourceBlobOid = file.sourceBlobOid;
+							store.log.push(`stamp:${key}`);
+						}
 						outcomes[key] = "unchanged";
 					} else if (store.racedKeys.has(key)) {
 						outcomes[key] = "conflict";
 					} else {
 						row.content = file.content;
 						row.contentHash = file.contentHash;
+						row.sourceBlobOid = file.sourceBlobOid ?? null;
 						row.embeddedAt = null;
 						store.log.push(`update:${key}`);
 						outcomes[key] = "updated";
@@ -297,8 +307,75 @@ export const databaseMock = {
 					continue;
 				}
 				row.repositorySyncId = input.syncId;
+				if (file.sourceBlobOid) {
+					row.sourceBlobOid = file.sourceBlobOid;
+				}
 				store.log.push(`adopt:${key}`);
 				outcomes[key] = "adopted";
+			}
+			return outcomes;
+		},
+	),
+
+	listManagedContextBlobStates: vi.fn(
+		async (
+			scope: { projectId: string; organizationId: string },
+			syncId: string,
+			keys: readonly string[],
+		) => {
+			const wanted = new Set(keys);
+			return new Map(
+				committed()
+					.context.filter(
+						(c) =>
+							c.projectId === scope.projectId &&
+							c.organizationId === scope.organizationId &&
+							c.repositorySyncId === syncId &&
+							wanted.has(c.sourcePath as string) &&
+							typeof c.sourceBlobOid === "string" &&
+							typeof c.content === "string" &&
+							c.contentHash !== null,
+					)
+					.map((c) => [
+						c.sourcePath as string,
+						{
+							sourceBlobOid: c.sourceBlobOid as string,
+							bytes: Buffer.byteLength(c.content as string),
+						},
+					]),
+			);
+		},
+	),
+
+	confirmUnchangedRepositoryContext: vi.fn(
+		async (
+			tx: unknown,
+			input: {
+				projectId: string;
+				organizationId: string;
+				syncId: string;
+				entries: Array<{ storageKey: string; sourceBlobOid: string }>;
+				decided: ReadonlySet<string>;
+			},
+		) => {
+			expectTx(tx);
+			const outcomes: Record<string, string> = {};
+			for (const entry of input.entries) {
+				if (input.decided.has(entry.storageKey)) {
+					continue;
+				}
+				const row = tables().context.find(
+					(c) =>
+						c.projectId === input.projectId &&
+						c.organizationId === input.organizationId &&
+						c.repositorySyncId === input.syncId &&
+						c.sourcePath === entry.storageKey &&
+						c.contentHash !== null,
+				);
+				outcomes[entry.storageKey] =
+					row?.sourceBlobOid === entry.sourceBlobOid
+						? "unchanged"
+						: "conflict";
 			}
 			return outcomes;
 		},

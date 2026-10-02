@@ -3,10 +3,14 @@
  * §5.4). The activities barrel re-exports this module, so EVERY export here
  * becomes a schedulable activity: helpers stay unexported or live in ./lib.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+	type ReadRepositoryBlobSizesInput,
+	readRepositoryBlobSizes,
+} from "@repo/connectors";
 import {
 	canCreateProjectInstructions,
 	claimInstructionFileStagingKey,
@@ -18,6 +22,7 @@ import {
 	getProjectInstructionSettings,
 	getProjectRepoIntegration,
 	getPublishedInstructionTree,
+	InstructionInheritedSourceError,
 	insertInstructionRepositorySyncRun,
 	listUnfinishedInstructionRepositorySyncRunReceipts,
 	recordAudit,
@@ -39,12 +44,17 @@ import {
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
+	snapshotKey,
 	stagingKey,
 	validateRelativePath,
 } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import { ApplicationFailure } from "@temporalio/activity";
 import { getTemporalClient } from "../client";
+import {
+	createSyncRunProgress,
+	type SyncRunProgress,
+} from "../lib/instruction-sync-progress";
 import {
 	type AcquireTreeResult,
 	type AwaitSnapshotSettledInput,
@@ -79,6 +89,7 @@ import {
 	MAX_INVENTORY_ENTRIES,
 	readBlobCapped,
 	revParseHead,
+	revParseRootTree,
 	sparseCheckout,
 } from "./lib/instruction-sync-git";
 import {
@@ -94,6 +105,7 @@ import {
 	type LsTreeSummary,
 	type TreeEntry,
 	treesEqual,
+	unchangedPublishedFiles,
 } from "./lib/instruction-sync-tree";
 import {
 	cloneWithAuthRecovery as cloneRepositoryWithAuthRecovery,
@@ -283,7 +295,23 @@ type PlannedSyncFile = {
 	mimeType: string;
 	isText: boolean;
 	/** Adopting only: the row this file already has. */
-	adopted?: { fileId: string; storageKey: string; sha256: string };
+	adopted?: {
+		fileId: string;
+		storageKey: string;
+		sha256: string;
+		/** Inherited from a published row: it has no bytes of its own to stage. */
+		inherited: boolean;
+	};
+};
+
+/** The facts of a published row a new snapshot needs to inherit it. */
+type InheritableFile = {
+	id: string;
+	size: number;
+	sha256: string;
+	mimeType: string;
+	isText: boolean;
+	storageKey: string;
 };
 
 type MeasuredFile = PlannedSyncFile & {
@@ -310,6 +338,7 @@ export async function acquireInstructionTreeFromRepository(
 		kept: 0,
 		uploaded: 0,
 	};
+	const syncProgress = createSyncRunProgress(context);
 	return withHeartbeatTicker<AcquireTreeResult>(
 		async () => {
 			let adopted = await getInstructionSnapshotBySyncRunKey(
@@ -319,11 +348,7 @@ export async function acquireInstructionTreeFromRepository(
 			);
 			if (adopted && adopted.status !== "RECEIVING") {
 				// Staged already; the child owns the verdict (§5.2 step 3).
-				return {
-					outcome: "staged",
-					snapshotId: adopted.id,
-					commitSha: adopted.sourceCommitSha,
-				};
+				return stagedResult(adopted);
 			}
 			const integration = await getProjectRepoIntegration(
 				context.repositoryIntegrationId,
@@ -352,22 +377,26 @@ export async function acquireInstructionTreeFromRepository(
 					const step = await acquireOnce({
 						context,
 						provider: integration.provider,
+						repository: {
+							provider: integration.provider,
+							repositoryUrl: integration.repositoryUrl,
+							owner: integration.repositoryOwner,
+							repo: integration.repositoryName,
+							azureOrganization: integration.azureOrganization,
+						},
 						url,
 						runDir,
 						dir: path.join(runDir, `repo-${pass}`),
 						adopted,
 						progress,
+						syncProgress,
 					});
 					if (step.kind === "done") {
 						return step.result;
 					}
 					adopted = step.adopted;
 					if (adopted.status !== "RECEIVING") {
-						return {
-							outcome: "staged",
-							snapshotId: adopted.id,
-							commitSha: adopted.sourceCommitSha,
-						};
+						return stagedResult(adopted);
 					}
 				}
 				throw syncFailure("CLONE_FAILED", adoptedDetails(adopted));
@@ -379,6 +408,17 @@ export async function acquireInstructionTreeFromRepository(
 	);
 }
 
+function stagedResult(adopted: AdoptedRow): AcquireTreeResult {
+	return {
+		outcome: "staged",
+		snapshotId: adopted.id,
+		commitSha: adopted.sourceCommitSha,
+		...(adopted.validationAttemptId
+			? { validationAttemptId: adopted.validationAttemptId }
+			: {}),
+	};
+}
+
 function adoptedDetails(adopted: AdoptedRow | null): SyncFailureDetails {
 	return adopted ? { snapshotId: adopted.id } : {};
 }
@@ -386,18 +426,21 @@ function adoptedDetails(adopted: AdoptedRow | null): SyncFailureDetails {
 async function acquireOnce(input: {
 	context: SyncRunContext;
 	provider: string;
+	repository: BlobSizeRepository;
 	url: string;
 	runDir: string;
 	dir: string;
 	adopted: AdoptedRow | null;
 	progress: Progress;
+	syncProgress: SyncRunProgress;
 }): Promise<
 	| { kind: "done"; result: AcquireTreeResult }
 	| { kind: "adopt"; adopted: AdoptedRow }
 > {
-	const { context, adopted, dir, progress } = input;
+	const { context, adopted, dir, progress, syncProgress } = input;
 	const signal = requestAbortSignal(ACQUIRE_GIT_BUDGET_MS);
 	const baseDetails = adoptedDetails(adopted);
+	await syncProgress.phase("FETCHING");
 	const { env, token } = await cloneWithAuthRecovery({
 		...input,
 		signal,
@@ -423,6 +466,7 @@ async function acquireOnce(input: {
 	const details: SyncFailureDetails = { commitSha, ...baseDetails };
 	progress.phase = "cloned";
 	safeHeartbeat(progress);
+	await syncProgress.phase("PREPARING");
 
 	const published = adopted
 		? null
@@ -488,6 +532,7 @@ async function acquireOnce(input: {
 		signal,
 		details,
 		git,
+		sizes: { repository: input.repository, token, commitSha },
 	});
 	progress.phase = "checked_out";
 	progress.kept = planned.plan.length;
@@ -500,14 +545,20 @@ async function acquireOnce(input: {
 	}
 
 	let snapshotId: string;
+	let validationAttemptId: string | null;
 	let rows: Array<{ fileId: string; storageKey: string; file: MeasuredFile }>;
 	if (adopted) {
 		snapshotId = adopted.id;
-		rows = measured.map((file) => ({
-			fileId: file.adopted?.fileId as string,
-			storageKey: file.adopted?.storageKey as string,
-			file,
-		}));
+		validationAttemptId = adopted.validationAttemptId;
+		// An inherited row carries its source's promoted key and needs no
+		// bytes staged; only the rows this run uploads are staged.
+		rows = measured
+			.filter((file) => file.adopted?.inherited !== true)
+			.map((file) => ({
+				fileId: file.adopted?.fileId as string,
+				storageKey: file.adopted?.storageKey as string,
+				file,
+			}));
 	} else {
 		if (
 			published &&
@@ -527,35 +578,84 @@ async function acquireOnce(input: {
 			};
 		}
 		const ignore = planned.ignore as NonNullable<typeof planned.ignore>;
-		const created = await createInstructionSnapshot({
-			projectId: context.projectId,
-			organizationId: context.organizationId,
-			userId: context.actingUserId,
-			source: "REPOSITORY",
-			repositoryIntegrationId: context.repositoryIntegrationId,
-			sourceRef: context.ref,
-			sourceCommitSha: commitSha,
-			syncRunKey: context.runKey,
-			publishOnReady: true,
-			excludedCount: planned.excludedCount,
-			settingsFrozen: {
-				ignoreGlobs: ignore.globs,
-				layer: ignore.layer,
-				limits: SNAPSHOT_LIMITS,
-				rootPath: context.rootPath,
-				syncId: context.syncId,
-				syncGeneration: context.generation,
-			},
-			files: measured.map((f, i) => ({
-				path: f.path,
-				size: f.size,
-				sha256: f.sha256,
-				mimeType: f.mimeType,
-				isText: f.isText,
-				kind: f.kind,
-				storageKey: stagingKey(context.projectId, "pending", String(i)),
-				mode: f.mode,
-			})),
+		// Files byte-identical to the published version's are INHERITED from it
+		// instead of staged, so a sync that changed one file of a thousand
+		// uploads one. Only a published version this sync's own source produced
+		// is a base (the same provenance the "unchanged" answer above needs).
+		const inheritable: Map<string, InheritableFile> =
+			published && provenanceMatches(published, context)
+				? unchangedPublishedFiles(measured, published.files)
+				: new Map();
+		const createSnapshot = (inherit: Map<string, InheritableFile>) =>
+			createInstructionSnapshot({
+				projectId: context.projectId,
+				organizationId: context.organizationId,
+				userId: context.actingUserId,
+				source: "REPOSITORY",
+				repositoryIntegrationId: context.repositoryIntegrationId,
+				sourceRef: context.ref,
+				sourceCommitSha: commitSha,
+				syncRunKey: context.runKey,
+				// The row is created with the token its child workflow will
+				// carry: the acquisition starts the checks itself, so there is
+				// no finalize to write one later.
+				validationAttemptId: randomUUID(),
+				publishOnReady: true,
+				excludedCount: planned.excludedCount,
+				settingsFrozen: {
+					ignoreGlobs: ignore.globs,
+					layer: ignore.layer,
+					limits: SNAPSHOT_LIMITS,
+					rootPath: context.rootPath,
+					syncId: context.syncId,
+					syncGeneration: context.generation,
+				},
+				promotedKeyFor: (sourceSnapshotId, sourceFileId) =>
+					snapshotKey(
+						context.projectId,
+						sourceSnapshotId,
+						sourceFileId,
+					),
+				files: measured.map((f, i) => {
+					const source = inherit.get(f.path);
+					return source
+						? {
+								path: f.path,
+								size: source.size,
+								sha256: source.sha256,
+								mimeType: source.mimeType,
+								isText: source.isText,
+								kind: f.kind,
+								storageKey: source.storageKey,
+								mode: f.mode,
+								inheritedFromFileId: source.id,
+							}
+						: {
+								path: f.path,
+								size: f.size,
+								sha256: f.sha256,
+								mimeType: f.mimeType,
+								isText: f.isText,
+								kind: f.kind,
+								storageKey: stagingKey(
+									context.projectId,
+									"pending",
+									String(i),
+								),
+								mode: f.mode,
+							};
+				}),
+			});
+		// A published row that no longer qualifies as a source by the time the
+		// snapshot is written (pruned or replaced between the read and the
+		// write) costs the saving, never the sync: the whole tree is staged.
+		let inherited = inheritable;
+		const created = await createSnapshot(inherited).catch((error) => {
+			if (!(error instanceof InstructionInheritedSourceError)) {
+				throw error;
+			}
+			inherited = new Map();
+			return createSnapshot(inherited);
 		});
 		if (created.existing) {
 			const winner = await getInstructionSnapshotBySyncRunKey(
@@ -569,12 +669,15 @@ async function acquireOnce(input: {
 			return { kind: "adopt", adopted: winner };
 		}
 		snapshotId = created.id;
+		validationAttemptId = created.validationAttemptId;
 		const byPath = new Map(measured.map((f) => [f.path, f]));
-		rows = created.files.map((row) => ({
-			fileId: row.id,
-			storageKey: row.storageKey,
-			file: byPath.get(row.path) as MeasuredFile,
-		}));
+		rows = created.files
+			.filter((row) => !inherited.has(row.path))
+			.map((row) => ({
+				fileId: row.id,
+				storageKey: row.storageKey,
+				file: byPath.get(row.path) as MeasuredFile,
+			}));
 		recordAudit({
 			action: "project.instructions.upload_started",
 			category: "project",
@@ -588,6 +691,7 @@ async function acquireOnce(input: {
 			},
 			metadata: {
 				keptCount: measured.length,
+				inheritedCount: inherited.size,
 				excludedCount: planned.excludedCount,
 				layer: ignore.layer,
 				mode: "repository",
@@ -602,10 +706,16 @@ async function acquireOnce(input: {
 		rows,
 		details: { ...details, snapshotId },
 		progress,
+		syncProgress,
 	});
 	return {
 		kind: "done",
-		result: { outcome: "staged", snapshotId, commitSha },
+		result: {
+			outcome: "staged",
+			snapshotId,
+			commitSha,
+			...(validationAttemptId ? { validationAttemptId } : {}),
+		},
 	};
 }
 
@@ -872,6 +982,7 @@ function planAdopted(
 				fileId: row.id,
 				storageKey: row.storageKey,
 				sha256: row.sha256,
+				inherited: typeof row.inheritedFromFileId === "string",
 			},
 		};
 	});
@@ -891,6 +1002,12 @@ function planAdopted(
  * `actual` is left out, because the checkout was stopped and the files on
  * disk are a lower bound, not the size. Anything else is a genuine
  * repository-budget overflow and keeps `repositorySize`.
+ *
+ * The provider's tree API does know every file's size (GitHub's trees and
+ * Azure DevOps's `Trees - Get` carry it), so on a trip it is asked first and
+ * `actual` is the exact largest file or total. Only when it cannot answer
+ * (GitLab, a truncated or failed listing, a kept file it does not list) is
+ * the figure the disk's lower bound, and it says so with `atLeast`.
  */
 async function checkoutKeptFiles(input: {
 	dir: string;
@@ -899,6 +1016,7 @@ async function checkoutKeptFiles(input: {
 	signal: AbortSignal;
 	details: SyncFailureDetails;
 	git: <T>(fn: () => Promise<T>, details: SyncFailureDetails) => Promise<T>;
+	sizes: BlobSizeSource;
 }): Promise<void> {
 	const { dir, plan, details } = input;
 	const exceeded: { limit: SyncLimitDetail | null } = { limit: null };
@@ -916,7 +1034,13 @@ async function checkoutKeptFiles(input: {
 					error instanceof GitCommandError &&
 					error.kind === "disk_limit"
 				) {
-					exceeded.limit = await keptSetLimit(dir, plan);
+					exceeded.limit = await keptSetLimit({
+						dir,
+						plan,
+						env: input.env,
+						signal: input.signal,
+						sizes: input.sizes,
+					});
 				}
 				throw error;
 			}
@@ -932,14 +1056,105 @@ async function checkoutKeptFiles(input: {
 	}
 }
 
-async function keptSetLimit(
-	dir: string,
-	plan: readonly PlannedSyncFile[],
-): Promise<SyncLimitDetail | null> {
+type BlobSizeRepository = Omit<
+	ReadRepositoryBlobSizesInput,
+	"token" | "commitSha" | "rootTreeId"
+>;
+
+type BlobSizeSource = {
+	repository: BlobSizeRepository;
+	token: string;
+	commitSha: string;
+};
+
+/**
+ * The size of every kept file as the provider reports it, or null when it
+ * cannot report all of them: an unsupported provider, a failed or truncated
+ * listing, or a kept file it does not list.
+ */
+async function providerKeptSizes(input: {
+	dir: string;
+	plan: readonly PlannedSyncFile[];
+	env: NodeJS.ProcessEnv;
+	signal: AbortSignal;
+	sizes: BlobSizeSource;
+}): Promise<number[] | null> {
+	const { repository, token, commitSha } = input.sizes;
+	let rootTreeId = "";
+	if (repository.provider === "AZURE_DEVOPS") {
+		rootTreeId = await revParseRootTree({
+			dir: input.dir,
+			env: input.env,
+			signal: input.signal,
+		}).catch(() => "");
+		if (rootTreeId === "") {
+			return null;
+		}
+	}
+	const listed = await readRepositoryBlobSizes({
+		...repository,
+		token,
+		commitSha,
+		rootTreeId,
+	});
+	if (!listed.ok || !listed.complete) {
+		return null;
+	}
+	const sizes: number[] = [];
+	for (const file of input.plan) {
+		const size = listed.sizes.get(file.repoPath);
+		if (size === undefined) {
+			return null;
+		}
+		sizes.push(size);
+	}
+	return sizes;
+}
+
+function limitOf(
+	largest: number,
+	total: number,
+	exact: boolean,
+): SyncLimitDetail | null {
+	const kind =
+		largest > SNAPSHOT_LIMITS.maxFileBytes
+			? ("fileSize" as const)
+			: total > SNAPSHOT_LIMITS.maxTotalBytes
+				? ("totalSize" as const)
+				: null;
+	if (kind === null) {
+		return null;
+	}
+	return {
+		kind,
+		max:
+			kind === "fileSize"
+				? SNAPSHOT_LIMITS.maxFileBytes
+				: SNAPSHOT_LIMITS.maxTotalBytes,
+		actual: kind === "fileSize" ? largest : total,
+		...(exact ? {} : { atLeast: true as const }),
+	};
+}
+
+async function keptSetLimit(input: {
+	dir: string;
+	plan: readonly PlannedSyncFile[];
+	env: NodeJS.ProcessEnv;
+	signal: AbortSignal;
+	sizes: BlobSizeSource;
+}): Promise<SyncLimitDetail | null> {
+	const reported = await providerKeptSizes(input);
+	if (reported !== null) {
+		return limitOf(
+			Math.max(0, ...reported),
+			reported.reduce((sum, size) => sum + size, 0),
+			true,
+		);
+	}
 	let total = 0;
 	let largest = 0;
-	for (const file of plan) {
-		const stat = await lstat(path.join(dir, file.repoPath)).catch(
+	for (const file of input.plan) {
+		const stat = await lstat(path.join(input.dir, file.repoPath)).catch(
 			() => null,
 		);
 		if (stat?.isFile()) {
@@ -947,13 +1162,8 @@ async function keptSetLimit(
 			largest = Math.max(largest, stat.size);
 		}
 	}
-	if (largest > SNAPSHOT_LIMITS.maxFileBytes) {
-		return { kind: "fileSize", max: SNAPSHOT_LIMITS.maxFileBytes };
-	}
-	if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
-		return { kind: "totalSize", max: SNAPSHOT_LIMITS.maxTotalBytes };
-	}
-	return null;
+	// What reached the disk before the checkout was stopped is a lower bound.
+	return limitOf(largest, total, false);
 }
 
 /** Spec §5.3.2 step 9: sizes from `lstat`, byte caps, then hashes. */
@@ -1025,9 +1235,12 @@ async function stageBytes(input: {
 	rows: Array<{ fileId: string; storageKey: string; file: MeasuredFile }>;
 	details: SyncFailureDetails;
 	progress: Progress;
+	syncProgress: SyncRunProgress;
 }): Promise<void> {
 	const { context, snapshotId, details, progress } = input;
 	const storage = getStorageProvider();
+	const copying = input.syncProgress.copying(input.rows.length);
+	await copying.begin();
 	let next = 0;
 	const worker = async (): Promise<void> => {
 		while (next < input.rows.length) {
@@ -1061,6 +1274,7 @@ async function stageBytes(input: {
 			if (progress.uploaded % HEARTBEAT_EVERY_UPLOADS === 0) {
 				safeHeartbeat(progress);
 			}
+			await copying.advance(progress.uploaded);
 		}
 	};
 	await Promise.all(

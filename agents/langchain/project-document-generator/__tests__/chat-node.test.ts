@@ -65,6 +65,13 @@ vi.mock("../utils", async () => ({
 	// exercising; override per-test to target the vision/context paths.
 	isContextLengthError: vi.fn().mockReturnValue(false),
 	isVisionUnsupportedError: vi.fn().mockReturnValue(false),
+	// The real shared predicate, so the retry-gate tests exercise the actual
+	// classification of status codes and network faults.
+	isRetryableError: (
+		await vi.importActual<typeof import("@repo/agent-core")>(
+			"@repo/agent-core",
+		)
+	).isRetryableError,
 	calculateRetryDelay: vi.fn().mockReturnValue(100),
 	sleep: vi.fn().mockResolvedValue(undefined),
 	// The real implementation (from the dependency-free tool-rounds
@@ -821,6 +828,38 @@ describe("Project Document Generator Chat Node - Patch Mode", () => {
 		expect(update?.document).toContain("Regenerated Document");
 	});
 
+	it("retries with a corrective ToolMessage when a patch element is null", async () => {
+		// A null element used to throw while its shape was being read, and the
+		// catch block does not retry that TypeError.
+		mockInvoke.mockResolvedValueOnce(
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "call_null_patch",
+						name: "apply_document_patches",
+						args: { patches: [null] },
+					},
+				],
+			}),
+		);
+
+		const command = await chatNode(
+			createMockState({
+				document: createLargeDocument(),
+				messages: [new HumanMessage("Add Charlie to stakeholders.")],
+			}),
+		);
+		const goto = (command as any).goto;
+		const update = (command as any).update;
+
+		expect(Array.isArray(goto) ? goto[0] : goto).toBe("chat_node");
+		expect(update.retryCount).toBe(1);
+		expect(String(update.messages.at(-1).content)).toContain(
+			"Patch must be an object",
+		);
+	});
+
 	it("retries with corrective ToolMessage when a patch anchor is unknown", async () => {
 		const existingDoc = createLargeDocument();
 		mockInvoke.mockResolvedValueOnce(
@@ -1071,6 +1110,39 @@ describe("Project Document Generator Chat Node - Truncated Output Handling", () 
 
 		expect(Array.isArray(goto) ? goto[0] : goto).toBe("chat_node");
 		expect(update.retryCount).toBe(1);
+	});
+
+	it("sends a non-string write_document_local document through the corrective retry", async () => {
+		// An object here used to reach stripToolDefinitions and throw a
+		// TypeError, which the catch block does not retry.
+		mockInvoke.mockResolvedValueOnce(
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "call_object_doc",
+						name: "write_document_local",
+						args: { document: { body: "# Title" } },
+					},
+				],
+			}),
+		);
+
+		const command = await chatNode(
+			createMockState({
+				document: "## Overview\n\nTiny document.\n",
+				retryCount: 0,
+				messages: [new HumanMessage("update it")],
+			}),
+		);
+		const goto = (command as any).goto;
+		const update = (command as any).update;
+
+		expect(Array.isArray(goto) ? goto[0] : goto).toBe("chat_node");
+		expect(update.retryCount).toBe(1);
+		expect(String(update.messages.at(-1).content)).toContain(
+			"empty or invalid arguments",
+		);
 	});
 });
 
@@ -2821,6 +2893,71 @@ describe("chatNode — deterministic provider 400", () => {
 
 		expect((command as any).update).toMatchObject({ retryCount: 0 });
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("chatNode — retry gate", () => {
+	beforeEach(() => {
+		mockInvoke.mockReset();
+	});
+
+	async function runWithRejection(error: unknown) {
+		mockInvoke.mockRejectedValueOnce(error);
+		const command = await chatNode(
+			createMockState({
+				messages: [new HumanMessage("Generate the document.")],
+			}),
+		);
+		const goto = (command as any).goto;
+		return {
+			goto: Array.isArray(goto) ? goto : [goto],
+			update: (command as any).update,
+		};
+	}
+
+	it.each([
+		["401", 401],
+		["403", 403],
+		["404", 404],
+		["413", 413],
+	])(
+		"ends the run on an HTTP %s without retrying",
+		async (_label, status) => {
+			const { goto, update } = await runWithRejection(
+				Object.assign(new Error("Request failed"), { status }),
+			);
+
+			expect(goto).toContain("__end__");
+			expect(update).toMatchObject({ retryCount: 0 });
+			expect(update.error).toContain("Request failed");
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("ends the run on an unclassified error without retrying", async () => {
+		const { goto, update } = await runWithRejection(
+			new Error("Cannot read properties of undefined"),
+		);
+
+		expect(goto).toContain("__end__");
+		expect(update).toMatchObject({ retryCount: 0 });
+	});
+
+	it.each([
+		[
+			"an HTTP 503",
+			Object.assign(new Error("Unavailable"), { status: 503 }),
+		],
+		["an HTTP 429", Object.assign(new Error("Slow down"), { status: 429 })],
+		[
+			"a connection reset",
+			Object.assign(new Error("read failed"), { code: "ECONNRESET" }),
+		],
+	])("retries %s", async (_label, error) => {
+		const { goto, update } = await runWithRejection(error);
+
+		expect(goto).toContain("chat_node");
+		expect(update).toMatchObject({ retryCount: 1 });
 	});
 });
 

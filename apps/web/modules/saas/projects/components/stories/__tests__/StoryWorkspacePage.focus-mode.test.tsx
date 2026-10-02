@@ -1,4 +1,3 @@
-import { FocusModeToggle } from "@saas/shared/components/FocusModeToggle";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import { SidebarCollapseProvider } from "@saas/shared/contexts/SidebarCollapseContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -16,12 +15,76 @@ vi.mock("../editor/ProvenanceSection", () => ({
 vi.mock("../../../hooks/useFeatureMaturationV2Enabled", () => ({
 	useFeatureMaturationV2Enabled: () => false,
 }));
-vi.mock("../StoryWorkspace", () => ({
-	StoryWorkspace: () => (
-		<div data-testid="workspace">
-			<FocusModeToggle />
-		</div>
+vi.mock("@copilotkit/react-ui", () => ({
+	useChatContext: () => ({ setOpen: vi.fn() }),
+	CopilotSidebar: ({ children }: { children?: ReactNode }) => (
+		<div data-testid="copilot-sidebar">{children}</div>
 	),
+}));
+vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
+	useDocumentAssistantHistoryEnabled: () => false,
+}));
+vi.mock("@saas/projects/hooks/useDocumentAssistantHistory", () => ({
+	useDocumentAssistantHistoryRealtimeSync: vi.fn(),
+	useActiveDocumentAssistantConversation: () => ({
+		data: undefined,
+		isLoading: false,
+	}),
+}));
+vi.mock(
+	"@saas/projects/components/copilot/DocumentAssistantOutcomesProvider",
+	() => ({
+		DocumentAssistantOutcomesProvider: ({
+			children,
+		}: {
+			children: ReactNode;
+		}) => children,
+	}),
+);
+vi.mock("@saas/projects/components/copilot/HydratedMessagesContext", () => ({
+	HydratedMessagesProvider: ({ children }: { children: ReactNode }) =>
+		children,
+	useHydratedMessages: () => ({ hydratedMessages: [] }),
+}));
+vi.mock("@tiptap/react", () => ({
+	useEditor: () => null,
+	EditorContent: () => null,
+}));
+vi.mock("@saas/subscriptions/components/SubscribeToggle", () => ({
+	SubscribeToggle: () => null,
+}));
+vi.mock("@saas/agents/hooks/useDefaultMcpInlineRender", () => ({
+	useDefaultMcpInlineRender: vi.fn(),
+}));
+vi.mock("@saas/agents/components/FabricAgentLauncher", () => ({
+	useFabricAgentLauncher: () => ({ launch: vi.fn() }),
+	useRegisterFabricAgentContext: vi.fn(),
+}));
+vi.mock("@saas/agents/hooks/useCodeContextLauncher", () => ({
+	useCodeContextLauncher: () => ({ launch: vi.fn() }),
+}));
+vi.mock("@saas/agents/hooks/useFabricMention", () => ({
+	useFabricMention: () => ({ extension: null, suggestion: {} }),
+}));
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "user-1", name: "Test User" } }),
+}));
+vi.mock("../DeliveryTrackSelector", () => ({
+	DeliveryTrackSelector: () => <div data-testid="delivery-track-selector" />,
+}));
+vi.mock("../EstimateConfidenceSelector", () => ({
+	EstimateConfidenceSelector: () => (
+		<div data-testid="estimate-confidence-selector" />
+	),
+}));
+vi.mock("../ReadinessPanel", () => ({
+	ReadinessPanel: () => <div data-testid="readiness-panel" />,
+}));
+vi.mock("../DiscoveryPanel", () => ({
+	DiscoveryPanel: () => <div data-testid="discovery-panel" />,
+}));
+vi.mock("../StoryEvidence", () => ({
+	StoryEvidence: () => <div data-testid="story-evidence" />,
 }));
 // `<CopilotChatSessionProvider>` (mounted by the page inside `<CopilotKit>`)
 // calls `useCopilotChatInternal()` once for the whole surface, so the mock has
@@ -41,6 +104,14 @@ vi.mock("@copilotkit/react-core", () => {
 	return {
 		CopilotKit: ({ children }: { children: ReactNode }) => children,
 		useCopilotChatInternal: () => session,
+		useCoAgent: () => ({
+			state: { document: "" },
+			setState: vi.fn(),
+			running: false,
+			nodeName: undefined,
+		}),
+		useCopilotAction: vi.fn(),
+		useCopilotReadable: vi.fn(),
 	};
 });
 vi.mock("@copilotkit/react-ui/styles.css", () => ({}));
@@ -70,6 +141,8 @@ vi.mock("@saas/shared/components/copilot/use-copilot-error-handler", () => ({
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({ push: vi.fn() }),
 	usePathname: () => "/app/acme/projects/p1/stories/s1",
+	useParams: () => ({}),
+	useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("../../../lib/stories/types", async (importActual) => {
@@ -83,6 +156,7 @@ vi.mock("../../../lib/stories/types", async (importActual) => {
 			priority: "MEDIUM",
 			identifier: "F-100",
 			createdById: "u1",
+			tasks: [],
 		}),
 		getPriorityLabel: () => "Medium",
 	};
@@ -91,40 +165,67 @@ vi.mock("../../../lib/stories/types", async (importActual) => {
 vi.mock("@shared/lib/orpc-query-utils", () => {
 	const stub = (data: unknown) => ({
 		queryOptions: (opts: { input: unknown }) => ({
-			queryKey: ["stub", opts.input],
+			queryKey: ["stub", opts?.input],
 			queryFn: async () => data,
 		}),
+		queryKey: (opts?: { input?: unknown }) => ["stub", opts?.input],
+		key: () => ["stub"],
+		mutationOptions: () => ({
+			queryKey: ["stub"],
+			mutationFn: async () => ({}),
+		}),
 	});
-	return {
-		orpc: {
-			projects: {
-				get: stub({
-					project: {
-						id: "p1",
-						name: "Foundry Test Bench",
-						organizationId: "org-1",
-					},
-				}),
-				members: { list: stub({ members: [] }) },
-				stories: {
-					get: stub({
-						story: { id: "s1" },
+	const makeProxy = (path: string[]): unknown =>
+		new Proxy(() => undefined, {
+			get: (_t, prop) => {
+				const fullPath = [...path, String(prop)].join(".");
+				if (fullPath === "projects.get") {
+					return stub({
+						project: {
+							id: "p1",
+							name: "Foundry Test Bench",
+							organizationId: "org-1",
+						},
+					});
+				}
+				if (fullPath === "projects.stories.get") {
+					return stub({
+						story: {
+							id: "s1",
+							identifier: "F-100",
+							title: "Focus mode test feature",
+							kind: "STORY",
+							priority: "MEDIUM",
+						},
 						canEdit: true,
 						canAddTags: true,
 						canManageAllTags: true,
-					}),
-					pmCapabilities: stub({ configured: false }),
-					statuses: { list: stub({ statuses: [] }) },
-					priorityHistory: stub({
-						items: [],
-						nextCursor: null,
-						initialPriority: null,
-						totalCount: 0,
-					}),
-				},
+					});
+				}
+				if (prop === "queryKey") {
+					return (opts?: { input?: unknown }) => [
+						...path,
+						opts?.input,
+					];
+				}
+				if (prop === "key") {
+					return () => [...path];
+				}
+				if (prop === "queryOptions" || prop === "mutationOptions") {
+					return () => ({
+						queryKey: [...path],
+						queryFn: async () => ({}),
+						mutationFn: async () => ({}),
+					});
+				}
+				return makeProxy([...path, String(prop)]);
 			},
-		},
-	};
+			apply: () => ({
+				queryKey: [...path],
+				queryFn: async () => ({}),
+			}),
+		});
+	return { orpc: makeProxy([]) };
 });
 
 vi.mock("next-intl", () => ({
@@ -160,7 +261,7 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 		);
 	}
 
-	it("hides header chrome when Focus Mode is activated and restores it on exit", async () => {
+	it("hides header chrome and collapses engagement profile metadata row in Focus Mode and restores on exit", async () => {
 		const user = userEvent.setup();
 		render(
 			<StoryWorkspacePage
@@ -171,10 +272,13 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 			{ wrapper: Wrapper },
 		);
 
-		// Initially, the breadcrumb trail is visible in the header
+		// Initially, the breadcrumb trail is visible in the header and engagement profile row is visible in workspace
 		expect(
 			await screen.findByText("Foundry Test Bench"),
 		).toBeInTheDocument();
+		expect(
+			screen.getByTestId("engagement-profile-metadata-row"),
+		).toBeVisible();
 
 		// Focus Mode toggle is available in workspace
 		const focusToggle = screen.getByRole("button", { name: "Focus Mode" });
@@ -187,6 +291,13 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 		expect(
 			screen.queryByText("Foundry Test Bench"),
 		).not.toBeInTheDocument();
+		// Engagement profile metadata row remains mounted but hidden via CSS/accessibility attributes
+		const metadataRow = screen.getByTestId(
+			"engagement-profile-metadata-row",
+		);
+		expect(metadataRow).not.toBeVisible();
+		expect(metadataRow).toHaveClass("hidden");
+		expect(metadataRow).toHaveAttribute("aria-hidden", "true");
 
 		// Exit Focus Mode
 		const exitToggle = screen.getByRole("button", {
@@ -198,5 +309,9 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 		expect(
 			await screen.findByText("Foundry Test Bench"),
 		).toBeInTheDocument();
+		// Engagement profile metadata row restores to visible
+		expect(metadataRow).toBeVisible();
+		expect(metadataRow).not.toHaveClass("hidden");
+		expect(metadataRow).toHaveAttribute("aria-hidden", "false");
 	});
 });

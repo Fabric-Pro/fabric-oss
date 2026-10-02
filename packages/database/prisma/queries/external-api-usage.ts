@@ -8,7 +8,7 @@ import { db } from "../client";
 import { Prisma } from "../generated/client";
 
 export interface LogExternalApiUsageParams {
-	apiKeyType: "USER" | "ORGANIZATION";
+	apiKeyType: "USER" | "ORGANIZATION" | "OAUTH";
 	apiKeyId: string;
 	apiKeyPrefix: string;
 	instanceId?: string;

@@ -12,6 +12,7 @@
 
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import { db } from "@repo/database";
+import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import {
 	integrationExecutorRegistry,
 	isRegisteredIntegrationProvider,
@@ -477,6 +478,9 @@ export async function searchAvailableIntegrations(
 				? { organizationId: input.organizationId }
 				: { userId: input.userId, organizationId: null }),
 			isActive: true,
+			// <PROVIDER>_OAUTH_APP rows hold OAuth client credentials, not a
+			// connection that can be searched.
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			...providerFilter,
 			// Filter by enabled integration IDs if provided (null = all)
 			...(input.enabledIntegrationIds

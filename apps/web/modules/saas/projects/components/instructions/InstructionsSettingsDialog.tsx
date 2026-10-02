@@ -1,5 +1,6 @@
 "use client";
 
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -36,6 +37,7 @@ export function InstructionsSettingsDialog({
 	/** The Repository section (§7.4), when the project syncs or is left in repository mode. */
 	repositorySection?: ReactNode;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.settingsDialog");
 	const queryClient = useQueryClient();
 	const settings = useQuery({
@@ -71,7 +73,7 @@ export function InstructionsSettingsDialog({
 				toast.success(t("saved"));
 				onOpenChange(false);
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) => toast.error(actionError(error)),
 		}),
 	);
 

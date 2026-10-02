@@ -113,6 +113,7 @@ export const googleDocsPickerSessionProcedure = tenantProtectedProcedure
 			where: {
 				userId,
 				provider: "GOOGLE_DRIVE",
+				NOT: { name: "GOOGLE_DRIVE_OAUTH_APP" },
 				isActive: true,
 				organizationId: organizationId ?? null,
 			},

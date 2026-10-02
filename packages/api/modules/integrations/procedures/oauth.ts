@@ -15,6 +15,7 @@ import {
 	updateDataConnection,
 	type WorkflowIntegrationProvider,
 } from "@repo/database";
+import { OAUTH_APP_PROVIDERS } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { logger } from "@repo/logs";
 import {
 	triggerOAuthServerIngestion,
@@ -47,22 +48,10 @@ import {
 import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
 import { decodeOAuthState, encodeOAuthState } from "../lib/oauth-state";
 
-const OAuthProviderEnum = z.enum([
-	"AIRTABLE",
-	"ASANA",
-	"BITBUCKET",
-	"DROPBOX",
-	"GITHUB",
-	"GMAIL",
-	"GITLAB",
-	"GOOGLE_DRIVE",
-	"HUBSPOT",
-	"INTERCOM",
-	"LINEAR",
-	"MICROSOFT_GRAPH",
-	"SLACK",
-	"NOTION",
-]);
+// The providers `saveAppCredentials` accepts are exactly the ones whose
+// `<PROVIDER>_OAUTH_APP` names the shared list reserves, so selectors in other
+// packages exclude every app row this procedure can create.
+const OAuthProviderEnum = z.enum(OAUTH_APP_PROVIDERS);
 
 function mapOAuthToDataConnectionProvider(
 	provider: OAuthProviderType,
@@ -460,11 +449,19 @@ export const genericOAuthProcedures = {
 					| null = null;
 
 				if (workflowProvider) {
+					// Exclude the <PROVIDER>_OAUTH_APP row: it shares provider,
+					// user and organization with the connection row but holds
+					// the OAuth client credentials saveAppCredentials stored.
+					// Matching it renamed it into a connection and overwrote the
+					// client id and secret with this token, switching OAuth off
+					// for the organization once the admin who saved them
+					// connected. Same guard as status/disconnect below.
 					const existingIntegration =
 						await db.workflowIntegration.findFirst({
 							where: {
 								userId: state.userId,
 								provider: workflowProvider as any,
+								NOT: { name: `${providerType}_OAUTH_APP` },
 								...(orgIdForQuery
 									? { organizationId: orgIdForQuery }
 									: { organizationId: null }),
@@ -762,6 +759,33 @@ export const genericOAuthProcedures = {
 					: context.session.activeOrganizationId;
 			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
 
+			// Providers that don't map to a workflow integration row have
+			// nothing to revoke or deactivate here. When `workflowProvider` is
+			// null the cast below still produces a value Prisma rejects at
+			// runtime, so no-op explicitly.
+			if (!workflowProvider) {
+				return { success: true };
+			}
+
+			// Every active connection row, so each one's token is revoked —
+			// never the _OAUTH_APP row, which holds the OAuth client
+			// credentials rather than a token.
+			const connections = await db.workflowIntegration.findMany({
+				where: {
+					userId,
+					// `mapOAuthToWorkflowProvider` returns `string | null` but
+					// every non-null value is a valid enum member — narrow back
+					// via cast rather than refactoring the helper's return type
+					// across all callers.
+					provider: workflowProvider as WorkflowIntegrationProvider,
+					isActive: true,
+					NOT: { name: `${input.provider}_OAUTH_APP` },
+					...(organizationId
+						? { organizationId }
+						: { organizationId: null }),
+				},
+			});
+
 			// Best-effort: revoke the grant at the provider before we drop our
 			// copy, so disconnect actually invalidates the token rather than
 			// leaving it live until natural expiry. Only runs for providers
@@ -770,24 +794,11 @@ export const genericOAuthProcedures = {
 			// so a key-rotation/AES-tag failure doesn't get misreported as a
 			// network revoke failure.
 			const providerConfig = getOAuthProvider(input.provider);
-			if (workflowProvider && providerConfig?.revokeAccessToken) {
-				const activeRow = await db.workflowIntegration.findFirst({
-					where: {
-						userId,
-						// `mapOAuthToWorkflowProvider` returns `string | null`
-						// but every non-null value is a valid enum member —
-						// narrow back via cast rather than refactoring the
-						// helper's return type across all callers.
-						provider:
-							workflowProvider as WorkflowIntegrationProvider,
-						isActive: true,
-						NOT: { name: `${input.provider}_OAUTH_APP` },
-						...(organizationId
-							? { organizationId }
-							: { organizationId: null }),
-					},
-				});
-				if (activeRow?.credentials) {
+			if (providerConfig?.revokeAccessToken) {
+				for (const activeRow of connections) {
+					if (!activeRow.credentials) {
+						continue;
+					}
 					let tokenToRevoke: string | undefined;
 					try {
 						const creds = JSON.parse(
@@ -819,14 +830,8 @@ export const genericOAuthProcedures = {
 				}
 			}
 
-			// Deactivate the connection token, but NOT the _OAUTH_APP config
-			// record. When `workflowProvider` is null the cast still produces
-			// a value Prisma rejects at runtime; guard explicitly so we just
-			// no-op the disconnect for providers that don't map to a workflow
-			// integration row.
-			if (!workflowProvider) {
-				return { success: true };
-			}
+			// Deactivate the connection rows, but NOT the _OAUTH_APP config
+			// record.
 			await db.workflowIntegration.updateMany({
 				where: {
 					userId,
@@ -911,6 +916,7 @@ export const genericOAuthProcedures = {
 				where: {
 					userId,
 					provider: workflowProvider as any,
+					NOT: { name: `${input.provider}_OAUTH_APP` },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -1092,6 +1098,7 @@ export const genericOAuthProcedures = {
 				where: {
 					userId,
 					provider: workflowProvider as any,
+					NOT: { name: `${input.provider}_OAUTH_APP` },
 					isActive: true,
 					...(organizationId
 						? { organizationId }

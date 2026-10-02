@@ -16,7 +16,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listFn = vi.fn();
@@ -133,6 +133,7 @@ function renderSettings() {
 			<ProjectRepositoryIntegrationSettings project={project} />
 		</QueryClientProvider>,
 	);
+	return queryClient;
 }
 
 /** Reveal the add-repository panel, which hosts every browse entry point. */
@@ -181,5 +182,50 @@ describe("ProjectRepositoryIntegrationSettings — repo browse parity (#2196)", 
 		expect(
 			screen.queryByText(/browse gitlab repositories/i),
 		).not.toBeInTheDocument();
+	});
+
+	it("keeps prompting to connect, not browsing, for a token that exists only on the MCP config", async () => {
+		// `gitlab.status` reports that state as `partialConnection`, with
+		// `connected` still false: the browse backend needs the connection the
+		// partial state lacks and would answer "GitLab not connected".
+		gitlabStatusFn.mockResolvedValue({
+			connected: false,
+			partialConnection: true,
+		});
+		const user = userEvent.setup({ pointerEventsCheck: 0 });
+		renderSettings();
+		await openAddPanel(user);
+
+		expect(
+			await screen.findByText(/connect gitlab to browse repositories/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/browse gitlab repositories/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("prompts to connect when the status request fails, without caching a guessed `{ connected: false }`", async () => {
+		// The status query shares its key with the workflow GitLab settings. A
+		// failure swallowed into `{ connected: false }` would be cached as a
+		// fresh success there and hide an error that screen has to react to.
+		gitlabStatusFn.mockRejectedValue(new Error("status unavailable"));
+		const user = userEvent.setup({ pointerEventsCheck: 0 });
+		const queryClient = renderSettings();
+		await openAddPanel(user);
+
+		expect(
+			await screen.findByText(/connect gitlab to browse repositories/i),
+		).toBeInTheDocument();
+		await waitFor(
+			() =>
+				expect(
+					queryClient.getQueryState(["gitlab-oauth-status", null])
+						?.status,
+				).toBe("error"),
+			{ timeout: 4000 },
+		);
+		expect(
+			queryClient.getQueryData(["gitlab-oauth-status", null]),
+		).toBeUndefined();
 	});
 });

@@ -130,6 +130,7 @@ export const linkFromWorkflowIntegrationProcedure = tenantProtectedProcedure
 				userId: user.id,
 				provider: providerInfo.workflowProvider as any,
 				isActive: true,
+				NOT: { name: `${providerInfo.workflowProvider}_OAUTH_APP` },
 				...(orgIdForQuery !== null
 					? { organizationId: orgIdForQuery }
 					: { organizationId: null }),

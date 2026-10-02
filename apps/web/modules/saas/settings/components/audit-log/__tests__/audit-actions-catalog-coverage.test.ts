@@ -58,6 +58,17 @@ describe("audit action catalog coverage", () => {
 		expect(described.size).toBe(CATALOG.length);
 	});
 
+	it("says which company context fields an edit records", () => {
+		// The row exists because these two fields steer every Proposal the
+		// organization generates; an operator must be able to tell it is about
+		// them, not about the source's content.
+		const description = describeActionKey(
+			"org.company_context.metadata_updated",
+		);
+		expect(description).toMatch(/type label/i);
+		expect(description).toMatch(/AI instructions/i);
+	});
+
 	it("names the repository-sync triggers where an operator reads them", () => {
 		const started = describeActionKey(
 			"project.instructions.repository_sync_started",

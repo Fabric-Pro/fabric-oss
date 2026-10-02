@@ -18,7 +18,79 @@ The **Fabric MCP Gateway** turns your entire Fabric instance into a single MCP s
 
 ## Quick Setup
 
-### 1. Create an API Key
+### Sign in from your coding agent
+
+Add the gateway to your tool with no key, then sign in from the tool. The first
+request is answered `401` with a `WWW-Authenticate` challenge naming Fabric's
+sign-in metadata, the tool opens your browser, and you choose the organization
+and approve the tool once. A project's **Connect your coding agent** dialog
+shows the same entries with your deployment's URL filled in.
+
+<Tabs items={["Claude Code", "VS Code", "Cursor", "Codex", "Other"]}>
+  <Tab value="Claude Code">
+    ```bash
+    claude mcp add --transport http fabric https://your-fabric.com/api/mcp-gateway
+    ```
+
+    Then run `/mcp` in Claude Code and choose **Authenticate**.
+  </Tab>
+  <Tab value="VS Code">
+    Use **Add to VS Code** in the Connect dialog, or add the server to your MCP
+    configuration with no headers:
+
+    ```json
+    {
+      "servers": {
+        "fabric": {
+          "type": "http",
+          "url": "https://your-fabric.com/api/mcp-gateway"
+        }
+      }
+    }
+    ```
+
+    VS Code asks you to sign in the first time the server starts.
+  </Tab>
+  <Tab value="Cursor">
+    Use **Add to Cursor** in the Connect dialog, or add a server with only the
+    URL `https://your-fabric.com/api/mcp-gateway`. Cursor opens the browser to
+    sign in.
+  </Tab>
+  <Tab value="Codex">
+    ```bash
+    codex mcp add fabric --url https://your-fabric.com/api/mcp-gateway
+    codex mcp login fabric
+    ```
+  </Tab>
+  <Tab value="Other">
+    Any client that implements MCP authorization works from the server entry
+    alone. It contains no credential, so a project can commit it as `.mcp.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "fabric": {
+          "type": "http",
+          "url": "https://your-fabric.com/api/mcp-gateway"
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+What you approve is the same for every tool: read the organization's projects
+and context, read coding instructions, and suggest changes to them, held for
+review and never published by the agent. The tool stays signed in until you
+revoke it under **Account → Connected agents**, which signs it out at its next
+request. An agent signed in for one organization cannot switch to another; sign
+in again to choose a different one.
+
+### Or use an API key (CI and headless)
+
+Where nobody can approve a sign-in in a browser, authenticate with a key.
+
+#### 1. Create an API Key
 
 Go to **Settings → API Keys** and create a new key. Copy the key — it starts with `fab_`.
 
@@ -26,7 +98,7 @@ Go to **Settings → API Keys** and create a new key. Copy the key — it starts
 For organization context, create the key from your organization settings page.
 </Callout>
 
-### 2. Configure Your Client
+#### 2. Configure Your Client
 
 <Tabs items={["Claude Desktop", "Cursor", "VS Code", "Custom"]}>
   <Tab value="Claude Desktop">
@@ -81,7 +153,7 @@ For organization context, create the key from your organization settings page.
   </Tab>
 </Tabs>
 
-### 3. Organization Context (Optional)
+#### 3. Organization Context (Optional)
 
 To scope all tools to a specific organization, add the `X-Organization-Id` header:
 
@@ -415,8 +487,16 @@ The gateway implements the **MCP 2025-03-26 Streamable HTTP** transport:
 
 | Method | Header | Use Case |
 |---|---|---|
-| API Key | `Authorization: Bearer fab_xxx` | External clients (recommended) |
+| Sign-in (OAuth 2.1) | `Authorization: Bearer fat_xxx`, obtained by the client | Coding agents (recommended) |
+| API Key | `Authorization: Bearer fab_xxx` or `org_xxx` | CI and headless clients |
 | Session Cookie | Automatic | Browser-based clients |
+
+An unauthenticated request is answered `401` with
+`WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/api/mcp-gateway"`.
+That document names the authorization server (`<origin>/api/auth`), whose
+metadata is at `<origin>/.well-known/oauth-authorization-server/api/auth`.
+Clients register themselves (RFC 7591) as public clients, use PKCE S256, and
+request the token for the resource `<origin>/api/mcp-gateway`.
 
 ---
 

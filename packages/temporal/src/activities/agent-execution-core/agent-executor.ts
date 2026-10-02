@@ -1343,12 +1343,15 @@ async function loadOAuthIntegrationToolsForAgent(
 	);
 
 	if (hasMicrosoftGraph) {
-		// Check for active Microsoft Teams OAuth connection
+		// Check for the caller's own active Microsoft Teams OAuth connection
+		// (org arm filters by userId too, never a teammate's)
 		const microsoftIntegration = organizationId
 			? await db.workflowIntegration.findFirst({
 					where: {
+						userId,
 						organizationId,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				})
@@ -1357,6 +1360,7 @@ async function loadOAuthIntegrationToolsForAgent(
 						userId,
 						organizationId: null,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				});

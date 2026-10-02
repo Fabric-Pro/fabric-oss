@@ -21,13 +21,17 @@ import {
 	buildContextIgnoreRules as buildCliContextIgnoreRules,
 	CONTEXT_IGNORE_FILENAME as CLI_CONTEXT_IGNORE_FILENAME,
 	DEFAULT_CONTEXT_IGNORE_PATTERNS as CLI_DEFAULT_PATTERNS,
+	MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS as CLI_MAX_DOUBLE_STAR_GROUPS,
+	findContextIgnoreProblem as cliFindContextIgnoreProblem,
 } from "../../cli/src/lib/context-sync/ignore";
 import {
 	CONTEXT_IGNORE_FILENAME,
 	CONTEXT_TEXT_EXTENSIONS,
 	createContextDefaultRules,
 	DEFAULT_CONTEXT_IGNORE_PATTERNS,
+	findContextIgnoreProblem,
 	hasContextTextExtension,
+	MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS,
 } from "../src/context-sync-rules";
 
 /** Paths relative to a pushed or selected folder, files and folders. */
@@ -66,6 +70,32 @@ describe("the CLI's rules are the canonical ones", () => {
 			...DEFAULT_CONTEXT_IGNORE_PATTERNS,
 		]);
 		expect(CLI_CONTEXT_IGNORE_FILENAME).toBe(CONTEXT_IGNORE_FILENAME);
+	});
+
+	it("refuses the same rules, at the same line", () => {
+		expect(CLI_MAX_DOUBLE_STAR_GROUPS).toBe(
+			MAX_CONTEXT_IGNORE_DOUBLE_STAR_GROUPS,
+		);
+		for (const text of [
+			"",
+			"# **/**/**\n",
+			"**/a/**\n",
+			"**/a/**/b/**\n",
+			"keep.md\n**/**/**/x\n",
+			"a\r\n\r\n***/b/****/c/**/d\r\n",
+			"!**/a/**/b/**\n",
+		]) {
+			const canonical = findContextIgnoreProblem(text);
+			expect(cliFindContextIgnoreProblem(text), text).toEqual(
+				canonical === null
+					? null
+					: {
+							line: canonical.line,
+							groups: canonical.groups,
+							max: canonical.max,
+						},
+			);
+		}
 	});
 
 	it("has the same text extensions", () => {

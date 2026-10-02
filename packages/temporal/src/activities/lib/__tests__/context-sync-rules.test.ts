@@ -128,16 +128,58 @@ describe(".contextignore rules the matcher could not evaluate in time (Fizzy #27
 		expect(rules.ignoresFile("docs/a/kept.md")).toBe(false);
 	});
 
-	it("does not evaluate a path the sync could never store, which is what bounds the matcher's time by depth", () => {
+	it("does not hand the matcher a path the sync could never store, which bounds its time by depth", () => {
 		const rules = buildContextIgnoreRules({ contextIgnore: "**/a/**" });
-		const deep = "a/".repeat(2_000);
+		const deep = "b/".repeat(2_000);
+		const evaluated: string[] = [];
+		const spy = {
+			ignoresFile: (p: string) => {
+				evaluated.push(p);
+				return rules.ignoresFile(p);
+			},
+			ignoresDirectory: (p: string) => {
+				evaluated.push(p);
+				return rules.ignoresDirectory(p);
+			},
+		};
 
 		const start = performance.now();
-		const match = matchContextEntry(rules, `${deep}x.md`, "100644");
+		const match = matchContextEntry(spy, `${deep}x.md`, "100644");
 		const elapsed = performance.now() - start;
 
 		expect(match).toBe("unmatchable");
-		expect(elapsed).toBeLessThan(50);
+		expect(
+			Math.max(0, ...evaluated.map((p) => p.length)),
+		).toBeLessThanOrEqual(512);
+		expect(elapsed).toBeLessThan(100);
+	});
+
+	it("ignores a long path inside an ignored folder, as a short one is", () => {
+		const rules = buildContextIgnoreRules({});
+		const long = `node_modules/${"d/".repeat(268)}x.md`;
+		expect(long.length).toBeGreaterThan(512);
+
+		expect(matchContextEntry(rules, long, "100644")).toBe("ignored");
+	});
+
+	it("ignores a long path inside a folder the user's own rule leaves out", () => {
+		const rules = buildContextIgnoreRules({ contextIgnore: "drafts/\n" });
+
+		expect(
+			matchContextEntry(
+				rules,
+				`deep/drafts/${"d/".repeat(260)}x.md`,
+				"100644",
+			),
+		).toBe("ignored");
+	});
+
+	it("keeps a long path that no folder rule leaves out unmatchable", () => {
+		const rules = buildContextIgnoreRules({});
+
+		expect(
+			matchContextEntry(rules, `docs/${"d/".repeat(268)}x.md`, "100644"),
+		).toBe("unmatchable");
 	});
 });
 

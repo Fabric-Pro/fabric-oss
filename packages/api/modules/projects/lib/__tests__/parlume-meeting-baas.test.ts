@@ -77,27 +77,11 @@ describe("startParlumeMeetingBot", () => {
 					},
 					streaming_enabled: true,
 					streaming_config: {
-						mode: "transcription",
+						mode: "audio",
 						output_url:
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
 						input_url:
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
-						transcription: {
-							provider: "gladia",
-							api_key: null,
-							custom_params: {
-								endpointing: 0.3,
-								realtime_processing: {
-									custom_vocabulary: true,
-									custom_vocabulary_config: {
-										vocabulary: [
-											"Parlume",
-											"Fabric Parlume",
-										],
-									},
-								},
-							},
-						},
 						audio_frequency: 24_000,
 					},
 					timeout_config: {

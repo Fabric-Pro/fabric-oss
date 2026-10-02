@@ -82,6 +82,12 @@ export async function recheckGitlabCapabilities(opts: {
 			userId: opts.input.userId,
 			organizationId: opts.input.organizationId,
 			provider: "GITLAB",
+			// A disconnected (deactivated) row is not a connection to probe.
+			isActive: true,
+			// The GITLAB_OAUTH_APP row holds client credentials, not a
+			// connection; the probe result written below belongs on the
+			// connection row.
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { id: true, settings: true },
 	})) as { id: string; settings: unknown } | null;

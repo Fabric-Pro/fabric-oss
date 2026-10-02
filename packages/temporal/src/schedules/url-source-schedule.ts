@@ -19,8 +19,20 @@
  *     `deleteUrlSourceSchedule` first on the cadence-change path. The
  *     `updateUrlSourceSchedule` helper handles that internally.
  *   - `deleteUrlSourceSchedule` swallows "not found" so retry-safe.
+ *
+ * Company website sources (Fizzy #2719): pass `owner: { kind: "company",
+ * organizationId }` instead of a `projectId`. The schedule id is built from
+ * the `CompanyContextSource` id the same way, the workflow args carry the
+ * owner, and the schedule starts its crawls on COMPANY_CONTEXT_TASK_QUEUE,
+ * which only workers that know company context poll. Args without an owner
+ * are a project's, exactly as before.
  */
 import type { ScheduleClient } from "@temporalio/client";
+import {
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	resolveContextOwner,
+} from "../lib/context-owner";
 import type {
 	UrlRefreshMode,
 	UrlSourceScope,
@@ -230,7 +242,8 @@ interface ScheduledUrlCrawlArgs {
 	url: string;
 	scope: UrlSourceScope;
 	maxPages: number;
-	projectId: string;
+	/** Absent for a company source. */
+	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
 	apiKey: string;
@@ -238,6 +251,8 @@ interface ScheduledUrlCrawlArgs {
 	urlRefreshMode: UrlRefreshMode;
 	parentSourceTitle?: string | null;
 	mode: "scheduled";
+	/** Present for a company source only; absent is the project owner. */
+	owner?: ContextOwner;
 }
 
 export interface CreateUrlSourceScheduleArgs {
@@ -245,7 +260,8 @@ export interface CreateUrlSourceScheduleArgs {
 	url: string;
 	scope: UrlSourceScope;
 	maxPages: number;
-	projectId: string;
+	/** The context's project; omit it for a company source, which passes `owner`. */
+	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
 	apiKey: string;
@@ -257,6 +273,11 @@ export interface CreateUrlSourceScheduleArgs {
 	providerName?: UrlSourceProviderName;
 	refreshMode: UrlRefreshMode;
 	parentSourceTitle?: string | null;
+	/**
+	 * `{ kind: "company", organizationId }` for a company source; its
+	 * organization must match `organizationId`. Absent is the project owner.
+	 */
+	owner?: ContextOwner;
 }
 
 export interface CreateUrlSourceScheduleResult {
@@ -288,6 +309,16 @@ export async function createUrlSourceSchedule(
 		throw new MissingFirecrawlKeyError();
 	}
 
+	// A company owner must agree with the args' organization; a project
+	// schedule must name its project, or every fire would fail.
+	const owner = resolveContextOwner(args);
+	if (owner.kind === "project" && !owner.projectId) {
+		throw new Error(
+			"createUrlSourceSchedule needs a projectId, or a company owner",
+		);
+	}
+	const companyOwner = owner.kind === "company" ? owner : undefined;
+
 	const scheduleId = buildUrlSourceScheduleId(args.contextId);
 
 	const workflowArgs: ScheduledUrlCrawlArgs = {
@@ -295,7 +326,7 @@ export async function createUrlSourceSchedule(
 		url: args.url,
 		scope: args.scope,
 		maxPages: args.maxPages,
-		projectId: args.projectId,
+		...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
 		userId: args.userId,
 		organizationId: args.organizationId,
 		apiKey: args.apiKey,
@@ -305,6 +336,7 @@ export async function createUrlSourceSchedule(
 		urlRefreshMode: args.refreshMode,
 		parentSourceTitle: args.parentSourceTitle ?? null,
 		mode: "scheduled",
+		...(companyOwner ? { owner: companyOwner } : {}),
 	};
 
 	await scheduleClient.create({
@@ -315,7 +347,10 @@ export async function createUrlSourceSchedule(
 		action: {
 			type: "startWorkflow",
 			workflowType: URL_CRAWL_WORKFLOW_NAME,
-			taskQueue: URL_CONTEXT_TASK_QUEUE,
+			taskQueue: contextOwnerTaskQueue(
+				companyOwner,
+				URL_CONTEXT_TASK_QUEUE,
+			),
 			args: [workflowArgs],
 			// Schedules let `${scheduledTime}` be templated into the
 			// workflowId — but the JS SDK's `startWorkflow` action expects a
@@ -350,10 +385,13 @@ export interface UpdateUrlSourceScheduleArgs {
 	url: string;
 	scope: UrlSourceScope;
 	maxPages: number;
-	projectId: string;
+	/** The context's project; omit it for a company source, which passes `owner`. */
+	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
 	parentSourceTitle?: string | null;
+	/** A company source's owner; absent is the project owner. */
+	owner?: ContextOwner;
 	// Required ONLY when newRefreshMode is one of DAILY/WEEKLY/MONTHLY.
 	// Optional in the type because the same call handles "switch to ONCE"
 	// where no key is needed (delete-only path).
@@ -424,6 +462,7 @@ export async function updateUrlSourceSchedule(
 					: {}),
 				refreshMode: args.newRefreshMode,
 				parentSourceTitle: args.parentSourceTitle,
+				...(args.owner ? { owner: args.owner } : {}),
 			},
 			scheduleClient,
 		);
@@ -458,6 +497,7 @@ export async function updateUrlSourceSchedule(
 			// Guarded above (`newScheduled` true and we returned early for null).
 			refreshMode: args.newRefreshMode as UrlRefreshMode,
 			parentSourceTitle: args.parentSourceTitle,
+			...(args.owner ? { owner: args.owner } : {}),
 		},
 		scheduleClient,
 	);

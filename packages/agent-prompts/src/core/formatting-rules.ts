@@ -33,11 +33,11 @@ export const MARKDOWN_FORMATTING_RULES = {
 	/**
 	 * Correct formatting example
 	 */
-	correctExample: `## Executive Summary
+	correctExample: `## Overview
 
 This document describes the product requirements for the system.
 
-## Features
+## Requirements
 
 ### User Management
 
@@ -52,7 +52,7 @@ This document describes the product requirements for the system.
 | Import CSV | High | Planned |
 | Export PDF | Medium | Planned |
 
-## Technical Requirements
+## Implementation Notes
 
 The system will be built using:
 
@@ -72,7 +72,7 @@ function example() {
 	 * Incorrect formatting example (what NOT to do)
 	 */
 	incorrectExample:
-		"Executive SummaryThis document describes...FeaturesUser Management- User registration...Data Management| Feature | Priority |Import CSV | High |Export PDF | Medium |Technical RequirementsThe system will be built using:1. React for the frontend2. Node.js for the backend3. PostgreSQL for the database",
+		"OverviewThis document describes...RequirementsUser Management- User registration...Data Management| Feature | Priority |Import CSV | High |Export PDF | Medium |Implementation NotesThe system will be built using:1. React for the frontend2. Node.js for the backend3. PostgreSQL for the database",
 
 	/**
 	 * Incorrect table format examples (NEVER use these)

@@ -10,18 +10,19 @@
  * `changeset-release/master`, and Vercel built every one of those orphan
  * pushes. So pin the ref ladder rather than trusting the patterns by reading.
  *
- * Only the rules that terminate BEFORE the script shells out are covered here:
- * everything past the ref ladder runs `git diff` and `npx turbo-ignore`, which
- * a unit test has no business doing. Leaving VERCEL_GIT_PREVIOUS_SHA unset is
- * what keeps a fall-through case cheap — it exits at the first-deployment rule.
+ * Ref-ladder cases leave VERCEL_GIT_PREVIOUS_SHA unset. Exact-deployment
+ * regressions use a disposable Git repository with a CI-only diff and a
+ * previous deployment SHA; these cases never reach network-backed turbo-ignore.
  *
  * Exit semantics are Vercel's and are inverted from the usual shell reading:
  * 0 = SKIP the build, 1 = BUILD.
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const SCRIPT = resolve(__dirname, "../../scripts/vercel-ignore.sh");
 
@@ -30,19 +31,27 @@ const BUILD = 1;
 
 /**
  * Run the script with a given ref. The environment is inherited, but the script
- * reads only the two VERCEL_* variables set here, so a real Vercel-like
- * environment cannot change the outcome. The empty VERCEL_GIT_PREVIOUS_SHA is
- * deliberate: any ref that falls through the ref ladder then exits at the
- * first-deployment rule, so no case here can reach the git or network paths.
+ * has its source/build-marker variables reset here. An empty previous SHA is
+ * the default: ref-ladder cases exit at the first-deployment rule. Inert-diff
+ * cases supply a disposable repository and its previous revision.
  */
-function runWithRef(ref: string): Promise<number> {
+function runWithRef(
+	ref: string,
+	previousSha = "",
+	cwd?: string,
+	marker = "",
+	sha = "",
+): Promise<number> {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawn("sh", [SCRIPT], {
 			env: {
 				...process.env,
 				VERCEL_GIT_COMMIT_REF: ref,
-				VERCEL_GIT_PREVIOUS_SHA: "",
+				VERCEL_GIT_PREVIOUS_SHA: previousSha,
+				VERCEL_GIT_COMMIT_SHA: sha,
+				FABRIC_PRIVATE_PROMOTION_BUILD_SHA: marker,
 			},
+			cwd,
 			stdio: "ignore",
 		});
 		child.on("error", reject);
@@ -87,4 +96,82 @@ describe("vercel-ignore.sh ref ladder", () => {
 	])("does not skip %s on its first deployment", async (ref) => {
 		await expect(runWithRef(ref)).resolves.toBe(BUILD);
 	});
+});
+
+describe("private promotion build admission", () => {
+	const sha = "a".repeat(40);
+	it("skips automatic raw and versioned promotion previews", async () => {
+		await expect(runWithRef("promotion/example-cycle")).resolves.toBe(SKIP);
+		await expect(
+			runWithRef("promotion/example-cycle", "", undefined, "", sha),
+		).resolves.toBe(SKIP);
+	});
+	it("builds a trusted request bound to the exact full SHA", async () => {
+		await expect(
+			runWithRef("promotion/example-cycle", "", undefined, sha, sha),
+		).resolves.toBe(BUILD);
+	});
+	it.each(["a".repeat(39), "A".repeat(40), "g".repeat(40), "b".repeat(40)])(
+		"skips malformed or mismatched marker %s",
+		async (marker) => {
+			await expect(
+				runWithRef(
+					"promotion/example-cycle",
+					"",
+					undefined,
+					marker,
+					sha,
+				),
+			).resolves.toBe(SKIP);
+		},
+	);
+	it("skips a marker without Vercel Git SHA evidence", async () => {
+		await expect(
+			runWithRef("promotion/example-cycle", "", undefined, sha),
+		).resolves.toBe(SKIP);
+	});
+});
+
+describe("exact deployment refs with an inert CI-only delta", () => {
+	let repo: string;
+	let previousSha: string;
+
+	beforeAll(() => {
+		repo = mkdtempSync(resolve(tmpdir(), "vercel-ignore-test-"));
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-C", repo, ...args], {
+				encoding: "utf8",
+			}).trim();
+		git("init", "-q");
+		git("config", "user.name", "Test");
+		git("config", "user.email", "test@example.test");
+		writeFileSync(resolve(repo, "base.txt"), "base\n");
+		git("add", ".");
+		git("commit", "-q", "-m", "base");
+		previousSha = git("rev-parse", "HEAD");
+		mkdirSync(resolve(repo, ".github"));
+		writeFileSync(resolve(repo, ".github", "ci.yml"), "name: example\n");
+		git("add", ".");
+		git("commit", "-q", "-m", "CI-only change");
+	});
+
+	afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+	it.each(["master", "staging"])(
+		"builds %s despite a previous deployment and only CI changes",
+		async (ref) => {
+			await expect(runWithRef(ref, previousSha, repo)).resolves.toBe(
+				BUILD,
+			);
+		},
+	);
+
+	it.each(["feature/example", "staging-example", "promotion-example"])(
+		"preserves the inert-diff optimization for %s",
+		async (ref) => {
+			await expect(runWithRef(ref, previousSha, repo)).resolves.toBe(
+				SKIP,
+			);
+		},
+	);
 });

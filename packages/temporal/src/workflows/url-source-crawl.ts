@@ -23,6 +23,21 @@
  * Registered under the string name **`urlSourceCrawlWorkflow`** — matches the
  * exported function name so the API procedure (Group 3) can start it via the
  * Temporal client by literal string.
+ *
+ * Company website sources (Fizzy #2719) run through this same workflow, told
+ * apart by an optional `owner` on the input (`../lib/context-owner`). A
+ * missing owner is the project owner: every recorded history and every
+ * schedule's arguments carry none, and a project run schedules exactly the
+ * commands, with exactly the inputs, it always did. A company run:
+ *   - starts on COMPANY_CONTEXT_TASK_QUEUE (`contextOwnerTaskQueue`), as do
+ *     its schedules;
+ *   - first runs `companyUrlCrawlGateActivity`, before any map or scrape, and
+ *     returns without crawling when the gate says no (COMPANY_CONTEXT off,
+ *     the source gone, or no embedding model that can index it). That
+ *     command exists only on the company branch, which no project history
+ *     reaches, so project histories replay unchanged;
+ *   - carries the owner into every activity that reads or writes a row, so
+ *     each one works on `CompanyContextSource` / `CompanyContextUrlPage`.
  */
 import {
 	ActivityFailure,
@@ -35,6 +50,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
 
 /**
  * Telemetry contract for `project_context_url_crawl_failed` (
@@ -205,6 +221,7 @@ const {
 	updateParentStatusActivity,
 	pruneOrphanUrlPagesActivity,
 	bulkInitUrlPagesActivity,
+	companyUrlCrawlGateActivity,
 } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "1 minute",
 	retry: {
@@ -306,7 +323,8 @@ export interface UrlSourceCrawlWorkflowInput {
 	url: string;
 	scope: UrlSourceScope;
 	maxPages: number;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
 	apiKey: string;
@@ -327,6 +345,12 @@ export interface UrlSourceCrawlWorkflowInput {
 	 * upserts in place rather than creating a new row.
 	 */
 	retryPageUrl?: string;
+	/**
+	 * Who owns the source (Fizzy #2719). Absent is the project owner, which
+	 * every input recorded before company context existed is. A company owner
+	 * must be started on COMPANY_CONTEXT_TASK_QUEUE.
+	 */
+	owner?: ContextOwner;
 }
 
 export interface UrlSourceCrawlWorkflowOutput {
@@ -507,7 +531,9 @@ function emitResyncTelemetry(args: {
 	mode: UrlCrawlMode;
 	pagesIndexed: number;
 	durationMs: number;
-	projectId: string;
+	projectId: string | undefined;
+	/** Set for a company source, whose event is its own. */
+	companyOrganizationId?: string;
 	contextId: string;
 }): void {
 	if (args.mode === "initial") {
@@ -515,11 +541,15 @@ function emitResyncTelemetry(args: {
 	}
 	const trigger = args.mode === "manual-resync" ? "manual" : "scheduled";
 	log.info("analytics_event", {
-		event: "project_context_url_resynced",
+		event: args.companyOrganizationId
+			? "company_context_url_resynced"
+			: "project_context_url_resynced",
 		trigger,
 		pagesIndexed: args.pagesIndexed,
 		durationMs: args.durationMs,
-		projectId: args.projectId,
+		...(args.companyOrganizationId
+			? { organizationId: args.companyOrganizationId }
+			: { projectId: args.projectId }),
 		contextId: args.contextId,
 	});
 }
@@ -575,6 +605,12 @@ export async function urlSourceCrawlWorkflow(
 		retryPageUrl,
 	} = input;
 
+	// A malformed owner fails the run non-retryably before anything is
+	// scheduled. Only a company owner travels to the activities: a project
+	// run schedules them with exactly the inputs it always did.
+	const owner = resolveContextOwner(input);
+	const companyOwner = owner.kind === "company" ? owner : undefined;
+
 	log.info("[UrlSourceCrawl] start", {
 		contextId,
 		url,
@@ -588,6 +624,32 @@ export async function urlSourceCrawlWorkflow(
 	const startedAtMs = workflowNow();
 
 	try {
+		// Company owner only: may this crawl run at all? Before any map or
+		// scrape, so a gated-off organization never calls the crawler. No
+		// project history reaches this command.
+		if (companyOwner) {
+			const gate = await companyUrlCrawlGateActivity({
+				contextId,
+				owner: companyOwner,
+				userId,
+				mode,
+				workflowId: workflowInfo().workflowId,
+			});
+			if (!gate.proceed) {
+				log.info("[UrlSourceCrawl] company crawl not run", {
+					contextId,
+					reason: gate.reason,
+				});
+				return {
+					success: false,
+					scope,
+					pagesIndexed: 0,
+					pagesSkipped: 0,
+					error: gate.message ?? gate.reason,
+				};
+			}
+		}
+
 		// Retry mode: scrape + upsert + embed exactly one URL. We never
 		// touch the parent's `extractionStatus` or the schedule fields —
 		// the parent stays as the user left it (typically COMPLETED with
@@ -623,6 +685,7 @@ export async function urlSourceCrawlWorkflow(
 				// `manual-resync` mode forces re-embed even on hash match,
 				// matching the user's intent ("retry this one page").
 				mode: "manual-resync",
+				owner: companyOwner,
 			});
 
 			if (!upsert.skipped) {
@@ -636,6 +699,7 @@ export async function urlSourceCrawlWorkflow(
 					content: page.markdown,
 					userId: effectiveUserId,
 					organizationId: organizationId ?? undefined,
+					owner: companyOwner,
 				});
 				pagesIndexed = 1;
 			} else {
@@ -686,6 +750,7 @@ export async function urlSourceCrawlWorkflow(
 				urlLastSyncedAt: new Date(workflowNow()),
 				urlNextRefreshAt: nextRefresh,
 				content: page.markdown,
+				owner: companyOwner,
 				// Notification-emit fields. Gated
 				// behind `patched()` so old in-flight histories — whose
 				// `ScheduleActivityTask` event recorded the input WITHOUT
@@ -726,6 +791,7 @@ export async function urlSourceCrawlWorkflow(
 							sourceUrl: page.pageUrl,
 							sourceTitle: parentSourceTitle ?? undefined,
 						},
+						owner: companyOwner,
 					});
 				} catch (embedError) {
 					// Embedding is best-effort: the page is already scraped and
@@ -753,6 +819,7 @@ export async function urlSourceCrawlWorkflow(
 				pagesIndexed,
 				durationMs: workflowNow() - startedAtMs,
 				projectId,
+				companyOrganizationId: companyOwner?.organizationId,
 				contextId,
 			});
 
@@ -845,6 +912,7 @@ export async function urlSourceCrawlWorkflow(
 					urls: targets,
 					userId,
 					organizationId,
+					owner: companyOwner,
 				});
 			}
 
@@ -903,6 +971,7 @@ export async function urlSourceCrawlWorkflow(
 						userId,
 						organizationId,
 						mode,
+						owner: companyOwner,
 					});
 				} catch (upsertError) {
 					log.warn("[UrlSourceCrawl] upsert failed", {
@@ -933,6 +1002,7 @@ export async function urlSourceCrawlWorkflow(
 							content: page.markdown,
 							userId: effectiveUserId,
 							organizationId: organizationId ?? undefined,
+							owner: companyOwner,
 						});
 						pagesIndexed++;
 					} catch (embedError) {
@@ -1021,6 +1091,7 @@ export async function urlSourceCrawlWorkflow(
 						userId,
 						organizationId,
 						mode,
+						owner: companyOwner,
 					}),
 			);
 
@@ -1067,6 +1138,7 @@ export async function urlSourceCrawlWorkflow(
 							content: job.content,
 							userId: effectiveUserId,
 							organizationId: organizationId ?? undefined,
+							owner: companyOwner,
 						}),
 				);
 
@@ -1109,6 +1181,7 @@ export async function urlSourceCrawlWorkflow(
 			await pruneOrphanUrlPagesActivity({
 				parentContextId: contextId,
 				keptUrls,
+				owner: companyOwner,
 			});
 		}
 
@@ -1124,6 +1197,7 @@ export async function urlSourceCrawlWorkflow(
 			extractionStatus: "COMPLETED",
 			urlLastSyncedAt: new Date(workflowNow()),
 			urlNextRefreshAt: nextRefresh,
+			owner: companyOwner,
 			// Notification-emit fields. Gated for
 			// replay-determinism — see the SINGLE_PAGE call above for the
 			// rationale.
@@ -1150,6 +1224,7 @@ export async function urlSourceCrawlWorkflow(
 			pagesIndexed: totalIndexed,
 			durationMs: workflowNow() - startedAtMs,
 			projectId,
+			companyOrganizationId: companyOwner?.organizationId,
 			contextId,
 		});
 
@@ -1229,6 +1304,7 @@ export async function urlSourceCrawlWorkflow(
 							urlLastSyncedAt: finalLastSyncedAt,
 							urlNextRefreshAt: nextRefreshOnCancel,
 							extractionError: null,
+							owner: companyOwner,
 							// Notification-emit fields, gated for replay
 							// determinism. When finalStatus is COMPLETED
 							// (cancel-with-progress), the user gets a
@@ -1294,10 +1370,14 @@ export async function urlSourceCrawlWorkflow(
 		// ops dashboard can route it without an HTTP analytics dependency. See
 		// `ROLLOUT.md` for the Datadog/Grafana query.
 		log.info("analytics_event", {
-			event: "project_context_url_crawl_failed",
+			event: companyOwner
+				? "company_context_url_crawl_failed"
+				: "project_context_url_crawl_failed",
 			stage: failureStage,
 			errorType: failureErrorType,
-			projectId,
+			...(companyOwner
+				? { organizationId: companyOwner.organizationId }
+				: { projectId }),
 			contextId,
 		});
 
@@ -1327,6 +1407,7 @@ export async function urlSourceCrawlWorkflow(
 				extractionError: errorMessage,
 				urlLastSyncedAt: null,
 				urlNextRefreshAt: null,
+				owner: companyOwner,
 				// Notification-emit fields ("completed", FAILED
 				// branch). Gated for replay determinism — see the
 				// SINGLE_PAGE COMPLETED call for the same rationale. Emits

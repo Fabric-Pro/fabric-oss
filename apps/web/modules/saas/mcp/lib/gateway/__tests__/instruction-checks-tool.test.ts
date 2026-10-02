@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
+	resolveEffectiveProjectPermissions: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 	getInstructionFileByPath: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
@@ -32,12 +33,20 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	hasPermission: (permissions: readonly string[], permission: string) =>
+		permissions.includes(permission),
+	Permissions: { INSTRUCTION_READ: "instruction:read" },
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getInstructionFileByPath: m.getInstructionFileByPath,
 	getProjectInstructionSettings: m.getProjectInstructionSettings,
 	resolveInstructionSnapshotSource: m.resolveInstructionSnapshotSource,
 	resolveCurrentInstructionRepository: m.resolveCurrentInstructionRepository,
+}));
+
+vi.mock("@repo/api/lib/effective-project-permissions", () => ({
+	resolveEffectiveProjectPermissions: (...a: unknown[]) =>
+		m.resolveEffectiveProjectPermissions(...a),
 }));
 
 vi.mock("@repo/storage", () => ({
@@ -178,6 +187,11 @@ beforeEach(() => {
 	for (const fn of Object.values(m)) {
 		fn.mockReset();
 	}
+	m.resolveEffectiveProjectPermissions.mockResolvedValue({
+		permissions: ["instruction:read"],
+		source: "project-member",
+		organizationId: "org_1",
+	});
 	m.getProjectAccessContext.mockResolvedValue({ organizationId: "org_1" });
 	m.getPublishedInstructionSnapshot.mockResolvedValue(publishedSnapshot());
 	m.getProjectInstructionSettings.mockResolvedValue({
@@ -397,6 +411,21 @@ describe("report shape", () => {
 });
 
 describe("access and publication", () => {
+	it("reports a caller who discovers the project but lacks INSTRUCTION_READ as a failed access check", async () => {
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["project:read"],
+			source: "org",
+			organizationId: "org_1",
+		});
+
+		const report = reportOf(
+			await run({ projectId: PROJECT, lockDigest: DIGEST }),
+		);
+
+		expect(check(report, "access")).toMatchObject({ status: "fail" });
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
 	it("reports a denied project as a failed access check and learns nothing more", async () => {
 		m.getProjectAccessContext.mockResolvedValue(null);
 		const report = reportOf(

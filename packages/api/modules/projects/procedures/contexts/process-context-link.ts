@@ -55,8 +55,8 @@ import {
 } from "./knowledge-base-category";
 import { contextTabHref, displayUrl, estimateCopy } from "./lib/estimate-copy";
 
-const URL_SCOPE_VALUES = ["SINGLE_PAGE", "PATH_PREFIX"] as const;
-const URL_REFRESH_MODE_VALUES = [
+export const URL_SCOPE_VALUES = ["SINGLE_PAGE", "PATH_PREFIX"] as const;
+export const URL_REFRESH_MODE_VALUES = [
 	"ONCE",
 	"DAILY",
 	"WEEKLY",
@@ -64,14 +64,14 @@ const URL_REFRESH_MODE_VALUES = [
 	"LIVE",
 ] as const;
 
-const MIN_MAX_PAGES = 1;
+export const MIN_MAX_PAGES = 1;
 // Capped at 500 because at concurrency 1 with the per-scrape settle +
 // selector wait + extraction, 500 pages already takes ~85 min wall-clock;
 // going higher risks bumping the workflow's 120 min activity timeout.
 // Default 200 keeps the Firecrawl spend low on the common case — most
 // help centers and docs sites fit well under 200 pages.
-const MAX_MAX_PAGES = 500;
-const DEFAULT_MAX_PAGES = 200;
+export const MAX_MAX_PAGES = 500;
+export const DEFAULT_MAX_PAGES = 200;
 
 const URL_CONTEXT_TASK_QUEUE = "project-documents";
 const URL_CRAWL_WORKFLOW_NAME = "urlSourceCrawlWorkflow";
@@ -82,7 +82,7 @@ const URL_CRAWL_WORKFLOW_NAME = "urlSourceCrawlWorkflow";
  * the API package doesn't reach across into a workflow-side type. Kept in
  * lockstep via the test in `__tests__/process-context-link.test.ts`.
  */
-type UrlSourceProviderName =
+export type UrlSourceProviderName =
 	| "firecrawl"
 	| "jina"
 	| "tavily"
@@ -125,18 +125,20 @@ type ProviderNotConfiguredCode =
 	| "CRAWL_PROVIDER_NOT_CONFIGURED"
 	| "FIRECRAWL_NOT_CONFIGURED";
 
-interface ProviderNotConfiguredData {
+export interface ProviderNotConfiguredData {
 	code: ProviderNotConfiguredCode;
 	settingsPath: string;
 }
 
-function buildSearchProvidersSettingsPath(orgSlug?: string | null): string {
+export function buildSearchProvidersSettingsPath(
+	orgSlug?: string | null,
+): string {
 	return orgSlug
 		? `/app/${orgSlug}/settings/search-providers`
 		: "/app/settings/search-providers";
 }
 
-async function resolveOrgSlug(
+export async function resolveOrgSlug(
 	organizationId: string | undefined,
 ): Promise<string | null> {
 	if (!organizationId) {
@@ -154,7 +156,7 @@ async function resolveOrgSlug(
  * the structure; this guard removes one specific abuse path (credentials
  * in URL) called out in the spec.
  */
-function rejectCredentialedUrl(value: string): boolean {
+export function rejectCredentialedUrl(value: string): boolean {
 	try {
 		const parsed = new URL(value);
 		return parsed.username === "" && parsed.password === "";
@@ -170,7 +172,7 @@ function rejectCredentialedUrl(value: string): boolean {
  * Inlining the ordering here means the procedure doesn't depend on the
  * temporal worker code at compile time.
  */
-function pickEnabledProvider(
+export function pickEnabledProvider(
 	providers: SearchProviderRow[],
 	requireCrawl: boolean,
 ): SearchProviderRow | null {

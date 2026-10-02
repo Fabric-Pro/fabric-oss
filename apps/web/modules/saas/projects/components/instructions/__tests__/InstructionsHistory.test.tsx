@@ -72,6 +72,7 @@ function mutationOptionsStub(
 	mutationFn: (input: {
 		snapshotId: string;
 		publishBeforeScan?: boolean;
+		expectedPublishedSnapshotId?: string | null;
 	}) => Promise<unknown>,
 ) {
 	return (
@@ -93,8 +94,23 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					mutationOptions: mutationOptionsStub(async (input) => {
 						publishInputs.push(input);
 						if (input.snapshotId === "fail") {
-							throw new Error(
-								"A newer version is already published",
+							throw Object.assign(
+								new Error(
+									"A newer version is already published",
+								),
+								{ code: "CONFLICT" },
+							);
+						}
+						if (input.snapshotId === "stale") {
+							throw Object.assign(
+								new Error("Another version was published"),
+								{
+									code: "CONFLICT",
+									data: {
+										reason: "PUBLISHED_CHANGED",
+										publishedVersion: 9,
+									},
+								},
 							);
 						}
 						if (input.snapshotId === "pending") {
@@ -109,8 +125,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				delete: {
 					mutationOptions: mutationOptionsStub(async (input) => {
 						if (input.snapshotId === "fail") {
-							throw new Error(
-								"The published snapshot cannot be deleted",
+							throw Object.assign(
+								new Error(
+									"The published snapshot cannot be deleted",
+								),
+								{ code: "CONFLICT" },
 							);
 						}
 						return { deleted: true };
@@ -271,9 +290,7 @@ describe("InstructionsHistory", () => {
 		});
 		await userEvent.click(publishButtons[0]);
 		await waitFor(() =>
-			expect(toast.error).toHaveBeenCalledWith(
-				"A newer version is already published",
-			),
+			expect(toast.error).toHaveBeenCalledWith("conflict"),
 		);
 		expect(onChanged).not.toHaveBeenCalled();
 
@@ -317,14 +334,15 @@ describe("InstructionsHistory", () => {
 		});
 		await userEvent.click(deleteButtons[0]);
 		await waitFor(() =>
-			expect(toast.error).toHaveBeenCalledWith(
-				"The published snapshot cannot be deleted",
-			),
+			expect(toast.error).toHaveBeenCalledWith("conflict"),
 		);
-		expect(onChanged).not.toHaveBeenCalled();
+		// A failed delete re-reads the list too: the version may already be
+		// gone (a second click, or someone else's delete), and the row on
+		// screen is then stale.
+		expect(onChanged).toHaveBeenCalledTimes(1);
 
 		await userEvent.click(deleteButtons[1]);
-		await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
 	});
 
 	// M9: deleting a snapshot whose workflow is still running removes the row
@@ -1077,9 +1095,7 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		await user.click(screen.getByRole("button", { name: "confirmAction" }));
 
 		await waitFor(() =>
-			expect(toast.error).toHaveBeenCalledWith(
-				"A newer version is already published",
-			),
+			expect(toast.error).toHaveBeenCalledWith("conflict"),
 		);
 		expect(screen.getByText("flaggedDialogTitle")).toBeTruthy();
 	});
@@ -1220,5 +1236,143 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		expect(
 			screen.getByRole("button", { name: "deleteAction" }),
 		).toBeTruthy();
+	});
+});
+
+describe("InstructionsHistory: publishing from the page the person saw", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		publishInputs.length = 0;
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const row = (
+		id: string,
+		version: number,
+		extra: Record<string, unknown> = {},
+	) => ({
+		id,
+		version,
+		status: "READY",
+		source: "UPLOAD",
+		fileCount: 3,
+		createdAt: new Date(),
+		...extra,
+	});
+
+	function renderHistory(
+		snapshots: Array<ReturnType<typeof row>>,
+		props: Partial<React.ComponentProps<typeof InstructionsHistory>> = {},
+	) {
+		const onChanged = vi.fn();
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={snapshots}
+				publishedId="v8"
+				publishedVersion={8}
+				onChanged={onChanged}
+				{...props}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		return { onChanged };
+	}
+
+	it("sends the published version it displays with a publish and with a rollback", async () => {
+		renderHistory([row("v9", 9), row("v8", 8), row("v7", 7)]);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "publishAction" }),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+
+		await waitFor(() => expect(publishInputs).toHaveLength(2));
+		expect(publishInputs.map((i) => i.expectedPublishedSnapshotId)).toEqual(
+			["v8", "v8"],
+		);
+	});
+
+	it("says 'nothing was published' when nothing is", async () => {
+		renderHistory([row("v1", 1)], {
+			publishedId: null,
+			publishedVersion: null,
+		});
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "publishAction" }),
+		);
+
+		await waitFor(() => expect(publishInputs).toHaveLength(1));
+		expect(publishInputs[0]).toHaveProperty(
+			"expectedPublishedSnapshotId",
+			null,
+		);
+	});
+
+	it("tells the person which version was published since, re-reads, and shows no generic error", async () => {
+		const { onChanged } = renderHistory([row("stale", 9), row("v8", 8)]);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "publishAction" }),
+		);
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith("publishedChanged:9"),
+		);
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(onChanged).toHaveBeenCalledTimes(1);
+	});
+
+	it("warns a rollback how many running checks will publish themselves afterwards", async () => {
+		renderHistory([
+			row("v9", 9, { status: "VALIDATING", publishOnReady: true }),
+			row("v10", 10, { status: "RECEIVING", publishOnReady: true }),
+			row("v8", 8),
+			row("v7", 7),
+		]);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+
+		expect(window.confirm).toHaveBeenCalledWith(
+			"rollbackConfirm:7 rollbackPendingNote:2",
+		);
+	});
+
+	it("adds no warning to a rollback when nothing is still being checked, nor to a plain publish", async () => {
+		renderHistory([
+			row("v9", 9),
+			row("v8", 8),
+			row("v7", 7),
+			row("v10", 10, { status: "VALIDATING", publishOnReady: true }),
+		]);
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "publishAction" }),
+		);
+		expect(window.confirm).toHaveBeenLastCalledWith("publishConfirm:9");
+	});
+
+	it("counts a repository sync run that has not staged its snapshot yet", async () => {
+		renderHistory([row("v8", 8), row("v7", 7)], {
+			syncRunPendingPublish: true,
+		});
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "rollbackAction" }),
+		);
+
+		expect(window.confirm).toHaveBeenCalledWith(
+			"rollbackConfirm:7 rollbackPendingNote:1",
+		);
 	});
 });

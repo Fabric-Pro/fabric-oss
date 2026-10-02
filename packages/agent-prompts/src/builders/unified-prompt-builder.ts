@@ -14,7 +14,12 @@
  * - Tool usage instructions
  */
 
-import type { DocumentType, ProjectContext } from "@repo/agent-types";
+import {
+	type DocumentType,
+	hasProjectContextEntries,
+	hasVendorContextEntries,
+	type ProjectContext,
+} from "@repo/agent-types";
 import { getBaseInstructions } from "../core/base-instructions";
 import { listAnchorPaths } from "../core/document-patches";
 import { buildFollowUpInstructions } from "../core/follow-up-questions";
@@ -30,7 +35,10 @@ import {
 	USER_STORY_REQUIREMENTS,
 } from "../documents/user-story-constants";
 import { getPrdOverrideInstructions } from "../templates/prd-template";
-import { getProposalOverrideInstructions } from "../templates/proposal-template";
+import {
+	getProposalOverrideInstructions,
+	getProposalVendorSectionReminder,
+} from "../templates/proposal-template";
 import type { QualityTier } from "../types";
 import {
 	type ContextAvailability,
@@ -107,6 +115,11 @@ export function buildUnifiedSystemPrompt(
 
 	const sections: string[] = [];
 
+	// Company context (Fizzy #2719) arrives as vendor-marked entries. It lets
+	// the default Proposal template add its vendor section, and it is not the
+	// project's own context: it must not push the wizard features out below.
+	const hasVendorContext = hasVendorContextEntries(ragContexts);
+
 	// Get document type-specific configuration (always needed for overrides)
 	const docConfig = getDocumentPrompt(documentType);
 
@@ -132,7 +145,9 @@ export function buildUnifiedSystemPrompt(
 			const prdInstructions = getPrdOverrideInstructions();
 			sections.push(`${prdInstructions}\n\n---\n\n${fabricPattern}`);
 		} else if (documentType === "proposal") {
-			const proposalInstructions = getProposalOverrideInstructions();
+			const proposalInstructions = getProposalOverrideInstructions({
+				hasVendorContext,
+			});
 			sections.push(`${proposalInstructions}\n\n---\n\n${fabricPattern}`);
 		} else if (documentType === "user_story") {
 			const criticalInstructions =
@@ -150,7 +165,9 @@ export function buildUnifiedSystemPrompt(
 				`${prdInstructions}\n\n---\n\n${buildDocumentTypePrompt(docConfig, qualityTier)}`,
 			);
 		} else if (documentType === "proposal") {
-			const proposalInstructions = getProposalOverrideInstructions();
+			const proposalInstructions = getProposalOverrideInstructions({
+				hasVendorContext,
+			});
 			sections.push(
 				`${proposalInstructions}\n\n---\n\n${buildDocumentTypePrompt(docConfig, qualityTier)}`,
 			);
@@ -172,7 +189,7 @@ export function buildUnifiedSystemPrompt(
 	// CRITICAL: When RAG contexts exist, they define the product scope
 	// Don't include wizard features as they override actual product content from RAG
 	if (projectContext?.name) {
-		const hasRagContexts = ragContexts && ragContexts.length > 0;
+		const hasRagContexts = hasProjectContextEntries(ragContexts);
 		const contextForPrompt = hasRagContexts
 			? { ...projectContext, features: [] as string[] }
 			: projectContext;
@@ -305,7 +322,7 @@ If we deliver **[solution]**, then **[impact]** improves by **[metric]** because
 
 **Continue with:** Scope (In/Out), Deliverables, Plan (Phases), Success Metrics (TABLE), Dependencies/Risks, Stakeholders, Open Questions, Release Notes.
 
-❌ **FORBIDDEN (INSTANT FAILURE):** Executive Summary, Table of Contents, Problem Statement, System Architecture, Data Models, Timeline, Roadmap, Milestones, Budget, ROI, Appendix, numbered sections (1. 2. 3.)
+❌ **FORBIDDEN (INSTANT FAILURE):** Executive Summary, Table of Contents, Problem Statement, System Architecture, Data Models, Timeline, Roadmap, Milestones, Budget, ROI, Appendix, numbered sections (1. 2. 3.)${hasVendorContext ? `\n\n${getProposalVendorSectionReminder()}` : ""}
 
 **YOUR FIRST LINE MUST BE: ### **Project Proposal****`);
 	}
@@ -744,7 +761,7 @@ If we deliver **[solution]**, then **[impact]** improves by **[metric]** because
 ### **Release Notes**
 \`\`\`
 
-❌ FORBIDDEN (INSTANT FAILURE): Executive Summary, Table of Contents, Problem Statement, System Architecture, Data Models, Timeline, Roadmap, Budget, Appendix, numbered sections (1. 2. 3.)
+❌ FORBIDDEN (INSTANT FAILURE): Executive Summary, Table of Contents, Problem Statement, System Architecture, Data Models, Timeline, Roadmap, Budget, Appendix, numbered sections (1. 2. 3.)${hasVendorContextEntries(ragContexts) ? `\n\n${getProposalVendorSectionReminder()}` : ""}
 
 **START YOUR RESPONSE WITH: ### **Project Proposal****`;
 	}

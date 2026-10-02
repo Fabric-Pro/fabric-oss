@@ -34,6 +34,12 @@ const OUTSIDE_CONFIG_PATH = path.join(tmpdir(), "fabricai", "config.json");
 export interface InstructionsMocks {
 	getPublished: ReturnType<typeof vi.fn>;
 	createDownloadUrl: ReturnType<typeof vi.fn>;
+	/**
+	 * Signed URLs for named files, which a sync that writes a few files uses
+	 * instead of the archive. Its default answer points each requested path at
+	 * `FILE_URL_BASE`, which `stubBundle` serves.
+	 */
+	createFileDownloadUrls?: ReturnType<typeof vi.fn>;
 	getApiKey: ReturnType<typeof vi.fn<() => string | undefined>>;
 	getConfigPath: ReturnType<typeof vi.fn<() => string>>;
 	getDefaultContext: ReturnType<typeof vi.fn<() => unknown>>;
@@ -52,6 +58,24 @@ export interface InstructionsMocks {
 export function resetInstructionsMocks(mocks: InstructionsMocks): void {
 	mocks.getPublished.mockReset();
 	mocks.createDownloadUrl.mockReset();
+	mocks.createFileDownloadUrls?.mockReset();
+	mocks.createFileDownloadUrls?.mockImplementation(
+		async (
+			_project: string,
+			input: { digest: string; paths: string[] },
+		) => ({
+			snapshotId: "snap-2",
+			digest: input.digest,
+			files: input.paths.map((p) => ({
+				path: p,
+				sha256: "",
+				size: 0,
+				mode: null,
+				url: `${FILE_URL_BASE}${encodeURIComponent(p)}`,
+			})),
+			expiresInSeconds: 600,
+		}),
+	);
 	mocks.getApiKey.mockReset();
 	mocks.getApiKey.mockReturnValue("fab_test");
 	mocks.getConfigPath.mockReset();
@@ -211,8 +235,12 @@ export async function seedRawLock(dest: string, body: string): Promise<void> {
 	);
 }
 
+/** Where the default `createFileDownloadUrls` answer points, per encoded path. */
+export const FILE_URL_BASE = "https://storage.example.com/files/";
+
 /**
- * Serve one zip from the stubbed global fetch the bundle download uses.
+ * Serve the published tree from the stubbed global fetch: one zip for the
+ * archive URL, and each file by itself for the per-file URLs.
  * `beforeServe` runs inside the download, after the plan was made and before
  * any write: the window an editor's save can land in (Decision 37).
  */
@@ -230,8 +258,16 @@ export function stubBundle(
 	);
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async () => {
+		vi.fn(async (input: string | URL | Request) => {
 			await beforeServe?.();
+			const url = String(input);
+			if (url.startsWith(FILE_URL_BASE)) {
+				const body =
+					files[decodeURIComponent(url.slice(FILE_URL_BASE.length))];
+				return body === undefined
+					? new Response("not found", { status: 404 })
+					: new Response(Buffer.from(body), { status: 200 });
+			}
 			return new Response(archive.slice().buffer, { status: 200 });
 		}),
 	);

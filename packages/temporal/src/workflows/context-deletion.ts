@@ -21,10 +21,16 @@
  * - Visibility and monitoring
  * - Consistent error handling
  * - Audit trail for deletions
+ *
+ * Also deletes an organization's company context sources (Fizzy #2719): an
+ * input naming a company owner is started on COMPANY_CONTEXT_TASK_QUEUE
+ * (`contextOwnerTaskQueue`), and the owner travels in the activity input.
+ * The activity call is the same for both owners.
  */
 
 import { ApplicationFailure, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
 
 const { deleteSingleContextActivity } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "2 minutes",
@@ -39,10 +45,16 @@ const { deleteSingleContextActivity } = proxyActivities<typeof activities>({
 
 export interface ContextDeletionWorkflowInput {
 	contextId: string;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string;
 	organizationId?: string;
 	qdrantId?: string;
+	/**
+	 * Who owns the context. Absent is the project owner, which every input
+	 * recorded before company context existed is.
+	 */
+	owner?: ContextOwner;
 	/** Optional metadata for audit trail */
 	metadata?: {
 		contextType?: string;
@@ -73,6 +85,10 @@ export async function contextDeletionWorkflow(
 	const { contextId, projectId, userId, organizationId, qdrantId, metadata } =
 		input;
 
+	// A malformed owner fails the run non-retryably before the activity is
+	// scheduled.
+	resolveContextOwner(input);
+
 	console.log(
 		`[ContextDeletion] Starting deletion for context ${contextId}`,
 		{
@@ -89,6 +105,7 @@ export async function contextDeletionWorkflow(
 			userId,
 			organizationId,
 			qdrantId,
+			owner: input.owner,
 		});
 
 		if (result.success) {

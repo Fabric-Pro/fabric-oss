@@ -8,6 +8,7 @@
 		"./context-sync-rules": "./src/context-sync-rules.ts",
 		"./export": "./src/export/index.ts",
 		"./proposal-branch-ref": "./src/proposal-branch-ref.ts",
+		"./scan-rules-version": "./src/scan-rules-version.ts",
 		"./workflow-ids": "./src/workflow-ids.ts"
 	},
 	"scripts": {

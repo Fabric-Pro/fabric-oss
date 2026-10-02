@@ -1304,6 +1304,9 @@
 					},
 					"brand_kit": {
 						"updated": "Markenkit aktualisiert"
+					},
+					"company_context": {
+						"metadata_updated": "Details einer Unternehmenskontext-Quelle aktualisiert"
 					}
 				},
 				"account": {
@@ -1311,6 +1314,10 @@
 						"created": "Persönlicher API-Schlüssel erstellt",
 						"revoked": "Persönlicher API-Schlüssel widerrufen",
 						"rotated": "Persönlicher API-Schlüssel rotiert"
+					},
+					"oauth": {
+						"consent_granted": "Coding-Agent verbunden",
+						"consent_revoked": "Coding-Agent widerrufen"
 					},
 					"ai_provider": {
 						"configured": "KI-Anbieter konfiguriert",
@@ -2031,7 +2038,8 @@
 				"general": "Allgemein",
 				"members": "Mitglieder",
 				"title": "Org",
-				"dangerZone": "Gefahrenzone"
+				"dangerZone": "Gefahrenzone",
+				"companyContext": "Unternehmenskontext"
 			}
 		},
 		"save": "Speichern",
@@ -2057,6 +2065,112 @@
 			"saved": "Markenkit gespeichert",
 			"saveFailed": "Das Markenkit konnte nicht gespeichert werden",
 			"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern."
+		},
+		"companyContext": {
+			"title": "Unternehmenskontext",
+			"description": "Was Ihr Unternehmen über sich selbst sagt – Leistungen, Fallstudien und Positionierung –, einmal gepflegt für jedes Angebot und jeden Business Case.",
+			"usage": {
+				"title": "Wo dies verwendet wird",
+				"body": "Angebote und Business Cases stützen sich auf diese Quellen, um Ihr Unternehmen und seine bisherigen Projekte zu beschreiben, und können sie wörtlich zitieren. Diese Dokumente gehen an Kunden – fügen Sie daher nur Material hinzu, das Sie auch mit einem Kunden teilen würden.",
+				"scope": "Andere Dokumenttypen verwenden den Unternehmenskontext nicht, und er erscheint nie im Kontext-Tab eines Projekts."
+			},
+			"readOnly": "Ein Administrator der Organisation verwaltet den Unternehmenskontext. Sie können die Quellen ansehen und herunterladen; bitten Sie einen Administrator, Quellen hinzuzufügen, zu ändern oder zu entfernen.",
+			"list": {
+				"title": "Quellen",
+				"summary": "{ready} von {total} bereit",
+				"add": "Quelle hinzufügen",
+				"reprocessAll": "Veraltete Quellen neu verarbeiten",
+				"loading": "Unternehmenskontext wird geladen…",
+				"loadFailed": "Der Unternehmenskontext konnte nicht geladen werden.",
+				"retry": "Erneut versuchen",
+				"emptyTitle": "Noch kein Unternehmenskontext",
+				"emptyAdmin": "Fügen Sie Fallstudien, Leistungsbeschreibungen, Ihre Website oder alles andere hinzu, was Ihr Unternehmen beschreibt.",
+				"emptyMember": "Es wurden noch keine Quellen hinzugefügt."
+			},
+			"model": {
+				"missing": "Es ist kein Embedding-Anbieter konfiguriert, daher können Angebote und Business Cases diese Quellen noch nicht verwenden. Konfigurieren Sie einen KI-Anbieter mit Embedding-Unterstützung.",
+				"unsupported": "Das Embedding-Modell Ihrer Organisation kann für den Unternehmenskontext nicht verwendet werden. Die Quellen sind erst durchsuchbar, wenn es sich ändert.",
+				"openProviders": "KI-Anbieter öffnen",
+				"stale": "{count, plural, one {# Quelle wurde} other {# Quellen wurden}} mit einem früheren Embedding-Modell indexiert und {count, plural, one {wird} other {werden}} erst nach einer Neuverarbeitung verwendet."
+			},
+			"types": {
+				"FILE": "Datei",
+				"TEXT": "Text",
+				"LINK": "Website"
+			},
+			"status": {
+				"pending": "Ausstehend",
+				"processing": "Wird verarbeitet…",
+				"indexing": "Wird indexiert…",
+				"ready": "Bereit",
+				"needsReprocessing": "Neuverarbeitung nötig",
+				"notSearchable": "Nicht durchsuchbar",
+				"failed": "Fehlgeschlagen",
+				"cancelled": "Abgebrochen"
+			},
+			"row": {
+				"added": "Hinzugefügt am {date}",
+				"lastSynced": "Zuletzt synchronisiert am {date}",
+				"pageCount": "{count, plural, one {# Seite} other {# Seiten}}",
+				"refresh": {
+					"ONCE": "Keine automatische Aktualisierung",
+					"DAILY": "Tägliche Aktualisierung",
+					"WEEKLY": "Wöchentliche Aktualisierung",
+					"MONTHLY": "Monatliche Aktualisierung",
+					"LIVE": "Live-Aktualisierung"
+				}
+			},
+			"actions": {
+				"more": "Weitere Aktionen für {name}",
+				"download": "{name} herunterladen",
+				"downloadFailed": "Diese Quelle konnte nicht heruntergeladen werden.",
+				"showPages": "Seiten von {name} anzeigen",
+				"hidePages": "Seiten von {name} ausblenden",
+				"sync": "Jetzt synchronisieren",
+				"syncStarted": "Synchronisierung gestartet",
+				"cancelCrawl": "Verarbeitung abbrechen",
+				"cancelRequested": "Verarbeitung wird abgebrochen…",
+				"reprocess": "Neu verarbeiten",
+				"reprocessStarted": "Neuverarbeitung gestartet",
+				"reprocessAllStarted": "{count, plural, =0 {Nichts neu zu verarbeiten} one {# Quelle wird neu verarbeitet} other {# Quellen werden neu verarbeitet}}",
+				"reprocessAllSkipped": "{count, plural, one {Bei # Quelle konnte die Neuverarbeitung nicht starten} other {Bei # Quellen konnte die Neuverarbeitung nicht starten}}",
+				"delete": "Löschen",
+				"deleteBlocked": "Verarbeitung abbrechen, um zu löschen",
+				"deleted": "Quelle entfernt",
+				"failed": "Das hat nicht funktioniert. Versuchen Sie es erneut."
+			},
+			"deleteDialog": {
+				"title": "Diese Quelle entfernen?",
+				"description": "„{name}“ wird aus Ihrem Unternehmenskontext entfernt. Künftig erstellte Angebote und Business Cases verwenden sie nicht mehr.",
+				"cancel": "Abbrechen",
+				"confirm": "Quelle entfernen",
+				"deleting": "Wird entfernt…"
+			},
+			"pages": {
+				"label": "Von {name} erfasste Seiten",
+				"loading": "Seiten werden geladen…",
+				"loadFailed": "Die Seiten konnten nicht geladen werden.",
+				"empty": "Noch keine Seiten erfasst.",
+				"shown": "{shown} von {total} angezeigt",
+				"loadMore": "Mehr laden",
+				"status": {
+					"PENDING": "Ausstehend",
+					"EXTRACTING": "Wird verarbeitet…",
+					"COMPLETED": "Indexiert",
+					"FAILED": "Fehlgeschlagen",
+					"CANCELLED": "Abgebrochen"
+				}
+			},
+			"addDialog": {
+				"title": "Unternehmenskontext hinzufügen",
+				"description": "Laden Sie Dateien hoch, fügen Sie Websites hinzu oder fügen Sie Text über Ihr Unternehmen ein. Angebote und Business Cases können alles zitieren, was Sie hier hinzufügen.",
+				"tabsLabel": "Quellentyp",
+				"tabs": {
+					"file": "Datei",
+					"link": "Link",
+					"text": "Text"
+				}
+			}
 		}
 	},
 	"start": {
@@ -4632,6 +4746,17 @@
 				"FAILED": "Fehlgeschlagen",
 				"SUPERSEDED": "Überholt"
 			}
+		},
+		"companyContextNotice": {
+			"empty": {
+				"title": "Noch kein Unternehmenskontext",
+				"body": "Angebote und Business Cases können zusätzlich auf Material zurückgreifen, das Ihre Organisation über Ihr Unternehmen pflegt, etwa Fallstudien, Leistungen und Referenzen. Bisher wurde keines hinzugefügt, daher nutzt dieser Entwurf nur den Kontext des Projekts."
+			},
+			"notReady": {
+				"title": "Unternehmenskontext wird noch verarbeitet",
+				"body": "Die Unternehmensquellen Ihrer Organisation sind noch nicht bereit, daher nutzt dieser Entwurf nur den Kontext des Projekts. Entwürfe, die nach Abschluss der Verarbeitung begonnen werden, können darauf zurückgreifen."
+			},
+			"openSettings": "Unternehmenskontext öffnen"
 		},
 		"glossy": {
 			"recipientBrand": {

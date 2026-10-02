@@ -10,6 +10,10 @@
 
 import { PAT_INVALID_REASON } from "@repo/api/modules/projects/procedures/repository-integrations/lib/pat-validation-errors";
 import { classificationForRawKind } from "@repo/utils/pipeline-sync-failure-kinds";
+import {
+	GITLAB_STATUS_QUERY_KEY,
+	gitlabStatusQueryOptions,
+} from "@saas/data-connections/lib/gitlab-status-query";
 import { InlineJobProgress } from "@saas/jobs/components/InlineJobProgress";
 import type { JobListItem } from "@saas/jobs/hooks/use-jobs";
 import {
@@ -393,19 +397,14 @@ export function ProjectRepositoryIntegrationSettings({
 	const githubStatus = githubStatusQuery.data;
 
 	// ── GitLab connection status ────────────────────────────────────
-	const { data: gitlabStatus } = useQuery({
-		queryKey: ["gitlab-oauth-status", project.organizationId],
-		queryFn: async () => {
-			try {
-				return await orpcClient.integrations.gitlab.status({
-					organizationId: project.organizationId ?? null,
-				});
-			} catch {
-				return { connected: false };
-			}
-		},
-		staleTime: 30000,
-	});
+	// A failed first status request leaves `gitlabStatus` undefined, which
+	// reads as "not connected" here; a failed refetch keeps the last successful
+	// status rather than dropping to "not connected". It must NOT be turned
+	// into a cached `{ connected: false }`: the cache entry is shared (see
+	// `gitlab-status-query.ts`).
+	const { data: gitlabStatus } = useQuery(
+		gitlabStatusQueryOptions(project.organizationId),
+	);
 
 	const hasGitHubTeamCreds = integrationList.some(
 		(i) => i.provider === "GITHUB" && i.status === "ACTIVE",
@@ -672,7 +671,7 @@ export function ProjectRepositoryIntegrationSettings({
 						queryKey: ["github-oauth-status"],
 					});
 					queryClient.invalidateQueries({
-						queryKey: ["gitlab-oauth-status"],
+						queryKey: [GITLAB_STATUS_QUERY_KEY],
 					});
 					queryClient.invalidateQueries({
 						queryKey: ["github-repos-project"],

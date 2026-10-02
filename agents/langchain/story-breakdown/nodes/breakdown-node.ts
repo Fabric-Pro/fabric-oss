@@ -461,8 +461,13 @@ export async function breakdownNode(
 			const toolCall = response.tool_calls[0];
 
 			if (toolCall.name === "write_document_local") {
-				// Validate tool call arguments
-				if (!toolCall.args || !toolCall.args.document) {
+				// Validate tool call arguments. A document that is not a non-empty
+				// string (an object or array the model generated) would otherwise
+				// be stored as the edit, so it takes the corrective retry too.
+				if (
+					typeof toolCall.args?.document !== "string" ||
+					!toolCall.args.document
+				) {
 					const truncated = isOutputTruncated(response);
 					console.error(
 						"[Story Breakdown] Invalid tool call arguments",
@@ -483,7 +488,7 @@ export async function breakdownNode(
 						// Use HumanMessage because sanitizeMessagesForModel strips all ToolMessages.
 						const correctionMessage = new HumanMessage({
 							content:
-								'ERROR: Your previous write_document_local call had empty arguments. You MUST include the "document" parameter with the full document content as a markdown string. Please call write_document_local again with the document content.',
+								'ERROR: Your previous write_document_local call had empty or invalid arguments. You MUST include the "document" parameter with the full document content as a markdown string. Please call write_document_local again with the document content.',
 						});
 
 						console.log(

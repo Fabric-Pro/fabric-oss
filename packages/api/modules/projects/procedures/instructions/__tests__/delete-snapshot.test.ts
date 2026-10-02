@@ -366,6 +366,32 @@ describe("projects.instructions.delete", () => {
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 
+	it("answers NOT_FOUND, with no audit row and no storage work, when the row is already gone at delete time", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			id: "s",
+			version: 2,
+			status: "READY",
+		});
+		m.getPublishedInstructionSnapshot.mockResolvedValue({ id: "other" });
+		m.listInstructionFiles.mockResolvedValue([
+			{ storageKey: `${OWN_PREFIX}f1` },
+		]);
+		// A second click: the first delete committed between this request's
+		// read and its DELETE, so the DELETE matches nothing and gives no
+		// reason.
+		m.deleteInstructionSnapshot.mockResolvedValue({ deleted: false });
+
+		await expect(
+			m.handlers.delete!({ input: baseInput, context: ctx }),
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "This version was already deleted",
+		});
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.deleteObjects).not.toHaveBeenCalled();
+		expect(m.listObjects).not.toHaveBeenCalled();
+	});
+
 	// R32/I4: the file rows only know their own keys, so nothing recorded
 	// which export zips had been built from this snapshot. Deleting a version
 	// because it held something you did not want stored left a full copy of

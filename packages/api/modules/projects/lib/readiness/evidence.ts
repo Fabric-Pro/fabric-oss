@@ -35,12 +35,12 @@ const INDEXED = "COMPLETED" as const;
 
 /**
  * One credential that has reached this organization over MCP, as the reach
- * record carries it. `credentialId` is polymorphic across `user_api_key` and
- * `organization_api_key`, which is why the kind has to travel with it — see the
- * `OrganizationCliReach` model doc.
+ * record carries it. `credentialId` is polymorphic across `user_api_key`,
+ * `organization_api_key` and `oauth_client`, which is why the kind has to travel
+ * with it — see the `OrganizationCliReach` model doc.
  */
 interface CliReachRecord {
-	credentialKind: "USER_API_KEY" | "ORGANIZATION_API_KEY";
+	credentialKind: "USER_API_KEY" | "ORGANIZATION_API_KEY" | "OAUTH_CLIENT";
 	credentialId: string;
 }
 
@@ -142,6 +142,7 @@ async function resolveOrganizationCliConnected(
 
 	const userKeyIds = idsOfKind("USER_API_KEY");
 	const organizationKeyIds = idsOfKind("ORGANIZATION_API_KEY");
+	const oauthClientIds = idsOfKind("OAUTH_CLIENT");
 
 	/** A null expiry is a key that never expires, not a key that expired at epoch. */
 	const unexpired = { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] };
@@ -153,33 +154,54 @@ async function resolveOrganizationCliConnected(
 	 */
 	const ownerStillAMember = { members: { some: { organizationId } } };
 
-	const [aliveUserKey, aliveOrganizationKey] = await Promise.all([
-		userKeyIds.length === 0
-			? null
-			: db.userApiKey.findFirst({
-					where: {
-						id: { in: userKeyIds },
-						isActive: true,
-						...unexpired,
-						user: ownerStillAMember,
-					},
-					select: { id: true },
-				}),
-		organizationKeyIds.length === 0
-			? null
-			: db.organizationApiKey.findFirst({
-					where: {
-						id: { in: organizationKeyIds },
-						isActive: true,
-						...unexpired,
-						createdBy: ownerStillAMember,
-					},
-					select: { id: true },
-				}),
-	]);
+	const [aliveUserKey, aliveOrganizationKey, aliveOAuthConsent] =
+		await Promise.all([
+			userKeyIds.length === 0
+				? null
+				: db.userApiKey.findFirst({
+						where: {
+							id: { in: userKeyIds },
+							isActive: true,
+							...unexpired,
+							user: ownerStillAMember,
+						},
+						select: { id: true },
+					}),
+			organizationKeyIds.length === 0
+				? null
+				: db.organizationApiKey.findFirst({
+						where: {
+							id: { in: organizationKeyIds },
+							isActive: true,
+							...unexpired,
+							createdBy: ownerStillAMember,
+						},
+						select: { id: true },
+					}),
+			// A signed-in agent is alive while the consent that bound it to this
+			// organization exists: revoking removes the consent with the tokens,
+			// and a disabled client or a departed person ends it the same way.
+			oauthClientIds.length === 0
+				? null
+				: db.oauthConsent.findFirst({
+						where: {
+							referenceId: organizationId,
+							client: {
+								id: { in: oauthClientIds },
+								disabled: { not: true },
+							},
+							user: ownerStillAMember,
+						},
+						select: { id: true },
+					}),
+		]);
 
 	// One surviving credential is enough; a dead one beside it changes nothing.
-	return aliveUserKey !== null || aliveOrganizationKey !== null;
+	return (
+		aliveUserKey !== null ||
+		aliveOrganizationKey !== null ||
+		aliveOAuthConsent !== null
+	);
 }
 
 /**

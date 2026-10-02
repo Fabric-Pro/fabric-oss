@@ -7,6 +7,7 @@
  * OAuth is recommended for better security and automatic token refresh.
  */
 
+import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
@@ -41,6 +42,7 @@ import { GitLabIcon } from "./icon";
 
 export function GitLabSettings({
 	apiKey,
+	hasPersistedCredential,
 	onApiKeyChange,
 	organizationId,
 }: IntegrationSettingsProps) {
@@ -48,21 +50,16 @@ export function GitLabSettings({
 	const [usePatMode, setUsePatMode] = useState(false);
 	const queryClient = useQueryClient();
 
-	// Check GitLab OAuth connection status
-	const { data: gitlabStatus, isLoading: isLoadingStatus } = useQuery({
-		queryKey: ["gitlab-oauth-status", organizationId],
-		queryFn: async () => {
-			try {
-				return await orpcClient.integrations.gitlab.status({
-					organizationId: organizationId ?? null,
-				});
-			} catch (error) {
-				console.debug("[GitLabSettings] Status check failed:", error);
-				return { connected: false };
-			}
-		},
-		staleTime: 30000,
-	});
+	// Check GitLab connection status. A failed check is NOT "not connected":
+	// the error is kept so the page can tell "status unavailable" apart from
+	// "no connection". The query is shared with other screens (same key), all
+	// through `gitlabStatusQueryOptions`, so none of them can cache a guessed
+	// `{ connected: false }` over a failure.
+	const {
+		data: gitlabStatus,
+		isLoading: isLoadingStatus,
+		isError: isStatusError,
+	} = useQuery(gitlabStatusQueryOptions(organizationId));
 
 	// Check if OAuth is configured on the server
 	const { data: oauthConfigured } = useQuery({
@@ -243,7 +240,80 @@ export function GitLabSettings({
 		},
 	});
 
-	// Show OAuth status if connected
+	// The one GitLab Disconnect on this page. The plugin sets `ownsDisconnect`,
+	// so the page adds no generic one; this runs `gitlab.disconnect`, which
+	// deactivates every GitLab connection row for the user and org (a Personal
+	// Access Token saved through the generic save path included).
+	const disconnectControl = (
+		<AlertDialog>
+			<AlertDialogTrigger asChild>
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={disconnectMutation.isPending}
+					aria-label="Disconnect GitLab"
+					className="text-destructive hover:text-red-700 hover:bg-red-50"
+				>
+					{disconnectMutation.isPending ? (
+						<Loader2Icon className="h-4 w-4 animate-spin" />
+					) : (
+						<>
+							<LogOutIcon className="h-4 w-4 mr-1" />
+							Disconnect
+						</>
+					)}
+				</Button>
+			</AlertDialogTrigger>
+			<AlertDialogContent>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Disconnect GitLab?</AlertDialogTitle>
+					<AlertDialogDescription>
+						{gitlabStatus?.username ? (
+							<>
+								This disconnects{" "}
+								<span className="font-semibold">
+									@{gitlabStatus.username}
+								</span>{" "}
+								from your GitLab connection in Fabric, including
+								the official GitLab MCP server.
+							</>
+						) : (
+							"This disconnects your GitLab connection in Fabric, including the official GitLab MCP server."
+						)}{" "}
+						Workflows, agents, and PM-sync that use it will fail
+						until you reconnect. GitLab repositories linked in a
+						project's settings stay connected; manage those there.
+						This action cannot be undone.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel>Cancel</AlertDialogCancel>
+					<AlertDialogAction
+						onClick={handleDisconnect}
+						variant="destructive"
+					>
+						Disconnect
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
+
+	// Not connected as far as `gitlab.status` says. Disconnect must stay
+	// reachable whenever GitLab may still hold a credential here, because the
+	// page adds no generic one for this plugin:
+	//  - `partialConnection`: a live token on the MCP registry's config with no
+	//    workflow connection behind it;
+	//  - `hasPersistedCredential`: the page's own list shows a SAVED GitLab
+	//    credential, whatever the status said (it failed, or a cache entry
+	//    written by another screen was stale). This is the saved list, not the
+	//    typed text, so an unsaved Personal Access Token does not count.
+	const statusUnavailable = isStatusError && !gitlabStatus?.connected;
+	const showStoredCredentialNotice =
+		!gitlabStatus?.connected &&
+		(Boolean(gitlabStatus?.partialConnection) ||
+			Boolean(hasPersistedCredential));
+
 	if (gitlabStatus?.connected) {
 		return (
 			<div className="space-y-6">
@@ -271,13 +341,16 @@ export function GitLabSettings({
 									GitLab Connected
 								</span>
 							</div>
-							<p className="text-sm text-green-700 dark:text-green-300 mt-1">
-								Signed in as{" "}
-								<span className="font-semibold">
-									@{gitlabStatus.username}
-								</span>
-								{gitlabStatus.name && ` (${gitlabStatus.name})`}
-							</p>
+							{gitlabStatus.username ? (
+								<p className="text-sm text-green-700 dark:text-green-300 mt-1">
+									Signed in as{" "}
+									<span className="font-semibold">
+										@{gitlabStatus.username}
+									</span>
+									{gitlabStatus.name &&
+										` (${gitlabStatus.name})`}
+								</p>
+							) : null}
 							{gitlabStatus.connectedAt && (
 								<p className="text-xs text-success dark:text-green-400 mt-1">
 									Connected{" "}
@@ -293,52 +366,7 @@ export function GitLabSettings({
 								</p>
 							)}
 						</div>
-						<AlertDialog>
-							<AlertDialogTrigger asChild>
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={disconnectMutation.isPending}
-									className="text-destructive hover:text-red-700 hover:bg-red-50"
-								>
-									{disconnectMutation.isPending ? (
-										<Loader2Icon className="h-4 w-4 animate-spin" />
-									) : (
-										<>
-											<LogOutIcon className="h-4 w-4 mr-1" />
-											Disconnect
-										</>
-									)}
-								</Button>
-							</AlertDialogTrigger>
-							<AlertDialogContent>
-								<AlertDialogHeader>
-									<AlertDialogTitle>
-										Disconnect GitLab?
-									</AlertDialogTitle>
-									<AlertDialogDescription>
-										This removes the OAuth credential for{" "}
-										<span className="font-semibold">
-											@{gitlabStatus.username}
-										</span>
-										. Workflows, agents, and PM-sync that
-										use GitLab will fail until you
-										reconnect. This action cannot be undone.
-									</AlertDialogDescription>
-								</AlertDialogHeader>
-								<AlertDialogFooter>
-									<AlertDialogCancel>
-										Cancel
-									</AlertDialogCancel>
-									<AlertDialogAction
-										onClick={handleDisconnect}
-										variant="destructive"
-									>
-										Disconnect
-									</AlertDialogAction>
-								</AlertDialogFooter>
-							</AlertDialogContent>
-						</AlertDialog>
+						{disconnectControl}
 					</div>
 				</div>
 
@@ -365,9 +393,11 @@ export function GitLabSettings({
 				)}
 
 				<p className="text-sm text-muted-foreground">
-					Your GitLab account is connected via OAuth. The task agent
-					can access projects, create issues, and submit merge
-					requests on your behalf.
+					{gitlabStatus.username
+						? "Your GitLab account is connected via OAuth. "
+						: "GitLab is connected. "}
+					The task agent can access projects, create issues, and
+					submit merge requests on your behalf.
 				</p>
 			</div>
 		);
@@ -376,6 +406,37 @@ export function GitLabSettings({
 	// Not connected - show OAuth button or PAT form
 	return (
 		<div className="space-y-6">
+			{showStoredCredentialNotice ? (
+				<Alert variant="error">
+					<AlertTriangleIcon className="h-4 w-4" />
+					<AlertTitle>
+						{statusUnavailable
+							? "Couldn't check GitLab connection status"
+							: gitlabStatus?.partialConnection
+								? "GitLab is only partly connected"
+								: "A GitLab credential is saved here"}
+					</AlertTitle>
+					<AlertDescription>
+						{statusUnavailable
+							? "A GitLab credential is saved here, but its status could not be loaded, so it may still be connected. You can disconnect it now, or reload to try again."
+							: gitlabStatus?.partialConnection
+								? "A GitLab token is stored for agents, but the connection that workflows and project sync use is missing. Connect GitLab again to restore it, or disconnect it."
+								: "GitLab did not report it as connected. You can disconnect it, or reload to check again."}
+					</AlertDescription>
+					<div className="mt-3">{disconnectControl}</div>
+				</Alert>
+			) : statusUnavailable ? (
+				<Alert variant="error">
+					<AlertTriangleIcon className="h-4 w-4" />
+					<AlertTitle>
+						Couldn&apos;t check GitLab connection status
+					</AlertTitle>
+					<AlertDescription>
+						Reload to try again. Until then this page cannot tell
+						whether GitLab is already connected.
+					</AlertDescription>
+				</Alert>
+			) : null}
 			{/* OAuth Section (if configured) */}
 			{oauthConfigured && (
 				<div className="space-y-4">

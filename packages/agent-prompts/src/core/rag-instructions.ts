@@ -64,7 +64,7 @@ When referencing a context, use one of these formats:
 
 ### Verification Checklist:
 Before finalizing your document, verify:
-- [ ] At least 3 contexts are directly referenced or cited
+- [ ] Every context that bears on the document is reflected or cited
 - [ ] Technical terms match the terminology used in contexts
 - [ ] Project-specific names, features, and decisions are accurately reflected
 - [ ] No contradictions with information provided in contexts

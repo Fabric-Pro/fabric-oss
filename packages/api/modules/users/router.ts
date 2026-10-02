@@ -22,6 +22,10 @@ import {
 	getMfaPromptStateProcedure,
 } from "./procedures/mfa-prompt";
 import {
+	listOAuthConnectionsProcedure,
+	revokeOAuthConnectionProcedure,
+} from "./procedures/oauth-connections";
+import {
 	getOnboardingTourStateProcedure,
 	updateOnboardingTourStateProcedure,
 } from "./procedures/onboarding";
@@ -56,6 +60,10 @@ export const usersRouter = {
 		create: createUserApiKeyProcedure,
 		list: listUserApiKeysProcedure,
 		delete: deleteUserApiKeyProcedure,
+	},
+	oauthConnections: {
+		list: listOAuthConnectionsProcedure,
+		revoke: revokeOAuthConnectionProcedure,
 	},
 	orchestratorPreferences: {
 		get: getOrchestratorPreferencesProcedure,

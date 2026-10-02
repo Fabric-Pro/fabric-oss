@@ -50,6 +50,7 @@ async function resolveSlackBotToken(
 			where: {
 				userId,
 				provider: "SLACK",
+				NOT: { name: "SLACK_OAUTH_APP" },
 				isActive: true,
 				...(organizationId
 					? { organizationId }

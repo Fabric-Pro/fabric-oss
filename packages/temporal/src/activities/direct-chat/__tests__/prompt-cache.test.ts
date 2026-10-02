@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
 	buildDirectChatPromptCacheRequest,
 	buildLegacyDirectChatSystemInstructions,
+	DIRECT_CHAT_CACHEABLE_GUIDELINES,
 	DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT,
+	DIRECT_CHAT_IDENTITY,
 } from "../prompt-cache";
 
 describe("buildLegacyDirectChatSystemInstructions", () => {
@@ -50,6 +52,42 @@ Today is September 9, 2026.`);
 		);
 		expect(result).toContain(
 			"document context or web search results\n\nFRAME OUTPUT REQUIREMENT:\n- Create it.\n\nToday is",
+		);
+	});
+
+	it("leaves the identity line to a caller that brings its own persona", () => {
+		const result = buildLegacyDirectChatSystemInstructions({
+			capabilitiesInstructions: "CAPABILITIES:\n- Tools connected.",
+			webSearchInstructions: "",
+			frameOutputInstructions: "",
+			currentDateContext: "Today is September 9, 2026.",
+			includeIdentity: false,
+		});
+
+		expect(result.startsWith("CAPABILITIES:")).toBe(true);
+		expect(result).not.toContain(DIRECT_CHAT_IDENTITY);
+	});
+});
+
+describe("DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT", () => {
+	// A provider prompt cache keys on these exact bytes, so an accidental edit
+	// to the identity or either guideline block silently invalidates every
+	// warm cache. Change this literal only when the prefix is meant to change.
+	it("is byte-for-byte the pinned cache prefix", () => {
+		expect(DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT).toBe(
+			`You are Advisor, Fabric's AI assistant that helps users accomplish tasks.
+
+TOOL USAGE GUIDELINES:
+- CAREFULLY read the tool's input schema to understand ALL available filter/query parameters
+- When the user specifies filters, ALWAYS use the appropriate filter parameters
+- Do NOT fetch ALL data and filter client-side - use server-side filtering
+- Only fetch the minimum data needed to answer the user's question
+- When an MCP tool is available that matches the user's request, call it — do not give text instructions instead
+
+RESPONSE GUIDELINES:
+- Use markdown for formatting (tables, bullet points, code blocks)
+- Be concise but complete
+- Cite sources when using document context or web search results`,
 		);
 	});
 });
@@ -150,6 +188,45 @@ describe("buildDirectChatPromptCacheRequest", () => {
 			{ role: "system", content: "turn-specific context" },
 		]);
 		expect(request.messages[0]).not.toHaveProperty("providerOptions");
+	});
+
+	it("drops the identity from the stable prefix when the caller brings a persona", () => {
+		const messages = [
+			{ role: "user", content: "earlier question" },
+			{ role: "user", content: "current question" },
+		];
+
+		const rolling = buildDirectChatPromptCacheRequest({
+			promptCacheEnabled: true,
+			rollingHistoryEnabled: true,
+			systemPrompt: "You are Fabric Agent.",
+			messages,
+			includeIdentity: false,
+		});
+		const adjacent = buildDirectChatPromptCacheRequest({
+			promptCacheEnabled: true,
+			rollingHistoryEnabled: false,
+			systemPrompt: "You are Fabric Agent.",
+			messages,
+			includeIdentity: false,
+		});
+
+		expect(rolling.system).toEqual({
+			role: "system",
+			content: DIRECT_CHAT_CACHEABLE_GUIDELINES,
+			providerOptions: ANTHROPIC_EPHEMERAL_CACHE,
+		});
+		expect(adjacent.system).toEqual([
+			{
+				role: "system",
+				content: DIRECT_CHAT_CACHEABLE_GUIDELINES,
+				providerOptions: ANTHROPIC_EPHEMERAL_CACHE,
+			},
+			{ role: "system", content: "You are Fabric Agent." },
+		]);
+		expect(DIRECT_CHAT_CACHEABLE_GUIDELINES).not.toContain(
+			DIRECT_CHAT_IDENTITY,
+		);
 	});
 
 	it("uses only adjacent top-level system blocks for unsupported Claude models", () => {

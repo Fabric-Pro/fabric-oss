@@ -120,6 +120,29 @@ describe("walk + ignore rules", () => {
 		expect(pushed(plan)).toEqual(["a.md", "keep.txt", "sub/top-only.md"]);
 	});
 
+	it("refuses a .contextignore rule with three ** groups, naming its line, before walking", async () => {
+		const root = await makeFolder({
+			".contextignore": "drafts/\n# **/**/**\n**/a/**/b/**\n",
+			"a.md": "# A\n",
+		});
+
+		await expect(computeContextPlan({ root, lock: null })).rejects.toThrow(
+			/\.contextignore line 3 has 3 "\*\*" groups, and a rule can have at most 2\. Nothing was pushed\./,
+		);
+	});
+
+	it("refuses an --exclude pattern with three ** groups", async () => {
+		const root = await makeFolder({ "a.md": "# A\n" });
+
+		await expect(
+			computeContextPlan({
+				root,
+				lock: null,
+				excludes: ["**/a/**/b/**"],
+			}),
+		).rejects.toThrow(/--exclude pattern "\*\*\/a\/\*\*\/b\/\*\*" has 3/);
+	});
+
 	it("applies repeatable --exclude patterns", async () => {
 		const root = await makeFolder({
 			"a.md": "# A\n",

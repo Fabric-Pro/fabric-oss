@@ -44,6 +44,7 @@ export function PublishFlaggedVersionDialog({
 	version,
 	rollback,
 	scanStatus,
+	pendingPublishes = 0,
 	pending,
 	onConfirm,
 }: {
@@ -53,6 +54,11 @@ export function PublishFlaggedVersionDialog({
 	/** Whether publishing this version would take the project BACK to it. */
 	rollback: boolean;
 	scanStatus: FlaggedScanStatus;
+	/**
+	 * Checks still running that will publish themselves when they finish, and
+	 * so would replace a rollback made now.
+	 */
+	pendingPublishes?: number;
 	/** The shared publish mutation's pending state, so Confirm cannot double-fire. */
 	pending: boolean;
 	onConfirm: () => void;
@@ -76,6 +82,11 @@ export function PublishFlaggedVersionDialog({
 						})}
 					</DialogDescription>
 				</DialogHeader>
+				{rollback && pendingPublishes > 0 ? (
+					<p className="text-muted-foreground text-sm">
+						{t("rollbackPendingNote", { count: pendingPublishes })}
+					</p>
+				) : null}
 				<p className="text-muted-foreground text-sm">
 					{t(scanSentenceKey[scanStatus])}
 				</p>

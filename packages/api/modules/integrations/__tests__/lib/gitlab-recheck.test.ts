@@ -134,6 +134,32 @@ describe("recheckGitlabCapabilities", () => {
 		).rejects.toThrow(GitLabIntegrationNotConnectedError);
 	});
 
+	it("only looks at an active connection row, so a disconnected integration is 'not connected'", async () => {
+		// `gitlab.disconnect` deactivates the row and leaves its credentials, so
+		// the lookup must require `isActive` or a recheck would probe GitLab with
+		// a disconnected user's token. (Call-shape assertion: this fake applies no
+		// `where`; the behaviour itself is covered in
+		// procedures/gitlab-disconnect-token-resolution.test.ts.)
+		const { outer } = makeDb({
+			integration: null,
+			officialServerId: "srv-1",
+			existingOfficialConfigId: null,
+		});
+		await recheckGitlabCapabilities({
+			db: outer as never,
+			input: baseInput,
+		}).catch(() => undefined);
+
+		expect(outer.workflowIntegration.findFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					provider: "GITLAB",
+					isActive: true,
+				}),
+			}),
+		);
+	});
+
 	it("writes useOfficialMcp=true + creates MCPConfig when probe returns ok", async () => {
 		const { outer, tx } = makeDb({
 			integration: {

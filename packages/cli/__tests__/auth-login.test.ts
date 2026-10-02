@@ -12,7 +12,9 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		whoami: vi.fn(),
 		getBaseUrl: vi.fn<() => string | undefined>(),
+		getOAuth: vi.fn<() => unknown>(),
 		saveApiKey: vi.fn(),
+		revokeOAuthSession: vi.fn(async () => true),
 		printError: vi.fn((_: string, code: number) => {
 			throw new ExitSignal(code);
 		}),
@@ -34,7 +36,12 @@ const FabricClientOptions: { value: unknown } = { value: undefined };
 
 vi.mock("../src/lib/config.js", () => ({
 	getBaseUrl: mocks.getBaseUrl,
+	getOAuth: mocks.getOAuth,
 	saveApiKey: mocks.saveApiKey,
+}));
+
+vi.mock("../src/lib/oauth/session.js", () => ({
+	revokeOAuthSession: mocks.revokeOAuthSession,
 }));
 
 vi.mock("../src/lib/output.js", () => ({
@@ -53,7 +60,10 @@ beforeEach(() => {
 	});
 	mocks.getBaseUrl.mockReset();
 	mocks.getBaseUrl.mockReturnValue(undefined);
+	mocks.getOAuth.mockReset();
+	mocks.getOAuth.mockReturnValue(undefined);
 	mocks.saveApiKey.mockReset();
+	mocks.revokeOAuthSession.mockClear();
 	mocks.printError.mockClear();
 	mocks.printSuccess.mockReset();
 	FabricClientOptions.value = undefined;
@@ -91,6 +101,29 @@ describe("fabric auth login", () => {
 			baseUrl: "https://environment.example",
 		});
 		expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {});
+	});
+
+	it("ends at the server the browser sign-in a key replaces", async () => {
+		const signIn = {
+			clientId: "client-example",
+			redirectUri: "http://127.0.0.1:49152/callback",
+			tokenEndpoint: "https://deployment.example/api/auth/oauth2/token",
+			accessToken: "fat_access",
+			refreshToken: "frt_refresh",
+			expiresAt: 1_900_000_000_000,
+		};
+		mocks.getOAuth.mockReturnValue(signIn);
+
+		await runLogin(["--key", "fab_test_key"]);
+
+		expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {});
+		expect(mocks.revokeOAuthSession).toHaveBeenCalledWith(signIn);
+	});
+
+	it("revokes nothing when no browser sign-in was stored", async () => {
+		await runLogin(["--key", "fab_test_key"]);
+
+		expect(mocks.revokeOAuthSession).not.toHaveBeenCalled();
 	});
 
 	it("keeps invalid or expired key guidance for HTTP 401", async () => {

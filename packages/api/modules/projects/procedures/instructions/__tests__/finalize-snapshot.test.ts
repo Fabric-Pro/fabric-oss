@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
+	claimInstructionValidationAttempt: vi.fn(),
 	getInstructionSnapshot: vi.fn(),
 	startInstructionSnapshotValidation: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
@@ -34,6 +35,8 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	claimInstructionValidationAttempt: (...a: unknown[]) =>
+		m.claimInstructionValidationAttempt(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
 	startInstructionSnapshotValidation: (...a: unknown[]) =>
 		m.startInstructionSnapshotValidation(...a),
@@ -100,6 +103,7 @@ beforeEach(() => {
 		userId: "user_1",
 		proposalStatus: null,
 	});
+	m.claimInstructionValidationAttempt.mockResolvedValue("attempt_1");
 	m.startInstructionSnapshotValidation.mockResolvedValue({ changed: true });
 	m.workflowStart.mockResolvedValue(undefined);
 	m.getTemporalClient.mockResolvedValue({
@@ -119,6 +123,7 @@ describe("projects.instructions.finalize", () => {
 			snapshotId: "snap_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
 		});
 		// R15: the workflow must be started BEFORE the status write commits,
 		// so a start failure never strands the snapshot in VALIDATING with no
@@ -146,8 +151,40 @@ describe("projects.instructions.finalize", () => {
 			projectId: "proj_1",
 			organizationId: "org_1",
 			userId: "user_1",
+			validationAttemptId: "attempt_1",
 		});
 		expect(result).toEqual({ status: "VALIDATING" });
+	});
+
+	// The token is on the row BEFORE the run exists, so every write the run
+	// makes can name it and a stale attempt of an earlier run matches nothing.
+	it("writes the ownership token to the row before it starts the workflow", async () => {
+		await m.handlers.finalize!({ input: baseInput, context: ctx });
+
+		expect(m.claimInstructionValidationAttempt).toHaveBeenCalledWith({
+			snapshotId: "snap_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(
+			m.claimInstructionValidationAttempt.mock.invocationCallOrder[0],
+		).toBeLessThan(m.workflowStart.mock.invocationCallOrder[0]);
+	});
+
+	it("starts nothing and answers the row's real status when the row left RECEIVING/FAILED before the token could be written", async () => {
+		m.claimInstructionValidationAttempt.mockResolvedValue(null);
+		m.getInstructionSnapshot
+			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
+			.mockResolvedValueOnce({ id: "snap_1", status: "VALIDATING" });
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "VALIDATING" });
+		expect(m.workflowStart).not.toHaveBeenCalled();
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
 	});
 
 	it("propagates a generic workflow-start failure and never writes VALIDATING (leaves the row retryable)", async () => {
@@ -173,6 +210,7 @@ describe("projects.instructions.finalize", () => {
 			snapshotId: "snap_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
 		});
 		expect(result).toEqual({ status: "VALIDATING" });
 	});
@@ -227,6 +265,7 @@ describe("projects.instructions.finalize", () => {
 			snapshotId: "snap_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
 		});
 		expect(result).toEqual({ status: "VALIDATING" });
 	});
@@ -255,6 +294,7 @@ describe("projects.instructions.finalize", () => {
 			snapshotId: "snap_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
+			validationAttemptId: "attempt_1",
 		});
 		expect(result).toEqual({ status: "VALIDATING" });
 	});
@@ -283,6 +323,28 @@ describe("projects.instructions.finalize", () => {
 		expect(result).toEqual({ status: "FAILED" });
 		// The whole point: no transition, so the row cannot end up VALIDATING
 		// with nothing running. The user retries once the run has closed.
+		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	// "Retry checks" pressed twice: the first press started a fresh run, and
+	// the second one reads the row while it is still FAILED (the first
+	// press's VALIDATING write has not landed yet) and gets `AlreadyStarted`
+	// from the run the FIRST press started. That run is live, so the answer is
+	// the row's real status, not the "previous run is still closing" FAILED.
+	it("answers the row's real status when AlreadyStarted comes from a run a moment-earlier press started", async () => {
+		m.getInstructionSnapshot
+			.mockResolvedValueOnce({ id: "snap_1", status: "FAILED" })
+			.mockResolvedValueOnce({ id: "snap_1", status: "VALIDATING" });
+		const alreadyStarted = new Error("workflow already started");
+		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
+		m.workflowStart.mockRejectedValue(alreadyStarted);
+
+		const result = await m.handlers.finalize!({
+			input: baseInput,
+			context: ctx,
+		});
+
+		expect(result).toEqual({ status: "VALIDATING" });
 		expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
 	});
 
@@ -470,6 +532,7 @@ describe("projects.instructions.finalize: publish first, scan afterwards (Fizzy 
 			projectId: "proj_1",
 			organizationId: "org_1",
 			userId: "user_1",
+			validationAttemptId: "attempt_1",
 			publishBeforeScan: true,
 		});
 	});

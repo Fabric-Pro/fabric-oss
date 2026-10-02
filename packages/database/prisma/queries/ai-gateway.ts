@@ -172,6 +172,32 @@ function getPlatformGatewayProviderConfig(): AiProviderConfig | null {
 }
 
 /**
+ * The organization's own default provider configuration, or null when it has
+ * none with a usable credential. The organization rung of
+ * {@link resolveTenantProviderConfig}, shared with
+ * {@link getOrganizationSystemAiProviderApiKey}.
+ */
+async function resolveOrganizationProviderConfig(
+	organizationId: string,
+): Promise<AiProviderConfig | null> {
+	const orgConfig = await db.cloudProviderConfig.findFirst({
+		where: {
+			organizationId,
+			isDefault: true,
+			enabled: true,
+		},
+		select: {
+			id: true,
+			provider: true,
+			...PROVIDER_CREDENTIAL_SELECT,
+			config: true,
+		},
+	});
+
+	return orgConfig ? toAiProviderConfig(orgConfig, "organization") : null;
+}
+
+/**
  * Resolve the tenant's OWN provider configuration.
  *
  * AI PROVIDER RESOLUTION (with fallback):
@@ -210,25 +236,10 @@ async function resolveTenantProviderConfig({
 		// charged, NOT what a guest may see — guests still reach no other
 		// project, no organization settings, and never the key itself.
 		// Adding a membership filter here would silently change who pays.
-		const orgConfig = await db.cloudProviderConfig.findFirst({
-			where: {
-				organizationId,
-				isDefault: true,
-				enabled: true,
-			},
-			select: {
-				id: true,
-				provider: true,
-				...PROVIDER_CREDENTIAL_SELECT,
-				config: true,
-			},
-		});
-
+		const orgConfig =
+			await resolveOrganizationProviderConfig(organizationId);
 		if (orgConfig) {
-			const resolved = toAiProviderConfig(orgConfig, "organization");
-			if (resolved) {
-				return resolved;
-			}
+			return orgConfig;
 		}
 
 		// Organization has no configured provider - fall back to personal config
@@ -330,6 +341,35 @@ export async function getSystemAiProviderApiKey({
 		organizationId,
 	});
 
+	if (resolved) {
+		return resolved;
+	}
+
+	return getPlatformGatewayProviderConfig() ?? { ...EMPTY_PROVIDER_CONFIG };
+}
+
+/**
+ * {@link getSystemAiProviderApiKey} without the personal rung: the
+ * organization's own default provider, else the deployment's gateway key.
+ *
+ * For an index the whole organization shares (company context, Fizzy #2719).
+ * Its vectors are written by one member and searched by every other, so the
+ * model that produced them must not depend on who is acting; a member's
+ * personal key would give each member a different model. An organization
+ * with neither resolves to the "nothing configured" shape.
+ */
+export async function getOrganizationSystemAiProviderApiKey({
+	organizationId,
+}: {
+	organizationId: string;
+}): Promise<AiProviderConfig> {
+	if (!organizationId) {
+		throw new Error(
+			"getOrganizationSystemAiProviderApiKey requires an organizationId",
+		);
+	}
+
+	const resolved = await resolveOrganizationProviderConfig(organizationId);
 	if (resolved) {
 		return resolved;
 	}

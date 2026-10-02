@@ -345,6 +345,66 @@ describe("InstructionProposalBranchPanel", () => {
 		confirm.mockRestore();
 	});
 
+	it.each([
+		{
+			label: "Close",
+			failure: null,
+			button: branchCopy.close,
+			command: () => state.close,
+		},
+		{
+			label: "Retry opening",
+			failure: { code: "PR_CREATION_REFUSED", retryable: false },
+			button: branchCopy.retryOpening,
+			command: () => state.retry,
+		},
+		{
+			label: "Start over",
+			failure: { code: "CREATE_OUTCOME_UNKNOWN", retryable: false },
+			button: branchCopy.startOver,
+			command: () => state.startOver,
+		},
+		{
+			label: "Stop tracking",
+			failure: { code: "REPOSITORY_CHANGED", retryable: false },
+			button: branchCopy.stopTracking,
+			command: () => state.stopTracking,
+		},
+	])(
+		"$label toasts the translated line for the error's code, never the server's message",
+		async ({ failure, button, command }) => {
+			state.branches = [
+				{
+					branch: branch(
+						failure === null ? {} : { state: "BLOCKED", failure },
+					),
+					liveChanges: 1,
+				},
+			];
+			state.commandError = Object.assign(
+				new Error("Upstream said: provider detail"),
+				{ code: "CONFLICT" },
+			);
+			const user = userEvent.setup();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			renderPanel();
+			await user.click(
+				await screen.findByRole("button", { name: button }),
+			);
+
+			await waitFor(() =>
+				expect(state.toastError).toHaveBeenCalledWith(
+					en.projects.codingInstructions.actionErrors.conflict,
+				),
+			);
+			expect(command()).toHaveBeenCalled();
+			expect(state.toastError).not.toHaveBeenCalledWith(
+				"Upstream said: provider detail",
+			);
+			confirm.mockRestore();
+		},
+	);
+
 	it("offers Retry opening only on PR_CREATION_REFUSED", async () => {
 		state.branches = [
 			{

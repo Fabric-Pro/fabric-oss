@@ -30,6 +30,11 @@ import {
 	getGitLabAccessToken,
 } from "@repo/integrations/gitlab";
 import {
+	connectionRow,
+	createWorkflowIntegrationFake,
+	type FakeWorkflowIntegrationRow,
+} from "../../../__tests__/helpers/workflow-integration-fake";
+import {
 	PMSourceNotFound,
 	resolvePmServerKey,
 	resolvePmSource,
@@ -251,71 +256,92 @@ describe("resolvePmSource", () => {
 		expect(vi.mocked(db.mCPServer.findUnique)).not.toHaveBeenCalled();
 	});
 
-	// --- Org-level fallback ---------------------------------------------------
-	// A project's GitLab REST connection belongs to the project/org, not the
-	// individual user who happened to set it up. Code-repo integrations resolve
-	// per-project (any teammate can sync); the PM GitLab REST path must behave
-	// the same way. In org context, when the calling user has no GitLab
-	// integration of their own, fall back to any active org GitLab integration
-	// and resolve the token via that integration's owner. Personal projects
-	// stay strictly user-scoped (you can't borrow another user's personal OAuth).
+	// --- Connection owner ----------------------------------------------------
+	// A GitLab WorkflowIntegration is a member's personal OAuth connection. In
+	// org context the REST path must act through the CALLER's own connection
+	// and never fall back to a teammate's, so a member who never connected
+	// (or disconnected) cannot read or write tickets through someone else's
+	// account. Rows are seeded in an in-memory store (teammate first) so a
+	// lookup without `userId` in the organization arm would pick the teammate.
 
-	it("org context: falls back to an org-mate's active GitLab integration when the caller has none", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		// caller (u2) has no GitLab integration; an org-mate (u1) does.
-		vi.mocked(db.workflowIntegration.findFirst)
-			.mockResolvedValueOnce(null)
-			.mockResolvedValueOnce({ id: "wi-org", userId: "u1" } as never);
-		vi.mocked(getGitLabAccessToken).mockResolvedValue("ORG_TOK" as never);
-
-		const source = await resolvePmSource({
-			mcpServerId: "srv-gl",
-			mcpConfigId: null,
-			userId: "u2",
-			organizationId: "org-x",
-			containerId: "100",
-		});
-
-		expect(source).toMatchObject({ kind: "rest-gitlab", token: "ORG_TOK" });
-		// Token resolved via the integration's OWNER, not the calling user.
-		expect(getGitLabAccessToken).toHaveBeenCalledWith("u1", "org-x");
-		// The fallback lookup is org-scoped (no userId) — any active integration.
-		const orgCall = vi.mocked(db.workflowIntegration.findFirst).mock
-			.calls[1]?.[0];
-		expect(orgCall?.where).toMatchObject({
-			organizationId: "org-x",
-			provider: "GITLAB",
-			isActive: true,
-		});
-		expect(orgCall?.where).not.toHaveProperty("userId");
+	const teammateGitLab = connectionRow({
+		id: "wi-teammate",
+		userId: "user-1",
+		provider: "GITLAB",
+	});
+	const callerGitLab = connectionRow({
+		id: "wi-caller",
+		userId: "user-2",
+		provider: "GITLAB",
 	});
 
-	it("org context: prefers the caller's own GitLab integration over an org-mate's", async () => {
+	function seed(rows: FakeWorkflowIntegrationRow[]) {
+		const fake = createWorkflowIntegrationFake(rows);
+		vi.mocked(db.workflowIntegration.findFirst).mockImplementation(
+			fake.findFirst as never,
+		);
+	}
+
+	it("org context: never borrows a teammate's GitLab connection when the caller has none", async () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValueOnce({
-			id: "wi-own",
-			userId: "u2",
+		seed([teammateGitLab]);
+		vi.mocked(getGitLabAccessToken).mockResolvedValue("TEAMMATE_TOK");
+
+		await expect(
+			resolvePmSource({
+				mcpServerId: "srv-gl",
+				mcpConfigId: null,
+				userId: "user-2",
+				organizationId: "org-example",
+				containerId: "100",
+			}),
+		).rejects.toMatchObject({ reason: "no-integration" });
+		expect(getGitLabAccessToken).not.toHaveBeenCalled();
+	});
+
+	it("org context: uses the caller's own GitLab connection, not a teammate's", async () => {
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
 		} as never);
-		vi.mocked(getGitLabAccessToken).mockResolvedValue("OWN_TOK" as never);
+		seed([teammateGitLab, callerGitLab]);
+		vi.mocked(getGitLabAccessToken).mockImplementation(
+			async (userId: string) => `${userId}-token`,
+		);
 
 		const source = await resolvePmSource({
 			mcpServerId: "srv-gl",
 			mcpConfigId: null,
-			userId: "u2",
-			organizationId: "org-x",
+			userId: "user-2",
+			organizationId: "org-example",
 			containerId: "100",
 		});
 
-		expect(source).toMatchObject({ kind: "rest-gitlab", token: "OWN_TOK" });
-		// Own integration found on the first lookup — no org fallback needed.
-		expect(getGitLabAccessToken).toHaveBeenCalledWith("u2", "org-x");
-		expect(
-			vi.mocked(db.workflowIntegration.findFirst),
-		).toHaveBeenCalledTimes(1);
+		expect(source).toMatchObject({
+			kind: "rest-gitlab",
+			token: "user-2-token",
+		});
+		expect(getGitLabAccessToken).toHaveBeenCalledWith(
+			"user-2",
+			"org-example",
+		);
+	});
+
+	it("the hourly poll (requireFreshToken) acts as the project owner, never a teammate", async () => {
+		seed([teammateGitLab]);
+
+		await expect(
+			resolvePmSource({
+				mcpServerId: "key:gitlab-official",
+				mcpConfigId: null,
+				userId: "user-2",
+				organizationId: "org-example",
+				containerId: "100",
+				requireFreshToken: true,
+			}),
+		).rejects.toMatchObject({ reason: "no-integration" });
+		expect(getFreshGitLabAccessToken).not.toHaveBeenCalled();
 	});
 
 	it("personal context: never borrows another user's integration (stays user-scoped)", async () => {

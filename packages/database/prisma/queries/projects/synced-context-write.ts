@@ -66,6 +66,8 @@ export function buildSyncedContextCreateData(input: {
 	userId: string;
 	organizationId: string | null;
 	repositorySyncId?: string;
+	/** The git blob the content was read from; only the repository sync's writer knows it. */
+	sourceBlobOid?: string;
 	now: Date;
 }) {
 	return {
@@ -82,6 +84,7 @@ export function buildSyncedContextCreateData(input: {
 		...(input.repositorySyncId
 			? { repositorySyncId: input.repositorySyncId }
 			: {}),
+		...(input.sourceBlobOid ? { sourceBlobOid: input.sourceBlobOid } : {}),
 	} satisfies Prisma.ProjectContextUncheckedCreateInput;
 }
 
@@ -90,6 +93,10 @@ export function buildSyncedContextCreateData(input: {
  * content pair (never the metadata edit's), the title and path refreshed in
  * `metadata` with every other key kept, and `embeddedAt` cleared so the row
  * reads as not yet indexed until the re-embed lands.
+ *
+ * `sourceBlobOid` is the git blob the content was read from: the repository
+ * sync's writer passes it, and every other writer leaves it out, which CLEARS
+ * the column, so a member's edit is never mistaken for an unchanged blob.
  */
 export function buildSyncedContextReplaceData(input: {
 	storedMetadata: Prisma.JsonValue;
@@ -99,11 +106,13 @@ export function buildSyncedContextReplaceData(input: {
 	/** Already resolved; see `syncedContextTitle`. */
 	title: string;
 	userId: string;
+	sourceBlobOid?: string;
 	now: Date;
 }) {
 	return {
 		content: input.content,
 		contentHash: input.contentHash,
+		sourceBlobOid: input.sourceBlobOid ?? null,
 		contentUpdatedAt: input.now,
 		contentUpdatedByUserId: input.userId,
 		metadata: {
