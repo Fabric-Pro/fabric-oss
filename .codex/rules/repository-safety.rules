@@ -1,5 +1,6 @@
-# Commands forbidden by repository policy. These rules are an additional Codex
-# boundary; CI and review remain the cross-agent enforcement layers.
+# Commands restricted by repository policy: forbidden outright, or requiring
+# the user's approval. These rules are an additional Codex boundary; CI and
+# review remain the cross-agent enforcement layers.
 
 prefix_rule(
     pattern = ["git", "clean"],
@@ -46,8 +47,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["gh", "pr", "merge"],
-    decision = "forbidden",
-    justification = "This repository lands through the OSS relay; do not merge its pull requests directly.",
+    decision = "prompt",
+    justification = "Land a PR only when the user's requested workflow includes landing. land a staging PR with gh pr merge <n> --squash --match-head-commit <sha>, never --admin. When the legacy OSS relay applies, do not merge at all.",
     match = ["gh pr merge 123", "gh pr merge --squash 123"],
     not_match = ["gh pr view 123"],
 )

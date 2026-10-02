@@ -34,6 +34,14 @@ vi.mock("@repo/database", () => ({
 vi.mock("@repo/connectors", () => ({
 	verifyRepositoryBranch: m.verifyRepositoryBranch,
 }));
+// The follow-up run a changed selection can queue is not what this suite is
+// about, and its module reaches the Temporal client.
+vi.mock("../start-sync-workflow", () => ({
+	isInstructionRepositorySyncRunning: async () => false,
+}));
+vi.mock("../../../../lib/repository-sync-follow-up", () => ({
+	queueRepositorySyncFollowUp: async () => false,
+}));
 vi.mock("@repo/integrations/repo-auth", () => ({
 	resolveFreshRepoTokenForRow: m.resolveFreshRepoTokenForRow,
 }));

@@ -7,14 +7,23 @@ on:
   push:
     branches: [staging, 'promotion/**']
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional exact source SHA for pinned recovery builds
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
-# No concurrency group by design. GitHub concurrency keeps at most one pending
-# run and silently replaces older pending runs; that could discard the only
-# snapshot proof for a staging fast-forward or future release. Every master SHA
-# therefore keeps its own run to completion.
+# Automatic staging pushes keep one running build and one replaceable pending
+# build. A new push does not interrupt the running build, so merge bursts still
+# produce complete snapshot evidence. Promotion and manual recovery builds use
+# their own run-ID groups and cannot replace an automatic staging request.
+concurrency:
+  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' && 'private-staging-images-auto-staging' || format('private-staging-images-pinned-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 env:
   SNAPSHOT_NAMESPACE: ghcr.io/fabric-pro/fabric-dev-snapshots
@@ -35,11 +44,43 @@ jobs:
     if: github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.build-admission.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+          persist-credentials: false
+
+      - name: Admit exact source tree for snapshot builds
+        id: build-admission
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || exit 1
+          [[ -z "${EXPECTED_SHA:-}" || "$EXPECTED_SHA" == "$GITHUB_SHA" ]] || { echo 'pinned build source moved' >&2; exit 1; }
+          BUILD=true
+          if [[ "$EVENT_NAME" == push && "$SOURCE_REF" == refs/heads/promotion/* ]]; then
+            # Trusted ops selects reuse or dispatches a complete fresh build.
+            # A consumed release entry alone never authorizes automatic builds.
+            BUILD=false
+            [[ "$(git cat-file -t "$GITHUB_SHA:.changeset")" == tree ]] || exit 1
+            PATHS="$RUNNER_TEMP/promotion-changeset-paths"
+            git ls-tree -r -z --name-only "$GITHUB_SHA" -- .changeset >"$PATHS"
+            while IFS= read -r -d '' path; do
+              if [[ "$path" == .changeset/*.md && "${path##*/}" != README.md ]]; then
+                BUILD=false
+              fi
+            done <"$PATHS"
+          fi
+          echo "build=$BUILD" >>"$GITHUB_OUTPUT"
 
       - name: Run focused Node tests
         run: node --test .github/actions/oss-snapshot/*manifest.test.mjs
@@ -47,7 +88,7 @@ jobs:
   build:
     name: Build and attest ${{ matrix.component }}
     needs: policy-tests
-    if: github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
+    if: needs.policy-tests.outputs.build == 'true' && github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -106,7 +147,7 @@ jobs:
             || { echo "::error::checkout is $ACTUAL_SHA, expected $GITHUB_SHA"; exit 1; }
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Verify private package identity and visibility
         env:
@@ -274,7 +315,7 @@ jobs:
   aggregate:
     name: Validate and aggregate all snapshots
     needs: [policy-tests, build]
-    if: github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
+    if: needs.policy-tests.outputs.build == 'true' && github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

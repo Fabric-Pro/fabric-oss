@@ -386,7 +386,7 @@ describe("ConnectCliDialog — the placeholder key", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("replaces the placeholder in the local-sync commands node too, for the coding-instructions purpose with local sync available", async () => {
+	it("signs the local-sync commands in through the browser until a key is minted, then carries the key in the same node", async () => {
 		const user = setupUser();
 		renderHost({
 			startOpen: true,
@@ -397,15 +397,20 @@ describe("ConnectCliDialog — the placeholder key", () => {
 		const commandNode = screen.getByTestId(
 			"connect-cli-local-sync-command",
 		);
-		expect(commandNode.textContent).toContain(PLACEHOLDER_KEY);
-		expect(commandNode.textContent).not.toContain(RAW_KEY);
+		const browserSignIn = `fabric auth login --base-url ${window.location.origin}`;
+		// No key and no placeholder: the CLI opens the browser to sign in.
+		expect(commandNode.textContent).toContain(browserSignIn);
+		expect(commandNode.textContent).not.toContain("--key");
+		expect(commandNode.textContent).not.toContain(PLACEHOLDER_KEY);
 
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
 		);
 
 		await waitFor(() => expect(commandNode.textContent).toContain(RAW_KEY));
-		expect(commandNode.textContent).not.toContain(PLACEHOLDER_KEY);
+		expect(commandNode.textContent).toContain(
+			`fabric auth login --key ${RAW_KEY} --base-url ${window.location.origin}`,
+		);
 	});
 
 	it("removes the create control after minting, keeps the disclosure in place, and shows the shown-once notice", async () => {
@@ -764,10 +769,12 @@ describe("ConnectCliDialog — the starter instruction", () => {
 			localSetup: { kind: "upload" },
 		});
 
-		// Present from the first open, with the placeholder standing in.
+		// Present from the first open, signing in through the browser.
 		expect(
 			screen.getByTestId("connect-cli-local-sync-command"),
-		).toHaveTextContent(PLACEHOLDER_KEY);
+		).toHaveTextContent(
+			`fabric auth login --base-url ${window.location.origin}`,
+		);
 
 		await user.click(
 			await screen.findByRole("button", { name: /create the key/i }),
@@ -1257,7 +1264,7 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		}
 	});
 
-	it("says the sentence has to be sent in the tool that was just configured", async () => {
+	it("says the sentence has to be sent in the tool that was just connected", async () => {
 		const user = setupUser();
 		renderHost({ startOpen: true });
 		await user.click(
@@ -1265,9 +1272,11 @@ describe("ConnectCliDialog — the starter instruction", () => {
 		);
 
 		// The section has to read as a complete instruction on its own now
-		// that nothing in it presses a button for the reader.
+		// that nothing in it presses a button for the reader. "Connected",
+		// not "configured": the default route signs the tool in rather than
+		// pasting a configuration into it.
 		expect(
-			await screen.findByText(/send it in the tool you just configured/i),
+			await screen.findByText(/send it in the tool you just connected/i),
 		).toBeInTheDocument();
 	});
 });
@@ -1782,11 +1791,66 @@ describe("ConnectCliDialog — resilience", () => {
 	});
 });
 
+describe("ConnectCliDialog — signing in from the tool", () => {
+	it("leads with the keyless route and keeps the API key behind a closed disclosure", async () => {
+		renderHost({ startOpen: true });
+
+		const signIn = await screen.findByTestId("agent-sign-in");
+		expect(
+			within(signIn).getByTestId("agent-sign-in-claude-code"),
+		).toHaveTextContent(
+			`claude mcp add --transport http fabric ${window.location.origin}/api/mcp-gateway`,
+		);
+		expect(
+			screen.getByTestId("connect-cli-key-alternative"),
+		).not.toHaveAttribute("open");
+		expect(createKeyMock).not.toHaveBeenCalled();
+	});
+
+	it("never puts the minted key into the sign-in route, and announces its copies in the one live region", async () => {
+		const user = setupUser();
+		renderHost({ startOpen: true });
+		await user.click(
+			await screen.findByRole("button", { name: /create the key/i }),
+		);
+		await waitFor(() => expect(configurationText()).toContain(RAW_KEY));
+		expect(
+			screen.getByTestId("connect-cli-key-alternative"),
+		).toHaveAttribute("open");
+
+		const signIn = screen.getByTestId("agent-sign-in");
+		expect(signIn.textContent).not.toContain(RAW_KEY);
+
+		await user.click(
+			within(signIn).getByRole("button", {
+				name: "Copy the Claude Code command",
+			}),
+		);
+
+		expect(clipboardWrite).toHaveBeenCalledWith(
+			`claude mcp add --transport http fabric ${window.location.origin}/api/mcp-gateway`,
+		);
+		expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(
+			1,
+		);
+		await waitFor(() =>
+			expect(
+				document.querySelector('[aria-live="polite"]')?.textContent,
+			).toMatch(/claude code command: copied to the clipboard/i),
+		);
+		// Copying a keyless command is not taking the key: the guard holds.
+		expect(
+			screen.getByTestId("connect-cli-dismissal-note"),
+		).toBeInTheDocument();
+	});
+});
+
 describe("ConnectCliDialog — focus", () => {
-	it("puts initial focus on the create control when the dialog opens", async () => {
+	it("puts initial focus on the sign-in route's first control when the dialog opens", async () => {
 		// Opened from closed via the invoking control, as production does —
 		// `startOpen` skips the real open transition Radix's own focus
-		// handling runs through.
+		// handling runs through. The create control sits in the collapsed
+		// API-key route now, so the default route takes focus.
 		const user = setupUser();
 		renderHost();
 
@@ -1796,7 +1860,7 @@ describe("ConnectCliDialog — focus", () => {
 
 		await waitFor(() =>
 			expect(
-				screen.getByRole("button", { name: /create the key/i }),
+				screen.getByRole("tab", { name: "Claude Code" }),
 			).toHaveFocus(),
 		);
 	});

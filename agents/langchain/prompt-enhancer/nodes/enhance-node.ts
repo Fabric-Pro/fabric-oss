@@ -38,6 +38,7 @@ import {
 	extractProviderConfig,
 	getAgentModelAsync,
 	isJsonParseError,
+	isRetryableError,
 	MAX_JSON_RETRIES,
 	MAX_RETRIES,
 	sleep,
@@ -236,6 +237,19 @@ function sanitizeMessagesForModel(messages: BaseMessage[]): BaseMessage[] {
 }
 
 /**
+ * Thrown when the model calls enhance_prompt_local without a string
+ * `enhancedContent`. That is a malformed generation rather than a provider
+ * failure, so it gets the JSON-parse retry budget: a fresh attempt can
+ * self-correct, where a 401 or a schema-rejecting 400 cannot.
+ */
+class MalformedToolArgsError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "MalformedToolArgsError";
+	}
+}
+
+/**
  * Enhance node for prompt improvement following ag-ui-demo pattern
  *
  * Flow:
@@ -431,6 +445,11 @@ export async function enhanceNode(
 					enhancedContent: string;
 					focusAnchor?: string;
 				};
+				if (typeof args?.enhancedContent !== "string") {
+					throw new MalformedToolArgsError(
+						"[Prompt Enhancer] enhance_prompt_local was called without enhancedContent",
+					);
+				}
 
 				console.log("[Prompt Enhancer] Prompt enhanced", {
 					contentLength: args.enhancedContent.length,
@@ -512,18 +531,27 @@ export async function enhanceNode(
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		const isJsonError = error instanceof Error && isJsonParseError(error);
+		// A malformed generation (unparseable or incomplete tool-call
+		// arguments) can self-correct on a fresh attempt. Anything else is
+		// retried only when the shared predicate calls it transient: a 401,
+		// 403, schema-rejecting 400 or context overflow fails the same way on
+		// every attempt.
+		const isGenerationError =
+			isJsonError || error instanceof MalformedToolArgsError;
+		const retryable = isGenerationError || isRetryableError(error);
 
 		console.error("[Prompt Enhancer] Error in enhance node", {
 			error: errorMessage,
 			isJsonParseError: isJsonError,
+			retryable,
 			retryCount: state.retryCount || 0,
 		});
 
 		// Determine max retries based on error type
-		const maxRetries = isJsonError ? MAX_JSON_RETRIES : MAX_RETRIES;
+		const maxRetries = isGenerationError ? MAX_JSON_RETRIES : MAX_RETRIES;
 		const currentRetryCount = state.retryCount || 0;
 
-		if (currentRetryCount < maxRetries) {
+		if (retryable && currentRetryCount < maxRetries) {
 			const nextRetryCount = currentRetryCount + 1;
 			const delayMs = calculateRetryDelay(currentRetryCount);
 
@@ -545,16 +573,20 @@ export async function enhanceNode(
 			});
 		}
 
-		// Max retries reached
-		console.error("[Prompt Enhancer] Max retries reached", {
-			retryCount: currentRetryCount,
-			maxRetries,
-			isJsonParseError: isJsonError,
-		});
+		console.error(
+			retryable
+				? "[Prompt Enhancer] Max retries reached"
+				: "[Prompt Enhancer] Not retrying a non-retryable error",
+			{
+				retryCount: currentRetryCount,
+				maxRetries,
+				isJsonParseError: isJsonError,
+			},
+		);
 
 		// Create user-friendly error message
 		let userFacingError: string;
-		if (isJsonError) {
+		if (isGenerationError) {
 			userFacingError =
 				"The AI had difficulty processing this prompt. This can happen with complex template syntax. Please try again or simplify the request.";
 		} else {

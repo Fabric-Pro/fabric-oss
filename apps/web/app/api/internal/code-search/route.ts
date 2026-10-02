@@ -132,6 +132,7 @@ async function resolveCodeSearchCredentials(
 			...orgFilter,
 			provider: provider as WorkflowIntegrationProvider,
 			isActive: true,
+			NOT: { name: `${provider}_OAUTH_APP` },
 		},
 		select: { credentials: true },
 		orderBy: { updatedAt: "desc" },

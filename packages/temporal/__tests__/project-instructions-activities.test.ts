@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
 	markInstructionSnapshotReady: vi.fn(),
 	markInstructionSnapshotRejected: vi.fn(),
 	claimInstructionSnapshotValidation: vi.fn(),
+	recordInstructionSnapshotProgress: vi.fn(),
 	updateInstructionFileMetadata: vi.fn(),
 	getInstructionSnapshotById: vi.fn(),
 	canReadProjectInstructions: vi.fn(),
@@ -14,6 +15,10 @@ const m = vi.hoisted(() => ({
 	listPrunableInstructionSnapshots: vi.fn(),
 	deleteInstructionSnapshot: vi.fn(),
 	recordAudit: vi.fn(),
+	// Inherited files (Fizzy #2546): the source rows and the bulk key move.
+	listInheritedInstructionSources: vi.fn(),
+	moveInheritedInstructionFileKeys: vi.fn(),
+	recordInstructionSnapshotScanRulesVersion: vi.fn(),
 	downloadFile: vi.fn(),
 	copyFile: vi.fn(),
 	uploadFile: vi.fn(),
@@ -43,7 +48,15 @@ function redactedKeys(value: unknown): string[] {
 	]);
 }
 
-vi.mock("@repo/database", () => ({ ...m }));
+// The acceptance rule for an inherited source is pure and shared with the
+// database package's own create; it is the real one here, so these cases
+// exercise the rule and not a stand-in for it.
+vi.mock("@repo/database", async () => {
+	const { isAcceptableInheritedSource } = await import(
+		"../../database/prisma/queries/instruction-inherited-source"
+	);
+	return { ...m, isAcceptableInheritedSource };
+});
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({
 		downloadFile: m.downloadFile,
@@ -140,6 +153,7 @@ import {
 	snapshotKey,
 	stagingKey,
 } from "@repo/instructions";
+import { INSTRUCTION_SCAN_RULES_VERSION } from "@repo/instructions/scan-rules-version";
 import {
 	finalizeInstructionSnapshot,
 	markInstructionSnapshotFailed,
@@ -209,6 +223,20 @@ type StageSpec = {
 	 * stand in for an inherited file (Fizzy #2546).
 	 */
 	inheritedFromFileId?: string | null;
+	/**
+	 * The SOURCE row an inherited file names, as the database reports it.
+	 * Defaults to a READY snapshot `base` holding the same bytes at its own
+	 * promoted key, never cleared by any rule set. `null` is a source that is
+	 * not there.
+	 */
+	source?: {
+		snapshotId?: string;
+		status?: string;
+		scanRulesVersion?: string | null;
+		sha256?: string;
+		size?: number;
+		storageKey?: string;
+	} | null;
 };
 
 async function stage(specs: StageSpec[]) {
@@ -217,10 +245,25 @@ async function stage(specs: StageSpec[]) {
 		[];
 	const bytes = new Map<string, Buffer>();
 	const heads = new Map<string, number | null>();
+	const sources = new Map<string, Record<string, unknown>>();
 	for (const spec of specs) {
 		const data = spec.data ?? Buffer.alloc(0);
 		const key = spec.storageKey ?? stagingKey("p", "s", spec.id);
 		const size = spec.size ?? data.length;
+		if (spec.inheritedFromFileId && spec.source !== null) {
+			const sourceSnapshot = spec.source?.snapshotId ?? "base";
+			sources.set(spec.inheritedFromFileId, {
+				id: spec.inheritedFromFileId,
+				snapshotId: sourceSnapshot,
+				storageKey:
+					spec.source?.storageKey ??
+					snapshotKey("p", sourceSnapshot, spec.inheritedFromFileId),
+				sha256: spec.source?.sha256 ?? spec.sha256 ?? (await sha(data)),
+				size: spec.source?.size ?? size,
+				snapshotStatus: spec.source?.status ?? "READY",
+				scanRulesVersion: spec.source?.scanRulesVersion ?? null,
+			});
+		}
 		heads.set(
 			key,
 			spec.headPresent === false ? null : (spec.headSize ?? data.length),
@@ -249,6 +292,7 @@ async function stage(specs: StageSpec[]) {
 		bytes.set(key, data);
 	}
 	m.listInstructionFiles.mockResolvedValue(rows);
+	m.listInheritedInstructionSources.mockResolvedValue(sources);
 	m.listObjects.mockResolvedValue({ objects });
 	m.getFileMetadata.mockImplementation(async (key: string) => {
 		const size = heads.get(key);
@@ -300,11 +344,18 @@ beforeEach(() => {
 	// committed.
 	m.markInstructionSnapshotReady.mockResolvedValue({ changed: true });
 	m.markInstructionSnapshotRejected.mockResolvedValue({ changed: true });
+	m.listInheritedInstructionSources.mockResolvedValue(new Map());
+	m.moveInheritedInstructionFileKeys.mockResolvedValue({ moved: 0 });
+	m.recordInstructionSnapshotScanRulesVersion.mockResolvedValue({
+		changed: true,
+	});
+	m.copyFile.mockResolvedValue(undefined);
 	m.failInstructionSnapshot.mockResolvedValue({ changed: true });
 	// Default: the gate's claim on the row is the write that moves it into
 	// VALIDATING. The cases below override it with `{ changed: false }` to
 	// stand in for a row something else already moved.
 	m.claimInstructionSnapshotValidation.mockResolvedValue({ changed: true });
+	m.recordInstructionSnapshotProgress.mockResolvedValue({ changed: true });
 	m.canReadProjectInstructions.mockResolvedValue(true);
 	// Default: the snapshot exists and belongs to `snap`'s project/org, so
 	// every activity's R16 tenant check passes and the existing behavioral
@@ -2894,8 +2945,33 @@ describe("derived snapshots (Fizzy #2546)", () => {
 		expect(m.downloadFile).not.toHaveBeenCalled();
 	});
 
-	it("refuses a row claiming inheritance on a snapshot with no base", async () => {
-		// Default snapshot row: `baseSnapshotId` is absent.
+	it("refuses a row whose source row is not there, whatever the snapshot's base column says", async () => {
+		// The source is validated from its own row, not from `baseSnapshotId`:
+		// a pruned base clears that column and must not make a missing source
+		// look acceptable, or the reverse.
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+				source: null,
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections).toEqual([
+			{ path: "AGENTS.md", reason: "missing" },
+		]);
+	});
+
+	it("accepts an inherited row on a snapshot whose base column was cleared", async () => {
+		// Default snapshot row: `baseSnapshotId` is absent (SetNull after a
+		// prune, or a repository sync that never sets it).
 		await stage([
 			{
 				id: "inh1",
@@ -2908,13 +2984,40 @@ describe("derived snapshots (Fizzy #2546)", () => {
 
 		const r = await verifyAndScanInstructionFiles(snap);
 
+		expect(r.ok).toBe(true);
+	});
+
+	it.each([
+		["a source in a snapshot that is not READY", { status: "REJECTED" }],
+		["a source with other bytes", { sha256: "f".repeat(64) }],
+		["a source of another size", { size: 999 }],
+		[
+			"a source that is not at its own promoted key",
+			{ storageKey: "projects/p/instructions/staging/base/bf1" },
+		],
+	])("refuses %s", async (_label, source) => {
+		derivedSnapshotRow();
+		await stage([
+			{
+				id: "inh1",
+				path: "AGENTS.md",
+				data: Buffer.from("# inherited"),
+				storageKey: BASE_KEY,
+				inheritedFromFileId: "bf1",
+				source,
+			},
+		]);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
 		expect(r.ok).toBe(false);
 		expect(r.rejections).toEqual([
 			{ path: "AGENTS.md", reason: "missing" },
 		]);
+		expect(m.downloadFile).not.toHaveBeenCalled();
 	});
 
-	it("promotes an inherited file into THIS snapshot's prefix and never deletes the base's key", async () => {
+	it("copies an inherited file server-side into THIS snapshot's prefix and never deletes the base's key", async () => {
 		derivedSnapshotRow();
 		await stage([
 			{
@@ -2929,18 +3032,25 @@ describe("derived snapshots (Fizzy #2546)", () => {
 		const r = await finalizeInstructionSnapshot(snap);
 
 		expect(r.ok).toBe(true);
-		// Re-hashed from the base's object and WRITTEN to this snapshot's own
-		// key; never a server-side copy and never a move.
-		expect(m.uploadFile).toHaveBeenCalledWith(
+		// The source is an immutable promoted key, so promotion copies it
+		// server-side: no download, no upload, and the rows move in one write.
+		expect(m.copyFile).toHaveBeenCalledWith(
+			BASE_KEY,
 			snapshotKey("p", "s", "inh1"),
-			expect.any(Buffer),
-			expect.objectContaining({ bucket: "skills" }),
+			{ bucket: "skills" },
 		);
-		expect(m.updateInstructionFileMetadata).toHaveBeenCalledWith(
-			"inh1",
-			"o",
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.moveInheritedInstructionFileKeys).toHaveBeenCalledWith(
 			expect.objectContaining({
-				storageKey: snapshotKey("p", "s", "inh1"),
+				snapshotId: "s",
+				moves: [
+					{
+						fileId: "inh1",
+						from: BASE_KEY,
+						to: snapshotKey("p", "s", "inh1"),
+					},
+				],
 			}),
 		);
 		// The staging cleanup runs on DETERMINISTIC keys for this snapshot
@@ -3344,7 +3454,7 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
 		});
 
-		it("copies an inherited file into THIS snapshot's prefix from the base's object", async () => {
+		it("reads an inherited file whose source was never cleared and writes it into THIS snapshot's prefix", async () => {
 			const BASE_KEY = "projects/p/instructions/snapshots/base/bf1";
 			fastRow({ baseSnapshotId: "base" });
 			const inherited = Buffer.from("# inherited");
@@ -4227,5 +4337,1048 @@ describe("secret findings are bounded while they are collected", () => {
 			detail: `${6_500 - 100} more`,
 		});
 		expectBoundedScans();
+	});
+});
+
+describe("storage round trips overlap, verdicts keep manifest order", () => {
+	/**
+	 * Wraps the staged download (and optionally the upload) so the FIRST
+	 * files are the slowest, and counts how many are in flight at once. A
+	 * pass that still ran one file at a time would peak at 1; one whose
+	 * verdicts followed completion order would list the late files first.
+	 */
+	function instrument(slowest: number) {
+		const counts = {
+			downloads: 0,
+			peakDownloads: 0,
+			uploads: 0,
+			peakUploads: 0,
+		};
+		const staged = m.downloadFile.getMockImplementation();
+		m.downloadFile.mockImplementation(async (key: string) => {
+			counts.downloads++;
+			counts.peakDownloads = Math.max(
+				counts.peakDownloads,
+				counts.downloads,
+			);
+			const index = Number(/f(\d+)$/.exec(key)?.[1] ?? 0);
+			await new Promise((r) =>
+				setTimeout(r, Math.max(0, slowest - index)),
+			);
+			try {
+				return await staged?.(key);
+			} finally {
+				counts.downloads--;
+			}
+		});
+		m.uploadFile.mockImplementation(async () => {
+			counts.uploads++;
+			counts.peakUploads = Math.max(counts.peakUploads, counts.uploads);
+			await new Promise((r) => setTimeout(r, 2));
+			counts.uploads--;
+		});
+		return counts;
+	}
+
+	const files = (n: number, data: (i: number) => string) =>
+		Array.from({ length: n }, (_, i) => ({
+			id: `f${i}`,
+			path: `rules/r${String(i).padStart(2, "0")}.md`,
+			data: Buffer.from(data(i)),
+		}));
+
+	it("the gate overlaps downloads but reports and writes in manifest order", async () => {
+		const specs: StageSpec[] = files(20, (i) =>
+			i === 2 || i === 15
+				? `aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`
+				: `# rule ${i}\n`,
+		);
+		specs[7] = {
+			...specs[7],
+			id: "f7",
+			path: "rules/r07.md",
+			sha256: "0".repeat(64),
+		};
+		await stage(specs);
+		const counts = instrument(20);
+
+		const r = await verifyAndScanInstructionFiles(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections.map((x) => [x.path, x.reason])).toEqual([
+			["rules/r02.md", "secret"],
+			["rules/r07.md", "hash_mismatch"],
+			["rules/r15.md", "secret"],
+		]);
+		expect(counts.peakDownloads).toBeGreaterThan(1);
+		expect(counts.peakDownloads).toBeLessThanOrEqual(8);
+		const written = m.updateInstructionFileMetadata.mock.calls.map(
+			(c) => c[0],
+		);
+		expect(written).toEqual(
+			Array.from({ length: 20 }, (_, i) => `f${i}`).filter(
+				(id) => !["f2", "f7", "f15"].includes(id),
+			),
+		);
+		expect(
+			activityMocks.heartbeat.mock.calls
+				.map((c) => c[0])
+				.filter((d) => d?.phase === "verify")
+				.map((d) => d.file),
+		).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+	});
+
+	it("a failed download stops the gate: no metadata for that file or any after it, and the error propagates", async () => {
+		await stage(files(20, (i) => `# rule ${i}\n`));
+		const staged = m.downloadFile.getMockImplementation();
+		const failure = new Error("storage unavailable");
+		const requested: string[] = [];
+		m.downloadFile.mockImplementation(async (key: string) => {
+			requested.push(key);
+			if (key.endsWith("/f3")) {
+				throw failure;
+			}
+			return staged?.(key);
+		});
+
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toBe(failure);
+
+		expect(
+			m.updateInstructionFileMetadata.mock.calls.map((c) => c[0]),
+		).toEqual(["f0", "f1", "f2"]);
+		// Nothing past the prefetch window was ever requested.
+		expect(requested.length).toBeLessThanOrEqual(3 + 8);
+	});
+
+	it("promotion overlaps its downloads and uploads and keeps the rejection order", async () => {
+		const specs: StageSpec[] = files(20, (i) => `# rule ${i}\n`);
+		specs[5] = {
+			...specs[5],
+			id: "f5",
+			path: "rules/r05.md",
+			sha256: "0".repeat(64),
+		};
+		specs[12] = {
+			...specs[12],
+			id: "f12",
+			path: "rules/r12.md",
+			headSize: 999,
+		};
+		await stage(specs);
+		const counts = instrument(20);
+
+		const r = await finalizeInstructionSnapshot(snap);
+
+		expect(r.ok).toBe(false);
+		expect(r.rejections.map((x) => [x.path, x.reason])).toEqual([
+			["rules/r05.md", "hash_mismatch"],
+			["rules/r12.md", "size_mismatch"],
+		]);
+		expect(counts.peakDownloads).toBeGreaterThan(1);
+		expect(counts.peakDownloads).toBeLessThanOrEqual(8);
+		expect(counts.peakUploads).toBeLessThanOrEqual(8);
+		expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+	});
+
+	it("a clean promotion writes every file and counts every byte", async () => {
+		const specs = files(20, (i) => `# rule ${i}\n`);
+		await stage(specs);
+		const counts = instrument(20);
+
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+
+		expect(m.uploadFile).toHaveBeenCalledTimes(20);
+		expect(counts.peakUploads).toBeGreaterThan(1);
+		expect(m.markInstructionSnapshotReady).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fileCount: 20,
+				storedBytes: specs.reduce((sum, s) => sum + s.data.length, 0),
+			}),
+		);
+	});
+
+	it("the deferred scan's last attempt names an unreadable file in manifest order, ahead of a later finding", async () => {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			userId: "acknowledger",
+			status: "READY",
+			publishOnReady: true,
+			publishBeforeScan: true,
+			deferredScanStatus: "PENDING",
+			version: 7,
+			fileCount: 6,
+			baseSnapshotId: null,
+			settingsFrozen: { layer: "default", ignoreGlobs: [], limits: {} },
+		});
+		activityMocks.attempt = DEFERRED_SCAN_MAX_ATTEMPTS;
+		await stage(
+			files(6, (i) =>
+				i === 4
+					? `aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`
+					: `# ${i}\n`,
+			).map((s) => ({ ...s, storageKey: snapshotKey("p", "s", s.id) })),
+		);
+		const staged = m.downloadFile.getMockImplementation();
+		m.downloadFile.mockImplementation(async (key: string) => {
+			if (key.endsWith("/f1")) {
+				await new Promise((r) => setTimeout(r, 10));
+				throw new Error("read timed out");
+			}
+			return staged?.(key);
+		});
+
+		const r = await scanPublishedInstructionSnapshot(snap);
+
+		expect(r.outcome).toBe("INCOMPLETE");
+		expect(r.findings.map((x) => [x.path, x.reason])).toEqual([
+			["rules/r01.md", "scan_failed"],
+			["rules/r04.md", "secret"],
+		]);
+	});
+});
+
+/**
+ * The ownership token (`validationAttemptId`): a run the API started with one
+ * names it in every write, and an attempt whose token the row no longer
+ * carries stops instead of writing over the run that replaced it.
+ */
+describe("the validation attempt ownership token", () => {
+	const owned = { ...snap, validationAttemptId: "attempt-new" };
+	const stale = { ...snap, validationAttemptId: "attempt-old" };
+	const rowOwnedBy = (
+		validationAttemptId: string | null,
+		status = "VALIDATING",
+	) => ({
+		id: "s",
+		projectId: "p",
+		organizationId: "o",
+		status,
+		publishOnReady: true,
+		version: 7,
+		fileCount: 3,
+		validationAttemptId,
+		settingsFrozen: { layer: "default", ignoreGlobs: [], limits: {} },
+	});
+
+	it("stops a stale attempt before it lists or downloads anything", async () => {
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new"),
+		);
+
+		await expect(
+			verifyAndScanInstructionFiles(stale),
+		).rejects.toMatchObject({
+			nonRetryable: true,
+			type: "INSTRUCTION_SNAPSHOT_ATTEMPT_SUPERSEDED",
+		});
+
+		expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+		expect(m.listObjects).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+
+	it("stops an attempt whose run already failed and cleared the token", async () => {
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy(null, "FAILED"),
+		);
+
+		await expect(
+			verifyAndScanInstructionFiles(stale),
+		).rejects.toMatchObject({
+			type: "INSTRUCTION_SNAPSHOT_ATTEMPT_SUPERSEDED",
+		});
+		expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+	});
+
+	it("names its token in the claim, and moves a FAILED row it owns without waiting for the API", async () => {
+		await stage([
+			{ id: "f1", path: "AGENTS.md", data: Buffer.from("# hi\n") },
+		]);
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new", "FAILED"),
+		);
+
+		await expect(
+			verifyAndScanInstructionFiles(owned),
+		).resolves.toMatchObject({ ok: true });
+
+		expect(m.claimInstructionSnapshotValidation).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+			validationAttemptId: "attempt-new",
+		});
+		expect(m.downloadFile).toHaveBeenCalled();
+	});
+
+	it("names its token in the READY write", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new"),
+		);
+
+		await finalizeInstructionSnapshot(owned);
+
+		expect(m.markInstructionSnapshotReady).toHaveBeenCalledWith(
+			expect.objectContaining({ validationAttemptId: "attempt-new" }),
+		);
+	});
+
+	it("accepts a READY write that matched nothing because this run's own earlier attempt already wrote it", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new", "READY"),
+		);
+		m.markInstructionSnapshotReady.mockResolvedValue({ changed: false });
+
+		await expect(finalizeInstructionSnapshot(owned)).resolves.toEqual({
+			ok: true,
+			rejections: [],
+		});
+	});
+
+	it("fails non-retryably when the READY write matched nothing because the token moved on mid-run", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.getInstructionSnapshotById
+			.mockResolvedValueOnce(rowOwnedBy("attempt-new"))
+			.mockResolvedValue(rowOwnedBy("attempt-newer"));
+		m.markInstructionSnapshotReady.mockResolvedValue({ changed: false });
+
+		await expect(finalizeInstructionSnapshot(owned)).rejects.toMatchObject({
+			nonRetryable: true,
+			type: "INSTRUCTION_SNAPSHOT_ATTEMPT_SUPERSEDED",
+		});
+	});
+
+	it("names its token in the rejection verdict and in the FAILED marker", async () => {
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new"),
+		);
+		m.listInstructionFiles.mockResolvedValue([]);
+
+		await rejectInstructionSnapshot({ ...owned, rejections: [] });
+		await markInstructionSnapshotFailed({ ...owned, failure: "TypeError" });
+
+		expect(m.markInstructionSnapshotRejected).toHaveBeenCalledWith(
+			expect.objectContaining({ validationAttemptId: "attempt-new" }),
+		);
+		expect(m.failInstructionSnapshot).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+			validationAttemptId: "attempt-new",
+		});
+	});
+
+	it("leaves a stale attempt's rejection cleanup alone: it stops before it deletes a newer run's staging objects", async () => {
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new"),
+		);
+
+		await expect(
+			rejectInstructionSnapshot({ ...stale, rejections: [] }),
+		).rejects.toMatchObject({
+			type: "INSTRUCTION_SNAPSHOT_ATTEMPT_SUPERSEDED",
+		});
+
+		expect(m.deleteObjects).not.toHaveBeenCalled();
+		expect(m.markInstructionSnapshotRejected).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * Progress: every pass reports how many files it has fully decided, with the
+ * run's token, and only counts files whose decision is final.
+ */
+describe("per-file progress of the check passes", () => {
+	const owned = { ...snap, validationAttemptId: "attempt-1" };
+	const row = (overrides: Record<string, unknown> = {}) =>
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			userId: "u",
+			status: "VALIDATING",
+			publishOnReady: true,
+			version: 7,
+			fileCount: 3,
+			baseSnapshotId: null,
+			validationAttemptId: "attempt-1",
+			settingsFrozen: { layer: "default", ignoreGlobs: [], limits: {} },
+			...overrides,
+		});
+	const three = [
+		{ id: "f1", path: "a.md", data: Buffer.from("# a\n") },
+		{ id: "f2", path: "b.md", data: Buffer.from("# b\n") },
+		{ id: "f3", path: "c.md", data: Buffer.from("# c\n") },
+	];
+	function reported() {
+		return m.recordInstructionSnapshotProgress.mock.calls.map(([input]) => {
+			const { phase, done, total, validationAttemptId } = input as {
+				phase: string;
+				done: number;
+				total: number;
+				validationAttemptId?: string;
+			};
+			return { phase, done, total, validationAttemptId };
+		});
+	}
+
+	it("reports the gate as CHECKING, from none decided to all, naming the run's token", async () => {
+		row();
+		await stage(three);
+
+		await verifyAndScanInstructionFiles(owned);
+
+		const calls = reported();
+		expect(calls[0]).toEqual({
+			phase: "CHECKING",
+			done: 0,
+			total: 3,
+			validationAttemptId: "attempt-1",
+		});
+		expect(calls.at(-1)).toEqual({
+			phase: "CHECKING",
+			done: 3,
+			total: 3,
+			validationAttemptId: "attempt-1",
+		});
+		expect(new Set(calls.map((c) => c.phase))).toEqual(
+			new Set(["CHECKING"]),
+		);
+	});
+
+	it("counts a file the gate refused as decided", async () => {
+		row();
+		await stage([
+			{
+				id: "f1",
+				path: "a.md",
+				data: Buffer.from(`key = ${AWS_EXAMPLE_ACCESS_KEY}\n`),
+			},
+			{ id: "f2", path: "b.md", data: Buffer.from("# b\n") },
+		]);
+
+		await verifyAndScanInstructionFiles(owned);
+
+		expect(reported().at(-1)).toMatchObject({ done: 2, total: 2 });
+	});
+
+	it("reports the promotion as SAVING", async () => {
+		row();
+		await stage(three);
+
+		await finalizeInstructionSnapshot(owned);
+
+		expect(reported()[0]).toMatchObject({
+			phase: "SAVING",
+			done: 0,
+			total: 3,
+		});
+		expect(reported().at(-1)).toMatchObject({
+			phase: "SAVING",
+			done: 3,
+			total: 3,
+		});
+	});
+
+	it("reports the publish-first promotion as CHECKING", async () => {
+		row({ publishBeforeScan: true, deferredScanStatus: null });
+		const rows = await stage(three);
+		const promoted = rows.map((r) => ({
+			...r,
+			storageKey: snapshotKey("p", "s", r.id as string),
+		}));
+		m.listInstructionFiles.mockReset();
+		m.listInstructionFiles
+			.mockResolvedValueOnce(rows)
+			.mockResolvedValueOnce(promoted);
+
+		await promoteUnscannedInstructionSnapshot(owned);
+
+		expect(reported()[0]).toMatchObject({
+			phase: "CHECKING",
+			done: 0,
+			total: 3,
+		});
+		expect(reported().at(-1)).toMatchObject({ done: 3, total: 3 });
+	});
+
+	it("reports the deferred scan as SCANNING", async () => {
+		row({ status: "READY", deferredScanStatus: "PENDING" });
+		await stage(
+			three.map((t) => ({
+				...t,
+				storageKey: snapshotKey("p", "s", t.id),
+			})),
+		);
+
+		await scanPublishedInstructionSnapshot(owned);
+
+		expect(reported()[0]).toMatchObject({
+			phase: "SCANNING",
+			done: 0,
+			total: 3,
+		});
+		expect(reported().at(-1)).toMatchObject({
+			phase: "SCANNING",
+			done: 3,
+			total: 3,
+		});
+	});
+
+	it("does not fail the pass when a progress write fails", async () => {
+		row();
+		await stage(three);
+		m.recordInstructionSnapshotProgress.mockRejectedValue(
+			new Error("database unavailable"),
+		);
+
+		await expect(
+			verifyAndScanInstructionFiles(owned),
+		).resolves.toMatchObject({ ok: true });
+	});
+
+	it("never counts the file that was being read when the pass failed", async () => {
+		row();
+		await stage(three);
+		m.downloadFile.mockImplementation(async (key: string) => {
+			if (key.endsWith("/f3")) {
+				throw new Error("storage unavailable");
+			}
+			return { data: Buffer.from("# x\n"), contentType: "t", size: 4 };
+		});
+
+		await expect(verifyAndScanInstructionFiles(owned)).rejects.toThrow();
+
+		expect(reported().every((c) => c.done < 3)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// A one-file edit costs one file.
+//
+// An inherited file is the same immutable bytes the source snapshot already
+// promoted, and the source records the scan rule-set version that cleared
+// them. These cases pin what that buys, and where it stops: a source cleared
+// by the CURRENT rule set is not read, hashed or scanned again and is copied
+// server-side; a source cleared under another rule set, or never, is read in
+// full exactly as before. Each count below is what the old code did for every
+// inherited file, so each fails on it.
+// ---------------------------------------------------------------------------
+describe("incremental derived snapshots", () => {
+	const CLEARED = { scanRulesVersion: INSTRUCTION_SCAN_RULES_VERSION };
+
+	function derivedRow(overrides: Record<string, unknown> = {}) {
+		m.getInstructionSnapshotById.mockResolvedValue({
+			id: "s",
+			projectId: "p",
+			organizationId: "o",
+			userId: "u",
+			status: "RECEIVING",
+			publishOnReady: true,
+			publishBeforeScan: false,
+			deferredScanStatus: null,
+			version: 8,
+			fileCount: 2,
+			baseSnapshotId: "base",
+			settingsFrozen: {
+				layer: "default",
+				ignoreGlobs: ["**/node_modules/**"],
+				limits: {},
+			},
+			...overrides,
+		});
+	}
+
+	function inheritedSpecs(
+		count: number,
+		source: StageSpec["source"] = CLEARED,
+		overrides: Partial<StageSpec> = {},
+	): StageSpec[] {
+		return Array.from({ length: count }, (_, i) => ({
+			id: `inh${i}`,
+			path: `rules/r${i}.md`,
+			data: Buffer.from(`# rule ${i}`),
+			storageKey: snapshotKey("p", "base", `bf${i}`),
+			inheritedFromFileId: `bf${i}`,
+			source,
+			...overrides,
+		}));
+	}
+
+	const edited: StageSpec = {
+		id: "up1",
+		path: "CLAUDE.md",
+		data: Buffer.from("# edited"),
+	};
+
+	describe("the gate", () => {
+		it("reads only the changed file when every inherited source was cleared by the current rule set", async () => {
+			derivedRow();
+			await stage([edited, ...inheritedSpecs(50)]);
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r.ok).toBe(true);
+			expect(m.downloadFile).toHaveBeenCalledTimes(1);
+			expect(m.downloadFile).toHaveBeenCalledWith(
+				stagingKey("p", "s", "up1"),
+				{ bucket: "skills" },
+			);
+			expect(m.getFileMetadata).toHaveBeenCalledTimes(1);
+			expect(scanTextForSecrets).toHaveBeenCalledTimes(1);
+		});
+
+		it("reports progress over the files it actually reads: 1 of 1, not 51", async () => {
+			derivedRow();
+			await stage([edited, ...inheritedSpecs(50)]);
+
+			await verifyAndScanInstructionFiles(snap);
+
+			const calls = m.recordInstructionSnapshotProgress.mock.calls.map(
+				([arg]) => arg,
+			);
+			expect(calls.length).toBeGreaterThan(0);
+			expect(
+				calls.every((c) => c.phase === "CHECKING" && c.total === 1),
+			).toBe(true);
+			expect(calls.at(-1)).toMatchObject({ done: 1, total: 1 });
+		});
+
+		it.each([
+			["a different rule set", { scanRulesVersion: "an-older-rule-set" }],
+			["no rule set at all", { scanRulesVersion: null }],
+		])(
+			"reads and scans every inherited file when its source was cleared by %s",
+			async (_label, source) => {
+				derivedRow();
+				await stage([edited, ...inheritedSpecs(20, source)]);
+
+				const r = await verifyAndScanInstructionFiles(snap);
+
+				expect(r.ok).toBe(true);
+				expect(m.downloadFile).toHaveBeenCalledTimes(21);
+				expect(scanTextForSecrets).toHaveBeenCalledTimes(21);
+			},
+		);
+
+		it("still catches a secret in an inherited file whose source was cleared under an older rule set", async () => {
+			derivedRow();
+			await stage(
+				inheritedSpecs(
+					1,
+					{ scanRulesVersion: "an-older-rule-set" },
+					{
+						data: Buffer.from(
+							`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+						),
+					},
+				),
+			);
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r.ok).toBe(false);
+			expect(r.rejections).toEqual([
+				expect.objectContaining({ reason: "secret" }),
+			]);
+		});
+
+		it("still refuses a credential FILE NAME on a cleared inherited row, with no I/O", async () => {
+			derivedRow();
+			await stage(inheritedSpecs(1, CLEARED, { path: ".env" }));
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r.ok).toBe(false);
+			expect(r.rejections).toEqual([
+				expect.objectContaining({ path: ".env", reason: "secret" }),
+			]);
+			expect(m.downloadFile).not.toHaveBeenCalled();
+			expect(m.getFileMetadata).not.toHaveBeenCalled();
+		});
+
+		it("stamps the rule-set version it imported when it passes, under the run's attempt token", async () => {
+			derivedRow({ validationAttemptId: "attempt-1" });
+			await stage([edited, ...inheritedSpecs(2)]);
+
+			const r = await verifyAndScanInstructionFiles({
+				...snap,
+				validationAttemptId: "attempt-1",
+			});
+
+			expect(r.ok).toBe(true);
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).toHaveBeenCalledExactlyOnceWith({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				scanRulesVersion: INSTRUCTION_SCAN_RULES_VERSION,
+				statuses: ["RECEIVING", "VALIDATING"],
+				validationAttemptId: "attempt-1",
+			});
+		});
+
+		it("stamps nothing when any file is rejected", async () => {
+			derivedRow();
+			await stage([
+				edited,
+				...inheritedSpecs(1, CLEARED, { path: ".env" }),
+			]);
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r.ok).toBe(false);
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).not.toHaveBeenCalled();
+		});
+
+		it("always reads an inherited root .fabricignore in full: its provenance check needs the text", async () => {
+			derivedRow();
+			await stage([
+				edited,
+				...inheritedSpecs(1, CLEARED, {
+					path: ".fabricignore",
+					data: Buffer.from("# nothing excluded\n"),
+				}),
+			]);
+
+			const r = await verifyAndScanInstructionFiles(snap);
+
+			expect(r.ok).toBe(true);
+			expect(m.downloadFile).toHaveBeenCalledWith(
+				snapshotKey("p", "base", "bf0"),
+				{ bucket: "skills" },
+			);
+		});
+	});
+
+	describe("promotion (the full gate's)", () => {
+		it("downloads exactly the changed file and copies every inherited one server-side", async () => {
+			derivedRow();
+			await stage([edited, ...inheritedSpecs(50)]);
+
+			const r = await finalizeInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(true);
+			expect(m.downloadFile).toHaveBeenCalledTimes(1);
+			expect(m.uploadFile).toHaveBeenCalledTimes(1);
+			expect(m.getFileMetadata).toHaveBeenCalledTimes(1);
+			expect(m.copyFile).toHaveBeenCalledTimes(50);
+			expect(m.copyFile).toHaveBeenCalledWith(
+				snapshotKey("p", "base", "bf7"),
+				snapshotKey("p", "s", "inh7"),
+				{ bucket: "skills" },
+			);
+		});
+
+		it("moves the rows in bulk, at most 500 per statement, and copies at most 32 at once", async () => {
+			derivedRow();
+			await stage(inheritedSpecs(1200));
+			let active = 0;
+			let widest = 0;
+			m.copyFile.mockImplementation(async () => {
+				active++;
+				widest = Math.max(widest, active);
+				await Promise.resolve();
+				await Promise.resolve();
+				active--;
+			});
+
+			const r = await finalizeInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(true);
+			expect(
+				m.moveInheritedInstructionFileKeys.mock.calls.map(
+					([arg]) => arg.moves.length,
+				),
+			).toEqual([500, 500, 200]);
+			expect(widest).toBeGreaterThan(1);
+			expect(widest).toBeLessThanOrEqual(32);
+			expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		});
+
+		it("does not stamp a rule-set version itself, and counts every file's bytes", async () => {
+			derivedRow();
+			await stage([edited, ...inheritedSpecs(3)]);
+
+			await finalizeInstructionSnapshot(snap);
+
+			// Only the activity that ran the rules claims a version.
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).not.toHaveBeenCalled();
+			expect(
+				m.markInstructionSnapshotReady.mock.calls[0]?.[0],
+			).not.toHaveProperty("scanRulesVersion");
+			expect(m.markInstructionSnapshotReady).toHaveBeenCalledWith(
+				expect.objectContaining({
+					fileCount: 4,
+					storedBytes:
+						Buffer.byteLength("# edited") +
+						[0, 1, 2].reduce(
+							(sum, i) => sum + Buffer.byteLength(`# rule ${i}`),
+							0,
+						),
+				}),
+			);
+		});
+
+		it("refuses with `missing` when the copy fails and the source object is gone", async () => {
+			derivedRow();
+			await stage([
+				...inheritedSpecs(2),
+				...inheritedSpecs(1, CLEARED, {
+					id: "gone",
+					path: "rules/gone.md",
+					storageKey: snapshotKey("p", "base", "bfgone"),
+					inheritedFromFileId: "bfgone",
+					headPresent: false,
+				}),
+			]);
+			m.copyFile.mockImplementation(async (source: string) => {
+				if (source.endsWith("/bfgone")) {
+					throw new Error("NoSuchKey");
+				}
+			});
+
+			const r = await finalizeInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(false);
+			expect(r.rejections).toEqual([
+				{ path: "rules/gone.md", reason: "missing" },
+			]);
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("lets Temporal retry when the copy fails but the source object is still there", async () => {
+			derivedRow();
+			await stage(inheritedSpecs(2));
+			m.copyFile.mockRejectedValue(new Error("storage unavailable"));
+
+			await expect(finalizeInstructionSnapshot(snap)).rejects.toThrow(
+				"storage unavailable",
+			);
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+		});
+
+		it("re-verifies a row an earlier attempt already moved to its own key, instead of copying it", async () => {
+			derivedRow();
+			await stage([
+				...inheritedSpecs(1, CLEARED, {
+					storageKey: snapshotKey("p", "s", "inh0"),
+				}),
+			]);
+
+			const r = await finalizeInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(true);
+			expect(m.copyFile).not.toHaveBeenCalled();
+			expect(m.downloadFile).toHaveBeenCalledWith(
+				snapshotKey("p", "s", "inh0"),
+				{ bucket: "skills" },
+			);
+		});
+
+		it("reports SAVING progress over all files, a copy included", async () => {
+			derivedRow();
+			await stage([edited, ...inheritedSpecs(10)]);
+
+			await finalizeInstructionSnapshot(snap);
+
+			const calls = m.recordInstructionSnapshotProgress.mock.calls.map(
+				([arg]) => arg,
+			);
+			expect(
+				calls.every((c) => c.phase === "SAVING" && c.total === 11),
+			).toBe(true);
+			expect(calls.at(-1)).toMatchObject({ done: 11, total: 11 });
+			const done = calls.map((c) => c.done);
+			expect([...done].sort((a, b) => a - b)).toEqual(done);
+		});
+	});
+
+	describe("publish-first promotion", () => {
+		function publishFirstRow() {
+			derivedRow({ publishBeforeScan: true });
+		}
+
+		async function stagePromoted(specs: StageSpec[]) {
+			const rows = await stage(specs);
+			const promoted = rows.map((row) => ({
+				...row,
+				storageKey: snapshotKey("p", "s", row.id as string),
+			}));
+			m.listInstructionFiles.mockReset();
+			m.listInstructionFiles
+				.mockResolvedValueOnce(rows)
+				.mockResolvedValueOnce(promoted);
+		}
+
+		it("reads only the changed file and copies the cleared inherited ones", async () => {
+			publishFirstRow();
+			await stagePromoted([edited, ...inheritedSpecs(30)]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(true);
+			expect(m.downloadFile).toHaveBeenCalledTimes(1);
+			expect(m.copyFile).toHaveBeenCalledTimes(30);
+			expect(m.moveInheritedInstructionFileKeys).toHaveBeenCalledTimes(1);
+			// The scan has not run: no version is claimed for this snapshot.
+			const ready = m.markInstructionSnapshotReady.mock.calls[0]?.[0];
+			expect(ready).toMatchObject({ deferredScan: true });
+			expect(ready).not.toHaveProperty("scanRulesVersion");
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).not.toHaveBeenCalled();
+		});
+
+		it("writes nothing for the cleared files once another file is refused", async () => {
+			publishFirstRow();
+			await stagePromoted([
+				{ ...edited, sha256: "0".repeat(64) },
+				...inheritedSpecs(5),
+			]);
+
+			const r = await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(r.ok).toBe(false);
+			expect(m.copyFile).not.toHaveBeenCalled();
+		});
+
+		it("reads every inherited file when its source was cleared by another rule set", async () => {
+			publishFirstRow();
+			await stagePromoted([
+				edited,
+				...inheritedSpecs(5, { scanRulesVersion: "an-older-rule-set" }),
+			]);
+
+			await promoteUnscannedInstructionSnapshot(snap);
+
+			expect(m.downloadFile).toHaveBeenCalledTimes(6);
+			expect(m.copyFile).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("the deferred scan", () => {
+		function publishedDerivedRow() {
+			derivedRow({
+				status: "READY",
+				publishBeforeScan: true,
+				deferredScanStatus: "PENDING",
+			});
+		}
+
+		/** Rows as a finished promotion leaves them: at their own keys. */
+		function promotedSpecs(
+			count: number,
+			source: StageSpec["source"] = CLEARED,
+		): StageSpec[] {
+			return [
+				{ ...edited, storageKey: snapshotKey("p", "s", "up1") },
+				...inheritedSpecs(count, source).map((spec) => ({
+					...spec,
+					storageKey: snapshotKey("p", "s", spec.id),
+				})),
+			];
+		}
+
+		it("scans only the changed file when every inherited source was cleared by the current rule set", async () => {
+			publishedDerivedRow();
+			await stage(promotedSpecs(40));
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("PASSED");
+			expect(m.downloadFile).toHaveBeenCalledTimes(1);
+			expect(scanTextForSecrets).toHaveBeenCalledTimes(1);
+			expect(
+				m.recordInstructionSnapshotProgress.mock.calls.at(-1)?.[0],
+			).toMatchObject({ phase: "SCANNING", done: 1, total: 1 });
+		});
+
+		it("scans every file when the sources were cleared by another rule set", async () => {
+			publishedDerivedRow();
+			await stage(promotedSpecs(10, { scanRulesVersion: null }));
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("PASSED");
+			expect(m.downloadFile).toHaveBeenCalledTimes(11);
+		});
+
+		it("stamps the rule-set version it imported when its own verdict is PASSED", async () => {
+			publishedDerivedRow();
+			await stage(promotedSpecs(3));
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("PASSED");
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).toHaveBeenCalledExactlyOnceWith({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+				scanRulesVersion: INSTRUCTION_SCAN_RULES_VERSION,
+				statuses: ["READY"],
+			});
+		});
+
+		it("never stamps a scan that found something", async () => {
+			publishedDerivedRow();
+			await stage([
+				{
+					...edited,
+					data: Buffer.from(
+						`aws_access_key_id = ${AWS_EXAMPLE_ACCESS_KEY}\n`,
+					),
+					storageKey: snapshotKey("p", "s", "up1"),
+				},
+			]);
+
+			const r = await scanPublishedInstructionSnapshot(snap);
+
+			expect(r.outcome).toBe("ISSUES_FOUND");
+			expect(
+				m.recordInstructionSnapshotScanRulesVersion,
+			).not.toHaveBeenCalled();
+		});
+
+		it("the verdict record no longer claims a version", async () => {
+			publishedDerivedRow();
+			m.recordInstructionDeferredScanOutcome.mockResolvedValue({
+				changed: true,
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+
+			await recordDeferredScanOutcome({
+				...snap,
+				outcome: "PASSED",
+				findings: [],
+			});
+
+			expect(
+				m.recordInstructionDeferredScanOutcome.mock.calls[0]?.[0],
+			).not.toHaveProperty("scanRulesVersion");
+		});
 	});
 });

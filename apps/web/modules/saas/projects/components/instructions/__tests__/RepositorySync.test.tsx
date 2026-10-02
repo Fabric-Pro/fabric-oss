@@ -376,6 +376,24 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(onSaved).toHaveBeenCalled();
 	});
 
+	it("starts no sync of its own, and says the new selection syncs next, when the server queued it behind an open run", async () => {
+		m.configure.mockResolvedValue({
+			syncId: "sync_1",
+			generation: 2,
+			syncQueued: true,
+		});
+		const user = userEvent.setup();
+		const { onOpenChange, onSaved } = renderDialog();
+
+		await pickAgents(user);
+		await user.click(submit());
+
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(m.syncNow).not.toHaveBeenCalled();
+		expect(m.toastInfo).toHaveBeenCalledWith(copy.syncNowResult.queued);
+		expect(onSaved).toHaveBeenCalled();
+	});
+
 	it("offers a choice when the project has more than one repository, and reseeds the branch", async () => {
 		const user = userEvent.setup();
 		renderDialog({ integrations: [INTEGRATION, SECOND] });
@@ -1382,6 +1400,23 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(
 				await screen.findByText(copy.tree.notices.ignoreFileTooLarge),
 			).toBeInTheDocument();
+			expect(box("agents/skills")).not.toBeChecked();
+			expect(box("agents/skills")).toBeEnabled();
+		});
+
+		it("says a file that is not UTF-8 text makes the sync refuse the folder, and shows no rules from it", async () => {
+			m.readIgnoreFile.mockResolvedValue({
+				supported: true,
+				state: "encoding",
+				rules: [],
+			});
+			await renderOnAgents(["skills/**"]);
+			expect(
+				await screen.findByText(copy.tree.notices.ignoreFileEncoding),
+			).toHaveAttribute("role", "alert");
+			expect(
+				screen.queryByText(copy.tree.notices.fabricignore),
+			).not.toBeInTheDocument();
 			expect(box("agents/skills")).not.toBeChecked();
 			expect(box("agents/skills")).toBeEnabled();
 		});

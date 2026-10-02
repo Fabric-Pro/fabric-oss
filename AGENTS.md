@@ -190,6 +190,15 @@ sibling in the same task:
   [Living Memory](apps/web/modules/saas/projects/components/ConfigureContextRepositorySyncDialog.tsx))
   choose through the shared selection tree in
   [`components/repository-sync/`](apps/web/modules/saas/projects/components/repository-sync/).
+- Project context and company context: the same ingestion workflows serve
+  both through an owner discriminator and a
+  [row-store adapter](packages/temporal/src/lib/context-row-store.ts), over
+  sibling tables (`ProjectContext`, `CompanyContextSource`). The add forms are
+  shared in [`context-sources/`](apps/web/modules/saas/context-sources/); the
+  source lists are separate
+  ([project](apps/web/modules/saas/projects/components/ProjectContextsList.tsx),
+  [company](apps/web/modules/saas/organizations/components/company-context/CompanyContextList.tsx)).
+  A change to one side's ingestion or fields usually needs the other.
 
 When adding, renaming, removing, or feature-gating navigation, tabs, settings,
 or covered page components, update the
@@ -240,7 +249,7 @@ after later revisions:
   they genuinely have no user-visible or deployable effect.
 
 For an impacting change, run `pnpm exec changeset status
---since=origin/master --output=<temporary-json>` and verify that `.releases` is
+--since=<the PR's base, normally the staging branch> --output=<temporary-json>` and verify that `.releases` is
 non-empty. Exit code zero with `"releases": []` is not success. For a
 non-impacting change, record the reason and apply `skip-changeset` as soon as
 the PR exists; omission alone is not a decision. The CI contract is in the
@@ -255,10 +264,32 @@ Never add AI attribution or generated-by footers. Follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [pull-request template](.github/PULL_REQUEST_TEMPLATE.md).
 
-This repository lands through its OSS relay. Never run `gh pr merge` here. A
-request to create or update a PR does not by itself authorize relay/publication;
-relay only when the user's requested workflow includes landing. After every
-push, any prior head-SHA authorization is stale.
+While private staging release is enabled (`STAGING_RELEASE_ENABLED`), feature
+work lands on the protected `staging` integration branch, not `master`. The
+release-cycle runbook in the ops repository is authoritative and changes; read
+it before delivering.
+
+- Branch from `staging` and open the PR with `staging` as its base.
+- Merge only when the user's requested workflow includes landing and every
+  required check on the current head has passed:
+  `gh pr merge <n> --squash --match-head-commit <sha>`. Adding `--auto` merges
+  it as soon as those checks pass. Never use `--admin`.
+- A PR that is merely behind `staging` merges as is; do not update it just to
+  catch up. Resolve a real conflict by merging `staging` in
+  (`gh pr update-branch`), never a rebase or force-push.
+- A merged PR is not a deployment. Verify the staging deployment of that exact
+  revision before calling the change on staging.
+- Developers do not open OSS PRs or post `/relay`. A bot promotes staging
+  batches to `master` after automated validation of the exact candidate and
+  its healthy deployment evidence. Publication scans must pass before public
+  publication. Production releases remain separate gated events. Never create
+  `promotion/*` or `backport/*` branches; they are bot-owned.
+
+When the mode is disabled, the legacy per-PR OSS relay applies: never run
+`gh pr merge` then, and relay only when the requested workflow includes
+landing. Either way, a request to create or update a PR does not by itself
+authorize landing it, and after every push any prior head-SHA authorization is
+stale.
 
 ## Workspace safety
 

@@ -17,6 +17,7 @@ name: Migration Safety
 # so GitHub waits forever on a status that will not arrive. Adding this to the
 # required set while it was path-filtered blocked every open pull request.
 # The scoping moved inside the job instead.
+
 on:
   pull_request:
     branches: [master, staging]
@@ -31,7 +32,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   lint-migrations:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: Lint migrations
     # arm64: checkout, pnpm/node setup, and the tsx-based lint:migrations
     # script (reads migration SQL off disk, no database, no native deps) are
@@ -71,6 +88,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # Every input the linter's verdict depends on (see above).
+          RELEVANT='^(packages/database/prisma/migrations/|packages/database/prisma/pending-constraint-validations\.json|packages/database/scripts/lint-migrations\.ts|packages/database/migration-lint-baseline\.json|packages/database/package\.json|pnpm-workspace\.yaml|\.github/workflows/migration-safety\.yml)'
           # Read the pull request's file list, and refuse anything that might
           # be partial. Every guard below exists because some way of getting a
           # short list exits 0.
@@ -164,7 +183,7 @@ jobs:
           # entry are anchored at `^` for the match while $FILES itself keeps
           # one line per entry for the count above. Entries with no rename
           # source contribute a blank line, which matches nothing.
-          if grep -qE '^(packages/database/prisma/migrations/|packages/database/prisma/pending-constraint-validations\.json|packages/database/scripts/lint-migrations\.ts|packages/database/migration-lint-baseline\.json|packages/database/package\.json|pnpm-workspace\.yaml|\.github/workflows/migration-safety\.yml)' <<<"${FILES//$'\t'/$'\n'}"; then
+          if grep -qE "$RELEVANT" <<<"${FILES//$'\t'/$'\n'}"; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
             echo "Migration files changed — linting."
           else
@@ -174,7 +193,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.scope.outputs.relevant == 'true'
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`

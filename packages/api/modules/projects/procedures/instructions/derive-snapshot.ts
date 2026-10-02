@@ -27,6 +27,7 @@ import {
 } from "./proposal-admission";
 import { assertInstructionDeriveAccess } from "./proposal-authorization";
 import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
+import { versionContentionAsConflict } from "./version-contention";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure plus a dynamic project permission:
@@ -37,8 +38,10 @@ import { startAdmittedProposalPullRequest } from "./proposal-pull-request";
  * inherited without the client uploading anything. The `put` rows come back as
  * staged files the client PUTs through the ordinary `createUploadUrls` →
  * `finalize` path, so an edit runs the SAME verify → scan → finalize → publish
- * workflow an upload does: the secret gate reads every file, the digest is
- * recomputed, history and retention behave identically.
+ * workflow an upload does: the secret gate decides every file (an inherited one
+ * is read again only when its source was not cleared by the scan rule set now
+ * in force), the digest is recomputed, history and retention behave
+ * identically.
  *
  * Storage keys are ALWAYS server-generated, exactly as in `begin-snapshot.ts`:
  * each `put` gets the provisional `stagingKey(projectId, "pending", <index>)`
@@ -263,7 +266,7 @@ export const deriveSnapshotProcedure = tenantProtectedProcedure
 						),
 					}
 				: {}),
-		});
+		}).catch(versionContentionAsConflict);
 		if (!created.ok) {
 			// The tab REFUSES an identical pending proposal rather than
 			// resuming it (Fizzy #2605).

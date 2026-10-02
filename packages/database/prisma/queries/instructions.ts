@@ -8,18 +8,23 @@
  * given.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { db, Prisma } from "../client";
 import type {
 	ProjectInstructionDeferredScanStatus,
 	ProjectInstructionFileKind,
 	ProjectInstructionProposalStatus,
 	ProjectInstructionPullRequestState,
+	ProjectInstructionSnapshotProgressPhase,
 	ProjectInstructionSnapshotStatus,
 	ProjectInstructionSource,
 	RepositoryProvider,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
+import {
+	type InheritedInstructionSource,
+	isAcceptableInheritedSource,
+} from "./instruction-inherited-source";
 import {
 	currentAppend,
 	type EvidenceOp,
@@ -52,6 +57,8 @@ import {
 import { canUpdateProjectInstructions } from "./projects/projects";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
+export type InstructionSnapshotProgressPhase =
+	ProjectInstructionSnapshotProgressPhase;
 export type InstructionProposalStatus = ProjectInstructionProposalStatus;
 export type InstructionSource = ProjectInstructionSource;
 export type InstructionFileKind = ProjectInstructionFileKind;
@@ -221,7 +228,23 @@ const summarySelect = {
 	deferredScanStatus: true,
 	deferredScanFindings: true,
 	deferredScanCompletedAt: true,
+	// How far the running checks have got. Read by the same polled queries,
+	// so the tab can say "Checking 40 of 120 files" instead of only
+	// "checking". Meaningful only while the row is VALIDATING (or READY with
+	// its scan PENDING); every write that ends a run clears it.
+	progressPhase: true,
+	progressDone: true,
+	progressTotal: true,
+	progressUpdatedAt: true,
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/** The progress columns of a row nothing is currently checking. */
+const NO_PROGRESS = {
+	progressPhase: null,
+	progressDone: null,
+	progressTotal: null,
+	progressUpdatedAt: null,
+} as const;
 
 /**
  * A proposal's metadata plus where it goes and what its pull request is
@@ -272,6 +295,14 @@ type CreateInstructionSnapshotInput = {
 	 * allocating another version.
 	 */
 	syncRunKey?: string | null;
+	/**
+	 * The ownership token of the check run this row is created for
+	 * (`validationAttemptId`). Repository sync only: it creates the row and
+	 * starts the checks itself, so the token is written with the row. An
+	 * upload gets its token from `claimInstructionValidationAttempt` when it
+	 * finalizes.
+	 */
+	validationAttemptId?: string | null;
 	files: Array<{
 		path: string;
 		size: number;
@@ -282,31 +313,73 @@ type CreateInstructionSnapshotInput = {
 		storageKey: string;
 		/** Unix mode from git (0o755 / 0o644). Uploads omit it and store null. */
 		mode?: number | null;
+		/**
+		 * Repository sync only: this file is byte-identical to a row of a READY
+		 * snapshot, so it is inherited (`storageKey` is that row's promoted
+		 * key) instead of staged. The create refuses the whole snapshot when
+		 * the named source is not an acceptable one
+		 * (`isAcceptableInheritedSource`).
+		 */
+		inheritedFromFileId?: string | null;
 	}>;
+	/**
+	 * The promoted key of a file in a snapshot, built by the caller from ids
+	 * (this package does not know the key layout). Required when any file
+	 * inherits.
+	 */
+	promotedKeyFor?: (snapshotId: string, fileId: string) => string;
 };
+
+/**
+ * A file claimed an inherited source that is not an acceptable one. Nothing
+ * was written; the caller falls back to staging that file's bytes.
+ */
+export class InstructionInheritedSourceError extends Error {
+	constructor() {
+		super("An inherited file does not match a promoted source file");
+		this.name = "InstructionInheritedSourceError";
+	}
+}
 
 type CreatedInstructionSnapshot = {
 	id: string;
 	version: number;
 	files: Array<{ id: string; path: string; storageKey: string }>;
+	/** The token the row carries: the input's for a new row, the row's own for an adopted one. */
+	validationAttemptId: string | null;
 	/** Set when a concurrent attempt of the same sync run had already created the row. */
 	existing?: true;
 };
 
 /**
- * How many times to re-read the highest version and retry the insert.
+ * How many times a version allocation re-reads the highest version and
+ * retries the insert.
  *
- * The version is allocated read-then-write inside the transaction, which
- * Postgres' default READ COMMITTED isolation does not serialize: two uploads
- * beginning on the same project at the same moment both read version N and
- * both try to insert N + 1, and `@@unique([projectId, version])` fails the
- * loser with P2002. Retrying re-reads the now-committed winner, so the second
- * upload takes N + 2 instead of surfacing a raw Prisma error as a 500 at
- * `begin-snapshot.ts`. Three attempts covers the realistic contention (two or
- * three people uploading together); beyond that the collision is not a race
- * and the error is worth seeing.
+ * The version is allocated read-then-write, which READ COMMITTED does not
+ * serialize: simultaneous begins on one project read the same highest version
+ * and `@@unique([projectId, version])` fails all but one with P2002. Retrying
+ * re-reads the committed winners. Waiting on a project-row lock instead
+ * (#795) put the waiters inside a 5 s interactive transaction on serverless,
+ * and under a burst they expired it; a retry holds nothing while it waits.
  */
-const VERSION_ALLOCATION_ATTEMPTS = 3;
+const VERSION_ALLOCATION_ATTEMPTS = 8;
+
+/** The jitter's base: attempt N waits a random 20-120 ms times N. */
+const VERSION_RETRY_MIN_DELAY_MS = 20;
+const VERSION_RETRY_MAX_DELAY_MS = 120;
+
+/**
+ * Version allocation lost the race on every attempt. Never a raw Prisma
+ * error: the procedures answer it as a CONFLICT the caller can simply retry.
+ */
+export class InstructionVersionContentionError extends Error {
+	constructor() {
+		super(
+			"Several versions were started on this project at the same moment",
+		);
+		this.name = "InstructionVersionContentionError";
+	}
+}
 
 /** True only for a unique-constraint violation — every other error rethrows. */
 function isVersionCollision(error: unknown): boolean {
@@ -317,20 +390,78 @@ function isVersionCollision(error: unknown): boolean {
 }
 
 /**
- * Allocates the next version and creates the snapshot row, retrying the
- * allocation on a version collision (see `VERSION_ALLOCATION_ATTEMPTS`
- * above).
+ * Runs one allocation attempt up to `VERSION_ALLOCATION_ATTEMPTS` times, on a
+ * unique violation only, with a random delay that grows with the attempt so
+ * colliders do not retry in lockstep. `onCollision` may answer instead of
+ * retrying (a repository sync's run key already holding its row).
+ */
+async function withVersionRetry<T>(
+	attempt: () => Promise<T>,
+	onCollision?: () => Promise<T | null>,
+): Promise<T> {
+	for (let n = 1; n <= VERSION_ALLOCATION_ATTEMPTS; n++) {
+		try {
+			return await attempt();
+		} catch (error) {
+			if (!isVersionCollision(error)) {
+				throw error;
+			}
+			const answered = await onCollision?.();
+			if (answered) {
+				return answered;
+			}
+			if (n === VERSION_ALLOCATION_ATTEMPTS) {
+				throw new InstructionVersionContentionError();
+			}
+			const jitter =
+				VERSION_RETRY_MIN_DELAY_MS +
+				Math.random() *
+					(VERSION_RETRY_MAX_DELAY_MS - VERSION_RETRY_MIN_DELAY_MS);
+			await new Promise((resolve) => setTimeout(resolve, jitter * n));
+		}
+	}
+	throw new InstructionVersionContentionError();
+}
+
+/**
+ * Takes the project row's write lock and returns the published pointer it
+ * guards (an empty array when the project is not there).
  *
- * For a repository sync's `syncRunKey`, a P2002 might instead be the run's
- * OWN unique constraint — a retried acquisition racing itself — rather than
- * an ordinary version collision. Under this repo's driver adapter a P2002
- * carries no usable `meta.target` (see `uniqueViolationConstraint` in
- * `projects/publishing-tenant-lock.ts`), so which constraint fired is not
- * something the error can answer; the run key is checked by reading the row
- * instead. When a snapshot already exists under the key, it is the winner of
- * that race and is returned as `existing: true` rather than allocating a
- * second version; when nothing is found under the key, the P2002 was an
- * ordinary version collision and the loop retries as before.
+ * Only for a derivation that claims the published pointer (a proposal, or one
+ * that auto-publishes): the pointer comparison and, for a proposal, the
+ * admission counts are only meaningful under this lock. Plain version
+ * allocation does not take it. It is also the lock the pointer move and the
+ * delete take (project first, then snapshot), so the order is the same on
+ * every path.
+ */
+async function lockProjectRow(
+	tx: Prisma.TransactionClient,
+	projectId: string,
+	organizationId: string,
+) {
+	return tx.$queryRaw<
+		Array<{ publishedInstructionSnapshotId: string | null }>
+	>`
+		SELECT p."publishedInstructionSnapshotId"
+		FROM "project" p
+		WHERE p."id" = ${projectId}
+			AND p."organizationId" = ${organizationId}
+		FOR UPDATE OF p
+	`;
+}
+
+/**
+ * Allocates the next version and creates the snapshot row, retrying on a
+ * version collision (see `VERSION_ALLOCATION_ATTEMPTS`) and throwing
+ * `InstructionVersionContentionError` when every attempt lost.
+ *
+ * For a repository sync's `syncRunKey` the run's own earlier row is looked up
+ * inside the transaction, and again after a P2002: under this repo's driver
+ * adapter a P2002 carries no usable `meta.target` (see
+ * `uniqueViolationConstraint` in `projects/publishing-tenant-lock.ts`), so
+ * which constraint fired is not something the error can answer. A row found
+ * under the key is the winner of a retried acquisition racing itself and is
+ * returned as `existing: true`; otherwise it was a version collision.
  */
 export async function createInstructionSnapshot(
 	input: CreateInstructionSnapshotInput,
@@ -343,45 +474,35 @@ export async function createInstructionSnapshot(
 			"createInstructionSnapshot: publishBeforeScan requires publishOnReady",
 		);
 	}
-	let lastError: unknown;
-	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
-		try {
-			return await allocateAndCreateSnapshot(input);
-		} catch (error) {
-			if (!isVersionCollision(error)) {
-				throw error;
-			}
-			if (input.syncRunKey) {
-				const existing = await findSnapshotForSyncRun(
-					input.syncRunKey,
-					input,
-				);
-				if (existing) {
-					return existing;
-				}
-			}
-			lastError = error;
-		}
-	}
-	throw lastError;
+	const { syncRunKey } = input;
+	return withVersionRetry(
+		() => allocateAndCreateSnapshot(input),
+		syncRunKey
+			? () => findSnapshotForSyncRun(db, syncRunKey, input)
+			: undefined,
+	);
 }
 
 async function findSnapshotForSyncRun(
+	tx: Pick<
+		Prisma.TransactionClient,
+		"projectInstructionSnapshot" | "projectInstructionFile"
+	>,
 	syncRunKey: string,
 	tenant: { projectId: string; organizationId: string },
 ): Promise<CreatedInstructionSnapshot | null> {
-	const row = await db.projectInstructionSnapshot.findFirst({
+	const row = await tx.projectInstructionSnapshot.findFirst({
 		where: {
 			syncRunKey,
 			projectId: tenant.projectId,
 			organizationId: tenant.organizationId,
 		},
-		select: { id: true, version: true },
+		select: { id: true, version: true, validationAttemptId: true },
 	});
 	if (!row) {
 		return null;
 	}
-	const files = await db.projectInstructionFile.findMany({
+	const files = await tx.projectInstructionFile.findMany({
 		where: {
 			snapshotId: row.id,
 			projectId: tenant.projectId,
@@ -389,11 +510,74 @@ async function findSnapshotForSyncRun(
 		},
 		select: { id: true, path: true, storageKey: true },
 	});
-	return { id: row.id, version: row.version, files, existing: true };
+	return {
+		id: row.id,
+		version: row.version,
+		files,
+		validationAttemptId: row.validationAttemptId,
+		existing: true,
+	};
+}
+
+/**
+ * Refuses the whole create when a file claims an inherited source that is not
+ * an acceptable one, inside the transaction that would write the row, so the
+ * answer is about the same moment the snapshot starts to exist. Returns the
+ * validated sources, whose `name`/`description` the inherited rows carry: the
+ * gate skips an already-cleared inherited file and so never re-derives them.
+ */
+async function resolveInheritedSources(
+	tx: Prisma.TransactionClient,
+	input: CreateInstructionSnapshotInput,
+): Promise<Map<string, InheritedInstructionSource>> {
+	const inherited = input.files.flatMap((file) =>
+		file.inheritedFromFileId
+			? [{ file, sourceId: file.inheritedFromFileId }]
+			: [],
+	);
+	if (inherited.length === 0) {
+		return new Map();
+	}
+	const { promotedKeyFor } = input;
+	if (!promotedKeyFor) {
+		throw new Error(
+			"createInstructionSnapshot: inherited files require promotedKeyFor",
+		);
+	}
+	const sources = await readInheritedSources(tx, {
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+		sourceFileIds: inherited.map((i) => i.sourceId),
+	});
+	for (const { file, sourceId } of inherited) {
+		const source = sources.get(sourceId);
+		if (
+			source === undefined ||
+			!isAcceptableInheritedSource(
+				source,
+				file,
+				promotedKeyFor(source.snapshotId, source.id),
+			)
+		) {
+			throw new InstructionInheritedSourceError();
+		}
+	}
+	return sources;
 }
 
 function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 	return db.$transaction(async (tx) => {
+		if (input.syncRunKey) {
+			const existing = await findSnapshotForSyncRun(
+				tx,
+				input.syncRunKey,
+				input,
+			);
+			if (existing) {
+				return existing;
+			}
+		}
+		const inheritedSources = await resolveInheritedSources(tx, input);
 		const latest = await tx.projectInstructionSnapshot.findFirst({
 			where: {
 				projectId: input.projectId,
@@ -422,6 +606,7 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 				sourceRef: input.sourceRef ?? null,
 				sourceCommitSha: input.sourceCommitSha ?? null,
 				syncRunKey: input.syncRunKey ?? null,
+				validationAttemptId: input.validationAttemptId ?? null,
 			},
 			select: { id: true, version: true },
 		});
@@ -433,12 +618,23 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 				userId: input.userId,
 				path: f.path,
 				kind: f.kind,
+				// Frontmatter name and description, copied from the validated
+				// source for an inherited row: the gate skips an already-cleared
+				// file and never derives them again. Null for every other row,
+				// whose bytes the gate reads.
+				name:
+					inheritedSources.get(f.inheritedFromFileId ?? "")?.name ??
+					null,
+				description:
+					inheritedSources.get(f.inheritedFromFileId ?? "")
+						?.description ?? null,
 				storageKey: f.storageKey,
 				sha256: f.sha256,
 				size: f.size,
 				mimeType: f.mimeType,
 				isText: f.isText,
 				mode: f.mode ?? null,
+				inheritedFromFileId: f.inheritedFromFileId ?? null,
 			})),
 		});
 		const files = await tx.projectInstructionFile.findMany({
@@ -449,7 +645,12 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 			},
 			select: { id: true, path: true, storageKey: true },
 		});
-		return { id: snapshot.id, version: snapshot.version, files };
+		return {
+			id: snapshot.id,
+			version: snapshot.version,
+			files,
+			validationAttemptId: input.validationAttemptId ?? null,
+		};
 	});
 }
 
@@ -905,10 +1106,12 @@ async function nextIntentOrder(tx: Prisma.TransactionClient): Promise<bigint> {
  *
  * The whole point is that what comes out is indistinguishable, to every step
  * downstream, from a full upload: the same verify → scan → finalize → publish
- * workflow runs, the same secret gate reads every file (inherited ones
- * included — the rule set may have tightened since the base was scanned), the
+ * workflow runs, the same secret gate decides every file — an inherited one is
+ * read again unless its source snapshot was cleared under the CURRENT scan
+ * rule set (`scanRulesVersion`), so a tightened rule still reaches it — the
  * same digest is computed, and the same history and retention rules apply.
- * Nothing here is a shortcut past a check; it is a shortcut past the TRANSFER.
+ * Nothing here is a shortcut past a check; it is a shortcut past the TRANSFER
+ * and past re-reading bytes that already passed the same rules.
  *
  * ONE transaction, and the base is read inside it. Every refusal below is a
  * statement about the base's own file set, so answering it from a read taken
@@ -922,8 +1125,11 @@ async function nextIntentOrder(tx: Prisma.TransactionClient): Promise<bigint> {
  * the same reason: it counts what that upload left out, and this derivation
  * left out nothing further.
  *
- * Version allocation is the same read-then-write inside the transaction as
- * `createInstructionSnapshot`, with the same P2002 retry around it.
+ * Version allocation is the same optimistic read-then-insert as
+ * `createInstructionSnapshot`, with the same bounded, jittered retry on a
+ * collision and the same `InstructionVersionContentionError` on exhaustion.
+ * The project row lock is taken only by a derivation that claims the
+ * published pointer.
  */
 export async function createDerivedInstructionSnapshot(
 	input: CreateDerivedInstructionSnapshotInput,
@@ -945,18 +1151,7 @@ export async function createDerivedInstructionSnapshot(
 			"createDerivedInstructionSnapshot: publishBeforeScan requires publishOnReady and no proposal",
 		);
 	}
-	let lastError: unknown;
-	for (let attempt = 0; attempt < VERSION_ALLOCATION_ATTEMPTS; attempt++) {
-		try {
-			return await allocateAndCreateDerivedSnapshot(input);
-		} catch (error) {
-			if (!isVersionCollision(error)) {
-				throw error;
-			}
-			lastError = error;
-		}
-	}
-	throw lastError;
+	return withVersionRetry(() => allocateAndCreateDerivedSnapshot(input));
 }
 
 function allocateAndCreateDerivedSnapshot(
@@ -992,15 +1187,11 @@ function allocateAndCreateDerivedSnapshot(
 				// serializes admission: counting without the lock lets
 				// concurrent reader requests all observe spare capacity and
 				// then exceed both bounds together.
-				const locked = await tx.$queryRaw<
-					Array<{ publishedInstructionSnapshotId: string | null }>
-				>`
-					SELECT p."publishedInstructionSnapshotId"
-					FROM "project" p
-					WHERE p."id" = ${input.projectId}
-						AND p."organizationId" = ${input.organizationId}
-					FOR UPDATE OF p
-				`;
+				const locked = await lockProjectRow(
+					tx,
+					input.projectId,
+					input.organizationId,
+				);
 				if (locked.length === 0) {
 					return { ok: false, reason: "base_not_found" };
 				}
@@ -1435,8 +1626,8 @@ function allocateAndCreateDerivedSnapshot(
 						name: f.name,
 						description: f.description,
 						// The base's immutable promoted object. Promotion
-						// rewrites this to THIS snapshot's own key once it has
-						// re-hashed and re-written the bytes.
+						// moves this to THIS snapshot's own key once it has
+						// copied the object there inside storage.
 						storageKey: f.storageKey,
 						sha256: f.sha256,
 						size: f.size,
@@ -1524,7 +1715,9 @@ function allocateAndCreateDerivedSnapshot(
 export function getInstructionSnapshotById(id: string) {
 	return db.projectInstructionSnapshot.findUnique({
 		where: { id },
-		select: summarySelect,
+		// The token is the activities' business and never leaves the server:
+		// `summarySelect` is what the tab's reads return.
+		select: { ...summarySelect, validationAttemptId: true },
 	});
 }
 
@@ -2354,10 +2547,10 @@ export function listInstructionFiles(
 			sha256: true,
 			storageKey: true,
 			mode: true,
-			// Set only on a derived snapshot's inherited rows. The validation
-			// gate needs it to rebuild the key such a row legitimately sits
-			// at — `snapshotKey(projectId, baseSnapshotId, inheritedFromFileId)`
-			// — which cannot be recovered by parsing `storageKey`.
+			// Set only on an inherited row. The validation gate needs it to
+			// find the SOURCE row, whose own ids rebuild the key such a row
+			// legitimately sits at — which cannot be recovered by parsing
+			// `storageKey`.
 			inheritedFromFileId: true,
 		},
 	});
@@ -2418,6 +2611,105 @@ export async function updateInstructionFileMetadata(
 		where: { id: fileId, organizationId },
 		data,
 	});
+}
+
+const INHERITED_SOURCE_LOOKUP_CHUNK = 5000;
+
+/**
+ * The source rows of every inherited file in a snapshot, in ONE query, keyed
+ * by the source file id.
+ *
+ * Tenant-bound on both columns, so a row naming a file of another project or
+ * organization finds nothing and is refused by the caller as `missing`.
+ * A snapshot is capped at 5,000 files, so this is one statement; the chunking
+ * only keeps a larger input under the statement parameter limit.
+ */
+export function listInheritedInstructionSources(input: {
+	projectId: string;
+	organizationId: string;
+	sourceFileIds: readonly string[];
+}): Promise<Map<string, InheritedInstructionSource>> {
+	return readInheritedSources(db, input);
+}
+
+async function readInheritedSources(
+	client: Pick<Prisma.TransactionClient, "projectInstructionFile">,
+	input: {
+		projectId: string;
+		organizationId: string;
+		sourceFileIds: readonly string[];
+	},
+): Promise<Map<string, InheritedInstructionSource>> {
+	const sources = new Map<string, InheritedInstructionSource>();
+	const unique = [...new Set(input.sourceFileIds)];
+	for (let i = 0; i < unique.length; i += INHERITED_SOURCE_LOOKUP_CHUNK) {
+		const rows = await client.projectInstructionFile.findMany({
+			where: {
+				id: { in: unique.slice(i, i + INHERITED_SOURCE_LOOKUP_CHUNK) },
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+			},
+			select: {
+				id: true,
+				snapshotId: true,
+				storageKey: true,
+				sha256: true,
+				size: true,
+				name: true,
+				description: true,
+				snapshot: { select: { status: true, scanRulesVersion: true } },
+			},
+		});
+		for (const row of rows) {
+			sources.set(row.id, {
+				id: row.id,
+				snapshotId: row.snapshotId,
+				storageKey: row.storageKey,
+				sha256: row.sha256,
+				size: row.size,
+				name: row.name,
+				description: row.description,
+				snapshotStatus: row.snapshot.status,
+				scanRulesVersion: row.snapshot.scanRulesVersion,
+			});
+		}
+	}
+	return sources;
+}
+
+/**
+ * Moves many inherited rows from their source key to this snapshot's own
+ * promoted key in ONE statement, after the bytes were copied server-side.
+ *
+ * Conditional on the row still holding the SOURCE key, so a retry of a
+ * promotion that already moved some rows matches nothing for them and is
+ * idempotent; the tenant and snapshot columns keep it inside the snapshot the
+ * caller named. Location only: content columns are never written.
+ */
+export async function moveInheritedInstructionFileKeys(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	moves: ReadonlyArray<{ fileId: string; from: string; to: string }>;
+}): Promise<{ moved: number }> {
+	if (input.moves.length === 0) {
+		return { moved: 0 };
+	}
+	const ids = input.moves.map((m) => m.fileId);
+	const from = input.moves.map((m) => m.from);
+	const to = input.moves.map((m) => m.to);
+	const moved = await db.$executeRaw`
+		UPDATE "project_instruction_file" AS f
+		SET "storageKey" = v."to"
+		FROM unnest(${ids}::text[], ${from}::text[], ${to}::text[])
+			AS v("id", "from", "to")
+		WHERE f."id" = v."id"
+			AND f."snapshotId" = ${input.snapshotId}
+			AND f."projectId" = ${input.projectId}
+			AND f."organizationId" = ${input.organizationId}
+			AND f."storageKey" = v."from"
+	`;
+	return { moved };
 }
 
 /**
@@ -2493,6 +2785,17 @@ export async function claimInstructionFileStagingKey(input: {
 const VERDICT_STATUSES: InstructionSnapshotStatus[] = ["READY", "REJECTED"];
 
 /**
+ * The ownership condition every write of a check attempt carries. A run
+ * started with a token (`validationAttemptId`) may only write a row that still
+ * names that token, so a stale attempt (a zombie of a run that has since
+ * failed, or of one a "Try again" replaced) matches nothing. A run started
+ * without one (it began before the column existed) writes as it always did.
+ */
+function ownedByAttempt(validationAttemptId: string | undefined) {
+	return validationAttemptId === undefined ? {} : { validationAttemptId };
+}
+
+/**
  * The READY transition, as a single conditional write.
  *
  * `finalizeInstructionSnapshot` is a Temporal activity, and Temporal delivers
@@ -2526,6 +2829,7 @@ export async function markInstructionSnapshotReady(input: {
 	storedBytes: number;
 	digest: string;
 	readyAt: Date;
+	validationAttemptId?: string;
 	/**
 	 * The publish-first promotion (Fizzy #2737): READY without the content
 	 * secret scan, which runs after publication. Writes `deferredScanStatus:
@@ -2541,6 +2845,7 @@ export async function markInstructionSnapshotReady(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			status: { notIn: VERDICT_STATUSES },
+			...ownedByAttempt(input.validationAttemptId),
 		},
 		select: { proposalStatus: true },
 	});
@@ -2553,8 +2858,10 @@ export async function markInstructionSnapshotReady(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			status: { notIn: VERDICT_STATUSES },
+			...ownedByAttempt(input.validationAttemptId),
 		},
 		data: {
+			...NO_PROGRESS,
 			status: "READY",
 			fileCount: input.fileCount,
 			storedBytes: input.storedBytes,
@@ -2570,6 +2877,40 @@ export async function markInstructionSnapshotReady(input: {
 				? { deferredScanStatus: "PENDING" as const }
 				: {}),
 		},
+	});
+	return { changed: count > 0 };
+}
+
+/**
+ * Records that the scan rule-set version `scanRulesVersion` cleared EVERY file
+ * of this snapshot. Written by the activity that actually ran the rules, with
+ * the version that activity itself imported — never by a later activity, which
+ * after a worker deploy could name a version nothing ran under.
+ *
+ * Two callers, told apart by the statuses they may write in: the full gate
+ * (the row is still RECEIVING or VALIDATING, and the write carries the run's
+ * ownership token like its progress writes) and the deferred scan (the row is
+ * READY). A stamp that lands on a snapshot that is then REJECTED or FAILED is
+ * harmless: only a READY snapshot is ever read as a source for an inherited
+ * file (`isAcceptableInheritedSource`).
+ */
+export async function recordInstructionSnapshotScanRulesVersion(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	scanRulesVersion: string;
+	statuses: InstructionSnapshotStatus[];
+	validationAttemptId?: string;
+}): Promise<{ changed: boolean }> {
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			status: { in: input.statuses },
+			...ownedByAttempt(input.validationAttemptId),
+		},
+		data: { scanRulesVersion: input.scanRulesVersion },
 	});
 	return { changed: count > 0 };
 }
@@ -2711,6 +3052,7 @@ export async function markInstructionSnapshotRejected(input: {
 	organizationId: string;
 	rejections: InstructionRejection[];
 	audit: RecordAuditInput;
+	validationAttemptId?: string;
 }): Promise<{ changed: boolean }> {
 	return db.$transaction(async (tx) => {
 		const snapshot = await tx.projectInstructionSnapshot.findFirst({
@@ -2719,6 +3061,7 @@ export async function markInstructionSnapshotRejected(input: {
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 				status: { notIn: VERDICT_STATUSES },
+				...ownedByAttempt(input.validationAttemptId),
 			},
 			select: {
 				proposalStatus: true,
@@ -2740,8 +3083,10 @@ export async function markInstructionSnapshotRejected(input: {
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 				status: { notIn: VERDICT_STATUSES },
+				...ownedByAttempt(input.validationAttemptId),
 			},
 			data: {
+				...NO_PROGRESS,
 				status: "REJECTED",
 				rejection: rejections as unknown as Prisma.InputJsonValue,
 			},
@@ -2808,6 +3153,7 @@ export async function startInstructionSnapshotValidation(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
+	validationAttemptId?: string;
 }): Promise<{ changed: boolean }> {
 	const { count } = await db.projectInstructionSnapshot.updateMany({
 		where: {
@@ -2815,8 +3161,9 @@ export async function startInstructionSnapshotValidation(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			status: { in: ["RECEIVING", "FAILED"] },
+			...ownedByAttempt(input.validationAttemptId),
 		},
-		data: { status: "VALIDATING" },
+		data: { ...NO_PROGRESS, status: "VALIDATING" },
 	});
 	return { changed: count > 0 };
 }
@@ -2846,23 +3193,84 @@ export async function startInstructionSnapshotValidation(input: {
  * that admits FAILED still matches.
  *
  * RECEIVING is the only from-state an activity can own on its own evidence,
- * so it is the only one here.
+ * so it is the only one here, UNLESS the attempt carries a token. A token
+ * (`validationAttemptId`) is that evidence for FAILED too: the API wrote it to
+ * the row before it started this run, so a FAILED row that names it is this
+ * run's own, the case where the API's status write after the start was lost.
+ * A zombie cannot ride that arm: the marker that writes FAILED also clears
+ * the token, so a stale attempt's claim matches nothing.
  */
 export async function claimInstructionSnapshotValidation(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
+	validationAttemptId?: string;
 }): Promise<{ changed: boolean }> {
 	const { count } = await db.projectInstructionSnapshot.updateMany({
 		where: {
 			id: input.snapshotId,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
-			status: "RECEIVING",
+			status:
+				input.validationAttemptId === undefined
+					? "RECEIVING"
+					: { in: ["RECEIVING", "FAILED"] },
+			...ownedByAttempt(input.validationAttemptId),
 		},
-		data: { status: "VALIDATING" },
+		data: { ...NO_PROGRESS, status: "VALIDATING" },
 	});
 	return { changed: count > 0 };
+}
+
+/**
+ * The token a run about to be started for a snapshot will carry, as the
+ * answer to "which run owns this row's checks".
+ *
+ * A row waiting for checks (RECEIVING, or FAILED for a "Try again") that has
+ * no token gets a fresh one, written only if the row still has none, so two
+ * simultaneous finalizes agree on one. A row that already has one keeps it:
+ * it is the token of a start that is in flight or already running (a retried
+ * finalize whose status write was lost, a second press of "Try again"), and
+ * replacing it would fence that run out of its own row. A failed run never
+ * leaves a token behind (`failInstructionSnapshot` and the reaper clear it),
+ * so each "Try again" after a real failure begins with none and gets a fresh
+ * one, which is what fences the previous run's stale attempts.
+ *
+ * Null when the row is no longer waiting for checks; the caller answers with
+ * the row's real status.
+ */
+export async function claimInstructionValidationAttempt(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+}): Promise<string | null> {
+	const where = {
+		id: input.snapshotId,
+		projectId: input.projectId,
+		organizationId: input.organizationId,
+		status: { in: ["RECEIVING", "FAILED"] as InstructionSnapshotStatus[] },
+	};
+	const read = () =>
+		db.projectInstructionSnapshot.findFirst({
+			where,
+			select: { validationAttemptId: true },
+		});
+	const current = await read();
+	if (!current) {
+		return null;
+	}
+	if (current.validationAttemptId !== null) {
+		return current.validationAttemptId;
+	}
+	const fresh = randomUUID();
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: { ...where, validationAttemptId: null },
+		data: { validationAttemptId: fresh },
+	});
+	if (count > 0) {
+		return fresh;
+	}
+	return (await read())?.validationAttemptId ?? null;
 }
 
 /**
@@ -2895,6 +3303,7 @@ export async function failInstructionSnapshot(input: {
 	snapshotId: string;
 	projectId: string;
 	organizationId: string;
+	validationAttemptId?: string;
 }): Promise<{ changed: boolean }> {
 	const { count } = await db.projectInstructionSnapshot.updateMany({
 		where: {
@@ -2902,8 +3311,17 @@ export async function failInstructionSnapshot(input: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
 			status: { in: ["RECEIVING", "VALIDATING"] },
+			...ownedByAttempt(input.validationAttemptId),
 		},
-		data: { status: "FAILED", rejection: Prisma.JsonNull },
+		// The token goes with the run: nothing owns a FAILED row, so a stale
+		// attempt of this run can no longer claim it back, and the next "Try
+		// again" starts from none.
+		data: {
+			...NO_PROGRESS,
+			status: "FAILED",
+			rejection: Prisma.JsonNull,
+			validationAttemptId: null,
+		},
 	});
 	return { changed: count > 0 };
 }
@@ -2956,7 +3374,57 @@ export async function failStaleValidatingInstructionSnapshot(input: {
 			status: "VALIDATING",
 			updatedAt: input.observedUpdatedAt,
 		},
-		data: { status: "FAILED", rejection: Prisma.JsonNull },
+		data: {
+			...NO_PROGRESS,
+			status: "FAILED",
+			rejection: Prisma.JsonNull,
+			validationAttemptId: null,
+		},
+	});
+	return { changed: count > 0 };
+}
+
+/**
+ * Records how far a check pass has got: the pass, the files it has fully
+ * decided, and the files it has to decide.
+ *
+ * One conditional write, so a progress report can never reach a row it does
+ * not belong to. It names the run's token (`ownedByAttempt`), so a stale
+ * attempt matches nothing, and it only matches a row somebody is actually
+ * checking: VALIDATING, or the READY row of a publish-first version whose
+ * scan is still PENDING. A row that has since reached any other state is left
+ * alone, which is what keeps a late report from writing a count onto a
+ * finished version.
+ *
+ * `changed: false` is not an error: the row moved on, and the pass finds out
+ * at its next verdict write.
+ */
+export async function recordInstructionSnapshotProgress(input: {
+	snapshotId: string;
+	projectId: string;
+	organizationId: string;
+	validationAttemptId?: string;
+	phase: InstructionSnapshotProgressPhase;
+	done: number;
+	total: number;
+}): Promise<{ changed: boolean }> {
+	const { count } = await db.projectInstructionSnapshot.updateMany({
+		where: {
+			id: input.snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			OR: [
+				{ status: "VALIDATING" },
+				{ status: "READY", deferredScanStatus: "PENDING" },
+			],
+			...ownedByAttempt(input.validationAttemptId),
+		},
+		data: {
+			progressPhase: input.phase,
+			progressDone: input.done,
+			progressTotal: input.total,
+			progressUpdatedAt: new Date(),
+		},
 	});
 	return { changed: count > 0 };
 }
@@ -4441,6 +4909,12 @@ type PublishInstructionSnapshotResult =
 	| {
 			published: false;
 			changed: false;
+			/**
+			 * Only with `published_changed`: the version number of the
+			 * pointer the caller's `expectedPublishedSnapshotId` no longer
+			 * matches, null when nothing is published.
+			 */
+			currentPublishedVersion?: number | null;
 			reason:
 				| "not_found"
 				| "not_ready"
@@ -4451,6 +4925,11 @@ type PublishInstructionSnapshotResult =
 				| "configuration_changed"
 				| "permission_revoked"
 				| "repository_backed"
+				/**
+				 * The caller said which pointer it was looking at
+				 * (`expectedPublishedSnapshotId`) and it has moved since.
+				 */
+				| "published_changed"
 				/**
 				 * Manual path: the target was published before its secret
 				 * scan (Fizzy #2737). A scan still PENDING always refuses —
@@ -4622,6 +5101,16 @@ export async function publishInstructionSnapshot(input: {
 	 * fence is `fast_path_not_authorized`, not this one.
 	 */
 	acknowledgeDeferredScan?: boolean;
+	/**
+	 * The published snapshot the caller was looking at when it chose to publish
+	 * or roll back (null: nothing was published). Compared, under the project
+	 * row lock, with the pointer as it stands: a mismatch refuses with
+	 * `published_changed` and writes nothing, so a choice made against a page
+	 * that has since gone stale cannot silently replace a version the person
+	 * never saw. Absent, nothing is compared. A target that is already the
+	 * pointer stays the idempotent success it always was.
+	 */
+	expectedPublishedSnapshotId?: string | null;
 	audit?: RecordAuditInput;
 }): Promise<PublishInstructionSnapshotResult> {
 	if (input.requireBaseUnmoved === true && input.allowRollback === true) {
@@ -4714,6 +5203,21 @@ export async function publishInstructionSnapshot(input: {
 				published: false as const,
 				changed: false as const,
 				reason: "not_found" as const,
+			};
+		}
+		// The caller's view of the pointer, judged against the LOCKED pointer.
+		// Not for the target that already is the pointer: that is the
+		// idempotent repeat, answered below as it always was.
+		if (
+			input.expectedPublishedSnapshotId !== undefined &&
+			pointer.pointerId !== input.expectedPublishedSnapshotId &&
+			pointer.pointerId !== snapshot.id
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "published_changed" as const,
+				currentPublishedVersion: pointer.pointerVersion ?? null,
 			};
 		}
 		// A REPOSITORY proposal reaches agents only by being merged in the
@@ -5031,8 +5535,8 @@ export async function publishInstructionSnapshot(input: {
  *
  * A derived snapshot inherits unchanged files by pointing its rows at the
  * base's immutable promoted keys, and those pointers only stop mattering when
- * `finalizeInstructionSnapshot` has re-hashed and re-written every one of them
- * under the derived snapshot's own prefix. Until then, deleting or pruning the
+ * `finalizeInstructionSnapshot` has copied every one of them under the derived
+ * snapshot's own prefix. Until then, deleting or pruning the
  * base removes the bytes an in-flight validation is about to read — the gate
  * would report every inherited path as `missing` and reject an edit that was
  * perfectly good.
@@ -6029,8 +6533,7 @@ export async function deleteInstructionSnapshot(
 			// lock — the project row to decide whether the delete is allowed.
 			// If a snapshot selected for pruning becomes the published one in
 			// between, the two transactions can wait on each other, and the
-			// derive's retry loop only understands version collisions, so the
-			// deadlock surfaces as a failed save rather than a retry.
+			// deadlock surfaces as a failed save.
 			//
 			// Taking the lock here costs one statement on a path that is
 			// already writing, and it makes the ordering the same everywhere:
@@ -6259,6 +6762,7 @@ export async function recordInstructionDeferredScanOutcome(input: {
 				deferredScanStatus: "PENDING",
 			},
 			data: {
+				...NO_PROGRESS,
 				deferredScanStatus: input.outcome,
 				deferredScanFindings:
 					input.findings.length > 0
@@ -6380,6 +6884,7 @@ export async function markStaleDeferredScanIncomplete(input: {
 				updatedAt: input.observedUpdatedAt,
 			},
 			data: {
+				...NO_PROGRESS,
 				deferredScanStatus: "INCOMPLETE",
 				deferredScanFindings: Prisma.JsonNull,
 				deferredScanCompletedAt: new Date(),

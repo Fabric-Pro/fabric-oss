@@ -101,6 +101,9 @@ export async function getGoogleDriveAccessToken(input: {
 		provider: "GOOGLE_DRIVE" as const,
 		isActive: true,
 		organizationId: input.organizationId ?? null,
+		// The GOOGLE_DRIVE_OAUTH_APP row holds OAuth client credentials, not
+		// this user's token.
+		NOT: { name: "GOOGLE_DRIVE_OAUTH_APP" },
 	};
 
 	const row = await db.workflowIntegration.findFirst({ where });

@@ -12,10 +12,16 @@
  * - Durability (survives server restarts)
  * - Visibility and monitoring
  * - Consistent error handling
+ *
+ * Also embeds an organization's company context sources (Fizzy #2719): an
+ * input naming a company owner is started on COMPANY_CONTEXT_TASK_QUEUE
+ * (`contextOwnerTaskQueue`), and the owner travels in the activity input.
+ * The activity call is the same for both owners.
  */
 
 import { ApplicationFailure, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
 
 const { embedSingleContextActivity } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "5 minutes",
@@ -30,7 +36,8 @@ const { embedSingleContextActivity } = proxyActivities<typeof activities>({
 
 export interface ContextEmbeddingWorkflowInput {
 	contextId: string;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string;
 	organizationId?: string;
 	/**
@@ -55,6 +62,12 @@ export interface ContextEmbeddingWorkflowInput {
 	 * activity is scheduled with exactly the arguments it always was.
 	 */
 	reembed?: boolean;
+	/**
+	 * Who owns the context. Absent is the project owner, which every input
+	 * recorded before company context existed is; carried through to the
+	 * activity, which reads and writes the owner's row.
+	 */
+	owner?: ContextOwner;
 }
 
 export interface ContextEmbeddingWorkflowOutput {
@@ -77,6 +90,10 @@ export async function contextEmbeddingWorkflow(
 		`[ContextEmbedding] Starting embedding for context ${input.contextId}`,
 	);
 
+	// A malformed owner fails the run non-retryably before the activity is
+	// scheduled.
+	resolveContextOwner(input);
+
 	try {
 		const result = await embedSingleContextActivity({
 			contextId: input.contextId,
@@ -87,6 +104,7 @@ export async function contextEmbeddingWorkflow(
 			type: input.type,
 			metadata: input.metadata,
 			reembed: input.reembed,
+			owner: input.owner,
 		});
 
 		if (result.success) {

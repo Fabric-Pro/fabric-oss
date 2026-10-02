@@ -492,12 +492,15 @@ async function loadOAuthIntegrationTools(
 			return { toolMap, workflowGuidance: "" };
 		}
 
-		// Check for Microsoft Teams integration (uses XOR pattern for tenant isolation)
+		// Check for the caller's own Microsoft Teams connection (XOR tenant
+		// isolation; the org arm filters by userId too, never a teammate's)
 		const microsoftIntegration = organizationId
 			? await db.workflowIntegration.findFirst({
 					where: {
+						userId,
 						organizationId,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				})
@@ -506,6 +509,7 @@ async function loadOAuthIntegrationTools(
 						userId,
 						organizationId: null,
 						provider: "MICROSOFT_GRAPH",
+						NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 						isActive: true,
 					},
 				});
@@ -611,12 +615,15 @@ async function loadOAuthIntegrationTools(
 			}
 		}
 
-		// Check for GitHub integration (uses XOR pattern for tenant isolation)
+		// Check for the caller's own GitHub connection (XOR tenant isolation;
+		// the org arm filters by userId too, never a teammate's)
 		const githubIntegration = organizationId
 			? await db.workflowIntegration.findFirst({
 					where: {
+						userId,
 						organizationId,
 						provider: "GITHUB",
+						NOT: { name: "GITHUB_OAUTH_APP" },
 						isActive: true,
 					},
 				})
@@ -625,6 +632,7 @@ async function loadOAuthIntegrationTools(
 						userId,
 						organizationId: null,
 						provider: "GITHUB",
+						NOT: { name: "GITHUB_OAUTH_APP" },
 						isActive: true,
 					},
 				});

@@ -1,3 +1,4 @@
+import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { findManyMock } = vi.hoisted(() => ({
@@ -40,6 +41,7 @@ describe("searchAvailableIntegrations tenant scoping", () => {
 			where: {
 				organizationId: "org-1",
 				isActive: true,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 	});
@@ -55,6 +57,7 @@ describe("searchAvailableIntegrations tenant scoping", () => {
 				userId: "member-b",
 				organizationId: null,
 				isActive: true,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 	});

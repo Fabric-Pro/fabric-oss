@@ -148,7 +148,9 @@ type RowContext = {
 	type: string;
 	extractionStatus?: string | null;
 	s3Path?: string | null;
-	content?: string | null;
+	/** The list carries a bounded preview and the length, never the body. */
+	contentPreview?: string | null;
+	contentLength?: number;
 	fileSize?: number | null;
 	sourceTitle?: string | null;
 	originalFilename?: string | null;
@@ -179,7 +181,7 @@ function isContextDownloadable(ctx: RowContext): boolean {
 	// is COMPLETED. Legacy rows (pre-extractionStatus column) have a valid
 	// `content` but `extractionStatus === null` — they would wrongly be
 	// treated as pending otherwise.
-	if (ctx.content && ctx.content.length > 0) {
+	if ((ctx.contentLength ?? 0) > 0) {
 		return true;
 	}
 	return ctx.extractionStatus === "COMPLETED";
@@ -557,7 +559,7 @@ const NOT_SEARCHABLE_STATUS = {
 function isStoredButNotSearchable(context: {
 	extractionStatus?: string | null;
 	extractionError?: string | null;
-	content?: string | null;
+	contentPreview?: string | null;
 }) {
 	const status = context.extractionStatus || "PENDING";
 
@@ -576,13 +578,15 @@ function isStoredButNotSearchable(context: {
 	if (status === "COMPLETED" && (context.extractionError ?? "").length > 0) {
 		return true;
 	}
-	return status === "FAILED" && (context.content ?? "").trim().length > 0;
+	return (
+		status === "FAILED" && (context.contentPreview ?? "").trim().length > 0
+	);
 }
 
 function resolveExtractionStatus(context: {
 	extractionStatus?: string | null;
 	extractionError?: string | null;
-	content?: string | null;
+	contentPreview?: string | null;
 }) {
 	const status = context.extractionStatus || "PENDING";
 
@@ -1726,7 +1730,7 @@ export function ProjectContextsList({ projectId }: Props) {
 			context as {
 				extractionStatus?: string;
 				extractionError?: string | null;
-				content?: string | null;
+				contentPreview?: string | null;
 			},
 		);
 		const ExtractionIcon = extractionStatus.icon;
@@ -2119,7 +2123,7 @@ export function ProjectContextsList({ projectId }: Props) {
 	type ReadinessRow = {
 		extractionStatus?: string | null;
 		extractionError?: string | null;
-		content?: string | null;
+		contentPreview?: string | null;
 	};
 	const notSearchableCount = contexts.filter((context) =>
 		isStoredButNotSearchable(context as ReadinessRow),
@@ -2147,7 +2151,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		if (getContextClass(row) === "A") {
 			return sum + (row.fileSize ?? 0);
 		}
-		return sum + (row.content?.length ?? 0);
+		return sum + (row.contentLength ?? 0);
 	}, 0);
 
 	return (
@@ -2621,7 +2625,7 @@ export function ProjectContextsList({ projectId }: Props) {
 																							extractionError?:
 																								| string
 																								| null;
-																							content?:
+																							contentPreview?:
 																								| string
 																								| null;
 																						},

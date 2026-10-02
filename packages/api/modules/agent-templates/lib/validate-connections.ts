@@ -42,7 +42,11 @@ async function hasOAuthConnection(
 	userId: string,
 	organizationId?: string,
 ): Promise<boolean> {
-	// Check if OAuth integration exists - using tenant isolation
+	// Check that the CALLER's own OAuth connection exists (XOR tenant
+	// isolation). An OAuth connection is personal to the member who made it,
+	// so the org arm filters by userId too: a teammate's connection must not
+	// satisfy the "oauth" marker for someone who never connected. This keeps
+	// validation in step with the binding in `createAgentTemplateInstance`.
 	// Cast provider to the enum type expected by Prisma
 	const integration = await db.workflowIntegration.findFirst({
 		where: organizationId
@@ -53,8 +57,10 @@ async function hasOAuthConnection(
 						| "MICROSOFT_GRAPH"
 						| "SLACK"
 						| "NOTION",
+					userId,
 					organizationId,
 					isActive: true,
+					NOT: { name: `${provider}_OAUTH_APP` },
 				}
 			: {
 					provider: provider as
@@ -66,6 +72,7 @@ async function hasOAuthConnection(
 					userId,
 					organizationId: null,
 					isActive: true,
+					NOT: { name: `${provider}_OAUTH_APP` },
 				},
 		select: { id: true },
 	});
@@ -128,6 +135,15 @@ export const toolConnectionsSchema = z
 	.optional()
 	.nullable();
 
+export interface ConnectionValidationOptions {
+	/**
+	 * OAuth providers already bound on the instance being updated. An
+	 * `"oauth"` marker for one of these keeps the existing binding, so it is
+	 * accepted without the acting user having their own connection.
+	 */
+	boundOAuthProviders?: ReadonlySet<string>;
+}
+
 export interface ValidationResult {
 	valid: boolean;
 	errors: string[];
@@ -142,6 +158,7 @@ export async function validateKnowledgeConnections(
 	knowledgeConnections: unknown,
 	userId: string,
 	organizationId?: string,
+	options: ConnectionValidationOptions = {},
 ): Promise<ValidationResult> {
 	const result: ValidationResult = {
 		valid: true,
@@ -183,6 +200,13 @@ export async function validateKnowledgeConnections(
 			// OAuth providers use "oauth" as a marker value
 			// Validate server-side that the OAuth connection actually exists
 			if (isOAuthProvider(sourceType) && integrationId === "oauth") {
+				// Already bound on the instance being edited: the update keeps
+				// that binding as is (see `getBoundOAuthProviderTypes`), so the
+				// acting user's own connection is not what gets bound and is not
+				// required.
+				if (options.boundOAuthProviders?.has(sourceType)) {
+					return { sourceType, integrationId, valid: true };
+				}
 				const hasConnection = await hasOAuthConnection(
 					sourceType,
 					userId,
@@ -349,12 +373,14 @@ export async function validateAllConnections(
 	toolConnections: unknown,
 	userId: string,
 	organizationId?: string,
+	options: ConnectionValidationOptions = {},
 ): Promise<ValidationResult> {
 	const [knowledgeResult, toolResult] = await Promise.all([
 		validateKnowledgeConnections(
 			knowledgeConnections,
 			userId,
 			organizationId,
+			options,
 		),
 		validateToolConnections(toolConnections, userId, organizationId),
 	]);

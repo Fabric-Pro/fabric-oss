@@ -22,6 +22,7 @@ const githubPlugin: IntegrationPlugin = {
 
 	// Custom settings component that supports OAuth and PAT
 	settingsComponent: GitHubSettings,
+	ownsDisconnect: true,
 
 	// Form fields are still defined for PAT fallback and credential mapping
 	formFields: [

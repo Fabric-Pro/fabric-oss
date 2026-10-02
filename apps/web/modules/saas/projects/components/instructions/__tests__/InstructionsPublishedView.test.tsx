@@ -703,6 +703,130 @@ describe("InstructionsPublishedView", () => {
 		expect(checking).toHaveAttribute("aria-live", "polite");
 	});
 
+	describe("the checks' progress pill", () => {
+		const view = (
+			newest: Record<string, unknown>,
+			props: Record<string, unknown> = {},
+		) =>
+			render(
+				<InstructionsPublishedView
+					projectId="p"
+					projectName="Checkout Rewrite"
+					published={
+						{
+							id: "s7",
+							version: 7,
+							status: "READY",
+							fileCount: 4,
+							excludedCount: 0,
+							createdAt: new Date(),
+							source: "UPLOAD",
+							user: { id: "u", name: "A. Member" },
+						} as never
+					}
+					snapshots={
+						[
+							{
+								id: "s8",
+								version: 8,
+								source: "UPLOAD",
+								fileCount: 4,
+								excludedCount: 0,
+								createdAt: new Date(),
+								...newest,
+							} as never,
+						] as never
+					}
+					onReplaceClick={() => undefined}
+					onChanged={() => undefined}
+					{...props}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+		const copy = en.projects.codingInstructions.publishedView;
+
+		it("says how many files the checks have decided out of how many", () => {
+			view({
+				status: "VALIDATING",
+				progressPhase: "CHECKING",
+				progressDone: 40,
+				progressTotal: 120,
+			});
+
+			expect(
+				screen.getByText("Checking 40 of 120 files"),
+			).toBeInTheDocument();
+			expect(screen.queryByText(copy.checkingSummary)).toBeNull();
+		});
+
+		it("words the saving pass as saving", () => {
+			view({
+				status: "VALIDATING",
+				progressPhase: "SAVING",
+				progressDone: 3,
+				progressTotal: 120,
+			});
+
+			expect(
+				screen.getByText("Saving 3 of 120 files"),
+			).toBeInTheDocument();
+		});
+
+		it("announces the phase, and keeps the count out of the live region's text", () => {
+			view({
+				status: "VALIDATING",
+				progressPhase: "CHECKING",
+				progressDone: 40,
+				progressTotal: 120,
+			});
+
+			expect(screen.getByText(copy.checkingPhase)).toHaveClass("sr-only");
+			expect(
+				screen.getByText("Checking 40 of 120 files"),
+			).toHaveAttribute("aria-hidden", "true");
+			expect(
+				screen
+					.getByText("Checking 40 of 120 files")
+					.closest("[aria-live]"),
+			).toHaveAttribute("aria-live", "polite");
+		});
+
+		it("keeps today's copy when nothing has reported yet", () => {
+			view({ status: "VALIDATING" });
+
+			expect(screen.getByText(copy.checkingSummary)).toBeInTheDocument();
+		});
+
+		it("keeps today's copy for a count that does not add up", () => {
+			view({
+				status: "VALIDATING",
+				progressPhase: "CHECKING",
+				progressDone: 130,
+				progressTotal: 120,
+			});
+
+			expect(screen.getByText(copy.checkingSummary)).toBeInTheDocument();
+		});
+
+		it("says Publishing while the pointer catches up with a version that passed its checks", () => {
+			view(
+				{ status: "READY", publishOnReady: true },
+				{ awaitingPublish: true },
+			);
+
+			expect(screen.getByText(copy.publishing)).toBeInTheDocument();
+		});
+
+		it("says nothing of publishing once the wait is over, or for a version that is not set to publish", () => {
+			const { unmount } = view(
+				{ status: "READY", publishOnReady: true },
+				{ awaitingPublish: false },
+			);
+			expect(screen.queryByText(copy.publishing)).toBeNull();
+			unmount();
+		});
+	});
+
 	it("shows no failed-checks banner when the newest snapshot is READY", () => {
 		render(
 			<InstructionsPublishedView

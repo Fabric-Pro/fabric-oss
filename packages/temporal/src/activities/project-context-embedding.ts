@@ -1,5 +1,5 @@
 import { getSystemRAGProviderConfig } from "@repo/ai";
-import { db } from "@repo/database";
+import { stampContextsEmbedded } from "@repo/database";
 import {
 	ensureCollection,
 	generateEmbeddings,
@@ -101,23 +101,44 @@ export async function storeContextsInQdrant(params: {
 
 /**
  * Update database with Qdrant IDs and embeddedAt timestamp
+ *
+ * Only for rows whose content is still what was embedded: `versions[i]` is
+ * the content version (hash, or `updatedAt` for a row without one) copied
+ * into the workflow input with `contextIds[i]`. A row that changed since stays
+ * unstamped, so the next pass embeds it again, and a row that was deleted is
+ * skipped instead of failing the whole batch. A caller without `versions`
+ * (an execution started before they existed) is guarded by the id alone.
  */
 export async function updateContextEmbeddingStatus(params: {
+	projectId: string;
 	contextIds: string[];
 	qdrantIds: string[];
+	versions?: Array<{
+		contentHash: string | null;
+		updatedAt: string;
+	} | null>;
 }): Promise<void> {
-	const { contextIds, qdrantIds } = params;
+	const { projectId, contextIds, qdrantIds, versions } = params;
 
-	// Update all contexts in a transaction
-	await db.$transaction(
-		contextIds.map((contextId, index) =>
-			db.projectContext.update({
-				where: { id: contextId },
-				data: {
-					qdrantId: qdrantIds[index],
-					embeddedAt: new Date(),
-				},
-			}),
-		),
-	);
+	const { stamped, skipped } = await stampContextsEmbedded({
+		projectId,
+		contexts: contextIds.map((id, index) => {
+			const version = versions?.[index] ?? null;
+			return {
+				id,
+				qdrantId: qdrantIds[index],
+				version: version
+					? {
+							contentHash: version.contentHash,
+							updatedAt: new Date(version.updatedAt),
+						}
+					: null,
+			};
+		}),
+	});
+	if (skipped > 0) {
+		console.warn(
+			`[updateContextEmbeddingStatus] Left ${skipped} of ${stamped + skipped} contexts unstamped: changed or deleted since they were embedded`,
+		);
+	}
 }

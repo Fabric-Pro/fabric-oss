@@ -242,10 +242,18 @@ describe("audit.taxonomy handler", () => {
 		// applied, never for a superseded attempt = 165,
 		// + 2 Parlume meeting session actions = 167.
 		// + 12 AI provider configuration actions (6 org + 6 account) and
-		// 1 confirmed Parlume action = 180.
-		expect(result.actions).toHaveLength(180);
+		// 1 confirmed Parlume action = 180,
+		// + 1 org.company_context.metadata_updated (a company context source's
+		// type label or AI instructions changed — text that steers every
+		// Proposal and Business Case the organization generates, recorded with
+		// both values before and after, Fizzy #2719) = 181,
+		// + 2 account.oauth.consent_* (a coding agent approved / revoked) = 183.
+		expect(result.actions).toHaveLength(183);
 		expect(result.actions).toContain("org.ai_provider.configured");
 		expect(result.actions).toContain("account.ai_provider.deleted");
+		expect(result.actions).toContain(
+			"org.company_context.metadata_updated",
+		);
 		expect(result.actions).toContain("project.parlume.session_started");
 		expect(result.actions).toContain("project.parlume.session_stopped");
 		expect(result.actions).toContain("project.parlume.action_confirmed");
@@ -464,6 +472,9 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.recipient_brand.fetched");
 		expect(result.actions).toContain("project.recipient_brand.updated");
 		expect(result.actions).toContain("org.brand_kit.updated");
+		expect(result.actions).toContain(
+			"org.company_context.metadata_updated",
+		);
 
 		expect(result.categories).toEqual([
 			"auth",

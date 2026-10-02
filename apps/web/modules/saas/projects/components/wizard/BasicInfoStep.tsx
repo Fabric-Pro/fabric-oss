@@ -300,9 +300,9 @@ export function BasicInfoStep({
 					}
 					return (
 						ctx.originalFilename ??
-						(typeof ctx.content === "string" &&
-						ctx.content.length > 0
-							? ctx.content.slice(0, 240)
+						(typeof ctx.contentPreview === "string" &&
+						ctx.contentPreview.length > 0
+							? ctx.contentPreview.slice(0, 240)
 							: null)
 					);
 				})

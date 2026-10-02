@@ -26,6 +26,16 @@ export function toSyncRunView(run: SyncRunRow, currentSyncId: string | null) {
 		snapshotId: run.snapshotId,
 		snapshotVersion: run.snapshotVersion,
 		limit: parseInstructionSyncLimitDetail(run.limitDetail),
+		// Where an open run has got. Only the copy carries a count; the
+		// phases before it carry none, and a finished run carries nothing.
+		progress:
+			run.finishedAt === null && run.progressPhase !== null
+				? {
+						phase: run.progressPhase,
+						done: run.progressDone,
+						total: run.progressTotal,
+					}
+				: null,
 		userName: run.user.name,
 		fromCurrentConfiguration: run.syncId === currentSyncId,
 	};

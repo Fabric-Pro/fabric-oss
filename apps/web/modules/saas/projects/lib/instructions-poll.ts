@@ -154,6 +154,15 @@ function isInFlight(snapshot: PollRow, now: number): boolean {
 	return now - createdAt <= abandonAfterMs;
 }
 
+/**
+ * Whether a snapshot is a check run that is still plausibly alive: RECEIVING or
+ * VALIDATING, and not yet old enough for the tab to have stopped waiting on it
+ * (`isInFlight`'s age bounds). A published version's pending scan is not one.
+ */
+export function isCheckRunActive(snapshot: PollRow, now: number): boolean {
+	return ACTIVE_STATUSES.has(snapshot.status) && isInFlight(snapshot, now);
+}
+
 /** While the workflow is plausibly seconds from finishing. */
 export const INSTRUCTIONS_FAST_POLL_MS = 3_000;
 /** After that: still watching, but at a cost that can run for hours. */

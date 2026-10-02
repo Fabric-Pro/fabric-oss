@@ -80,35 +80,28 @@ export async function resolvePmTarget(args: {
 		return null;
 	}
 
-	// The GitLab REST connection belongs to the project/org, not the individual
-	// user who set it up — code-repo integrations resolve per-project so any
-	// teammate can sync, and this UI/capability check must agree with the
-	// worker's resolver (pm-source.ts). Prefer the caller's own integration; in
-	// ORG context fall back to any active org GitLab integration. Personal
-	// projects (organizationId === null) stay strictly user-scoped.
-	const ownIntegration = await db.workflowIntegration.findFirst({
+	// The caller's OWN GitLab connection only (XOR tenant isolation: org
+	// context filters by organizationId AND userId). This UI/capability check
+	// must agree with the worker's resolver (temporal `pm-source.ts`), which
+	// acts through the caller's own connection and never a teammate's.
+	const integration = await db.workflowIntegration.findFirst({
 		where: organizationId
-			? { organizationId, userId, provider: "GITLAB", isActive: true }
+			? {
+					organizationId,
+					userId,
+					provider: "GITLAB",
+					isActive: true,
+					NOT: { name: "GITLAB_OAUTH_APP" },
+				}
 			: {
 					organizationId: null,
 					userId,
 					provider: "GITLAB",
 					isActive: true,
+					NOT: { name: "GITLAB_OAUTH_APP" },
 				},
 		select: { id: true },
 	});
-	const integration =
-		ownIntegration ??
-		(organizationId
-			? await db.workflowIntegration.findFirst({
-					where: {
-						organizationId,
-						provider: "GITLAB",
-						isActive: true,
-					},
-					select: { id: true },
-				})
-			: null);
 	if (!integration) {
 		return null;
 	}

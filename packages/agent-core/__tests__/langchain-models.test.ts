@@ -8,11 +8,13 @@ import {
 } from "@repo/agent-core/output-truncation";
 import { AZURE_OPENAI_API_VERSION } from "@repo/agent-types";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isRetryableError } from "../src/retry";
 import type { RuntimeProviderConfig } from "../src/services/langchain-models";
 import {
 	applyReasoningConfig,
 	createProviderModel,
 	extractProviderConfig,
+	getAgentModelAsync,
 	getGatewayReasoningConfig,
 	getReasoningConfig,
 	isGatewayClaudeReasoningModel,
@@ -2246,6 +2248,79 @@ describe("createProviderModel — AZURE_AI_FOUNDRY endpoint shapes", () => {
 			expect(field(model, "azureOpenAIApiDeploymentName")).toBe(
 				"prod-chat",
 			);
+		},
+	);
+});
+
+describe("getAgentModelAsync — AI-config API fallback failures", () => {
+	// No provider config on the runnable, so resolution falls back to the
+	// ai-config API for this tenant.
+	const tenantConfig = {
+		configurable: {
+			tenant_user_id: "user-1",
+			tenant_organization_id: "org-1",
+		},
+	};
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	function stubFetch(impl: () => Promise<Response>) {
+		vi.stubEnv("FABRIC_API_URL", "https://app.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"test-service-secret-0123456789abcdef",
+		);
+		vi.stubGlobal("fetch", vi.fn(impl));
+	}
+
+	it.each([503, 502, 429])(
+		"surfaces a retryable error when the lookup returns HTTP %i",
+		async (status) => {
+			stubFetch(async () => new Response("{}", { status }));
+
+			const error = await getAgentModelAsync(tenantConfig).catch(
+				(e: unknown) => e,
+			);
+
+			expect(error).toMatchObject({ status });
+			expect(isRetryableError(error)).toBe(true);
+		},
+	);
+
+	it("rethrows a network fault from the lookup as is", async () => {
+		const fault = Object.assign(new TypeError("fetch failed"), {
+			cause: Object.assign(new Error("read ECONNRESET"), {
+				code: "ECONNRESET",
+			}),
+		});
+		stubFetch(async () => {
+			throw fault;
+		});
+
+		const error = await getAgentModelAsync(tenantConfig).catch(
+			(e: unknown) => e,
+		);
+
+		expect(error).toBe(fault);
+		expect(isRetryableError(error)).toBe(true);
+	});
+
+	it.each([401, 404])(
+		"still reports no provider configured when the lookup returns HTTP %i",
+		async (status) => {
+			stubFetch(async () => new Response("{}", { status }));
+
+			const error = await getAgentModelAsync(tenantConfig).catch(
+				(e: unknown) => e,
+			);
+
+			expect(String((error as Error).message)).toContain(
+				"No AI provider configured",
+			);
+			expect(isRetryableError(error)).toBe(false);
 		},
 	);
 });

@@ -221,6 +221,7 @@ export async function updateContextExtractionStatus(
 				? {
 						content: data.content,
 						contentHash: contextContentHashOrNull(data.content),
+						sourceBlobOid: null,
 					}
 				: {}),
 			...(data?.extractionError !== undefined
@@ -686,6 +687,9 @@ function escapeLikeLiteral(value: string): string {
 	return value.replace(/[\\%_]/g, "\\$&");
 }
 
+/** How many leading characters of a context's text a list row carries. */
+const CONTEXT_LIST_PREVIEW_CHARS = 300;
+
 /**
  * List contexts for a project
  */
@@ -750,14 +754,45 @@ export async function listContexts(options: {
 	const [contexts, total] = await Promise.all([
 		db.projectContext.findMany({
 			where,
+			// Metadata only. `content` can be megabytes per row across thousands
+			// of rows, and the Context tab refetches this list every couple of
+			// seconds while a sync runs; a body is read with `getContext` when a
+			// context is opened.
+			omit: { content: true },
 			orderBy: { createdAt: "desc" },
 			...(paginate ? { take: limit, skip: offset } : {}),
 		}),
 		db.projectContext.count({ where }),
 	]);
 
+	// A bounded preview and the character length stand in for the body: what a
+	// row's snippet, its "has text" checks and a size total need, at the cost of
+	// 300 characters per row instead of the whole text.
+	const stats =
+		contexts.length === 0
+			? []
+			: await db.$queryRaw<
+					Array<{
+						id: string;
+						preview: string | null;
+						length: number | null;
+					}>
+				>`
+					SELECT c."id",
+						left(c."content", ${CONTEXT_LIST_PREVIEW_CHARS}) AS "preview",
+						char_length(c."content") AS "length"
+					FROM "project_context" c
+					WHERE c."projectId" = ${projectId}
+						AND c."id" = ANY(${contexts.map((row) => row.id)}::text[])
+				`;
+	const statsById = new Map(stats.map((row) => [row.id, row]));
+
 	return {
-		contexts,
+		contexts: contexts.map((row) => ({
+			...row,
+			contentPreview: statsById.get(row.id)?.preview ?? null,
+			contentLength: Number(statsById.get(row.id)?.length ?? 0),
+		})),
 		total,
 		hasMore: paginate ? offset + limit < total : false,
 	};
@@ -1130,7 +1165,10 @@ export async function updateContext(
 		data: {
 			...data,
 			...(data.content !== undefined
-				? { contentHash: contextContentHashOrNull(data.content) }
+				? {
+						contentHash: contextContentHashOrNull(data.content),
+						sourceBlobOid: null,
+					}
 				: {}),
 		},
 	});
@@ -2621,6 +2659,61 @@ export async function markContextAsEmbedded(
 			embeddedAt: new Date(),
 		},
 	});
+}
+
+/**
+ * What a context looked like when its content was copied out for embedding:
+ * its content hash, and where that is null (a row that never came through the
+ * synced-file path), its `updatedAt`. Enough to tell, at stamp time, whether
+ * the content the vector was built from is still the content on the row.
+ */
+export interface EmbeddedContentVersion {
+	contentHash: string | null;
+	updatedAt: Date;
+}
+
+/**
+ * Stamps contexts as embedded after a bulk embed, for exactly the rows whose
+ * content is still the content that was embedded.
+ *
+ * The bulk embed copies content into its workflow input and stamps minutes
+ * later, so a row can be edited in between. Stamping it would record the new
+ * content as embedded when the vector holds the old: the row would never be
+ * picked up again. A `version` makes each write conditional on the row still
+ * matching it (hash when it has one, `updatedAt` otherwise); a row that moved
+ * stays unstamped, so the next pass embeds it again. A row that is gone is
+ * skipped rather than thrown on, which would roll back every other row's
+ * stamp with it. Without a `version` the write is guarded by the id alone.
+ */
+export async function stampContextsEmbedded(input: {
+	projectId: string;
+	contexts: Array<{
+		id: string;
+		qdrantId: string;
+		version?: EmbeddedContentVersion | null;
+	}>;
+}): Promise<{ stamped: number; skipped: number }> {
+	const counts = await db.$transaction(
+		input.contexts.map((context) =>
+			db.projectContext.updateMany({
+				where: {
+					id: context.id,
+					projectId: input.projectId,
+					...(context.version
+						? context.version.contentHash === null
+							? {
+									contentHash: null,
+									updatedAt: context.version.updatedAt,
+								}
+							: { contentHash: context.version.contentHash }
+						: {}),
+				},
+				data: { qdrantId: context.qdrantId, embeddedAt: new Date() },
+			}),
+		),
+	);
+	const stamped = counts.reduce((sum, { count }) => sum + count, 0);
+	return { stamped, skipped: input.contexts.length - stamped };
 }
 
 /**

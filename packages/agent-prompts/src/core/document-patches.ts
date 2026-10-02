@@ -136,6 +136,7 @@ export type PatchErrorCode =
 	| "find_ambiguous_in_section"
 	| "overlapping_ranges"
 	| "malformed_anchor"
+	| "malformed_patch"
 	| "unsupported_op"
 	| "invalid_replacement_content"
 	| "excessive_content_loss"
@@ -672,6 +673,27 @@ function validatePatchShape(
 	patch: DocumentPatch,
 	patchIndex: number,
 ): PatchError | null {
+	// Patches arrive as model-generated tool arguments, so their runtime shape
+	// is unchecked: a null element or a non-string anchor would otherwise throw
+	// below instead of returning an error the model can be asked to correct.
+	if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
+		return {
+			patchIndex,
+			op: "replace_section",
+			anchor: "",
+			code: "malformed_patch",
+			message: `Patch must be an object with "op" and "anchor" fields.`,
+		};
+	}
+	if (patch.anchor != null && typeof patch.anchor !== "string") {
+		return {
+			patchIndex,
+			op: patch.op,
+			anchor: "",
+			code: "malformed_anchor",
+			message: `Patch "anchor" must be a heading-path string such as "## Overview".`,
+		};
+	}
 	const { op } = patch;
 	const anchor: string = patch.anchor ?? "";
 	if (!op) {

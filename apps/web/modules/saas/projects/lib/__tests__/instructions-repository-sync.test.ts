@@ -23,6 +23,7 @@ import {
 	syncOutcomeMessage,
 	syncRunEnded,
 	syncRunOutcome,
+	syncRunProgress,
 	triggerLabelKey,
 } from "../instructions-repository-sync";
 
@@ -251,6 +252,32 @@ describe("a failed run's message (§7.3)", () => {
 			{
 				key: "errors.limit.totalSize",
 				values: { actual: "57.2 MB", max: "50 MB" },
+			},
+		],
+		[
+			{ kind: "fileSize", actual: 5_243_904, max: 5_242_880 },
+			{
+				key: "errors.limit.fileSize",
+				values: { actual: "5.001 MB", max: "5 MB" },
+			},
+		],
+		[
+			{ kind: "totalSize", actual: 52_428_801, max: 52_428_800 },
+			{
+				key: "errors.limit.totalSize",
+				values: { actual: "52,428,801 bytes", max: "50 MB" },
+			},
+		],
+		[
+			{
+				kind: "fileSize",
+				actual: 6_291_456,
+				max: 5_242_880,
+				atLeast: true,
+			},
+			{
+				key: "errors.limit.fileSizeAtLeast",
+				values: { actual: "6 MB", max: "5 MB" },
 			},
 		],
 		[
@@ -787,5 +814,102 @@ describe("localSetupRouteFor (Fizzy #2721)", () => {
 				configured: { ...configured, rootPath: "agents/../etc" },
 			}),
 		).toBeNull();
+	});
+});
+
+describe("syncRunProgress", () => {
+	const open = (
+		progress: SyncRunView["progress"],
+		overrides: Partial<SyncRunView> = {},
+	) =>
+		({
+			id: "sync_1:run_a",
+			trigger: "MANUAL",
+			startedAt: new Date(),
+			finishedAt: null,
+			status: null,
+			error: null,
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			userName: null,
+			fromCurrentConfiguration: true,
+			progress,
+			...overrides,
+		}) satisfies SyncRunView;
+
+	it("names the phases that carry no count without inventing one", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open({ phase: "FETCHING", done: null, total: null }),
+			}),
+		).toEqual({ kind: "fetching" });
+		expect(
+			syncRunProgress({
+				latestRun: open({
+					phase: "PREPARING",
+					done: null,
+					total: null,
+				}),
+			}),
+		).toEqual({ kind: "preparing" });
+	});
+
+	it("reports the copy as files uploaded out of files to copy", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open({ phase: "COPYING", done: 3, total: 8 }),
+			}),
+		).toEqual({ kind: "copying", done: 3, total: 8 });
+	});
+
+	it("continues into the snapshot's own pass once it reports one", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open({ phase: "COPYING", done: 8, total: 8 }),
+				inFlightSnapshot: {
+					status: "VALIDATING",
+					version: 5,
+					scanPending: false,
+					progress: { phase: "SAVING", done: 4, total: 8 },
+				},
+			}),
+		).toEqual({ kind: "checking", phase: "SAVING", done: 4, total: 8 });
+	});
+
+	it("stays on the run's own phase while the snapshot has reported nothing", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open({ phase: "COPYING", done: 8, total: 8 }),
+				inFlightSnapshot: {
+					status: "RECEIVING",
+					version: 5,
+					scanPending: false,
+					progress: null,
+				},
+			}),
+		).toEqual({ kind: "copying", done: 8, total: 8 });
+	});
+
+	it("says nothing for a finished run, or for one that has reported nothing", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open(
+					{ phase: "COPYING", done: 8, total: 8 },
+					{ finishedAt: new Date() },
+				),
+			}),
+		).toBeNull();
+		expect(syncRunProgress({ latestRun: open(null) })).toBeNull();
+		expect(syncRunProgress({ latestRun: null })).toBeNull();
+	});
+
+	it("never reports a copy count that does not add up", () => {
+		expect(
+			syncRunProgress({
+				latestRun: open({ phase: "COPYING", done: 9, total: 8 }),
+			}),
+		).toEqual({ kind: "preparing" });
 	});
 });

@@ -43,6 +43,7 @@ const ALL_BASE_COLLECTIONS = [
 	"chat-documents",
 	"workspace-documents",
 	"project-contexts",
+	"company-contexts",
 	"fabric_orchestrator_memory",
 	"fabric_episodic_memory",
 	"fabric_capabilities",
@@ -152,7 +153,7 @@ describe("deleteOrganizationCollections", () => {
 		getCollectionsMock.mockRejectedValue(new Error("qdrant unreachable"));
 
 		await expect(deleteOrganizationCollections(ORG_ID)).rejects.toThrow(
-			/Failed to delete 6 collection/,
+			`Failed to delete ${ALL_BASE_COLLECTIONS.length} collection`,
 		);
 		expect(deleteCollectionMock).not.toHaveBeenCalled();
 	});

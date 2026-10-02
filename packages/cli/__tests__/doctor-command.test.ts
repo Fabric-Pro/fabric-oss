@@ -67,6 +67,7 @@ const { mocks } = vi.hoisted(() => ({
 		whoami: vi.fn(),
 		getPublished: vi.fn(),
 		createDownloadUrl: vi.fn(),
+		createFileDownloadUrls: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getDefaultContext: vi.fn<() => unknown>(),
 		getClient: vi.fn(),
@@ -97,6 +98,7 @@ vi.mock("../src/lib/client.js", () => {
 		instructions: {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: mocks.createDownloadUrl,
+			createFileDownloadUrls: mocks.createFileDownloadUrls,
 		},
 		withoutContext: () => {
 			mocks.withoutContext();
@@ -458,7 +460,7 @@ describe("auth", () => {
 		const auth = checkOf(report, "auth");
 		expect(auth.status).toBe("fail");
 		expect(auth.evidence).toBe("server");
-		expect(auth.fix?.command).toBe("fabric auth login --key <api-key>");
+		expect(auth.fix?.command).toBe("fabric auth login");
 		for (const id of [
 			"access",
 			"published",

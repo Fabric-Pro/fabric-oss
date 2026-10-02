@@ -176,7 +176,9 @@ This provides a complete reference of all available authentication endpoints, re
 
 ## API Keys for MCP Gateway
 
-Fabric API keys (format: `fab_xxxx_xxxxxxxxxx`) are also used to authenticate with the [MCP Gateway](/docs/integrations/mcp-gateway). Create keys in **Settings → API Keys** and use them with external MCP clients like Claude Desktop and Cursor.
+Coding agents sign in to the [MCP Gateway](/docs/integrations/mcp-gateway) themselves: Fabric is an OAuth 2.1 authorization server (issuer `<origin>/api/auth`, dynamic client registration for public clients, PKCE S256), and the person approves each agent for one organization. Approved agents are listed, and can be revoked, under **Account → Connected agents**.
+
+Fabric API keys (format: `fab_xxxx_xxxxxxxxxx`) also authenticate with the gateway, for CI and headless clients. Create keys in **Settings → API Keys**.
 
 ---
 

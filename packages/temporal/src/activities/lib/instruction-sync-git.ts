@@ -668,6 +668,21 @@ export async function revParseHead(
 	return stdout.toString("utf8").trim();
 }
 
+/** The root tree id of `HEAD`'s commit: what Azure DevOps addresses a tree by. */
+export async function revParseRootTree(
+	input: GitCallBase & { dir: string },
+): Promise<string> {
+	const { stdout } = await runGit({
+		cwd: input.dir,
+		args: ["rev-parse", "--verify", "HEAD^{tree}"],
+		env: input.env,
+		signal: input.signal,
+		label: "rev-parse",
+		maxStdoutBytes: 256,
+	});
+	return stdout.toString("utf8").trim();
+}
+
 /** Spec §5.3.2 step 5: no `-l`, because sizes would fetch every blob. */
 export async function listTree(
 	input: GitCallBase & { dir: string; rootPath: string; maxEntries: number },

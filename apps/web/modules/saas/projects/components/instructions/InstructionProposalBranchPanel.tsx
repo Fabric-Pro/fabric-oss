@@ -1,5 +1,6 @@
 "use client";
 
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -99,6 +100,7 @@ export function InstructionProposalBranchPanel({
 	isError?: boolean;
 }) {
 	const readOnly = userId !== undefined;
+	const actionError = useInstructionActionError();
 	const t = useTranslations(
 		"projects.codingInstructions.proposalReview.branch",
 	);
@@ -172,7 +174,7 @@ export function InstructionProposalBranchPanel({
 					t("closeSuccess"),
 				),
 			onError: (error: Error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refresh();
 			},
 		}),
@@ -185,7 +187,7 @@ export function InstructionProposalBranchPanel({
 					t("startOverSuccess"),
 				),
 			onError: (error: Error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refresh();
 			},
 		}),
@@ -198,7 +200,7 @@ export function InstructionProposalBranchPanel({
 					t("retrySuccess"),
 				),
 			onError: (error: Error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refresh();
 			},
 		}),
@@ -212,7 +214,7 @@ export function InstructionProposalBranchPanel({
 						t("stopTrackingSuccess"),
 					),
 				onError: (error: Error) => {
-					toast.error(error.message);
+					toast.error(actionError(error));
 					refresh();
 				},
 			},

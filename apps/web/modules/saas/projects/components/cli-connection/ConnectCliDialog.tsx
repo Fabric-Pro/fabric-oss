@@ -24,10 +24,16 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import type { LocalSetupRoute } from "../../lib/instructions-repository-sync";
+import { AgentSignInSection } from "./AgentSignInSection";
 import {
-	type LocalSetupRoute,
-	quoteShellArgIfNeeded,
-} from "../../lib/instructions-repository-sync";
+	buildLocalSyncCommands,
+	buildRepositorySetupCommands,
+	gatewayUrl,
+	keyLoginLine,
+	type LocalSetupTool,
+	oauthLoginLine,
+} from "./lib/agent-sign-in";
 
 export type { LocalSetupRoute };
 
@@ -43,7 +49,14 @@ export type { LocalSetupRoute };
 const DIALOG_TITLE = "Connect Fabric to your coding tool";
 
 const DIALOG_DESCRIPTION =
-	"Create a key, connect your coding tool with it, and it can read this project's context while you work.";
+	"Sign in from your coding tool, and it can read this project's context while you work.";
+
+/**
+ * The API-key route, kept for CI and headless machines where nobody can
+ * approve a sign-in in a browser. Everything below the summary is the original
+ * mint flow with its disclosure and dismissal guard untouched.
+ */
+const KEY_ALTERNATIVE_LABEL = "Use an API key instead (CI, headless)";
 
 /** Section 1 — what the key grants, said before anything is minted (R27). */
 const DISCLOSURE_LABEL = "Before you create the key";
@@ -52,7 +65,7 @@ const DISCLOSURE_POINTS = [
 	"The key authenticates as you. A tool holding it reads everything you can read in this organization — every project in it, not only this one.",
 	"It is read-only: a tool holding it can read your work in Fabric, and cannot change it.",
 	"It stays valid until you revoke it, or until it expires 90 days from now, whichever comes first.",
-	"After you create a key, the configuration and any local setup commands below will contain a live credential. Treat it like a password: do not paste it into a shared document, a ticket or a chat.",
+	"After you create a key, the configuration below and any local setup commands will contain a live credential. Treat it like a password: do not paste it into a shared document, a ticket or a chat.",
 ] as const;
 
 /**
@@ -94,11 +107,12 @@ const CONFIGURATION_INTRO =
 	"Paste this into your coding tool's MCP configuration.";
 
 /**
- * Stands in for a real key everywhere one is needed before the reader has
- * minted one: the configuration block below and the local-sync commands.
- * Shaped like an ordinary value rather than an obvious dummy, so a reader who
- * already holds a key can copy the template as-is and paste their own key
- * over the placeholder.
+ * Stands in for a real key in the API-key route's configuration block before
+ * the reader has minted one. (The local-sync commands need no placeholder:
+ * until a key exists they sign in through the browser.) Shaped like an
+ * ordinary value rather than an obvious dummy, so a reader who already holds a
+ * key can copy the template as-is and paste their own key over the
+ * placeholder.
  */
 const PLACEHOLDER_KEY = "YOUR_API_KEY";
 
@@ -164,7 +178,7 @@ const INSTRUCTION_LABEL = "Then say this to your tool";
  * configuration had to be pasted first (Fizzy #2457).
  */
 const INSTRUCTION_INTRO =
-	"Copy this sentence and send it in the tool you just configured. It only works there: the configuration above is what gives the tool access to this project.";
+	"Copy this sentence and send it in the tool you just connected. It only works there: the connection is what gives the tool access to this project.";
 
 /**
  * The local-checkout route. Shown only when `localSetup` names one, and
@@ -193,16 +207,18 @@ const INSTRUCTION_INTRO =
  * reader to a refusal.
  *
  * Two routes, not three steps. The files can reach the tool on disk (this
- * block) or live over MCP (the configuration plus the sentence below). Both
- * need the key this dialog just created; neither needs the other. The
- * checkout route leads, because it is the one to pick for Claude Code, and
- * the MCP route follows as the alternative.
+ * block) or live over MCP (the sign-in entries plus the sentence below);
+ * neither needs the other. The checkout route leads, because it is the one to
+ * pick for Claude Code, and the MCP route follows as the alternative.
  *
- * The sign-in line carries the key on purpose in both variants: the CLI
- * stores it in its own per-user config and the hook it installs never names
- * it, so this is the one place the key has to be typed — and copying this
- * block is copying the key, which is why it satisfies the dismissal guard
- * exactly as the configuration does.
+ * The sign-in line opens the browser by default (`fabric auth login` without a
+ * key), so nothing secret is on screen. Once a key has been created in the
+ * collapsed API-key route, the line carries that key instead: the CLI stores
+ * it in its own per-user config and the hook it installs never names it, so
+ * this is the one place the key has to be typed — and copying this block is
+ * then copying the key, which is why it satisfies the dismissal guard exactly
+ * as the configuration does. One block either way, so the tool choice and the
+ * update mode are asked once.
  */
 const ROUTES_INTRO =
 	"Two ways to give your tool these instructions. Use either; choose the coding tool you use in the checkout below.";
@@ -210,7 +226,7 @@ const ROUTES_INTRO =
 const LOCAL_SYNC_LABEL = "Recommended: keep the files in your checkout";
 
 const LOCAL_SYNC_INTRO =
-	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Both tools read the files directly, so the sentence further down is not needed.";
+	"Run these once in the checkout. The first installs or updates the CLI. The second signs it in: it opens your browser so you can approve the CLI for this organization, and the CLI keeps its sign-in in its own profile, never in the repository. If you create an API key below instead, the line signs in with that key; like any command it may then remain in your shell history. FABRIC_BASE_URL overrides the profile URL when it is set. The third copies whatever is published into the checkout and configures the session-start behavior below. If nothing is published yet, the hook checks for the first version at future session starts. Both tools read the files directly, so the sentence further down is not needed.";
 
 const LOCAL_SYNC_REPOSITORY_LABEL =
 	"Recommended: work in a checkout of the repository";
@@ -221,10 +237,8 @@ const LOCAL_SYNC_REPOSITORY_LABEL =
  * session-start hook is comparing the checkout against.
  */
 function localSyncRepositoryIntro(ref: string): string {
-	return `Run these once. The first two clone the repository this project syncs from and enter the folder its instructions live in. The next installs or updates the CLI. The next signs it in with this key and this deployment URL; the CLI keeps both in its own profile, never in the repository, though like any command the line may remain in your shell history. The last installs a session-start hook that reports when ${ref} has newer published instructions than your checkout and never changes the checkout — git pull does that. Both tools read the files directly, so the sentence further down is not needed.`;
+	return `Run these once. The first two clone the repository this project syncs from and enter the folder its instructions live in. The next installs or updates the CLI. The next signs it in: it opens your browser so you can approve the CLI, and the CLI keeps its sign-in in its own profile, never in the repository. If you create an API key below instead, the line signs in with that key. The last installs a session-start hook that reports when ${ref} has newer published instructions than your checkout and never changes the checkout — git pull does that. Both tools read the files directly, so the sentence further down is not needed.`;
 }
-
-type LocalSetupTool = "claude-code" | "codex";
 
 const LOCAL_SETUP_TOOL_LABEL = "Choose your coding tool";
 
@@ -242,54 +256,8 @@ const APPLY_UPDATES_LABEL =
 const APPLY_UPDATES_DESCRIPTION =
 	"By default, session-start checks only report published changes and print a command to apply them. Select this option to update local instruction files automatically.";
 
-/** The MCP route's heading when it follows the checkout route. */
+/** The sign-in section's heading when it follows the checkout route. */
 const MCP_ROUTE_LABEL = "Or read them live over MCP";
-
-function buildLocalSyncCommands(
-	projectId: string,
-	rawKey: string,
-	baseUrl: string,
-	automaticallyApplyUpdates: boolean,
-	tool: LocalSetupTool,
-): string {
-	return [
-		"npm install -g @fabricorg/cli",
-		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
-		`fabric instructions init --project ${projectId} --tool ${tool}${
-			automaticallyApplyUpdates ? " --apply" : ""
-		}`,
-	].join("\n");
-}
-
-/**
- * The repository variant's five lines: clone (with an explicit target
- * directory), enter the folder the instructions live in, install/update the
- * CLI, sign in, then `init` — never with `--apply` (see the doc comment above
- * `ROUTES_INTRO`). Every argument drawn from server-held data — the clone URL,
- * the directory, the root folder — is quoted with `quoteShellArgIfNeeded` and
- * both `git clone` and `cd` use a `--` option terminator, so a stored path
- * carrying a shell metacharacter (`parseRepoUrl` preserves path characters;
- * it strips only userinfo, query and fragment) or a leading `-` can neither
- * split the pasted block into extra commands nor be read as an option.
- */
-function buildRepositorySetupCommands(
-	route: Extract<LocalSetupRoute, { kind: "repository" }>,
-	projectId: string,
-	rawKey: string,
-	baseUrl: string,
-	tool: LocalSetupTool,
-): string {
-	const cdTarget = route.rootPath
-		? `${route.directory}/${route.rootPath}`
-		: route.directory;
-	return [
-		`git clone -- ${quoteShellArgIfNeeded(route.cloneUrl)} ${quoteShellArgIfNeeded(route.directory)}`,
-		`cd -- ${quoteShellArgIfNeeded(cdTarget)}`,
-		"npm install -g @fabricorg/cli",
-		`fabric auth login --key ${rawKey} --base-url ${baseUrl}`,
-		`fabric instructions init --project ${projectId} --tool ${tool}`,
-	].join("\n");
-}
 
 /**
  * Which entry point opened this dialog, so the one pasted sentence names the
@@ -408,16 +376,6 @@ const ISSUED_KEY_NAME = "Coding CLI (created from the connect prompt)";
  */
 const ISSUED_KEY_EXPIRY_DAYS = 90;
 
-/**
- * The endpoint the configuration names.
- *
- * It must be the gateway and never the alternate `/mcp` host. That host
- * verifies personal keys only, so an organization key reaches it, fails to
- * resolve, and the client is handed a *successful* connection with an empty
- * tool list — a reader with no error to read and nothing to fix.
- */
-const MCP_GATEWAY_PATH = "/api/mcp-gateway";
-
 /** The organization settings page where the key can later be revoked. */
 function apiKeysSettingsPath(organizationSlug: string): string {
 	return `/app/${organizationSlug}/settings/api-keys`;
@@ -436,7 +394,7 @@ function buildMcpConfiguration(origin: string, rawKey: string): string {
 			mcpServers: {
 				fabric: {
 					type: "http",
-					url: `${origin}${MCP_GATEWAY_PATH}`,
+					url: gatewayUrl(origin),
 					headers: {
 						Authorization: `Bearer ${rawKey}`,
 					},
@@ -548,6 +506,7 @@ export function ConnectCliDialog({
 	const [localSetupTool, setLocalSetupTool] =
 		useState<LocalSetupTool>("claude-code");
 	const [announcement, setAnnouncement] = useState("");
+	const [keyFlowOpen, setKeyFlowOpen] = useState(false);
 	const [origin, setOrigin] = useState("");
 	const initialFocusRef = useRef<HTMLButtonElement>(null);
 	/**
@@ -646,6 +605,7 @@ export function ConnectCliDialog({
 			setKeyCopied(false);
 			setAutomaticallyApplyUpdates(false);
 			setLocalSetupTool("claude-code");
+			setKeyFlowOpen(false);
 			setAnnouncement("");
 			createKeyMutation.reset();
 			// Fences off a copy still in flight when Done (or a disarmed
@@ -677,11 +637,11 @@ export function ConnectCliDialog({
 			}
 			setCopied(target);
 			// Both blocks carry the key ONCE ONE HAS BEEN MINTED; taking either
-			// is taking the key then. Before that, both blocks carry only the
-			// placeholder, and copying a template that reads "YOUR_API_KEY" is
-			// not taking a secret — gating on `keyIssued` keeps a pre-mint copy
-			// from silently disarming the dismissal guard for a key minted
-			// later in the same visit.
+			// is taking the key then. Before that, the configuration carries
+			// only the placeholder and the commands sign in through the
+			// browser, and copying either is not taking a secret — gating on
+			// `keyIssued` keeps a pre-mint copy from silently disarming the
+			// dismissal guard for a key minted later in the same visit.
 			if (
 				(target === "configuration" || target === "command") &&
 				keyIssued
@@ -713,25 +673,23 @@ export function ConnectCliDialog({
 	);
 	const starterInstruction = buildStarterInstruction(projectName, purpose);
 	const isRepositoryRoute = localSetup?.kind === "repository";
+	// `origin`, not `window.location.origin`: this block renders
+	// unconditionally, including on the server pass, where `window` does not
+	// exist. `buildMcpConfiguration` above uses the same hydration-safe state.
+	const loginLine =
+		rawKey === null ? oauthLoginLine(origin) : keyLoginLine(rawKey, origin);
 	const localSyncCommands =
 		purpose === "coding-instructions" && localSetup && projectId
 			? localSetup.kind === "repository"
 				? buildRepositorySetupCommands(
 						localSetup,
 						projectId,
-						rawKey ?? PLACEHOLDER_KEY,
-						// `origin`, not `window.location.origin`: this block now
-						// renders unconditionally, including on the server
-						// pass, where `window` does not exist.
-						// `buildMcpConfiguration` above uses the same
-						// hydration-safe state for the same reason.
-						origin,
+						loginLine,
 						localSetupTool,
 					)
 				: buildLocalSyncCommands(
 						projectId,
-						rawKey ?? PLACEHOLDER_KEY,
-						origin,
+						loginLine,
 						automaticallyApplyUpdates,
 						localSetupTool,
 					)
@@ -871,9 +829,10 @@ export function ConnectCliDialog({
 					<DialogDescription>{DIALOG_DESCRIPTION}</DialogDescription>
 				</DialogHeader>
 
-				{/* One polite live region for both copy controls. Kept mounted
-				 * across state changes so assistive technology has something to
-				 * observe rather than a node appearing mid-announcement. */}
+				{/* One polite live region for every copy control, the sign-in
+				 * section's included. Kept mounted across state changes so
+				 * assistive technology has something to observe rather than a
+				 * node appearing mid-announcement. */}
 				<p aria-live="polite" className="sr-only">
 					{announcement}
 				</p>
@@ -884,86 +843,6 @@ export function ConnectCliDialog({
 				 * content, and the KEY each instruction block carries, change
 				 * with `keyIssued`. */}
 				<div className="min-w-0 space-y-4">
-					{/* Section 1. Disclosure, above the create control, so
-					 * nothing is minted — and no real key is shown — before
-					 * it has been read. */}
-					<section
-						aria-labelledby="connect-cli-disclosure-label"
-						className="space-y-3 rounded-lg border border-border bg-muted/40 p-4"
-					>
-						<h3
-							id="connect-cli-disclosure-label"
-							className="app-editorial-label"
-						>
-							{DISCLOSURE_LABEL}
-						</h3>
-						<ul className="space-y-2 text-muted-foreground text-sm">
-							{disclosurePointsFor(purpose).map((point) => (
-								<li
-									key={point}
-									className="flex items-start gap-2"
-								>
-									<span
-										aria-hidden="true"
-										className="mt-2 size-1 shrink-0 rounded-full bg-primary"
-									/>
-									<span>{point}</span>
-								</li>
-							))}
-						</ul>
-					</section>
-
-					{/* Section 2. The create control: directly under the
-					 * disclosure and above every instruction block, so
-					 * nothing about setup is read before the reader has been
-					 * told what the key can do. Before a key exists, the
-					 * mint button and its error; once one does, that button
-					 * is replaced by `keyNotice` — the create affordance
-					 * disappears and the disclosure stays exactly where it
-					 * was. */}
-					{keyIssued ? (
-						keyNotice
-					) : (
-						<>
-							{/* The ONLY place a key is minted. Never on open:
-							 * a curious click must leave nothing behind. */}
-							<Button
-								ref={initialFocusRef}
-								autoLoading={false}
-								className="w-full"
-								loading={createKeyMutation.isPending}
-								onClick={() => createKeyMutation.mutate()}
-							>
-								{createKeyMutation.isPending ? (
-									CREATE_KEY_PENDING_LABEL
-								) : (
-									<>
-										<KeyIcon aria-hidden="true" />
-										{CREATE_KEY_LABEL}
-									</>
-								)}
-							</Button>
-							{issueError ? (
-								<Alert variant="error">
-									<AlertTriangleIcon aria-hidden="true" />
-									<AlertTitle>{ISSUE_ERROR_TITLE}</AlertTitle>
-									{/* Always the fallback copy, never `issueError.message`:
-									 * this repo is public, and a Prisma or driver
-									 * message reaching this alert would paint an
-									 * internal detail in front of any organization
-									 * member who clicks create. The real error is
-									 * logged in the mutation's `onError` instead. */}
-									<AlertDescription>
-										{ISSUE_ERROR_FALLBACK}
-									</AlertDescription>
-								</Alert>
-							) : null}
-						</>
-					)}
-
-					{/* Section 3. Setup instructions — shown from the first
-					 * open, with `PLACEHOLDER_KEY` standing in for the
-					 * blocks below until Section 2 mints a real one. */}
 					{cliFirst ? (
 						<p className="text-muted-foreground text-sm">
 							{ROUTES_INTRO}
@@ -1038,8 +917,8 @@ export function ConnectCliDialog({
 								</p>
 							) : null}
 							{/* Automatic updates are upload-only: Fabric is the
-							 * only writer there. A repository checkout's hook
-							 * is report-only (see the doc comment above
+							 * only writer there. A repository checkout's hook is
+							 * report-only (see the doc comment above
 							 * `ROUTES_INTRO`), so this option has nothing to
 							 * offer for that variant. */}
 							{isRepositoryRoute ? null : (
@@ -1074,21 +953,23 @@ export function ConnectCliDialog({
 									</div>
 								</div>
 							)}
-							{/* Wraps rather than scrolls: a line longer
-							 * than the dialog is wide would otherwise hide
-							 * its end behind a scrollbar — the project id,
-							 * exactly where it stops being obvious.
-							 * `min-w-0` on the wrapper above is what keeps
-							 * a block like this from widening the dialog's
-							 * grid column and clipping every paragraph. */}
+							{/* Wraps rather than scrolls: a line longer than the
+							 * dialog is wide would otherwise hide its end behind a
+							 * scrollbar — the project id, exactly where it stops
+							 * being obvious. `min-w-0` on the wrapper above is
+							 * what keeps a block like this from widening the
+							 * dialog's grid column and clipping every paragraph. */}
 							<pre
 								className="whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-4 font-mono text-xs"
 								data-testid="connect-cli-local-sync-command"
 							>
 								{localSyncCommands}
 							</pre>
+							{/* Initial focus whenever this route leads: before a
+							 * key exists the commands sign in through the
+							 * browser, and after one is minted they carry it. */}
 							<Button
-								ref={keyIssued ? initialFocusRef : undefined}
+								ref={initialFocusRef}
 								aria-describedby={
 									uncopiedSecretOnScreen
 										? "connect-cli-dismissal-note"
@@ -1115,63 +996,169 @@ export function ConnectCliDialog({
 						</section>
 					) : null}
 
-					{/* The MCP route: the configuration, then the sentence. */}
-					<section
-						aria-labelledby="connect-cli-configuration-label"
-						className="space-y-3"
+					{/* The MCP route: sign in from the tool, no key. */}
+					<AgentSignInSection
+						announce={setAnnouncement}
+						label={cliFirst ? MCP_ROUTE_LABEL : undefined}
+						origin={origin}
+					/>
+
+					{/* The API-key route, collapsed. Kept in the DOM while
+					 * closed so the minted key — which exists only in this
+					 * component's state — is never lost to a toggle, and forced
+					 * open while a key is on screen so its dismissal guard is
+					 * never hiding behind a closed disclosure. */}
+					<details
+						className="space-y-4 rounded-lg border border-border p-4"
+						data-testid="connect-cli-key-alternative"
+						onToggle={(event) =>
+							setKeyFlowOpen(event.currentTarget.open)
+						}
+						open={keyFlowOpen || keyIssued}
 					>
-						<h3
-							id="connect-cli-configuration-label"
-							className="app-editorial-label"
+						<summary className="cursor-pointer font-medium text-sm">
+							{KEY_ALTERNATIVE_LABEL}
+						</summary>
+						{/* Section 1. Disclosure, above the create control, so
+						 * nothing is minted — and no real key is shown — before
+						 * it has been read. */}
+						<section
+							aria-labelledby="connect-cli-disclosure-label"
+							className="space-y-3 rounded-lg border border-border bg-muted/40 p-4"
 						>
-							{cliFirst ? MCP_ROUTE_LABEL : CONFIGURATION_LABEL}
-						</h3>
-						<p className="text-muted-foreground text-sm">
-							{CONFIGURATION_INTRO}
-						</p>
-						<pre className="overflow-x-auto rounded-lg border border-border bg-muted p-4 text-xs">
-							<code data-testid="connect-cli-configuration">
-								{configuration}
-							</code>
-						</pre>
-						{keyIssued ? null : (
-							<p className="text-muted-foreground text-sm">
-								{PLACEHOLDER_KEY_NOTE}
-							</p>
+							<h3
+								id="connect-cli-disclosure-label"
+								className="app-editorial-label"
+							>
+								{DISCLOSURE_LABEL}
+							</h3>
+							<ul className="space-y-2 text-muted-foreground text-sm">
+								{disclosurePointsFor(purpose).map((point) => (
+									<li
+										key={point}
+										className="flex items-start gap-2"
+									>
+										<span
+											aria-hidden="true"
+											className="mt-2 size-1 shrink-0 rounded-full bg-primary"
+										/>
+										<span>{point}</span>
+									</li>
+								))}
+							</ul>
+						</section>
+
+						{/* Section 2. The create control: directly under the
+						 * disclosure and above every instruction block, so
+						 * nothing about setup is read before the reader has been
+						 * told what the key can do. Before a key exists, the
+						 * mint button and its error; once one does, that button
+						 * is replaced by `keyNotice` — the create affordance
+						 * disappears and the disclosure stays exactly where it
+						 * was. */}
+						{keyIssued ? (
+							keyNotice
+						) : (
+							<>
+								{/* The ONLY place a key is minted. Never on open:
+								 * a curious click must leave nothing behind. */}
+								<Button
+									autoLoading={false}
+									className="w-full"
+									loading={createKeyMutation.isPending}
+									onClick={() => createKeyMutation.mutate()}
+								>
+									{createKeyMutation.isPending ? (
+										CREATE_KEY_PENDING_LABEL
+									) : (
+										<>
+											<KeyIcon aria-hidden="true" />
+											{CREATE_KEY_LABEL}
+										</>
+									)}
+								</Button>
+								{issueError ? (
+									<Alert variant="error">
+										<AlertTriangleIcon aria-hidden="true" />
+										<AlertTitle>
+											{ISSUE_ERROR_TITLE}
+										</AlertTitle>
+										{/* Always the fallback copy, never `issueError.message`:
+										 * this repo is public, and a Prisma or driver
+										 * message reaching this alert would paint an
+										 * internal detail in front of any organization
+										 * member who clicks create. The real error is
+										 * logged in the mutation's `onError` instead. */}
+										<AlertDescription>
+											{ISSUE_ERROR_FALLBACK}
+										</AlertDescription>
+									</Alert>
+								) : null}
+							</>
 						)}
-						<Button
-							ref={
-								keyIssued && !cliFirst
-									? initialFocusRef
-									: undefined
-							}
-							// Initial focus lands on the first copy control,
-							// so the note below is read out as that
-							// control's description — the disarmed
-							// dismissals are announced before a reader can
-							// discover them by pressing Escape.
-							aria-describedby={
-								uncopiedSecretOnScreen && !cliFirst
-									? "connect-cli-dismissal-note"
-									: undefined
-							}
-							autoLoading={false}
-							className="w-full"
-							onClick={() => copy("configuration", configuration)}
+
+						{/* Section 3. The MCP configuration, with
+						 * `PLACEHOLDER_KEY` standing in until Section 2 mints a
+						 * real key. */}
+						<section
+							aria-labelledby="connect-cli-configuration-label"
+							className="space-y-3"
 						>
-							{copied === "configuration" ? (
-								<>
-									<CheckIcon aria-hidden="true" />
-									{COPIED_LABEL}
-								</>
-							) : (
-								<>
-									<CopyIcon aria-hidden="true" />
-									{COPY_CONFIGURATION_LABEL}
-								</>
+							<h3
+								id="connect-cli-configuration-label"
+								className="app-editorial-label"
+							>
+								{CONFIGURATION_LABEL}
+							</h3>
+							<p className="text-muted-foreground text-sm">
+								{CONFIGURATION_INTRO}
+							</p>
+							<pre className="overflow-x-auto rounded-lg border border-border bg-muted p-4 text-xs">
+								<code data-testid="connect-cli-configuration">
+									{configuration}
+								</code>
+							</pre>
+							{keyIssued ? null : (
+								<p className="text-muted-foreground text-sm">
+									{PLACEHOLDER_KEY_NOTE}
+								</p>
 							)}
-						</Button>
-					</section>
+							<Button
+								ref={
+									keyIssued && !cliFirst
+										? initialFocusRef
+										: undefined
+								}
+								// Initial focus lands on the first copy control,
+								// so the note below is read out as that
+								// control's description — the disarmed
+								// dismissals are announced before a reader can
+								// discover them by pressing Escape.
+								aria-describedby={
+									uncopiedSecretOnScreen && !cliFirst
+										? "connect-cli-dismissal-note"
+										: undefined
+								}
+								autoLoading={false}
+								className="w-full"
+								onClick={() =>
+									copy("configuration", configuration)
+								}
+							>
+								{copied === "configuration" ? (
+									<>
+										<CheckIcon aria-hidden="true" />
+										{COPIED_LABEL}
+									</>
+								) : (
+									<>
+										<CopyIcon aria-hidden="true" />
+										{COPY_CONFIGURATION_LABEL}
+									</>
+								)}
+							</Button>
+						</section>
+					</details>
 
 					<section
 						aria-labelledby="connect-cli-instruction-label"

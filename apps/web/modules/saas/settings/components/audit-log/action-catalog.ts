@@ -251,6 +251,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"org",
 	),
+	"account.oauth.consent_granted": D(
+		"account.oauth.consent_granted",
+		"Coding agent connected",
+		Key,
+		"info",
+		"org",
+	),
+	"account.oauth.consent_revoked": D(
+		"account.oauth.consent_revoked",
+		"Coding agent revoked",
+		Key,
+		"warning",
+		"org",
+	),
 	"org.integration.connected": D(
 		"org.integration.connected",
 		"Integration connected",

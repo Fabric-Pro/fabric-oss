@@ -434,11 +434,18 @@ export const githubOAuthProcedures = {
 				// entirely, which breaks the XOR tenant isolation pattern.
 				const orgIdForQuery = state.organizationId ?? null;
 
+				// Never the GITHUB_OAUTH_APP row: it shares provider, user and
+				// organization with the connection row but holds the OAuth
+				// client credentials saveAppCredentials stored. Matching it
+				// renamed it into a connection and overwrote the client id and
+				// secret with this token, switching OAuth off for the whole
+				// organization the moment the admin who saved them connected.
 				const existingIntegration =
 					await db.workflowIntegration.findFirst({
 						where: {
 							userId: state.userId,
 							provider: "GITHUB",
+							NOT: { name: "GITHUB_OAUTH_APP" },
 							...(orgIdForQuery
 								? { organizationId: orgIdForQuery }
 								: { organizationId: null }),
@@ -572,6 +579,7 @@ export const githubOAuthProcedures = {
 				where: {
 					userId,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -625,11 +633,13 @@ export const githubOAuthProcedures = {
 					? input.organizationId
 					: context.session.activeOrganizationId;
 
-			// Revoke the token with GitHub
+			// Revoke the token with GitHub. Never the GITHUB_OAUTH_APP row: it
+			// holds the OAuth client credentials, not a token.
 			const integrations = await db.workflowIntegration.findMany({
 				where: {
 					userId,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
@@ -686,10 +696,15 @@ export const githubOAuthProcedures = {
 				}
 			}
 
+			// Deactivate the connection rows only. The GITHUB_OAUTH_APP row
+			// holds the OAuth client credentials saved by saveAppCredentials;
+			// deactivating it switches OAuth off for the whole organization.
+			// The generic oauth.disconnect excludes it the same way.
 			await db.workflowIntegration.updateMany({
 				where: {
 					userId,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					...(organizationId
 						? { organizationId }
 						: { organizationId: null }),

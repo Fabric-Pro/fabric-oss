@@ -30,8 +30,12 @@ COPY packages/database/package.json packages/database/
 COPY packages/utils/package.json packages/utils/
 COPY tooling/typescript/package.json tooling/typescript/
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# Install dependencies. Only some workspace manifests are copied above, so the
+# install is filtered: since pnpm 11.28.0 an unfiltered frozen install fails
+# with ERR_PNPM_OUTDATED_LOCKFILE when the lockfile names a project whose
+# directory is missing. `--filter .` keeps the root project, whose `tsx` the
+# production CMD loads from /app/node_modules.
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@repo/mcp-stdio-wrapper..." --filter .
 
 # =============================================================================
 # Stage 2: Builder

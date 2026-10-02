@@ -91,12 +91,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   changes:
+    needs: [promotion_policy]
     name: Detect changed paths
     # Not needed for the cache-warming run on master (see header), and not
     # relevant for PRs and explicit full validation runs.
     if: >-
-      github.event_name != 'push'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (github.event_name != 'push')
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -160,10 +174,9 @@ jobs:
   # command `<NONEXISTENT>` and are dropped below.
   plan:
     name: Plan shards
-    needs: changes
+    needs: [changes, promotion_policy]
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       needs.changes.outputs.code == 'true')
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -179,7 +192,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -193,10 +206,7 @@ jobs:
           # No `cache: 'pnpm'` on purpose: this job never installs, so it has
           # no store to save, and a save here would race the shards' own.
 
-      # BASE_REF is `github.base_ref` (the PR's target branch name) and is
-      # empty on non-PR events, which the EVENT_NAME check guards. The
-      # branching is done in shell rather than in a `${{ }}` template so the
-      # run: block contains no expression interpolation.
+      # BASE_REF is the PR target branch; non-PR events use the full plan.
       - name: Compute shard matrix
         id: plan
         env:
@@ -323,12 +333,12 @@ jobs:
 
   vitest:
     name: Vitest (${{ matrix.name }})
-    needs: plan
+    needs: [plan, promotion_policy]
     # No `always()`/`!cancelled()`: the implicit success() on `needs` is what
     # keeps the shards from starting when the plan failed, and the plan is
     # itself skipped on push and on PRs with no code changes.
     if: >-
-      needs.plan.outputs.has_shards == 'true'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.result == 'success' && (needs.plan.outputs.has_shards == 'true')
     strategy:
       # Every shard reports independently; one red package must not hide the
       # state of the others, which is the whole point of splitting them up.
@@ -449,7 +459,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -585,10 +595,9 @@ jobs:
   # @repo/utils/url-security, and a one-file run is cheap.
   browser-security:
     name: Browser relay security (real Chromium)
-    needs: changes
+    needs: [changes, promotion_policy]
     if: >-
-      github.event_name != 'push' &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -603,7 +612,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # Same npm audit stall as the shards: skip it.
           npm_config_audit: "false"
@@ -655,10 +664,9 @@ jobs:
   # Runs only when a path in the `migrations` filter changed.
   migration-drift:
     name: Migration drift
-    needs: changes
+    needs: [changes, promotion_policy]
     if: >-
-      github.event_name != 'push' &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true')
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -688,7 +696,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # Same npm audit stall as the shards: skip it.
           npm_config_audit: "false"
@@ -737,9 +745,10 @@ jobs:
   # here — a dispatch is never a push, so this job is not part of the manual
   # validation path.
   warm-caches:
+    needs: [promotion_policy]
     name: Warm caches
     if: >-
-      github.event_name == 'push'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (github.event_name == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -755,7 +764,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -796,13 +805,13 @@ jobs:
   # touched, and which are conditionally skipped altogether.
   unit-tests:
     name: unit-tests
-    needs: [changes, plan, vitest, browser-security, migration-drift]
+    needs: [changes, plan, vitest, browser-security, migration-drift, promotion_policy]
     # Not on push: the master run warms caches and runs no tests, so it has
     # no verdict to report (and `changes` is skipped there, which the
     # fail-closed check below would otherwise flag). Skipped entirely in the
     # private staging and promotion PRs use the same fail-closed aggregate.
     if: >-
-      always() && github.event_name != 'push'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
     runs-on: ubuntu-latest
     env:
       EVENT_NAME: ${{ github.event_name }}
@@ -838,8 +847,9 @@ jobs:
             fi
           fi
 
-          # On PRs: tests are required only when test-relevant paths changed.
-          # On workflow_dispatch: the full sweep is always planned.
+          # On PRs: tests are required only when
+          # test-relevant paths changed. On workflow_dispatch: the full sweep
+          # is always planned.
           if [[ "$EVENT_NAME" == "pull_request" && "$CODE_CHANGED" != "true" ]]; then
             echo "No test-relevant changes — unit tests not required."
             exit 0

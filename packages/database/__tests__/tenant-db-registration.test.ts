@@ -1,13 +1,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+// `fileURLToPath`, not `URL#pathname`: on Windows the pathname is `/D:/…` and
+// joining it produced `D:\D:\…`, so this suite never loaded there.
+const here = path.dirname(fileURLToPath(import.meta.url));
 const tenantDb = readFileSync(path.join(here, "../src/tenant-db.ts"), "utf8");
 const rls = readFileSync(
 	path.join(here, "../scripts/apply-rls-direct.ts"),
 	"utf8",
 );
+const schema = readFileSync(path.join(here, "../prisma/schema.prisma"), "utf8");
 
 describe("Coding Instructions tables are registered on the tenant path", () => {
 	it.each([
@@ -187,4 +191,87 @@ describe("Glossy edition tables are registered on the tenant path", () => {
 			/\{\s*name: "organization_brand_kit",\s*policy: "org_only_with_project_guest_read",?\s*\}/,
 		);
 	});
+});
+
+/**
+ * Company context (Fizzy #2719). Both tables carry organizationId alone, so a
+ * USER_OWNED_TABLES entry would inject a userId filter Prisma rejects, and a
+ * project-scoped entry would let a guest's invited projects reach them. RLS is
+ * plain org_only: no guest-read branch.
+ */
+describe("Company context tables are registered on the tenant path", () => {
+	const orgOnly = setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set([");
+	const userOwned = setMembers(
+		tenantDb,
+		"const USER_OWNED_TABLES = new Set([",
+	);
+	const perUserOrg = setMembers(
+		tenantDb,
+		"const PER_USER_ORG_TABLES = new Set([",
+	);
+
+	it.each([
+		["CompanyContextSource", "company_context_source"],
+		["CompanyContextUrlPage", "company_context_url_page"],
+	])(
+		"%s is organization-only and never project-scoped, under org_only RLS",
+		(model, table) => {
+			expect(orgOnly).toContain(model);
+			expect(userOwned).not.toContain(model);
+			expect(perUserOrg).not.toContain(model);
+			expect(tenantDb).not.toMatch(new RegExp(`\\b${model}: "`));
+			expect(rls).toMatch(
+				new RegExp(
+					`\\{\\s*name: "${table}",\\s*policy: "org_only",?\\s*\\}`,
+				),
+			);
+		},
+	);
+});
+
+/**
+ * Agent sign-in's OAuth tables belong to Better Auth, like `session` and
+ * `account`: its adapter writes them on the base client, outside any tenant
+ * context, so they are classified the same way — off the tenant path and off
+ * the RLS allowlist. Tenant access is settled at the app layer: every token
+ * verification re-reads membership of the organization in `referenceId`, and
+ * listing or revoking is scoped to the signed-in user. None of them carries an
+ * `organizationId` column; adding one would put the table under the RLS
+ * coverage guard (`rls-coverage.test.ts`), which then demands a decision.
+ */
+describe("Better Auth's OAuth tables stay off the tenant path, like session and account", () => {
+	function modelBody(model: string): string {
+		const start = schema.indexOf(`model ${model} {`);
+		if (start === -1) {
+			throw new Error(`model not found: ${model}`);
+		}
+		return schema.slice(start, schema.indexOf("\n}", start));
+	}
+
+	it.each([
+		["OauthClient", "oauth_client"],
+		["OauthRefreshToken", "oauth_refresh_token"],
+		["OauthAccessToken", "oauth_access_token"],
+		["OauthConsent", "oauth_consent"],
+		["Session", "session"],
+		["Account", "account"],
+	])("%s is neither tenant-registered nor RLS-listed", (model, table) => {
+		expect(tenantDb).not.toMatch(new RegExp(`["\\s]${model}["]`));
+		expect(tenantDb).not.toMatch(new RegExp(`\\b${model}:`));
+		expect(rls).not.toMatch(new RegExp(`name:\\s*"${table}"`));
+	});
+
+	it.each([
+		"OauthClient",
+		"OauthRefreshToken",
+		"OauthAccessToken",
+		"OauthConsent",
+	])(
+		"%s has no organizationId column (the organization is in referenceId)",
+		(model) => {
+			const body = modelBody(model);
+			expect(body).not.toMatch(/^\s*organizationId\s/m);
+			expect(body).toMatch(/@@map\("oauth_/);
+		},
+	);
 });

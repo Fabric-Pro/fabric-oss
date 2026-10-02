@@ -115,46 +115,38 @@ export async function resolvePmSource(args: {
 		throw new PMSourceNotFound("no-config");
 	}
 
-	// The GitLab REST connection belongs to the project/org, not the individual
-	// user who happened to set it up. Code-repo integrations (GitHub / GitLab /
-	// Azure DevOps) resolve per-project so any teammate can sync; the PM GitLab
-	// REST path must behave the same way. Prefer the caller's own GitLab
-	// integration; in ORG context, fall back to ANY active org GitLab
-	// integration when the caller has none, and resolve the token via that
-	// integration's owner. Personal projects (organizationId === null) stay
-	// strictly user-scoped — you can't borrow another user's personal OAuth.
-	const ownIntegration = await db.workflowIntegration.findFirst({
+	// The GitLab REST path acts through the CALLER's own GitLab connection
+	// (XOR tenant isolation: org context filters by organizationId AND userId).
+	// A GitLab WorkflowIntegration is a member's personal OAuth connection, so
+	// falling back to "any active org GitLab integration" would let a user who
+	// never connected — or who disconnected — read and write tickets through a
+	// teammate's account. The hourly poll passes the project owner as `userId`,
+	// so it acts as the owner and skips the project when the owner has no
+	// connection. Keep this in step with `resolvePmTarget` (packages/api).
+	const integration = await db.workflowIntegration.findFirst({
 		where: organizationId
-			? { organizationId, userId, provider: "GITLAB", isActive: true }
+			? {
+					organizationId,
+					userId,
+					provider: "GITLAB",
+					isActive: true,
+					NOT: { name: "GITLAB_OAUTH_APP" },
+				}
 			: {
 					organizationId: null,
 					userId,
 					provider: "GITLAB",
 					isActive: true,
+					NOT: { name: "GITLAB_OAUTH_APP" },
 				},
 		select: { id: true, userId: true },
 	});
-	const integration =
-		ownIntegration ??
-		(organizationId
-			? await db.workflowIntegration.findFirst({
-					// Org-scoped (no userId): any teammate's active GitLab
-					// connection serves the whole org, mirroring per-project
-					// code-repo resolution.
-					where: {
-						organizationId,
-						provider: "GITLAB",
-						isActive: true,
-					},
-					select: { id: true, userId: true },
-				})
-			: null);
 	if (!integration) {
 		throw new PMSourceNotFound("no-integration");
 	}
 
-	// Resolve the token for the integration's OWNER — the caller themselves when
-	// they have their own connection, or the org-mate who configured GitLab.
+	// Resolve the token for the integration's owner, which the filter above
+	// pins to the caller.
 	// `getGitLabAccessToken` never throws on a refresh failure: it hands back
 	// the current token (still valid inside the pre-expiry buffer, dead after
 	// it) and lets the caller's 401 handling cope. `requireFreshToken` callers

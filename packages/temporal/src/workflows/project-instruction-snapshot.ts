@@ -90,6 +90,15 @@ export type ProjectInstructionSnapshotWorkflowInput = {
 	 * the opt-in off the row and refuses a snapshot that did not make it.
 	 */
 	publishBeforeScan?: boolean;
+	/**
+	 * The ownership token the API (or the sync acquisition) wrote to the row
+	 * before it started this run. It is only carried: the workflow passes its
+	 * input to every activity unchanged, and each activity names the token in
+	 * its writes, so no workflow code branches on it and a history recorded
+	 * without it replays command for command. Optional for exactly that
+	 * reason, and for runs started before it existed.
+	 */
+	validationAttemptId?: string;
 };
 
 type DeferredScanOutcome = "PASSED" | "ISSUES_FOUND" | "INCOMPLETE";

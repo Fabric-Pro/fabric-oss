@@ -11,7 +11,7 @@
  * snapshot version.
  */
 
-import { formatByteSize } from "@repo/instructions";
+import { formatByteSize, formatByteSizeOver } from "@repo/instructions";
 import {
 	contextSyncPathSpellingProblem,
 	defaultRuleForDirectlySelectedFile,
@@ -95,6 +95,8 @@ type ContextSyncLimitView = {
 		| "doubleStarGroups";
 	max: number;
 	actual?: number;
+	/** `actual` is a lower bound: the check could not learn the size. */
+	atLeast?: true;
 	/** 1-based line of the `.contextignore` rule a `doubleStarGroups` names. */
 	line?: number;
 };
@@ -167,6 +169,68 @@ export type ContextSyncState = {
 	cleanupPending: number;
 	availableIntegrations: ContextSyncIntegration[];
 };
+
+/** What Living Memory's sync is doing right now, as the status line words it. */
+export type ContextSyncProgress =
+	| { kind: "fetching" }
+	| { kind: "applying"; done: number; total: number }
+	| { kind: "pruning"; removed: number }
+	| { kind: "indexing"; indexed: number; managed: number };
+
+/**
+ * Where an open run is, read from what it has already committed.
+ *
+ * Every file the plan keeps lands in exactly one outcome bucket once its batch
+ * commits (`mergeContextRepositorySyncRunOutcomes` keeps a key's first
+ * decision, and the batch's outcomes commit with its ledger write), so the
+ * buckets' sum is the files fully processed and `plan.keptCount` is the files
+ * to process: the line reads the ledger, never a guess. Before the plan exists
+ * nothing has been decided and no total is known, so the line only names the
+ * phase. Once every kept file is decided the run prunes, whose total is not
+ * known up front, so it says "so far".
+ *
+ * After the run, while rows still await indexing, it is the index's count of
+ * the rows this sync manages: `awaitingIndexCount` is live, so the number
+ * moves as the vectors land.
+ *
+ * `null` when there is nothing to report, and the line keeps its plain wording.
+ */
+export function contextSyncProgress(
+	state: Pick<
+		ContextSyncState,
+		"running" | "latestRun" | "managedCount" | "awaitingIndexCount"
+	>,
+): ContextSyncProgress | null {
+	const run = state.latestRun;
+	if (state.running) {
+		if (!run || run.finishedAt !== null) {
+			return null;
+		}
+		if (!run.plan) {
+			return { kind: "fetching" };
+		}
+		const { counts } = run;
+		const done =
+			counts.created +
+			counts.updated +
+			counts.adopted +
+			counts.unchanged +
+			counts.conflict +
+			counts.pathInUse;
+		const total = run.plan.keptCount;
+		return done < total
+			? { kind: "applying", done, total }
+			: { kind: "pruning", removed: counts.removed };
+	}
+	if (state.awaitingIndexCount > 0 && state.managedCount > 0) {
+		return {
+			kind: "indexing",
+			indexed: Math.max(0, state.managedCount - state.awaitingIndexCount),
+			managed: state.managedCount,
+		};
+	}
+	return null;
+}
 
 /**
  * `get` returns every connected integration regardless of status (so a
@@ -408,9 +472,11 @@ function limitMessage(limit: ContextSyncLimitView): ContextSyncMessage {
 						values: { max: formatByteSize(limit.max) },
 					}
 				: {
-						key: `failure.limit.${limit.kind}`,
+						key: limit.atLeast
+							? `failure.limit.${limit.kind}AtLeast`
+							: `failure.limit.${limit.kind}`,
 						values: {
-							actual: formatByteSize(limit.actual),
+							actual: formatByteSizeOver(limit.actual, limit.max),
 							max: formatByteSize(limit.max),
 						},
 					};

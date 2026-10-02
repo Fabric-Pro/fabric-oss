@@ -200,7 +200,11 @@ async function runSync(
 		return;
 	}
 	state.snapshotId = acquired.snapshotId;
-	state.childResult = await runChild(begun.context, acquired.snapshotId);
+	state.childResult = await runChild(
+		begun.context,
+		acquired.snapshotId,
+		acquired.validationAttemptId,
+	);
 }
 
 /**
@@ -238,6 +242,7 @@ function typedFailure(error: unknown): {
 async function runChild(
 	context: SyncRunContext,
 	snapshotId: string,
+	validationAttemptId: string | undefined,
 ): Promise<SnapshotChildResult | null> {
 	let child: ChildWorkflowHandle<typeof projectInstructionSnapshotWorkflow>;
 	try {
@@ -250,6 +255,7 @@ async function runChild(
 					projectId: context.projectId,
 					organizationId: context.organizationId,
 					userId: context.actingUserId,
+					...(validationAttemptId ? { validationAttemptId } : {}),
 				},
 			],
 		});

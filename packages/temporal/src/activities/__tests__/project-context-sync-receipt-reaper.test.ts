@@ -48,6 +48,14 @@ vi.mock("@repo/database", () => ({
 	recordAuditTx: (...a: unknown[]) => mocks.recordAuditTx(...a),
 }));
 
+vi.mock("../lib/context-awaiting-index", () => ({
+	startAwaitingContextIndexing: vi.fn().mockResolvedValue({
+		syncs: 0,
+		started: 0,
+		errorCount: 0,
+	}),
+}));
+
 vi.mock("../../client", () => ({
 	getTemporalClient: (...a: unknown[]) => mocks.getTemporalClient(...a),
 }));

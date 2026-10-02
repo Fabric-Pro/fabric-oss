@@ -120,6 +120,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  promotion_policy:
+    # Prefix selects authentication work; only its live REST result permits reuse.
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+      github.event.pull_request.base.ref == 'master' &&
+      startsWith(github.event.pull_request.head.ref, 'promotion/')
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/private-promotion-policy.yml
+
   # Resolves the set of packages whose `type-check` task Turbo would actually
   # run and buckets it into shards (see WHY SHARD in the header).
   #
@@ -130,6 +143,9 @@ jobs:
   # including the ones with no script, which surface as the literal command
   # `<NONEXISTENT>` and are dropped below.
   plan:
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
+    needs: [promotion_policy]
     name: Plan shards
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -147,7 +163,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -161,10 +177,7 @@ jobs:
           # No `cache: 'pnpm'` on purpose: this job never installs, so it has
           # no store to save, and a save here would race the shards' own.
 
-      # BASE_REF is `github.base_ref` (the PR's target branch name) and is
-      # empty on non-PR events, which the EVENT_NAME check guards. The
-      # branching is done in shell rather than in a `${{ }}` template so the
-      # run: block contains no expression interpolation.
+      # BASE_REF is the PR target branch; non-PR events use the full plan.
       - name: Compute shard matrix
         id: plan
         env:
@@ -289,11 +302,11 @@ jobs:
 
   shard:
     name: Type check (${{ matrix.name }})
-    needs: plan
+    needs: [plan, promotion_policy]
     # No `always()`/`!cancelled()`: the implicit success() on `needs` is what
     # keeps the shards from starting when the plan failed.
     if: >-
-      needs.plan.outputs.has_shards == 'true'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.result == 'success' && (needs.plan.outputs.has_shards == 'true')
     strategy:
       # Every shard reports independently; one red package must not hide the
       # state of the others, which is the whole point of splitting them up.
@@ -331,7 +344,7 @@ jobs:
 
       - name: Setup pnpm
         # Version is read from root package.json's `packageManager` field.
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
           # up to npm's 5-minute fetch timeout on hosted runners before `pnpm self-update`
@@ -417,11 +430,11 @@ jobs:
   # what the PR touched.
   type-check:
     name: type-check
-    needs: [plan, shard]
+    needs: [plan, shard, promotion_policy]
     # Not on push: a master run has no PR to report on, and an aggregate job
     # per push adds no useful verdict. Private PRs execute this aggregate.
     if: >-
-      always() && github.event_name != 'push'
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
     runs-on: ubuntu-latest
     env:
       PLAN_RESULT: ${{ needs.plan.result }}

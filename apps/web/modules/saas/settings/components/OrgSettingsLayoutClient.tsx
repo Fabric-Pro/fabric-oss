@@ -12,6 +12,7 @@ const settingsPageTitles: Record<string, string> = {
 	"ai-providers": "AI Providers",
 	"ai-models": "AI Models",
 	"ai-memory": "AI Memory",
+	"company-context": "Company context",
 	"rag-providers": "RAG Providers",
 	"search-providers": "Search Providers",
 	openapi: "OpenAPI Services",

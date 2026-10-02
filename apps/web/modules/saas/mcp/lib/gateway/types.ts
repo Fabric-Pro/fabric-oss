@@ -20,6 +20,11 @@ export type GatewayCredential =
 	| "organization-key"
 	/** `fab_` key — tenant resolved per request from the owner's memberships. */
 	| "personal-key"
+	/**
+	 * A coding agent signed in over OAuth. Like an organization key its tenant
+	 * is fixed (at consent time) and may not be steered by a request header.
+	 */
+	| "oauth"
 	/** Browser cookie. Carries the user's full interactive authority. */
 	| "session";
 
@@ -86,4 +91,16 @@ export interface ConnectedServerInfo {
 		description?: string;
 		inputSchema?: Record<string, unknown>;
 	}>;
+}
+
+/**
+ * Credentials whose tenant is fixed when they are issued, so a request may not
+ * move them to another organization — an organization key at creation, an OAuth
+ * token at consent. Every "may this reach that organization" decision asks this
+ * rather than comparing against one credential kind.
+ */
+export function isOrganizationBoundCredential(
+	credential: GatewayCredential,
+): boolean {
+	return credential === "organization-key" || credential === "oauth";
 }

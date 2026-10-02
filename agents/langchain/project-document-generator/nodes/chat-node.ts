@@ -69,6 +69,7 @@ import {
 	injectOrgIdIntoToolArgs,
 	isContextLengthError,
 	isJsonParseError,
+	isRetryableError,
 	isVisionUnsupportedError,
 	MAX_JSON_RETRIES,
 	MAX_RETRIES,
@@ -4244,7 +4245,14 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			}
 
 			if (toolCall.name === "write_document_local") {
-				if (!toolCall.args || !toolCall.args.document) {
+				// A non-string document (an object, an array) is as unusable as a
+				// missing one and would otherwise throw in stripToolDefinitions,
+				// which the catch block does not retry; send both through the
+				// corrective retry instead.
+				if (
+					typeof toolCall.args?.document !== "string" ||
+					!toolCall.args.document
+				) {
 					const truncated = isOutputTruncated(response);
 					logger.error(
 						"[Project Document Generator] Invalid tool call arguments",
@@ -4259,7 +4267,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 						messages,
 						toolCall,
 						correctionContent:
-							'ERROR: Your write_document_local call had empty arguments. You MUST include the "document" parameter with the full document content as a markdown string. Please try again and include the document content.',
+							'ERROR: Your write_document_local call had empty or invalid arguments. You MUST include the "document" parameter with the full document content as a markdown string. Please try again and include the document content.',
 						exhaustedMessage:
 							"The AI model was unable to generate the document after multiple attempts. Please try again or use a different model.",
 						truncated,
@@ -4923,10 +4931,18 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			});
 		}
 
+		// Retry only what a fresh attempt can clear: a malformed tool-call
+		// generation (JSON) or a failure the shared predicate calls transient
+		// (5xx, 408/425/429, timeouts, network faults). Everything else,
+		// including 401, 403, 404 and 413, fails identically on every
+		// attempt, so it ends the run now instead of after MAX_RETRIES
+		// redundant provider calls.
+		const retryable = isJsonError || isRetryableError(error);
+
 		// Determine max retries based on error type
 		const maxRetries = isJsonError ? MAX_JSON_RETRIES : MAX_RETRIES;
 
-		if (state.retryCount < maxRetries) {
+		if (retryable && state.retryCount < maxRetries) {
 			const nextRetryCount = state.retryCount + 1;
 			const delayMs = calculateRetryDelay(state.retryCount);
 
@@ -4950,12 +4966,17 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			});
 		}
 
-		// Max retries reached - provide user-friendly error
-		logger.error("[Project Document Generator] Max retries reached", {
-			retryCount: state.retryCount,
-			maxRetries,
-			isJsonParseError: isJsonError,
-		});
+		// Out of retries, or not retryable - provide user-friendly error
+		logger.error(
+			retryable
+				? "[Project Document Generator] Max retries reached"
+				: "[Project Document Generator] Not retrying a non-retryable error",
+			{
+				retryCount: state.retryCount,
+				maxRetries,
+				isJsonParseError: isJsonError,
+			},
+		);
 
 		let userFacingError: string;
 		if (isJsonError) {

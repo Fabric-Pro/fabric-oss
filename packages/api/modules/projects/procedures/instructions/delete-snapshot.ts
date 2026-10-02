@@ -239,6 +239,15 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// No reason and nothing deleted: the row was already gone, so a
+		// concurrent delete of the same version won. Another audit row and a
+		// second storage sweep would describe work this request did not do.
+		if (!removal.deleted) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "This version was already deleted",
+			});
+		}
+
 		recordAuditFromRequest(context, {
 			action: "project.instructions.deleted",
 			category: "project",

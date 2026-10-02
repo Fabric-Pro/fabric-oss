@@ -43,6 +43,11 @@ export default defineConfig({
 		// crash when esbuild emits __commonJS shims into ESM. Load from node_modules.
 		"stripe",
 	],
+	// Bundled CommonJS dependencies (including yaml via @repo/utils) require
+	// Node builtins at load time. Supply require in ESM, as the worker agents do.
+	banner: {
+		js: "import { createRequire as __fabricCreateRequire } from 'module'; const require = __fabricCreateRequire(import.meta.url);",
+	},
 	// Clean output directory before build
 	clean: true,
 	// Generate sourcemaps for debugging

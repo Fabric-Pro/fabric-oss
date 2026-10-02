@@ -49,9 +49,10 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { requireScope } from "../external-api/middleware/api-key-auth";
-import type {
-	ExternalApiContext,
-	ExternalApiVariables,
+import {
+	type ExternalApiContext,
+	type ExternalApiVariables,
+	isOrganizationBoundKey,
 } from "../external-api/types";
 import {
 	syncedContextConflictMessage,
@@ -182,7 +183,7 @@ async function resolveContextProject(
 	}
 
 	if (
-		apiCtx.keyType === "organization" &&
+		isOrganizationBoundKey(apiCtx) &&
 		apiCtx.organizationId !== hostingOrganizationId
 	) {
 		return { error: notFound("Project").error, status: 404 };

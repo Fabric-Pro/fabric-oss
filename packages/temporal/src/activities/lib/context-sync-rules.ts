@@ -125,11 +125,18 @@ export function matchContextEntry(
 	relativePath: string,
 	mode: string,
 ): ContextEntryMatch {
-	// A path the sync could never store is not evaluated: the matcher's time
-	// grows with a path's depth, and this bounds it by what a sync can hold.
-	// It is reported as `invalid-path`, which is what it is.
+	// A path the sync could never store is never handed to the matcher: its
+	// time grows with a path's depth, and this bounds it by what a sync can
+	// hold. But a rule that leaves out a FOLDER leaves out everything beneath
+	// it, however deep, so the folder prefixes that fit are judged first
+	// (shortest first, so the cost is bounded by the cap): a long path inside
+	// `node_modules/` is ignored, as the CLI's walk, which never descends
+	// there, would leave it. Otherwise it is `unmatchable`
+	// (attention `invalid-path`), which is what a path no key can hold is.
 	if (relativePath.length > MAX_CONTEXT_SOURCE_PATH_LENGTH) {
-		return "unmatchable";
+		return ancestorDirectoryIsIgnored(rules, relativePath)
+			? "ignored"
+			: "unmatchable";
 	}
 	try {
 		const ignored = isRegularFileMode(mode)
@@ -140,6 +147,29 @@ export function matchContextEntry(
 	} catch {
 		return "unmatchable";
 	}
+}
+
+/**
+ * Whether a folder above a path too long to store is left out by the rules.
+ * Only prefixes within the storable length are judged, so the matcher never
+ * sees a path over the cap.
+ */
+function ancestorDirectoryIsIgnored(
+	rules: ContextIgnoreRules,
+	relativePath: string,
+): boolean {
+	let end = relativePath.indexOf("/");
+	while (end > 0 && end <= MAX_CONTEXT_SOURCE_PATH_LENGTH) {
+		try {
+			if (rules.ignoresDirectory(relativePath.slice(0, end))) {
+				return true;
+			}
+		} catch {
+			return false;
+		}
+		end = relativePath.indexOf("/", end + 1);
+	}
+	return false;
 }
 
 /** One of the text extensions, in any case (the canonical module's rule). */

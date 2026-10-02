@@ -73,12 +73,15 @@ type IgnoreFileState =
 	| { kind: "loading" }
 	| { kind: "error" }
 	| { kind: "tooLarge" }
+	| { kind: "encoding" }
 	| { kind: "rules"; rules: readonly string[] };
 
 /**
  * What the dialog knows of the synced folder's `.fabricignore`. Only a file
  * with rules changes anything: no file, one with no rules, and one over the
- * sync's limit all leave the project's rules in force, as in the sync.
+ * sync's limit all leave the project's rules in force, as in the sync. One
+ * that is not UTF-8 text leaves them in force too, but the sync refuses it, so
+ * it is told apart.
  */
 function ignoreFileStateOf(input: {
 	read: boolean;
@@ -101,6 +104,9 @@ function ignoreFileStateOf(input: {
 	}
 	if (input.data.state === "tooLarge") {
 		return { kind: "tooLarge" };
+	}
+	if (input.data.state === "encoding") {
+		return { kind: "encoding" };
 	}
 	return input.data.state === "rules" && input.data.rules.length > 0
 		? { kind: "rules", rules: input.data.rules }
@@ -394,8 +400,9 @@ export function ConfigureRepositorySyncDialog({
 			toast.error(t("configureDialog.errors.ignoreRulesUnavailable"));
 			return;
 		}
+		let saved: Awaited<ReturnType<typeof configure.mutateAsync>>;
 		try {
-			await configure.mutateAsync({
+			saved = await configure.mutateAsync({
 				projectId,
 				repositoryIntegrationId: integrationId,
 				ref: branch,
@@ -430,7 +437,17 @@ export function ConfigureRepositorySyncDialog({
 			);
 			setSelection((prev) => ({ ...prev, edits: NO_EXCLUSION_EDITS }));
 		}
-		// Saved. The first sync starts now (§7.2); a refusal to start is
+		// Saved. A change made while a run was open is already queued behind
+		// it, by the server: that run stops at its next fence and the new
+		// selection syncs next, so there is nothing to start from here, and
+		// "Sync now" would only be refused.
+		if ("syncQueued" in saved) {
+			toast.info(t("syncNowResult.queued"));
+			onSaved();
+			onOpenChange(false);
+			return;
+		}
+		// Otherwise the first sync starts now (§7.2); a refusal to start is
 		// reported, and the configuration stands either way.
 		try {
 			const result = (await syncNow.mutateAsync({
@@ -767,6 +784,11 @@ function RulesNotices({
 			) : null}
 			{ignoreFile.kind === "rules" ? (
 				<p className="text-xs">{t("fabricignore")}</p>
+			) : null}
+			{ignoreFile.kind === "encoding" ? (
+				<p role="alert" className="text-destructive text-xs">
+					{t("ignoreFileEncoding")}
+				</p>
 			) : null}
 			{ignoreFile.kind === "tooLarge" ? (
 				<p className="text-muted-foreground text-xs">

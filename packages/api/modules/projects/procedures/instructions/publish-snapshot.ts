@@ -56,6 +56,17 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			 * scan is still PENDING refuses regardless.
 			 */
 			publishBeforeScan: z.boolean().default(false),
+			/**
+			 * The published snapshot the caller's page was showing when the
+			 * person chose to publish or roll back; null for "nothing was
+			 * published". When given, the pointer is compared under the
+			 * project lock and a mismatch is refused as
+			 * `PUBLISHED_CHANGED`, so a choice made against a stale page
+			 * cannot silently replace a version the person never saw.
+			 * Optional: the CLI and API callers that omit it keep today's
+			 * behaviour.
+			 */
+			expectedPublishedSnapshotId: z.string().nullable().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -69,8 +80,28 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			organizationId,
 			allowRollback: true,
 			acknowledgeDeferredScan: input.publishBeforeScan ?? false,
+			...(input.expectedPublishedSnapshotId === undefined
+				? {}
+				: {
+						expectedPublishedSnapshotId:
+							input.expectedPublishedSnapshotId,
+					}),
 		});
 		if (!result.published) {
+			if (result.reason === "published_changed") {
+				// Another publish or rollback landed since the caller's page
+				// loaded. Nothing was written. The version it carries is
+				// what the page names when it asks the person to review.
+				throw new ORPCError("CONFLICT", {
+					message:
+						"Another version was published since this page was loaded. Reload the history and review it before trying again",
+					data: {
+						reason: "PUBLISHED_CHANGED",
+						publishedVersion:
+							result.currentPublishedVersion ?? null,
+					},
+				});
+			}
 			if (result.reason === "not_found") {
 				throw new ORPCError("NOT_FOUND", {
 					message: "Snapshot not found",

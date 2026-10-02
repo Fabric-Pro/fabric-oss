@@ -6,6 +6,10 @@
  * compact sidebar header from `menuItems[0].title` / `.avatar`, so an account
  * group placed FIRST would head an organization-owned page with the signed-in
  * user's own name and avatar. Appending is what keeps the header honest.
+ *
+ * Also pins the first menu entry gated by a database feature flag: Company
+ * context (Fizzy #2719) appears only while `COMPANY_CONTEXT` is on for the
+ * organization in the URL.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -34,6 +38,12 @@ vi.mock("@repo/auth/lib/helper", () => ({
 const getSession = vi.fn();
 const getActiveOrganization = vi.fn();
 const isGuestInOrg = vi.fn();
+const isFeatureEnabled = vi.fn();
+
+vi.mock("@repo/database", () => ({
+	isFeatureEnabled: (key: string, organizationId?: string) =>
+		isFeatureEnabled(key, organizationId),
+}));
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSession(),
@@ -80,6 +90,7 @@ vi.mock("next-intl/server", () => ({
 			"settings.menu.account.security": "Security",
 			"settings.menu.organization.general": "General",
 			"settings.menu.organization.members": "Members",
+			"settings.menu.organization.companyContext": "Company context",
 		};
 		return copy[key] ?? key;
 	},
@@ -137,6 +148,7 @@ describe("organization settings menu — account group", () => {
 			members: [],
 		});
 		isGuestInOrg.mockResolvedValue(false);
+		isFeatureEnabled.mockResolvedValue(false);
 	});
 
 	it("offers security and notifications from organization context", async () => {
@@ -204,17 +216,19 @@ describe("organization settings menu — account group", () => {
 		expect(
 			menuItems.slice(0, -1).some((group) => group.title === "Account"),
 		).toBe(false);
-		// Five now, not two. The personal settings tree is gone, so the
+		// Six now, not two. The personal settings tree is gone, so the
 		// account-global pages that lived only there — the profile, account
 		// deletion, and the member's own AI provider keys — moved here with the
 		// other two. Each would have collided with an organization page of the
 		// same slug at the top level, which is why the whole group is nested
-		// under `account/`.
+		// under `account/`. Connected agents (the coding agents a member signed
+		// in) is per person too, so it joins them, ahead of the danger zone.
 		expect(accountGroup.items.map((item) => item.title)).toEqual([
 			"settings.menu.account.general",
 			"Security",
 			"Notifications",
 			"Personal AI Providers",
+			"settings.menu.account.connectedAgents",
 			"settings.menu.account.dangerZone",
 		]);
 	});
@@ -250,5 +264,85 @@ describe("organization settings menu — account group", () => {
 		expect(screen.getAllByText("Example Org").length).toBeGreaterThan(0);
 		// The signed-in user's name must not head an organization-owned page.
 		expect(screen.queryByTitle("Example Member")).toBeNull();
+	});
+});
+
+describe("organization settings menu — company context gate", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getSession.mockResolvedValue({
+			user: {
+				id: "user-1",
+				name: "Example Member",
+				email: "dev@example.com",
+				image: null,
+			},
+		});
+		getActiveOrganization.mockResolvedValue({
+			id: "org-1",
+			name: "Example Org",
+			slug: "example-org",
+			logo: null,
+			members: [],
+		});
+		isGuestInOrg.mockResolvedValue(false);
+	});
+
+	const COMPANY_CONTEXT_HREF = "/app/example-org/settings/company-context";
+
+	it("has no Company context entry while the gate is off for the organization", async () => {
+		isFeatureEnabled.mockResolvedValue(false);
+
+		const menuItems = await buildMenu();
+		const hrefs = menuItems.flatMap((group) =>
+			group.items.map((item) => item.href),
+		);
+
+		expect(hrefs).not.toContain(COMPANY_CONTEXT_HREF);
+		// Read for the organization in the URL, not a session default.
+		expect(isFeatureEnabled).toHaveBeenCalledWith(
+			"COMPANY_CONTEXT",
+			"org-1",
+		);
+	});
+
+	it("lists Company context in the AI group, after AI Memory, while the gate is on", async () => {
+		isFeatureEnabled.mockImplementation(
+			async (key: string) => key === "COMPANY_CONTEXT",
+		);
+
+		const menuItems = await buildMenu();
+		const aiGroup = menuItems.find((group) => group.title === "AI");
+		const aiHrefs = aiGroup?.items.map((item) => item.href) ?? [];
+
+		expect(aiHrefs).toContain(COMPANY_CONTEXT_HREF);
+		expect(aiHrefs.indexOf(COMPANY_CONTEXT_HREF)).toBe(
+			aiHrefs.indexOf("/app/example-org/settings/ai-memory") + 1,
+		);
+		expect(
+			aiGroup?.items.find((item) => item.href === COMPANY_CONTEXT_HREF)
+				?.title,
+		).toBe("Company context");
+	});
+
+	it("shows the entry to a member who is not an admin — the page is read-only for them, not hidden", async () => {
+		// `isOrganizationAdmin` and `isOrganizationOwner` are mocked false for
+		// this whole file.
+		isFeatureEnabled.mockResolvedValue(true);
+
+		const menuItems = await buildMenu();
+		const hrefs = menuItems.flatMap((group) =>
+			group.items.map((item) => item.href),
+		);
+
+		expect(hrefs).toContain(COMPANY_CONTEXT_HREF);
+	});
+
+	it("never reads the gate for a project guest, who is redirected first", async () => {
+		isGuestInOrg.mockResolvedValue(true);
+		isFeatureEnabled.mockResolvedValue(true);
+
+		await expect(buildMenu()).rejects.toThrow("redirect:/app/example-org");
+		expect(isFeatureEnabled).not.toHaveBeenCalled();
 	});
 });

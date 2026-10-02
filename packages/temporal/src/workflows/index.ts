@@ -577,6 +577,7 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
+export { projectRepositorySyncFollowUpWorkflow } from "./project-repository-sync-follow-up";
 // Coding Instructions automatic sync poll (spec §6.1). Named, like the sync.
 export { projectInstructionRepositoryPollWorkflow } from "./project-instruction-repository-poll";
 // Coding Instructions repository sync (design 2026-09-23 §5.2). Named, not

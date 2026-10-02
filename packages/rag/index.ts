@@ -8,6 +8,7 @@
 // Export all modules
 export * from "./lib/chunking";
 export * from "./lib/collection-manager";
+export * from "./lib/company-contexts";
 export * from "./lib/embedding";
 export * from "./lib/extraction";
 export * from "./lib/ocr";

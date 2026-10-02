@@ -693,6 +693,7 @@ async function checkIntegrationCredentials(
 	const integration = await db.workflowIntegration.findFirst({
 		where: {
 			provider: provider as any,
+			NOT: { name: `${provider}_OAUTH_APP` },
 			userId,
 			...orgFilter,
 			isActive: true,

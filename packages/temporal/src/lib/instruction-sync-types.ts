@@ -154,7 +154,16 @@ export type BeginSyncRunResult =
 
 export type AcquireTreeResult =
 	| { outcome: "unchanged"; commitSha: string }
-	| { outcome: "staged"; snapshotId: string; commitSha: string | null };
+	| {
+			outcome: "staged";
+			snapshotId: string;
+			commitSha: string | null;
+			/**
+			 * The ownership token the staged row carries, for the child
+			 * workflow's input; absent for a row that predates the token.
+			 */
+			validationAttemptId?: string;
+	  };
 
 /**
  * Which limit a LIMITS_EXCEEDED failure hit. Numbers only: `actual` is

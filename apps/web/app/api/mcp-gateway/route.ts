@@ -6,7 +6,10 @@
  * Claude Desktop, Cursor, VS Code, Windsurf, or custom implementations.
  *
  * Authentication:
- *   - API Key: `Authorization: Bearer fab_xxx` (recommended for external clients)
+ *   - OAuth access token: `Authorization: Bearer fat_xxx`, obtained by signing
+ *     in from the agent (discovery starts at the `WWW-Authenticate` challenge on
+ *     a 401). Bound to the organization chosen at consent.
+ *   - API Key: `Authorization: Bearer fab_xxx` (CI and headless clients)
  *   - Session cookie: Better Auth session (for browser-based clients)
  *   - Organization context: `X-Organization-Id` header — optional, and honoured
  *     only when the authenticated caller is a member of the organization it
@@ -28,7 +31,9 @@
 import { createHash } from "node:crypto";
 import { verifyUserApiKey } from "@repo/api/modules/users/procedures/api-keys";
 import { auth } from "@repo/auth";
-import { isOrganizationLive } from "@repo/database";
+import { gatewayAuthenticateHeader } from "@repo/auth/lib/oauth-scopes";
+import { isOrganizationLive, verifyOAuthAccessToken } from "@repo/database";
+import { getBaseUrl } from "@repo/utils";
 import {
 	createGatewaySession,
 	deleteGatewaySession,
@@ -49,6 +54,7 @@ import type { GatewayCredential } from "@saas/mcp/lib/gateway/types";
 import {
 	type McpKeyIdentity,
 	recordCliReach,
+	toOAuthClientIdentity,
 	toOrganizationKeyIdentity,
 	toUserKeyIdentity,
 } from "@saas/mcp/lib/record-cli-reach";
@@ -371,6 +377,31 @@ async function authenticateRequest(request: NextRequest): Promise<AuthOutcome> {
 		});
 	}
 
+	// 1c. OAuth access token — a coding agent that signed in instead of
+	// pasting a key. The token names the user and the organization chosen at
+	// consent, and neither the organization header nor the session's active
+	// organization can move it. Everything that makes a token dead (expired,
+	// revoked, client disabled, owner gone or banned, no longer a member) is
+	// settled inside the verifier and answered with the same 401 as any other
+	// bad credential.
+	if (authHeader?.startsWith("Bearer ")) {
+		const token = await verifyOAuthAccessToken(authHeader.substring(7));
+		if (!token.valid) {
+			return UNAUTHENTICATED;
+		}
+
+		return authenticatedAs({
+			userId: token.userId,
+			organizationId: token.organizationId,
+			userName: token.userName || "Unknown",
+			email: token.email,
+			role: (token.role as "user" | "admin") || "user",
+			credential: "oauth",
+			scopes: token.scopes,
+			keyIdentity: toOAuthClientIdentity(token.clientRowId),
+		});
+	}
+
 	// 2. Better Auth session.
 	//
 	// This branch used to be excluded from the no-null-organization rule, on
@@ -685,11 +716,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		);
 	}
 	if (authOutcome.status === "unauthenticated") {
+		// The challenge is what lets an MCP client offer "sign in" instead of
+		// asking for a key: it names where the resource's metadata lives.
 		return NextResponse.json(
 			{
-				error: "Unauthorized. Provide a personal API key (Bearer fab_xxx), org API key (Bearer org_xxx), or session cookie.",
+				error: "Unauthorized. Sign in from your agent, or provide a personal API key (Bearer fab_xxx), org API key (Bearer org_xxx), or session cookie.",
 			},
-			{ status: 401 },
+			{
+				status: 401,
+				headers: {
+					"WWW-Authenticate": gatewayAuthenticateHeader(getBaseUrl()),
+				},
+			},
 		);
 	}
 	const authResult = authOutcome.authResult;

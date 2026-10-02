@@ -104,6 +104,7 @@ export async function getMicrosoftAccessToken(
 					userId,
 					organizationId,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -112,6 +113,7 @@ export async function getMicrosoftAccessToken(
 					userId,
 					organizationId: null,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -660,6 +662,7 @@ export async function executeMicrosoftTeamsTool(
 					userId,
 					organizationId,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -668,6 +671,7 @@ export async function executeMicrosoftTeamsTool(
 					userId,
 					organizationId: null,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			});

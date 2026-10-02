@@ -109,7 +109,10 @@ export {
 	formatPrdForbiddenSections,
 	formatProposalForbiddenSections,
 	getPrdOverrideInstructions,
+	getProposalForbiddenSections,
 	getProposalOverrideInstructions,
+	getProposalVendorSectionInstructions,
+	getProposalVendorSectionReminder,
 	getUserStoryOverrideInstructions,
 	PRD_FORBIDDEN_SECTIONS,
 	PRD_OPTIONAL_SECTIONS,
@@ -117,6 +120,7 @@ export {
 	PRD_TEMPLATE,
 	PROPOSAL_FORBIDDEN_SECTIONS,
 	PROPOSAL_TEMPLATE,
+	PROPOSAL_VENDOR_SECTION,
 } from "./templates";
 // Types
 export type {

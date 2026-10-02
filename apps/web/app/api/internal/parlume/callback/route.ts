@@ -63,11 +63,22 @@ export async function POST(request: NextRequest) {
 		!expected ||
 		!constantTimeEqual(request.headers.get("x-mb-secret"), expected)
 	) {
-		parlumeLog("warn", "callback.rejected", {
-			sessionId,
-			...describeRejected(raw),
-			hasSecretHeader: request.headers.has("x-mb-secret"),
-		});
+		const rejected = describeRejected(raw);
+		// The provider also posts status-change events to this URL without the
+		// callback secret; they carry nothing Fabric acts on, so they are noise
+		// rather than a sign of a wrong secret.
+		parlumeLog(
+			rejected.event === "bot.status_change" &&
+				!request.headers.has("x-mb-secret")
+				? "info"
+				: "warn",
+			"callback.rejected",
+			{
+				sessionId,
+				...rejected,
+				hasSecretHeader: request.headers.has("x-mb-secret"),
+			},
+		);
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 	let json: unknown;
@@ -93,6 +104,7 @@ export async function POST(request: NextRequest) {
 			id: true,
 			status: true,
 			endReason: true,
+			leaveRequestedAt: true,
 			streamClosedAt: true,
 			streamGeneration: true,
 		},
@@ -112,7 +124,12 @@ export async function POST(request: NextRequest) {
 		status: session.status,
 		streamClosed: session.streamClosedAt !== null,
 	});
-	if (parsed.data.event === "bot.failed") {
+	// The provider reports a bot that leaves on our request before recording
+	// anything as failed. A leave Fabric asked for (stop, idle, revoked access,
+	// hard stop) is a normal end with the reason already recorded.
+	const requestedLeave =
+		session.leaveRequestedAt !== null && session.endReason !== null;
+	if (parsed.data.event === "bot.failed" && !requestedLeave) {
 		await db.parlumeMeetingSession.updateMany({
 			where: { id: session.id, status: { not: "ENDED" } },
 			data: {

@@ -506,3 +506,38 @@ export function repositoryPathsForKeys(
 	}
 	return paths;
 }
+
+/**
+ * The git blob id the pinned commit holds for each of `keys`: only a key that
+ * is there exactly once as a regular file has one, so an ambiguous or absent
+ * key is simply missing and is read the ordinary way. The inventory already
+ * carries every entry's blob id, so asking costs nothing.
+ */
+export function blobOidsForKeys(
+	keys: readonly string[],
+	entries: readonly ContextInventoryEntry[],
+): Map<string, string> {
+	const wanted = new Set(keys);
+	const found = new Map<string, string | null>();
+	for (const entry of entries) {
+		if (
+			!entry.utf8 ||
+			entry.type !== "blob" ||
+			!isRegularFileMode(entry.mode)
+		) {
+			continue;
+		}
+		const key = contextStorageKey(entry.path);
+		if (!key.ok || !wanted.has(key.storageKey)) {
+			continue;
+		}
+		found.set(key.storageKey, found.has(key.storageKey) ? null : entry.oid);
+	}
+	const oids = new Map<string, string>();
+	for (const [key, oid] of found) {
+		if (oid !== null) {
+			oids.set(key, oid);
+		}
+	}
+	return oids;
+}

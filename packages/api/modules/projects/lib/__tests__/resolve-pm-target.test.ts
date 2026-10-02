@@ -24,6 +24,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { db, resolvePMConfigForUser } from "@repo/database";
+import {
+	createWorkflowIntegrationStore,
+	type StoredRow,
+} from "../../../integrations/__tests__/procedures/workflow-integration-store";
 import { resolvePmTarget } from "../resolve-pm-target";
 
 beforeEach(() => {
@@ -253,59 +257,64 @@ describe("resolvePmTarget", () => {
 		expect(result).toBeNull();
 	});
 
-	// --- Org-level fallback (mirrors pm-source.ts and per-project code repos) ---
+	// --- Connection owner (mirrors temporal pm-source.ts) ---------------------
+	// A GitLab WorkflowIntegration is a member's personal OAuth connection; in
+	// org context the REST target resolves only through the CALLER's own
+	// connection, never a teammate's. Rows are seeded in an in-memory store
+	// (teammate first) so a lookup without `userId` would pick the teammate.
 
-	it("org context: falls back to an org-mate's active GitLab integration when the caller has none", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst)
-			.mockResolvedValueOnce(null)
-			.mockResolvedValueOnce({ id: "wi-org" } as never);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
-				organizationId: "org-x",
-			},
-			userId: "u2",
-			organizationId: "org-x",
-		});
-
-		expect(result).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
-		// The fallback lookup is org-scoped (no userId).
-		const orgCall = vi.mocked(db.workflowIntegration.findFirst).mock
-			.calls[1]?.[0];
-		expect(orgCall?.where).toMatchObject({
-			organizationId: "org-x",
-			provider: "GITLAB",
-			isActive: true,
-		});
-		expect(orgCall?.where).not.toHaveProperty("userId");
+	const gitlabRow = (id: string, userId: string): StoredRow => ({
+		id,
+		userId,
+		organizationId: "org-example",
+		provider: "GITLAB",
+		name: "GITLAB",
+		isActive: true,
+		credentials: "{}",
 	});
+	const teammateGitLab = gitlabRow("wi-teammate", "user-1");
+	const callerGitLab = gitlabRow("wi-caller", "user-2");
 
-	it("org context: returns null when neither the caller nor any org-mate has GitLab", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
+	function seed(rows: StoredRow[]) {
+		const store = createWorkflowIntegrationStore();
+		store.rows.push(...rows);
+		vi.mocked(db.workflowIntegration.findFirst).mockImplementation(
+			store.delegate.findFirst as never,
+		);
+	}
+
+	const gitlabProject = {
+		projectManagementMcpServerId: "key:gitlab-official",
+		projectManagementMcpConfigId: null,
+		organizationId: "org-example",
+	};
+
+	it("org context: returns null when only a teammate has GitLab connected", async () => {
+		seed([teammateGitLab]);
 
 		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
-				organizationId: "org-x",
-			},
-			userId: "u2",
-			organizationId: "org-x",
+			project: gitlabProject,
+			userId: "user-2",
+			organizationId: "org-example",
 		});
 
 		expect(result).toBeNull();
-		// Both the own-lookup and the org fallback were attempted.
+	});
+
+	it("org context: resolves rest-gitlab from the caller's own connection", async () => {
+		seed([teammateGitLab, callerGitLab]);
+
+		const result = await resolvePmTarget({
+			project: gitlabProject,
+			userId: "user-2",
+			organizationId: "org-example",
+		});
+
+		expect(result).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
 		expect(
-			vi.mocked(db.workflowIntegration.findFirst),
-		).toHaveBeenCalledTimes(2);
+			vi.mocked(db.workflowIntegration.findFirst).mock.calls[0]?.[0]
+				?.where,
+		).toMatchObject({ userId: "user-2", organizationId: "org-example" });
 	});
 
 	it("personal context: does not fall back to another user's integration", async () => {

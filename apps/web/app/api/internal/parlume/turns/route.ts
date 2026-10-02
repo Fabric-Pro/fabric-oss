@@ -125,8 +125,10 @@ export async function POST(request: NextRequest) {
 	}
 	try {
 		const temporal = await getTemporalClient();
+		// Same queue as direct chat: the worker flushes activity heartbeats every
+		// second there, and nothing polls a queue named "default".
 		await temporal.workflow.start("parlumeMeetingTurnWorkflow", {
-			taskQueue: "default",
+			taskQueue: "fabric-worker",
 			workflowId: `parlume-turn-${turn.id}`,
 			workflowIdConflictPolicy: "USE_EXISTING",
 			args: [{ turnId: turn.id }],

@@ -131,11 +131,17 @@ export async function loadGitLabToken(
 		};
 	}
 
+	// Active rows only. `gitlab.disconnect` deactivates the connection rows but
+	// leaves their credentials in place, and it clears the MCPConfig token
+	// above, so without this filter a disconnected user resolved straight back
+	// to the deactivated row's token.
 	const wi = (await db.workflowIntegration.findFirst({
 		where: {
 			userId: ctx.userId,
 			organizationId: ctx.organizationId,
 			provider: "GITLAB",
+			isActive: true,
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { id: true, credentials: true, settings: true },
 	})) as WorkflowIntegrationRow | null;
@@ -551,11 +557,17 @@ async function persistGitLabTokenOnTx(
 		}
 	}
 
+	// Never the GITLAB_OAUTH_APP row: it shares provider, user and
+	// organization with the connection row but holds the OAuth client
+	// credentials saveAppCredentials stored. Updating it here replaced the
+	// client id and secret with this token, switching OAuth off for the
+	// whole organization the moment the admin who saved them connected.
 	const existingWi = (await tx.workflowIntegration.findFirst({
 		where: {
 			userId: input.userId,
 			organizationId: input.organizationId,
 			provider: "GITLAB",
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { id: true, settings: true },
 	})) as { id: string; settings: unknown } | null;
@@ -905,6 +917,7 @@ async function markNeedsReauthOnTx(
 			userId: ctx.userId,
 			organizationId: ctx.organizationId,
 			provider: "GITLAB",
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { id: true, settings: true },
 	})) as { id: string; settings: unknown } | null;
@@ -1310,6 +1323,7 @@ async function loadStoredGitLabUser(
 			userId: ctx.userId,
 			organizationId: ctx.organizationId,
 			provider: "GITLAB",
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { settings: true },
 	})) as { settings: unknown } | null;

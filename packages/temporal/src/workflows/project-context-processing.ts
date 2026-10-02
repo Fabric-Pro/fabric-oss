@@ -12,6 +12,13 @@
  * - Multi-tenancy support with user/organization isolation
  *
  * Similar pattern to wizardContextProcessingWorkflow for consistency.
+ *
+ * Also processes an organization's company context files (Fizzy #2719): an
+ * input naming a company owner is started on COMPANY_CONTEXT_TASK_QUEUE
+ * (`contextOwnerTaskQueue`), and every activity call carries the owner, so
+ * each one reads and writes the company source instead of a project context.
+ * The activity calls and their order are the same for both owners; the
+ * import-as-document branch is project-only.
  */
 
 import {
@@ -21,6 +28,7 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
 
 // Configure activity retry policies
 const { updateProjectContextStatus, getProjectContextStatus } = proxyActivities<
@@ -73,11 +81,17 @@ const {
 
 export interface ProjectContextProcessingInput {
 	contextId: string;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string;
 	organizationId?: string;
 	extractionStrategy?: string;
 	isRetry?: boolean;
+	/**
+	 * Who owns the context. Absent is the project owner, which every input
+	 * recorded before company context existed is.
+	 */
+	owner?: ContextOwner;
 }
 
 export interface ProjectContextProcessingOutput {
@@ -121,6 +135,10 @@ export async function projectContextProcessingWorkflow(
 		extractionStrategy = "local-only",
 		isRetry = false,
 	} = input;
+	// Validated before any activity runs: a malformed owner fails the run
+	// non-retryably with nothing written. A project owner is exactly what the
+	// input always was.
+	const owner = resolveContextOwner(input);
 
 	log.info("Starting project context processing workflow", {
 		contextId,
@@ -133,6 +151,8 @@ export async function projectContextProcessingWorkflow(
 
 	try {
 		// Run the combined processing activity
+		// The owner rides as a trailing optional argument, so the positional
+		// arguments recorded project histories carry are unchanged.
 		const result: ProjectContextProcessingResult = isRetry
 			? await retryProjectContext(
 					contextId,
@@ -140,6 +160,7 @@ export async function projectContextProcessingWorkflow(
 					userId,
 					organizationId,
 					extractionStrategy,
+					input.owner,
 				)
 			: await processProjectContext(
 					contextId,
@@ -147,6 +168,7 @@ export async function projectContextProcessingWorkflow(
 					userId,
 					organizationId,
 					extractionStrategy,
+					input.owner,
 				);
 
 		if (!result.success) {
@@ -157,12 +179,16 @@ export async function projectContextProcessingWorkflow(
 			// Update status to FAILED so UI reflects the failure — but only if
 			// extraction didn't already mark it COMPLETED (bug #1039 guard).
 			try {
-				const currentStatus = await getProjectContextStatus(contextId);
+				const currentStatus = await getProjectContextStatus(
+					contextId,
+					input.owner,
+				);
 				if (currentStatus !== "COMPLETED") {
 					await updateProjectContextStatus(
 						contextId,
 						"FAILED",
 						result.error,
+						input.owner,
 					);
 				}
 			} catch {
@@ -182,8 +208,10 @@ export async function projectContextProcessingWorkflow(
 		});
 
 		// Check if this context was tagged as a document type during upload
-		// If so, clean up the content and create a ProjectDocument
-		if (result.documentTag) {
+		// If so, clean up the content and create a ProjectDocument. A project
+		// surface: a company source's activity never returns a tag, and the
+		// owner check keeps the branch unreachable for one regardless.
+		if (result.documentTag && owner.kind === "project") {
 			log.info(
 				"Context tagged as document type, creating imported document",
 				{
@@ -216,7 +244,7 @@ export async function projectContextProcessingWorkflow(
 							documentTitle: result.documentTitle,
 							userId,
 							organizationId,
-							projectId,
+							projectId: owner.projectId,
 						});
 
 						log.info("Content cleanup complete", {
@@ -322,7 +350,7 @@ export async function projectContextProcessingWorkflow(
 								taskQueue: "project-documents",
 								args: [
 									{
-										projectId,
+										projectId: owner.projectId,
 										documentId: result.targetDocumentId,
 										documentType: result.documentTag,
 										userId,
@@ -433,7 +461,7 @@ export async function projectContextProcessingWorkflow(
 						}
 					} else {
 						({ documentId } = await createImportedDocument({
-							projectId,
+							projectId: owner.projectId,
 							contextId,
 							documentType: result.documentTag,
 							title: result.documentTitle,
@@ -525,12 +553,16 @@ export async function projectContextProcessingWorkflow(
 		// content is persisted, but if some future code path does, we won't
 		// regress the user-visible status.
 		try {
-			const currentStatus = await getProjectContextStatus(contextId);
+			const currentStatus = await getProjectContextStatus(
+				contextId,
+				input.owner,
+			);
 			if (currentStatus !== "COMPLETED") {
 				await updateProjectContextStatus(
 					contextId,
 					"FAILED",
 					errorMessage,
+					input.owner,
 				);
 			} else {
 				log.warn(

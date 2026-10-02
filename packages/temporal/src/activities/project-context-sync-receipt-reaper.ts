@@ -50,6 +50,7 @@ import { logger } from "@repo/logs";
 import type { Client } from "@temporalio/client";
 import { getTemporalClient } from "../client";
 import { safeHeartbeat } from "./lib/activity-liveness";
+import { startAwaitingContextIndexing } from "./lib/context-awaiting-index";
 import { completeInterruptedContextSyncRun } from "./lib/context-sync-record";
 import {
 	describeExecution,
@@ -127,7 +128,40 @@ async function completeStrandedReceipt(
 	);
 }
 
+/**
+ * The hourly tick's Living Memory pass: complete the stranded receipts, then
+ * start an index-only pass for rows a sync left unindexed
+ * (`startAwaitingContextIndexing`). The second step is an extension of this
+ * activity rather than a new one, so the reaper workflow's history is
+ * unchanged. A failure there is logged, never thrown: the receipts are
+ * already completed and the rows are the next tick's work.
+ */
 export async function reapStrandedContextSyncReceipts(): Promise<StrandedSyncReceiptReapResult> {
+	const result = await completeStrandedContextSyncReceipts();
+	try {
+		const indexing = await startAwaitingContextIndexing();
+		if (indexing.syncs > 0) {
+			logger.info(
+				{
+					event: "context.reaper.awaiting_index.completed",
+					...indexing,
+				},
+				`[ContextSyncReaper] Started ${indexing.started} index-only embedding(s)`,
+			);
+		}
+	} catch (error) {
+		logger.warn(
+			{
+				event: "context.reaper.awaiting_index.failed",
+				errorName: error instanceof Error ? error.name : typeof error,
+			},
+			"[ContextSyncReaper] The index-only pass failed; it is retried next run",
+		);
+	}
+	return result;
+}
+
+async function completeStrandedContextSyncReceipts(): Promise<StrandedSyncReceiptReapResult> {
 	const startedAtMs = Date.now();
 	const receipts = await claimStrandedContextSyncRunReceipts({
 		startedBefore: new Date(startedAtMs - STRANDED_SYNC_RECEIPT_AGE_MS),

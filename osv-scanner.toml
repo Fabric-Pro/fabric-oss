@@ -39,6 +39,17 @@ id = "GHSA-7pqw-9j4j-h8q3"
 ignoreUntil = 2026-11-12
 reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; same unfixable package and same symlink-write class as GHSA-jmr9-qjv8-65gv. No patched release exists upstream. Sole call site is the CLI's Python dev path, which this repo never invokes. See SECURITY.md § Documented dismissals."
 
+# node-forge has no fixed release to move to: 1.4.0 is both the newest ever
+# published and inside the advisory's `<= 1.4.0` range. It arrives only through
+# @copilotkit/runtime -> @langchain/google-gauth -> google-auth-library@8 ->
+# gtoken@6 -> google-p12-pem, which never calls the RSA signature verification
+# the advisory is about. Overriding gtoken to 7.x would drop the chain but swaps
+# a major under an auth library for a dismissal of unreachable code.
+[[IgnoredVulns]]
+id = "GHSA-86w9-cpqp-85rv"
+ignoreUntil = 2026-12-31
+reason = "node-forge@1.4.0 via @copilotkit/runtime -> @langchain/google-gauth -> google-auth-library@8 -> gtoken@6 -> google-p12-pem; no patched release exists upstream. google-p12-pem only parses PKCS#12 and writes PEM, never verifying RSA signatures, and loads only for .p12 key files. See SECURITY.md § Documented dismissals."
+
 # The former deepmerge-ts entry (GHSA-ggr8-5vv4-36mx) was removed 2026-09-02:
 # the `deepmerge-ts` -> `^8.0.2` override in the root package.json moves
 # @prisma/config's exact 7.1.5 pin past the first fixed release (8.0.0).

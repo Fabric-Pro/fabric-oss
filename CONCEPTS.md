@@ -414,6 +414,16 @@ Membership of the organization is **not** reach. It is the single most common wa
 
 Distinct from *tenant scope*, which asks which projects belong to a workspace the person is in at all. The two differ for exactly the projects of your own organization that you were never added to, and that gap is where every disclosure and every dead link in this area has come from. A surface deciding what to **show** may legitimately ask either question; a surface deciding what to **link to** must ask about reach.
 
+### Project guest
+A member of a project who is not a member of the organization that owns it — typically someone from the client's side, invited to one engagement. A guest can hold any project role, including one that generates documents, so project role says nothing about guest status; only the owning organization's membership does.
+
+A guest works from their own workspace, not the project's. Anything that resolves an organization for work inside a project must take the project's owning organization rather than the one the guest's session carries, or a guest's action lands in the wrong tenant. Whether organization-owned material reaches a guest is decided per kind, never inherited from project access: the Brand kit is readable by guests because their editions carry it, while the Company context is withheld from them.
+
+### Company context
+The organization's own profile as a vendor — sales assets, case studies, security documents, websites — collected once and drawn on when the organization's Proposals and Business Cases are generated. It is the vendor-side counterpart to a project's context, which describes the client.
+
+It is organization-owned and never part of any project: it does not appear in a project's context list, readiness or summary, and it feeds only the document types that speak for the vendor, so engineering documents are never shaped by marketing material. A Project guest neither sees it nor retrieves it, but a document an organization member generated from it is an ordinary project document, visible under the project's normal rules. Deleting a source takes it out of generation and refuses any new work on it at once, although its stored data is removed afterwards in the background; until then it stays listed as being deleted, and deleting it again retries the removal.
+
 ## Navigation
 
 ### Project shortcut

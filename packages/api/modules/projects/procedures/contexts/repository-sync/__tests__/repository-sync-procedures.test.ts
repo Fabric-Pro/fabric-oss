@@ -39,6 +39,7 @@ const m = vi.hoisted(() => ({
 	startContextRepositorySync: vi.fn(),
 	isContextRepositorySyncRunning: vi.fn(),
 	describeContextSyncExecutions: vi.fn(),
+	queueRepositorySyncFollowUp: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -95,6 +96,9 @@ vi.mock("../../../../../../lib/audit", () => ({
 }));
 vi.mock("../../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: m.resolveEffectiveProjectPermissions,
+}));
+vi.mock("../../../../lib/repository-sync-follow-up", () => ({
+	queueRepositorySyncFollowUp: m.queueRepositorySyncFollowUp,
 }));
 vi.mock("../../../../lib/context-repository-sync-workflow", () => ({
 	startContextRepositorySync: m.startContextRepositorySync,
@@ -363,6 +367,7 @@ beforeEach(() => {
 			excludedPaths: ["docs/drafts"],
 		},
 	});
+	m.queueRepositorySyncFollowUp.mockResolvedValue(true);
 	m.listUnfinishedContextRepositorySyncRuns.mockResolvedValue([]);
 	m.describeContextSyncExecutions.mockResolvedValue(new Map());
 	m.completeInterruptedContextRepositorySyncRuns.mockResolvedValue({
@@ -1312,6 +1317,105 @@ describe("repositorySync.configure", () => {
 			expect(m.startContextRepositorySync).not.toHaveBeenCalled();
 		},
 	);
+
+	describe("queueing the run a changed selection asked for", () => {
+		const stored = {
+			repositoryIntegrationId: "int-1",
+			ref: "develop",
+			paths: ["docs", "notes/team.md"],
+			excludedPaths: ["docs/drafts"],
+		};
+		const written = (
+			previous: typeof stored | null,
+			sync: Partial<typeof stored> = {},
+		) => ({
+			status: "configured",
+			sync: {
+				id: "sync-1",
+				generation: 6,
+				automatic: false,
+				...stored,
+				...sync,
+			},
+			previous,
+		});
+
+		it("queues a follow-up for the caller, and says so, when a changed selection meets an open run", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertContextRepositorySync.mockResolvedValue(
+				written({ ...stored, paths: ["docs"] }),
+			);
+
+			const result = await call("configure", configureInput);
+
+			expect(m.queueRepositorySyncFollowUp).toHaveBeenCalledWith({
+				subject: "context",
+				projectId: "proj-1",
+				organizationId: "org-host",
+				requesterUserId: "user-1",
+			});
+			expect(result).toEqual({
+				syncId: "sync-1",
+				generation: 6,
+				syncQueued: true,
+			});
+		});
+
+		it("queues one when only what is left out changed", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertContextRepositorySync.mockResolvedValue(
+				written({ ...stored, excludedPaths: [] }),
+			);
+
+			expect(await call("configure", configureInput)).toMatchObject({
+				syncQueued: true,
+			});
+		});
+
+		it("queues nothing when no run is open", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(false);
+			m.upsertContextRepositorySync.mockResolvedValue(
+				written({ ...stored, ref: "main" }),
+			);
+
+			expect(await call("configure", configureInput)).toEqual({
+				syncId: "sync-1",
+				generation: 6,
+			});
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+		});
+
+		it("queues nothing when what is synced did not change, which leaves an open run to finish", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertContextRepositorySync.mockResolvedValue(written(stored));
+
+			await call("configure", { ...configureInput, automatic: true });
+
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+		});
+
+		it("queues nothing for a first configure, which has no run to fence", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertContextRepositorySync.mockResolvedValue(written(null));
+
+			await call("configure", configureInput);
+
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+		});
+
+		it("saves the configuration and claims nothing queued when queueing failed", async () => {
+			m.isContextRepositorySyncRunning.mockResolvedValue(true);
+			m.queueRepositorySyncFollowUp.mockResolvedValue(false);
+			m.upsertContextRepositorySync.mockResolvedValue(
+				written({ ...stored, ref: "main" }),
+			);
+
+			expect(await call("configure", configureInput)).toEqual({
+				syncId: "sync-1",
+				generation: 6,
+			});
+		});
+	});
 
 	it("audits the automatic toggle as a configure that changed nothing synced, with the generation it kept (Fizzy #2713)", async () => {
 		const stored = {

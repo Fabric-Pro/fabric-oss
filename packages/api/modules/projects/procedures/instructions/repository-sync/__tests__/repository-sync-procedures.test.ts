@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 	getInstructionRepositorySync: vi.fn(),
+	getInstructionSyncRunSnapshotProgress: vi.fn(),
 	getLatestInstructionRepositorySyncRun: vi.fn(),
 	listInstructionRepositorySyncRuns: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
@@ -18,6 +19,7 @@ const m = vi.hoisted(() => ({
 	resolveFreshRepoTokenForRow: vi.fn(),
 	startInstructionRepositorySync: vi.fn(),
 	isInstructionRepositorySyncRunning: vi.fn(),
+	queueRepositorySyncFollowUp: vi.fn(),
 }));
 
 /**
@@ -51,6 +53,8 @@ vi.mock("@repo/database", async () => ({
 		)
 	).parseInstructionSyncLimitDetail,
 	getInstructionRepositorySync: m.getInstructionRepositorySync,
+	getInstructionSyncRunSnapshotProgress:
+		m.getInstructionSyncRunSnapshotProgress,
 	getLatestInstructionRepositorySyncRun:
 		m.getLatestInstructionRepositorySyncRun,
 	listInstructionRepositorySyncRuns: m.listInstructionRepositorySyncRuns,
@@ -73,6 +77,9 @@ vi.mock("../../../../../../lib/audit", () => ({
 }));
 vi.mock("../../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: m.resolveEffectiveProjectPermissions,
+}));
+vi.mock("../../../../lib/repository-sync-follow-up", () => ({
+	queueRepositorySyncFollowUp: m.queueRepositorySyncFollowUp,
 }));
 vi.mock("../start-sync-workflow", () => ({
 	startInstructionRepositorySync: m.startInstructionRepositorySync,
@@ -183,11 +190,13 @@ beforeEach(() => {
 	});
 	m.getInstructionRepositorySync.mockResolvedValue(syncRow);
 	m.getLatestInstructionRepositorySyncRun.mockResolvedValue(null);
+	m.getInstructionSyncRunSnapshotProgress.mockResolvedValue(null);
 	m.listProjectRepoIntegrations.mockResolvedValue([
 		integration,
 		{ ...integration, id: "int_2", status: "TOKEN_EXPIRED" },
 	]);
 	m.isInstructionRepositorySyncRunning.mockResolvedValue(false);
+	m.queueRepositorySyncFollowUp.mockResolvedValue(true);
 	m.getProjectRepoIntegration.mockResolvedValue(integration);
 	m.resolveFreshRepoTokenForRow.mockResolvedValue({ token: SECRET_TOKEN });
 	m.verifyRepositoryBranch.mockResolvedValue("exists");
@@ -292,6 +301,7 @@ describe("repositorySync.get", () => {
 				delegateName: "Delegate Person",
 			},
 			latestRun: null,
+			inFlightSnapshot: null,
 			availableIntegrations: [
 				{
 					id: "int_1",
@@ -367,6 +377,93 @@ describe("repositorySync.get", () => {
 			id: "sync_1:run_a",
 			fromCurrentConfiguration: false,
 		});
+	});
+
+	it("reports an open run's phase and count, and its snapshot's own progress by the run's key", async () => {
+		m.getLatestInstructionRepositorySyncRun.mockResolvedValue({
+			id: "sync_1:run_a",
+			syncId: "sync_1",
+			trigger: "MANUAL",
+			generation: 2,
+			startedAt: new Date("2026-09-23T10:00:00.000Z"),
+			finishedAt: null,
+			status: null,
+			error: null,
+			note: null,
+			commitSha: null,
+			snapshotId: null,
+			snapshotVersion: null,
+			limitDetail: null,
+			progressPhase: "COPYING",
+			progressDone: 3,
+			progressTotal: 8,
+			user: { id: "user_1", name: "Example Member" },
+		});
+		m.getInstructionSyncRunSnapshotProgress.mockResolvedValue({
+			id: "snap_1",
+			version: 4,
+			status: "VALIDATING",
+			deferredScanStatus: null,
+			progressPhase: "CHECKING",
+			progressDone: 5,
+			progressTotal: 8,
+		});
+
+		const result = (await handlers.get?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as {
+			latestRun: { progress: unknown };
+			inFlightSnapshot: unknown;
+		};
+
+		expect(m.getInstructionSyncRunSnapshotProgress).toHaveBeenCalledWith(
+			"sync_1:run_a",
+			"proj_1",
+			"org_1",
+		);
+		expect(result.latestRun.progress).toEqual({
+			phase: "COPYING",
+			done: 3,
+			total: 8,
+		});
+		expect(result.inFlightSnapshot).toEqual({
+			status: "VALIDATING",
+			version: 4,
+			scanPending: false,
+			progress: { phase: "CHECKING", done: 5, total: 8 },
+		});
+	});
+
+	it("reads no snapshot, and reports no run progress, for a run that has finished", async () => {
+		m.getLatestInstructionRepositorySyncRun.mockResolvedValue({
+			id: "sync_1:run_a",
+			syncId: "sync_1",
+			trigger: "MANUAL",
+			generation: 2,
+			startedAt: new Date("2026-09-23T10:00:00.000Z"),
+			finishedAt: new Date("2026-09-23T10:01:00.000Z"),
+			status: "SUCCEEDED",
+			error: null,
+			note: null,
+			commitSha: "c0ffee",
+			snapshotId: "snap_1",
+			snapshotVersion: 4,
+			limitDetail: null,
+			progressPhase: "COPYING",
+			progressDone: 8,
+			progressTotal: 8,
+			user: { id: "user_1", name: "Example Member" },
+		});
+
+		const result = (await handlers.get?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as { latestRun: { progress: unknown }; inFlightSnapshot: unknown };
+
+		expect(m.getInstructionSyncRunSnapshotProgress).not.toHaveBeenCalled();
+		expect(result.latestRun.progress).toBeNull();
+		expect(result.inFlightSnapshot).toBeNull();
 	});
 
 	it("treats a missing mode as upload mode", async () => {
@@ -613,6 +710,104 @@ describe("repositorySync.configure", () => {
 				ignoreGlobsChanged: false,
 				generation: 3,
 			},
+		});
+	});
+
+	describe("queueing the run a changed selection asked for", () => {
+		const stored = {
+			repositoryIntegrationId: "int_1",
+			ref: "develop",
+			rootPath: "agents",
+		};
+		const written = (previous: typeof stored | null, generation = 4) => ({
+			sync: { id: "sync_1", generation, automatic: false, ...stored },
+			previous,
+			ignoreGlobsChanged: false,
+		});
+
+		it("queues a follow-up for the caller, and says so, when a changed selection meets an open run", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertInstructionRepositorySync.mockResolvedValue(
+				written({ ...stored, ref: "main" }),
+			);
+
+			const result = await handlers.configure?.({ input, context: ctx });
+
+			expect(m.queueRepositorySyncFollowUp).toHaveBeenCalledWith({
+				subject: "instructions",
+				projectId: "proj_1",
+				organizationId: "org_1",
+				requesterUserId: "user_1",
+			});
+			expect(result).toEqual({
+				syncId: "sync_1",
+				generation: 4,
+				syncQueued: true,
+			});
+		});
+
+		it("queues one for a changed ignore list too", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertInstructionRepositorySync.mockResolvedValue({
+				...written(stored),
+				ignoreGlobsChanged: true,
+			});
+
+			expect(
+				await handlers.configure?.({ input, context: ctx }),
+			).toMatchObject({ syncQueued: true });
+		});
+
+		it("queues nothing when no run is open", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(false);
+			m.upsertInstructionRepositorySync.mockResolvedValue(
+				written({ ...stored, ref: "main" }),
+			);
+
+			const result = await handlers.configure?.({ input, context: ctx });
+
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+			expect(result).toEqual({ syncId: "sync_1", generation: 4 });
+		});
+
+		it("queues nothing when what is synced did not change, which leaves an open run to finish", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertInstructionRepositorySync.mockResolvedValue(
+				written(stored),
+			);
+
+			await handlers.configure?.({
+				input: { ...input, automatic: true },
+				context: ctx,
+			});
+
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+		});
+
+		it("queues nothing for a first configure, which has no run to fence", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
+			m.upsertInstructionRepositorySync.mockResolvedValue(
+				written(null, 1),
+			);
+
+			await handlers.configure?.({ input, context: ctx });
+
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
+		});
+
+		it("saves the configuration and claims nothing queued when queueing failed", async () => {
+			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
+			m.queueRepositorySyncFollowUp.mockResolvedValue(false);
+			m.upsertInstructionRepositorySync.mockResolvedValue(
+				written({ ...stored, ref: "main" }),
+			);
+
+			expect(await handlers.configure?.({ input, context: ctx })).toEqual(
+				{
+					syncId: "sync_1",
+					generation: 4,
+				},
+			);
 		});
 	});
 

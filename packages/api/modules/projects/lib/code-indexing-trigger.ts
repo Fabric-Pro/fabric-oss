@@ -266,6 +266,7 @@ async function startLegacyOAuthIndexing(opts: {
 					: { organizationId: null }),
 				// biome-ignore lint/suspicious/noExplicitAny: provider enum from parseRepoUrl
 				provider: parsed.provider as any,
+				NOT: { name: `${parsed.provider}_OAUTH_APP` },
 				isActive: true,
 			},
 			select: { credentials: true },

@@ -16,9 +16,9 @@ import {
  * providers, auth headers, host handling and closed outcome set, except
  * that a missing file is an answer, not a failure:
  *
- *  - `ok: true, state: "found"`    — the file's text, at most `maxBytes`
- *                                    bytes, decoded as UTF-8 the way the
- *                                    sync decodes the blob it reads.
+ *  - `ok: true, state: "found"`    — the file's bytes, at most `maxBytes`
+ *                                    of them and not decoded: whether they
+ *                                    are text is the caller's judgement.
  *  - `ok: true, state: "absent"`   — no REGULAR file is at the path: the
  *                                    remote answered 404, or the path is a
  *                                    folder, a submodule or a symbolic link.
@@ -71,7 +71,7 @@ export type ReadRepositoryFileOutcome =
 	| "unsupported";
 
 export type ReadRepositoryFileResult =
-	| { ok: true; state: "found"; text: string }
+	| { ok: true; state: "found"; bytes: Uint8Array }
 	| { ok: true; state: "absent" }
 	| { ok: true; state: "tooLarge" }
 	| { ok: false; outcome: ReadRepositoryFileOutcome };
@@ -151,15 +151,13 @@ async function readCappedBody(
 	return { complete: true, bytes };
 }
 
-/** The found file: decoded exactly as the sync decodes the blob it reads. */
+/**
+ * The found file, undecoded: the caller decodes it as the sync does
+ * (`decodeFabricIgnore`), which refuses what a lenient decoding would
+ * quietly repair.
+ */
 function found(bytes: Uint8Array): ReadRepositoryFileResult {
-	// `Buffer#toString("utf8")`, as the sync activity decodes the
-	// `.fabricignore` blob, so the preview parses the same text.
-	return {
-		ok: true,
-		state: "found",
-		text: Buffer.from(bytes).toString("utf8"),
-	};
+	return { ok: true, state: "found", bytes };
 }
 
 function parseJson(bytes: Uint8Array): unknown {

@@ -22,6 +22,7 @@ import {
 	contextSyncPathValidationMessage,
 	contextSyncPausedReason,
 	contextSyncPollInterval,
+	contextSyncProgress,
 	contextSyncRunEnded,
 	contextSyncTreeErrorMessage,
 	contextSyncTriggerLabelKey,
@@ -925,6 +926,25 @@ describe("a failed run's message (Fizzy #2784)", () => {
 			},
 		],
 		[
+			{ kind: "fileSize", actual: 5_243_904, max: 5_242_880 },
+			{
+				key: "failure.limit.fileSize",
+				values: { actual: "5.001 MB", max: "5 MB" },
+			},
+		],
+		[
+			{
+				kind: "totalSize",
+				actual: 60_000_000,
+				max: 52_428_800,
+				atLeast: true,
+			},
+			{
+				key: "failure.limit.totalSizeAtLeast",
+				values: { actual: "57.2 MB", max: "50 MB" },
+			},
+		],
+		[
 			{ kind: "inventory", max: 200_000 },
 			{ key: "failure.limit.inventory", values: { max: "200,000" } },
 		],
@@ -1119,5 +1139,142 @@ describe("the copy the failure messages ask for exists (Fizzy #2784)", () => {
 		]) {
 			expect(typeof lookup(key), key).toBe("string");
 		}
+	});
+});
+
+describe("contextSyncProgress", () => {
+	const counts = {
+		created: 0,
+		updated: 0,
+		adopted: 0,
+		unchanged: 0,
+		conflict: 0,
+		pathInUse: 0,
+		removed: 0,
+		pruneConflicts: 0,
+	};
+	const plan = {
+		keptCount: 10,
+		excludedCount: 0,
+		attentionCount: 0,
+		attention: [],
+		missingPaths: [],
+		protectedPrefixes: [],
+	};
+	const openRun = (
+		overrides: Partial<ContextSyncRunView> = {},
+	): ContextSyncRunView => ({
+		id: "run_1",
+		trigger: "MANUAL",
+		startedAt: new Date(),
+		finishedAt: null,
+		status: null,
+		error: null,
+		commitSha: null,
+		userName: null,
+		counts,
+		plan: null,
+		applyAttention: [],
+		pruneConflicts: { keys: [], overflow: 0 },
+		...overrides,
+	});
+	const state = (
+		overrides: Partial<ContextSyncState> = {},
+	): Pick<
+		ContextSyncState,
+		"running" | "latestRun" | "managedCount" | "awaitingIndexCount"
+	> => ({
+		running: true,
+		latestRun: openRun(),
+		managedCount: 0,
+		awaitingIndexCount: 0,
+		...overrides,
+	});
+
+	it("only names the phase before the plan exists: nothing is decided and no total is known", () => {
+		expect(contextSyncProgress(state())).toEqual({ kind: "fetching" });
+	});
+
+	it("counts every file the committed batches have decided, out of the files the plan keeps", () => {
+		expect(
+			contextSyncProgress(
+				state({
+					latestRun: openRun({
+						plan,
+						counts: {
+							...counts,
+							created: 2,
+							updated: 1,
+							adopted: 1,
+							unchanged: 3,
+							conflict: 1,
+							pathInUse: 1,
+						},
+					}),
+				}),
+			),
+		).toEqual({ kind: "applying", done: 9, total: 10 });
+	});
+
+	it("does not count the removals and prune conflicts as applied files", () => {
+		expect(
+			contextSyncProgress(
+				state({
+					latestRun: openRun({
+						plan,
+						counts: {
+							...counts,
+							created: 4,
+							removed: 3,
+							pruneConflicts: 2,
+						},
+					}),
+				}),
+			),
+		).toEqual({ kind: "applying", done: 4, total: 10 });
+	});
+
+	it("moves to pruning, with no total, once every kept file is decided", () => {
+		expect(
+			contextSyncProgress(
+				state({
+					latestRun: openRun({
+						plan,
+						counts: { ...counts, created: 10, removed: 2 },
+					}),
+				}),
+			),
+		).toEqual({ kind: "pruning", removed: 2 });
+	});
+
+	it("reports rows awaiting indexing as indexed out of managed once the run is over", () => {
+		expect(
+			contextSyncProgress(
+				state({
+					running: false,
+					latestRun: openRun({ finishedAt: new Date() }),
+					managedCount: 20,
+					awaitingIndexCount: 5,
+				}),
+			),
+		).toEqual({ kind: "indexing", indexed: 15, managed: 20 });
+	});
+
+	it("says nothing when nothing awaits indexing, or when the open run is not the latest row yet", () => {
+		expect(
+			contextSyncProgress(
+				state({
+					running: false,
+					managedCount: 20,
+					awaitingIndexCount: 0,
+				}),
+			),
+		).toBeNull();
+		expect(
+			contextSyncProgress(
+				state({ latestRun: openRun({ finishedAt: new Date() }) }),
+			),
+		).toBeNull();
+		expect(contextSyncProgress(state({ latestRun: null }))).toBeNull();
 	});
 });

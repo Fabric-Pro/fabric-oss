@@ -20,6 +20,11 @@ const instructionSyncLimitDetailSchema = z.object({
 	actual: z.number().int().nonnegative().optional(),
 	/** 1-based line of the rule a `doubleStarGroups` detail names. */
 	line: z.number().int().positive().optional(),
+	/**
+	 * `actual` is a lower bound, not the size: the check could not learn the
+	 * true value and measured what had reached the disk.
+	 */
+	atLeast: z.literal(true).optional(),
 });
 
 /**

@@ -29,6 +29,45 @@ function files(list: File[]): PickedSource {
 	return { id: `s${nextId}`, kind: "files", files: list };
 }
 
+describe("readFolderFiles progress", () => {
+	it("reports each kept file once it has been read, out of the kept files, and never an excluded one", async () => {
+		const onProgress = vi.fn();
+
+		await readFolderFiles(
+			[
+				folder("example-skills", [
+					file("example-skills/CLAUDE.md", "# hi"),
+					file("example-skills/node_modules/pkg/index.js", "x"),
+					file("example-skills/docs/a.md", "a"),
+				]),
+			],
+			undefined,
+			onProgress,
+		);
+
+		expect(onProgress.mock.calls).toEqual([
+			[1, 2],
+			[2, 2],
+		]);
+	});
+
+	it("reports nothing for a pick with no kept file", async () => {
+		const onProgress = vi.fn();
+
+		await readFolderFiles(
+			[
+				folder("example-skills", [
+					file("example-skills/node_modules/pkg/index.js", "x"),
+				]),
+			],
+			undefined,
+			onProgress,
+		);
+
+		expect(onProgress).not.toHaveBeenCalled();
+	});
+});
+
 describe("readFolderFiles", () => {
 	it("strips the picked folder name, hashes, classifies, applies ignore rules and picks up .fabricignore", async () => {
 		const { entries, fabricIgnoreText } = await readFolderFiles([

@@ -84,6 +84,8 @@ vi.mock("@repo/auth/lib/client-ip", () => ({
 	getTrustedClientIp: () => "127.0.0.1",
 }));
 
+import { Hono } from "hono";
+import { createSystemHealthRestRoutes } from "../../../system-health/rest/routes";
 import { createAuditLogRestRoutes } from "../routes";
 
 function hashFor(key: string): string {
@@ -729,5 +731,51 @@ describe("the published spec and the runtime agree on refusal codes", () => {
 
 		expect(documented).toContain("INSUFFICIENT_SCOPE");
 		expect(documented).toContain("INSUFFICIENT_PERMISSION");
+	});
+});
+
+/**
+ * Mounted the way `packages/api/index.ts` mounts them: the audit-log and
+ * system-health surfaces at `/v1`, then the public v1 API at the same prefix.
+ * Their key middleware once ran for every `/v1` request, so the v1 API refused
+ * a signed-in agent's access token with this surface's "Keys must start with
+ * fab_ or org_" before its own routes were reached.
+ */
+describe("mounted at /v1 beside the public v1 API", () => {
+	function mountedLikeTheApi() {
+		const publicV1 = new Hono();
+		publicV1.get("/auth/whoami", (c) => c.json({ reached: "v1" }));
+		return new Hono()
+			.route("/v1", createAuditLogRestRoutes())
+			.route("/v1", createSystemHealthRestRoutes())
+			.route("/v1", publicV1);
+	}
+
+	it("leaves a v1 request to the v1 API's own authentication", async () => {
+		const res = await mountedLikeTheApi().request("/v1/auth/whoami", {
+			headers: { Authorization: "Bearer fat_signed-in-agent" },
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ reached: "v1" });
+	});
+
+	it("still authenticates its own paths, with and without a trailing segment", async () => {
+		const app = mountedLikeTheApi();
+
+		for (const path of [
+			"/v1/audit-log",
+			"/v1/audit-log/export",
+			"/v1/system-health",
+			"/v1/status-updates",
+		]) {
+			const res = await app.request(path, {
+				headers: { Authorization: "Bearer fat_signed-in-agent" },
+			});
+			expect(res.status, path).toBe(401);
+			expect((await res.json()).error.code, path).toBe(
+				"INVALID_API_KEY_FORMAT",
+			);
+		}
 	});
 });

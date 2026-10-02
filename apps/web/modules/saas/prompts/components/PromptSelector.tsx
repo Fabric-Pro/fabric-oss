@@ -161,9 +161,21 @@ export function PromptSelector({
 	// state only replaces the picker when nothing has loaded at all.
 	const loadFailed = Boolean(error) && !data;
 
-	// Deduplicate prompts by ID (API may return the same prompt via multiple bindings)
-	const prompts = (data?.prompts ?? []).filter(
-		(p, i, arr) => arr.findIndex((q) => q.id === p.id) === i,
+	// One entry per prompt. The API returns a prompt once per binding, ranked by
+	// tier, and each row carries the version ITS binding pins — so a prompt also
+	// bound at a higher tier without being the default arrives first with a
+	// stale version. Keep the default row when there is one: its version is the
+	// one that runs, and the one Regenerate and "Bind as Default" must carry
+	// (Fizzy #2807).
+	const rows = data?.prompts ?? [];
+	const prompts = rows.filter(
+		(p, i) =>
+			rows.findIndex(
+				(q) =>
+					q.id === p.id &&
+					(q.isDefault ||
+						!rows.some((r) => r.id === p.id && r.isDefault)),
+			) === i,
 	);
 
 	// Group prompts by scope

@@ -1,5 +1,6 @@
 import {
 	getInstructionRepositorySync,
+	getInstructionSyncRunSnapshotProgress,
 	getLatestInstructionRepositorySyncRun,
 	getProjectInstructionSettings,
 	listProjectRepoIntegrations,
@@ -61,6 +62,17 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 					? listProjectRepoIntegrations(input.projectId)
 					: Promise.resolve([]),
 			]);
+		// An open run's snapshot, found by the run's key, so the tab can carry
+		// the run's progress on from the copy into the snapshot's own checks.
+		// The receipt only names the snapshot once the run is recorded.
+		const inFlightSnapshot =
+			latestRun && latestRun.finishedAt === null
+				? await getInstructionSyncRunSnapshotProgress(
+						latestRun.id,
+						input.projectId,
+						organizationId,
+					)
+				: null;
 		return {
 			sourceOfTruth:
 				settings.sourceOfTruth === "REPOSITORY"
@@ -101,6 +113,22 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 			// reachable while the status line leaves it out (Fizzy #2672).
 			latestRun: latestRun
 				? toSyncRunView(latestRun, sync?.id ?? null)
+				: null,
+			inFlightSnapshot: inFlightSnapshot
+				? {
+						status: inFlightSnapshot.status,
+						version: inFlightSnapshot.version,
+						scanPending:
+							inFlightSnapshot.deferredScanStatus === "PENDING",
+						progress:
+							inFlightSnapshot.progressPhase === null
+								? null
+								: {
+										phase: inFlightSnapshot.progressPhase,
+										done: inFlightSnapshot.progressDone,
+										total: inFlightSnapshot.progressTotal,
+									},
+					}
 				: null,
 			availableIntegrations: integrations
 				.filter((i) => i.status === "ACTIVE")

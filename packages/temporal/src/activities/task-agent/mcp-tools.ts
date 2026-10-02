@@ -220,12 +220,16 @@ async function executeSandboxTool(
 			const repoUrl = args.repoUrl as string | undefined;
 
 			if (repoUrl && isGitHubCloneUrl(repoUrl) && !githubToken) {
-				// Try to get GitHub token from user's integrations (XOR tenant isolation)
+				// Use the caller's OWN GitHub connection (XOR tenant isolation). The org
+				// arm filters by userId too: a teammate's token must never clone for
+				// a user who has not connected GitHub themselves.
 				const integration = organizationId
 					? await db.workflowIntegration.findFirst({
 							where: {
+								userId,
 								organizationId,
 								provider: "GITHUB",
+								NOT: { name: "GITHUB_OAUTH_APP" },
 								isActive: true,
 							},
 						})
@@ -234,6 +238,7 @@ async function executeSandboxTool(
 								userId,
 								organizationId: null,
 								provider: "GITHUB",
+								NOT: { name: "GITHUB_OAUTH_APP" },
 								isActive: true,
 							},
 						});
@@ -541,6 +546,7 @@ export async function loadMcpConfiguration(
 					userId,
 					organizationId,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -549,6 +555,7 @@ export async function loadMcpConfiguration(
 					userId,
 					organizationId: null,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -586,6 +593,7 @@ export async function loadMcpConfiguration(
 					userId,
 					organizationId,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -594,6 +602,7 @@ export async function loadMcpConfiguration(
 					userId,
 					organizationId: null,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			});

@@ -505,7 +505,7 @@ export function ProjectSettings({
 								organizationId={project.organizationId ?? null}
 							/>
 						)}
-						<div className="grid gap-6 2xl:grid-cols-2">
+						<div className="space-y-6">
 							<PrdSourceSettings project={project} />
 							<ProjectDatabricksKnowledgeSettings
 								projectId={project.id}

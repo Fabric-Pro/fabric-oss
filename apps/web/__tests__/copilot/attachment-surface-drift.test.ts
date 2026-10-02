@@ -184,9 +184,11 @@ describe("attachment vocabulary — read, not restated", () => {
  */
 const PICKER_SURFACES = {
 	"Project context": {
+		// The shared File tab body the project dialog renders; its picker and
+		// intake gate moved there together from `ContextUploaderDialog.tsx`.
 		path: join(
 			WEB_ROOT,
-			"modules/saas/projects/components/ContextUploaderDialog.tsx",
+			"modules/saas/context-sources/components/FileSourceTabContent.tsx",
 		),
 		acceptConstant: "CONTEXT_UPLOAD_ACCEPT_ATTR",
 		gateSymbol: "contextUploadConfigFor",

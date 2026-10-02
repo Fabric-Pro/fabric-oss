@@ -143,6 +143,23 @@ export function CodingInstructionsTab({
 			: interval;
 	};
 
+	// Whether the tab is still waiting for the published pointer to catch up
+	// with a version that passed its checks, read at render for the
+	// "Publishing..." pill. The same bounded answer the poll uses, so the pill
+	// goes when the polling does.
+	const awaitsPublishAt = (now: number) =>
+		instructionsAwaitsPublish({
+			snapshots: snapshotsRef.current,
+			publishedId: publishedIdRef.current,
+			readySince:
+				readySeen &&
+				readySeen.snapshotId === snapshotsRef.current?.[0]?.id
+					? readySeen.at
+					: null,
+			now,
+			elapsedMs: now - mountedAt.current,
+		});
+
 	const published = useQuery({
 		...orpc.projects.instructions.getPublished.queryOptions({
 			input: { projectId },
@@ -207,6 +224,20 @@ export function CodingInstructionsTab({
 		(published.data as { id?: string } | null | undefined)?.id ?? null;
 	publishedRowRef.current =
 		(published.data as PollSnapshot | null | undefined) ?? null;
+
+	// "Publishing..." while the pointer catches up with a version that passed
+	// its checks. Re-rendered once a second while it is on, so it goes when the
+	// bounded wait ends even though the poll that would re-render it has
+	// stopped by then.
+	const awaitingPublish = awaitsPublishAt(Date.now());
+	const [, setClock] = useState(0);
+	useEffect(() => {
+		if (!awaitingPublish) {
+			return;
+		}
+		const timer = setInterval(() => setClock((n) => n + 1), 1000);
+		return () => clearInterval(timer);
+	}, [awaitingPublish]);
 
 	// The two queries are polled separately, so when a deferred scan's verdict
 	// lands (Fizzy #2737) one of them can hold it a tick before the other. The
@@ -496,6 +527,7 @@ export function CodingInstructionsTab({
 				// no pointer it cannot tell a publish from a rollback, so it
 				// says so rather than labelling every version a publish.
 				publishedUnknown={published.isError}
+				awaitingPublish={awaitingPublish}
 				// Spec §6.12: a repository-backed project's instructions are
 				// changed in git and refreshed by sync, so the tab does not
 				// offer to edit them. Treated as repository-backed until the

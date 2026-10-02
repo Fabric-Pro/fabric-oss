@@ -45,7 +45,11 @@ import {
 	MAX_CONTEXT_FILE_BYTES,
 	type SkippedContextFile,
 } from "./classify.js";
-import { buildContextIgnoreRules, CONTEXT_IGNORE_FILENAME } from "./ignore.js";
+import {
+	buildContextIgnoreRules,
+	CONTEXT_IGNORE_FILENAME,
+	findContextIgnoreProblem,
+} from "./ignore.js";
 import type { ContextLock } from "./lock.js";
 import { normalizeContextSourcePath } from "./source-path.js";
 import { walkContextDirectory } from "./walk.js";
@@ -103,7 +107,31 @@ async function readContextIgnore(root: string): Promise<string | null> {
 	const read = await readFileSafely(root, CONTEXT_IGNORE_FILENAME, {
 		maxBytes: 1024 * 1024,
 	});
-	return read === null ? null : new TextDecoder().decode(read.bytes);
+	if (read === null) {
+		return null;
+	}
+	const text = new TextDecoder().decode(read.bytes);
+	const problem = findContextIgnoreProblem(text);
+	if (problem !== null) {
+		throw new Error(
+			`${CONTEXT_IGNORE_FILENAME} line ${problem.line} has ${problem.groups} "**" groups, and a rule can have at most ${problem.max}. Nothing was pushed.`,
+		);
+	}
+	return text;
+}
+
+/** `--exclude` patterns are rules too, and are held to the same bound. */
+function assertExcludesEvaluable(
+	excludes: readonly string[] | undefined,
+): void {
+	for (const pattern of excludes ?? []) {
+		const problem = findContextIgnoreProblem(pattern);
+		if (problem !== null) {
+			throw new Error(
+				`The --exclude pattern "${pattern}" has ${problem.groups} "**" groups, and a rule can have at most ${problem.max}. Nothing was pushed.`,
+			);
+		}
+	}
 }
 
 /**
@@ -152,6 +180,7 @@ export async function computeContextPlan(input: {
 	excludes?: readonly string[];
 }): Promise<ContextPlan> {
 	const { root, lock } = input;
+	assertExcludesEvaluable(input.excludes);
 	const rules = buildContextIgnoreRules({
 		contextIgnore: await readContextIgnore(root),
 		excludes: input.excludes,

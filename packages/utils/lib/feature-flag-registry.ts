@@ -277,6 +277,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Default-off preview. The API verifies the project, agent binding and operator-managed media bridge before it creates a bot, so enabling this flag alone never starts a meeting or creates an idle service.",
 	},
+	COMPANY_CONTEXT: {
+		label: "Company context",
+		description:
+			"Lets an organization maintain sources about itself that Proposal and Business Case generation retrieve alongside the project's own context.",
+		envVar: "FABRIC_FEATURE_COMPANY_CONTEXT",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2719. One switch for the company context page, retrieval and the empty-context notice together; off, all three are absent. Turning it off keeps every source and vector, and scheduled company crawls exit without calling the crawler; turning it back on restores everything. Roll out through the per-organization override so the web tier and the Temporal worker read the same value, and enable an organization only after BOTH the web deployment and the worker rollout have fully completed — workers polling the company context task queue are live and no older worker still polls project-documents. On a worker rollback, turn it off.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

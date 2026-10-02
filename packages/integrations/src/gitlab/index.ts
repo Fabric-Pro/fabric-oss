@@ -1259,6 +1259,7 @@ async function findActiveGitLabIntegration(
 					userId,
 					organizationId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -1267,6 +1268,7 @@ async function findActiveGitLabIntegration(
 					userId,
 					organizationId: null,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -1582,6 +1584,7 @@ export async function getGitLabToken({
 					userId,
 					organizationId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -1590,6 +1593,7 @@ export async function getGitLabToken({
 					userId,
 					organizationId: null,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -1719,6 +1723,7 @@ export async function executeGitLabTool(
 					userId,
 					organizationId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -1727,6 +1732,7 @@ export async function executeGitLabTool(
 					userId,
 					organizationId: null,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			});

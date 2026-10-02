@@ -729,6 +729,7 @@ async function resolveAllCredentials(
 				userId,
 				...orgFilter,
 				provider: parsed.provider,
+				NOT: { name: `${parsed.provider}_OAUTH_APP` },
 				isActive: true,
 			},
 			select: { credentials: true },

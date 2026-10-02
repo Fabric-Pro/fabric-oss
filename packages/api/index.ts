@@ -355,10 +355,11 @@ export const app = new Hono()
 	.route("/", createVscodeAuthRoutes())
 	// External API gateway (API key auth, agent execution)
 	.route("/v1/external", createExternalApiRoutes())
-	// Public docs (Swagger UI + raw OpenAPI spec) for the audit-log REST API.
-	// MUST be registered BEFORE `createAuditLogRestRoutes()` — that sub-app
-	// installs a global `app.use("*", ...)` auth middleware on /v1/* that
-	// would otherwise reject these public routes with 401 before they match.
+	// Public docs (Swagger UI + raw OpenAPI spec) for the audit-log REST API,
+	// reachable without a key. The key middleware of the audit-log and
+	// system-health sub-apps below is scoped to their own paths
+	// (`/audit-log/*`, `/system-health/*`, `/status-updates/*`), so these
+	// routes no longer depend on being registered first; the order is kept.
 	// Env-gated so prod doesn't advertise the surface publicly.
 	.get("/v1/openapi.json", (c) => {
 		if (!publicApiDocsEnabled()) {
@@ -414,13 +415,13 @@ code { background: #f4f4f5; padding: 0.15rem 0.4rem; border-radius: 4px; font-si
 		});
 		return handler(c, next);
 	})
-	// Public audit-log REST API. Mounted AFTER the docs routes above so
-	// `/v1/audit-log*` traffic gets authenticated while `/v1/docs` +
-	// `/v1/openapi.json` stay reachable without a key.
+	// Public audit-log REST API. Its key middleware covers `/v1/audit-log` and
+	// `/v1/audit-log/*` only — never every `/v1` request, which once refused
+	// the v1 API's own credentials (see the sub-app).
 	.route("/v1", createAuditLogRestRoutes())
-	// Public system-health REST API. Same key-auth middleware and the same
-	// after-the-docs ordering constraint as the audit-log routes above; each
-	// route enforces its own scope, so an audit-log-only key is refused here.
+	// Public system-health REST API. The same key middleware, scoped to
+	// `/v1/system-health*` and `/v1/status-updates*`; each route enforces its
+	// own scope, so an audit-log-only key is refused here.
 	.route("/v1", createSystemHealthRestRoutes())
 	// Public v1 API — stable surface for @fabricorg/sdk and @fabricorg/cli
 	.route("/v1", createPublicV1Routes())

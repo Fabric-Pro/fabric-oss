@@ -27,6 +27,7 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		getPublished: vi.fn(),
 		createDownloadUrl: vi.fn(),
+		createFileDownloadUrls: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
 		getConfigPath: vi.fn<() => string>(),
 		getDefaultContext: vi.fn<() => unknown>(),
@@ -48,6 +49,7 @@ vi.mock("../src/lib/client.js", () => {
 		instructions: {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: mocks.createDownloadUrl,
+			createFileDownloadUrls: mocks.createFileDownloadUrls,
 		},
 		// The real `FabricClient.withoutContext()` returns a sibling with no
 		// ambient org/personal default. Here it returns the same stub and

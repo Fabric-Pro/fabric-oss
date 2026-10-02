@@ -304,6 +304,9 @@ export async function refreshMcpConfigToken(args: {
 			userId: owner.userId,
 			organizationId: owner.organizationId,
 			provider: "GITLAB",
+			// The GITLAB_OAUTH_APP row stores the OAuth client credentials;
+			// mirroring the refreshed token onto it would overwrite them.
+			NOT: { name: "GITLAB_OAUTH_APP" },
 		},
 		select: { id: true, settings: true, credentials: true },
 	});

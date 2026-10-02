@@ -197,6 +197,34 @@ export function treesEqual(
 }
 
 /**
+ * The published files a sync's kept files are byte-identical to, by path:
+ * same bytes (`sha256`) and the same normalised mode. Those become inherited
+ * rows of the new snapshot instead of staged uploads, so a sync that changed
+ * one file of a thousand moves one file. A path the published tree does not
+ * have, or has with other bytes or another mode, is absent from the result.
+ */
+export function unchangedPublishedFiles<
+	P extends { path: string; sha256: string; mode: number | null },
+>(
+	kept: readonly { path: string; sha256: string; mode: number }[],
+	published: readonly P[],
+): Map<string, P> {
+	const byPath = new Map(published.map((f) => [f.path, f]));
+	const unchanged = new Map<string, P>();
+	for (const f of kept) {
+		const other = byPath.get(f.path);
+		if (
+			other !== undefined &&
+			other.sha256 === f.sha256 &&
+			normalizeMode(other.mode) === normalizeMode(f.mode)
+		) {
+			unchanged.set(f.path, other);
+		}
+	}
+	return unchanged;
+}
+
+/**
  * One `ls-tree -r -z` record, kept byte-exact for the proposal commit (Fizzy
  * #2563 spec §7 step 2). Unlike `TreeEntry`, nothing is dropped: symlinks and
  * gitlinks are what collision checks must see, and a non-UTF-8 name keeps its

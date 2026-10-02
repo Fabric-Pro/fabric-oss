@@ -194,11 +194,11 @@ async function createWebSearchTool(
 
 	return {
 		[toolName]: tool({
+			// One description for both names: the shared `fabric_web_search`
+			// definition describes the orchestrator's Jina-backed tool, not this
+			// one, which runs on the workspace's configured search provider.
 			description:
-				toolName === "webSearch"
-					? "Search the web for current information."
-					: fabricToolDefinitions.get(toolName)?.description ||
-						"Search the web for current information.",
+				"Search the web with the workspace's configured search provider. Returns up to maxResults results, each with title, URL and snippet, plus page content, published date and author when the provider supplies them. Use it for current events, recent information, or facts the workspace does not hold. On failure it returns success: false with an error message and no results.",
 			inputSchema: z.object({
 				query: z.string().describe("The search query to execute"),
 				maxResults: z

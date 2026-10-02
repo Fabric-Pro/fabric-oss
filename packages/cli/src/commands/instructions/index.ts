@@ -49,6 +49,11 @@ import { getApiKey, getConfigPath } from "../../lib/config.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
 import {
+	fetchFilesByUrl,
+	PER_FILE_MAX_WRITES,
+	PublishedChangedError,
+} from "../../lib/instructions/file-downloads.js";
+import {
 	type CheckoutClassification,
 	type CheckoutJson,
 	classifyCheckout,
@@ -485,10 +490,7 @@ function instructionsClient(
 	{ neverRetry = false }: { neverRetry?: boolean } = {},
 ): FabricClient {
 	if (!getApiKey()) {
-		throw new CliFailure(
-			"Not authenticated. Run: fabric auth login --key <api-key>",
-			3,
-		);
+		throw new CliFailure("Not authenticated. Run: fabric auth login", 3);
 	}
 	// `withoutContext()`: the SDK constructor adopts `FABRIC_ORG` /
 	// `FABRIC_PERSONAL` and injects them into every URL that does not name a
@@ -1289,12 +1291,12 @@ async function syncOnce(
 	// "delete everything the lock names", so a version-skewed or truncated
 	// response was one step from emptying the tree and writing a ledger that
 	// agreed with it.
-	const manifest = assertValidManifest({
+	let manifest = assertValidManifest({
 		manifest: published.manifest,
 		snapshot: published.snapshot,
 	});
 
-	const plan = await computeSyncPlan(
+	let plan = await computeSyncPlan(
 		{ destination: root, manifest, lock },
 		{ keepLocalEdits },
 	);
@@ -1308,36 +1310,92 @@ async function syncOnce(
 
 	let contents = new Map<string, Uint8Array>();
 	if (plan.writes.length > 0) {
-		const org = orgSlugFor(opts);
-		let download: { url: string };
-		try {
-			download = await downloadUrlClient(
-				opts,
-			).instructions.createDownloadUrl(opts.project, { org });
-		} catch (error) {
-			throw asCliFailure(error);
+		// A few files are fetched by name, so one changed file costs one
+		// download rather than the whole archive.
+		let perFile = plan.writes.length <= PER_FILE_MAX_WRITES;
+		if (perFile) {
+			const byPath = new Map(
+				manifest.map((entry) => [entry.path, entry]),
+			);
+			try {
+				contents = await fetchFilesByUrl({
+					client,
+					projectId: opts.project,
+					org: orgSlugFor(opts),
+					digest: published.snapshot.digest,
+					files: plan.writes.map((entry) => ({
+						path: entry.path,
+						size: byPath.get(entry.path)?.size ?? -1,
+						sha256: byPath.get(entry.path)?.sha256 ?? "",
+					})),
+					timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
+					signal: activeDeadline,
+				});
+			} catch (error) {
+				if (!(error instanceof PublishedChangedError)) {
+					throw asCliFailure(error);
+				}
+				// The published version moved after this plan was made. One
+				// fresh manifest and a new plan, then the archive of what is
+				// published now; no further retry.
+				published = await fetchPublished(
+					client,
+					opts,
+					undefined,
+					guard,
+				);
+				if (!published.published || !published.snapshot) {
+					throw new CliFailure(
+						"This project has no published coding instructions yet.",
+						4,
+					);
+				}
+				outcome.version = published.snapshot.version;
+				outcome.digest = published.snapshot.digest;
+				manifest = assertValidManifest({
+					manifest: published.manifest,
+					snapshot: published.snapshot,
+				});
+				plan = await computeSyncPlan(
+					{ destination: root, manifest, lock },
+					{ keepLocalEdits },
+				);
+				fillPlanPaths(outcome, plan);
+				perFile = false;
+			}
 		}
-		const sizes = new Map(
-			manifest.map((entry) => [entry.path, entry.size] as const),
-		);
-		const archive = await fetchBundle(download.url, {
-			timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
-			// Bounded by what this manifest says it holds, not by what the
-			// response claims. The manifest has already been checked against
-			// the published snapshot limits, so this is a number the client
-			// decided.
-			maxBytes: maxArchiveBytes(manifest),
-			// In hook mode the same clock that bounds the command bounds the
-			// download, rather than a second independent budget after it.
-			signal: activeDeadline,
-		});
-		contents = extractBundle(
-			archive,
-			plan.writes.map((entry) => ({
-				path: entry.path,
-				size: sizes.get(entry.path) ?? -1,
-			})),
-		);
+		if (!perFile && plan.writes.length > 0) {
+			const org = orgSlugFor(opts);
+			let download: { url: string };
+			try {
+				download = await downloadUrlClient(
+					opts,
+				).instructions.createDownloadUrl(opts.project, { org });
+			} catch (error) {
+				throw asCliFailure(error);
+			}
+			const sizes = new Map(
+				manifest.map((entry) => [entry.path, entry.size] as const),
+			);
+			const archive = await fetchBundle(download.url, {
+				timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
+				// Bounded by what this manifest says it holds, not by what the
+				// response claims. The manifest has already been checked against
+				// the published snapshot limits, so this is a number the client
+				// decided.
+				maxBytes: maxArchiveBytes(manifest),
+				// In hook mode the same clock that bounds the command bounds the
+				// download, rather than a second independent budget after it.
+				signal: activeDeadline,
+			});
+			contents = extractBundle(
+				archive,
+				plan.writes.map((entry) => ({
+					path: entry.path,
+					size: sizes.get(entry.path) ?? -1,
+				})),
+			);
+		}
 	}
 
 	const applied = await applyPlan({ root, plan, contents, keepLocalEdits });

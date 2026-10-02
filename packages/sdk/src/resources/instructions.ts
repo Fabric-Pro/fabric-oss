@@ -148,6 +148,29 @@ export interface InstructionDownload {
 	expiresInSeconds: number;
 }
 
+/** One named file of the published tree, with a short-lived signed URL for its bytes. */
+export interface InstructionFileDownload {
+	path: string;
+	sha256: string;
+	size: number;
+	mode: number | null;
+	url: string;
+}
+
+export interface InstructionFileDownloads {
+	snapshotId: string;
+	digest: string;
+	files: InstructionFileDownload[];
+	expiresInSeconds: number;
+}
+
+export interface CreateInstructionFileDownloadsInput {
+	/** The digest of the published version the caller planned against. */
+	digest: string;
+	/** 1 to 200 unique paths of the published manifest. */
+	paths: string[];
+}
+
 export interface GetPublishedInstructionsOptions {
 	/** The digest already held locally; turns the call into a delta. */
 	sinceDigest?: string;
@@ -488,6 +511,27 @@ export class InstructionsResource {
 			`/projects/${encodeURIComponent(projectId)}/instructions/published/download${buildQuery(options)}`,
 			{},
 			{ retry: { maxRetries: 0 } },
+		);
+	}
+
+	/**
+	 * Short-lived signed URLs for ONLY the named files of the published tree,
+	 * for a caller that writes a few files and has no use for the whole archive.
+	 *
+	 * `digest` is the version the caller planned against. When the published
+	 * version has moved on the server answers 409 `PUBLISHED_CHANGED` before
+	 * signing anything, which surfaces here as a thrown API error the caller
+	 * handles by planning again. Unlike `createDownloadUrl` this builds
+	 * nothing, so the client's normal retry policy applies.
+	 */
+	createFileDownloadUrls(
+		projectId: string,
+		input: CreateInstructionFileDownloadsInput,
+		options: CreateInstructionDownloadOptions = {},
+	): Promise<InstructionFileDownloads> {
+		return this.http.post<InstructionFileDownloads>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/published/files${buildQuery(options)}`,
+			input,
 		);
 	}
 

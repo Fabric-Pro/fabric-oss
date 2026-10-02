@@ -90,6 +90,10 @@ model User {
   invitations                Invitation[]
   members                    Member[]
   passkeys                   Passkey[]
+  oauthClients               OauthClient[]
+  oauthRefreshTokens         OauthRefreshToken[]
+  oauthAccessTokens          OauthAccessToken[]
+  oauthConsents              OauthConsent[]
   projects                   Project[]
   prompts                    Prompt[]
   purchases                  Purchase[]
@@ -383,6 +387,10 @@ model User {
   recipientBrandsUpdated ProjectRecipientBrand[] @relation("ProjectRecipientBrandUpdatedBy")
   brandKitsUpdated       OrganizationBrandKit[]  @relation("OrganizationBrandKitUpdatedBy")
 
+  // Company context (Fizzy #2719). Creator provenance only; SetNull on delete,
+  // so a departing admin never takes the organization's sources with them.
+  companyContextSourcesCreated CompanyContextSource[] @relation("CompanyContextSourceCreatedBy")
+
   // Brute force protection
   failedLoginAttempts Int       @default(0)
   lockedUntil         DateTime?
@@ -415,6 +423,8 @@ model Session {
   // packages/auth/lib/two-factor-management-step-up.ts.
   twoFactorStepUpGrantedAt DateTime?
   user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oauthRefreshTokens       OauthRefreshToken[]
+  oauthAccessTokens        OauthAccessToken[]
 
   @@map("session")
 }
@@ -478,6 +488,129 @@ model Passkey {
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("passkey")
+}
+
+/// An OAuth client that registered itself (RFC 7591) so a coding agent can sign
+/// in without a pasted key. Field names and types follow the `oauth-provider`
+/// plugin's schema exactly: Better Auth's Prisma adapter reads and writes
+/// through them, so renaming one breaks the flow rather than a type-check.
+///
+/// Only public clients are ever registered here (no secret, PKCE required).
+model OauthClient {
+  id                      String   @id @default(cuid())
+  clientId                String   @unique
+  clientSecret            String?
+  disabled                Boolean? @default(false)
+  skipConsent             Boolean?
+  enableEndSession        Boolean?
+  subjectType             String?
+  scopes                  String[]
+  userId                  String?
+  createdAt               DateTime?
+  updatedAt               DateTime?
+  name                    String?
+  uri                     String?
+  icon                    String?
+  contacts                String[]
+  tos                     String?
+  policy                  String?
+  softwareId              String?
+  softwareVersion         String?
+  softwareStatement       String?
+  redirectUris            String[]
+  postLogoutRedirectUris  String[]
+  tokenEndpointAuthMethod String?
+  grantTypes              String[]
+  responseTypes           String[]
+  public                  Boolean?
+  type                    String?
+  requirePKCE             Boolean?
+  referenceId             String?
+  metadata                Json?
+
+  user          User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens OauthRefreshToken[]
+  accessTokens  OauthAccessToken[]
+  consents      OauthConsent[]
+
+  @@index([userId])
+  @@map("oauth_client")
+}
+
+/// Refresh token, stored as a sha256 hex digest (never the token itself).
+/// `referenceId` is the organization the user chose at consent time.
+model OauthRefreshToken {
+  id          String    @id @default(cuid())
+  token       String    @unique
+  clientId    String
+  sessionId   String?
+  userId      String
+  referenceId String?
+  expiresAt   DateTime?
+  createdAt   DateTime?
+  revoked     DateTime?
+  authTime    DateTime?
+  scopes      String[]
+
+  client       OauthClient        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  session      Session?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessTokens OauthAccessToken[]
+
+  @@index([clientId])
+  @@index([sessionId])
+  @@index([userId])
+  @@index([referenceId])
+  @@map("oauth_refresh_token")
+}
+
+/// Opaque access token, stored as a sha256 hex digest. The gateway and the v1
+/// API look a presented token up by that digest, so deleting the row revokes it
+/// at the next request. `referenceId` is the organization the token is bound to.
+model OauthAccessToken {
+  id          String    @id @default(cuid())
+  token       String?   @unique
+  clientId    String
+  sessionId   String?
+  userId      String?
+  referenceId String?
+  refreshId   String?
+  expiresAt   DateTime?
+  createdAt   DateTime?
+  scopes      String[]
+
+  client  OauthClient         @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  session Session?            @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user    User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refresh OauthRefreshToken?  @relation(fields: [refreshId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([sessionId])
+  @@index([userId])
+  @@index([referenceId])
+  @@index([refreshId])
+  @@map("oauth_access_token")
+}
+
+/// One approval of one client by one user for one organization. Consent is
+/// per (client, user, organization): approving an agent for one organization
+/// grants it nothing in another.
+model OauthConsent {
+  id          String    @id @default(cuid())
+  clientId    String
+  userId      String?
+  referenceId String?
+  scopes      String[]
+  createdAt   DateTime?
+  updatedAt   DateTime?
+
+  client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user   User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([userId])
+  @@index([referenceId])
+  @@map("oauth_consent")
 }
 
 model TwoFactor {
@@ -850,6 +983,10 @@ model Organization {
   glossySegmentCache    GlossySegmentCache[]
   recipientBrands       ProjectRecipientBrand[]
   brandKit              OrganizationBrandKit?
+
+  // Company context (Fizzy #2719); cascade on org delete (tenant erasure).
+  companyContextSources  CompanyContextSource[]
+  companyContextUrlPages CompanyContextUrlPage[]
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
@@ -1301,6 +1438,9 @@ model OrganizationApiKey {
 enum CliCredentialKind {
   USER_API_KEY
   ORGANIZATION_API_KEY
+  /// A coding agent signed in over OAuth. `credentialId` is the `OauthClient`
+  /// row id; the connection is alive while a consent for the organization exists.
+  OAUTH_CLIENT
 
   @@map("cli_credential_kind")
 }
@@ -2346,6 +2486,13 @@ model ProjectContext {
   // alone.
   sourcePath String?
   contentHash String?
+  // The git blob id the repository sync last read this row's content from.
+  // A sync whose inventory shows the same blob id for this path skips
+  // checking the file out and reading it. Written only by the sync's own
+  // writer and CLEARED by every other content write, so a member's edit is
+  // never mistaken for "unchanged". NULL on every row no sync wrote, and on
+  // rows written before this column existed (read once, then stamped).
+  sourceBlobOid String?
 
   // Who last changed the CONTENT of a synced file, and when — so a conflict
   // can name them. Stamped on create and on every content replace through
@@ -3468,6 +3615,174 @@ model OrganizationBrandKit {
 
   @@index([updatedById])
   @@map("organization_brand_kit")
+}
+
+/// A company context source (Fizzy #2719): material an organization maintains
+/// once about itself — sales assets, pasted positioning text, its websites —
+/// that Proposal and Business Case generation retrieve alongside a project's
+/// own context. An organization has exactly one company context: the set of
+/// these rows carrying its id.
+///
+/// A sibling store to `ProjectContext`, never rows in it. No project surface —
+/// the Context tab, readiness, summaries, downloads, MCP, v1 REST, unified
+/// search — reads this table, so company material cannot appear in or count
+/// toward a project by construction.
+///
+/// Organization-owned. `organizationId` is the only tenant column (`org_only`
+/// RLS, with no project-guest read branch). `createdByUserId` is creator
+/// provenance with SetNull, so a departing admin never deletes the
+/// organization's sources.
+///
+/// `type` reuses `ProjectContextType`; the API accepts only the kinds company
+/// context supports. The field groups mirror `ProjectContext` for FILE, TEXT
+/// and LINK, and for INTEGRATION later.
+///
+/// Every query helper (`prisma/queries/company-context.ts`) takes the
+/// organization id and scopes by it; there is no unscoped by-id read.
+model CompanyContextSource {
+  id             String             @id @default(cuid())
+  organizationId String
+  type           ProjectContextType
+  content        String             @db.Text
+  metadata       Json?
+
+  // Search index markers. `embeddingModel` is the identity of the embedding
+  // model the source was last embedded with — the resolved model string, not
+  // the settings enum, since a custom provider has no enum value. A source
+  // counts as ready for retrieval only while it matches the organization's
+  // current model (`companyContextReadyWhere`). Written together with
+  // `embeddedAt`, cleared together with it.
+  qdrantId       String?
+  embeddedAt     DateTime?
+  embeddingModel String?
+
+  // File upload fields. Objects live under `{organizationId}/company-context/`
+  // in the project-contexts bucket, which organization deletion sweeps.
+  s3Path           String?
+  s3Bucket         String?
+  originalFilename String?
+  mimeType         String?
+  fileSize         Int?
+
+  // Extraction status
+  extractionStatus ExtractionStatus @default(PENDING)
+  extractionError  String?
+  extractedAt      DateTime?
+
+  // Tombstone: when a delete of the source started. Only the delete path
+  // writes it, and clears it only when its deletion workflow could not start.
+  // A tombstoned source is never ready for retrieval, and no claim, crawl,
+  // re-process or late ingestion write that would make it ready lands on it.
+  // Independent of `extractionStatus`, so no status write erases it.
+  deletingAt DateTime?
+
+  // Source URL for LINK type
+  sourceUrl   String?
+  sourceTitle String?
+
+  // URL crawl configuration for LINK sources, as on `ProjectContext`.
+  urlScope            UrlSourceScope?
+  urlMaxPages         Int?
+  urlRefreshMode      UrlRefreshMode?
+  urlNextRefreshAt    DateTime?
+  urlLastSyncedAt     DateTime?
+  urlScheduleId       String? // Temporal schedule ID for DAILY/WEEKLY/MONTHLY
+  urlActiveWorkflowId String? // Temporal workflowId of the in-flight crawl, NULL when none
+
+  // User-declared type label and AI guidance, read live at retrieval time
+  // (never embedded), as on `ProjectContext`. The pair after them records who
+  // last edited either field and when; a plain id, not a relation.
+  sourceType              String?
+  aiInstructions          String?
+  metadataUpdatedAt       DateTime?
+  metadataUpdatedByUserId String?
+
+  /// sha256 hex of `content`, NULL while content is empty. Written with every
+  /// content write.
+  contentHash String?
+
+  createdByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("CompanyContextSourceCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  // Indexed child pages for PATH_PREFIX crawls
+  urlPages      CompanyContextUrlPage[]
+  ownedUrlPages CompanyContextUrlPage[] @relation("CompanyContextUrlPageOwner") @ignore
+
+  /// The owner-inclusive identity `CompanyContextUrlPage`'s composite foreign
+  /// key points at. `id` alone already makes the pair unique; this exists
+  /// because a foreign key needs a unique index over exactly the referenced
+  /// columns. It also gives Prisma Client the `id_organizationId` compound
+  /// key the query helpers read and write through.
+  @@unique([id, organizationId], map: "company_context_source_id_organizationId_key")
+  @@index([organizationId, createdAt])
+  @@index([createdByUserId])
+  @@map("company_context_source")
+}
+
+/// Per-page row for a company LINK source crawled under PATH_PREFIX scope.
+/// Mirrors `ProjectContextUrlPage`; single-page sources create no rows here
+/// (the parent's `content` holds the page).
+///
+/// # Ownership is enforced by the database
+///
+/// Postgres does not evaluate the parent's row-level-security policy through a
+/// foreign key, so a plain key on `parentSourceId` would let a raw or buggy
+/// writer attach a page naming one organization to another organization's
+/// source. The foreign key is therefore composite over
+/// `(parentSourceId, organizationId)` against
+/// `company_context_source (id, organizationId)`. Both columns are NOT NULL, so
+/// the default MATCH SIMPLE always fires and ownership disagreement cannot be
+/// stored.
+///
+/// That key, `company_context_url_page_owner_fkey`, is declared as
+/// `ownerParent`, an `@ignore`d relation: Prisma Migrate keeps it while Prisma
+/// Client never exposes it. Writers set `parentSourceId` and `organizationId`
+/// as plain scalar fields. ON UPDATE NO ACTION: a parent that changed
+/// organization while it still had pages would be refused rather than carry
+/// them across the tenant boundary.
+model CompanyContextUrlPage {
+  id             String               @id @default(cuid())
+  parentSourceId String
+  parentSource   CompanyContextSource @relation(fields: [parentSourceId], references: [id], onDelete: Cascade)
+  // Do not edit this relation without reading the model comment: it is the
+  // ownership constraint, and `migrate dev` recreates it from this line.
+  ownerParent    CompanyContextSource @relation("CompanyContextUrlPageOwner", fields: [parentSourceId, organizationId], references: [id, organizationId], onDelete: Cascade, onUpdate: NoAction, map: "company_context_url_page_owner_fkey") @ignore
+
+  /// Mirrors the parent's organization; held to it by the composite key above.
+  organizationId String
+
+  pageUrl            String
+  pageTitle          String?
+  content            String           @db.Text
+  qdrantId           String?
+  embeddedAt         DateTime?
+  /// The embedding model identity this page was last embedded with; see
+  /// `CompanyContextSource.embeddingModel`.
+  embeddingModel     String?
+  lastFetchedAt      DateTime         @default(now())
+  etag               String?
+  lastModifiedHeader String?
+  contentHash        String // sha256, drives skip-if-unchanged on re-sync
+  chunkCount         Int              @default(0)
+  extractionStatus   ExtractionStatus @default(PENDING)
+  extractionError    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// One row per URL per source, so a concurrent re-sync skips a page another
+  /// run already created instead of duplicating it.
+  @@unique([parentSourceId, pageUrl])
+  @@index([parentSourceId, extractionStatus])
+  @@index([organizationId])
+  @@map("company_context_url_page")
 }
 
 // Project RAG Settings - Per-project RAG configuration
@@ -17753,6 +18068,24 @@ enum ProjectInstructionSyncError {
   TREE_REFUSED
 }
 
+/// Which pass of the snapshot checks is running. CHECKING is the integrity and
+/// secret check (and the check half of a publish-before-scan promotion), SAVING
+/// is the promotion into immutable storage, SCANNING is the deferred secret
+/// scan after a publish-before-scan.
+enum ProjectInstructionSnapshotProgressPhase {
+  CHECKING
+  SAVING
+  SCANNING
+}
+
+/// Which pass of a repository sync run is running. Only COPYING carries a
+/// count; FETCHING and PREPARING have none to give.
+enum ProjectInstructionSyncProgressPhase {
+  FETCHING
+  PREPARING
+  COPYING
+}
+
 /// Why automatic sync stopped for a project until someone re-configures it.
 enum ProjectInstructionSyncPause {
   PERMISSION_REVOKED
@@ -17802,6 +18135,14 @@ model ProjectInstructionSnapshot {
   /// capped. Set only with ISSUES_FOUND.
   deferredScanFindings    Json?
   deferredScanCompletedAt DateTime?
+  /// The scan rule-set version (`INSTRUCTION_SCAN_RULES_VERSION` in
+  /// `@repo/instructions`) that cleared EVERY file of this snapshot. Written
+  /// only when the full gate passes with no rejection, or when the deferred
+  /// scan completes clean; never on a FAILED or REJECTED snapshot or a scan
+  /// with findings. A derived snapshot skips re-reading an inherited file
+  /// whose source snapshot carries the current version. Null = never cleared
+  /// (or cleared before this column existed), which means a full read.
+  scanRulesVersion        String?
 
   fileCount     Int     @default(0)
   storedBytes   Int     @default(0)
@@ -17825,6 +18166,21 @@ model ProjectInstructionSnapshot {
   /// acquisition finds its own row by this key and adopts it instead of
   /// allocating a second version. Null for every other source.
   syncRunKey              String? @unique
+
+  /// The ownership token of the check run that may write this row's progress
+  /// and verdict. Written by the API (or the sync acquisition) BEFORE the
+  /// snapshot workflow starts, carried through the workflow input, and
+  /// required by every write an attempt makes when its input carries one. Null
+  /// when no run owns the row (a row whose run failed, and every row that
+  /// predates the column).
+  validationAttemptId     String?
+  /// How far the running checks have got: the pass, and how many files that
+  /// pass has fully decided out of how many. Counts only finished work, in
+  /// manifest order; reset when a run claims the row.
+  progressPhase           ProjectInstructionSnapshotProgressPhase?
+  progressDone            Int?
+  progressTotal           Int?
+  progressUpdatedAt       DateTime?
 
   /// The READY snapshot this one was derived from: an in-tab file edit, a
   /// file added or deleted, or (later) a CLI push. Unchanged files are
@@ -18246,6 +18602,13 @@ model ProjectInstructionRepositorySyncRun {
   /// checked first, so receipts whose runs stay open cannot starve later ones.
   /// Null until first claimed; irrelevant once `finishedAt` is set.
   reapCheckedAt  DateTime?
+  /// How far the in-flight run has got. FETCHING and PREPARING carry no
+  /// count; COPYING carries files copied out of files to copy. Null once the
+  /// run is recorded.
+  progressPhase     ProjectInstructionSyncProgressPhase?
+  progressDone      Int?
+  progressTotal     Int?
+  progressUpdatedAt DateTime?
 
   project      Project                          @relation("ProjectInstructionRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
   organization Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)

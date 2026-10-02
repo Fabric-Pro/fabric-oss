@@ -530,6 +530,23 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 		);
 	});
 
+	it("starts no sync of its own, and says the new selection syncs next, when the server queued it behind an open run", async () => {
+		configureMock.mockResolvedValue({
+			syncId: "sync_1",
+			generation: 2,
+			syncQueued: true,
+		});
+		const { user, onOpenChange, onSaved } = await renderAndSelectDocs();
+		vi.mocked(toast.info).mockClear();
+
+		await user.click(saveButton());
+
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+		expect(syncNowMock).not.toHaveBeenCalled();
+		expect(toast.info).toHaveBeenCalledWith(`${NS}.syncNowResult.queued`);
+		expect(onSaved).toHaveBeenCalled();
+	});
+
 	it("ignores Escape while the save is in flight, and closes once it has settled", async () => {
 		let finish: (value: unknown) => void = () => {};
 		configureMock.mockImplementation(

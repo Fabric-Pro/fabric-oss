@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import {
 	type ContextSyncAttentionReason,
 	type ContextSyncNowResult,
+	type ContextSyncProgress,
 	type ContextSyncState,
 	contextSyncActionErrorMessage,
 	contextSyncAttentionMessageKey,
@@ -37,6 +38,7 @@ import {
 	contextSyncLastAppliedSummary,
 	contextSyncNowResultMessage,
 	contextSyncPausedReason,
+	contextSyncProgress,
 	contextSyncTriggerLabelKey,
 	offersSyncFromRepository,
 	offersSyncNow,
@@ -44,6 +46,7 @@ import {
 import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextRepositorySyncDialog";
 import { contextSummaryLead } from "./repository-sync/lib/context-selection";
 import { translateSelectionMessage } from "./repository-sync/lib/selection-row";
+import { SyncProgressLine } from "./repository-sync/SyncProgressLine";
 
 /**
  * Living Memory's repository sync entry point and status (design 2026-09-23
@@ -233,6 +236,7 @@ export function ContextRepositorySyncStatus({
 			? null
 			: t(contextSyncTriggerLabelKey(state.lastAppliedRun.trigger));
 	const paused = contextSyncPausedReason(configured);
+	const progress = contextSyncProgress(state);
 
 	function setAutomatic(next: boolean) {
 		if (!configured) {
@@ -284,13 +288,25 @@ export function ContextRepositorySyncStatus({
 				aria-live="polite"
 				className="flex flex-col gap-1"
 			>
-				{state.running ? (
+				{state.running && progress ? (
+					// Only the phase is announced; the count beside it is not read
+					// out on every poll (`SyncProgressLine`).
+					<div
+						className="text-primary"
+						data-testid="context-sync-running"
+					>
+						<SyncProgressLine
+							{...contextProgressLine(progress, t)}
+							testId="context-sync-progress"
+						/>
+					</div>
+				) : state.running ? (
 					<p
 						className="inline-flex items-center gap-1.5 text-primary"
 						data-testid="context-sync-running"
 					>
 						<Loader2Icon
-							className="size-3.5 animate-spin"
+							className="size-3.5 motion-safe:animate-spin"
 							aria-hidden="true"
 						/>
 						{t("running")}
@@ -327,9 +343,17 @@ export function ContextRepositorySyncStatus({
 						className="text-muted-foreground"
 						data-testid="context-sync-awaiting-index"
 					>
-						{t("awaitingIndex", {
-							count: state.awaitingIndexCount,
-						})}
+						{progress?.kind === "indexing" ? (
+							<SyncProgressLine
+								{...contextProgressLine(progress, t)}
+								showSpinner={false}
+								className="inline-flex items-center gap-1.5"
+							/>
+						) : (
+							t("awaitingIndex", {
+								count: state.awaitingIndexCount,
+							})
+						)}
 					</p>
 				) : null}
 				{state.cleanupPending > 0 ? (
@@ -531,4 +555,48 @@ function attentionItemsOf(
 		items.push({ key, reason: "prune-conflict" });
 	}
 	return items;
+}
+
+/**
+ * The words for where an open run (or the index behind it) is. The phase is the
+ * step's name alone (what a screen reader hears); the text is the same step
+ * with its count.
+ */
+function contextProgressLine(
+	progress: ContextSyncProgress,
+	t: (key: string, values?: Record<string, string | number>) => string,
+) {
+	switch (progress.kind) {
+		case "fetching":
+			return { phase: t("fetching"), text: t("fetching") };
+		case "applying":
+			return {
+				phase: t("applyingPhase"),
+				text: t("applying", {
+					done: progress.done,
+					total: progress.total,
+				}),
+				done: progress.done,
+				total: progress.total,
+			};
+		case "pruning":
+			return {
+				phase: t("pruningPhase"),
+				text: t("pruning", { removed: progress.removed }),
+			};
+		case "indexing":
+			return {
+				phase: t("indexingPhase"),
+				text: t("indexing", {
+					indexed: progress.indexed,
+					managed: progress.managed,
+				}),
+				done: progress.indexed,
+				total: progress.managed,
+			};
+		default: {
+			const unreachable: never = progress;
+			return unreachable;
+		}
+	}
 }

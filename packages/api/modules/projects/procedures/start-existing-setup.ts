@@ -269,6 +269,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					where: {
 						userId: user.id,
 						provider: "GITHUB",
+						NOT: { name: "GITHUB_OAUTH_APP" },
 						isActive: true,
 						...(orgIdForQuery
 							? { organizationId: orgIdForQuery }
@@ -452,6 +453,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					where: {
 						userId: user.id,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						isActive: true,
 						...(orgIdForQuery
 							? { organizationId: orgIdForQuery }

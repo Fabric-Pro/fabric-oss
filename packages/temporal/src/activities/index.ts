@@ -1070,6 +1070,7 @@ export {
 // registers exactly these three. `syncContextTreeFromRepository` is a stub
 // that fails every run as STORE_FAILED until PR 1 task T3b.
 export * from "./project-context-repository-sync";
+export * from "./project-repository-sync-follow-up";
 export * from "./project-contexts-reprocess";
 // Organization purge activities (reminder, guarded hard delete, and the
 // vector / object-storage / billing teardown the cascade cannot reach).
@@ -1427,6 +1428,9 @@ export {
 	type BulkInitUrlPagesActivityInput,
 	type BulkInitUrlPagesActivityOutput,
 	bulkInitUrlPagesActivity,
+	type CompanyUrlCrawlGateActivityInput,
+	type CompanyUrlCrawlGateActivityOutput,
+	companyUrlCrawlGateActivity,
 	type EmbedUrlPageActivityInput,
 	type EmbedUrlPageActivityOutput,
 	embedUrlPageActivity,

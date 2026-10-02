@@ -17,6 +17,7 @@ export const linearPlugin: IntegrationPlugin = {
 	color: "text-indigo-500",
 	brandColor: "#5E6AD2",
 	SettingsComponent: LinearSettings,
+	ownsDisconnect: true,
 
 	formFields: [
 		{

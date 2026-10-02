@@ -1131,6 +1131,10 @@ describe("completeInstructionRepositorySyncRun", () => {
 				note: null,
 				commitSha: "c0ffee",
 				snapshotId: "snap_1",
+				progressPhase: null,
+				progressDone: null,
+				progressTotal: null,
+				progressUpdatedAt: null,
 				limitDetail: "DbNull",
 			},
 		});
@@ -1361,6 +1365,10 @@ describe("completeInstructionRepositorySyncRun", () => {
 						note: null,
 						commitSha: null,
 						snapshotId: null,
+						progressPhase: null,
+						progressDone: null,
+						progressTotal: null,
+						progressUpdatedAt: null,
 						limitDetail: "DbNull",
 					},
 				});

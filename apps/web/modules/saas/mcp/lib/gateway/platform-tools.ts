@@ -74,10 +74,11 @@ import {
 	sanitizeDisplayText,
 } from "./instruction-checks";
 import { lessonPath, renderLesson } from "./instruction-lessons";
-import type {
-	GatewaySession,
-	GatewayToolDefinition,
-	ToolCallResult,
+import {
+	type GatewaySession,
+	type GatewayToolDefinition,
+	isOrganizationBoundCredential,
+	type ToolCallResult,
 } from "./types";
 
 // ─── Tool Definitions ───────────────────────────────────────────────────────
@@ -2022,7 +2023,7 @@ export async function executePlatformTool(
 	const required = TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
 	if (!scopeSatisfied(session.scopes, required)) {
 		return errorResult(
-			`This API key does not have the "${required.scope}" scope required by ${toolName}.`,
+			`This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${required.scope}" scope required by ${toolName}.`,
 		);
 	}
 
@@ -2286,10 +2287,13 @@ async function handleSwitchOrganization(
 	// being a starting position. A key issued for an organization belongs to
 	// that organization; callers who need to move between tenants authenticate
 	// as themselves.
-	if (session.credential === "organization-key") {
+	if (isOrganizationBoundCredential(session.credential)) {
 		return errorResult(
-			"This API key is issued for a single organization and cannot switch to another. " +
-				"Use a key issued for the organization you want, or authenticate as yourself.",
+			session.credential === "oauth"
+				? "This agent signed in for a single organization and cannot switch to another. " +
+						"Sign in again and choose the organization you want."
+				: "This API key is issued for a single organization and cannot switch to another. " +
+						"Use a key issued for the organization you want, or authenticate as yourself.",
 		);
 	}
 
@@ -2678,7 +2682,7 @@ function credentialMayReachHost(
 	session: GatewaySession,
 	hostOrganizationId: string | null,
 ): boolean {
-	if (session.credential !== "organization-key") {
+	if (!isOrganizationBoundCredential(session.credential)) {
 		return true;
 	}
 	return (
@@ -5154,9 +5158,44 @@ async function resolveInstructionProjectAccess(
 	return { organizationId: access.organizationId };
 }
 
+/**
+ * Whether the caller LIVE holds `INSTRUCTION_READ` on the project, resolved
+ * the way the v1 route does (`resolveEffectiveProjectPermissions`). Discovery
+ * (`getProjectAccessContext`) is not the permission: every key surface checks
+ * the creator's current permission unconditionally, so the read tools do not
+ * rely on the two happening to coincide for today's roles.
+ */
+async function callerHoldsInstructionRead(
+	projectId: string,
+	session: GatewaySession,
+): Promise<boolean> {
+	const [
+		{ resolveEffectiveProjectPermissions },
+		{ hasPermission, Permissions },
+	] = await Promise.all([
+		import("@repo/api/lib/effective-project-permissions"),
+		import("@repo/database"),
+	]);
+	const effective = await resolveEffectiveProjectPermissions(
+		projectId,
+		session.userId,
+	);
+	return (
+		effective !== null &&
+		hasPermission(effective.permissions, Permissions.INSTRUCTION_READ)
+	);
+}
+
+/**
+ * `requireRead` is set by the read tools (list, file, bundle, checks) and not
+ * by the lesson tool, which only looks at the published version before a
+ * write whose own gate is unchanged. A refusal reads as an inaccessible
+ * project does.
+ */
 async function resolvePublishedInstructionSnapshot(
 	args: Record<string, unknown>,
 	session: GatewaySession,
+	options: { requireRead?: boolean } = {},
 ): Promise<ResolvedInstructionSnapshot> {
 	const projectId = args.projectId as string;
 	if (!projectId) {
@@ -5165,6 +5204,12 @@ async function resolvePublishedInstructionSnapshot(
 	const access = await resolveInstructionProjectAccess(projectId, session);
 	if ("error" in access) {
 		return { error: access.error };
+	}
+	if (
+		options.requireRead === true &&
+		!(await callerHoldsInstructionRead(projectId, session))
+	) {
+		return { error: errorResult(INSTRUCTION_PROJECT_DENIED) };
 	}
 	const { getPublishedInstructionSnapshot } = await import("@repo/database");
 	const snapshot = await getPublishedInstructionSnapshot(projectId);
@@ -5355,7 +5400,9 @@ async function handleListProjectInstructions(
 	if ("error" in since) {
 		return since.error;
 	}
-	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
+		requireRead: true,
+	});
 	if ("error" in resolved) {
 		return resolved.error;
 	}
@@ -5427,7 +5474,9 @@ async function handleGetProjectInstruction(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
+		requireRead: true,
+	});
 	if ("error" in resolved) {
 		return resolved.error;
 	}
@@ -5515,7 +5564,9 @@ async function handleGetProjectInstructionBundle(
 	if ("error" in since) {
 		return since.error;
 	}
-	const resolved = await resolvePublishedInstructionSnapshot(args, session);
+	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
+		requireRead: true,
+	});
 	if ("error" in resolved) {
 		return resolved.error;
 	}
@@ -5742,9 +5793,11 @@ function instructionAuthCheck(session: GatewaySession): InstructionCheck {
 			? "organization API key"
 			: session.credential === "personal-key"
 				? "personal API key"
-				: session.credential === "session"
-					? "browser session"
-					: "credential";
+				: session.credential === "oauth"
+					? "signed-in agent"
+					: session.credential === "session"
+						? "browser session"
+						: "credential";
 	const granted = session.scopes;
 	const satisfying = ["instructions:read", "mcp:read", "mcp:write", "*"].find(
 		(scope) => granted.includes(scope),
@@ -5979,6 +6032,7 @@ async function handleGetInstructionChecks(
 		resolved = await resolvePublishedInstructionSnapshot(
 			{ projectId },
 			session,
+			{ requireRead: true },
 		);
 	} catch (error) {
 		console.error(

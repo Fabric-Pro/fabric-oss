@@ -220,6 +220,27 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 		});
 	}, 60_000);
 
+	it("starts the child with the ownership token the staged row carries", async () => {
+		const sync = syncMocks("snap_token", {
+			acquireInstructionTreeFromRepository: vi.fn(
+				async (): Promise<AcquireTreeResult> => ({
+					outcome: "staged",
+					snapshotId: "snap_token",
+					commitSha: SHA,
+					validationAttemptId: "attempt_1",
+				}),
+			),
+		});
+		const child = childMocks();
+
+		await run(sync, child);
+
+		expect(child.verifyAndScanInstructionFiles).toHaveBeenCalledWith({
+			...childRef("snap_token"),
+			validationAttemptId: "attempt_1",
+		});
+	}, 60_000);
+
 	it("records a skipped run without acquiring", async () => {
 		const sync = syncMocks("snap_skip", {
 			beginInstructionRepositorySyncRun: vi.fn(

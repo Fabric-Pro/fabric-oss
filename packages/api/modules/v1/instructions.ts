@@ -3,6 +3,7 @@
  *
  *   GET  /projects/:projectId/instructions/published            manifest + delta
  *   POST /projects/:projectId/instructions/published/download   signed zip URL
+ *   POST /projects/:projectId/instructions/published/files      signed URLs for named files
  *   POST /projects/:projectId/instructions/changes              propose a change, for review
  *   POST /projects/:projectId/instructions/versions             publish a change directly
  *   GET  /projects/:projectId/instructions/proposals/:snapshotId/pull-request
@@ -20,6 +21,7 @@
  * digest, same shared zip builder — two surfaces must not be able to answer
  * differently about the same snapshot.
  */
+import { config } from "@repo/config";
 import {
 	db,
 	getInstructionManifestDiff,
@@ -30,12 +32,14 @@ import {
 	resolveInstructionSnapshotSource,
 } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
+import { getStorageProvider } from "@repo/storage";
 import type { Context, Hono, Next } from "hono";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { requireScope } from "../external-api/middleware/api-key-auth";
-import type {
-	ExternalApiContext,
-	ExternalApiVariables,
+import {
+	type ExternalApiContext,
+	type ExternalApiVariables,
+	isOrganizationBoundKey,
 } from "../external-api/types";
 import { buildInstructionSnapshotZip } from "../projects/procedures/instructions/build-zip";
 // Type-only: the implementation is imported lazily in the handler below, so
@@ -174,7 +178,7 @@ async function resolveInstructionProject(
 	}
 
 	if (
-		apiCtx.keyType === "organization" &&
+		isOrganizationBoundKey(apiCtx) &&
 		apiCtx.organizationId !== hostingOrganizationId
 	) {
 		return { error: notFound("Project").error, status: 404 };
@@ -250,6 +254,55 @@ async function resolvePublishedSnapshot(
 		return null;
 	}
 	return snapshot as ReadyPublishedSnapshot;
+}
+
+/** The most paths one per-file URL request may name. */
+const FILE_URLS_MAX_PATHS = 200;
+
+/** The longest path accepted, the same bound the snapshot's own path validation uses. */
+const FILE_URLS_MAX_PATH_LENGTH = 4096;
+
+/**
+ * The `{ digest, paths }` body of `published/files`, or why it is refused.
+ * Paths are matched byte-for-byte against the published manifest, so nothing
+ * here normalises them; a duplicate is refused rather than collapsed, because
+ * the caller asked for a count it will not get.
+ */
+function readFileUrlsBody(
+	raw: unknown,
+): { digest: string; paths: string[] } | { error: string } {
+	if (typeof raw !== "object" || raw === null) {
+		return { error: "Expected a JSON object with digest and paths" };
+	}
+	const { digest, paths } = raw as { digest?: unknown; paths?: unknown };
+	if (
+		typeof digest !== "string" ||
+		digest.length === 0 ||
+		digest.length > INSTRUCTION_DIGEST_MAX_LENGTH
+	) {
+		return {
+			error: `digest must be a string of 1 to ${INSTRUCTION_DIGEST_MAX_LENGTH} characters.`,
+		};
+	}
+	if (
+		!Array.isArray(paths) ||
+		paths.length === 0 ||
+		paths.length > FILE_URLS_MAX_PATHS ||
+		!paths.every(
+			(p): p is string =>
+				typeof p === "string" &&
+				p.length > 0 &&
+				p.length <= FILE_URLS_MAX_PATH_LENGTH,
+		)
+	) {
+		return {
+			error: `paths must be 1 to ${FILE_URLS_MAX_PATHS} non-empty strings.`,
+		};
+	}
+	if (new Set(paths).size !== paths.length) {
+		return { error: "paths must be unique." };
+	}
+	return { digest, paths };
 }
 
 /**
@@ -646,6 +699,120 @@ export function registerInstructionRoutes(
 					snapshotId: snapshot.id,
 					digest: snapshot.digest,
 					url,
+					expiresInSeconds: DOWNLOAD_URL_EXPIRES_IN_SECONDS,
+				}),
+			);
+		},
+	);
+
+	/**
+	 * POST /projects/:projectId/instructions/published/files
+	 *
+	 * Short-lived signed URLs for ONLY the files a caller names, so a sync that
+	 * writes one file of a thousand downloads one file instead of the whole
+	 * archive. `digest` is the version the caller planned against; if the
+	 * published version has moved on the answer is 409 `PUBLISHED_CHANGED`
+	 * before any URL is signed, and the caller re-plans (or takes the archive).
+	 * It resolves the project exactly like `/published/download`, so it is the
+	 * same two gates: the key's `instructions:read` scope and the creator's
+	 * live read permission on the project's hosting organization.
+	 */
+	app.post(
+		"/projects/:projectId/instructions/published/files",
+		requireScope("instructions:read"),
+		async (c) => {
+			let rawBody: unknown;
+			try {
+				rawBody = await c.req.json();
+			} catch {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
+			const body = readFileUrlsBody(rawBody);
+			if ("error" in body) {
+				return c.json(badRequest(body.error), 400);
+			}
+
+			const apiCtx = c.get("externalApiContext");
+			const projectId = c.req.param("projectId")!;
+			const resolved = await resolveInstructionProject(
+				projectId,
+				apiCtx,
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+
+			const snapshot = await resolvePublishedSnapshot(
+				projectId,
+				resolved.organizationId,
+			);
+			if (!snapshot) {
+				return c.json(notFound("Published snapshot"), 404);
+			}
+			if (snapshot.digest !== body.digest) {
+				return c.json(
+					{
+						error: {
+							message:
+								"The published version changed since this digest; fetch the manifest again",
+							code: "PUBLISHED_CHANGED",
+						},
+					},
+					409,
+				);
+			}
+
+			const byPath = new Map(
+				(
+					await listInstructionFiles(
+						snapshot.id,
+						resolved.organizationId,
+					)
+				).map((f) => [f.path, f]),
+			);
+			const known = body.paths.flatMap((path) => {
+				const file = byPath.get(path);
+				return file ? [file] : [];
+			});
+			if (known.length !== body.paths.length) {
+				return c.json(
+					{
+						error: {
+							message:
+								"Some paths are not in the published version",
+							code: "FILE_NOT_FOUND",
+							paths: body.paths.filter(
+								(path) => !byPath.has(path),
+							),
+						},
+					},
+					404,
+				);
+			}
+
+			const storage = getStorageProvider();
+			const files = await Promise.all(
+				known.map(async (f) => ({
+					path: f.path,
+					sha256: f.sha256,
+					size: f.size,
+					mode: f.mode,
+					url: await storage.getSignedUrl(f.storageKey, {
+						bucket: config.storage.bucketNames.skills,
+						expiresIn: DOWNLOAD_URL_EXPIRES_IN_SECONDS,
+					}),
+				})),
+			);
+
+			return c.json(
+				ok({
+					snapshotId: snapshot.id,
+					digest: snapshot.digest,
+					files,
 					expiresInSeconds: DOWNLOAD_URL_EXPIRES_IN_SECONDS,
 				}),
 			);

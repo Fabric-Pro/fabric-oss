@@ -3,6 +3,11 @@
  *
  * Activities for embedding individual project contexts (Notion pages, uploaded files, etc.)
  * into Qdrant for RAG retrieval.
+ *
+ * Also embeds an organization's company context sources (Fizzy #2719) when
+ * the input names a company owner: the source is read and marked on its own
+ * table, chunked with the organization's RAG settings, and written to the
+ * company collection. A missing owner is the project owner, unchanged.
  */
 
 import {
@@ -15,18 +20,31 @@ import {
 	updateContextExtractionStatus,
 } from "@repo/database";
 import {
+	deleteCompanyContextRowPoints,
 	deleteProjectContext,
 	type EmbedResult,
+	embedCompanyContext,
 	embedProjectContext,
+	resolveCompanyEmbeddingModel,
+	unsupportedEmbeddingModelMessage,
 } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
+import {
+	type CompanyContextOwner,
+	type ContextOwner,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import { companyContextRowStore } from "../lib/context-row-store";
 import { activityLogger } from "./lib/activity-logger";
 
 export interface EmbedSingleContextInput {
 	contextId: string;
-	projectId: string;
+	/** The context's project; absent for a company source. */
+	projectId?: string;
 	userId: string;
 	organizationId?: string;
+	/** Who owns the row; absent is the project owner (`../lib/context-owner`). */
+	owner?: ContextOwner;
 	/** Omit to have the activity read the body back from `contextId`. */
 	content?: string;
 	type: string;
@@ -213,9 +231,13 @@ export interface EmbedSingleContextOutput {
 export async function embedSingleContextActivity(
 	input: EmbedSingleContextInput,
 ): Promise<EmbedSingleContextOutput> {
+	const owner = resolveContextOwner(input);
+	if (owner.kind === "company") {
+		return embedCompanySource(input, owner);
+	}
+
 	const {
 		contextId,
-		projectId,
 		userId,
 		organizationId,
 		content,
@@ -223,6 +245,7 @@ export async function embedSingleContextActivity(
 		metadata,
 		reembed,
 	} = input;
+	const { projectId } = owner;
 
 	activityLogger.info("Embedding project context", {
 		contextId,
@@ -464,6 +487,224 @@ export async function embedSingleContextActivity(
 		// best-effort (log + continue). AIProviderNotConfigured is handled
 		// above and intentionally NOT re-thrown (a missing provider won't
 		// fix itself on retry).
+		throw error instanceof Error ? error : new Error(errorMessage);
+	}
+}
+
+/** Recorded on a company source whose text is empty, so nothing is indexed. */
+const COMPANY_SOURCE_NO_TEXT_MESSAGE =
+	"This source has no text to index, so there is nothing to search.";
+
+/**
+ * Embed a company context source (Fizzy #2719): a pasted text, or the text a
+ * source holds on its own row. It is read and marked on
+ * `CompanyContextSource`, always scoped by the owner's organization.
+ *
+ * Every pass replaces rather than adds: the source's own earlier points go
+ * first — by `contextId`, so a website source's crawled pages keep theirs —
+ * and the source is marked embedded, with the model identity its points
+ * carry (the model the embed reports having used), only once every chunk
+ * landed. A source with no text keeps no points and no index markers, and
+ * records why it is not searchable. A model whose vectors do not fit the
+ * collection fails the source before anything is written. Other failures
+ * are recorded on the source and rethrown for Temporal to retry, as for a
+ * project context; a missing provider is recorded and not retried. The
+ * model and the provider are read from the organization's own embedding
+ * configuration, as the embed itself resolves them, never from an acting
+ * member's personal key.
+ */
+async function embedCompanySource(
+	input: EmbedSingleContextInput,
+	owner: CompanyContextOwner,
+): Promise<EmbedSingleContextOutput> {
+	const { contextId, userId, content, metadata } = input;
+	const { organizationId } = owner;
+	const rows = companyContextRowStore(owner);
+	// Set once this pass deleted the source's points, so a failure from then
+	// on also clears its index markers. Not before: a delete that failed
+	// leaves the markers as they were, and the retry deletes again.
+	let pointsRemoved = false;
+	const recordFailure = (message: string) =>
+		rows.recordIndexingFailure(
+			contextId,
+			message,
+			pointsRemoved ? { pointsRemoved: true } : undefined,
+		);
+
+	activityLogger.info("Embedding company context source", {
+		contextId,
+		organizationId,
+	});
+
+	try {
+		const source = await rows.loadSource(contextId);
+		if (!source) {
+			// Deleted before this ran. An earlier attempt may have written
+			// points before the row went; remove them rather than leave them
+			// searchable.
+			await deleteCompanyContextRowPoints({
+				organizationId,
+				contextIds: [contextId],
+			});
+			activityLogger.info(
+				"Company context source no longer exists; nothing to embed",
+				{ contextId },
+			);
+			return { success: true };
+		}
+
+		const body = content ?? source.content;
+		if (body.trim().length === 0) {
+			// Nothing to index — a re-synced page that now renders empty,
+			// say. The text an earlier pass indexed is gone from the source,
+			// so its points and index markers go too, and the source records
+			// why it is not searchable rather than answer from stale chunks.
+			await deleteCompanyContextRowPoints({
+				organizationId,
+				contextIds: [contextId],
+			});
+			pointsRemoved = true;
+			await rows.clearEmbedding(contextId);
+			await rows.recordIndexingFailure(
+				contextId,
+				COMPANY_SOURCE_NO_TEXT_MESSAGE,
+			);
+			activityLogger.info(
+				"Company context source has no text to embed; removed its earlier points",
+				{ contextId },
+			);
+			return { success: true };
+		}
+
+		const model = await resolveCompanyEmbeddingModel({
+			organizationId,
+			userId,
+		});
+		if (!model.supported) {
+			const reason = unsupportedEmbeddingModelMessage(model);
+			activityLogger.warn(
+				"Company context source cannot be embedded with the organization's model",
+				{
+					contextId,
+					embeddingModel: model.identity,
+					dimensions: model.dimensions,
+				},
+			);
+			await rows.setStatus(contextId, "FAILED", {
+				extractionError: reason,
+			});
+			return { success: false, error: reason };
+		}
+
+		const heartbeatInterval = setInterval(() => heartbeat(), 10_000);
+		try {
+			await deleteCompanyContextRowPoints({
+				organizationId,
+				contextIds: [contextId],
+			});
+			pointsRemoved = true;
+
+			const result = await embedCompanyContext({
+				contextId,
+				userId,
+				content: body,
+				type: source.type,
+				metadata: {
+					...metadata,
+					filename:
+						metadata?.filename ??
+						source.originalFilename ??
+						undefined,
+					sourceUrl:
+						metadata?.sourceUrl ?? source.sourceUrl ?? undefined,
+					sourceTitle:
+						metadata?.sourceTitle ??
+						source.sourceTitle ??
+						undefined,
+				},
+				company: {
+					organizationId,
+					sourceId: contextId,
+					contextType: source.type,
+				},
+			});
+			// `embedCompanyContext` resolves `{ success: false }` rather than
+			// throwing; throw so Temporal retries, as the project path does.
+			if (!result.success || !result.embeddingModel) {
+				throw new Error(result.error || "Embedding generation failed");
+			}
+
+			const marked = await rows.markEmbedded(contextId, {
+				qdrantId: result.qdrantId ?? null,
+				embeddingModel: result.embeddingModel,
+			});
+			if (!marked) {
+				// Deleted while it was being embedded: the points just
+				// written belong to nothing.
+				await deleteCompanyContextRowPoints({
+					organizationId,
+					contextIds: [contextId],
+				});
+				activityLogger.info(
+					"Company context source was deleted while it was embedded; removed its points",
+					{ contextId },
+				);
+				return { success: true };
+			}
+
+			// Best-effort, as for a project context: the embed succeeded and
+			// is marked; this only settles the status and clears a message an
+			// earlier attempt left.
+			try {
+				await rows.setStatus(contextId, "COMPLETED", {
+					extractionError: null,
+				});
+			} catch (writeError) {
+				activityLogger.warn(
+					"Failed to flag company context source as COMPLETED",
+					{ contextId, writeError },
+				);
+			}
+
+			activityLogger.info("Company context source embedded", {
+				contextId,
+				qdrantId: result.qdrantId,
+				chunksCreated: result.chunksCreated,
+			});
+			return { success: true, qdrantId: result.qdrantId };
+		} finally {
+			clearInterval(heartbeatInterval);
+		}
+	} catch (error) {
+		if (error instanceof AIProviderNotConfiguredError) {
+			activityLogger.warn(
+				"No AI provider configured, skipping company context embedding",
+				{ contextId },
+			);
+			await recordFailure(
+				"AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
+			).catch((writeError) => {
+				activityLogger.warn(
+					"Failed to flag company context source as FAILED (AIProviderNotConfigured)",
+					{ contextId, writeError },
+				);
+			});
+			return { success: true };
+		}
+
+		const errorMessage =
+			error instanceof Error ? error.message : "Unknown error";
+		activityLogger.error("Failed to embed company context source", error, {
+			contextId,
+		});
+		await recordFailure(`Search indexing failed: ${errorMessage}`).catch(
+			(writeError) => {
+				activityLogger.warn(
+					"Failed to flag company context source as FAILED",
+					{ contextId, writeError },
+				);
+			},
+		);
 		throw error instanceof Error ? error : new Error(errorMessage);
 	}
 }

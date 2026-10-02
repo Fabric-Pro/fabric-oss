@@ -43,3 +43,13 @@ export const INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;
  * queue; the build procedure starts `glossyEditionBuildWorkflow` here.
  */
 export const GLOSSY_EDITION_TASK_QUEUE = "glossy-edition" as const;
+
+/**
+ * Company context ingestion (Fizzy #2719): the file-processing, embedding,
+ * deletion and crawl workflows, their activities and schedules, when the
+ * owner is a company source. Only workers that know company context poll it,
+ * so a worker without that change can never pick up a company job and run it
+ * down the project path; during a rollback company jobs wait here instead of
+ * failing.
+ */
+export const COMPANY_CONTEXT_TASK_QUEUE = "company-context" as const;

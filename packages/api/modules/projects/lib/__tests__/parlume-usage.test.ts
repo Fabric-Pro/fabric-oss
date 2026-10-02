@@ -8,6 +8,7 @@ vi.mock("@repo/database", () => ({
 
 import {
 	PARLUME_MEETING_BAAS_USD_PER_HOUR,
+	PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
 	recordParlumeMeetingProviderUsage,
 	resolveParlumeMeetingEnd,
 } from "../parlume-usage";
@@ -66,7 +67,7 @@ beforeEach(() => {
 });
 
 describe("recordParlumeMeetingProviderUsage", () => {
-	it("prices bot time by the hour and files it under the session", () => {
+	it("prices bot time and its transcription, filed under the session", () => {
 		recordParlumeMeetingProviderUsage({
 			sessionId: "session-1",
 			userId: "user-1",
@@ -93,6 +94,15 @@ describe("recordParlumeMeetingProviderUsage", () => {
 			latencyMs: 30 * 60 * 1000,
 			success: true,
 		});
+		expect(mocks.logUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "CLOUDFLARE_AI",
+				providerModelId: "@cf/deepgram/flux",
+				featureKey: "parlume",
+				conversationId: "session-1",
+				costUsd: 30 * PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
+			}),
+		);
 	});
 
 	it("records a bot that never joined at zero cost", () => {
@@ -106,6 +116,7 @@ describe("recordParlumeMeetingProviderUsage", () => {
 			success: false,
 		});
 
+		expect(mocks.logUsage).toHaveBeenCalledTimes(1);
 		expect(mocks.logUsage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				costUsd: 0,

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	postParlumeMeetingChat,
 	requestParlumeMeetingStop,
 	speakParlumeResponse,
 	verifyParlumeVoiceGeneration,
@@ -7,10 +8,60 @@ import {
 
 const resolveOpenAiApiKey = vi.hoisted(() => vi.fn());
 const logAiUsageAsync = vi.hoisted(() => vi.fn());
+const getAISpeechModel = vi.hoisted(() => vi.fn());
+const generateSpeech = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/ai", () => ({
+	getAISpeechModel,
 	resolveOpenAiApiKey,
 }));
+
+vi.mock("ai", () => ({
+	generateSpeech,
+}));
+
+// 24 kHz 16-bit mono WAV around the given samples, as gateway speech returns.
+function wavOf(samples: number[]): Uint8Array {
+	const pcm = new Uint8Array(new Int16Array(samples).buffer);
+	const bytes = new Uint8Array(44 + pcm.length);
+	const view = new DataView(bytes.buffer);
+	const ascii = (offset: number, text: string) => {
+		for (let i = 0; i < text.length; i++) {
+			bytes[offset + i] = text.charCodeAt(i);
+		}
+	};
+	ascii(0, "RIFF");
+	view.setUint32(4, bytes.length - 8, true);
+	ascii(8, "WAVE");
+	ascii(12, "fmt ");
+	view.setUint32(16, 16, true);
+	view.setUint16(20, 1, true);
+	view.setUint16(22, 1, true);
+	view.setUint32(24, 24_000, true);
+	view.setUint32(28, 48_000, true);
+	view.setUint16(32, 2, true);
+	view.setUint16(34, 16, true);
+	ascii(36, "data");
+	view.setUint32(40, pcm.length, true);
+	bytes.set(pcm, 44);
+	return bytes;
+}
+
+async function drain(body: unknown): Promise<number> {
+	if (!(body instanceof ReadableStream)) {
+		throw new Error("Expected streaming body");
+	}
+	const reader = body.getReader();
+	let total = 0;
+	for (
+		let chunk = await reader.read();
+		!chunk.done;
+		chunk = await reader.read()
+	) {
+		total += chunk.value.byteLength;
+	}
+	return total;
+}
 
 vi.mock("@repo/database", () => ({
 	logAiUsageAsync,
@@ -34,6 +85,132 @@ beforeEach(() => {
 	process.env.NEXT_PUBLIC_PARTYKIT_HOST = "bridge.example.com";
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	resolveOpenAiApiKey.mockResolvedValue("voice-key");
+	getAISpeechModel.mockResolvedValue(null);
+});
+
+describe("Parlume speech through the organization's AI Gateway", () => {
+	const trackUsage = vi.fn();
+	beforeEach(() => {
+		getAISpeechModel.mockResolvedValue({
+			model: { modelId: "openai/tts-1" },
+			modelId: "openai/tts-1",
+			configId: "gateway-config",
+			trackUsage,
+		});
+	});
+
+	it("speaks the gateway's WAV as PCM without touching the direct OpenAI key", async () => {
+		generateSpeech.mockResolvedValue({
+			audio: { uint8Array: wavOf([1, 2, 3, 4]) },
+		});
+		let played = 0;
+		const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+			played = await drain(init?.body);
+			return Response.json({ played: true });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			speakParlumeResponse({
+				...speaker,
+				response: "The project is Example.",
+			}),
+		).resolves.toEqual({ played: true, interrupted: false });
+
+		expect(generateSpeech).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: "The project is Example.",
+				outputFormat: "wav",
+			}),
+		);
+		expect(played).toBe(8);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][0]).toContain("action=speak");
+		expect(resolveOpenAiApiKey).not.toHaveBeenCalled();
+		expect(trackUsage).toHaveBeenCalled();
+		expect(logAiUsageAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/tts-1",
+				featureKey: "parlume",
+				conversationId: "session-1",
+				success: true,
+			}),
+		);
+	});
+
+	it("falls back to the direct OpenAI key when the gateway cannot speak", async () => {
+		generateSpeech.mockRejectedValue(new Error("model not available"));
+		const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+			if (url.includes("api.openai.com")) {
+				return new Response(new Uint8Array([0, 1]));
+			}
+			await drain(init?.body);
+			return Response.json({ played: true });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			speakParlumeResponse({ ...speaker, response: "Hello" }),
+		).resolves.toEqual({ played: true, interrupted: false });
+
+		expect(logAiUsageAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "VERCEL_GATEWAY",
+				success: false,
+				errorMessage: "model not available",
+			}),
+		);
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			"https://api.openai.com/v1/audio/speech",
+		);
+	});
+
+	it("reports the last route's error when every route fails", async () => {
+		generateSpeech.mockRejectedValue(new Error("model not available"));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 })),
+		);
+
+		await expect(
+			speakParlumeResponse({ ...speaker, response: "Hello" }),
+		).rejects.toThrow("HTTP 401");
+	});
+});
+
+describe("Parlume meeting chat fallback", () => {
+	it("asks the bridge to post the reply into the meeting chat", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(Response.json({ sent: true }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			postParlumeMeetingChat({
+				sessionId: "session-1",
+				message: "Answer",
+			}),
+		).resolves.toBe(true);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://bridge.example.com/parties/parlume/session-1?action=chat",
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({ message: "Answer" }),
+			}),
+		);
+	});
+
+	it("reports failure instead of throwing when the bridge is unreachable", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+
+		await expect(
+			postParlumeMeetingChat({
+				sessionId: "session-1",
+				message: "Answer",
+			}),
+		).resolves.toBe(false);
+	});
 });
 
 afterEach(() => {

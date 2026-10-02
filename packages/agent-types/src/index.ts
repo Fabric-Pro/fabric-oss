@@ -27,6 +27,13 @@ export {
 	countDistinctDecisions,
 	extractDecisionPrecheck,
 } from "./decision-precheck";
+export {
+	defuseVendorContextMarker,
+	hasProjectContextEntries,
+	hasVendorContextEntries,
+	isVendorContextEntry,
+	VENDOR_CONTEXT_MARKER,
+} from "./vendor-context";
 
 /**
  * Supported document types (single source of truth)

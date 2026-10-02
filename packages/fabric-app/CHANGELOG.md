@@ -1,5 +1,43 @@
 # fabric-app
 
+## 1.16.16
+
+### Patch Changes
+
+- 75707ae: LangGraph agents now retry gateway outages, overloads and connection timeouts instead of failing the request outright.
+- 75707ae: The prompt enhancer and project document assistants now report authentication, permission and other permanent provider errors immediately instead of retrying them several times first.
+- 75707ae: Update the Aspire AppHost to 13.6.0, adding dashboard run history that survives AppHost restarts and higher telemetry limits for local development.
+- 75707ae: Organization admins can now build a company context in organization settings — files, pasted text and websites about their own company — and Proposal and Business Case generation draws on it alongside the project's context, with a notice in document creation when it is still empty.
+- 75707ae: Structured AI features such as story maturation seeding, background re-analysis and delivery-track classification now work when an organization selects Claude Sonnet 5.5, Opus 5.5, Fable 5.1 or Mythos 5.1 on Databricks, instead of failing because Databricks cannot serve structured output to those models.
+- 75707ae: Images uploaded into a document or a story description no longer show "Image unavailable" once their storage link is more than an hour old, including after the image is resized or captioned.
+- 75707ae: Delivery track, estimate confidence and readiness details are now hidden in Focus Mode on feature pages to reclaim vertical screen space for the specification editor.
+- 75707ae: Connecting or disconnecting GitLab, GitHub or another OAuth integration no longer overwrites or removes the organization's saved OAuth app credentials, so the OAuth connect option stays available instead of falling back to the personal access token form.
+- 75707ae: Coding Instructions checks large uploads and repository syncs several times faster by overlapping each file's storage round trips.
+- 75707ae: Changing one Coding Instructions or Living Memory file now processes one file, and coding agents sign in through the browser, with no API key.
+- 75707ae: Coding Instructions and Living Memory syncs now judge long paths inside ignored folders correctly, show translated failure messages, and state over-limit sizes so they visibly exceed the limit.
+- aa9afe2: Coding Instructions and Living Memory repository syncs are faster on hostile input, hide their data from organization members with no project tie, and report failed syncs with the exact limit they hit.
+- 75707ae: Uploads and syncs show exact per-file progress, and concurrent publish, retry, delete and sync actions are now race-safe.
+- 75707ae: Several simultaneous uploads to one project no longer time out; version numbers are allocated without waiting on a lock.
+- 75707ae: Consolidate the Project Settings Knowledge tab layout into a consistent vertical stack, removing unbalanced negative space on large displays.
+- 75707ae: In an organization, the task agent's GitHub repository clone, the GitHub and Microsoft Teams tools offered to agents and the orchestrator, GitLab project-management sync, and an agent's newly connected OAuth knowledge sources now use only the acting user's own connection, never a teammate's.
+- 75707ae: Parlume now receives raw meeting audio and transcribes it with Deepgram Flux on Cloudflare Workers AI, so its spoken replies are played into the Teams meeting; transcription is recorded in the project's AI usage.
+- 75707ae: Parlume's spoken replies are now played into the Teams meeting through the bot's own audio input instead of being sent to the transcription stream, where they were never heard.
+- dd563c9: A Parlume session whose bot has already left the meeting now finalizes at the next access check when no transcription stream is open, instead of waiting for the four-hour cap.
+- 75707ae: Parlume now speaks through the organization's AI Gateway, falling back to its OpenAI key, posts a reply to the meeting chat when it cannot be spoken, recognizes its name however transcription spells it, and records a stop or idle leave as a normal end.
+- 24884bc: Parlume gets a dedicated project page for invitations, live status, sessions, requests, and spend. A session now ends on its own when the bot is removed from the meeting or nobody has spoken for three minutes, and records why it ended. Parlume spend is attributed in project AI usage, and every step emits a structured log event.
+- 76f9746: Listing a project's Parlume sessions now finalizes any session that outlived its hard stop after the meeting provider reported its bot gone, so a lost bridge alarm no longer strands a session.
+- 24884bc: Parlume now waits for the requester to finish speaking before answering, so a request split across transcript segments is no longer cut off by its own continuation. Only speech while Parlume is audible interrupts it, and live transcription recognizes the Parlume name.
+- 75707ae: Parlume now answers spoken requests: meeting turns run on the worker's chat queue instead of a queue nothing served, the wake phrase accepts the spellings live transcription produces for "Fabric" and "Parlume", and both names are boosted in transcription.
+- c9c187f: Parlume's meeting-provider usage row now ends at the moment the bot left the call rather than at finalization, and meeting-notes usage carries the session id so per-meeting spend is complete.
+- 75707ae: Bump the pinned pnpm from 11.25.0 to 11.28.2.
+- 75707ae: Reject dependency versions published without the provenance or trusted-publishing evidence that earlier releases carried, a possible sign of a hijacked maintainer account.
+- 7df8ed5: Release preparation now supports automated validation and authorization of private staging batches before public publication.
+- 75707ae: Chat, the orchestrator and document generation no longer give the AI model instructions that contradict each other or name tools it was not given, so answers follow the persona, tools and document rules that actually apply.
+- 75707ae: A regenerated document's version history now names the prompt version that actually wrote it, and the document editor's prompt picker keeps showing the default prompt and binds its newest version when that prompt is bound at more than one level.
+- 75707ae: Fix data analyst startup when bundled dependencies load Node.js built-in modules.
+- 75707ae: Disconnecting GitLab from the workflow integration settings page now fully disconnects your GitLab connection, including the official GitLab MCP server, instead of leaving GitLab tools working, and removing a connection there no longer deletes the stored OAuth app credentials.
+- 75707ae: The document and story breakdown assistants now ask the model to try again when it returns a document in the wrong format, instead of saving it as a successful edit.
+
 ## 1.16.15
 
 ### Patch Changes

@@ -631,6 +631,43 @@ describe("Middleware (proxy.ts)", () => {
 			expect(response.url).toContain("/change-password");
 		});
 
+		it.each([
+			"/auth/oauth/consent",
+			"/auth/oauth/organization",
+			"/auth/oauth/resume",
+		])(
+			"should redirect the agent authorization page %s to /change-password when mustChangePassword is true",
+			async (path) => {
+				mockGetSessionCookie.mockReturnValue("valid-token");
+				const req = createMockRequest(path, {
+					sessionData: {
+						session: { user: { mustChangePassword: true } },
+					},
+				});
+
+				const response = await proxy(req);
+
+				expect(response.type).toBe("redirect");
+				expect(response.url).toBe(
+					"https://www.fabric.pro/change-password",
+				);
+			},
+		);
+
+		it("should serve the agent consent page, unframable, when mustChangePassword is false", async () => {
+			mockGetSessionCookie.mockReturnValue("valid-token");
+			const req = createMockRequest("/auth/oauth/consent", {
+				sessionData: {
+					session: { user: { mustChangePassword: false } },
+				},
+			});
+
+			const response = await proxy(req);
+
+			expect(response.type).toBe("next");
+			expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+		});
+
 		it("should pass through /app when mustChangePassword is false", async () => {
 			mockGetSessionCookie.mockReturnValue("valid-token");
 			const req = createMockRequest("/app", {

@@ -400,6 +400,31 @@ export function extractS3KeysFromContent(htmlContent: string): string[] {
 }
 
 /**
+ * Extract the `document-media/...` S3 key from a single `<img src>` value — a
+ * signed URL with the key in its path — or null. Used by DocumentEditor's
+ * signed-URL refresher to find the images it has to re-sign.
+ */
+export function extractDocumentS3KeyFromImgSrc(src: string): string | null {
+	const match = src.match(/\/(document-media\/[^?"]+)/);
+	return match ? match[1] : null;
+}
+
+/**
+ * `key` when it sits under `prefix`, else null.
+ *
+ * `resolveMediaUrls` and `resolveStoryImageUrls` refuse the WHOLE batch when a
+ * single key falls outside the document's (or story's) own prefix, so one image
+ * pasted in from another document would stop every image on the page from
+ * being re-signed. The refreshers send only keys that can succeed.
+ */
+export function keyWithinPrefix(
+	key: string | null,
+	prefix: string,
+): string | null {
+	return key?.startsWith(prefix) ? key : null;
+}
+
+/**
  * Full upload pipeline: validate -> compress -> get URL -> upload to S3.
  * Returns the S3 key on success.
  */

@@ -111,10 +111,15 @@ export interface EmbeddingProviderConfig {
 
 /**
  * Get the dimensions for an embedding model
+ *
+ * Exported so a caller that has to know whether a model's vectors fit a
+ * fixed-size collection (company context, Fizzy #2719) reads the same table
+ * the embedding calls size their requests from.
+ *
  * @param modelName - The model name
  * @returns The dimensions for the model
  */
-function getEmbeddingDimensions(modelName: string): number {
+export function getEmbeddingDimensions(modelName: string): number {
 	// Extract base model name if it has a provider prefix
 	const baseName = modelName.includes("/")
 		? (modelName.split("/").pop() ?? modelName)
@@ -174,6 +179,7 @@ export async function generateEmbedding(
 	} = await getAIEmbeddingModelWithMetadata({
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
+		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
 	});
 
 	logger.info("[EmbeddingGenerator] Resolved embedding model", {
@@ -229,6 +235,8 @@ export async function generateEmbedding(
 			embedding,
 			model: baseModelName,
 			tokens: usage.tokens,
+			provider: metadata.provider,
+			modelString: metadata.modelString,
 		};
 	} catch (error) {
 		logger.error("[EmbeddingGenerator] Failed to generate embedding", {
@@ -340,6 +348,7 @@ export async function generateEmbeddings(
 	} = await getAIEmbeddingModelWithMetadata({
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
+		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
 	});
 
 	// Track usage (fire-and-forget)
@@ -461,6 +470,8 @@ export async function generateEmbeddings(
 			model: baseModelName,
 			totalTokens,
 			cost,
+			provider: metadata.provider,
+			modelString: metadata.modelString,
 		};
 	} catch (error) {
 		logger.error(

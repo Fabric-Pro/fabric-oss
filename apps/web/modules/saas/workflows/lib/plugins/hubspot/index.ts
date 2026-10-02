@@ -12,6 +12,7 @@ const hubspotPlugin: IntegrationPlugin = {
 	color: "text-orange-500",
 	brandColor: "#FF7A59",
 	SettingsComponent: HubSpotSettings,
+	ownsDisconnect: true,
 	formFields: [
 		{
 			id: "apiKey",

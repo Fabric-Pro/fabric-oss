@@ -647,6 +647,15 @@ const SETTINGS_GROUP: GsGroup = {
 			href: settingsHref("api-keys"),
 		},
 		{
+			id: "settings-connected-agents",
+			label: "Connected agents",
+			description:
+				"See the coding agents you have signed in to Fabric, the organization each works in and what it can do, and revoke one to sign it out at once.",
+			icon: BotIcon,
+			cluster: "Tools & connections",
+			href: settingsHref("account/connected-agents"),
+		},
+		{
 			id: "settings-billing",
 			label: "Billing",
 			description: "Manage your subscription, plan, and payment details.",

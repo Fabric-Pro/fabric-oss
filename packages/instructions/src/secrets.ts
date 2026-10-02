@@ -99,13 +99,25 @@ type SecretRule = {
 	id: string;
 	label: string;
 	matches: (line: string) => boolean;
+	/**
+	 * A stable serialization of what this rule matches, for the scan rule-set
+	 * version (`scan-rules-version.ts`): the regex source and flags, or the
+	 * parameters of a hand-written matcher. A change to a matcher's LOGIC that
+	 * no parameter reflects is covered by `SCANNER_REVISION`, not by this.
+	 */
+	signature: string;
 };
 
 const fromPattern = (
 	id: string,
 	label: string,
 	pattern: RegExp,
-): SecretRule => ({ id, label, matches: (line) => pattern.test(line) });
+): SecretRule => ({
+	id,
+	label,
+	matches: (line) => pattern.test(line),
+	signature: `regex:${pattern.source}/${pattern.flags}`,
+});
 
 const WHITESPACE = /\s/;
 const WORD_CHAR = /[A-Za-z0-9_]/;
@@ -440,7 +452,12 @@ export const SECRET_RULES: ReadonlyArray<SecretRule> = [
 		"Google API key",
 		/\bAIza[0-9A-Za-z_-]{35,}\b/,
 	),
-	{ id: "jwt", label: "JSON Web Token", matches: matchesJwt },
+	{
+		id: "jwt",
+		label: "JSON Web Token",
+		matches: matchesJwt,
+		signature: "matcher:jwt",
+	},
 	fromPattern(
 		"bearer-header",
 		"Bearer token in a header",
@@ -460,6 +477,7 @@ export const SECRET_RULES: ReadonlyArray<SecretRule> = [
 		id: "generic-assignment",
 		label: "Credential assigned inline",
 		matches: (line) => matchesCredentialAssignment(line, LONG_ASSIGNMENT),
+		signature: assignmentSignature(LONG_ASSIGNMENT),
 	},
 	{
 		// The rule above needs 24 characters, which ordinary passwords rarely
@@ -470,8 +488,23 @@ export const SECRET_RULES: ReadonlyArray<SecretRule> = [
 		id: "short-credential-assignment",
 		label: "Password or key assigned inline",
 		matches: (line) => matchesCredentialAssignment(line, SHORT_ASSIGNMENT),
+		signature: assignmentSignature(SHORT_ASSIGNMENT),
 	},
 ];
+
+function assignmentSignature(shape: AssignmentShape): string {
+	return `assignment:${shape.minLength}:${shape.requiresDigit}:${shape.valueChars.join("")}`;
+}
+
+/**
+ * The data every verdict of `isSecretFileName` and `scanTextForSecrets`
+ * depends on beyond the rule list itself, for the scan rule-set version.
+ */
+export const SECRET_SCANNER_PARAMETERS = {
+	assignmentKeywords: ASSIGNMENT_KEYWORDS,
+	placeholderPrefixes: PLACEHOLDER_PREFIXES,
+	envTemplateSuffixes: ENV_TEMPLATE_SUFFIXES,
+} as const;
 
 /** A bounded scan's result: the hits it kept, and how many it found in all. */
 export type SecretScan = { hits: SecretHit[]; total: number };

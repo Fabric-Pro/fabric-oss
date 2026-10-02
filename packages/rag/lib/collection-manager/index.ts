@@ -102,6 +102,30 @@ const COLLECTION_CONFIGS: Record<
 		],
 		optimizersConfig: { indexingThreshold: 10000 },
 	},
+	// Company context (Fizzy #2719): an organization's own sources, apart
+	// from every project's vectors so no project search can open them.
+	// Organization-only — see `requiresOrganization` below.
+	"company-contexts": {
+		vectorSize: VECTOR_SIZE,
+		distanceMetric: DEFAULT_DISTANCE_METRIC,
+		enableHybrid: true,
+		payloadIndexes: [
+			{ fieldName: "organizationId", fieldSchema: "keyword" },
+			{ fieldName: "contextId", fieldSchema: "keyword" },
+			// The chunk deleter filters on it, and Qdrant rejects a delete
+			// filter on an unindexed key with 400 Bad Request.
+			{ fieldName: "originalContextId", fieldSchema: "keyword" },
+			// Crawled pages' chunks carry their parent source's id, which lets
+			// a source delete remove every page's points in one filter.
+			{ fieldName: "parentContextId", fieldSchema: "keyword" },
+			{ fieldName: "contextType", fieldSchema: "keyword" },
+			// Lets retrieval filter to points written by the organization's
+			// current embedding model.
+			{ fieldName: "embeddingModel", fieldSchema: "keyword" },
+		],
+		optimizersConfig: { indexingThreshold: 10000 },
+		requiresOrganization: true,
+	},
 	fabric_orchestrator_memory: {
 		vectorSize: VECTOR_SIZE,
 		distanceMetric: DEFAULT_DISTANCE_METRIC,
@@ -162,6 +186,13 @@ export function getCollectionName(
 	organizationId?: string | null,
 ): string {
 	if (!organizationId) {
+		// An organization-only collection has no shared personal twin: the
+		// base name would pool every organization's vectors in one place.
+		if (COLLECTION_CONFIGS[baseCollection].requiresOrganization) {
+			throw new Error(
+				`Collection ${baseCollection} requires an organization ID`,
+			);
+		}
 		// Personal data uses shared collection
 		return baseCollection;
 	}
@@ -186,6 +217,14 @@ export function getCollectionName(
  * and reprocess paths that resolve it cannot drift from the writers.
  */
 export const PROJECT_CONTEXTS_BASE_COLLECTION = "project-contexts" as const;
+
+/**
+ * Base name of the collection holding company-context vectors (Fizzy #2719).
+ * Organization-only: the name on the wire is always
+ * `company-contexts-org-<orgId>`, resolved through `getCollectionName`, which
+ * throws without an organization.
+ */
+export const COMPANY_CONTEXTS_BASE_COLLECTION = "company-contexts" as const;
 
 /**
  * Whether the resolved collection exists in Qdrant RIGHT NOW.

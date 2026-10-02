@@ -1,3 +1,4 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -78,5 +79,17 @@ export default defineConfig({
 		// Leave `isolate` at its default (true). Do NOT set isolate:false —
 		// measured directly, it fails 8 files / 69 tests in this suite.
 		maxWorkers: "50%",
+	},
+	resolve: {
+		alias: [
+			// The `@fabricorg/integrations-*` packages export only a built
+			// `dist`, and `turbo run test` depends on `generate`, not `build`,
+			// so CI never has one: importing `modules/v1/integrations.ts` failed
+			// to resolve. Point the bare specifiers at their source instead.
+			{
+				find: /^@fabricorg\/(integrations-[a-z]+)$/,
+				replacement: path.resolve(__dirname, "../$1/src/index.ts"),
+			},
+		],
 	},
 });

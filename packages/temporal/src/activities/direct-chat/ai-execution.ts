@@ -558,7 +558,8 @@ function createWorkflowTools(
 
 	return {
 		list_workflows: tool({
-			description: "List all workflows belonging to the user.",
+			description:
+				"List the user's own workflows in the current workspace, most recently updated first, at most 100. The optional query matches workflow names and descriptions (case-insensitive). Returns each workflow's id, name, description, status and triggerType; use the id with get_workflow_details or execute_workflow.",
 			inputSchema: listWorkflowsSchema as any,
 			execute: async (params: { query?: string }) => {
 				try {
@@ -596,7 +597,7 @@ function createWorkflowTools(
 		}),
 		get_workflow_details: tool({
 			description:
-				"Get detailed information about a specific workflow by ID.",
+				"Get one of the user's workflows by id (from list_workflows): name, description, status, triggerType, its nodes, edges and variables, and when it was created and last updated. Returns an error when no workflow with that id belongs to the user in this workspace.",
 			inputSchema: getWorkflowDetailsSchema as any,
 			execute: async (params: { workflowId: string }) => {
 				try {
@@ -633,7 +634,7 @@ function createWorkflowTools(
 		}),
 		execute_workflow: tool({
 			description:
-				"Request to execute a workflow. Returns confirmation request.",
+				"Start one of the user's workflows by id. Only workflows with triggerType MANUAL can be started. Until the user has approved this start, the call returns requiresConfirmation: true and starts nothing; with the user's approval it starts the workflow and returns the start result. Returns an error when the workflow does not exist or cannot be started manually.",
 			inputSchema: executeWorkflowSchema as any,
 			execute: async (params: { workflowId: string }) => {
 				try {
@@ -999,6 +1000,10 @@ async function runDirectChatTurn({
 	});
 	const hasBuiltInWebSearch =
 		"webSearch" in builtInTools || "fabric_web_search" in builtInTools;
+	// An explicit Fabric tool list registers web search as `fabric_web_search`;
+	// the prompt has to name the tool the model was actually given.
+	const webSearchToolName =
+		"webSearch" in builtInTools ? "webSearch" : "fabric_web_search";
 	const requestedFrameOutput = detectRequestedFrameOutput(message);
 	const hasFrameTool =
 		"fabric_create_frame" in builtInTools ||
@@ -1232,7 +1237,6 @@ ${describeToolAvailability({
 	forceDisableTools: input.forceDisableTools,
 	toolFailureSummary: input.toolFailureSummary,
 })}
-${toolsEnabled && hasBuiltInWebSearch ? "- Web search is available via the webSearch tool. Use it for current information, news, research, and fact-checking." : ""}
 ${
 	mcpToolsEnabled
 		? `- External MCP tools are connected. You MUST call the relevant tool when it matches the user's request — do NOT describe how to use it, just call it directly.
@@ -1255,14 +1259,14 @@ If the user asks for something one of them does, say those tools were left out o
 		: ""
 }
 ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
-${toolsEnabled ? "- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows and list_skills, and base the suggestions on what they return. Never use workspace document tools for that." : ""}
+${toolsEnabled ? `- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows${"list_skills" in skillTools ? " and list_skills" : ""}, and base the suggestions on what they return. Never use workspace document tools for that.` : ""}
 
 ${DIAGRAM_RENDERING_GUIDANCE}`;
 
 	const webSearchInstructions =
 		toolsEnabled && hasBuiltInWebSearch
 			? `WEB SEARCH GUIDELINES:
-- Use webSearch for questions about current events, recent information, or facts you're uncertain about
+- Use ${webSearchToolName} for questions about current events, recent information, or facts you're uncertain about
 - Include the current year or "latest" in queries for up-to-date information
 - After searching, cite sources using [Title](URL) format inline with the text
 - Never put citations at the end - cite immediately after the relevant information`
@@ -1285,6 +1289,11 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		metadata.modelString,
 	);
 
+	// A caller that brings its own persona (the Fabric Agent drawer, a
+	// mention reply, a voice session) keeps it as the only identity, as
+	// `orchestratorBasePrompt` does on the other engine.
+	const callerHasPersona = Boolean(input.systemPrompt?.trim());
+
 	// Anthropic gets an invariant system prefix. Other providers retain the
 	// prior full-string ordering and content.
 	const defaultSystemInstructions = promptCacheEnabled
@@ -1301,6 +1310,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				webSearchInstructions,
 				frameOutputInstructions,
 				currentDateContext,
+				includeIdentity: !callerHasPersona,
 			});
 
 	// Caller instructions retain their leading position inside the variable
@@ -1682,6 +1692,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			rollingHistoryEnabled,
 			systemPrompt: fullSystemContext,
 			messages: convertedMessages,
+			includeIdentity: !callerHasPersona,
 		});
 
 		const result = streamText({

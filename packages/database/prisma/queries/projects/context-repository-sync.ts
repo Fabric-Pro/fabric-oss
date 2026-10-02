@@ -374,6 +374,45 @@ export function countAwaitingIndexContexts(
 }
 
 /**
+ * A project's synced rows not yet indexed: every row keyed by a `sourcePath`,
+ * whether a repository sync manages it or a `fabric context push` wrote it,
+ * with the title its embedding is started under. Their content changes in
+ * place, so only the hash-guarded pass may index them; the project-wide bulk
+ * embed hands these to it instead of copying a body that can be replaced
+ * before the copy lands in the index.
+ */
+export async function listUnindexedSyncedContexts(
+	scope: ManagedContextScope,
+	limit: number,
+): Promise<Array<{ id: string; sourcePath: string; title: string }>> {
+	const rows = await db.projectContext.findMany({
+		where: {
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			embeddedAt: null,
+			sourcePath: { not: null },
+		},
+		orderBy: { sourcePath: "asc" },
+		take: limit,
+		select: { id: true, sourcePath: true, metadata: true },
+	});
+	return rows.flatMap((row) =>
+		row.sourcePath === null
+			? []
+			: [
+					{
+						id: row.id,
+						sourcePath: row.sourcePath,
+						title: storedSyncedContextTitle(
+							row.metadata,
+							row.sourcePath,
+						),
+					},
+				],
+	);
+}
+
+/**
  * One page of a sync's managed rows not yet indexed (`embeddedAt IS NULL`),
  * by storage key (§5.3.1 step 9): rows whose `sourcePath` sorts after
  * `afterKey`, so the next page starts from the last key returned. Each comes
@@ -412,6 +451,115 @@ export async function listContextRepositorySyncAwaitingIndex(
 							row.metadata,
 							row.sourcePath,
 						),
+					},
+				],
+	);
+}
+
+/**
+ * When a managed row's CONTENT last changed: `contentUpdatedAt`, stamped on
+ * create and on every content replace of a synced file, else `createdAt`.
+ * Not `updatedAt`, which embedding and re-crawls bump.
+ */
+function contentChangedBetween(range: { from: Date; to: Date }) {
+	const within = { gte: range.from, lt: range.to };
+	return [
+		{ contentUpdatedAt: within },
+		{ contentUpdatedAt: null, createdAt: within },
+	];
+}
+
+/**
+ * One page of syncs that hold managed rows still unindexed (`embeddedAt IS
+ * NULL`) whose content last changed within `changedBetween`, and have no run
+ * open: the candidates of an index-only pass, by sync id after `afterId`.
+ * `userId` is the member the sync acts as, which an embedding runs as.
+ */
+export function listContextRepositorySyncsAwaitingIndex(input: {
+	changedBetween: { from: Date; to: Date };
+	afterId?: string | null;
+	limit: number;
+}): Promise<
+	Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		userId: string;
+	}>
+> {
+	return db.projectContextRepositorySync.findMany({
+		where: {
+			activeRunKey: null,
+			...(input.afterId ? { id: { gt: input.afterId } } : {}),
+			contexts: {
+				some: {
+					embeddedAt: null,
+					OR: contentChangedBetween(input.changedBetween),
+				},
+			},
+		},
+		orderBy: { id: "asc" },
+		take: input.limit,
+		select: {
+			id: true,
+			projectId: true,
+			organizationId: true,
+			userId: true,
+		},
+	});
+}
+
+/**
+ * One page of a sync's managed rows still unindexed whose content last changed
+ * within `changedBetween`, by storage key after `afterKey`, each with the
+ * time its content last changed (`changedAt`) and the title its embedding is
+ * started under.
+ */
+export async function listContextRepositorySyncAwaitingIndexSince(
+	scope: ManagedContextScope,
+	syncId: string,
+	input: {
+		changedBetween: { from: Date; to: Date };
+		afterKey?: string | null;
+		limit: number;
+	},
+): Promise<
+	Array<{ id: string; sourcePath: string; title: string; changedAt: Date }>
+> {
+	const rows = await db.projectContext.findMany({
+		where: {
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+			repositorySyncId: syncId,
+			embeddedAt: null,
+			sourcePath:
+				input.afterKey === undefined || input.afterKey === null
+					? { not: null }
+					: { gt: input.afterKey },
+			OR: contentChangedBetween(input.changedBetween),
+		},
+		orderBy: { sourcePath: "asc" },
+		take: input.limit,
+		select: {
+			id: true,
+			sourcePath: true,
+			metadata: true,
+			contentUpdatedAt: true,
+			createdAt: true,
+		},
+	});
+	return rows.flatMap((row) =>
+		row.sourcePath === null
+			? []
+			: [
+					{
+						id: row.id,
+						sourcePath: row.sourcePath,
+						title: storedSyncedContextTitle(
+							row.metadata,
+							row.sourcePath,
+						),
+						changedAt: row.contentUpdatedAt ?? row.createdAt,
 					},
 				],
 	);
@@ -1290,6 +1438,11 @@ export interface RepositoryContextFile {
 	contentHash: string;
 	/** Defaults to the file name. */
 	title?: string | null;
+	/**
+	 * The git blob the content was read from. Stamped on the row so a later
+	 * run whose inventory shows the same blob can skip reading the file.
+	 */
+	sourceBlobOid?: string;
 }
 
 const APPLY_ROW_SELECT = {
@@ -1297,8 +1450,99 @@ const APPLY_ROW_SELECT = {
 	organizationId: true,
 	contentHash: true,
 	repositorySyncId: true,
+	sourceBlobOid: true,
 	metadata: true,
 } satisfies Prisma.ProjectContextSelect;
+
+const BLOB_STATE_LOOKUP_CHUNK = 1000;
+
+/**
+ * What a sync already holds for `keys`: each row this sync manages that has
+ * content and a recorded blob id, with the stored content's byte length.
+ *
+ * A planner that sees the same blob id in its inventory for such a key reads
+ * nothing for it: not a checkout, not a size, not the bytes. The byte length
+ * stands in for the file's size toward the run's total (same bytes). Rows
+ * with no recorded blob id (written before it existed, or by a member's
+ * edit) are absent, so they are read once and stamped.
+ */
+export async function listManagedContextBlobStates(
+	scope: ManagedContextScope,
+	syncId: string,
+	keys: readonly string[],
+): Promise<Map<string, { sourceBlobOid: string; bytes: number }>> {
+	const states = new Map<string, { sourceBlobOid: string; bytes: number }>();
+	for (let i = 0; i < keys.length; i += BLOB_STATE_LOOKUP_CHUNK) {
+		const rows = await db.$queryRaw<
+			Array<{ sourcePath: string; sourceBlobOid: string; bytes: number }>
+		>`
+			SELECT c."sourcePath", c."sourceBlobOid", octet_length(c."content") AS "bytes"
+			FROM "project_context" c
+			WHERE c."projectId" = ${scope.projectId}
+				AND c."organizationId" = ${scope.organizationId}
+				AND c."repositorySyncId" = ${syncId}
+				AND c."sourcePath" = ANY(${keys.slice(i, i + BLOB_STATE_LOOKUP_CHUNK)}::text[])
+				AND c."sourceBlobOid" IS NOT NULL
+				AND c."contentHash" IS NOT NULL
+				AND c."content" IS NOT NULL
+		`;
+		for (const row of rows) {
+			states.set(row.sourcePath, {
+				sourceBlobOid: row.sourceBlobOid,
+				bytes: Number(row.bytes),
+			});
+		}
+	}
+	return states;
+}
+
+/**
+ * Records, as `unchanged`, the planned keys whose row still carries the blob
+ * id the plan saw — and nothing else: no read, no write. Caller holds locks 1
+ * and 3 and passes the ledger's decided keys, as for `applyRepositoryContextBatch`.
+ *
+ * Answered under the lock, so a row a member edited, or that another writer
+ * took, between planning and now is not trusted: it is `conflict`, the same
+ * outcome a guarded write that matched nothing gets, and the next run decides.
+ */
+export async function confirmUnchangedRepositoryContext(
+	tx: Prisma.TransactionClient,
+	input: {
+		projectId: string;
+		organizationId: string;
+		syncId: string;
+		entries: ReadonlyArray<{ storageKey: string; sourceBlobOid: string }>;
+		decided: ReadonlySet<string>;
+	},
+): Promise<ContextSyncOutcomes> {
+	const wanted = input.entries.filter(
+		(entry) => !input.decided.has(entry.storageKey),
+	);
+	if (wanted.length === 0) {
+		return {};
+	}
+	const rows = await tx.projectContext.findMany({
+		where: {
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			repositorySyncId: input.syncId,
+			sourcePath: { in: wanted.map((entry) => entry.storageKey) },
+			contentHash: { not: null },
+		},
+		select: { sourcePath: true, sourceBlobOid: true },
+	});
+	const held = new Map(
+		rows.map((row) => [row.sourcePath, row.sourceBlobOid]),
+	);
+	const outcomes: ContextSyncOutcomes = {};
+	for (const entry of wanted) {
+		outcomes[entry.storageKey] =
+			held.get(entry.storageKey) === entry.sourceBlobOid
+				? "unchanged"
+				: "conflict";
+	}
+	return outcomes;
+}
 
 /**
  * Apply one batch of planned files (§5.3.1 step 7). Caller holds locks 1 and
@@ -1385,6 +1629,9 @@ async function applyOne(
 					userId: input.actingUserId,
 					organizationId,
 					repositorySyncId: syncId,
+					...(file.sourceBlobOid
+						? { sourceBlobOid: file.sourceBlobOid }
+						: {}),
 					now,
 				}),
 			],
@@ -1406,6 +1653,25 @@ async function applyOne(
 
 	if (row.repositorySyncId === syncId) {
 		if (row.contentHash === file.contentHash) {
+			// Same bytes, so nothing is rewritten; a row written before the blob
+			// id was recorded, or whose blob moved without its bytes changing,
+			// is stamped so the next run can skip reading it.
+			if (
+				file.sourceBlobOid &&
+				row.sourceBlobOid !== file.sourceBlobOid
+			) {
+				await tx.projectContext.updateMany({
+					where: {
+						id: row.id,
+						projectId,
+						organizationId,
+						sourcePath,
+						contentHash: file.contentHash,
+						repositorySyncId: syncId,
+					},
+					data: { sourceBlobOid: file.sourceBlobOid },
+				});
+			}
 			return "unchanged";
 		}
 		const { count } = await tx.projectContext.updateMany({
@@ -1424,6 +1690,9 @@ async function applyOne(
 				contentHash: file.contentHash,
 				title,
 				userId: input.actingUserId,
+				...(file.sourceBlobOid
+					? { sourceBlobOid: file.sourceBlobOid }
+					: {}),
 				now,
 			}),
 		});
@@ -1443,7 +1712,12 @@ async function applyOne(
 			contentHash: file.contentHash,
 			repositorySyncId: null,
 		},
-		data: { repositorySyncId: syncId },
+		data: {
+			repositorySyncId: syncId,
+			...(file.sourceBlobOid
+				? { sourceBlobOid: file.sourceBlobOid }
+				: {}),
+		},
 	});
 	return count === 1 ? "adopted" : "conflict";
 }

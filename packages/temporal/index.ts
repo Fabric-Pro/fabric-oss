@@ -308,8 +308,17 @@ export {
 	upsertWorkflowSchedule,
 	WORKFLOW_BUILDER_SCHEDULE_PREFIX,
 } from "./src/schedules/workflow-builder-schedule";
+// Company context (Fizzy #2719): the owner a context workflow input names,
+// and the queue a company owner's workflows start on.
+export {
+	type CompanyContextOwner,
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	type ProjectContextOwner,
+} from "./src/lib/context-owner";
 // Task queue names — shared by the worker and every starter so they cannot drift
 export {
+	COMPANY_CONTEXT_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
 } from "./src/task-queues";

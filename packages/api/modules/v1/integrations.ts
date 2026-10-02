@@ -26,6 +26,7 @@ import {
 } from "@fabricorg/integrations-runtime";
 import { slackPlugin } from "@fabricorg/integrations-slack";
 import { db } from "@repo/database";
+import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
@@ -78,7 +79,13 @@ class PortalCredentialStore implements CredentialStore {
 				: never
 			: never;
 		const integration = await db.workflowIntegration.findFirst({
-			where: { ...where, provider: provider as unknown as ProviderEnum },
+			where: {
+				...where,
+				provider: provider as unknown as ProviderEnum,
+				// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
+				// not a connection.
+				NOT: { name: `${provider}_OAUTH_APP` },
+			},
 			orderBy: { lastUsedAt: "desc" },
 		});
 		if (!integration) {
@@ -247,7 +254,13 @@ export function registerIntegrationRoutes(
 			: { userId: ctx.userId, organizationId: null, isActive: true };
 
 		const rows = await db.workflowIntegration.findMany({
-			where,
+			where: {
+				...where,
+				// A stored OAuth app (client id and secret) is not a
+				// connection: listing it would report an unconnected provider
+				// as "connected".
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
+			},
 			select: { provider: true, name: true, lastUsedAt: true },
 			orderBy: { lastUsedAt: "desc" },
 		});

@@ -262,6 +262,58 @@ describe("projectInstructionSnapshotWorkflow", () => {
 		expect(order).toEqual(["gate", "promote", "publish", "prune"]);
 	});
 
+	it("hands the run's ownership token to every activity, the FAILED marker included, with no other change to the commands", async () => {
+		const seen: Array<[string, string | undefined]> = [];
+		const record =
+			(name: string) =>
+			async (ref: SnapshotRef): Promise<GateResult> => {
+				seen.push([name, ref.validationAttemptId]);
+				return { ok: true, rejections: [] };
+			};
+		const mocks = happyMocks({
+			verifyAndScanInstructionFiles: record("gate"),
+			finalizeInstructionSnapshot: record("promote"),
+			publishInstructionSnapshotActivity: async (ref) => {
+				seen.push(["publish", ref.validationAttemptId]);
+				return { published: true };
+			},
+			pruneInstructionSnapshots: async (ref) => {
+				seen.push(["prune", ref.validationAttemptId]);
+				return { deleted: 0 };
+			},
+		});
+
+		const result = await runWorkflow(
+			{ ...INPUT, validationAttemptId: "attempt_1" },
+			mocks,
+		);
+
+		expect(result).toEqual({ status: "READY", published: true });
+		expect(seen).toEqual([
+			["gate", "attempt_1"],
+			["promote", "attempt_1"],
+			["publish", "attempt_1"],
+			["prune", "attempt_1"],
+		]);
+
+		const marked: Array<string | undefined> = [];
+		await expect(
+			runWorkflow(
+				{ ...INPUT, validationAttemptId: "attempt_2" },
+				happyMocks({
+					verifyAndScanInstructionFiles: async () => {
+						throw new Error("boom");
+					},
+					markInstructionSnapshotFailed: async (input) => {
+						marked.push(input.validationAttemptId);
+						return { marked: true };
+					},
+				}),
+			),
+		).rejects.toBeInstanceOf(WorkflowFailedError);
+		expect(marked).toEqual(["attempt_2"]);
+	}, 60_000);
+
 	it("reports published: false when the snapshot is manual (publishOnReady false), and still prunes", async () => {
 		const mocks = happyMocks({
 			publishInstructionSnapshotActivity: async () => ({

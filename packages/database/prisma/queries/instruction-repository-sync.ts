@@ -23,7 +23,10 @@
 
 import { logger } from "@repo/logs";
 import { db, Prisma } from "../client";
-import type { ProjectInstructionSyncTrigger } from "../generated/client";
+import type {
+	ProjectInstructionSyncProgressPhase,
+	ProjectInstructionSyncTrigger,
+} from "../generated/client";
 import { recordAuditTx } from "./audit-log";
 import {
 	type InstructionSyncLimitDetail,
@@ -50,6 +53,7 @@ import type {
  * it is added to that constant (Decision 47).
  */
 export type InstructionSyncTrigger = ProjectInstructionSyncTrigger;
+export type InstructionSyncProgressPhase = ProjectInstructionSyncProgressPhase;
 export type InstructionSyncRunStatus =
 	| "SUCCEEDED"
 	| "UNCHANGED"
@@ -735,6 +739,65 @@ export async function insertInstructionRepositorySyncRun(input: {
 		inserted: false,
 		generation: existing?.generation ?? input.generation,
 	};
+}
+
+/**
+ * Records where an open sync run has got: the phase, and for the one phase
+ * that has a count (COPYING) the files copied out of the files to copy.
+ *
+ * Conditional on the run being the open one (`finishedAt IS NULL`) and on the
+ * tenant, so a late write from an attempt of a run `record` has already
+ * completed matches nothing instead of putting a phase back on a finished
+ * receipt. `changed: false` is not an error.
+ */
+export async function recordInstructionSyncRunProgress(input: {
+	runKey: string;
+	projectId: string;
+	organizationId: string;
+	phase: InstructionSyncProgressPhase;
+	done: number | null;
+	total: number | null;
+}): Promise<{ changed: boolean }> {
+	const { count } = await db.projectInstructionRepositorySyncRun.updateMany({
+		where: {
+			id: input.runKey,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			finishedAt: null,
+		},
+		data: {
+			progressPhase: input.phase,
+			progressDone: input.done,
+			progressTotal: input.total,
+			progressUpdatedAt: new Date(),
+		},
+	});
+	return { changed: count > 0 };
+}
+
+/**
+ * The snapshot a sync run created, found by the run's key, with how far its
+ * checks have got. The tab uses it to carry the run's progress on from the
+ * copy (the run's own phases) into the snapshot's CHECKING and SAVING while
+ * the run is still open, before the receipt names the snapshot.
+ */
+export function getInstructionSyncRunSnapshotProgress(
+	syncRunKey: string,
+	projectId: string,
+	organizationId: string,
+) {
+	return db.projectInstructionSnapshot.findFirst({
+		where: { syncRunKey, projectId, organizationId },
+		select: {
+			id: true,
+			version: true,
+			status: true,
+			deferredScanStatus: true,
+			progressPhase: true,
+			progressDone: true,
+			progressTotal: true,
+		},
+	});
 }
 
 /**
@@ -1744,6 +1807,11 @@ export async function completeInstructionRepositorySyncRun(input: {
 					note: outcome.note,
 					commitSha: input.commitSha,
 					snapshotId: input.snapshotId,
+					// The run is over: nothing is in flight to report.
+					progressPhase: null,
+					progressDone: null,
+					progressTotal: null,
+					progressUpdatedAt: null,
 					limitDetail:
 						(outcome.error === "LIMITS_EXCEEDED"
 							? parseInstructionSyncLimitDetail(input.limit)
@@ -1827,6 +1895,10 @@ const runSelect = {
 	commitSha: true,
 	snapshotId: true,
 	limitDetail: true,
+	// Where the run in flight has got; null for a finished run.
+	progressPhase: true,
+	progressDone: true,
+	progressTotal: true,
 	user: { select: { id: true, name: true } },
 } satisfies Prisma.ProjectInstructionRepositorySyncRunSelect;
 
@@ -1901,7 +1973,18 @@ export async function getPublishedInstructionTree(
 					sourceRef: true,
 					sourceCommitSha: true,
 					settingsFrozen: true,
-					files: { select: { path: true, sha256: true, mode: true } },
+					files: {
+						select: {
+							id: true,
+							path: true,
+							sha256: true,
+							mode: true,
+							size: true,
+							mimeType: true,
+							isText: true,
+							storageKey: true,
+						},
+					},
 				},
 			},
 		},
@@ -1941,6 +2024,7 @@ export function getInstructionSnapshotBySyncRunKey(
 			version: true,
 			status: true,
 			sourceCommitSha: true,
+			validationAttemptId: true,
 			files: {
 				select: {
 					id: true,
@@ -1950,6 +2034,7 @@ export function getInstructionSnapshotBySyncRunKey(
 					size: true,
 					storageKey: true,
 					mimeType: true,
+					inheritedFromFileId: true,
 				},
 			},
 		},

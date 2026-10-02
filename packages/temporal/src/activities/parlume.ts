@@ -10,6 +10,7 @@ import {
 import { executeParlumeAgent, loadParlumeAgent } from "./parlume-agent";
 import { parlumeActivityLog } from "./parlume-log";
 import {
+	postParlumeMeetingChat,
 	requestParlumeMeetingStop,
 	speakParlumeResponse,
 } from "./parlume-voice";
@@ -263,22 +264,60 @@ export async function executeParlumeMeetingTurn(params: {
 				firstTextAt: firstTextAt ?? new Date(),
 			},
 		});
-		const playback = await speakParlumeResponse({
-			sessionId: session.id,
-			userId: session.userId,
-			organizationId: session.organizationId,
-			projectId: session.projectId,
-			response,
-			voiceGeneration: turn.voiceGeneration,
-			confirmationSpeakerId: proposal?.speakerId,
-			signal: Context.current().cancellationSignal,
-		});
+		const signal = Context.current().cancellationSignal;
+		let playback: Awaited<ReturnType<typeof speakParlumeResponse>>;
+		let deliveryNote: string | null = null;
+		try {
+			playback = await speakParlumeResponse({
+				sessionId: session.id,
+				userId: session.userId,
+				organizationId: session.organizationId,
+				projectId: session.projectId,
+				response,
+				voiceGeneration: turn.voiceGeneration,
+				confirmationSpeakerId: proposal?.speakerId,
+				signal,
+			});
+		} catch (speechError) {
+			if (signal.aborted) {
+				throw speechError;
+			}
+			// The answer exists; only the voice failed. Deliver it as text so
+			// the question is still answered, and say so in the history.
+			const reason =
+				speechError instanceof Error
+					? speechError.message
+					: String(speechError);
+			const posted = await postParlumeMeetingChat({
+				sessionId: session.id,
+				message: proposal
+					? `${response}\n\n(Voice is unavailable, so this proposal cannot be confirmed by voice. Ask again when voice works.)`
+					: response,
+			});
+			parlumeActivityLog(
+				posted ? "warn" : "error",
+				"turn.speech_failed",
+				{
+					sessionId: session.id,
+					turnId: turn.id,
+					voiceGeneration: turn.voiceGeneration,
+					postedToChat: posted,
+					error: reason.slice(0, 300),
+				},
+			);
+			if (!posted) {
+				throw speechError;
+			}
+			playback = { played: false, interrupted: false };
+			deliveryNote = `Spoken reply unavailable (${reason.slice(0, 160)}); the answer was posted to the meeting chat.`;
+		}
 		await db.$transaction([
 			db.parlumeMeetingTurn.updateMany({
 				where: { id: turn.id, status: "RUNNING" },
 				data: {
 					status: "COMPLETED",
 					completedAt: new Date(),
+					error: deliveryNote,
 					firstAudioAt: playback.firstAudioAt
 						? new Date(playback.firstAudioAt)
 						: null,
@@ -302,8 +341,9 @@ export async function executeParlumeMeetingTurn(params: {
 						}
 					: {
 							status: "CANCELLED",
-							outcome:
-								"The proposal was interrupted before it finished.",
+							outcome: deliveryNote
+								? "The proposal could not be spoken, so it cannot be confirmed by voice."
+								: "The proposal was interrupted before it finished.",
 						},
 			}),
 		]);
@@ -313,6 +353,7 @@ export async function executeParlumeMeetingTurn(params: {
 			voiceGeneration: turn.voiceGeneration,
 			played: playback.played,
 			interrupted: playback.interrupted,
+			postedToChat: deliveryNote !== null,
 			proposedAction: proposal !== null,
 			responseChars: response.length,
 			firstTextMs: firstTextAt ? firstTextAt.getTime() - startedAt : null,
@@ -327,7 +368,10 @@ export async function executeParlumeMeetingTurn(params: {
 			turnId: turn.id,
 			voiceGeneration: turn.voiceGeneration,
 			totalMs: Date.now() - startedAt,
-			error: error instanceof Error ? error.name : "Unknown error",
+			error:
+				error instanceof Error
+					? `${error.name}: ${error.message}`.slice(0, 300)
+					: "Unknown error",
 		});
 		await fail("Parlume agent execution failed.");
 	}

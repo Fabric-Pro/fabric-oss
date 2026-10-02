@@ -3,6 +3,7 @@ import type { AgentInstanceStatus } from "@repo/database";
 import {
 	archiveInstanceVersion,
 	getAgentTemplateInstance,
+	getBoundOAuthProviderTypes,
 	getWorkspaceAccessContext,
 	restoreInstanceVersion,
 	updateAgentTemplateInstance,
@@ -170,6 +171,15 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				input.toolConnections,
 				context.user.id,
 				existing.organizationId ?? undefined,
+				{
+					// OAuth providers already bound on this instance keep their
+					// binding (the editor re-sends every selection on save), so
+					// the acting user's own connection is only checked for newly
+					// selected providers — matching updateAgentTemplateInstance.
+					boundOAuthProviders: input.knowledgeConnections
+						? await getBoundOAuthProviderTypes(input.id)
+						: undefined,
+				},
 			);
 
 			if (!connectionValidation.valid) {

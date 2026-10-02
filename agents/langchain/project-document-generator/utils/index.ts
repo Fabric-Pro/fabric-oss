@@ -5,11 +5,17 @@
  */
 
 import type { BaseMessage } from "@langchain/core/messages";
+import { isContextOverflowError } from "@repo/agent-core";
 
 // Retry helpers now live in @repo/agent-core (shared across the LangGraph
 // agents) — re-exported here under the names this agent's nodes and tests
 // already use.
-export { calculateRetryDelay, isJsonParseError, sleep } from "@repo/agent-core";
+export {
+	calculateRetryDelay,
+	isJsonParseError,
+	isRetryableError,
+	sleep,
+} from "@repo/agent-core";
 // Deterministically stamp the active org id onto emitted <excalidraw-embed>
 // tags so the saved diagram resolves its org-scoped MCP config on reload.
 export { injectOrgIdIntoToolArgs } from "./excalidraw-embed-org-id";
@@ -85,34 +91,7 @@ export const MAX_JSON_RETRIES = 3;
  * tokens each attempt.
  */
 export function isContextLengthError(error: Error): boolean {
-	const msg = error.message || "";
-	if (/prompt is too long/i.test(msg)) {
-		return true;
-	}
-	if (/context_length_exceeded/i.test(msg)) {
-		return true;
-	}
-	if (/maximum context length/i.test(msg)) {
-		return true;
-	}
-	// AI SDK / OpenAI-shape errors expose `code` on the object
-	const code = (
-		error as unknown as { code?: string; error?: { code?: string } }
-	).code;
-	if (code === "context_length_exceeded") {
-		return true;
-	}
-	const nestedCode = (error as unknown as { error?: { code?: string } }).error
-		?.code;
-	if (nestedCode === "context_length_exceeded") {
-		return true;
-	}
-	// 400 + "too long" variants from Vercel AI Gateway wrapping Anthropic
-	const status = (error as unknown as { status?: number }).status;
-	if (status === 400 && /too long|context/i.test(msg)) {
-		return true;
-	}
-	return false;
+	return isContextOverflowError(error);
 }
 
 /**

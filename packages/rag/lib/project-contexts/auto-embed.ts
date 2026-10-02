@@ -20,7 +20,12 @@
  * @see https://weaviate.io/blog/chunking-strategies-for-rag
  */
 
-import { getProjectRagSettings, markContextAsEmbedded } from "@repo/database";
+import {
+	getDefaultRagSettings,
+	getOrganizationRagSettings,
+	getProjectRagSettings,
+	markContextAsEmbedded,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import {
 	type ChunkingStrategy,
@@ -32,7 +37,14 @@ import {
 	routeContentForChunking,
 	type TextChunk,
 } from "../chunking";
-import { generateEmbedding } from "../embedding";
+// The modules, not the `../company-contexts` barrel, which also carries
+// retrieval and the model resolver.
+import {
+	COMPANY_EMBEDDING_RESOLUTION,
+	companyEmbeddingIdentity,
+} from "../company-contexts/resolution";
+import { storeCompanyContextPoints } from "../company-contexts/store";
+import { generateEmbedding, generateEmbeddings } from "../embedding";
 import { deleteProjectContext, storeProjectContext } from "./store";
 
 /**
@@ -119,6 +131,208 @@ function mapSplitMethodToStrategy(splitMethod: string): ChunkingStrategy {
 }
 
 /**
+ * Where a company source's points go (Fizzy #2719); see `embedCompanyContext`.
+ */
+export interface CompanyEmbedTarget {
+	organizationId: string;
+	/** The `CompanyContextSource` the text belongs to: every point's `originalContextId`. */
+	sourceId: string;
+	/** The source's type (`FILE` | `TEXT` | `LINK`): every point's `contextType`. */
+	contextType: string;
+	/** The source id, when the text is a crawled page's; omitted otherwise. */
+	parentContextId?: string | null;
+}
+
+/**
+ * Options for `embedCompanyContext`. `contextId` is the row the text came
+ * from: the source itself, or a crawled page of it. There is no project, and
+ * the organization is the target's.
+ *
+ * There is no key either: the embedding call resolves the organization's own
+ * embedding provider (`COMPANY_EMBEDDING_RESOLUTION`) and fails when it has
+ * none, so a key resolved another way — the default provider, or an acting
+ * member's personal one — never decides whether a company source is indexed.
+ */
+export type EmbedCompanyContextOptions = Omit<
+	EmbedContextOptions,
+	"projectId" | "organizationId" | "skipDbUpdate" | "apiKey"
+> & {
+	company: CompanyEmbedTarget;
+};
+
+/** What `embedCompanyContext` did. */
+export interface CompanyEmbedResult extends EmbedResult {
+	/**
+	 * On success, the identity of the model that produced the points, which
+	 * every point carries. The caller marks its row with this one, not with
+	 * an identity it resolved before the embed: the organization may have
+	 * switched models in between.
+	 */
+	embeddingModel?: string;
+}
+
+/**
+ * Whose context is being embedded. It decides where the chunk settings come
+ * from and where the points go: a project context reads its project's RAG
+ * settings and writes the project collection; a company source reads its
+ * organization's settings and writes the company collection.
+ */
+type EmbedOwner =
+	| { kind: "project"; projectId: string }
+	| ({ kind: "company" } & CompanyEmbedTarget);
+
+/**
+ * The embed options apart from the project, which the owner carries. The key
+ * is a project embed's; a company embed has none (see
+ * `EmbedCompanyContextOptions`).
+ */
+type EmbedContextBody = Omit<EmbedContextOptions, "projectId" | "apiKey"> & {
+	apiKey?: EmbedContextOptions["apiKey"];
+};
+
+/** Chunk settings in the shape the project RAG settings have. */
+export interface ContextChunkSettings {
+	chunkSize: number;
+	chunkOverlap: number;
+	/** A `ChunkSplitMethod`; null leaves the choice to the content. */
+	splitMethod: string | null;
+	/** `splitMethod` as a chunking strategy; undefined when it is null. */
+	strategy: ChunkingStrategy | undefined;
+}
+
+/**
+ * Chunk settings for an organization's company context: its
+ * `OrganizationRagSettings`, each unset field falling back to `defaults`, and
+ * those to the system defaults the organization settings override. Project
+ * RAG settings are keyed by project, so they never apply to a company source.
+ *
+ * A caller whose pipeline has defaults of its own passes them, so a company
+ * source is chunked exactly like the matching project content until the
+ * organization sets something.
+ */
+export async function getCompanyChunkSettings(
+	organizationId: string,
+	defaults?: {
+		chunkSize: number;
+		chunkOverlap: number;
+		splitMethod: string | null;
+	},
+): Promise<ContextChunkSettings> {
+	if (!organizationId) {
+		throw new Error("getCompanyChunkSettings requires an organizationId");
+	}
+	const fallback = defaults ?? getDefaultRagSettings();
+	const settings = await getOrganizationRagSettings(organizationId);
+	const splitMethod = settings?.splitMethod ?? fallback.splitMethod;
+	return {
+		chunkSize: settings?.chunkSize ?? fallback.chunkSize,
+		chunkOverlap: settings?.chunkOverlap ?? fallback.chunkOverlap,
+		splitMethod,
+		strategy: splitMethod
+			? mapSplitMethodToStrategy(splitMethod)
+			: undefined,
+	};
+}
+
+/** One chunk of a company embed. */
+interface CompanyChunk {
+	/** What is embedded: the chunk with its document context, when enriched. */
+	embedText: string;
+	/** What the point stores, and retrieval hands the prompt. */
+	content: string;
+	chunkIndex: number;
+}
+
+/**
+ * Embed a company source's chunks and write them to the company collection
+ * (Fizzy #2719).
+ *
+ * One embedding call for all the chunks resolves the model once, so every
+ * point carries the same identity, and it is the identity of the model that
+ * call actually used. It is returned for the caller to mark its row with.
+ * One batched store writes the points.
+ *
+ * All or nothing: a source is ready only once it is marked embedded, so a
+ * missing embedding or a failed write fails the whole embed for the caller to
+ * record and retry. Point ids are deterministic, so a retry replaces what
+ * this pass wrote.
+ */
+async function embedCompanyChunks(
+	owner: Extract<EmbedOwner, { kind: "company" }>,
+	options: EmbedContextBody,
+	chunks: readonly CompanyChunk[],
+): Promise<CompanyEmbedResult> {
+	const { contextId, userId, organizationId, type, metadata } = options;
+
+	const result = await generateEmbeddings(
+		chunks.map((chunk) => chunk.embedText),
+		{
+			userId,
+			organizationId,
+			tags: ["company-context", type.toLowerCase()],
+			...COMPANY_EMBEDDING_RESOLUTION,
+		},
+	);
+	const embedded = result.embeddings.filter(
+		(embedding) => embedding && embedding.length > 0,
+	).length;
+	if (
+		result.embeddings.length !== chunks.length ||
+		embedded < chunks.length
+	) {
+		return {
+			success: false,
+			error: `Failed to embed ${chunks.length - embedded}/${chunks.length} chunks: empty embedding result`,
+		};
+	}
+	const embeddingModel = companyEmbeddingIdentity(result);
+
+	const ids = await storeCompanyContextPoints(
+		chunks.map((chunk, index) => ({
+			organizationId: owner.organizationId,
+			sourceId: owner.sourceId,
+			contextId,
+			parentContextId: owner.parentContextId ?? null,
+			contextType: owner.contextType,
+			embeddingModel,
+			sourceUrl: metadata?.sourceUrl ?? null,
+			sourceTitle: metadata?.sourceTitle ?? null,
+			content: chunk.content,
+			embedding: result.embeddings[index],
+			chunkIndex: chunk.chunkIndex,
+		})),
+	);
+
+	logger.info(
+		`[AutoEmbed] Successfully embedded company context ${contextId}: ${ids.length} chunk(s) with ${embeddingModel}`,
+	);
+	return {
+		success: true,
+		qdrantId: ids[0],
+		chunksCreated: ids.length,
+		embeddingModel,
+	};
+}
+
+/**
+ * Embed a company context source, or a crawled page of one (Fizzy #2719).
+ *
+ * The same chunking as `embedProjectContext`, with the organization's chunk
+ * settings, embedded with the organization's model into the organization's
+ * company collection. It never writes a row: the caller records the embed on
+ * its own row, with the model identity the result names.
+ */
+export async function embedCompanyContext(
+	options: EmbedCompanyContextOptions,
+): Promise<CompanyEmbedResult> {
+	const { company, ...body } = options;
+	return embedContext(
+		{ ...body, organizationId: company.organizationId, skipDbUpdate: true },
+		{ kind: "company", ...company },
+	);
+}
+
+/**
  * Embed a single project context
  *
  * This function:
@@ -139,9 +353,19 @@ function mapSplitMethodToStrategy(splitMethod: string): ChunkingStrategy {
 export async function embedProjectContext(
 	options: EmbedContextOptions,
 ): Promise<EmbedResult> {
+	return embedContext(options, {
+		kind: "project",
+		projectId: options.projectId,
+	});
+}
+
+/** The embed both owners share; `owner` decides settings and destination. */
+async function embedContext(
+	options: EmbedContextBody,
+	owner: EmbedOwner,
+): Promise<CompanyEmbedResult> {
 	const {
 		contextId,
-		projectId,
 		userId,
 		organizationId,
 		content,
@@ -150,9 +374,12 @@ export async function embedProjectContext(
 		metadata,
 		skipDbUpdate = false,
 	} = options;
+	const projectId = owner.kind === "project" ? owner.projectId : undefined;
 
 	logger.info(
-		`[AutoEmbed] Embedding context ${contextId} for project ${projectId}`,
+		owner.kind === "project"
+			? `[AutoEmbed] Embedding context ${contextId} for project ${projectId}`
+			: `[AutoEmbed] Embedding company context ${contextId} for organization ${owner.organizationId}`,
 	);
 
 	try {
@@ -164,18 +391,25 @@ export async function embedProjectContext(
 			return { success: true, chunksCreated: 0 };
 		}
 
-		// Normalize provider config
-		const providerConfig = normalizeProviderConfig(apiKey);
-
-		// Check API key
-		if (!providerConfig.apiKey) {
+		// A project embed checks the key it was handed. A company embed has
+		// none: its embedding call resolves the organization's own provider,
+		// and fails when there is none.
+		const providerConfig =
+			owner.kind === "project"
+				? normalizeProviderConfig(apiKey ?? "")
+				: undefined;
+		if (providerConfig && !providerConfig.apiKey) {
 			throw new Error(
 				"No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
 			);
 		}
 
-		// Get project's RAG settings for chunking configuration
-		const ragSettings = await getProjectRagSettings(projectId);
+		// Chunking configuration: the project's RAG settings, or for a company
+		// source its organization's.
+		const ragSettings =
+			owner.kind === "company"
+				? await getCompanyChunkSettings(owner.organizationId)
+				: await getProjectRagSettings(owner.projectId);
 
 		// Determine if we need to chunk.
 		//
@@ -196,10 +430,20 @@ export async function embedProjectContext(
 		if (needsChunking) {
 			// Route computed once and handed down — it carries the parsed
 			// document, so nothing below re-parses the spec.
-			return await embedWithChunking(options, ragSettings, specRoute);
+			return await embedWithChunking(
+				options,
+				owner,
+				ragSettings,
+				specRoute,
+			);
 		}
 
 		// Small content - embed as single chunk
+		if (owner.kind === "company") {
+			return await embedCompanyChunks(owner, options, [
+				{ embedText: content, content, chunkIndex: 0 },
+			]);
+		}
 		const embeddingResult = await generateEmbedding(
 			content,
 			{
@@ -223,7 +467,7 @@ export async function embedProjectContext(
 		// IMPORTANT: Always set originalContextId so filter-based deletion works consistently
 		const qdrantId = await storeProjectContext({
 			contextId,
-			projectId,
+			projectId: owner.projectId,
 			userId,
 			organizationId,
 			content,
@@ -286,17 +530,19 @@ export async function embedProjectContext(
  * Used for large content that needs to be split into multiple chunks
  */
 async function embedWithChunking(
-	options: EmbedContextOptions,
+	options: EmbedContextBody,
+	owner: EmbedOwner,
 	ragSettings: {
 		chunkSize: number;
 		chunkOverlap: number;
-		splitMethod: string;
+		// Null only from company settings without a text default, which
+		// the text path never asks for; the mapping's default applies.
+		splitMethod: string | null;
 	},
 	specRoute: ContentRoute,
-): Promise<EmbedResult> {
+): Promise<CompanyEmbedResult> {
 	const {
 		contextId,
-		projectId,
 		userId,
 		organizationId,
 		content,
@@ -305,9 +551,7 @@ async function embedWithChunking(
 		metadata,
 		skipDbUpdate = false,
 	} = options;
-
-	// Normalize provider config
-	const providerConfig = normalizeProviderConfig(apiKey);
+	const projectId = owner.kind === "project" ? owner.projectId : undefined;
 
 	logger.info(
 		`[AutoEmbed] Chunking content (${content.length} chars) with strategy=${ragSettings.splitMethod}, size=${ragSettings.chunkSize}`,
@@ -356,7 +600,7 @@ async function embedWithChunking(
 
 		// Map database split method to chunking strategy
 		// For markdown/code content, prefer DOCUMENT strategy regardless of settings
-		let strategy = mapSplitMethodToStrategy(ragSettings.splitMethod);
+		let strategy = mapSplitMethodToStrategy(ragSettings.splitMethod ?? "");
 		if (contentInfo.type === "markdown" || contentInfo.type === "code") {
 			strategy = "DOCUMENT";
 			logger.info(
@@ -383,6 +627,21 @@ async function embedWithChunking(
 	logger.info(
 		`[AutoEmbed] Created ${enrichedChunks.length} chunks for context ${contextId}`,
 	);
+
+	if (owner.kind === "company") {
+		return embedCompanyChunks(
+			owner,
+			options,
+			enrichedChunks.map((chunk) => ({
+				embedText: chunk.enrichedContent,
+				content: chunk.originalContent,
+				chunkIndex: chunk.index,
+			})),
+		);
+	}
+
+	// Normalize provider config
+	const providerConfig = normalizeProviderConfig(apiKey ?? "");
 
 	// Generate embeddings and store each chunk
 	let firstQdrantId: string | undefined;
@@ -428,7 +687,7 @@ async function embedWithChunking(
 			// can find and delete ALL chunks for a context (fixes orphaned chunk issue)
 			const qdrantId = await storeProjectContext({
 				contextId: chunkContextId,
-				projectId,
+				projectId: owner.projectId,
 				userId,
 				organizationId,
 				content: chunk.originalContent,

@@ -14,6 +14,7 @@ import {
 	type AgentTemplateScope,
 	Prisma,
 } from "../generated/client";
+import { OAUTH_APP_ROW_NAMES } from "./lib/oauth-app-row";
 
 // ============================================
 // BUILT-IN TOOL MAPPING
@@ -710,7 +711,10 @@ export async function createAgentTemplateInstance(
 			}
 		}
 
-		// Lookup OAuth integrations by provider
+		// Lookup the creator's OWN OAuth connections by provider (XOR tenant
+		// isolation). A connection is personal to the member who made it, so
+		// the org arm filters by userId too — otherwise every teammate's
+		// connection for the provider would be bound to this instance.
 		if (oauthProvidersToLookup.length > 0) {
 			const oauthIntegrations = await db.workflowIntegration.findMany({
 				where: params.organizationId
@@ -718,8 +722,12 @@ export async function createAgentTemplateInstance(
 							provider: {
 								in: oauthProvidersToLookup as OAuthProviderType[],
 							},
+							userId: params.userId,
 							organizationId: params.organizationId,
 							isActive: true,
+							// <PROVIDER>_OAUTH_APP rows hold OAuth client
+							// credentials, not a connection to bind.
+							NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 						}
 					: {
 							provider: {
@@ -728,6 +736,7 @@ export async function createAgentTemplateInstance(
 							userId: params.userId,
 							organizationId: null,
 							isActive: true,
+							NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 						},
 				select: {
 					id: true,
@@ -831,6 +840,56 @@ export interface UpdateAgentTemplateInstanceParams {
 	createNewVersion?: boolean;
 }
 
+interface ExistingIntegrationConfig {
+	integrationId: string;
+	integrationType: string;
+	isEnabled: boolean;
+	allowedResources: Prisma.JsonValue | null;
+}
+
+/**
+ * The OAuth providers already bound (enabled) on an instance. The editor
+ * re-sends every OAuth selection as an `"oauth"` marker on each save, so a
+ * marker for one of these providers means "keep the existing binding", not
+ * "bind the acting user's connection": an authorized teammate editing the
+ * instance must neither be blocked for lacking their own connection nor
+ * silently replace the owner's. Only newly selected providers resolve through
+ * the acting user. Shared by the update query below and the API validation.
+ */
+function boundOAuthConfigs(
+	configs: ExistingIntegrationConfig[],
+): Map<string, ExistingIntegrationConfig[]> {
+	const byProvider = new Map<string, ExistingIntegrationConfig[]>();
+	for (const config of configs) {
+		if (!config.isEnabled || !isOAuthProviderType(config.integrationType)) {
+			continue;
+		}
+		const list = byProvider.get(config.integrationType) ?? [];
+		list.push(config);
+		byProvider.set(config.integrationType, list);
+	}
+	return byProvider;
+}
+
+/**
+ * OAuth provider types with an enabled binding on the instance — what
+ * `updateAgentTemplateInstance` preserves for an unchanged `"oauth"` marker.
+ */
+export async function getBoundOAuthProviderTypes(
+	instanceId: string,
+): Promise<Set<string>> {
+	const configs = await db.agentIntegrationConfiguration.findMany({
+		where: { instanceId, isEnabled: true },
+		select: {
+			integrationId: true,
+			integrationType: true,
+			isEnabled: true,
+			allowedResources: true,
+		},
+	});
+	return new Set(boundOAuthConfigs(configs).keys());
+}
+
 /**
  * Resolve knowledgeConnections to integration configuration records.
  * Handles both "oauth" markers and direct integration IDs.
@@ -840,6 +899,7 @@ async function resolveKnowledgeConnectionsToConfigs(
 	userId: string,
 	organizationId?: string,
 	knowledgeResources?: Record<string, { schema: string; indexes: string[] }>,
+	existingConfigs: ExistingIntegrationConfig[] = [],
 ): Promise<
 	Array<{
 		integrationId: string;
@@ -859,10 +919,24 @@ async function resolveKnowledgeConnectionsToConfigs(
 
 	const connections = knowledgeConnections as Record<string, unknown>;
 	const oauthProvidersToLookup: string[] = [];
+	const alreadyBound = boundOAuthConfigs(existingConfigs);
 
-	// First pass: collect OAuth providers that need lookup
+	// First pass: keep existing bindings for providers that are still
+	// selected, and collect newly selected OAuth providers for lookup
 	for (const [provider, value] of Object.entries(connections)) {
-		if (value === "oauth" && isOAuthProviderType(provider)) {
+		const kept = value === "oauth" ? alreadyBound.get(provider) : undefined;
+		if (kept) {
+			for (const config of kept) {
+				configs.push({
+					integrationId: config.integrationId,
+					integrationType: config.integrationType,
+					allowedResources:
+						knowledgeResources?.[provider] ??
+						(config.allowedResources as Prisma.InputJsonValue | null) ??
+						undefined,
+				});
+			}
+		} else if (value === "oauth" && isOAuthProviderType(provider)) {
 			oauthProvidersToLookup.push(provider);
 		} else if (
 			typeof value === "string" &&
@@ -878,7 +952,8 @@ async function resolveKnowledgeConnectionsToConfigs(
 		}
 	}
 
-	// Lookup OAuth integrations by provider
+	// Lookup the caller's OWN OAuth connections by provider (XOR tenant
+	// isolation; the org arm filters by userId too, never a teammate's).
 	if (oauthProvidersToLookup.length > 0) {
 		const oauthIntegrations = await db.workflowIntegration.findMany({
 			where: organizationId
@@ -886,8 +961,12 @@ async function resolveKnowledgeConnectionsToConfigs(
 						provider: {
 							in: oauthProvidersToLookup as OAuthProviderType[],
 						},
+						userId,
 						organizationId,
 						isActive: true,
+						// <PROVIDER>_OAUTH_APP rows hold OAuth client
+						// credentials, not a connection to bind.
+						NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 					}
 				: {
 						provider: {
@@ -896,6 +975,7 @@ async function resolveKnowledgeConnectionsToConfigs(
 						userId,
 						organizationId: null,
 						isActive: true,
+						NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 					},
 			select: {
 				id: true,
@@ -959,6 +1039,7 @@ export async function updateAgentTemplateInstance(
 				userId,
 				organizationId,
 				knowledgeResources,
+				current.integrationConfigurations,
 			)
 		: null;
 

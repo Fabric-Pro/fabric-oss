@@ -176,7 +176,7 @@ const PROBE_BUDGET_MS = 15_000;
 const MAX_PROBES = 20;
 const PROBE_CONCURRENCY = 4;
 
-const LOGIN_COMMAND = "fabric auth login --key <api-key>";
+const LOGIN_COMMAND = "fabric auth login";
 const CLI_INSTALL_COMMAND = "npm install -g @fabricorg/cli";
 /** The read-only git inspection's whole budget. */
 const GIT_BUDGET_MS = 10_000;
@@ -671,10 +671,10 @@ async function checkAuth(
 				id,
 				"server",
 				"fail",
-				"no API key: FABRIC_API_KEY is not set and the active profile stores none",
+				"no API key or sign-in: FABRIC_API_KEY is not set and the active profile stores neither",
 				{
 					fix: fixOf(
-						"log in with an organization API key that carries instructions:read (create one in the organization's Settings → API keys)",
+						"sign in through your browser, or for CI log in with an organization API key that carries instructions:read (create one in the organization's Settings → API keys)",
 						LOGIN_COMMAND,
 					),
 				},
@@ -717,14 +717,17 @@ async function checkAuth(
 	}
 
 	const keyType =
-		who.keyType === "organization" || who.keyType === "personal"
+		who.keyType === "organization" ||
+		who.keyType === "personal" ||
+		who.keyType === "oauth"
 			? who.keyType
 			: "unknown";
 	const prefix =
 		typeof who.keyPrefix === "string" && who.keyPrefix.length > 0
 			? sanitizeDisplayText(who.keyPrefix, 24)
 			: "(no prefix)";
-	const label = `${keyType} key ${prefix}`;
+	const label =
+		keyType === "oauth" ? "signed-in session" : `${keyType} key ${prefix}`;
 
 	if (!Array.isArray(who.scopes)) {
 		// Not a refusal: the project read below is the real test.

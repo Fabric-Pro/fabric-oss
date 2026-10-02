@@ -63,6 +63,68 @@ beforeEach(() => {
 describe("projects.instructions.publish", () => {
 	// Spec §4: while a repository is the source of truth, History may not
 	// publish an uploaded version — the same refusal an edit gets.
+	it("maps published_changed to CONFLICT PUBLISHED_CHANGED with the current version, and audits and warms nothing", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "published_changed",
+			currentPublishedVersion: 9,
+		});
+
+		await expect(
+			m.handlers.publish!({
+				input: {
+					projectId: "p",
+					snapshotId: "s",
+					expectedPublishedSnapshotId: "old",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { reason: "PUBLISHED_CHANGED", publishedVersion: 9 },
+		});
+
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.runInBackground).not.toHaveBeenCalled();
+	});
+
+	it("forwards the pointer the caller saw, including null for nothing published, and forwards nothing when it is omitted", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: false,
+		});
+
+		await m.handlers.publish!({
+			input: {
+				projectId: "p",
+				snapshotId: "s",
+				expectedPublishedSnapshotId: "saw",
+			},
+			context: ctx,
+		});
+		await m.handlers.publish!({
+			input: {
+				projectId: "p",
+				snapshotId: "s",
+				expectedPublishedSnapshotId: null,
+			},
+			context: ctx,
+		});
+		await m.handlers.publish!({
+			input: { projectId: "p", snapshotId: "s" },
+			context: ctx,
+		});
+
+		const [saw, none, omitted] =
+			m.publishInstructionSnapshot.mock.calls.map(
+				([arg]) => arg as Record<string, unknown>,
+			);
+		expect(saw?.expectedPublishedSnapshotId).toBe("saw");
+		expect(none).toHaveProperty("expectedPublishedSnapshotId", null);
+		expect(omitted).not.toHaveProperty("expectedPublishedSnapshotId");
+	});
+
 	it("maps a repository_backed refusal to PRECONDITION_FAILED and audits nothing", async () => {
 		m.publishInstructionSnapshot.mockResolvedValue({
 			published: false,

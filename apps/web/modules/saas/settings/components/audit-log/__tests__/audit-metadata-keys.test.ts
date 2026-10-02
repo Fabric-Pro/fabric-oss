@@ -27,7 +27,7 @@
  */
 
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { keyIsSensitive } from "@repo/utils/sensitive-keys";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -109,7 +109,8 @@ function scan(): ScanResult {
 		if (!WRITES_AUDIT.test(text)) {
 			continue;
 		}
-		const path = relative(REPO_ROOT, file);
+		// Reported with `/` on every platform, so the allowlist and the messages match.
+		const path = relative(REPO_ROOT, file).split(sep).join("/");
 		const sf = ts.createSourceFile(
 			file,
 			text,

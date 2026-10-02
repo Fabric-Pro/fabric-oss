@@ -20,6 +20,7 @@ const notionPlugin: IntegrationPlugin = {
 
 	formFields: [],
 	SettingsComponent: NotionSettings,
+	ownsDisconnect: true,
 	testConfig: {
 		skipClientTest: true,
 	},

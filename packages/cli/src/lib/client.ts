@@ -4,7 +4,8 @@
  */
 
 import { FabricAuthError, FabricClient } from "@fabricorg/sdk";
-import { getApiKey, getBaseUrl } from "./config.js";
+import { getApiKey, getBaseUrl, getOAuth, hasStoredApiKey } from "./config.js";
+import { createOAuthFetch } from "./oauth/session.js";
 import { printError } from "./output.js";
 
 export interface ClientOverrides {
@@ -25,18 +26,23 @@ export interface ClientOverrides {
 }
 
 export function getClient(overrides: ClientOverrides = {}): FabricClient {
-	const apiKey = getApiKey();
+	const apiKey = hasStoredApiKey() ? getApiKey() : undefined;
+	const oauth = apiKey ? undefined : getOAuth();
 
-	if (!apiKey) {
+	if (!apiKey && !oauth) {
 		printError(
-			"Not authenticated. Run:\n  fabric auth login --key <api-key>",
+			"Not authenticated. Run:\n  fabric auth login\nor, for CI:\n  fabric auth login --key <api-key>",
 			3,
 		);
 	}
 
 	try {
 		return new FabricClient({
-			apiKey,
+			// A browser sign-in's token is refreshed per request by the fetch
+			// below, which overwrites the Authorization header; what is passed
+			// here only satisfies the client's need for a credential.
+			apiKey: apiKey ?? oauth?.accessToken,
+			...(oauth ? { fetch: createOAuthFetch() } : {}),
 			baseUrl: getBaseUrl(),
 			...(overrides.timeoutMs !== undefined
 				? { timeoutMs: overrides.timeoutMs }

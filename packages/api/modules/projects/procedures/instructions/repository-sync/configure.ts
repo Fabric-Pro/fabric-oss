@@ -10,6 +10,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { queueRepositorySyncFollowUp } from "../../../lib/repository-sync-follow-up";
 import { requireHostingOrganizationId } from "../hosting-organization";
 import { projectIgnoreGlobsSchema } from "../ignore-globs-input";
 import {
@@ -20,6 +21,7 @@ import {
 	repositoryReadError,
 	resolveInstructionSyncCredential,
 } from "./repository";
+import { isInstructionRepositorySyncRunning } from "./start-sync-workflow";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
@@ -41,6 +43,13 @@ import {
  * which under its lock. Either is audited as
  * `project.instructions.repository_sync_configured`; the `*Changed` flags
  * say which it was.
+ *
+ * A change to what is synced made while a run is open fences that run, and
+ * "Sync now" is refused until it closes, so the new selection would not sync
+ * on its own. In that case a follow-up run is queued
+ * (`queueRepositorySyncFollowUp`), which starts it as soon as the open one
+ * closes, and the answer says so with `syncQueued: true`: the client then
+ * does not call `syncNow`. Absent otherwise, and when queueing failed.
  *
  * `ignoreGlobs` (Fizzy #2726) carries the configure dialog's folder
  * exclusions: the project's own ignore list, written in the SAME transaction
@@ -182,5 +191,27 @@ export const configureRepositorySyncProcedure = tenantProtectedProcedure
 				metadata: { ignoreGlobCount: input.ignoreGlobs?.length ?? 0 },
 			});
 		}
-		return { syncId: written.sync.id, generation: written.sync.generation };
+		// Only a change to what is synced fences an open run; the automatic
+		// toggle and "Re-enable" leave it to finish.
+		const selectionChanged =
+			written.previous !== null &&
+			(written.previous.repositoryIntegrationId !==
+				written.sync.repositoryIntegrationId ||
+				written.previous.ref !== written.sync.ref ||
+				written.previous.rootPath !== written.sync.rootPath ||
+				written.ignoreGlobsChanged);
+		const syncQueued =
+			selectionChanged &&
+			(await isInstructionRepositorySyncRunning(input.projectId)) &&
+			(await queueRepositorySyncFollowUp({
+				subject: "instructions",
+				projectId: input.projectId,
+				organizationId,
+				requesterUserId: context.user.id,
+			}));
+		return {
+			syncId: written.sync.id,
+			generation: written.sync.generation,
+			...(syncQueued ? { syncQueued: true as const } : {}),
+		};
 	});

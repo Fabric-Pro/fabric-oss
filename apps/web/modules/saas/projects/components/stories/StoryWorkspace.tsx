@@ -24,6 +24,7 @@ import {
 	useClarifyingQuestions,
 } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { FocusModeToggle } from "@saas/shared/components/FocusModeToggle";
+import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { formatDistanceToNow } from "date-fns";
 import { CustomMessages } from "../copilot/CustomMessages";
@@ -139,9 +140,14 @@ import {
 import {
 	extractStoryS3KeyFromImgSrc,
 	extractStoryS3KeysFromContent,
+	keyWithinPrefix,
 	resolveStoryImageUrls,
 	uploadStoryImage,
 } from "../../lib/image-upload-utils";
+import {
+	createSignedMediaUrlRefresher,
+	type SignedMediaUrlRefresher,
+} from "../../lib/signed-media-url-refresher";
 import { shouldDeferStoryPropSync } from "../../lib/stories/diff-review-guard";
 import { restorePendingDecisions } from "../../lib/stories/pending-decisions-preserve";
 import {
@@ -630,6 +636,7 @@ export function StoryWorkspace({
 	const { user } = useSession();
 	const sessionUser = user;
 	const { organizationId, basePath } = useOrganizationContext();
+	const { isFocusMode } = useFocusMode();
 	// Cross-tab BroadcastChannel listener: mirrors the wiring in
 	// DocumentEditor.tsx so the StoryWorkspace surface (USER_STORY scope)
 	// also picks up history mutations from sibling tabs.
@@ -1367,6 +1374,10 @@ export function StoryWorkspace({
 	const imageUploaderRef = useRef<
 		((file: File, signal: AbortSignal) => Promise<void>) | null
 	>(null);
+
+	// Keeps uploaded images and pulled file links on a live signed URL; the
+	// upload callback hands it the URL it just signed.
+	const mediaUrlRefresherRef = useRef<SignedMediaUrlRefresher | null>(null);
 
 	/**
 	 * Stable wrapper passed to the shared clipboard hook. The hook keeps a
@@ -2216,6 +2227,7 @@ export function StoryWorkspace({
 				// `updateAttributes` would target the wrong node.
 				editor.commands.removeImageUpload(uploadId);
 				if (signedUrl) {
+					mediaUrlRefresherRef.current?.remember(s3Key, signedUrl);
 					editor
 						.chain()
 						.focus()
@@ -2255,95 +2267,41 @@ export function StoryWorkspace({
 	// always sees the latest closure (with the up-to-date `editor` instance).
 	imageUploaderRef.current = handleStoryImageUpload;
 
-	// Re-resolve expired story-media S3 signed URLs on mount and whenever the
-	// editor instance changes. Signed URLs expire after 1 hour, so loading a
-	// story with previously-uploaded images requires a fresh resolve. Mirrors
-	// `DocumentEditor.tsx:1713` for the story-media keyspace.
+	// Uploaded images are stored with the URL signed at upload time, which
+	// expires after an hour. Re-sign them — and the `href` of file links pulled
+	// from a PM tool (`<a data-s3-key>`) — on load AND whenever one is
+	// re-rendered from the document, which brings that expired URL back.
+	// Shares DocumentEditor's refresher (Fizzy #2800).
 	useEffect(() => {
 		if (!editor) {
 			return;
 		}
-		let cancelled = false;
-		const resolveUrls = async (): Promise<void> => {
-			const editorDom = editor.view.dom;
-			const images = editorDom.querySelectorAll("img[src]");
-			const keyMap = new Map<string, HTMLImageElement[]>();
-			// Anchors carrying `data-s3-key` are file attachments pulled from a
-			// PM tool — refresh their `href` the same way images refresh `src`.
-			const anchorMap = new Map<string, HTMLAnchorElement[]>();
-			for (const img of images) {
-				const src = img.getAttribute("src") || "";
-				// Handles bare markdown (`story-media/...`), root-relative
-				// (`/story-media/...`), and signed-URL (`https://.../story-media/...?Sig`)
-				// shapes. See `extractStoryS3KeyFromImgSrc` for the contract +
-				// tests.
-				const key = extractStoryS3KeyFromImgSrc(src);
-				if (key) {
-					if (!keyMap.has(key)) {
-						keyMap.set(key, []);
-					}
-					keyMap.get(key)?.push(img as HTMLImageElement);
-				}
-			}
-			for (const a of editorDom.querySelectorAll("a[data-s3-key]")) {
-				const key = a.getAttribute("data-s3-key") || "";
-				if (!key.startsWith("story-media/")) {
-					continue;
-				}
-				if (!keyMap.has(key)) {
-					keyMap.set(key, []);
-				}
-				if (!anchorMap.has(key)) {
-					anchorMap.set(key, []);
-				}
-				anchorMap.get(key)?.push(a as HTMLAnchorElement);
-			}
-			// Also check editor JSON for keys referenced as `data-s3-key`
-			// (extracted via the shared helper) so newly-loaded content with
-			// only the data attribute and no resolved src still gets refreshed.
-			const html = editor.getHTML();
-			for (const key of extractStoryS3KeysFromContent(html)) {
-				if (!keyMap.has(key)) {
-					keyMap.set(key, []);
-				}
-			}
-			if (keyMap.size === 0) {
-				return;
-			}
-			try {
-				const urls = await resolveStoryImageUrls({
+		const ownKeys = `story-media/${projectId}/${story.id}/`;
+		const refresher = createSignedMediaUrlRefresher({
+			editor,
+			// Handles bare markdown (`story-media/...`), root-relative and
+			// signed-URL shapes — see `extractStoryS3KeyFromImgSrc`.
+			keyFromImageSrc: (src) =>
+				keyWithinPrefix(extractStoryS3KeyFromImgSrc(src), ownKeys),
+			keyFromStoredKey: (key) => keyWithinPrefix(key, ownKeys),
+			refreshLinks: true,
+			resolve: (s3Keys) =>
+				resolveStoryImageUrls({
 					projectId,
 					userStoryId: story.id,
 					organizationId: organizationId ?? null,
-					s3Keys: [...keyMap.keys()],
-				});
-				if (cancelled) {
-					return;
-				}
-				for (const [key, imgEls] of keyMap) {
-					const freshUrl = urls[key];
-					if (!freshUrl) {
-						continue;
-					}
-					for (const img of imgEls) {
-						img.setAttribute("src", freshUrl);
-					}
-					for (const a of anchorMap.get(key) ?? []) {
-						a.setAttribute("href", freshUrl);
-					}
-				}
-			} catch (e) {
+					s3Keys,
+				}),
+			onError: (e) =>
 				console.error(
 					"[StoryWorkspace] Failed to resolve story-media URLs:",
 					e,
-				);
-			}
-		};
-		// Delay slightly to ensure editor content is rendered.
-		const timer = setTimeout(resolveUrls, 500);
+				),
+		});
+		mediaUrlRefresherRef.current = refresher;
 		return () => {
-			cancelled = true;
-			clearTimeout(timer);
+			refresher.destroy();
+			mediaUrlRefresherRef.current = null;
 		};
 	}, [editor, projectId, story.id, organizationId]);
 
@@ -6117,9 +6075,18 @@ export function StoryWorkspace({
 							)}
 							{/* Delivery track, estimate confidence, readiness gates,
 							    discovery runs and spike evidence (inverted-loop
-							    Slices 2–5, 7) — always visible above the stage rail. */}
+							    Slices 2–5, 7) — collapsed in Focus Mode to maximize editor space. */}
 							{!isUserGenerationActive && (
-								<div className="space-y-3 border-b px-6 py-3">
+								<div
+									data-testid="engagement-profile-metadata-row"
+									className={cn(
+										"space-y-3 border-b px-6 py-3",
+										isFocusMode && "hidden",
+									)}
+									hidden={isFocusMode}
+									aria-hidden={isFocusMode}
+									inert={isFocusMode ? true : undefined}
+								>
 									<div className="flex flex-wrap items-start gap-4">
 										<DeliveryTrackSelector
 											projectId={projectId}

@@ -3,6 +3,7 @@ import {
 	INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID,
 	instructionRepositorySyncWorkflowId,
 	instructionSnapshotWorkflowId,
+	repositorySyncFollowUpWorkflowId,
 } from "../src/workflow-ids";
 
 describe("workflow ids", () => {
@@ -28,5 +29,16 @@ describe("workflow ids", () => {
 				INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID,
 			);
 		}
+	});
+	it("gives each subject and project one follow-up id, distinct from the sync's own", () => {
+		expect(repositorySyncFollowUpWorkflowId("context", "proj_1")).toBe(
+			"repository-sync-follow-up-context-proj_1",
+		);
+		expect(repositorySyncFollowUpWorkflowId("instructions", "proj_1")).toBe(
+			"repository-sync-follow-up-instructions-proj_1",
+		);
+		expect(
+			repositorySyncFollowUpWorkflowId("instructions", "proj_1"),
+		).not.toBe(instructionRepositorySyncWorkflowId("proj_1"));
 	});
 });

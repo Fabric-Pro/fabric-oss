@@ -1,3 +1,4 @@
+import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { passkeyClient } from "@better-auth/passkey/client";
 import {
 	adminClient,
@@ -28,6 +29,10 @@ export const authClient = createAuthClient({
 		adminClient(),
 		passkeyClient(),
 		twoFactorClient(),
+		// Signing in during an agent's authorization resumes it: the plugin
+		// attaches the signed authorization query to the sign-in request and
+		// the server answers with the page to continue to.
+		oauthProviderClient(),
 	],
 });
 

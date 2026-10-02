@@ -23,6 +23,8 @@ const { mocks } = vi.hoisted(() => ({
 		resolveEffectiveProjectPermissions: vi.fn(),
 		hasProjectAccess: vi.fn(),
 		buildInstructionSnapshotZip: vi.fn(),
+		/** The storage provider's per-file signer behind `published/files`. */
+		getSignedUrl: vi.fn(),
 		submitInstructionChange: vi.fn(),
 		getProposalPullRequestStatus: vi.fn(),
 		/** `readOpenProposals`, the service behind `proposals/open`. */
@@ -64,6 +66,13 @@ vi.mock("@repo/database", () => ({
 // Only the real pull-request service reaches for this, and only to start a
 // workflow, which the status read never does.
 vi.mock("@repo/temporal", () => ({ getTemporalClient: vi.fn() }));
+
+vi.mock("@repo/storage", () => ({
+	getStorageProvider: () => ({ getSignedUrl: mocks.getSignedUrl }),
+}));
+vi.mock("@repo/config", () => ({
+	config: { storage: { bucketNames: { skills: "skills" } } },
+}));
 
 vi.mock("../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions:
@@ -157,7 +166,7 @@ const PUBLISHED_PATH = `/projects/${PROJECT}/instructions/published`;
  * PROJECT supplies the tenant on this surface — see the gate's own comment.
  */
 let apiContext: {
-	keyType: "personal" | "organization";
+	keyType: "personal" | "organization" | "oauth";
 	userId: string;
 	organizationId?: string;
 	scopes: string[];
@@ -646,6 +655,29 @@ describe("authorization", () => {
 
 		expect(response.status).toBe(200);
 	});
+
+	/**
+	 * A signed-in agent is bound to the organization chosen at consent,
+	 * exactly like an organization key: a project hosted elsewhere is not
+	 * found, whatever the person could reach in the browser.
+	 */
+	it("keeps a signed-in agent bound to the organization it was approved for", async () => {
+		apiContext = { ...organizationKey("org-other"), keyType: "oauth" };
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["instruction:read"],
+			source: "project-member",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+
+		expect(response.status).toBe(404);
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+
+		apiContext = { ...organizationKey(ORG), keyType: "oauth" };
+		const admitted = await buildApp().request(PUBLISHED_PATH);
+		expect(admitted.status).toBe(200);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1162,197 @@ describe("POST /projects/:projectId/instructions/published/download", () => {
 
 		expect(response.status).toBe(403);
 		expect(mocks.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// POST /projects/:projectId/instructions/published/files
+// ---------------------------------------------------------------------------
+/**
+ * Signed URLs for named files, so a sync that writes a few files of a large
+ * tree does not download the archive. The route resolves the project exactly
+ * like `published/download` — same scope, same live permission, same tenant —
+ * and adds one rule of its own: the caller names the digest it planned
+ * against, and a published version that has moved on is 409 before any URL is
+ * signed.
+ */
+describe("POST /projects/:projectId/instructions/published/files", () => {
+	const path = `${PUBLISHED_PATH}/files`;
+	const DIGEST = "d".repeat(64);
+
+	beforeEach(() => {
+		mocks.getSignedUrl.mockImplementation(
+			async (key: string) => `https://storage.example.com/${key}?sig=x`,
+		);
+	});
+
+	it("signs a URL for each named file and nothing else, echoing no storage key", async () => {
+		const response = await buildApp().request(
+			postJson(path, {
+				digest: DIGEST,
+				paths: [".claude/skills/review/SKILL.md"],
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: {
+				snapshotId: "snap-2",
+				digest: DIGEST,
+				files: [
+					{
+						path: ".claude/skills/review/SKILL.md",
+						sha256: "b".repeat(64),
+						size: 64,
+						mode: 33188,
+						url: "https://storage.example.com/snapshots/secret-key-2?sig=x",
+					},
+				],
+				expiresInSeconds: 600,
+			},
+		});
+		expect(mocks.getSignedUrl).toHaveBeenCalledTimes(1);
+		expect(mocks.getSignedUrl).toHaveBeenCalledWith(
+			"snapshots/secret-key-2",
+			{
+				bucket: "skills",
+				expiresIn: 600,
+			},
+		);
+		expect(mocks.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+	});
+
+	it("is 409 PUBLISHED_CHANGED, signing nothing, when the digest is not the published one", async () => {
+		const response = await buildApp().request(
+			postJson(path, { digest: "e".repeat(64), paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"The published version changed since this digest; fetch the manifest again",
+				code: "PUBLISHED_CHANGED",
+			},
+		});
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("is 404 FILE_NOT_FOUND, signing nothing, when any path is not in the published version", async () => {
+		const response = await buildApp().request(
+			postJson(path, {
+				digest: DIGEST,
+				paths: ["AGENTS.md", "missing.md"],
+			}),
+		);
+
+		expect(response.status).toBe(404);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message: "Some paths are not in the published version",
+				code: "FILE_NOT_FOUND",
+				paths: ["missing.md"],
+			},
+		});
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("404s when the project has nothing published", async () => {
+		mocks.getPublishedInstructionSnapshot.mockResolvedValue(null);
+
+		const response = await buildApp().request(
+			postJson(path, { digest: DIGEST, paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	it.each([
+		["a missing digest", { paths: ["AGENTS.md"] }],
+		["an empty digest", { digest: "", paths: ["AGENTS.md"] }],
+		["no paths", { digest: DIGEST, paths: [] }],
+		["a non-string path", { digest: DIGEST, paths: [1] }],
+		["an empty path", { digest: DIGEST, paths: [""] }],
+		[
+			"a duplicate path",
+			{ digest: DIGEST, paths: ["AGENTS.md", "AGENTS.md"] },
+		],
+		[
+			"more than 200 paths",
+			{
+				digest: DIGEST,
+				paths: Array.from({ length: 201 }, (_, i) => `f${i}.md`),
+			},
+		],
+	])("refuses %s with 400 before any lookup", async (_label, body) => {
+		const response = await buildApp().request(postJson(path, body));
+
+		expect(response.status).toBe(400);
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("refuses a body that is not JSON", async () => {
+		const response = await buildApp().request(
+			new Request(`http://localhost${path}`, {
+				method: "POST",
+				body: "not json",
+			}),
+		);
+
+		expect(response.status).toBe(400);
+	});
+
+	it("refuses a key without instructions:read", async () => {
+		mocks.scopes = ["projects:read"];
+
+		const response = await buildApp().request(
+			postJson(path, { digest: DIGEST, paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("is a 404 for an organization key of another organization, and signs nothing", async () => {
+		apiContext = organizationKey("org-2");
+
+		const response = await buildApp().request(
+			postJson(path, { digest: DIGEST, paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(404);
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("is a 404 for a caller with no tie to the project, and signs nothing", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "none",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(
+			postJson(path, { digest: DIGEST, paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(404);
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("is 403 when the creator no longer holds the read permission", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: ORG,
+		});
+
+		const response = await buildApp().request(
+			postJson(path, { digest: DIGEST, paths: ["AGENTS.md"] }),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
 	});
 });
 

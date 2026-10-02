@@ -5,6 +5,7 @@ import {
 	parseFrontmatter,
 	SNAPSHOT_LIMITS,
 } from "@repo/instructions";
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import {
 	editInstructionSnapshot,
 	type InstructionEdit,
@@ -165,6 +166,7 @@ export function InstructionFileView({
 	/** Refresh the tab's snapshot list and published pointer after a save. */
 	onChanged?: () => void;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.fileView");
 	const kindLabels = t.raw("kindLabels") as Record<string, string>;
 	const q = useQuery(
@@ -321,7 +323,7 @@ export function InstructionFileView({
 			);
 			onChanged?.();
 		},
-		onError: (error: Error) => toast.error(error.message),
+		onError: (error: Error) => toast.error(actionError(error)),
 	});
 
 	if (q.isLoading) {

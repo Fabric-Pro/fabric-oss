@@ -265,6 +265,12 @@ export {
 	TEST_CASE_IMPLEMENTATION_REVISER_PROMPT_FALLBACK_BODY,
 	TEST_CASE_STEP_REVISER_PROMPT_FALLBACK_BODY,
 } from "./lib/prompts/test-case-step-revision";
+// --- Gateway text-to-speech (from lib/speech-model) ---
+export {
+	type AISpeechModelResult,
+	GATEWAY_SPEECH_MODEL_ID,
+	getAISpeechModel,
+} from "./lib/speech-model";
 // --- Work-item title generation (from lib/story-title-generator) ---
 export {
 	generateStoryTitleFromDescription,

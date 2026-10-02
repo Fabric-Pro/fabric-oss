@@ -208,7 +208,9 @@ beforeEach(() => {
 	m.readRepositoryFile.mockResolvedValue({
 		ok: true,
 		state: "found",
-		text: "# generated\nbuild/\n\n!keep.md\n  dist/**  \n",
+		bytes: new TextEncoder().encode(
+			"# generated\nbuild/\n\n!keep.md\n  dist/**  \n",
+		),
 	});
 });
 
@@ -367,13 +369,43 @@ describe("repositorySync.readIgnoreFile (instructions)", () => {
 		m.readRepositoryFile.mockResolvedValue({
 			ok: true,
 			state: "found",
-			text: "# only a comment\n\n",
+			bytes: new TextEncoder().encode("# only a comment\n\n"),
 		});
 
 		expect(await call(input)).toEqual({
 			supported: true,
 			state: "rules",
 			rules: [],
+		});
+	});
+
+	it("answers a UTF-16 file as an encoding problem with no rules, as the sync refuses it", async () => {
+		const utf16 = new Uint8Array([
+			0xff, 0xfe, 0x62, 0x00, 0x2f, 0x00, 0x0a, 0x00,
+		]);
+		m.readRepositoryFile.mockResolvedValue({
+			ok: true,
+			state: "found",
+			bytes: utf16,
+		});
+
+		expect(await call(input)).toEqual({
+			supported: true,
+			state: "encoding",
+			rules: [],
+		});
+	});
+
+	it("answers a file with invalid UTF-8 as an encoding problem rather than repairing it", async () => {
+		m.readRepositoryFile.mockResolvedValue({
+			ok: true,
+			state: "found",
+			bytes: new Uint8Array([0x62, 0x75, 0x69, 0x6c, 0x64, 0xff, 0x0a]),
+		});
+
+		expect(await call(input)).toMatchObject({
+			supported: true,
+			state: "encoding",
 		});
 	});
 

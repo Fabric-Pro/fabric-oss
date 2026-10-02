@@ -26,6 +26,29 @@ describe("ORG_ROLE_PERMISSIONS", () => {
 		},
 	);
 
+	// The MCP gateway's instruction reads gate on project access
+	// (`getProjectAccessContext`), which any role with a tie to the project
+	// passes. That is equivalent to `INSTRUCTION_READ` only while EVERY role
+	// holds it: a role that could see a project without it would read
+	// instructions over MCP that the app and the v1 API refuse.
+	it.each(Object.entries(ORG_ROLE_PERMISSIONS))(
+		"org %s holds INSTRUCTION_READ",
+		(_role, permissions) => {
+			expect(
+				hasPermission(permissions, Permissions.INSTRUCTION_READ),
+			).toBe(true);
+		},
+	);
+
+	it.each(Object.entries(PROJECT_ROLE_PERMISSIONS))(
+		"project %s holds INSTRUCTION_READ",
+		(_role, permissions) => {
+			expect(
+				hasPermission(permissions, Permissions.INSTRUCTION_READ),
+			).toBe(true);
+		},
+	);
+
 	it("owner has ORG_DELETE", () => {
 		expect(
 			hasPermission(ORG_ROLE_PERMISSIONS.owner, Permissions.ORG_DELETE),

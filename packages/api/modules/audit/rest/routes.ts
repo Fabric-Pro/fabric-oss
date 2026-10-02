@@ -357,7 +357,14 @@ export function createAuditLogRestRoutes() {
 	// also audits REJECTED attempts (bad key, revoked key, insufficient scope,
 	// rate-limited) — previously only successful reads left a row, so a key being
 	// probed or replayed after revocation was invisible.
-	app.use("*", apiKeyRestAuth());
+	//
+	// Scoped to this surface's own paths, never "*": the app is mounted at
+	// `/v1` beside the public v1 API, and a "*" middleware here ran for EVERY
+	// `/v1` request — refusing the v1 API's own credentials (a signed-in
+	// agent's access token) before its routes were reached, and charging each
+	// v1 call to this surface's rate limit. "/audit-log/*" also matches the
+	// bare "/audit-log".
+	app.use("/audit-log/*", apiKeyRestAuth());
 
 	// =========================================================================
 	// GET /audit-log — paginated list

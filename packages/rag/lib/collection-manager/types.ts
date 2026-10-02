@@ -10,6 +10,7 @@ export type BaseCollectionName =
 	| "chat-documents"
 	| "workspace-documents"
 	| "project-contexts"
+	| "company-contexts"
 	| "fabric_orchestrator_memory"
 	| "fabric_episodic_memory"
 	| "fabric_capabilities";
@@ -57,6 +58,12 @@ export interface CollectionConfig {
 	 * Existing collections with unnamed vectors still work — this only applies to new collections.
 	 */
 	enableHybrid?: boolean;
+	/**
+	 * When true, the collection exists only per organization: there is no
+	 * shared personal collection, and resolving its name without an
+	 * organization throws instead of falling back to the base name.
+	 */
+	requiresOrganization?: boolean;
 }
 
 /**

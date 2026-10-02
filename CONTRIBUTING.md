@@ -114,6 +114,21 @@ publishes and cannot wait or grant itself an exemption. Its PR simply stays red
 until the pick matures — re-run the checks then. Nothing needs fixing on the
 branch.
 
+pnpm also refuses a version published with weaker trust evidence than an
+earlier release of the same package (`trustPolicy: no-downgrade`): a package
+that used to ship with provenance or trusted publishing and suddenly does not
+may have a hijacked maintainer account behind it, though a legitimate manual
+release looks the same. When a range allows it, pnpm resolves the newest
+version that is not a downgrade. When it cannot — an exact pin, or a lockfile
+that already carries one — the install fails with `ERR_PNPM_TRUST_DOWNGRADE`.
+
+On pnpm 11 a registry timeout during that check can surface as the same error,
+so first re-run the install once the registry is reachable. If it still fails,
+treat it as a possible takeover, not noise: check who published the version,
+whether that account maintains the package, and why the release lacks what its
+predecessors had. Only then add the exact version to `trustPolicyExclude` in
+`pnpm-workspace.yaml`, with the reason in the PR.
+
 ### Claude Code hooks
 
 This repo ships Claude Code PreToolUse hooks that enforce destructive-command, secret-file, DB-migration, branch-naming, and pre-PR quality rules. See [`.claude/README.md`](./.claude/README.md) for the full list and the escape-path policy.

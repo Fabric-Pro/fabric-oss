@@ -1,5 +1,6 @@
 "use client";
 
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import {
@@ -471,6 +472,7 @@ export function InstructionProposals({
 	/** The connected repository's provider, to say whether it can be reconnected in-app. */
 	repositoryProvider?: string | null;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.proposalReview");
 	const tPr = useTranslations(
 		"projects.codingInstructions.proposalReview.pullRequest",
@@ -642,7 +644,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),
@@ -654,7 +656,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),
@@ -677,7 +679,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),
@@ -700,7 +702,7 @@ export function InstructionProposals({
 					? tPr(`refusals.${reason}`, { seconds })
 					: reason && PULL_REQUEST_REFUSALS.has(reason)
 						? tPr(`refusals.${reason}`)
-						: error.message,
+						: actionError(error),
 		);
 		refreshState();
 	};
@@ -737,7 +739,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),
@@ -754,7 +756,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error: Error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),
@@ -767,7 +769,7 @@ export function InstructionProposals({
 				refreshState();
 			},
 			onError: (error: Error) => {
-				toast.error(error.message);
+				toast.error(actionError(error));
 				refreshState();
 			},
 		}),

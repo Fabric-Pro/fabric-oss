@@ -26,8 +26,10 @@ import {
 	compressImageToBudget,
 	encodedSizeOf,
 	exceedsProviderImageBudget,
+	extractDocumentS3KeyFromImgSrc,
 	extractS3KeysFromContent,
 	extractStoryS3KeyFromImgSrc,
+	keyWithinPrefix,
 	MAX_ENCODED_IMAGE_BYTES,
 	MAX_RAW_IMAGE_BYTES,
 	validateImageFile,
@@ -408,6 +410,47 @@ describe("extractStoryS3KeyFromImgSrc", () => {
 				"https://other.example.com/story-media/p1/s1/uuid.png",
 			),
 		).toBe("story-media/p1/s1/uuid.png");
+	});
+});
+
+describe("extractDocumentS3KeyFromImgSrc", () => {
+	it("extracts the key from a signed URL, dropping the signature", () => {
+		expect(
+			extractDocumentS3KeyFromImgSrc(
+				"https://bucket.example.com/document-media/p1/d1/uuid.png?X-Amz-Signature=abc",
+			),
+		).toBe("document-media/p1/d1/uuid.png");
+	});
+
+	it("returns null for an image that is not a document upload", () => {
+		expect(
+			extractDocumentS3KeyFromImgSrc("https://example.com/logo.png"),
+		).toBeNull();
+		expect(
+			extractDocumentS3KeyFromImgSrc(
+				"https://bucket.example.com/story-media/p1/s1/uuid.png",
+			),
+		).toBeNull();
+	});
+});
+
+describe("keyWithinPrefix", () => {
+	// The media resolvers refuse the WHOLE batch when one key falls outside the
+	// document's (or story's) own prefix, so a single image pasted in from
+	// another document stopped every image on the page from being re-signed.
+	const prefix = "document-media/p1/d1/";
+
+	it("keeps a key under the prefix", () => {
+		expect(keyWithinPrefix("document-media/p1/d1/a.png", prefix)).toBe(
+			"document-media/p1/d1/a.png",
+		);
+	});
+
+	it("drops a key from another document, and a missing one", () => {
+		expect(
+			keyWithinPrefix("document-media/p1/d2/a.png", prefix),
+		).toBeNull();
+		expect(keyWithinPrefix(null, prefix)).toBeNull();
 	});
 });
 

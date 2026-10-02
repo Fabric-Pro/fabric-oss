@@ -1,6 +1,10 @@
 "use client";
 
-import { formatByteSize, SNAPSHOT_LIMITS } from "@repo/instructions";
+import {
+	formatByteSize,
+	formatByteSizeOver,
+	SNAPSHOT_LIMITS,
+} from "@repo/instructions";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -21,6 +25,7 @@ import {
 	readFolderFiles,
 } from "../../lib/read-folder";
 import { uploadSnapshot } from "../../lib/upload-snapshot";
+import { SyncProgressLine } from "../repository-sync/SyncProgressLine";
 import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
 type Row = {
@@ -133,6 +138,14 @@ export function UploadFolderDialog({
 	// all start from the committed `sources`, so a second change made
 	// mid-read would be computed from a list missing the first one.
 	const [reading, setReading] = useState(false);
+	// How many kept files the preview has read so far, out of how many. Only
+	// while `reading`; a recomputation starts it over.
+	const [readProgress, setReadProgress] = useState<{
+		done: number;
+		total: number;
+	} | null>(null);
+	// Every file is up and the call that starts the checks is in flight.
+	const [finalizing, setFinalizing] = useState(false);
 	const [publishOnReady, setPublishOnReady] = useState(true);
 	// The publish-first choice and its acknowledgement. Reset on close: the
 	// acknowledgement is for this upload, not for the dialog's lifetime.
@@ -211,6 +224,8 @@ export function UploadFolderDialog({
 		// The recomputation this invalidates will not clear its own flag
 		// (it no longer owns the dialog's state), so the reset does.
 		setReading(false);
+		setReadProgress(null);
+		setFinalizing(false);
 		setSources([]);
 		setEntries(null);
 		setFabricIgnoreText(null);
@@ -246,8 +261,17 @@ export function UploadFolderDialog({
 		generation.current += 1;
 		const current = generation.current;
 		setReading(true);
+		setReadProgress(null);
 		try {
-			const result = await readFolderFiles(next, projectGlobs);
+			const result = await readFolderFiles(
+				next,
+				projectGlobs,
+				(done, total) => {
+					if (current === generation.current) {
+						setReadProgress({ done, total });
+					}
+				},
+			);
 			if (current !== generation.current) {
 				return;
 			}
@@ -270,6 +294,7 @@ export function UploadFolderDialog({
 			// middle of whatever superseded it.
 			if (current === generation.current) {
 				setReading(false);
+				setReadProgress(null);
 			}
 		}
 	}
@@ -402,6 +427,7 @@ export function UploadFolderDialog({
 					setPendingSnapshotId(id);
 				},
 				onProgress: (done, total) => setProgress({ done, total }),
+				onFinalizing: () => setFinalizing(true),
 			});
 			onUploaded(snapshotId);
 			if (serverExcludedPaths.length > 0) {
@@ -422,8 +448,24 @@ export function UploadFolderDialog({
 			// clicking Upload again resumes it rather than abandoning it.
 			setError(e instanceof Error ? e.message : t("genericError"));
 			setProgress(null);
+			setFinalizing(false);
 		}
 	}
+
+	// The preview reading the kept files one by one, shared by the pick view
+	// (the first add) and the review view (every later one).
+	const readingLine =
+		reading && readProgress ? (
+			<SyncProgressLine
+				phase={t("readingPhase")}
+				text={t("reading", {
+					done: readProgress.done,
+					total: readProgress.total,
+				})}
+				done={readProgress.done}
+				total={readProgress.total}
+			/>
+		) : null;
 
 	return (
 		<Dialog
@@ -511,6 +553,9 @@ export function UploadFolderDialog({
 								{t("settingsLoading")}
 							</p>
 						)}
+						<div aria-live="polite" className="text-sm">
+							{readingLine}
+						</div>
 						{error ? (
 							<p className="text-destructive text-sm">{error}</p>
 						) : null}
@@ -721,8 +766,9 @@ export function UploadFolderDialog({
 											: "fileTooLarge",
 										{
 											path: largestOversized.path,
-											size: formatByteSize(
+											size: formatByteSizeOver(
 												largestOversized.size,
+												SNAPSHOT_LIMITS.maxFileBytes,
 											),
 											max: formatByteSize(
 												SNAPSHOT_LIMITS.maxFileBytes,
@@ -731,7 +777,10 @@ export function UploadFolderDialog({
 										},
 									)
 								: t("tooManyBytes", {
-										size: formatByteSize(keptBytes),
+										size: formatByteSizeOver(
+											keptBytes,
+											SNAPSHOT_LIMITS.maxTotalBytes,
+										),
 										max: formatByteSize(
 											SNAPSHOT_LIMITS.maxTotalBytes,
 										),
@@ -771,14 +820,29 @@ export function UploadFolderDialog({
 								disabled={progress !== null}
 							/>
 						) : null}
-						{progress ? (
-							<p aria-live="polite" className="text-sm">
-								{t("progress", {
-									done: progress.done,
-									total: progress.total,
-								})}
-							</p>
-						) : null}
+						{/* Only the step is announced; the counts beside it
+						    are `aria-hidden` so a screen reader does not read
+						    out every file (`SyncProgressLine`). */}
+						<div aria-live="polite" className="text-sm">
+							{progress && finalizing ? (
+								<SyncProgressLine
+									phase={t("startingChecks")}
+									text={t("startingChecks")}
+								/>
+							) : progress ? (
+								<SyncProgressLine
+									phase={t("uploadingPhase")}
+									text={t("progress", {
+										done: progress.done,
+										total: progress.total,
+									})}
+									done={progress.done}
+									total={progress.total}
+								/>
+							) : (
+								readingLine
+							)}
+						</div>
 						{error ? (
 							<p className="text-destructive text-sm">{error}</p>
 						) : null}

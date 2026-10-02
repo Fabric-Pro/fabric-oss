@@ -82,7 +82,8 @@ export function ParlumeInviteForm({
 			const message =
 				inviteError instanceof Error ? inviteError.message : "";
 			setError(
-				message.includes("not ready") || message.includes("voice key")
+				message.includes("not ready") ||
+					message.includes("needs a voice")
 					? "Parlume needs operator setup in this environment before it can join meetings."
 					: "Parlume could not join this meeting. Check the link and try again.",
 			);

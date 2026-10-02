@@ -11,6 +11,7 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
+import { OAUTH_APP_ROW_NAMES } from "../prisma/queries/lib/oauth-app-row";
 import {
 	getWorkflowIntegrationByIdInTenant,
 	listWorkflowIntegrationsInTenant,
@@ -134,6 +135,7 @@ describe("listWorkflowIntegrationsInTenant", () => {
 			where: {
 				organizationId: "org-1",
 				isActive: true,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 			orderBy: { createdAt: "desc" },
 		});
@@ -152,6 +154,7 @@ describe("listWorkflowIntegrationsInTenant", () => {
 				userId: "member-b",
 				organizationId: null,
 				isActive: true,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 			orderBy: { createdAt: "desc" },
 		});

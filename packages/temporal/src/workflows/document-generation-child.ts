@@ -19,6 +19,7 @@
  * 6. Embed document for RAG
  */
 
+import { hasProjectContextEntries } from "@repo/agent-types";
 import {
 	ActivityFailure,
 	ApplicationFailure,
@@ -92,7 +93,11 @@ export interface DocumentGenerationChildInput {
 	aiToken: string;
 	prompt?: string;
 	promptId?: string;
-	/** Specific prompt version ID for attribution tracking */
+	/**
+	 * The client's claim about the prompt version. Attribution comes from the
+	 * version the generation activity rendered (Fizzy #2807); this is read only
+	 * for a generation result recorded before that change.
+	 */
 	promptVersionId?: string;
 	/** Current document content for regeneration context */
 	currentDocument?: string;
@@ -546,18 +551,35 @@ export async function documentGenerationChildWorkflow(
 			aiToken,
 			promptId,
 			currentDocument,
-			hasRagContexts: contexts.length > 0,
+			// The project's own context only: company entries are marked as
+			// vendor material, and a project with nothing of its own keeps its
+			// wizard features in the prompt (Fizzy #2719). Histories recorded
+			// before company context hold no marked entries, so replay sees
+			// the value it always did.
+			hasRagContexts: hasProjectContextEntries(contexts),
 			hasTeamsIntegration,
 			hasSlackIntegration,
 		});
 		documentContent = generationResult.content;
 
-		// Prefer the resolved prompt version ID from the activity (which reflects the
-		// actual prompt content used) over the client-supplied input ID, which may be
-		// stale. Fall back to the input ID only for the custom-prompt path where no
-		// resolution happens.
+		// Attribute the run to the prompt version the activity actually rendered
+		// (Fizzy #2807). The activity now always sets the key — the version's id,
+		// or null when no prompt version produced the run — and the client's
+		// input ID is never a better answer than that: it can be a stale pin.
+		//
+		// A result without the key was recorded by a worker from before that
+		// change, which set it on the bound path only. A run in flight across
+		// the deploy resumes here with such a result, so it keeps the old
+		// fallback rather than losing its attribution. No `patched()`: the
+		// branch is chosen by the recorded result itself, and either way only
+		// an argument of the `createDocumentVersion` activity in Step 5 changes,
+		// never which commands run.
+		const reportedPromptVersionId =
+			generationResult.resolvedPromptVersionId;
 		const effectivePromptVersionId =
-			generationResult.resolvedPromptVersionId ?? promptVersionId;
+			reportedPromptVersionId === undefined
+				? promptVersionId
+				: (reportedPromptVersionId ?? undefined);
 
 		const generationDuration = Date.now() - generationStartTime;
 		const wordCount = documentContent.split(/\s+/).length;

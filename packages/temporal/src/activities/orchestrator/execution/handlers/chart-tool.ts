@@ -223,6 +223,8 @@ export function createChartTool() {
 	return tool({
 		description: [
 			"Creates interactive charts from data. Pass RAW data from API responses - the tool handles aggregation.",
+			"When the user asks for a chart, call create_chart; do not substitute a Markdown table or a prose description for the chart.",
+			"Never invent records or numbers. Pass the actual data received from tools without manually counting, summing, or averaging it. If the required data is missing, retrieve it first or explain why the chart cannot be created.",
 			"",
 			"USAGE: Pass the actual data array you received from other tools, specify how to group and aggregate it.",
 			"",

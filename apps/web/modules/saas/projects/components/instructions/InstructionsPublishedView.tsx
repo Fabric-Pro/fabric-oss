@@ -4,11 +4,13 @@ import type { InstructionRejection } from "@repo/database";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
+import { Progress } from "@ui/components/progress";
 import {
 	AlertTriangleIcon,
 	CheckIcon,
@@ -26,6 +28,11 @@ import {
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
+import {
+	checkPhaseMessageKey,
+	checkProgressMessageKey,
+	snapshotCheckProgress,
+} from "../../lib/instructions-check-progress";
 import {
 	localSetupRouteFor,
 	offersSyncFromRepository,
@@ -119,6 +126,15 @@ export type InstructionsSnapshot = {
 	deferredScanFindings?: InstructionRejection[] | null;
 	/** When the version became readable; what a pending scan is dated from. */
 	readyAt?: string | Date | null;
+	/**
+	 * How far the running checks have got (`recordInstructionSnapshotProgress`):
+	 * the pass, and the files it has fully decided out of the files it has to
+	 * decide. Null when nothing has reported yet, and for runs that started
+	 * before progress existed.
+	 */
+	progressPhase?: "CHECKING" | "SAVING" | "SCANNING" | null;
+	progressDone?: number | null;
+	progressTotal?: number | null;
 };
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -158,6 +174,7 @@ export function InstructionsPublishedView({
 	repositoryConfirmed,
 	repositorySync,
 	publishedUnknown = false,
+	awaitingPublish = false,
 }: {
 	projectId: string;
 	/** Named in the "Connect your agent" starter instruction. */
@@ -173,6 +190,13 @@ export function InstructionsPublishedView({
 	 * without knowing what is published now.
 	 */
 	publishedUnknown?: boolean;
+	/**
+	 * The newest version passed its checks and is set to publish itself, and
+	 * the tab is still waiting for the published pointer to catch up
+	 * (`instructionsAwaitsPublish`). Bounded by the tab, so "Publishing…" is
+	 * never left up for a version whose publish was refused.
+	 */
+	awaitingPublish?: boolean;
 	/**
 	 * Whether this viewer may change the published files. A UI gate only:
 	 * `derive` re-checks `INSTRUCTION_CREATE` server-side on every save.
@@ -207,6 +231,7 @@ export function InstructionsPublishedView({
 	 */
 	repositorySync?: RepositorySyncControls;
 }) {
+	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.publishedView");
 	const [selected, setSelected] = useState<string | null>(null);
 	const [addFileOpen, setAddFileOpen] = useState(false);
@@ -322,6 +347,17 @@ export function InstructionsPublishedView({
 		newest && RECEIVING_STATUSES.has(newest.status) && newerThanPublished
 			? newest
 			: null;
+	// Where the checks have got, from the snapshot's own progress columns; null
+	// (and so today's plain "Checking your upload") whenever they are unset.
+	const checkProgress = checking ? snapshotCheckProgress(checking) : null;
+	// The checks passed and the tab is waiting for the pointer to move onto
+	// this version. Not for a proposal, which publishes only through review.
+	const publishing =
+		!checking &&
+		awaitingPublish &&
+		newest !== null &&
+		newest.status === "READY" &&
+		newerThanPublished;
 	// An edit that passed its checks but did NOT publish, because the version
 	// it was made from stopped being the published one while it was being
 	// checked. The auto-publish is a fast-forward for exactly this reason
@@ -466,14 +502,14 @@ export function InstructionsPublishedView({
 				}
 				onChanged();
 			},
-			onError: (error) => toast.error(error.message),
+			onError: (error) => toast.error(actionError(error)),
 		}),
 	);
 
 	const download = useMutation(
 		orpc.projects.instructions.createDownloadUrl.mutationOptions({
 			onSuccess: (data) => window.open(data.url, "_blank", "noopener"),
-			onError: (error) => toast.error(error.message),
+			onError: (error) => toast.error(actionError(error)),
 		}),
 	);
 
@@ -546,7 +582,7 @@ export function InstructionsPublishedView({
 										reason: reasonLabel(settingsLayer, t),
 									})}
 						</p>
-					) : checking ? null : (
+					) : checking || publishing ? null : (
 						<p className="text-muted-foreground">
 							{t("emptySummary")}
 						</p>
@@ -599,22 +635,64 @@ export function InstructionsPublishedView({
 					    element is always rendered so the live region exists
 					    before the text arrives; the pill classes apply only
 					    while there is something to say. */}
-					<p
-						aria-live="polite"
-						className={
-							checking
-								? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm"
-								: "text-sm"
-						}
-					>
-						{checking ? (
-							<Loader2Icon
-								className="size-3.5 animate-spin"
+					<div className="flex flex-col gap-1.5">
+						{/* Only the phase is announced (the sr-only span); the
+						    count beside it changes on every poll and is
+						    `aria-hidden`, so it is not read out each time. */}
+						<p
+							aria-live="polite"
+							className={
+								checking || publishing
+									? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm"
+									: "text-sm"
+							}
+						>
+							{checking || publishing ? (
+								<Loader2Icon
+									className="size-3.5 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : null}
+							{checkProgress ? (
+								<>
+									<span className="sr-only">
+										{t(
+											checkPhaseMessageKey(
+												checkProgress.phase,
+											),
+										)}
+									</span>
+									<span aria-hidden="true">
+										{t(
+											checkProgressMessageKey(
+												checkProgress.phase,
+											),
+											{
+												done: checkProgress.done,
+												total: checkProgress.total,
+											},
+										)}
+									</span>
+								</>
+							) : checking ? (
+								t("checkingSummary")
+							) : publishing ? (
+								t("publishing")
+							) : (
+								""
+							)}
+						</p>
+						{checkProgress && checkProgress.total > 0 ? (
+							<Progress
 								aria-hidden="true"
+								className="h-1 w-48"
+								value={
+									(checkProgress.done / checkProgress.total) *
+									100
+								}
 							/>
 						) : null}
-						{checking ? t("checkingSummary") : ""}
-					</p>
+					</div>
 					{repositorySync ? (
 						<RepositorySyncStatus
 							state={repositorySync.state}
@@ -1054,6 +1132,13 @@ export function InstructionsPublishedView({
 				canMutate={canMutateDirect}
 				canPublish={repositoryBacked ? canReview : canMutateDirect}
 				repositoryBacked={repositoryBacked}
+				// An open sync run with no snapshot yet has no row in the list
+				// to stand for the publish it will make.
+				syncRunPendingPublish={
+					repositorySync !== undefined &&
+					repositorySync.state.running &&
+					(repositorySync.state.inFlightSnapshot ?? null) === null
+				}
 				syncRuns={
 					repositorySync &&
 					(repositorySync.state.configured ||

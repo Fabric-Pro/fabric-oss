@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 	execute: vi.fn(),
 	retrieve: vi.fn(),
 	speak: vi.fn(),
+	chat: vi.fn(),
 	stop: vi.fn(),
 	decision: vi.fn(),
 	proposal: vi.fn(),
@@ -54,6 +55,7 @@ vi.mock("../parlume-actions", () => ({
 }));
 vi.mock("../parlume-voice", () => ({
 	speakParlumeResponse: mocks.speak,
+	postParlumeMeetingChat: mocks.chat,
 	requestParlumeMeetingStop: mocks.stop,
 }));
 vi.mock("../project-metadata", () => ({
@@ -177,6 +179,45 @@ describe("Parlume meeting turns", () => {
 		expect(mocks.actions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ status: "CANCELLED" }),
+			}),
+		);
+	});
+	it("posts an answer that cannot be spoken to the meeting chat and records it as answered", async () => {
+		mocks.speak.mockRejectedValue(
+			new Error("Parlume speech generation failed (HTTP 401)."),
+		);
+		mocks.chat.mockResolvedValue(true);
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.chat).toHaveBeenCalledWith({
+			sessionId: "session",
+			message: "The plan.",
+		});
+		expect(mocks.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETED",
+					spokenAt: null,
+					error: expect.stringContaining(
+						"posted to the meeting chat",
+					),
+				}),
+			}),
+		);
+		expect(mocks.update).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ status: "FAILED" }),
+			}),
+		);
+	});
+	it("fails the turn with its cause when neither voice nor chat can deliver it", async () => {
+		mocks.speak.mockRejectedValue(
+			new Error("Parlume speech generation failed (HTTP 401)."),
+		);
+		mocks.chat.mockResolvedValue(false);
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.updateMany).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ status: "COMPLETED" }),
 			}),
 		);
 	});

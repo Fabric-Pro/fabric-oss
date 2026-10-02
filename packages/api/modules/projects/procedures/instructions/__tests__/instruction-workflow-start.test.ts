@@ -16,6 +16,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
+	claimInstructionValidationAttempt: vi.fn(),
 	getInstructionSnapshot: vi.fn(),
 	startInstructionSnapshotValidation: vi.fn(),
 	getTemporalClient: vi.fn(),
@@ -23,6 +24,8 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	claimInstructionValidationAttempt: (...a: unknown[]) =>
+		m.claimInstructionValidationAttempt(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
 	startInstructionSnapshotValidation: (...a: unknown[]) =>
 		m.startInstructionSnapshotValidation(...a),
@@ -52,6 +55,7 @@ beforeEach(() => {
 	for (const fn of Object.values(m)) {
 		(fn as ReturnType<typeof vi.fn>).mockReset();
 	}
+	m.claimInstructionValidationAttempt.mockResolvedValue("attempt_1");
 	m.startInstructionSnapshotValidation.mockResolvedValue({ changed: true });
 	m.workflowStart.mockResolvedValue(undefined);
 	m.getTemporalClient.mockResolvedValue({

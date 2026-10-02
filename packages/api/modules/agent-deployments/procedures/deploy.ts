@@ -333,6 +333,7 @@ async function isIntegrationConfigured(
 	const integration = await db.workflowIntegration.findFirst({
 		where: {
 			provider: "SLACK",
+			NOT: { name: "SLACK_OAUTH_APP" },
 			OR: organizationId
 				? [{ organizationId }, { userId, organizationId: null }]
 				: [{ userId, organizationId: null }],

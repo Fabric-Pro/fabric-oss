@@ -419,6 +419,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -427,6 +428,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId: null,
 					provider: "GITHUB",
+					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -489,6 +491,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -497,6 +500,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId: null,
 					provider: "MICROSOFT_GRAPH",
+					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
 					isActive: true,
 				},
 			});
@@ -560,6 +564,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			})
@@ -568,6 +573,7 @@ async function loadOAuthIntegrationTools(
 					userId,
 					organizationId: null,
 					provider: "GITLAB",
+					NOT: { name: "GITLAB_OAUTH_APP" },
 					isActive: true,
 				},
 			});

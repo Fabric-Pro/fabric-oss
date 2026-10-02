@@ -10,6 +10,7 @@
 export {
 	calculateRetryDelay,
 	isJsonParseError,
+	isRetryableError,
 	MAX_NODE_RETRIES as MAX_RETRIES,
 	sleep,
 } from "@repo/agent-core";

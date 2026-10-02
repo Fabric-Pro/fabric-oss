@@ -361,6 +361,7 @@ export async function findGitLabOAuthConfig(
 		where: {
 			...tenantFilter,
 			provider: "GITLAB",
+			NOT: { name: "GITLAB_OAUTH_APP" },
 			isActive: true,
 		},
 		select: { id: true },
@@ -476,6 +477,7 @@ export async function findMcpConfigsForRepos(
 							where: {
 								userId,
 								provider: "GITLAB",
+								NOT: { name: "GITLAB_OAUTH_APP" },
 								isActive: true,
 								...(organizationId
 									? { organizationId }
@@ -553,6 +555,7 @@ export async function findMcpConfigsForRepos(
 					where: {
 						userId,
 						provider: "GITLAB",
+						NOT: { name: "GITLAB_OAUTH_APP" },
 						isActive: true,
 						...(organizationId
 							? { organizationId }
