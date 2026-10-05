@@ -7,6 +7,7 @@ import { withContentCollections } from "@content-collections/next";
 import { PrismaPlugin } from "@prisma/nextjs-monorepo-workaround-plugin";
 import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
+import { cliManifestEnv } from "./lib/cli-manifest-env";
 
 const withNextIntl = nextIntlPlugin("./modules/i18n/request.ts");
 
@@ -352,6 +353,11 @@ const nextConfig: NextConfig = {
 	// /api/version route so stale-build detection can compare loaded vs latest.
 	env: {
 		NEXT_PUBLIC_APP_VERSION: appVersion,
+		// Where this deployment serves its CLI and the address it was built
+		// for, from the pack step's manifest, for the MCP handshake's
+		// one-line setup offer and for answering a tarball name that is no
+		// longer served. Absent when no CLI was packed.
+		...cliManifestEnv(__dirname),
 	},
 
 	// Standalone output for the Docker image only (DOCKER_BUILD=true): a
@@ -489,6 +495,10 @@ const nextConfig: NextConfig = {
 			"../../node_modules/.pnpm/@img+sharp-libvips-linux-x64@*/node_modules/@img/sharp-libvips-linux-x64/lib/**/*",
 			"../../node_modules/.pnpm/@img+sharp-libvips-linux-arm64@*/node_modules/@img/sharp-libvips-linux-arm64/lib/**/*",
 		],
+		// Vercel serves `public/` from its CDN, so the function that answers
+		// the CLI discovery document does not have the manifest next to it
+		// unless the tracer is told to bring it.
+		"/.well-known/fabric-cli.json": ["./public/cli/manifest.json"],
 	},
 
 	// Drop the WASM engines for databases this app has no datasource for (see

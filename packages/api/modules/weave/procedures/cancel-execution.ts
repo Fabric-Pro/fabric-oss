@@ -14,8 +14,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { assertRowInAuthorizedOrganization } from "../lib/plan-organization";
 import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const CancelExecutionInputSchema = z.object({
@@ -33,19 +33,10 @@ export const cancelExecutionProcedure = protectedProcedure
 	.input(CancelExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -58,10 +49,17 @@ export const cancelExecutionProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		// PENDING is cancellable so a row left behind by an ambiguous start

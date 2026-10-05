@@ -43,7 +43,11 @@ import {
 	type StorySource,
 	updateTask,
 } from "@repo/database";
-
+import {
+	assertGitLabPmMcpConfigOrigin,
+	GitLabPmOriginMismatchError,
+	requireRecordedGitLabPmOrigin,
+} from "@repo/integrations/gitlab";
 import {
 	computeLabelDeltaOnPush,
 	readLabelStatusMap,
@@ -87,7 +91,11 @@ import { withHeartbeatTicker } from "../lib/activity-liveness";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { runWithTimeout } from "../orchestrator/execution/mcp-call-timeout";
-import { type PMSource, resolvePmSource } from "../pm-source";
+import {
+	assertPmMcpTargetOrigin,
+	type PMSource,
+	resolvePmSource,
+} from "../pm-source";
 import {
 	callPmToolWithFallback,
 	GITLAB_REST_CAPABILITIES,
@@ -102,6 +110,7 @@ import {
 	resolveJiraDefaultIssueType,
 } from "./fetch-pm-hierarchy";
 import { resolveFizzyAccountSlug } from "./fizzy-account-slug";
+import { mayUseMcpConfigCredential } from "./mcp-credential-gate";
 import { NOT_ATTEMPTED_MARKER } from "./pm-fetch-complete";
 import { truncateTitleForProvider } from "./pm-title-limits";
 import {
@@ -1917,6 +1926,21 @@ export function parsePMItemFromGetOutput(
 // =============================================================================
 
 /**
+ * A PM call refused because its client is bound to another GitLab instance
+ * than the container (`executeMcpTool`'s `pmTarget`) is not an ordinary
+ * failure to record or classify: nothing was sent, and the activity fails
+ * non-retryably with it.
+ */
+function rethrowGitLabPmOriginMismatch(error: unknown): void {
+	if (
+		error instanceof ApplicationFailure &&
+		error.type === "GitLabPmOriginMismatch"
+	) {
+		throw error;
+	}
+}
+
+/**
  * Typed result of {@link discoverPMToolCapabilitiesResult}. The error branch
  * carries the underlying `McpClientError` code so callers (e.g. the conflict
  * preview) can map it to a user-facing "credentials missing / expired" state
@@ -1940,6 +1964,17 @@ export async function discoverPMToolCapabilitiesResult(params: {
 	userId: string;
 	organizationId?: string;
 	containerId?: string | null;
+	/**
+	 * Set by a caller that dispatches to the project's PM container itself
+	 * with the capabilities it gets back (the story and test-case sync
+	 * workflows call `executeMcpTool` directly), carrying the
+	 * `additionalContext` that came with the container. A personal GitLab
+	 * config on another instance than the container's is then refused here,
+	 * as `GITLAB_PM_ORIGIN_MISMATCH`, before any item is dispatched. Callers
+	 * that only list the config's tools, or that check the container
+	 * themselves (`assertPmMcpTargetOrigin`), leave it out.
+	 */
+	pmTarget?: { additionalContext?: unknown };
 	/**
 	 * Opt-in overall timeout (ms) for the connect + tool-list + analyze step. On
 	 * timeout the function returns `{ ok:false, error:{ code:"DISCOVERY_TIMEOUT" } }`
@@ -2006,6 +2041,34 @@ export async function discoverPMToolCapabilitiesResult(params: {
 		};
 	}
 
+	// The instance the discovery client must be bound to, so the tool list
+	// comes from the same instance the caller will dispatch to.
+	let expectedGitLabOrigin: string | undefined;
+	if (params.pmTarget) {
+		try {
+			await assertGitLabPmMcpConfigOrigin({
+				mcpConfigId,
+				userId,
+				organizationId,
+				pmAdditionalContext: params.pmTarget.additionalContext,
+			});
+			expectedGitLabOrigin = requireRecordedGitLabPmOrigin(
+				params.pmTarget.additionalContext,
+			);
+		} catch (error) {
+			if (error instanceof GitLabPmOriginMismatchError) {
+				return {
+					ok: false,
+					error: {
+						code: "GITLAB_PM_ORIGIN_MISMATCH",
+						message: error.message,
+					},
+				};
+			}
+			throw error;
+		}
+	}
+
 	// Close the non-cached discovery client AT MOST ONCE, from whichever path
 	// reaches it first, so cleanup is robust to both slow-call shapes when a
 	// timeout wins the race:
@@ -2040,6 +2103,7 @@ export async function discoverPMToolCapabilitiesResult(params: {
 				mcpConfigId,
 				userId,
 				organizationId,
+				{ expectedGitLabOrigin },
 			);
 			if (!result.ok) {
 				logger.warn("[PM Discovery] client creation failed", {
@@ -2113,6 +2177,7 @@ export async function discoverPMToolCapabilitiesResult(params: {
 						userId,
 						organizationId,
 						redirectUri: `${getBaseUrl()}/api/mcp/oauth/callback`,
+						expectedGitLabOrigin,
 					});
 					// If the discovery timeout already won while this cache borrow was
 					// in flight (a slow getCachedMcpClientForConfig), do NOT start a new
@@ -2280,6 +2345,8 @@ export async function discoverPMToolCapabilities(params: {
 	userId: string;
 	organizationId?: string;
 	containerId?: string | null;
+	/** See `discoverPMToolCapabilitiesResult`. */
+	pmTarget?: { additionalContext?: unknown };
 }): Promise<PMToolCapabilities | null> {
 	const result = await discoverPMToolCapabilitiesResult(params);
 	return result.ok ? result.capabilities : null;
@@ -2358,6 +2425,14 @@ export async function syncStoryToPM(
 		return syncGitLabStoryViaRest(input);
 	}
 	const mcpConfigId = maybeMcpConfigId;
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
 
 	// Captured at function scope so the catch-path FAILURE log can name the real
 	// tool — the in-`try` `capabilities` const is out of scope there. Stays
@@ -2381,11 +2456,23 @@ export async function syncStoryToPM(
 		}
 		detectedPmTool = capabilities.detectedType ?? "unknown";
 
-		// 1.5. Get MCP config to extract base URL for URL normalization
-		const mcpConfig = await getMcpConfigById(mcpConfigId, {
+		// 1.5. Get MCP config to extract base URL for URL normalization.
+		// Its stored credential is used directly below (ADO / Fizzy / Jira
+		// attachments), and with capabilities discovered by an earlier
+		// activity no MCP client (so no organization check) has been built in
+		// this one yet. An owner who may no longer use the config gets it
+		// treated as gone, as after the offboarding cascade; the push itself
+		// is then refused by the client factory inside `executeMcpTool`.
+		const mcpConfig = (await mayUseMcpConfigCredential({
+			mcpConfigId,
 			userId,
 			organizationId,
-		});
+		}))
+			? await getMcpConfigById(mcpConfigId, {
+					userId,
+					organizationId,
+				})
+			: null;
 		const pmToolBaseUrl =
 			mcpConfig?.baseUrl || mcpConfig?.mcpServer?.defaultUrl || null;
 
@@ -3209,6 +3296,7 @@ export async function syncStoryToPM(
 				}
 
 				const updateResult = await executeMcpTool({
+					pmTarget: { additionalContext },
 					toolName: updateTool.toolName,
 					args: updateArgs,
 					userId,
@@ -3492,6 +3580,7 @@ export async function syncStoryToPM(
 				});
 
 				const createResult = await executeMcpTool({
+					pmTarget: { additionalContext },
 					toolName: createTool.toolName,
 					args: createArgs,
 					userId,
@@ -3662,6 +3751,7 @@ export async function syncStoryToPM(
 									] = result.description;
 								}
 								await executeMcpTool({
+									pmTarget: { additionalContext },
 									toolName: followUpUpdateTool.toolName,
 									args: followUpArgs,
 									userId,
@@ -3910,6 +4000,7 @@ export async function syncStoryToPM(
 				let getResult: { success: boolean; output?: unknown };
 				try {
 					getResult = await executeMcpTool({
+						pmTarget: { additionalContext },
 						toolName: getTool.toolName,
 						args: getArgs,
 						userId,
@@ -3917,6 +4008,7 @@ export async function syncStoryToPM(
 						mcpConfigId,
 					});
 				} catch (mcpError) {
+					rethrowGitLabPmOriginMismatch(mcpError);
 					// #1360: classify before deciding. A *classified* not-found
 					// resolves per provenance (preserve stamped, self-heal
 					// legacy). A NON-not-found throw (transient/auth/server) is
@@ -4480,6 +4572,7 @@ export async function syncStoryToPM(
 			terminalStatusLabel: lifecycle?.terminalStatusLabel,
 		};
 	} catch (error) {
+		rethrowGitLabPmOriginMismatch(error);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		const errorStack = error instanceof Error ? error.stack : undefined;
@@ -4721,6 +4814,14 @@ export async function getWorkItemsByIdsFromPM(input: {
 		fields: fieldsOverride,
 		strict,
 	} = input;
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
 
 	if (ids.length === 0) {
 		return {
@@ -4774,6 +4875,7 @@ export async function getWorkItemsByIdsFromPM(input: {
 	];
 
 	const result = await executeMcpTool({
+		pmTarget: { additionalContext },
 		toolName: batchToolName,
 		args: { project, ids, fields },
 		userId,
@@ -5508,6 +5610,7 @@ export async function listWorkItemsFromPM(input: {
 			userId,
 			organizationId: organizationId ?? null,
 			containerId,
+			additionalContext,
 		});
 		if (source.kind !== "rest-gitlab") {
 			throw ApplicationFailure.nonRetryable(
@@ -5534,6 +5637,16 @@ export async function listWorkItemsFromPM(input: {
 	}
 
 	const mcpConfigId = maybeMcpConfigId;
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is listed. An
+	// empty listing from the wrong instance would read as an empty board,
+	// and a full pull deletes the Fabric stories of an empty board.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
 
 	const capabilities =
 		input.capabilities ??
@@ -5541,6 +5654,7 @@ export async function listWorkItemsFromPM(input: {
 			mcpConfigId,
 			userId,
 			organizationId,
+			pmTarget: { additionalContext },
 		}));
 
 	if (!capabilities?.taskList) {
@@ -5564,6 +5678,7 @@ export async function listWorkItemsFromPM(input: {
 		): Promise<string | null> => {
 			try {
 				const result = await executeMcpTool({
+					pmTarget: { additionalContext },
 					toolName,
 					args: {},
 					userId,
@@ -5744,6 +5859,7 @@ export async function listWorkItemsFromPM(input: {
 	// "cursor" and "none" styles: no pagination params added; in-memory fallback applied after parsing.
 
 	const result = await executeMcpTool({
+		pmTarget: { additionalContext },
 		toolName: listTool.toolName,
 		args: listArgs,
 		userId,
@@ -5984,6 +6100,7 @@ export async function listWorkItemsFromPM(input: {
 				);
 				try {
 					const batchResult = await executeMcpTool({
+						pmTarget: { additionalContext },
 						toolName: batchToolName,
 						args: {
 							project: containerValue,
@@ -6109,6 +6226,7 @@ export async function listWorkItemsFromPM(input: {
 				}
 				try {
 					const getResult = await executeMcpTool({
+						pmTarget: { additionalContext },
 						toolName: getTool.toolName,
 						args: {
 							[getTool.idParam]: Number(item.id),
@@ -6267,6 +6385,14 @@ export async function searchWorkItemsFromPM(input: {
 }): Promise<ListWorkItemsResult> {
 	const { mcpConfigId, containerId, userId, organizationId, query } = input;
 	const top = Math.min(Math.max(input.top ?? 100, 1), 200);
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: input.additionalContext,
+	});
 
 	const capabilities = await discoverPMToolCapabilities({
 		mcpConfigId,
@@ -6297,6 +6423,7 @@ export async function searchWorkItemsFromPM(input: {
 	};
 
 	const result = await executeMcpTool({
+		pmTarget: { additionalContext: input.additionalContext },
 		toolName: searchToolName,
 		args: searchArgs,
 		userId,
@@ -7095,6 +7222,7 @@ export async function fetchPMItemsByIds(input: {
 			userId,
 			organizationId: organizationId ?? null,
 			containerId,
+			additionalContext: input.additionalContext,
 			requireFreshToken: input.requireFreshToken,
 		});
 		if (source.kind !== "rest-gitlab") {
@@ -7121,6 +7249,15 @@ export async function fetchPMItemsByIds(input: {
 	const deadlineAt =
 		budgetMs !== undefined ? Date.now() + budgetMs : undefined;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before any item is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
+
 	// Bound discovery via its own internal timeout (Step 3c) so a hung connect/
 	// list can't stall the poll before the pool exists. A DISCOVERY_TIMEOUT is
 	// TRANSIENT → empty partial (complete=false, anchor untouched — DEC-6); any
@@ -7130,6 +7267,7 @@ export async function fetchPMItemsByIds(input: {
 		userId,
 		organizationId,
 		timeoutMs: callTimeoutMs,
+		pmTarget: { additionalContext },
 	});
 	if (!disc.ok && disc.error.code === "DISCOVERY_TIMEOUT") {
 		logger.warn(
@@ -7148,6 +7286,12 @@ export async function fetchPMItemsByIds(input: {
 			notFoundIds: [],
 			failedIdErrors,
 		};
+	}
+	if (!disc.ok && disc.error.code === "GITLAB_PM_ORIGIN_MISMATCH") {
+		throw ApplicationFailure.nonRetryable(
+			disc.error.message,
+			"GitLabPmOriginMismatch",
+		);
 	}
 	const capabilities = disc.ok ? disc.capabilities : null;
 
@@ -7245,6 +7389,7 @@ export async function fetchPMItemsByIds(input: {
 				idValue = asNum;
 			}
 			const getResult = await executeMcpTool({
+				pmTarget: { additionalContext },
 				toolName: getTool.toolName,
 				args: {
 					[getTool.idParam]: idValue,
@@ -7370,6 +7515,7 @@ export async function fetchPMItemsByIds(input: {
 				raw: data,
 			};
 		} catch (err) {
+			rethrowGitLabPmOriginMismatch(err);
 			const errMsg = err instanceof Error ? err.message : String(err);
 			logger.error("[Fetch PM Items By IDs] Exception fetching item", {
 				externalId,
@@ -7529,6 +7675,7 @@ export async function listAllFizzyCards(input: {
 		): Promise<string | null> => {
 			try {
 				const result = await executeMcpTool({
+					pmTarget: { additionalContext },
 					toolName,
 					args: {},
 					userId,
@@ -7609,6 +7756,7 @@ export async function listAllFizzyCards(input: {
 	try {
 		// Step 1: Fetch columns for the board
 		const columnsResult = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: getColumnsTool,
 			args: { account_slug: accountSlug, board_id: containerId },
 			userId,
@@ -7659,6 +7807,7 @@ export async function listAllFizzyCards(input: {
 
 				while (pagesForColumn < FIZZY_COLUMN_PAGE_CAP) {
 					const cardsResult = await executeMcpTool({
+						pmTarget: { additionalContext },
 						toolName: getCardsTool,
 						args: {
 							account_slug: accountSlug,
@@ -8105,6 +8254,17 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	const typeMappingEnabled =
 		enableTypeMapping ?? process.env.FEATURE_PM_TYPE_MAPPING === "true";
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	if (mcpConfigId != null) {
+		await assertPmMcpTargetOrigin({
+			mcpConfigId,
+			userId,
+			organizationId,
+			additionalContext,
+		});
+	}
+
 	// Resolve mcpServerId: prefer explicit input, else look up from config.
 	// On the REST-GitLab path mcpConfigId is null — mcpServerId MUST come
 	// from input; we can't look it up.
@@ -8314,6 +8474,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 		try {
 			const getTool = caps.taskGet;
 			const getResult = await executeMcpTool({
+				pmTarget: { additionalContext },
 				toolName: getTool.toolName,
 				args: (() => {
 					const args: Record<string, unknown> = {
@@ -8614,6 +8775,14 @@ export async function syncBulkStoriesToPM(
 		userId,
 		organizationId,
 	} = input;
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
 
 	const results: BulkStorySyncResult["results"] = [];
 	let syncedCount = 0;
@@ -8712,6 +8881,7 @@ export async function syncBulkStoriesToPM(
 			results,
 		};
 	} catch (error) {
+		rethrowGitLabPmOriginMismatch(error);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		logger.error("[Bulk Story Sync] Failed", {
@@ -8758,6 +8928,14 @@ export async function syncTaskToPM(params: {
 		userId,
 		organizationId,
 	} = params;
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
 
 	// Tenant XOR for the owning-STORY log row (a synced PM "task" is never a
 	// Fabric `StoryTask` in the log — it always logs as its owning STORY,
@@ -8838,6 +9016,7 @@ export async function syncTaskToPM(params: {
 		}
 
 		const createResult = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: createTool.toolName,
 			args: createArgs,
 			userId,
@@ -8926,6 +9105,7 @@ export async function syncTaskToPM(params: {
 
 		throw new Error("Failed to create task in PM tool");
 	} catch (error) {
+		rethrowGitLabPmOriginMismatch(error);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		logger.error("[Task Sync] Failed", { taskId, error: errorMessage });

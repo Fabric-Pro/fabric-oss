@@ -1,19 +1,21 @@
-import { ORPCError } from "@orpc/server";
-import {
-	hasProjectAccess,
-	moveWizardTempContextsToProject,
-} from "@repo/database";
+import { moveWizardTempContextsToProject } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
-	requirePermission,
+	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../projects/lib/project-organization";
 
 export const moveToProjectProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.PROJECT_UPDATE))
+	// The contexts become the DESTINATION project's, so the caller must be
+	// able to add context to that project — the permission creating one
+	// directly requires (`contexts/create-context.ts`). A project the caller
+	// can only view is refused; so is an organization other than the
+	// project's, before the handler runs.
+	.use(requireProjectPermission(Permissions.CONTEXT_CREATE))
 	.route({
 		method: "POST",
 		path: "/wizard/temp-contexts/move-to-project",
@@ -30,27 +32,23 @@ export const moveToProjectProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { sessionId, projectId, organizationId } = input;
+		const { sessionId, projectId } = input;
 		const user = context.user;
 
-		// Verify user has access to the project
-		const hasAccess = await hasProjectAccess(
+		// Always the authorized project's organization — whatever was named,
+		// or nothing — for the temp-context lookup, the move and the binding
+		// workflow. A project with no organization is refused (ADR-018).
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
 			projectId,
-			user.id,
-			organizationId ?? undefined,
 		);
-		if (!hasAccess) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have access to this project",
-			});
-		}
 
 		// Move temp contexts to project
 		const result = await moveWizardTempContextsToProject(
 			sessionId,
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 
 		// If contexts were migrated and have embeddings, bind them to the project
@@ -73,7 +71,7 @@ export const moveToProjectProcedure = tenantProtectedProcedure
 								projectId,
 								contextIdMapping: result.contextIdMapping,
 								userId: user.id,
-								organizationId: organizationId ?? undefined,
+								organizationId,
 							},
 						],
 					}),

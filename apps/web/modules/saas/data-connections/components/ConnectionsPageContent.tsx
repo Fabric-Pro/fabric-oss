@@ -1,5 +1,6 @@
 "use client";
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
 import { McpServerIcon } from "@saas/mcp/components/McpServerIcon";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -29,6 +30,11 @@ import {
 	ACTION_ONLY_PROVIDERS,
 	getActionOnlyProviderPlugin,
 } from "../lib/action-only-providers";
+import {
+	gitlabStateFromIntegrationList,
+	isSearchSourceConnected,
+	rowShowsProviderConnected,
+} from "../lib/provider-connection-state";
 import {
 	matchesStatusFilter,
 	resolveProviderHealth,
@@ -207,18 +213,39 @@ export function ConnectionsPageContent({
 		},
 	});
 
+	// GitLab's provider-level state is the person's own connection, the one
+	// every GitLab screen reports; a workflow-scoped GitLab credential, the
+	// OAuth app row or another member's row never makes it connected
+	// (`../lib/provider-connection-state`).
+	const gitlabState = useMemo(
+		() => gitlabStateFromIntegrationList(actionIntegrations),
+		[actionIntegrations],
+	);
+
+	// The search sources that work now, by the one rule the tiles and the
+	// header count share: not EXPIRED or PENDING, and for GitLab only while
+	// the person's GitLab is connected. A disconnect keeps its source,
+	// EXPIRED; that source stays listed on the provider's own page.
+	const connectedSearchSources = useMemo(
+		() =>
+			(connections ?? []).filter((connection) =>
+				isSearchSourceConnected(connection, gitlabState),
+			),
+		[connections, gitlabState],
+	);
+
 	const searchConnectedProviders = useMemo(
 		() =>
-			new Set(
-				(connections ?? []).map((connection) => connection.provider),
+			new Set<DataConnectionProvider>(
+				connectedSearchSources.map((connection) => connection.provider),
 			),
-		[connections],
+		[connectedSearchSources],
 	);
 
 	const actionConnectedProviders = useMemo(() => {
 		const providers = new Set<DataConnectionProvider>();
 		for (const integration of actionIntegrations ?? []) {
-			if (!integration.hasCredentials) {
+			if (!rowShowsProviderConnected(integration)) {
 				continue;
 			}
 			const mappedProvider = mapActionProviderToDataConnectionProvider(
@@ -228,13 +255,27 @@ export function ConnectionsPageContent({
 				providers.add(mappedProvider);
 			}
 		}
+		if (gitlabState === "connected") {
+			providers.add("GITLAB");
+		}
 		return providers;
-	}, [actionIntegrations]);
+	}, [actionIntegrations, gitlabState]);
+
+	// A stored action connection whose grant died (GitLab reports
+	// `connectionState: "needs-reconnect"`): shown as needing a reconnect,
+	// not as connected and not as absent.
+	const actionReconnectProviders = useMemo(() => {
+		const providers = new Set<DataConnectionProvider>();
+		if (gitlabState === "needs-reconnect") {
+			providers.add("GITLAB");
+		}
+		return providers;
+	}, [gitlabState]);
 
 	const connectedActionOnlyTypes = useMemo(() => {
 		const types = new Set<(typeof ACTION_ONLY_PROVIDERS)[number]["type"]>();
 		for (const integration of actionIntegrations ?? []) {
-			if (!integration.hasCredentials) {
+			if (!rowShowsProviderConnected(integration)) {
 				continue;
 			}
 			const entry = ACTION_ONLY_PROVIDERS.find(
@@ -554,7 +595,7 @@ export function ConnectionsPageContent({
 					{filteredProviders.length + filteredActionOnly.length} shown
 				</span>
 				<span aria-hidden="true">·</span>
-				<span>{connections?.length ?? 0} search connected</span>
+				<span>{connectedSearchSources.length} search connected</span>
 				<span aria-hidden="true">·</span>
 				<span>
 					{actionConnectedProviders.size +
@@ -606,6 +647,9 @@ export function ConnectionsPageContent({
 											hasActionConnection={
 												hasActionConnection
 											}
+											actionNeedsReconnect={actionReconnectProviders.has(
+												provider,
+											)}
 											health={health}
 										/>
 									);
@@ -658,7 +702,22 @@ export function ConnectionsPageContent({
 										server.description ??
 										"Model Context Protocol server"
 									}
-									connected={false}
+									// The GitLab personal servers (`gitlab`,
+									// `gitlab-official`) hold no credential of
+									// their own: they show the person's GitLab
+									// connection, as the GitLab provider tile
+									// beside them does. Other servers' tiles
+									// carry no status here.
+									connected={
+										isGitLabPersonalMcpServerKey(
+											server.key,
+										) && gitlabState === "connected"
+									}
+									needsReconnect={
+										isGitLabPersonalMcpServerKey(
+											server.key,
+										) && gitlabState === "needs-reconnect"
+									}
 								/>
 							))}
 						</IntegrationGroup>

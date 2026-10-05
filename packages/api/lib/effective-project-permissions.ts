@@ -11,6 +11,14 @@ export type EffectiveProjectAccess = {
 	/** Which path granted them — for side-effect decisions in the middleware. */
 	source: "owner" | "project-member" | "org" | "none";
 	organizationId: string | null;
+	/**
+	 * Whether the project's organization is soft-deleted (in its retention
+	 * window). Read in the same query as the project row. `false` for a project
+	 * with no organization. Always set by `resolveEffectiveProjectPermissions`;
+	 * optional only so the many test doubles of this shape that predate it stay
+	 * valid — an absent value reads as "not deleted".
+	 */
+	organizationDeleted?: boolean;
 };
 
 /**
@@ -60,7 +68,15 @@ export async function resolveEffectiveProjectPermissions(
 	const [project, member] = await Promise.all([
 		db.project.findUnique({
 			where: { id: projectId },
-			select: { id: true, organizationId: true, userId: true },
+			select: {
+				id: true,
+				organizationId: true,
+				userId: true,
+				// Folded into this lookup rather than a second query: the
+				// permission check refuses a project whose organization is
+				// deleted, and the tenant middleware only checks the SESSION's.
+				organization: { select: { deletedAt: true } },
+			},
 		}),
 		db.projectMember.findUnique({
 			where: { projectId_userId: { projectId, userId } },
@@ -70,6 +86,7 @@ export async function resolveEffectiveProjectPermissions(
 	if (!project) {
 		return null;
 	}
+	const organizationDeleted = project.organization?.deletedAt != null;
 
 	// PATH 1 — PERSONAL-PROJECT OWNER. Named, not lettered: this file and
 	// `../orpc/middleware/require-permission.ts` used to letter the same three
@@ -84,6 +101,7 @@ export async function resolveEffectiveProjectPermissions(
 			permissions: resolveProjectPermissions("OWNER"),
 			source: "owner",
 			organizationId: null,
+			organizationDeleted: false,
 		};
 	}
 
@@ -99,6 +117,7 @@ export async function resolveEffectiveProjectPermissions(
 			permissions: resolveProjectPermissions(member.role),
 			source: "project-member",
 			organizationId: project.organizationId,
+			organizationDeleted,
 		};
 	}
 
@@ -121,6 +140,7 @@ export async function resolveEffectiveProjectPermissions(
 				permissions: resolveOrgPermissions(orgMember.role),
 				source: "org",
 				organizationId: project.organizationId,
+				organizationDeleted,
 			};
 		}
 	}
@@ -129,5 +149,6 @@ export async function resolveEffectiveProjectPermissions(
 		permissions: [],
 		source: "none",
 		organizationId: project.organizationId,
+		organizationDeleted,
 	};
 }

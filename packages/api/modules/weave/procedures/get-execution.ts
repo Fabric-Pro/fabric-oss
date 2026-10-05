@@ -16,8 +16,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { assertRowInAuthorizedOrganization } from "../lib/plan-organization";
 import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const GetExecutionInputSchema = z.object({
@@ -49,19 +49,10 @@ export const getExecutionProcedure = protectedProcedure
 	.input(GetExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		let execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 			include: {
 				plan: true,
@@ -77,10 +68,17 @@ export const getExecutionProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_READ,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		// Reconcile-on-read: a workflow can die without persisting terminal
@@ -191,9 +189,6 @@ export const getExecutionProcedure = protectedProcedure
 						where: {
 							id: input.executionId,
 							userId,
-							...(organizationId
-								? { organizationId }
-								: { organizationId: null }),
 						},
 						include: {
 							plan: true,
@@ -232,9 +227,6 @@ export const getExecutionProcedure = protectedProcedure
 				where: {
 					weaveExecutionId: execution.id,
 					userId,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
 				},
 				select: runSelect,
 			})) ??
@@ -248,9 +240,6 @@ export const getExecutionProcedure = protectedProcedure
 								: {}),
 							weaveExecutionId: null,
 							userId,
-							...(organizationId
-								? { organizationId }
-								: { organizationId: null }),
 						},
 						orderBy: { createdAt: "desc" },
 						select: runSelect,

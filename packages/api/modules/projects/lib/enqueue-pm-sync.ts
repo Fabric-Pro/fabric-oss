@@ -1,4 +1,8 @@
-import { db, PmSyncStatus, resolvePMConfigForUser } from "@repo/database";
+import { db, PmSyncStatus } from "@repo/database";
+import {
+	GitLabPmOriginMismatchError,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -222,12 +226,28 @@ export async function enqueuePmSync(
 				return { enqueued: false, reason: "no-pm-config" };
 			}
 		} else {
-			const userMcpConfig = await resolvePMConfigForUser({
-				configId: project.projectManagementMcpConfigId,
-				mcpServerId: project.projectManagementMcpServerId,
-				userId,
-				organizationId: project.organizationId ?? undefined,
-			});
+			let userMcpConfig: Awaited<
+				ReturnType<typeof resolveProjectPMConfigForUser>
+			>;
+			try {
+				userMcpConfig = await resolveProjectPMConfigForUser({
+					configId: project.projectManagementMcpConfigId,
+					mcpServerId: project.projectManagementMcpServerId,
+					userId,
+					organizationId: project.organizationId ?? undefined,
+					pmAdditionalContext:
+						project.projectManagementAdditionalContext,
+				});
+			} catch (error) {
+				if (!(error instanceof GitLabPmOriginMismatchError)) {
+					throw error;
+				}
+				// The user's own GitLab MCP config is on another instance than
+				// the container; their connection is on that instance too, so
+				// the REST fallback cannot serve it either. Say so on the row.
+				await markFailed(itemType, itemId, error.message);
+				return { enqueued: false, reason: "no-pm-config" };
+			}
 			if (userMcpConfig?.enabled) {
 				mcpConfigIdForWorkflow = userMcpConfig.id;
 			} else if (isGitLabProject && restPathSupportsItemType) {

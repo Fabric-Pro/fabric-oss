@@ -8,6 +8,10 @@
 		".": {
 			"types": "./src/index.ts",
 			"default": "./src/index.ts"
+		},
+		"./databricks-compat": {
+			"types": "./src/databricks-compat.ts",
+			"default": "./src/databricks-compat.ts"
 		}
 	},
 	"scripts": {

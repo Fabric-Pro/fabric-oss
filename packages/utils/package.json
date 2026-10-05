@@ -234,6 +234,11 @@
 			"import": "./lib/operation-result-message.ts",
 			"default": "./lib/operation-result-message.ts"
 		},
+		"./oauth-project-resource": {
+			"types": "./lib/oauth-project-resource.ts",
+			"import": "./lib/oauth-project-resource.ts",
+			"default": "./lib/oauth-project-resource.ts"
+		},
 		"./oauth-refresh": {
 			"types": "./lib/oauth-refresh.ts",
 			"import": "./lib/oauth-refresh.ts",

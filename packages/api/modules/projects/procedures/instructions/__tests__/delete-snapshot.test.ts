@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
 	getInstructionSnapshot: vi.fn(),
+	getProjectInstructionSettings: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
 	countInFlightDerivedSnapshots: vi.fn(),
 	listInstructionFiles: vi.fn(),
@@ -28,6 +29,7 @@ const m = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	permissionMiddleware: vi.fn(),
+	assertProjectPermission: vi.fn(),
 	requestedPermission: undefined as string | undefined,
 }));
 
@@ -41,6 +43,8 @@ vi.mock("@repo/database", () => ({
 	countInFlightDerivedSnapshots: (...a: unknown[]) =>
 		m.countInFlightDerivedSnapshots(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
+	getProjectInstructionSettings: (...a: unknown[]) =>
+		m.getProjectInstructionSettings(...a),
 	getPublishedInstructionSnapshot: (...a: unknown[]) =>
 		m.getPublishedInstructionSnapshot(...a),
 	listInstructionFiles: (...a: unknown[]) => m.listInstructionFiles(...a),
@@ -92,7 +96,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 			m.requestedPermission = permission;
 			return (args: unknown) => m.permissionMiddleware(args);
 		},
-		Permissions: { INSTRUCTION_DELETE: "instruction:delete" },
+		assertProjectPermission: (...a: unknown[]) =>
+			m.assertProjectPermission(...a),
+		Permissions: {
+			INSTRUCTION_CREATE: "instruction:create",
+			INSTRUCTION_DELETE: "instruction:delete",
+		},
 	};
 });
 
@@ -112,6 +121,7 @@ const OWN_PREFIX = "projects/p/instructions/snapshots/s/";
 beforeEach(() => {
 	for (const f of [
 		m.getInstructionSnapshot,
+		m.getProjectInstructionSettings,
 		m.getPublishedInstructionSnapshot,
 		m.countInFlightDerivedSnapshots,
 		m.listInstructionFiles,
@@ -121,9 +131,13 @@ beforeEach(() => {
 		m.recordAuditFromRequest,
 		m.resolveEffectiveProjectPermissions,
 		m.permissionMiddleware,
+		m.assertProjectPermission,
 	]) {
 		f.mockReset();
 	}
+	// Default: the caller holds INSTRUCTION_DELETE. Individual tests override
+	// this to simulate an editor who may create but not delete.
+	m.assertProjectPermission.mockResolvedValue(undefined);
 	m.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: [],
 		source: "org",
@@ -131,6 +145,12 @@ beforeEach(() => {
 	});
 	m.listObjects.mockResolvedValue({ objects: [] });
 	m.deleteInstructionSnapshot.mockResolvedValue({ deleted: true });
+	// Default: no move of the project's uploads into its repository is open.
+	m.getProjectInstructionSettings.mockResolvedValue({
+		ignoreGlobs: null,
+		sourceOfTruth: "UPLOAD",
+		migration: null,
+	});
 	// Default: nothing is deriving from the snapshot under test.
 	m.countInFlightDerivedSnapshots.mockResolvedValue(0);
 	// Default: the permission gate allows. Individual tests override this
@@ -139,14 +159,18 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.delete", () => {
-	it("declares INSTRUCTION_DELETE as its guarding permission", () => {
-		expect(m.requestedPermission).toBe("instruction:delete");
+	// A creator may discard their own unfinished upload without holding
+	// INSTRUCTION_DELETE, so the permission every caller must pass is the one
+	// that lets anyone begin an upload; INSTRUCTION_DELETE is asked for inside
+	// the handler, for everything else (see "an upload that was never finalized").
+	it("declares INSTRUCTION_CREATE as the permission every caller must hold", () => {
+		expect(m.requestedPermission).toBe("instruction:create");
 	});
 
 	it("throws FORBIDDEN and deletes nothing when the permission middleware denies", async () => {
 		m.permissionMiddleware.mockRejectedValueOnce(
 			new ORPCError("FORBIDDEN", {
-				message: "Missing required permission: instruction:delete",
+				message: "Missing required permission: instruction:create",
 			}),
 		);
 		await expect(
@@ -170,6 +194,65 @@ describe("projects.instructions.delete", () => {
 		expect(m.deleteObjects).not.toHaveBeenCalled();
 		expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	describe("while a move of the project's uploads into its repository is open (Fizzy #2878 §9)", () => {
+		const move = (snapshotId: string | null) => ({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+			migration: {
+				v: 1,
+				state: "PROPOSING",
+				branchId: null,
+				snapshotId,
+				syncId: "sync_1",
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_2",
+			},
+		});
+
+		it("refuses to delete the move's own proposal: its rows are the pull request's, and it goes with the move", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 9,
+				status: "READY",
+			});
+			m.getProjectInstructionSettings.mockResolvedValue(move("s"));
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "MIGRATION_OPEN", state: "PROPOSING" },
+			});
+
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
+
+		it("still deletes any other snapshot", async () => {
+			m.getInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 3,
+				status: "REJECTED",
+			});
+			m.getProjectInstructionSettings.mockResolvedValue(
+				move("some-other-snapshot"),
+			);
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "published",
+			});
+			m.listInstructionFiles.mockResolvedValue([]);
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).resolves.toBeDefined();
+
+			expect(m.deleteInstructionSnapshot).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	it("throws CONFLICT and deletes nothing when the snapshot is the project's published one", async () => {
@@ -198,13 +281,32 @@ describe("projects.instructions.delete", () => {
 	 * after this handler had collected the keys it meant to remove. The tab
 	 * hid the button for those statuses, but the UI is not a boundary.
 	 */
-	it.each(["RECEIVING", "VALIDATING"])(
+	it.each([
+		["VALIDATING", { status: "VALIDATING", source: "UPLOAD", userId: "u" }],
+		// A repository sync's own snapshot is RECEIVING while the sync copies
+		// its files in: the run owns it, whoever started it.
+		[
+			"RECEIVING (a sync's)",
+			{ status: "RECEIVING", source: "REPOSITORY", userId: "u" },
+		],
+		// A suggestion or a direct commit is RECEIVING under its pull
+		// request's rules, not an upload someone walked away from.
+		[
+			"RECEIVING (a proposal)",
+			{
+				status: "RECEIVING",
+				source: "UPLOAD",
+				userId: "u",
+				proposalStatus: "PENDING",
+			},
+		],
+	])(
 		"throws CONFLICT for a %s snapshot and touches neither rows nor storage",
-		async (status) => {
+		async (_label, fields) => {
 			m.getInstructionSnapshot.mockResolvedValue({
 				id: "s",
 				version: 4,
-				status,
+				...fields,
 			});
 
 			await expect(
@@ -216,6 +318,199 @@ describe("projects.instructions.delete", () => {
 			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 		},
 	);
+
+	// An upload whose browser could not reach storage never reaches `finalize`:
+	// it stays RECEIVING, no workflow owns it, and the tab used to offer no way
+	// out (Fizzy #2878 follow-up). The creator may discard it, and so may
+	// anyone who holds INSTRUCTION_DELETE; VALIDATING stays refused.
+	describe("an upload that was never finalized", () => {
+		const unfinished = {
+			id: "s",
+			version: 5,
+			status: "RECEIVING",
+			source: "UPLOAD",
+			userId: "u",
+			proposalStatus: null,
+		};
+
+		function discardable(over: Record<string, unknown> = {}) {
+			m.getInstructionSnapshot.mockResolvedValue({
+				...unfinished,
+				...over,
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "other",
+			});
+			m.listInstructionFiles.mockResolvedValue([
+				{ storageKey: `${OWN_PREFIX}f1` },
+			]);
+			m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
+		}
+
+		function deniedDelete() {
+			m.assertProjectPermission.mockImplementation(
+				async (_p: string, _u: string, permission: string) => {
+					if (permission === "instruction:delete") {
+						throw new ORPCError("FORBIDDEN", {
+							message: `Missing required permission: ${permission}`,
+						});
+					}
+				},
+			);
+		}
+
+		it("lets its creator discard it without INSTRUCTION_DELETE, rows first and then storage", async () => {
+			discardable();
+			deniedDelete();
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).resolves.toEqual({ deleted: true });
+
+			expect(m.deleteInstructionSnapshot).toHaveBeenCalledWith(
+				"s",
+				"p",
+				"org_1",
+				{ abandonedUpload: true },
+			);
+			expect(m.deleteObjects).toHaveBeenCalledWith([`${OWN_PREFIX}f1`], {
+				bucket: "skills",
+			});
+			expect(
+				m.deleteInstructionSnapshot.mock.invocationCallOrder[0]!,
+			).toBeLessThan(m.deleteObjects.mock.invocationCallOrder[0]!);
+			expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+				ctx,
+				expect.objectContaining({
+					action: "project.instructions.deleted",
+				}),
+			);
+		});
+
+		it("lets someone who holds INSTRUCTION_DELETE discard another member's", async () => {
+			discardable({ userId: "someone-else" });
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).resolves.toEqual({ deleted: true });
+
+			expect(m.assertProjectPermission).toHaveBeenCalledWith(
+				"p",
+				"u",
+				"instruction:delete",
+			);
+			expect(m.deleteInstructionSnapshot).toHaveBeenCalledWith(
+				"s",
+				"p",
+				"org_1",
+				{ abandonedUpload: true },
+			);
+		});
+
+		it("refuses another member's unfinished upload to an editor who may not delete, touching nothing", async () => {
+			discardable({ userId: "someone-else" });
+			deniedDelete();
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+			expect(m.listObjects).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
+
+		it("refuses a reader before anything is read", async () => {
+			m.permissionMiddleware.mockRejectedValueOnce(
+				new ORPCError("FORBIDDEN", {
+					message: "Missing required permission: instruction:create",
+				}),
+			);
+			discardable();
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+			expect(m.getInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+		});
+
+		it("does not let a creator without INSTRUCTION_DELETE delete a finished version", async () => {
+			discardable({ status: "READY" });
+			deniedDelete();
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+		});
+
+		it("answers CONFLICT, touching no object, when finalizing started after the read", async () => {
+			discardable();
+			// `finalize` claimed the row's validation attempt between this
+			// request's read and its DELETE: the predicate in the DELETE is
+			// what refuses.
+			m.deleteInstructionSnapshot.mockResolvedValue({
+				deleted: false,
+				reason: "active",
+			});
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				message:
+					"This upload is still being checked and cannot be deleted yet",
+			});
+
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+			expect(m.listObjects).not.toHaveBeenCalled();
+			expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		});
+
+		it("still refuses a VALIDATING upload to its creator and to a deleter alike", async () => {
+			discardable({ status: "VALIDATING" });
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({ code: "CONFLICT" });
+
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+			expect(m.deleteObjects).not.toHaveBeenCalled();
+		});
+
+		it("never opens the door for the proposal of a move into a repository", async () => {
+			discardable();
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "UPLOAD",
+				migration: {
+					v: 1,
+					state: "PROPOSING",
+					branchId: null,
+					snapshotId: "s",
+					syncId: "sync_1",
+					pullRequestUrl: null,
+					startedAt: "2026-10-03T10:00:00.000Z",
+					userId: "u",
+				},
+			});
+
+			await expect(
+				m.handlers.delete!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "MIGRATION_OPEN" },
+			});
+
+			expect(m.deleteInstructionSnapshot).not.toHaveBeenCalled();
+		});
+	});
 
 	// The read above is a read-then-delete check a fresh "Try again" can win,
 	// which is why the DELETE carries the predicate too. When IT is the one
@@ -271,6 +566,7 @@ describe("projects.instructions.delete", () => {
 			"s",
 			"p",
 			"org_1",
+			{ abandonedUpload: false },
 		);
 		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
 			ctx,

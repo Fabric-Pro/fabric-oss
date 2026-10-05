@@ -1,5 +1,10 @@
 import { ORPCError } from "@orpc/client";
 import { listWorkflowIntegrations } from "@repo/database";
+import type { ConnectionTestResult as TestConnectionResult } from "@repo/integrations";
+import {
+	gitlabOutboundFetch,
+	storedGitLabOrigin,
+} from "@repo/integrations/gitlab";
 import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -56,12 +61,6 @@ const IntegrationTypeEnum = z.enum([
 ]);
 
 type IntegrationType = z.infer<typeof IntegrationTypeEnum>;
-
-interface TestConnectionResult {
-	success: boolean;
-	message?: string;
-	error?: string;
-}
 
 async function testGmailConnection(
 	credentials: Record<string, string>,
@@ -303,22 +302,24 @@ async function testGitLabConnection(
 		credentials.access_token ||
 		credentials.apiToken ||
 		"";
-	const rawUrl =
-		credentials.GITLAB_URL ||
-		credentials.domain ||
-		credentials.url ||
-		"https://gitlab.com";
-
 	if (!apiToken) {
 		return { success: false, error: "GitLab access token is required" };
 	}
 
-	const baseUrl = rawUrl.startsWith("http")
-		? rawUrl.replace(/\/$/, "")
-		: `https://${rawUrl.replace(/\/$/, "")}`;
+	// The instance the saved connection belongs to (its issuer's, else its
+	// recorded address), gitlab.com when none. A refused address is
+	// reported, never fetched.
+	const origin = storedGitLabOrigin(credentials);
+	if (!origin.ok) {
+		return {
+			success: false,
+			error: `Invalid GitLab URL: ${origin.reason}`,
+		};
+	}
+	const baseUrl = origin.origin;
 
 	try {
-		const response = await fetch(`${baseUrl}/api/v4/user`, {
+		const response = await gitlabOutboundFetch(`${baseUrl}/api/v4/user`, {
 			headers: {
 				Authorization: `Bearer ${apiToken}`,
 				Accept: "application/json",
@@ -758,55 +759,13 @@ async function testWebhookConnection(
 async function testGithubConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
-	// Check for OAuth flow first, then fall back to PAT
-	const token =
+	const { testGitHubAccessToken } = await import("@repo/integrations/github");
+	return testGitHubAccessToken(
 		credentials.access_token ||
-		credentials.apiKey ||
-		credentials.GITHUB_TOKEN;
-	if (!token) {
-		return {
-			success: false,
-			error: "GitHub not connected. Please connect via OAuth or provide a token.",
-		};
-	}
-
-	try {
-		const response = await fetch("https://api.github.com/user", {
-			headers: {
-				Authorization: `Bearer ${token}`,
-				Accept: "application/vnd.github+json",
-				"User-Agent": "Fabric-App",
-			},
-		});
-
-		if (response.ok) {
-			const user = (await response.json()) as { login: string };
-			return {
-				success: true,
-				message: `Connected as ${user.login}`,
-			};
-		}
-
-		if (response.status === 401) {
-			return {
-				success: false,
-				error: "Access token expired or invalid. Please reconnect GitHub.",
-			};
-		}
-
-		return {
-			success: false,
-			error: `GitHub API returned status ${response.status}`,
-		};
-	} catch (error) {
-		return {
-			success: false,
-			error:
-				error instanceof Error
-					? error.message
-					: "Failed to connect to GitHub",
-		};
-	}
+			credentials.GITHUB_TOKEN ||
+			credentials.apiKey ||
+			"",
+	);
 }
 
 /**
@@ -1555,6 +1514,13 @@ export const testSavedConnectionProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
+		if (!organizationId) {
+			return {
+				success: false,
+				status: "unknown" as const,
+				error: "An organization is required to test saved connections",
+			};
+		}
 
 		// Verify organization membership if in org context
 		if (organizationId) {
@@ -1584,7 +1550,30 @@ export const testSavedConnectionProcedure = tenantProtectedProcedure
 			};
 		}
 
-		const integration = integrations[0];
+		// Settings test the account connection, never a newer workflow override.
+		const integration =
+			input.type === "GITHUB"
+				? integrations.find(
+						(candidate) => candidate.workflowId === null,
+					)
+				: integrations[0];
+		if (!integration) {
+			return {
+				success: false,
+				status: "unknown" as const,
+				error: "No saved credentials found for this integration",
+			};
+		}
+		if (input.type === "GITHUB") {
+			const { testSavedGitHubConnection } = await import(
+				"@repo/integrations/github"
+			);
+			return testSavedGitHubConnection({
+				integrationId: integration.id,
+				userId: user.id,
+				organizationId,
+			});
+		}
 
 		// Decrypt credentials
 		let credentials: Record<string, string>;

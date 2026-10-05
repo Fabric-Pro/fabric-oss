@@ -69,7 +69,13 @@ describe("callMcpWithRestFallback", () => {
 	it("delegates straight to REST when the source is rest-adapter", async () => {
 		const restFallback = vi.fn(async () => ({ from: "rest" }));
 		const result = await callMcpWithRestFallback({
-			source: { kind: "rest-adapter", token: "tok" },
+			source: {
+				kind: "rest-adapter",
+				credential: {
+					token: "tok",
+					apiBase: "https://gitlab.com/api/v4",
+				},
+			},
 			method: "list_projects",
 			args: {},
 			restFallback,

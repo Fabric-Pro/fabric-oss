@@ -39,16 +39,30 @@ export {
 	invalidateMcpClientCache,
 	McpClientError,
 	type McpClientType,
+	McpGitLabOriginMismatchError,
 	// OAuth authorization required error (for handling in UI)
 	OAuthAuthorizationRequiredError,
 } from "./lib/client";
+// GitLab personal servers: credentials come from the GitLab connection service
+export {
+	GitLabMcpCredentialError,
+	type GitLabMcpFetch,
+	getGitLabMcpAccessToken,
+	getValidMcpAccessToken,
+	getValidMcpTransportAuth,
+	isGitLabPersonalMcpConfig,
+} from "./lib/gitlab-credential";
 // OAuth Client Provider for AI SDK v7 (automatic token management)
 export {
 	type CreateOAuthProviderOptions,
 	cleanupOAuthFlowState,
 	createOAuthClientProvider,
-	hasValidOAuthTokens,
 } from "./lib/oauth-provider";
+// Organization gate on every config-backed client (Fizzy #2903)
+export {
+	checkMcpConfigOrganizationAccess,
+	type McpConfigAccess,
+} from "./lib/organization-access";
 // Read-only mode write-gate + the single external-dispatch funnel (Fizzy #2007)
 export {
 	type CallMcpToolOptions,

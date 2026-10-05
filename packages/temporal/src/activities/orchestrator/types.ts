@@ -233,6 +233,16 @@ export interface ExecuteMcpToolInput {
 	 * failure themselves can opt in to avoid duplicate generic MCP logs.
 	 */
 	failureLogging?: "executor" | "caller";
+	/**
+	 * Set by a caller acting on a project's PM container, with the
+	 * `additionalContext` that came with it. The container id names a project
+	 * on one GitLab instance only (`recordedGitLabPmOrigin`), so the client
+	 * that runs the tool must be bound to that instance: a GitLab personal
+	 * server on any other one (the config or connection moved since the
+	 * caller checked) is refused non-retryably as `GitLabPmOriginMismatch`
+	 * before anything is sent, cached client or not. Other servers ignore it.
+	 */
+	pmTarget?: { additionalContext?: unknown };
 }
 
 export interface ExecuteMcpToolOutput {

@@ -1096,7 +1096,7 @@ function ReadinessPanelBody() {
 				    until someone connects with it.) Here the view lives as
 				    long as the panel does, and the panel does not depend on
 				    this item at all. */}
-				{organizationId ? (
+				{organizationId && projectId !== "" ? (
 					<ConnectCliDialog
 						open={connectCliOpen}
 						onOpenChange={setConnectCliOpen}
@@ -1116,6 +1116,7 @@ function ReadinessPanelBody() {
 						}}
 						organizationId={organizationId}
 						organizationSlug={organizationSlug ?? undefined}
+						projectId={projectId}
 						/* `||`, not `??`: the payload names the project with the
 						   empty string when there is no project to name — the
 						   disabled shape, and the first render before the read

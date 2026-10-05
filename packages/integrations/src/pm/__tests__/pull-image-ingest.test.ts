@@ -1112,3 +1112,61 @@ describe("ingestPulledImages — empty (0-byte) attachments", () => {
 		expect(result.description).toContain("could not be imported");
 	});
 });
+
+describe("buildGitLabIngestOptions — the download goes only where it may", () => {
+	const SECRET = "d".repeat(32);
+	const description = `![shot](/uploads/${SECRET}/shot.png)`;
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it.each([
+		"https://169.254.169.254",
+		"https://127.0.0.1",
+		"https://10.0.0.5",
+	])(
+		"never sends the token to an internal instance (%s)",
+		async (baseUrl) => {
+			const fetchMock = vi.fn(async () => imageResponse());
+			vi.stubGlobal("fetch", fetchMock);
+
+			const result = await ingestPulledImages({
+				description,
+				projectId: "p1",
+				storyId: "s1",
+				store: makeStore(),
+				...buildGitLabIngestOptions("GL-TOKEN", "42", baseUrl),
+			});
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(result.failed).toBe(1);
+		},
+	);
+
+	it("reaches a public self-hosted instance through the outbound guard", async () => {
+		const fetchMock = vi.fn(async () => imageResponse());
+		vi.stubGlobal("fetch", fetchMock);
+
+		await ingestPulledImages({
+			description,
+			projectId: "p1",
+			storyId: "s1",
+			store: makeStore(),
+			...buildGitLabIngestOptions(
+				"GL-TOKEN",
+				"42",
+				"https://gitlab.example.com",
+			),
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [
+			string,
+			RequestInit & { dispatcher?: unknown },
+		];
+		expect(url).toBe(
+			`https://gitlab.example.com/api/v4/projects/42/uploads/${SECRET}/shot.png`,
+		);
+		expect(init.dispatcher).toBeDefined();
+	});
+});

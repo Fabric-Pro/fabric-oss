@@ -52,6 +52,14 @@ export const TOOL_RESULTS = {
 	prunedPlaceholderMax: 300,
 	/** Number of recent iterations whose tool results are kept in full */
 	recentIterationsToKeep: 2,
+	/**
+	 * Largest page a paged Fabric body read (`fabric_get_project_document`,
+	 * `fabric_get_project_source`) may request. Two-thirds of `maxChars`,
+	 * leaving room for the JSON envelope and for escaping in the body, so a
+	 * typical page is shown whole with its `nextOffset`. A page that still
+	 * overflows keeps its pagination fields through the over-cap path.
+	 */
+	pagedBodyMaxLength: 8_000,
 } as const;
 
 /**

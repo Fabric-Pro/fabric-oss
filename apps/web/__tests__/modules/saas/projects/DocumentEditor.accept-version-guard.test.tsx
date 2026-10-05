@@ -44,6 +44,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // stale `expectedVersion` is refused with the oRPC CONFLICT code, as
 // `updateDocumentProcedure` does.
 const server = { content: "", version: 7 };
+// The document's status, kept beside `server` so the assertions that compare
+// `server` as a whole still read as "content and version, nothing else".
+let serverStatus = "COMPLETED";
+let serverType = "BUSINESS_CASE";
 let documentGetCalls = 0;
 const saveCalls: Array<Record<string, unknown>> = [];
 
@@ -52,10 +56,10 @@ function serverDocument() {
 		document: {
 			id: "doc-1",
 			title: "Business case",
-			type: "BUSINESS_CASE",
+			type: serverType,
 			content: server.content,
 			version: server.version,
-			status: "COMPLETED",
+			status: serverStatus,
 		},
 	};
 }
@@ -77,7 +81,19 @@ async function fakeUpdate(vars: Record<string, unknown>) {
 		server.content = vars.content;
 		server.version += 1;
 	}
-	return { ...serverDocument(), contentUnchanged: false };
+	// As `updateDocumentProcedure` does: a save that asks completes the
+	// document only if it is still a draft and has content, and reports
+	// whether this request did.
+	let draftCompleted = false;
+	if (
+		vars.completeDraft === true &&
+		serverStatus === "DRAFT" &&
+		server.content.trim() !== ""
+	) {
+		serverStatus = "COMPLETE";
+		draftCompleted = true;
+	}
+	return { ...serverDocument(), contentUnchanged: false, draftCompleted };
 }
 
 const PROJECT_PAYLOAD = {
@@ -463,6 +479,8 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		mockAgentState = {};
 		server.content = "";
 		server.version = 7;
+		serverStatus = "COMPLETED";
+		serverType = "BUSINESS_CASE";
 		documentGetCalls = 0;
 		saveSlot = window.document.createElement("div");
 		window.document.body.appendChild(saveSlot);
@@ -599,6 +617,9 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 			projectId: "proj-1",
 			id: "doc-1",
 			content: expect.stringContaining("One more line."),
+			// The Save button is the author's own call on the document, so
+			// it also asks the server to complete a draft. Still unguarded.
+			completeDraft: true,
 		});
 		expect(saveCalls[0].content).toContain(SLOT_A);
 	});
@@ -654,6 +675,179 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		expect(cachedDocument()).toMatchObject({
 			content: elsewhere,
 			version: 8,
+		});
+	});
+
+	/**
+	 * Completing a draft is the explicit Save's job, and only its job. Kept in
+	 * this file for its harness: the fake server above also holds the
+	 * document's status, and completes a draft when a save asks it to.
+	 *
+	 * The autosave fires ten seconds after the last keystroke and clears the
+	 * unsaved state. Two things follow, and both are pinned here: it must not
+	 * complete the draft, and it must not leave Save disabled on a draft that
+	 * is still owed its completion.
+	 */
+	describe("completing a draft", () => {
+		beforeEach(() => {
+			serverStatus = "DRAFT";
+		});
+
+		it("an autosave keeps the text, leaves the draft a draft, and leaves Save available", async () => {
+			const { editor } = await mount(STORED);
+
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			try {
+				await act(async () => {
+					editor.commands.insertContentAt(
+						editor.state.doc.content.size,
+						"<p>One more line.</p>",
+					);
+					latestEditorOptions.onUpdate?.({ editor });
+				});
+				// The debounce, then the save it starts: the save's own
+				// follow-ups are timers too, and would be dropped with the
+				// fake clock if it were restored before they ran.
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(10_000);
+				});
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(1_000);
+				});
+			} finally {
+				vi.useRealTimers();
+			}
+			await flush();
+
+			expect(saveCalls).toHaveLength(1);
+			expect(saveCalls[0]).toEqual({
+				projectId: "proj-1",
+				id: "doc-1",
+				content: expect.stringContaining("One more line."),
+			});
+			expect(saveCalls[0]).not.toHaveProperty("completeDraft");
+			expect(serverStatus).toBe("DRAFT");
+
+			await waitFor(() => {
+				expect(saveButton()).toHaveAccessibleName("Save document");
+			});
+			expect(saveButton()).toBeEnabled();
+		});
+
+		it("Save on a draft whose text is already saved completes it, and then has nothing left to do", async () => {
+			await mount(STORED);
+			await waitFor(() => {
+				expect(saveButton()).toBeEnabled();
+			});
+
+			await act(async () => {
+				fireEvent.click(saveButton());
+			});
+			await flush();
+
+			expect(saveCalls).toHaveLength(1);
+			expect(saveCalls[0]).toMatchObject({
+				id: "doc-1",
+				completeDraft: true,
+			});
+			expect(serverStatus).toBe("COMPLETE");
+			expect(toast.success).toHaveBeenCalledWith(
+				"Document saved and marked as complete",
+			);
+			await waitFor(() => {
+				expect(saveButton()).toHaveAccessibleName(
+					"Document saved, no changes to save",
+				);
+			});
+			expect(saveButton()).toBeDisabled();
+		});
+
+		it("does not claim the completion when someone else had already completed the draft", async () => {
+			await mount(STORED);
+			await waitFor(() => {
+				expect(saveButton()).toBeEnabled();
+			});
+			// Completed elsewhere; this editor has not refetched and still
+			// holds the document as a draft.
+			serverStatus = "COMPLETE";
+
+			await act(async () => {
+				fireEvent.click(saveButton());
+			});
+			await flush();
+
+			expect(saveCalls).toHaveLength(1);
+			expect(toast.success).toHaveBeenCalledWith(
+				"Document saved successfully",
+			);
+			expect(toast.success).not.toHaveBeenCalledWith(
+				"Document saved and marked as complete",
+			);
+			// The response says the document is complete, so Save has nothing
+			// left to finish and does not stay enabled.
+			await waitFor(() => {
+				expect(saveButton()).toHaveAccessibleName(
+					"Document saved, no changes to save",
+				);
+			});
+			expect(saveButton()).toBeDisabled();
+		});
+
+		it("does not offer Save on a draft while an assistant proposal is streaming or awaiting review", async () => {
+			const { rerender } = await mount(STORED);
+			await waitFor(() => {
+				expect(saveButton()).toBeEnabled();
+			});
+
+			// The assistant is writing into the editor.
+			mockAgentState = {};
+			mockIsLoading = true;
+			rerender(tree());
+			await flush();
+			expect(saveButton()).toBeDisabled();
+
+			// Its proposal is on screen, waiting for Accept or Reject. Saving
+			// now would store text nobody accepted and complete the document
+			// on it.
+			mockAgentState = { document: PROPOSED };
+			mockIsLoading = false;
+			rerender(tree());
+			await flush();
+			await act(async () => {
+				actionConfigs.get("confirm_changes")?.renderAndWaitForResponse({
+					args: {},
+					respond: vi.fn(),
+					status: "executing",
+				});
+				await Promise.resolve();
+			});
+			await flush();
+			expect(saveButton()).toBeDisabled();
+			expect(saveCalls).toHaveLength(0);
+		});
+
+		it("does not keep Save enabled on a draft integration contract, which a save never completes", async () => {
+			serverType = "INTEGRATION_CONTRACT";
+			await mount(STORED);
+
+			await waitFor(() => {
+				expect(saveButton()).toHaveAccessibleName(
+					"Document saved, no changes to save",
+				);
+			});
+			expect(saveButton()).toBeDisabled();
+		});
+
+		it("a document that is not a draft keeps Save disabled until there is something to save", async () => {
+			serverStatus = "COMPLETE";
+			await mount(STORED);
+
+			await waitFor(() => {
+				expect(saveButton()).toHaveAccessibleName(
+					"Document saved, no changes to save",
+				);
+			});
+			expect(saveButton()).toBeDisabled();
 		});
 	});
 });

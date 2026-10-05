@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { installFakeGit } from "../../../../__tests__/helpers/fake-git";
 import {
 	buildGitEnv,
 	credentialFreeUrl,
@@ -89,7 +91,7 @@ describe.skipIf(!hasGit)("lsRemoteHead against real git (spec §6.1)", () => {
 		await expect(
 			lsRemoteHead({
 				cwd: work,
-				url: `file://${source}`,
+				url: pathToFileURL(source).href,
 				ref: "main",
 				env: syncEnv(),
 			}),
@@ -100,7 +102,7 @@ describe.skipIf(!hasGit)("lsRemoteHead against real git (spec §6.1)", () => {
 		await expect(
 			lsRemoteHead({
 				cwd: work,
-				url: `file://${source}`,
+				url: pathToFileURL(source).href,
 				ref: "gone",
 				env: syncEnv(),
 			}),
@@ -111,7 +113,7 @@ describe.skipIf(!hasGit)("lsRemoteHead against real git (spec §6.1)", () => {
 		await expect(
 			lsRemoteHead({
 				cwd: work,
-				url: `file://${source}`,
+				url: pathToFileURL(source).href,
 				ref: "release",
 				env: syncEnv(),
 			}),
@@ -122,7 +124,7 @@ describe.skipIf(!hasGit)("lsRemoteHead against real git (spec §6.1)", () => {
 		await expect(
 			lsRemoteHead({
 				cwd: work,
-				url: `file://${path.join(work, "no-such-repo")}`,
+				url: pathToFileURL(path.join(work, "no-such-repo")).href,
 				ref: "main",
 				env: syncEnv(),
 			}),
@@ -136,24 +138,14 @@ describe.skipIf(!hasGit)("lsRemoteHead against real git (spec §6.1)", () => {
 	it("kills a hung ls-remote at its timeout", async () => {
 		// A stand-in `git` that never answers: spawn resolves the command on
 		// the child env's PATH, so this directory shadows the real binary.
-		// `sleep` is named by absolute path because PATH holds only fakeBin.
-		const sleepBin = execFileSync("sh", ["-c", "command -v sleep"], {
-			encoding: "utf8",
-		}).trim();
-		const fakeBin = path.join(work, "fake-bin");
-		await mkdir(fakeBin, { recursive: true });
-		await writeFile(
-			path.join(fakeBin, "git"),
-			`#!/bin/sh\nexec ${sleepBin} 30\n`,
-		);
-		await chmod(path.join(fakeBin, "git"), 0o755);
+		const fakeGit = await installFakeGit(work, "hang");
 		const started = Date.now();
 		await expect(
 			lsRemoteHead({
 				cwd: work,
-				url: `file://${source}`,
+				url: pathToFileURL(source).href,
 				ref: "main",
-				env: syncEnv({ PATH: fakeBin }),
+				env: syncEnv(fakeGit),
 				timeoutMs: 200,
 			}),
 		).rejects.toMatchObject({ kind: "timeout", label: "ls-remote" });

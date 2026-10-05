@@ -21,9 +21,11 @@ const mockUpdate = vi.fn();
 const mockDeleteMany = vi.fn();
 const mockFindUnique = vi.fn();
 const mockActivityCreate = vi.fn();
+const mockQueryRaw = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
+		$queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
 		projectRepositoryIntegration: {
 			findFirst: (...args: unknown[]) => mockFindFirst(...args),
 			findMany: (...args: unknown[]) => mockFindMany(...args),
@@ -44,6 +46,7 @@ import {
 	createProjectRepoIntegration,
 	deleteProjectRepoIntegration,
 	disconnectIntegrationsForUser,
+	findAllByRepoUrl,
 	findProjectRepoCredentials,
 	getActiveIntegrations,
 	getProjectRepoIntegration,
@@ -946,6 +949,53 @@ describe("Project Repository Integrations", () => {
 			expect(selectArg.encryptedAccessToken).toBeUndefined();
 			expect(selectArg.encryptedRefreshToken).toBeUndefined();
 			expect(selectArg.encryptedPat).toBeUndefined();
+		});
+	});
+
+	// An Azure DevOps `{org}.visualstudio.com` remote spells the organization in
+	// lowercase (hosts are), while the stored URL keeps the organization's own
+	// case: an exact lookup never found the repository for such a checkout.
+	describe("findAllByRepoUrl", () => {
+		it("matches whatever the case, comparing lowercase forms exactly", async () => {
+			mockQueryRaw.mockResolvedValue([{ id: "int-1" }]);
+			mockFindMany.mockResolvedValue([{ id: "int-1" }]);
+
+			const found = await findAllByRepoUrl([
+				"https://dev.azure.com/example-org/Example/_git/instructions",
+				"https://dev.azure.com/Example-Org/Example/_git/instructions",
+			]);
+
+			expect(found).toEqual([{ id: "int-1" }]);
+			const [strings, lowered] = mockQueryRaw.mock.calls[0] as [
+				TemplateStringsArray,
+				string[],
+			];
+			expect(strings.join("?")).toMatch(
+				/lower\("repositoryUrl"\) = ANY\(\?::text\[\]\)/,
+			);
+			expect(strings.join("?")).not.toMatch(/ILIKE/i);
+			expect(lowered).toEqual([
+				"https://dev.azure.com/example-org/example/_git/instructions",
+			]);
+			expect(mockFindMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { id: { in: ["int-1"] }, status: "ACTIVE" },
+				}),
+			);
+		});
+
+		it("asks nothing more when no repository matches", async () => {
+			mockQueryRaw.mockResolvedValue([]);
+
+			expect(
+				await findAllByRepoUrl(["https://github.com/example-org/x"]),
+			).toEqual([]);
+			expect(mockFindMany).not.toHaveBeenCalled();
+		});
+
+		it("asks nothing at all for no URLs", async () => {
+			expect(await findAllByRepoUrl([])).toEqual([]);
+			expect(mockQueryRaw).not.toHaveBeenCalled();
 		});
 	});
 });

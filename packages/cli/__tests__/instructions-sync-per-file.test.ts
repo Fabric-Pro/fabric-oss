@@ -42,6 +42,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -235,8 +237,12 @@ describe("a sync with many writes", () => {
 		// because a timed-out retry of that POST does not wait for the build
 		// already running on the server, it starts another one.
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
-			{ timeoutMs: 15_000 },
-			{ timeoutMs: 60_000, retry: { maxRetries: 0 } },
+			{ project: "project-1", timeoutMs: 15_000 },
+			{
+				project: "project-1",
+				timeoutMs: 60_000,
+				retry: { maxRetries: 0 },
+			},
 		]);
 		expect(await readFile(path.join(dest, "rule-100.md"), "utf8")).toBe(
 			"# rule 100\n",

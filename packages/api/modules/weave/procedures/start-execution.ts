@@ -17,9 +17,9 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
 import { assertStoryReadyForRun } from "../../projects/lib/run-readiness";
+import { requireAuthorizedRowOrganization } from "../lib/plan-organization";
 import { PENDING_RUN_ID } from "../lib/temporal-handle";
 
 /** Partial unique index from plan §F2 (one active Weave execution per story). */
@@ -134,19 +134,10 @@ export const startExecutionProcedure = protectedProcedure
 	.input(StartExecutionInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const plan = await db.weavePlan.findFirst({
 			where: {
 				id: input.planId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -159,10 +150,19 @@ export const startExecutionProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names a plan, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			plan.projectId,
 			userId,
 			Permissions.AGENT_EXECUTE,
+		);
+		// From here on the AUTHORIZED project's organization, not the one
+		// resolved from the input before the project was known. A row stamped
+		// with another organization is refused before anything is written —
+		// see `lib/plan-organization.ts`.
+		const projectOrganizationId = requireAuthorizedRowOrganization(
+			input.organizationId,
+			plan,
+			authorized,
 		);
 
 		if (plan.status !== "APPROVED") {
@@ -247,7 +247,7 @@ export const startExecutionProcedure = protectedProcedure
 					runId: PENDING_RUN_ID,
 					status: "PENDING",
 					userId,
-					organizationId: organizationId ?? null,
+					organizationId: projectOrganizationId,
 				},
 			});
 		} catch (error) {
@@ -321,7 +321,7 @@ export const startExecutionProcedure = protectedProcedure
 							message: `Execute weave plan: ${plan.name}`,
 							history: [],
 							userId,
-							organizationId,
+							organizationId: projectOrganizationId,
 							executionMode: "weave",
 							projectId: plan.projectId,
 							weavePlanId: input.planId,

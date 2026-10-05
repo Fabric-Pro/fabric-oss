@@ -42,6 +42,8 @@ import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import {
 	DEFAULT_ROADMAP_COLUMN_ORDER,
+	DEFAULT_ROADMAP_COLUMNS,
+	DEFAULT_ROADMAP_MODE,
 	ROADMAP_COLUMN_LABELS,
 	type RoadmapColumnKey,
 	type RoadmapColumns,
@@ -50,16 +52,6 @@ import {
 	type RoadmapViewMode,
 } from "../../hooks/useRoadmapView";
 import { Segmented } from "./Segmented";
-
-/** Every optional column visible — the default card-field visibility. */
-const ALL_COLUMNS_ON: RoadmapColumns = {
-	stage: true,
-	sync: true,
-	size: true,
-	source: true,
-	tags: true,
-	flags: true,
-};
 
 export type RoadmapSettingsMenuProps = {
 	mode: RoadmapViewMode;
@@ -201,12 +193,14 @@ export function RoadmapSettingsMenu({
 		onColumnOrderChange(arrayMove(columnOrder, oldIndex, newIndex));
 	};
 
-	// Restore every view setting (layout, grouping, sort, card fields + order)
-	// to its shipped default, applying immediately (live).
+	// Restore this menu's settings (layout, grouping, card fields + order) to
+	// their shipped defaults, applying immediately (live). The sort is left
+	// alone: it is the toolbar's control and saves on change, so resetting it
+	// here would write a change this menu's Cancel could not take back.
 	const handleReset = () => {
-		onModeChange("table");
+		onModeChange(DEFAULT_ROADMAP_MODE);
 		onGroupByChange("priority");
-		onColumnsChange(ALL_COLUMNS_ON);
+		onColumnsChange({ ...DEFAULT_ROADMAP_COLUMNS });
 		onColumnOrderChange([...DEFAULT_ROADMAP_COLUMN_ORDER]);
 	};
 

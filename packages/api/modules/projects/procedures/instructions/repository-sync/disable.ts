@@ -9,6 +9,8 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "../hosting-organization";
+import { migrationOpenError } from "../migration-freeze";
+import { readMove } from "./migration-read";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
@@ -40,9 +42,26 @@ export const disableRepositorySyncProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// A move from uploads into a repository is canceled, not switched
+		// back: its own command ends it and closes its pull request (Fizzy
+		// #2878 §9). Two states have no cancel and need a way out: a move that
+		// has switched (the project is repository-backed and waits for its
+		// first sync, which may never succeed) and one that is blocked (it
+		// could not open its pull request, or the project was flipped behind
+		// it). Switching back to upload mode ends either, and is recorded as
+		// the move's cancellation.
+		const tenant = { projectId: input.projectId, organizationId };
+		const move = await readMove(tenant);
+		if (
+			move !== null &&
+			move.view.state !== "SWITCHING" &&
+			move.view.state !== "BLOCKED"
+		) {
+			throw await migrationOpenError(move.pointer, tenant);
+		}
 		const result = await deleteInstructionRepositorySync({
-			projectId: input.projectId,
-			organizationId,
+			...tenant,
+			actorUserId: context.user.id,
 		});
 		if (!result) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
@@ -53,7 +72,11 @@ export const disableRepositorySyncProcedure = tenantProtectedProcedure
 			organizationId,
 			projectId: input.projectId,
 			resource: { type: "project", id: input.projectId, name: null },
-			metadata: { reason: "user", hadConfiguration: result.deleted },
+			metadata: {
+				reason: "user",
+				hadConfiguration: result.deleted,
+				...(move === null ? {} : { endedMigration: move.view.state }),
+			},
 		});
 		return { disabled: true as const, hadConfiguration: result.deleted };
 	});

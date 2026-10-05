@@ -1,226 +1,131 @@
 "use client";
 
-import { Button } from "@ui/components/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
-import { CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
-import { useRef, useState } from "react";
-import {
-	buildClaudeCodeCommand,
-	buildCodexCommands,
-	buildCursorInstallLink,
-	buildPortableMcpConfiguration,
-	buildVsCodeInstallLink,
-} from "./lib/agent-sign-in";
-
-/* -------------------------------------------------------------------------- */
-/* Copy                                                                        */
-/* -------------------------------------------------------------------------- */
-
-const SECTION_LABEL = "Connect your coding agent";
-
-const SECTION_INTRO =
-	"Add Fabric to your tool, then sign in from the tool. You approve it once in your browser, for this organization. Nothing here contains a key, so it is safe to share or commit.";
-
-const CLAUDE_CODE_NEXT_STEP =
-	"Then run /mcp in Claude Code and choose Authenticate. Your browser opens so you can approve the connection.";
-
-const VS_CODE_NEXT_STEP =
-	"VS Code asks you to confirm the server, then opens your browser to sign in.";
-
-const CURSOR_NEXT_STEP =
-	"Cursor asks you to confirm the server, then opens your browser to sign in.";
-
-const CODEX_NEXT_STEP =
-	"The second command opens your browser so you can approve the connection.";
-
-const PORTABLE_NEXT_STEP =
-	"Save this as .mcp.json, or add the server to your tool's MCP settings. A client that supports sign-in will offer it the first time it connects.";
-
-const COPIED_LABEL = "Copied";
-const COPY_FAILED = "Copying failed. Select the text and copy it manually.";
-
-const AGENTS: ReadonlyArray<{ id: AgentId; label: string }> = [
-	{ id: "claude-code", label: "Claude Code" },
-	{ id: "vscode", label: "VS Code" },
-	{ id: "cursor", label: "Cursor" },
-	{ id: "codex", label: "Codex" },
-	{ id: "other", label: "Other" },
-];
-
-type AgentId = "claude-code" | "vscode" | "cursor" | "codex" | "other";
+import { Tabs, TabsContent } from "@ui/components/tabs";
+import { useState } from "react";
+import { EditorToolSteps } from "./EditorToolSteps";
+import type { CloneChoice } from "./lib/agent-sign-in";
+import { type AgentId, isAgentId } from "./lib/agent-tools";
+import type { CheckoutSetup } from "./lib/checkout-setup";
+import { PortableToolSteps } from "./PortableToolSteps";
+import { TerminalToolSteps } from "./TerminalToolSteps";
+import { ToolPicker } from "./ToolPicker";
 
 interface AgentSignInSectionProps {
 	/** The deployment origin the entries point at. Empty until mounted. */
 	origin: string;
 	/**
-	 * The heading. The dialog names this section differently when the
-	 * checkout route is offered first.
+	 * The project every entry connects to, by its gateway URL: the sign-in is
+	 * for this project alone and asks for no organization or project.
 	 */
-	label?: string;
+	projectId: string;
+	/** Names an editor's server, so two projects' servers do not collide. */
+	projectName: string;
 	/**
 	 * Says a copy's outcome through the host's live region. The dialog keeps
 	 * exactly one, so this section adds none of its own.
 	 */
 	announce: (message: string) => void;
+	/**
+	 * Set for the coding-instructions purpose. Without it, Claude Code and
+	 * Codex connect over MCP only, which is all the project purpose needs.
+	 */
+	checkout?: CheckoutSetup;
 }
 
-function CommandBlock({
-	command,
-	label,
-	testId,
+/**
+ * The way to connect a coding tool: pick one, then follow its steps. No key.
+ *
+ * Claude Code and Codex run the CLI this deployment serves (coding
+ * instructions) or add the gateway as an MCP server (project context); VS Code
+ * and Cursor install the gateway from a link; any other client gets the
+ * server entry. Whichever it is, the tool signs in through the browser and the
+ * person approves it once. See `./lib/agent-sign-in.ts` for where each format
+ * comes from.
+ *
+ * The picked tool and the clone choice live here, above the steps, so the
+ * choice survives a change of tool and the "Other" steps can send the person
+ * to the Claude Code ones.
+ */
+export function AgentSignInSection({
+	origin,
+	projectId,
+	projectName,
 	announce,
-}: {
-	command: string;
-	/** Unique in the dialog: the key route has copy controls of its own. */
-	label: string;
-	testId: string;
-	announce: (message: string) => void;
-}) {
-	const [state, setState] = useState<"idle" | "copied">("idle");
-	const generation = useRef(0);
+	checkout,
+}: AgentSignInSectionProps) {
+	const [tool, setTool] = useState<AgentId>("claude-code");
+	const [cloneChoice, setCloneChoice] = useState<CloneChoice>("have");
 
-	const copy = async () => {
-		const current = ++generation.current;
-		try {
-			await navigator.clipboard.writeText(command);
-			if (current === generation.current) {
-				setState("copied");
-				announce(`${label}: copied to the clipboard.`);
-			}
-		} catch {
-			if (current === generation.current) {
-				setState("idle");
-				announce(COPY_FAILED);
+	const oneLineSetupExists =
+		checkout?.discovery.status === "ready" && checkout.localSetup !== null;
+	const afterward =
+		checkout === undefined
+			? null
+			: checkout.localSetup?.kind === "repository"
+				? "repository"
+				: "upload";
+
+	const stepsFor = (picked: AgentId) => {
+		switch (picked) {
+			case "claude-code":
+			case "codex":
+				return (
+					<TerminalToolSteps
+						announce={announce}
+						checkout={checkout}
+						cloneChoice={cloneChoice}
+						onCloneChoiceChange={setCloneChoice}
+						origin={origin}
+						projectId={projectId}
+						tool={picked}
+					/>
+				);
+			case "vscode":
+			case "cursor":
+				return (
+					<EditorToolSteps
+						afterward={afterward}
+						editor={picked}
+						origin={origin}
+						projectId={projectId}
+						projectName={projectName}
+					/>
+				);
+			case "other":
+				return (
+					<PortableToolSteps
+						announce={announce}
+						onUseOneLineSetup={
+							oneLineSetupExists
+								? () => setTool("claude-code")
+								: null
+						}
+						origin={origin}
+						projectId={projectId}
+					/>
+				);
+			default: {
+				const unreachable: never = picked;
+				return unreachable;
 			}
 		}
 	};
 
 	return (
-		<div className="space-y-2">
-			<pre
-				className="whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-4 font-mono text-xs"
-				data-testid={testId}
+		<section data-testid="agent-sign-in">
+			<Tabs
+				onValueChange={(value) => {
+					if (isAgentId(value)) {
+						setTool(value);
+					}
+				}}
+				value={tool}
 			>
-				{command}
-			</pre>
-			<Button
-				autoLoading={false}
-				onClick={copy}
-				size="sm"
-				variant="outline"
-			>
-				{state === "copied" ? (
-					<>
-						<CheckIcon aria-hidden="true" />
-						{COPIED_LABEL}
-					</>
-				) : (
-					<>
-						<CopyIcon aria-hidden="true" />
-						{label}
-					</>
-				)}
-			</Button>
-		</div>
-	);
-}
-
-/**
- * The default way to connect a coding tool: one action per tool, no key.
- *
- * The tool is pointed at the gateway, the gateway answers 401 with a pointer to
- * its sign-in metadata, and the tool walks the person through approving it in
- * the browser. See `./lib/agent-sign-in.ts` for where each format comes from.
- */
-export function AgentSignInSection({
-	origin,
-	label = SECTION_LABEL,
-	announce,
-}: AgentSignInSectionProps) {
-	return (
-		<section
-			aria-labelledby="agent-sign-in-label"
-			className="space-y-3"
-			data-testid="agent-sign-in"
-		>
-			<h3 id="agent-sign-in-label" className="app-editorial-label">
-				{label}
-			</h3>
-			<p className="text-muted-foreground text-sm">{SECTION_INTRO}</p>
-
-			<Tabs defaultValue="claude-code">
-				<TabsList aria-label={SECTION_LABEL} className="flex-wrap">
-					{AGENTS.map((agent) => (
-						<TabsTrigger key={agent.id} value={agent.id}>
-							{agent.label}
-						</TabsTrigger>
-					))}
-				</TabsList>
-
-				<TabsContent className="space-y-3 pt-3" value="claude-code">
-					<CommandBlock
-						announce={announce}
-						command={buildClaudeCodeCommand(origin)}
-						label="Copy the Claude Code command"
-						testId="agent-sign-in-claude-code"
-					/>
-					<p className="text-muted-foreground text-sm">
-						{CLAUDE_CODE_NEXT_STEP}
-					</p>
-				</TabsContent>
-
-				<TabsContent className="space-y-3 pt-3" value="vscode">
-					<Button asChild>
-						<a
-							data-testid="agent-sign-in-vscode"
-							href={buildVsCodeInstallLink(origin)}
-						>
-							<ExternalLinkIcon aria-hidden="true" />
-							Add to VS Code
-						</a>
-					</Button>
-					<p className="text-muted-foreground text-sm">
-						{VS_CODE_NEXT_STEP}
-					</p>
-				</TabsContent>
-
-				<TabsContent className="space-y-3 pt-3" value="cursor">
-					<Button asChild>
-						<a
-							data-testid="agent-sign-in-cursor"
-							href={buildCursorInstallLink(origin)}
-						>
-							<ExternalLinkIcon aria-hidden="true" />
-							Add to Cursor
-						</a>
-					</Button>
-					<p className="text-muted-foreground text-sm">
-						{CURSOR_NEXT_STEP}
-					</p>
-				</TabsContent>
-
-				<TabsContent className="space-y-3 pt-3" value="codex">
-					<CommandBlock
-						announce={announce}
-						command={buildCodexCommands(origin)}
-						label="Copy the Codex commands"
-						testId="agent-sign-in-codex"
-					/>
-					<p className="text-muted-foreground text-sm">
-						{CODEX_NEXT_STEP}
-					</p>
-				</TabsContent>
-
-				<TabsContent className="space-y-3 pt-3" value="other">
-					<CommandBlock
-						announce={announce}
-						command={buildPortableMcpConfiguration(origin)}
-						label="Copy the server entry"
-						testId="agent-sign-in-portable"
-					/>
-					<p className="text-muted-foreground text-sm">
-						{PORTABLE_NEXT_STEP}
-					</p>
+				<ToolPicker />
+				{/* Keyed by tool, so a "Copied" on one tool's block never shows
+				 * on the next tool's. */}
+				<TabsContent className="mt-6" key={tool} value={tool}>
+					{stepsFor(tool)}
 				</TabsContent>
 			</Tabs>
 		</section>

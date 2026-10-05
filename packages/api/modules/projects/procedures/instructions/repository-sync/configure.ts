@@ -14,6 +14,10 @@ import { queueRepositorySyncFollowUp } from "../../../lib/repository-sync-follow
 import { requireHostingOrganizationId } from "../hosting-organization";
 import { projectIgnoreGlobsSchema } from "../ignore-globs-input";
 import {
+	assertNoOpenMigration,
+	withMigrationFreeze,
+} from "../migration-freeze";
+import {
 	instructionSyncRefSchema,
 	loadInstructionSyncIntegration,
 	MAX_INSTRUCTION_SYNC_ROOT_PATH_LENGTH,
@@ -96,6 +100,12 @@ export const configureRepositorySyncProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// A move from uploads into a repository owns the sync row until it
+		// ends (Fizzy #2878 §9); re-pointing it would strand its pull request.
+		await assertNoOpenMigration({
+			projectId: input.projectId,
+			organizationId,
+		});
 		const rootPath = normalizeRootPath(input.rootPath);
 		if (rootPath === null) {
 			throw new ORPCError("BAD_REQUEST", {
@@ -134,20 +144,27 @@ export const configureRepositorySyncProcedure = tenantProtectedProcedure
 					"Couldn't reach the repository to check the branch. Try again.",
 			});
 		}
-		const written = await upsertInstructionRepositorySync({
-			projectId: input.projectId,
-			organizationId,
-			userId: context.user.id,
-			repositoryIntegrationId: integration.id,
-			ref: input.ref,
-			rootPath,
-			...(input.automatic === undefined
-				? {}
-				: { automatic: input.automatic }),
-			...(input.ignoreGlobs === undefined
-				? {}
-				: { ignoreGlobs: input.ignoreGlobs }),
-		});
+		// The pre-check above is the fast answer; the writer decides the freeze
+		// again under the project lock, so a move that started while the branch
+		// was being verified is refused here rather than overwritten.
+		const written = await withMigrationFreeze(
+			{ projectId: input.projectId, organizationId },
+			() =>
+				upsertInstructionRepositorySync({
+					projectId: input.projectId,
+					organizationId,
+					userId: context.user.id,
+					repositoryIntegrationId: integration.id,
+					ref: input.ref,
+					rootPath,
+					...(input.automatic === undefined
+						? {}
+						: { automatic: input.automatic }),
+					...(input.ignoreGlobs === undefined
+						? {}
+						: { ignoreGlobs: input.ignoreGlobs }),
+				}),
+		);
 		if (!written) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}

@@ -134,7 +134,12 @@ beforeEach(() => {
 	// Default: configured planner URL (deployed-style), healthy service.
 	process.env.WEAVE_PLANNERS_URL = "http://planners.test:8142";
 	mockHasProjectAccess.mockResolvedValue(true);
-	mockAssertProjectPermission.mockResolvedValue(undefined);
+	// Returns the project it authorized and that project's organization
+	// (Fizzy #2904); the handler runs in it.
+	mockAssertProjectPermission.mockResolvedValue({
+		projectId: "proj-1",
+		organizationId: "org-1",
+	});
 	mockProjectFindUnique.mockResolvedValue({
 		name: "Demo Project",
 		description: "Project-level description",

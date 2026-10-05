@@ -14,6 +14,7 @@ import {
 import {
 	canCreateProjectInstructions,
 	claimInstructionFileStagingKey,
+	clearInstructionSyncPause,
 	completeInstructionRepositorySyncRun,
 	createInstructionSnapshot,
 	getInstructionRepositorySyncForRun,
@@ -33,6 +34,7 @@ import {
 	classifyPath,
 	compileIgnore,
 	decodeFabricIgnore,
+	type ExcludedPath,
 	FABRIC_IGNORE_FILE,
 	fileTypingFor,
 	type InstructionFileKind,
@@ -41,6 +43,7 @@ import {
 	// The `.fabricignore` read limit, the same 64 KiB `begin` accepts (spec
 	// §5.3.2 step 6), shared with the configure dialog's preview (Fizzy #2726).
 	MAX_FABRICIGNORE_BYTES,
+	mergeExcludedPaths,
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
 	SNAPSHOT_LIMITS,
@@ -79,6 +82,7 @@ import {
 	describeSnapshotWorkflow,
 	sweepClosedAbandonment,
 } from "./lib/instruction-abandonment";
+import { settleMigrationAfterSuccessfulRun } from "./lib/instruction-migration-settlement";
 import { INSTRUCTIONS_BUCKET } from "./lib/instruction-prune";
 import {
 	credentialFreeUrl,
@@ -224,6 +228,16 @@ export async function beginInstructionRepositorySyncRun(
 			context: { ...context, generation: receipt.generation },
 		};
 	}
+	if (row.automaticPausedReason === "MIGRATING") {
+		// The project is being moved from uploads into this repository (Fizzy
+		// #2878 §9): the row exists for the move's pull request, and nothing
+		// may sync from the folder before that pull request merges, whoever
+		// asked and however. A manual run is skipped too: the folder holds
+		// nothing yet, and publishing from it would replace the uploads with
+		// an empty tree. The move clears the pause itself when the pull
+		// request merges.
+		return { ok: false, skipped: "paused", context };
+	}
 	if (isAutomaticInstructionSyncTrigger(input.trigger)) {
 		// Eligibility is checked before `expected`: a configure that turns
 		// automatic sync off may also re-point the row (a new repository,
@@ -240,14 +254,53 @@ export async function beginInstructionRepositorySyncRun(
 			return { ok: false, skipped: "paused", context };
 		}
 	}
+	let pausedReason = row.automaticPausedReason;
 	if (
-		input.trigger === "PULL_REQUEST_MERGED" &&
-		row.automaticPausedReason !== null
+		input.trigger === "COMMIT_PUSHED" &&
+		(pausedReason === "REF_MISSING" ||
+			pausedReason === "PERMISSION_REVOKED") &&
+		(input.expected === undefined ||
+			(input.expected.syncId === row.id &&
+				input.expected.generation === row.generation)) &&
+		(pausedReason === "REF_MISSING" ||
+			(await canCreateProjectInstructions(row.projectId, actingUserId)))
+	) {
+		// A commit that has just been pushed to the synced branch with the
+		// integration's credential proves what these two pauses doubt: the
+		// ref exists and the credential still works. A run that waited for a
+		// member to clear them would leave the published version behind a
+		// commit the branch holds, and the next member to read it would take
+		// the stale copy for the branch. The delegate's own right is not
+		// proved by a push (the committer is another member), so a
+		// PERMISSION_REVOKED pause lifts only while the delegate can write
+		// now. Only for the row the commit was made against, so a pause a
+		// re-configure wrote for a newer configuration is never lifted by an
+		// older commit; MIGRATING and every later pause stay.
+		if (
+			await clearInstructionSyncPause({
+				syncId: row.id,
+				organizationId: row.organizationId,
+				generation: row.generation,
+				reason: pausedReason,
+			})
+		) {
+			pausedReason = null;
+		}
+	}
+	if (
+		(input.trigger === "PULL_REQUEST_MERGED" ||
+			input.trigger === "COMMIT_PUSHED") &&
+		pausedReason !== null
 	) {
 		// A merged proposal's sync bypasses the automatic toggle but not a
 		// pause (Fizzy #2563 spec §9, plan R3): the pause is a failure a
 		// member must clear, and the merge-sync dispatcher retries until the
-		// request is acknowledged or given up.
+		// request is acknowledged or given up. A direct commit's confirming
+		// sync (Fizzy #2878 §10) is the same, except for the two pauses a
+		// pushed commit disproves (above): it is what publishes the new head
+		// for the agents and the Files tab, so a pause it cannot lift (the
+		// delegate cannot write, the row was re-configured) skips it, and
+		// the pause's own remedy is what resumes the sync.
 		return { ok: false, skipped: "paused", context };
 	}
 	if (
@@ -513,6 +566,7 @@ async function acquireOnce(input: {
 		? {
 				plan: planAdopted(adopted, inventory, details),
 				excludedCount: 0,
+				excludedPaths: [],
 				ignore: null,
 			}
 		: await planFresh({
@@ -602,6 +656,7 @@ async function acquireOnce(input: {
 				validationAttemptId: randomUUID(),
 				publishOnReady: true,
 				excludedCount: planned.excludedCount,
+				excludedPaths: planned.excludedPaths,
 				settingsFrozen: {
 					ignoreGlobs: ignore.globs,
 					layer: ignore.layer,
@@ -870,6 +925,12 @@ async function planFresh(input: {
 }): Promise<{
 	plan: PlannedSyncFile[];
 	excludedCount: number;
+	/**
+	 * The files the ignore rules left out, by name. The count also holds what
+	 * the inventory skipped (symlinks, submodules) and a dropped `.fabricignore`,
+	 * which have no rule to name, so the list can be shorter than the count.
+	 */
+	excludedPaths: ExcludedPath[];
 	ignore: ReturnType<typeof resolveIgnoreGlobs>;
 }> {
 	const { context, details } = input;
@@ -945,6 +1006,7 @@ async function planFresh(input: {
 		})),
 		excludedCount:
 			input.inventory.excludedCount + result.excluded.length + dropped,
+		excludedPaths: mergeExcludedPaths(result.excluded),
 		ignore,
 	};
 }
@@ -1565,6 +1627,18 @@ export async function recordInstructionRepositorySyncRun(
 		scheduling: outcome.scheduling,
 		limit: input.limit ?? null,
 	});
+
+	// The first sync from the repository after a move from uploads
+	// succeeded: the move is complete (Fizzy #2878 §9). Retried with this
+	// step, and a run that did not succeed leaves the move switching.
+	if (completed.completed) {
+		await settleMigrationAfterSuccessfulRun({
+			...tenant,
+			syncId: context.syncId,
+			status: outcome.status,
+			snapshotId: snapshot ? snapshotId : null,
+		});
+	}
 
 	// A `begin` attempt that inserted a receipt under an earlier
 	// configuration and threw, before the retry that gave this run its

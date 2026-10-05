@@ -64,6 +64,7 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 				organizationId: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
+				projectManagementAdditionalContext: true,
 			},
 		});
 		if (!project) {
@@ -81,6 +82,8 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 					project.projectManagementMcpServerId,
 				projectManagementMcpConfigId:
 					project.projectManagementMcpConfigId,
+				projectManagementAdditionalContext:
+					project.projectManagementAdditionalContext,
 				organizationId: project.organizationId,
 			},
 			userId: user.id,

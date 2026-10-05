@@ -27,6 +27,9 @@ const {
 	findUniqueOrThrowMock,
 	upsertMcpConfigMock,
 	createMcpConfigMock,
+	serverFindUniqueMock,
+	findUsableGitLabConnectionMock,
+	triggerMcpToolIngestionMock,
 } = vi.hoisted(() => ({
 	getMcpConfigByIdMock: vi.fn(),
 	getMcpConfigForTenantAndServerMock: vi.fn(),
@@ -35,9 +38,15 @@ const {
 	findUniqueOrThrowMock: vi.fn(),
 	upsertMcpConfigMock: vi.fn(),
 	createMcpConfigMock: vi.fn(),
+	serverFindUniqueMock: vi.fn(),
+	findUsableGitLabConnectionMock: vi.fn(),
+	triggerMcpToolIngestionMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
+	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	clearMcpConfigFromReportInstances: vi.fn(),
 	createMcpClientSession: vi.fn(),
 	createMcpConfig: (...args: unknown[]) => createMcpConfigMock(...args),
@@ -46,6 +55,9 @@ vi.mock("@repo/database", () => ({
 			updateMany: (...args: unknown[]) => updateManyMock(...args),
 			findUniqueOrThrow: (...args: unknown[]) =>
 				findUniqueOrThrowMock(...args),
+		},
+		mCPServer: {
+			findUnique: (...args: unknown[]) => serverFindUniqueMock(...args),
 		},
 	},
 	deleteMcpConfig: vi.fn(),
@@ -63,7 +75,13 @@ vi.mock("@repo/database", () => ({
 vi.mock("@repo/temporal", () => ({
 	triggerMcpServerIngestion: vi.fn(),
 	triggerMcpToolDeletion: vi.fn(),
-	triggerMcpToolIngestion: vi.fn(),
+	triggerMcpToolIngestion: (...args: unknown[]) =>
+		triggerMcpToolIngestionMock(...args),
+}));
+
+vi.mock("@repo/integrations/gitlab", () => ({
+	findUsableGitLabConnection: (...args: unknown[]) =>
+		findUsableGitLabConnectionMock(...args),
 }));
 
 vi.mock("@repo/utils", () => ({
@@ -97,6 +115,12 @@ vi.mock("../../../../orpc/procedures", () => {
 		} as const,
 	};
 });
+
+// The GitLab tile Delete path pulls in the audit writer (and its oRPC
+// middleware); this file exercises authType transitions only.
+vi.mock("../../lib/gitlab-config-removal", () => ({
+	removeGitLabPersonalMcpConfig: vi.fn(),
+}));
 
 vi.mock("@orpc/server", () => ({
 	ORPCError: class extends Error {
@@ -175,6 +199,13 @@ beforeEach(() => {
 		transport: "HTTP",
 		defaultUrl: "https://mcp.example.com/v1/mcp",
 	});
+	// The server row's key, by id. Mirrors whatever server the test set up,
+	// so a test that names a GitLab server is read as one.
+	serverFindUniqueMock.mockImplementation(async () => {
+		const server = await getMcpServerByIdMock();
+		return server ? { key: server.key ?? "example" } : null;
+	});
+	findUsableGitLabConnectionMock.mockResolvedValue(null);
 	updateManyMock.mockResolvedValue({ count: 1 });
 	findUniqueOrThrowMock.mockImplementation(async () => ({
 		id: "cfg_1",
@@ -408,5 +439,301 @@ describe("mcp.configs.upsert — breaker reset gated on server authMethods suppo
 			lastRefreshFailedAt: null,
 			lastRefreshError: null,
 		});
+	});
+});
+
+/**
+ * The GitLab personal servers' credential is the person's GitLab connection,
+ * written only by the GitLab connection service. A token supplied through the
+ * generic config upsert would be a second copy of that grant — the copy whose
+ * refreshes rotate (and kill) it — so the upsert never stores one for them.
+ */
+describe("mcp.configs.upsert — GitLab personal servers take no token", () => {
+	const TOKEN_COLUMNS = [
+		"encryptedAccessToken",
+		"accessTokenHash",
+		"encryptedRefreshToken",
+	];
+
+	function healthyOAuthConfig(serverKey: string) {
+		return condemnedOAuthConfig({
+			needsReauth: false,
+			status: "HEALTHY",
+			mcpServer: { key: serverKey, authMethods: ["OAUTH2"] },
+		});
+	}
+
+	function gitlabServer(serverKey: string) {
+		getMcpServerByIdMock.mockResolvedValue({
+			id: "srv_1",
+			key: serverKey,
+			name: "GitLab",
+			transport: "HTTP",
+			defaultUrl: "https://gitlab.com/api/v4/mcp",
+		});
+	}
+
+	const SUPPLIED_SECRETS: Array<[string, Record<string, unknown>]> = [
+		["a plaintext access token", { authType: "OAUTH2", accessToken: "a" }],
+		[
+			"a plaintext refresh token",
+			{ authType: "OAUTH2", refreshToken: "r" },
+		],
+		[
+			"a pre-encrypted access token",
+			{ authType: "OAUTH2", encryptedAccessToken: "enc-access" },
+		],
+		[
+			"a pre-encrypted refresh token",
+			{ authType: "OAUTH2", encryptedRefreshToken: "enc-refresh" },
+		],
+		["a plaintext API key", { authType: "API_KEY", apiKey: "glpat-x" }],
+		[
+			"a pre-encrypted API key",
+			{ authType: "API_KEY", encryptedApiKey: "enc-key" },
+		],
+		// The auth type does not open a path: an API key sent with OAUTH2 or
+		// NONE is refused all the same.
+		[
+			"an API key sent as OAUTH2",
+			{ authType: "OAUTH2", apiKey: "glpat-x" },
+		],
+		["an API key sent as NONE", { authType: "NONE", apiKey: "glpat-x" }],
+	];
+
+	for (const serverKey of ["gitlab", "gitlab-official"]) {
+		it.each(SUPPLIED_SECRETS)(
+			`refuses ${serverKey} with %s and writes nothing`,
+			async (_label, fields) => {
+				getMcpConfigByIdMock.mockResolvedValue(
+					healthyOAuthConfig(serverKey),
+				);
+				gitlabServer(serverKey);
+
+				await expect(
+					handler({
+						input: upsertInput(fields),
+						context: { user: { id: "user_1" } },
+					}),
+				).rejects.toMatchObject({ code: "BAD_REQUEST" });
+				expect(updateManyMock).not.toHaveBeenCalled();
+			},
+		);
+
+		it.each(["API_KEY", "NONE", undefined])(
+			`saves a ${serverKey} config sent as %s with no credential column, stored as OAUTH2`,
+			async (authType) => {
+				// An older row (or a form built from one) naming another auth
+				// type, or an edit that sends none at all.
+				getMcpConfigByIdMock.mockResolvedValue(
+					condemnedOAuthConfig({
+						needsReauth: false,
+						status: "HEALTHY",
+						authType: authType ?? "API_KEY",
+						mcpServer: { key: serverKey, authMethods: ["OAUTH2"] },
+					}),
+				);
+				gitlabServer(serverKey);
+
+				await handler({
+					input: upsertInput(authType ? { authType } : {}),
+					context: { user: { id: "user_1" } },
+				});
+
+				const written = writtenData();
+				expect(written.authType).toBe("OAUTH2");
+				expect(written.apiKeyMethod).toBeUndefined();
+				for (const column of [...TOKEN_COLUMNS, "encryptedApiKey"]) {
+					expect(written).not.toHaveProperty(column);
+				}
+			},
+		);
+	}
+
+	it("does not clear a stored API key when a gitlab edit sends encryptedApiKey: null", async () => {
+		// Clearing is the GitLab connection's job (disconnect) and the
+		// migration's; the settings path writes no credential column at all.
+		getMcpConfigByIdMock.mockResolvedValue(healthyOAuthConfig("gitlab"));
+		gitlabServer("gitlab");
+
+		await handler({
+			input: upsertInput({ authType: "OAUTH2", encryptedApiKey: null }),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(writtenData()).not.toHaveProperty("encryptedApiKey");
+	});
+
+	it("still stores a token for any other OAuth server (control)", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(healthyOAuthConfig("linear"));
+		getMcpServerByIdMock.mockResolvedValue({
+			id: "srv_1",
+			key: "linear",
+			name: "Linear",
+			transport: "HTTP",
+			defaultUrl: "https://mcp.linear.app/mcp",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				accessToken: "linear-access",
+				refreshToken: "linear-refresh",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(writtenData()).toMatchObject({
+			encryptedAccessToken: "encrypted:linear-access",
+			accessTokenHash: "hashed:linear-access",
+			encryptedRefreshToken: "encrypted:linear-refresh",
+		});
+	});
+});
+
+describe("mcp.configs.upsert — token columns fail closed on a server lookup miss", () => {
+	it("stores no token when the server's key cannot be read", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
+		);
+		// No system server matches, and no server row exists for the id.
+		getMcpServerByIdMock.mockResolvedValue(null);
+		serverFindUniqueMock.mockResolvedValue(null);
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				accessToken: "orphan-access",
+				refreshToken: "orphan-refresh",
+				encryptedAccessToken: "enc-orphan",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const written = writtenData();
+		for (const column of [
+			"encryptedAccessToken",
+			"accessTokenHash",
+			"encryptedRefreshToken",
+		]) {
+			expect(written).not.toHaveProperty(column);
+		}
+	});
+
+	it("stores no API key when the server's key cannot be read", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
+		);
+		getMcpServerByIdMock.mockResolvedValue(null);
+		serverFindUniqueMock.mockResolvedValue(null);
+
+		await handler({
+			input: upsertInput({ authType: "API_KEY", apiKey: "orphan-key" }),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(writtenData()).not.toHaveProperty("encryptedApiKey");
+	});
+
+	it("still stores an API key for a tenant-owned (non-system) server it can read", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
+		);
+		getMcpServerByIdMock.mockResolvedValue(null);
+		serverFindUniqueMock.mockResolvedValue({ key: "custom:my-server" });
+
+		await handler({
+			input: upsertInput({ authType: "API_KEY", apiKey: "custom-key" }),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(writtenData()).toMatchObject({
+			encryptedApiKey: expect.any(String),
+		});
+	});
+
+	it("still stores a token for a tenant-owned (non-system) server it can read", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
+		);
+		// `getMcpServerById` without a tenant finds only system servers.
+		getMcpServerByIdMock.mockResolvedValue(null);
+		serverFindUniqueMock.mockResolvedValue({ key: "custom:my-server" });
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				accessToken: "custom-access",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(writtenData()).toMatchObject({
+			encryptedAccessToken: "encrypted:custom-access",
+			accessTokenHash: "hashed:custom-access",
+		});
+	});
+});
+
+describe("mcp.configs.upsert — GitLab tool ingestion follows the person's connection", () => {
+	function gitlabRecord(extra: Record<string, unknown> = {}) {
+		return {
+			id: "cfg_1",
+			authType: "OAUTH2",
+			enabled: true,
+			displayName: "GitLab",
+			encryptedAccessToken: null,
+			...extra,
+		};
+	}
+
+	beforeEach(() => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({
+				needsReauth: false,
+				status: "HEALTHY",
+				mcpServer: { key: "gitlab-official", authMethods: ["OAUTH2"] },
+			}),
+		);
+		getMcpServerByIdMock.mockResolvedValue({
+			id: "srv_1",
+			key: "gitlab-official",
+			name: "GitLab",
+			transport: "HTTP",
+			defaultUrl: "https://gitlab.com/api/v4/mcp",
+		});
+	});
+
+	it("ingests when the person's GitLab connection is usable, though the config holds no token", async () => {
+		findUniqueOrThrowMock.mockResolvedValue(gitlabRecord());
+		findUsableGitLabConnectionMock.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
+
+		await handler({
+			input: upsertInput({ authType: "OAUTH2" }),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(findUsableGitLabConnectionMock).toHaveBeenCalledWith({
+			userId: "user_1",
+			organizationId: null,
+		});
+		expect(triggerMcpToolIngestionMock).toHaveBeenCalledOnce();
+	});
+
+	it("does not ingest when GitLab is not connected, whatever token copy the config row still holds", async () => {
+		findUniqueOrThrowMock.mockResolvedValue(
+			gitlabRecord({ encryptedAccessToken: "enc-leftover-copy" }),
+		);
+		findUsableGitLabConnectionMock.mockResolvedValue(null);
+
+		await handler({
+			input: upsertInput({ authType: "OAUTH2" }),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(triggerMcpToolIngestionMock).not.toHaveBeenCalled();
 	});
 });

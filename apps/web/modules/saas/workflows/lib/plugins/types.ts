@@ -4,6 +4,10 @@
  * See: https://github.com/vercel-labs/workflow-builder-template/blob/main/CONTRIBUTING.md
  */
 
+import type {
+	ConnectionCheckStatus,
+	ConnectionTestResult,
+} from "@repo/integrations";
 import type { ComponentType } from "react";
 
 /**
@@ -183,6 +187,8 @@ export interface IntegrationSettingsProps {
 	 * form but not saved yet.
 	 */
 	hasPersistedCredential?: boolean;
+	/** Validated test outcome; stored credentials alone do not prove authorization. */
+	connectionStatus?: ConnectionCheckStatus;
 	onApiKeyChange: (value: string) => void;
 	config?: Record<string, unknown>;
 	onConfigChange?: (config: Record<string, unknown>) => void;
@@ -193,11 +199,7 @@ export interface IntegrationSettingsProps {
 /**
  * Test connection result
  */
-export interface TestConnectionResult {
-	success: boolean;
-	message?: string;
-	error?: string;
-}
+export type TestConnectionResult = ConnectionTestResult;
 
 /**
  * Integration category for UI organization

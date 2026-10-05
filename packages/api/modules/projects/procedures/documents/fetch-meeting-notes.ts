@@ -6,6 +6,7 @@ import {
 	Permissions,
 	requireProjectPermission,
 	resolveOrganizationId,
+	resolveSourceCredentialOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
@@ -52,6 +53,14 @@ export const fetchMeetingNotesProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
+		// The Microsoft connection the caller's meetings are read through is
+		// selected as it was before the authorized-project binding, so it
+		// cannot silently switch to a teammate's shared connection; the
+		// project's organization above is for everything else.
+		const sourceOrganizationId = resolveSourceCredentialOrganizationId(
+			input.organizationId,
+			context.session,
+		);
 
 		const hasAccess = await hasProjectAccess(
 			input.projectId,
@@ -79,7 +88,7 @@ export const fetchMeetingNotesProcedure = tenantProtectedProcedure
 					"get_meeting_by_join_url",
 					{ joinWebUrl: joinUrl },
 					user.id,
-					organizationId ?? undefined,
+					sourceOrganizationId,
 				)) as {
 					meeting?: { id: string; subject?: string } | null;
 					error?: string;
@@ -105,7 +114,7 @@ export const fetchMeetingNotesProcedure = tenantProtectedProcedure
 					"list_meeting_transcripts",
 					{ meetingId },
 					user.id,
-					organizationId ?? undefined,
+					sourceOrganizationId,
 				)) as {
 					transcripts?: Array<{
 						id: string;
@@ -158,7 +167,7 @@ export const fetchMeetingNotesProcedure = tenantProtectedProcedure
 					"get_meeting_transcript_content",
 					{ meetingId, transcriptId },
 					user.id,
-					organizationId ?? undefined,
+					sourceOrganizationId,
 				)) as {
 					format?: string;
 					content?: string;

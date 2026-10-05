@@ -1,0 +1,15 @@
+-- AlterEnum
+-- A direct commit to a repository-backed project's synced branch (Fizzy #2878
+-- §10) is a snapshot that is not a proposal, and its destination is neither
+-- Fabric's own copy nor a pull request.
+--
+-- Alone in its own migration: a value added by ALTER TYPE cannot be used in
+-- the transaction that adds it, and nothing may use this one before it has
+-- committed. Additive, with one hazard: a client from before this migration
+-- that selects "proposalDestination" throws on a row carrying the new value
+-- (its generated enum does not know it), it does not skip the row. Only a
+-- member's direct commit writes the value, and only code that ships with this
+-- migration does, so the exposure is an older replica during a rolling deploy
+-- reading a snapshot a newer replica wrote. The value cannot be removed while a
+-- snapshot row holds it.
+ALTER TYPE "ProjectInstructionProposalDestination" ADD VALUE 'REPOSITORY_COMMIT';

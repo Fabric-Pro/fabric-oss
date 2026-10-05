@@ -38,16 +38,19 @@ import {
 	getInstructionRepositorySyncForProposal,
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
+	type InstructionMigrationPointer,
 	type PullRequestFailure,
 	type RepositoryProposalDestination,
 	type UploadStartedAuditTemplate,
 } from "@repo/database";
 import {
+	type DirectCommitContext,
 	FALLBACK_PROPOSER_NAME,
 	type ProposalNote,
 	PULL_REQUEST_COMMITTER_NAME,
 	type PullRequestContextV2,
 	proposalNoteSchema,
+	renderDirectCommitText,
 	renderPullRequestText,
 } from "@repo/instructions";
 import { repositoryIdentity } from "@repo/integrations/instruction-pull-requests";
@@ -56,27 +59,41 @@ import {
 	auditRequestFields,
 	resolveActor,
 } from "../../../../lib/audit";
+import { migrationOpenError } from "./migration-freeze";
 import { assertRepositoryProposalAccess } from "./proposal-authorization";
 
 /**
  * What the caller is asking for. `proposal` is the reviewed path; `publish`
  * is the inline entry point's unreviewed one and `direct` the tab's direct
- * save. Only a proposal can reach a REPOSITORY destination.
+ * save. A proposal can reach a REPOSITORY destination; `commit` (Fizzy #2878
+ * §10) is a member with write rights committing straight to the synced branch
+ * and is admitted only for a repository-backed project.
  */
-type AdmissionMode = "proposal" | "publish" | "direct";
+type AdmissionMode = "proposal" | "publish" | "direct" | "commit" | "migration";
 
 export type AdmissionInput = {
 	projectId: string;
 	/** The project's hosting organization, already resolved server-side. */
 	organizationId: string;
 	userId: string;
+	/**
+	 * `migration` (Fizzy #2878 §9) is the move of an upload-backed project's
+	 * published tree into a repository: the one admission of a REPOSITORY
+	 * proposal for a project that is still upload-backed, made against the
+	 * sync row the move created and the branch tip the caller read
+	 * (`baseCommitSha`). Every other mode is refused while a move is open.
+	 */
 	mode: AdmissionMode;
+	/** `migration` only: the synced branch's tip the move's commit is built on. */
+	baseCommitSha?: string;
 	/** The raw `note` from the request; parsed here with `proposalNoteSchema`. */
 	note?: unknown;
 	/** The proposer's display name, a body input only (spec §5.2). */
 	proposerName: string | null | undefined;
 	/** How many paths the change set touches, for the default title. */
 	fileCount: number;
+	/** `commit` only: the committer's own message, rendered here and frozen. */
+	message?: string;
 };
 
 export type RepositoryAdmission = {
@@ -95,9 +112,21 @@ export type RepositoryAdmission = {
 	blocked?: PullRequestFailure;
 };
 
+/**
+ * A direct commit to the synced branch (Fizzy #2878 §10): the frozen
+ * destination and the rendered commit text, stored as the snapshot's
+ * `commitContext`. There is no note and no pull request.
+ */
+type CommitAdmission = {
+	destination: "REPOSITORY_COMMIT";
+	note: null;
+	context: DirectCommitContext;
+};
+
 export type Admission =
 	| { destination: "FABRIC"; note: ProposalNote | null }
-	| RepositoryAdmission;
+	| RepositoryAdmission
+	| CommitAdmission;
 
 /** Kept word for word from the refusal both call sites gave before this. */
 const REPOSITORY_SOURCE_OF_TRUTH_MESSAGE =
@@ -113,10 +142,15 @@ const ADO_PROJECT_MESSAGE =
 const REPOSITORY_BASE_UNAVAILABLE_MESSAGE =
 	"Sync the repository before proposing a change.";
 
+/** A direct commit needs a branch to commit to (Fizzy #2878 §10). */
+const NOT_REPOSITORY_SOURCED_MESSAGE =
+	"This project's coding instructions are uploaded, not synced from a repository, so there is no branch to commit to.";
+
 type RefusalReason =
 	| "REPOSITORY_SOURCE_OF_TRUTH"
 	| "REPOSITORY_UNAVAILABLE"
-	| "REPOSITORY_BASE_UNAVAILABLE";
+	| "REPOSITORY_BASE_UNAVAILABLE"
+	| "NOT_REPOSITORY_SOURCED";
 
 function refusal(
 	reason: RefusalReason,
@@ -187,6 +221,36 @@ function noteThrow(field: "title" | "body" | "note", message: string): never {
 }
 
 /**
+ * A commit message or attribution the renderer refused (Fizzy #2878 §10),
+ * 422 naming only the field: the message is the committer's own words and a
+ * rejected one may be rejected BECAUSE it carries a credential, so no text is
+ * quoted.
+ */
+export function commitTextRefused(
+	code:
+		| "MESSAGE_EMPTY"
+		| "MESSAGE_TOO_LONG"
+		| "MESSAGE_REJECTED"
+		| "ATTRIBUTION_REJECTED",
+): never {
+	const messages = {
+		MESSAGE_EMPTY: "The commit message needs a first line.",
+		MESSAGE_TOO_LONG: "The commit message is too long.",
+		MESSAGE_REJECTED:
+			"The commit message looks like it contains a credential. Remove it and try again.",
+		ATTRIBUTION_REJECTED:
+			"Your name cannot be used as the author of a commit.",
+	} as const;
+	throw new ORPCError("UNPROCESSABLE_CONTENT", {
+		message: messages[code],
+		data: {
+			reason: code,
+			field: code === "ATTRIBUTION_REJECTED" ? "author" : "message",
+		},
+	});
+}
+
+/**
  * The root PR 1's sync froze into the base's `settingsFrozen` (plan R22), or
  * null. Only a string on a non-null object counts, so missing or malformed
  * provenance never equals a sync root and the base is refused.
@@ -200,42 +264,28 @@ export function frozenRootPath(value: unknown): string | null {
 }
 
 /** ISO 8601 UTC in whole seconds: part of the reproducible commit (spec §5.2). */
-function wholeSecondsNow(): string {
+export function wholeSecondsNow(): string {
 	return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /**
- * Spec §5.1 steps 1 to 6. Throws an `ORPCError` whose `data.reason` is one of
- * `REPOSITORY_SOURCE_OF_TRUTH`, `REPOSITORY_UNAVAILABLE`,
- * `REPOSITORY_BASE_UNAVAILABLE` (412) or `NOTE_REJECTED` (422, with
- * `data.field`), or `FORBIDDEN` (403). An attribution the renderer cannot
- * make safe is not a refusal: the row is admitted BLOCKED
- * (`ATTRIBUTION_REJECTED`) and nothing is pushed for it.
+ * The project's sync row, its integration and the repository's identity, or
+ * the refusal each missing piece earns (spec §5.1 steps 2 to 4). `syncId`
+ * names the one row a move into the repository may be admitted against.
  */
-export async function admitInstructionProposal(
-	i: AdmissionInput,
-): Promise<Admission> {
-	const settings = await getProjectInstructionSettings(
-		i.projectId,
-		i.organizationId,
-	);
-	// A note is a proposal's; any other derivation stores none.
-	const note = i.mode === "proposal" ? parseNote(i.note) : null;
-	if (settings.sourceOfTruth !== "REPOSITORY") {
-		return { destination: "FABRIC", note };
-	}
-	if (i.mode !== "proposal") {
-		throw refusal(
-			"REPOSITORY_SOURCE_OF_TRUTH",
-			REPOSITORY_SOURCE_OF_TRUTH_MESSAGE,
-		);
-	}
-
+async function resolveSyncRepository(
+	i: { projectId: string; organizationId: string },
+	syncId?: string,
+) {
 	const sync = await getInstructionRepositorySyncForProposal(
 		i.projectId,
 		i.organizationId,
 	);
-	if (!sync || sync.organizationId !== i.organizationId) {
+	if (
+		!sync ||
+		sync.organizationId !== i.organizationId ||
+		(syncId !== undefined && sync.id !== syncId)
+	) {
 		throw refusal(
 			"REPOSITORY_SOURCE_OF_TRUTH",
 			REPOSITORY_SOURCE_OF_TRUTH_MESSAGE,
@@ -261,11 +311,103 @@ export async function admitInstructionProposal(
 				: REPOSITORY_UNAVAILABLE_MESSAGE,
 		);
 	}
+	return { sync, repository };
+}
+
+/** The note of the move's one pull request and commit (Fizzy #2878 §9): fixed words, never the caller's. */
+function migrationNote(): ProposalNote {
+	return {
+		title: "Move coding instructions into the repository",
+		body: "Adds the coding instructions this project had uploaded to Fabric to this folder, in one commit. Once it is merged Fabric syncs the project from this folder instead of from uploads.",
+	};
+}
+
+/**
+ * The admission of a move from uploads into the repository (Fizzy #2878 §9):
+ * the REPOSITORY destination of the sync row the move created, with the
+ * branch tip the caller read as the commit's base. The project is still
+ * upload-backed, so none of the checks that read a published REPOSITORY copy
+ * apply; the move is authorized by its procedure (INSTRUCTION_CREATE and
+ * INSTRUCTION_UPDATE) rather than by the reader opt-in, and refuses unless
+ * the pointer says it is proposing for the row it is admitted against.
+ */
+async function admitMigration(
+	i: AdmissionInput,
+	pointer: InstructionMigrationPointer | null,
+): Promise<RepositoryAdmission> {
+	if (
+		pointer === null ||
+		pointer.state !== "PROPOSING" ||
+		i.baseCommitSha === undefined
+	) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"There is no move of this project's coding instructions into its repository waiting for a pull request.",
+			data: { reason: "MIGRATION_NOT_OPEN" },
+		});
+	}
+	const { sync, repository } = await resolveSyncRepository(i, pointer.syncId);
+	return renderRepositoryAdmission({
+		i,
+		sync,
+		repository,
+		note: migrationNote(),
+		baseCommitSha: i.baseCommitSha,
+	});
+}
+
+/**
+ * Spec §5.1 steps 1 to 6. Throws an `ORPCError` whose `data.reason` is one of
+ * `REPOSITORY_SOURCE_OF_TRUTH`, `REPOSITORY_UNAVAILABLE`,
+ * `REPOSITORY_BASE_UNAVAILABLE` (412) or `NOTE_REJECTED` (422, with
+ * `data.field`), or `FORBIDDEN` (403). An attribution the renderer cannot
+ * make safe is not a refusal: the row is admitted BLOCKED
+ * (`ATTRIBUTION_REJECTED`) and nothing is pushed for it.
+ */
+export async function admitInstructionProposal(
+	i: AdmissionInput,
+): Promise<Admission> {
+	const settings = await getProjectInstructionSettings(
+		i.projectId,
+		i.organizationId,
+	);
+	if (i.mode === "migration") {
+		return admitMigration(i, settings.migration);
+	}
+	// A move into the repository is open (Fizzy #2878 §9): every other way
+	// of changing the project's instructions waits for it.
+	if (settings.migration) {
+		throw await migrationOpenError(settings.migration, {
+			projectId: i.projectId,
+			organizationId: i.organizationId,
+		});
+	}
+	// A note is a proposal's; any other derivation stores none.
+	const note = i.mode === "proposal" ? parseNote(i.note) : null;
+	if (settings.sourceOfTruth !== "REPOSITORY") {
+		if (i.mode === "commit") {
+			throw refusal(
+				"NOT_REPOSITORY_SOURCED",
+				NOT_REPOSITORY_SOURCED_MESSAGE,
+			);
+		}
+		return { destination: "FABRIC", note };
+	}
+	if (i.mode !== "proposal" && i.mode !== "commit") {
+		throw refusal(
+			"REPOSITORY_SOURCE_OF_TRUTH",
+			REPOSITORY_SOURCE_OF_TRUTH_MESSAGE,
+		);
+	}
+
+	const { sync, repository } = await resolveSyncRepository(i);
 
 	await assertRepositoryProposalAccess({
 		projectId: i.projectId,
 		userId: i.userId,
-		allowReaders: sync.allowReaderProposals,
+		// A commit writes the branch itself: the proposal opt-in that lets a
+		// reader suggest a pull request never lets one commit.
+		allowReaders: i.mode === "commit" ? false : sync.allowReaderProposals,
 	});
 
 	// Unscoped pointer read (a project-level pointer), so the tenant is
@@ -286,6 +428,60 @@ export async function admitInstructionProposal(
 		);
 	}
 
+	if (i.mode === "commit") {
+		const rendered = renderDirectCommitText({
+			message: i.message ?? "",
+			proposerName: i.proposerName ?? "",
+			mailFrom: config.mails.from,
+		});
+		if (!rendered.ok) {
+			return commitTextRefused(rendered.code);
+		}
+		return {
+			destination: "REPOSITORY_COMMIT",
+			note: null,
+			context: {
+				v: 1,
+				integrationId: sync.repositoryIntegrationId,
+				syncId: sync.id,
+				syncGeneration: sync.generation,
+				provider: repository.provider,
+				targetRef: sync.ref,
+				rootPath: sync.rootPath,
+				baseCommitSha: base.sourceCommitSha,
+				repository,
+				author: rendered.author,
+				committer: rendered.committer,
+				message: rendered.message,
+				committedAt: wholeSecondsNow(),
+			},
+		};
+	}
+
+	return renderRepositoryAdmission({
+		i,
+		sync,
+		repository,
+		note,
+		baseCommitSha: base.sourceCommitSha,
+	});
+}
+
+/**
+ * A REPOSITORY proposal's frozen destination and rendered text (spec §5.1
+ * steps 6 and 7), for the proposal path and for a move into the repository:
+ * both freeze the sync row, the repository identity, the base commit and the
+ * attribution, and both are admitted BLOCKED when attribution cannot be made
+ * safe.
+ */
+async function renderRepositoryAdmission(args: {
+	i: AdmissionInput;
+	sync: Awaited<ReturnType<typeof resolveSyncRepository>>["sync"];
+	repository: Awaited<ReturnType<typeof resolveSyncRepository>>["repository"];
+	note: ProposalNote | null;
+	baseCommitSha: string;
+}): Promise<RepositoryAdmission> {
+	const { i, sync, repository, note, baseCommitSha } = args;
 	const project = await db.project.findFirst({
 		where: { id: i.projectId, organizationId: i.organizationId },
 		select: { name: true },
@@ -314,7 +510,7 @@ export async function admitInstructionProposal(
 		provider: repository.provider,
 		targetRef: sync.ref,
 		rootPath: sync.rootPath,
-		baseCommitSha: base.sourceCommitSha,
+		baseCommitSha,
 		repository,
 		committedAt,
 	};

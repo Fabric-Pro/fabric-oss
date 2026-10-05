@@ -42,6 +42,9 @@ type AvailableAgent = {
 	enabledMcpConfigIds?: string[];
 	workspaceIds?: string[];
 	instanceId?: string;
+	instanceVersion?: number;
+	enabledFabricToolIds?: string[];
+	boundProjectId?: string | null;
 	enabledIntegrationProviders?: string[];
 };
 
@@ -135,11 +138,14 @@ export function AgentModelPicker({
 						return {
 							agentId: `template-instance:${instance.id}`,
 							displayName: instance.name,
+							instanceVersion: instance.version,
 							description: instance.description,
 							instructions: config.instructions,
 							enabledMcpConfigIds: config.enabledMcpConfigIds,
 							workspaceIds: config.workspaceIds,
 							instanceId: config.instanceId ?? instance.id,
+							enabledFabricToolIds: config.enabledFabricToolIds,
+							boundProjectId: config.boundProjectId,
 							enabledIntegrationProviders:
 								config.enabledIntegrationProviders,
 						};
@@ -201,6 +207,8 @@ export function AgentModelPicker({
 			enabledMcpConfigIds: agent.enabledMcpConfigIds,
 			workspaceIds: agent.workspaceIds,
 			instanceId: agent.instanceId,
+			enabledFabricToolIds: agent.enabledFabricToolIds,
+			boundProjectId: agent.boundProjectId,
 			enabledIntegrationProviders: agent.enabledIntegrationProviders,
 		});
 	};
@@ -313,6 +321,9 @@ export function AgentModelPicker({
 										/>
 										<span className="flex-1 min-w-0 text-xs text-foreground truncate">
 											{agent.displayName}
+											{agent.instanceVersion != null
+												? ` · v${agent.instanceVersion}`
+												: ""}
 										</span>
 										{isSelected && (
 											<CheckCircle2Icon className="size-3.5 text-primary shrink-0" />

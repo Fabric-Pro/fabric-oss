@@ -865,13 +865,33 @@ export async function cleanupCodeSearchOnRepoUnlink(
  * non-deterministic in a way nobody can see or debug.
  *
  * Ordered by creation so a delivery behaves the same way twice.
+ *
+ * Case-insensitive: GitHub, GitLab and Azure DevOps all treat owner,
+ * organization, project and repository names that way, and a remote does not
+ * keep the stored case (an Azure DevOps `{org}.visualstudio.com` remote spells
+ * the organization in lowercase, because hosts are). An exact match missed the
+ * repository whenever the two spellings differed only in case.
+ *
+ * Compared with `lower(...) = ANY(...)`, exact apart from case, never as a
+ * case-insensitive pattern (ILIKE): there `_` is a wildcard, and every Azure
+ * DevOps URL carries `/_git/`.
  */
 export async function findAllByRepoUrl(repositoryUrls: string[]) {
 	if (repositoryUrls.length === 0) {
 		return [];
 	}
+	const lowered = [
+		...new Set(repositoryUrls.map((url) => url.toLowerCase())),
+	];
+	const matched = await db.$queryRaw<{ id: string }[]>`
+		SELECT "id" FROM "project_repository_integration"
+		WHERE lower("repositoryUrl") = ANY(${lowered}::text[])
+	`;
+	if (matched.length === 0) {
+		return [];
+	}
 	return db.projectRepositoryIntegration.findMany({
-		where: { repositoryUrl: { in: repositoryUrls }, status: "ACTIVE" },
+		where: { id: { in: matched.map((row) => row.id) }, status: "ACTIVE" },
 		orderBy: { createdAt: "asc" },
 		include: {
 			project: {

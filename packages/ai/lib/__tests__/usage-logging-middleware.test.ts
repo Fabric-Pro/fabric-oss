@@ -265,6 +265,182 @@ describe("usage-logging middleware — wrapStream", () => {
 	});
 });
 
+describe("usage-logging middleware — stream terminal states", () => {
+	beforeEach(() => logAiUsageAsync.mockReset());
+
+	function streamOf(chunks: Record<string, unknown>[], close = true) {
+		return vi.fn().mockResolvedValue({
+			stream: new ReadableStream({
+				start(controller) {
+					for (const c of chunks) {
+						controller.enqueue(c);
+					}
+					if (close) {
+						controller.close();
+					}
+				},
+			}),
+		});
+	}
+
+	async function drain(stream: unknown) {
+		const reader = (stream as ReadableStream).getReader();
+		while (true) {
+			const { done } = await reader.read();
+			if (done) {
+				break;
+			}
+		}
+	}
+
+	it("records the provider-interface nested Anthropic finish usage as the inclusive total", async () => {
+		// `@ai-sdk/anthropic` 4's doStream finish chunk, as this middleware
+		// sees it: `LanguageModelV4Usage` breakdown objects, `total` inclusive
+		// of both cache buckets, and no `totalTokens` of its own.
+		const doStream = streamOf([
+			{ type: "text-delta", delta: "hi" },
+			{
+				type: "finish",
+				finishReason: { unified: "stop", raw: "end_turn" },
+				usage: {
+					inputTokens: {
+						total: 100,
+						noCache: 0,
+						cacheRead: 80,
+						cacheWrite: 20,
+					},
+					outputTokens: { total: 40, text: 40, reasoning: undefined },
+				},
+			},
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			inputTokens: 100,
+			outputTokens: 40,
+			totalTokens: 140,
+			cachedInputTokens: 80,
+			cacheCreationInputTokens: 20,
+			success: true,
+		});
+	});
+
+	it("records one zero-token failure when the stream closes without a finish or error chunk", async () => {
+		const doStream = streamOf([{ type: "text-delta", delta: "hi" }]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			errorMessage: expect.stringContaining("without a finish"),
+		});
+	});
+
+	it("records one zero-token failure when the consumer cancels before finish", async () => {
+		// Left open: the consumer stops reading mid-stream (client disconnect,
+		// abort) and cancels.
+		const doStream = streamOf([{ type: "text-delta", delta: "hi" }], false);
+		const { stream } = await mw().wrapStream({ doStream });
+		const reader = (stream as ReadableStream).getReader();
+		await reader.read();
+		await reader.cancel(new Error("client went away"));
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			errorMessage: expect.stringContaining("cancelled"),
+		});
+	});
+
+	it("records one zero-token failure when the source stream errors without an error chunk", async () => {
+		const doStream = vi.fn().mockResolvedValue({
+			stream: new ReadableStream({
+				start(controller) {
+					controller.enqueue({ type: "text-delta", delta: "hi" });
+					controller.error(new Error("socket reset"));
+				},
+			}),
+		});
+		const { stream } = await mw().wrapStream({ doStream });
+		await expect(drain(stream)).rejects.toThrow("socket reset");
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 0,
+			errorMessage: expect.stringContaining("socket reset"),
+		});
+	});
+
+	it("does not add a second row when the consumer cancels after finish", async () => {
+		const doStream = streamOf(
+			[
+				{
+					type: "finish",
+					usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+				},
+			],
+			false,
+		);
+		const { stream } = await mw().wrapStream({ doStream });
+		const reader = (stream as ReadableStream).getReader();
+		await reader.read();
+		await reader.cancel();
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: true,
+		});
+	});
+
+	it("keeps the finish usage when a provider emits finish after an error chunk (one failed row)", async () => {
+		// `@ai-sdk/openai` 4 chat/completion models enqueue an `error` chunk
+		// and keep going; their `flush` always enqueues `finish` with the usage
+		// accumulated so far.
+		const doStream = streamOf([
+			{ type: "text-delta", delta: "hi" },
+			{ type: "error", error: new Error("upstream hiccup") },
+			{
+				type: "finish",
+				finishReason: { unified: "error", raw: undefined },
+				usage: {
+					inputTokens: { total: 50, noCache: 50 },
+					outputTokens: { total: 7 },
+				},
+			},
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			errorMessage: "upstream hiccup",
+			inputTokens: 50,
+			outputTokens: 7,
+			totalTokens: 57,
+		});
+	});
+
+	it("records the error chunk once when no finish follows it", async () => {
+		const doStream = streamOf([
+			{ type: "error", error: new Error("first") },
+			{ type: "error", error: new Error("second") },
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			errorMessage: "first",
+			inputTokens: 0,
+		});
+	});
+});
+
 describe("usage-logging middleware — wrapEmbed (embeddings)", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());
 

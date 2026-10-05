@@ -2328,6 +2328,12 @@
 				"alreadyQueued": "Für dieses Dokument steht bereits eine Generierung in der Warteschlange — es wurde keine zweite gestartet",
 				"alreadyRunning": "Für dieses Dokument läuft bereits eine Generierung — es wurde keine zweite gestartet",
 				"failed": "Regenerierung fehlgeschlagen: {message}"
+			},
+			"markComplete": {
+				"action": "Als abgeschlossen markieren",
+				"completed": "Dokument als abgeschlossen markiert",
+				"notDraft": "Es wurde nichts geändert — das Dokument ist kein Entwurf mit Inhalt mehr",
+				"failed": "Das Dokument konnte nicht als abgeschlossen markiert werden: {message}"
 			}
 		},
 		"sharedWithMe": {
@@ -5037,6 +5043,8 @@
 	},
 	"tooltips": {
 		"documentEditor": {
+			"markComplete": "Diesen Entwurf als abgeschlossen markieren, damit er als fertiges Dokument zählt.",
+			"saveCompletesDraft": "Dokument speichern und diesen Entwurf als abgeschlossen markieren.",
 			"generationQueued": "Dieses Dokument wartet auf die Kontextarbeit des Projekts, bevor es generiert werden kann. Es startet von selbst, sobald das abgeschlossen ist — ein erneuter Versuch ist nicht nötig.",
 			"visualSlot": {
 				"insert": "Visuellen Platzhalter einfügen: Die Glossy-Ausgabe erhält an dieser Stelle ein Visual in der gewählten Art oder in der passendsten.",

@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
 	getInstructionSnapshot: vi.fn(),
+	getProjectInstructionSettings: vi.fn(),
 	listInstructionFiles: vi.fn(),
 	claimInstructionFileStagingKey: vi.fn(),
 	authorizeInstructionProposalUploadUrls: vi.fn(),
@@ -30,6 +31,8 @@ const m = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
+	getProjectInstructionSettings: (...a: unknown[]) =>
+		m.getProjectInstructionSettings(...a),
 	listInstructionFiles: (...a: unknown[]) => m.listInstructionFiles(...a),
 	claimInstructionFileStagingKey: (...a: unknown[]) =>
 		m.claimInstructionFileStagingKey(...a),
@@ -88,6 +91,11 @@ beforeEach(() => {
 		source: "org",
 		organizationId: "org_1",
 	});
+	m.getProjectInstructionSettings.mockResolvedValue({
+		ignoreGlobs: null,
+		sourceOfTruth: "UPLOAD",
+		migration: null,
+	});
 	m.getInstructionSnapshot.mockResolvedValue({
 		id: "snap_1",
 		status: "RECEIVING",
@@ -130,6 +138,42 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.createUploadUrls", () => {
+	it.each([
+		["proposing", "PROPOSING"],
+		["switching", "SWITCHING"],
+	])(
+		"signs nothing while a move into the repository is %s (Fizzy #2878 §9): the upload began before it",
+		async (_label, state) => {
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "UPLOAD",
+				migration: {
+					v: 1,
+					state,
+					branchId: null,
+					snapshotId: null,
+					syncId: "sync_1",
+					pullRequestUrl: null,
+					startedAt: "2026-10-03T10:00:00.000Z",
+					userId: "user_2",
+				},
+			});
+
+			await expect(
+				m.handlers.createUploadUrls!({
+					input: baseInput,
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "MIGRATION_OPEN", state, pullRequest: null },
+			});
+
+			expect(m.claimInstructionFileStagingKey).not.toHaveBeenCalled();
+			expect(m.getStorageProvider).not.toHaveBeenCalled();
+		},
+	);
+
 	it("rewrites the provisional storage key to the real (projectId, snapshotId, fileId) key and signs it", async () => {
 		const result = (await m.handlers.createUploadUrls!({
 			input: baseInput,

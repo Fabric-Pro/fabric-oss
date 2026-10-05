@@ -52,6 +52,14 @@ const REFRESH_ADMITTED_AT =
  * `pullRequestUrl`, `pullRequestExternalId` and `pullRequestObservation`.
  */
 const MEMBER_BRANCHES = "20260927100000_instruction_proposal_branches";
+/**
+ * A direct commit to the synced branch (Fizzy #2878 §10) adds a third value to
+ * the destination enum, alone in its own migration; its other two migrations
+ * (the sync trigger value, the commit columns) say what they may do in
+ * `instruction-direct-commit-migrations.test.ts`.
+ */
+const DESTINATION_REPOSITORY_COMMIT =
+	"20261002150000_instruction_proposal_destination_repository_commit";
 
 /** Every migration of the feature, in the order the deploy applies them. */
 const FEATURE_MIGRATIONS = [
@@ -60,6 +68,7 @@ const FEATURE_MIGRATIONS = [
 	...INDEXES.map(([migration]) => migration),
 	REFRESH_ADMITTED_AT,
 	MEMBER_BRANCHES,
+	DESTINATION_REPOSITORY_COMMIT,
 ];
 
 /**
@@ -103,7 +112,7 @@ function executable(name: string): string {
 }
 
 describe("proposal pull-request migrations (spec §4.5)", () => {
-	it("are exactly these six: no other migration touches the feature's schema", () => {
+	it("are exactly these seven: no other migration touches the feature's schema", () => {
 		const touching = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name)

@@ -28,6 +28,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
+import {
+	PROJECT_BOUND_HIDDEN_TOOL_NAMES,
+	PROJECT_BOUND_TOOL_NAMES,
+} from "../project-binding";
 
 // Resolved from the vitest root (`apps/web`) rather than from `import.meta.url`,
 // which this runner does not give as a file URL.
@@ -206,5 +211,96 @@ describe("platform tool authorization coverage", () => {
 			.sort();
 
 		expect(stale).toEqual([]);
+	});
+});
+
+/**
+ * A session bound to one project (`../project-binding`) has the platform tools
+ * that answer for one project and none that reach past it. Which are which is
+ * decided tool by tool, in two lists; a tool in neither is refused, and this is
+ * the test that fails until a new one is put in one of them — so a tool added
+ * later is organization-wide until somebody has decided it is project-safe, and
+ * never project-safe by default.
+ */
+describe("platform tools classified for a project-bound session", () => {
+	const allowed: readonly string[] = PROJECT_BOUND_TOOL_NAMES;
+	const hidden: readonly string[] = PROJECT_BOUND_HIDDEN_TOOL_NAMES;
+	const defined = PLATFORM_TOOL_DEFINITIONS.map((tool) => tool.name);
+
+	it("classifies every platform tool as allowed or hidden", () => {
+		const unclassified = defined
+			.filter((name) => !allowed.includes(name) && !hidden.includes(name))
+			.sort();
+
+		expect(unclassified).toEqual([]);
+	});
+
+	it("classifies no tool both ways", () => {
+		const both = allowed.filter((name) => hidden.includes(name)).sort();
+
+		expect(both).toEqual([]);
+	});
+
+	it("names no tool that does not exist", () => {
+		const unknown = [...allowed, ...hidden]
+			.filter((name) => !defined.includes(name))
+			.sort();
+
+		expect(unknown).toEqual([]);
+	});
+
+	it("lists no tool twice", () => {
+		const all = [...allowed, ...hidden];
+
+		expect(all.length).toBe(new Set(all).size);
+	});
+
+	it("finds tools at all, so an empty definition list cannot pass the checks above", () => {
+		expect(defined.length).toBeGreaterThan(40);
+		expect(allowed.length).toBeGreaterThan(20);
+	});
+
+	/**
+	 * What an allowed tool is allowed BECAUSE of: it asks the project-access
+	 * helpers about a project (which refuse any but the bound one) or, for the
+	 * two that describe the connection, answers for the bound project itself.
+	 * A handler with none of them has nothing holding it to one project.
+	 */
+	it("keeps every allowed tool's handler behind a project-access helper, or on the bound project", () => {
+		const helpers = [
+			"hasGatewayProjectAccess",
+			"resolveGatewayProjectReadAccess",
+			"resolveGatewayProjectWriteAccess",
+			"resolveInstructionProjectAccess",
+			"resolvePublishedInstructionSnapshot",
+			"resolveProjectForStoryWrite",
+			"sessionMayReachProject",
+			"boundProjectId",
+		];
+		const handlerOf = (tool: string) =>
+			`handle${tool
+				.replace(/^fabric_/, "")
+				.split("_")
+				.map((word) => word[0].toUpperCase() + word.slice(1))
+				.join("")}`;
+		const bodies = new Map(
+			handlerBodies().map(({ name, body }) => [name, body]),
+		);
+		// Handlers whose name is not the tool's in PascalCase.
+		const renamed = new Map([
+			["fabric_instruction_checks", "handleGetInstructionChecks"],
+		]);
+
+		const unguarded = allowed
+			.filter((tool) => {
+				const body = bodies.get(renamed.get(tool) ?? handlerOf(tool));
+				return (
+					body === undefined ||
+					!helpers.some((helper) => body.includes(helper))
+				);
+			})
+			.sort();
+
+		expect(unguarded).toEqual([]);
 	});
 });

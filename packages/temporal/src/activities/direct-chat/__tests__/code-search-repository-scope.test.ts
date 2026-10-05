@@ -55,15 +55,20 @@ type CodeSearchTool = {
 		success: boolean;
 		searchedRepository?: string;
 		status?: string;
+		message?: string;
 	}>;
 };
 
-async function buildTool(preferredRepositoryUrl?: string) {
+async function buildTool(
+	preferredRepositoryUrl?: string,
+	liveRepositoryReads?: boolean,
+) {
 	const tools = await createCodeSearchTool({
 		userId: "u1",
 		organizationId: "org-1",
 		projectId: "p1",
 		preferredRepositoryUrl,
+		liveRepositoryReads,
 	});
 	return tools.code_search as CodeSearchTool;
 }
@@ -228,4 +233,140 @@ describe("code_search repository scope", () => {
 		const result = await tool.execute({ query: "auth" });
 		expect(result.searchedRepository).toBe("all");
 	});
+});
+
+// Fizzy #2926: a repository that is connected but has no code index is not a
+// wrong name. Reported as unknown, the call failed; three in a row tripped the
+// orchestrator's breaker, and nothing told the model the live readers exist.
+describe("code_search on a connected repository with no index", () => {
+	const DOCS_SITE = {
+		id: "ri-docs",
+		repositoryUrl: "https://dev.azure.com/example-org/site/_git/docs-site",
+		repositoryOwner: "example-org",
+		repositoryName: "docs-site",
+		roleTag: null,
+	};
+
+	it("reports a named, connected, unindexed repository as unavailable, not as a failure", async () => {
+		h.integrations.mockResolvedValue([
+			...(await h.integrations()),
+			DOCS_SITE,
+		]);
+		const tool = await buildTool();
+		const result = await tool.execute({
+			query: "auth",
+			repository: "docs-site",
+		});
+		expect(result).toMatchObject({
+			available: false,
+			status: "missing",
+			results: [],
+			message: expect.stringContaining(
+				"The code index for example-org/docs-site does not exist — this repository is connected but has not been indexed",
+			),
+		});
+		expect(result).not.toHaveProperty("success");
+		expect(h.query).not.toHaveBeenCalled();
+	});
+
+	it("reports a project with no index at all as unavailable, whatever repository is named", async () => {
+		h.getProjectCodeIndexes.mockResolvedValue([]);
+		const tool = await buildTool();
+		const connected = await tool.execute({
+			query: "auth",
+			repository: "example-org/web-app",
+		});
+		expect(connected).toMatchObject({ available: false });
+		expect(connected).not.toHaveProperty("success");
+		expect(connected.message).not.toContain("does not identify");
+
+		// Still not a failure, but the unrecognised name is called out.
+		const unknown = await tool.execute({
+			query: "auth",
+			repository: "unheard-of",
+		});
+		expect(unknown).toMatchObject({ available: false });
+		expect(unknown).not.toHaveProperty("success");
+		expect(unknown.message).toContain(
+			'"unheard-of" does not identify one repository connected to this project; connected: example-org/web-app, example-org/legacy-app.',
+		);
+	});
+
+	it("matches the project's own legacy repository when it has no index", async () => {
+		h.getProjectCodeIndexes.mockResolvedValue([
+			{ repositoryIntegrationId: "ri-web", status: "READY" },
+		]);
+		h.project.mockResolvedValue({
+			repositoryUrl: "https://gitlab.example.com/example-org/core",
+			repositoryOwner: "example-org",
+			repositoryName: "core",
+		});
+		const tool = await buildTool();
+		const result = await tool.execute({
+			query: "auth",
+			repository: "https://gitlab.example.com/example-org/core.git",
+		});
+		expect(result).toMatchObject({
+			available: false,
+			status: "missing",
+			message: expect.stringContaining("example-org/core"),
+		});
+	});
+
+	it("still fails a name that matches nothing connected, listing both kinds", async () => {
+		h.integrations.mockResolvedValue([
+			...(await h.integrations()),
+			DOCS_SITE,
+		]);
+		const tool = await buildTool();
+		const result = await tool.execute({
+			query: "auth",
+			repository: "someone-else/secret",
+		});
+		expect(result).toMatchObject({
+			success: false,
+			status: "unknown_repository",
+		});
+		const message = result.message;
+		expect(message).toContain("example-org/web-app");
+		expect(message).toContain(
+			"Connected but not indexed: example-org/docs-site",
+		);
+	});
+
+	it.each([
+		[
+			"a project with no index",
+			() => h.getProjectCodeIndexes.mockResolvedValue([]),
+			{},
+		],
+		[
+			"an index still building",
+			() =>
+				h.getProjectCodeIndexes.mockResolvedValue([
+					{ repositoryIntegrationId: "ri-web", status: "INDEXING" },
+				]),
+			{ repository: "web-app" },
+		],
+	])(
+		"points at code_tree and code_file_get only where the chat offers them: %s",
+		async (_name, arrange, args) => {
+			arrange();
+			const withReaders = await (
+				await buildTool(undefined, true)
+			).execute({ query: "auth", ...args });
+			const directChat = await (await buildTool()).execute({
+				query: "auth",
+				...args,
+			});
+			const said = (r: unknown) => (r as { message: string }).message;
+			// Conditional: an explicit Fabric tool list can leave them out.
+			expect(said(withReaders)).toContain(
+				"If code_tree and code_file_get are among your tools",
+			);
+			expect(said(withReaders)).toContain("other sources");
+			expect(said(directChat)).not.toContain("code_tree");
+			expect(said(directChat)).toContain("other sources");
+		},
+	);
 });

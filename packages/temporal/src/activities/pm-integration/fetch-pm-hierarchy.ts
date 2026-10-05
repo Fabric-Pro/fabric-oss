@@ -7,6 +7,7 @@
 import { logger } from "@repo/logs";
 import { findBacklogsListTool } from "@repo/utils";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import {
 	discoverPMToolCapabilities,
 	listAllFizzyCards,
@@ -740,6 +741,15 @@ export async function fetchPMWorkItemsByType(
 		capabilities: preCapabilities,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext,
+	});
+
 	const capabilities =
 		preCapabilities ??
 		(await discoverPMToolCapabilities({
@@ -845,6 +855,7 @@ export async function fetchPMWorkItemsByType(
 				};
 
 				const listResult = await executeMcpTool({
+					pmTarget: { additionalContext },
 					toolName: listTool.toolName,
 					args: listArgs,
 					userId,
@@ -958,6 +969,7 @@ export async function fetchPMWorkItemsByType(
 		}
 
 		const listResult = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: listTool.toolName,
 			args: listArgs,
 			userId,

@@ -5,6 +5,10 @@
  * These handle trigger configuration, agent invocation, and output delivery.
  */
 
+// Static, not `await import(...)`: under the worker's tsx runtime a dynamic
+// import of this ES-module package fails to link its named imports from
+// @repo/database. See src/__tests__/worker-dynamic-imports.test.ts.
+import { getSlackCredentials } from "@repo/integrations";
 import type {
 	TriggerConfig,
 	TriggerContext,
@@ -239,9 +243,6 @@ export async function postToSlack(input: {
 	userId?: string;
 	organizationId?: string;
 }): Promise<{ messageTs: string; ok: boolean }> {
-	// Get Slack credentials from integration
-	const { getSlackCredentials } = await import("@repo/integrations");
-
 	if (!input.userId) {
 		throw new Error("userId is required for Slack post");
 	}
@@ -477,9 +478,6 @@ export async function sendSlackReply(input: {
 	messageTs: string;
 	ok: boolean;
 }> {
-	// Get Slack credentials from integration
-	const { getSlackCredentials } = await import("@repo/integrations");
-
 	const credentials = await getSlackCredentials(
 		input.userId,
 		input.organizationId,

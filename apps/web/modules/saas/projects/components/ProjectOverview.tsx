@@ -1,6 +1,7 @@
 "use client";
 
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import type { TabId } from "@saas/projects/lib/project-tabs";
 import { cn } from "@ui/lib";
 import {
@@ -9,6 +10,7 @@ import {
 	PencilIcon,
 	PlusIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
 import {
 	getDocumentMeta,
@@ -153,6 +155,7 @@ export function ProjectOverview({
 	onProjectUpdated,
 	onNavigateToTab,
 }: Props) {
+	const { basePath } = useOrganizationContext();
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 	const [editSection, setEditSection] = useState<EditSection | null>(null);
 
@@ -307,7 +310,10 @@ export function ProjectOverview({
 							</p>
 						</div>
 					) : (
-						<ul className="divide-y divide-border">
+						// Each row carries its own vertical padding so that the whole
+						// row, not just its text, is the link. The negative margin
+						// takes back the first row's top and the last row's bottom.
+						<ul className="-my-3 divide-y divide-border">
 							{pipelineDocs.map((doc) => {
 								const meta = getDocumentMeta(doc.type);
 								const DocIcon = meta.icon;
@@ -317,12 +323,17 @@ export function ProjectOverview({
 								const isComplete =
 									statusView.tone === "complete";
 								const isActive = statusView.tone === "active";
+								// A failed generation may have left nothing to
+								// open, and the Documents tab does not open such
+								// a card either. There is no word count here to
+								// tell the two apart, so a failed document is
+								// not a link.
+								const canOpen = doc.status !== "FAILED";
+								const rowClassName =
+									"flex items-center gap-3 py-3";
 
-								return (
-									<li
-										key={doc.id}
-										className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
-									>
+								const row = (
+									<>
 										<div
 											className={cn(
 												"flex size-8 shrink-0 items-center justify-center rounded-lg border",
@@ -341,7 +352,7 @@ export function ProjectOverview({
 											/>
 										</div>
 										<div className="min-w-0 flex-1">
-											<p className="truncate text-sm font-medium text-foreground">
+											<p className="truncate text-sm font-medium text-foreground group-hover/row:underline">
 												{doc.title}
 											</p>
 											<p className="text-xs text-muted-foreground">
@@ -360,6 +371,26 @@ export function ProjectOverview({
 										>
 											{statusView.label}
 										</span>
+									</>
+								);
+
+								return (
+									<li key={doc.id}>
+										{canOpen ? (
+											<Link
+												href={`${basePath}/projects/${projectId}/documents/${doc.id}`}
+												className={cn(
+													rowClassName,
+													"group/row rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+												)}
+											>
+												{row}
+											</Link>
+										) : (
+											<div className={rowClassName}>
+												{row}
+											</div>
+										)}
 									</li>
 								);
 							})}

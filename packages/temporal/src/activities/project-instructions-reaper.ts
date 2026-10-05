@@ -23,6 +23,10 @@
  *     its secret scan is READY with the scan PENDING until its own workflow
  *     records a verdict. When that workflow is gone first, nothing else ever
  *     would, and the version reads "scan pending" forever (phase 0b).
+ *  5. **Stale pending direct commits** (Fizzy #2878 §10). A direct commit that
+ *     is READY with no outcome after the 24 hours its workflow may run has
+ *     nothing behind it, and would count against the member's and the
+ *     project's caps for good (phase 0c).
  *
  * Modelled on the attachment sweeps: bounded per-run budgets, structured
  * `instructions.reaper.*` events, a result object of counts, and no tenant in
@@ -92,14 +96,17 @@
  */
 
 import {
+	failStaleDirectCommit,
 	failStaleValidatingInstructionSnapshot,
 	listAbandonedReceivingInstructionSnapshots,
 	listPendingAbandonedInstructionSnapshots,
 	listProjectsWithPrunableInstructionSnapshots,
 	listStaleDeferredScanInstructionSnapshots,
+	listStaleDirectCommits,
 	listStaleValidatingInstructionSnapshots,
 	markStaleDeferredScanIncomplete,
 	rejectAbandonedInstructionSnapshot,
+	STALE_COMMIT_AFTER_MS,
 } from "@repo/database";
 import {
 	DEFERRED_SCAN_STALE_AFTER_MS,
@@ -152,6 +159,12 @@ const MAX_STALE_VALIDATING_PER_RUN = 100;
  * costs a `describe`, and a healthy deployment has none.
  */
 const MAX_STALE_DEFERRED_SCAN_PER_RUN = 100;
+/**
+ * Phase 0c's slice. No `describe` per row (the workflow's 24 hour execution
+ * timeout is the evidence, and it is older than the row), so it can be larger
+ * than phases 0 and 0b; a healthy deployment has none of these either.
+ */
+const MAX_STALE_DIRECT_COMMITS_PER_RUN = 200;
 
 /**
  * The two GLOBAL budgets, spent across every phase rather than per phase.
@@ -291,6 +304,16 @@ export interface ReapInstructionSnapshotsResult {
 	 * attention for the same reason `healedValidating` is.
 	 */
 	incompleteDeferredScans: number;
+	/** Stale pending direct commits phase 0c's candidate query returned. */
+	staleDirectCommits: number;
+	/**
+	 * Of those, how many THIS run closed out as `failed STALE`: a commit that
+	 * was READY with no outcome for longer than its workflow can have been
+	 * alive, which would otherwise have counted against the member's and the
+	 * project's caps for good. Worth an operator's attention: a workflow that
+	 * dies this way has a record that kept failing, or was terminated.
+	 */
+	closedStaleDirectCommits: number;
 	/**
 	 * Rows any phase left alone because Temporal still knows of an
 	 * execution for their validation workflow. In phase 1 that is a RECEIVING
@@ -349,6 +372,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 	const deferredScanCutoff = new Date(
 		startedAtMs - DEFERRED_SCAN_STALE_AFTER_MS,
 	);
+	const directCommitCutoff = new Date(startedAtMs - STALE_COMMIT_AFTER_MS);
 	// Spent across all phases, not per phase.
 	const objectBudget: StorageBudget = {
 		remaining: MAX_STORAGE_OBJECTS_PER_RUN,
@@ -433,6 +457,13 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		startedAtMs,
 		(row) => row.id,
 	);
+	const staleDirectCommits = await selectRotatedSlice(
+		(limit, offset) =>
+			listStaleDirectCommits(directCommitCutoff, limit, offset),
+		MAX_STALE_DIRECT_COMMITS_PER_RUN,
+		startedAtMs,
+		(row) => row.id,
+	);
 	// Acquired once per run, and only because phases 0, 0b and 1 need it —
 	// phases 1b and 3 work on rows whose verdict is already written. A client
 	// that will not construct is an UNKNOWN, not a licence to write a verdict:
@@ -458,6 +489,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 	let rejected = 0;
 	let healedValidating = 0;
 	let incompleteDeferredScans = 0;
+	let closedStaleDirectCommits = 0;
 	let skippedLive = 0;
 	let stagingObjectsDeleted = 0;
 	let storageTruncated = false;
@@ -610,6 +642,51 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 			incomplete: incompleteDeferredScans,
 		},
 		`[InstructionReaper] Recorded ${incompleteDeferredScans} stranded deferred scan(s) as incomplete`,
+	);
+
+	// PHASE 0c: direct commits that are READY with no outcome and have no
+	// workflow behind them (Fizzy #2878 §10).
+	//
+	// A direct commit's workflow records every outcome, with retries that are
+	// bounded and an execution timeout of 24 hours. The one way a commit row
+	// is still pending after that is a workflow that never recorded: its
+	// record kept failing and its report could not be written either, or it
+	// was terminated. Such a row counts against the member's five and the
+	// project's twenty-five pending commits for good, so a member who hit it
+	// five times could never commit again.
+	//
+	// The evidence is the AGE, not an execution: the workflow cannot outlive
+	// its execution timeout, which is the row's own age bound, so no
+	// `describe` is needed. The write is fenced on the row still being a READY
+	// direct commit with no outcome, so an outcome recorded after the listing
+	// is never overwritten. `failed STALE` is retryable: nothing was written
+	// to the branch for this row, and the member may commit the change again.
+	for (const row of staleDirectCommits) {
+		if (outOfBudget("close-stale-direct-commits")) {
+			break;
+		}
+		safeHeartbeat({
+			phase: "close-stale-direct-commits",
+			snapshotId: row.id,
+		});
+		const changed = await failStaleDirectCommit({
+			snapshotId: row.id,
+			organizationId: row.organizationId,
+			cutoff: directCommitCutoff,
+		});
+		if (changed) {
+			closedStaleDirectCommits++;
+		}
+	}
+
+	logger.info(
+		{
+			event: "instructions.reaper.stale_direct_commits_closed",
+			// Counts only, as above.
+			scanned: staleDirectCommits.length,
+			closed: closedStaleDirectCommits,
+		},
+		`[InstructionReaper] Closed ${closedStaleDirectCommits} stale pending direct commit(s)`,
 	);
 	// Every id phase 1 closed out in THIS run, swept or not. Phase 1b selects
 	// on the pending mark the rejection above just wrote, so without this the
@@ -840,6 +917,8 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 		healedValidating,
 		staleDeferredScans: staleDeferredScans.length,
 		incompleteDeferredScans,
+		staleDirectCommits: staleDirectCommits.length,
+		closedStaleDirectCommits,
 		skippedLive,
 		resweptAbandoned,
 		stagingObjectsDeleted,
@@ -857,6 +936,7 @@ export async function reapInstructionSnapshots(): Promise<ReapInstructionSnapsho
 			budgetStopped ||
 			staleValidating.length >= MAX_STALE_VALIDATING_PER_RUN ||
 			staleDeferredScans.length >= MAX_STALE_DEFERRED_SCAN_PER_RUN ||
+			staleDirectCommits.length >= MAX_STALE_DIRECT_COMMITS_PER_RUN ||
 			abandoned.length >= MAX_ABANDONED_PER_RUN ||
 			pending.length >= MAX_RESWEPT_ABANDONED_PER_RUN ||
 			projects.length >= MAX_PRUNE_PROJECTS_PER_RUN,

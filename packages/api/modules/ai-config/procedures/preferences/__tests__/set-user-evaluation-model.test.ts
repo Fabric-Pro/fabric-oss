@@ -29,7 +29,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chainable,
 		resolveOrganizationId: vi.fn(() => null),
-		requirePermission: vi.fn(() => ({})),
+		requireInputOrgPermission: vi.fn(() => ({})),
 		Permissions: { ORG_AI_CONFIG_EDIT: "org_ai_config_edit" },
 	};
 });

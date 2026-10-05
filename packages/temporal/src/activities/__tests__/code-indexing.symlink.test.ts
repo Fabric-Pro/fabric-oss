@@ -45,7 +45,9 @@ describe("walkDirWith — symlink handling", () => {
 		const sorted = visited.sort();
 		expect(sorted).toContain("a-before-symlink.ts");
 		expect(sorted).toContain("z-after-symlink.ts");
-		expect(sorted).toContain(join("sub", "deep.ts"));
+		// Forward-slashed on every OS: the stored path is matched against the
+		// webhook's `changedFiles` and split on "/" by `shouldSkipFile`.
+		expect(sorted).toContain("sub/deep.ts");
 		expect(sorted).not.toContain("sym");
 	});
 });

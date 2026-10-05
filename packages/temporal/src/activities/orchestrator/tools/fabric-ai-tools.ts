@@ -32,6 +32,14 @@ import {
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-feature-tool-schemas";
+import {
+	CODE_FILE_GET_DESCRIPTION,
+	CODE_FILE_GET_INPUT_SCHEMA,
+	CODE_SEARCH_DESCRIPTION,
+	CODE_SEARCH_INPUT_SCHEMA,
+	CODE_TREE_DESCRIPTION,
+	CODE_TREE_INPUT_SCHEMA,
+} from "../../../workflows/orchestrator/project-repository-tool-schemas";
 
 export interface FabricAiTool {
 	name: string;
@@ -2186,38 +2194,8 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		// =======================================================================
 		{
 			name: "code_search",
-			description:
-				"Search the project's connected repositories for code matching a query. Returns file paths and matched snippets. " +
-				"If the project has multiple repositories connected, searches across all of them. " +
-				"Use this to find specific functions, classes, patterns, or implementations in the codebase. " +
-				"KEYWORDS: code search, find function, find class, source code, implementation, codebase, " +
-				"repository, search code, find code, how is X implemented.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					query: {
-						type: "string",
-						description:
-							"Search query — use specific terms, function names, or patterns",
-					},
-					path: {
-						type: "string",
-						description:
-							"Filter results to a specific directory path (e.g., 'src/auth')",
-					},
-					language: {
-						type: "string",
-						description:
-							"Filter by programming language (e.g., 'typescript', 'python')",
-					},
-					repo: {
-						type: "string",
-						description:
-							"Filter to one of the project's indexed repositories by name, owner/name (e.g., 'acme/backend') or URL. When the conversation names the repository the user is viewing (a 'Repository URL' line), pass it here unless the user asks about another repository. Omit to search all connected repos.",
-					},
-				},
-				required: ["query"],
-			},
+			description: `${CODE_SEARCH_DESCRIPTION} KEYWORDS: code search, find function, find class, source code, implementation, codebase, repository, search code, find code, how is X implemented.`,
+			inputSchema: CODE_SEARCH_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {
@@ -2241,27 +2219,8 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 		{
 			name: "code_file_get",
-			description:
-				"Fetch the full content of a specific file from the project's connected repositories by its path. " +
-				"Use after code_search to read the full source of a relevant file. " +
-				"If multiple repos are connected and no repo is specified, tries each repo until the file is found. " +
-				"KEYWORDS: get file, read file, file content, source file, view code, open file.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					path: {
-						type: "string",
-						description:
-							"File path relative to repository root (e.g., 'src/auth/middleware.ts')",
-					},
-					repo: {
-						type: "string",
-						description:
-							"Target repository in owner/name format (e.g., 'acme/backend'). Omit to search all connected repos.",
-					},
-				},
-				required: ["path"],
-			},
+			description: `${CODE_FILE_GET_DESCRIPTION} KEYWORDS: get file, read file, file content, source file, view code, open file.`,
+			inputSchema: CODE_FILE_GET_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {
@@ -2280,26 +2239,8 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 		{
 			name: "code_tree",
-			description:
-				"List the directory tree of the project's connected repositories. Useful for understanding the project structure. " +
-				"If multiple repos are connected, lists structure from all repos unless a specific one is specified. " +
-				"KEYWORDS: directory tree, project structure, list files, file tree, repository structure.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					directory: {
-						type: "string",
-						description:
-							"Filter to a specific directory (e.g., 'src/components'). Omit for full tree.",
-					},
-					repo: {
-						type: "string",
-						description:
-							"Target repository in owner/name format (e.g., 'acme/backend'). Omit to list all connected repos.",
-					},
-				},
-				required: [],
-			},
+			description: `${CODE_TREE_DESCRIPTION} KEYWORDS: directory tree, project structure, list files, file tree, repository structure.`,
+			inputSchema: CODE_TREE_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {

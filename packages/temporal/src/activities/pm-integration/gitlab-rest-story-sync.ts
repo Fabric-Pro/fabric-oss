@@ -490,6 +490,7 @@ export async function syncGitLabStoryViaRest(
 			userId,
 			organizationId: organizationId ?? null,
 			containerId: containerId ?? null,
+			additionalContext,
 		});
 	} catch (error) {
 		if (error instanceof PMSourceNotFound) {

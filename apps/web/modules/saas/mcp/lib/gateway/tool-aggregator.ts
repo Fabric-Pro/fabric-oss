@@ -12,6 +12,7 @@
  * every upstream server. Falls back to live tool discovery if cache is stale.
  */
 
+import { boundProjectId, projectBoundTools } from "./project-binding";
 import type {
 	ConnectedServerInfo,
 	GatewaySession,
@@ -56,6 +57,18 @@ function sanitizePrefix(name: string): string {
 export async function getAggregatedTools(
 	session: GatewaySession,
 ): Promise<{ tools: GatewayToolDefinition[]; servers: ConnectedServerInfo[] }> {
+	// A session bound to one project is offered that project's platform tools
+	// and no connected server's: those belong to the person and the
+	// organization, with no tie to a project. It never reaches the discovery
+	// below, and so never reads or fills the shared cache.
+	if (boundProjectId(session) !== null) {
+		const { PLATFORM_TOOL_DEFINITIONS } = await import("./platform-tools");
+		return {
+			tools: projectBoundTools(PLATFORM_TOOL_DEFINITIONS),
+			servers: [],
+		};
+	}
+
 	const cacheKey = getCacheKey(session.userId, session.organizationId);
 	const cached = toolListCache.get(cacheKey);
 
@@ -223,6 +236,8 @@ async function discoverToolsLive(
 			userId: session.userId,
 			organizationId: session.organizationId || undefined,
 			redirectUri: `${siteUrl}/api/mcp/oauth/callback`,
+			// Only lists the server's tools.
+			access: "read",
 		});
 
 		const toolsMap = await client.tools();
@@ -277,6 +292,23 @@ export async function executeConnectedServerTool(
 	session: GatewaySession,
 	servers: ConnectedServerInfo[],
 ): Promise<ToolCallResult> {
+	// Never on a session bound to one project, whatever reached this far: a
+	// connected server is the person's and the organization's, and has no
+	// project to be held to.
+	if (boundProjectId(session) !== null) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "Connected server tools are not available on a connection to one project.",
+					}),
+				},
+			],
+			isError: true,
+		};
+	}
+
 	// Parse prefix__toolName
 	const separatorIndex = namespacedToolName.indexOf("__");
 	if (separatorIndex === -1) {
@@ -324,6 +356,8 @@ export async function executeConnectedServerTool(
 			userId: session.userId,
 			organizationId: session.organizationId || undefined,
 			redirectUri: `${siteUrl}/api/mcp/oauth/callback`,
+			// Executes a tool.
+			access: "connect" as const,
 		};
 
 		let client: Awaited<

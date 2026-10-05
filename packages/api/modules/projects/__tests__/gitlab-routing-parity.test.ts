@@ -1,8 +1,15 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@repo/utils", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	encryptApiKey: (v: string) => `enc:${v}`,
+	decryptApiKey: (v: string) => v.replace(/^enc:/, ""),
+}));
+
 import {
 	callMcpWithRestFallback,
 	resolveGitLabSource,
 } from "@repo/integrations/gitlab";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ROUTED_METHODS = [
 	"list_projects",
@@ -15,32 +22,64 @@ const ROUTED_METHODS = [
 	"update_issue",
 ] as const;
 
-function makeResolverDeps() {
+/**
+ * A person with a live GitLab connection that may use GitLab's official MCP
+ * server, and that server's `gitlab-official` row. The resolver reads the
+ * connection through the connection service; these are its database and
+ * lock.
+ */
+function makeResolverArgs() {
+	const connection = {
+		id: "wi-1",
+		userId: "u1",
+		organizationId: null,
+		provider: "GITLAB",
+		name: "GitLab: dev",
+		workflowId: null,
+		isActive: true,
+		credentials: `enc:${JSON.stringify({
+			access_token: "tok",
+			refresh_token: "ref",
+			expires_in: 7200,
+			token_obtained_at: new Date().toISOString(),
+			issuer: {
+				kind: "app",
+				clientId: "app-client",
+				origin: "https://gitlab.com",
+			},
+			connectionGeneration: 1,
+		})}`,
+		settings: { useOfficialMcp: true },
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+	};
+	const db = {
+		workflowIntegration: {
+			findMany: async () => [connection],
+			create: vi.fn(),
+			update: vi.fn(),
+			updateMany: vi.fn(),
+		},
+		mCPConfig: {
+			findFirst: async () => ({
+				id: "cfg",
+				baseUrl: null,
+				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			}),
+			updateMany: vi.fn(),
+		},
+		projectRepositoryIntegration: { findMany: async () => [] },
+	};
 	return {
 		userId: "u1",
 		organizationId: null as string | null,
-		db: {
-			mCPConfig: {
-				findFirst: async () => ({
-					id: "cfg",
-					baseUrl: null,
-					encryptedAccessToken: "enc",
-					tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
-					mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-				}),
-			},
-			workflowIntegration: {
-				findFirst: async () => null,
-			},
-		} as never,
-		decrypt: () => "tok",
-		refresh: async () => "tok",
-		getRestToken: async () => null as string | null,
-		// Required by the resolver: a caller that omits the writer degrades to
-		// REST while persisting nothing, so the next request refreshes the same
-		// dead token again (issue #2795). These cases never fail a refresh, so
-		// an explicit no-op is the honest wiring.
-		markRefreshFailure: vi.fn(async () => {}),
+		deps: {
+			db: db as never,
+			withLock: (async (
+				_keys: unknown,
+				fn: (tx: unknown, b: () => void) => unknown,
+			) => fn(db, () => {})) as never,
+		},
 	};
 }
 
@@ -72,7 +111,7 @@ describe("GitLab routing parity (MCP <> REST)", () => {
 					),
 			);
 
-			const source = await resolveGitLabSource(makeResolverDeps());
+			const source = await resolveGitLabSource(makeResolverArgs());
 			expect(source?.kind).toBe("official-mcp");
 
 			const out = await callMcpWithRestFallback({
@@ -106,7 +145,7 @@ describe("GitLab routing parity (MCP <> REST)", () => {
 					),
 			);
 
-			const source = await resolveGitLabSource(makeResolverDeps());
+			const source = await resolveGitLabSource(makeResolverArgs());
 			const restFallback = vi.fn(async () => ({
 				method,
 				fromRest: true,

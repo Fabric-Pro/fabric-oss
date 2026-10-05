@@ -30,6 +30,7 @@ WORKDIR /app
 # fails with "Cannot find module '@prisma/client/runtime/library'".
 # Those patterns lived in .npmrc until the pnpm 11 migration.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY tooling ./tooling
 
 # Copy package.json files for workspace packages (excluding agents)
@@ -147,6 +148,21 @@ ENV DOCKER_BUILD=true
 # ("Compiled successfully in 77s") and then exhausts the heap in the phase after,
 # now that the workspace closure actually resolves.
 RUN pnpm --filter "web^..." build
+#
+# The CLI this image serves at /cli. Turbo wires the same step in front of
+# `next build` on Vercel (turbo.json: @fabricorg/cli#pack:deployment); this
+# build calls `next build` directly, so it runs the step itself. Its own
+# process, finished before the Next build starts.
+#
+# The tarball can have the address it is served from baked in, so the CLI signs
+# in there without --base-url. The step takes it from FABRIC_CLI_ORIGIN if
+# given, otherwise from NEXT_PUBLIC_SITE_URL above, so a self-hosted image is
+# built with `--build-arg NEXT_PUBLIC_SITE_URL=https://fabric.example.com` like
+# the app itself. Baking is optional and never wrong: the Connect dialog's line
+# carries --base-url unless the page is on the baked address, and --base-url
+# wins over the bake.
+ARG FABRIC_CLI_ORIGIN
+RUN pnpm --filter @fabricorg/cli pack:deployment
 #
 # NODE_OPTIONS rather than an argv flag, since Next 16.3. The flag below used to
 # be enough because the TypeScript phase ran inside this process; 16.3 runs it in

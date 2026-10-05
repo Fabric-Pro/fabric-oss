@@ -35,6 +35,10 @@ import { listIntegrationsProcedure } from "./procedures/integrations/list-integr
 import { listSlackChannelsProcedure } from "./procedures/integrations/list-slack-channels";
 import { listTeamsChatsProcedure } from "./procedures/integrations/list-teams-chats";
 import { saveIntegrationProcedure } from "./procedures/integrations/save-integration";
+import {
+	listIntegrationSharingProcedure,
+	setIntegrationUsageScopeProcedure,
+} from "./procedures/integrations/sharing";
 import { testIntegrationConnectionProcedure } from "./procedures/integrations/test-connection";
 import { testSavedConnectionProcedure } from "./procedures/integrations/test-saved-connection";
 import { listWorkflowsProcedure } from "./procedures/list-workflows";
@@ -99,6 +103,8 @@ export const workflowsRouter = {
 	integrations: {
 		list: listIntegrationsProcedure,
 		listStatus: listIntegrationStatusProcedure,
+		listSharing: listIntegrationSharingProcedure,
+		setUsageScope: setIntegrationUsageScopeProcedure,
 		save: saveIntegrationProcedure,
 		delete: deleteIntegrationProcedure,
 		disconnectByType: disconnectByTypeProcedure,

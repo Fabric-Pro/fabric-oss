@@ -26,10 +26,12 @@ import {
 	Loader2Icon,
 	LockIcon,
 	PlusIcon,
+	RefreshCwIcon,
 	SearchIcon,
 	StarIcon,
 	UserIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 function GitLabIconSvg({ className }: { className?: string }) {
 	return (
@@ -40,6 +42,24 @@ function GitLabIconSvg({ className }: { className?: string }) {
 }
 
 import { useEffect, useMemo, useState } from "react";
+
+/** The person's GitLab connection, as the server's connection service says. */
+type GitLabConnectionState = "connected" | "needs-reconnect" | "not-connected";
+
+/**
+ * The canonical connection state a listing reports, whatever else it says.
+ * Every response carries it; an older shape without it falls back to
+ * `configured`.
+ */
+function listingConnectionState(result: {
+	configured: boolean;
+	connectionState?: GitLabConnectionState;
+}): GitLabConnectionState {
+	if (result.connectionState) {
+		return result.connectionState;
+	}
+	return result.configured ? "connected" : "not-connected";
+}
 
 export interface GitLabProject {
 	name: string;
@@ -125,7 +145,14 @@ export function GitLabProjectPicker({
 	const [username, setUsername] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [isConfigured, setIsConfigured] = useState(true);
+	// The notice comes from the canonical connection state the server
+	// returns with the listing, never from whether projects could be
+	// listed: a connection that needs reconnecting is not "not connected",
+	// and a listing that failed is an error, not a missing connection.
+	const [connectionState, setConnectionState] =
+		useState<GitLabConnectionState>("connected");
+	const [isReconnecting, setIsReconnecting] = useState(false);
+	const isConfigured = connectionState === "connected";
 	const [searchQuery, setSearchQuery] = useState("");
 	const [roleTagInput, setRoleTagInput] = useState("");
 	const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
@@ -148,8 +175,12 @@ export function GitLabProjectPicker({
 				projectId: projectId ?? undefined,
 			});
 
-			if (!result.configured) {
-				setIsConfigured(false);
+			// The state first, before any error: a connection that was just
+			// reconnected reads as connected even when this listing failed,
+			// and the failure is then shown as the error it is.
+			const state = listingConnectionState(result);
+			setConnectionState(state);
+			if (state !== "connected") {
 				setGroups([]);
 				return;
 			}
@@ -163,7 +194,6 @@ export function GitLabProjectPicker({
 				return;
 			}
 
-			setIsConfigured(true);
 			setUsername(result.username ?? null);
 			setGroups(result.groups ?? []);
 			setHasLoaded(true);
@@ -205,6 +235,15 @@ export function GitLabProjectPicker({
 				projectId: projectId ?? undefined,
 			});
 
+			// The same order as the main listing: the connection state
+			// first, so a search after a reconnect (or after the connection
+			// lapsed) updates the notice, then the search's own error.
+			const state = listingConnectionState(result);
+			setConnectionState(state);
+			if (state !== "connected") {
+				return;
+			}
+
 			if (result.error) {
 				setGroupSearchError(result.error);
 				return;
@@ -236,6 +275,56 @@ export function GitLabProjectPicker({
 			setIsSearchingGroup(false);
 		}
 	};
+
+	const handleReconnectGitLab = async () => {
+		setIsReconnecting(true);
+		try {
+			const result = await orpcClient.integrations.gitlab.start({
+				redirectUri: `${window.location.origin}/api/integrations/gitlab/oauth/callback`,
+				returnUrl:
+					window.location.pathname +
+					window.location.search +
+					window.location.hash,
+				organizationId: organizationId ?? null,
+			});
+			const width = 600;
+			const height = 700;
+			const left = window.screenX + (window.outerWidth - width) / 2;
+			const top = window.screenY + (window.outerHeight - height) / 2;
+			window.open(
+				result.authorizationUrl,
+				"gitlab-oauth",
+				`width=${width},height=${height},left=${left},top=${top}`,
+			);
+		} catch (err) {
+			toast.error(
+				err instanceof Error
+					? err.message
+					: "Failed to start the GitLab reconnect",
+			);
+			setIsReconnecting(false);
+		}
+	};
+
+	// The reconnect popup reports back here; reload the listing then.
+	useEffect(() => {
+		if (!open) {
+			return;
+		}
+		const handleMessage = (event: MessageEvent) => {
+			if (event.origin !== window.location.origin) {
+				return;
+			}
+			if (event.data?.type === "gitlab_oauth_success") {
+				setIsReconnecting(false);
+				fetchRepos();
+			} else if (event.data?.type === "gitlab_oauth_error") {
+				setIsReconnecting(false);
+			}
+		};
+		window.addEventListener("message", handleMessage);
+		return () => window.removeEventListener("message", handleMessage);
+	}, [open]);
 
 	useEffect(() => {
 		if (open) {
@@ -339,7 +428,38 @@ export function GitLabProjectPicker({
 					</div>
 				)}
 
-				{!isLoading && !isConfigured && (
+				{!isLoading && connectionState === "needs-reconnect" && (
+					<div className="flex flex-col items-center gap-4 py-8 text-center">
+						<div className="rounded-full bg-amber-500/10 p-4">
+							<AlertCircleIcon className="size-8 text-highlight" />
+						</div>
+						<div>
+							<p className="font-medium text-foreground/70">
+								GitLab Needs Reconnecting
+							</p>
+							<p className="mt-1 text-sm text-foreground/50">
+								Your GitLab connection has expired. Reconnect
+								GitLab to browse and select projects for this
+								project.
+							</p>
+						</div>
+						<Button
+							variant="outline"
+							onClick={handleReconnectGitLab}
+							disabled={isReconnecting}
+							className="gap-2"
+						>
+							{isReconnecting ? (
+								<Loader2Icon className="size-4 animate-spin" />
+							) : (
+								<RefreshCwIcon className="size-4" />
+							)}
+							Reconnect GitLab
+						</Button>
+					</div>
+				)}
+
+				{!isLoading && connectionState === "not-connected" && (
 					<div className="flex flex-col items-center gap-4 py-8 text-center">
 						<div className="rounded-full bg-amber-500/10 p-4">
 							<AlertCircleIcon className="size-8 text-highlight" />

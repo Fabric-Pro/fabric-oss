@@ -277,13 +277,16 @@ it before delivering.
 - A PR that is merely behind `staging` merges as is; do not update it just to
   catch up. Resolve a real conflict by merging `staging` in
   (`gh pr update-branch`), never a rebase or force-push.
+- Developers do not open OSS PRs or post `/relay`.
 - A merged PR is not a deployment. Verify the staging deployment of that exact
-  revision before calling the change on staging.
-- Developers do not open OSS PRs or post `/relay`. A bot promotes staging
-  batches to `master` after automated validation of the exact candidate and
-  its healthy deployment evidence. Publication scans must pass before public
-  publication. Production releases remain separate gated events. Never create
-  `promotion/*` or `backport/*` branches; they are bot-owned.
+  revision before calling ordinary feature work deployed on staging. Batch
+  release candidates use immutable CI-only validation and do not require a
+  shared-staging deployment or candidate image build; staging builds and
+  deployments for feature work continue normally. The bot validates the frozen
+  staging source, composed candidate, and exact master SHA before promotion.
+  Publication scans must pass before public publication. Production releases
+  remain separate gated events. Never create `promotion/*` or `backport/*`
+  branches; they are bot-owned.
 
 When the mode is disabled, the legacy per-PR OSS relay applies: never run
 `gh pr merge` then, and relay only when the requested workflow includes

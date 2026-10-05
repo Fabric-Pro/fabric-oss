@@ -27,6 +27,7 @@ import {
 	FABRIC_IGNORE_FILE,
 	fileTypingFor,
 	isSecretFileName,
+	readFrozenIgnoreGlobs,
 	SNAPSHOT_LIMITS,
 	stagingKey,
 	validatePortableName,
@@ -44,45 +45,6 @@ import {
  * the one that re-resolves the project's live ignore settings.
  */
 export const MAX_CHANGES = 50;
-
-/**
- * The frozen `ignoreGlobs`/`layer` pair a snapshot carries, or null when the
- * `Json` column does not hold that shape.
- *
- * Mirrors `readFrozenIgnoreSettings` in the validation activity, and for the
- * same reason: nothing in the database constrains the column, and an older row
- * can hold anything. A shape this cannot read means only the snapshot's OWN
- * frozen rules are skipped here, rather than refusing an edit over a column
- * surprise; the always-excluded paths (`ALWAYS_IGNORE_GLOBS`) still apply,
- * because nothing downstream re-checks them: the gate re-applies the stored
- * `.fabricignore` provenance, not the always layer (Fizzy #2704).
- */
-function readFrozenIgnoreGlobs(
-	settingsFrozen: unknown,
-): { globs: string[]; layer: "fabricignore" | "project" | "default" } | null {
-	if (
-		settingsFrozen === null ||
-		typeof settingsFrozen !== "object" ||
-		Array.isArray(settingsFrozen)
-	) {
-		return null;
-	}
-	const { layer, ignoreGlobs } = settingsFrozen as Record<string, unknown>;
-	if (
-		layer !== "fabricignore" &&
-		layer !== "project" &&
-		layer !== "default"
-	) {
-		return null;
-	}
-	if (
-		!Array.isArray(ignoreGlobs) ||
-		ignoreGlobs.some((glob) => typeof glob !== "string")
-	) {
-		return null;
-	}
-	return { globs: ignoreGlobs as string[], layer };
-}
 
 /**
  * The oRPC code and message for each refusal the database query can return.
@@ -165,6 +127,18 @@ export function derivedSnapshotRefusal(
 				message:
 					"This project already has 25 active coding-instructions proposals. Try again after one is decided or canceled.",
 				data: { reason: "PROPOSAL_PROJECT_LIMIT" },
+			});
+		case "commit_proposer_limit":
+			return new ORPCError("CONFLICT", {
+				message:
+					"You already have five commits waiting to be pushed for this project. Wait for them to finish before committing again.",
+				data: { reason: "COMMIT_PROPOSER_LIMIT" },
+			});
+		case "commit_project_limit":
+			return new ORPCError("CONFLICT", {
+				message:
+					"This project already has 25 commits waiting to be pushed. Try again after some have finished.",
+				data: { reason: "COMMIT_PROJECT_LIMIT" },
 			});
 	}
 }

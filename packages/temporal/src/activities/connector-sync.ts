@@ -13,6 +13,7 @@ import {
 	type DataConnectionStatus,
 	db,
 	getConnectionWithCredentials,
+	getDataConnectionSyncMetadata,
 	getSyncedResourceByExternalId,
 	type Prisma,
 	type ResourceSyncStatus,
@@ -709,6 +710,40 @@ export async function loadConnectorConfig(input: {
 	userId: string;
 	organizationId?: string;
 }): Promise<ConnectorConfig | null> {
+	// The connection's metadata first, with no credential column selected.
+	// A GitLab Data Connection holds no credential: each GitLab activity
+	// resolves the acting person's own GitLab connection itself
+	// (`resolveGitLabSyncCredential`). So for GitLab nothing token-bearing is
+	// selected, decrypted or returned — not a legacy token column, not the
+	// inline `credentials` JSON, not a saved DataConnectionCredential — and
+	// this activity's result, which is recorded in workflow history, carries
+	// none.
+	const metadata = await getDataConnectionSyncMetadata({
+		id: input.connectorId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+
+	if (!metadata) {
+		return null;
+	}
+
+	if (metadata.provider === "GITLAB") {
+		return {
+			id: metadata.id,
+			provider: metadata.provider,
+			name: metadata.name,
+			status: metadata.status,
+			credentials: {},
+			providerConfig:
+				(metadata.config as Record<string, unknown> | null) || {},
+			syncConfig: {
+				incrementalSyncIntervalMinutes: 60, // Default 1 hour
+			},
+			lastSyncAt: metadata.lastSyncAt,
+		};
+	}
+
 	const connection = await getConnectionWithCredentials({
 		id: input.connectorId,
 		userId: input.userId,
@@ -718,6 +753,8 @@ export async function loadConnectorConfig(input: {
 	if (!connection) {
 		return null;
 	}
+
+	const config = connection.config as Record<string, unknown> | null;
 
 	// Parse credentials from the encrypted JSON field
 	const inlineCredentials = connection.credentials as Record<
@@ -738,7 +775,6 @@ export async function loadConnectorConfig(input: {
 			);
 		}
 	}
-	const config = connection.config as Record<string, unknown> | null;
 
 	return {
 		id: connection.id,
@@ -763,7 +799,23 @@ export async function testConnection(input: {
 	connectorId: string;
 	provider: string;
 	credentials: ConnectorConfig["credentials"];
+	/** The person who started the sync (GitLab acts with their connection). */
+	userId?: string;
+	organizationId?: string;
+	/** The connection's config (GitLab: its configured address). */
+	providerConfig?: Record<string, unknown>;
 }): Promise<boolean> {
+	// GitLab, outside the catch-all below: a missing connection or a refused
+	// address is thrown with its reason, not folded into `false`.
+	if (input.provider === "GITLAB") {
+		return testGitLabConnection({
+			actor: {
+				userId: input.userId,
+				organizationId: input.organizationId,
+			},
+			providerConfig: input.providerConfig,
+		});
+	}
 	// Test connection based on provider
 	// This is a stub - actual implementation would call provider APIs
 	try {
@@ -827,9 +879,6 @@ export async function testConnection(input: {
 			case "GITHUB":
 				// Test GitHub API access
 				return !!input.credentials.accessToken;
-
-			case "GITLAB":
-				return testGitLabConnection(input.credentials);
 
 			case "BITBUCKET":
 				return testBitbucketConnection(input.credentials);
@@ -972,6 +1021,9 @@ export async function discoverResources(_input: {
 	provider: string;
 	providerConfig: Record<string, unknown>;
 	credentials: ConnectorConfig["credentials"];
+	/** The person who started the sync (GitLab acts with their connection). */
+	userId?: string;
+	organizationId?: string;
 }): Promise<Resource[]> {
 	switch (
 		_input.provider as
@@ -995,7 +1047,10 @@ export async function discoverResources(_input: {
 			});
 		case "GITLAB":
 			return discoverCollabGitLabResources({
-				credentials: _input.credentials,
+				actor: {
+					userId: _input.userId,
+					organizationId: _input.organizationId,
+				},
 				providerConfig: _input.providerConfig,
 			});
 		case "BITBUCKET":
@@ -1141,6 +1196,9 @@ export async function fetchResourceDocuments(_input: {
 	syncType: "full" | "incremental" | "gc";
 	cursor?: SyncCursor;
 	batchSize: number;
+	/** The person who started the sync (GitLab acts with their connection). */
+	userId?: string;
+	organizationId?: string;
 }): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
 	switch (
 		_input.provider as
@@ -1169,7 +1227,10 @@ export async function fetchResourceDocuments(_input: {
 		case "GITLAB":
 			return fetchCollabGitLabResourceDocuments({
 				resource: _input.resource,
-				credentials: _input.credentials,
+				actor: {
+					userId: _input.userId,
+					organizationId: _input.organizationId,
+				},
 				providerConfig: _input.providerConfig,
 				cursor: _input.cursor,
 				batchSize: _input.batchSize,

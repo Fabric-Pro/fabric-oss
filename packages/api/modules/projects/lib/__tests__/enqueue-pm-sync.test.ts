@@ -15,6 +15,8 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	db: {
 		userStory: {
 			findFirst: mocks.userStoryFindFirst,

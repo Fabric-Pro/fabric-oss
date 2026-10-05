@@ -247,8 +247,28 @@ describe("audit.taxonomy handler", () => {
 		// type label or AI instructions changed — text that steers every
 		// Proposal and Business Case the organization generates, recorded with
 		// both values before and after, Fizzy #2719) = 181,
-		// + 2 account.oauth.consent_* (a coding agent approved / revoked) = 183.
-		expect(result.actions).toHaveLength(183);
+		// + 2 account.oauth.consent_* (a coding agent approved / revoked) = 183,
+		// + 2 project.instructions.{committed, commit_fell_back_to_pull_request}
+		// (a direct commit pushed to a repository-backed project's synced
+		// branch, and the pull request it became when the branch refused it;
+		// commit id, ref, file count and a code only, Fizzy #2878) = 185,
+		// + 3 project.instructions.repository_migration_{started, canceled,
+		// completed} (uploaded coding instructions moved into a repository,
+		// Fizzy #2878) = 188.
+		expect(result.actions).toHaveLength(188);
+		expect(result.actions).toContain(
+			"project.instructions.repository_migration_started",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.repository_migration_canceled",
+		);
+		expect(result.actions).toContain(
+			"project.instructions.repository_migration_completed",
+		);
+		expect(result.actions).toContain("project.instructions.committed");
+		expect(result.actions).toContain(
+			"project.instructions.commit_fell_back_to_pull_request",
+		);
 		expect(result.actions).toContain("org.ai_provider.configured");
 		expect(result.actions).toContain("account.ai_provider.deleted");
 		expect(result.actions).toContain(

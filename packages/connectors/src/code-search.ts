@@ -8,13 +8,20 @@
  */
 
 import {
-	type CodeSearchResult,
+	type CodeSearchResponse,
+	errorClassName,
 	type FileContentResult,
 	type GetFileParams,
 	getGitHubFile,
 	type ListStructureParams,
 	listGitHubStructure,
+	notAFileError,
+	type RepositoryObjectType,
+	type RepositoryReadError,
 	type RepositoryStructure,
+	readErrorFromException,
+	readErrorFromResponse,
+	readErrorLogFields,
 	type SearchCodeParams,
 	searchGitHubCode,
 } from "./github/github-code-search";
@@ -22,10 +29,13 @@ import {
 // Re-export all types so consumers can import from a single module
 export type {
 	CodeSearchParams,
+	CodeSearchResponse,
 	CodeSearchResult,
 	FileContentResult,
 	GetFileParams,
 	ListStructureParams,
+	RepositoryObjectType,
+	RepositoryReadError,
 	RepositoryStructure,
 	SearchCodeParams,
 	TreeEntry,
@@ -47,10 +57,59 @@ function adoAuthHeader(pat: string): string {
 	return `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
 }
 
+/**
+ * Whether an Azure DevOps answer is a failure, discarding its body if so.
+ * 203 is the sign-in page Azure DevOps serves for an invalid or expired PAT:
+ * `response.ok` is true for it, but its body is HTML, never the data asked
+ * for — as repository-api.ts and repository-file.ts already treat it.
+ */
+async function adoFailed(response: Response): Promise<boolean> {
+	if (response.ok && response.status !== 203) {
+		return false;
+	}
+	await response.body?.cancel().catch(() => {});
+	return true;
+}
+
+const UNSUPPORTED_PROVIDER_ERROR: RepositoryReadError = {
+	kind: "misconfigured",
+	message: "This repository provider is not supported for code reads.",
+};
+
+const ADO_PROJECT_MISSING_ERROR: RepositoryReadError = {
+	kind: "misconfigured",
+	message:
+		"The repository is not fully configured: its Azure DevOps project is missing.",
+};
+
+/**
+ * What an Azure DevOps item is when it is not a regular file, from the
+ * item's own metadata (the `items` endpoint asked with
+ * `Accept: application/json` and no content — the request repository-file.ts
+ * makes): folder, symbolic link, or submodule (a `commit` object). Null for a
+ * blob, and for anything this does not recognise.
+ */
+function adoNonFileType(item: unknown): RepositoryObjectType | null {
+	if (!item || typeof item !== "object" || Array.isArray(item)) {
+		return null;
+	}
+	const record = item as Record<string, unknown>;
+	if (record.isFolder === true || record.gitObjectType === "tree") {
+		return "dir";
+	}
+	if (record.isSymLink === true) {
+		return "symlink";
+	}
+	if (record.gitObjectType === "commit") {
+		return "submodule";
+	}
+	return null;
+}
+
 /** Search code in an Azure DevOps repository. */
 async function searchAzureDevOpsCode(
 	params: SearchCodeParams,
-): Promise<CodeSearchResult[]> {
+): Promise<CodeSearchResponse> {
 	const {
 		query,
 		owner: organization,
@@ -65,7 +124,7 @@ async function searchAzureDevOpsCode(
 		console.error(
 			"[code-search] azureProject is required for Azure DevOps search",
 		);
-		return [];
+		return { results: [], error: ADO_PROJECT_MISSING_ERROR };
 	}
 
 	const clampedMax = Math.min(
@@ -99,11 +158,13 @@ async function searchAzureDevOpsCode(
 		}),
 	});
 
-	if (!response.ok) {
+	if (await adoFailed(response)) {
+		const error = readErrorFromResponse(response);
 		console.error(
-			`[code-search] ADO search failed: ${response.status} ${response.statusText}`,
+			"[code-search] ADO search failed",
+			readErrorLogFields(error),
 		);
-		return [];
+		return { results: [], error };
 	}
 
 	const data = (await response.json()) as {
@@ -119,12 +180,14 @@ async function searchAzureDevOpsCode(
 		}>;
 	};
 
-	return (data.results ?? []).map((item) => ({
-		filePath: item.path,
-		fileName: item.fileName,
-		repository: item.repository?.name ?? repo,
-		matchedSnippets: [],
-	}));
+	return {
+		results: (data.results ?? []).map((item) => ({
+			filePath: item.path,
+			fileName: item.fileName,
+			repository: item.repository?.name ?? repo,
+			matchedSnippets: [],
+		})),
+	};
 }
 
 /** Fetch a single file from an Azure DevOps repository. */
@@ -151,6 +214,7 @@ async function getAzureDevOpsFile(
 			encoding: "none",
 			isBinary: false,
 			isTruncated: false,
+			error: ADO_PROJECT_MISSING_ERROR,
 		};
 	}
 
@@ -164,18 +228,21 @@ async function getAzureDevOpsFile(
 		`https://dev.azure.com/${organization}/${azureProject}/_apis/git/repositories/${repo}/items?` +
 		fileParams.toString();
 
-	const response = await fetch(url, {
+	// Folder status comes from the item's metadata, never from the bytes of
+	// the file: a JSON file can hold any fields at all. One small metadata
+	// request first, then the content.
+	const metadataResponse = await fetch(url, {
 		headers: {
 			Authorization: adoAuthHeader(token),
+			Accept: "application/json",
 		},
 	});
-
-	if (!response.ok) {
-		console.error("[code-search] ADO get file failed", {
-			status: response.status,
-			statusText: response.statusText,
-			path,
-		});
+	if (await adoFailed(metadataResponse)) {
+		const error = readErrorFromResponse(metadataResponse);
+		console.error(
+			"[code-search] ADO get file metadata failed",
+			readErrorLogFields(error),
+		);
 		return {
 			path,
 			content: "",
@@ -183,6 +250,49 @@ async function getAzureDevOpsFile(
 			encoding: "none",
 			isBinary: false,
 			isTruncated: false,
+			error,
+		};
+	}
+	let metadata: unknown;
+	try {
+		metadata = await metadataResponse.json();
+	} catch {
+		// Not item metadata: decide nothing from it and read the content.
+		metadata = undefined;
+	}
+	const nonFile = adoNonFileType(metadata);
+	if (nonFile) {
+		return {
+			path,
+			content: "",
+			size: 0,
+			encoding: "none",
+			isBinary: false,
+			isTruncated: false,
+			error: notAFileError(nonFile),
+		};
+	}
+
+	const response = await fetch(url, {
+		headers: {
+			Authorization: adoAuthHeader(token),
+		},
+	});
+
+	if (await adoFailed(response)) {
+		const error = readErrorFromResponse(response);
+		console.error(
+			"[code-search] ADO get file failed",
+			readErrorLogFields(error),
+		);
+		return {
+			path,
+			content: "",
+			size: 0,
+			encoding: "none",
+			isBinary: false,
+			isTruncated: false,
+			error,
 		};
 	}
 
@@ -222,6 +332,7 @@ async function listAzureDevOpsStructure(
 			totalFiles: 0,
 			totalDirectories: 0,
 			truncated: false,
+			error: ADO_PROJECT_MISSING_ERROR,
 		};
 	}
 
@@ -248,15 +359,18 @@ async function listAzureDevOpsStructure(
 		},
 	});
 
-	if (!response.ok) {
+	if (await adoFailed(response)) {
+		const error = readErrorFromResponse(response);
 		console.error(
-			`[code-search] ADO list structure failed: ${response.status} ${response.statusText}`,
+			"[code-search] ADO list structure failed",
+			readErrorLogFields(error),
 		);
 		return {
 			entries: [],
 			totalFiles: 0,
 			totalDirectories: 0,
 			truncated: false,
+			error,
 		};
 	}
 
@@ -521,7 +635,7 @@ async function compareAzureDevOpsCommits(
 			Accept: "application/json",
 		},
 	});
-	if (!response.ok) {
+	if (await adoFailed(response)) {
 		return UNKNOWN_COMPARE;
 	}
 	const data = (await response.json()) as {
@@ -575,7 +689,9 @@ export async function compareRepositoryCommits(
 				return UNKNOWN_COMPARE;
 		}
 	} catch (error) {
-		console.error("[code-search] compareRepositoryCommits error:", error);
+		console.error("[code-search] compareRepositoryCommits error", {
+			errorClass: errorClassName(error),
+		});
 		return UNKNOWN_COMPARE;
 	}
 }
@@ -588,11 +704,13 @@ export async function compareRepositoryCommits(
  * Search code in a repository.
  *
  * Routes to the correct provider implementation based on `params.provider`.
- * Returns an empty array on any error — never throws.
+ * Never throws: a failed search returns no results with `error` set, so a
+ * caller can tell "no matches" from "denied", "rate limited" or "the provider
+ * failed". A search that ran and found nothing has no `error`.
  */
 export async function searchRepositoryCode(
 	params: SearchCodeParams,
-): Promise<CodeSearchResult[]> {
+): Promise<CodeSearchResponse> {
 	try {
 		switch (params.provider) {
 			case "GITHUB":
@@ -603,11 +721,15 @@ export async function searchRepositoryCode(
 				console.error(
 					`[code-search] Unsupported provider: ${(params as SearchCodeParams).provider}`,
 				);
-				return [];
+				return { results: [], error: UNSUPPORTED_PROVIDER_ERROR };
 		}
 	} catch (error) {
-		console.error("[code-search] searchRepositoryCode error:", error);
-		return [];
+		const readError = readErrorFromException();
+		console.error(
+			"[code-search] searchRepositoryCode error",
+			readErrorLogFields(readError, error),
+		);
+		return { results: [], error: readError };
 	}
 }
 
@@ -616,6 +738,8 @@ export async function searchRepositoryCode(
  *
  * Binary files return empty content with `isBinary: true`.
  * Files larger than 100 KB are truncated with `isTruncated: true`.
+ * Never throws: a failed read returns empty content with `error` set, so a
+ * caller can tell "not found" from "denied" or "provider down".
  */
 export async function getRepositoryFile(
 	params: GetFileParams,
@@ -639,18 +763,27 @@ export async function getRepositoryFile(
 				console.error(
 					`[code-search] Unsupported provider: ${(params as GetFileParams).provider}`,
 				);
-				return emptyResult;
+				return {
+					...emptyResult,
+					error: UNSUPPORTED_PROVIDER_ERROR,
+				};
 		}
 	} catch (error) {
-		console.error("[code-search] getRepositoryFile error:", error);
-		return emptyResult;
+		const readError = readErrorFromException();
+		console.error(
+			"[code-search] getRepositoryFile error",
+			readErrorLogFields(readError, error),
+		);
+		return { ...emptyResult, error: readError };
 	}
 }
 
 /**
  * List the directory tree of a repository.
  *
- * Optionally filter by a directory prefix. Returns an empty structure on error.
+ * Optionally filter by a directory prefix. Never throws: a failed listing
+ * returns an empty structure with `error` set, so a caller can tell an empty
+ * directory from a denied or failed read.
  */
 export async function listRepositoryStructure(
 	params: ListStructureParams,
@@ -672,10 +805,17 @@ export async function listRepositoryStructure(
 				console.error(
 					`[code-search] Unsupported provider: ${(params as ListStructureParams).provider}`,
 				);
-				return emptyResult;
+				return {
+					...emptyResult,
+					error: UNSUPPORTED_PROVIDER_ERROR,
+				};
 		}
 	} catch (error) {
-		console.error("[code-search] listRepositoryStructure error:", error);
-		return emptyResult;
+		const readError = readErrorFromException();
+		console.error(
+			"[code-search] listRepositoryStructure error",
+			readErrorLogFields(readError, error),
+		);
+		return { ...emptyResult, error: readError };
 	}
 }

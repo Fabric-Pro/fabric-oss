@@ -78,6 +78,8 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
+	// No caller-owned config: the GitLab instance check has nothing to refuse.
+	getMcpConfigById: async () => null,
 	setAiUsageRecorder: vi.fn(),
 	// Read-only mode gate — default: project is writable
 	isProjectReadOnly: vi.fn(async () => false),
@@ -95,7 +97,7 @@ vi.mock("@repo/database", () => ({
 			updateMany: epicUpdateManyMock,
 		},
 		mCPConfig: {
-			findUnique: vi.fn().mockResolvedValue(null),
+			findFirst: vi.fn().mockResolvedValue(null),
 		},
 	},
 	PmSyncStatus: {

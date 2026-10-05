@@ -358,6 +358,8 @@ export async function ingestMcpToolsActivity(
 				userId: effectiveUserId,
 				organizationId:
 					organizationId || config.organizationId || undefined,
+				// Only lists the server's tools, to index them.
+				access: "read",
 			});
 			client = clientResult.client;
 		} catch (clientError) {

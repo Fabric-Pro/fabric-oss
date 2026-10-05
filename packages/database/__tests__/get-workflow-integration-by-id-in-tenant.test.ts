@@ -4,6 +4,9 @@ const findFirstMock = vi.fn();
 const findManyMock = vi.fn();
 vi.mock("../prisma/client", () => ({
 	db: {
+		member: {
+			findFirst: vi.fn().mockResolvedValue({ id: "member-example" }),
+		},
 		workflowIntegration: {
 			findFirst: (args: unknown) => findFirstMock(args),
 			findMany: (args: unknown) => findManyMock(args),
@@ -20,6 +23,7 @@ import {
 const integrations = [
 	{
 		id: "org-integration",
+		usageScope: "ORGANIZATION_SHARED",
 		userId: "member-a",
 		organizationId: "org-1",
 		isActive: true,
@@ -70,7 +74,7 @@ function mockIntegrationList() {
 describe("getWorkflowIntegrationByIdInTenant", () => {
 	beforeEach(() => findFirstMock.mockReset());
 
-	it("looks up by organization in org context, without a userId filter", async () => {
+	it("looks up the same organization with owner or explicitly shared access", async () => {
 		findFirstMock.mockResolvedValue({
 			id: "int-1",
 			provider: "DATABRICKS_VECTOR_SEARCH",
@@ -89,6 +93,14 @@ describe("getWorkflowIntegrationByIdInTenant", () => {
 			where: {
 				id: "int-1",
 				organizationId: "org-1",
+				OR: [
+					{ userId: "user-1" },
+					{
+						usageScope: "ORGANIZATION_SHARED",
+						NOT: { provider: { in: ["GITLAB"] } },
+					},
+				],
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 		expect(integration).toMatchObject({ id: "int-1" });
@@ -113,6 +125,7 @@ describe("getWorkflowIntegrationByIdInTenant", () => {
 				id: "int-2",
 				userId: "user-1",
 				organizationId: null,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 		expect(integration).toMatchObject({ id: "int-2" });
@@ -125,7 +138,7 @@ describe("listWorkflowIntegrationsInTenant", () => {
 		mockIntegrationList();
 	});
 
-	it("lets one org member list an integration created by another member", async () => {
+	it("lets one org member list an explicitly shared integration created by another member", async () => {
 		const result = await listWorkflowIntegrationsInTenant({
 			userId: "member-b",
 			organizationId: "org-1",
@@ -134,6 +147,13 @@ describe("listWorkflowIntegrationsInTenant", () => {
 		expect(findManyMock).toHaveBeenCalledWith({
 			where: {
 				organizationId: "org-1",
+				OR: [
+					{ userId: "member-b" },
+					{
+						usageScope: "ORGANIZATION_SHARED",
+						NOT: { provider: { in: ["GITLAB"] } },
+					},
+				],
 				isActive: true,
 				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},

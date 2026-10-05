@@ -86,6 +86,8 @@ function storyFixture() {
 		acceptanceCriteria: null,
 		identifier: "F-1",
 		tasks: [],
+		// The handler's tenant is the story's project's organization.
+		project: { organizationId: "org-a" },
 	};
 }
 
@@ -186,5 +188,64 @@ describe("generateTasksProcedure — function-tag role clause (Fizzy #1767 Stage
 		// + roleClause : "")` — so the no-clause prompt must be exactly the
 		// with-clause prompt minus its trailing "\n\n" + sentinel.
 		expect(withClause).toBe(`${withoutClause}\n\n${ROLE_CLAUSE_SENTINEL}`);
+	});
+});
+
+// The organization picks whose AI provider (and provider key) generates the
+// tasks. `requireProjectPermission` authorizes the PROJECT, so the tenant is
+// the project's own organization — never an id the caller put in the input,
+// which can name an organization the caller has no tie to.
+describe("generateTasksProcedure — tenant comes from the project", () => {
+	beforeEach(() => {
+		for (const m of Object.values(mocks)) {
+			(m as ReturnType<typeof vi.fn>).mockReset();
+		}
+		mocks.userStoryFindFirst.mockResolvedValue({
+			...storyFixture(),
+			project: { organizationId: "org-a" },
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue({
+			model: { id: "stub-model" },
+			metadata: { providerKey: "stub" },
+		});
+		mocks.generateText.mockResolvedValue({ text: "[]" });
+		mocks.getProjectFunctionTagClause.mockResolvedValue("");
+	});
+
+	it("resolves the model for the project's organization when the input names another", async () => {
+		await handlers.generateTasks({
+			input: {
+				projectId: PROJECT_ID,
+				storyId: STORY_ID,
+				organizationId: "org-b",
+			},
+			context: ctx,
+		});
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledTimes(1);
+		const [, tenant] = mocks.getAIModelWithMetadata.mock.calls[0];
+		expect(tenant).toMatchObject({
+			userId: "user-1",
+			organizationId: "org-a",
+		});
+	});
+
+	it("refuses a project with no organization before any AI or task work", async () => {
+		mocks.userStoryFindFirst.mockResolvedValue({
+			...storyFixture(),
+			project: { organizationId: null },
+		});
+
+		await expect(
+			handlers.generateTasks({
+				input: { projectId: PROJECT_ID, storyId: STORY_ID },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+		expect(mocks.getProjectFunctionTagClause).not.toHaveBeenCalled();
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
+		expect(mocks.storyTaskCreate).not.toHaveBeenCalled();
 	});
 });

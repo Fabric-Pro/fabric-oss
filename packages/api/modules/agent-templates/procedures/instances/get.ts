@@ -33,6 +33,12 @@ export const getInstanceProcedure = tenantProtectedProcedure
 				where: { id: input.id },
 				include: {
 					template: true,
+					// Retain disabled-binding declarations without exposing them as enabled scope.
+					_count: { select: { mcpServerConfigurations: true } },
+					mcpServerConfigurations: {
+						where: { isEnabled: true },
+						select: { mcpConfigId: true },
+					},
 					integrationConfigurations: {
 						where: { isEnabled: true },
 						include: {

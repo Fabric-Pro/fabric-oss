@@ -70,6 +70,23 @@ export function mcpConfigLockKey(configId: string): string {
 }
 
 /**
+ * Lifecycle lock for one person's GitLab connection in one tenant context.
+ *
+ * Keyed on the (user, organization) pair rather than on a row id because the
+ * operations it serializes — first connect, classification of a legacy
+ * row, refresh, disconnect — include ones that run BEFORE any row exists, and two
+ * concurrent first connects must not each create one. Every writer of the
+ * personal GitLab credential takes this key (see
+ * `@repo/integrations/gitlab/connection`).
+ */
+export function gitlabConnectionLockKey(
+	userId: string,
+	organizationId: string | null,
+): string {
+	return `gitlab-conn:${organizationId ?? "-"}:${userId}`;
+}
+
+/**
  * Budget for a transaction that holds one of the advisory locks above WHILE
  * a provider token exchange runs inside it (see `refresh-lock.ts` and the
  * GitLab refresh paths, which inline the same shape rather than going

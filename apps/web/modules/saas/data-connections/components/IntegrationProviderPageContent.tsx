@@ -3,6 +3,7 @@
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useMonitoringFeatureFlag } from "@saas/shared/lib/use-monitoring-feature-flag";
 import { IntegrationBrandIcon } from "@saas/workflows/components/integrations/IntegrationBrandIcon";
+import { IntegrationSharingControls } from "@saas/workflows/components/integrations/IntegrationSharingControls";
 import { getIntegration } from "@saas/workflows/lib/plugins";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -33,11 +34,13 @@ import {
 	GITLAB_STATUS_QUERY_KEY,
 	gitlabStatusQueryOptions,
 } from "../lib/gitlab-status-query";
+import { gitlabStateFromIntegrationList } from "../lib/provider-connection-state";
 import {
 	type DataConnectionProvider,
 	getProviderMetadata,
 } from "../lib/providers";
 import { ConnectionModeBadge } from "./ConnectionModeBadge";
+import { GitLabRepositoryLinksCard } from "./GitLabRepositoryLinksCard";
 import {
 	type GitLabTransport,
 	GitLabTransportBadge,
@@ -160,22 +163,32 @@ export function IntegrationProviderPageContent({
 		[actionIntegrations, actionProvider],
 	);
 
+	// GitLab: the person's one connection state, the same one every other
+	// GitLab screen shows (`gitlab.status`; the integration list reports the
+	// same state on the person's own row, used until the status query
+	// loads — never the first GitLab row it happens to list, which can be a
+	// workflow-scoped credential). A project repository link never counts:
+	// it is the project's grant.
+	const gitlabConnectionState = isGitLab
+		? (gitlabStatus?.state ??
+			(actionIntegrations
+				? gitlabStateFromIntegrationList(actionIntegrations)
+				: null))
+		: null;
 	// Stored credentials exist AND we haven't already discovered they're
 	// invalid. The Capability status block, the "Set Up Actions" /
 	// "Manage Actions" CTA, and the action-source picker all hang off this
 	// flag, so when GitLab's stored token is dead we treat it as
 	// not-connected to avoid contradicting the badge.
-	const hasActionConnection =
-		Boolean(actionIntegration?.hasCredentials) &&
-		!(isGitLab && gitlabStatus?.needsReauth === true);
+	const hasActionConnection = isGitLab
+		? gitlabConnectionState === "connected"
+		: Boolean(actionIntegration?.hasCredentials);
 	// Distinct from "never connected" — there's a stored credential but it
 	// stopped working, so the user needs to reauth, not start from scratch.
 	// Surfaced as its own callout because the generic "Set up runtime
 	// credentials" copy doesn't tell them what's actually wrong.
 	const gitlabReauthRequired =
-		isGitLab &&
-		Boolean(actionIntegration?.hasCredentials) &&
-		gitlabStatus?.needsReauth === true;
+		isGitLab && gitlabConnectionState === "needs-reconnect";
 	const isLoading = isLoadingActions;
 	const actionHref =
 		actionProvider && actionPlugin
@@ -312,6 +325,12 @@ export function IntegrationProviderPageContent({
 
 			<div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
 				<div className="space-y-6">
+					{actionProvider ? (
+						<IntegrationSharingControls
+							organizationId={organizationId}
+							provider={actionProvider}
+						/>
+					) : null}
 					<Card>
 						<CardHeader>
 							<CardTitle>Connection Setup</CardTitle>
@@ -405,6 +424,12 @@ export function IntegrationProviderPageContent({
 							) : null}
 						</CardContent>
 					</Card>
+
+					{isGitLab ? (
+						<GitLabRepositoryLinksCard
+							organizationId={organizationId}
+						/>
+					) : null}
 
 					{actionPlugin && actionPlugin.actions.length > 0 ? (
 						<Card>

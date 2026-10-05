@@ -257,6 +257,7 @@ if (!isPublishMode)
             mc mb local/uploads --ignore-existing
             mc mb local/workspace-documents --ignore-existing
             mc mb local/chat-documents --ignore-existing
+            mc mb local/skills --ignore-existing
             echo 'Buckets created successfully!'
             """)
         .WaitFor(minio)

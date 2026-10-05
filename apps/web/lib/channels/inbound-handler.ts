@@ -12,53 +12,10 @@ import { db } from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
 import { addSlackReaction } from "@repo/integrations/slack";
 import { getTemporalClient } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
 import { fanoutSlackMonitorEvent } from "./slack-monitor-fanout";
 
 const THREAD_TIMEOUT_MS = 60 * 60 * 1000; // 1h, mirrors slack default
-
-async function resolveCredentials(
-	channel: string,
-	providerKey: string,
-): Promise<Record<string, unknown> | undefined> {
-	type ProviderEnum = NonNullable<
-		Parameters<typeof db.workflowIntegration.findFirst>[0]
-	>["where"] extends infer W
-		? W extends { provider?: infer P }
-			? P
-			: never
-		: never;
-
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			provider: providerKey as unknown as ProviderEnum,
-			isActive: true,
-			// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
-			// not a connection.
-			NOT: { name: `${providerKey}_OAUTH_APP` },
-		},
-		orderBy: { lastUsedAt: "desc" },
-	});
-	if (!integration) {
-		console.warn(
-			`[channels:${channel}] no active WorkflowIntegration for provider ${providerKey}`,
-		);
-		return undefined;
-	}
-	try {
-		return JSON.parse(decryptApiKey(integration.credentials)) as Record<
-			string,
-			unknown
-		>;
-	} catch (err) {
-		console.error(
-			`[channels:${channel}] failed to decrypt credentials`,
-			err,
-		);
-		return undefined;
-	}
-}
 
 function lcHeaders(req: NextRequest): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -81,12 +38,14 @@ export async function handleChannelInbound(
 	}
 
 	const rawBody = await req.text();
-	const credentials = await resolveCredentials(channel, adapter.providerKey);
 
-	const verified = await adapter.verifyInbound(
-		{ headers: lcHeaders(req), rawBody },
-		credentials,
-	);
+	// Verification uses the deployment's own secret, never a tenant's stored
+	// connection: nothing in the unauthenticated request can say which
+	// tenant it belongs to (Fizzy #2860).
+	const verified = await adapter.verifyInbound({
+		headers: lcHeaders(req),
+		rawBody,
+	});
 
 	if (verified.kind === "invalid") {
 		console.warn(`[channels:${channel}] verify failed: ${verified.reason}`);

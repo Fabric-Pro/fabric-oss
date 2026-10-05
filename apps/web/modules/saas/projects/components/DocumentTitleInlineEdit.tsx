@@ -241,7 +241,9 @@ export function DocumentTitleInlineEdit({
 
 	if (isEditing) {
 		return (
-			<div className="flex items-center gap-2">
+			// `pointer-events-auto`: on a document card the title sits in a
+			// region that passes clicks through to the card.
+			<div className="pointer-events-auto flex items-center gap-2">
 				<Input
 					ref={inputRef}
 					value={value}
@@ -267,8 +269,20 @@ export function DocumentTitleInlineEdit({
 	}
 
 	return (
+		// The title text does not wrap, so this inline-flex box cannot be
+		// narrower than the whole title: with no limit of its own a long title
+		// never truncates, runs past its container and carries the rename
+		// control with it. On a document card with a coarse pointer that put
+		// the title under the Active badge and the control off the card, out
+		// of reach — so there the box is held to its container.
+		//
+		// Not with a mouse, yet. There the card's hidden action row shares the
+		// title's line and reserves its width, which leaves the container too
+		// narrow to hold even a short title; the same limit would hide titles
+		// that show today. A long title still overruns there until the card's
+		// header gives the title its real width.
 		<span
-			className={`group inline-flex items-center gap-2 text-left min-w-0 ${displayClassName}`}
+			className={`group inline-flex items-center gap-2 text-left min-w-0 pointer-coarse:max-w-full ${displayClassName}`}
 		>
 			<span className="break-words text-left truncate">{title}</span>
 			<Tooltip>
@@ -279,7 +293,13 @@ export function DocumentTitleInlineEdit({
 							setIsEditing(true);
 							onEditingChange?.(true);
 						}}
-						className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+						// Hidden until hovered, but never invisible while it
+						// can be reached: shown with keyboard focus, and always
+						// with a coarse pointer, which never hovers and gets a
+						// larger target than the icon. `pointer-events-auto`
+						// because on a document card the title around it
+						// passes clicks through to the card.
+						className="pointer-events-auto relative shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-60 hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-60 pointer-coarse:after:absolute pointer-coarse:after:-inset-3.5 pointer-coarse:after:content-[''] transition-opacity cursor-pointer"
 						aria-label="Rename document"
 					>
 						<PencilIcon className="size-3.5" />

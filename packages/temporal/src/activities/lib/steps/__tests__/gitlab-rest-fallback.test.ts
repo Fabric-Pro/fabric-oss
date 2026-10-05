@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../gitlab-resolver", () => ({
 	resolveGitLabSourceForStep: vi.fn(),
-	resolveGitLabRestTokenForStep: vi.fn(async () => "rest-token-from-WI"),
+	resolveGitLabRestTokenForStep: vi.fn(async () => ({
+		token: "rest-token-from-WI",
+		apiBase: "https://gitlab.com/api/v4",
+	})),
 }));
 
 // Mock the REST helpers so a successful fallback can complete without
@@ -30,6 +33,10 @@ const mockedResolver = vi.mocked(resolveGitLabSourceForStep);
 function officialMcpThatThrowsMethodNotFound(method: string) {
 	return {
 		kind: "official-mcp" as const,
+		credential: {
+			token: "mcp-token",
+			apiBase: "https://gitlab.com/api/v4",
+		},
 		callTool: vi.fn(async () => {
 			throw new GitLabMcpMethodNotFoundError(
 				`Method not found: ${method}`,

@@ -38,3 +38,7 @@ yarn-error.log*
 next-env.d.ts
 
 .content-collections
+
+# The CLI this deployment serves: the tarball and its manifest are produced by
+# `@fabricorg/cli#pack:deployment` before every build (see turbo.json).
+/public/cli/

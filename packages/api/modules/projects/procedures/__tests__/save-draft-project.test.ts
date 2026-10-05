@@ -14,6 +14,17 @@ const { handlers, mockUpsert, mockVerifyMembership } = vi.hoisted(() => ({
 	mockVerifyMembership: vi.fn(),
 }));
 
+// The real GitLab container-instance binding runs on an in-memory draft
+// table; the actor's GitLab connection is on a self-hosted instance.
+const drafts = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[] }));
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: async () => ({
+		integrationId: "wi-1",
+		origin: "https://gitlab.example.com",
+	}),
+}));
+
 vi.mock("@repo/database", () => ({
 	upsertDraftProjectByKey: (...args: unknown[]) => mockUpsert(...args),
 	engagementProfileSchema: z.enum([
@@ -23,6 +34,25 @@ vi.mock("@repo/database", () => ({
 		"DELEGATED",
 	]),
 	Prisma: { JsonNull: "__JSON_NULL__", DbNull: "__DB_NULL__" },
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
+	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
+	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
+	db: {
+		project: {
+			findFirst: async (args: { where: { draftKey: string } }) =>
+				drafts.rows.find(
+					(row) => row.draftKey === args.where.draftKey,
+				) ?? null,
+		},
+		mCPServer: {
+			findUnique: async (args: { where: { id: string } }) =>
+				args.where.id === "srv-gitlab"
+					? { key: "gitlab-official" }
+					: null,
+		},
+		mCPConfig: { findFirst: async () => null },
+	},
 }));
 
 vi.mock("../../../organizations/lib/membership", () => ({
@@ -88,6 +118,7 @@ describe("saveDraftProjectProcedure input schema", () => {
 describe("saveDraftProjectProcedure handler", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		drafts.rows = [];
 		mockUpsert.mockResolvedValue({
 			project: {
 				id: "proj_1",
@@ -302,5 +333,123 @@ describe("saveDraftProjectProcedure handler", () => {
 
 		expect(result.project.wizardState).toEqual(persistedWizardState);
 		expect(result.created).toBe(false);
+	});
+});
+
+describe("saveDraftProjectProcedure — the GitLab container's instance", () => {
+	const DRAFT_KEY = "550e8400-e29b-41d4-a716-446655440009";
+	const saved = {
+		project: {
+			id: "proj_1",
+			name: "Draft",
+			draftKey: DRAFT_KEY,
+			wizardState: null,
+		},
+		created: false,
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		drafts.rows = [];
+		mockUpsert.mockResolvedValue(saved);
+	});
+
+	it("records the actor's instance for a chosen GitLab container, never the client's", async () => {
+		mockVerifyMembership.mockResolvedValueOnce({ id: "membership_1" });
+		await handlers.saveDraft({
+			input: {
+				draftKey: DRAFT_KEY,
+				name: "Draft",
+				organizationId: "org_1",
+				projectManagementMcpServerId: "srv-gitlab",
+				projectManagementContainerId: "42",
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://client-chosen.example.com",
+				},
+			},
+			context: ctx,
+		});
+
+		const args = mockUpsert.mock.calls[0][0];
+		expect(args.projectManagementAdditionalContext).toEqual({
+			gitlabOrigin: "https://gitlab.example.com",
+		});
+		// No draft was read: the save must not land on one created since.
+		expect(args.expectedPmSelection).toBeNull();
+	});
+
+	// A person's GitLab connection lives in an organization (ADR-018), and
+	// reading it can classify (write) a row in the organization it is given,
+	// so a save with none reads nothing and records no instance.
+	it("records no instance, and drops the client's, when the save has no organization", async () => {
+		await handlers.saveDraft({
+			input: {
+				draftKey: DRAFT_KEY,
+				name: "Draft",
+				organizationId: null,
+				projectManagementMcpServerId: "srv-gitlab",
+				projectManagementContainerId: "42",
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://client-chosen.example.com",
+				},
+			},
+			context: ctx,
+		});
+
+		const args = mockUpsert.mock.calls[0][0];
+		expect(args.projectManagementAdditionalContext).toEqual({});
+	});
+
+	it("re-binds from the draft as it is when another save changed the container first", async () => {
+		drafts.rows = [
+			{
+				draftKey: DRAFT_KEY,
+				projectManagementMcpServerId: "srv-gitlab",
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: "42",
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://gitlab.com",
+				},
+			},
+		];
+		mockUpsert.mockImplementationOnce(async () => {
+			// Another save switched the draft to container 77 first.
+			drafts.rows = [
+				{
+					...drafts.rows[0],
+					projectManagementContainerId: "77",
+					projectManagementAdditionalContext: {
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				},
+			];
+			throw Object.assign(new Error("PM selection changed"), {
+				name: "PmSelectionChangedError",
+				code: "P2025",
+			});
+		});
+
+		await handlers.saveDraft({
+			input: {
+				draftKey: DRAFT_KEY,
+				name: "Draft",
+				organizationId: null,
+				projectManagementAdditionalContext: { areaPath: "Team" },
+			},
+			context: ctx,
+		});
+
+		expect(mockUpsert).toHaveBeenCalledTimes(2);
+		const first = mockUpsert.mock.calls[0][0];
+		expect(first.expectedPmSelection).toMatchObject({ containerId: "42" });
+		const retried = mockUpsert.mock.calls[1][0];
+		expect(retried.expectedPmSelection).toMatchObject({
+			containerId: "77",
+		});
+		// Container 77 keeps the instance it was chosen on.
+		expect(retried.projectManagementAdditionalContext).toEqual({
+			areaPath: "Team",
+			gitlabOrigin: "https://gitlab.example.com",
+		});
 	});
 });

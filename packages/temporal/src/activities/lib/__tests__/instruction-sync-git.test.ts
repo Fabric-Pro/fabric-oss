@@ -96,24 +96,48 @@ describe("buildGitEnv", () => {
 });
 
 describe("git-askpass.sh", () => {
+	// A Windows file carries no mode bits, so "executable" there is the mode
+	// git tracks for it; and Windows cannot execute a shebang script directly
+	// (git runs it through its bundled sh, as this does).
+	const onWindows = process.platform === "win32";
+
+	async function isExecutable(): Promise<boolean> {
+		if (!onWindows) {
+			return ((await stat(GIT_ASKPASS_PATH)).mode & 0o111) !== 0;
+		}
+		const { stdout } = await run("git", [
+			"-C",
+			path.dirname(GIT_ASKPASS_PATH),
+			"ls-files",
+			"--stage",
+			"--",
+			path.basename(GIT_ASKPASS_PATH),
+		]);
+		return stdout.startsWith("100755 ");
+	}
+
+	function ask(prompt: string, env: NodeJS.ProcessEnv) {
+		return onWindows
+			? run("sh", [GIT_ASKPASS_PATH, prompt], { env })
+			: run(GIT_ASKPASS_PATH, [prompt], { env });
+	}
+
 	it("is tracked executable, answers the username and password prompts naming its host, and answers nothing for a foreign host (review S3)", async () => {
-		expect((await stat(GIT_ASKPASS_PATH)).mode & 0o111).not.toBe(0);
+		expect(await isExecutable()).toBe(true);
 		const env = {
 			PATH: process.env.PATH,
 			FABRIC_GIT_USERNAME: "oauth2",
 			FABRIC_GIT_CREDENTIAL: "tok-9",
 			FABRIC_GIT_HOST: "gitlab.example.com",
 		};
-		const user = await run(
-			GIT_ASKPASS_PATH,
-			["Username for 'https://gitlab.example.com': "],
-			{ env },
+		const user = await ask(
+			"Username for 'https://gitlab.example.com': ",
+			env,
 		);
-		const pass = await run(
-			GIT_ASKPASS_PATH,
+		const pass = await ask(
 			// Assembled so the literal is not email-shaped for the publication scan.
-			[`Password for 'https://oauth2@${"gitlab.example.com"}': `],
-			{ env },
+			`Password for 'https://oauth2@${"gitlab.example.com"}': `,
+			env,
 		);
 		expect(user.stdout).toBe("oauth2\n");
 		expect(pass.stdout).toBe("tok-9\n");
@@ -121,10 +145,9 @@ describe("git-askpass.sh", () => {
 		// A prompt naming a different host -- a cross-host redirect, or an
 		// HTTPS_PROXY that itself demands auth -- gets an empty answer
 		// instead of the repository token.
-		const foreign = await run(
-			GIT_ASKPASS_PATH,
-			["Password for 'https://attacker.example.com': "],
-			{ env },
+		const foreign = await ask(
+			"Password for 'https://attacker.example.com': ",
+			env,
 		);
 		expect(foreign.stdout).toBe("\n");
 
@@ -132,11 +155,10 @@ describe("git-askpass.sh", () => {
 		// the prompt cannot bypass an unanchored match: the real authority
 		// here is evil.com, at the end, not the spoofed gitlab.example.com in
 		// the middle (review S3 fix round 2).
-		const spoofed = await run(
-			GIT_ASKPASS_PATH,
+		const spoofed = await ask(
 			// Assembled so the literal is not email-shaped for the publication scan.
-			[`Password for 'https://gitlab.example.com'@${"evil.com"}': `],
-			{ env },
+			`Password for 'https://gitlab.example.com'@${"evil.com"}': `,
+			env,
 		);
 		expect(spoofed.stdout).toBe("\n");
 	});

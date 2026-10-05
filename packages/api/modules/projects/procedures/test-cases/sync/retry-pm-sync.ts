@@ -56,6 +56,7 @@ export const retryTestCasePmSyncProcedure = tenantProtectedProcedure
 					select: {
 						projectManagementMcpServerId: true,
 						projectManagementMcpConfigId: true,
+						projectManagementAdditionalContext: true,
 						organizationId: true,
 					},
 				},
@@ -78,6 +79,8 @@ export const retryTestCasePmSyncProcedure = tenantProtectedProcedure
 					item.project.projectManagementMcpServerId,
 				projectManagementMcpConfigId:
 					item.project.projectManagementMcpConfigId,
+				projectManagementAdditionalContext:
+					item.project.projectManagementAdditionalContext,
 				organizationId: item.project.organizationId,
 			},
 			userId: context.user.id,

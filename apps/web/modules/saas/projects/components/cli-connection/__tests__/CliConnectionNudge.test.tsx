@@ -252,8 +252,8 @@ function member(userId: string, name: string) {
 }
 
 /** The issuing view's own copy, used to drive it end to end from the prompt. */
-const DIALOG_TITLE = "Connect Fabric to your coding tool";
-const CREATE_KEY_LABEL = "Create the key";
+const DIALOG_TITLE = "Connect your coding tool";
+const CREATE_KEY_LABEL = "Create key";
 const DONE_LABEL = "Done";
 
 /**
@@ -790,7 +790,7 @@ describe("CliConnectionNudge — funnel events", () => {
 		await user.click(screen.getByRole("button", { name: CONNECT_LABEL }));
 
 		expect(
-			await screen.findByText("Connect Fabric to your coding tool"),
+			await screen.findByText("Connect your coding tool"),
 		).toBeInTheDocument();
 		expect(trackEventMock).toHaveBeenCalledWith(CLI_NUDGE_OPENED_EVENT, {
 			projectId: PROJECT_ID,
@@ -815,7 +815,7 @@ describe("CliConnectionNudge — the issuing view is a sibling", () => {
 
 		await user.click(screen.getByRole("button", { name: CONNECT_LABEL }));
 		expect(
-			await screen.findByText("Connect Fabric to your coding tool"),
+			await screen.findByText("Connect your coding tool"),
 		).toBeInTheDocument();
 
 		readinessContext = contextWith({
@@ -834,7 +834,7 @@ describe("CliConnectionNudge — the issuing view is a sibling", () => {
 
 		expect(prompt()).not.toBeInTheDocument();
 		expect(
-			screen.getByText("Connect Fabric to your coding tool"),
+			screen.getByText("Connect your coding tool"),
 		).toBeInTheDocument();
 	});
 
@@ -851,7 +851,7 @@ describe("CliConnectionNudge — the issuing view is a sibling", () => {
 		await user.click(screen.getByRole("button", { name: CONNECT_LABEL }));
 
 		expect(
-			screen.queryByText("Connect Fabric to your coding tool"),
+			screen.queryByText("Connect your coding tool"),
 		).not.toBeInTheDocument();
 	});
 });

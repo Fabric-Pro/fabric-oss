@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
 	guardToolWriteForReadOnly: vi.fn(async () => null),
 	checkIntegrationAuthority: vi.fn(async () => ({ authorized: true })),
 	executeRegisteredIntegrationOperation: vi.fn(),
+	executeMicrosoftTeamsTool: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -42,7 +43,7 @@ vi.mock("../../authority-gate", () => ({
 	checkIntegrationAuthority: h.checkIntegrationAuthority,
 }));
 vi.mock("../../../../shared/oauth-tool-executors", () => ({
-	executeMicrosoftTeamsTool: vi.fn(),
+	executeMicrosoftTeamsTool: h.executeMicrosoftTeamsTool,
 }));
 
 const { IntegrationHandler } = await import("../integration-handler");
@@ -282,4 +283,24 @@ describe("operation resolution", () => {
 
 		expect(handler.canHandle(input)).toBe(true);
 	});
+});
+
+it("passes the selected Microsoft connection ID to the refresh-aware executor", async () => {
+	h.fetchCredentialsByIdAndProviderInTenant.mockResolvedValue({
+		MICROSOFT_ACCESS_TOKEN: "example-token",
+	});
+	h.executeMicrosoftTeamsTool.mockResolvedValue({ chats: [] });
+	const input = buildInput("MICROSOFT_GRAPH", {
+		integrationId: "shared-selected",
+		inputs: { operation: "list_chats" },
+	});
+	const result = await new IntegrationHandler().execute(buildContext(input));
+	expect(result.handled).toBe(true);
+	expect(h.executeMicrosoftTeamsTool).toHaveBeenCalledWith(
+		"list_chats",
+		input.step.inputs,
+		"u1",
+		"org-1",
+		"shared-selected",
+	);
 });

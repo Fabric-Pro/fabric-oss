@@ -10,6 +10,7 @@ export * from "./prisma/queries/frame-templates";
 export * from "./prisma/queries/lib/owner-scoped-schedule";
 // Report instance scheduling (pure: normalization + next-run math)
 export * from "./prisma/queries/lib/report-schedule";
+export * from "./prisma/queries/projects/knowledge-search";
 // Daily brief shared schemas
 export * from "./src/daily-brief-schema";
 // Delivery tracks: readiness policy + stage-transition enforcement

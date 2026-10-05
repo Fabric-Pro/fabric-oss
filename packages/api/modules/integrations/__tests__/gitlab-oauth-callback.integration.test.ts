@@ -267,7 +267,7 @@ describe("GitLab OAuth callback — project target", () => {
 		expect(args.data.status).toBe("TOKEN_EXPIRED");
 	});
 
-	it("auto-wires GitLab as the project's PM tool from the same token", async () => {
+	it("asks to auto-wire GitLab PM for the acting person, without handing over the repository token", async () => {
 		enableGitLabPM.mockClear();
 		const { handleProjectTargetCallback } = await import(
 			"../procedures/gitlab-oauth"
@@ -301,7 +301,10 @@ describe("GitLab OAuth callback — project target", () => {
 		expect(pmArgs.projectId).toBe("proj_1");
 		expect(pmArgs.repositoryOwner).toBe("acme");
 		expect(pmArgs.repositoryName).toBe("widgets");
-		expect(pmArgs.token.accessToken).toBe("a-token");
+		// The repository link is a team grant: PM runs on the acting person's
+		// own GitLab connection, so its token is never passed along.
+		expect(pmArgs).not.toHaveProperty("token");
+		expect(JSON.stringify(pmArgs)).not.toContain("a-token");
 	});
 
 	it("does not fail the repo connect when PM auto-wire throws", async () => {

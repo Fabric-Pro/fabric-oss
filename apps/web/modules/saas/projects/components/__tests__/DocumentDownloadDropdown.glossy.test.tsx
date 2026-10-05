@@ -130,6 +130,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					deleteAll: mutation(),
 					generate: mutation(),
 					setActive: mutation(),
+					update: mutation(),
 				},
 			},
 		},

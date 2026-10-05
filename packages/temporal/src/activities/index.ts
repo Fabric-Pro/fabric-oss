@@ -1134,6 +1134,11 @@ export * from "./instruction-proposal-pull-requests";
 // registers exactly its claim, append, recovery, re-observation, create,
 // lookup, retry opening, release and revert activities.
 export * from "./instruction-proposal-branches";
+// Direct commits to a repository-backed project's synced branch (Fizzy #2878
+// §10). The module exports only activities (its helpers live in
+// ./lib/instruction-direct-commit), so `export *` registers exactly its
+// readiness and commit activities.
+export * from "./instruction-direct-commit";
 // Automatic repository sync poll (spec §6.1, §8.2). Named, so a future
 // export of that module cannot become a schedulable activity by accident.
 export {

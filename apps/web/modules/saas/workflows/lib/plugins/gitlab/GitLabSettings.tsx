@@ -7,7 +7,10 @@
  * OAuth is recommended for better security and automatic token refresh.
  */
 
-import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
+import {
+	gitlabStatusQueryOptions,
+	invalidateGitLabConnectionViews,
+} from "@saas/data-connections/lib/gitlab-status-query";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
@@ -88,18 +91,8 @@ export function GitLabSettings({
 			if (result.revocationWarning) {
 				toast.warning(result.revocationWarning, { duration: 10000 });
 			}
-			queryClient.invalidateQueries({
-				queryKey: ["gitlab-oauth-status"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["account-settings-integrations"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["workflow-integrations"],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["data-connections"],
-			});
+			// Every screen that shows the connection, not only this one.
+			void invalidateGitLabConnectionViews(queryClient);
 		},
 		onError: (error) => {
 			toast.error(
@@ -301,20 +294,30 @@ export function GitLabSettings({
 
 	// Not connected as far as `gitlab.status` says. Disconnect must stay
 	// reachable whenever GitLab may still hold a credential here, because the
-	// page adds no generic one for this plugin:
-	//  - `partialConnection`: a live token on the MCP registry's config with no
-	//    workflow connection behind it;
-	//  - `hasPersistedCredential`: the page's own list shows a SAVED GitLab
-	//    credential, whatever the status said (it failed, or a cache entry
-	//    written by another screen was stale). This is the saved list, not the
-	//    typed text, so an unsaved Personal Access Token does not count.
+	// page adds no generic one for this plugin: `hasPersistedCredential` means
+	// the page's own list shows a SAVED GitLab credential, whatever the status
+	// said (it failed, or a cache entry written by another screen was stale).
+	// This is the saved list, not the typed text, so an unsaved Personal
+	// Access Token does not count.
+	//
+	// The connection's state, as every GitLab screen reports it. `connected`
+	// alone is not enough: it stays true for a connection whose grant died
+	// (`state: "needs-reconnect"`), which must ask for a reconnect rather than
+	// show "GitLab Connected".
+	const connectionState =
+		gitlabStatus?.state ??
+		(gitlabStatus?.connected
+			? gitlabStatus.needsReauth
+				? "needs-reconnect"
+				: "connected"
+			: "not-connected");
+	const isConnected = connectionState === "connected";
+	const needsReconnect = connectionState === "needs-reconnect";
 	const statusUnavailable = isStatusError && !gitlabStatus?.connected;
 	const showStoredCredentialNotice =
-		!gitlabStatus?.connected &&
-		(Boolean(gitlabStatus?.partialConnection) ||
-			Boolean(hasPersistedCredential));
+		!gitlabStatus?.connected && Boolean(hasPersistedCredential);
 
-	if (gitlabStatus?.connected) {
+	if (isConnected && gitlabStatus) {
 		return (
 			<div className="space-y-6">
 				{/* Connected Status */}
@@ -412,16 +415,33 @@ export function GitLabSettings({
 					<AlertTitle>
 						{statusUnavailable
 							? "Couldn't check GitLab connection status"
-							: gitlabStatus?.partialConnection
-								? "GitLab is only partly connected"
-								: "A GitLab credential is saved here"}
+							: "A GitLab credential is saved here"}
 					</AlertTitle>
 					<AlertDescription>
 						{statusUnavailable
 							? "A GitLab credential is saved here, but its status could not be loaded, so it may still be connected. You can disconnect it now, or reload to try again."
-							: gitlabStatus?.partialConnection
-								? "A GitLab token is stored for agents, but the connection that workflows and project sync use is missing. Connect GitLab again to restore it, or disconnect it."
-								: "GitLab did not report it as connected. You can disconnect it, or reload to check again."}
+							: "GitLab did not report it as connected. You can disconnect it, or reload to check again."}
+					</AlertDescription>
+					<div className="mt-3">{disconnectControl}</div>
+				</Alert>
+			) : needsReconnect ? (
+				<Alert variant="error">
+					<AlertTriangleIcon className="h-4 w-4" />
+					<AlertTitle>GitLab needs to be reconnected</AlertTitle>
+					<AlertDescription>
+						{gitlabStatus?.username ? (
+							<>
+								The connection for{" "}
+								<span className="font-semibold">
+									@{gitlabStatus.username}
+								</span>{" "}
+								stopped working
+							</>
+						) : (
+							"Your GitLab connection stopped working"
+						)}
+						, so workflows, agents and PM sync can&apos;t reach
+						GitLab. Reconnect to restore access, or disconnect it.
 					</AlertDescription>
 					<div className="mt-3">{disconnectControl}</div>
 				</Alert>
@@ -440,30 +460,17 @@ export function GitLabSettings({
 			{/* OAuth Section (if configured) */}
 			{oauthConfigured && (
 				<div className="space-y-4">
-					{gitlabStatus?.needsReauth && (
-						<Alert variant="error">
-							<AlertTriangleIcon className="h-4 w-4" />
-							<AlertTitle>
-								GitLab token needs re-authorization
-							</AlertTitle>
-							<AlertDescription>
-								Your GitLab refresh token is no longer valid —
-								agents and PM features can&apos;t reach GitLab
-								until you reconnect.
-							</AlertDescription>
-						</Alert>
-					)}
 					<div className="p-4 rounded-lg border bg-muted/30">
 						<div className="flex items-center gap-3 mb-3">
 							<GitLabIcon className="h-8 w-8" />
 							<div>
 								<h3 className="font-semibold">
-									{gitlabStatus?.needsReauth
+									{needsReconnect
 										? "Reconnect GitLab"
 										: "Connect with GitLab"}
 								</h3>
 								<p className="text-sm text-muted-foreground">
-									{gitlabStatus?.needsReauth
+									{needsReconnect
 										? "Re-authorize to restore agent and PM access."
 										: "Recommended: Sign in with your GitLab account for secure access"}
 								</p>
@@ -473,18 +480,14 @@ export function GitLabSettings({
 							onClick={handleConnectGitLab}
 							disabled={isLoadingStatus}
 							className="w-full"
-							variant={
-								gitlabStatus?.needsReauth
-									? "destructive"
-									: "default"
-							}
+							variant={needsReconnect ? "destructive" : "default"}
 						>
 							{isLoadingStatus ? (
 								<Loader2Icon className="h-4 w-4 mr-2 animate-spin" />
 							) : (
 								<GitLabIcon className="h-4 w-4 mr-2" />
 							)}
-							{gitlabStatus?.needsReauth
+							{needsReconnect
 								? "Reconnect GitLab"
 								: "Connect GitLab Account"}
 						</Button>
@@ -570,7 +573,7 @@ export function GitLabSettings({
 			)}
 
 			{/* Info Note */}
-			{!gitlabStatus?.connected && (
+			{!isConnected && (
 				<div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
 					<p className="text-xs text-blue-700 dark:text-blue-300">
 						<strong>Note:</strong> OAuth is recommended for better

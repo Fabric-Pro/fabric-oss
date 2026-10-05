@@ -1,4 +1,33 @@
+/** The REST base of gitlab.com — the only instance a bare token may go to. */
 const GITLAB_API_BASE = "https://gitlab.com/api/v4";
+
+/**
+ * A token together with the REST base of the GitLab instance that issued it.
+ * Built from the connection service's `origin`, so a self-hosted credential
+ * is only ever sent to its own instance.
+ */
+export type GitLabApiCredential = { token: string; apiBase: string };
+
+/**
+ * What the REST helpers accept: a credential with its instance, or a bare
+ * token, which means gitlab.com. `getGitLabConnectionToken` refuses a
+ * non-gitlab.com credential unless the caller passes `anyOrigin`, and a
+ * caller that does must hand the helpers a `GitLabApiCredential` built from
+ * the result's `origin`, never the bare token.
+ */
+export type GitLabAuth = string | GitLabApiCredential;
+
+/** `https://host[:port]` → that instance's REST base (`…/api/v4`). */
+export function gitlabApiBaseForOrigin(origin: string): string {
+	return `${origin.replace(/\/+$/, "")}/api/v4`;
+}
+
+export function toGitLabApiCredential(auth: GitLabAuth): GitLabApiCredential {
+	return typeof auth === "string"
+		? { token: auth, apiBase: GITLAB_API_BASE }
+		: auth;
+}
+
 const MAX_RATE_LIMIT_WAIT_MS = 2_000;
 
 export class GitLabApiError extends Error {

@@ -5,7 +5,13 @@ const { findManyMock } = vi.hoisted(() => ({
 	findManyMock: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	canUseWorkflowIntegrations: vi.fn().mockResolvedValue(true),
+	workflowIntegrationAccessWhere: (
+		await import(
+			"@repo/database/prisma/queries/workflows/integration-access"
+		)
+	).workflowIntegrationAccessWhere,
 	db: {
 		workflowIntegration: {
 			findMany: findManyMock,
@@ -30,7 +36,7 @@ describe("searchAvailableIntegrations tenant scoping", () => {
 		findManyMock.mockResolvedValue([]);
 	});
 
-	it("discovers all active org integrations without filtering by creator", async () => {
+	it("discovers owned or explicitly shared active org integrations", async () => {
 		await searchAvailableIntegrations({
 			query: "search databricks",
 			userId: "member-b",
@@ -40,6 +46,13 @@ describe("searchAvailableIntegrations tenant scoping", () => {
 		expect(findManyMock).toHaveBeenCalledWith({
 			where: {
 				organizationId: "org-1",
+				OR: [
+					{ userId: "member-b" },
+					{
+						usageScope: "ORGANIZATION_SHARED",
+						NOT: { provider: { in: ["GITLAB"] } },
+					},
+				],
 				isActive: true,
 				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},

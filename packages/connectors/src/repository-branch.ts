@@ -79,7 +79,7 @@ async function verifyGitHubBranch(
 	return outcomeFromStatus(response.status);
 }
 
-function gitlabHost(): string {
+export function gitlabHost(): string {
 	// Pinned unconditionally: project repo integrations are gitlab.com-only
 	// (`parseRepoUrl` rejects every other host, and the PAT connect path pins
 	// the same host for exactly this reason). Deriving the fetch origin from a
@@ -88,7 +88,7 @@ function gitlabHost(): string {
 	return "https://gitlab.com";
 }
 
-function gitlabHeaders(input: {
+export function gitlabHeaders(input: {
 	token: string;
 	gitlabAuth?: "bearer" | "private-token";
 }): Record<string, string> {

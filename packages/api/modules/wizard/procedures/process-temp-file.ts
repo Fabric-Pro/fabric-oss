@@ -5,7 +5,8 @@ import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -21,7 +22,18 @@ import {
  * Similar pattern to workspace document processing for durability and offloading.
  */
 export const processTempFileProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.PROJECT_UPDATE))
+	// Evaluated against the organization named in the input, not the
+	// session's: wizard temp contexts are stamped with it, and processing one
+	// runs extraction and embeddings on that organization's AI provider.
+	// `requireOrganization`: temp contexts exist only to become a project's
+	// in an organization (ADR-018). Without it a null organization resolves
+	// nothing and the role check is skipped — an organization viewer could
+	// upload and process files the session role used to refuse them.
+	.use(
+		requireInputOrgPermission(Permissions.PROJECT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/wizard/temp-contexts/:contextId/process",
@@ -48,8 +60,14 @@ export const processTempFileProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { contextId, organizationId, extractionStrategy } = input;
+		const { contextId, extractionStrategy } = input;
 		const user = context.user;
+		// The organization the gate authorized (it resolves the same way), so
+		// an omitted one is the session's here too, never the null arm.
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
 
 		// Get temp context to verify it exists and get session info
 		const tempContext = await getWizardTempContextById(

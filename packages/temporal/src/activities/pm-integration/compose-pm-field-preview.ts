@@ -17,6 +17,7 @@ import {
 import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/activity";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import { describeAdoToolRequirement, resolveAdoTool } from "./ado-tool-surface";
 import {
 	assembleFieldMappingDescription,
@@ -25,6 +26,12 @@ import {
 } from "./story-sync";
 
 export interface ComposePmFieldPreviewInput {
+	/**
+	 * The project's `projectManagementAdditionalContext`: it records the
+	 * GitLab instance `containerId` lives on. Required, so a personal GitLab
+	 * config on another instance is always refused.
+	 */
+	pmAdditionalContext: unknown;
 	mcpConfigId: string;
 	containerId: string;
 	containerName?: string;
@@ -78,6 +85,15 @@ export async function composePmFieldPreview(
 		organizationId,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: input.pmAdditionalContext,
+	});
+
 	if (fields.length === 0) {
 		return { markdown: "", emptyFieldIds: [] };
 	}
@@ -112,6 +128,7 @@ export async function composePmFieldPreview(
 	let result: { success: boolean; output?: unknown };
 	try {
 		result = await executeMcpTool({
+			pmTarget: { additionalContext: input.pmAdditionalContext },
 			toolName: getCall.toolName,
 			args: getCall.args,
 			userId,

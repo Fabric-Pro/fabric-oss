@@ -79,6 +79,11 @@ const ORG = "org_1";
 const BASE = "snap_base";
 /** `snapshotPrefix(PROJECT, BASE)`, as the procedure computes it. */
 const BASE_PREFIX = `projects/${PROJECT}/instructions/snapshots/${BASE}/`;
+/** The names the base's upload kept for the files it left out. */
+const BASE_EXCLUDED_PATHS = [
+	{ path: "tasks/a.md", rule: "tasks/" },
+	{ path: "tasks/b.md", rule: "tasks/" },
+];
 
 /** A promoted file row of the base snapshot. */
 function baseFile(id: string, path: string, size = 10) {
@@ -180,6 +185,7 @@ beforeEach(() => {
 					ignoreGlobs: ["**/tasks/**"],
 				},
 				excludedCount: 4,
+				excludedPaths: BASE_EXCLUDED_PATHS,
 			};
 		}
 		return { version: 7 };
@@ -239,7 +245,7 @@ describe("createDerivedInstructionSnapshot", () => {
 		expect(rows).toHaveLength(2);
 	});
 
-	it("copies settingsFrozen and excludedCount from the base verbatim", async () => {
+	it("copies settingsFrozen, excludedCount and excludedPaths from the base verbatim", async () => {
 		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
 
 		await createDerivedInstructionSnapshot(input([put("README.md")]));
@@ -260,10 +266,25 @@ describe("createDerivedInstructionSnapshot", () => {
 						ignoreGlobs: ["**/tasks/**"],
 					},
 					excludedCount: 4,
+					excludedPaths: BASE_EXCLUDED_PATHS,
 					fileCount: 2,
 				}),
 			}),
 		);
+	});
+
+	it("reads the base's excludedPaths, so an edit keeps the left-out list its version had", async () => {
+		withBaseFiles([baseFile("bf1", "CLAUDE.md")]);
+
+		await createDerivedInstructionSnapshot(input([put("README.md")]));
+
+		const baseRead = mocks.snapshot.findFirst.mock.calls
+			.map(([args]) => args as { where: object; select?: object })
+			.find((args) => "id" in args.where);
+		expect(baseRead?.select).toMatchObject({
+			excludedCount: true,
+			excludedPaths: true,
+		});
 	});
 
 	/**

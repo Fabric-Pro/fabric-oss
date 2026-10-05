@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readTreeEntries } from "../instruction-branch-git";
 import {
@@ -278,7 +279,7 @@ describe.skipIf(!hasGit)(
 			};
 			await cloneTreeless({
 				cwd: run,
-				url: `file://${branchSource}`,
+				url: pathToFileURL(branchSource).href,
 				ref: "main",
 				dir,
 				env,

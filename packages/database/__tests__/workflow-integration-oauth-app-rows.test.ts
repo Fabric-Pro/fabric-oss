@@ -43,14 +43,19 @@ function matchesField(value: unknown, condition: unknown, key: string) {
 
 function matchesWhere(row: Row, where: Where): boolean {
 	return Object.entries(where).every(([key, condition]) =>
-		key === "NOT"
-			? !matchesWhere(row, condition as Where)
-			: matchesField(row[key as keyof Row], condition, key),
+		key === "OR"
+			? (condition as Where[]).some((clause) => matchesWhere(row, clause))
+			: key === "NOT"
+				? !matchesWhere(row, condition as Where)
+				: matchesField(row[key as keyof Row], condition, key),
 	);
 }
 
 vi.mock("../prisma/client", () => ({
 	db: {
+		member: {
+			findFirst: vi.fn().mockResolvedValue({ id: "member-example" }),
+		},
 		workflowIntegration: {
 			findMany: async ({ where }: { where: Where }) =>
 				rows.filter((row) => matchesWhere(row, where)),

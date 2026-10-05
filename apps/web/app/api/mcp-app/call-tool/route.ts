@@ -1,6 +1,7 @@
 import { callMcpTool } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
 import { getSession } from "@saas/auth/lib/server";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import type { NextRequest } from "next/server";
 
 /**
@@ -40,6 +41,17 @@ export async function POST(request: NextRequest) {
 
 		const userId = session.user.id;
 
+		// Executing a tool needs MCP_CONNECT in the named organization, checked
+		// before the config is read: the config's own token outlives membership.
+		const authorization = await authorizeMcpConfigRequest({
+			userId,
+			organizationId,
+			action: "connect",
+		});
+		if (!authorization.ok) {
+			return authorization.response;
+		}
+
 		// Use @modelcontextprotocol/sdk Client directly for tool execution
 		const { Client } = await import(
 			"@modelcontextprotocol/sdk/client/index.js"
@@ -50,9 +62,10 @@ export async function POST(request: NextRequest) {
 		const { StreamableHTTPClientTransport } = await import(
 			"@modelcontextprotocol/sdk/client/streamableHttp.js"
 		);
-		const { getMcpConfigById, getValidAccessToken } = await import(
-			"@repo/database"
-		);
+		const { getMcpConfigById } = await import("@repo/database");
+		// Resolves GitLab personal servers through the person's GitLab
+		// connection; every other config through its own MCPConfig token.
+		const { getValidMcpTransportAuth } = await import("@repo/mcp");
 		const { decryptApiKey } = await import("@repo/utils");
 
 		// Get MCP config from database
@@ -76,6 +89,7 @@ export async function POST(request: NextRequest) {
 		}
 
 		const mcpServer = mcpConfig.mcpServer as {
+			key?: string | null;
 			defaultUrl?: string;
 			name?: string;
 			transport?: string;
@@ -92,16 +106,33 @@ export async function POST(request: NextRequest) {
 		// Build auth headers
 		const headers: Record<string, string> = {};
 		const authType = mcpConfig.authType?.toString() || "NONE";
+		// Set for a GitLab personal server: the token may only travel to its
+		// own GitLab origin, through the GitLab outbound guard, so every
+		// transport request uses this fetch.
+		let transportFetch:
+			| ((url: string | URL, init?: RequestInit) => Promise<Response>)
+			| undefined;
 
-		if (authType === "OAUTH2") {
-			const accessToken = await getValidAccessToken({
+		// A GitLab personal server always takes the person's GitLab
+		// connection token, whatever auth type its config names: an API key
+		// stored on such a row is never sent.
+		const { isGitLabPersonalMcpServerKey } = await import(
+			"@repo/database/prisma/queries/lib/gitlab-personal-keys"
+		);
+		if (
+			authType === "OAUTH2" ||
+			isGitLabPersonalMcpServerKey(mcpServer?.key)
+		) {
+			const auth = await getValidMcpTransportAuth({
 				configId,
 				userId,
 				organizationId,
+				endpoint: serverUrl,
 			});
-			if (accessToken) {
-				headers.Authorization = `Bearer ${accessToken}`;
+			if (auth.accessToken) {
+				headers.Authorization = `Bearer ${auth.accessToken}`;
 			}
+			transportFetch = auth.fetch;
 		} else if (authType === "API_KEY" && mcpConfig.encryptedApiKey) {
 			const apiKey = await decryptApiKey(
 				mcpConfig.encryptedApiKey as string,
@@ -127,12 +158,14 @@ export async function POST(request: NextRequest) {
 		const transport =
 			configTransport === "SSE"
 				? new SSEClientTransport(url, {
+						...(transportFetch ? { fetch: transportFetch } : {}),
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
+						...(transportFetch ? { fetch: transportFetch } : {}),
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }

@@ -50,6 +50,7 @@ import { bodyLimit } from "hono/body-limit";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import {
+	credentialMayReachProject,
 	type ExternalApiContext,
 	type ExternalApiVariables,
 	isOrganizationBoundKey,
@@ -162,6 +163,12 @@ async function resolveContextProject(
 			},
 			status: 403,
 		};
+	}
+
+	// An agent that signed in for one project reaches that project alone, and
+	// hears of any other as it hears of one that does not exist.
+	if (!credentialMayReachProject(apiCtx, projectId)) {
+		return { error: notFound("Project").error, status: 404 };
 	}
 
 	const access = await resolveEffectiveProjectPermissions(

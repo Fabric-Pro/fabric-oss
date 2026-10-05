@@ -439,9 +439,11 @@ const databricksProviderCache = new Map<
 >();
 
 /**
- * Shared fetch for Databricks providers: strips the `stream_options` field some
- * serving backends reject, and flattens Claude's non-standard `delta.content`
- * reasoning arrays to plain text. See lib/databricks-compat.ts.
+ * Shared fetch for Databricks providers: applies the Vercel-path request-body
+ * rule (strips `stream_options`/`parallel_tool_calls`, drops `temperature`,
+ * relaxes strict JSON schema), injects Claude prompt-cache markers, and
+ * flattens Claude's non-standard `delta.content` reasoning arrays to plain text.
+ * See lib/databricks-compat.ts and `@repo/agent-types`' databricks-compat.ts.
  */
 const databricksFetch = createDatabricksFetch();
 

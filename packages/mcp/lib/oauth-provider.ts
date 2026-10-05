@@ -24,6 +24,10 @@ import {
 } from "@repo/database";
 import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
 import { refreshOAuthToken } from "@repo/utils/oauth-refresh";
+import {
+	createGitLabConnectionAuthProvider,
+	isGitLabPersonalMcpConfig,
+} from "./gitlab-credential";
 
 /**
  * Error thrown when OAuth authorization is required but cannot be performed
@@ -182,6 +186,26 @@ export async function createOAuthClientProvider(
 		token_endpoint_auth_method: "client_secret_basic",
 		scope: cfg.scopes?.join(" ") || undefined,
 	};
+
+	// GitLab personal servers: the credential is the person's GitLab
+	// connection, owned (and refreshed) by the connection service. The SDK
+	// must not refresh, store or invalidate anything for these configs.
+	if (isGitLabPersonalMcpConfig(cfg)) {
+		return createGitLabConnectionAuthProvider({
+			config: cfg,
+			userId,
+			organizationId,
+			redirectUri,
+			clientMetadata,
+			onAuthorizationRequired,
+			authorizationRequired: (authorizationUrl) =>
+				new OAuthAuthorizationRequiredError({
+					configId,
+					serverName,
+					authorizationUrl: authorizationUrl.toString(),
+				}),
+		});
+	}
 
 	/**
 	 * Get the token endpoint from cached metadata or server config.
@@ -739,30 +763,6 @@ export async function createOAuthClientProvider(
 	};
 
 	return provider;
-}
-
-/**
- * Check if an MCP config has valid OAuth tokens without creating a full provider.
- * Useful for quick status checks.
- */
-export async function hasValidOAuthTokens(configId: string): Promise<boolean> {
-	const cfg = await getMcpConfigByIdInternal(configId);
-	if (!cfg?.encryptedAccessToken) {
-		return false;
-	}
-
-	// Check if token is expired
-	if (cfg.tokenExpiresAt) {
-		const now = Date.now();
-		const expiresAt = cfg.tokenExpiresAt.getTime();
-		// Consider expired if less than 60 seconds remaining
-		if (expiresAt < now + 60 * 1000) {
-			// Has refresh token? Might be refreshable
-			return !!cfg.encryptedRefreshToken;
-		}
-	}
-
-	return true;
 }
 
 /**

@@ -25,6 +25,7 @@ export {
 } from "./base-connector";
 export type {
 	CodeSearchParams,
+	CodeSearchResponse,
 	CodeSearchResult,
 	CompareCommitsParams,
 	CompareCommitsResult,
@@ -32,6 +33,8 @@ export type {
 	FileContentResult,
 	GetFileParams,
 	ListStructureParams,
+	RepositoryObjectType,
+	RepositoryReadError,
 	RepositoryStructure,
 	SearchCodeParams,
 	TreeEntry,
@@ -63,6 +66,7 @@ export type {
 	RepoAccessVerdictFor,
 } from "./repository-access-status";
 export { integrationStatusForRepoAccess } from "./repository-access-status";
+export type { RepositoryApiInput } from "./repository-api";
 export type {
 	ReadRepositoryBlobSizesInput,
 	ReadRepositoryBlobSizesResult,
@@ -83,6 +87,32 @@ export {
 	resolveDefaultBranch,
 	verifyRepositoryBranch,
 } from "./repository-branch";
+// Branch history within a folder (request-path helper)
+export type {
+	ListRepositoryCommitsInput,
+	ListRepositoryCommitsResult,
+	RepositoryCommit,
+} from "./repository-commits";
+export {
+	COMMIT_MESSAGE_MAX_CHARS,
+	COMMITS_PAGE_SIZE,
+	listRepositoryCommits,
+} from "./repository-commits";
+// Commit-to-commit path diff and one file at a commit (request-path helpers)
+export type {
+	CompareRepositoryRefsInput,
+	CompareRepositoryRefsResult,
+	IsCommitOnBranchInput,
+	IsCommitOnBranchResult,
+	ReadRepositoryFileAtCommitInput,
+	RepositoryCompareFile,
+	RepositoryCompareStatus,
+} from "./repository-compare";
+export {
+	compareRepositoryRefs,
+	isCommitOnBranch,
+	readRepositoryFileAtCommit,
+} from "./repository-compare";
 // Capped single-file read (request-path helper)
 export type {
 	ReadRepositoryFileInput,

@@ -78,10 +78,108 @@ vi.mock("@repo/utils", () => ({
 
 import { encryptApiKey } from "@repo/utils";
 import {
+	GitLabPersonalCredentialRequiredError,
 	getValidAccessToken,
 	isPermanentGrantFailure,
 	recordRefreshFailure,
 } from "../prisma/queries/mcp";
+
+/**
+ * A GitLab personal MCP config's credential is the person's GitLab
+ * connection, refreshed only by the GitLab connection service with the client
+ * that issued it. This generic path would refresh the MCPConfig copy with the
+ * config's own client — rotating the very grant the connection holds — so it
+ * must refuse those configs outright, before any refresh or write.
+ */
+describe("getValidAccessToken — GitLab personal configs are refused", () => {
+	beforeEach(() => {
+		findUniqueMock.mockReset();
+		updateMock.mockReset();
+		updateManyMock.mockReset();
+		refreshOAuthTokenMock.mockReset();
+		safeFetchOutboundMock.mockReset();
+		safeFetchOutboundMock.mockResolvedValue({ ok: false });
+	});
+
+	for (const key of ["gitlab", "gitlab-official"]) {
+		it(`refuses an OAuth ${key} config with an expired copy, without refreshing it`, async () => {
+			findUniqueMock.mockResolvedValue({
+				id: "cfg_gl",
+				userId: "user-1",
+				organizationId: null,
+				authType: "OAUTH2",
+				encryptedAccessToken: "ENC:copy-access",
+				encryptedRefreshToken: "ENC:copy-refresh",
+				tokenExpiresAt: new Date(Date.now() - 60_000),
+				updatedAt: new Date(Date.now() - 3_600_000),
+				needsReauth: false,
+				oauthClientId: "dcr-client",
+				mcpServer: {
+					key,
+					defaultUrl: "https://gitlab.com/api/v4/mcp",
+					oauthTokenEndpoint: "https://gitlab.com/oauth/token",
+				},
+				baseUrl: null,
+			});
+
+			await expect(
+				getValidAccessToken({ configId: "cfg_gl", userId: "user-1" }),
+			).rejects.toBeInstanceOf(GitLabPersonalCredentialRequiredError);
+			expect(refreshOAuthTokenMock).not.toHaveBeenCalled();
+			expect(updateMock).not.toHaveBeenCalled();
+			expect(updateManyMock).not.toHaveBeenCalled();
+		});
+	}
+
+	// A GitLab config that names another auth type (an API key saved through
+	// the API before saving one there was refused) holds no credential the
+	// generic path may hand out: the stored key is never decrypted or returned.
+	for (const authType of ["API_KEY", "NONE"]) {
+		it(`refuses a ${authType} gitlab config without returning its stored key`, async () => {
+			findUniqueMock.mockResolvedValue({
+				id: "cfg_gl",
+				userId: "user-1",
+				organizationId: null,
+				authType,
+				encryptedApiKey: "ENC:glpat-on-the-config",
+				encryptedAccessToken: null,
+				encryptedRefreshToken: null,
+				tokenExpiresAt: null,
+				updatedAt: new Date(Date.now() - 3_600_000),
+				needsReauth: false,
+				oauthClientId: null,
+				mcpServer: {
+					key: "gitlab",
+					defaultUrl: "https://gitlab.com/api/v4/mcp",
+					oauthTokenEndpoint: null,
+				},
+				baseUrl: null,
+			});
+
+			await expect(
+				getValidAccessToken({ configId: "cfg_gl", userId: "user-1" }),
+			).rejects.toBeInstanceOf(GitLabPersonalCredentialRequiredError);
+			expect(refreshOAuthTokenMock).not.toHaveBeenCalled();
+			expect(updateMock).not.toHaveBeenCalled();
+		});
+	}
+
+	it("still authorizes first: another person's GitLab config is refused as unauthorized", async () => {
+		findUniqueMock.mockResolvedValue({
+			id: "cfg_gl",
+			userId: "user-2",
+			organizationId: null,
+			authType: "OAUTH2",
+			encryptedAccessToken: "ENC:copy-access",
+			mcpServer: { key: "gitlab-official" },
+			baseUrl: null,
+		});
+
+		await expect(
+			getValidAccessToken({ configId: "cfg_gl", userId: "user-1" }),
+		).rejects.toThrow(/Unauthorized/);
+	});
+});
 
 describe("getValidAccessToken — needsReauth circuit breaker", () => {
 	beforeEach(() => {

@@ -1,5 +1,6 @@
 "use client";
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
 import { AlwaysOnPill } from "@saas/mcp/components/AlwaysOnPill";
 import { McpServerIcon } from "@saas/mcp/components/McpServerIcon";
 import { Badge } from "@ui/components/badge";
@@ -129,9 +130,13 @@ export function McpServerCard({
 	};
 
 	// Determine auth config
-	const authMethod = server.authMethods?.[0] || "NONE";
+	// A GitLab server is OAuth through the person's connection, whatever
+	// its registry entry advertises.
+	const isGitLab = isGitLabPersonalMcpServerKey(server.key);
+	const authMethod = isGitLab ? "OAUTH2" : server.authMethods?.[0] || "NONE";
 	const noAuth =
-		!server.authMethods?.length || server.authMethods.includes("NONE");
+		!isGitLab &&
+		(!server.authMethods?.length || server.authMethods.includes("NONE"));
 	const authConfig =
 		AUTH_CONFIG[noAuth ? "NONE" : authMethod] ?? AUTH_CONFIG.NONE;
 

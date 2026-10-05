@@ -52,6 +52,7 @@ export function RepositorySyncRuns({
 						// unfinished row's worker is gone.
 						const message = syncOutcomeMessage(
 							syncRunOutcome(run, running && index === 0),
+							run.commitSha,
 						);
 						const commit = shortCommit(run.commitSha);
 						const parts = [
@@ -59,7 +60,8 @@ export function RepositorySyncRuns({
 							t(triggerLabelKey(run.trigger)),
 							t(message.key, message.values),
 						];
-						if (commit) {
+						// The outcome already names the commit it took or refused.
+						if (commit && !message.key.endsWith("Commit")) {
 							parts.push(t("runs.commit", { commit }));
 						}
 						if (run.snapshotVersion !== null) {

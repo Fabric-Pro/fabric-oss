@@ -69,23 +69,19 @@ export const slackChannelAdapter: ChannelAdapter = {
 	name: "Slack",
 	providerKey: "SLACK",
 
-	verifyInbound(ctx: InboundContext, credentials): VerifyOutcome {
+	verifyInbound(ctx: InboundContext): VerifyOutcome {
 		const rawBody =
 			typeof ctx.rawBody === "string"
 				? ctx.rawBody
 				: new TextDecoder().decode(ctx.rawBody);
 
-		// Slack signing-secret check. Mirrors the bespoke route. If no signing
-		// secret is configured for this tenant, we surface `invalid` so the
-		// unified route rejects rather than silently passes — matches the
-		// bespoke route's behavior of blocking unsigned events when
-		// SLACK_SIGNING_SECRET is set.
-		const signingSecret =
-			typeof credentials?.signing_secret === "string"
-				? credentials.signing_secret
-				: typeof credentials?.SLACK_SIGNING_SECRET === "string"
-					? (credentials.SLACK_SIGNING_SECRET as string)
-					: process.env.SLACK_SIGNING_SECRET;
+		// Slack signing-secret check, against the deployment's
+		// SLACK_SIGNING_SECRET only. Organizations may store their own OAuth
+		// client id/secret, but no signing secret is collected anywhere, and
+		// it is never read from a tenant's stored connection: that row is
+		// tenant-editable, and the request is not yet authenticated, so
+		// nothing in it can pick the right tenant (Fizzy #2860).
+		const signingSecret = process.env.SLACK_SIGNING_SECRET;
 
 		const signature = ctx.headers["x-slack-signature"];
 		const timestamp = ctx.headers["x-slack-request-timestamp"];

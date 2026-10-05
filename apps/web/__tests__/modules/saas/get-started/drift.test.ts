@@ -96,11 +96,17 @@ const inPageSource = [
 	// anchors ("Sync from repository", "Sync now") even though it mounts
 	// inside ProjectContextsList's Living Memory section header.
 	"apps/web/modules/saas/projects/components/ContextRepositorySyncStatus.tsx",
-	// Every coding-instructions page-tour anchor sits in the composing view:
-	// the tree, file-view and history ones on wrapper elements, the two sync
-	// buttons (design 2026-09-23 §7.5) on the buttons themselves. This one
-	// file covers the whole page.
+	// The coding-instructions page-tour anchors: the tree and file-view ones
+	// on wrapper elements in the composing view, the header action ones
+	// (History, and the More button that stands for the menu's actions) in the
+	// action bar it renders, and the status strip's own and its Connect your
+	// agent link in the strip.
 	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
+	"apps/web/modules/saas/projects/components/instructions/InstructionsActionBar.tsx",
+	"apps/web/modules/saas/projects/components/instructions/InstructionsStatusStrip.tsx",
+	// The Commit action of a repository project: the file view's Edit button,
+	// and the Commit button that replaces it while a file is being edited.
+	"apps/web/modules/saas/projects/components/instructions/InstructionFileView.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",

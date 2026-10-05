@@ -10,6 +10,7 @@
  * - Result display with export options
  */
 
+import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
 import { Textarea } from "@ui/components/textarea";
@@ -125,7 +126,13 @@ export function WorkflowTemplateChat({
 						</Button>
 					</Link>
 					<div className="flex-1">
-						<h1 className="font-semibold">{instanceName}</h1>
+						<h1 className="font-semibold">
+							<AgentVersionIdentity
+								name={instanceName}
+								instanceId={instanceId}
+								organizationId={organizationId}
+							/>
+						</h1>
 						{instanceDescription && (
 							<p className="text-xs text-muted-foreground truncate max-w-md">
 								{instanceDescription}
@@ -156,7 +163,11 @@ export function WorkflowTemplateChat({
 									<Sparkles className="h-8 w-8 text-primary" />
 								</div>
 								<h2 className="text-2xl font-bold mb-2">
-									{instanceName}
+									<AgentVersionIdentity
+										name={instanceName}
+										instanceId={instanceId}
+										organizationId={organizationId}
+									/>
 								</h2>
 								<p className="text-muted-foreground max-w-md mx-auto">
 									Enter a research question below. The Deep

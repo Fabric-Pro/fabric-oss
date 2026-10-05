@@ -17,6 +17,11 @@ const uploadDialogCopy = en.projects.codingInstructions.uploadDialog as Record<
 // add-file dialog.
 const publishBeforeScanCopy = en.projects.codingInstructions
 	.publishBeforeScan as Record<string, string>;
+// What a failed action says by its code (`useInstructionActionError`).
+const actionErrorsCopy = en.projects.codingInstructions.actionErrors as Record<
+	string,
+	string
+>;
 
 function interpolate(template: string, values?: Record<string, unknown>) {
 	if (!values) {
@@ -64,7 +69,9 @@ vi.mock("next-intl", () => ({
 	useTranslations: (namespace?: string) => {
 		const copy = namespace?.endsWith(".publishBeforeScan")
 			? publishBeforeScanCopy
-			: uploadDialogCopy;
+			: namespace?.endsWith(".actionErrors")
+				? actionErrorsCopy
+				: uploadDialogCopy;
 		const t = (key: string, values?: Record<string, unknown>) =>
 			interpolate(copy[key] ?? key, values);
 		t.rich = (
@@ -639,9 +646,13 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 
 		// First attempt: ordinary, and it fails after `begin`.
 		await userEvent.click(upload);
+		// Said in the dialog's own words, never the error's.
 		await waitFor(() =>
-			expect(screen.getByText("network down")).toBeInTheDocument(),
+			expect(
+				screen.getByText(uploadDialogCopy.genericError),
+			).toBeInTheDocument(),
 		);
+		expect(screen.queryByText("network down")).not.toBeInTheDocument();
 
 		// The member now opts in; the registered snapshot froze the old choice.
 		await userEvent.click(
@@ -662,6 +673,39 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 			resumeSnapshotId: undefined,
 		});
 	});
+
+	// The server's refusals carry a code and an untranslated message that can
+	// name a path or a provider. The code picks the line; the message is never
+	// shown.
+	it.each([
+		["BAD_REQUEST", actionErrorsCopy.badRequest],
+		["PRECONDITION_FAILED", actionErrorsCopy.preconditionFailed],
+		["FORBIDDEN", actionErrorsCopy.forbidden],
+	])(
+		"says what a refusal coded %s means, never the server's message",
+		async (code, line) => {
+			uploadSnapshot.mockRejectedValueOnce(
+				Object.assign(
+					new Error("begin-snapshot said: internal detail"),
+					{
+						code,
+					},
+				),
+			);
+			await pickAndReview(false);
+
+			await userEvent.click(
+				screen.getByRole("button", { name: /Upload 1 files/ }),
+			);
+
+			await waitFor(() =>
+				expect(screen.getByText(line)).toBeInTheDocument(),
+			);
+			expect(
+				screen.queryByText(/begin-snapshot said/),
+			).not.toBeInTheDocument();
+		},
+	);
 });
 
 /**

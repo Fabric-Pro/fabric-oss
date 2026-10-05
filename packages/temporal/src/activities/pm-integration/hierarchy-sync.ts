@@ -30,8 +30,10 @@ import {
 } from "@repo/utils";
 import { ApplicationFailure, Context } from "@temporalio/activity";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import { refreshAtlassianCloudToken } from "./atlassian-cloud-refresh";
 import { fetchPmTicket } from "./fetch-pm-ticket";
+import { mayUseMcpConfigCredential } from "./mcp-credential-gate";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
 import { computePmHash } from "./pm-sync-hash";
 import { truncateTitleForProvider } from "./pm-title-limits";
@@ -690,6 +692,18 @@ export async function syncWorkItemToPM(
 		);
 	}
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is sent (the REST
+	// path below checks the connection's instance in `resolvePmSource`).
+	if (mcpConfigId) {
+		await assertPmMcpTargetOrigin({
+			mcpConfigId,
+			userId,
+			organizationId,
+			additionalContext,
+		});
+	}
+
 	// GitLab REST fallback path: `mcpConfigId` is `null` and the source is
 	// resolved via `mcpServerId` (the `key:gitlab-official` sentinel).
 	//
@@ -817,22 +831,42 @@ export async function syncWorkItemToPM(
 	// cross-tool mismatch check further down which needs `mcpServerId`, and
 	// (c) the Jira hybrid Cloud attachment upload which needs the
 	// `atlassianCloud*` token fields (see `resolveJiraCloudTarget`).
-	const mcpConfig = await db.mCPConfig.findUnique({
-		where: { id: mcpConfigId },
-		select: {
-			id: true,
-			baseUrl: true,
-			mcpServerId: true,
-			encryptedApiKey: true,
-			commandArgs: true,
-			mcpServer: { select: { defaultUrl: true } },
-			encryptedAtlassianCloudAccessToken: true,
-			atlassianCloudTokenExpiresAt: true,
-			atlassianCloudCloudId: true,
-			atlassianCloudSiteUrl: true,
-			atlassianCloudAccessibleResources: true,
-		},
+	//
+	// The stored credentials are used directly (before any MCP client is
+	// built in this activity when capabilities were pre-discovered), so an
+	// owner who may no longer use the config gets it treated as gone, as
+	// after the offboarding cascade; the push is then refused by the client
+	// factory. The read is scoped to the same `userId` and `organizationId`
+	// the gate checked, so the credential used is always that owner's: a
+	// config that belongs to someone else, or to another organization, reads
+	// as gone too, as the client factory's own tenant-scoped lookup does.
+	const mayUseCredential = await mayUseMcpConfigCredential({
+		mcpConfigId,
+		userId,
+		organizationId,
 	});
+	const mcpConfig = !mayUseCredential
+		? null
+		: await db.mCPConfig.findFirst({
+				where: {
+					id: mcpConfigId,
+					userId,
+					organizationId: organizationId ?? null,
+				},
+				select: {
+					id: true,
+					baseUrl: true,
+					mcpServerId: true,
+					encryptedApiKey: true,
+					commandArgs: true,
+					mcpServer: { select: { defaultUrl: true } },
+					encryptedAtlassianCloudAccessToken: true,
+					atlassianCloudTokenExpiresAt: true,
+					atlassianCloudCloudId: true,
+					atlassianCloudSiteUrl: true,
+					atlassianCloudAccessibleResources: true,
+				},
+			});
 
 	// Resolve the Jira hybrid Cloud target up-front: the description build uses
 	// it to decide whether to strip image refs (Cloud target present → re-embed
@@ -1372,6 +1406,7 @@ export async function syncWorkItemToPM(
 		}
 
 		const updateResult = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: updateTool.toolName,
 			args: updateArgs,
 			userId,
@@ -1606,6 +1641,7 @@ export async function syncWorkItemToPM(
 		});
 
 		const createResult = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: createTool.toolName,
 			args: createArgs,
 			userId,

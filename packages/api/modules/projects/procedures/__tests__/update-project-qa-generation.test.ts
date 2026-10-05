@@ -82,7 +82,7 @@ beforeEach(() => {
 	mockGetProject.mockResolvedValue({
 		id: "proj-1",
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 	});
 	mockUpdateProject.mockResolvedValue({ id: "proj-1" });
 });

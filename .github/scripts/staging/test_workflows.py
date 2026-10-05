@@ -419,9 +419,24 @@ class PullRequestContracts(unittest.TestCase):
             with self.subTest(workflow=name):
                 job = workflow(name)['jobs'][key]
                 for step in job['steps']:
-                    self.assertEqual(step.get('if'), "github.event_name == 'pull_request'", step.get('name', step.get('uses')))
+                    condition = step.get('if')
+                    if name == 'changeset-check.yml':
+                        self.assertTrue(condition.startswith("github.event_name == 'pull_request'"), step.get('name', step.get('uses')))
+                    else:
+                        self.assertEqual(condition, "github.event_name == 'pull_request'", step.get('name', step.get('uses')))
                 self.assertNotIn('environment', job)
                 self.assertNotIn('secrets.', json.dumps(job))
+                if name == 'changeset-check.yml':
+                    self.assertEqual(job['needs'], 'classify-relay-batch')
+                    classifier = workflow(name)['jobs']['classify-relay-batch']
+                    self.assertEqual(classifier['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+                    self.assertIn("github.repository == 'Fabric-Pro/fabric-oss'", classifier['if'])
+                    self.assertIn("startsWith(github.event.pull_request.head.ref, 'relay/staging-pr-')", classifier['if'])
+                    checkout = classifier['steps'][0]
+                    self.assertEqual(checkout['with']['ref'], '${{ github.event.pull_request.head.sha }}')
+                    self.assertEqual(checkout['with']['persist-credentials'], 'false')
+                    self.assertEqual(classifier['steps'][1]['run'], 'node .github/scripts/staging/public-relay-changeset.mjs')
+                    self.assertIn('needs.classify-relay-batch.outputs.relay_batch', job['steps'][1]['if'])
 
     def test_pr_metadata_job_conditions_preserve_exemptions(self):
         exempt = {'login': 'dependabot[bot]'}

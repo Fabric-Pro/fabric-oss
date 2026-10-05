@@ -14,6 +14,7 @@
  * - Server-level invalidation
  */
 
+import { db } from "@repo/database";
 import {
 	generateEmbedding,
 	generateEmbeddings,
@@ -30,13 +31,53 @@ import {
 } from "@repo/rag/lib/vector-store/capability-store";
 
 // =============================================================================
+// Turned-off MCP configs
+// =============================================================================
+
+/** A tool's `configId` that names an `MCPConfig` row (not a virtual source). */
+function isMcpConfigRowId(configId: string | undefined): configId is string {
+	return (
+		typeof configId === "string" &&
+		configId.length > 0 &&
+		configId !== "fabric-ai-server" &&
+		!configId.startsWith("oauth:integration:")
+	);
+}
+
+/**
+ * Of the MCP configs some indexed tools belong to, the ones turned off now
+ * (`enabled: false` on the row). An indexed tool outlives its config's
+ * switch: the vectors stay until something deletes them, and a GitLab
+ * server's tile Delete turns the config off without deleting them (a
+ * deletion keyed by server name could erase the tools of a reconnect made
+ * meanwhile). The caller-selected id lists (`enabledMcpConfigIds`) are a
+ * preference, not the row's state, so every read of the index checks the
+ * rows themselves. A config whose row is gone is left to the deletion that
+ * removed it.
+ */
+async function findDisabledMcpConfigIds(
+	configIds: Iterable<string | undefined>,
+): Promise<Set<string>> {
+	const ids = [...new Set([...configIds].filter(isMcpConfigRowId))];
+	if (ids.length === 0) {
+		return new Set();
+	}
+	const rows = await db.mCPConfig.findMany({
+		where: { id: { in: ids }, enabled: false },
+		select: { id: true },
+	});
+	return new Set(rows.map((row) => row.id));
+}
+
+// =============================================================================
 // Infrastructure Tools
 // =============================================================================
 
 /**
  * Fabric AI tools that are always enabled regardless of the user's
  * enabledFabricToolIds setting. These are project infrastructure, not
- * user-togglable features. Both searchQdrant and loadFromQdrant use this set.
+ * user-togglable features. Every read of the index applies this set through
+ * isToolEnabledForRequest.
  */
 const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
 	"project_rag_query",
@@ -51,6 +92,92 @@ const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
 	"fabric_list_project_sources",
 	"fabric_get_project_source",
 ]);
+
+/**
+ * How many Qdrant matches `searchQdrant` asks for before filtering them by
+ * the request's enabled lists and cutting to its `limit`.
+ */
+const QDRANT_SEARCH_CANDIDATES = 100;
+
+/**
+ * Whether a Fabric AI tool (`configId: "fabric-ai-server"`) may be offered.
+ * Fabric AI tools answer only to the Fabric tool list (null = all): the MCP
+ * config list names user-added servers, and a chat's list of assigned
+ * servers does not name this virtual server, so applying it here excluded
+ * every Fabric tool, the project repository readers included. The BM25 step of `search_tools`
+ * and the routing pre-check read the Fabric list the same way.
+ */
+function isFabricToolEnabled(
+	toolName: string,
+	enabledFabricToolSet: Set<string> | null,
+): boolean {
+	if (enabledFabricToolSet === null) {
+		return true;
+	}
+	return (
+		INFRASTRUCTURE_FABRIC_TOOLS.has(toolName) ||
+		enabledFabricToolSet.has(toolName)
+	);
+}
+
+/** The `configId` prefix of an OAuth integration's tools. */
+const OAUTH_INTEGRATION_PREFIX = "oauth:integration:";
+
+/** A request's enabled lists as sets; null = the list does not restrict. */
+interface EnabledToolSets {
+	mcpConfigIds: Set<string> | null;
+	integrationIds: Set<string> | null;
+	fabricToolIds: Set<string> | null;
+}
+
+function toEnabledToolSets(lists: {
+	enabledMcpConfigIds?: string[] | null;
+	enabledIntegrationIds?: string[] | null;
+	enabledFabricToolIds?: string[] | null;
+}): EnabledToolSets {
+	const toSet = (ids?: string[] | null) =>
+		Array.isArray(ids) ? new Set(ids) : null;
+	return {
+		mcpConfigIds: toSet(lists.enabledMcpConfigIds),
+		integrationIds: toSet(lists.enabledIntegrationIds),
+		fabricToolIds: toSet(lists.enabledFabricToolIds),
+	};
+}
+
+/**
+ * Whether a request's enabled lists let a tool be offered. Every read of the
+ * index applies this one rule: the in-memory index is shared between
+ * requests, so it can hold tools that an earlier request's lists allowed
+ * and this one's do not (Fizzy #2925).
+ *
+ * - No `configId`: a system tool, always offered.
+ * - `fabric-ai-server`: follows the Fabric tool list only.
+ * - `oauth:integration:{id}`: follows the integration list.
+ * - Anything else is an `MCPConfig` row id and follows the MCP config list.
+ *
+ * An empty list offers none of its kind.
+ */
+function isToolEnabledForRequest(
+	configId: string | undefined,
+	toolName: string,
+	enabled: EnabledToolSets,
+): boolean {
+	if (!configId) {
+		return true;
+	}
+	if (configId === "fabric-ai-server") {
+		return isFabricToolEnabled(toolName, enabled.fabricToolIds);
+	}
+	if (configId.startsWith(OAUTH_INTEGRATION_PREFIX)) {
+		return (
+			enabled.integrationIds === null ||
+			enabled.integrationIds.has(
+				configId.slice(OAUTH_INTEGRATION_PREFIX.length),
+			)
+		);
+	}
+	return enabled.mcpConfigIds === null || enabled.mcpConfigIds.has(configId);
+}
 
 // =============================================================================
 // Types
@@ -241,11 +368,13 @@ class BM25Index {
 	}
 
 	/**
-	 * Search for documents matching the query
+	 * Search for documents matching the query. With `onlyIds`, only those
+	 * documents are ranked, so the others cannot take the `limit` slots.
 	 */
 	search(
 		query: string,
 		limit = 10,
+		onlyIds?: ReadonlySet<string>,
 	): Array<{ id: string; score: number; matchedTerms: string[] }> {
 		const queryTerms = query
 			.toLowerCase()
@@ -259,6 +388,9 @@ class BM25Index {
 		}> = [];
 
 		for (const [docId, docTerms] of this.documents) {
+			if (onlyIds && !onlyIds.has(docId)) {
+				continue;
+			}
 			let score = 0;
 			const matchedTerms: string[] = [];
 
@@ -568,12 +700,34 @@ export class ToolIndex {
 			}
 		}
 
-		// Fall back to in-memory BM25 search
+		// Fall back to in-memory BM25 search. The in-memory index is shared
+		// between requests, so it can hold tools this request's enabled lists
+		// leave out, and tools loaded before their config was turned off.
+		// Both are dropped before ranking, so they cannot fill the limit.
+		const checkedConfigIds = new Set(
+			Array.from(this.entries.values(), (entry) => entry.configId).filter(
+				isMcpConfigRowId,
+			),
+		);
+		const disabledConfigIds =
+			await findDisabledMcpConfigIds(checkedConfigIds);
+		const enabled = toEnabledToolSets(options);
 		return this.searchInMemory(query, {
 			category,
 			limit,
 			minConfidence,
 			readOnlyOnly,
+			// An entry added during the lookup above was not checked: leave
+			// its config's tools out rather than offer a config that is off.
+			isOffered: (entry) =>
+				(!isMcpConfigRowId(entry.configId) ||
+					(checkedConfigIds.has(entry.configId) &&
+						!disabledConfigIds.has(entry.configId))) &&
+				isToolEnabledForRequest(
+					entry.configId,
+					entry.toolName,
+					enabled,
+				),
 		});
 	}
 
@@ -603,7 +757,11 @@ export class ToolIndex {
 		// embedding model and API key via getAIEmbeddingModelWithMetadata()
 		const result = await generateEmbedding(query, options.tenantContext);
 
-		// Search Qdrant
+		// Search Qdrant. The enabled lists and the turned-off configs are
+		// applied to what comes back, so ask for a wider pool than `limit`:
+		// asking for exactly `limit` let tools of servers this request does
+		// not use fill every slot, and the filter then left nothing (Fizzy
+		// #2924). The result is cut to `limit` after filtering, below.
 		const searchOptions: CapabilitySearchOptions = {
 			queryEmbedding: result.embedding,
 			type: "mcp_tool",
@@ -612,7 +770,7 @@ export class ToolIndex {
 			organizationId: options.organizationId,
 			includeSystem: options.includeSystem,
 			minScore: options.minConfidence,
-			limit: options.limit,
+			limit: Math.max(options.limit, QDRANT_SEARCH_CANDIDATES),
 		};
 
 		const qdrantResults = await searchCapabilities(searchOptions);
@@ -633,105 +791,38 @@ export class ToolIndex {
 
 		// CRITICAL: Filter by enabled MCP config IDs, Integration IDs, and Fabric AI tool IDs
 		// This ensures tools from disabled integrations/servers don't appear in search results
-		const enabledConfigSet = Array.isArray(options.enabledMcpConfigIds)
-			? new Set(options.enabledMcpConfigIds)
-			: null;
-		const enabledIntegrationSet = Array.isArray(
-			options.enabledIntegrationIds,
-		)
-			? new Set(options.enabledIntegrationIds)
-			: null;
-		const enabledFabricToolSet = Array.isArray(options.enabledFabricToolIds)
-			? new Set(options.enabledFabricToolIds)
-			: null;
-
-		const mcpExplicitlyDisabled =
-			enabledConfigSet !== null && enabledConfigSet.size === 0;
-		const integrationsExplicitlyDisabled =
-			enabledIntegrationSet !== null && enabledIntegrationSet.size === 0;
-
-		const filteredQdrantResults = qdrantResults.filter((qResult) => {
+		const enabled = toEnabledToolSets(options);
+		const preferredQdrantResults = qdrantResults.filter((qResult) => {
 			const configId = qResult.capability.metadata?.configId as
 				| string
 				| undefined;
-
-			if (!configId) {
-				// No configId = system tool (Fabric AI, etc.) - always include
-				return true;
-			}
-
-			// Fabric AI tools: configId === "fabric-ai-server"
-			// Apply tool-name-level filtering when enabledFabricToolIds is provided
-			if (configId === "fabric-ai-server") {
-				if (enabledFabricToolSet !== null) {
-					const toolName = qResult.capability.name;
-					if (INFRASTRUCTURE_FABRIC_TOOLS.has(toolName)) {
-						return true;
-					}
-					const isEnabled = enabledFabricToolSet.has(toolName);
-					if (!isEnabled) {
-						console.log(
-							`[ToolIndex] Excluding Fabric AI tool from search (not in enabled list): ${toolName}`,
-						);
-					}
-					return isEnabled;
-				}
-				// No Fabric tool filter = include all (config-level filter still applies below)
-			}
-
-			// Check if this is an OAuth integration tool (configId format: oauth:integration:{integrationId})
-			if (configId.startsWith("oauth:integration:")) {
-				const integrationId = configId.replace(
-					"oauth:integration:",
-					"",
-				);
-
-				// If integrations are explicitly disabled (empty array), exclude
-				if (integrationsExplicitlyDisabled) {
-					console.log(
-						`[ToolIndex] Excluding OAuth tool from search (integrations disabled): ${qResult.capability.name}`,
-					);
-					return false;
-				}
-
-				// If we have a specific list of enabled integrations, check it
-				if (enabledIntegrationSet !== null) {
-					const isEnabled = enabledIntegrationSet.has(integrationId);
-					if (!isEnabled) {
-						console.log(
-							`[ToolIndex] Excluding OAuth tool from search (integration not enabled): ${qResult.capability.name}`,
-						);
-					}
-					return isEnabled;
-				}
-
-				// No filter = include all OAuth tools
-				return true;
-			}
-
-			// Regular MCP tools: configId is the MCPConfig.id from database
-			// If MCP tools are explicitly disabled (empty array), exclude
-			if (mcpExplicitlyDisabled) {
+			const isEnabled = isToolEnabledForRequest(
+				configId,
+				qResult.capability.name,
+				enabled,
+			);
+			if (!isEnabled) {
 				console.log(
-					`[ToolIndex] Excluding MCP tool from search (MCP disabled): ${qResult.capability.name}`,
+					`[ToolIndex] Excluding tool from search (not in the request's enabled lists): ${qResult.capability.name} (configId=${configId})`,
 				);
-				return false;
 			}
-
-			// If we have a specific list of enabled configs, check it
-			if (enabledConfigSet !== null) {
-				const isEnabled = enabledConfigSet.has(configId);
-				if (!isEnabled) {
-					console.log(
-						`[ToolIndex] Excluding MCP tool from search (config not enabled): ${qResult.capability.name}`,
-					);
-				}
-				return isEnabled;
-			}
-
-			// No filter = include all MCP tools
-			return true;
+			return isEnabled;
 		});
+
+		// Tools of a config turned off now are not offered, whatever the
+		// caller's preference lists say.
+		const disabledConfigIds = await findDisabledMcpConfigIds(
+			preferredQdrantResults.map(
+				(qResult) =>
+					qResult.capability.metadata?.configId as string | undefined,
+			),
+		);
+		const filteredQdrantResults = preferredQdrantResults.filter(
+			(qResult) =>
+				!disabledConfigIds.has(
+					qResult.capability.metadata?.configId as string,
+				),
+		);
 
 		// Debug: Log filter results
 		console.log(
@@ -739,7 +830,10 @@ export class ToolIndex {
 		);
 
 		// Get BM25 scores for hybrid matching
-		const bm25Results = this.bm25Index.search(query, options.limit * 2);
+		const bm25Results = this.bm25Index.search(
+			query,
+			Math.max(options.limit * 2, QDRANT_SEARCH_CANDIDATES),
+		);
 		const bm25Scores = new Map(
 			bm25Results.map((r) => [
 				r.id,
@@ -851,12 +945,16 @@ export class ToolIndex {
 			limit: number;
 			minConfidence: number;
 			readOnlyOnly: boolean;
+			/** Whether the caller may be offered this entry at all. */
+			isOffered: (entry: ToolIndexEntry) => boolean;
 		},
 	): ToolSearchResult[] {
-		const { category, limit, minConfidence, readOnlyOnly } = options;
+		const { category, limit, minConfidence, readOnlyOnly, isOffered } =
+			options;
 
-		// Filter candidates by category and read-only
-		let candidates = Array.from(this.entries.values());
+		// Filter candidates by what the caller may be offered, category and
+		// read-only
+		let candidates = Array.from(this.entries.values()).filter(isOffered);
 
 		if (category) {
 			const categoryTools = this.categoryToTools.get(category);
@@ -875,8 +973,12 @@ export class ToolIndex {
 			return [];
 		}
 
-		// BM25 search
-		const bm25Results = this.bm25Index.search(query, limit * 2);
+		// BM25 search over the candidates only
+		const bm25Results = this.bm25Index.search(
+			query,
+			limit * 2,
+			new Set(candidates.map((entry) => entry.id)),
+		);
 		const bm25Scores = new Map(
 			bm25Results.map((r) => [
 				r.id,
@@ -930,82 +1032,6 @@ export class ToolIndex {
 		}
 
 		// Sort by confidence and limit
-		return results
-			.sort((a, b) => b.confidence - a.confidence)
-			.slice(0, limit);
-	}
-
-	/**
-	 * Search with semantic similarity using query embedding
-	 */
-	async searchSemantic(
-		query: string,
-		queryEmbedding: number[],
-		options: Omit<ToolSearchOptions, "query" | "useSemanticSearch">,
-	): Promise<ToolSearchResult[]> {
-		const {
-			category,
-			limit = 10,
-			minConfidence = 0.2,
-			readOnlyOnly = false,
-		} = options;
-
-		// Filter candidates
-		let candidates = Array.from(this.entries.values()).filter(
-			(e) => e.embedding && e.embedding.length > 0,
-		);
-
-		if (category) {
-			const categoryTools = this.categoryToTools.get(category);
-			if (categoryTools) {
-				candidates = candidates.filter((e) => categoryTools.has(e.id));
-			} else {
-				candidates = [];
-			}
-		}
-
-		if (readOnlyOnly) {
-			candidates = candidates.filter((e) => e.isReadOnly);
-		}
-
-		// Get BM25 results for hybrid scoring
-		const bm25Results = this.bm25Index.search(query, limit * 2);
-		const bm25Scores = new Map(
-			bm25Results.map((r) => [
-				r.id,
-				{ score: r.score, matched: r.matchedTerms },
-			]),
-		);
-
-		// Calculate semantic similarity and combine with BM25
-		const results: ToolSearchResult[] = [];
-
-		for (const entry of candidates) {
-			// Type guard - candidates are pre-filtered to have embeddings
-			if (!entry.embedding) {
-				continue;
-			}
-			const semanticScore = this.cosineSimilarity(
-				queryEmbedding,
-				entry.embedding,
-			);
-			const bm25Data = bm25Scores.get(entry.id);
-			const bm25Score = bm25Data ? Math.min(bm25Data.score / 10, 1) : 0;
-
-			// Hybrid score: 60% semantic + 40% BM25
-			const confidence = 0.6 * semanticScore + 0.4 * bm25Score;
-
-			if (confidence >= minConfidence) {
-				results.push({
-					tool: entry,
-					confidence: Math.min(confidence, 1),
-					matchReason: `Semantic match (${(semanticScore * 100).toFixed(1)}%) + keyword (${(bm25Score * 100).toFixed(1)}%)`,
-					keywordMatches: bm25Data?.matched || [],
-					semanticScore,
-				});
-			}
-		}
-
 		return results
 			.sort((a, b) => b.confidence - a.confidence)
 			.slice(0, limit);
@@ -1243,130 +1269,66 @@ export class ToolIndex {
 			// This respects Orchestrator preferences (disabled integrations/servers are excluded)
 			let filteredCapabilities = capabilities;
 
-			// Build filter sets
-			const enabledConfigSet = Array.isArray(enabledMcpConfigIds)
-				? new Set(enabledMcpConfigIds)
-				: null;
-			const enabledIntegrationSet = Array.isArray(enabledIntegrationIds)
-				? new Set(enabledIntegrationIds)
-				: null;
-			const enabledFabricToolSet = Array.isArray(enabledFabricToolIds)
-				? new Set(enabledFabricToolIds)
-				: null;
-
-			// Check for explicit "disable all" cases
-			const mcpExplicitlyDisabled =
-				enabledConfigSet !== null && enabledConfigSet.size === 0;
-			const integrationsExplicitlyDisabled =
-				enabledIntegrationSet !== null &&
-				enabledIntegrationSet.size === 0;
+			const enabled = toEnabledToolSets({
+				enabledMcpConfigIds,
+				enabledIntegrationIds,
+				enabledFabricToolIds,
+			});
 
 			// Debug: Log what we're filtering with
-			if (enabledConfigSet) {
+			if (enabled.mcpConfigIds) {
 				console.log(
 					"[ToolIndex] Filtering MCP tools with enabled configs:",
-					Array.from(enabledConfigSet),
+					Array.from(enabled.mcpConfigIds),
 				);
 			}
-			if (enabledIntegrationSet) {
+			if (enabled.integrationIds) {
 				console.log(
 					"[ToolIndex] Filtering OAuth tools with enabled integrations:",
-					Array.from(enabledIntegrationSet),
+					Array.from(enabled.integrationIds),
 				);
 			}
-			if (enabledFabricToolSet) {
+			if (enabled.fabricToolIds) {
 				console.log(
 					"[ToolIndex] Filtering Fabric AI tools with enabled tool IDs:",
-					Array.from(enabledFabricToolSet),
+					Array.from(enabled.fabricToolIds),
 				);
 			}
 
 			filteredCapabilities = capabilities.filter((result) => {
 				const cap = result.capability;
-				const metadata = cap.metadata || {};
-				const configId = metadata.configId as string | undefined;
-
-				if (!configId) {
-					// No configId = system tool (Fabric AI, etc.) - always include
-					console.log(
-						`[ToolIndex] Including system tool (no configId): ${cap.name}`,
-					);
-					return true;
-				}
-
-				// Fabric AI tools: apply tool-name-level filtering
-				if (configId === "fabric-ai-server") {
-					if (enabledFabricToolSet !== null) {
-						if (INFRASTRUCTURE_FABRIC_TOOLS.has(cap.name)) {
-							return true;
-						}
-						const isEnabled = enabledFabricToolSet.has(cap.name);
-						if (!isEnabled) {
-							console.log(
-								`[ToolIndex] Excluding Fabric AI tool (not in enabled list): ${cap.name}`,
-							);
-						}
-						return isEnabled;
-					}
-					// No Fabric tool filter = config-level filter still applies below
-				}
-
-				// Check if this is an OAuth integration tool (configId format: oauth:integration:{integrationId})
-				if (configId.startsWith("oauth:integration:")) {
-					const integrationId = configId.replace(
-						"oauth:integration:",
-						"",
-					);
-
-					// If integrations are explicitly disabled (empty array), exclude
-					if (integrationsExplicitlyDisabled) {
-						console.log(
-							`[ToolIndex] Excluding OAuth tool (integrations disabled): ${cap.name}`,
-						);
-						return false;
-					}
-
-					// If we have a specific list of enabled integrations, check it
-					if (enabledIntegrationSet !== null) {
-						const isEnabled =
-							enabledIntegrationSet.has(integrationId);
-						console.log(
-							`[ToolIndex] OAuth Tool: ${cap.name}, integrationId: ${integrationId}, enabled: ${isEnabled}`,
-						);
-						return isEnabled;
-					}
-
-					// No filter = include all OAuth tools
-					console.log(
-						`[ToolIndex] Including OAuth tool (no filter): ${cap.name}`,
-					);
-					return true;
-				}
-
-				// Regular MCP tools: configId is the MCPConfig.id from database
-				// If MCP tools are explicitly disabled (empty array), exclude
-				if (mcpExplicitlyDisabled) {
-					console.log(
-						`[ToolIndex] Excluding MCP tool (MCP disabled): ${cap.name}`,
-					);
-					return false;
-				}
-
-				// If we have a specific list of enabled configs, check it
-				if (enabledConfigSet !== null) {
-					const isEnabled = enabledConfigSet.has(configId);
-					console.log(
-						`[ToolIndex] MCP Tool: ${cap.name}, configId: ${configId}, enabled: ${isEnabled}`,
-					);
-					return isEnabled;
-				}
-
-				// No filter = include all MCP tools
-				console.log(
-					`[ToolIndex] Including MCP tool (no filter): ${cap.name}`,
+				const configId = cap.metadata?.configId as string | undefined;
+				const isEnabled = isToolEnabledForRequest(
+					configId,
+					cap.name,
+					enabled,
 				);
-				return true;
+				if (!isEnabled) {
+					console.log(
+						`[ToolIndex] Excluding tool (not in the request's enabled lists): ${cap.name} (configId=${configId})`,
+					);
+				}
+				return isEnabled;
 			});
+
+			// Tools of a config turned off now are not loaded, whatever the
+			// caller's preference lists say.
+			const disabledConfigIds = await findDisabledMcpConfigIds(
+				filteredCapabilities.map(
+					(result) =>
+						result.capability.metadata?.configId as
+							| string
+							| undefined,
+				),
+			);
+			if (disabledConfigIds.size > 0) {
+				filteredCapabilities = filteredCapabilities.filter(
+					(result) =>
+						!disabledConfigIds.has(
+							result.capability.metadata?.configId as string,
+						),
+				);
+			}
 
 			console.log(
 				`[ToolIndex] Filtered from ${capabilities.length} to ${filteredCapabilities.length} tools based on enabled configs/integrations`,
@@ -1836,25 +1798,6 @@ export class ToolIndex {
 			console.error("[ToolIndex] Failed to generate embeddings:", error);
 			// Continue without embeddings - BM25 search will still work
 		}
-	}
-
-	private cosineSimilarity(a: number[], b: number[]): number {
-		if (a.length !== b.length) {
-			return 0;
-		}
-
-		let dotProduct = 0;
-		let normA = 0;
-		let normB = 0;
-
-		for (let i = 0; i < a.length; i++) {
-			dotProduct += a[i] * b[i];
-			normA += a[i] * a[i];
-			normB += b[i] * b[i];
-		}
-
-		const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-		return magnitude === 0 ? 0 : dotProduct / magnitude;
 	}
 
 	/**

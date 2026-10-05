@@ -12,6 +12,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Start an on-demand run of the security/accessibility finding-grouping
@@ -49,13 +50,21 @@ export const startGroupingProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId } = input;
+		const { projectId } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const user = context.user;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -75,7 +84,7 @@ export const startGroupingProcedure = tenantProtectedProcedure
 		const grouping = await createScanFindingGrouping({
 			projectId,
 			userId: user.id,
-			organizationId: organizationId ?? null,
+			organizationId,
 		});
 
 		// Lazy-load @repo/temporal so importing this procedure doesn't pull the
@@ -94,7 +103,7 @@ export const startGroupingProcedure = tenantProtectedProcedure
 							groupingId: grouping.id,
 							projectId,
 							userId: user.id,
-							organizationId: organizationId ?? null,
+							organizationId,
 						},
 					],
 					workflowExecutionTimeout: "30 minutes",

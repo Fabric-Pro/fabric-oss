@@ -15,7 +15,10 @@
  * renderer and its secret scan — so every refusal here is the one that ships.
  */
 
-import { pullRequestContextSchemaV2 } from "@repo/instructions";
+import {
+	directCommitContextSchema,
+	pullRequestContextSchemaV2,
+} from "@repo/instructions";
 import { Permissions } from "@repo/permissions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +26,7 @@ const m = vi.hoisted(() => ({
 	getProjectInstructionSettings: vi.fn(),
 	getInstructionRepositorySyncForProposal: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
+	getMemberProposalBranch: vi.fn(),
 	projectFindFirst: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	mailFrom: "",
@@ -44,6 +48,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			m.getInstructionRepositorySyncForProposal(...a),
 		getPublishedInstructionSnapshot: (...a: unknown[]) =>
 			m.getPublishedInstructionSnapshot(...a),
+		getMemberProposalBranch: (...a: unknown[]) =>
+			m.getMemberProposalBranch(...a),
 	};
 });
 vi.mock("@repo/config", () => ({
@@ -663,6 +669,125 @@ describe("attribution", () => {
 	});
 });
 
+describe("commit mode (Fizzy #2878 §10)", () => {
+	function commit(overrides: Record<string, unknown> = {}) {
+		return admit({
+			mode: "commit",
+			message: "Tighten the review skill",
+			...overrides,
+		});
+	}
+
+	it("admits a member with CREATE on a repository-backed project, freezing the sync, base, author and message", async () => {
+		const admission = await commit();
+
+		expect(admission).toMatchObject({
+			destination: "REPOSITORY_COMMIT",
+			note: null,
+			context: {
+				v: 1,
+				integrationId: "int_1",
+				syncId: "sync_1",
+				syncGeneration: 4,
+				provider: "GITHUB",
+				targetRef: "main",
+				rootPath: "instructions",
+				baseCommitSha: SHA,
+				repository: {
+					provider: "GITHUB",
+					owner: "example-org",
+					repo: "example-repo",
+				},
+				author: { name: "Pat Example", email: NOREPLY },
+				committer: { name: "Fabric", email: NOREPLY },
+				message: "Tighten the review skill",
+			},
+		});
+		const context = (admission as { context: unknown }).context;
+		expect(directCommitContextSchema.safeParse(context).success).toBe(true);
+		expect(m.projectFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("refuses an upload-backed project with NOT_REPOSITORY_SOURCED and reads no repository", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const error = await refusal(commit());
+
+		expect(error).toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { reason: "NOT_REPOSITORY_SOURCED" },
+		});
+		expect(
+			m.getInstructionRepositorySyncForProposal,
+		).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project with no source of truth chosen yet the same way", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			sourceOfTruth: null,
+		});
+
+		expect(await refusal(commit())).toMatchObject({
+			data: { reason: "NOT_REPOSITORY_SOURCED" },
+		});
+	});
+
+	it("refuses a reader even when the project lets readers propose", async () => {
+		m.resolveEffectiveProjectPermissions.mockResolvedValue(
+			access([Permissions.INSTRUCTION_READ]),
+		);
+		m.getInstructionRepositorySyncForProposal.mockResolvedValue(
+			syncRow({ allowReaderProposals: true }),
+		);
+
+		expect(await refusal(commit())).toMatchObject({ code: "FORBIDDEN" });
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("refuses a base that is not the sync's published commit", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue(
+			publishedBase({ source: "UPLOAD", sourceCommitSha: null }),
+		);
+
+		expect(await refusal(commit())).toMatchObject({
+			data: { reason: "REPOSITORY_BASE_UNAVAILABLE" },
+		});
+	});
+
+	it.each([
+		["an empty message", "   \n  ", "MESSAGE_EMPTY"],
+		["a message over the cap", "x".repeat(6000), "MESSAGE_TOO_LONG"],
+		["a message carrying a token", `Fix it ${TOKEN}`, "MESSAGE_REJECTED"],
+	])(
+		"refuses %s as 422 naming the message, never quoting it",
+		async (_label, message, reason) => {
+			const error = await refusal(commit({ message }));
+
+			expect(error).toMatchObject({
+				code: "UNPROCESSABLE_CONTENT",
+				data: { reason, field: "message" },
+			});
+			expect(JSON.stringify(error)).not.toContain(TOKEN);
+		},
+	);
+
+	it("falls back to the neutral author name for an address-shaped member name", async () => {
+		const admission = await commit({ proposerName: NOREPLY });
+
+		expect(admission).toMatchObject({
+			destination: "REPOSITORY_COMMIT",
+			context: { author: { name: expect.not.stringContaining("@") } },
+		});
+	});
+
+	it("never changes what a proposal admits", async () => {
+		expect(await admit()).toMatchObject({ destination: "REPOSITORY" });
+	});
+});
+
 describe("uploadStartedAuditTemplate", () => {
 	it("carries the request's actor and IP and the caller-known metadata", () => {
 		const headers = new Headers({
@@ -709,5 +834,233 @@ describe("uploadStartedAuditTemplate", () => {
 		expect(template).toHaveProperty("ipAddress");
 		// The id and version exist only inside the create transaction.
 		expect(template).not.toHaveProperty("resource");
+	});
+});
+
+describe("a move from uploads into the repository (Fizzy #2878 §9)", () => {
+	const pointer = (over: Record<string, unknown> = {}) => ({
+		v: 1,
+		state: "PROPOSING",
+		branchId: "branch_1",
+		snapshotId: "snap_move",
+		syncId: "sync_1",
+		pullRequestUrl: null,
+		startedAt: "2026-10-03T10:00:00.000Z",
+		userId: USER,
+		...over,
+	});
+	const TIP = "c".repeat(40);
+
+	function proposing(over: Record<string, unknown> = {}) {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+			migration: pointer(over),
+		});
+		m.getMemberProposalBranch.mockResolvedValue({
+			pullRequestUrl:
+				"https://github.com/example-org/example-repo/pull/9",
+			pullRequestExternalId: "9",
+		});
+	}
+
+	describe("while it is open, every other way of changing the instructions is refused", () => {
+		it.each([
+			["a proposal", "proposal"],
+			["a direct publish", "publish"],
+			["a direct save", "direct"],
+			["a commit", "commit"],
+		])(
+			"refuses %s with MIGRATION_OPEN, 409, naming the pull request, and reads nothing else",
+			async (_label, mode) => {
+				proposing();
+
+				const error = await refusal(
+					admit({ mode, message: "Tighten the rules" }),
+				);
+
+				expect(error).toMatchObject({
+					code: "CONFLICT",
+					data: {
+						reason: "MIGRATION_OPEN",
+						state: "PROPOSING",
+						pullRequest: {
+							url: "https://github.com/example-org/example-repo/pull/9",
+							externalId: "9",
+						},
+					},
+				});
+				expect(
+					m.getInstructionRepositorySyncForProposal,
+				).not.toHaveBeenCalled();
+				expect(
+					m.getPublishedInstructionSnapshot,
+				).not.toHaveBeenCalled();
+			},
+		);
+
+		it("refuses while it is switching too, and says so", async () => {
+			proposing({ state: "SWITCHING" });
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "REPOSITORY",
+				migration: pointer({ state: "SWITCHING" }),
+			});
+
+			const error = await refusal(admit());
+
+			expect(error.data).toMatchObject({
+				reason: "MIGRATION_OPEN",
+				state: "SWITCHING",
+			});
+		});
+
+		it("answers null for the pull request when the move has no branch yet", async () => {
+			proposing({ branchId: null });
+
+			const error = await refusal(admit());
+
+			expect(error.data).toMatchObject({ pullRequest: null });
+			expect(m.getMemberProposalBranch).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("admitted as a move", () => {
+		it("freezes the move's own sync row and the branch tip, in fixed words, and reads no published copy", async () => {
+			proposing();
+			m.getInstructionRepositorySyncForProposal.mockResolvedValue(
+				syncRow({ rootPath: ".claude", generation: 1 }),
+			);
+
+			const admission = await admit({
+				mode: "migration",
+				baseCommitSha: TIP,
+				fileCount: 12,
+			});
+
+			expect(admission).toMatchObject({
+				destination: "REPOSITORY",
+				syncId: "sync_1",
+				syncGeneration: 1,
+				note: { title: "Move coding instructions into the repository" },
+			});
+			expect(admission.destination).toBe("REPOSITORY");
+			const context = pullRequestContextSchemaV2.parse(
+				(admission as { context: unknown }).context,
+			);
+			expect(context).toMatchObject({
+				v: 2,
+				integrationId: "int_1",
+				syncId: "sync_1",
+				targetRef: "main",
+				rootPath: ".claude",
+				baseCommitSha: TIP,
+				repository: { provider: "GITHUB" },
+			});
+			expect(context.message).toMatch(
+				/^Move coding instructions into the repository\n\n/,
+			);
+			expect(context.committer.name).toBe("Fabric");
+			expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		});
+
+		it("ignores a note in the input: the words are Fabric's", async () => {
+			proposing();
+
+			const admission = await admit({
+				mode: "migration",
+				baseCommitSha: TIP,
+				note: { title: "Something else" },
+			});
+
+			expect((admission as { note: { title: string } }).note.title).toBe(
+				"Move coding instructions into the repository",
+			);
+		});
+
+		it("needs the pointer to be proposing for THIS sync row", async () => {
+			proposing({ syncId: "sync_other" });
+
+			const error = await refusal(
+				admit({ mode: "migration", baseCommitSha: TIP }),
+			);
+
+			expect(error).toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { reason: "REPOSITORY_SOURCE_OF_TRUTH" },
+			});
+		});
+
+		it.each([
+			[
+				"no move is open",
+				() => {
+					m.getProjectInstructionSettings.mockResolvedValue({
+						ignoreGlobs: null,
+						sourceOfTruth: "UPLOAD",
+						migration: null,
+					});
+				},
+			],
+			[
+				"the move is switching",
+				() => {
+					m.getProjectInstructionSettings.mockResolvedValue({
+						ignoreGlobs: null,
+						sourceOfTruth: "REPOSITORY",
+						migration: pointer({ state: "SWITCHING" }),
+					});
+				},
+			],
+		])("refuses when %s", async (_label, arrange) => {
+			arrange();
+
+			const error = await refusal(
+				admit({ mode: "migration", baseCommitSha: TIP }),
+			);
+
+			expect(error).toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "MIGRATION_NOT_OPEN" },
+			});
+		});
+
+		it("needs the branch tip it builds on", async () => {
+			proposing();
+
+			const error = await refusal(admit({ mode: "migration" }));
+
+			expect(error.data).toMatchObject({ reason: "MIGRATION_NOT_OPEN" });
+		});
+
+		it("refuses an integration that is no longer active, as every admission does", async () => {
+			proposing();
+			m.getInstructionRepositorySyncForProposal.mockResolvedValue(
+				syncRow(integration({ status: "TOKEN_EXPIRED" })),
+			);
+
+			const error = await refusal(
+				admit({ mode: "migration", baseCommitSha: TIP }),
+			);
+
+			expect(error.data).toMatchObject({
+				reason: "REPOSITORY_UNAVAILABLE",
+			});
+		});
+
+		it("is admitted BLOCKED when the author's name cannot be made safe, never refused", async () => {
+			proposing();
+			m.render = () => ({ ok: false, code: "ATTRIBUTION_REJECTED" });
+
+			const admission = await admit({
+				mode: "migration",
+				baseCommitSha: TIP,
+			});
+
+			expect(admission).toMatchObject({
+				destination: "REPOSITORY",
+				blocked: { code: "ATTRIBUTION_REJECTED" },
+			});
+		});
 	});
 });

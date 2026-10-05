@@ -146,6 +146,16 @@ jobs:
           [[ "$ACTUAL_SHA" == "$GITHUB_SHA" ]] \
             || { echo "::error::checkout is $ACTUAL_SHA, expected $GITHUB_SHA"; exit 1; }
 
+      # The hosted runner's root disk can run out while an image rebuilds its
+      # dependency layer (any lockfile change) and exports its cache, as
+      # data-analyst did with "No space left on device". These preinstalled
+      # toolchains are not used by this job.
+      - name: Free runner disk for the image build
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 

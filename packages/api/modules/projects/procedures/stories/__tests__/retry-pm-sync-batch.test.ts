@@ -30,6 +30,8 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	applyPmUnlink: mocks.applyPmUnlink,
 	isPmServerIdKeySentinel: (id: string) =>
 		typeof id === "string" && id.startsWith("key:"),

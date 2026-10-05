@@ -12,6 +12,8 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { disconnectPersonalGitLab } from "../../../integrations/lib/gitlab-personal-disconnect";
+import { authorizeGitLabTenant } from "../../../integrations/lib/gitlab-request-tenant";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 /**
@@ -74,6 +76,34 @@ export const deleteIntegrationProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", {
 				message: "Integration not found",
 			});
+		}
+
+		if (
+			integration.provider === "GITLAB" &&
+			integration.workflowId === null &&
+			integration.name !== "GITLAB_OAUTH_APP"
+		) {
+			// The personal GitLab connection: the one personal GitLab
+			// disconnect rather than deleting the row, which would skip the
+			// revocation and the fence on an in-flight refresh.
+			// Project repository links are untouched.
+			await disconnectPersonalGitLab({
+				// Resolved and authorized against the organization the input
+				// names; a request with no organization is refused rather
+				// than disconnecting into a no-organization tenant.
+				tenant: await authorizeGitLabTenant(
+					Permissions.MCP_CONNECT,
+					input.organizationId,
+					context,
+				),
+				surface: "workflows.integrations.delete",
+				audit: context,
+				metadata: { integrationId: integration.id },
+			});
+			return {
+				success: true,
+				message: "Integration deleted successfully",
+			};
 		}
 
 		// Fail loudly (naming the dependent projects) instead of surfacing the

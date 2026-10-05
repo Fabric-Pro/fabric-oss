@@ -1,4 +1,8 @@
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
+import {
+	GitLabPmOriginMismatchError,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 
 export interface ResolveApplyPmConfigInput {
@@ -19,7 +23,11 @@ export type ResolveApplyPmConfigResult =
 	  }
 	| {
 			resolved: false;
-			reason: "no-pm-config" | "user-not-connected";
+			reason:
+				| "no-pm-config"
+				| "user-not-connected"
+				/** The caller's GitLab is on another instance than the container. */
+				| "gitlab-instance-mismatch";
 	  };
 
 /**
@@ -83,12 +91,25 @@ export async function resolveApplyPmConfig(
 		return { resolved: false, reason: "no-pm-config" };
 	}
 
-	const userMcpConfig = await resolvePMConfigForUser({
-		configId: project.projectManagementMcpConfigId,
-		mcpServerId: project.projectManagementMcpServerId,
-		userId: input.userId,
-		organizationId: project.organizationId ?? undefined,
-	});
+	let userMcpConfig: Awaited<
+		ReturnType<typeof resolveProjectPMConfigForUser>
+	>;
+	try {
+		userMcpConfig = await resolveProjectPMConfigForUser({
+			configId: project.projectManagementMcpConfigId,
+			mcpServerId: project.projectManagementMcpServerId,
+			userId: input.userId,
+			organizationId: project.organizationId ?? undefined,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
+		});
+	} catch (error) {
+		// The caller's own GitLab MCP config is on another instance than the
+		// container: neither it nor the REST fallback may serve this project.
+		if (error instanceof GitLabPmOriginMismatchError) {
+			return { resolved: false, reason: "gitlab-instance-mismatch" };
+		}
+		throw error;
+	}
 
 	if (userMcpConfig?.enabled) {
 		return { resolved: true, mcpConfigId: userMcpConfig.id, ...base };

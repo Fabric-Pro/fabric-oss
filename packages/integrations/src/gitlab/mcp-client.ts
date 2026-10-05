@@ -8,12 +8,22 @@
  * a synchronous one-shot.
  */
 
+import { gitlabOutboundFetch } from "./outbound";
+
 export class GitLabMcpError extends Error {
 	constructor(
 		message: string,
 		readonly code?: number,
 		/** HTTP status when the error originated from a non-OK HTTP response (vs a JSON-RPC error). */
 		readonly httpStatus?: number,
+		/**
+		 * Provenance of `httpStatus`: true only when the endpoint URL itself
+		 * answered it, with no redirect involved. A redirect — refused
+		 * (`redirect: "manual"` surfaces it as a 3xx) or followed by some
+		 * other fetch — leaves this false, so the status says nothing about
+		 * whether the call ran.
+		 */
+		readonly answeredByEndpoint: boolean = false,
 	) {
 		super(message);
 		this.name = "GitLabMcpError";
@@ -43,6 +53,14 @@ interface JsonRpcError {
 	error: { code: number; message: string; data?: unknown };
 }
 
+function sameUrl(a: string, b: string): boolean {
+	try {
+		return new URL(a).href === new URL(b).href;
+	} catch {
+		return false;
+	}
+}
+
 export function createGitLabMcpClient(opts: {
 	serverUrl: string;
 	token: string;
@@ -55,7 +73,12 @@ export function createGitLabMcpClient(opts: {
 	return {
 		async callTool(name, args) {
 			const id = nextId++;
-			const response = await fetch(opts.serverUrl, {
+			// The endpoint is the user's GitLab instance: anything but
+			// gitlab.com goes through the outbound guard. Redirects are never
+			// followed — a POST that was redirected may already have run, and
+			// a status from wherever it led says nothing about the endpoint.
+			const response = await gitlabOutboundFetch(opts.serverUrl, {
+				redirect: "manual",
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
@@ -75,10 +98,19 @@ export function createGitLabMcpClient(opts: {
 			});
 
 			if (!response.ok) {
+				const isRedirect =
+					response.status >= 300 && response.status < 400;
+				const answeredByEndpoint =
+					!isRedirect &&
+					!response.redirected &&
+					(!response.url || sameUrl(response.url, opts.serverUrl));
 				throw new GitLabMcpError(
-					`GitLab MCP HTTP ${response.status}: ${await response.text().catch(() => "")}`,
+					isRedirect
+						? `GitLab MCP HTTP ${response.status}: the endpoint redirected; not followed`
+						: `GitLab MCP HTTP ${response.status}: ${await response.text().catch(() => "")}`,
 					undefined, // no JSON-RPC error code on HTTP non-OK
 					response.status, // capture the HTTP status for downstream classification
+					answeredByEndpoint,
 				);
 			}
 

@@ -44,31 +44,24 @@ const {
 	};
 });
 
+const db = vi.hoisted(() => ({}) as Record<string, unknown>);
 vi.mock("@repo/database", () => {
-	const tx = {
+	Object.assign(db, {
+		workflowIntegration: store.delegate,
+		dataConnection: { updateMany: vi.fn() },
 		mCPServer: { findFirst: async () => ({ id: "gitlab-server" }) },
 		mCPConfig: {
+			updateMany: vi.fn(async () => ({ count: 0 })),
+			findMany: async () => [],
+			// No MCPConfig token copy: the connection row under test is the
+			// only credential.
 			findFirst: async () => null,
 			create: async () => ({ id: "mcp-config" }),
-			update: async () => ({ id: "mcp-config" }),
-			delete: async () => ({}),
 		},
-		workflowIntegration: store.delegate,
-	};
+		projectRepositoryIntegration: { findMany: async () => [] },
+	});
 	return {
-		db: {
-			workflowIntegration: store.delegate,
-			dataConnection: { updateMany: vi.fn() },
-			mCPConfig: {
-				updateMany: vi.fn(),
-				findMany: async () => [],
-				// No MCPConfig token, so token reads fall through to the
-				// WorkflowIntegration store under test.
-				findFirst: async () => null,
-			},
-			$transaction: async <T>(cb: (client: typeof tx) => Promise<T>) =>
-				cb(tx),
-		},
+		db,
 		createDataConnection: vi.fn(),
 		getDataConnectionByProvider: vi.fn().mockResolvedValue(null),
 		updateDataConnection: vi.fn(),
@@ -90,13 +83,18 @@ vi.mock("@repo/integrations", () => ({
 	getGitHubToken: vi.fn(),
 }));
 
-vi.mock("@repo/integrations/gitlab", () => ({
-	GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS: 2000,
-	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS: 10000,
-	GitLabApiError: class extends Error {},
-	GitLabReauthRequiredError: class extends Error {},
-	getValidGitLabAccessToken: vi.fn(),
-	gitlabFetch: vi.fn(),
+// The real GitLab connection service writes and reads the connection against
+// the same store; only the capability probe (network) is stubbed. Its
+// lifecycle lock only serialises; run the body.
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		_keys: unknown,
+		fn: (tx: unknown, b: () => void) => unknown,
+	) => fn(db, () => {}),
+}));
+
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
 	probeGitLabMcp: async () => ({
 		status: "not-found",
 		capable: false,
@@ -121,7 +119,8 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("@repo/utils", () => ({
+vi.mock("@repo/utils", async (importOriginal) => ({
+	...(await importOriginal<object>()),
 	encryptApiKey: (v: string) => `enc_${v}`,
 	decryptApiKey: (v: string) => v.replace(/^enc_/, ""),
 	hashApiKey: (v: string) => `hash_${v}`,
@@ -169,7 +168,6 @@ vi.mock("../../lib/sync-gitlab-official-mcp", () => ({
 		ok: true,
 		action: "noop",
 	}),
-	resetGitlabOfficialMcpBreaker: async () => ({ ok: true }),
 }));
 
 vi.mock("../../lib/github-oauth", () => ({
@@ -211,6 +209,30 @@ vi.mock("../../../../orpc/procedures", () => {
 		requirePermission: () => ({}),
 		requireInputOrgPermission: () => ({}),
 		requireOrganizationMembership: vi.fn(),
+		// The resolution `authorizeInputOrganization` performs (input, else
+		// session; an explicit null suppresses the session fallback; none
+		// refused when required). It models no guest write organization
+		// (`effectiveWriteOrgId`), which the real resolver lets win even over
+		// an explicit null. Membership and role are exercised for real in
+		// gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		resolveOrganizationId: vi.fn(),
 		resolveOrganizationIdForCaller: vi.fn(),
 		Permissions: {
@@ -223,12 +245,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	};
 });
 
-import { db } from "@repo/database";
 import {
-	getValidGitLabToken,
-	loadGitLabToken,
-	persistGitLabToken,
-} from "../../lib/gitlab-token";
+	getGitLabAccessToken,
+	resetGitLabConnectionDepsForTests,
+} from "@repo/integrations/gitlab";
+import { persistGitLabToken } from "../../lib/gitlab-token";
 import { encodeOAuthState } from "../../lib/oauth-state";
 import { __resetInMemoryOAuthStateStoreForTests } from "../../lib/oauth-state-store";
 import { githubOAuthProcedures } from "../../procedures/github-oauth";
@@ -263,6 +284,7 @@ function seedAppRow(provider: string): string {
 		organizationId: ORG,
 		provider,
 		name: `${provider}_OAUTH_APP`,
+		workflowId: null,
 		isActive: true,
 		credentials: appCredentials(),
 	});
@@ -289,6 +311,7 @@ const fetchMock = vi.fn();
 
 beforeEach(() => {
 	store.reset();
+	resetGitLabConnectionDepsForTests();
 	__resetInMemoryOAuthStateStoreForTests();
 	fetchMock.mockReset();
 	fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
@@ -301,7 +324,7 @@ beforeEach(() => {
 
 describe("GitLab: save app credentials, connect, disconnect", () => {
 	const persist = async (accessToken: string) => {
-		return persistGitLabToken(db as never, {
+		const result = await persistGitLabToken({
 			userId: ADMIN,
 			organizationId: ORG,
 			token: {
@@ -316,8 +339,17 @@ describe("GitLab: save app credentials, connect, disconnect", () => {
 				name: "Example User",
 				avatarUrl: null,
 			},
+			issuer: {
+				kind: "app",
+				clientId: "client-id",
+				origin: "https://gitlab.com",
+			},
 			freshGrant: true,
 		});
+		if (!result.written) {
+			throw new Error("connect was fenced out");
+		}
+		return result;
 	};
 
 	it("keeps the app credentials through connect, reconnect and disconnect", async () => {
@@ -343,9 +375,14 @@ describe("GitLab: save app credentials, connect, disconnect", () => {
 			decrypted(store.row(first.workflowIntegrationId).credentials),
 		).toMatchObject({ access_token: "first-token" });
 
-		// A reconnect updates that connection row, not the app row.
+		// A reconnect preserves intentional sharing and updates the connection row.
+		store.row(first.workflowIntegrationId).usageScope =
+			"ORGANIZATION_SHARED";
 		const second = await persist("second-token");
 		expect(second.workflowIntegrationId).toBe(first.workflowIntegrationId);
+		expect(store.row(second.workflowIntegrationId).usageScope).toBe(
+			"ORGANIZATION_SHARED",
+		);
 		expect(connectionRows("GITLAB")).toHaveLength(1);
 		expect(
 			decrypted(store.row(first.workflowIntegrationId).credentials),
@@ -368,22 +405,17 @@ describe("GitLab: save app credentials, connect, disconnect", () => {
 });
 
 describe("GitLab reads beside the GITLAB_OAUTH_APP row", () => {
-	it("loadGitLabToken never reads the app row's client credentials as a token", async () => {
+	it("never reads the app row's client credentials as a token", async () => {
 		const appRowId = seedAppRow("GITLAB");
 
-		await expect(
-			loadGitLabToken(db as never, {
-				userId: ADMIN,
-				organizationId: ORG,
-			}),
-		).resolves.toBeNull();
+		await expect(getGitLabAccessToken(ADMIN, ORG)).resolves.toBeNull();
 		expect(store.row(appRowId)).toMatchObject({
 			name: "GITLAB_OAUTH_APP",
 			credentials: appCredentials(),
 		});
 	});
 
-	it("an MCPConfig-sourced refresh keeps the identity stored on the connection row", async () => {
+	it("a refresh with the app the token was issued by keeps the identity stored on the connection row", async () => {
 		const appRowId = seedAppRow("GITLAB");
 		store.rows.push({
 			id: "connection-row",
@@ -391,36 +423,24 @@ describe("GitLab reads beside the GITLAB_OAUTH_APP row", () => {
 			organizationId: ORG,
 			provider: "GITLAB",
 			name: "GitLab: example-user",
+			workflowId: null,
 			isActive: true,
-			credentials: `enc_${JSON.stringify({ access_token: "stale" })}`,
+			credentials: `enc_${JSON.stringify({
+				access_token: "stale",
+				refresh_token: "rtok",
+				expires_in: 7200,
+				token_obtained_at: new Date(
+					Date.now() - 3 * 3_600_000,
+				).toISOString(),
+				issuer: {
+					kind: "app",
+					clientId: "client-id",
+					origin: "https://gitlab.com",
+				},
+				connectionGeneration: 1,
+			})}`,
 			settings: { gitlabUserId: 42, gitlabUsername: "example-user" },
 		});
-		// The token lives on MCPConfig (the primary store), so the refresh
-		// reads the identity it re-persists from the WorkflowIntegration row.
-		const mcpRow = {
-			id: "mcp-config",
-			encryptedAccessToken: "enc_stale",
-			encryptedRefreshToken: "enc_rtok",
-			tokenExpiresAt: new Date(Date.now() + 10_000),
-			needsReauth: false,
-		};
-		const tx = {
-			$executeRaw: async () => 1,
-			mCPServer: { findFirst: async () => ({ id: "gitlab-server" }) },
-			mCPConfig: {
-				findFirst: async () => mcpRow,
-				create: async () => ({ id: "mcp-config" }),
-				update: async () => ({ id: "mcp-config" }),
-				updateMany: async () => ({ count: 1 }),
-				delete: async () => ({}),
-			},
-			workflowIntegration: store.delegate,
-		};
-		const refreshDb = {
-			...tx,
-			$transaction: async <T>(cb: (client: typeof tx) => Promise<T>) =>
-				cb(tx),
-		};
 		fetchMock.mockResolvedValueOnce(
 			new Response(
 				JSON.stringify({
@@ -435,13 +455,14 @@ describe("GitLab reads beside the GITLAB_OAUTH_APP row", () => {
 			),
 		);
 
-		const token = await getValidGitLabToken(
-			refreshDb as never,
-			{ userId: ADMIN, organizationId: ORG },
-			{ credentials: { clientId: "client-id", clientSecret: "secret" } },
-		);
+		expect(await getGitLabAccessToken(ADMIN, ORG)).toBe("renewed");
 
-		expect(token).toBe("renewed");
+		// The exchange used the stored app's client (the issuer).
+		const body = new URLSearchParams(
+			String((fetchMock.mock.calls[0][1] as RequestInit).body),
+		);
+		expect(body.get("client_id")).toBe("client-id");
+		expect(body.get("client_secret")).toBe("client-secret");
 		expect(store.row("connection-row").settings).toMatchObject({
 			gitlabUserId: 42,
 			gitlabUsername: "example-user",
@@ -450,6 +471,7 @@ describe("GitLab reads beside the GITLAB_OAUTH_APP row", () => {
 			decrypted(store.row("connection-row").credentials),
 		).toMatchObject({
 			access_token: "renewed",
+			refresh_token: "rtok-2",
 		});
 		expect(store.row(appRowId)).toMatchObject({
 			name: "GITLAB_OAUTH_APP",
@@ -562,6 +584,99 @@ describe.each([
 		});
 		expect(decrypted(connections[0].credentials)).toMatchObject({
 			access_token: "generic-access",
+		});
+	});
+});
+
+describe("integrations.oauth.callback (GITLAB) — the Data Connection holds no token", () => {
+	async function connectGitLab() {
+		mockExchangeCodeForTokens.mockResolvedValue({
+			access_token: "gitlab-grant-access",
+			refresh_token: "gitlab-grant-refresh",
+			token_type: "bearer",
+			scope: "api read_user",
+			expires_in: 7200,
+		});
+		mockGetUserInfo.mockResolvedValue({
+			id: "42",
+			login: "example",
+			name: "Example",
+			email: null,
+			avatarUrl: null,
+		});
+		return (
+			genericOAuthProcedures.callback as unknown as Handler<
+				{ code: string; state: string },
+				{ success: boolean; message: string }
+			>
+		).handler({
+			input: {
+				code: "code",
+				state: encodeOAuthState({
+					userId: ADMIN,
+					organizationId: ORG,
+					provider: "GITLAB",
+					redirectUri: REDIRECT_URI,
+				}),
+			},
+			context,
+		});
+	}
+
+	beforeEach(async () => {
+		const database = await import("@repo/database");
+		vi.mocked(database.createDataConnection).mockReset();
+		vi.mocked(database.updateDataConnection).mockReset();
+		vi.mocked(database.getDataConnectionByProvider).mockReset();
+	});
+
+	it("creates the Data Connection with its default config and no token", async () => {
+		const database = await import("@repo/database");
+		vi.mocked(database.getDataConnectionByProvider).mockResolvedValue(null);
+
+		await expect(connectGitLab()).resolves.toMatchObject({ success: true });
+
+		expect(database.createDataConnection).toHaveBeenCalledOnce();
+		const written = vi.mocked(database.createDataConnection).mock
+			.calls[0]![0];
+		expect(written).toMatchObject({
+			provider: "GITLAB",
+			status: "CONNECTED",
+			config: { includeIssues: true, includeMergeRequests: true },
+		});
+		expect(written.accessToken).toBeUndefined();
+		expect(written.refreshToken).toBeUndefined();
+		expect(written.tokenExpiresAt).toBeUndefined();
+		expect(written.credentials).toBeUndefined();
+		expect(JSON.stringify(written)).not.toContain("gitlab-grant");
+		// The grant itself went to the person's connection.
+		expect(
+			decrypted(connectionRows("GITLAB")[0]!.credentials),
+		).toMatchObject({ access_token: "gitlab-grant-access" });
+	});
+
+	it("updates an existing Data Connection without a token and keeps its config", async () => {
+		const database = await import("@repo/database");
+		vi.mocked(database.getDataConnectionByProvider).mockResolvedValue({
+			id: "conn-gl",
+			provider: "GITLAB",
+			config: { baseUrl: "https://gitlab.example.com" },
+		} as any);
+
+		await expect(connectGitLab()).resolves.toMatchObject({ success: true });
+
+		expect(database.createDataConnection).not.toHaveBeenCalled();
+		expect(database.updateDataConnection).toHaveBeenCalledOnce();
+		const { data } = vi.mocked(database.updateDataConnection).mock
+			.calls[0]![0];
+		expect(data).toEqual({
+			name: "GitLab: example",
+			status: "CONNECTED",
+			accessToken: null,
+			refreshToken: null,
+			tokenExpiresAt: null,
+			credentialId: null,
+			lastSyncError: null,
 		});
 	});
 });

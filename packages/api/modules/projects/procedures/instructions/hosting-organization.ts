@@ -12,13 +12,15 @@ import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-pr
  * decides which organization the handler acts in and what it may show.
  *
  * Every coding-instructions procedure is project-scoped, so the only
- * organization any of them may act in is the project's own. That is NOT what
- * `resolveOrganizationId` answers: it returns an explicit caller-supplied
- * `organizationId` verbatim and otherwise falls back to the session's active
- * organization (`packages/api/orpc/procedures.ts`). Neither value is the
- * project's host org for a caller who belongs to more than one, and the
- * `requireProjectPermission` middleware does not publish the org it resolved
- * onto the context, so a handler cannot read it back.
+ * organization any of them may act in is the project's own. That was NOT what
+ * `resolveOrganizationId` answered when this was written: it returned an
+ * explicit caller-supplied `organizationId` verbatim and otherwise fell back
+ * to the session's active organization. Since Fizzy #2904 the permission
+ * middleware records the project it authorized and `resolveOrganizationId`
+ * returns that project's organization (`lib/authorized-project-binding.ts`),
+ * but only AFTER the check has run in the same request; this helper derives
+ * the host organization explicitly and also returns the caller's permissions,
+ * which the binding does not carry.
  *
  * The observable bug that closes: a multi-organization member begins an
  * upload for a project in organization A (`begin` already derives the host

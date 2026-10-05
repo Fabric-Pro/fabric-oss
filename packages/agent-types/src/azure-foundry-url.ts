@@ -5,7 +5,8 @@
  * use.
  *
  * Lives in `@repo/agent-types` because it is pure and the LangGraph agent
- * bundle cannot import `@repo/ai` (see `databricks-compat` in agent-core).
+ * bundle cannot import `@repo/ai`: every `agents/langchain/*` tsup config marks
+ * `@repo/ai` external, while bundling the other `@repo/*` packages.
  * `@repo/ai` re-exports it for the model factory and the connection tester, so
  * Test Connection probes exactly the request every in-app Azure call makes.
  */

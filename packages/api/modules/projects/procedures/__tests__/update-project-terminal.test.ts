@@ -64,7 +64,7 @@ beforeEach(() => {
 	mockGetProject.mockResolvedValue({
 		id: "proj-1",
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 		projectManagementMcpServerId: "azure-devops",
 	});
 	mockUpdateProject.mockResolvedValue({ id: "proj-1" });
@@ -76,7 +76,7 @@ describe("updateProjectProcedure — terminal status fields", () => {
 		mockGetProject.mockResolvedValue({
 			id: "proj-1",
 			userId: "user-1",
-			organizationId: null,
+			organizationId: "org-1",
 			projectManagementMcpServerId: "azure-devops",
 			pmTerminalStatuses: ["Removed"],
 		});
@@ -100,7 +100,7 @@ describe("updateProjectProcedure — terminal status fields", () => {
 		mockGetProject.mockResolvedValue({
 			id: "proj-1",
 			userId: "user-1",
-			organizationId: null,
+			organizationId: "org-1",
 			projectManagementMcpServerId: "azure-devops",
 			pmTerminalStatuses: ["Done", "Closed"],
 		});

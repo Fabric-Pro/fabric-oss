@@ -5,6 +5,9 @@ import {
 	formatByteSizeOver,
 	SNAPSHOT_LIMITS,
 } from "@repo/instructions";
+import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
+import { instructionActionErrorKey } from "@saas/projects/lib/instructions-action-error";
+import { orpcClient } from "@shared/lib/orpc-client";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -25,6 +28,7 @@ import {
 	readFolderFiles,
 } from "../../lib/read-folder";
 import { uploadSnapshot } from "../../lib/upload-snapshot";
+import { StorageUploadError } from "../../lib/upload-storage-error";
 import { SyncProgressLine } from "../repository-sync/SyncProgressLine";
 import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
@@ -89,6 +93,7 @@ export function UploadFolderDialog({
 	open,
 	onOpenChange,
 	onUploaded,
+	onDiscarded,
 	projectGlobs,
 	settingsReady = true,
 	canPublishBeforeScan = false,
@@ -97,6 +102,12 @@ export function UploadFolderDialog({
 	open: boolean;
 	onOpenChange: (o: boolean) => void;
 	onUploaded: (snapshotId: string) => void;
+	/**
+	 * The upload gave up on storage and the snapshot it had begun was
+	 * deleted: the tab re-reads, so the row that begin wrote is gone from it
+	 * and the tab is as it was before the upload.
+	 */
+	onDiscarded?: () => void;
 	projectGlobs?: string[] | null;
 	/**
 	 * False while the project's coding-instructions settings (its saved
@@ -116,6 +127,7 @@ export function UploadFolderDialog({
 	canPublishBeforeScan?: boolean;
 }) {
 	const t = useTranslations("projects.codingInstructions.uploadDialog");
+	const actionError = useInstructionActionError();
 	const folderInputRef = useRef<HTMLInputElement>(null);
 	const filesInputRef = useRef<HTMLInputElement>(null);
 	const nextSourceId = useRef(0);
@@ -313,7 +325,19 @@ export function UploadFolderDialog({
 			}
 			return t("pathCollision", { path: e.path });
 		}
-		return e instanceof Error ? e.message : t("genericError");
+		return t("readError");
+	}
+
+	/**
+	 * What a failed upload says: the line for the error's code when the server
+	 * sent one, otherwise a plain "Upload failed". Never the error's own
+	 * message, which is not translated and can name a path, a provider or a
+	 * server detail (`instruction-action-errors-are-translated.test.ts`).
+	 */
+	function describeUploadError(e: unknown): string {
+		return instructionActionErrorKey(e) === "generic"
+			? t("genericError")
+			: actionError(e);
 	}
 
 	/**
@@ -410,6 +434,15 @@ export function UploadFolderDialog({
 		}
 		setError(null);
 		setProgress({ done: 0, total: kept.length });
+		// The snapshot a retry resumes, while the publish choice it was
+		// registered with is unchanged; and then the one this attempt is working
+		// on, from `onSnapshotStarted` (a closure over state would still hold
+		// the previous attempt's).
+		const resume =
+			pendingSnapshotId !== null && pendingFastPath.current === fastPath
+				? pendingSnapshotId
+				: null;
+		let begun = resume;
 		try {
 			const { snapshotId, serverExcludedPaths } = await uploadSnapshot({
 				projectId,
@@ -417,12 +450,9 @@ export function UploadFolderDialog({
 				fabricIgnoreText,
 				publishOnReady,
 				publishBeforeScan: fastPath,
-				resumeSnapshotId:
-					pendingSnapshotId !== null &&
-					pendingFastPath.current === fastPath
-						? pendingSnapshotId
-						: undefined,
+				resumeSnapshotId: resume ?? undefined,
 				onSnapshotStarted: (id) => {
+					begun = id;
 					pendingFastPath.current = fastPath;
 					setPendingSnapshotId(id);
 				},
@@ -440,16 +470,51 @@ export function UploadFolderDialog({
 				close();
 			}
 		} catch (e) {
-			// Surfaces the server's own message verbatim — a secret-scan
-			// rejection or a validation failure (bad path, oversize file,
-			// too many files) both throw with a human-readable message from
-			// `begin-snapshot.ts`. `pendingSnapshotId` is deliberately left
-			// set here: the snapshot stays RECEIVING server-side, and
-			// clicking Upload again resumes it rather than abandoning it.
-			setError(e instanceof Error ? e.message : t("genericError"));
 			setProgress(null);
 			setFinalizing(false);
+			if (e instanceof StorageUploadError) {
+				await discardAfterStorageFailure(begun);
+				return;
+			}
+			// `pendingSnapshotId` is deliberately left set here: the snapshot
+			// stays RECEIVING server-side, and clicking Upload again resumes
+			// it rather than abandoning it. The review list already previews
+			// every refusal the client can predict (limits, collisions,
+			// credential file names), so what lands here is a refusal it could
+			// not predict, said by its code, or a transport failure.
+			setError(describeUploadError(e));
 		}
+	}
+
+	/**
+	 * A file's PUT gave up, so storage could not be reached: the snapshot this
+	 * attempt began has none of its files and its checks have not run, and left
+	 * alone it sits RECEIVING, hides Upload and cannot be deleted from the tab.
+	 * Delete it and say so, so the next attempt starts clean and the tab is as it
+	 * was. When even the delete fails the snapshot is kept for a resume, as
+	 * for any other failure, and the sentence says it was not discarded. The
+	 * tab re-reads either way: the server removes the rows before the stored
+	 * objects, so a refused delete can still have taken the row away.
+	 */
+	async function discardAfterStorageFailure(begun: string | null) {
+		if (begun === null) {
+			setError(t("storageUnreachable"));
+			return;
+		}
+		try {
+			await orpcClient.projects.instructions.delete({
+				projectId,
+				snapshotId: begun,
+			});
+		} catch {
+			setError(t("storageUnreachableKept"));
+			onDiscarded?.();
+			return;
+		}
+		setPendingSnapshotId(null);
+		pendingFastPath.current = false;
+		setError(t("storageUnreachable"));
+		onDiscarded?.();
 	}
 
 	// The preview reading the kept files one by one, shared by the pick view

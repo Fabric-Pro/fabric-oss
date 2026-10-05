@@ -3,8 +3,8 @@
  *
  * Existing MCP paths are covered by integration tests elsewhere; this file
  * focuses on the new branch added when no MCPConfig exists but the project's
- * server is `gitlab-official` and the tenant has an active GITLAB
- * WorkflowIntegration.
+ * server is `gitlab-official` and the caller has a usable personal GitLab
+ * connection (resolved by the GitLab connection service).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,11 +13,20 @@ vi.mock("@repo/database", () => ({
 	db: {
 		project: { findUnique: vi.fn() },
 		mCPServer: { findUnique: vi.fn() },
-		workflowIntegration: { findFirst: vi.fn() },
 	},
 	resolvePMConfigForUser: vi.fn(),
 	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
 	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
+}));
+
+// The GitLab REST gate asks the connection service for the caller's usable
+// personal connection; its own behaviour (classification, reconnect-required) is
+// covered against the real service in
+// modules/projects/__tests__/gitlab-personal-connection-gates.test.ts.
+const mockFindUsableGitLabConnection = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: mockFindUsableGitLabConnection,
 }));
 
 vi.mock("../../../../../../orpc/procedures", () => {
@@ -95,7 +104,7 @@ beforeEach(() => {
 });
 
 describe("get-pm-capabilities — REST-GitLab branch", () => {
-	it("returns configured=true with REST capabilities when server is gitlab-official + active WorkflowIntegration + no MCPConfig", async () => {
+	it("returns configured=true with REST capabilities when server is gitlab-official + usable GitLab connection + no MCPConfig", async () => {
 		setupProject({
 			projectManagementMcpServerId: "srv-gl",
 			projectManagementMcpConfigId: null,
@@ -106,9 +115,10 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 
 		const result = await handler({
 			input: { projectId: "proj-1" },
@@ -135,7 +145,36 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		});
 	});
 
-	it("falls through to 'not connected' error when server is gitlab-official but no active WorkflowIntegration", async () => {
+	it("offers no REST capabilities when the caller's connection is on another GitLab instance than the container", async () => {
+		setupProject({
+			projectManagementMcpServerId: "srv-gl",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "100",
+			projectManagementContainerName: "example-group/fabricgl",
+		});
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null);
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
+		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.example.com",
+		});
+
+		const result = await handler({
+			input: { projectId: "proj-1" },
+			context: baseCtx,
+		});
+
+		expect(result).toMatchObject({
+			configured: true,
+			capabilities: null,
+			detectedType: "gitlab-rest",
+			error: expect.stringContaining("different GitLab instance"),
+		});
+	});
+
+	it("falls through to 'not connected' error when server is gitlab-official but no usable GitLab connection", async () => {
 		setupProject({
 			projectManagementMcpServerId: "srv-gl",
 			projectManagementMcpConfigId: null,
@@ -145,7 +184,7 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
+		mockFindUsableGitLabConnection.mockResolvedValue(null);
 
 		const result = await handler({
 			input: { projectId: "proj-1" },
@@ -187,9 +226,10 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 
 		const result = await handler({
 			input: { projectId: "proj-1" },
@@ -203,7 +243,7 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		expect(result.capabilities).not.toHaveProperty("canFetch");
 	});
 
-	it("uses XOR tenant filter (org context) for the WorkflowIntegration lookup", async () => {
+	it("uses XOR tenant filter (org context) for the GitLab connection lookup", async () => {
 		setupProject({
 			organizationId: "org-x",
 			projectManagementMcpServerId: "srv-gl",
@@ -214,20 +254,18 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 
 		await handler({
 			input: { projectId: "proj-1" },
 			context: baseCtx,
 		});
 
-		const call = vi.mocked(db.workflowIntegration.findFirst).mock
-			.calls[0]?.[0];
-		expect(call?.where).toMatchObject({
-			provider: "GITLAB",
-			isActive: true,
+		// The caller's own connection in the project's organization only.
+		expect(mockFindUsableGitLabConnection).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-x",
 		});
@@ -241,9 +279,10 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 			projectManagementContainerName: "example-group/fabricgl",
 		});
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 
 		const result = await handler({
 			input: { projectId: "proj-1" },
@@ -269,14 +308,14 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		});
 	});
 
-	it("returns the not-connected error when sentinel is set but WorkflowIntegration is missing", async () => {
+	it("returns the not-connected error when sentinel is set but the GitLab connection is missing", async () => {
 		setupProject({
 			projectManagementMcpServerId: "key:gitlab-official",
 			projectManagementMcpConfigId: null,
 			projectManagementContainerId: "100",
 		});
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
+		mockFindUsableGitLabConnection.mockResolvedValue(null);
 
 		const result = await handler({
 			input: { projectId: "proj-1" },
@@ -294,9 +333,9 @@ describe("get-pm-capabilities — REST-GitLab branch", () => {
 		});
 		// Verify the sentinel resolved without hitting the catalog.
 		expect(vi.mocked(db.mCPServer.findUnique)).not.toHaveBeenCalled();
-		// Verify the gitlab-official branch was actually entered (WorkflowIntegration
+		// Verify the gitlab-official branch was actually entered (the connection
 		// is the gatekeeper — only reached when serverKey === "gitlab-official").
-		expect(vi.mocked(db.workflowIntegration.findFirst)).toHaveBeenCalled();
+		expect(mockFindUsableGitLabConnection).toHaveBeenCalled();
 		expect(typeof result.error).toBe("string");
 	});
 });

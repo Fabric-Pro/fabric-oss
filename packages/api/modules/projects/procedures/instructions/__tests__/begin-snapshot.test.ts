@@ -17,8 +17,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
+	inputSchemas: {} as Record<
+		string,
+		{ safeParse: (value: unknown) => { success: boolean } }
+	>,
 	createInstructionSnapshot: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
+	getMemberProposalBranch: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 	assertProjectPermission: vi.fn(),
@@ -29,6 +34,8 @@ vi.mock("@repo/database", () => ({
 		m.createInstructionSnapshot(...a),
 	getProjectInstructionSettings: (...a: unknown[]) =>
 		m.getProjectInstructionSettings(...a),
+	getMemberProposalBranch: (...a: unknown[]) =>
+		m.getMemberProposalBranch(...a),
 }));
 vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...a: unknown[]) => m.recordAuditFromRequest(...a),
@@ -41,7 +48,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 	const builder = {
 		use: () => builder,
 		route: () => builder,
-		input: () => builder,
+		input: (schema: {
+			safeParse: (value: unknown) => { success: boolean };
+		}) => {
+			m.inputSchemas.begin = schema;
+			return builder;
+		},
 		handler: (fn: (...a: unknown[]) => unknown) => {
 			m.handlers.begin = fn;
 			return fn;
@@ -163,6 +175,126 @@ describe("projects.instructions.begin", () => {
 		});
 	});
 
+	describe("the names of the files left out", () => {
+		const keptAndIgnored = [
+			{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) },
+			{ path: ".git/HEAD", size: 10, sha256: "c".repeat(64) },
+		];
+
+		function storedExcludedPaths() {
+			return (
+				m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+					excludedPaths: Array<{ path: string; rule: string }>;
+				}
+			).excludedPaths;
+		}
+
+		it("stores what the server left out, then what the client reported, rule by rule", async () => {
+			await m.handlers.begin?.({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					clientExcludedCount: 2,
+					clientExcluded: [
+						{ path: "build/out.js", rule: "build/" },
+						{ path: "tasks/a.md", rule: "tasks/" },
+					],
+					files: keptAndIgnored,
+				},
+				context: ctx,
+			});
+
+			expect(storedExcludedPaths()).toEqual([
+				{ path: ".git/HEAD", rule: "**/.git/**" },
+				{ path: "build/out.js", rule: "build/" },
+				{ path: "tasks/a.md", rule: "tasks/" },
+			]);
+		});
+
+		it("keeps one entry for a path both sides left out", async () => {
+			await m.handlers.begin?.({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					clientExcluded: [{ path: ".git/HEAD", rule: "*.git" }],
+					files: keptAndIgnored,
+				},
+				context: ctx,
+			});
+
+			expect(storedExcludedPaths()).toEqual([
+				{ path: ".git/HEAD", rule: "**/.git/**" },
+			]);
+		});
+
+		it("caps the stored list at 500 while the count keeps describing the whole pick", async () => {
+			const clientExcluded = Array.from({ length: 500 }, (_, i) => ({
+				path: `build/file-${i}.js`,
+				rule: "build/",
+			}));
+
+			await m.handlers.begin?.({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					clientExcludedCount: 4000,
+					clientExcluded,
+					files: keptAndIgnored,
+				},
+				context: ctx,
+			});
+
+			const call = m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+				excludedCount: number;
+			};
+			expect(storedExcludedPaths()).toHaveLength(500);
+			expect(storedExcludedPaths()[0]).toEqual({
+				path: ".git/HEAD",
+				rule: "**/.git/**",
+			});
+			expect(call.excludedCount).toBe(4001);
+		});
+
+		it("stores the server's own list for a client that sends no names", async () => {
+			await m.handlers.begin?.({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					clientExcludedCount: 3,
+					files: keptAndIgnored,
+				},
+				context: ctx,
+			});
+
+			expect(storedExcludedPaths()).toEqual([
+				{ path: ".git/HEAD", rule: "**/.git/**" },
+			]);
+		});
+
+		it("accepts no names or up to 500, and refuses more than that or a name without its rule", () => {
+			const accepts = (input: object) =>
+				m.inputSchemas.begin?.safeParse({
+					projectId: "proj_1",
+					files: [
+						{ path: "CLAUDE.md", size: 1, sha256: "a".repeat(64) },
+					],
+					...input,
+				}).success;
+			const names = (count: number) =>
+				Array.from({ length: count }, (_, i) => ({
+					path: `build/${i}.js`,
+					rule: "build/",
+				}));
+
+			expect(accepts({})).toBe(true);
+			expect(accepts({ clientExcluded: names(500) })).toBe(true);
+			expect(accepts({ clientExcluded: names(501) })).toBe(false);
+			expect(accepts({ clientExcluded: [{ path: "build/a.js" }] })).toBe(
+				false,
+			);
+		});
+	});
+
 	it("rejects a traversal path before touching the database", async () => {
 		await expect(
 			m.handlers.begin!({
@@ -266,6 +398,55 @@ describe("projects.instructions.begin", () => {
 		).rejects.toMatchObject({
 			code: "PRECONDITION_FAILED",
 			message: expect.stringContaining("come from its repository"),
+		});
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2878 §9: the published version is what a move into the repository
+	// carries, so nothing is uploaded until the move ends.
+	it("refuses an upload while a move into the repository is open, naming its pull request", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+			migration: {
+				v: 1,
+				state: "PROPOSING",
+				branchId: "branch_1",
+				snapshotId: "snap_move",
+				syncId: "sync_1",
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_1",
+			},
+		});
+		m.getMemberProposalBranch.mockResolvedValue({
+			pullRequestUrl:
+				"https://github.com/example-org/instructions/pull/7",
+			pullRequestExternalId: "7",
+		});
+
+		await expect(
+			m.handlers.begin!({
+				input: {
+					projectId: "proj_1",
+					publishOnReady: true,
+					files: [
+						{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) },
+					],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				reason: "MIGRATION_OPEN",
+				state: "PROPOSING",
+				pullRequest: {
+					url: "https://github.com/example-org/instructions/pull/7",
+					externalId: "7",
+				},
+			},
 		});
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();

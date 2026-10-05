@@ -58,6 +58,13 @@ vi.mock("../record-pm-sync-log", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The organization gate on the config owner (Fizzy #2903): a member whose
+	// role allows MCP read and connect.
+	canConnectOrganizationMcpConfigs: vi.fn(async () => true),
+	canReadOrganizationMcpConfigs: vi.fn(async () => true),
+	isOrganizationMember: vi.fn(async () => true),
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	setAiUsageRecorder: vi.fn(),
 	// Read-only mode gate — default: project is writable
 	isProjectReadOnly: vi.fn(async () => false),
@@ -67,7 +74,7 @@ vi.mock("@repo/database", () => ({
 			updateMany: dbMocks.userStoryUpdateMany,
 			findMany: dbMocks.userStoryFindMany,
 		},
-		mCPConfig: { findUnique: vi.fn().mockResolvedValue(null) },
+		mCPConfig: { findFirst: vi.fn().mockResolvedValue(null) },
 	},
 	PmSyncStatus: {
 		PENDING: "PENDING",
@@ -101,7 +108,13 @@ vi.mock("../story-sync", async () => {
 	};
 });
 
-import { getMcpConfigById, getStoryById } from "@repo/database";
+import {
+	canConnectOrganizationMcpConfigs,
+	db,
+	getMcpConfigById,
+	getStoryById,
+	isOrganizationMember,
+} from "@repo/database";
 import { executeMcpTool } from "../../orchestrator/execution/execute-mcp-tool";
 import { syncWorkItemToPM } from "../hierarchy-sync";
 import { computePmHash } from "../pm-sync-hash";
@@ -361,5 +374,114 @@ describe("syncStoryToPM → log row direction is faithful to the attempt", () =>
 		expect(dbMocks.recordPmSyncLog).toHaveBeenCalledWith(
 			expect.objectContaining({ direction: "push", status: "FAILURE" }),
 		);
+	});
+});
+
+describe("syncWorkItemToPM → the stored credential and the owner's organization access (Fizzy #2903)", () => {
+	it("reads the config's stored credentials for an owner allowed to run its tools", async () => {
+		vi.mocked(getStoryById).mockResolvedValue(makeEntity() as never);
+
+		await syncWorkItemToPM({ ...baseInput, itemType: "story" });
+
+		expect(canConnectOrganizationMcpConfigs).toHaveBeenCalledWith(
+			"user-9",
+			"org-1",
+		);
+		expect(db.mCPConfig.findFirst).toHaveBeenCalled();
+	});
+
+	it("never reads the config's stored credentials once the owner has left", async () => {
+		vi.mocked(getStoryById).mockResolvedValue(makeEntity() as never);
+		vi.mocked(canConnectOrganizationMcpConfigs).mockResolvedValueOnce(
+			false,
+		);
+		vi.mocked(isOrganizationMember).mockResolvedValueOnce(false);
+
+		await syncWorkItemToPM({ ...baseInput, itemType: "story" }).catch(
+			() => undefined,
+		);
+
+		expect(db.mCPConfig.findFirst).not.toHaveBeenCalled();
+	});
+
+	// The gate approves the sync's own `userId` and `organizationId`, so the
+	// credential read must be that owner's config in that organization and
+	// nobody else's. A stored config owned by "owner-1" in "org-1" stands in
+	// for the row; the mock applies the where clause the way Prisma does.
+	describe("reads only the config the gate approved", () => {
+		const storedConfig = {
+			id: "mcp-1",
+			userId: "owner-1",
+			organizationId: "org-1" as string | null,
+		};
+
+		beforeEach(() => {
+			// A field the where clause leaves out filters nothing, as in Prisma.
+			vi.mocked(db.mCPConfig.findFirst).mockImplementation((async (args: {
+				where: Partial<typeof storedConfig>;
+			}) => {
+				const matches = (
+					Object.entries(args.where) as [
+						keyof typeof storedConfig,
+						unknown,
+					][]
+				).every(([field, value]) => storedConfig[field] === value);
+				return matches ? storedConfig : null;
+			}) as never);
+			vi.mocked(getStoryById).mockResolvedValue(makeEntity() as never);
+		});
+
+		async function configRead(input: typeof baseInput) {
+			await syncWorkItemToPM({ ...input, itemType: "story" }).catch(
+				() => undefined,
+			);
+			return vi.mocked(db.mCPConfig.findFirst).mock.results[0]?.value;
+		}
+
+		it("finds the config when the sync runs as its owner in its organization", async () => {
+			await expect(
+				configRead({ ...baseInput, userId: "owner-1" }),
+			).resolves.toBe(storedConfig);
+		});
+
+		it("does not read another person's config, even for a member allowed to run tools", async () => {
+			await expect(
+				configRead({ ...baseInput, userId: "user-9" }),
+			).resolves.toBeNull();
+			expect(canConnectOrganizationMcpConfigs).toHaveBeenCalledWith(
+				"user-9",
+				"org-1",
+			);
+		});
+
+		it("does not read the owner's config through another organization", async () => {
+			await expect(
+				configRead({
+					...baseInput,
+					userId: "owner-1",
+					organizationId: "org-2",
+				}),
+			).resolves.toBeNull();
+		});
+
+		it("does not read an organization's config when the sync names no organization", async () => {
+			const { organizationId: _omitted, ...withoutOrganization } =
+				baseInput;
+			await expect(
+				configRead({
+					...(withoutOrganization as typeof baseInput),
+					userId: "owner-1",
+				}),
+			).resolves.toBeNull();
+			expect(db.mCPConfig.findFirst).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: {
+						id: "mcp-1",
+						userId: "owner-1",
+						organizationId: null,
+					},
+				}),
+			);
+		});
 	});
 });

@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	buildDocumentLink,
+	completeDraftDocument,
 	DocumentVersionConflictError,
 	db,
 	hasProjectAccess,
@@ -69,6 +70,16 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			 * last-write-wins.
 			 */
 			expectedVersion: z.number().int().nonnegative().optional(),
+			/**
+			 * The author is finishing the document: complete it if it is still
+			 * a draft and has content. The editor sends it with an explicit
+			 * Save, and the Documents tab with Mark as complete. An autosave
+			 * omits it, so a document is not completed while it is still being
+			 * typed. Unlike `status: "COMPLETE"` it does nothing to a document
+			 * that is no longer a draft; the response's `draftCompleted` says
+			 * whether this request completed it.
+			 */
+			completeDraft: z.boolean().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -138,7 +149,7 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 
 		// Update document
 		// TENANT ISOLATION: Pass userId and organizationId for DocumentVersion tenant filtering
-		const document = await updateDocument(input.id, {
+		const saved = await updateDocument(input.id, {
 			title: input.title,
 			content: input.content,
 			status: input.status,
@@ -173,15 +184,47 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			throw error;
 		});
 
+		// The author asked to finish the document (`completeDraft`). Only a
+		// draft with content qualifies; an explicit status wins, and a revert
+		// that skips the version bump is not the author finishing anything.
+		// The completion itself is a separate guarded write: it holds only if
+		// the document is still a draft when it lands, so a generation that
+		// has picked the document up since is not overwritten, and its result
+		// says whether THIS request completed the document.
+		const mayCompleteDraft =
+			input.completeDraft === true &&
+			input.status === undefined &&
+			!input.skipVersionBump &&
+			saved.status === "DRAFT" &&
+			saved.type !== "INTEGRATION_CONTRACT" &&
+			saved.content.trim() !== "";
+		const draftCompleted = mayCompleteDraft
+			? await completeDraftDocument(input.id)
+			: false;
+		const document = draftCompleted
+			? { ...saved, status: "COMPLETE" as const }
+			: saved;
+
+		// This request moved the document into COMPLETE: it completed the
+		// draft, or it set the status explicitly on one that was not complete.
+		const becameComplete =
+			draftCompleted ||
+			(input.status === "COMPLETE" && prior.status !== "COMPLETE");
+
 		// Only embed when the save actually changed content — update-document
 		// is the only procedure that may skip the embed on metadata-only saves.
+		// A document that has just become COMPLETE is the exception: nothing
+		// embeds a draft, so this is the first point at which the embed can
+		// run for it, and skipping it would leave a document of an embedded
+		// type finished but absent from retrieval until its next content
+		// change.
 		await applyDocumentUpdateSideEffects({
 			projectId: input.projectId,
 			document,
 			user,
 			organizationId,
 			logScope: "UpdateDocument",
-			skipEmbed: !input.content,
+			skipEmbed: !input.content && !becameComplete,
 		});
 
 		// Mention fan-out — fire and forget, must never break the save.
@@ -211,9 +254,10 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 		const contentChanged =
 			prior != null && document.version !== prior.version;
 		const statusChanged =
-			input.status !== undefined &&
-			prior != null &&
-			input.status !== prior.status;
+			becameComplete ||
+			(input.status !== undefined &&
+				prior != null &&
+				input.status !== prior.status);
 		if (contentChanged || statusChanged) {
 			void fanOut
 				.subscriptionUpdate({
@@ -259,7 +303,7 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			);
 		}
 
-		return { document, contentUnchanged };
+		return { document, contentUnchanged, draftCompleted };
 	});
 
 export async function dispatchDocumentMentions(args: {

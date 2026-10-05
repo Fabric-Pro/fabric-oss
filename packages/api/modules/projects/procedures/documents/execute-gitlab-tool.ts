@@ -2,13 +2,9 @@ import { ORPCError } from "@orpc/client";
 import { db, hasProjectAccess } from "@repo/database";
 import {
 	callMcpWithRestFallback,
-	createGitLabRefreshFailureWriter,
 	executeGitLabTool,
-	getGitLabAccessToken,
-	refreshMcpConfigToken,
 	resolveGitLabSource,
 } from "@repo/integrations/gitlab";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
@@ -73,21 +69,25 @@ export const executeGitLabToolProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const source = await resolveGitLabSource({
-			userId: user.id,
-			organizationId: organizationId ?? null,
-			projectId: input.projectId,
-			db: db as never,
-			decrypt: decryptApiKey,
-			refresh: (configId) =>
-				refreshMcpConfigToken({ configId, db: db as never }),
-			getRestToken: async ({ userId, organizationId: o }) =>
-				(await getGitLabAccessToken(userId, o ?? undefined)) ?? null,
-			// Without this the document editor degrades to REST on a dead
-			// grant but persists nothing, so every subsequent request
-			// refreshes the same revoked token again.
-			markRefreshFailure: createGitLabRefreshFailureWriter(db as never),
+		// The credential is the caller's GitLab connection in the PROJECT's
+		// organization: the tenant `requireProjectPermission` authorized for
+		// this project. The input or session organization can name another
+		// one (`hasProjectAccess` does not tie its organization argument to
+		// the project), and reading the connection there could classify,
+		// refresh and use a connection the caller still holds in an
+		// organization they have left. A project with no organization has no
+		// GitLab connection to use (ADR-018).
+		const project = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: { organizationId: true },
 		});
+		const credentialOrganizationId = project?.organizationId ?? null;
+		const source = credentialOrganizationId
+			? await resolveGitLabSource({
+					userId: user.id,
+					organizationId: credentialOrganizationId,
+				})
+			: null;
 
 		if (!source) {
 			throw new ORPCError("BAD_REQUEST", {
@@ -106,7 +106,7 @@ export const executeGitLabToolProcedure = tenantProtectedProcedure
 						input.methodName,
 						input.args,
 						user.id,
-						organizationId ?? undefined,
+						credentialOrganizationId ?? undefined,
 					),
 			});
 

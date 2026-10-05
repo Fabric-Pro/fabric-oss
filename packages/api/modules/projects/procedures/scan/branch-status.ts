@@ -11,6 +11,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /** The four states the branch-status panel badges per branch. */
 export type BranchScanStatusValue =
@@ -72,12 +73,20 @@ export const listBranchScanStatusProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, repositoryIntegrationId } = input;
+		const { projectId, repositoryIntegrationId } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			context.user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -91,7 +100,7 @@ export const listBranchScanStatusProcedure = tenantProtectedProcedure
 		// unexpected throw too so the panel simply goes empty instead of erroring.
 		const service = new AtlasService({
 			userId: context.user.id,
-			organizationId: organizationId ?? null,
+			organizationId,
 		});
 		let branches: Awaited<ReturnType<typeof service.listBranches>>;
 		try {

@@ -405,6 +405,16 @@ export function ProjectRepositoryIntegrationSettings({
 	const { data: gitlabStatus } = useQuery(
 		gitlabStatusQueryOptions(project.organizationId),
 	);
+	// The person's GitLab in the three states every GitLab screen shows.
+	// `connected` alone stays true for a connection whose grant died, which
+	// cannot browse and must be reconnected instead.
+	const gitlabConnectionState =
+		gitlabStatus?.state ??
+		(gitlabStatus?.connected
+			? gitlabStatus.needsReauth
+				? "needs-reconnect"
+				: "connected"
+			: "not-connected");
 
 	const hasGitHubTeamCreds = integrationList.some(
 		(i) => i.provider === "GITHUB" && i.status === "ACTIVE",
@@ -1499,7 +1509,7 @@ export function ProjectRepositoryIntegrationSettings({
 						    below was the only GitLab affordance here: it
 						    promised "connect to browse", and once you connected
 						    it simply vanished with no browser behind it. */}
-						{gitlabStatus?.connected === true ? (
+						{gitlabConnectionState === "connected" ? (
 							<div className="rounded-lg border p-3 bg-card">
 								<div className="flex items-center justify-between">
 									<div className="flex items-center gap-2">
@@ -1517,6 +1527,34 @@ export function ProjectRepositoryIntegrationSettings({
 										disabled={isConnectingOAuth}
 									>
 										Browse
+									</Button>
+								</div>
+							</div>
+						) : gitlabConnectionState === "needs-reconnect" ? (
+							<div className="rounded-lg border border-destructive/50 p-3">
+								<div className="flex items-center justify-between">
+									<div className="flex items-center gap-2">
+										<AlertTriangleIcon
+											className="h-4 w-4 text-destructive"
+											aria-hidden="true"
+										/>
+										<span className="text-sm">
+											Reconnect GitLab to browse
+											repositories
+										</span>
+									</div>
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={handleConnectGitLab}
+										disabled={isConnectingOAuth}
+									>
+										{isConnectingOAuth ? (
+											<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+										) : (
+											<GitLabIcon className="mr-2 h-4 w-4" />
+										)}
+										Reconnect GitLab
 									</Button>
 								</div>
 							</div>

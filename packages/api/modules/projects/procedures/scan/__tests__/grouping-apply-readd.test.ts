@@ -151,6 +151,9 @@ beforeEach(() => {
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockGroupingUpdateMany.mockResolvedValue({ count: 1 });
 	mockProjectFindUnique.mockResolvedValue({
+		// Read by the handler's organization resolution (Fizzy #2904) and by
+		// the PM-sync lookup alike.
+		organizationId: "org-1",
 		projectManagementMcpConfigId: null,
 		projectManagementContainerId: null,
 	});
@@ -207,6 +210,7 @@ describe("applyGroupingProcedure", () => {
 
 	it("passes per-ticket doSync=true only when the ticket is accepted-to-sync AND a PM tool is configured", async () => {
 		mockProjectFindUnique.mockResolvedValue({
+			organizationId: "org-1",
 			projectManagementMcpConfigId: "cfg-1",
 			projectManagementContainerId: "cont-1",
 		});

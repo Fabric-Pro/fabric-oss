@@ -78,6 +78,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The temporary OSV exception is valid only while the reviewed patch is
+      # locked, installed for every consumer, and copied into Docker installs.
+      - name: Verify braces security patch
+        run: node --test tooling/scripts/src/braces-patch.node-test.mjs
+
+      - name: Verify multipart parser security fixes
+        run: node --test tooling/scripts/src/busboy-security.node-test.mjs
+
       - name: Format check
         run: pnpm format:check
 
@@ -89,7 +97,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
           python3 .github/scripts/staging/test_workflows.py
           node --test .github/actions/oss-snapshot/*manifest.test.mjs
-          node --test .github/scripts/staging/promotion-*.test.mjs
+          node --test .github/scripts/staging/promotion-*.test.mjs .github/scripts/staging/public-relay-changeset.test.mjs
 
       - name: Agent guidance
         run: pnpm guidance:check

@@ -16,6 +16,14 @@ import {
 	type WorkflowIntegrationProvider,
 } from "@repo/database";
 import { OAUTH_APP_PROVIDERS } from "@repo/database/prisma/queries/lib/oauth-app-row";
+import {
+	findUsableGitLabConnection,
+	GITLAB_DEFAULT_ORIGIN,
+	getGitLabConnectionGeneration,
+	getGitLabConnectionToken,
+	identifyGitLabIssuer,
+	readGitLabPersonalConnection,
+} from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import {
 	triggerOAuthServerIngestion,
@@ -24,6 +32,7 @@ import {
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	protectedProcedure,
 	requireInputOrgPermission,
@@ -32,6 +41,10 @@ import {
 	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { GITLAB_DATA_CONNECTION_CLEARED_TOKENS } from "../../data-connections/lib/gitlab-data-connection";
+import { disconnectPersonalGitLab } from "../lib/gitlab-personal-disconnect";
+import { authorizeGitLabTenant } from "../lib/gitlab-request-tenant";
+import { persistGitLabToken } from "../lib/gitlab-token";
 import {
 	assertOAuthStateBoundToCaller,
 	consumeOAuthStateOnce,
@@ -390,6 +403,19 @@ export const genericOAuthProcedures = {
 			}
 
 			try {
+				// A GitLab grant is the person's ONE GitLab connection, written
+				// by the connection service. Read its generation BEFORE the
+				// exchange so a disconnect or another connect landing meanwhile
+				// is not overwritten.
+				const gitlabTenant = {
+					userId: state.userId,
+					organizationId: state.organizationId ?? null,
+				};
+				const gitlabGenerationBefore =
+					providerType === "GITLAB"
+						? await getGitLabConnectionGeneration(gitlabTenant)
+						: undefined;
+
 				// Exchange code for tokens
 				const redirectUri =
 					state.redirectUri ||
@@ -448,7 +474,49 @@ export const genericOAuthProcedures = {
 					| Awaited<ReturnType<typeof db.workflowIntegration.update>>
 					| null = null;
 
-				if (workflowProvider) {
+				if (workflowProvider === "GITLAB") {
+					// Through the connection service, with the client that issued
+					// this grant: a later refresh uses exactly that client, and a
+					// PAT or an earlier grant is replaced whole (no leftover
+					// refresh token or issuer).
+					const persisted = await persistGitLabToken({
+						userId: state.userId,
+						organizationId: orgIdForQuery,
+						token: {
+							accessToken: tokenResponse.access_token,
+							refreshToken: tokenResponse.refresh_token ?? null,
+							expiresAt: tokenResponse.expires_in
+								? new Date(
+										Date.now() +
+											tokenResponse.expires_in * 1000,
+									)
+								: null,
+							scopes: tokenResponse.scope
+								? tokenResponse.scope.split(" ")
+								: ["api", "read_user"],
+						},
+						gitlabUser: {
+							id: Number(userInfo.id) || 0,
+							username: userInfo.login,
+							name: userInfo.name ?? userInfo.login,
+							avatarUrl: userInfo.avatarUrl ?? null,
+						},
+						issuer: await identifyGitLabIssuer(gitlabTenant, {
+							clientId,
+							origin: GITLAB_DEFAULT_ORIGIN,
+						}),
+						freshGrant: true,
+						expectedGeneration: gitlabGenerationBefore,
+					});
+					if (!persisted.written) {
+						return {
+							success: false,
+							message:
+								"Your GitLab connection changed while this sign-in was completing. Please connect GitLab again.",
+							provider: provider.name,
+						};
+					}
+				} else if (workflowProvider) {
 					// Exclude the <PROVIDER>_OAUTH_APP row: it shares provider,
 					// user and organization with the connection row but holds
 					// the OAuth client credentials saveAppCredentials stored.
@@ -541,7 +609,38 @@ export const genericOAuthProcedures = {
 					const connectionConfigJson =
 						connectionConfig as Prisma.InputJsonValue;
 
-					if (existingConnection) {
+					if (dataConnectionProvider === "GITLAB") {
+						// A GitLab Data Connection holds no token: a sync uses
+						// the GitLab connection (written above by the connection
+						// service) of the person who starts it. An existing row
+						// keeps its config — its GitLab address included — and
+						// loses any legacy token copy.
+						if (existingConnection) {
+							await updateDataConnection({
+								id: existingConnection.id,
+								userId: state.userId,
+								organizationId: orgIdForQuery,
+								data: {
+									name: `${provider.name}: ${userInfo.login}`,
+									status: "CONNECTED",
+									...GITLAB_DATA_CONNECTION_CLEARED_TOKENS,
+									lastSyncError: null,
+								},
+							});
+						} else {
+							await createDataConnection({
+								userId: state.userId,
+								organizationId: orgIdForQuery,
+								provider: dataConnectionProvider,
+								name: `${provider.name}: ${userInfo.login}`,
+								createdBy: state.userId,
+								externalWorkspaceId: userInfo.id,
+								externalWorkspaceName: userInfo.login,
+								config: connectionConfigJson,
+								status: "CONNECTED",
+							});
+						}
+					} else if (existingConnection) {
 						await updateDataConnection({
 							id: existingConnection.id,
 							userId: state.userId,
@@ -672,6 +771,14 @@ export const genericOAuthProcedures = {
 				scope: z.string().optional(),
 				hasRefreshToken: z.boolean().optional(),
 				connectedAt: z.string().optional(),
+				/**
+				 * GitLab only: the person's connection as every GitLab screen
+				 * shows it. A connection that needs reconnecting has
+				 * `connected: false` here.
+				 */
+				connectionState: z
+					.enum(["connected", "needs-reconnect", "not-connected"])
+					.optional(),
 			}),
 		)
 		.handler(async ({ input, context }) => {
@@ -688,6 +795,46 @@ export const genericOAuthProcedures = {
 					? input.organizationId
 					: context.session.activeOrganizationId;
 			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
+
+			// GitLab: the person's one connection, as every other GitLab
+			// screen reports it (`readGitLabPersonalConnection`). A row that is
+			// active but needs reconnecting is not "connected" here, and a
+			// project repository link never makes the person connected.
+			if (workflowProvider === "GITLAB") {
+				// Resolved and authorized before the read, which can adopt a
+				// legacy copy into a connection row in this tenant.
+				const tenant = await authorizeGitLabTenant(
+					Permissions.INTEGRATION_READ,
+					input.organizationId,
+					context,
+				);
+				const { summary, status } =
+					await readGitLabPersonalConnection(tenant);
+				if (summary.state !== "connected") {
+					return {
+						connected: false,
+						providerName: provider.name,
+						connectionState: summary.state,
+					};
+				}
+				return {
+					connected: true,
+					providerName: provider.name,
+					connectionState: summary.state,
+					login: summary.account?.username ?? undefined,
+					name: summary.account?.name ?? null,
+					avatarUrl: summary.account?.avatarUrl ?? null,
+					scope:
+						typeof status.settings.scope === "string"
+							? status.settings.scope
+							: undefined,
+					hasRefreshToken: status.hasRefreshToken,
+					connectedAt:
+						typeof status.settings.connectedAt === "string"
+							? status.settings.connectedAt
+							: undefined,
+				};
+			}
 
 			// Strict isolation: personal context (null) only sees personal integrations
 			// Exclude _OAUTH_APP config records (those store client_id/secret, not connection tokens)
@@ -736,7 +883,12 @@ export const genericOAuthProcedures = {
 	 * IMPORTANT: organizationId must be explicitly passed for proper tenant isolation
 	 */
 	disconnect: tenantProtectedProcedure
-		.use(requirePermission(Permissions.INTEGRATION_DISCONNECT))
+		// The floor every provider shares. GitLab removes only the caller's
+		// own connection, so `MCP_CONNECT` (what connecting one needs) is
+		// enough for it; every other provider is held to
+		// `INTEGRATION_DISCONNECT` in the handler, against the resolved
+		// organization.
+		.use(requirePermission(Permissions.MCP_CONNECT))
 		.route({
 			method: "POST",
 			path: "/integrations/oauth/:provider/disconnect",
@@ -752,11 +904,6 @@ export const genericOAuthProcedures = {
 		.output(z.object({ success: z.boolean() }))
 		.handler(async ({ input, context }) => {
 			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
 			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
 
 			// Providers that don't map to a workflow integration row have
@@ -765,6 +912,51 @@ export const genericOAuthProcedures = {
 			// runtime, so no-op explicitly.
 			if (!workflowProvider) {
 				return { success: true };
+			}
+
+			// GitLab: the person's connection is owned by the connection
+			// service. A bare `isActive: false` here would leave its token,
+			// issuer and generation behind, would leave the MCP configs'
+			// columns uncleared, and would not fence an in-flight refresh — so take the one
+			// personal GitLab disconnect every surface shares (core
+			// disconnect, revocation with the issuing client, the person's
+			// Data Connections marked expired, one audit row).
+			if (workflowProvider === "GITLAB") {
+				await disconnectPersonalGitLab({
+					tenant: await authorizeGitLabTenant(
+						Permissions.MCP_CONNECT,
+						input.organizationId,
+						context,
+					),
+					surface: "integrations.oauth.disconnect",
+					audit: context,
+				});
+				return { success: true };
+			}
+
+			// Any other provider: the admin-level permission, checked against
+			// the organization this request resolves to, and every query,
+			// revocation and log line below acts in THAT organization. The
+			// procedure-wide floor is only `MCP_CONNECT` (for the GitLab
+			// branch), so this check must not be skippable:
+			// `requireOrganization` refuses a request that resolves no
+			// organization (explicit null, or none in the session) instead of
+			// passing it through with no role check — ADR-018 has no personal
+			// tenant to disconnect in. Using the returned organization, not a
+			// separately resolved one, keeps authorization and the writes on
+			// the same tenant when a guest write organization
+			// (`effectiveWriteOrgId`) differs from the session's.
+			const organizationId = await authorizeInputOrganization(
+				Permissions.INTEGRATION_DISCONNECT,
+				input.organizationId,
+				context,
+				{ requireOrganization: true },
+			);
+			if (!organizationId) {
+				// `requireOrganization` refuses this above; this only narrows.
+				throw new ORPCError("FORBIDDEN", {
+					message: "An organization is required",
+				});
 			}
 
 			// Every active connection row, so each one's token is revoked —
@@ -780,9 +972,7 @@ export const genericOAuthProcedures = {
 					provider: workflowProvider as WorkflowIntegrationProvider,
 					isActive: true,
 					NOT: { name: `${input.provider}_OAUTH_APP` },
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
+					organizationId,
 				},
 			});
 
@@ -813,7 +1003,7 @@ export const genericOAuthProcedures = {
 							creds.refresh_token ?? creds.access_token;
 					} catch (decryptError) {
 						logger.error(
-							`[OAuthDisconnect] Failed to decrypt ${input.provider} credentials for integration ${activeRow.id} (user=${userId}, org=${organizationId ?? "personal"}): ${decryptError instanceof Error ? decryptError.message : String(decryptError)}`,
+							`[OAuthDisconnect] Failed to decrypt ${input.provider} credentials for integration ${activeRow.id} (user=${userId}, org=${organizationId}): ${decryptError instanceof Error ? decryptError.message : String(decryptError)}`,
 						);
 					}
 					if (tokenToRevoke) {
@@ -823,7 +1013,7 @@ export const genericOAuthProcedures = {
 							);
 						} catch (revokeError) {
 							logger.error(
-								`[OAuthDisconnect] Failed to revoke ${input.provider} token for integration ${activeRow.id} (user=${userId}, org=${organizationId ?? "personal"}): ${revokeError instanceof Error ? revokeError.message : String(revokeError)}`,
+								`[OAuthDisconnect] Failed to revoke ${input.provider} token for integration ${activeRow.id} (user=${userId}, org=${organizationId}): ${revokeError instanceof Error ? revokeError.message : String(revokeError)}`,
 							);
 						}
 					}
@@ -837,9 +1027,7 @@ export const genericOAuthProcedures = {
 					userId,
 					provider: workflowProvider as WorkflowIntegrationProvider,
 					NOT: { name: `${input.provider}_OAUTH_APP` },
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
+					organizationId,
 				},
 				data: {
 					isActive: false,
@@ -855,9 +1043,7 @@ export const genericOAuthProcedures = {
 					where: {
 						userId,
 						provider: dataConnectionProvider,
-						...(organizationId
-							? { organizationId }
-							: { organizationId: null }),
+						organizationId,
 					},
 					data: {
 						status: "EXPIRED",
@@ -911,6 +1097,34 @@ export const genericOAuthProcedures = {
 					? input.organizationId
 					: context.session.activeOrganizationId;
 			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
+
+			// GitLab: the connection service reads (and refreshes) the token
+			// with the client that issued it; rebuilding the credential here
+			// would drop that issuer and the connection generation.
+			// A bare token carries no GitLab instance, so this hands out only a
+			// gitlab.com credential (the service's default refuses any other).
+			if (workflowProvider === "GITLAB") {
+				const token = await getGitLabConnectionToken(
+					await authorizeGitLabTenant(
+						Permissions.INTEGRATION_READ,
+						input.organizationId,
+						context,
+					),
+					{ mode: "strict" },
+				);
+				if (token.ok) {
+					return { success: true, accessToken: token.accessToken };
+				}
+				return {
+					success: false,
+					error:
+						token.reason === "not-connected"
+							? `${provider.name} not connected`
+							: token.reason === "unsupported-origin"
+								? `${provider.name} is connected to a self-hosted instance, which this endpoint does not support.`
+								: `${provider.name} token expired and cannot be refreshed. Please reconnect.`,
+				};
+			}
 
 			const integration = await db.workflowIntegration.findFirst({
 				where: {
@@ -1086,25 +1300,48 @@ export const genericOAuthProcedures = {
 			}
 
 			const userId = context.user.id;
+			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
+			// GitLab: resolved and authorized before the connection read
+			// below, which can classify a legacy connection row in this tenant.
+			const gitlabTenant =
+				workflowProvider === "GITLAB"
+					? await authorizeGitLabTenant(
+							Permissions.INTEGRATION_USE,
+							input.organizationId,
+							context,
+						)
+					: null;
 			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
+			const organizationId = gitlabTenant
+				? gitlabTenant.organizationId
+				: input.organizationId !== undefined
 					? input.organizationId
 					: context.session.activeOrganizationId;
-			const workflowProvider = mapOAuthToWorkflowProvider(input.provider);
 
-			// Check if integration exists and is active
-			const integration = await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					provider: workflowProvider as any,
-					NOT: { name: `${input.provider}_OAUTH_APP` },
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-			});
+			// Check if integration exists and is active. GitLab: the person's
+			// usable connection through the connection service, which reads a
+			// reconnect-required connection as not connected.
+			const integration =
+				workflowProvider === "GITLAB"
+					? await findUsableGitLabConnection(
+							gitlabTenant ?? {
+								userId,
+								organizationId: organizationId ?? null,
+							},
+						).then((found) =>
+							found ? { id: found.integrationId } : null,
+						)
+					: await db.workflowIntegration.findFirst({
+							where: {
+								userId,
+								provider: workflowProvider as any,
+								NOT: { name: `${input.provider}_OAUTH_APP` },
+								isActive: true,
+								...(organizationId
+									? { organizationId }
+									: { organizationId: null }),
+							},
+						});
 
 			if (!integration) {
 				return {

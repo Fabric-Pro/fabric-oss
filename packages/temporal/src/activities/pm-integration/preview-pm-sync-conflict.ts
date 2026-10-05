@@ -1,4 +1,8 @@
-import { getStoryById, resolvePMConfigForUser } from "@repo/database";
+import { getStoryById } from "@repo/database";
+import {
+	GitLabPmOriginMismatchError,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { ApplicationFailure, Context } from "@temporalio/activity";
 import { PMSourceNotFound, resolvePmSource } from "../pm-source";
@@ -27,6 +31,12 @@ export type PmSyncErrorKind =
 function mcpErrorCodeToKind(code: string): PmSyncErrorKind {
 	switch (code) {
 		case "CONFIG_NOT_FOUND":
+		// The config's owner left the organization, or their role no longer
+		// allows running its tools: the config is unusable until the
+		// offboarding cascade deletes it, so it reads as missing, as it will
+		// then.
+		case "ORGANIZATION_MEMBERSHIP_REQUIRED":
+		case "MCP_PERMISSION_DENIED":
 			return "MISSING";
 		case "CONFIG_DISABLED":
 			return "DISABLED";
@@ -51,12 +61,15 @@ function mcpErrorCodeToKind(code: string): PmSyncErrorKind {
 
 /** Map a `PMSourceNotFound.reason` (from the GitLab REST path) to a UI kind. */
 function restReasonToKind(
-	reason: "no-config" | "no-integration" | "token-failed",
+	reason: "no-config" | "no-integration" | "token-failed" | "origin-mismatch",
 ): PmSyncErrorKind {
 	switch (reason) {
 		case "no-config":
 			return "MISSING";
 		case "no-integration":
+		// The caller's GitLab is on another instance than the project's: they
+		// need a connection to the project's instance, as with none at all.
+		case "origin-mismatch":
 			return "NOT_CONFIGURED";
 		case "token-failed":
 			return "EXPIRED";
@@ -70,6 +83,14 @@ function restReasonToKind(
  * to this project's container.
  */
 function fetchErrorToKind(error: unknown): PmSyncErrorKind {
+	// The read was refused before it was sent: the client is bound to another
+	// GitLab instance than the project's container (`pmTarget`).
+	if (
+		error instanceof Error &&
+		(error as { type?: unknown }).type === "GitLabPmOriginMismatch"
+	) {
+		return restReasonToKind("origin-mismatch");
+	}
 	const msg = (
 		error instanceof Error ? error.message : String(error)
 	).toLowerCase();
@@ -212,6 +233,7 @@ export async function previewPmSyncConflict(
 				userId,
 				organizationId: organizationId ?? null,
 				containerId,
+				additionalContext,
 			});
 		} catch (error) {
 			if (error instanceof PMSourceNotFound) {
@@ -309,12 +331,28 @@ export async function previewPmSyncConflict(
 	// `resolvePMConfigForUser` can only ever return a config the caller owns —
 	// a `null` result means the caller simply hasn't connected (MISSING), never
 	// another user's credentials.
-	const resolvedConfig = await resolvePMConfigForUser({
-		configId: mcpConfigId,
-		mcpServerId,
-		userId,
-		organizationId,
-	});
+	// A personal GitLab config on another instance than the container is
+	// refused like a missing connection to the project's instance.
+	let resolvedConfig: Awaited<
+		ReturnType<typeof resolveProjectPMConfigForUser>
+	>;
+	try {
+		resolvedConfig = await resolveProjectPMConfigForUser({
+			configId: mcpConfigId,
+			mcpServerId,
+			userId,
+			organizationId,
+			pmAdditionalContext: additionalContext,
+		});
+	} catch (error) {
+		if (error instanceof GitLabPmOriginMismatchError) {
+			return {
+				hasConflict: false,
+				pmError: { kind: restReasonToKind("origin-mismatch") },
+			};
+		}
+		throw error;
+	}
 
 	if (!resolvedConfig) {
 		return { hasConflict: false, pmError: { kind: "MISSING" } };

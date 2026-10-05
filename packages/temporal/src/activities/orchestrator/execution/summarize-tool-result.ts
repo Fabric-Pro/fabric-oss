@@ -87,6 +87,7 @@ const SYSTEM_PROMPT = `You are a tool result summarizer. Your job is to condense
 
 Rules:
 - Preserve ALL names, dates, numbers, IDs, URLs, and actionable details
+- Preserve pagination and continuation fields exactly (e.g. truncated, hasMore, nextOffset, nextCursor, cursor, page tokens) — they are how the caller fetches the rest
 - Preserve key decisions, action items, and conclusions
 - Remove redundant or repeated information
 - Remove verbose formatting, boilerplate, and metadata that isn't relevant

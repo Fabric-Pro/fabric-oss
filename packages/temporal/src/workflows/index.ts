@@ -393,6 +393,10 @@ export {
 	statusQuery as goalOrientedStatusQuery,
 } from "./goal-oriented-agent";
 export * from "./hybrid-execution";
+// Coding Instructions direct commit (Fizzy #2878 §10): one workflow per
+// snapshot, waiting for its validation and then pushing one commit. Named,
+// like the sync: only the workflow function belongs in the bundle's registry.
+export { projectInstructionDirectCommitWorkflow } from "./instruction-direct-commit";
 // Member proposal branches (Fizzy #2738 spec §6): one workflow per branch,
 // signal-started by `wake`, owning every git write on that branch.
 export {
@@ -403,6 +407,7 @@ export {
 // Coding Instructions proposal pull requests (Fizzy #2563 spec §9): the
 // five-minute sweeper. Named, like the sync.
 export { instructionProposalPullRequestSweepWorkflow } from "./instruction-proposal-pull-request-sweep";
+export { projectInstructionRevertCommitWorkflow } from "./instruction-revert-commit";
 // Meeting action item linking (fire-and-forget — matches one meeting's action
 // items to the project's work items once its insights are ready). #1902
 export {

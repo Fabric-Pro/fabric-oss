@@ -93,7 +93,7 @@ describe("projects.instructions.getPublished", () => {
 		expect(result).toEqual(PARITY_SNAPSHOT);
 	});
 
-	it("404s a snapshot belonging to a different organization, exactly like nothing published", async () => {
+	it("answers null for a snapshot belonging to a different organization, exactly like nothing published", async () => {
 		m.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: [],
 			source: "org",
@@ -112,10 +112,10 @@ describe("projects.instructions.getPublished", () => {
 					session: { activeOrganizationId: null },
 				},
 			}),
-		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		).resolves.toBeNull();
 	});
 
-	it("404s when nothing is published", async () => {
+	it("answers null when nothing is published", async () => {
 		m.resolveEffectiveProjectPermissions.mockResolvedValue({
 			permissions: [],
 			source: "org",
@@ -131,7 +131,7 @@ describe("projects.instructions.getPublished", () => {
 					session: { activeOrganizationId: null },
 				},
 			}),
-		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		).resolves.toBeNull();
 	});
 
 	it("throws FORBIDDEN when no organization can be resolved", async () => {

@@ -11,6 +11,10 @@ import {
 } from "../../../../orpc/procedures";
 import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import {
+	assertNoOpenMigration,
+	migrationOpenFromRefusal,
+} from "./migration-freeze";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_UPDATE).
@@ -74,6 +78,12 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// The published version is what a move into the repository carries
+		// (Fizzy #2878 §9): it stays put until the move ends.
+		await assertNoOpenMigration({
+			projectId: input.projectId,
+			organizationId,
+		});
 		const result = await publishInstructionSnapshot({
 			snapshotId: input.snapshotId,
 			projectId: input.projectId,
@@ -88,6 +98,14 @@ export const publishSnapshotProcedure = tenantProtectedProcedure
 					}),
 		});
 		if (!result.published) {
+			if (result.reason === "migration_open") {
+				// Decided under the project lock: a move started after the
+				// check above (Fizzy #2878 §9).
+				throw await migrationOpenFromRefusal(result, {
+					projectId: input.projectId,
+					organizationId,
+				});
+			}
 			if (result.reason === "published_changed") {
 				// Another publish or rollback landed since the caller's page
 				// loaded. Nothing was written. The version it carries is

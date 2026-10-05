@@ -199,6 +199,44 @@ describe("a run's outcome (§7.3)", () => {
 	});
 });
 
+describe("a finished run's outcome, said as git says it (Fizzy #2878)", () => {
+	const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+	it("names the commit a published run took", () => {
+		expect(
+			syncOutcomeMessage({ kind: "published", version: 4 }, SHA),
+		).toEqual({
+			key: "outcomes.publishedCommit",
+			values: { sha7: "0123456" },
+		});
+	});
+
+	it("names the commit a refused run refused", () => {
+		expect(syncOutcomeMessage({ kind: "rejected" }, SHA)).toEqual({
+			key: "outcomes.rejectedCommit",
+			values: { sha7: "0123456" },
+		});
+	});
+
+	it("keeps the version and generic wording when the run recorded no commit", () => {
+		expect(
+			syncOutcomeMessage({ kind: "published", version: 4 }, null),
+		).toEqual({ key: "outcomes.published", values: { version: 4 } });
+		expect(syncOutcomeMessage({ kind: "rejected" }, null)).toEqual({
+			key: "outcomes.rejected",
+		});
+	});
+
+	it("leaves every other outcome as it was, commit or not", () => {
+		expect(syncOutcomeMessage({ kind: "unchanged" }, SHA)).toEqual({
+			key: "outcomes.unchanged",
+		});
+		expect(
+			syncOutcomeMessage({ kind: "not_published", reason: "older" }, SHA),
+		).toEqual({ key: "outcomes.notPublished.older" });
+	});
+});
+
 describe("a failed run's message (§7.3)", () => {
 	const configuration = { ref: "main", rootPath: "agents" };
 
@@ -667,6 +705,8 @@ describe("localSetupRouteFor (Fizzy #2721)", () => {
 		});
 		expect(route).toEqual<LocalSetupRoute>({
 			kind: "repository",
+			provider: "GITHUB",
+			repositoryLabel: "example-org/instructions",
 			cloneUrl: "https://github.com/example-org/instructions.git",
 			directory: "instructions",
 			ref: "main",
@@ -726,26 +766,39 @@ describe("localSetupRouteFor (Fizzy #2721)", () => {
 		).toBeNull();
 	});
 
-	it("offers the repository route for GITHUB and GITLAB", () => {
-		for (const provider of ["GITHUB", "GITLAB"]) {
+	it("offers the repository route for GITHUB, GITLAB and AZURE_DEVOPS", () => {
+		for (const provider of ["GITHUB", "GITLAB", "AZURE_DEVOPS"]) {
 			expect(
 				localSetupRouteFor({
 					repositoryBacked: true,
 					repositoryConfirmed: true,
 					configured: { ...configured, provider },
 				}),
-			).toMatchObject({ kind: "repository" });
+			).toMatchObject({ kind: "repository", provider });
 		}
 	});
 
-	it("returns null for AZURE_DEVOPS: the CLI classifies it as unsupported and refuses init", () => {
-		expect(
-			localSetupRouteFor({
-				repositoryBacked: true,
-				repositoryConfirmed: true,
-				configured: { ...configured, provider: "AZURE_DEVOPS" },
-			}),
-		).toBeNull();
+	it("names an Azure DevOps repository by its organization and repository, with the clone URL it stored", () => {
+		const route = localSetupRouteFor({
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			configured: {
+				...configured,
+				provider: "AZURE_DEVOPS",
+				repositoryOwner: "example-org",
+				repositoryName: "rules",
+				repositoryUrl:
+					"https://dev.azure.com/example-org/platform/_git/rules",
+			},
+		});
+
+		expect(route).toMatchObject({
+			kind: "repository",
+			provider: "AZURE_DEVOPS",
+			repositoryLabel: "example-org/rules",
+			cloneUrl: "https://dev.azure.com/example-org/platform/_git/rules",
+			directory: "rules",
+		});
 	});
 
 	it("returns null for a provider string this build does not recognise", () => {

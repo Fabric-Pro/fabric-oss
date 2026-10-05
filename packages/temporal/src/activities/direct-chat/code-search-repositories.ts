@@ -74,6 +74,50 @@ export function buildCodeSearchRepositories(
 	return repositories;
 }
 
+/**
+ * The project's connected repositories that have no code-index row: the
+ * repository integrations, and the legacy repository when one is set. Each
+ * carries status "missing". `code_search` cannot search them, but the model
+ * can still be told what they are instead of being told they do not exist.
+ */
+export function buildUnindexedRepositories(
+	indexes: ReadonlyArray<CodeIndexRow>,
+	integrations: ReadonlyArray<RepositoryIntegrationRow>,
+	legacy: LegacyRepositoryRow | null,
+): CodeSearchRepository[] {
+	const indexed = new Set(
+		indexes.map((index) => index.repositoryIntegrationId),
+	);
+	const repositories: CodeSearchRepository[] = integrations
+		.filter((integration) => !indexed.has(integration.id))
+		.map((integration) => ({
+			integrationId: integration.id,
+			label: `${integration.repositoryOwner}/${integration.repositoryName}`,
+			name: integration.repositoryName,
+			url: integration.repositoryUrl,
+			roleTag: integration.roleTag,
+			status: "missing",
+		}));
+	if (
+		!indexed.has(null) &&
+		(legacy?.repositoryUrl || legacy?.repositoryName)
+	) {
+		const name = legacy.repositoryName ?? null;
+		repositories.push({
+			integrationId: null,
+			label:
+				legacy.repositoryOwner && name
+					? `${legacy.repositoryOwner}/${name}`
+					: (legacy.repositoryUrl ?? "default repository"),
+			name,
+			url: legacy.repositoryUrl ?? null,
+			roleTag: null,
+			status: "missing",
+		});
+	}
+	return repositories;
+}
+
 function normalizeRepositoryRef(value: string): string {
 	return stripTrailingSlashes(
 		value
@@ -174,6 +218,7 @@ export function describeCodeSearchRepositories(
 export function codeIndexUnavailableResult(
 	status: string,
 	repositoryLabel?: string,
+	options: { liveRepositoryReads?: boolean } = {},
 ): { available: false; status: string; results: []; message: string } {
 	const subject = repositoryLabel
 		? `The code index for ${repositoryLabel}`
@@ -184,12 +229,25 @@ export function codeIndexUnavailableResult(
 			: status === "FAILED"
 				? "failed to build and needs a re-index from the project's repository settings"
 				: status === "missing"
-					? "does not exist — no repository has been indexed for this project"
+					? repositoryLabel
+						? "does not exist — this repository is connected but has not been indexed"
+						: "does not exist — no repository has been indexed for this project"
 					: `is not searchable right now (status ${status})`;
+	// Where the chat also offers the live readers (the orchestrator's Fabric
+	// catalog), point at them: told only to "answer from other sources", the
+	// model retried code_search or left for another integration's file
+	// tools (Fizzy #2926). Direct chat does not offer them, so it is not.
+	// An explicit Fabric tool list can leave them out, and this result cannot
+	// see that list, so the advice is conditional.
+	const otherSources =
+		"answer from the project's other sources (documents, features, Context-tab sources)";
+	const instead = options.liveRepositoryReads
+		? `If code_tree and code_file_get are among your tools, list the repository with code_tree and read files with code_file_get: they read the connected repository directly and need no index. Otherwise ${otherSources}. Tell the user that code search will work once the repository is indexed.`
+		: `${otherSources[0].toUpperCase()}${otherSources.slice(1)}, and tell the user that code search will work once the repository is indexed.`;
 	return {
 		available: false,
 		status,
 		results: [],
-		message: `${subject} ${state}, so code search is unavailable for now. Do not call code_search again in this turn: answer from the project's other sources (documents, features, Context-tab sources), and tell the user that code search will work once the repository is indexed.`,
+		message: `${subject} ${state}, so code search is unavailable for now. Do not call code_search again in this turn. ${instead}`,
 	};
 }

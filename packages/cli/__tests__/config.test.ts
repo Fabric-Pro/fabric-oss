@@ -35,6 +35,7 @@ afterEach(() => {
 });
 
 const OAUTH = {
+	issuer: "https://deployment.example",
 	clientId: "client-example",
 	redirectUri: "http://127.0.0.1:49152/callback",
 	tokenEndpoint: "https://deployment.example/api/auth/oauth2/token",
@@ -45,7 +46,7 @@ const OAUTH = {
 };
 
 describe("CLI profile configuration", () => {
-	it("stores an explicitly selected deployment with the active profile and keeps env precedence", async () => {
+	it("stores an explicitly selected deployment under its own profile and keeps env precedence", async () => {
 		await isolatedConfigHome();
 		const initialConfig = await import("../src/lib/config.js");
 		await writeFile(
@@ -70,10 +71,16 @@ describe("CLI profile configuration", () => {
 		const saved = JSON.parse(
 			await readFile(config.getConfigPath(), "utf8"),
 		);
-		expect(saved.activeProfile).toBe("staging");
-		expect(saved.profiles.staging).toEqual({
+		// Profiles are keyed by the deployment's origin: the named profile
+		// keeps its default context under the default deployment, and the
+		// explicitly selected one gets a profile of its own and becomes active.
+		expect(saved.version).toBe(2);
+		expect(saved.activeProfile).toBe("https://deployment.example");
+		expect(saved.profiles["https://deployment.example"]).toEqual({
 			apiKey: "fab_test_key",
 			baseUrl: "https://deployment.example",
+		});
+		expect(saved.profiles["https://fabric.pro"]).toEqual({
 			defaultContext: { type: "org", slug: "example-org" },
 		});
 		expect(config.getBaseUrl()).toBe("https://deployment.example");

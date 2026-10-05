@@ -49,7 +49,7 @@ vi.mock("@repo/database", () => ({
 		userStory: { update: vi.fn(), updateMany: vi.fn(), findMany: vi.fn() },
 		feature: { update: vi.fn(), updateMany: vi.fn() },
 		epic: { update: vi.fn(), updateMany: vi.fn() },
-		mCPConfig: { findUnique: vi.fn().mockResolvedValue(null) },
+		mCPConfig: { findFirst: vi.fn().mockResolvedValue(null) },
 	},
 	PmSyncStatus: {
 		PENDING: "PENDING",

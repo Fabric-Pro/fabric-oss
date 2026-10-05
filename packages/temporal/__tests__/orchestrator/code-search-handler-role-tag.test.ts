@@ -5,6 +5,8 @@ vi.mock("@repo/database", () => ({
 		projectRepositoryIntegration: {
 			findMany: vi.fn(),
 		},
+		// The handler always reads the project's legacy repository columns.
+		project: { findUnique: vi.fn().mockResolvedValue(null) },
 	},
 	getMergedSearchProviderConfigs: vi.fn().mockResolvedValue([]),
 	getProjectCodeIndexes: vi.fn().mockResolvedValue([]),
@@ -40,12 +42,14 @@ vi.mock("@repo/integrations/github", () => ({
 }));
 
 vi.mock("@repo/connectors", () => ({
-	searchRepositoryCode: vi.fn().mockResolvedValue([
-		{
-			filePath: "src/auth.ts",
-			matchedSnippets: ["export function login() {}"],
-		},
-	]),
+	searchRepositoryCode: vi.fn().mockResolvedValue({
+		results: [
+			{
+				filePath: "src/auth.ts",
+				matchedSnippets: ["export function login() {}"],
+			},
+		],
+	}),
 	getRepositoryFile: vi.fn(),
 	listRepositoryStructure: vi.fn(),
 }));

@@ -16,6 +16,7 @@
 
 import { auth } from "@repo/auth";
 import { db } from "@repo/database";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
 
@@ -36,6 +37,17 @@ export async function GET(req: NextRequest) {
 
 	const url = new URL(req.url);
 	const organizationId = url.searchParams.get("organizationId");
+
+	// Listing configs in an organization needs current membership there with
+	// MCP_READ; a removed member must not keep learning their config ids.
+	const authorization = await authorizeMcpConfigRequest({
+		userId: session.user.id,
+		organizationId,
+		action: "read",
+	});
+	if (!authorization.ok) {
+		return authorization.response;
+	}
 
 	// Tenant XOR — never OR. Personal context requires organizationId: null.
 	const configs = await db.mCPConfig.findMany({

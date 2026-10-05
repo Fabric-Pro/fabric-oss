@@ -9,9 +9,15 @@ import {
 	checkProgressMessageKey,
 } from "../../lib/instructions-check-progress";
 import {
+	type FabricCopyState,
+	fabricCopyState,
+} from "../../lib/instructions-copy-state";
+import {
+	type RepositoryMigrationControls,
 	type RepositorySyncState,
 	type SyncRunProgress,
 	settledByRetry,
+	shortCommit,
 	syncErrorMessage,
 	syncOutcomeMessage,
 	syncRunOutcome,
@@ -19,21 +25,79 @@ import {
 	triggerLabelKey,
 } from "../../lib/instructions-repository-sync";
 import { SyncProgressLine } from "../repository-sync/SyncProgressLine";
+import {
+	MigrationEndedNoticeLine,
+	RepositoryMigrationStatus,
+} from "./RepositoryMigrationStatus";
 
 /**
- * The last repository sync, under the tab's summary: outcome, trigger and
- * time (design 2026-09-23 §7.3). Everyone who can read the tab sees it; its
- * actions exist only when the tab passes the callbacks, which it does for
- * configurers.
+ * The commit and branch the published version was synced from, which Fabric's
+ * copy is compared against. Which version, repository, branch and commit is
+ * published is already said by the summary line above this block, so the block
+ * does not say it again.
+ */
+type PublishedSource = {
+	sourceCommitSha: string | null;
+	sourceRef: string | null;
+};
+
+/**
+ * The tab speaks state, not commands: under the summary, whether Fabric's copy
+ * is what the last sync took and if not why (a commit the secret scan refused,
+ * a sync that failed), the last sync's outcome, whether automatic sync is on,
+ * and the one thing the tab cannot know — the state of anyone's own checkout
+ * (design 2026-09-23 §7.3; Fizzy #2878). Everyone who can read the tab sees
+ * it; its actions exist only when the tab passes the callbacks, which it does
+ * for configurers.
  *
- * A REJECTED run's detail is the rejected banner above, not this line.
+ * A REJECTED run's detail is the rejected banner above, not this block;
+ * `onSeeFindings` is what takes the reader there.
  */
 export function RepositorySyncStatus({
-	state,
-	onSyncNow,
-	onConfigure,
-	publishedVersion = null,
-}: {
+	projectId,
+	migration,
+	canManageMigration = false,
+	onMigrationChanged,
+	...lines
+}: SyncLinesProps & {
+	/**
+	 * What the tab hands the move of uploaded instructions into a repository
+	 * (Fizzy #2878 §9), with the project's id for its commands. While the sync
+	 * state names a move, its status takes the place of the sync lines (the sync
+	 * the move created is paused); once a move that ended without its files
+	 * landing is gone, its notice stands above them until it is dismissed.
+	 */
+	projectId?: string;
+	migration?: RepositoryMigrationControls;
+	/** The member may create and update, so may cancel or retry the move. */
+	canManageMigration?: boolean;
+	onMigrationChanged?: () => Promise<void> | void;
+}) {
+	if (lines.state.migration && projectId !== undefined) {
+		return (
+			<RepositoryMigrationStatus
+				projectId={projectId}
+				state={lines.state}
+				migration={migration}
+				canManage={canManageMigration}
+				onChanged={onMigrationChanged ?? (() => {})}
+			/>
+		);
+	}
+	return (
+		<>
+			{migration?.endedNotice ? (
+				<MigrationEndedNoticeLine
+					notice={migration.endedNotice}
+					onDismiss={migration.onDismissEndedNotice}
+				/>
+			) : null}
+			<SyncLines {...lines} />
+		</>
+	);
+}
+
+type SyncLinesProps = {
 	state: RepositorySyncState;
 	/**
 	 * The version now published. A run whose staged version was stuck in its
@@ -41,9 +105,30 @@ export function RepositorySyncStatus({
 	 * more.
 	 */
 	publishedVersion?: number | null;
+	/** The published version's source, when it came from the repository. */
+	published?: PublishedSource | null;
+	/**
+	 * A commit made from this tab that Fabric's copy has not taken yet (Fizzy
+	 * #2878 §10): the push landed, and the sync of the real tree that publishes
+	 * it follows within seconds. Said in place of the copy line, which would
+	 * otherwise call Fabric's copy behind the very commit that is on its way.
+	 */
+	syncingCommit?: { sha: string; ref: string } | null;
 	onSyncNow?: () => void;
 	onConfigure?: () => void;
-}) {
+	/** Present while a rejected-version banner is on the page to point at. */
+	onSeeFindings?: () => void;
+};
+
+function SyncLines({
+	state,
+	onSyncNow,
+	onConfigure,
+	onSeeFindings,
+	publishedVersion = null,
+	published = null,
+	syncingCommit = null,
+}: SyncLinesProps) {
 	const t = useTranslations("projects.codingInstructions.repositorySync");
 	// The snapshot's own check phases are worded where an upload's are.
 	const tChecks = useTranslations(
@@ -80,11 +165,22 @@ export function RepositorySyncStatus({
 	const outcome = run ? syncRunOutcome(run, running) : null;
 	const settled = outcome ? settledByRetry(outcome, publishedVersion) : null;
 	const outcomeMessage =
-		settled ?? (outcome ? syncOutcomeMessage(outcome) : null);
+		settled ??
+		(outcome ? syncOutcomeMessage(outcome, run?.commitSha ?? null) : null);
+	// Fabric's copy, against the branch's tip. Computed against the published
+	// version only when it came from the repository: an upload-sourced version
+	// has no commit to compare.
+	const copy =
+		published && published.sourceCommitSha !== null
+			? fabricCopyState(state, published)
+			: ({ kind: "unknown" } as const);
+	// A failure that explains why Fabric's copy is behind is said once, in the
+	// copy line, not again under the last-run line.
 	const errorMessage =
-		!settled && outcome?.kind === "failed"
+		!settled && outcome?.kind === "failed" && copy.kind !== "behind-error"
 			? syncErrorMessage(outcome, configuration)
 			: null;
+	const ref = configuration?.ref ?? published?.sourceRef ?? "";
 	return (
 		<div
 			role="status"
@@ -93,6 +189,45 @@ export function RepositorySyncStatus({
 			// gap, but stays in the accessibility tree (`hidden` would not).
 			className="flex flex-col gap-1 text-sm empty:sr-only"
 		>
+			{syncingCommit ? (
+				<p
+					className="inline-flex items-center gap-1.5 text-primary"
+					data-testid="repository-sync-copy"
+				>
+					<Loader2Icon
+						className="size-3.5 motion-safe:animate-spin"
+						aria-hidden="true"
+					/>
+					{t("status.copySyncingCommit", {
+						commit: shortCommit(syncingCommit.sha) ?? "",
+						ref: syncingCommit.ref,
+					})}
+				</p>
+			) : copy.kind !== "unknown" ? (
+				<p
+					className={
+						copy.kind === "refused" || copy.kind === "behind-error"
+							? "text-destructive"
+							: "text-muted-foreground"
+					}
+					data-testid="repository-sync-copy"
+				>
+					{copyLine(copy, ref, t)}
+					{copy.kind === "refused" && onSeeFindings ? (
+						<>
+							{" "}
+							<Button
+								size="sm"
+								variant="link"
+								className="h-auto px-0"
+								onClick={onSeeFindings}
+							>
+								{t("status.seeFindings")}
+							</Button>
+						</>
+					) : null}
+				</p>
+			) : null}
 			{running && progress ? (
 				// Only the phase is announced; the count beside it is not read
 				// out on every poll (`SyncProgressLine`).
@@ -149,9 +284,59 @@ export function RepositorySyncStatus({
 						</Button>
 					) : null}
 				</p>
+			) : configuration ? (
+				<p className="text-muted-foreground">
+					{t(
+						configuration.automatic
+							? configuration.provider === "GITHUB"
+								? "status.automaticOnPush"
+								: "status.automaticOnPoll"
+							: "status.automaticOff",
+					)}
+				</p>
+			) : null}
+			{configuration ? (
+				<p className="text-muted-foreground">
+					{t("status.checkoutNote")}
+				</p>
 			) : null}
 		</div>
 	);
+}
+
+/** The line about Fabric's copy against the branch's tip. */
+function copyLine(
+	copy: Exclude<FabricCopyState, { kind: "unknown" }>,
+	ref: string,
+	t: Translate,
+): string {
+	switch (copy.kind) {
+		case "current":
+			return t("status.copyCurrent", {
+				ref,
+				time: formatRelativeTime(copy.syncedAt),
+			});
+		case "refused":
+			return copy.commit
+				? t("status.copyRefused", {
+						ref,
+						commit: shortCommit(copy.commit) ?? "",
+						time: formatRelativeTime(copy.at),
+					})
+				: t("status.copyRefusedNoCommit", {
+						ref,
+						time: formatRelativeTime(copy.at),
+					});
+		case "behind-error":
+			return t("status.copyBehindError", {
+				ref,
+				error: t(copy.message.key, copy.message.values),
+			});
+		default: {
+			const unreachable: never = copy;
+			return unreachable;
+		}
+	}
 }
 
 type Translate = (

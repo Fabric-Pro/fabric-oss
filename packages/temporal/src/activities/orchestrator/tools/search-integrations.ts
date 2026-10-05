@@ -11,7 +11,11 @@
  */
 
 import type { WorkflowIntegrationProvider } from "@repo/database";
-import { db } from "@repo/database";
+import {
+	canUseWorkflowIntegrations,
+	db,
+	workflowIntegrationAccessWhere,
+} from "@repo/database";
 import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import {
 	integrationExecutorRegistry,
@@ -472,11 +476,21 @@ export async function searchAvailableIntegrations(
 		};
 	}
 
+	if (
+		!(await canUseWorkflowIntegrations(input.userId, input.organizationId))
+	) {
+		return {
+			results: [],
+			totalIntegrationsSearched: 0,
+			durationMs: Date.now() - startTime,
+		};
+	}
 	const integrations = await db.workflowIntegration.findMany({
 		where: {
-			...(input.organizationId
-				? { organizationId: input.organizationId }
-				: { userId: input.userId, organizationId: null }),
+			...workflowIntegrationAccessWhere(
+				input.userId,
+				input.organizationId,
+			),
 			isActive: true,
 			// <PROVIDER>_OAUTH_APP rows hold OAuth client credentials, not a
 			// connection that can be searched.

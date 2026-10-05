@@ -4,6 +4,12 @@ import {
 	listWorkflowIntegrations,
 	updateWorkflowIntegration,
 } from "@repo/database";
+import {
+	connectGitLab,
+	credentialGitLabOrigin,
+	GITLAB_DEFAULT_ORIGIN,
+	getGitLabConnectionStatus,
+} from "@repo/integrations/gitlab";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -12,6 +18,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { authorizeGitLabTenant } from "../../../integrations/lib/gitlab-request-tenant";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 /**
@@ -135,6 +142,72 @@ export const saveIntegrationProcedure = tenantProtectedProcedure
 				cleanedCredentials[key] = value;
 				hasRealValue = true;
 			}
+		}
+
+		// GitLab: the person's ONE GitLab connection, written by the connection
+		// service. A personal access token REPLACES whatever grant was there —
+		// built from scratch, so no OAuth refresh token or issuer survives it —
+		// rather than being merged into the old credential.
+		if (input.type === "GITLAB") {
+			// The person's connection is read (it can classify) and written in
+			// this tenant: WORKSPACE_UPDATE — this procedure's permission —
+			// checked in the organization the request resolves to, not only
+			// the session's, and no organization refused (ADR-018) rather
+			// than a no-organization connection written.
+			const tenant = await authorizeGitLabTenant(
+				Permissions.WORKSPACE_UPDATE,
+				input.organizationId,
+				context,
+			);
+			const accessToken = cleanedCredentials.GITLAB_ACCESS_TOKEN;
+			if (!accessToken) {
+				const status = await getGitLabConnectionStatus(tenant);
+				if (status.connected && status.integrationId) {
+					return {
+						success: true,
+						integrationId: status.integrationId,
+						message:
+							"GITLAB integration unchanged (no new credentials provided)",
+					};
+				}
+				throw new ORPCError("BAD_REQUEST", {
+					message: "Enter a GitLab personal access token.",
+				});
+			}
+			// The instance the token belongs to, from whichever address field
+			// the form sent. An address that is present but refused (not
+			// https, a loopback / private / metadata host, unparsable) is an
+			// error — never quietly replaced by gitlab.com, which would send a
+			// self-hosted token there.
+			const named = credentialGitLabOrigin(cleanedCredentials);
+			if (named.present && !named.ok) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Enter a valid GitLab URL: ${named.reason}.`,
+				});
+			}
+			const origin = named.present
+				? (named as { origin: string }).origin
+				: GITLAB_DEFAULT_ORIGIN;
+			const written = await connectGitLab(tenant, {
+				accessToken,
+				refreshToken: null,
+				expiresAt: null,
+				scopes: [],
+				issuer: { kind: "pat", origin },
+				// The person just entered this token.
+				freshGrant: true,
+			});
+			if (!written.written) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"Your GitLab connection changed while saving. Please try again.",
+				});
+			}
+			return {
+				success: true,
+				integrationId: written.integrationId,
+				message: "GITLAB integration saved successfully",
+			};
 		}
 
 		// Check if integration already exists

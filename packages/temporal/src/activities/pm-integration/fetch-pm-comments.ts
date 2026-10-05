@@ -1,5 +1,6 @@
 import { logger } from "@repo/logs";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import { descriptionToText } from "./adf";
 import { extractDisplayName, normalizeIsoDate } from "./fetch-pm-ticket";
 import type { PMToolCapabilities } from "./tool-analyzer";
@@ -108,6 +109,15 @@ export async function fetchPmComments(
 		maxCharsPerComment = MAX_CHARS_PER_COMMENT,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: additionalContext,
+	});
+
 	const taskComments = capabilities.taskComments;
 	if (!taskComments) {
 		return [];
@@ -141,6 +151,7 @@ export async function fetchPmComments(
 	let result: { success: boolean; output: unknown };
 	try {
 		result = await executeMcpTool({
+			pmTarget: { additionalContext },
 			toolName: taskComments.toolName,
 			args,
 			userId,

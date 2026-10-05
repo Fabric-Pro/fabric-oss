@@ -56,6 +56,24 @@ describe("instruction proposal authorization", () => {
 		).toBe(false);
 	});
 
+	it("never serves a direct commit's own files as content, before or after the branch holds it (Fizzy #2878 §10)", () => {
+		const commit = {
+			status: "READY",
+			proposalStatus: null,
+			proposalDestination: "REPOSITORY_COMMIT",
+		};
+		const stampedAsCopy = { ...commit, source: "REPOSITORY" };
+		expect(isInstructionSnapshotContentReadable(commit)).toBe(false);
+		expect(isInstructionSnapshotContentReadable(stampedAsCopy)).toBe(false);
+		expect(
+			isInstructionSnapshotContentReadable({
+				status: "READY",
+				proposalStatus: null,
+				proposalDestination: "FABRIC",
+			}),
+		).toBe(true);
+	});
+
 	it("lets a project reader submit a proposal but not create a direct snapshot", async () => {
 		await expect(
 			assertInstructionDeriveAccess({

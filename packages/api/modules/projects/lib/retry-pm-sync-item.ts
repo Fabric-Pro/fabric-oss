@@ -155,6 +155,8 @@ async function startTestCaseSyncForItem(
 		project: {
 			projectManagementMcpServerId: project.projectManagementMcpServerId,
 			projectManagementMcpConfigId: project.projectManagementMcpConfigId,
+			projectManagementAdditionalContext:
+				project.projectManagementAdditionalContext,
 			organizationId: project.organizationId,
 		},
 		userId,

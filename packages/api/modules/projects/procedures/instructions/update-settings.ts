@@ -9,6 +9,7 @@ import {
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { projectIgnoreGlobsSchema } from "./ignore-globs-input";
+import { assertNoOpenMigration, withMigrationFreeze } from "./migration-freeze";
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_UPDATE).
@@ -39,12 +40,22 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
-		await updateProjectInstructionSettings(
-			input.projectId,
+		// New ignore rules would re-plan what a move into the repository
+		// carries and fence its sync row (Fizzy #2878 §9).
+		await assertNoOpenMigration({
+			projectId: input.projectId,
 			organizationId,
-			{
-				ignoreGlobs: input.ignoreGlobs,
-			},
+		});
+		await withMigrationFreeze(
+			{ projectId: input.projectId, organizationId },
+			() =>
+				updateProjectInstructionSettings(
+					input.projectId,
+					organizationId,
+					{
+						ignoreGlobs: input.ignoreGlobs,
+					},
+				),
 		);
 		recordAuditFromRequest(context, {
 			action: "project.instructions.settings_updated",

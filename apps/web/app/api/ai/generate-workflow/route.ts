@@ -3,18 +3,18 @@
  * Converts natural language descriptions into structured workflows
  * Supports both creation and modification modes
  * Based on Vercel workflow-builder-template pattern
- * Uses Next.js after for non-blocking usage logging.
- * See: server-after-nonblocking rule from Vercel React Best Practices
  */
 
 import { getAIModelWithMetadata } from "@repo/ai";
+import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
 import { auth } from "@repo/auth";
-import { logAiUsage } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { generateText } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import { after } from "next/server";
 import { z } from "zod";
 
 // Schema for existing workflow nodes/edges (input)
@@ -123,8 +123,6 @@ const GeneratedWorkflowSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-	const startTime = Date.now();
-
 	try {
 		console.log("[AI Workflow Generation] Request started");
 
@@ -163,13 +161,37 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		const { prompt, organizationId, existingWorkflow, mode } =
-			validation.data;
+		const {
+			prompt,
+			organizationId: requestedOrganizationId,
+			existingWorkflow,
+			mode,
+		} = validation.data;
 		console.log("[AI Workflow Generation] Prompt:", prompt, "Mode:", mode);
 
 		const userId = session.user.id;
 
-		// Get AI model using centralized entry point
+		// The organization picks the AI provider (and its key) that serves
+		// this request and the tenant its usage is logged against, so a
+		// client-supplied id is honoured only when the caller has a tie to
+		// that organization. An omitted id resolves to the session's active
+		// organization, tie-checked the same way; neither is a 403 (ADR-018).
+		const organizationResolution = await resolveRequestedOrganization({
+			userId,
+			requestedOrganizationId,
+			activeOrganizationId: session.session.activeOrganizationId,
+		});
+		if (!organizationResolution.ok) {
+			console.warn(
+				"[AI Workflow Generation] Requested organization refused",
+				{ userId, organizationId: requestedOrganizationId },
+			);
+			return forbiddenOrganizationResponse(organizationResolution);
+		}
+		const organizationId = organizationResolution.organizationId;
+
+		// The resolved model records its own AiUsageLog row for each provider
+		// call, so this route writes none of its own.
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
 			{ userId, organizationId },
@@ -179,15 +201,13 @@ export async function POST(req: NextRequest) {
 		trackUsage();
 
 		// Generate workflow using AI
-		const { workflow, usage } = await generateWorkflowFromPrompt(
+		const workflow = await generateWorkflowFromPrompt(
 			prompt,
 			model,
 			metadata.modelString,
 			mode,
 			existingWorkflow,
 		);
-
-		const latencyMs = Date.now() - startTime;
 
 		console.log("[AI Workflow Generation] Generated workflow:", {
 			action: workflow.action,
@@ -197,44 +217,11 @@ export async function POST(req: NextRequest) {
 			removals: workflow.removals?.length ?? 0,
 		});
 
-		// Log AI usage after response is sent (non-blocking)
-		// See: server-after-nonblocking rule from Vercel React Best Practices
-		after(() => {
-			logAiUsage({
-				userId,
-				organizationId: organizationId ?? undefined,
-				provider: metadata.provider,
-				providerModelId: metadata.modelString,
-				modelCanonicalName: metadata.canonicalName,
-				billingCategory:
-					metadata.billingMode === "included_credit"
-						? "INCLUDED_CREDIT"
-						: metadata.billingMode === "metered_stripe"
-							? "STRIPE_METERED"
-							: metadata.billingMode === "platform_unbilled"
-								? "PLATFORM_UNBILLED"
-								: "EXTERNAL_BYOK",
-				billingCustomerId: metadata.billingCustomerId,
-				taskType: "COMPLEX",
-				inputTokens: usage.inputTokens,
-				outputTokens: usage.outputTokens,
-				totalTokens: usage.totalTokens,
-				latencyMs,
-				success: true,
-			}).catch((error) => {
-				console.error(
-					"[AI Workflow Generation] Failed to log usage:",
-					error,
-				);
-			});
-		});
-
 		return new Response(JSON.stringify(workflow), {
 			status: 200,
 			headers: { "Content-Type": "application/json" },
 		});
 	} catch (error: unknown) {
-		const latencyMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : "Internal server error";
 
@@ -263,23 +250,6 @@ export async function POST(req: NextRequest) {
 		}
 
 		console.error("[AI Workflow Generation] Error:", error);
-
-		// Log failed request (non-blocking)
-		after(() => {
-			logAiUsage({
-				provider: "UNKNOWN" as any,
-				providerModelId: "unknown",
-				taskType: "COMPLEX",
-				inputTokens: 0,
-				outputTokens: 0,
-				totalTokens: 0,
-				latencyMs,
-				success: false,
-				errorMessage,
-			}).catch(() => {
-				// Silent failure for error logging
-			});
-		});
 
 		return new Response(
 			JSON.stringify({
@@ -369,17 +339,10 @@ CRITICAL: When user says things like "change X to Y", "update the email", "modif
 - Use action: "update" with the updates array
 - DO NOT create new duplicate nodes`;
 
-/** Usage data from AI SDK (normalized to numbers) */
-interface UsageData {
-	inputTokens: number;
-	outputTokens: number;
-	totalTokens: number;
-}
-
 /**
  * Generate workflow from natural language prompt using AI
  * Supports both create and modify modes
- * Returns workflow object and usage data for logging
+ * Returns the validated workflow object
  * Uses generateText instead of generateObject to avoid OpenAI structured output
  * restrictions on z.record (which generates 'propertyNames' — not permitted).
  */
@@ -389,10 +352,7 @@ async function generateWorkflowFromPrompt(
 	modelString: string,
 	mode: "create" | "modify" = "create",
 	existingWorkflow?: z.infer<typeof ExistingWorkflowSchema>,
-): Promise<{
-	workflow: z.infer<typeof GeneratedWorkflowSchema>;
-	usage: UsageData;
-}> {
+): Promise<z.infer<typeof GeneratedWorkflowSchema>> {
 	// Select system prompt based on mode
 	const systemPrompt =
 		mode === "modify" ? MODIFY_SYSTEM_PROMPT : CREATE_SYSTEM_PROMPT;
@@ -459,16 +419,7 @@ Respond with a JSON object only, no markdown or code fences.`;
 		}
 
 		// Validate with Zod schema
-		const workflow = GeneratedWorkflowSchema.parse(parsed);
-
-		return {
-			workflow,
-			usage: {
-				inputTokens: result.usage.inputTokens ?? 0,
-				outputTokens: result.usage.outputTokens ?? 0,
-				totalTokens: result.usage.totalTokens ?? 0,
-			},
-		};
+		return GeneratedWorkflowSchema.parse(parsed);
 	} catch (error: unknown) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";

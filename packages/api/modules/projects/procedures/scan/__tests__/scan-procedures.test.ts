@@ -73,7 +73,13 @@ vi.mock("@repo/database", async () => {
 		);
 	return {
 		...actual,
-		db: {},
+		// The handlers take their organization from the project row when no
+		// permission middleware has recorded one (Fizzy #2904), as here.
+		db: {
+			project: {
+				findUnique: async () => ({ organizationId: "org-1" }),
+			},
+		},
 		hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 		updateScanFinding: (...a: unknown[]) => mockUpdateScanFinding(...a),
 		recordScanActivity: (...a: unknown[]) => mockRecordScanActivity(...a),
@@ -521,7 +527,8 @@ describe("triggerScanProcedure — purge re-scan", () => {
 			"proj-1",
 			{
 				userId: "user-1",
-				organizationId: null,
+				// The project's organization (Fizzy #2904), not the input's null.
+				organizationId: "org-1",
 			},
 		);
 		// FINDINGS_PURGED page-history entry with the deleted count.

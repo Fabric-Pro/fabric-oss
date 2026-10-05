@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
 	resolveEffectiveProjectPermissions: vi.fn(),
 	recordAuditFromRequest: vi.fn(),
 	getInstructionRepositorySync: vi.fn(),
+	getMemberProposalBranch: vi.fn(),
 	getInstructionSyncRunSnapshotProgress: vi.fn(),
 	getLatestInstructionRepositorySyncRun: vi.fn(),
 	listInstructionRepositorySyncRuns: vi.fn(),
@@ -20,6 +21,20 @@ const m = vi.hoisted(() => ({
 	startInstructionRepositorySync: vi.fn(),
 	isInstructionRepositorySyncRunning: vi.fn(),
 	queueRepositorySyncFollowUp: vi.fn(),
+	readMove: vi.fn(),
+	/** What the configuration writer throws, under the project lock, for an open move. */
+	MigrationOpenError: class MigrationOpenError extends Error {
+		pointer = {
+			v: 1,
+			state: "PROPOSING",
+			branchId: null,
+			snapshotId: null,
+			syncId: "sync_move",
+			pullRequestUrl: null,
+			startedAt: "2026-10-03T10:00:00.000Z",
+			userId: "user_2",
+		};
+	},
 }));
 
 /**
@@ -53,6 +68,7 @@ vi.mock("@repo/database", async () => ({
 		)
 	).parseInstructionSyncLimitDetail,
 	getInstructionRepositorySync: m.getInstructionRepositorySync,
+	getMemberProposalBranch: m.getMemberProposalBranch,
 	getInstructionSyncRunSnapshotProgress:
 		m.getInstructionSyncRunSnapshotProgress,
 	getLatestInstructionRepositorySyncRun:
@@ -65,7 +81,11 @@ vi.mock("@repo/database", async () => ({
 	deleteInstructionRepositorySync: m.deleteInstructionRepositorySync,
 	updateInstructionRepositorySyncProposalSettings:
 		m.updateInstructionRepositorySyncProposalSettings,
+	InstructionMigrationOpenError: m.MigrationOpenError,
 }));
+// What the move looks like to `disable`, without the pull request machinery
+// that reading it pulls in (`migration-read.ts` has its own suite).
+vi.mock("../migration-read", () => ({ readMove: m.readMove }));
 vi.mock("@repo/connectors", () => ({
 	verifyRepositoryBranch: m.verifyRepositoryBranch,
 }));
@@ -177,8 +197,15 @@ const syncRow = {
 
 beforeEach(() => {
 	for (const [key, fn] of Object.entries(m)) {
-		if (key !== "requireProjectPermission") fn.mockReset();
+		if (
+			key !== "requireProjectPermission" &&
+			key !== "MigrationOpenError"
+		) {
+			(fn as ReturnType<typeof vi.fn>).mockReset();
+		}
 	}
+	// No move of the project's uploads into its repository is open.
+	m.readMove.mockResolvedValue(null);
 	m.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: ["instruction:read", "instruction:create"],
 		source: "project-member",
@@ -281,6 +308,7 @@ describe("repositorySync.get", () => {
 		// added below when it joined the mapping (Fizzy #2721).
 		expect(result).toEqual({
 			sourceOfTruth: "REPOSITORY",
+			migration: null,
 			canConfigure: true,
 			running: false,
 			configured: {
@@ -680,6 +708,25 @@ describe("repositorySync.configure", () => {
 		}
 	});
 
+	it("answers MIGRATION_OPEN when the writer refuses under the project lock after the pre-check passed: a move started while the branch was being verified (Fizzy #2878 §9)", async () => {
+		m.upsertInstructionRepositorySync.mockRejectedValue(
+			new m.MigrationOpenError("a move is open"),
+		);
+
+		await expect(
+			handlers.configure?.({ input, context: ctx }),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				reason: "MIGRATION_OPEN",
+				state: "PROPOSING",
+				pullRequest: null,
+			},
+		});
+
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+	});
+
 	it("audits the automatic toggle as a configure that changed nothing synced, with the generation it kept (Fizzy #2744)", async () => {
 		const stored = {
 			repositoryIntegrationId: "int_1",
@@ -1019,6 +1066,118 @@ describe("repositorySync.configure", () => {
 	});
 });
 
+/** The pointer of an open move from uploads into a repository (Fizzy #2878 §9). */
+const openMove = (state: "PROPOSING" | "SWITCHING") => ({
+	v: 1,
+	state,
+	branchId: "branch_1",
+	snapshotId: "snap_move",
+	syncId: "sync_1",
+	pullRequestUrl: null,
+	startedAt: "2026-10-03T10:00:00.000Z",
+	userId: "user_1",
+});
+
+describe("while a move from uploads into the repository is open (Fizzy #2878 §9)", () => {
+	beforeEach(() => {
+		m.getMemberProposalBranch.mockResolvedValue({
+			pullRequestUrl:
+				"https://github.com/example-org/instructions/pull/7",
+			pullRequestExternalId: "7",
+		});
+	});
+
+	const refused = {
+		code: "CONFLICT",
+		data: {
+			reason: "MIGRATION_OPEN",
+			state: "PROPOSING",
+			pullRequest: {
+				url: "https://github.com/example-org/instructions/pull/7",
+				externalId: "7",
+			},
+		},
+	};
+
+	it("refuses Sync now while the move is proposing, starting nothing", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+			migration: openMove("PROPOSING"),
+		});
+
+		await expect(
+			handlers.syncNow?.({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject(refused);
+
+		expect(m.startInstructionRepositorySync).not.toHaveBeenCalled();
+	});
+
+	it("lets Sync now hurry a move that is switching", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+			migration: openMove("SWITCHING"),
+		});
+
+		await expect(
+			handlers.syncNow?.({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			}),
+		).resolves.toEqual({ started: true });
+	});
+
+	it.each(["PROPOSING", "SWITCHING"] as const)(
+		"refuses to re-configure the sync while the move is %s",
+		async (state) => {
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "UPLOAD",
+				migration: openMove(state),
+			});
+
+			await expect(
+				handlers.configure?.({
+					input: {
+						projectId: "proj_1",
+						repositoryIntegrationId: "int_1",
+						ref: "develop",
+						rootPath: "agents/",
+					},
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				data: { reason: "MIGRATION_OPEN", state },
+			});
+
+			expect(m.upsertInstructionRepositorySync).not.toHaveBeenCalled();
+			expect(m.verifyRepositoryBranch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reports the open move on the sync state the tab reads, beside the paused row", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "UPLOAD",
+			migration: openMove("PROPOSING"),
+		});
+
+		const result = (await handlers.get?.({
+			input: { projectId: "proj_1" },
+			context: ctx,
+		})) as Record<string, unknown>;
+
+		expect(result).toMatchObject({
+			sourceOfTruth: "UPLOAD",
+			migration: { state: "PROPOSING" },
+		});
+	});
+});
+
 describe("repositorySync.syncNow", () => {
 	it("starts a MANUAL run as the caller and audits", async () => {
 		expect(
@@ -1102,6 +1261,7 @@ describe("repositorySync.disable", () => {
 		expect(m.deleteInstructionRepositorySync).toHaveBeenCalledWith({
 			projectId: "proj_1",
 			organizationId: "org_1",
+			actorUserId: "user_1",
 		});
 		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
 			ctx,
@@ -1110,6 +1270,107 @@ describe("repositorySync.disable", () => {
 				metadata: { reason: "user", hadConfiguration: true },
 			}),
 		);
+	});
+
+	describe("while a move of the project's uploads into its repository is open (Fizzy #2878 §9)", () => {
+		const pointer = (state: "PROPOSING" | "SWITCHING") => ({
+			v: 1,
+			state,
+			branchId: "branch_1",
+			snapshotId: "snap_move",
+			syncId: "sync_move",
+			pullRequestUrl: null,
+			startedAt: "2026-10-03T10:00:00.000Z",
+			userId: "user_2",
+		});
+		const openMove = (stored: "PROPOSING" | "SWITCHING", shown: string) => {
+			m.readMove.mockResolvedValue({
+				pointer: pointer(stored),
+				proposal: null,
+				branchId: "branch_1",
+				evidence: { sourceFlipped: false, targetMismatch: false },
+				view: { state: shown },
+			});
+		};
+
+		it.each([
+			["a move that has switched", "SWITCHING" as const, "SWITCHING"],
+			["a move that is blocked", "PROPOSING" as const, "BLOCKED"],
+		])(
+			"is the way out of %s: it switches back to upload mode, ends the move and records who did",
+			async (_label, stored, shown) => {
+				openMove(stored, shown);
+
+				expect(
+					await handlers.disable?.({
+						input: { projectId: "proj_1" },
+						context: ctx,
+					}),
+				).toEqual({ disabled: true, hadConfiguration: true });
+
+				expect(m.deleteInstructionRepositorySync).toHaveBeenCalledWith({
+					projectId: "proj_1",
+					organizationId: "org_1",
+					actorUserId: "user_1",
+				});
+				expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+					ctx,
+					expect.objectContaining({
+						action: "project.instructions.repository_sync_disabled",
+						metadata: {
+							reason: "user",
+							hadConfiguration: true,
+							endedMigration: shown,
+						},
+					}),
+				);
+			},
+		);
+
+		it.each([
+			["is proposing", "PROPOSING" as const, "PROPOSING"],
+			["is open", "PROPOSING" as const, "OPEN"],
+			["has merged and not yet switched", "PROPOSING" as const, "MERGED"],
+			[
+				"has ended and not been cleaned up",
+				"PROPOSING" as const,
+				"ABANDONED",
+			],
+		])(
+			"is refused while the move %s: its own commands end it",
+			async (_label, stored, shown) => {
+				openMove(stored, shown);
+
+				await expect(
+					handlers.disable?.({
+						input: { projectId: "proj_1" },
+						context: ctx,
+					}),
+				).rejects.toMatchObject({
+					code: "CONFLICT",
+					data: { reason: "MIGRATION_OPEN", state: stored },
+				});
+
+				expect(
+					m.deleteInstructionRepositorySync,
+				).not.toHaveBeenCalled();
+				expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+			},
+		);
+
+		it("is as it always was when no move is open", async () => {
+			await handlers.disable?.({
+				input: { projectId: "proj_1" },
+				context: ctx,
+			});
+
+			expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+				ctx,
+				expect.objectContaining({
+					metadata: { reason: "user", hadConfiguration: true },
+				}),
+			);
+		});
 	});
 
 	it("flips a disconnected project back to upload mode when no row is left", async () => {

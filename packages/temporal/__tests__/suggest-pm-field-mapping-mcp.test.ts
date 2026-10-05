@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
 	discoverPMToolCapabilities: vi.fn(),
 }));
 
+// The GitLab instance check reads the config; these tests are not about it.
+vi.mock("../src/activities/pm-source", () => ({
+	assertPmMcpTargetOrigin: async () => undefined,
+}));
 vi.mock("../src/activities/orchestrator/execution/execute-mcp-tool", () => ({
 	executeMcpTool: mocks.executeMcpTool,
 }));
@@ -61,6 +65,7 @@ const BASE_INPUT = {
 	exampleWorkItemId: 4321,
 	userId: "user-1",
 	organizationId: "org-1",
+	pmAdditionalContext: null,
 };
 
 function wireHappyPath(xmlForm: string = XML_FORM) {

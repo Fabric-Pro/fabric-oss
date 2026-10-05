@@ -3,7 +3,6 @@ import {
 	createStory,
 	db,
 	Prisma,
-	resolvePMConfigForUser,
 	type StoryKind,
 	type StorySource,
 	updateStory,
@@ -36,6 +35,11 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { assertCapabilityAvailable } from "../../../../capabilities/assert";
+import {
+	projectGitLabPmOrigin,
+	resolveProjectPmConfig,
+	rethrowGitLabPmOriginMismatch,
+} from "../../../lib/gitlab-pm-source";
 import { stripInternalStoryFields } from "../../../lib/strip-internal-story-fields";
 import {
 	getGitLabIssueForPM,
@@ -91,11 +95,16 @@ async function fetchPMItemData({
 		stripAttachmentBlock,
 	} = await import("@repo/temporal");
 
+	// Bound to the instance the project's container lives on: a client for
+	// a GitLab server elsewhere (cached or new) is refused before use.
 	const { client, serverUrl } = await getCachedMcpClientForConfig({
 		configId: userMcpConfig.id,
 		userId,
 		organizationId,
-	});
+		expectedGitLabOrigin: projectGitLabPmOrigin(
+			project.projectManagementAdditionalContext,
+		),
+	}).catch(rethrowGitLabPmOriginMismatch);
 
 	const baseUrl =
 		userMcpConfig.baseUrl ||
@@ -173,7 +182,10 @@ async function fetchPMItemData({
 		userId,
 		organizationId,
 		mcpConfigId: userMcpConfig.id,
-	});
+		pmTarget: {
+			additionalContext: project.projectManagementAdditionalContext,
+		},
+	}).catch(rethrowGitLabPmOriginMismatch);
 
 	if (!getResult.success) {
 		const errMsg =
@@ -503,6 +515,8 @@ async function handleGitLabImport(args: {
 	externalId: string;
 	overwrite: boolean;
 	labelStatusMapSource: unknown;
+	/** The project's PM context: records the container's GitLab instance. */
+	pmAdditionalContext: unknown;
 }) {
 	const {
 		projectId,
@@ -519,7 +533,8 @@ async function handleGitLabImport(args: {
 		userId,
 		organizationId,
 		projectId,
-	});
+		pmAdditionalContext: args.pmAdditionalContext,
+	}).catch(rethrowGitLabPmOriginMismatch);
 	if (!source) {
 		throw new ORPCError("BAD_REQUEST", {
 			message:
@@ -818,6 +833,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				overwrite: input.overwrite,
 				labelStatusMapSource:
 					project.projectManagementAdditionalContext,
+				pmAdditionalContext: project.projectManagementAdditionalContext,
 			});
 			if (gitlabResult.success && gitlabResult.story) {
 				await logImportPull({
@@ -834,8 +850,9 @@ export const importFromPMProcedure = tenantProtectedProcedure
 			return gitlabResult;
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,

@@ -74,17 +74,12 @@ When `STAGING_RELEASE_ENABLED=true`, internal feature PRs target protected
 private `staging` and execute checks before private snapshot deployment. The
 trusted private ops pipeline freezes a twice-weekly batch, composes it onto
 canonical master, performs changeset versioning, and validates the pinned
-candidate before public publication. For validated version/changelog/consumed
-changeset differences only, trusted ops may retain the healthy frozen staging
-deployment with its original image and web provenance; dependency fields,
-lockfiles, build inputs and runtime changes require fresh candidate images and
-deployment. Automatic promotion images and web previews defer until trusted
-ops selects the fresh fallback; normal staging builds continue automatically.
-Automated validation binds the final candidate and original deployment
-separately before authorizing promotion.
-Staging can show the original build version during reuse; public release builds
-use the final versioned source. OSS receives one sanitized squash commit
-per approved batch; the private master synchronizes to that exact public result.
+candidate in immutable CI-only mode before public publication. New candidates
+do not require candidate image builds or a shared-staging deployment; CI
+validates the frozen staging source, composed candidate, and exact master SHA.
+Staging builds and deployments continue normally for feature work. OSS receives
+one sanitized squash commit per approved batch; the private master synchronizes
+to that exact public result.
 
 In this mode `release.yml` publishes already-versioned approved content and
 refuses unconsumed changesets. The public scheduled Version-PR cutting path is
@@ -92,6 +87,11 @@ disabled. Public image, release artifact, BOM and production provenance checks
 remain in force. The private ops release-cycle runbook is the internal developer
 contract. The Version-PR flow below remains the fallback while batch mode is
 disabled.
+
+The public relay batch still satisfies `Require changeset`: it verifies the
+immutable candidate's consumed changeset metadata on the exact relay head
+instead of requiring a new changeset file. Ordinary feature, OSS, and legacy
+PRs continue to require a changeset or an explicit `skip-changeset` decision.
 
 Private web image checks require access to the larger native x64 `ubuntu-8core` runner. The web Dockerfile grants Node a 12 GiB
 heap, which exceeds the standard private Linux runner's memory. Verify the

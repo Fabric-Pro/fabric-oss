@@ -40,6 +40,8 @@ vi.mock("../../../../lib/pm-test-case-sync-capability", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
 		testCase: { findFirst: mocks.testCaseFindFirst },

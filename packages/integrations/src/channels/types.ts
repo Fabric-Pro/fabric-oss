@@ -129,10 +129,14 @@ export interface ChannelAdapter {
 	/** Provider enum value used to look up credentials in WorkflowIntegration. */
 	readonly providerKey: string;
 
-	verifyInbound(
-		ctx: InboundContext,
-		credentials?: ChannelCredentials,
-	): Promise<VerifyOutcome> | VerifyOutcome;
+	/**
+	 * Verify an inbound webhook with a deployment-level secret. Takes no
+	 * credentials on purpose: the request is not yet authenticated, so
+	 * nothing in it can identify a tenant, and any tenant-stored secret
+	 * picked here would let one tenant's connection decide verification for
+	 * every tenant (Fizzy #2860).
+	 */
+	verifyInbound(ctx: InboundContext): Promise<VerifyOutcome> | VerifyOutcome;
 
 	send(
 		input: SendMessageInput,

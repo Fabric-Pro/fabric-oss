@@ -58,6 +58,16 @@ const m = vi.hoisted(() => ({
 	toastSuccess: vi.fn(),
 	toastInfo: vi.fn(),
 	toastError: vi.fn(),
+	// The app's confirmation dialog is mounted once in the (saas) layout and
+	// is absent here: this records what an action asked and, by default,
+	// confirms, as pressing the dialog's button would.
+	confirm: vi.fn(),
+}));
+
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({
+		confirm: (...a: unknown[]) => m.confirm(...a),
+	}),
 }));
 
 vi.mock("sonner", () => ({
@@ -225,6 +235,9 @@ beforeEach(() => {
 	for (const fn of Object.values(m)) {
 		fn.mockReset();
 	}
+	m.confirm.mockImplementation((options: { onConfirm: () => void }) =>
+		options.onConfirm(),
+	);
 	m.configure.mockResolvedValue({ syncId: "sync_1", generation: 1 });
 	m.updateProposalSettings.mockImplementation(
 		async (i: { allowReaderProposals: boolean }) => ({
@@ -351,9 +364,12 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			screen.getByText("example-org/instructions"),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-		expect(
-			screen.getByText(copy.configureDialog.afterSyncNotice),
-		).toBeInTheDocument();
+		const notice = screen.getByText(copy.configureDialog.afterSyncNotice);
+		expect(notice).toBeInTheDocument();
+		expect(notice).toHaveTextContent(
+			"editors commit from Fabric straight to the branch, and readers can suggest pull requests. Only pushing from the CLI is turned off.",
+		);
+		expect(notice).not.toHaveTextContent(/editing in fabric/i);
 		expect(
 			screen.getByRole("checkbox", {
 				name: copy.configureDialog.automaticLabel,
@@ -397,18 +413,28 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 	it("offers a choice when the project has more than one repository, and reseeds the branch", async () => {
 		const user = userEvent.setup();
 		renderDialog({ integrations: [INTEGRATION, SECOND] });
-		await user.selectOptions(
-			screen.getByLabelText(copy.configureDialog.repositoryLabel),
-			"int_2",
+		// The design system's Select, not a native one: a combobox that opens
+		// a listbox, so the choice is two clicks.
+		const repository = screen.getByRole("combobox", {
+			name: copy.configureDialog.repositoryLabel,
+		});
+		await user.click(repository);
+		expect(
+			screen.getByRole("option", {
+				name: "GitHub · example-org/instructions",
+			}),
+		).toBeInTheDocument();
+		await user.click(
+			screen.getByRole("option", {
+				name: "Azure DevOps · example-org/agents",
+			}),
 		);
 		expect(
 			screen.getByLabelText(copy.configureDialog.branchLabel),
 		).toHaveValue("trunk");
-		expect(
-			screen.getByRole("option", {
-				name: "Azure DevOps · example-org/agents",
-			}),
-		).toBeInTheDocument();
+		expect(repository).toHaveTextContent(
+			"Azure DevOps · example-org/agents",
+		);
 	});
 
 	it("keeps a missing branch inline, starts nothing, and stays open", async () => {
@@ -676,6 +702,10 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			expect(submit()).toHaveAccessibleDescription(
 				copy.summary.nothingSelected,
 			);
+			// The repository root has no row to tick: the hint names Select all.
+			expect(
+				screen.getByText(copy.summary.nothingSelected),
+			).toHaveTextContent("Select all to sync the whole repository.");
 			// Coding Instructions syncs one folder: a file can't be ticked.
 			expect(box("agents/CLAUDE.md")).toBeDisabled();
 			expect(box("agents/CLAUDE.md")).toHaveAccessibleDescription(
@@ -1291,9 +1321,15 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			});
 
 			await user.click(box("agents/skills"));
-			await user.selectOptions(
-				screen.getByLabelText(copy.configureDialog.repositoryLabel),
-				"int_2",
+			await user.click(
+				screen.getByRole("combobox", {
+					name: copy.configureDialog.repositoryLabel,
+				}),
+			);
+			await user.click(
+				screen.getByRole("option", {
+					name: "Azure DevOps · example-org/agents",
+				}),
 			);
 			await waitFor(() => expect(box("agents/skills")).toBeEnabled());
 			expect(box("agents/skills")).toBeChecked();
@@ -1538,14 +1574,14 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByText(copy.running)).toBeInTheDocument();
 	});
 
-	it("shows the last run's outcome, version and member", () => {
+	it("shows the last run's outcome, the commit it took and the member", () => {
 		render(
 			<RepositorySyncStatus
 				state={{ ...CONFIGURED, latestRun: run() }}
 			/>,
 		);
 		expect(screen.getByRole("status")).toHaveTextContent(
-			"published version 4",
+			"took commit 0123456",
 		);
 		expect(screen.getByRole("status")).toHaveTextContent("Example Member");
 	});
@@ -1672,7 +1708,7 @@ describe("RepositorySyncStatus (§7.3)", () => {
 			/>,
 		);
 		const status = screen.getByRole("status");
-		expect(status).toHaveTextContent("published version 5");
+		expect(status).toHaveTextContent("took commit 0123456");
 		expect(status).toHaveTextContent(`(${copy.triggers.POLL})`);
 		expect(status).not.toHaveTextContent(
 			copy.outcomes.notPublished.configuration_changed,
@@ -1805,13 +1841,25 @@ describe("RepositorySyncStatus (§7.3)", () => {
 		expect(screen.getByText(/Automatic sync paused/)).toBeInTheDocument();
 	});
 
-	it("keeps an empty, room-free status region mounted for a configured sync with nothing to say", () => {
+	it("says a configured sync's standing state even when no run has anything to report", () => {
 		render(<RepositorySyncStatus state={CONFIGURED} />);
 
 		const region = screen.getByRole("status");
 
-		expect(region).toBeEmptyDOMElement();
+		expect(region).toHaveTextContent(copy.status.automaticOff);
+		expect(region).toHaveTextContent(copy.status.checkoutNote);
+		// Still the region that takes no room when it has nothing in it.
 		expect(region).toHaveClass("empty:sr-only");
+	});
+
+	it("mounts nothing for a project with no sync and no run", () => {
+		const { container } = render(
+			<RepositorySyncStatus
+				state={{ ...CONFIGURED, configured: null, latestRun: null }}
+			/>,
+		);
+
+		expect(container).toBeEmptyDOMElement();
 	});
 
 	it("announces into the same status region when a run starts, rather than mounting a new one", () => {
@@ -1959,7 +2007,7 @@ describe("RepositorySyncRuns (§7.3 History list)", () => {
 		});
 		expect(
 			await screen.findByText(
-				/Sync now · published version 4 · commit 0123456 · version 4 · by Example Member/,
+				/Sync now · took commit 0123456 · version 4 · by Example Member/,
 			),
 		).toBeInTheDocument();
 		expect(screen.getByText(/Scheduled · failed/)).toBeInTheDocument();
@@ -2023,7 +2071,6 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 	}
 
 	it("shows the configuration read-only with Change… and a confirmed switch to upload mode", async () => {
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 		const user = userEvent.setup();
 		const { onChange, onChanged } = renderSection(CONFIGURED);
 
@@ -2039,11 +2086,16 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 		await user.click(
 			screen.getByRole("button", { name: copy.settings.switchToUpload }),
 		);
-		expect(confirm).toHaveBeenCalledWith(
-			copy.settings.switchConfirm.replace(
-				"{repository}",
-				"example-org/instructions",
-			),
+		expect(m.confirm).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: copy.settings.switchConfirmTitle,
+				message: copy.settings.switchConfirm.replace(
+					"{repository}",
+					"example-org/instructions",
+				),
+				confirmLabel: copy.settings.switchToUpload,
+				destructive: true,
+			}),
 		);
 		// The run history survives the switch, and the confirmation says so.
 		expect(copy.settings.switchConfirm).toContain("Sync history is kept.");
@@ -2054,17 +2106,19 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 	});
 
 	it("warns that a run in progress will not publish", async () => {
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		m.confirm.mockImplementation(() => undefined);
 		const user = userEvent.setup();
 		renderSection({ ...CONFIGURED, running: true });
 		await user.click(
 			screen.getByRole("button", { name: copy.settings.switchToUpload }),
 		);
-		expect(confirm).toHaveBeenCalledWith(
-			copy.settings.switchConfirmRunning.replace(
-				"{repository}",
-				"example-org/instructions",
-			),
+		expect(m.confirm).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: copy.settings.switchConfirmRunning.replace(
+					"{repository}",
+					"example-org/instructions",
+				),
+			}),
 		);
 		expect(copy.settings.switchConfirmRunning).toContain(
 			"Sync history is kept.",
@@ -2194,7 +2248,6 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 	});
 
 	it("disables the toggle and Change… while a switch to upload mode is in flight (Decision 40)", async () => {
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		m.disable.mockImplementation(() => new Promise(() => {}));
 		const user = userEvent.setup();
 		renderSection(CONFIGURED);
@@ -2214,7 +2267,6 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 	});
 
 	it("keeps every settings action disabled until the tab has re-read what a switch to upload mode changed (Decision 53)", async () => {
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		let settle: () => void = () => {};
 		const onChanged = vi.fn(
 			() =>
@@ -2333,7 +2385,6 @@ describe("RepositorySyncSettingsSection (§7.4)", () => {
 	});
 
 	it("reports a failed switch to upload mode in the tab's own words, never the server's", async () => {
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		m.disable.mockRejectedValue(new Error("upstream said no"));
 		const user = userEvent.setup();
 		renderSection(CONFIGURED);

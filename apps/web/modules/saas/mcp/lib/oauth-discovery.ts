@@ -29,6 +29,7 @@ export async function authorizationServerMetadataResponse(
 
 export async function gatewayResourceMetadataResponse(
 	request: Request,
+	projectId?: string,
 ): Promise<Response> {
 	const server = await readAuthorizationServerMetadata(request);
 
@@ -36,6 +37,7 @@ export async function gatewayResourceMetadataResponse(
 		buildGatewayProtectedResourceMetadata({
 			appUrl: getBaseUrl(),
 			issuer: server.issuer,
+			projectId,
 		}),
 		{ headers: { ...CORS_HEADERS, "Cache-Control": CACHE_CONTROL } },
 	);

@@ -155,17 +155,27 @@ export async function resolveInstructionSyncCredential(
 /**
  * The error for a remote read that did not succeed, in the codes the
  * configure dialog already words: `BRANCH_NOT_FOUND`,
- * `REPOSITORY_CREDENTIALS_EXPIRED`, `REPOSITORY_UNREACHABLE`.
+ * `REPOSITORY_CREDENTIALS_EXPIRED`, `REPOSITORY_UNREACHABLE`; and
+ * `FOLDER_NOT_FOUND` when the branch is there but the folder read is not
+ * (`missing-path`, which only a read limited to a folder can answer).
  */
 export function repositoryReadError(
-	outcome: "not-found" | "unauthorized" | "unreachable",
+	outcome: "not-found" | "unauthorized" | "unreachable" | "missing-path",
 	options: {
 		ref: string;
+		/** The folder the read was limited to; "" for the repository root. */
+		path?: string;
 		refreshFault: ResolvedToken["refreshFault"];
 		unreachableMessage: string;
 	},
 ): ORPCError<string, unknown> {
-	if (outcome === "not-found") {
+	if (outcome === "missing-path" && options.path) {
+		return new ORPCError("BAD_REQUEST", {
+			message: `The folder "${options.path}/" isn't on branch "${options.ref}" any more. It was removed or renamed; choose the folder again in the sync settings.`,
+			data: { code: "FOLDER_NOT_FOUND" },
+		});
+	}
+	if (outcome === "not-found" || outcome === "missing-path") {
 		return new ORPCError("BAD_REQUEST", {
 			message: `Branch "${options.ref}" wasn't found on the remote.`,
 			data: { code: "BRANCH_NOT_FOUND" },

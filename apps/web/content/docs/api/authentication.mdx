@@ -176,7 +176,7 @@ This provides a complete reference of all available authentication endpoints, re
 
 ## API Keys for MCP Gateway
 
-Coding agents sign in to the [MCP Gateway](/docs/integrations/mcp-gateway) themselves: Fabric is an OAuth 2.1 authorization server (issuer `<origin>/api/auth`, dynamic client registration for public clients, PKCE S256), and the person approves each agent for one organization. Approved agents are listed, and can be revoked, under **Account → Connected agents**.
+Coding agents sign in to the [MCP Gateway](/docs/integrations/mcp-gateway) themselves: Fabric is an OAuth 2.1 authorization server (issuer `<origin>/api/auth`, dynamic client registration for public clients, PKCE S256), and the person approves each agent for one project, when it was connected from a project's own gateway URL, or for one organization. A project grant reaches that project alone and a token issued for it works only at that project's URL. Approved agents are listed, one row per grant, and can be revoked, under **Account → Connected agents**.
 
 Fabric API keys (format: `fab_xxxx_xxxxxxxxxx`) also authenticate with the gateway, for CI and headless clients. Create keys in **Settings → API Keys**.
 

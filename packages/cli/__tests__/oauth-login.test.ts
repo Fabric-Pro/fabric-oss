@@ -13,6 +13,7 @@ import {
 	OAuthDiscoveryError,
 } from "../src/lib/oauth/discovery.js";
 import { loginWithBrowser, REQUESTED_SCOPES } from "../src/lib/oauth/flow.js";
+import { LOGIN_TIMEOUT_MS } from "../src/lib/oauth/loopback.js";
 
 /**
  * A stand-in authorization server that enforces what the real one does for
@@ -235,6 +236,41 @@ describe("fabric auth login in the browser", () => {
 		});
 	});
 
+	it("asks for the project's own resource, at the authorization and at the token, when it signs in for one project", async () => {
+		await loginWithBrowser({
+			baseUrl: fake.origin,
+			project: "project-example-one",
+			announce: () => {},
+			openBrowser: browserThatApproves(fake),
+		});
+
+		const resource = `${fake.origin}/api/v1/projects/project-example-one`;
+		expect(fake.authorizations[0]?.get("resource")).toBe(resource);
+		expect(fake.tokenRequests[0]?.resource).toBe(resource);
+	});
+
+	it("probes a client it reuses with the same project resource it will ask for", async () => {
+		fake.knownClients.add("client-reused");
+
+		await loginWithBrowser({
+			baseUrl: fake.origin,
+			project: "project-example-one",
+			previous: {
+				clientId: "client-reused",
+				redirectUri: "http://127.0.0.1:1/callback",
+				tokenEndpoint: `${fake.origin}/api/auth/oauth2/token`,
+			},
+			announce: () => {},
+			openBrowser: browserThatApproves(fake),
+		});
+
+		expect(fake.probes).toEqual(["client-reused"]);
+		expect(fake.registrations).toHaveLength(0);
+		expect(fake.authorizations[0]?.get("resource")).toBe(
+			`${fake.origin}/api/v1/projects/project-example-one`,
+		);
+	});
+
 	it("ignores a callback whose state is not the one it started and still completes", async () => {
 		const credentials = await loginWithBrowser({
 			baseUrl: fake.origin,
@@ -273,6 +309,24 @@ describe("fabric auth login in the browser", () => {
 				timeoutMs: 50,
 			}),
 		).rejects.toThrow("Timed out");
+	});
+
+	it("gives up when the caller's signal aborts, however long the browser would have taken", async () => {
+		const controller = new AbortController();
+
+		const login = loginWithBrowser({
+			baseUrl: fake.origin,
+			announce: () => controller.abort(),
+			openBrowser: () => {},
+			timeoutMs: 60_000,
+			signal: controller.signal,
+		});
+
+		await expect(login).rejects.toThrow("cancelled");
+	});
+
+	it("waits five minutes for the browser when nobody says otherwise, so a run nobody is watching ends", () => {
+		expect(LOGIN_TIMEOUT_MS).toBe(5 * 60 * 1000);
 	});
 
 	it("falls back to the announced URL when the browser cannot be opened", async () => {

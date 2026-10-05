@@ -10,6 +10,7 @@ import {
 	requireInputOrgPermission,
 	requireProjectPermission,
 	resolveOrganizationId,
+	resolveSourceCredentialOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import {
@@ -206,6 +207,14 @@ export const listUpcomingMeetingsProcedure = tenantProtectedProcedure
 			input.organizationId,
 			context.session,
 		);
+		// The Microsoft connection the caller's meetings are read through is
+		// selected as it was before the authorized-project binding, so it
+		// cannot silently switch to a teammate's shared connection; the
+		// project's organization above is for everything else.
+		const sourceOrganizationId = resolveSourceCredentialOrganizationId(
+			input.organizationId,
+			context.session,
+		);
 
 		const hasAccess = await hasProjectAccess(
 			input.projectId,
@@ -285,7 +294,7 @@ export const listUpcomingMeetingsProcedure = tenantProtectedProcedure
 					endDate: windowEnd.toISOString(),
 				},
 				user.id,
-				organizationId ?? undefined,
+				sourceOrganizationId,
 			)) as { meetings?: GraphCalendarMeeting[] };
 
 			return {

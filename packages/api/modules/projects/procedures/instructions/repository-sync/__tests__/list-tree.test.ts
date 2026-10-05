@@ -275,8 +275,17 @@ describe("authorization: visibility first, then INSTRUCTION_CREATE in the hostin
 		NOTHING_READ();
 	});
 
-	it("resolves the credential in the project's hosting organization, never a client-supplied or session one", async () => {
-		await call({ ...input, organizationId: "org-evil" });
+	it("refuses a client-supplied organization other than the host's, before any credential is read", async () => {
+		// Fizzy #2904 review: refused by `requireProjectPermission` before the
+		// handler body runs, rather than ignored by the handler.
+		await expect(
+			call({ ...input, organizationId: "org-evil" }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+	});
+
+	it("resolves the credential in the project's hosting organization, never the session's", async () => {
+		await call(input);
 
 		expect(m.resolveFreshRepoTokenForRow).toHaveBeenCalledWith(
 			expect.objectContaining({ integrationId: "int-1" }),

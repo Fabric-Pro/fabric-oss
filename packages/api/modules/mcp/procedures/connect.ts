@@ -7,22 +7,111 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { db, isGitLabPersonalMcpServerKey } from "@repo/database";
+import { preferredMcpServerAuthType } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import { getGitLabConnectionStatus } from "@repo/integrations/gitlab";
 import { getBaseUrl } from "@repo/utils";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
 	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { assertOAuthStartOrganization } from "../../integrations/lib/oauth-start-organization";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
 /**
- * Get connection info for an MCP server.
- * Returns the auth type and connect URL for OAuth servers.
+ * The organization both procedures act in, resolved and authorized once,
+ * before any query: the input's, else a guest write organization, else the
+ * session's (`authorizeInputOrganization`), with the caller's membership and
+ * MCP_READ checked there. An omitted input therefore means the session's
+ * organization, as on every other surface. One is required: MCP configs and
+ * the GitLab connection live in an organization (ADR-018), so an explicit
+ * `null`, or nothing to resolve, is refused before anything is read, rather
+ * than reading a no-organization row.
  */
+async function authorizedConnectOrganization(
+	inputOrganizationId: string | null | undefined,
+	context: Parameters<typeof authorizeInputOrganization>[2],
+): Promise<string> {
+	// With `requireOrganization`, a request that resolves none is refused
+	// there (MISSING_ORGANIZATION_CONTEXT), so what returns is always set.
+	return (await authorizeInputOrganization(
+		Permissions.MCP_READ,
+		inputOrganizationId,
+		context,
+		{ requireOrganization: true },
+	)) as string;
+}
+
+/**
+ * Connection state of a GitLab personal MCP server: the person's GitLab
+ * connection in the (authorized) organization, since those configs hold no
+ * credential of their own. It does not depend on whether the person has a
+ * config row for the server; whether one exists, and whether it is turned
+ * on, are reported separately (`configProvisioned`, `configEnabled`).
+ */
+async function gitlabConnectionState(
+	userId: string,
+	organizationId: string,
+): Promise<{ isConnected: boolean; needsReauth: boolean }> {
+	const status = await getGitLabConnectionStatus({ userId, organizationId });
+	return {
+		isConnected: status.connected && !status.needsReauth,
+		needsReauth: status.connected && status.needsReauth,
+	};
+}
+
+/**
+ * A GitLab personal server: its state is the person's connection, never its
+ * config's token columns (which hold no token), whatever auth type the config
+ * or the server names.
+ */
+function isGitLabPersonalServer(server: { key: string | null }): boolean {
+	return isGitLabPersonalMcpServerKey(server.key);
+}
+
+/** Connection state of any other server, from its own config row. */
+function configConnectionState(
+	config:
+		| {
+				authType: string;
+				encryptedApiKey: string | null;
+				encryptedAccessToken: string | null;
+				tokenExpiresAt: Date | null;
+				needsReauth: boolean;
+		  }
+		| null
+		| undefined,
+): { isConnected: boolean; needsReauth: boolean } {
+	if (!config) {
+		return { isConnected: false, needsReauth: false };
+	}
+	const needsReauth = config.needsReauth;
+	if (config.authType === "NONE") {
+		return { isConnected: true, needsReauth };
+	}
+	if (config.authType === "API_KEY") {
+		return { isConnected: !!config.encryptedApiKey, needsReauth };
+	}
+	if (config.authType === "OAUTH2") {
+		if (!config.encryptedAccessToken) {
+			return { isConnected: false, needsReauth };
+		}
+		if (config.tokenExpiresAt) {
+			// Expired, with a 5 minute buffer.
+			const expirationBuffer = 5 * 60 * 1000;
+			const isExpired =
+				new Date(config.tokenExpiresAt).getTime() - expirationBuffer <
+				Date.now();
+			return { isConnected: !isExpired && !needsReauth, needsReauth };
+		}
+		return { isConnected: !needsReauth, needsReauth };
+	}
+	return { isConnected: false, needsReauth };
+}
+
 export const connectProcedures = {
 	/**
 	 * Get info needed to connect to an MCP server
@@ -50,6 +139,21 @@ export const connectProcedures = {
 				needsReauth: z.boolean(),
 				oauthStartUrl: z.string().url().optional(),
 				configId: z.string().optional(),
+				/** Whether the person has a config row for this server here. */
+				configProvisioned: z.boolean(),
+				/**
+				 * Whether that row is turned on. A server is usable only
+				 * when connected, provisioned AND enabled: a turned-off
+				 * row's tools are neither offered nor run.
+				 */
+				configEnabled: z.boolean(),
+				/**
+				 * The organization this was resolved and authorized in. A
+				 * caller that goes on to write (add the server, start its
+				 * sign-in) writes there, not in whatever it passed (which
+				 * may have been nothing, resolving the session's).
+				 */
+				organizationId: z.string(),
 				iconUrl: z.string().optional(),
 				description: z.string().optional(),
 				defaultUrl: z.string().optional(),
@@ -57,26 +161,18 @@ export const connectProcedures = {
 		)
 		.handler(async ({ input, context }) => {
 			const userId = context.user.id;
-			const { serverId, organizationId } = input;
-
-			// Verify org membership if in org context
-			if (organizationId) {
-				const membership = await verifyOrganizationMembership(
-					organizationId,
-					userId,
-				);
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You are not a member of this organization",
-					});
-				}
-			}
+			const { serverId } = input;
+			const organizationId = await authorizedConnectOrganization(
+				input.organizationId,
+				context,
+			);
 
 			// Get the MCP server
 			const server = await db.mCPServer.findUnique({
 				where: { id: serverId },
 				select: {
 					id: true,
+					key: true,
 					name: true,
 					description: true,
 					defaultUrl: true,
@@ -97,10 +193,11 @@ export const connectProcedures = {
 				where: {
 					mcpServerId: serverId,
 					userId,
-					organizationId: organizationId ?? null,
+					organizationId,
 				},
 				select: {
 					id: true,
+					enabled: true,
 					authType: true,
 					encryptedApiKey: true,
 					encryptedAccessToken: true,
@@ -111,39 +208,17 @@ export const connectProcedures = {
 			});
 
 			// Determine auth type from server
-			const preferredAuthType = server.authMethods.includes("OAUTH2")
-				? "OAUTH2"
-				: server.authMethods.includes("API_KEY")
-					? "API_KEY"
-					: "NONE";
+			// A GitLab server is OAuth through the person's connection,
+			// whatever its registry entry advertises.
+			const preferredAuthType = preferredMcpServerAuthType(server);
 
-			// Check if connected
-			let isConnected = false;
-			let needsReauth = false;
-
-			if (config) {
-				needsReauth = config.needsReauth;
-
-				if (config.authType === "NONE") {
-					isConnected = true;
-				} else if (config.authType === "API_KEY") {
-					isConnected = !!config.encryptedApiKey;
-				} else if (config.authType === "OAUTH2") {
-					if (!config.encryptedAccessToken) {
-						isConnected = false;
-					} else if (config.tokenExpiresAt) {
-						// Check if token is expired (with 5 min buffer)
-						const expirationBuffer = 5 * 60 * 1000;
-						const isExpired =
-							new Date(config.tokenExpiresAt).getTime() -
-								expirationBuffer <
-							Date.now();
-						isConnected = !isExpired && !needsReauth;
-					} else {
-						isConnected = !needsReauth;
-					}
-				}
-			}
+			// GitLab personal servers hold no credential of their own: their
+			// state is the person's GitLab connection, whether or not a config
+			// row exists for the server (`configProvisioned` says that). Every
+			// other server is judged from its config.
+			const { isConnected, needsReauth } = isGitLabPersonalServer(server)
+				? await gitlabConnectionState(userId, organizationId)
+				: configConnectionState(config);
 
 			// Build OAuth start URL if needed
 			let oauthStartUrl: string | undefined;
@@ -170,6 +245,9 @@ export const connectProcedures = {
 				needsReauth,
 				oauthStartUrl,
 				configId: config?.id,
+				configProvisioned: Boolean(config),
+				configEnabled: config?.enabled ?? false,
+				organizationId,
 				iconUrl: server.iconUrl ?? undefined,
 				description: server.description ?? undefined,
 				defaultUrl: server.defaultUrl ?? undefined,
@@ -201,31 +279,27 @@ export const connectProcedures = {
 					authType: z.enum(["NONE", "API_KEY", "OAUTH2"]),
 					isConnected: z.boolean(),
 					needsReauth: z.boolean(),
+					/** Whether the person has a config row for this server here. */
+					configProvisioned: z.boolean(),
+					/** Whether that row is turned on. */
+					configEnabled: z.boolean(),
 				}),
 			),
 		)
 		.handler(async ({ input, context }) => {
 			const userId = context.user.id;
-			const { serverIds, organizationId } = input;
-
-			// Verify org membership if in org context
-			if (organizationId) {
-				const membership = await verifyOrganizationMembership(
-					organizationId,
-					userId,
-				);
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You are not a member of this organization",
-					});
-				}
-			}
+			const { serverIds } = input;
+			const organizationId = await authorizedConnectOrganization(
+				input.organizationId,
+				context,
+			);
 
 			// Get all servers
 			const servers = await db.mCPServer.findMany({
 				where: { id: { in: serverIds } },
 				select: {
 					id: true,
+					key: true,
 					name: true,
 					authMethods: true,
 				},
@@ -236,10 +310,11 @@ export const connectProcedures = {
 				where: {
 					mcpServerId: { in: serverIds },
 					userId,
-					organizationId: organizationId ?? null,
+					organizationId,
 				},
 				select: {
 					mcpServerId: true,
+					enabled: true,
 					authType: true,
 					encryptedApiKey: true,
 					encryptedAccessToken: true,
@@ -257,41 +332,24 @@ export const connectProcedures = {
 				}
 			}
 
+			const gitlabState = servers.some(isGitLabPersonalServer)
+				? await gitlabConnectionState(userId, organizationId)
+				: null;
+
 			// Build response
 			return servers.map((server) => {
 				const config = configMap.get(server.id);
 
-				const preferredAuthType = server.authMethods.includes("OAUTH2")
-					? "OAUTH2"
-					: server.authMethods.includes("API_KEY")
-						? "API_KEY"
-						: "NONE";
+				// A GitLab server is OAuth through the person's connection,
+				// whatever its registry entry advertises.
+				const preferredAuthType = preferredMcpServerAuthType(server);
 
-				let isConnected = false;
-				let needsReauth = false;
-
-				if (config) {
-					needsReauth = config.needsReauth;
-
-					if (config.authType === "NONE") {
-						isConnected = true;
-					} else if (config.authType === "API_KEY") {
-						isConnected = !!config.encryptedApiKey;
-					} else if (config.authType === "OAUTH2") {
-						if (!config.encryptedAccessToken) {
-							isConnected = false;
-						} else if (config.tokenExpiresAt) {
-							const expirationBuffer = 5 * 60 * 1000;
-							const isExpired =
-								new Date(config.tokenExpiresAt).getTime() -
-									expirationBuffer <
-								Date.now();
-							isConnected = !isExpired && !needsReauth;
-						} else {
-							isConnected = !needsReauth;
-						}
-					}
-				}
+				// GitLab personal servers: the person's GitLab connection,
+				// with or without a config row.
+				const { isConnected, needsReauth } =
+					gitlabState && isGitLabPersonalServer(server)
+						? gitlabState
+						: configConnectionState(config);
 
 				return {
 					serverId: server.id,
@@ -302,6 +360,8 @@ export const connectProcedures = {
 						| "OAUTH2",
 					isConnected,
 					needsReauth,
+					configProvisioned: Boolean(config),
+					configEnabled: config?.enabled ?? false,
 				};
 			});
 		}),

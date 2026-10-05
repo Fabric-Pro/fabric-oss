@@ -6,7 +6,7 @@
  * files are never deleted, and a file already correct is not rewritten.
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { InstructionManifestEntry } from "@fabricorg/sdk";
@@ -224,6 +224,13 @@ describe("computeSyncPlan", () => {
 	 */
 	it("treats a case-only rename as one file and plans no delete", async () => {
 		const dest = await makeTree({ "README.md": "old" });
+		// Where the filesystem folds case (Windows, macOS) `readme.md` IS the
+		// file on disk, locked under its old spelling, so writing it is an
+		// update; where it does not (Linux) nothing is there yet, so it is new.
+		const foldsCase = await access(path.join(dest, "readme.md")).then(
+			() => true,
+			() => false,
+		);
 
 		const plan = await computeSyncPlan({
 			destination: dest,
@@ -233,7 +240,9 @@ describe("computeSyncPlan", () => {
 
 		expect(plan.deletes).toHaveLength(0);
 		expect(plan.keptRenamed.map((k) => k.path)).toEqual(["README.md"]);
-		expect(actionOf(plan, "readme.md")).toBe("added");
+		expect(actionOf(plan, "readme.md")).toBe(
+			foldsCase ? "updated" : "added",
+		);
 	});
 
 	it("treats an NFC/NFD-only rename as one file too", async () => {
@@ -380,18 +389,42 @@ describe("verifyLedger", () => {
 		).toEqual(["AGENTS.md (missing)"]);
 	});
 
-	it("reports a mode that drifted", async () => {
-		const dest = await makeTree({ "script.sh": "#!" });
-		const { chmod } = await import("node:fs/promises");
-		await chmod(path.join(dest, "script.sh"), 0o644);
+	// Windows files have no POSIX permission bits (`stat` reports 666 whatever
+	// was written), so mode drift is not reported there; the Windows test
+	// below pins that, and this one needs a platform with `chmod`.
+	it.skipIf(process.platform === "win32")(
+		"reports a mode that drifted",
+		async () => {
+			const dest = await makeTree({ "script.sh": "#!" });
+			const { chmod } = await import("node:fs/promises");
+			await chmod(path.join(dest, "script.sh"), 0o644);
 
-		const drift = await verifyLedger({
-			root: dest,
-			lock: lockOf({ "script.sh": { contents: "#!", mode: 0o100755 } }),
-		});
+			const drift = await verifyLedger({
+				root: dest,
+				lock: lockOf({
+					"script.sh": { contents: "#!", mode: 0o100755 },
+				}),
+			});
 
-		expect(drift).toEqual(["script.sh (mode 644, published as 755)"]);
-	});
+			expect(drift).toEqual(["script.sh (mode 644, published as 755)"]);
+		},
+	);
+
+	it.runIf(process.platform === "win32")(
+		"does not report a published executable bit as drift, which Windows cannot hold",
+		async () => {
+			const dest = await makeTree({ "script.sh": "#!" });
+
+			const drift = await verifyLedger({
+				root: dest,
+				lock: lockOf({
+					"script.sh": { contents: "#!", mode: 0o100755 },
+				}),
+			});
+
+			expect(drift).toEqual([]);
+		},
+	);
 
 	/**
 	 * Delta review, finding 1. `verifyLedger` used to join and read lock paths

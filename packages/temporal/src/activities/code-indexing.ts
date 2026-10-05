@@ -38,6 +38,7 @@ import {
 	jobStep,
 	seedJobSteps,
 } from "./lib/job-progress";
+import { resolveRepositoryAuthContext } from "./lib/repository-auth-context";
 
 /**
  * Throw a non-retryable ApplicationFailure for errors that should not be retried.
@@ -554,7 +555,12 @@ function shouldSkipFile(relativePath: string, sizeBytes: number): boolean {
 /** Context types for code index vectors. */
 const CODE_CONTEXT_TYPES = ["CODE_FILE", "CODE_FILE_SUMMARY"] as const;
 
-/** Walk a directory tree, calling `onFile` for each non-skipped file. */
+/**
+ * Walk a directory tree, calling `onFile` for each non-skipped file.
+ * `relativePath` is always forward-slashed, whatever the host OS: it is stored
+ * and matched against the webhook's `changedFiles` and split on "/" by
+ * `shouldSkipFile`, and `path.join` would yield backslashes on native Windows.
+ */
 export function walkDirWith(
 	rootDir: string,
 	onFile: (fullPath: string, relativePath: string, entry: fs.Dirent) => void,
@@ -566,7 +572,8 @@ export function walkDirWith(
 				continue;
 			}
 			const fullPath = path.join(dir, entry.name);
-			const relativePath = path.join(basePath, entry.name);
+			const relativePath =
+				basePath === "" ? entry.name : `${basePath}/${entry.name}`;
 			if (entry.isDirectory()) {
 				if (!SKIP_DIRS.has(entry.name)) {
 					walk(fullPath, relativePath);
@@ -1105,19 +1112,14 @@ async function walkRepositoryFileTree(
 			);
 		}
 		const { fullPath, relativePath } = found[i];
-		// Canonicalize to forward slashes so the stored path matches the GitHub
-		// webhook's `changedFiles` (used by incremental selection + purge) and
-		// the SKIP_DIRS "/" split — on any host OS. No-op on the Linux workers;
-		// fixes native-Windows dev where path.join yields backslashes.
-		const relPath = relativePath.split(path.sep).join("/");
 		const stats = fs.lstatSync(fullPath);
-		if (shouldSkipFile(relPath, stats.size)) {
+		if (shouldSkipFile(relativePath, stats.size)) {
 			skippedFiles++;
 			continue;
 		}
-		const ext = path.extname(relPath).toLowerCase();
+		const ext = path.extname(relativePath).toLowerCase();
 		entries.push({
-			relativePath: relPath,
+			relativePath,
 			language: detectLanguageFromExt(ext),
 		});
 	}
@@ -2379,11 +2381,18 @@ export interface ResolveRepoTokenOutput {
 export async function resolveRepoTokenActivity(
 	input: ResolveRepoTokenInput,
 ): Promise<ResolveRepoTokenOutput> {
+	// Keep historical activity arguments compatible: derive the tenant from
+	// the project-bound repository rather than adding workflow commands/inputs.
+	const authContext = await resolveRepositoryAuthContext(input);
+	if (!authContext) {
+		return { token: null, authMethod: null };
+	}
 	// Canonical resolver: refreshes a near-expiry GitHub/GitLab OAuth token
 	// instead of decrypting a stored one that a GitHub App expires after 8h.
 	const { token, authMethod } = await resolveFreshRepoToken({
 		integrationId: input.integrationId,
 		projectId: input.projectId,
+		...authContext,
 	});
 	return { token, authMethod };
 }

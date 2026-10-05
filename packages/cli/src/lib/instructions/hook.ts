@@ -18,6 +18,9 @@
  * published version is most likely to have moved.
  */
 import path from "node:path";
+import { BUNDLE_COPY_FILE } from "../launcher.js";
+import { isRemoteName } from "./git.js";
+import { isIdentifier } from "./identifiers.js";
 import {
 	readFileSafely,
 	resolvesInside,
@@ -104,6 +107,28 @@ export interface RemoveHookResult {
 }
 
 /**
+ * A hook's command line is run by a shell at every session start, so the two
+ * words in it that are not fixed text must be plain identifiers. Callers
+ * validate earlier and say so in a sentence; this is the last guard.
+ */
+function assertCommandIdentifiers(projectId: string, org?: string): void {
+	if (!isIdentifier(projectId) || (org !== undefined && !isIdentifier(org))) {
+		throw new Error(
+			"A project id and an organization slug in a hook command must be plain identifiers",
+		);
+	}
+}
+
+/** The remote name a hook is bound to is the one rule git.ts applies to a remote. */
+function assertCommandRemote(remote: string | undefined): void {
+	if (remote && !isRemoteName(remote)) {
+		throw new Error(
+			"A remote name in a hook command must be a plain git remote name",
+		);
+	}
+}
+
+/**
  * The command the session hook runs.
  *
  * An explicit `--org` is carried through when `init` was given one. These
@@ -111,15 +136,44 @@ export interface RemoveHookResult {
  * supplied once on the command line has nowhere else to live — leaving it out
  * would install a hook that binds differently from the `init` that created
  * it. It still never carries the key.
+ *
+ * `binding` ties the hook to one deployment (`--base-url <origin>`), so it
+ * can only ever talk to the deployment `init` set it up against, and to one
+ * remote when a checkout has two for the repository. A hook written before
+ * those flags existed names a project only; the matcher below still
+ * recognises it, and `init` replaces it.
+ */
+export function buildHookArguments(
+	projectId: string,
+	apply: boolean,
+	org?: string,
+	binding: { baseUrl?: string; remote?: string } = {},
+): string {
+	assertCommandIdentifiers(projectId, org);
+	assertCommandRemote(binding.remote);
+	const verb = apply ? "sync" : "check";
+	const deployment = binding.baseUrl ? ` --base-url ${binding.baseUrl}` : "";
+	const remote = binding.remote ? ` --remote ${binding.remote}` : "";
+	const context = org ? ` --org ${org}` : "";
+	return `instructions ${verb} --project ${projectId}${deployment}${remote}${context} --hook`;
+}
+
+/**
+ * The hook command: the arguments above behind `launcher`, the words that
+ * start this CLI. `fabric` is only right where `fabric` is on PATH; a person
+ * who ran the served build with `npx` has no such command, and `init` passes
+ * the `node <file>` that does exist (`hook-launcher.ts`). The first word is
+ * always a bare command name: Codex runs hooks through PowerShell, where a
+ * quoted first token is a parse error.
  */
 export function buildHookCommand(
 	projectId: string,
 	apply: boolean,
 	org?: string,
+	binding: { baseUrl?: string; remote?: string } = {},
+	launcher = "fabric",
 ): string {
-	const verb = apply ? "sync" : "check";
-	const context = org ? ` --org ${org}` : "";
-	return `fabric instructions ${verb} --project ${projectId}${context} --hook`;
+	return `${launcher} ${buildHookArguments(projectId, apply, org, binding)}`;
 }
 
 /**
@@ -131,9 +185,11 @@ export function buildHookCommand(
 export function buildLessonPromptCommand(
 	projectId: string,
 	org?: string,
+	launcher = "fabric",
 ): string {
+	assertCommandIdentifiers(projectId, org);
 	const context = org ? ` --org ${org}` : "";
-	return `fabric instructions lesson-prompt --project ${projectId}${context} --hook`;
+	return `${launcher} instructions lesson-prompt --project ${projectId}${context} --hook`;
 }
 
 /**
@@ -517,7 +573,7 @@ export async function findSessionStartHooks(input: {
 function subcommandOf(hook: unknown): string {
 	const command = isRecord(hook) ? hook.command : undefined;
 	return typeof command === "string"
-		? (command.trim().split(/\s+/)[2] ?? "")
+		? (parseHookCommand(command)?.args[1] ?? "")
 		: "";
 }
 
@@ -537,12 +593,89 @@ function hookTargetFor(tool: InstructionsHookTool): {
 }
 
 /**
+ * What starts the CLI in a hook command this tool wrote: `fabric`, which has to
+ * be on PATH, or `node <file>`, the copy of the served build `init` keeps
+ * (`hook-launcher.ts`).
+ */
+export type HookLauncherKind =
+	| { kind: "global" }
+	| { kind: "script"; path: string };
+
+/**
+ * A command line as words: split on whitespace outside double quotes, the
+ * quotes themselves dropped. The only quoting this tool writes is a path with a
+ * space in it, so there are no escapes to read; `null` for an unclosed quote.
+ */
+function splitCommandWords(command: string): string[] | null {
+	const words: string[] = [];
+	let current = "";
+	let started = false;
+	let quoted = false;
+	for (const character of command) {
+		if (character === '"') {
+			quoted = !quoted;
+			started = true;
+		} else if (!quoted && /\s/.test(character)) {
+			if (started) {
+				words.push(current);
+				current = "";
+				started = false;
+			}
+		} else {
+			current += character;
+			started = true;
+		}
+	}
+	if (quoted) {
+		return null;
+	}
+	if (started) {
+		words.push(current);
+	}
+	return words;
+}
+
+/**
+ * A hook command split into what launches the CLI and the CLI's own
+ * arguments, or `null` when it is neither form this tool writes. The script
+ * form is recognised by the file's name alone: it is the one file `init`
+ * keeps, and no other command of that name is this tool's to rewrite.
+ */
+export function parseHookCommand(
+	command: string,
+): { launcher: HookLauncherKind; args: string[] } | null {
+	const words = splitCommandWords(command);
+	if (words === null) {
+		return null;
+	}
+	if (words[0] === "fabric") {
+		return { launcher: { kind: "global" }, args: words.slice(1) };
+	}
+	const script = words[1];
+	if (
+		words[0] === "node" &&
+		script !== undefined &&
+		script.replace(/\\/g, "/").split("/").at(-1) === BUNDLE_COPY_FILE
+	) {
+		return {
+			launcher: { kind: "script", path: script },
+			args: words.slice(2),
+		};
+	}
+	return null;
+}
+
+/** The arguments of a hook command this tool wrote, however it launches the CLI. */
+export function hookArgumentsOf(command: string): string | null {
+	return parseHookCommand(command)?.args.join(" ") ?? null;
+}
+
+/**
  * Is this hook one this tool wrote for this project (and, when given, one of
  * `subcommands`)?
  *
- * Token-exact. The command is split on whitespace — every command this tool
- * generates is a plain, unquoted argv line, so a command that needs shell
- * quoting to parse is by definition not ours.
+ * Word-exact, in either launcher form. A command that does not parse as one of
+ * them is by definition not ours.
  *
  * `subcommands` defaults to every subcommand this tool has ever written
  * (`HOOK_SUBCOMMANDS`) rather than narrowing automatically, so a caller that
@@ -557,14 +690,14 @@ function isFabricHookFor(
 	if (!isRecord(hook) || typeof hook.command !== "string") {
 		return false;
 	}
-	const tokens = hook.command.trim().split(/\s+/);
-	if (tokens[0] !== "fabric" || tokens[1] !== "instructions") {
+	const args = parseHookCommand(hook.command)?.args;
+	if (args === undefined || args[0] !== "instructions") {
 		return false;
 	}
-	if (tokens[2] === undefined || !subcommands.has(tokens[2])) {
+	if (args[1] === undefined || !subcommands.has(args[1])) {
 		return false;
 	}
-	return readProjectToken(tokens) === projectId;
+	return readProjectToken(args) === projectId;
 }
 
 /**
@@ -579,14 +712,14 @@ function isFabricHookFor(
  * command this tool did not write is not this tool's to rewrite, so an
  * ambiguous one is left exactly as it is.
  */
-function readProjectToken(tokens: string[]): string | null {
+function readProjectToken(args: string[]): string | null {
 	let found: string | null = null;
 	let occurrences = 0;
-	for (let index = 3; index < tokens.length; index++) {
-		const token = tokens[index] as string;
+	for (let index = 2; index < args.length; index++) {
+		const token = args[index] as string;
 		if (token === "--project") {
 			occurrences++;
-			found = tokens[index + 1] ?? null;
+			found = args[index + 1] ?? null;
 			continue;
 		}
 		if (token.startsWith("--project=")) {

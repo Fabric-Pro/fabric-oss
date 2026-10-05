@@ -11,7 +11,7 @@
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
-	type CodeSearchResult,
+	type CodeSearchResponse,
 	type FileContentResult,
 	getRepositoryFile,
 	listRepositoryStructure,
@@ -294,16 +294,23 @@ export async function POST(req: Request) {
 						{ status: 400 },
 					);
 				}
-				const results: CodeSearchResult[] = await searchRepositoryCode({
-					...baseParams,
-					query: params.query,
-					path: params.path,
-					language: params.language,
-					maxResults: Math.min(params.maxResults ?? 10, 30),
-				});
+				// A failed search is still HTTP 200 with the connector's
+				// `error` passed through (as get-file and list-structure do):
+				// route-level failures keep their own 4xx, whose body is
+				// `{ error: string }`, and a caller that ignores the field sees
+				// the empty results it always did.
+				const { results, error }: CodeSearchResponse =
+					await searchRepositoryCode({
+						...baseParams,
+						query: params.query,
+						path: params.path,
+						language: params.language,
+						maxResults: Math.min(params.maxResults ?? 10, 30),
+					});
 				return NextResponse.json({
 					results,
 					totalCount: results.length,
+					...(error ? { error } : {}),
 				});
 			}
 

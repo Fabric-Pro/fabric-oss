@@ -19,24 +19,34 @@ const connectedAgentsQueryKey = ["users", "oauth-connections"] as const;
 
 /**
  * The coding agents this account has signed in. Account-global like the rest
- * of `settings/account/*`: the rows span organizations, each naming the one it
- * was approved for. Revoking deletes the consent and every token under it, so
- * the agent is signed out at its next request rather than when a token expires.
+ * of `settings/account/*`: the rows span organizations and projects, one per
+ * grant, each naming the organization or the project it was approved for.
+ * Revoking deletes that grant's consent and every token under it and nothing
+ * else, so the agent is signed out of it at its next request rather than when a
+ * token expires.
  */
 /**
  * What an agent may do, in the words the consent screen used when it was
- * approved. The raw scope stays in each item's `title` for support; a scope
- * this screen has no sentence for is shown as it is.
+ * approved: for a project grant, the sentences that say "this project". The raw
+ * scope stays in each item's `title` for support; a scope this screen has no
+ * sentence for is shown as it is.
  */
-function ScopeList({ scopes }: { scopes: string[] }) {
+function ScopeList({
+	scopes,
+	projectScoped,
+}: {
+	scopes: string[];
+	projectScoped: boolean;
+}) {
 	const tScopes = useTranslations("auth.oauth.consent");
 	const scopeParam = scopes.join(" ");
+	const wordsKey = projectScoped ? "scopesProject" : "scopes";
 
 	return (
 		<ul className="mt-1 list-disc space-y-0.5 pl-5">
 			{requestedScopes(scopeParam).map((scope) => (
 				<li key={scope} title={scope}>
-					{tScopes(`scopes.${scope}`)}
+					{tScopes(`${wordsKey}.${scope}`)}
 				</li>
 			))}
 			{unknownScopes(scopeParam).map((scope) => (
@@ -110,13 +120,38 @@ export function ConnectedAgentsSettings() {
 											{connection.clientName ??
 												t("unnamedClient")}
 										</p>
-										<p className="text-muted-foreground">
-											{t("organization")}:{" "}
-											{connection.organizationName ?? "-"}
-										</p>
+										{connection.projectId === null ? (
+											<p className="text-muted-foreground">
+												{t("organization")}:{" "}
+												{connection.organizationName ??
+													"-"}
+											</p>
+										) : (
+											<p
+												className="text-muted-foreground"
+												data-testid="connected-agent-project"
+											>
+												{t("project")}:{" "}
+												{connection.projectName ===
+													null ||
+												connection.organizationName ===
+													null
+													? t("projectUnavailable")
+													: t("projectLine", {
+															project:
+																connection.projectName,
+															organization:
+																connection.organizationName,
+														})}
+											</p>
+										)}
 										<div className="text-muted-foreground">
 											<p>{t("access")}:</p>
 											<ScopeList
+												projectScoped={
+													connection.projectId !==
+													null
+												}
 												scopes={connection.scopes}
 											/>
 										</div>

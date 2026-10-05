@@ -8,6 +8,10 @@
 // Channel abstraction (Slice 5a) — uniform interface across Telegram, ...
 // Side-effect import below also registers built-in adapters.
 export * from "./channels/index";
+export type {
+	ConnectionCheckStatus,
+	ConnectionTestResult,
+} from "./connection-test-result";
 // Databricks Vector Search
 export * from "./databricks-vector-search/index";
 // GitHub integrations

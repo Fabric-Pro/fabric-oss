@@ -12,8 +12,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { assertRowInAuthorizedOrganization } from "../lib/plan-organization";
 
 const ApprovePlanInputSchema = z.object({
 	planId: z.string(),
@@ -34,20 +34,11 @@ export const approvePlanProcedure = protectedProcedure
 	.input(ApprovePlanInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		// Find plan with proper tenant isolation
 		const plan = await db.weavePlan.findFirst({
 			where: {
 				id: input.planId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -60,10 +51,17 @@ export const approvePlanProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names a plan, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			plan.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			plan,
+			authorized,
 		);
 
 		if (plan.status !== "PENDING_APPROVAL" && plan.status !== "DRAFT") {

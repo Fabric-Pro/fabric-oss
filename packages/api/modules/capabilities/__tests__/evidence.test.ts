@@ -52,6 +52,8 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	db: dbMock,
 	canEditProject: (...args: unknown[]) => canEditProjectMock(...args),
 	canEditProjectSettings: (...args: unknown[]) =>

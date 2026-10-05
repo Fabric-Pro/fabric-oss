@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	assertMemberBranch,
@@ -137,7 +138,7 @@ async function freshWorkspace(name: string): Promise<{
 	const dir = path.join(run, "repo");
 	const env = sourceEnv();
 	await initBranchWorkspace({
-		url: `file://${source}`,
+		url: pathToFileURL(source).href,
 		targetRef: "main",
 		dir,
 		env,
@@ -166,6 +167,8 @@ describe.skipIf(!hasGit)(
 			git(source, ["config", "uploadpack.allowFilter", "true"]);
 			git(source, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
 			git(source, ["add", "-A"]);
+			// A Windows file has no executable bit for `add` to read, so say so.
+			git(source, ["update-index", "--chmod=+x", "agents/exe.sh"]);
 			base = commitAll("base");
 		});
 

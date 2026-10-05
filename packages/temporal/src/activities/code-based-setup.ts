@@ -20,6 +20,7 @@ import {
 	type ProjectDocumentType,
 } from "@repo/database";
 import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
+import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import { repoForgeFromUrl } from "../lib/repo-forge";
 
 // ============================================================================
@@ -341,7 +342,7 @@ export interface FindGitLabOAuthConfigOutput {
 }
 
 /**
- * Find the user's GitLab OAuth WorkflowIntegration and return a synthetic
+ * Find the user's usable GitLab connection and return a synthetic
  * config ID that the orchestrator's loadOAuthIntegrationTools() understands.
  *
  * GitLab tools are loaded via OAuth integration, not MCP server.
@@ -353,18 +354,12 @@ export async function findGitLabOAuthConfig(
 ): Promise<FindGitLabOAuthConfigOutput> {
 	const { userId, organizationId } = input;
 
-	const tenantFilter = organizationId
-		? { userId, organizationId }
-		: { userId, organizationId: null };
-
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			...tenantFilter,
-			provider: "GITLAB",
-			NOT: { name: "GITLAB_OAUTH_APP" },
-			isActive: true,
-		},
-		select: { id: true },
+	// The caller's own usable GitLab connection (exclusive tenant). A
+	// reconnect-required connection, or a legacy `gitlab-official` MCP token
+	// copy with no connection behind it, reads as not connected.
+	const integration = await findUsableGitLabConnection({
+		userId,
+		organizationId: organizationId ?? null,
 	});
 
 	if (!integration) {
@@ -374,8 +369,8 @@ export async function findGitLabOAuthConfig(
 	}
 
 	return {
-		oauthConfigId: `oauth-gitlab:${integration.id}`,
-		integrationId: integration.id,
+		oauthConfigId: `oauth-gitlab:${integration.integrationId}`,
+		integrationId: integration.integrationId,
 	};
 }
 
@@ -470,23 +465,15 @@ export async function findMcpConfigsForRepos(
 				}
 				// GitLab tools come from OAuth integration, not MCP server.
 				// Use a synthetic config ID — the orchestrator loads GitLab tools
-				// via loadOAuthIntegrationTools() when WorkflowIntegration exists.
+				// via loadOAuthIntegrationTools() when the person's GitLab
+				// connection is usable.
 				if (isGitLab && !gitlabConfigId) {
-					const hasGitLabOAuth =
-						await db.workflowIntegration.findFirst({
-							where: {
-								userId,
-								provider: "GITLAB",
-								NOT: { name: "GITLAB_OAUTH_APP" },
-								isActive: true,
-								...(organizationId
-									? { organizationId }
-									: { organizationId: null }),
-							},
-							select: { id: true },
-						});
-					if (hasGitLabOAuth) {
-						gitlabConfigId = `oauth-gitlab:${hasGitLabOAuth.id}`;
+					const gitlabConnection = await findUsableGitLabConnection({
+						userId,
+						organizationId: organizationId ?? null,
+					});
+					if (gitlabConnection) {
+						gitlabConfigId = `oauth-gitlab:${gitlabConnection.integrationId}`;
 						toolMcpConfigId = gitlabConfigId;
 					}
 				} else if (isGitLab && gitlabConfigId) {
@@ -549,25 +536,17 @@ export async function findMcpConfigsForRepos(
 			configIdSet.add(githubConfigId);
 		} else if (isGitLab) {
 			// GitLab tools come from OAuth integration, not MCP server.
-			// Check for WorkflowIntegration directly.
+			// Check the person's GitLab connection directly.
 			if (!gitlabConfigId) {
-				const hasGitLabOAuth = await db.workflowIntegration.findFirst({
-					where: {
-						userId,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-						...(organizationId
-							? { organizationId }
-							: { organizationId: null }),
-					},
-					select: { id: true },
+				const gitlabConnection = await findUsableGitLabConnection({
+					userId,
+					organizationId: organizationId ?? null,
 				});
-				if (!hasGitLabOAuth) {
-					// GitLab OAuth not connected — skip these repos
+				if (!gitlabConnection) {
+					// GitLab not connected (or needs reconnecting) — skip these repos
 					continue;
 				}
-				gitlabConfigId = `oauth-gitlab:${hasGitLabOAuth.id}`;
+				gitlabConfigId = `oauth-gitlab:${gitlabConnection.integrationId}`;
 			}
 			mappings.push({
 				repoUrl: trimmed,

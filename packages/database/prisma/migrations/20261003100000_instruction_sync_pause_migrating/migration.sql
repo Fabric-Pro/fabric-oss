@@ -1,0 +1,17 @@
+-- AlterEnum
+-- The pause a project's repository sync carries while its coding instructions
+-- are being moved from uploads into the repository (Fizzy #2878 §9). The sync
+-- row exists from the start of the move so the move's pull request has a
+-- destination; polls, webhooks and the merge-triggered run skip a paused row,
+-- and the move clears the pause itself when its pull request merges.
+--
+-- Alone in its own migration: a value added by ALTER TYPE cannot be used in
+-- the transaction that adds it, and nothing may use this one before it has
+-- committed. Additive, with one hazard: a client from before this migration
+-- that selects "automaticPausedReason" throws on a row carrying the new value
+-- (its generated enum does not know it), it does not skip the row. Only a
+-- member starting the move writes it, and only code that ships with this
+-- migration does, so the exposure is an older replica during a rolling deploy
+-- reading that one project's sync row. The value cannot be removed while a
+-- sync row holds it.
+ALTER TYPE "ProjectInstructionSyncPause" ADD VALUE 'MIGRATING';

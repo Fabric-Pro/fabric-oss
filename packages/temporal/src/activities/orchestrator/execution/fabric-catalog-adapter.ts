@@ -131,9 +131,14 @@ async function runDirectBuilderTool(
 		organizationId: call.organizationId,
 		projectId: call.projectId,
 	};
+	// The catalog also runs code_tree and code_file_get, so code_search
+	// can point the model at them when its index is unavailable.
 	const tools =
 		call.toolName === "code_search"
-			? await createCodeSearchTool(context)
+			? await createCodeSearchTool({
+					...context,
+					liveRepositoryReads: true,
+				})
 			: await createFabricTool(call.toolName, context);
 	const built = tools[call.toolName] as
 		| {

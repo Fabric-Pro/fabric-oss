@@ -1,898 +1,346 @@
-import { describe, expect, it, vi } from "vitest";
+/**
+ * `resolveGitLabSource` chooses the TRANSPORT (official MCP or the REST
+ * adapter) for a person's GitLab calls. Both carry the same credential: the
+ * person's GitLab connection. The `gitlab-official` MCPConfig contributes only
+ * its endpoint URL, and only when that endpoint is on the GitLab instance the
+ * credential was issued by.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+} from "./helpers/gitlab-fake-db";
+
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import("./helpers/gitlab-fake-db");
+	return {
+		...(await importOriginal<object>()),
+		decryptApiKey: helpers.fakeDecrypt,
+		encryptApiKey: helpers.fakeEncrypt,
+	};
+});
+
 import {
 	GitLabMcpError,
 	GitLabMcpMethodNotFoundError,
 } from "../../src/gitlab/mcp-client";
-import {
-	GitLabReauthRequiredError,
-	GitLabRefreshSuppressedError,
-} from "../../src/gitlab/oauth-refresh";
 import {
 	callMcpWithRestFallback,
 	type GitLabSource,
 	resolveGitLabSource,
 } from "../../src/gitlab/source";
 
-const baseDeps = {
-	now: () => new Date("2026-05-15T12:00:00Z"),
-	// `markRefreshFailure` is required: a caller that omitted it degraded to
-	// REST while persisting nothing, so the next request refreshed the same
-	// dead token again (issue #2795). Cases that never reach the failure path
-	// take this explicit no-op; the ones that assert on the writer pass their
-	// own AFTER the spread.
-	markRefreshFailure: async () => {},
+const USER = "user-1";
+const ORG = "org-1";
+const officialServer = {
+	id: "srv-official",
+	key: "gitlab-official",
+	defaultUrl: "https://gitlab.com/api/v4/mcp",
 };
 
-function makeDb(opts: {
-	mcpConfig?: {
-		id: string;
-		baseUrl: string | null;
-		encryptedAccessToken: string;
-		encryptedRefreshToken?: string | null;
-		tokenExpiresAt: Date | null;
-		mcpServer: { defaultUrl: string | null } | null;
-	} | null;
-}) {
-	const mcpConfig = opts.mcpConfig
-		? {
-				// Default to a refresh token being present so existing tests
-				// (which assert opts.refresh runs) keep their original
-				// behavior. New tests that exercise the PAT short-circuit
-				// pass `encryptedRefreshToken: null` explicitly.
-				encryptedRefreshToken: "enc:refresh",
-				...opts.mcpConfig,
-			}
-		: null;
+function connection(
+	credential: Record<string, unknown>,
+	settings: Record<string, unknown> = {},
+	extra: Record<string, unknown> = {},
+) {
 	return {
-		mCPConfig: {
-			findFirst: vi.fn(async () => mcpConfig ?? null),
-		},
-		// Returning null → settings absent → flag === "legacy" → today's MCPConfig-wins behavior
-		workflowIntegration: {
-			findFirst: vi.fn(async () => null),
-		},
+		id: "wi-1",
+		userId: USER,
+		organizationId: ORG,
+		provider: "GITLAB",
+		name: "GitLab: dev",
+		workflowId: null,
+		credentials: encryptedCredential(credential),
+		settings,
+		isActive: true,
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+		...extra,
 	};
 }
 
+const liveCredential = {
+	access_token: "connection-token",
+	refresh_token: "connection-refresh",
+	expires_in: 7200,
+	token_obtained_at: new Date().toISOString(),
+	issuer: {
+		kind: "app",
+		clientId: "app-client",
+		origin: "https://gitlab.com",
+	},
+	connectionGeneration: 1,
+};
+
+function officialConfig(extra: Record<string, unknown> = {}) {
+	return {
+		id: "cfg-official",
+		userId: USER,
+		organizationId: ORG,
+		mcpServerId: officialServer.id,
+		baseUrl: null,
+		oauthClientId: "dcr-client",
+		encryptedOauthClientSecret: null,
+		dcrClientMetadata: null,
+		// The MCP copy is never what a transport sends.
+		encryptedAccessToken: "enc:mcp-copy-token",
+		encryptedRefreshToken: "enc:mcp-copy-refresh",
+		tokenExpiresAt: new Date(Date.now() + 3_600_000),
+		needsReauth: false,
+		enabled: true,
+		authType: "OAUTH2",
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+		...extra,
+	};
+}
+
+const fetchMock = vi.fn();
+
+beforeEach(() => {
+	fetchMock.mockReset();
+	vi.stubGlobal("fetch", fetchMock);
+});
+
+function depsFor(fake: ReturnType<typeof createGitLabFakeDb>) {
+	return {
+		db: fake.db as never,
+		withLock: fake.withLock as never,
+		fetchImpl: fetchMock as never,
+	};
+}
+
+/** The bearer token an official-MCP source actually sends. */
+async function bearerSentBy(source: GitLabSource | null) {
+	expect(source?.kind).toBe("official-mcp");
+	fetchMock.mockResolvedValueOnce({
+		ok: true,
+		status: 200,
+		headers: new Headers({ "content-type": "application/json" }),
+		json: async () => ({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+		text: async () =>
+			JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+	});
+	await (source as Extract<GitLabSource, { kind: "official-mcp" }>)
+		.callTool("list_projects", {})
+		.catch(() => undefined);
+	const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+	const headers = new Headers(init.headers);
+	return { url, authorization: headers.get("authorization") };
+}
+
 describe("resolveGitLabSource", () => {
-	it("returns official-mcp when an enabled gitlab-official config exists (uses baseUrl)", async () => {
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg1",
-				baseUrl: "https://custom.gitlab.com/api/v4/mcp",
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T13:00:00Z"),
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
+	it("returns null when the person has no GitLab connection", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			// A tokenless registration row is not a connection.
+			mCPConfig: [
+				officialConfig({
+					encryptedAccessToken: null,
+					encryptedRefreshToken: null,
+				}),
+			],
 		});
-		const refresh = vi.fn(async () => "should-not-be-called");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src?.kind).toBe("official-mcp");
-		expect(refresh).not.toHaveBeenCalled();
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toBeNull();
 	});
 
-	it("returns official-mcp using mcpServer.defaultUrl when baseUrl is null", async () => {
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg1",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T13:00:00Z"),
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
+	it("uses the REST adapter with the connection's token when no official MCP row exists", async () => {
+		const fake = createGitLabFakeDb({
+			workflowIntegration: [connection(liveCredential)],
 		});
-		const refresh = vi.fn(async () => "should-not-be-called");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src?.kind).toBe("official-mcp");
-		expect(refresh).not.toHaveBeenCalled();
-	});
-
-	it("falls through to REST when both baseUrl and mcpServer.defaultUrl are null but a REST token is available", async () => {
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg1",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T13:00:00Z"),
-				mcpServer: { defaultUrl: null },
-			},
-		});
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh: async () => {
-				throw new Error("should not refresh");
-			},
-			getRestToken: async () => "wi-token",
-			...baseDeps,
-		});
-		expect(src).toEqual({ kind: "rest-adapter", token: "wi-token" });
-	});
-
-	it("returns null when both baseUrl and mcpServer.defaultUrl are null and no REST token", async () => {
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg1",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T13:00:00Z"),
-				mcpServer: null,
-			},
-		});
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh: async () => {
-				throw new Error("should not refresh");
-			},
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src).toBeNull();
-	});
-
-	it("falls back to rest-adapter when no MCP config but WI token present", async () => {
-		const db = makeDb({});
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh: async () => {
-				throw new Error("should not refresh");
-			},
-			getRestToken: async () => "wi-token",
-			...baseDeps,
-		});
-		expect(src).toEqual({ kind: "rest-adapter", token: "wi-token" });
-	});
-
-	it("returns null when no source is connected", async () => {
-		const db = makeDb({});
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh: async () => {
-				throw new Error("should not refresh");
-			},
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src).toBeNull();
-	});
-
-	it("filters out MCPConfig rows with null encryptedAccessToken (needs-reauth)", async () => {
-		const db = makeDb({});
-		const findFirstSpy = db.mCPConfig.findFirst;
-		await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh: async () => {
-				throw new Error("should not refresh");
-			},
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		const callArg = findFirstSpy.mock.calls[0][0] as {
-			where: Record<string, unknown>;
-		};
-		// The where-clause must exclude rows with null tokens so the
-		// resolver never decrypts null and instead falls through to REST.
-		expect(callArg.where.encryptedAccessToken).toEqual({ not: null });
-	});
-
-	it("filters out MCPConfig rows the refresh circuit breaker has tripped (needsReauth)", async () => {
-		// Tripping the breaker leaves encryptedAccessToken populated, so the
-		// null-token filter alone still selects the row and drives a refresh
-		// that can only fail again. The row must be excluded outright and the
-		// caller degraded to REST.
-		const db = makeDb({});
-		const findFirstSpy = db.mCPConfig.findFirst;
-		const refresh = vi.fn(async () => {
-			throw new Error("should not refresh a condemned config");
-		});
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => "rest-token",
-			...baseDeps,
-		});
-		const callArg = findFirstSpy.mock.calls[0][0] as {
-			where: Record<string, unknown>;
-		};
-		expect(callArg.where.needsReauth).toBe(false);
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(refresh).not.toHaveBeenCalled();
-	});
-
-	it("treats null tokenExpiresAt as 'must refresh' and invokes opts.refresh", async () => {
-		// Legacy MCPConfig rows whose expiry was never recorded must NOT
-		// self-classify as "never expires" — that hides token expiry until a
-		// 401 surfaces. Null expiry must trigger refresh, matching the stance
-		// in get-valid-access-token.ts:82-86.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-null-expiry",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: null,
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => "fresh-token");
-		const decrypt = vi.fn(() => "decrypted-token");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt,
-			refresh,
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src?.kind).toBe("official-mcp");
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(refresh).toHaveBeenCalledWith("cfg-null-expiry");
-		expect(decrypt).not.toHaveBeenCalled();
-	});
-
-	it("falls through to REST adapter when MCP refresh rejects", async () => {
-		// A rejected refresh (revoked grant, dead refresh token, transient DB
-		// error) must not bubble as INTERNAL_SERVER_ERROR — the resolver
-		// should degrade to the REST adapter if a WI token is available.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-refresh-fails",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new Error("refresh-revoked");
-		});
-		const getRestToken = vi.fn(async () => "rest-fallback-token");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-		});
-		expect(src).toEqual({
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toEqual({
 			kind: "rest-adapter",
-			token: "rest-fallback-token",
-		});
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(getRestToken).toHaveBeenCalledOnce();
-	});
-
-	it("returns the stored access token when expiry is unknown AND no refresh credential (PAT / legacy row)", async () => {
-		// Sequence we want to preserve: tokenExpiresAt=null,
-		// encryptedAccessToken=valid, encryptedRefreshToken=null. The old
-		// code computed `expiresAt = 0`, set `needsRefresh = true`, called
-		// `opts.refresh` which threw "no refresh token", and silently
-		// degraded to REST — losing the still-valid access token. Mirror
-		// get-valid-access-token.ts:91-100: return the stored token as-is.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-pat",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: null,
-				tokenExpiresAt: null,
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.com/api/v4",
 			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new Error("should not refresh PAT");
-		});
-		const decrypt = vi.fn(() => "stored-token");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt,
-			refresh,
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src?.kind).toBe("official-mcp");
-		expect(refresh).not.toHaveBeenCalled();
-		expect(decrypt).toHaveBeenCalledWith("enc:abc");
-	});
-
-	it("reports a transient MCP refresh failure with reauthRequired=false", async () => {
-		// A plain Error means the refresh failed for a reason that says
-		// nothing about the credential (network blip, 5xx, DB outage).
-		// `needsReauth` is enforced downstream — a flagged config is refused
-		// at MCP client creation — so the resolver must not let a writer
-		// condemn on this. The failure is still reported so the diagnostic
-		// columns keep recording it (they are diagnostics only — no writer
-		// evaluates a threshold, so this never escalates on its own).
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-transient",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new Error("GitLab token refresh failed: 503");
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).toHaveBeenCalledWith({
-			mcpConfigId: "cfg-transient",
-			error: "GitLab token refresh failed: 503",
-			reauthRequired: false,
-			expectedRefreshToken: "enc:refresh",
 		});
 	});
 
-	it("reports a revoked grant with reauthRequired=true", async () => {
-		// GitLabReauthRequiredError is thrown only when GitLab answered
-		// `invalid_grant` or `invalid_token` — the two signals that no retry
-		// can recover, and therefore the only ones that may condemn the
-		// credential. A bare 401/403 does not qualify. The Settings reconnect
-		// banner is gated on the resulting needsReauth.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-revoked",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
+	it("routes through the official MCP endpoint with the CONNECTION's token, never the MCP copy", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
 		});
-		const refresh = vi.fn(async () => {
-			throw new GitLabReauthRequiredError();
+		const source = await resolveGitLabSource({
+			userId: USER,
+			organizationId: ORG,
+			deps: depsFor(fake),
 		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		// Still degrades to REST: only the marking is conditional.
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).toHaveBeenCalledWith({
-			mcpConfigId: "cfg-revoked",
-			error: "NEEDS_REAUTH",
-			reauthRequired: true,
-			// The row we selected still holds this ciphertext, so the writer
-			// is free to condemn against it.
-			expectedRefreshToken: "enc:refresh",
-		});
+		const sent = await bearerSentBy(source);
+		expect(sent.url).toBe("https://gitlab.com/api/v4/mcp");
+		expect(sent.authorization).toBe("Bearer connection-token");
 	});
 
-	it("forwards the ciphertext the refresh actually spent, not the one it selected", async () => {
-		// `refreshMcpConfigToken` retries a lost rotation race with the token
-		// the winner persisted, so the rejection it finally reports is about a
-		// value this resolver never loaded. The writer binds its condemning
-		// write to whatever we pass here — pass our own stale ciphertext and
-		// the write would either miss a genuine revocation or, worse, be
-		// evaluated against the wrong row version.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-retried",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:first-refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
+	it("uses the row's baseUrl over the server default", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [
+				officialConfig({
+					baseUrl: "https://gitlab.com/api/v4/mcp-beta",
+				}),
+			],
+			workflowIntegration: [connection(liveCredential)],
 		});
-		const refresh = vi.fn(async () => {
-			const err = new GitLabReauthRequiredError();
-			err.spentEncryptedRefreshToken = "enc:retried-refresh";
-			throw err;
+		const source = await resolveGitLabSource({
+			userId: USER,
+			organizationId: ORG,
+			deps: depsFor(fake),
 		});
-		const markRefreshFailure = vi.fn(async () => {});
-
-		await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => "rest-token",
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(markRefreshFailure).toHaveBeenCalledWith({
-			mcpConfigId: "cfg-retried",
-			error: "NEEDS_REAUTH",
-			reauthRequired: true,
-			expectedRefreshToken: "enc:retried-refresh",
-		});
-	});
-
-	it("reports a rejection carrying no ciphertext as transient rather than condemning", async () => {
-		// A condemnation may only travel with the row version it is bound to,
-		// so one that arrives with nothing to bind to is downgraded rather
-		// than cast into the condemning shape. Unreachable through
-		// `refreshMcpConfigToken` (it stamps every rejection it lets escape,
-		// and a row holding no refresh token fails earlier with a plain
-		// Error), so this pins the contract for any other `refresh()` wired in
-		// here. Fail-safe: a row with no refresh token has nothing to
-		// re-hammer, so declining to condemn costs no retry storm — and the
-		// warn keeps the dropped signal visible.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-no-token",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: null,
-				// KNOWN-expired, so the PAT short-circuit (which needs an
-				// unknown expiry) doesn't claim this row first.
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"),
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new GitLabReauthRequiredError();
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => "rest-token",
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).toHaveBeenCalledWith({
-			mcpConfigId: "cfg-no-token",
-			error: "NEEDS_REAUTH",
-			reauthRequired: false,
-			expectedRefreshToken: null,
-		});
-		expect(warnSpy).toHaveBeenCalledWith(
-			expect.stringContaining("no refresh-token ciphertext"),
-			{ mcpConfigId: "cfg-no-token" },
+		expect((await bearerSentBy(source)).url).toBe(
+			"https://gitlab.com/api/v4/mcp-beta",
 		);
-		warnSpy.mockRestore();
 	});
 
-	it("does NOT record a failure when the refresh was suppressed by the breaker", async () => {
-		// Race: the `needsReauth: false` filter selected this row while the
-		// flag was still false, another request tripped the breaker, and the
-		// refresh's own reload saw it and declined locally. Nothing was
-		// attempted against GitLab, and the row is already condemned — so
-		// there is no outcome to record. The REST degradation still runs.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-suppressed",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+	it("never sends the token to an MCP endpoint on a different GitLab instance", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [
+				officialConfig({
+					baseUrl: "https://gitlab.example.com/api/v4/mcp",
+				}),
+			],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
+		});
+		const source = await resolveGitLabSource({
+			userId: USER,
+			organizationId: ORG,
+			deps: depsFor(fake),
+		});
+		expect(source).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.com/api/v4",
 			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new GitLabRefreshSuppressedError(
-				"MCPConfig cfg-suppressed needs re-authentication — refresh suppressed by the circuit breaker",
-			);
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).not.toHaveBeenCalled();
-	});
-
-	it("does NOT record a failure when refresh() rejects with an aborted/timed-out exchange", async () => {
-		// A `refresh()` implementation wired here can bottom out in
-		// `refreshGitLabToken`, which bounds its exchange with
-		// `AbortSignal.timeout(...)` (see oauth-refresh.ts). Firing that
-		// timeout rejects with a DOMException — no response from GitLab was
-		// ever seen, so there is no outcome to record. Recording it anyway
-		// would still count toward the breaker's 3-strike threshold via
-		// `refreshFailureCount`, even though `reauthRequired` stays false,
-		// letting a burst of transient timeouts set up the NEXT genuine
-		// permanent failure to trip the breaker immediately instead of on
-		// its own third strike.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-timeout",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new DOMException("signal timed out", "TimeoutError");
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).not.toHaveBeenCalled();
-	});
-
-	it("does NOT record a failure when refresh() rejects with a plain Error whose cause is an abort/timeout", async () => {
-		// `isNoVerdictTransientError` also unwraps one level of `Error.cause`,
-		// for a wrapper that attaches the underlying abort/timeout instead of
-		// rethrowing it unchanged (e.g. `new Error("refresh failed", { cause:
-		// timeoutError })`). This is the direction the unwrap exists for: a
-		// non-verdict error whose cause is the real signal still resolves to
-		// no-verdict, the same as if the abort had been thrown directly.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-wrapped-timeout",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			throw new Error("refresh failed", {
-				cause: new DOMException("signal timed out", "TimeoutError"),
-			});
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).not.toHaveBeenCalled();
-	});
-
-	it("still records a genuine reauth verdict even when it carries an abort/timeout as its cause", async () => {
-		// The cause-unwrap must never cost a real verdict its recording: an
-		// error can be a genuine `GitLabReauthRequiredError` — GitLab answered
-		// `invalid_grant`/`invalid_token`, definitive evidence the credential
-		// is dead — while also carrying an abort/timeout as its `cause` (for
-		// example a wrapper that attaches diagnostic context about a retry
-		// that preceded the definitive answer). `reauthRequired` is checked
-		// before the cause-unwrap for exactly this reason, so the typed
-		// verdict always wins and the condemnation still lands.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-verdict-with-abort-cause",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => {
-			const err = new GitLabReauthRequiredError();
-			(err as Error & { cause?: unknown }).cause = new DOMException(
-				"signal timed out",
-				"TimeoutError",
-			);
-			throw err;
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).toHaveBeenCalledWith({
-			mcpConfigId: "cfg-verdict-with-abort-cause",
-			error: "NEEDS_REAUTH",
-			reauthRequired: true,
-			expectedRefreshToken: "enc:refresh",
 		});
 	});
 
-	it("does NOT record a failure when refresh() rejects with RefreshLockBudgetExhaustedError", async () => {
-		// The advisory-lock transaction declined to even START the exchange
-		// because too little of its budget remained after the lock wait — no
-		// provider contact happened at all. Same no-verdict reasoning as the
-		// abort/timeout case above.
-		const { RefreshLockBudgetExhaustedError } = await import(
-			"@repo/database/prisma/queries/lib/refresh-lock-key"
-		);
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-budget",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"), // expired
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+	it("ignores a disabled official row, and another person's or another context's row", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [
+				officialConfig({ id: "cfg-disabled", enabled: false }),
+				officialConfig({ id: "cfg-teammate", userId: "user-2" }),
+				officialConfig({
+					id: "cfg-other-org",
+					organizationId: "org-2",
+				}),
+			],
+			workflowIntegration: [connection(liveCredential)],
+		});
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.com/api/v4",
 			},
 		});
-		const refresh = vi.fn(async () => {
-			throw new RefreshLockBudgetExhaustedError();
-		});
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(refresh).toHaveBeenCalledOnce();
-		expect(markRefreshFailure).not.toHaveBeenCalled();
 	});
 
-	it("survives a markRefreshFailure rejection (DB down) and still falls through to REST", async () => {
-		// If the marking step itself fails (DB outage during the same
-		// request), the resolver must still degrade gracefully to REST so
-		// the user keeps working. The fallback is the real recovery path.
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg-revoked",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				encryptedRefreshToken: "enc:refresh",
-				tokenExpiresAt: new Date("2026-05-15T11:00:00Z"),
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
+	it("returns null when the connection needs reconnecting, even with an official row", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { needsReauth: true }),
+			],
 		});
-		const refresh = vi.fn(async () => {
-			throw new Error("refresh-revoked");
-		});
-		const markRefreshFailure = vi.fn(async () => {
-			throw new Error("db-down");
-		});
-		const getRestToken = vi.fn(async () => "rest-token");
-
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken,
-			...baseDeps,
-			markRefreshFailure,
-		});
-
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(markRefreshFailure).toHaveBeenCalledOnce();
-	});
-
-	it("refreshes the MCP token when within the refresh buffer", async () => {
-		const db = makeDb({
-			mcpConfig: {
-				id: "cfg1",
-				baseUrl: null,
-				encryptedAccessToken: "enc:abc",
-				tokenExpiresAt: new Date("2026-05-15T12:00:30Z"), // 30s in the future, < 60s buffer
-				mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-			},
-		});
-		const refresh = vi.fn(async () => "fresh-token");
-		const src = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: db as never,
-			decrypt: () => "decrypted-token",
-			refresh,
-			getRestToken: async () => null,
-			...baseDeps,
-		});
-		expect(src?.kind).toBe("official-mcp");
-		expect(refresh).toHaveBeenCalledOnce();
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toBeNull();
 	});
 });
 
 describe("resolveGitLabSource — useOfficialMcp flag", () => {
-	it("returns rest-adapter when settings.useOfficialMcp === false (skips MCPConfig lookup)", async () => {
-		const mcpFindFirst = vi.fn(); // should NOT be called
-		const wiFindFirst = vi.fn().mockResolvedValue({
-			settings: { useOfficialMcp: false, mcpProbe: null },
+	it("returns rest-adapter when settings.useOfficialMcp === false", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: false }),
+			],
 		});
-
-		const result = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: {
-				mCPConfig: { findFirst: mcpFindFirst },
-				workflowIntegration: { findFirst: wiFindFirst },
-			} as never,
-			decrypt: (s) => s,
-			refresh: async () => "ignored",
-			getRestToken: async () => "rest-token",
-			markRefreshFailure: baseDeps.markRefreshFailure,
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.com/api/v4",
+			},
 		});
-
-		expect(result).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		expect(mcpFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("returns official-mcp when settings.useOfficialMcp === true and MCPConfig exists", async () => {
-		const wiFindFirst = vi.fn().mockResolvedValue({
-			settings: { useOfficialMcp: true, mcpProbe: null },
+	it("falls through to REST when settings.useOfficialMcp === true but the official row is missing", async () => {
+		const errorSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const fake = createGitLabFakeDb({
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
 		});
-		const mcpFindFirst = vi.fn().mockResolvedValue({
-			id: "cfg-1",
-			baseUrl: null,
-			encryptedAccessToken: "enc",
-			tokenExpiresAt: null,
-			mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.com/api/v4",
+			},
 		});
-
-		const result = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: {
-				mCPConfig: { findFirst: mcpFindFirst },
-				workflowIntegration: { findFirst: wiFindFirst },
-			} as never,
-			decrypt: (s) => s,
-			refresh: async () => "ignored",
-			getRestToken: async () => null,
-			markRefreshFailure: baseDeps.markRefreshFailure,
-		});
-
-		expect(result?.kind).toBe("official-mcp");
+		expect(errorSpy).toHaveBeenCalled();
+		errorSpy.mockRestore();
 	});
 
-	it("falls through to REST when settings.useOfficialMcp === true but MCPConfig is missing (corrupt state)", async () => {
-		const wiFindFirst = vi.fn().mockResolvedValue({
-			settings: { useOfficialMcp: true, mcpProbe: null },
+	it("keeps the legacy choice (official MCP when its row exists) when the flag is unset", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [connection(liveCredential)],
 		});
-		const mcpFindFirst = vi.fn().mockResolvedValue(null);
-
-		const result = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: {
-				mCPConfig: { findFirst: mcpFindFirst },
-				workflowIntegration: { findFirst: wiFindFirst },
-			} as never,
-			decrypt: (s) => s,
-			refresh: async () => "ignored",
-			getRestToken: async () => "rest-token",
-			markRefreshFailure: baseDeps.markRefreshFailure,
+		const source = await resolveGitLabSource({
+			userId: USER,
+			organizationId: ORG,
+			deps: depsFor(fake),
 		});
-
-		expect(result).toEqual({ kind: "rest-adapter", token: "rest-token" });
-	});
-
-	it("preserves legacy behavior when settings.useOfficialMcp is undefined", async () => {
-		const wiFindFirst = vi.fn().mockResolvedValue({ settings: {} });
-		const mcpFindFirst = vi.fn().mockResolvedValue({
-			id: "cfg-legacy",
-			baseUrl: null,
-			encryptedAccessToken: "enc",
-			tokenExpiresAt: null,
-			mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-		});
-
-		const result = await resolveGitLabSource({
-			userId: "u1",
-			organizationId: null,
-			db: {
-				mCPConfig: { findFirst: mcpFindFirst },
-				workflowIntegration: { findFirst: wiFindFirst },
-			} as never,
-			decrypt: (s) => s,
-			refresh: async () => "ignored",
-			getRestToken: async () => null,
-			markRefreshFailure: baseDeps.markRefreshFailure,
-		});
-
-		expect(result?.kind).toBe("official-mcp");
+		expect(source?.kind).toBe("official-mcp");
 	});
 });
 
@@ -970,5 +418,159 @@ describe("callMcpWithRestFallback", () => {
 			}),
 		).rejects.toBe(mcpErr);
 		expect(restFallback).not.toHaveBeenCalled();
+	});
+});
+
+describe("official MCP capability loss", () => {
+	const notFound = () => ({
+		ok: false,
+		status: 404,
+		text: async () => "404 Not Found",
+	});
+
+	async function officialSource(fake: ReturnType<typeof createGitLabFakeDb>) {
+		const source = await resolveGitLabSource({
+			userId: USER,
+			organizationId: ORG,
+			deps: depsFor(fake),
+		});
+		expect(source?.kind).toBe("official-mcp");
+		return source as GitLabSource;
+	}
+
+	it("falls back to REST on a 404 from the endpoint — even for a write — and records the loss", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
+		});
+		const source = await officialSource(fake);
+		fetchMock.mockResolvedValueOnce(notFound());
+		const restFallback = vi.fn(async () => "rest-result");
+
+		const result = await callMcpWithRestFallback({
+			source,
+			method: "create_issue",
+			args: { project_id: "group/app", title: "t" },
+			restFallback,
+			idempotent: false,
+		});
+
+		expect(result).toBe("rest-result");
+		expect(restFallback).toHaveBeenCalledTimes(1);
+		expect(fake.tables.workflowIntegration[0].settings).toMatchObject({
+			useOfficialMcp: false,
+			mcpProbe: { status: "not-found", httpStatus: 404 },
+		});
+		// The issuer's registration is kept: only the routing flag moved.
+		expect(fake.tables.mCPConfig).toHaveLength(1);
+		expect(fake.tables.mCPConfig[0]).toMatchObject({
+			oauthClientId: "dcr-client",
+			enabled: true,
+		});
+		// Later calls go straight to REST.
+		expect(
+			(
+				await resolveGitLabSource({
+					userId: USER,
+					organizationId: ORG,
+					deps: depsFor(fake),
+				})
+			)?.kind,
+		).toBe("rest-adapter");
+	});
+
+	it("does not record the loss over a connection that changed since the source was built", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
+		});
+		const source = await officialSource(fake);
+		// A reconnect lands while the call is in flight.
+		fake.tables.workflowIntegration[0].credentials = encryptedCredential({
+			...liveCredential,
+			access_token: "reconnected-token",
+			connectionGeneration: 2,
+		});
+		fetchMock.mockResolvedValueOnce(notFound());
+
+		const result = await callMcpWithRestFallback({
+			source,
+			method: "list_issues",
+			args: {},
+			restFallback: async () => "rest-result",
+		});
+
+		expect(result).toBe("rest-result");
+		expect(fake.tables.workflowIntegration[0].settings).toEqual({
+			useOfficialMcp: true,
+		});
+	});
+
+	it("still rethrows an ambiguous MCP error on a write and leaves the routing flag alone", async () => {
+		const fake = createGitLabFakeDb({
+			mCPServer: [officialServer],
+			mCPConfig: [officialConfig()],
+			workflowIntegration: [
+				connection(liveCredential, { useOfficialMcp: true }),
+			],
+		});
+		const source = await officialSource(fake);
+		fetchMock.mockResolvedValueOnce({
+			ok: false,
+			status: 500,
+			text: async () => "boom",
+		});
+		const restFallback = vi.fn(async () => "rest-result");
+
+		await expect(
+			callMcpWithRestFallback({
+				source,
+				method: "create_issue",
+				args: {},
+				restFallback,
+				idempotent: false,
+			}),
+		).rejects.toBeInstanceOf(GitLabMcpError);
+		expect(restFallback).not.toHaveBeenCalled();
+		expect(fake.tables.workflowIntegration[0].settings).toEqual({
+			useOfficialMcp: true,
+		});
+	});
+});
+
+describe("REST source origin", () => {
+	it("carries the REST base of the instance that issued the credential", async () => {
+		const fake = createGitLabFakeDb({
+			workflowIntegration: [
+				connection({
+					...liveCredential,
+					issuer: {
+						kind: "app",
+						clientId: "app-client",
+						origin: "https://gitlab.example.com",
+					},
+				}),
+			],
+		});
+
+		expect(
+			await resolveGitLabSource({
+				userId: USER,
+				organizationId: ORG,
+				deps: depsFor(fake),
+			}),
+		).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "connection-token",
+				apiBase: "https://gitlab.example.com/api/v4",
+			},
+		});
 	});
 });

@@ -3,9 +3,15 @@ import {
 	db,
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
-	resolvePMConfigForUser,
 } from "@repo/database";
-import { GITLAB_REST_CAPABILITIES } from "@repo/integrations/gitlab";
+import {
+	findUsableGitLabConnection,
+	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+	GITLAB_REST_CAPABILITIES,
+	GitLabPmOriginMismatchError,
+	gitlabPmOriginMatches,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import { pmServerKeyToDetectedType } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -131,20 +137,42 @@ export const getPMCapabilitiesProcedure = tenantProtectedProcedure
 			};
 		}
 
-		// Resolve the CALLING USER's MCP config — prefers configId, falls back to serverId
-		const userMcpConfig = await resolvePMConfigForUser({
-			configId: project.projectManagementMcpConfigId,
-			mcpServerId: project.projectManagementMcpServerId,
-			userId: user.id,
-			organizationId: project.organizationId || undefined,
-		});
-
 		// Parse additional context from JSON. String-valued entries only — the
 		// column also carries the structured `fieldMapping` settings, which this
 		// procedure publishes as a flat string map.
 		const additionalContext = readPmStringContext(
 			project.projectManagementAdditionalContext,
 		);
+
+		// Resolve the CALLING USER's MCP config — prefers configId, falls back
+		// to serverId. Their own GitLab MCP config on another GitLab instance
+		// than the container's cannot serve it: reported like the REST case.
+		let userMcpConfig: Awaited<
+			ReturnType<typeof resolveProjectPMConfigForUser>
+		>;
+		try {
+			userMcpConfig = await resolveProjectPMConfigForUser({
+				configId: project.projectManagementMcpConfigId,
+				pmAdditionalContext: project.projectManagementAdditionalContext,
+				mcpServerId: project.projectManagementMcpServerId,
+				userId: user.id,
+				organizationId: project.organizationId || undefined,
+			});
+		} catch (error) {
+			if (!(error instanceof GitLabPmOriginMismatchError)) {
+				throw error;
+			}
+			return {
+				configured: true,
+				capabilities: null,
+				containerName: project.projectManagementContainerName,
+				detectedType: await storedDetectedType(),
+				mcpConfigId: project.projectManagementMcpConfigId ?? null,
+				containerId: project.projectManagementContainerId,
+				additionalContext,
+				error: GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+			};
+		}
 
 		if (
 			!userMcpConfig &&
@@ -175,21 +203,33 @@ export const getPMCapabilitiesProcedure = tenantProtectedProcedure
 			// Reuse the memoized resolver (sentinel → inline, catalog id → DB).
 			const serverKey = await getProjectServerKey();
 			if (serverKey === "gitlab-official") {
-				const tenantFilter = project.organizationId
-					? {
-							organizationId: project.organizationId,
-							userId: user.id,
-						}
-					: { organizationId: null, userId: user.id };
-				const integration = await db.workflowIntegration.findFirst({
-					where: {
-						...tenantFilter,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-					},
-					select: { id: true },
+				// The caller's own usable GitLab connection (exclusive tenant); a
+				// reconnect-required connection, or a legacy `gitlab-official` MCP
+				// token copy with no connection, reads as not connected.
+				const integration = await findUsableGitLabConnection({
+					userId: user.id,
+					organizationId: project.organizationId ?? null,
 				});
+				if (
+					integration &&
+					!gitlabPmOriginMatches(
+						project.projectManagementAdditionalContext,
+						integration.origin,
+					)
+				) {
+					// The container was chosen on another GitLab instance than the
+					// caller's connection: GitLab REST cannot serve it for them.
+					return {
+						configured: true,
+						capabilities: null,
+						containerName: project.projectManagementContainerName,
+						detectedType: "gitlab-rest",
+						mcpConfigId: null,
+						containerId: project.projectManagementContainerId,
+						additionalContext,
+						error: GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+					};
+				}
 				if (integration) {
 					// `canFetch` is consumed by internal Temporal activities but
 					// is not part of the public `getPMCapabilities` Zod output

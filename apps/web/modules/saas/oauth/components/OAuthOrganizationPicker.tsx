@@ -11,22 +11,27 @@ import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-
-interface AuthorizationRedirect {
-	redirect?: boolean;
-	url?: string;
-}
+import {
+	type AuthorizationRedirect,
+	followAuthorizationRedirect,
+} from "../lib/authorization-redirect";
+import { useAuthorizationBinding } from "../lib/use-authorization-binding";
 
 /**
  * Which organization an agent is authorized for, asked when the person belongs
  * to more than one. The choice becomes the organization the consent and every
  * token are bound to, so it is made here and nowhere later.
+ *
+ * An agent that asked for one project has no organization to choose, and the
+ * authorization server sends it to this page only when the person cannot open
+ * that project. The page says so, and offers nothing to continue with.
  */
 export function OAuthOrganizationPicker() {
 	const t = useTranslations("auth.oauth.organization");
 	const searchParams = useSearchParams();
 	const { session } = useSession();
 	const organizations = useOrganizationListQuery();
+	const binding = useAuthorizationBinding();
 	const [chosen, setChosen] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 	const [failed, setFailed] = useState(false);
@@ -70,12 +75,28 @@ export function OAuthOrganizationPicker() {
 			if (error || !data?.url) {
 				throw new Error("continue failed");
 			}
-			window.location.assign(data.url);
+			followAuthorizationRedirect({ ...data, url: data.url });
 		} catch {
 			setFailed(true);
 			setPending(false);
 		}
 	};
+
+	if (binding.data?.bound === true && binding.data.project === null) {
+		return (
+			<div className="flex flex-col gap-5">
+				<div className="space-y-2">
+					<p className="app-editorial-label">{t("label")}</p>
+					<h1 className="font-serif font-normal text-2xl leading-snug">
+						{t("noProjectAccessTitle")}
+					</h1>
+				</div>
+				<Alert variant="error">
+					<AlertDescription>{t("noProjectAccess")}</AlertDescription>
+				</Alert>
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex flex-col gap-5">

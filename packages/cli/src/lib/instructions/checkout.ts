@@ -17,7 +17,7 @@
  * saying which case it is, and nothing is written.
  *
  * `classifyCheckout` decides which case; `inspectMatchingCheckout` gathers the
- * facts for the matching one; `matchingReportLine` and `classLine` are the
+ * facts for the matching one; `matchingReport`, `matchingReportLine` and `classLine` are the
  * pure halves that turn those into the one line a session reads.
  */
 import { realpath } from "node:fs/promises";
@@ -29,7 +29,12 @@ import type {
 import { sanitizeDisplayText } from "./checks.js";
 import type { CheckoutTraits, GitDeadline, GitOperation } from "./git.js";
 import * as git from "./git.js";
-import { matches, parseRemoteUrl } from "./repository-identity.js";
+import { type BehindCondition, outcomeLine } from "./outcome.js";
+import {
+	hasComparableIdentity,
+	matches,
+	parseRemoteUrl,
+} from "./repository-identity.js";
 
 type CheckoutClass =
 	| "not-git"
@@ -48,7 +53,7 @@ export type CheckoutClassification =
 	| { class: "unsupported-provider"; provider: string }
 	| { class: "foreign" }
 	| { class: "ambiguous"; remotes: string[] }
-	| { class: "unmapped"; rootPath: string }
+	| { class: "unmapped"; rootPath: string; toplevel: string }
 	| {
 			class: "matching";
 			remote: string;
@@ -91,10 +96,17 @@ export interface CheckoutReport {
 	state: CheckoutState | null;
 	contains: boolean | null | undefined;
 	line: string | null;
+	/** Only in the matching class: what `line` is about. */
+	reportKind?: MatchingReport["kind"];
 	json: CheckoutJson;
 }
 
-const PREFIX = "fabric: coding instructions";
+/** The providers whose remotes `repository-identity.ts` knows how to compare. */
+const SUPPORTED_PROVIDERS: ReadonlySet<string> = new Set([
+	"GITHUB",
+	"GITLAB",
+	"AZURE_DEVOPS",
+]);
 
 /** Display bounds for every interpolated identifier. */
 const MAX = { host: 253, path: 300, ref: 200, remote: 100, reason: 200 };
@@ -133,7 +145,7 @@ function isSafeRootPath(rootPath: string): boolean {
 	return !rootPath.split(/[\\/]/).some((segment) => segment === "..");
 }
 
-async function sameDirectory(a: string, b: string): Promise<boolean> {
+export async function sameDirectory(a: string, b: string): Promise<boolean> {
 	const [left, right] = await Promise.all([
 		realpath(a).catch(() => null),
 		realpath(b).catch(() => null),
@@ -150,6 +162,8 @@ export async function classifyCheckout(input: {
 	destination: string;
 	repository: PublishedInstructionRepository | null | undefined;
 	deadline: GitDeadline;
+	/** Only this remote is looked at, for a checkout where two fetch from the repository. */
+	remote?: string;
 }): Promise<CheckoutClassification> {
 	try {
 		return await classify(input);
@@ -162,10 +176,12 @@ async function classify({
 	destination,
 	repository,
 	deadline,
+	remote,
 }: {
 	destination: string;
 	repository: PublishedInstructionRepository | null | undefined;
 	deadline: GitDeadline;
+	remote?: string;
 }): Promise<CheckoutClassification> {
 	const tree = await git.findWorkTree(destination, deadline);
 	if (tree.kind === "absent") {
@@ -177,11 +193,14 @@ async function classify({
 	if (!repository) {
 		return { class: "unknown-identity" };
 	}
-	if (repository.provider !== "GITHUB" && repository.provider !== "GITLAB") {
+	if (!SUPPORTED_PROVIDERS.has(repository.provider)) {
 		return {
 			class: "unsupported-provider",
 			provider: String(repository.provider),
 		};
+	}
+	if (!hasComparableIdentity(repository)) {
+		return { class: "unknown-identity" };
 	}
 	const root = tree.value.toplevel;
 	if (!isSafeRootPath(repository.rootPath)) {
@@ -214,7 +233,9 @@ async function classify({
 		};
 	}
 	const matching: string[] = [];
-	for (const name of names.value) {
+	for (const name of remote === undefined
+		? names.value
+		: names.value.filter((candidate) => candidate === remote)) {
 		const url = await git.effectiveFetchUrl(root, name, deadline);
 		if (url.kind !== "ok") {
 			return {
@@ -240,7 +261,11 @@ async function classify({
 
 	const mapped = path.join(root, repository.rootPath);
 	if (!(await sameDirectory(destination, mapped))) {
-		return { class: "unmapped", rootPath: repository.rootPath };
+		return {
+			class: "unmapped",
+			rootPath: repository.rootPath,
+			toplevel: root,
+		};
 	}
 	const traits = await git.checkoutTraits(root, deadline);
 	if (traits.kind !== "ok") {
@@ -333,7 +358,7 @@ async function inspectMatchingCheckout(input: {
 		}
 	}
 
-	const line = matchingReportLine({
+	const { kind: reportKind, line } = matchingReport({
 		repository,
 		remote: classification.remote,
 		snapshot: snapshot
@@ -347,6 +372,7 @@ async function inspectMatchingCheckout(input: {
 		state,
 		contains,
 		line,
+		reportKind,
 		json: {
 			class: "matching",
 			remote: classification.remote,
@@ -388,7 +414,7 @@ function traitNames(traits: CheckoutTraits): Array<keyof CheckoutTraits> {
 const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /** POSIX single-quoting, the rule doctor's generated commands use. */
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
 	if (value.length > 0 && SHELL_SAFE.test(value)) {
 		return value;
 	}
@@ -399,15 +425,25 @@ function show(value: string, max: number): string {
 	return sanitizeDisplayText(value, max);
 }
 
-function repositoryName(repository: { host: string; path: string }): string {
+export function repositoryName(repository: {
+	host: string;
+	path: string;
+}): string {
 	return `${show(repository.host, MAX.host)}/${show(repository.path, MAX.path)}`;
 }
 
 /**
- * The one line for the matching class, or `null` when the checkout already
- * holds the published commit. The decision table, over plain data.
+ * What the matching class says: `current` (nothing to say), `behind` (the
+ * checkout lacks the published commit) or `other` (nothing published yet, or
+ * published from another branch), and the one line for it. The decision table,
+ * over plain data.
  */
-export function matchingReportLine(input: {
+export interface MatchingReport {
+	kind: "current" | "behind" | "other";
+	line: string | null;
+}
+
+export function matchingReport(input: {
 	repository: Pick<PublishedInstructionRepository, "host" | "path" | "ref">;
 	remote: string;
 	snapshot: {
@@ -417,61 +453,78 @@ export function matchingReportLine(input: {
 	state: CheckoutState;
 	/** `undefined` when not evaluated; `null` when git could not say. */
 	contains: boolean | null | undefined;
-}): string | null {
+}): MatchingReport {
 	const { repository, remote, snapshot, state, contains } = input;
 	const name = repositoryName(repository);
 	const ref = show(repository.ref, MAX.ref);
 	const source = snapshot?.source;
 
 	if (!snapshot || source?.kind !== "REPOSITORY") {
-		return `${PREFIX}: the project is repository-sourced but nothing has been published from ${name} yet`;
+		return {
+			kind: "other",
+			line: outcomeLine("nothing-published", { repo: name }),
+		};
 	}
 	const version = Number(snapshot.version);
 	if (!source.current) {
-		return `${PREFIX} v${version} was published from ${show(source.ref, MAX.ref)}; the project now syncs ${ref} of ${name} — pull ${ref} to pick up the next publication`;
+		return {
+			kind: "other",
+			line: outcomeLine("earlier-source", {
+				version,
+				sourceRef: show(source.ref, MAX.ref),
+				ref,
+				repo: name,
+			}),
+		};
 	}
 	if (contains === true) {
-		return null;
+		return { kind: "current", line: null };
 	}
 
-	const sha7 = show(source.commitSha.slice(0, 7), 7);
-	const behind =
-		contains === false
-			? "this checkout is behind"
-			: "this checkout has not fetched it yet";
-	const base = `${PREFIX} v${version} (${sha7}) is published on ${ref} of ${name}; ${behind}`;
-
-	let advice: string;
+	// An operation first: a rebase detaches HEAD, and "check out the branch"
+	// is the wrong advice in the middle of one.
+	let condition: BehindCondition;
 	if (state.operation !== null) {
-		// Before the branch: a rebase detaches HEAD, and "check out the
-		// branch" is the wrong advice in the middle of one.
-		advice = `; a ${state.operation} is in progress`;
+		condition = { kind: "operation", operation: state.operation };
 	} else if (state.branch === null) {
-		advice = `; HEAD is detached — check out ${ref} and pull`;
+		condition = { kind: "detached" };
 	} else if (state.branch !== repository.ref) {
-		advice = `; you are on ${show(state.branch, MAX.ref)} — pull ${ref} when you switch to it`;
+		condition = {
+			kind: "other-branch",
+			branch: show(state.branch, MAX.ref),
+		};
 	} else if (!state.clean) {
-		advice = "; your working tree has changes — pull when it is clean";
+		condition = { kind: "dirty" };
 	} else {
-		const pull = [
-			"git",
-			"pull",
-			"--ff-only",
-			shellQuote(show(remote, MAX.remote)),
-			shellQuote(ref),
-		].join(" ");
-		advice = ` — run: ${pull}`;
+		condition = {
+			kind: "clean",
+			pull: [
+				"git",
+				"pull",
+				"--ff-only",
+				shellQuote(show(remote, MAX.remote)),
+				shellQuote(ref),
+			].join(" "),
+		};
 	}
+	return {
+		kind: "behind",
+		line: outcomeLine("behind", {
+			version,
+			sha7: show(source.commitSha.slice(0, 7), 7),
+			ref,
+			notFetched: contains !== false,
+			traits: traitNames(state.traits),
+			condition,
+		}),
+	};
+}
 
-	const traits = traitNames(state.traits).map(
-		(trait) =>
-			({
-				shallow: " (shallow clone)",
-				sparse: " (sparse checkout)",
-				superproject: " (inside a superproject)",
-			})[trait],
-	);
-	return `${base}${advice}${traits.join("")}`;
+/** The one line for the matching class, or `null` when the checkout already holds the published commit. */
+export function matchingReportLine(
+	input: Parameters<typeof matchingReport>[0],
+): string | null {
+	return matchingReport(input).line;
 }
 
 /** The one line for every class that is neither `matching` nor `not-git`. */
@@ -483,29 +536,36 @@ export function classLine(
 	repository: Pick<PublishedInstructionRepository, "host" | "path"> | null,
 ): string {
 	const name = repository ? repositoryName(repository) : "its repository";
-	const tail = "nothing was checked or changed";
 	switch (classification.class) {
 		case "foreign":
-			return `${PREFIX}: no remote of this checkout fetches from ${name} (foreign checkout); ${tail}`;
+			return outcomeLine("class-foreign", { repo: name });
 		case "ambiguous":
-			return `${PREFIX}: remotes ${classification.remotes
-				.map((remote) => show(remote, MAX.remote))
-				.join(
-					", ",
-				)} all fetch from ${name} (ambiguous checkout); ${tail}`;
-		case "unmapped": {
-			const where =
-				classification.rootPath === ""
-					? "the repository root"
-					: show(classification.rootPath, MAX.path);
-			return `${PREFIX}: this checkout is ${name}, but the project's instructions are at ${where}, not this directory (unmapped checkout); ${tail}`;
-		}
+			return outcomeLine("class-ambiguous", {
+				repo: name,
+				remotes: classification.remotes.map((remote) =>
+					show(remote, MAX.remote),
+				),
+			});
+		case "unmapped":
+			return outcomeLine("class-unmapped", {
+				repo: name,
+				where:
+					classification.rootPath === ""
+						? "the repository root"
+						: show(classification.rootPath, MAX.path),
+			});
 		case "unknown":
-			return `${PREFIX}: this git checkout could not be read (${show(classification.reason, MAX.reason)}; unknown checkout); ${tail}`;
+			return outcomeLine("class-unknown", {
+				reason: show(classification.reason, MAX.reason),
+			});
 		case "unknown-identity":
-			return `${PREFIX}: the project is repository-sourced but reports no repository to compare with (unknown repository); ${tail}`;
+			return outcomeLine("class-unknown-identity", {});
 		case "unsupported-provider":
-			return `${PREFIX}: ${show(classification.provider, 32)} repositories are not compared yet (unsupported provider); ${tail}`;
+			return outcomeLine("class-unsupported-provider", {
+				provider: show(classification.provider, 32),
+			});
+		default:
+			return classification satisfies never;
 	}
 }
 
@@ -518,6 +578,7 @@ export async function inspectCheckout(input: {
 	repository: PublishedInstructionRepository | null | undefined;
 	snapshot: PublishedInstructionSnapshot | undefined;
 	deadline: GitDeadline;
+	remote?: string;
 }): Promise<CheckoutReport> {
 	const classification = await classifyCheckout(input);
 	return reportForClassification({ ...input, classification });
@@ -560,25 +621,15 @@ export function currentLine(
 	snapshot: Pick<PublishedInstructionSnapshot, "version" | "source">,
 ): string {
 	const source = snapshot.source;
-	const sha7 =
-		source?.kind === "REPOSITORY"
-			? ` (${show(source.commitSha.slice(0, 7), 7)})`
-			: "";
-	return `${PREFIX} v${Number(snapshot.version)}${sha7} from ${show(repository.ref, MAX.ref)} of ${repositoryName(repository)} is already in this checkout's history; nothing to sync`;
-}
-
-/**
- * `init`'s line for a checkout of the repository: the hook it wrote reports
- * and never changes anything.
- */
-export function installedLine(
-	repository: Pick<PublishedInstructionRepository, "host" | "path" | "ref">,
-	apply: boolean,
-): string {
-	const base = `installed; this checkout is ${repositoryName(repository)}: the hook reports when ${show(repository.ref, MAX.ref)} has newer instructions and never changes the checkout`;
-	return apply
-		? `${base} — automatic updates are not available for repository checkouts yet; the hook reports and you (or your agent) run the pull`
-		: base;
+	return outcomeLine("already-current", {
+		version: Number(snapshot.version),
+		sha7:
+			source?.kind === "REPOSITORY"
+				? show(source.commitSha.slice(0, 7), 7)
+				: null,
+		ref: show(repository.ref, MAX.ref),
+		repo: repositoryName(repository),
+	});
 }
 
 /** `init`'s note when nothing has been published from the repository yet. */

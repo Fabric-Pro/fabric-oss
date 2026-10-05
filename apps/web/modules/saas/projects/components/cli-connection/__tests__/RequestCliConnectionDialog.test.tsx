@@ -817,6 +817,53 @@ describe("RequestCliConnectionDialog — confirming a fan-out", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("RequestCliConnectionDialog — the hand-picked cap", () => {
+	/** Every checkbox on the page by teammate name, found in one pass. */
+	function checkboxesByTeammate(): Map<string, HTMLElement> {
+		return new Map(
+			screen
+				.getAllByRole("checkbox")
+				.map(
+					(box) =>
+						[
+							box
+								.getAttribute("aria-label")
+								?.replace(/^Ask /, "") ?? "",
+							box,
+						] as const,
+				),
+		);
+	}
+
+	function checkbox(name: string): HTMLElement {
+		const box = checkboxesByTeammate().get(name);
+		if (box === undefined) {
+			throw new Error(`no checkbox for ${name}`);
+		}
+		return box;
+	}
+
+	/**
+	 * Ticks each teammate with one synthetic click, finding every box once.
+	 * `getByRole(..., { name })` computes the accessible name of every checkbox
+	 * on the page each time it is asked, so fifty such lookups among fifty-two
+	 * boxes took about five seconds alone and ran past the ten-second limit
+	 * when the suite was under load. The checkbox's own change handler is what
+	 * these tests exercise, and `fireEvent.click` reaches it as a press does;
+	 * each click still settles before the next, so the cap is read from the
+	 * selection the earlier clicks produced (one batch of fifty would be read
+	 * against an empty selection and prove nothing).
+	 */
+	function tick(names: readonly string[]) {
+		const boxes = checkboxesByTeammate();
+		for (const name of names) {
+			const box = boxes.get(name);
+			if (box === undefined) {
+				throw new Error(`no checkbox for ${name}`);
+			}
+			fireEvent.click(box);
+		}
+	}
+
 	/**
 	 * Counter-check for Fix 2's guard: the pre-fix picker let every checkbox
 	 * stay enabled and never rendered a cap explanation at all, so both
@@ -833,11 +880,11 @@ describe("RequestCliConnectionDialog — the hand-picked cap", () => {
 			screen.queryByText(/You've reached the limit/),
 		).not.toBeInTheDocument();
 
-		for (let index = 0; index < MAX_HAND_PICKED_RECIPIENTS; index++) {
-			await user.click(
-				screen.getByRole("checkbox", { name: `Ask Teammate ${index}` }),
-			);
-		}
+		tick(
+			CAP_PLUS_TWO_ROSTER.slice(0, MAX_HAND_PICKED_RECIPIENTS).map(
+				(entry) => entry.user.name,
+			),
+		);
 
 		// The explanation sits on the page now — not only announced once via
 		// the live region, which a reader tabbing back in would never hear.
@@ -849,9 +896,7 @@ describe("RequestCliConnectionDialog — the hand-picked cap", () => {
 
 		// Reachable but inert: the (cap + 1)th box is disabled rather than
 		// silently ignoring a press, which would read as broken.
-		const oneOverCap = screen.getByRole("checkbox", {
-			name: `Ask Teammate ${MAX_HAND_PICKED_RECIPIENTS}`,
-		});
+		const oneOverCap = checkbox(`Teammate ${MAX_HAND_PICKED_RECIPIENTS}`);
 		expect(oneOverCap).toBeDisabled();
 		expect(oneOverCap).not.toBeChecked();
 		await user.click(oneOverCap);
@@ -859,9 +904,7 @@ describe("RequestCliConnectionDialog — the hand-picked cap", () => {
 
 		// Freeing a slot by unchecking one already-picked box always works —
 		// the cap must never trap a selection at exactly the limit.
-		await user.click(
-			screen.getByRole("checkbox", { name: "Ask Teammate 0" }),
-		);
+		await user.click(checkbox("Teammate 0"));
 		expect(
 			screen.queryByText(/You've reached the limit/),
 		).not.toBeInTheDocument();
@@ -879,15 +922,9 @@ describe("RequestCliConnectionDialog — the hand-picked cap", () => {
 		await renderDialog();
 
 		await screen.findByRole("checkbox", { name: "Ask Teammate 0" });
-		for (const entry of CAP_PLUS_TWO_ROSTER) {
-			// Try every row, including the two past the cap — the guard, not
-			// this loop, is what must keep the selection from growing further.
-			await user.click(
-				screen.getByRole("checkbox", {
-					name: `Ask ${entry.user.name}`,
-				}),
-			);
-		}
+		// Try every row, including the two past the cap — the guard, not this
+		// loop, is what must keep the selection from growing further.
+		tick(CAP_PLUS_TWO_ROSTER.map((entry) => entry.user.name));
 
 		// Above the confirm threshold too, so this raises the confirmation —
 		// whose own count comes straight from the selection the guard capped.

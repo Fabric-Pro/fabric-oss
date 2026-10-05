@@ -440,6 +440,16 @@ async function enrollTwoFactor(
 	const enrolledHeaders = cookieHeaderFrom(verified.headers);
 	const current = await auth.api.getSession({ headers: enrolledHeaders });
 	expect(current?.user?.twoFactorEnabled).toBe(true);
+	// The session that came back is the enrollment mint itself, not a cached
+	// snapshot of the session it replaced: the signed `session_token` cookie
+	// is `<token>.<signature>`.
+	const sessionTokenCookie = readSetCookies(verified.headers)
+		.filter((cookie) => cookie.name.endsWith("session_token"))
+		.at(-1)?.value;
+	expect(sessionTokenCookie?.split(".")[0]).toBe(current.session.token);
+	expect(
+		await findSessionByToken(instance, current.session.token),
+	).toBeTruthy();
 
 	return {
 		headers: enrolledHeaders,
@@ -473,15 +483,34 @@ function readSetCookies(headers: Headers): Array<{
 	return out;
 }
 
-/** Build a request `cookie` header from every non-empty Set-Cookie returned. */
+/**
+ * Build the request `cookie` header a browser would send after applying this
+ * response's Set-Cookie headers: processed in order, a later write to the same
+ * name replaces the earlier one (RFC 6265 §5.3 step 11), and an empty value —
+ * Better Auth's `expireCookie` (`Max-Age=0`) — deletes it.
+ *
+ * Last-write-wins is load-bearing. Since better-auth 1.6.27 (#10657),
+ * `getSessionFromCtx` forwards `/get-session`'s Set-Cookie onto the calling
+ * endpoint's own response headers instead of `ctx.context.responseHeaders`,
+ * where `dispatch.mjs` used to overwrite and drop it. So
+ * `/two-factor/verify-totp`, whose session middleware populates the cookie
+ * cache for the session it is about to replace, now answers with a stale
+ * `session_data` (old token, `twoFactorEnabled: false`) followed by the new
+ * `session_token` and a fresh `session_data`. A browser keeps only the fresh
+ * one; sending every value, as this helper once did, made the server read the
+ * stale cache entry first.
+ */
 function cookieHeaderFrom(headers: Headers): Headers {
-	const cookies = readSetCookies(headers).filter(
-		(cookie) => cookie.value !== "",
-	);
+	const jar = new Map<string, string>();
+	for (const cookie of readSetCookies(headers)) {
+		if (cookie.value === "") {
+			jar.delete(cookie.name);
+		} else {
+			jar.set(cookie.name, cookie.value);
+		}
+	}
 	return new Headers({
-		cookie: cookies
-			.map((cookie) => `${cookie.name}=${cookie.value}`)
-			.join("; "),
+		cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; "),
 	});
 }
 

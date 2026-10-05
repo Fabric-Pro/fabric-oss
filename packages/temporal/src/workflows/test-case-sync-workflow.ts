@@ -284,6 +284,10 @@ export async function testCaseSyncWorkflow(
 				userId,
 				organizationId,
 				containerId,
+				// This workflow dispatches to the container itself
+				// (`executeMcpTool`), so discovery refuses a personal GitLab
+				// config on another instance than the container's.
+				pmTarget: { additionalContext },
 			});
 		} catch (preflightError) {
 			const detail = extractActivityError(preflightError);
@@ -579,6 +583,8 @@ export async function testCaseSyncWorkflow(
 						additionalContext,
 					});
 					const updateResult = await executeMcpTool({
+						// Bound to the PM container's GitLab instance at dispatch.
+						pmTarget: { additionalContext },
 						toolName: capabilities.taskUpdate.toolName,
 						args: updateArgs,
 						userId,
@@ -636,6 +642,8 @@ export async function testCaseSyncWorkflow(
 						additionalContext,
 					});
 					const createResult = await executeMcpTool({
+						// Bound to the PM container's GitLab instance at dispatch.
+						pmTarget: { additionalContext },
 						toolName: capabilities.taskCreation.toolName,
 						args: createArgs,
 						userId,

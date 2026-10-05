@@ -22,6 +22,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { createGroupingTicket } from "../../lib/create-grouping-ticket";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Apply the accepted proposals from an AWAITING_REVIEW grouping run: create the
@@ -61,13 +62,20 @@ export const applyGroupingProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { projectId, groupingId, accepted, declinedThemeKeys } = input;
-		const organizationId = input.organizationId ?? null;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const userId = context.user.id;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			userId,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -297,7 +305,7 @@ async function applyUpdate(
 				authorId: FABRIC_SYSTEM_USER_ID,
 				authorType: "AGENT",
 				content: proposal.commentBody,
-				organizationId: organizationId ?? null,
+				organizationId,
 				metadata: {
 					source: "security_finding_grouping",
 					themeKey: proposal.themeKey,
@@ -309,7 +317,7 @@ async function applyUpdate(
 				projectId,
 				type: "FINDINGS_GROUPED",
 				userId,
-				organizationId: organizationId ?? null,
+				organizationId,
 				storyId: proposal.storyId,
 				summary: `Added ${proposal.newFindingCount} new finding${proposal.newFindingCount === 1 ? "" : "s"} to ${proposal.storyIdentifier}`,
 				metadata: {

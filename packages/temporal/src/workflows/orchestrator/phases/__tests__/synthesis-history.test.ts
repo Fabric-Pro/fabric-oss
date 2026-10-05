@@ -172,9 +172,10 @@ describe("budget-exhausted synthesis wiring", () => {
 
 	it("sends the (possibly compacted) history to both synthesis attempts", () => {
 		const block = source.slice(
-			source.indexOf('patched("orch-synthesis-compacted-v1")'),
-			source.indexOf("state.pendingHandoff = {"),
+			source.indexOf("async function synthesizeFinalAnswer("),
+			source.indexOf("return { content: synthesisContent"),
 		);
+		expect(block).toContain('patched("orch-synthesis-compacted-v1")');
 		expect(
 			block.match(/conversationHistory: synthesisHistory,/g),
 		).toHaveLength(2);
@@ -184,8 +185,19 @@ describe("budget-exhausted synthesis wiring", () => {
 	});
 
 	it("adds findings to the fallback only on the patched path", () => {
+		expect(source).toMatch(/params\.fallback\(compactSynthesis\)/);
 		expect(source).toMatch(
-			/summarizeAccomplishments\(state, \{\s*includeFindings: compactSynthesis,\s*\}\)/,
+			/fallback: \(includeFindings\) =>\s*summarizeAccomplishments\(state, \{ includeFindings \}\)/,
+		);
+	});
+
+	it("the budget-exhaustion path synthesizes with its own prompts before setting the handoff", () => {
+		const block = source.slice(
+			source.indexOf('log.error("Orchestrator token budget exhausted"'),
+			source.indexOf("state.pendingHandoff = {"),
+		);
+		expect(block).toMatch(
+			/synthesizeFinalAnswer\(\{[\s\S]*systemPrompt: SYNTHESIS_SYSTEM_PROMPT,\s*retrySystemPrompt: SYNTHESIS_RETRY_SYSTEM_PROMPT,/,
 		);
 	});
 });

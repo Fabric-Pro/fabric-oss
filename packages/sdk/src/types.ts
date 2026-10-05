@@ -68,6 +68,8 @@ export interface WhoamiResult {
 	keyPrefix: string;
 	scopes: string[];
 	organizationContext?: string;
+	/** Set for a sign-in that reaches one project: that project's id. */
+	projectContext?: string;
 	orgs: FabricOrg[];
 }
 
@@ -267,6 +269,19 @@ export interface FabricClientOptions {
 	retry?: FabricRetryOptions;
 	/** Telemetry hook invoked on every request, response, retry, and error. */
 	onEvent?: (event: FabricTelemetryEvent) => void;
+	/**
+	 * Sent as the `User-Agent` request header when set. Servers read it to
+	 * tell which client build is calling, for instance to ask an old CLI to
+	 * upgrade. Not set by default; browsers ignore it.
+	 */
+	userAgent?: string;
+	/**
+	 * Called with the exact value of the `X-Fabric-Cli-Upgrade` response
+	 * header every time a response carries one, on success and on error
+	 * alike. The SDK never acts on it: the caller decides whether and how
+	 * often to show it.
+	 */
+	onUpgradeNotice?: (line: string) => void;
 }
 
 // ---- MCP ----

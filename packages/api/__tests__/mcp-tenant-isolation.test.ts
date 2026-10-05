@@ -61,6 +61,9 @@ const {
 // holds open handles past test completion and prevents vitest's main
 // process from exiting (vitest #3909 — the post-test hang we hit in CI).
 vi.mock("@repo/database", () => ({
+	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	listMcpConfigsForTenant: mockDb.listMcpConfigsForTenant,
 	getMcpConfigById: mockDb.getMcpConfigById,
 	getMcpConfigForTenantAndServer: mockDb.getMcpConfigForTenantAndServer,
@@ -79,7 +82,15 @@ vi.mock("@repo/database", () => ({
 	updateMcpConfigEnabled: vi.fn(),
 	// Delete handler clears the config from report bindings (best-effort).
 	clearMcpConfigFromReportInstances: vi.fn().mockResolvedValue(0),
-	db: {},
+	db: {
+		// The upsert reads the server's key by id (GitLab servers take no
+		// credential); these servers are ordinary ones.
+		mCPServer: {
+			findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
+				key: `example-${where.id}`,
+			})),
+		},
+	},
 	Prisma: {},
 }));
 

@@ -108,6 +108,35 @@
 			"outputs": ["dist/**", ".next/**", "!.next/cache/**"],
 			"inputs": ["$TURBO_DEFAULT$", ".env*"]
 		},
+		// The CLI a deployment serves from /cli (see
+		// packages/cli/scripts/pack-deployment.mjs). It bundles the CLI with its
+		// dependencies, so it is a bundler run of its own: it must finish, in its
+		// own process, before `next build` starts, and never share the web build's
+		// heap. Only `@repo/web#build` depends on it.
+		//
+		// `^build` is what carries a change in the SDK packages into this task's
+		// hash; the bundle itself is built from their source.
+		//
+		// When the build knows its address, the tarball has it baked in, so the
+		// address is part of the task's hash: a cache hit from a build with
+		// another address would serve a CLI that signs in somewhere else.
+		// NEXT_PUBLIC_SITE_URL and APP_URL are in `globalEnv` already;
+		// FABRIC_CLI_ORIGIN is only pass-through there, which does not hash it.
+		"@fabricorg/cli#pack:deployment": {
+			"dependsOn": ["^build"],
+			"env": ["FABRIC_CLI_ORIGIN"],
+			"outputs": ["$TURBO_ROOT$/apps/web/public/cli/**"],
+			"inputs": ["$TURBO_DEFAULT$"]
+		},
+		"@repo/web#build": {
+			"dependsOn": [
+				"^generate",
+				"^build",
+				"@fabricorg/cli#pack:deployment"
+			],
+			"outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+			"inputs": ["$TURBO_DEFAULT$", ".env*"]
+		},
 		"type-check": {
 			"dependsOn": ["generate", "^generate", "^build"],
 			"outputs": [],

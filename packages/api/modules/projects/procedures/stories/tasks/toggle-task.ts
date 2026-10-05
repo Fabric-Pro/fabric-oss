@@ -27,13 +27,18 @@ export const toggleTaskProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Resolved at handler entry, BEFORE anything is written: it can still
+		// refuse (a project with no organization), and refusing after the
+		// write would leave it committed behind a failed response.
+		// Outside the `try`, whose catch would otherwise turn its refusal
+		// into "Task not found".
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
 		try {
 			const task = await toggleTaskComplete(input.taskId);
 			if (task.isCompleted) {
-				const organizationId = resolveOrganizationId(
-					input.organizationId,
-					context.session,
-				);
 				dispatchLifecycleEvent({
 					resource: "task",
 					event: "completed",

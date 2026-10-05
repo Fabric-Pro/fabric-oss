@@ -61,8 +61,32 @@ describe("callPmToolWithFallback — REST GitLab path", () => {
 		expect(arg.gitlabProjectId).toBe("100");
 		expect(arg.userId).toBe("u");
 		expect(arg.organizationId).toBeNull();
-		expect(arg.source.kind).toBe("rest-adapter");
-		expect(arg.source.token).toBe("TOK");
+		expect(arg.source).toEqual({
+			kind: "rest-adapter",
+			credential: { token: "TOK", apiBase: "https://gitlab.com/api/v4" },
+		});
+	});
+
+	it("keeps a self-hosted source's instance on the adapter source", async () => {
+		listGitLabIssuesForPM.mockResolvedValue({ items: [] });
+
+		await callPmToolWithFallback({
+			source: {
+				...REST_SOURCE,
+				baseUrl: "https://gitlab.example.com/api/v4",
+			},
+			call: { tool: "listWorkItems", filters: {} },
+			userId: "u",
+			organizationId: null,
+		});
+
+		expect(listGitLabIssuesForPM.mock.calls[0]?.[0]?.source).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "TOK",
+				apiBase: "https://gitlab.example.com/api/v4",
+			},
+		});
 	});
 
 	it("routes fetchItem to getGitLabIssueForPM", async () => {
@@ -161,5 +185,28 @@ describe("callPmToolWithFallback — unknown tool", () => {
 				organizationId: null,
 			}),
 		).rejects.toThrow(/unknown.*tool|nonsense/i);
+	});
+});
+
+describe("callPmToolWithFallback — the connection moved to another instance", () => {
+	it("fails non-retryably when the adapter refuses the request", async () => {
+		const { GitLabPmOriginMismatchError } = await import(
+			"@repo/integrations/gitlab"
+		);
+		createGitLabIssueFromStory.mockRejectedValue(
+			new GitLabPmOriginMismatchError(),
+		);
+
+		await expect(
+			callPmToolWithFallback({
+				source: REST_SOURCE,
+				call: { tool: "createItem", payload: { title: "T" } },
+				userId: "u",
+				organizationId: null,
+			}),
+		).rejects.toMatchObject({
+			type: "GitLabPmOriginMismatch",
+			nonRetryable: true,
+		});
 	});
 });

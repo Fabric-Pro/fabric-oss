@@ -44,6 +44,9 @@ const state = vi.hoisted(() => ({
 	published: null as unknown,
 	sync: null as unknown,
 	settingsPending: false,
+	/** `getSettings` rejects while set, and how often it was asked. */
+	settingsFails: false,
+	settingsCalls: 0,
 	listCalls: 0,
 	publishedCalls: 0,
 	syncCalls: 0,
@@ -98,15 +101,21 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					}),
 				},
 				getSettings: {
-					queryOptions: queryOptionsStub("getSettings", () =>
-						state.settingsPending
+					queryOptions: queryOptionsStub("getSettings", () => {
+						state.settingsCalls++;
+						if (state.settingsFails) {
+							return Promise.reject(
+								new Error("settings unavailable"),
+							);
+						}
+						return state.settingsPending
 							? new Promise(() => undefined)
 							: Promise.resolve({
 									ignoreGlobs: null,
 									defaultIgnoreGlobs: [],
 									sourceOfTruth: null,
-								}),
-					),
+								});
+					}),
 				},
 				proposals: {
 					list: {
@@ -136,6 +145,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 								state.listRunsCalls++;
 								return { runs: [] };
 							},
+						),
+					},
+					getMigration: {
+						queryOptions: queryOptionsStub(
+							"repositorySync-getMigration",
+							async () => ({ migration: null, repository: null }),
 						),
 					},
 					syncNow: {
@@ -178,18 +193,27 @@ vi.mock("../InstructionsPublishedView", async () => {
 			repositoryConfirmed,
 			repositorySync,
 			canRead,
+			notice,
+			onCommitted,
+			syncingCommit,
+			readOnlyMode,
 		}: {
 			projectId: string;
+			notice?: ReactNode;
 			published: { id?: string } | null;
 			repositoryBacked?: boolean;
 			repositoryConfirmed?: boolean;
 			canRead?: boolean;
+			onCommitted?: (commit: { sha: string; ref: string }) => void;
+			syncingCommit?: { sha: string; ref: string } | null;
+			readOnlyMode?: boolean;
 			repositorySync?: {
 				state: { latestRun: { id: string } | null };
 				onChanged: () => Promise<void> | void;
 			};
 		}) => (
 			<>
+				{notice}
 				<RunsObserver projectId={projectId} />
 				<div data-testid="published-id">{published?.id ?? "none"}</div>
 				<div data-testid="latest-run">
@@ -216,12 +240,28 @@ vi.mock("../InstructionsPublishedView", async () => {
 					{String(repositoryConfirmed)}
 				</div>
 				<div data-testid="can-read">{String(canRead)}</div>
+				<div data-testid="read-only-mode">{String(readOnlyMode)}</div>
+				<button
+					type="button"
+					onClick={() =>
+						onCommitted?.({ sha: COMMIT_SHA, ref: "main" })
+					}
+				>
+					commit-made
+				</button>
+				<div data-testid="syncing-commit">
+					{syncingCommit
+						? `${syncingCommit.sha}@${syncingCommit.ref}`
+						: "none"}
+				</div>
 			</>
 		),
 	};
 });
 vi.mock("../InstructionsEmptyState", () => ({
-	InstructionsEmptyState: () => <div data-testid="empty" />,
+	InstructionsEmptyState: ({ notice }: { notice?: ReactNode }) => (
+		<div data-testid="empty">{notice}</div>
+	),
 }));
 vi.mock("../UploadFolderDialog", () => ({
 	UploadFolderDialog: () => null,
@@ -231,6 +271,7 @@ import { CodingInstructionsTab } from "../CodingInstructionsTab";
 
 const POLL_MS = 3_000;
 const IDLE_POLL_MS = 60_000;
+const COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 function snapshot(id: string, status: string): Snapshot {
 	return { id, version: 2, status, publishOnReady: true };
@@ -265,6 +306,8 @@ beforeEach(() => {
 	state.published = { id: "snap_1", version: 1, status: "READY" };
 	state.sync = IDLE_SYNC;
 	state.settingsPending = false;
+	state.settingsFails = false;
+	state.settingsCalls = 0;
 	state.listCalls = 0;
 	state.publishedCalls = 0;
 	state.syncCalls = 0;
@@ -395,6 +438,182 @@ describe("CodingInstructionsTab publication convergence", () => {
 			expect(state.publishedCalls).toBe(settled.published);
 		},
 	);
+});
+
+/**
+ * Fizzy #2878 §10: a commit made from the tab lands on the branch first; the
+ * published version follows from a sync of the real tree a few seconds later.
+ * The tab keeps reading the published state until the pointer names the commit,
+ * says "syncing" meanwhile, and gives up quietly, back to the ordinary
+ * current/behind state, when it never does.
+ */
+describe("CodingInstructionsTab after a commit made from the tab", () => {
+	const OLD = {
+		id: "snap_1",
+		version: 1,
+		status: "READY",
+		sourceCommitSha: "a".repeat(40),
+	};
+
+	it("keeps polling an idle tab until the published version is the commit, then stops", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = OLD;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		// Nothing is in flight: an idle tab is not polling at all.
+		const idle = { list: state.listCalls, published: state.publishedCalls };
+		await tick(POLL_MS * 3);
+		expect(state.listCalls).toBe(idle.list);
+		expect(state.publishedCalls).toBe(idle.published);
+
+		fireEvent.click(screen.getByRole("button", { name: "commit-made" }));
+		await tick(0);
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent(
+			`${COMMIT_SHA}@main`,
+		);
+
+		const waiting = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		await tick(POLL_MS);
+		await tick(POLL_MS);
+		expect(state.listCalls).toBeGreaterThan(waiting.list);
+		expect(state.publishedCalls).toBeGreaterThan(waiting.published);
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent(
+			`${COMMIT_SHA}@main`,
+		);
+
+		// The COMMIT_PUSHED sync publishes the version from the real tree.
+		state.snapshots = [
+			snapshot("snap_2", "READY"),
+			snapshot("snap_1", "READY"),
+		];
+		state.published = {
+			id: "snap_2",
+			version: 2,
+			status: "READY",
+			sourceCommitSha: COMMIT_SHA,
+		};
+		await tick(POLL_MS);
+		await tick(POLL_MS);
+		expect(screen.getByTestId("published-id")).toHaveTextContent("snap_2");
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent("none");
+
+		const settled = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 5; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.listCalls).toBe(settled.list);
+		expect(state.publishedCalls).toBe(settled.published);
+	});
+
+	it("gives up quietly after the bounded wait when the published version never takes the commit", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = OLD;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		fireEvent.click(screen.getByRole("button", { name: "commit-made" }));
+		await tick(0);
+		expect(screen.getByTestId("syncing-commit")).not.toHaveTextContent(
+			"none",
+		);
+
+		await tick(3 * 60_000 + 2 * POLL_MS);
+
+		// The wait is over and the tab says nothing more about it: the status
+		// block is back to calling Fabric's copy current or behind.
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent("none");
+		const after = {
+			list: state.listCalls,
+			published: state.publishedCalls,
+		};
+		for (let i = 0; i < 5; i++) {
+			await tick(POLL_MS);
+		}
+		expect(state.listCalls).toBe(after.list);
+		expect(state.publishedCalls).toBe(after.published);
+	});
+
+	it("drops the syncing notice once the sync follows another branch than the one committed to", async () => {
+		const syncOn = (ref: string) => ({
+			...IDLE_SYNC,
+			sourceOfTruth: "REPOSITORY",
+			configured: { ref, automatic: false, automaticPausedReason: null },
+		});
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = OLD;
+		state.sync = syncOn("main");
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		fireEvent.click(screen.getByRole("button", { name: "commit-made" }));
+		await tick(0);
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent(
+			`${COMMIT_SHA}@main`,
+		);
+
+		state.sync = syncOn("release");
+		await act(async () => {
+			screen.getByRole("button", { name: "settings-changed" }).click();
+		});
+		await tick(0);
+
+		expect(screen.getByTestId("syncing-commit")).toHaveTextContent("none");
+	});
+
+	it("re-reads the sync state at once, so the run the push starts is seen", async () => {
+		state.snapshots = [snapshot("snap_1", "READY")];
+		state.published = OLD;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+		const before = state.syncCalls;
+
+		fireEvent.click(screen.getByRole("button", { name: "commit-made" }));
+		await tick(0);
+
+		expect(state.syncCalls).toBeGreaterThan(before);
+	});
+
+	it("tells the published view when the project is in Read-only mode", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+				readOnlyMode
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+
+		expect(screen.getByTestId("read-only-mode")).toHaveTextContent("true");
+	});
 });
 
 describe("CodingInstructionsTab repository sync polling", () => {
@@ -640,6 +859,81 @@ describe("CodingInstructionsTab source-of-truth while settings load", () => {
 		expect(screen.getByTestId("repository-confirmed")).toHaveTextContent(
 			"false",
 		);
+	});
+});
+
+// A failed settings read used to hide Upload and the edit actions with no word
+// about why, which looks like missing permission. Said once, above the page,
+// with a way to try again, in both the published and the empty state.
+describe("CodingInstructionsTab when the settings cannot be read", () => {
+	function renderTab() {
+		return render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+	}
+
+	it("says so above a published tab, and keeps the actions held back", async () => {
+		state.settingsFails = true;
+		renderTab();
+		await tick(0);
+
+		const notice = screen.getByTestId("instructions-settings-notice");
+		expect(notice).toHaveTextContent("settingsErrorTitle");
+		expect(notice).toHaveTextContent("settingsErrorBody");
+		expect(screen.getByTestId("repository-backed")).toHaveTextContent(
+			"true",
+		);
+	});
+
+	it("says so above the empty state too, so a missing Upload is explained", async () => {
+		state.settingsFails = true;
+		state.snapshots = [];
+		state.published = null;
+		renderTab();
+		await tick(0);
+
+		expect(screen.getByTestId("empty")).toContainElement(
+			screen.getByTestId("instructions-settings-notice"),
+		);
+	});
+
+	it("reads the settings again on Try again, and the notice goes once they load", async () => {
+		state.settingsFails = true;
+		renderTab();
+		await tick(0);
+		const callsBefore = state.settingsCalls;
+
+		state.settingsFails = false;
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "retry" }));
+		});
+		await tick(0);
+
+		expect(state.settingsCalls).toBeGreaterThan(callsBefore);
+		expect(
+			screen.queryByTestId("instructions-settings-notice"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows nothing while the settings are merely loading, or once they have loaded", async () => {
+		state.settingsPending = true;
+		const loading = renderTab();
+		await tick(0);
+		expect(
+			screen.queryByTestId("instructions-settings-notice"),
+		).not.toBeInTheDocument();
+		loading.unmount();
+
+		state.settingsPending = false;
+		renderTab();
+		await tick(0);
+		expect(
+			screen.queryByTestId("instructions-settings-notice"),
+		).not.toBeInTheDocument();
 	});
 });
 

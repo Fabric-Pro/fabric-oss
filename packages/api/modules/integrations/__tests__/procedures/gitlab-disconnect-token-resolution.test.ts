@@ -3,135 +3,70 @@
  * for that user and organization, and `integrations.gitlab.status` must report
  * the right state on both sides of it.
  *
- * `disconnect` deactivates the WorkflowIntegration connection rows but leaves
- * their credentials in place, and it nulls the MCPConfig token. A reader that
- * falls back to a WorkflowIntegration without requiring `isActive` therefore
- * resolves the deactivated row's OAuth token straight back, which made the
- * disconnect cosmetic: `loadGitLabToken` (used by token refresh, reconcile and
- * recheck) did exactly that.
- *
- * The stores apply the real `where` clauses to real rows, and the token readers
- * under test are the real ones (`loadGitLabToken` here, `getGitLabToken` from
- * `@repo/integrations/gitlab`), run against the same stores the disconnect
- * handler wrote.
+ * Everything under test is real: the procedures, the GitLab connection
+ * service they call (disconnect, status), and every token reader
+ * (`getGitLabAccessToken`, `getGitLabToken`, `resolveGitLabSource`). They run
+ * against an in-memory database that applies the real `where` clauses
+ * (`@repo/integrations`' GitLab fake), so a reader that ignored `isActive`, or
+ * a disconnect that missed a store, shows up as a resolved token.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+	readCredential,
+} from "../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db";
 
-const { store, mcp } = await vi.hoisted(async () => {
-	const { createWorkflowIntegrationStore } = await import(
-		"./workflow-integration-store"
-	);
+const state = vi.hoisted(() => ({
+	fake: null as unknown as ReturnType<
+		typeof import("../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db").createGitLabFakeDb
+	>,
+	dataConnectionUpdateMany: null as unknown as ReturnType<typeof vi.fn>,
+}));
 
-	type McpRow = {
-		id: string;
-		userId: string;
-		organizationId: string | null;
-		serverKey: string;
-		mcpServerId: string;
-		enabled: boolean;
-		displayName: string;
-		scopes: string[];
-		baseUrl: string | null;
-		encryptedAccessToken: string | null;
-		encryptedRefreshToken: string | null;
-		accessTokenHash: string | null;
-		tokenExpiresAt: Date | null;
-		needsReauth: boolean;
-		oauthClientId: string | null;
-		encryptedOauthClientSecret: string | null;
-		dcrRegisteredAt: Date | null;
-	};
-	type Where = Record<string, unknown> & { mcpServer?: { key: string } };
-	const rows: McpRow[] = [];
-	// Applies the equality, `{ not: null }`, `{ in: [...] }` and
-	// `mcpServer.key` operators the readers under test use. Anything else
-	// throws, so an unmodelled clause fails the suite instead of matching.
-	const matches = (row: McpRow, where: Where) =>
-		Object.entries(where).every(([key, condition]) => {
-			if (key === "mcpServer") {
-				const k = (condition as { key: unknown }).key;
-				if (typeof k === "string") {
-					return row.serverKey === k;
-				}
-				return (k as { in: string[] }).in.includes(row.serverKey);
-			}
-			const value = row[key as keyof McpRow];
-			if (condition === null || typeof condition !== "object") {
-				return value === condition;
-			}
-			const ops = Object.keys(condition);
-			if (ops.length === 1 && ops[0] === "not") {
-				return value !== (condition as { not: unknown }).not;
-			}
-			throw new Error(`unsupported mcp filter on ${key}`);
-		});
-	const present = (row: McpRow) => ({
-		...row,
-		mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-	});
-
+vi.mock("@repo/database", async () => {
+	const { vi: vitest } = await import("vitest");
+	state.dataConnectionUpdateMany = vitest.fn(async () => ({ count: 0 }));
 	return {
-		store: createWorkflowIntegrationStore(),
-		mcp: {
-			rows,
-			delegate: {
-				findFirst: async ({ where }: { where: Where }) => {
-					const found = rows.find((row) => matches(row, where));
-					return found ? present(found) : null;
-				},
-				update: async ({
-					where,
-					data,
-				}: {
-					where: { id: string };
-					data: Partial<McpRow>;
-				}) => {
-					const row = rows.find((r) => r.id === where.id);
-					if (!row) {
-						throw new Error(`mcp update: ${where.id} missing`);
-					}
-					Object.assign(row, data);
-					return present(row);
-				},
-				updateMany: async ({
-					where,
-					data,
-				}: {
-					where: Where;
-					data: Partial<McpRow>;
-				}) => {
-					const hit = rows.filter((row) => matches(row, where));
-					for (const row of hit) {
-						Object.assign(row, data);
-					}
-					return { count: hit.length };
-				},
-			},
+		get db() {
+			return {
+				...state.fake.db,
+				dataConnection: { updateMany: state.dataConnectionUpdateMany },
+			};
 		},
+		createDataConnection: vitest.fn(),
+		getDataConnectionByProvider: vitest.fn(),
+		updateDataConnection: vitest.fn(),
+		getOrganizationMembership: vitest.fn(),
+		getProjectMemberRole: vitest.fn(),
+		createProjectRepoIntegration: vitest.fn(),
+		logRepoIntegrationActivity: vitest.fn(),
+		syncLegacyProjectRepoOnConnect: vitest.fn(),
 	};
 });
 
-vi.mock("@repo/database", () => ({
-	db: {
-		workflowIntegration: store.delegate,
-		dataConnection: { updateMany: vi.fn() },
-		mCPConfig: mcp.delegate,
-	},
-	createDataConnection: vi.fn(),
-	getDataConnectionByProvider: vi.fn(),
-	updateDataConnection: vi.fn(),
-	getOrganizationMembership: vi.fn(),
-	getProjectMemberRole: vi.fn(),
-	createProjectRepoIntegration: vi.fn(),
-	logRepoIntegrationActivity: vi.fn(),
-	syncLegacyProjectRepoOnConnect: vi.fn(),
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		keys: string | readonly string[],
+		fn: (
+			tx: unknown,
+			assertBudget: (ms: number) => void,
+		) => Promise<unknown>,
+	) => state.fake.withLock(keys, fn as never),
 }));
 
-// The refresh lock only serialises concurrent refreshes; run the body.
-vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
-	withRefreshLock: async (_key: unknown, fn: () => Promise<unknown>) => fn(),
-}));
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import(
+		"../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db"
+	);
+	return {
+		...(await importOriginal<object>()),
+		encryptApiKey: helpers.fakeEncrypt,
+		decryptApiKey: helpers.fakeDecrypt,
+		hashApiKey: (v: string) => `hash:${v}`,
+	};
+});
 
 vi.mock("@repo/connectors", () => ({
 	integrationStatusForRepoAccess: vi.fn(),
@@ -156,17 +91,6 @@ vi.mock("@repo/temporal", () => ({
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock("@repo/utils", () => ({
-	encryptApiKey: (v: string) => `enc_${v}`,
-	hashApiKey: (v: string) => `hash_${v}`,
-	decryptApiKey: (v: string) => {
-		if (!v.startsWith("enc_")) {
-			throw new Error("unsupported state or unable to authenticate data");
-		}
-		return v.slice("enc_".length);
-	},
 }));
 
 vi.mock("../../../../lib/project-permissions", () => ({
@@ -225,6 +149,30 @@ vi.mock("../../../../orpc/procedures", () => {
 		requirePermission: () => ({}),
 		requireInputOrgPermission: () => ({}),
 		requireOrganizationMembership: vi.fn(),
+		// The resolution `authorizeInputOrganization` performs (input, else
+		// session; an explicit null suppresses the session fallback; none
+		// refused when required). It models no guest write organization
+		// (`effectiveWriteOrgId`), which the real resolver lets win even over
+		// an explicit null. Membership and role are exercised for real in
+		// gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		resolveOrganizationId: vi.fn(),
 		resolveOrganizationIdForCaller: vi.fn(),
 		Permissions: {
@@ -238,11 +186,12 @@ vi.mock("../../../../orpc/procedures", () => {
 });
 
 import {
+	connectGitLab,
 	getGitLabAccessToken,
 	getGitLabToken,
+	resetGitLabConnectionDepsForTests,
 	resolveGitLabSource,
 } from "@repo/integrations/gitlab";
-import { loadGitLabToken } from "../../lib/gitlab-token";
 import { gitlabOAuthProcedures } from "../../procedures/gitlab-oauth";
 
 type Handler<I, O> = {
@@ -257,6 +206,18 @@ type Handler<I, O> = {
 
 const USER = "user-1";
 const ORG = "example-org";
+const SERVERS = [
+	{
+		id: "srv-gitlab",
+		key: "gitlab",
+		defaultUrl: "https://app.example.com/api/mcp/gitlab",
+	},
+	{
+		id: "srv-gitlab-official",
+		key: "gitlab-official",
+		defaultUrl: "https://gitlab.com/api/v4/mcp",
+	},
+];
 
 const ctx = (organizationId: string | null) => ({
 	user: { id: USER },
@@ -277,80 +238,93 @@ const status = (organizationId: string | null) =>
 			{ organizationId: string | null },
 			{
 				connected: boolean;
-				partialConnection?: boolean;
 				needsReauth?: boolean;
 			}
 		>
 	).handler({ input: { organizationId }, context: ctx(organizationId) });
 
-function seedWorkflowIntegration(
-	organizationId: string | null,
-	name = "GitLab: example-user",
-) {
-	store.rows.push({
-		id: "gl-wi",
+function seedConnection(organizationId: string | null) {
+	state.fake.tables.workflowIntegration.push({
+		id: `gl-wi-${organizationId ?? "personal"}`,
 		userId: USER,
 		organizationId,
 		provider: "GITLAB",
-		name,
+		name: "GitLab: example-user",
+		workflowId: null,
 		isActive: true,
-		credentials: `enc_${JSON.stringify({
+		credentials: encryptedCredential({
 			access_token: "wi-token",
 			refresh_token: "wi-refresh",
-		})}`,
+			expires_in: 7200,
+			token_obtained_at: new Date().toISOString(),
+			issuer: {
+				kind: "app",
+				clientId: "gl-client-id",
+				origin: "https://gitlab.com",
+			},
+			connectionGeneration: 1,
+		}),
 		settings: {},
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
 	});
 }
 
-function seedMcpConfig(
-	organizationId: string | null,
-	overrides: Partial<(typeof mcp.rows)[number]> = {},
-) {
-	const serverKey = overrides.serverKey ?? "gitlab";
-	mcp.rows.push({
-		id: `${serverKey}-${overrides.userId ?? USER}-${organizationId ?? "personal"}`,
-		userId: USER,
+type McpSeed = Record<string, unknown> & {
+	userId?: string;
+	serverKey?: string;
+};
+
+function seedMcpConfig(organizationId: string | null, overrides: McpSeed = {}) {
+	const { serverKey = "gitlab", ...rest } = overrides;
+	const userId = (rest.userId as string | undefined) ?? USER;
+	state.fake.tables.mCPConfig.push({
+		id: `${serverKey}-${userId}-${organizationId ?? "personal"}`,
+		userId,
 		organizationId,
-		serverKey,
 		mcpServerId: `srv-${serverKey}`,
 		enabled: true,
 		displayName: "GitLab",
 		scopes: ["api"],
 		baseUrl: null,
-		encryptedAccessToken: "enc_mcp-token",
-		encryptedRefreshToken: "enc_mcp-refresh",
-		accessTokenHash: "hash_mcp-token",
+		authType: "OAUTH2",
+		encryptedAccessToken: "enc:mcp-token",
+		encryptedRefreshToken: "enc:mcp-refresh",
+		accessTokenHash: "hash:mcp-token",
 		tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
 		needsReauth: false,
 		oauthClientId: null,
 		encryptedOauthClientSecret: null,
+		dcrClientMetadata: null,
 		dcrRegisteredAt: null,
-		...overrides,
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-02T00:00:00Z"),
+		...rest,
 	});
 }
 
-/** The `gitlab-official` config, with the DCR registration a reconnect reuses. */
+/** The `gitlab-official` config, with the DCR registration that issued its copy. */
 function seedOfficialConfig(
 	organizationId: string | null,
-	overrides: Partial<(typeof mcp.rows)[number]> = {},
+	overrides: McpSeed = {},
 ) {
 	seedMcpConfig(organizationId, {
 		serverKey: "gitlab-official",
 		displayName: "GitLab (Official)",
 		oauthClientId: "dcr-client-id",
-		encryptedOauthClientSecret: "enc_dcr-client-secret",
+		encryptedOauthClientSecret: "enc:dcr-client-secret",
 		dcrRegisteredAt: new Date("2026-01-01T00:00:00Z"),
-		accessTokenHash: "hash_official-token",
-		encryptedAccessToken: "enc_official-token",
-		encryptedRefreshToken: "enc_official-refresh",
+		accessTokenHash: "hash:official-token",
+		encryptedAccessToken: "enc:official-token",
+		encryptedRefreshToken: "enc:official-refresh",
 		...overrides,
 	});
 }
 
 const officialRow = (organizationId: string | null, userId = USER) => {
-	const row = mcp.rows.find(
+	const row = state.fake.tables.mCPConfig.find(
 		(r) =>
-			r.serverKey === "gitlab-official" &&
+			r.mcpServerId === "srv-gitlab-official" &&
 			r.userId === userId &&
 			r.organizationId === organizationId,
 	);
@@ -360,17 +334,11 @@ const officialRow = (organizationId: string | null, userId = USER) => {
 	return row;
 };
 
-/** Every reader of "the GitLab token for this tenant" that this repo has. */
+/** Every reader of "the GitLab token for this tenant". */
 async function resolveToken(organizationId: string | null) {
 	return {
-		loadGitLabToken: await loadGitLabToken(
-			{
-				mCPConfig: { findFirst: mcp.delegate.findFirst as never },
-				workflowIntegration: { findFirst: store.delegate.findFirst },
-			},
-			{ userId: USER, organizationId },
-		),
-		integrationsGetter: await getGitLabToken({
+		lenient: await getGitLabAccessToken(USER, organizationId ?? undefined),
+		getter: await getGitLabToken({
 			userId: USER,
 			organizationId: organizationId ?? undefined,
 		}),
@@ -378,146 +346,211 @@ async function resolveToken(organizationId: string | null) {
 }
 
 beforeEach(() => {
-	store.reset();
-	mcp.rows.length = 0;
+	state.fake = createGitLabFakeDb({
+		mCPServer: SERVERS.map((s) => ({ ...s })),
+	});
+	resetGitLabConnectionDepsForTests();
+	vi.stubEnv("GITLAB_CLIENT_ID", "gl-client-id");
+	vi.stubEnv("GITLAB_CLIENT_SECRET", "gl-client-secret");
 	vi.stubGlobal(
 		"fetch",
 		vi.fn().mockResolvedValue(new Response(null, { status: 200 })),
 	);
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-describe.each([
-	{ scope: "organization", organizationId: ORG },
-	{ scope: "personal", organizationId: null },
-])(
+// A request with no organization is refused before anything is read or
+// written (ADR-018: it is a resolution failure, not a personal workspace), so
+// the disconnect cases run in an organization only.
+describe("GitLab disconnect and status with no organization", () => {
+	it("refuses a disconnect and leaves the connection as it was", async () => {
+		seedConnection(null);
+		const before = JSON.stringify(state.fake.tables.workflowIntegration);
+
+		await expect(disconnect(null)).rejects.toThrow(
+			/requires an organization context/,
+		);
+
+		expect(JSON.stringify(state.fake.tables.workflowIntegration)).toBe(
+			before,
+		);
+	});
+
+	it("refuses a status read", async () => {
+		await expect(status(null)).rejects.toThrow(
+			/requires an organization context/,
+		);
+	});
+});
+
+describe.each([{ scope: "organization", organizationId: ORG }])(
 	"GitLab token resolution around disconnect ($scope)",
 	({ organizationId }) => {
-		it("resolves the token from both stores before disconnect (the test can see a live token)", async () => {
-			seedWorkflowIntegration(organizationId);
+		it("resolves the connection's token before disconnect (the test can see a live token)", async () => {
+			seedConnection(organizationId);
 			seedMcpConfig(organizationId);
 
-			const before = await resolveToken(organizationId);
-
-			expect(before.loadGitLabToken).toMatchObject({
-				source: "mcp",
-				accessToken: "mcp-token",
+			expect(await resolveToken(organizationId)).toEqual({
+				lenient: "wi-token",
+				getter: "wi-token",
 			});
-			expect(before.integrationsGetter).toBe("wi-token");
 		});
 
-		it("resolves no token after disconnect when both stores held one", async () => {
-			seedWorkflowIntegration(organizationId);
+		it("resolves no token after disconnect", async () => {
+			seedConnection(organizationId);
 			seedMcpConfig(organizationId);
 
 			await disconnect(organizationId);
 
 			expect(await resolveToken(organizationId)).toEqual({
-				loadGitLabToken: null,
-				integrationsGetter: null,
+				lenient: null,
+				getter: null,
 			});
 		});
 
-		it("resolves no token after disconnect when only the WorkflowIntegration held one", async () => {
-			seedWorkflowIntegration(organizationId);
+		it("resolves no token, before or after disconnect, when only a legacy official MCP copy holds one", async () => {
+			seedOfficialConfig(organizationId);
+			// A copy is not a connection: nothing resolves it, nothing adopts it.
+			expect(await resolveToken(organizationId)).toEqual({
+				lenient: null,
+				getter: null,
+			});
+			expect(state.fake.tables.workflowIntegration).toHaveLength(0);
 
 			await disconnect(organizationId);
 
 			expect(await resolveToken(organizationId)).toEqual({
-				loadGitLabToken: null,
-				integrationsGetter: null,
-			});
-		});
-
-		it("resolves no token after disconnect when only the MCPConfig held one", async () => {
-			seedMcpConfig(organizationId);
-
-			await disconnect(organizationId);
-
-			expect(await resolveToken(organizationId)).toEqual({
-				loadGitLabToken: null,
-				integrationsGetter: null,
+				lenient: null,
+				getter: null,
 			});
 		});
 
 		it("does not treat the stored OAuth app credentials as a token", async () => {
-			store.rows.push({
+			state.fake.tables.workflowIntegration.push({
 				id: "gl-app",
 				userId: USER,
 				organizationId,
 				provider: "GITLAB",
 				name: "GITLAB_OAUTH_APP",
+				workflowId: null,
 				isActive: true,
-				credentials: `enc_${JSON.stringify({ client_id: "c", client_secret: "s" })}`,
+				credentials: encryptedCredential({
+					client_id: "c",
+					client_secret: "s",
+				}),
+				settings: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
 			});
 
 			expect(await resolveToken(organizationId)).toEqual({
-				loadGitLabToken: null,
-				integrationsGetter: null,
+				lenient: null,
+				getter: null,
+			});
+		});
+
+		it("disconnect leaves the OAuth app row alone and empties the connection's credential", async () => {
+			seedConnection(organizationId);
+			state.fake.tables.workflowIntegration.push({
+				id: "gl-app",
+				userId: USER,
+				organizationId,
+				provider: "GITLAB",
+				name: "GITLAB_OAUTH_APP",
+				workflowId: null,
+				isActive: true,
+				credentials: encryptedCredential({
+					client_id: "c",
+					client_secret: "s",
+				}),
+				settings: {},
+				createdAt: new Date(),
+				updatedAt: new Date(),
+			});
+
+			await disconnect(organizationId);
+
+			const [connection, app] = state.fake.tables.workflowIntegration;
+			expect(connection.isActive).toBe(false);
+			expect(Object.keys(readCredential(connection)).sort()).toEqual([
+				"connectionGeneration",
+				"disconnectedAt",
+			]);
+			expect(app.isActive).toBe(true);
+			expect(readCredential(app)).toEqual({
+				client_id: "c",
+				client_secret: "s",
 			});
 		});
 	},
 );
 
 describe("integrations.gitlab.status", () => {
-	it("keeps `connected` false for a token that exists only on the MCPConfig (no WorkflowIntegration row), and reports it as a partial connection", async () => {
-		// Made through the MCP registry; `reconcile` has not backfilled the
-		// WorkflowIntegration yet. The token is live, so the settings page needs
-		// to offer Disconnect, but `connected` keeps its meaning for every other
-		// screen: repository browsing and PM sync need the WorkflowIntegration,
-		// so reporting `connected` here made them offer actions that then fail
-		// with "GitLab not connected".
+	it("reports a token stored only on the gitlab MCP config as not connected", async () => {
 		seedMcpConfig(ORG);
 
 		await expect(status(ORG)).resolves.toEqual({
 			connected: false,
-			partialConnection: true,
+			state: "not-connected",
 		});
 	});
 
-	it("reports a lone official GitLab MCP connection as partial too", async () => {
+	it("reports a lone legacy official GitLab MCP copy as not connected, and adopts nothing", async () => {
 		seedOfficialConfig(ORG);
 
 		await expect(status(ORG)).resolves.toEqual({
 			connected: false,
-			partialConnection: true,
+			state: "not-connected",
 		});
+		expect(state.fake.tables.workflowIntegration).toHaveLength(0);
 	});
 
-	it("flags an MCP-only connection that needs re-authorisation", async () => {
-		seedMcpConfig(ORG);
-		mcp.rows[0].needsReauth = true;
+	it("reports the connection's own reconnect-required state, not the MCP copy's", async () => {
+		seedConnection(ORG);
+		state.fake.tables.workflowIntegration[0].settings = {
+			needsReauth: true,
+		};
+		seedMcpConfig(ORG, { needsReauth: false });
 
-		await expect(status(ORG)).resolves.toEqual({
-			connected: false,
-			partialConnection: true,
+		await expect(status(ORG)).resolves.toMatchObject({
+			connected: true,
 			needsReauth: true,
 		});
 	});
 
-	it("reports neither connected nor partial for an MCPConfig whose token was cleared by disconnect", async () => {
+	it("reports not connected after disconnect", async () => {
 		seedMcpConfig(ORG);
 		await disconnect(ORG);
 
-		await expect(status(ORG)).resolves.toEqual({ connected: false });
+		await expect(status(ORG)).resolves.toEqual({
+			connected: false,
+			state: "not-connected",
+		});
 	});
 
-	it("reports connected, and no partial flag, with an active WorkflowIntegration; neither after disconnect", async () => {
-		seedWorkflowIntegration(ORG);
+	it("reports connected with an active connection, and not connected after disconnect", async () => {
+		seedConnection(ORG);
 		seedMcpConfig(ORG);
 		const before = await status(ORG);
 		expect(before.connected).toBe(true);
-		expect(before).not.toHaveProperty("partialConnection");
 
 		await disconnect(ORG);
 
-		await expect(status(ORG)).resolves.toEqual({ connected: false });
+		await expect(status(ORG)).resolves.toEqual({
+			connected: false,
+			state: "not-connected",
+		});
 	});
 
 	it("does not leak another user's or organization's MCPConfig", async () => {
 		seedMcpConfig("other-org");
 		seedMcpConfig(ORG, { userId: "user-2" });
 
-		await expect(status(ORG)).resolves.toEqual({ connected: false });
+		await expect(status(ORG)).resolves.toEqual({
+			connected: false,
+			state: "not-connected",
+		});
 	});
 });
 
@@ -528,31 +561,13 @@ describe("integrations.gitlab.disconnect and the gitlab-official MCP config", ()
 		"dcrRegisteredAt",
 	] as const;
 
-	/** What a caller of `resolveGitLabSource` gets for this tenant. */
 	const resolveSource = (organizationId: string | null) =>
-		resolveGitLabSource({
-			userId: USER,
-			organizationId,
-			db: {
-				mCPConfig: { findFirst: mcp.delegate.findFirst },
-				workflowIntegration: { findFirst: store.delegate.findFirst },
-			} as never,
-			decrypt: (v: string) => v.slice("enc_".length),
-			refresh: async () => {
-				throw new Error("refresh must not run");
-			},
-			getRestToken: async ({ userId, organizationId: o }) =>
-				(await getGitLabAccessToken(userId, o ?? undefined)) ?? null,
-			markRefreshFailure: async () => {},
-		});
+		resolveGitLabSource({ userId: USER, organizationId });
 
-	it.each([
-		{ scope: "organization", organizationId: ORG as string | null },
-		{ scope: "personal", organizationId: null as string | null },
-	])(
-		"clears the official config's token and marks it needsReauth ($scope), keeping the row and its DCR registration",
+	it.each([{ scope: "organization", organizationId: ORG as string | null }])(
+		"clears the official config's token copy ($scope), keeping the row, `enabled` and its DCR registration",
 		async ({ organizationId }) => {
-			seedWorkflowIntegration(organizationId);
+			seedConnection(organizationId);
 			seedMcpConfig(organizationId);
 			seedOfficialConfig(organizationId);
 			const before = { ...officialRow(organizationId) };
@@ -565,9 +580,7 @@ describe("integrations.gitlab.disconnect and the gitlab-official MCP config", ()
 				accessTokenHash: null,
 				encryptedRefreshToken: null,
 				tokenExpiresAt: null,
-				needsReauth: true,
 			});
-			// Kept so a reconnect updates in place and reuses the registration.
 			expect(after.id).toBe(before.id);
 			expect(after.enabled).toBe(true);
 			expect(after.displayName).toBe("GitLab (Official)");
@@ -579,19 +592,16 @@ describe("integrations.gitlab.disconnect and the gitlab-official MCP config", ()
 		},
 	);
 
-	it("clears an official config that exists without any `gitlab` row or WorkflowIntegration (connected only from the MCP Servers page)", async () => {
+	it("clears an official config that exists without any `gitlab` row or connection (connected only from the MCP Servers page)", async () => {
 		seedOfficialConfig(ORG);
 
 		await disconnect(ORG);
 
-		expect(officialRow(ORG)).toMatchObject({
-			encryptedAccessToken: null,
-			needsReauth: true,
-		});
+		expect(officialRow(ORG).encryptedAccessToken).toBeNull();
 	});
 
 	it("leaves another user's and another organization's official config untouched", async () => {
-		seedWorkflowIntegration(ORG);
+		seedConnection(ORG);
 		seedOfficialConfig(ORG);
 		seedOfficialConfig(ORG, { userId: "user-2" });
 		seedOfficialConfig("other-org");
@@ -611,22 +621,9 @@ describe("integrations.gitlab.disconnect and the gitlab-official MCP config", ()
 	});
 
 	it("stops resolveGitLabSource routing through the official MCP server", async () => {
-		seedWorkflowIntegration(ORG);
-		seedMcpConfig(ORG);
+		seedConnection(ORG);
 		seedOfficialConfig(ORG);
 
-		await expect(resolveSource(ORG)).resolves.toMatchObject({
-			kind: "official-mcp",
-		});
-
-		await disconnect(ORG);
-
-		// No official MCP, and no REST token either: nothing is usable.
-		await expect(resolveSource(ORG)).resolves.toBeNull();
-	});
-
-	it("stops resolveGitLabSource when only the official config existed", async () => {
-		seedOfficialConfig(ORG);
 		await expect(resolveSource(ORG)).resolves.toMatchObject({
 			kind: "official-mcp",
 		});
@@ -636,51 +633,46 @@ describe("integrations.gitlab.disconnect and the gitlab-official MCP config", ()
 		await expect(resolveSource(ORG)).resolves.toBeNull();
 	});
 
-	it("a fresh grant repopulates and un-breakers the official config the disconnect cleared", async () => {
-		const { syncGitlabOfficialMcpConfig } = await import(
-			"../../lib/sync-gitlab-official-mcp"
-		);
+	it("resolves no GitLab source when only a legacy official copy exists, before or after disconnect", async () => {
+		seedOfficialConfig(ORG);
+		await expect(resolveSource(ORG)).resolves.toBeNull();
+
+		await disconnect(ORG);
+
+		await expect(resolveSource(ORG)).resolves.toBeNull();
+	});
+
+	it("a fresh grant through the kept registration reconnects, clears the MCP breaker, and still writes no token to the MCP row", async () => {
 		seedOfficialConfig(ORG);
 		await disconnect(ORG);
 		const row = officialRow(ORG);
-		expect(row.needsReauth).toBe(true);
 
-		// What `persistGitLabToken` does for a reconnect on a capable server.
-		const tx = {
-			mCPServer: {
-				findFirst: async () => ({ id: "srv-gitlab-official" }),
-			},
-			mCPConfig: {
-				findFirst: mcp.delegate.findFirst,
-				update: mcp.delegate.update,
-				create: async () => {
-					throw new Error("must update the kept row in place");
+		const result = await connectGitLab(
+			{ userId: USER, organizationId: ORG },
+			{
+				accessToken: "new-token",
+				refreshToken: "new-refresh",
+				expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+				scopes: ["api"],
+				issuer: {
+					kind: "mcp-dcr",
+					mcpConfigId: row.id,
+					serverKey: "gitlab-official",
+					clientId: "dcr-client-id",
+					origin: "https://gitlab.com",
 				},
-				delete: async () => {
-					throw new Error("must not delete");
-				},
+				freshGrant: true,
 			},
-		};
-		const result = await syncGitlabOfficialMcpConfig(tx as never, {
-			userId: USER,
-			organizationId: ORG,
-			capable: true,
-			resetBreaker: true,
-			tokenBundle: {
-				encryptedAccessToken: "enc_new-token",
-				accessTokenHash: "hash_new-token",
-				encryptedRefreshToken: "enc_new-refresh",
-				tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
-			},
-		});
+		);
 
-		expect(result).toEqual({ ok: true, action: "updated" });
+		expect(result.written).toBe(true);
 		expect(officialRow(ORG)).toMatchObject({
 			id: row.id,
-			encryptedAccessToken: "enc_new-token",
+			encryptedAccessToken: null,
 			needsReauth: false,
 			oauthClientId: "dcr-client-id",
-			encryptedOauthClientSecret: "enc_dcr-client-secret",
+			encryptedOauthClientSecret: "enc:dcr-client-secret",
 		});
+		expect(await getGitLabAccessToken(USER, ORG)).toBe("new-token");
 	});
 });

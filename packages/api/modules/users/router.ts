@@ -22,6 +22,7 @@ import {
 	getMfaPromptStateProcedure,
 } from "./procedures/mfa-prompt";
 import {
+	getOAuthAuthorizationBindingProcedure,
 	listOAuthConnectionsProcedure,
 	revokeOAuthConnectionProcedure,
 } from "./procedures/oauth-connections";
@@ -62,6 +63,7 @@ export const usersRouter = {
 		delete: deleteUserApiKeyProcedure,
 	},
 	oauthConnections: {
+		authorizationBinding: getOAuthAuthorizationBindingProcedure,
 		list: listOAuthConnectionsProcedure,
 		revoke: revokeOAuthConnectionProcedure,
 	},

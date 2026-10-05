@@ -257,6 +257,43 @@ export function instructionsAwaitsPublish(input: {
 }
 
 /**
+ * How long the tab keeps watching for Fabric's copy to take a commit that was
+ * just made from it. The COMMIT_PUSHED sync that publishes the version from the
+ * real tree starts when the push lands and normally finishes in seconds; the
+ * bound is for a sync that was queued behind others, and past it the tab goes
+ * back to saying plainly that Fabric's copy is behind, which is true and needs
+ * no error.
+ */
+export const INSTRUCTIONS_COMMIT_SYNC_WAIT_MS = 3 * 60_000;
+
+/**
+ * Whether the tab is still waiting for the published version to be the commit
+ * its own editor just made (Fizzy #2878 §10). `committed` records the push; the
+ * published pointer follows a few seconds later, from a sync run of the
+ * branch's real tree, so the published row's `sourceCommitSha` is what says it
+ * has caught up. A sync that now follows another branch will never take the
+ * commit, so `configuredRef`, once a configuration names a different one, ends
+ * the wait.
+ */
+export function instructionsAwaitsCommitSync(input: {
+	awaited: { sha: string; ref: string; at: number } | null;
+	publishedSha: string | null | undefined;
+	configuredRef?: string | null;
+	now: number;
+}): boolean {
+	if (input.awaited === null) {
+		return false;
+	}
+	if (input.publishedSha === input.awaited.sha) {
+		return false;
+	}
+	if (input.configuredRef && input.configuredRef !== input.awaited.ref) {
+		return false;
+	}
+	return input.now - input.awaited.at < INSTRUCTIONS_COMMIT_SYNC_WAIT_MS;
+}
+
+/**
  * The `refetchInterval` for the snapshot list: `false` once nothing is in
  * flight (READY, REJECTED and FAILED are all terminal, and an abandoned
  * RECEIVING row is no longer in flight either) and the published pointer has
@@ -278,6 +315,8 @@ export function instructionsPollInterval(
 	elapsedMs: number,
 	options: {
 		awaitingPublish?: boolean;
+		/** A commit made from this tab has not yet become the published version. */
+		awaitingCommitSync?: boolean;
 		now: number;
 		published?: PollRow | null;
 	},
@@ -287,7 +326,7 @@ export function instructionsPollInterval(
 		(options.published
 			? isInFlight(options.published, options.now)
 			: false);
-	if (!active && !options.awaitingPublish) {
+	if (!active && !options.awaitingPublish && !options.awaitingCommitSync) {
 		return false;
 	}
 	return intervalAt(elapsedMs);

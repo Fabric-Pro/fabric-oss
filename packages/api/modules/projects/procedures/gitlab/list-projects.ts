@@ -1,30 +1,28 @@
 /**
  * List GitLab Projects (Grouped by Namespace)
  *
- * Uses resolveGitLabSource to pick the best credential source
- * (official MCP server, MCPConfig OAuth, or WorkflowIntegration REST token)
- * and then lists/groups the projects.
+ * Uses resolveGitLabSource to pick the transport (official MCP server or
+ * REST) for the person's GitLab connection and then lists/groups the
+ * projects.
  */
 
-import { db } from "@repo/database";
 import {
-	createGitLabRefreshFailureWriter,
 	GitLabApiError,
 	getAuthenticatedUser,
-	getGitLabAccessToken,
+	isGitLabMcpEndpointGone,
 	listUserProjects,
-	refreshMcpConfigToken,
+	readGitLabPersonalConnection,
+	recordGitLabMcpCapabilityLoss,
 	resolveGitLabSource,
 	searchGitLabProjects,
 } from "@repo/integrations/gitlab";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { authorizeGitLabTenant } from "../../../integrations/lib/gitlab-request-tenant";
 
 // ============================================================================
 // Types and helpers
@@ -174,8 +172,8 @@ function groupProjects(
 
 /**
  * AUTHORIZATION: Uses tenantProtectedProcedure (authenticated + tenant isolation)
- * Uses resolveGitLabSource to pick the best credential (official MCP, MCPConfig,
- * or WorkflowIntegration) and then lists GitLab projects.
+ * Uses resolveGitLabSource to pick the transport (official MCP or REST) for
+ * the person's GitLab connection and then lists GitLab projects.
  */
 export const listGitLabProjectsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.INTEGRATION_READ))
@@ -194,37 +192,50 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		// Reading the connection can classify a legacy connection row,
+		// refresh the token and use it, all in the organization it is given. The
+		// permission middleware above evaluates the session's organization,
+		// which an explicit input organization can differ from, so the
+		// organization this request acts in is resolved and authorized here
+		// (membership and INTEGRATION_READ there; none resolved is refused)
+		// before the connection is touched.
+		const tenant = await authorizeGitLabTenant(
+			Permissions.INTEGRATION_READ,
 			input.organizationId,
-			context.session,
+			context,
 		);
 
-		const source = await resolveGitLabSource({
-			userId,
-			organizationId: organizationId ?? null,
-			projectId: input.projectId,
-			db: db as never,
-			decrypt: decryptApiKey,
-			refresh: (configId) =>
-				refreshMcpConfigToken({ configId, db: db as never }),
-			getRestToken: async ({ userId: u, organizationId: o }) =>
-				(await getGitLabAccessToken(u, o ?? undefined)) ?? null,
-			// The project picker is polled by the UI, so an unrecorded dead
-			// grant here refreshes the same revoked token on every render.
-			markRefreshFailure: createGitLabRefreshFailureWriter(db as never),
-		});
+		const source = await resolveGitLabSource(tenant);
 
 		if (!source) {
+			// The canonical state says why there is no source: never
+			// connected (or disconnected), or a connection that needs
+			// reconnecting. A connection that reads as connected but gave no
+			// usable token is a failure to report, not "not connected".
+			const { summary } = await readGitLabPersonalConnection(tenant);
+			if (summary.state === "connected") {
+				return {
+					configured: true,
+					connectionState: "connected" as const,
+					username: null as string | null,
+					groups: [] as RepoGroup[],
+					error: "GitLab could not be reached with your connection. Try again.",
+				};
+			}
 			return {
 				configured: false,
+				connectionState: summary.state,
 				username: null as string | null,
 				groups: [] as RepoGroup[],
-				error: "GitLab not connected. Connect GitLab in Settings → Integrations or via the official GitLab MCP server.",
+				error:
+					summary.state === "needs-reconnect"
+						? "Your GitLab connection needs to be reconnected. Reconnect GitLab in Settings → Integrations."
+						: "GitLab not connected. Connect GitLab in Settings → Integrations or via the official GitLab MCP server.",
 			};
 		}
 
 		try {
+			let raw: GitLabProjectRaw[] | null = null;
 			if (source.kind === "official-mcp") {
 				const searchGroup = input.searchGroup?.trim();
 				const mcpArgs: Record<string, unknown> = {
@@ -234,11 +245,25 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 				if (searchGroup) {
 					mcpArgs.search = searchGroup;
 				}
-				const raw = (await source.callTool(
-					"list_projects",
-					mcpArgs,
-				)) as GitLabProjectRaw[];
-
+				try {
+					raw = (await source.callTool(
+						"list_projects",
+						mcpArgs,
+					)) as GitLabProjectRaw[];
+				} catch (err) {
+					// The endpoint is gone (404): record it so the next request
+					// picks REST, and answer this one over REST below.
+					if (!isGitLabMcpEndpointGone(err)) {
+						throw err;
+					}
+					await recordGitLabMcpCapabilityLoss(
+						source,
+						"list_projects",
+					);
+				}
+			}
+			if (source.kind === "official-mcp" && raw) {
+				const searchGroup = input.searchGroup?.trim();
 				if (searchGroup) {
 					// Mirror the REST path: filter to projects whose top-level namespace
 					// starts with the requested group name (case-insensitive). The MCP
@@ -255,6 +280,7 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 					});
 					return {
 						configured: true,
+						connectionState: "connected" as const,
 						username: null as string | null,
 						groups:
 							filtered.length > 0
@@ -283,6 +309,7 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 				const groups = groupProjects(raw, "");
 				return {
 					configured: true,
+					connectionState: "connected" as const,
 					username: null as string | null,
 					groups,
 					error: null,
@@ -290,13 +317,13 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 			}
 
 			// REST path
-			const user = await getAuthenticatedUser(source.token);
+			const user = await getAuthenticatedUser(source.credential);
 			const username = user.login;
 
 			if (input.searchGroup) {
 				const groupName = input.searchGroup.trim();
 				const groupSearchResults = await searchGitLabProjects(
-					source.token,
+					source.credential,
 					groupName,
 					100,
 				);
@@ -311,6 +338,7 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 				});
 				return {
 					configured: true,
+					connectionState: "connected" as const,
 					username,
 					groups:
 						filtered.length > 0
@@ -330,11 +358,17 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 			}
 
 			const allProjects = (await listUserProjects(
-				source.token,
+				source.credential,
 				100,
 			)) as unknown as GitLabProjectRaw[];
 			const groups = groupProjects(allProjects, username);
-			return { configured: true, username, groups, error: null };
+			return {
+				configured: true,
+				connectionState: "connected" as const,
+				username,
+				groups,
+				error: null,
+			};
 		} catch (err) {
 			if (
 				err instanceof GitLabApiError &&
@@ -342,6 +376,7 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 			) {
 				return {
 					configured: true,
+					connectionState: "connected" as const,
 					username: null as string | null,
 					groups: [] as RepoGroup[],
 					error: `GitLab rejected the stored token (${err.status} ${err.message}). Reconnect in Settings → Integrations.`,
@@ -349,6 +384,7 @@ export const listGitLabProjectsProcedure = tenantProtectedProcedure
 			}
 			return {
 				configured: true,
+				connectionState: "connected" as const,
 				username: null as string | null,
 				groups: [] as RepoGroup[],
 				error:

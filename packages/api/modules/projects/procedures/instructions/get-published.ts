@@ -1,4 +1,3 @@
-import { ORPCError } from "@orpc/client";
 import { getPublishedInstructionSnapshot } from "@repo/database";
 import { z } from "zod";
 import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
@@ -16,9 +15,9 @@ import { requireHostingOrganizationId } from "./hosting-organization";
  * `getPublishedInstructionSnapshot(projectId)` is UNSCOPED by design (the
  * published pointer lives on the `Project` row, keyed only by its id), so
  * this handler verifies the returned row's `organizationId` matches the
- * project's hosting organization before returning it (R11) — a mismatch
- * 404s exactly like "nothing published" rather than leaking cross-tenant
- * existence.
+ * project's hosting organization before returning it (R11) — a mismatch is
+ * answered as `null`, exactly like "nothing published", rather than leaking
+ * cross-tenant existence.
  */
 export const getPublishedSnapshotProcedure = tenantProtectedProcedure
 	.use(projectNotFoundUnlessVisible)
@@ -41,10 +40,13 @@ export const getPublishedSnapshotProcedure = tenantProtectedProcedure
 			context.user.id,
 		);
 		const snapshot = await getPublishedInstructionSnapshot(input.projectId);
+		// "Nothing published" is a state the tab renders and polls, not a
+		// failure: answered as `null` so a 3-second poll on a fresh project
+		// does not log a failed request each time. A snapshot of another
+		// organization is answered the same way (R11), so the route still
+		// leaks nothing.
 		if (!snapshot || snapshot.organizationId !== organizationId) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "No published snapshot",
-			});
+			return null;
 		}
 		return snapshot;
 	});

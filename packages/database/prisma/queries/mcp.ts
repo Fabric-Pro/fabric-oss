@@ -7,6 +7,10 @@ import {
 	DEFAULT_PROJECT_MANAGEMENT_KEYS,
 	PM_SERVER_ID_KEY_SENTINEL_PREFIX,
 } from "../default-pm-tool-keys";
+import {
+	GITLAB_PERSONAL_MCP_SERVER_KEYS,
+	isGitLabPersonalMcpServerKey,
+} from "./lib/gitlab-personal-keys";
 
 // Re-export sentinel helpers so `@repo/integrations` consumers
 // (`getProjectPMServerKey`) can recognise key-sentinel ids through the
@@ -1392,20 +1396,51 @@ export async function deleteOauthState(state: string) {
 }
 
 /**
- * Revoke OAuth tokens for a configuration
- * Clears access_token, refresh_token, tokenExpiresAt
- * Sets status to UNAVAILABLE
+ * Revoke a configuration's OAuth credentials: the server's own tokens
+ * (access token and its lookup hash, refresh token, expiry) and the chained
+ * Atlassian Cloud tokens with their site details, in ONE update. Two
+ * separate updates could fail between them and leave the chained tokens
+ * stored on a config the tile then shows as revoked. Keeps the row and its
+ * client registration. Sets status to UNAVAILABLE.
+ *
+ * Owner-scoped with the exclusive tenant filter, so a config id from another
+ * person or organization changes nothing; returns the number of rows
+ * changed (0 or 1).
  */
-export async function revokeOAuthTokens(configId: string) {
-	return db.mCPConfig.update({
-		where: { id: configId },
+export async function revokeOAuthTokens(
+	configId: string,
+	tenant: { userId: string; organizationId: string | null },
+): Promise<number> {
+	const result = await db.mCPConfig.updateMany({
+		where: {
+			id: configId,
+			...(tenant.organizationId
+				? {
+						organizationId: tenant.organizationId,
+						userId: tenant.userId,
+					}
+				: { organizationId: null, userId: tenant.userId }),
+		},
 		data: {
 			encryptedAccessToken: null,
+			accessTokenHash: null,
 			encryptedRefreshToken: null,
 			tokenExpiresAt: null,
 			status: "UNAVAILABLE", // Mark as unavailable since no valid tokens
+			encryptedAtlassianCloudAccessToken: null,
+			encryptedAtlassianCloudRefreshToken: null,
+			atlassianCloudTokenExpiresAt: null,
+			atlassianCloudSiteUrl: null,
+			atlassianCloudCloudId: null,
+			atlassianCloudAccessibleResources: Prisma.DbNull,
+			atlassianCloudScopes: [],
+			atlassianCloudConnectedAt: null,
+			atlassianCloudRefreshFailureCount: 0,
+			atlassianCloudLastRefreshFailedAt: null,
+			atlassianCloudLastRefreshError: null,
 		},
 	});
+	return result.count;
 }
 
 /**
@@ -1477,19 +1512,38 @@ export async function cleanupExpiredMcpSessions() {
 	});
 }
 
+export { GITLAB_PERSONAL_MCP_SERVER_KEYS, isGitLabPersonalMcpServerKey };
+
 /**
- * Get a valid access token for an MCP config
- * Automatically refreshes if expired
+ * Thrown by `getValidAccessToken` for any config of a GitLab personal server
+ * key, whatever its `authType`. Its token must come from the GitLab connection
+ * service, never from the MCPConfig row: not its OAuth columns (refreshing a
+ * copy rotates the very grant the connection holds and kills it) and not an
+ * API key stored there (a second, unmanaged GitLab credential).
+ */
+export class GitLabPersonalCredentialRequiredError extends Error {
+	constructor(configId: string) {
+		super(
+			`MCP config ${configId} uses the personal GitLab connection; resolve its token through the GitLab connection service`,
+		);
+		this.name = "GitLabPersonalCredentialRequiredError";
+	}
+}
+
+/**
+ * Load an MCP config and verify the caller may use it, without touching its
+ * credential.
  *
  * Supports both personal (user-level) and organizational MCP configs:
  * - For user-level configs: verifies the config belongs to the user
  * - For org-level configs: verifies the user is a member of the organization
  *
- * @param configId - MCP config ID
- * @param userId - User ID (for authorization)
- * @returns Decrypted access token (API key or OAuth access token) or null if not available
+ * Throws on any mismatch. Shared by `getValidAccessToken` and by the GitLab
+ * credential adapter in `@repo/mcp`, which must run the same check BEFORE it
+ * resolves the person's GitLab connection — accepting a config id and then
+ * trusting its owner would not be authorization.
  */
-export async function getValidAccessToken({
+export async function authorizeMcpConfigAccess({
 	configId,
 	userId,
 	organizationId,
@@ -1497,7 +1551,7 @@ export async function getValidAccessToken({
 	configId: string;
 	userId: string;
 	organizationId?: string | null;
-}): Promise<string | null> {
+}) {
 	// Use internal function - authorization is done below
 	const cfg = await getMcpConfigByIdInternal(configId);
 
@@ -1545,6 +1599,47 @@ export async function getValidAccessToken({
 				"Unauthorized: You are not a member of the organization that owns this MCP config",
 			);
 		}
+	}
+
+	return cfg;
+}
+
+/**
+ * Get a valid access token for an MCP config
+ * Automatically refreshes if expired
+ *
+ * Authorization is `authorizeMcpConfigAccess`. GitLab personal server keys
+ * (`GITLAB_PERSONAL_MCP_SERVER_KEYS`) are refused with
+ * `GitLabPersonalCredentialRequiredError` whatever the config's `authType`:
+ * callers resolve those through `getValidMcpAccessToken` in `@repo/mcp`.
+ *
+ * @param configId - MCP config ID
+ * @param userId - User ID (for authorization)
+ * @returns Decrypted access token (API key or OAuth access token) or null if not available
+ */
+export async function getValidAccessToken({
+	configId,
+	userId,
+	organizationId,
+}: {
+	configId: string;
+	userId: string;
+	organizationId?: string | null;
+}): Promise<string | null> {
+	const cfg = await authorizeMcpConfigAccess({
+		configId,
+		userId,
+		organizationId,
+	});
+
+	// Keyed on the server, not `authType`: an API-key or no-auth config of a
+	// GitLab personal server holds no credential either.
+	if (
+		isGitLabPersonalMcpServerKey(
+			(cfg.mcpServer as { key?: string } | null)?.key,
+		)
+	) {
+		throw new GitLabPersonalCredentialRequiredError(configId);
 	}
 
 	// If not OAuth, return API key or null
@@ -2354,13 +2449,30 @@ export interface PmToolOption {
 	configDisplayName: string | null;
 	transport: PmToolTransport | null;
 	/**
-	 * True iff the wizard is in org context AND the calling user has a
-	 * personal-scope `WorkflowIntegration{provider=GITLAB, isActive=true}`
-	 * row but no equivalent org-scoped row (and no org gitlab-official
-	 * MCPConfig). The picker uses this to render a distinct
-	 * "connected in personal — connect for this org" affordance.
+	 * True iff the wizard is in org context, the caller's GitLab is not
+	 * usable in this organization, and their personal-scope GitLab
+	 * connection is (see `PmToolGitLabStatus.personalScopeConnected`). The
+	 * picker uses this to render a distinct "connected in personal — connect
+	 * for this org" affordance.
 	 */
 	connectedInPersonalScope?: boolean;
+}
+
+/**
+ * The caller's GitLab connection, as the GitLab connection service reports
+ * it (`@repo/integrations/gitlab` `readGitLabPersonalConnection`). This
+ * package cannot import that service, so the API layer reads it and passes
+ * it in; the picker never decides GitLab's status from rows of its own, so it
+ * cannot disagree with any other GitLab screen.
+ */
+export interface PmToolGitLabStatus {
+	/** The caller's connection in the picker's tenant. */
+	state: "connected" | "needs-reconnect" | "not-connected";
+	/**
+	 * Org context only: the caller's personal-scope connection is usable.
+	 * Ignored in personal context.
+	 */
+	personalScopeConnected?: boolean;
 }
 
 /**
@@ -2373,6 +2485,12 @@ export interface PmToolOption {
  *   2. Tenant's enabled MCPConfigs whose linked MCPServer has
  *      category = "Project Management" OR tags includes
  *      "project-management".
+ *
+ * GitLab is offered as configured only when `gitlab.state` is "connected":
+ * an enabled `gitlab` / `gitlab-official` MCPConfig is a transport record,
+ * not a connection, and a connection that needs reconnecting cannot run PM
+ * sync. Otherwise GitLab falls back to its not-configured default stub (the
+ * option model has no needs-reconnect state).
  *
  * Deduplication is keyed on `MCPServer.key` — if the tenant has a
  * config for a default key, only the configured option is emitted
@@ -2390,20 +2508,18 @@ export interface PmToolOption {
 export async function listAvailablePmTools({
 	userId,
 	organizationId,
+	gitlab,
 }: {
 	userId: string;
 	organizationId: string | null;
+	gitlab: PmToolGitLabStatus;
 }): Promise<PmToolOption[]> {
 	const tenantFilter = organizationId
 		? { organizationId, userId }
 		: { organizationId: null, userId };
+	const gitlabUsable = gitlab.state === "connected";
 
-	const [
-		defaultServers,
-		tenantConfigs,
-		gitlabWorkflowIntegrations,
-		personalScopeGitlab,
-	] = await Promise.all([
+	const [defaultServers, tenantConfigs] = await Promise.all([
 		db.mCPServer.findMany({
 			where: {
 				isSystemProvided: true,
@@ -2432,60 +2548,6 @@ export async function listAvailablePmTools({
 				},
 			},
 		}),
-		db.workflowIntegration.findMany({
-			where: {
-				...tenantFilter,
-				provider: "GITLAB",
-				NOT: { name: "GITLAB_OAUTH_APP" },
-				isActive: true,
-			},
-			select: { id: true },
-			take: 1,
-		}),
-		// Personal-scope GitLab fallback (gated): when the wizard is in org
-		// context, look up the user's personal-scope GitLab integration so we
-		// can surface a "connect for this org" CTA. In personal context
-		// there's no gap to surface, so we resolve to an empty array without
-		// hitting the DB.
-		//
-		// The needsReauth filter is written as an explicit OR (rather than
-		// `NOT { equals: true }`) so it stays NULL-safe. Prisma translates
-		// `NOT (settings #> '{needsReauth}' = 'true')` to a comparison that
-		// evaluates to NULL when `settings` is NULL or the key is missing,
-		// which SQL three-valued logic then folds into "row excluded".
-		// Legacy rows whose `settings` was never written would silently fail
-		// the lookup. The OR below explicitly INCLUDES those rows.
-		organizationId !== null
-			? db.workflowIntegration.findMany({
-					where: {
-						organizationId: null,
-						userId,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-						OR: [
-							// Settings field is missing entirely (legacy row).
-							{ settings: { equals: Prisma.DbNull } },
-							// needsReauth key explicitly false.
-							{
-								settings: {
-									path: ["needsReauth"],
-									equals: false,
-								},
-							},
-							// needsReauth key set to null.
-							{
-								settings: {
-									path: ["needsReauth"],
-									equals: Prisma.DbNull,
-								},
-							},
-						],
-					},
-					select: { id: true },
-					take: 1,
-				})
-			: Promise.resolve([] as { id: string }[]),
 	]);
 
 	const configuredOptions: PmToolOption[] = [];
@@ -2497,6 +2559,11 @@ export async function listAvailablePmTools({
 			continue;
 		}
 		const key = server.key;
+		// A GitLab MCPConfig is a transport record; the person's connection
+		// decides whether GitLab is usable.
+		if (isGitLabPersonalMcpServerKey(key) && !gitlabUsable) {
+			continue;
+		}
 		const isDefault = DEFAULT_PROJECT_MANAGEMENT_KEYS.includes(
 			key as (typeof DEFAULT_PROJECT_MANAGEMENT_KEYS)[number],
 		);
@@ -2554,17 +2621,14 @@ export async function listAvailablePmTools({
 	}
 
 	// GitLab REST-fallback synthesis:
-	// If the tenant has a connected WorkflowIntegration{provider=GITLAB}
-	// but no enabled gitlab-official MCPConfig, surface a REST-mode entry
-	// so the wizard treats it as configured. PM runtime dispatch already
-	// resolves the REST source via resolveGitLabPMSource(); the MCPConfig
-	// is absent because the tier probe found the GitLab instance is not
-	// MCP-capable (Free/Bronze, or self-hosted CE without the MCP endpoint).
+	// If the caller's GitLab connection is usable but there is no enabled
+	// gitlab-official MCPConfig, surface a REST-mode entry so the wizard
+	// treats it as configured. PM runtime dispatch already resolves the REST
+	// source via resolveGitLabPMSource(); the MCPConfig is absent because the
+	// tier probe found the GitLab instance is not MCP-capable (Free/Bronze,
+	// or self-hosted CE without the MCP endpoint).
 	const restGitlabSynthesized: PmToolOption[] = [];
-	if (
-		!configuredKeys.has("gitlab-official") &&
-		gitlabWorkflowIntegrations.length > 0
-	) {
+	if (!configuredKeys.has("gitlab-official") && gitlabUsable) {
 		const gitlabServer = defaultServers.find(
 			(s) => s.key === "gitlab-official",
 		);
@@ -2602,7 +2666,9 @@ export async function listAvailablePmTools({
 		const iconKey =
 			DEFAULT_PROJECT_MANAGEMENT_ICON_KEY_OVERRIDES[key] ?? key;
 		const isPersonalGitlab =
-			key === "gitlab-official" && personalScopeGitlab.length > 0;
+			key === "gitlab-official" &&
+			organizationId !== null &&
+			gitlab.personalScopeConnected === true;
 		defaultStubs.push({
 			key,
 			displayName,

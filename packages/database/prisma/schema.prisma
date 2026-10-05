@@ -566,7 +566,9 @@ model OauthRefreshToken {
 
 /// Opaque access token, stored as a sha256 hex digest. The gateway and the v1
 /// API look a presented token up by that digest, so deleting the row revokes it
-/// at the next request. `referenceId` is the organization the token is bound to.
+/// at the next request. `referenceId` is what the token is bound to: an
+/// organization id, or `project:<audience>:<projectId>` for a token that reaches
+/// one project (see `@repo/utils/oauth-project-resource`).
 model OauthAccessToken {
   id          String    @id @default(cuid())
   token       String?   @unique
@@ -592,9 +594,10 @@ model OauthAccessToken {
   @@map("oauth_access_token")
 }
 
-/// One approval of one client by one user for one organization. Consent is
-/// per (client, user, organization): approving an agent for one organization
-/// grants it nothing in another.
+/// One approval of one client by one user for one organization, or for one
+/// project. Consent is per (client, user, reference): approving an agent for one
+/// organization or project grants it nothing in another. `referenceId` reads as
+/// it does on the tokens.
 model OauthConsent {
   id          String    @id @default(cuid())
   clientId    String
@@ -611,6 +614,29 @@ model OauthConsent {
   @@index([userId])
   @@index([referenceId])
   @@map("oauth_consent")
+}
+
+/// The project one authorization asked to be bound to. The authorization
+/// endpoint drops `resource` from the query it signs and stores, so the consent
+/// pages and the code never see it; this row carries it from the first request
+/// to the consent. Keyed by the request's PKCE challenge, which only the client
+/// that started the authorization and the person it sent knows. Short-lived:
+/// the authorization server deletes expired rows as it writes new ones.
+model OauthAuthorizationResource {
+  id            String   @id @default(cuid())
+  clientId      String
+  codeChallenge String
+  /// The canonical project resource URL the client sent.
+  resource      String
+  projectId     String
+  /// Which surface the grant reaches: `mcp` or `api`.
+  audience      String
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+
+  @@unique([clientId, codeChallenge])
+  @@index([expiresAt])
+  @@map("oauth_authorization_resource")
 }
 
 model TwoFactor {
@@ -1653,6 +1679,7 @@ model IntegrationApproval {
   id             String    @id @default(cuid())
   userId         String // Caller (always set; XOR-coexists with organizationId)
   organizationId String? // Org context, or null for personal
+  integrationId  String? // Exact connection selected by userId; legacy approvals fail closed
   pluginSlug     String // e.g. "slack" — matches IntegrationPlugin.slug
   endpoint       String // Dot-notation endpoint, e.g. "messages.delete"
   args           Json // Arguments the caller submitted
@@ -13087,6 +13114,11 @@ model WorkflowExecutionLog {
   @@map("workflow_execution_log")
 }
 
+enum WorkflowIntegrationUsageScope {
+  OWNER_ONLY
+  ORGANIZATION_SHARED
+}
+
 model WorkflowIntegration {
   id             String                      @id @default(cuid())
   workflowId     String? // Optional - can be user/org level
@@ -13095,6 +13127,7 @@ model WorkflowIntegration {
   provider       WorkflowIntegrationProvider
   name           String
   credentials    String // Encrypted JSON
+  usageScope     WorkflowIntegrationUsageScope @default(OWNER_ONLY) // Sharing requires explicit owner consent and org administrator authorization
   settings       Json?
   isActive       Boolean                     @default(true)
   createdAt      DateTime                    @default(now())
@@ -13106,6 +13139,14 @@ model WorkflowIntegration {
   agentConfigurations      AgentIntegrationConfiguration[] // Agent instances using this integration
   projectKnowledgeBindings ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
 
+  // Partial unique index `workflow_integration_personal_gitlab_key`, owned by
+  // migration 20261004120100_workflow_integration_personal_gitlab_unique and
+  // deliberately not declared here (Prisma models neither the WHERE clause nor
+  // NULLS NOT DISTINCT, and an @@unique stand-in would be recreated by every
+  // `migrate dev`): at most one personal GitLab connection row per
+  // (userId, organizationId), NULL organizationId matching NULL, over
+  // provider = GITLAB, workflowId IS NULL, name <> 'GITLAB_OAUTH_APP' — the
+  // GitLab connection service's `personalConnectionWhere`.
   @@index([workflowId])
   @@index([userId])
   @@index([organizationId])
@@ -14523,11 +14564,15 @@ model AiUsageLog {
   outputTokens             Int
   totalTokens              Int
   // Prompt-cache + reasoning token breakdown (default 0 = pre-caching / not reported).
-  // cachedInputTokens = prompt tokens served from cache (Anthropic: separate from
-  // inputTokens; OpenAI: a subset of inputTokens). cacheCreationInputTokens =
-  // tokens written into the cache (Anthropic, billed at a write premium). These
-  // let estimateAiUsageCostUsd price cache reads/writes at their real discounted
-  // rates instead of charging every input token at the full rate.
+  // inputTokens and totalTokens are the provider's TOTALS, including cache reads
+  // and writes, for every provider; the two cache columns are parts of
+  // inputTokens. cachedInputTokens = prompt tokens served from cache;
+  // cacheCreationInputTokens = tokens written into the cache (Anthropic, billed
+  // at a write premium). These let estimateAiUsageCostUsd price cache
+  // reads/writes at their real rates instead of charging every input token at
+  // the full rate. LangChain native-Anthropic rows written between 2026-09-09
+  // and this change stored inputTokens/totalTokens without the cache buckets;
+  // they were not migrated.
   cachedInputTokens        Int                     @default(0)
   cacheCreationInputTokens Int                     @default(0)
   reasoningTokens          Int                     @default(0)
@@ -17988,6 +18033,10 @@ enum ProjectInstructionProposalStatus {
 enum ProjectInstructionProposalDestination {
   FABRIC
   REPOSITORY
+  /// A direct commit to the synced branch (Fizzy #2878 §10). Not a proposal:
+  /// `proposalStatus` stays null. `commitContext` freezes where it lands and
+  /// `commitOutcome` records what became of it.
+  REPOSITORY_COMMIT
 }
 
 /// The pull-request operation of a REPOSITORY proposal (spec §4.2). The one
@@ -18040,6 +18089,11 @@ enum ProjectInstructionSyncTrigger {
   /// A proposal's pull request merged on its frozen target (Fizzy #2563
   /// spec §9.1). Not an automatic trigger: it bypasses the automatic toggle.
   PULL_REQUEST_MERGED
+  /// A direct commit Fabric pushed to the synced branch (Fizzy #2878 §10), so
+  /// the published copy confirms against the new tip. Like
+  /// PULL_REQUEST_MERGED, not an automatic trigger: it bypasses the automatic
+  /// toggle and honours a pause.
+  COMMIT_PUSHED
 }
 
 /// A finished run's outcome. Null on the run row while the run is in flight.
@@ -18090,6 +18144,11 @@ enum ProjectInstructionSyncProgressPhase {
 enum ProjectInstructionSyncPause {
   PERMISSION_REVOKED
   REF_MISSING
+  /// The project is being moved from uploads into this repository (Fizzy
+  /// #2878 §9): the sync row exists so the move's pull request has a
+  /// destination, but nothing may sync from the folder until that pull
+  /// request merges. Set at the move's start, cleared when it completes.
+  MIGRATING
 }
 
 model ProjectInstructionSnapshot {
@@ -18147,6 +18206,10 @@ model ProjectInstructionSnapshot {
   fileCount     Int     @default(0)
   storedBytes   Int     @default(0)
   excludedCount Int     @default(0)
+  /// The files left out, as [{ path, rule }], capped at `MAX_EXCLUDED_PATHS`
+  /// (`@repo/instructions`). `excludedCount` stays the authoritative number: an
+  /// empty list beside a non-zero count is a version made before this column.
+  excludedPaths Json    @default("[]")
   /// sha256 over sorted "path\0sha256\n" lines; set when READY.
   digest        String?
   /// The IDENTITY of the change set this snapshot was derived from: sha256
@@ -18242,6 +18305,14 @@ model ProjectInstructionSnapshot {
   mergeSyncRunId               String?
   /// { syncId, generation } passed as `expected` at dispatch.
   mergeSyncExpected            Json?
+
+  /// A direct commit's frozen destination and rendered commit text (Fizzy
+  /// #2878 §10): `directCommitContextSchema` in `@repo/instructions`. Set
+  /// only with `proposalDestination = REPOSITORY_COMMIT`.
+  commitContext Json?
+  /// What became of that commit: `directCommitOutcomeSchema`. Null while it is
+  /// pending, written once; the snapshot summary carries it for the tab's poll.
+  commitOutcome Json?
 
   /// Member proposal branches (Fizzy #2738 spec §4.1). A v2 REPOSITORY
   /// proposal's branch and its place on it; null for every other row.
@@ -18526,7 +18597,9 @@ model ProjectInstructionRepositorySync {
   ref                     String
   /// POSIX, relative, no trailing slash. "" is the repository root.
   rootPath                String   @default("")
-  automatic               Boolean  @default(false)
+  /// On by default: git is the authority, and the published copy follows the
+  /// branch. Rows that stored `false` keep it, since it may be deliberate.
+  automatic               Boolean  @default(true)
   generation              Int      @default(1)
 
   /// Automatic-run scheduling (spec §6.1). Written from PR 1 on, read from PR 2.
@@ -18725,6 +18798,7 @@ model ProjectRepositoryIntegration {
   @@unique([projectId, provider, repositoryOwner, repositoryName])
   @@index([projectId])
   @@index([status])
+  @@index([repositoryUrl])
   @@map("project_repository_integration")
 }
 

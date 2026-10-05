@@ -1,7 +1,14 @@
+/**
+ * Tests for the Databricks compatibility shim shared by the Vercel AI SDK path
+ * and the LangChain agent path. The implementation lives in `@repo/agent-types`
+ * (which has no test runner, like `azure-foundry-url`), so its suite lives here.
+ * Unaliased imports exercise the shared module with its default request-body
+ * rule — exactly what the agent path runs. The `vercel*` aliases exercise
+ * `@repo/ai`'s wrappers, which swap in the Vercel-only rule
+ * (`applyDatabricksChatBodyCompat`).
+ */
 import { createOpenAI } from "@ai-sdk/openai";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	applyDatabricksChatBodyCompat,
 	applyDatabricksPromptCacheMarkers,
 	createDatabricksFetch,
 	createDatabricksSseTransform,
@@ -13,6 +20,13 @@ import {
 	normalizeDatabricksUsageFields,
 	stripReasoningFromMessages,
 	stripUnsupportedRequestFields,
+} from "@repo/agent-types/databricks-compat";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	applyDatabricksChatBodyCompat,
+	createDatabricksFetch as createVercelDatabricksFetch,
+	stripUnsupportedRequestFields as stripVercelRequestFields,
+	isReasoningModelName as vercelIsReasoningModelName,
 } from "../lib/databricks-compat";
 
 async function runThroughSseTransform(
@@ -42,7 +56,7 @@ async function runThroughSseTransform(
 	return out.join("");
 }
 
-describe("stripUnsupportedRequestFields", () => {
+describe("stripUnsupportedRequestFields — default (agent path) rule", () => {
 	it("removes stream_options", () => {
 		const body = JSON.stringify({
 			model: "system.ai.meta-llama-3-3-70b-instruct",
@@ -56,6 +70,32 @@ describe("stripUnsupportedRequestFields", () => {
 		expect(out.model).toBe("system.ai.meta-llama-3-3-70b-instruct");
 	});
 
+	it("removes parallel_tool_calls (Databricks Claude: 'Extra inputs are not permitted')", () => {
+		const body = JSON.stringify({
+			model: "system.ai.claude-sonnet-5",
+			stream: true,
+			parallel_tool_calls: true,
+			tools: [{ type: "function", function: { name: "t" } }],
+			messages: [],
+		});
+		const out = JSON.parse(stripUnsupportedRequestFields(body));
+		expect(out.parallel_tool_calls).toBeUndefined();
+		expect(out.tools).toHaveLength(1);
+		expect(out.stream).toBe(true);
+	});
+
+	it("removes stream_options and parallel_tool_calls together in one pass", () => {
+		const body = JSON.stringify({
+			model: "system.ai.claude-sonnet-5",
+			stream_options: { include_usage: true },
+			parallel_tool_calls: false,
+			messages: [],
+		});
+		const out = JSON.parse(stripUnsupportedRequestFields(body));
+		expect(out.stream_options).toBeUndefined();
+		expect(out.parallel_tool_calls).toBeUndefined();
+	});
+
 	it("returns the body unchanged when there is nothing to strip", () => {
 		const body = JSON.stringify({ model: "x", messages: [] });
 		expect(stripUnsupportedRequestFields(body)).toBe(body);
@@ -65,13 +105,33 @@ describe("stripUnsupportedRequestFields", () => {
 		expect(stripUnsupportedRequestFields("not json")).toBe("not json");
 	});
 
-	it("removes parallel_tool_calls (agent-core strip-list parity)", () => {
+	it("leaves temperature and strict json_schema alone (Vercel-only transforms)", () => {
+		// The agent path omits temperature at the ChatOpenAI constructor and
+		// never sends response_format.json_schema, so its rule must not touch
+		// either — the body goes out byte-identical.
 		const body = JSON.stringify({
 			model: "m",
+			temperature: 0,
+			response_format: {
+				type: "json_schema",
+				json_schema: { name: "s", strict: true, schema: {} },
+			},
+			messages: [],
+		});
+		expect(stripUnsupportedRequestFields(body)).toBe(body);
+	});
+});
+
+describe("stripUnsupportedRequestFields — @repo/ai (Vercel path) rule", () => {
+	it("still removes stream_options and parallel_tool_calls", () => {
+		const body = JSON.stringify({
+			model: "m",
+			stream_options: { include_usage: true },
 			parallel_tool_calls: false,
 			messages: [],
 		});
-		const out = JSON.parse(stripUnsupportedRequestFields(body));
+		const out = JSON.parse(stripVercelRequestFields(body));
+		expect(out.stream_options).toBeUndefined();
 		expect(out.parallel_tool_calls).toBeUndefined();
 	});
 
@@ -81,7 +141,7 @@ describe("stripUnsupportedRequestFields", () => {
 			temperature: 0,
 			messages: [],
 		});
-		const out = JSON.parse(stripUnsupportedRequestFields(body));
+		const out = JSON.parse(stripVercelRequestFields(body));
 		expect(out.temperature).toBeUndefined();
 	});
 
@@ -94,8 +154,28 @@ describe("stripUnsupportedRequestFields", () => {
 			},
 			messages: [],
 		});
-		const out = JSON.parse(stripUnsupportedRequestFields(body));
+		const out = JSON.parse(stripVercelRequestFields(body));
 		expect(out.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("still injects prompt-cache markers for a Claude endpoint", () => {
+		const body = JSON.stringify({
+			model: "databricks-claude-sonnet-4-5",
+			temperature: 0,
+			messages: [
+				{ role: "system", content: "You are helpful." },
+				{ role: "user", content: "hi" },
+			],
+		});
+		const out = JSON.parse(stripVercelRequestFields(body));
+		expect(out.temperature).toBeUndefined();
+		expect(JSON.stringify(out.messages)).toContain("cache_control");
+	});
+});
+
+describe("@repo/ai re-exports", () => {
+	it("re-exports the shared isReasoningModelName rather than a copy", () => {
+		expect(vercelIsReasoningModelName).toBe(isReasoningModelName);
 	});
 });
 
@@ -200,6 +280,29 @@ describe("normalizeContentArrays", () => {
 		expect(payload.choices[0].message.content).toBe("Answer");
 	});
 
+	it("flattens a tool-call chunk's reasoning-only content array to an empty string (so the stream loop keeps it)", () => {
+		// Claude via Databricks emits an array delta.content alongside tool_calls;
+		// after normalization content is a string ("") and tool_calls survive
+		// untouched — so @langchain/openai's `typeof content !== 'string'` skip
+		// no longer drops the tool call.
+		const chunk = {
+			choices: [
+				{
+					delta: {
+						content: [{ type: "reasoning", summary: [] }],
+						tool_calls: [{ index: 0, function: { name: "t" } }],
+					},
+					index: 0,
+				},
+			],
+		};
+		expect(normalizeContentArrays(chunk)).toBe(true);
+		expect(chunk.choices[0].delta.content).toBe("");
+		expect(chunk.choices[0].delta.tool_calls).toEqual([
+			{ index: 0, function: { name: "t" } },
+		]);
+	});
+
 	it("leaves string content untouched and returns false", () => {
 		const chunk = { choices: [{ delta: { content: "already a string" } }] };
 		expect(normalizeContentArrays(chunk)).toBe(false);
@@ -285,7 +388,7 @@ describe("createDatabricksFetch", () => {
 		expect(JSON.parse(sentBody as string).stream_options).toBeUndefined();
 	});
 
-	it("drops temperature and relaxes strict json_schema on the outgoing body", async () => {
+	it("@repo/ai wrapper: drops temperature and relaxes strict json_schema on the outgoing body", async () => {
 		let sentBody: string | undefined;
 		const baseFetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
 			sentBody = init?.body as string;
@@ -295,7 +398,7 @@ describe("createDatabricksFetch", () => {
 			});
 		}) as unknown as typeof fetch;
 
-		const dbFetch = createDatabricksFetch(baseFetch);
+		const dbFetch = createVercelDatabricksFetch(baseFetch);
 		await dbFetch("https://x.cloud.databricks.com/serving-endpoints", {
 			method: "POST",
 			body: JSON.stringify({
@@ -314,6 +417,37 @@ describe("createDatabricksFetch", () => {
 		expect(parsed.temperature).toBeUndefined();
 		expect(parsed.max_tokens).toBe(4096);
 		expect(parsed.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("default rule: leaves temperature and strict json_schema on the outgoing body", async () => {
+		let sentBody: string | undefined;
+		const baseFetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
+			sentBody = init?.body as string;
+			return new Response("{}", {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+
+		const dbFetch = createDatabricksFetch(baseFetch);
+		await dbFetch("https://x.cloud.databricks.com/serving-endpoints", {
+			method: "POST",
+			body: JSON.stringify({
+				model: "m",
+				temperature: 0,
+				parallel_tool_calls: true,
+				response_format: {
+					type: "json_schema",
+					json_schema: { name: "scan", strict: true, schema: {} },
+				},
+			}),
+		});
+
+		expect(sentBody).toBeDefined();
+		const parsed = JSON.parse(sentBody as string);
+		expect(parsed.parallel_tool_calls).toBeUndefined();
+		expect(parsed.temperature).toBe(0);
+		expect(parsed.response_format.json_schema.strict).toBe(true);
 	});
 
 	it("normalizes array message.content on a valid non-streaming JSON response", async () => {
@@ -715,10 +849,12 @@ describe("createDatabricksSseTransform — usage normalization", () => {
 			midChunk + finalChunk + "data: [DONE]\n\n",
 		]);
 
+		// The final chunk omits `cache_creation`, so the synthesized event
+		// carries the mid chunk's value forward (Fizzy #2911).
 		expect(out).toBe(
 			'data: {"model":"m","choices":[{"delta":{"role":"assistant","content":"OK"},"index":0,"finish_reason":null}],"usage":{"completion_tokens":null,"prompt_tokens":4573,"total_tokens":null},"object":"chat.completion.chunk"}\n\n' +
 				'data: {"model":"m","choices":[{"delta":{"role":"assistant","content":""},"index":0,"finish_reason":"stop"}],"usage":{"completion_tokens":4,"prompt_tokens":4573,"total_tokens":4577}}\n\n' +
-				'data: {"model":"m","choices":[],"usage":{"cache_read_input_tokens":4570,"completion_tokens":4,"prompt_tokens":4573,"total_tokens":4577,"cache_creation_input_tokens":0,"prompt_tokens_details":{"cached_tokens":4570}}}\n\n' +
+				'data: {"model":"m","choices":[],"usage":{"cache_read_input_tokens":4570,"completion_tokens":4,"prompt_tokens":4573,"total_tokens":4577,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0},"prompt_tokens_details":{"cached_tokens":4570}}}\n\n' +
 				"data: [DONE]\n\n",
 		);
 	});
@@ -827,6 +963,93 @@ describe("createDatabricksSseTransform — usage normalization", () => {
 		expect(out.split('"choices":[]').length - 1).toBe(1);
 	});
 
+	// Fizzy #2911: every choices-bearing chunk loses its cache keys, so when
+	// the LAST usage the stream reports omits them, the counters an earlier
+	// chunk carried must still reach the one usage event that keeps them.
+	it("carries an earlier chunk's cache counters onto the synthesized event when the final chunk's usage omits them", async () => {
+		const firstChunk =
+			'data: {"model":"m","choices":[{"delta":{"content":"OK"},"index":0,"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":null,"total_tokens":null}}\n\n';
+		const finalChunk =
+			'data: {"model":"m","choices":[{"delta":{"content":""},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":4,"total_tokens":104}}\n\n';
+		const out = await runThroughSseTransform([
+			firstChunk + finalChunk + "data: [DONE]\n\n",
+		]);
+		expect(out).toBe(
+			'data: {"model":"m","choices":[{"delta":{"content":"OK"},"index":0,"finish_reason":null}],"usage":{"prompt_tokens":100,"completion_tokens":null,"total_tokens":null}}\n\n' +
+				finalChunk +
+				'data: {"model":"m","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":4,"total_tokens":104,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens_details":{"cached_tokens":90}}}\n\n' +
+				"data: [DONE]\n\n",
+		);
+	});
+
+	it("carries earlier cache counters onto a native choices-less usage chunk that omits them, without synthesizing a second event", async () => {
+		const contentChunk =
+			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const nativeUsageChunk =
+			'data: {"model":"m","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const out = await runThroughSseTransform([
+			contentChunk + nativeUsageChunk + "data: [DONE]\n\n",
+		]);
+		expect(out).toBe(
+			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":null}],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n' +
+				'data: {"model":"m","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens_details":{"cached_tokens":90}}}\n\n' +
+				"data: [DONE]\n\n",
+		);
+		expect(out.split('"choices":[]').length - 1).toBe(1);
+	});
+
+	it("keeps a later chunk's explicit cache value over an earlier one — only an omitted key is carried forward", async () => {
+		const firstChunk =
+			'data: {"choices":[{"delta":{"content":"OK"},"index":0,"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":null,"total_tokens":null}}\n\n';
+		const finalChunk =
+			'data: {"choices":[{"delta":{"content":""},"index":0,"finish_reason":"stop"}],"usage":{"cache_read_input_tokens":0,"prompt_tokens":100,"completion_tokens":4,"total_tokens":104}}\n\n';
+		const out = await runThroughSseTransform([
+			firstChunk + finalChunk + "data: [DONE]\n\n",
+		]);
+		expect(out).toContain(
+			'data: {"choices":[],"usage":{"cache_read_input_tokens":0,"prompt_tokens":100,"completion_tokens":4,"total_tokens":104,"cache_creation_input_tokens":0}}\n\n',
+		);
+		expect(out).not.toContain("prompt_tokens_details");
+	});
+
+	it("synthesizes a carried usage event when usage-bearing content follows an earlier native usage-only chunk", async () => {
+		// Both consumers keep only the LAST usage they see, so the stripped
+		// content chunk after the native event would otherwise be the one they
+		// report, without the cache read.
+		const contentChunk =
+			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}\n\n';
+		const nativeUsageChunk =
+			'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}\n\n';
+		const finalChunk =
+			'data: {"choices":[{"delta":{"content":""},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const out = await runThroughSseTransform([
+			contentChunk + nativeUsageChunk + finalChunk + "data: [DONE]\n\n",
+		]);
+		expect(
+			out.endsWith(
+				finalChunk +
+					'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102,"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens_details":{"cached_tokens":90}}}\n\n' +
+					"data: [DONE]\n\n",
+			),
+		).toBe(true);
+	});
+
+	it("synthesizes a usage event when a native usage-only chunk arrives before the cache-bearing content", async () => {
+		const nativeUsageChunk =
+			'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100}}\n\n';
+		const contentChunk =
+			'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":"stop"}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const out = await runThroughSseTransform([
+			nativeUsageChunk + contentChunk + "data: [DONE]\n\n",
+		]);
+		expect(out).toBe(
+			nativeUsageChunk +
+				'data: {"choices":[{"delta":{"content":"hi"},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n' +
+				'data: {"choices":[],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":2,"total_tokens":102,"prompt_tokens_details":{"cached_tokens":90}}}\n\n' +
+				"data: [DONE]\n\n",
+		);
+	});
+
 	it("the flushed reasoning-stripper residual never carries usage, even when the last array-choices chunk had cache fields", async () => {
 		// Regression: lastEnvelope used to be built from ANY chunk with an array
 		// `choices` — including a choices-less usage event (`choices: []` is
@@ -883,12 +1106,12 @@ describe("@ai-sdk/openai end-to-end via createDatabricksFetch (Fizzy #2522)", ()
 
 	function buildDatabricksModel(fakeFetch: typeof fetch) {
 		// Mirrors packages/ai/model-factory.ts's Databricks branch: createOpenAI
-		// wired with createDatabricksFetch, `.chat()` to force the
+		// wired with @repo/ai's createDatabricksFetch, `.chat()` to force the
 		// chat-completions API.
 		return createOpenAI({
 			apiKey: "test",
 			baseURL: "https://example.com/serving-endpoints",
-			fetch: createDatabricksFetch(fakeFetch),
+			fetch: createVercelDatabricksFetch(fakeFetch),
 		}).chat("databricks-claude-sonnet-4-5");
 	}
 
@@ -1174,9 +1397,11 @@ describe("isReasoningModelName", () => {
 });
 
 describe("createDatabricksFetch - reasoning stripping", () => {
-	// The fetch strips iff `stripReasoning` is true — the CALLER decides that flag
-	// from the resolved canonical identity (Bug #1942 review), so the request-body
-	// `model` (an opaque serving alias) is intentionally NOT re-checked here.
+	// The fetch strips iff `stripReasoning` is true — the CALLER (the CopilotKit
+	// route, or createProviderModel's Databricks branch on the agent path)
+	// decides that flag from the resolved canonical identity (Bug #1942 review),
+	// so the request-body `model` (an opaque serving alias) is intentionally NOT
+	// re-checked here.
 	const jsonResponse = () =>
 		vi.fn(
 			async () =>
@@ -1233,6 +1458,17 @@ describe("createDatabricksFetch - reasoning stripping", () => {
 	});
 });
 
+/**
+ * Databricks answers a request-schema failure with its OWN envelope
+ * (`{error_code, message}`) rather than OpenAI's (`{error: {...}}`). The
+ * `openai` SDK looks for `error`, finds nothing, and raises
+ * "400 status code (no body)" — discarding the only useful thing on the wire.
+ *
+ * Verified against the real gateway on 2026-08-11: the malformed payload that
+ * caused the 2026-08-07 incident returns HTTP 400 with a 247-byte body naming
+ * the exact offending field, while `openai@6.22.0` reports
+ * `message: "400 status code (no body)"`, `error: undefined`.
+ */
 /**
  * Verbatim 400 body captured from the Databricks gateway on 2026-08-11 while
  * reproducing the 2026-08-07 incident payload.

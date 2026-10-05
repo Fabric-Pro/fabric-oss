@@ -33,8 +33,40 @@ describe("Coding Instructions action errors", () => {
 		(_name, source) => {
 			expect(source).not.toMatch(/toast\.error\(\s*error\.message\s*\)/);
 			expect(source).not.toMatch(/:\s*error\.message\s*,?\s*\)/);
+			// The dialogs that keep an error in state and render it: the
+			// caught error's own message is never what is stored.
+			expect(source).not.toMatch(
+				/set\w*Error\(\s*\w+ instanceof Error \? \w+\.message/,
+			);
+			expect(source).not.toMatch(/message:\s*error\.message/);
 		},
 	);
+
+	// Native `window.confirm` blocks the renderer, sits outside the design
+	// system, and cannot name the action on its button. Every confirmation in
+	// this folder goes through `useConfirmationAlert`, destructively.
+	it.each(files.map((file) => [file.name, file.source] as const))(
+		"%s asks for no confirmation through window.confirm",
+		(_name, source) => {
+			expect(source).not.toMatch(/window\.confirm\s*\(/);
+			expect(source).not.toMatch(/(?<![.\w])confirm\(\s*["'`]/);
+		},
+	);
+
+	it("marks every confirmation destructive", () => {
+		const asking = files.filter((file) =>
+			/\bconfirm\(\{/.test(file.source),
+		);
+
+		expect(asking.length).toBeGreaterThan(0);
+		for (const file of asking) {
+			const calls = file.source.match(/\bconfirm\(\{/g) ?? [];
+			const destructive = file.source.match(/destructive: true/g) ?? [];
+			expect(destructive.length, file.name).toBeGreaterThanOrEqual(
+				calls.length,
+			);
+		}
+	});
 
 	it("routes every site that turns an error into a toast through the hook", () => {
 		const users = files.filter((file) =>
@@ -46,9 +78,14 @@ describe("Coding Instructions action errors", () => {
 			"InstructionFileView.tsx",
 			"InstructionProposalBranchPanel.tsx",
 			"InstructionProposals.tsx",
+			"InstructionsCommits.tsx",
 			"InstructionsHistory.tsx",
 			"InstructionsPublishedView.tsx",
 			"InstructionsSettingsDialog.tsx",
+			"MoveInstructionsDialog.tsx",
+			"RenameInstructionFileDialog.tsx",
+			"RepositoryMigrationStatus.tsx",
+			"UploadFolderDialog.tsx",
 		]);
 		for (const file of users) {
 			expect(file.source).toContain("useInstructionActionError()");

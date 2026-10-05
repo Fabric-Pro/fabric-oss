@@ -21,6 +21,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 
 import { uploadSnapshot } from "../upload-snapshot";
+import { StorageUploadError } from "../upload-storage-error";
 
 function entry(path: string, overrides?: Partial<FolderEntry>): FolderEntry {
 	return {
@@ -231,6 +232,71 @@ describe("uploadSnapshot", () => {
 		expect(finalize).not.toHaveBeenCalled();
 	});
 
+	// The dialog discards the snapshot it began only when storage could not be
+	// reached; every other failure keeps it for a resume. So a PUT that gave up
+	// is a typed error, however it failed: an HTTP status or a thrown fetch.
+	it.each([
+		["a response with a failing status", { ok: false, status: 403 }],
+		["a fetch that throws", new TypeError("Failed to fetch")],
+	])(
+		"rejects with a StorageUploadError naming the path when a PUT gives up on %s",
+		async (_label, outcome) => {
+			vi.useFakeTimers();
+			begin.mockResolvedValue({ snapshotId: "snap_1" });
+			listFiles.mockResolvedValue([{ id: "file_1", path: "notes.md" }]);
+			createUploadUrls.mockResolvedValue({
+				uploads: [
+					{
+						fileId: "file_1",
+						path: "notes.md",
+						url: "https://storage.example.com/put/file_1",
+						contentType: "text/plain",
+					},
+				],
+			});
+			vi.stubGlobal(
+				"fetch",
+				outcome instanceof Error
+					? vi.fn().mockRejectedValue(outcome)
+					: vi.fn().mockResolvedValue(outcome as Response),
+			);
+
+			const uploadPromise = uploadSnapshot({
+				projectId: "proj_1",
+				entries: [entry("notes.md")],
+				fabricIgnoreText: null,
+				publishOnReady: true,
+			});
+			const assertion = expect(uploadPromise).rejects.toSatisfy(
+				(error: unknown) =>
+					error instanceof StorageUploadError &&
+					error.path === "notes.md" &&
+					error.message.includes("notes.md"),
+			);
+			await vi.runAllTimersAsync();
+			await assertion;
+		},
+	);
+
+	it("does not call a refusal of begin, createUploadUrls or finalize a storage failure", async () => {
+		begin.mockResolvedValue({ snapshotId: "snap_1" });
+		listFiles.mockResolvedValue([{ id: "file_1", path: "notes.md" }]);
+		createUploadUrls.mockRejectedValue(new Error("signing refused"));
+
+		const error = await uploadSnapshot({
+			projectId: "proj_1",
+			entries: [entry("notes.md")],
+			fabricIgnoreText: null,
+			publishOnReady: true,
+		}).then(
+			() => null,
+			(e: unknown) => e,
+		);
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error).not.toBeInstanceOf(StorageUploadError);
+	});
+
 	it("resuming a snapshot skips begin, re-lists the existing snapshot's files, and never re-hashes (uploadSnapshot has no hashing of its own — that lives in read-folder.ts)", async () => {
 		listFiles.mockResolvedValue([{ id: "file_1", path: "CLAUDE.md" }]);
 		createUploadUrls.mockResolvedValue({
@@ -348,6 +414,53 @@ describe("uploadSnapshot", () => {
 			fabricIgnoreText: "*.log\n",
 			files: [{ path: "CLAUDE.md", size: 10, sha256: "a".repeat(64) }],
 			clientExcludedCount: 2,
+			clientExcluded: [
+				{ path: "notes.log", rule: "*.log" },
+				{ path: "node_modules/x/index.js", rule: "**/node_modules/**" },
+			],
+		});
+	});
+
+	it("names no more than 500 of the left-out entries, while the count says how many there were", async () => {
+		begin.mockResolvedValue({ snapshotId: "snap_1" });
+		listFiles.mockResolvedValue([{ id: "file_1", path: "CLAUDE.md" }]);
+		createUploadUrls.mockResolvedValue({
+			uploads: [
+				{
+					fileId: "file_1",
+					path: "CLAUDE.md",
+					url: "https://storage.example.com/put/file_1",
+					contentType: "text/markdown",
+				},
+			],
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response),
+		);
+		const ignored = Array.from({ length: 700 }, (_, i) =>
+			entry(`node_modules/pkg/file-${i}.js`, {
+				sha256: null,
+				excluded: { rule: "**/node_modules/**", layer: "default" },
+			}),
+		);
+
+		await uploadSnapshot({
+			projectId: "proj_1",
+			entries: [entry("CLAUDE.md"), ...ignored],
+			fabricIgnoreText: null,
+			publishOnReady: true,
+		});
+
+		const sent = begin.mock.calls[0]?.[0] as {
+			clientExcludedCount: number;
+			clientExcluded: Array<{ path: string; rule: string }>;
+		};
+		expect(sent.clientExcludedCount).toBe(700);
+		expect(sent.clientExcluded).toHaveLength(500);
+		expect(sent.clientExcluded[0]).toEqual({
+			path: "node_modules/pkg/file-0.js",
+			rule: "**/node_modules/**",
 		});
 	});
 

@@ -113,6 +113,140 @@ describe("InstructionsRejectedBanner", () => {
 		expect(onSyncAgain).toHaveBeenCalled();
 	});
 
+	// Fizzy #2878 §10: a commit of the branch that the sync refused is named as
+	// git names it, so what is wrong is a commit to fix, and Fabric's copy stays
+	// at the commit it was.
+	it("names the commit the sync refused and the commit Fabric's copy stays at", () => {
+		render(
+			<InstructionsRejectedBanner
+				rejection={[
+					{ path: "a.md", reason: "secret", detail: "github-token" },
+				]}
+				mode="repository"
+				commit="b1c2d3e4f5061728394a5b6c7d8e9f0123456789"
+				publishedCommit="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+				publishedVersion={7}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit b1c2d3e refused: 1 file contains secrets",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.rejectedBanner
+					.bodyRepositoryCommit,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Fabric's copy stays at commit a1b2c3d."),
+		).toBeInTheDocument();
+	});
+
+	it("words several refused files and a sync that never finished, naming the commit", () => {
+		const { unmount } = render(
+			<InstructionsRejectedBanner
+				rejection={[
+					{ path: "a.md", reason: "secret", detail: "github-token" },
+					{ path: "b.md", reason: "secret", detail: "jwt" },
+				]}
+				mode="repository"
+				commit="b1c2d3e4f5061728394a5b6c7d8e9f0123456789"
+			/>,
+		);
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit b1c2d3e refused: 2 files contain secrets",
+			}),
+		).toBeInTheDocument();
+		unmount();
+
+		render(
+			<InstructionsRejectedBanner
+				rejection={[{ path: "(upload)", reason: "abandoned" }]}
+				mode="repository"
+				commit="b1c2d3e4f5061728394a5b6c7d8e9f0123456789"
+			/>,
+		);
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit b1c2d3e refused: its sync never finished",
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the sync wording when the refused version recorded no commit", () => {
+		render(
+			<InstructionsRejectedBanner
+				rejection={[{ path: "a.md", reason: "hash_mismatch" }]}
+				mode="repository"
+				commit={null}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Sync rejected: 1 file failed checks",
+			}),
+		).toBeInTheDocument();
+	});
+
+	// Fizzy #2878 §10: a direct commit the scan refused was never pushed, so
+	// there is no commit to name and nothing to sync or upload again; the way
+	// on is to fix the files and commit again.
+	it("says a refused commit was never pushed to the branch, and offers neither Upload again nor Sync again", () => {
+		const banner = en.projects.codingInstructions.rejectedBanner;
+		render(
+			<InstructionsRejectedBanner
+				rejection={[
+					{ path: "a.md", reason: "secret", detail: "github-token" },
+				]}
+				onUploadAgain={() => undefined}
+				onSyncAgain={() => undefined}
+				mode="commit"
+				branch="main"
+				publishedVersion={7}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit not made: 1 file contains secrets",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(banner.bodyCommit.replace("{ref}", "main")),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Fabric's copy stays at version 7."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Upload again" }),
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: "Sync again" })).toBeNull();
+	});
+
+	it("words a refused commit with several files in the plural", () => {
+		render(
+			<InstructionsRejectedBanner
+				rejection={[
+					{ path: "a.md", reason: "secret", detail: "github-token" },
+					{ path: "b.md", reason: "secret", detail: "jwt" },
+				]}
+				mode="commit"
+				branch="main"
+			/>,
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit not made: 2 files contain secrets",
+			}),
+		).toBeInTheDocument();
+	});
+
 	it("keeps the neutral body for an abandoned upload and still offers Upload again", () => {
 		const banner = en.projects.codingInstructions.rejectedBanner;
 		const { container } = render(

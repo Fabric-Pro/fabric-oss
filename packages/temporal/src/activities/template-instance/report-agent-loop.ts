@@ -1281,6 +1281,9 @@ async function probeMcpConfig(
 			configId,
 			userId,
 			organizationId,
+			// Only lists the server's tools; running one (below) re-acquires
+			// the client with the default `connect`.
+			access: "read",
 		});
 		const serverName = result.serverName || displayName || configId;
 		const allServerTools = await result.client.tools();

@@ -35,9 +35,14 @@ vi.mock("../../../../orpc/procedures", () => {
 	chain.handler = (fn: unknown) => ({ handler: fn });
 	return {
 		tenantProtectedProcedure: chain,
-		// The wizard gates on requirePermission, not requireProjectPermission —
+		// The wizard gates on requireInputOrgPermission (the role in the
+		// organization the input names), not requireProjectPermission —
 		// there is no project yet.
-		requirePermission: () => () => chain,
+		requireInputOrgPermission: () => () => chain,
+		resolveOrganizationId: (
+			organizationId: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => organizationId ?? session.activeOrganizationId ?? undefined,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 	};
 });

@@ -49,6 +49,18 @@ vi.mock("@repo/temporal/coding-execution", () => ({
 	})),
 }));
 
+// The creator's live permission on the plan's project (Fizzy #2904 review):
+// the real precedence is covered in packages/api; here it is the project's
+// organization, or a refusal.
+const { assertProjectPermission } = vi.hoisted(() => ({
+	assertProjectPermission: vi.fn(),
+}));
+vi.mock("@repo/api/orpc/procedures", () => ({
+	assertProjectPermission,
+	Permissions: { AGENT_EXECUTE: "agent:execute" },
+}));
+
+import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database";
 import { executeWeaveCodingRun } from "../lib";
 
@@ -56,6 +68,12 @@ describe("executeWeaveCodingRun", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
 		vi.clearAllMocks();
+		assertProjectPermission.mockImplementation(
+			async (projectId: string) => ({
+				projectId,
+				organizationId: "org_1",
+			}),
+		);
 	});
 
 	it("uses the CodingRun workflow for feature-linked plans", async () => {
@@ -277,6 +295,259 @@ describe("executeWeaveCodingRun", () => {
 		).rejects.toMatchObject({
 			message:
 				"Local development require a default repository root on the project before Weave can launch implementation.",
+		});
+	});
+	// Fizzy #2904: `startExecution` runs a plan in its AUTHORIZED project's
+	// organization, so the run's organization can differ from the one a
+	// legacy plan was stamped with (none, for a project guest's plan).
+	// Fizzy #2904 review: the service token authenticates the service, not
+	// the user, and a queued delegation can run after its creator lost the
+	// project. So the creator is re-authorized on the plan's project and the
+	// plan held to that project's organization before anything is created.
+	describe("authorizing the plan's project", () => {
+		const featurePlan = (organizationId: string | null) => ({
+			id: "plan_5",
+			projectId: "project_5",
+			name: "Feature plan",
+			organizationId,
+			project: {
+				id: "project_5",
+				name: "Fabric",
+				organizationId: "org_1",
+				repositoryUrl: "https://github.com/acme/fabric",
+				repositoryOwner: "acme",
+				repositoryName: "fabric",
+				defaultBranch: "main",
+				implementationDefaultChannel: "BACKGROUND_AGENTS",
+				implementationDefaultProvider: "BACKGROUND_AGENTS",
+				implementationDefaultWorkingDirectory: null,
+			},
+			userStory: {
+				id: "story_5",
+				identifier: "FAB-105",
+				title: "Ship feature",
+				description: null,
+				acceptanceCriteria: null,
+			},
+			storyTask: null,
+		});
+		/** Honours the lookup's filter as the database would. */
+		const storePlan = (row: ReturnType<typeof featurePlan>) =>
+			vi
+				.mocked(db.weavePlan.findFirst)
+				.mockImplementation((async (args: {
+					where: Record<string, unknown>;
+				}) =>
+					Object.entries(args.where).every(
+						([key, value]) =>
+							(key === "id" && value === "plan_5") ||
+							(key === "userId" && value === "user_1") ||
+							(row as Record<string, unknown>)[key] === value,
+					)
+						? row
+						: null) as never);
+		const run = (organizationId: string | null) =>
+			executeWeaveCodingRun({
+				planId: "plan_5",
+				prompt: "Implement feature",
+				category: "backend",
+				userId: "user_1",
+				organizationId,
+				timeoutMs: 100,
+			});
+		const nothingCreated = () => {
+			expect(db.codingRun.create).not.toHaveBeenCalled();
+			expect(db.codingRun.update).not.toHaveBeenCalled();
+			expect(workflowStart).not.toHaveBeenCalled();
+			expect(createSession).not.toHaveBeenCalled();
+		};
+
+		beforeEach(() => {
+			vi.mocked(db.organization.findUnique).mockResolvedValue({
+				name: "Acme",
+			} as never);
+			vi.mocked(db.weaveExecution.findFirst).mockResolvedValue(null);
+			transactionCodingRunFindFirst.mockResolvedValue(null);
+			vi.mocked(db.codingRun.create).mockResolvedValue({
+				id: "run_5",
+			} as never);
+			vi.mocked(db.codingRun.update).mockResolvedValue({
+				id: "run_5",
+			} as never);
+			vi.mocked(db.codingRun.findUnique).mockResolvedValue({
+				id: "run_5",
+				externalUrl: null,
+				pullRequestUrl: null,
+			} as never);
+			workflowStart.mockResolvedValue({});
+			workflowGetHandle.mockReturnValue({
+				result: vi.fn().mockResolvedValue({
+					codingRunId: "run_5",
+					status: "completed",
+				}),
+			});
+		});
+
+		it("loads the plan by id and creator, then checks the creator's execute permission on its project", async () => {
+			storePlan(featurePlan("org_1"));
+			await run("org_1");
+			expect(db.weavePlan.findFirst).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { id: "plan_5", userId: "user_1" },
+				}),
+			);
+			expect(assertProjectPermission).toHaveBeenCalledWith(
+				"project_5",
+				"user_1",
+				"agent:execute",
+			);
+		});
+
+		it("runs a legacy plan with no organization in the project's organization", async () => {
+			storePlan(featurePlan(null));
+			await run("org_1");
+			expect(db.codingRun.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({ organizationId: "org_1" }),
+				}),
+			);
+			const options = workflowStart.mock.calls[0]?.[1] as {
+				args: Array<{ organizationId?: string }>;
+			};
+			expect(options.args[0]?.organizationId).toBe("org_1");
+		});
+
+		it("refuses a legacy plan under another organization, creating nothing", async () => {
+			storePlan(featurePlan(null));
+			await expect(run("org_other")).rejects.toMatchObject({
+				message: "Weave plan not found or access denied",
+			});
+			nothingCreated();
+		});
+
+		it("runs a legacy plan requested with no organization in the project's organization", async () => {
+			storePlan(featurePlan(null));
+			await run(null).catch(() => undefined);
+			// The authorized project's organization, never the request's null.
+			expect(db.codingRun.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({ organizationId: "org_1" }),
+				}),
+			);
+		});
+
+		it("refuses a creator who lost access to the project, creating nothing", async () => {
+			storePlan(featurePlan("org_1"));
+			assertProjectPermission.mockRejectedValue(
+				new ORPCError("NOT_FOUND", { message: "Project not found" }),
+			);
+			await expect(run("org_1")).rejects.toMatchObject({
+				message: "Weave plan not found or access denied",
+			});
+			nothingCreated();
+		});
+
+		it("refuses a plan stamped with another organization than its project's, creating nothing", async () => {
+			storePlan(featurePlan("org_other"));
+			await expect(run("org_other")).rejects.toMatchObject({
+				message: "Weave plan not found or access denied",
+			});
+			nothingCreated();
+		});
+
+		describe("an execution id the caller names", () => {
+			const execution = (over: Record<string, unknown> = {}) => ({
+				id: "exec_5",
+				planId: "plan_5",
+				userId: "user_1",
+				organizationId: "org_1",
+				status: "RUNNING",
+				...over,
+			});
+			/** Honours the explicit lookup's filter as the database would. */
+			const storeExecution = (row: Record<string, unknown>) =>
+				vi
+					.mocked(db.weaveExecution.findFirst)
+					.mockImplementation((async (args: {
+						where: Record<string, unknown>;
+					}) =>
+						Object.entries(args.where).every(
+							([key, value]) => row[key] === value,
+						)
+							? row
+							: null) as never);
+			const runWith = (weaveExecutionId: string) =>
+				executeWeaveCodingRun({
+					planId: "plan_5",
+					prompt: "Implement feature",
+					category: "backend",
+					userId: "user_1",
+					organizationId: "org_1",
+					weaveExecutionId,
+					timeoutMs: 100,
+				});
+
+			it.each([
+				["a cancelled execution", execution({ status: "CANCELLED" })],
+				["a completed execution", execution({ status: "COMPLETED" })],
+				[
+					"another plan's execution",
+					execution({ planId: "plan_other" }),
+				],
+				[
+					"another creator's execution",
+					execution({ userId: "user_2" }),
+				],
+				[
+					"an execution in another organization",
+					execution({ organizationId: "org_other" }),
+				],
+			])("refuses %s, creating nothing", async (_label, row) => {
+				storePlan(featurePlan("org_1"));
+				storeExecution(row);
+				await expect(runWith("exec_5")).rejects.toMatchObject({
+					message: "Weave plan not found or access denied",
+				});
+				nothingCreated();
+			});
+
+			it("refuses an id that does not exist, without falling back to the lookup", async () => {
+				storePlan(featurePlan("org_1"));
+				storeExecution(execution());
+				await expect(runWith("exec_missing")).rejects.toMatchObject({
+					message: "Weave plan not found or access denied",
+				});
+				expect(db.weaveExecution.findFirst).toHaveBeenCalledTimes(1);
+				nothingCreated();
+			});
+
+			it.each([
+				["in the project's organization", "org_1"],
+				["a legacy one with no organization", null],
+			])("links a valid active execution %s", async (_label, org) => {
+				storePlan(featurePlan("org_1"));
+				storeExecution(execution({ organizationId: org }));
+				await runWith("exec_5");
+				expect(db.codingRun.create).toHaveBeenCalledWith(
+					expect.objectContaining({
+						data: expect.objectContaining({
+							weaveExecutionId: "exec_5",
+						}),
+					}),
+				);
+			});
+		});
+
+		it("refuses a project with no organization, creating nothing", async () => {
+			storePlan(featurePlan(null));
+			assertProjectPermission.mockResolvedValue({
+				projectId: "project_5",
+				organizationId: null,
+			});
+			await expect(run(null)).rejects.toMatchObject({
+				message: "Weave plan not found or access denied",
+			});
+			nothingCreated();
 		});
 	});
 });

@@ -28,6 +28,7 @@ import { formatDistanceToNow } from "date-fns";
 import type { LucideIcon } from "lucide-react";
 import {
 	AlertTriangleIcon,
+	CheckCheckIcon,
 	CheckCircleIcon,
 	ClipboardListIcon,
 	ClockIcon,
@@ -298,8 +299,14 @@ const documentTypeDescriptions: Record<string, string> = {
 	GENERAL: "General purpose document",
 };
 
+// 44px with a coarse pointer: the minimum tap target for touch.
+//
+// `disabled:pointer-events-auto` undoes the button's own
+// `disabled:pointer-events-none`. A disabled button is one whose action is in
+// flight, and the row around it passes clicks through to the card: left
+// transparent, a second click on its spinner would open the document.
 const actionButtonClassName =
-	"size-8 border border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+	"size-8 pointer-coarse:size-11 border border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-auto";
 
 /**
  * The document status pill. When there is something to say beyond the status
@@ -476,6 +483,7 @@ export function DocumentsList({
 	const [togglingActiveDocId, setTogglingActiveDocId] = useState<
 		string | null
 	>(null);
+	const [completingDocId, setCompletingDocId] = useState<string | null>(null);
 	const [editingDocId, setEditingDocId] = useState<string | null>(null);
 
 	const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -580,6 +588,49 @@ export function DocumentsList({
 			projectId,
 			id: docId,
 			organizationId,
+		});
+	};
+
+	const markCompleteMutation = useMutation(
+		orpc.projects.documents.update.mutationOptions({
+			onSuccess: (result) => {
+				// The server completes only a document that is still a draft,
+				// and says whether this request did. This card may be older
+				// than the row — a generation started from another tab, or
+				// someone else completing it — and then nothing was changed
+				// here, whatever status the row has now.
+				if (result?.draftCompleted) {
+					toast.success(tDocuments("markComplete.completed"));
+				} else {
+					toast.info(tDocuments("markComplete.notDraft"));
+				}
+				queryClient.invalidateQueries({
+					queryKey: orpc.projects.documents.list.queryKey({
+						input: { projectId, organizationId },
+					}),
+				});
+			},
+			onError: (error) => {
+				toast.error(
+					tDocuments("markComplete.failed", {
+						message: error.message,
+					}),
+				);
+			},
+			onSettled: () => {
+				setCompletingDocId(null);
+			},
+		}),
+	);
+
+	const handleMarkComplete = (e: React.MouseEvent, docId: string) => {
+		e.stopPropagation();
+		setCompletingDocId(docId);
+		markCompleteMutation.mutate({
+			projectId,
+			id: docId,
+			organizationId,
+			completeDraft: true,
 		});
 	};
 
@@ -831,8 +882,7 @@ export function DocumentsList({
 
 						// Check if document has content (failed docs with 0 words have no content)
 						const hasContent =
-							doc.status !== "FAILED" ||
-							(doc.wordCount && doc.wordCount > 0);
+							doc.status !== "FAILED" || (doc.wordCount ?? 0) > 0;
 						const isClickable = hasContent;
 						const isActive = (doc as any).isActive !== false;
 						const glossyHref =
@@ -890,24 +940,40 @@ export function DocumentsList({
 									/>
 								)}
 
-								{/* Gradient background on hover */}
+								{/*
+								 * Decoration only. Both layers sit above the
+								 * "Open" button in paint order, so without
+								 * `pointer-events-none` they take every click
+								 * on the card body and the document opens
+								 * from the keyboard only.
+								 */}
 								<div
 									className={cn(
-										"absolute inset-0 bg-gradient-to-br opacity-0 transition-opacity duration-200 group-hover:opacity-100",
+										"pointer-events-none absolute inset-0 bg-gradient-to-br opacity-0 transition-opacity duration-200 group-hover:opacity-100",
 										style.haloClassName,
 									)}
 								/>
 								<div
 									className={cn(
-										"absolute inset-x-3 inset-y-3 rounded-[1.1rem] border opacity-80 transition-colors duration-200 group-hover:opacity-100",
+										"pointer-events-none absolute inset-x-3 inset-y-3 rounded-[1.1rem] border opacity-80 transition-colors duration-200 group-hover:opacity-100",
 										style.panelClassName,
 									)}
 								/>
 
 								<div className="pointer-events-none relative z-10 p-5">
-									{/* Active badge - top right, hides on hover so action buttons are accessible */}
+									{/*
+									 * Active badge - top right. It makes way for
+									 * the action row wherever that row appears
+									 * over it: on hover, and with keyboard focus
+									 * inside the card. With a coarse pointer the
+									 * row has a line of its own, so the badge
+									 * stays. `:focus-visible`, not `:focus-within`:
+									 * a button clicked with the mouse keeps focus,
+									 * and the badge must come back when the
+									 * pointer leaves.
+									 */}
 									{isActive && (
-										<div className="absolute top-[1.15rem] right-5 z-10 transition-opacity group-hover:opacity-0 pointer-events-none">
+										<div className="absolute top-[1.15rem] right-5 z-10 transition-opacity group-hover:opacity-0 not-pointer-coarse:group-has-focus-visible:opacity-0 pointer-events-none">
 											<Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 text-xs font-medium">
 												Active
 											</Badge>
@@ -915,7 +981,7 @@ export function DocumentsList({
 									)}
 
 									{/* Header */}
-									<div className="flex items-start gap-3">
+									<div className="flex items-start gap-3 pointer-coarse:flex-wrap">
 										{/* Icon with gradient */}
 										<div
 											className={cn(
@@ -925,8 +991,26 @@ export function DocumentsList({
 										>
 											<Icon className="size-5" />
 										</div>
+										{/*
+										 * Not a click target of its own: a click
+										 * on the title or the description opens
+										 * the document like the rest of the card.
+										 * The rename control inside takes its own
+										 * pointer events.
+										 *
+										 * `pr-16` keeps the Active badge's corner
+										 * free, and a long title truncates there.
+										 * With a coarse pointer and no badge
+										 * nothing sits in that corner — the action
+										 * row has a line of its own — so the title
+										 * gets it back.
+										 */}
 										<div
-											className="pointer-events-auto min-w-0 flex-1 pr-16"
+											className={cn(
+												"min-w-0 flex-1 pr-16",
+												!isActive &&
+													"pointer-coarse:pr-0",
+											)}
 											onMouseDownCapture={
 												canEdit
 													? (e) => e.stopPropagation()
@@ -962,8 +1046,24 @@ export function DocumentsList({
 											</p>
 										</div>
 
-										{/* Actions - visible on hover */}
-										<div className="pointer-events-auto flex shrink-0 items-start gap-1 pt-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+										{/*
+										 * Actions. Hidden until the card is
+										 * hovered — but hover styles apply only
+										 * where the device can hover, and a bare
+										 * `opacity-0` would leave invisible,
+										 * still tappable buttons (Delete among
+										 * them) on a card whose own tap navigates
+										 * away. So the row also shows with
+										 * keyboard focus inside the card, and
+										 * always with a coarse pointer, where it
+										 * takes a line of its own under the title
+										 * instead of squeezing it. Only the
+										 * buttons take pointer events: on its own
+										 * line the row spans the card, and the gap
+										 * beside the buttons must still open the
+										 * document.
+										 */}
+										<div className="pointer-events-none flex shrink-0 items-start gap-1 pt-0.5 opacity-0 transition-opacity *:pointer-events-auto group-hover:opacity-100 group-has-focus-visible:opacity-100 pointer-coarse:basis-full pointer-coarse:flex-wrap pointer-coarse:justify-end pointer-coarse:opacity-100">
 											{/* Only show View/Download for documents with content */}
 											{isClickable && (
 												<>
@@ -1027,6 +1127,60 @@ export function DocumentsList({
 													)}
 												</Button>
 											)}
+											{/*
+											 * The way out of DRAFT for a
+											 * document written by hand, from
+											 * the list. Regenerate above is
+											 * withheld from a draft, so a draft
+											 * with content had no action here
+											 * that finished it. An empty draft
+											 * has nothing to complete, and an
+											 * integration contract's status
+											 * belongs to its discovery run.
+											 */}
+											{canEdit &&
+												doc.status === "DRAFT" &&
+												doc.type !==
+													"INTEGRATION_CONTRACT" &&
+												(doc.content ?? "").trim() !==
+													"" && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																aria-label={tDocuments(
+																	"markComplete.action",
+																)}
+																className={
+																	actionButtonClassName
+																}
+																disabled={
+																	completingDocId ===
+																	doc.id
+																}
+																onClick={(e) =>
+																	handleMarkComplete(
+																		e,
+																		doc.id,
+																	)
+																}
+															>
+																{completingDocId ===
+																doc.id ? (
+																	<Loader2Icon className="size-4 animate-spin text-highlight" />
+																) : (
+																	<CheckCheckIcon className="size-4 text-success" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>
+															{tTooltips(
+																"markComplete",
+															)}
+														</TooltipContent>
+													</Tooltip>
+												)}
 											{/*
 											 * The way back from being stood down.
 											 *

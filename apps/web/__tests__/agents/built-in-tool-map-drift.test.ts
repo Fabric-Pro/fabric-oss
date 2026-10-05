@@ -3,13 +3,13 @@
  * must agree.
  *
  * `packages/database/prisma/queries/agent-templates.ts` holds the server's copy.
- * `FabricAIClient.tsx` holds a hand-maintained duplicate because a client
+ * `builtin-tool-map.ts` holds a hand-maintained duplicate because a client
  * component cannot import from `@repo/database` without dragging Prisma into
  * the browser bundle.
  *
  * The duplication is deliberate; the drift is not. The client copy is what
- * builds `enabledFabricToolIds` for the request, and `FabricAIClient` only
- * pushes ids it finds in its own map — so an id present on the server and
+ * builds `enabledFabricToolIds` for dedicated chats and shared agent selections,
+ * which only request ids found in that map — so an id present on the server and
  * missing on the client is never requested at all. No error, no warning: the
  * tool simply never fires. Fizzy #2473 added `fabric_list_meeting_transcripts`
  * to the server map and all but shipped with the client copy stale, which would
@@ -23,13 +23,13 @@ import { describe, expect, it } from "vitest";
 
 const CLIENT_SOURCE = join(
 	__dirname,
-	"../../modules/saas/agents/components/fabric-ai/FabricAIClient.tsx",
+	"../../modules/saas/agents/lib/builtin-tool-map.ts",
 );
 
 /**
  * Pull the client's literal map out of the source text. Reading the text rather
- * than importing keeps React and the rest of the component out of this test —
- * the map is a module-level const in a client component, not an export.
+ * than importing proves that the shared browser-safe module contains the literal
+ * map and does not depend on the server copy through a re-export.
  */
 function readClientToolMap(): Record<string, string[]> {
 	const source = readFileSync(CLIENT_SOURCE, "utf8");
@@ -58,7 +58,7 @@ function readClientToolMap(): Record<string, string[]> {
 }
 
 describe("built-in tool map drift (client vs server)", () => {
-	it("parses a non-trivial map out of the client component", () => {
+	it("parses a non-trivial map out of the client module", () => {
 		// Guards the guard: a regex that silently matched nothing would make
 		// every assertion below vacuously pass.
 		const client = readClientToolMap();

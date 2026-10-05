@@ -3,8 +3,8 @@ import {
 	db,
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
-	resolvePMConfigForUser,
 } from "@repo/database";
+import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
@@ -13,6 +13,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import {
+	resolveProjectPmConfig,
+	rethrowGitLabPmOriginMismatch,
+} from "../../../lib/gitlab-pm-source";
 
 /**
  * Test PM sync by creating a single work item in the configured project.
@@ -67,8 +71,9 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
@@ -99,20 +104,12 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 				serverKey = server?.key ?? null;
 			}
 			if (serverKey === "gitlab-official") {
-				const tenantFilter = project.organizationId
-					? {
-							organizationId: project.organizationId,
-							userId: user.id,
-						}
-					: { organizationId: null, userId: user.id };
-				const integration = await db.workflowIntegration.findFirst({
-					where: {
-						...tenantFilter,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-					},
-					select: { id: true },
+				// The caller's own usable GitLab connection (exclusive tenant); a
+				// reconnect-required connection, or a legacy `gitlab-official` MCP
+				// token copy with no connection, reads as not connected.
+				const integration = await findUsableGitLabConnection({
+					userId: user.id,
+					organizationId: project.organizationId ?? null,
 				});
 				if (integration) {
 					const {
@@ -123,7 +120,9 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 						userId: user.id,
 						organizationId: project.organizationId ?? null,
 						projectId: project.id,
-					});
+						pmAdditionalContext:
+							project.projectManagementAdditionalContext,
+					}).catch(rethrowGitLabPmOriginMismatch);
 					if (!source) {
 						throw new ORPCError("BAD_REQUEST", {
 							message:
@@ -294,13 +293,18 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// Bound to the container's GitLab instance at dispatch: the config
+		// may have moved since it was checked above.
 		const result = await executeMcpTool({
 			toolName: createTool.toolName,
 			args: createArgs,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
 			mcpConfigId: userMcpConfig.id,
-		});
+			pmTarget: {
+				additionalContext: project.projectManagementAdditionalContext,
+			},
+		}).catch(rethrowGitLabPmOriginMismatch);
 
 		if (!result.success) {
 			let errorDetail = "Unknown error";

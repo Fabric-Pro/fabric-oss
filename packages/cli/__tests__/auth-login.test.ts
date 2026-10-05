@@ -14,6 +14,7 @@ const { mocks } = vi.hoisted(() => ({
 		getBaseUrl: vi.fn<() => string | undefined>(),
 		getOAuth: vi.fn<() => unknown>(),
 		saveApiKey: vi.fn(),
+		signInWithBrowser: vi.fn(),
 		revokeOAuthSession: vi.fn(async () => true),
 		printError: vi.fn((_: string, code: number) => {
 			throw new ExitSignal(code);
@@ -42,6 +43,10 @@ vi.mock("../src/lib/config.js", () => ({
 
 vi.mock("../src/lib/oauth/session.js", () => ({
 	revokeOAuthSession: mocks.revokeOAuthSession,
+}));
+
+vi.mock("../src/lib/oauth/sign-in.js", () => ({
+	signInWithBrowser: mocks.signInWithBrowser,
 }));
 
 vi.mock("../src/lib/output.js", () => ({
@@ -101,6 +106,80 @@ describe("fabric auth login", () => {
 			baseUrl: "https://environment.example",
 		});
 		expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {});
+	});
+
+	describe("on a build packed for one deployment", () => {
+		afterEach(() => {
+			vi.unstubAllGlobals();
+			delete process.env.FABRIC_BASE_URL;
+		});
+
+		it("keeps the key under the deployment it was packed for", async () => {
+			vi.stubGlobal(
+				"__FABRIC_BAKED_ORIGIN__",
+				"https://deployment.example",
+			);
+			mocks.getBaseUrl.mockReturnValue("https://deployment.example");
+
+			await runLogin(["--key", "fab_test_key"]);
+
+			expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {
+				baseUrl: "https://deployment.example",
+			});
+		});
+
+		it("signs in through the browser to it, and keeps it as the chosen deployment", async () => {
+			vi.stubGlobal(
+				"__FABRIC_BAKED_ORIGIN__",
+				"https://deployment.example",
+			);
+			mocks.getBaseUrl.mockReturnValue("https://deployment.example");
+			mocks.signInWithBrowser.mockResolvedValue({
+				name: "Dev",
+				email: "dev@example.com",
+			});
+
+			await runLogin([]);
+
+			expect(mocks.signInWithBrowser).toHaveBeenCalledWith(
+				expect.objectContaining({
+					baseUrl: "https://deployment.example",
+					origin: "https://deployment.example",
+					explicit: true,
+				}),
+			);
+		});
+
+		it("lets --base-url name another deployment", async () => {
+			vi.stubGlobal(
+				"__FABRIC_BAKED_ORIGIN__",
+				"https://deployment.example",
+			);
+
+			await runLogin([
+				"--key",
+				"fab_test_key",
+				"--base-url",
+				"https://other.example",
+			]);
+
+			expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {
+				baseUrl: "https://other.example",
+			});
+		});
+
+		it("does not persist the deployment when FABRIC_BASE_URL overrides it for this run", async () => {
+			vi.stubGlobal(
+				"__FABRIC_BAKED_ORIGIN__",
+				"https://deployment.example",
+			);
+			process.env.FABRIC_BASE_URL = "https://environment.example";
+			mocks.getBaseUrl.mockReturnValue("https://environment.example");
+
+			await runLogin(["--key", "fab_test_key"]);
+
+			expect(mocks.saveApiKey).toHaveBeenCalledWith("fab_test_key", {});
+		});
 	});
 
 	it("ends at the server the browser sign-in a key replaces", async () => {
@@ -184,5 +263,110 @@ describe("fabric auth login", () => {
 			3,
 		);
 		expect(mocks.saveApiKey).not.toHaveBeenCalled();
+	});
+
+	describe("with --project", () => {
+		it("signs in through the browser for that project only, and says so", async () => {
+			mocks.getBaseUrl.mockReturnValue("https://deployment.example");
+			mocks.signInWithBrowser.mockResolvedValue({
+				name: "Dev",
+				email: "dev@example.com",
+			});
+
+			await runLogin(["--project", "project-example-one"]);
+
+			expect(mocks.signInWithBrowser).toHaveBeenCalledWith(
+				expect.objectContaining({
+					origin: "https://deployment.example",
+					project: "project-example-one",
+				}),
+			);
+			expect(mocks.printSuccess).toHaveBeenCalledWith(
+				"Authenticated as Dev (dev@example.com) for project project-example-one",
+			);
+			expect(mocks.saveApiKey).not.toHaveBeenCalled();
+		});
+
+		it("names the project in the line that tells the person where the browser went", async () => {
+			mocks.getBaseUrl.mockReturnValue("https://deployment.example");
+			mocks.signInWithBrowser.mockImplementation(
+				async (input: { announce: (url: string) => void }) => {
+					input.announce("https://deployment.example/authorize");
+					return { name: "Dev", email: "dev@example.com" };
+				},
+			);
+			const written: string[] = [];
+			const write = vi
+				.spyOn(process.stdout, "write")
+				.mockImplementation((chunk: unknown) => {
+					written.push(String(chunk));
+					return true;
+				});
+
+			try {
+				await runLogin(["--project", "project-example-one"]);
+			} finally {
+				write.mockRestore();
+			}
+
+			expect(written.join("")).toContain(
+				"Opening your browser to sign in to https://deployment.example for project project-example-one.",
+			);
+		});
+
+		it("does not touch the deployment's own browser sign-in or key", async () => {
+			mocks.getBaseUrl.mockReturnValue("https://deployment.example");
+			mocks.getOAuth.mockReturnValue({ accessToken: "fat_org_wide" });
+			mocks.signInWithBrowser.mockResolvedValue({
+				name: "Dev",
+				email: "dev@example.com",
+			});
+
+			await runLogin(["--project", "project-example-one"]);
+
+			expect(mocks.revokeOAuthSession).not.toHaveBeenCalled();
+			expect(mocks.saveApiKey).not.toHaveBeenCalled();
+		});
+
+		it("refuses to be combined with an API key, which is not limited to one project", async () => {
+			await expect(
+				runLogin([
+					"--project",
+					"project-example-one",
+					"--key",
+					"fab_test_key",
+				]),
+			).rejects.toMatchObject({ code: 2 });
+
+			expect(mocks.printError).toHaveBeenCalledWith(
+				expect.stringContaining("cannot be combined with --key"),
+				2,
+			);
+			expect(mocks.signInWithBrowser).not.toHaveBeenCalled();
+			expect(mocks.saveApiKey).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["a space", "my project"],
+			["a path", "../other"],
+			["a query", "abc?x=1"],
+			["more than 64 characters", "a".repeat(65)],
+			["nothing", ""],
+		])(
+			"refuses an id with %s in it, before opening a browser",
+			async (_label, id) => {
+				await expect(runLogin(["--project", id])).rejects.toMatchObject(
+					{
+						code: 2,
+					},
+				);
+
+				expect(mocks.printError).toHaveBeenCalledWith(
+					expect.stringContaining("--project must be a project id"),
+					2,
+				);
+				expect(mocks.signInWithBrowser).not.toHaveBeenCalled();
+			},
+		);
 	});
 });

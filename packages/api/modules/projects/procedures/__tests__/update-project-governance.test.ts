@@ -147,7 +147,15 @@ const orgProject = {
 	quotedPhases: [] as string[],
 };
 
-const personalProject = { ...orgProject, organizationId: null };
+// The project owner, as an accepted OWNER ProjectMember row. A project with no
+// organization is refused before any write (ADR-018), so the owner paths run on
+// an organization project.
+function asProjectOwner() {
+	mockProjectMemberFindUnique.mockResolvedValue({
+		role: "OWNER",
+		...ACTIVE_MEMBER,
+	});
+}
 
 function ctxFor(userId: string, activeOrganizationId: string | null) {
 	return {
@@ -250,15 +258,15 @@ describe("updateProjectProcedure governance", () => {
 	});
 
 	it("lets the owner change the profile, stamps engagementProfileUpdatedAt and writes an audit row in one transaction", async () => {
-		mockProjectFindUnique.mockResolvedValue(personalProject);
+		asProjectOwner();
 
 		const result = (await handlers.updateProject({
 			input: {
 				id: "proj_1",
-				organizationId: null,
+				organizationId: "org_1",
 				engagementProfile: "EXPLORE",
 			},
-			context: ctxFor("owner_1", null),
+			context: ctxFor("owner_1", "org_1"),
 		})) as { project: Record<string, unknown> };
 
 		// Update + audit row run together.
@@ -269,7 +277,7 @@ describe("updateProjectProcedure governance", () => {
 		const updateArgs = mockProjectUpdate.mock.calls[0][0];
 		expect(updateArgs.where).toEqual({
 			id: "proj_1",
-			organizationId: null,
+			organizationId: "org_1",
 		});
 		expect(updateArgs.data.engagementProfile).toBe("EXPLORE");
 		expect(updateArgs.data.engagementProfileUpdatedAt).toBeInstanceOf(Date);
@@ -284,7 +292,7 @@ describe("updateProjectProcedure governance", () => {
 			resourceType: "project",
 			resourceId: "proj_1",
 			resourceName: "Acme Portal",
-			organizationId: null,
+			organizationId: "org_1",
 		});
 		expect(activity.metadata).toEqual({
 			changed: {
@@ -296,14 +304,14 @@ describe("updateProjectProcedure governance", () => {
 	});
 
 	it("lets the owner enable enforceSpikeGate now that its run type exists", async () => {
-		mockProjectFindUnique.mockResolvedValue(personalProject);
+		asProjectOwner();
 		const result = (await handlers.updateProject({
 			input: {
 				id: "proj_1",
-				organizationId: null,
+				organizationId: "org_1",
 				enforceSpikeGate: true,
 			},
-			context: ctxFor("owner_1", null),
+			context: ctxFor("owner_1", "org_1"),
 		})) as { project: Record<string, unknown> };
 		expect(mockTransaction).toHaveBeenCalledTimes(1);
 		const updateArgs = mockProjectUpdate.mock.calls[0][0];
@@ -316,14 +324,14 @@ describe("updateProjectProcedure governance", () => {
 	});
 
 	it("lets the owner enable enforceDiscoveryGate now that its run type exists", async () => {
-		mockProjectFindUnique.mockResolvedValue(personalProject);
+		asProjectOwner();
 		const result = (await handlers.updateProject({
 			input: {
 				id: "proj_1",
-				organizationId: null,
+				organizationId: "org_1",
 				enforceDiscoveryGate: true,
 			},
-			context: ctxFor("owner_1", null),
+			context: ctxFor("owner_1", "org_1"),
 		})) as { project: Record<string, unknown> };
 		expect(mockTransaction).toHaveBeenCalledTimes(1);
 		const updateArgs = mockProjectUpdate.mock.calls[0][0];
@@ -350,16 +358,16 @@ describe("updateProjectProcedure governance", () => {
 	});
 
 	it("writes no audit row when a governance field is re-sent with its current value", async () => {
-		mockProjectFindUnique.mockResolvedValue(personalProject);
+		asProjectOwner();
 
 		await handlers.updateProject({
 			input: {
 				id: "proj_1",
-				organizationId: null,
+				organizationId: "org_1",
 				engagementProfile: "GOVERNED",
 				quotedPhases: [],
 			},
-			context: ctxFor("owner_1", null),
+			context: ctxFor("owner_1", "org_1"),
 		});
 
 		expect(mockTransaction).not.toHaveBeenCalled();

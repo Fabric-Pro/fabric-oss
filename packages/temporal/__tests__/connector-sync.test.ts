@@ -35,6 +35,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	getConnectionWithCredentials: vi.fn(),
+	getDataConnectionSyncMetadata: vi.fn(),
 	getSyncedResourceByExternalId: vi.fn(),
 	getSyncedResources: vi.fn(),
 	updateWorkspaceDocument: vi.fn(),
@@ -74,7 +75,20 @@ vi.mock("@repo/utils", () => ({
 	decryptApiKey: vi.fn((value: string) => value),
 }));
 
-import { getConnectionWithCredentials } from "@repo/database";
+// GitLab activities read the acting person's connection from the connection
+// service; the guarded fetch and origin rules stay real.
+vi.mock("@repo/integrations/gitlab", async () => ({
+	...(await vi.importActual<typeof import("@repo/integrations/gitlab")>(
+		"@repo/integrations/gitlab",
+	)),
+	getGitLabConnectionToken: vi.fn(),
+}));
+
+import {
+	getConnectionWithCredentials,
+	getDataConnectionSyncMetadata,
+} from "@repo/database";
+import { getGitLabConnectionToken } from "@repo/integrations/gitlab";
 import {
 	discoverResources,
 	fetchResourceDocuments,
@@ -224,6 +238,14 @@ describe("connector sync credential loading", () => {
 	});
 
 	it("merges reusable credential payload into connector config", async () => {
+		vi.mocked(getDataConnectionSyncMetadata).mockResolvedValueOnce({
+			id: "conn-1",
+			provider: "CLICKUP",
+			name: "ClickUp Search",
+			status: "CONNECTED",
+			config: { teamId: "123" },
+			lastSyncAt: null,
+		} as any);
 		vi.mocked(getConnectionWithCredentials).mockResolvedValueOnce({
 			id: "conn-1",
 			provider: "CLICKUP",
@@ -259,12 +281,26 @@ describe("connector sync credential loading", () => {
 });
 
 describe("connector sync GitLab provider", () => {
+	// The acting person's live GitLab connection, on `origin`.
+	function connectedOn(origin: string) {
+		vi.mocked(getGitLabConnectionToken).mockResolvedValue({
+			ok: true,
+			accessToken: "glpat-test",
+			issuer: { kind: "pat", origin },
+			origin,
+			integrationId: "wi-1",
+			generation: 1,
+			settings: {},
+		});
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 		global.fetch = vi.fn();
 	});
 
 	it("discovers configured GitLab projects without API discovery", async () => {
+		connectedOn("https://gitlab.example.com");
 		const resources = await discoverResources({
 			connectorId: "conn-gitlab-1",
 			provider: "GITLAB",
@@ -272,7 +308,9 @@ describe("connector sync GitLab provider", () => {
 				baseUrl: "https://gitlab.example.com/api/v4",
 				projects: ["platform/api", "platform/web"],
 			},
-			credentials: { apiKey: "glpat-test" },
+			credentials: {},
+			userId: "user-1",
+			organizationId: "org-1",
 		});
 
 		expect(resources).toEqual([
@@ -291,6 +329,7 @@ describe("connector sync GitLab provider", () => {
 	});
 
 	it("fetches GitLab issues and merge requests as searchable documents", async () => {
+		connectedOn("https://gitlab.com");
 		vi.mocked(global.fetch)
 			.mockResolvedValueOnce({
 				ok: true,
@@ -340,7 +379,9 @@ describe("connector sync GitLab provider", () => {
 					baseUrl: "https://gitlab.com/api/v4",
 				},
 			},
-			credentials: { apiKey: "glpat-test" },
+			credentials: {},
+			userId: "user-1",
+			organizationId: "org-1",
 			providerConfig: {
 				includeIssues: true,
 				includeMergeRequests: true,

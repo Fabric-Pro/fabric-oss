@@ -220,6 +220,6 @@ export default async function proxy(req: NextRequest) {
 
 export const config = {
 	matcher: [
-		"/((?!api|mcp|\\.well-known|image-proxy|images|integrations|fonts|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
+		"/((?!api|mcp|\\.well-known|cli/|image-proxy|images|integrations|fonts|_next/static|_next/image|favicon.ico|icon.png|manifest\\.json|sitemap.xml|robots.txt|llms\\.txt|llms-full\\.txt).*)",
 	],
 };

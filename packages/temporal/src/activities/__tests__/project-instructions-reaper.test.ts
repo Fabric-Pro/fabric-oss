@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
 	failStaleValidating: vi.fn(),
 	listStaleDeferredScans: vi.fn(),
 	markDeferredScanIncomplete: vi.fn(),
+	listStaleDirectCommits: vi.fn(),
+	failStaleDirectCommit: vi.fn(),
 	rejectAbandoned: vi.fn(),
 	markSwept: vi.fn(),
 	rotateAbandoned: vi.fn(),
@@ -48,6 +50,11 @@ vi.mock("@repo/database", () => ({
 		mocks.listStaleDeferredScans(...a),
 	markStaleDeferredScanIncomplete: (...a: unknown[]) =>
 		mocks.markDeferredScanIncomplete(...a),
+	listStaleDirectCommits: (...a: unknown[]) =>
+		mocks.listStaleDirectCommits(...a),
+	failStaleDirectCommit: (...a: unknown[]) =>
+		mocks.failStaleDirectCommit(...a),
+	STALE_COMMIT_AFTER_MS: 24 * 60 * 60_000,
 	rejectAbandonedInstructionSnapshot: (...a: unknown[]) =>
 		mocks.rejectAbandoned(...a),
 	markAbandonedInstructionSnapshotSwept: (...a: unknown[]) =>
@@ -190,6 +197,23 @@ function serveAbandonedPopulation(
 	);
 }
 
+/** Phase 0c's candidate query, served from a fixed population with its OFFSET/LIMIT/total semantics. */
+function serveStaleDirectCommits(
+	population: Array<{
+		id: string;
+		projectId: string;
+		organizationId: string;
+		createdAt: Date;
+	}>,
+): void {
+	mocks.listStaleDirectCommits.mockImplementation(
+		async (_cutoff: Date, limit: number, offset: number) => ({
+			candidates: population.slice(offset, offset + limit),
+			total: population.length,
+		}),
+	);
+}
+
 beforeEach(() => {
 	for (const m of Object.values(mocks)) {
 		m.mockReset();
@@ -200,6 +224,8 @@ beforeEach(() => {
 	mocks.failStaleValidating.mockResolvedValue({ changed: true });
 	serveDeferredScanPopulation([]);
 	mocks.markDeferredScanIncomplete.mockResolvedValue({ changed: true });
+	serveStaleDirectCommits([]);
+	mocks.failStaleDirectCommit.mockResolvedValue(true);
 	mocks.rejectAbandoned.mockResolvedValue({ changed: true });
 	mocks.markSwept.mockResolvedValue({ changed: true });
 	mocks.rotateAbandoned.mockResolvedValue({ rotated: true });
@@ -1077,6 +1103,137 @@ describe("reapInstructionSnapshots: per-run budgets", () => {
 			hitCap: false,
 		});
 		expect(mocks.loggerWarn).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * PHASE 0c (Fizzy #2878 §10). A direct commit that is READY with no outcome
+ * after the 24 hours its workflow may run has nothing behind it, and counts
+ * against the member's five and the project's twenty-five pending commits for
+ * good. The evidence is the row's age against the workflow's execution
+ * timeout, so Temporal is never asked.
+ */
+describe("reapInstructionSnapshots: stale pending direct commits", () => {
+	const DAY_MS = 24 * 60 * 60_000;
+	const staleCommit = (
+		id: string,
+		projectId = "p1",
+		organizationId = "o1",
+	) => ({
+		id,
+		projectId,
+		organizationId,
+		createdAt: new Date(Date.now() - DAY_MS - 60_000),
+	});
+
+	it("asks for candidates older than the day a commit workflow may run", async () => {
+		const before = Date.now();
+
+		await reapInstructionSnapshots();
+
+		const [cutoff] = mocks.listStaleDirectCommits.mock.calls[0] as [Date];
+		expect(cutoff.getTime()).toBeLessThanOrEqual(before - DAY_MS + 1_000);
+		expect(cutoff.getTime()).toBeGreaterThanOrEqual(
+			before - DAY_MS - 5_000,
+		);
+	});
+
+	it("closes a stale row out, bound to the row's own tenant and to the cutoff it was listed under", async () => {
+		serveStaleDirectCommits([staleCommit("c1", "p7", "o7")]);
+
+		const result = await reapInstructionSnapshots();
+
+		expect(mocks.failStaleDirectCommit).toHaveBeenCalledTimes(1);
+		const [input] = mocks.failStaleDirectCommit.mock.calls[0] as [
+			{ snapshotId: string; organizationId: string; cutoff: Date },
+		];
+		expect(input).toMatchObject({
+			snapshotId: "c1",
+			organizationId: "o7",
+		});
+		expect(input.cutoff).toBeInstanceOf(Date);
+		expect(result).toMatchObject({
+			staleDirectCommits: 1,
+			closedStaleDirectCommits: 1,
+		});
+	});
+
+	it("does not count a row the compare-and-set did not move, and carries on to the next", async () => {
+		serveStaleDirectCommits([staleCommit("c1"), staleCommit("c2")]);
+		mocks.failStaleDirectCommit
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+
+		const result = await reapInstructionSnapshots();
+
+		expect(mocks.failStaleDirectCommit).toHaveBeenCalledTimes(2);
+		expect(result).toMatchObject({
+			staleDirectCommits: 2,
+			closedStaleDirectCommits: 1,
+		});
+	});
+
+	it("never asks Temporal about a commit: its age is the evidence", async () => {
+		serveStaleDirectCommits([staleCommit("c1")]);
+
+		await reapInstructionSnapshots();
+
+		expect(mocks.getTemporalClient).not.toHaveBeenCalled();
+		expect(mocks.describe).not.toHaveBeenCalled();
+	});
+
+	it("reports hitCap when the candidate query comes back full", async () => {
+		serveStaleDirectCommits(
+			Array.from({ length: 200 }, (_, n) => staleCommit(`c${n}`)),
+		);
+
+		expect(await reapInstructionSnapshots()).toMatchObject({
+			staleDirectCommits: 200,
+			hitCap: true,
+		});
+	});
+
+	it("logs one line of counts and no identifiers", async () => {
+		serveStaleDirectCommits([
+			staleCommit("c-secret-id", "p-secret", "o-secret"),
+		]);
+
+		await reapInstructionSnapshots();
+
+		const line = mocks.loggerInfo.mock.calls.find(
+			([fields]) =>
+				(fields as { event?: string }).event ===
+				"instructions.reaper.stale_direct_commits_closed",
+		);
+		expect(line?.[0]).toEqual({
+			event: "instructions.reaper.stale_direct_commits_closed",
+			scanned: 1,
+			closed: 1,
+		});
+		expect(JSON.stringify(line)).not.toMatch(/secret/);
+	});
+
+	it("rotates through a population larger than one slice", async () => {
+		const population = Array.from({ length: 450 }, (_, n) =>
+			staleCommit(`c${n}`),
+		);
+		serveStaleDirectCommits(population);
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-04T00:00:00.000Z"));
+
+		const closed = new Set<string>();
+		mocks.failStaleDirectCommit.mockImplementation(
+			async (i: { snapshotId: string }) => {
+				closed.add(i.snapshotId);
+				return true;
+			},
+		);
+		for (let hour = 0; hour < 3; hour++) {
+			await reapInstructionSnapshots();
+			vi.setSystemTime(new Date(Date.now() + 60 * 60_000));
+		}
+
+		expect(closed.size).toBe(450);
 	});
 });
 

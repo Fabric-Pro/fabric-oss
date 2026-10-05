@@ -93,6 +93,34 @@ function decryptConnectionSecrets<T extends Record<string, unknown> | null>(
 	return out as T;
 }
 
+/**
+ * A GitLab Data Connection holds no credential: a GitLab sync resolves the
+ * GitLab connection of the person who starts it, inside each sync activity.
+ * Refuse, at the write, any token material for a GitLab row.
+ */
+function assertNoGitLabSecrets(
+	provider: DataConnectionProvider,
+	fields: {
+		accessToken?: string | null;
+		refreshToken?: string | null;
+		tokenExpiresAt?: Date | null;
+		credentials?: unknown;
+		credentialId?: string | null;
+	},
+): void {
+	if (provider !== "GITLAB") {
+		return;
+	}
+	const present = Object.entries(fields)
+		.filter(([, value]) => value !== undefined && value !== null)
+		.map(([key]) => key);
+	if (present.length > 0) {
+		throw new Error(
+			`A GitLab data connection cannot store credentials (${present.join(", ")})`,
+		);
+	}
+}
+
 // ============================================================================
 // Data Connection Queries
 // ============================================================================
@@ -300,6 +328,14 @@ export async function createDataConnection(params: {
 		credentialId,
 	} = params;
 
+	assertNoGitLabSecrets(provider, {
+		accessToken,
+		refreshToken,
+		tokenExpiresAt,
+		credentials,
+		credentialId,
+	});
+
 	// Enforce XOR pattern for tenant isolation
 	const tenantFields = organizationId
 		? { organizationId, userId: null }
@@ -380,6 +416,13 @@ export async function upsertDataConnection(params: {
 		credentials,
 		config,
 	} = params;
+
+	assertNoGitLabSecrets(provider, {
+		accessToken,
+		refreshToken,
+		tokenExpiresAt,
+		credentials,
+	});
 
 	// Check if connection already exists
 	const existing = await getDataConnectionByWorkspace({
@@ -897,6 +940,36 @@ export async function updateScheduleAfterRun(params: {
  *
  * SECURITY: Only use in server-side workflows, never expose to client.
  */
+/**
+ * A connection's sync metadata only: no token column, no `credentials` JSON,
+ * no saved-credential payload, and nothing decrypted. For a sync that must
+ * not read stored credentials (GitLab acts with the starting person's own
+ * connection instead).
+ */
+export async function getDataConnectionSyncMetadata(params: {
+	id: string;
+	userId: string;
+	organizationId: string | null | undefined;
+}) {
+	const { id, userId, organizationId } = params;
+	const tenantFilter = getTenantFilter({ userId, organizationId });
+
+	return db.dataConnection.findFirst({
+		where: {
+			id,
+			...tenantFilter,
+		},
+		select: {
+			id: true,
+			provider: true,
+			name: true,
+			status: true,
+			config: true,
+			lastSyncAt: true,
+		},
+	});
+}
+
 export async function getConnectionWithCredentials(params: {
 	id: string;
 	userId: string;

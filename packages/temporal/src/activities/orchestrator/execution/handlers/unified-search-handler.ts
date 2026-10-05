@@ -14,6 +14,10 @@
  */
 
 import type { ConnectorConfig } from "@repo/connectors";
+// Static, not `await import(...)`: under the worker's tsx runtime a dynamic
+// import of this ES-module package fails to link its named imports from
+// @repo/database. See src/__tests__/worker-dynamic-imports.test.ts.
+import { getGitHubAccessToken } from "@repo/integrations/github";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -213,9 +217,6 @@ export class UnifiedSearchHandler implements StepHandler {
 					((connection.credentials as Record<string, unknown> | null)
 						?.accessToken as string | undefined);
 				if (connection.provider === "GITHUB") {
-					const { getGitHubAccessToken } = await import(
-						"@repo/integrations/github"
-					);
 					resolvedAccessToken =
 						(await getGitHubAccessToken(
 							input.userId,

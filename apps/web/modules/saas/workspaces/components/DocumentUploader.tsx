@@ -6,6 +6,7 @@ import {
 	WORKSPACE_DOCUMENT_FORMAT_LABELS,
 	workspaceDocumentConfigFor,
 } from "@repo/utils";
+import { formatFileSize } from "@saas/projects/lib/instructions-file-size";
 import {
 	LiveAnnouncerRegion,
 	useLiveAnnouncer,
@@ -668,11 +669,9 @@ export function DocumentUploader({
 											</p>
 											<div className="flex items-center gap-2">
 												<p className="text-xs text-muted-foreground">
-													{(
-														fileState.file.size /
-														(1024 * 1024)
-													).toFixed(2)}{" "}
-													MB
+													{formatFileSize(
+														fileState.file.size,
+													)}
 												</p>
 												{(fileState.status ===
 													"uploading" ||

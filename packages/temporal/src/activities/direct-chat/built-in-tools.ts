@@ -33,6 +33,7 @@ import { PROJECT_DOCUMENT_TOOL_IDS } from "../shared/project-document-reads";
 import { PROJECT_FEATURE_TOOL_IDS } from "../shared/project-feature-reads";
 import {
 	buildCodeSearchRepositories,
+	buildUnindexedRepositories,
 	type CodeSearchRepository,
 	codeIndexUnavailableResult,
 	describeCodeSearchRepositories,
@@ -273,6 +274,8 @@ async function createWebSearchTool(
 async function loadCodeSearchRepositories(projectId: string): Promise<{
 	indexes: Array<{ repositoryIntegrationId: string | null; status: string }>;
 	repositories: CodeSearchRepository[];
+	/** Connected repositories with no index row, looked up on demand. */
+	loadUnindexed: () => Promise<CodeSearchRepository[]>;
 }> {
 	const { getProjectCodeIndexes } = await import("@repo/database");
 	const [indexes, integrations] = await Promise.all([
@@ -290,17 +293,19 @@ async function loadCodeSearchRepositories(projectId: string): Promise<{
 	]);
 	// The project's own legacy repository backs only an index row with no
 	// integration, so it is looked up only when there is one.
+	const loadLegacy = () =>
+		db.project.findUnique({
+			where: { id: projectId },
+			select: {
+				repositoryUrl: true,
+				repositoryOwner: true,
+				repositoryName: true,
+			},
+		});
 	const legacy = indexes.some(
 		(index) => index.repositoryIntegrationId === null,
 	)
-		? await db.project.findUnique({
-				where: { id: projectId },
-				select: {
-					repositoryUrl: true,
-					repositoryOwner: true,
-					repositoryName: true,
-				},
-			})
+		? await loadLegacy()
 		: null;
 	return {
 		indexes,
@@ -309,6 +314,14 @@ async function loadCodeSearchRepositories(projectId: string): Promise<{
 			integrations,
 			legacy,
 		),
+		// An indexed legacy repository is not unindexed, so the row is only
+		// needed when it was not loaded above.
+		loadUnindexed: async () =>
+			buildUnindexedRepositories(
+				indexes,
+				integrations,
+				legacy ?? (await loadLegacy()),
+			),
 	};
 }
 
@@ -319,13 +332,24 @@ interface CodeSearchToolContext extends BuiltInToolContext {
 	 * repositories.
 	 */
 	preferredRepositoryUrl?: string;
+	/**
+	 * The chat also offers `code_tree` and `code_file_get` (the
+	 * orchestrator's Fabric catalog), so an unsearchable index can point the
+	 * model at them.
+	 */
+	liveRepositoryReads?: boolean;
 }
 
 export async function createCodeSearchTool(
 	context: CodeSearchToolContext,
 ): Promise<Record<string, unknown>> {
-	const { projectId, userId, organizationId, preferredRepositoryUrl } =
-		context;
+	const {
+		projectId,
+		userId,
+		organizationId,
+		preferredRepositoryUrl,
+		liveRepositoryReads,
+	} = context;
 	if (!projectId) {
 		return {};
 	}
@@ -369,8 +393,15 @@ export async function createCodeSearchTool(
 				repo?: string;
 				maxResults?: number;
 			}) => {
-				const { indexes: codeIndexes, repositories } =
-					await loadCodeSearchRepositories(projectId);
+				const {
+					indexes: codeIndexes,
+					repositories,
+					loadUnindexed,
+				} = await loadCodeSearchRepositories(projectId);
+				const unavailable = (status: string, label?: string) =>
+					codeIndexUnavailableResult(status, label, {
+						liveRepositoryReads,
+					});
 				const requested = (args.repository ?? args.repo)?.trim();
 				let target: CodeSearchRepository | null = null;
 				if (requested && requested.toLowerCase() !== "all") {
@@ -379,12 +410,43 @@ export async function createCodeSearchTool(
 						requested,
 					);
 					if (!target) {
+						// Connected but never indexed, or nothing indexed at
+						// all: the index is unavailable, which no retry fixes,
+						// so a plain result rather than a failure (Fizzy #2926;
+						// a failure counts toward the three-strike breaker).
+						const unindexed = await loadUnindexed();
+						const connected = resolveCodeSearchRepository(
+							unindexed,
+							requested,
+						);
+						if (connected) {
+							return unavailable("missing", connected.label);
+						}
+						if (repositories.length === 0) {
+							// Nothing is searchable, so still not a failure, but
+							// the name was not recognised either: say so.
+							const result = unavailable(
+								codeIndexes[0]?.status ?? "missing",
+							);
+							return {
+								...result,
+								message: `${result.message} Note: "${requested}" does not identify one repository connected to this project; connected: ${
+									unindexed.map((r) => r.label).join(", ") ||
+									"none"
+								}.`,
+							};
+						}
 						return {
 							success: false,
-							message: `No indexed repository in this project matches "${requested}". Indexed repositories: ${
-								repositories.map((r) => r.label).join(", ") ||
-								"none"
-							}.`,
+							message: `"${requested}" does not identify one repository connected to this project. Indexed repositories: ${repositories
+								.map((r) => r.label)
+								.join(", ")}.${
+								unindexed.length > 0
+									? ` Connected but not indexed: ${unindexed
+											.map((r) => r.label)
+											.join(", ")}.`
+									: ""
+							}`,
 							status: "unknown_repository",
 						};
 					}
@@ -399,17 +461,12 @@ export async function createCodeSearchTool(
 
 				if (target) {
 					if (target.status !== "READY") {
-						return codeIndexUnavailableResult(
-							target.status,
-							target.label,
-						);
+						return unavailable(target.status, target.label);
 					}
 				} else if (
 					!codeIndexes.some((index) => index.status === "READY")
 				) {
-					return codeIndexUnavailableResult(
-						codeIndexes[0]?.status ?? "missing",
-					);
+					return unavailable(codeIndexes[0]?.status ?? "missing");
 				}
 
 				const { generateEmbedding } = await import(

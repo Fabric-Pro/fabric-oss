@@ -19,8 +19,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { assertRowInAuthorizedOrganization } from "../lib/plan-organization";
 import { resolveWeaveHandle } from "../lib/temporal-handle";
 
 const SignalApprovalInputSchema = z.object({
@@ -43,19 +43,10 @@ export const signalApprovalProcedure = protectedProcedure
 	.input(SignalApprovalInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -68,10 +59,17 @@ export const signalApprovalProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		if (execution.status !== "CHECKPOINT") {
@@ -115,19 +113,10 @@ export const autoApproveAllProcedure = protectedProcedure
 	.input(AutoApproveAllInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -140,10 +129,17 @@ export const autoApproveAllProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		const activeStatuses = ["RUNNING", "PAUSED", "CHECKPOINT"];
@@ -183,19 +179,10 @@ export const revokeAutoApproveProcedure = protectedProcedure
 	.input(RevokeAutoApproveInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -208,10 +195,17 @@ export const revokeAutoApproveProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		const activeStatuses = ["RUNNING", "PAUSED", "CHECKPOINT"];
@@ -255,19 +249,10 @@ export const retryFromStepProcedure = protectedProcedure
 	.input(RetryFromStepInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const execution = await db.weaveExecution.findFirst({
 			where: {
 				id: input.executionId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -280,10 +265,17 @@ export const retryFromStepProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names an execution, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			execution.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			execution,
+			authorized,
 		);
 
 		if (

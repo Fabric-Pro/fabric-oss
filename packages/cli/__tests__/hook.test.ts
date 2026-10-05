@@ -152,6 +152,68 @@ describe("buildHookCommand", () => {
 			"fabric instructions sync --project project-1 --org example-org --hook",
 		]);
 	});
+
+	it("binds the hook to a deployment, and to one remote when asked", () => {
+		expect(
+			buildHookCommand("project-1", false, undefined, {
+				baseUrl: "https://example.com",
+			}),
+		).toBe(
+			"fabric instructions check --project project-1 --base-url https://example.com --hook",
+		);
+		expect(
+			buildHookCommand("project-1", true, "example-org", {
+				baseUrl: "https://example.com",
+				remote: "upstream",
+			}),
+		).toBe(
+			"fabric instructions sync --project project-1 --base-url https://example.com --remote upstream --org example-org --hook",
+		);
+	});
+
+	it("replaces a hook written before hooks named a deployment", async () => {
+		const root = await makeTree();
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false),
+		});
+
+		const second = await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false, undefined, {
+				baseUrl: "https://example.com",
+			}),
+		});
+
+		expect(second.replacedCount).toBe(1);
+		expect(commandsIn(await readSettings(root))).toEqual([
+			"fabric instructions check --project project-1 --base-url https://example.com --hook",
+		]);
+	});
+
+	it("does not take a bound hook of another project for its own", async () => {
+		const root = await makeTree();
+		await mergeSessionStartHook({
+			root,
+			projectId: "project-1",
+			command: buildHookCommand("project-1", false, undefined, {
+				baseUrl: "https://example.com",
+			}),
+		});
+
+		const other = await mergeSessionStartHook({
+			root,
+			projectId: "project-10",
+			command: buildHookCommand("project-10", false, undefined, {
+				baseUrl: "https://example.com",
+			}),
+		});
+
+		expect(other.replacedCount).toBe(0);
+		expect(commandsIn(await readSettings(root))).toHaveLength(2);
+	});
 });
 
 /**

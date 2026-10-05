@@ -492,24 +492,33 @@ describe("authorization: visibility first, then CONTEXT_READ / CONTEXT_CREATE", 
 		},
 	);
 
-	it("acts in the project's hosting organization, never a client-supplied or session one", async () => {
-		await call("configure", {
-			...configureInput,
-			organizationId: "org-evil",
-		});
-		await call("disable", {
-			projectId: "proj-1",
-			organizationId: "org-evil",
-		});
-		await call("syncNow", {
-			projectId: "proj-1",
-			organizationId: "org-evil",
-		});
-		await call("get", { projectId: "proj-1", organizationId: "org-evil" });
-		await call("listTree", {
-			...listTreeInput,
-			organizationId: "org-evil",
-		});
+	it("refuses a client-supplied organization other than the host's, before any read or write", async () => {
+		// Fizzy #2904 review: `requireProjectPermission` refuses it before the
+		// handler body runs, rather than the handler ignoring it.
+		for (const [name, input] of [
+			["configure", configureInput],
+			["disable", { projectId: "proj-1" }],
+			["syncNow", { projectId: "proj-1" }],
+			["get", { projectId: "proj-1" }],
+			["listTree", listTreeInput],
+		] as const) {
+			await expect(
+				call(name, { ...input, organizationId: "org-evil" }),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		}
+		expect(m.upsertContextRepositorySync).not.toHaveBeenCalled();
+		expect(m.deleteContextRepositorySync).not.toHaveBeenCalled();
+		expect(m.startContextRepositorySync).not.toHaveBeenCalled();
+		expect(m.getContextRepositorySync).not.toHaveBeenCalled();
+		expect(m.resolveFreshRepoTokenForRow).not.toHaveBeenCalled();
+	});
+
+	it("acts in the project's hosting organization, never the session's", async () => {
+		await call("configure", configureInput);
+		await call("disable", { projectId: "proj-1" });
+		await call("syncNow", { projectId: "proj-1" });
+		await call("get", { projectId: "proj-1" });
+		await call("listTree", listTreeInput);
 
 		expect(m.upsertContextRepositorySync).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org-host" }),
