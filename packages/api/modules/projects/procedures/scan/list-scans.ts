@@ -32,12 +32,8 @@ export const getLatestScanProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, storyId, branch } = input;
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			context.user.id,
-			organizationId ?? undefined,
-		);
+		const { projectId, storyId, branch } = input;
+		const hasAccess = await hasProjectAccess(projectId, context.user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",
@@ -67,12 +63,8 @@ export const listScansProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, limit } = input;
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			context.user.id,
-			organizationId ?? undefined,
-		);
+		const { projectId, limit } = input;
+		const hasAccess = await hasProjectAccess(projectId, context.user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",

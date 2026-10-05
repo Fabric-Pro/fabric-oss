@@ -31,6 +31,7 @@ import { auth } from "@repo/auth";
 import { db } from "@repo/database";
 import { callMcpTool, createMcpClientForConfig } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
 
@@ -152,11 +153,24 @@ export async function POST(req: NextRequest) {
 		);
 	}
 
+	// This route has no organization of its own: the config's organization is
+	// the one it runs in, so that is where the caller must still be a member
+	// whose role grants MCP_CONNECT before the config's token is used.
+	const authorization = await authorizeMcpConfigRequest({
+		userId: session.user.id,
+		organizationId: config.organizationId,
+		action: "connect",
+	});
+	if (!authorization.ok) {
+		return authorization.response;
+	}
+
 	try {
 		const { client, serverUrl } = await createMcpClientForConfig({
 			configId: body.configId,
 			userId: session.user.id,
 			organizationId: config.organizationId ?? undefined,
+			access: "connect",
 		});
 
 		const aiSdkTools = await client.tools();

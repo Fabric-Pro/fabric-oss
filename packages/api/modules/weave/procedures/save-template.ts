@@ -12,8 +12,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { requireAuthorizedRowOrganization } from "../lib/plan-organization";
 
 const SaveTemplateInputSchema = z.object({
 	planId: z.string(),
@@ -35,20 +35,11 @@ export const saveTemplateProcedure = protectedProcedure
 	.input(SaveTemplateInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		// Fetch the source plan
 		const plan = await db.weavePlan.findFirst({
 			where: {
 				id: input.planId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 		});
 
@@ -61,16 +52,25 @@ export const saveTemplateProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names a plan, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			plan.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// From here on the AUTHORIZED project's organization, not the one
+		// resolved from the input before the project was known. A row stamped
+		// with another organization is refused before anything is written —
+		// see `lib/plan-organization.ts`.
+		const projectOrganizationId = requireAuthorizedRowOrganization(
+			input.organizationId,
+			plan,
+			authorized,
 		);
 
 		const template = await db.weavePlanTemplate.create({
 			data: {
 				userId,
-				organizationId: organizationId ?? null,
+				organizationId: projectOrganizationId,
 				projectId: input.global ? null : plan.projectId,
 				name: input.name,
 				description: input.description ?? plan.description,

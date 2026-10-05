@@ -86,8 +86,8 @@ describe("resolveRepoAuth", () => {
 		expect(decryptApiKeyMock).not.toHaveBeenCalled();
 	});
 
-	// Without ctx the GITHUB_OAUTH_APP client-credential lookup falls back to
-	// env vars + the global admin record, so a deployment that configures its
+	// Without ctx the GITHUB_OAUTH_APP client-credential lookup uses only
+	// env vars, so a deployment that configures its
 	// OAuth app per-org in the DB cannot refresh at all.
 	it("forwards userId/organizationId to the resolver", async () => {
 		await resolveRepoAuth(row({}), {

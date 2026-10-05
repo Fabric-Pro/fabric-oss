@@ -32,10 +32,23 @@ export async function canReviewInstructionProposals(input: {
 	);
 }
 
+/**
+ * Whether a snapshot's files may be served as version content: READY, and a
+ * direct version or an APPROVED proposal. A direct commit (`proposalDestination`
+ * `REPOSITORY_COMMIT`, Fizzy #2878 §10) is never a version: it holds the
+ * change stated against its base, not the tree the branch ended up with, so
+ * its files are not content to fetch whatever became of it. The version of
+ * that commit is the synced copy the sync makes from the branch. Callers pass
+ * the snapshot row, which carries the field.
+ */
 export function isInstructionSnapshotContentReadable(snapshot: {
 	status: string;
 	proposalStatus: ProposalStatus | null;
+	proposalDestination?: string;
 }): boolean {
+	if (snapshot.proposalDestination === "REPOSITORY_COMMIT") {
+		return false;
+	}
 	return (
 		snapshot.status === "READY" &&
 		(snapshot.proposalStatus === null ||

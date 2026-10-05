@@ -22,6 +22,10 @@ import {
 	listRegisteredIntegrationProviders,
 	resolveIntegrationOperation,
 } from "@repo/integrations/executor-registry";
+import {
+	getGitLabApiCredential,
+	gitlabOutboundFetch,
+} from "@repo/integrations/gitlab";
 import { executeMicrosoftTeamsTool } from "../../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
 import type { ExecuteStepInput } from "../../types";
@@ -35,6 +39,27 @@ import type { HandlerContext, HandlerResult, StepHandler } from "./types";
  * {@link getSupportedIntegrationOperations}, so discovery, the chat path and
  * this handler can never disagree about what a provider supports.
  */
+/**
+ * The acting user's own GitLab connection as handler credentials: the token
+ * and the REST base of the instance that issued it. Null when that person has
+ * no usable GitLab connection.
+ */
+async function resolveActingUserGitLabCredentials(
+	userId: string,
+	organizationId: string | undefined,
+): Promise<Record<string, string> | null> {
+	const credential = await getGitLabApiCredential(
+		userId,
+		organizationId ?? undefined,
+	);
+	return credential
+		? {
+				GITLAB_ACCESS_TOKEN: credential.token,
+				GITLAB_API_BASE: credential.apiBase,
+			}
+		: null;
+}
+
 const LEGACY_INTEGRATION_OPERATIONS: Record<string, string[]> = {
 	SLACK: [
 		"send_message",
@@ -352,18 +377,31 @@ export class IntegrationHandler implements StepHandler {
 			// would let a step declare NHTSA_VPIC, point at an active row from
 			// some other provider, and satisfy NHTSA's credentialless policy
 			// without the tenant having NHTSA configured at all.
-			const credentials = integration.integrationId
-				? await fetchCredentialsByIdAndProviderInTenant(
-						integration.integrationId,
-						integration.provider as WorkflowIntegrationProvider,
-						userId,
-						organizationId,
-					)
-				: await fetchCredentialsByProvider(
-						integration.provider as WorkflowIntegrationProvider,
-						userId,
-						organizationId,
-					);
+			//
+			// GitLab is the exception: a GitLab connection is personal, so a
+			// run always uses the ACTING user's own connection, read through
+			// the connection service (exclusive user/organization filter,
+			// refresh, reconnect state, and the REST base of the instance
+			// that issued it) — never a row found by id or provider, which in
+			// an organization could be another member's.
+			const credentials =
+				integration.provider === "GITLAB"
+					? await resolveActingUserGitLabCredentials(
+							userId,
+							organizationId,
+						)
+					: integration.integrationId
+						? await fetchCredentialsByIdAndProviderInTenant(
+								integration.integrationId,
+								integration.provider as WorkflowIntegrationProvider,
+								userId,
+								organizationId,
+							)
+						: await fetchCredentialsByProvider(
+								integration.provider as WorkflowIntegrationProvider,
+								userId,
+								organizationId,
+							);
 
 			if (!credentials) {
 				return {
@@ -380,6 +418,7 @@ export class IntegrationHandler implements StepHandler {
 				credentials,
 				step,
 				context,
+				integration.integrationId,
 			);
 
 			const durationMs = Date.now() - startTime;
@@ -730,6 +769,7 @@ export class IntegrationHandler implements StepHandler {
 		credentials: Record<string, string>,
 		step: ExecuteStepInput["step"],
 		context: HandlerContext,
+		integrationId?: string,
 	): Promise<{
 		success: boolean;
 		output?: string;
@@ -833,6 +873,7 @@ export class IntegrationHandler implements StepHandler {
 					credentials,
 					inputs,
 					context,
+					integrationId,
 				);
 			default:
 				return {
@@ -1279,9 +1320,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
-		const token =
-			credentials.GITLAB_ACCESS_TOKEN || credentials.access_token;
-		if (!token) {
+		const token = credentials.GITLAB_ACCESS_TOKEN;
+		// The REST base of the instance that issued the token (see
+		// `resolveActingUserGitLabCredentials`), never a hardcoded gitlab.com;
+		// every request goes through the outbound guard unless it is
+		// gitlab.com.
+		const apiBase = credentials.GITLAB_API_BASE;
+		if (!token || !apiBase) {
 			return { success: false, error: "GitLab token not configured" };
 		}
 
@@ -1305,8 +1350,8 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
-				const response = await fetch(
-					`https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}/issues`,
+				const response = await gitlabOutboundFetch(
+					`${apiBase}/projects/${encodeURIComponent(projectId)}/issues`,
 					{
 						method: "POST",
 						headers,
@@ -1340,10 +1385,10 @@ export class IntegrationHandler implements StepHandler {
 			case "list_issues": {
 				const state = (inputs.state as string) || "opened";
 				const url = projectId
-					? `https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}/issues?state=${state}`
-					: `https://gitlab.com/api/v4/issues?state=${state}&scope=assigned_to_me`;
+					? `${apiBase}/projects/${encodeURIComponent(projectId)}/issues?state=${state}`
+					: `${apiBase}/issues?state=${state}&scope=assigned_to_me`;
 
-				const response = await fetch(url, { headers });
+				const response = await gitlabOutboundFetch(url, { headers });
 
 				if (!response.ok) {
 					const error = await response.text();
@@ -1388,8 +1433,8 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
-				const mrResponse = await fetch(
-					`https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}/merge_requests`,
+				const mrResponse = await gitlabOutboundFetch(
+					`${apiBase}/projects/${encodeURIComponent(projectId)}/merge_requests`,
 					{
 						method: "POST",
 						headers,
@@ -1429,8 +1474,8 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
-				const projResponse = await fetch(
-					`https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}`,
+				const projResponse = await gitlabOutboundFetch(
+					`${apiBase}/projects/${encodeURIComponent(projectId)}`,
 					{ headers },
 				);
 
@@ -1453,10 +1498,12 @@ export class IntegrationHandler implements StepHandler {
 			case "list_merge_requests": {
 				const mrState = (inputs.state as string) || "opened";
 				const mrListUrl = projectId
-					? `https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}/merge_requests?state=${mrState}`
-					: `https://gitlab.com/api/v4/merge_requests?state=${mrState}&scope=assigned_to_me`;
+					? `${apiBase}/projects/${encodeURIComponent(projectId)}/merge_requests?state=${mrState}`
+					: `${apiBase}/merge_requests?state=${mrState}&scope=assigned_to_me`;
 
-				const mrListResponse = await fetch(mrListUrl, { headers });
+				const mrListResponse = await gitlabOutboundFetch(mrListUrl, {
+					headers,
+				});
 
 				if (!mrListResponse.ok) {
 					const error = await mrListResponse.text();
@@ -1502,8 +1549,8 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
-				const fileResponse = await fetch(
-					`https://gitlab.com/api/v4/projects/${encodeURIComponent(projectId)}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`,
+				const fileResponse = await gitlabOutboundFetch(
+					`${apiBase}/projects/${encodeURIComponent(projectId)}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`,
 					{ headers },
 				);
 
@@ -1870,6 +1917,7 @@ export class IntegrationHandler implements StepHandler {
 		credentials: Record<string, string>,
 		inputs: Record<string, unknown>,
 		_context: HandlerContext,
+		integrationId?: string,
 	): Promise<{
 		success: boolean;
 		output?: string;
@@ -1910,6 +1958,7 @@ export class IntegrationHandler implements StepHandler {
 						inputs,
 						_context.input.userId,
 						_context.input.organizationId || undefined,
+						integrationId,
 					);
 					return {
 						success: true,

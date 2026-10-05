@@ -11,6 +11,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Apply a user-confirmed subset of an AI review's proposals (G7). The review
@@ -64,11 +65,19 @@ export const applyReviewProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, reviewId, decisions } = input;
+		const { projectId, reviewId, decisions } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			context.user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -102,7 +111,7 @@ export const applyReviewProcedure = tenantProtectedProcedure
 				projectId,
 				type: "FINDINGS_REVIEWED",
 				userId: context.user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 				summary: `Applied AI review to ${applied} finding${
 					applied === 1 ? "" : "s"
 				}`,

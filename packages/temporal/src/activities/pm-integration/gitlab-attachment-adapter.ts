@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { config } from "@repo/config";
+import { gitlabOutboundFetch } from "@repo/integrations/gitlab";
 import { downloadFile } from "@repo/storage";
 import {
 	ATTACHMENT_BLOCK_CLOSE,
@@ -122,7 +123,9 @@ export function createGitLabAttachmentAdapter(opts: {
 				}),
 				filename,
 			);
-			const res = await fetch(uploadUrl, {
+			// `apiBase` is the connection's instance (user-supplied when
+			// self-hosted): guarded unless it is gitlab.com.
+			const res = await gitlabOutboundFetch(uploadUrl, {
 				method: "POST",
 				headers: { "PRIVATE-TOKEN": opts.token },
 				body: form,
@@ -169,7 +172,7 @@ export function createGitLabAttachmentAdapter(opts: {
 			// filename are the two components already present in every
 			// `/uploads/<secret>/<filename>` link in an issue description, so
 			// no extra lookup is needed to call it.
-			const res = await fetch(
+			const res = await gitlabOutboundFetch(
 				`${apiBase}/projects/${encodeURIComponent(
 					opts.projectId,
 				)}/uploads/${encodeURIComponent(secret)}/${encodeURIComponent(

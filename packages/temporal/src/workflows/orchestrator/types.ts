@@ -401,8 +401,16 @@ export interface WorkflowState {
 	// Circuit breaker: per-agent failure tracking within this workflow execution
 	agentCircuitBreakers: Record<string, CircuitBreakerState>;
 
-	// Per-tool consecutive `success: false` counter; resets on first success.
+	// Per-call failure strikes for the legacy breaker
+	// (`orch-tool-failure-breaker-2026-04`, histories recorded before the
+	// per-round rule): one per failed call, reset by the next success.
 	consecutiveToolFailures: Record<string, number>;
+
+	// Per-round failure strikes (`orch-tool-failure-breaker-per-round-v1`):
+	// one per round in which every call of the tool failed, reset by a round
+	// with any success. Kept apart from `consecutiveToolFailures` so an
+	// execution that switches rules mid-run starts the per-round count at 0.
+	toolFailureRoundStrikes: Record<string, number>;
 
 	// Issue #9: Track which capabilities are degraded
 	degradedCapabilities: DegradedCapabilities;
@@ -697,6 +705,7 @@ export function createInitialState(
 		// Circuit breaker state (starts empty — all circuits implicitly CLOSED)
 		agentCircuitBreakers: {},
 		consecutiveToolFailures: {},
+		toolFailureRoundStrikes: {},
 
 		// Issue #9: All capabilities start as non-degraded
 		degradedCapabilities: {

@@ -43,6 +43,12 @@ const {
 
 vi.mock("@repo/database", () => ({
 	hasProjectAccess: mockHasProjectAccess,
+	// The DRAFT project's row: the handler runs in its organization.
+	db: {
+		project: {
+			findUnique: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+		},
+	},
 }));
 
 vi.mock("@repo/rag", () => ({
@@ -72,7 +78,16 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: builder,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
-		requirePermission: () => (c: unknown) => c,
+		// The authorization itself is covered in
+		// refine-description-organization.test.ts; here both checks grant.
+		assertProjectPermission: vi.fn().mockResolvedValue(undefined),
+		authorizeInputOrganization: vi.fn(
+			async (
+				_permission: string,
+				o: string | null | undefined,
+				ctx: { session?: { activeOrganizationId?: string | null } },
+			) => o || (ctx.session?.activeOrganizationId ?? undefined),
+		),
 	};
 });
 
@@ -86,7 +101,10 @@ type Handler = (args: {
 		attachmentSummaries?: string[];
 		organizationId?: string | null;
 	};
-	context: { user: { id: string } };
+	context: {
+		user: { id: string };
+		session: { activeOrganizationId: string | null };
+	};
 }) => Promise<{
 	refinedDescription: string;
 	originalDescription: string;
@@ -100,7 +118,12 @@ async function loadHandler(): Promise<Handler> {
 		.handler;
 }
 
-const baseContext = { user: { id: "user-1" } };
+// The procedure runs in an organization (ADR-018); the session supplies it
+// when the input names none.
+const baseContext = {
+	user: { id: "user-1" },
+	session: { activeOrganizationId: "org-1" },
+};
 
 beforeEach(() => {
 	vi.clearAllMocks();

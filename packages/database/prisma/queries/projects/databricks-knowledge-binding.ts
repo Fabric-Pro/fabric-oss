@@ -17,6 +17,7 @@
  */
 
 import { db, Prisma } from "../../client";
+import { workflowIntegrationAccessWhere } from "../workflows/integration-access";
 
 /** Runtime shape consumed by tool exposure and RAG retrieval. */
 export interface ProjectDatabricksKnowledgeBindingRuntime {
@@ -201,12 +202,28 @@ export async function saveProjectDatabricksKnowledgeBinding(input: {
 			);
 		}
 
+		if (
+			project.organizationId &&
+			!(await tx.member.findFirst({
+				where: {
+					organizationId: project.organizationId,
+					userId: input.createdBy,
+				},
+				select: { id: true },
+			}))
+		) {
+			throw new InvalidDatabricksKnowledgeIntegrationError(
+				"Organization membership is required to bind this connection",
+			);
+		}
+
 		const integration = await tx.workflowIntegration.findFirst({
 			where: {
 				id: input.integrationId,
-				...(project.organizationId
-					? { organizationId: project.organizationId }
-					: { userId: project.userId, organizationId: null }),
+				...workflowIntegrationAccessWhere(
+					input.createdBy,
+					project.organizationId,
+				),
 			},
 			select: { id: true, provider: true, isActive: true },
 		});

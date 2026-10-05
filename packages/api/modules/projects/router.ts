@@ -198,6 +198,7 @@ import { listStageApproversProcedure } from "./procedures/governance/list-stage-
 import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
 // Coding Instructions (project instruction snapshots)
 import { beginSnapshotProcedure } from "./procedures/instructions/begin-snapshot";
+import { commitChangeProcedure } from "./procedures/instructions/commit-change";
 import { compareSnapshotsProcedure } from "./procedures/instructions/compare-snapshots";
 import { createDownloadUrlProcedure } from "./procedures/instructions/create-download-url";
 import { createUploadUrlsProcedure } from "./procedures/instructions/create-upload-urls";
@@ -232,14 +233,24 @@ import {
 	rejectInstructionProposalProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
+import { compareInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/compare-commits";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
 import { getRepositorySyncProcedure } from "./procedures/instructions/repository-sync/get";
+import { listInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/list-commits";
 import { listRepositorySyncRunsProcedure } from "./procedures/instructions/repository-sync/list-runs";
 import { listInstructionRepositoryTreeProcedure } from "./procedures/instructions/repository-sync/list-tree";
+import { migrateRepositorySyncProcedure } from "./procedures/instructions/repository-sync/migrate";
+import {
+	cancelRepositoryMigrationProcedure,
+	getRepositoryMigrationProcedure,
+	retryRepositoryMigrationProcedure,
+} from "./procedures/instructions/repository-sync/migration";
+import { readInstructionRepositoryCommitFileProcedure } from "./procedures/instructions/repository-sync/read-commit-file";
 import { readInstructionRepositoryIgnoreFileProcedure } from "./procedures/instructions/repository-sync/read-ignore-file";
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
+import { revertCommitProcedure } from "./procedures/instructions/revert-commit";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
@@ -2003,6 +2014,11 @@ export const projectsRouter = {
 		// are uploaded, the rest inherited. `createUploadUrls` and `finalize`
 		// then run unchanged over the staged rows it returns.
 		derive: deriveSnapshotProcedure,
+		// "Commit to <branch>" on a repository-backed project (Fizzy #2878
+		// §10): the change is validated and scanned, then pushed as one commit.
+		commitChange: commitChangeProcedure,
+		// Undo one commit of the synced branch with a revert commit.
+		revertCommit: revertCommitProcedure,
 		createUploadUrls: createUploadUrlsProcedure,
 		finalize: finalizeSnapshotProcedure,
 		list: listSnapshotsProcedure,
@@ -2048,12 +2064,24 @@ export const projectsRouter = {
 			listRuns: listRepositorySyncRunsProcedure,
 			// The configure dialog's folder browser (Fizzy #2725).
 			listTree: listInstructionRepositoryTreeProcedure,
+			// The synced branch's history, a commit diff and one file at a
+			// commit (Fizzy #2878 §10).
+			listCommits: listInstructionRepositoryCommitsProcedure,
+			compareCommits: compareInstructionRepositoryCommitsProcedure,
+			readCommitFile: readInstructionRepositoryCommitFileProcedure,
 			// The folder's .fabricignore rules, for the browser's
 			// exclusions (Fizzy #2726).
 			readIgnoreFile: readInstructionRepositoryIgnoreFileProcedure,
 			configure: configureRepositorySyncProcedure,
 			syncNow: syncRepositoryNowProcedure,
 			disable: disableRepositorySyncProcedure,
+			// "Move these instructions into a repository" (Fizzy #2878 §9):
+			// start, read, cancel and retry the move of an upload-backed
+			// project's published tree into a repository folder.
+			migrate: migrateRepositorySyncProcedure,
+			getMigration: getRepositoryMigrationProcedure,
+			cancelMigration: cancelRepositoryMigrationProcedure,
+			retryMigration: retryRepositoryMigrationProcedure,
 			// "Let read-only members propose changes as pull requests"
 			// (Fizzy #2563 Decision 4): never bumps the generation.
 			updateProposalSettings:

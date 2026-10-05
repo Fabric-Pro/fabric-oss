@@ -26,6 +26,7 @@ const m = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...a: unknown[]) => unknown>,
 	claimInstructionValidationAttempt: vi.fn(),
 	getInstructionSnapshot: vi.fn(),
+	getProjectInstructionSettings: vi.fn(),
 	startInstructionSnapshotValidation: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	getTemporalClient: vi.fn(),
@@ -38,6 +39,8 @@ vi.mock("@repo/database", () => ({
 	claimInstructionValidationAttempt: (...a: unknown[]) =>
 		m.claimInstructionValidationAttempt(...a),
 	getInstructionSnapshot: (...a: unknown[]) => m.getInstructionSnapshot(...a),
+	getProjectInstructionSettings: (...a: unknown[]) =>
+		m.getProjectInstructionSettings(...a),
 	startInstructionSnapshotValidation: (...a: unknown[]) =>
 		m.startInstructionSnapshotValidation(...a),
 }));
@@ -97,6 +100,11 @@ beforeEach(() => {
 		source: "org",
 		organizationId: "org_1",
 	});
+	m.getProjectInstructionSettings.mockResolvedValue({
+		ignoreGlobs: null,
+		sourceOfTruth: "UPLOAD",
+		migration: null,
+	});
 	m.getInstructionSnapshot.mockResolvedValue({
 		id: "snap_1",
 		status: "RECEIVING",
@@ -112,6 +120,39 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.finalize", () => {
+	it.each([
+		["proposing", "PROPOSING"],
+		["switching", "SWITCHING"],
+	])(
+		"starts nothing while a move into the repository is %s (Fizzy #2878 §9): finishing the upload would publish over what the move was made from",
+		async (_label, state) => {
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "UPLOAD",
+				migration: {
+					v: 1,
+					state,
+					branchId: null,
+					snapshotId: null,
+					syncId: "sync_1",
+					pullRequestUrl: null,
+					startedAt: "2026-10-03T10:00:00.000Z",
+					userId: "user_2",
+				},
+			});
+
+			await expect(
+				m.handlers.finalize!({ input: baseInput, context: ctx }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "MIGRATION_OPEN", state, pullRequest: null },
+			});
+
+			expect(m.workflowStart).not.toHaveBeenCalled();
+			expect(m.startInstructionSnapshotValidation).not.toHaveBeenCalled();
+		},
+	);
+
 	it("starts the validation workflow with a deterministic id, THEN flips RECEIVING to VALIDATING", async () => {
 		const result = await m.handlers.finalize!({
 			input: baseInput,

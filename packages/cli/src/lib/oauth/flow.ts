@@ -19,6 +19,7 @@ import {
 } from "./discovery.js";
 import { startLoopbackListener } from "./loopback.js";
 import { codeChallengeS256, createCodeVerifier, createState } from "./pkce.js";
+import { projectResource } from "./project-resource.js";
 
 /** What a person is asked to approve. Matches the server's scope ceiling. */
 export const REQUESTED_SCOPES = [
@@ -59,6 +60,12 @@ const UNUSABLE_CLIENT_ERRORS = new Set([
 
 export interface LoginOptions {
 	baseUrl: string;
+	/**
+	 * Sign in for this one project: the authorization asks for the project's
+	 * resource, and the tokens that come back reach that project and nothing
+	 * organization-wide. Without it the sign-in is for an organization.
+	 */
+	project?: string;
 	/** Reused when it was registered with this deployment. */
 	previous?: PreviousClient;
 	fetch?: FetchLike;
@@ -82,8 +89,11 @@ function trimBase(baseUrl: string): string {
 	return new URL(baseUrl).origin;
 }
 
-function apiResource(baseUrl: string): string {
-	return `${trimBase(baseUrl)}/api/v1`;
+/** What the sign-in asks the deployment to issue its tokens for. */
+function apiResource(baseUrl: string, project: string | undefined): string {
+	return project === undefined
+		? `${trimBase(baseUrl)}/api/v1`
+		: projectResource(trimBase(baseUrl), "api", project);
 }
 
 /** A field of a JSON body, when the body is an object and the field is one. */
@@ -275,7 +285,7 @@ export async function loginWithBrowser(
 			state,
 			code_challenge: codeChallengeS256(verifier),
 			code_challenge_method: "S256",
-			resource: apiResource(options.baseUrl),
+			resource: apiResource(options.baseUrl, options.project),
 		}).toString();
 		return url.toString();
 	};
@@ -328,7 +338,7 @@ export async function loginWithBrowser(
 				redirect_uri: listener.redirectUri,
 				client_id: clientId,
 				code_verifier: verifier,
-				resource: apiResource(options.baseUrl),
+				resource: apiResource(options.baseUrl, options.project),
 			},
 			options.signal,
 		);
@@ -343,6 +353,7 @@ export async function loginWithBrowser(
 			now(),
 		);
 		return {
+			issuer: metadata.issuer,
 			clientId,
 			redirectUri: registeredRedirectUri,
 			tokenEndpoint: metadata.token_endpoint,

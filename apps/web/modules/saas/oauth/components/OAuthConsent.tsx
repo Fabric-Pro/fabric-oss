@@ -1,6 +1,7 @@
 "use client";
 
 import { authClient } from "@repo/auth/client";
+import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationListQuery } from "@saas/organizations/lib/api";
 import { useQuery } from "@tanstack/react-query";
@@ -11,32 +12,39 @@ import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import {
+	type AuthorizationRedirect,
+	followAuthorizationRedirect,
+} from "../lib/authorization-redirect";
+import {
 	redirectTargetLabel,
 	requestedScopes,
 	unknownScopes,
 } from "../lib/consent-display";
+import { useAuthorizationBinding } from "../lib/use-authorization-binding";
 
 interface PublicClient {
 	client_name?: string;
 }
 
-interface AuthorizationRedirect {
-	redirect?: boolean;
-	url?: string;
-}
-
 /**
- * Where an agent asks to act as the signed-in person, for one organization.
+ * Where an agent asks to act as the signed-in person, for one organization or,
+ * when it was connected from a project, for that one project.
  *
- * Always shown the first time for a client, user and organization — consent is
- * never skipped for a client that registered itself. The name is whatever the
- * client called itself, and is labelled as such.
+ * Always shown the first time for a client, user and organization or project —
+ * consent is never skipped for a client that registered itself. The name is
+ * whatever the client called itself, and is labelled as such. A project
+ * request names the project and its organization and has no organization to
+ * choose; the scope lines then say "this project". What the server grants is
+ * decided there, not by this page: the answer says which project the page
+ * showed, or none, and the server refuses it when that is no longer what the
+ * connection is for.
  */
 export function OAuthConsent() {
 	const t = useTranslations("auth.oauth.consent");
 	const searchParams = useSearchParams();
 	const { session, user, loaded } = useSession();
 	const organizations = useOrganizationListQuery();
+	const binding = useAuthorizationBinding();
 	const [pending, setPending] = useState<"accept" | "deny" | null>(null);
 	const [failed, setFailed] = useState(false);
 
@@ -66,6 +74,8 @@ export function OAuthConsent() {
 			(org) => org.id === session?.activeOrganizationId,
 		) ?? (organizationList.length === 1 ? organizationList[0] : undefined);
 
+	const project = binding.data?.project ?? null;
+
 	const answer = async (accept: boolean) => {
 		setPending(accept ? "accept" : "deny");
 		setFailed(false);
@@ -73,12 +83,23 @@ export function OAuthConsent() {
 			const { data, error } =
 				await authClient.$fetch<AuthorizationRedirect>(
 					"/oauth2/consent",
-					{ method: "POST", body: { accept } },
+					{
+						method: "POST",
+						body: {
+							accept,
+							[OAUTH_DISPLAYED_BINDING_FIELD]: project
+								? {
+										projectId: project.id,
+										audience: project.audience,
+									}
+								: null,
+						},
+					},
 				);
 			if (error || !data?.url) {
 				throw new Error("consent failed");
 			}
-			window.location.assign(data.url);
+			followAuthorizationRedirect({ ...data, url: data.url });
 		} catch {
 			setFailed(true);
 			setPending(null);
@@ -94,9 +115,13 @@ export function OAuthConsent() {
 	}
 
 	const clientName = client.data?.client_name?.trim() || t("unnamedClient");
+	const projectRequested = binding.data?.bound === true;
+	const scopeWords = projectRequested ? "scopesProject" : "scopes";
 	const cannotAllow =
 		pending !== null ||
-		!organization ||
+		binding.isLoading ||
+		binding.isError ||
+		(projectRequested ? project === null : !organization) ||
 		scopes.length === 0 ||
 		unrecognized.length > 0 ||
 		!clientId;
@@ -106,7 +131,13 @@ export function OAuthConsent() {
 			<div className="space-y-2">
 				<p className="app-editorial-label">{t("label")}</p>
 				<h1 className="font-serif font-normal text-2xl leading-snug">
-					{t("title", { client: clientName })}
+					{project
+						? t("projectTitle", {
+								client: clientName,
+								project: project.name,
+								organization: project.organizationName,
+							})
+						: t("title", { client: clientName })}
 				</h1>
 				<p className="text-muted-foreground text-xs">
 					{t("selfAsserted")}
@@ -114,14 +145,35 @@ export function OAuthConsent() {
 			</div>
 
 			<dl className="space-y-3 text-sm">
-				<div>
-					<dt className="app-editorial-label">
-						{t("organizationLabel")}
-					</dt>
-					<dd className="mt-1 font-medium">
-						{organization?.name ?? t("noOrganization")}
-					</dd>
-				</div>
+				{projectRequested ? (
+					<div>
+						<dt className="app-editorial-label">
+							{t("projectLabel")}
+						</dt>
+						<dd
+							className="mt-1 font-medium"
+							data-testid="oauth-consent-project"
+						>
+							{project
+								? t("projectLine", {
+										project: project.name,
+										organization: project.organizationName,
+									})
+								: "-"}
+						</dd>
+					</div>
+				) : (
+					<div>
+						<dt className="app-editorial-label">
+							{t("organizationLabel")}
+						</dt>
+						<dd className="mt-1 font-medium">
+							{binding.isLoading
+								? t("projectLoading")
+								: (organization?.name ?? t("noOrganization"))}
+						</dd>
+					</div>
+				)}
 				<div>
 					<dt className="app-editorial-label">{t("scopesLabel")}</dt>
 					<dd className="mt-1">
@@ -135,7 +187,7 @@ export function OAuthConsent() {
 										aria-hidden="true"
 										className="mt-0.5 size-4 shrink-0 text-secondary"
 									/>
-									<span>{t(`scopes.${scope}`)}</span>
+									<span>{t(`${scopeWords}.${scope}`)}</span>
 								</li>
 							))}
 						</ul>
@@ -150,9 +202,14 @@ export function OAuthConsent() {
 			) : null}
 			<p className="text-muted-foreground text-xs">{t("revokeHint")}</p>
 
-			{failed ? (
+			{failed || binding.isError ? (
 				<Alert variant="error">
 					<AlertDescription>{t("failed")}</AlertDescription>
+				</Alert>
+			) : null}
+			{projectRequested && project === null ? (
+				<Alert variant="error">
+					<AlertDescription>{t("noProjectAccess")}</AlertDescription>
 				</Alert>
 			) : null}
 

@@ -47,7 +47,11 @@ const { resolvePmSource, PMSourceNotFound } = vi.hoisted(() => {
 	}
 	return { resolvePmSource: vi.fn(), PMSourceNotFound };
 });
-vi.mock("../../pm-source", () => ({ resolvePmSource, PMSourceNotFound }));
+vi.mock("../../pm-source", () => ({
+	resolvePmSource,
+	PMSourceNotFound,
+	assertPmMcpTargetOrigin: async () => undefined,
+}));
 
 const { callPmToolWithFallback } = vi.hoisted(() => ({
 	callPmToolWithFallback: vi.fn(),
@@ -69,6 +73,11 @@ const { getStoryById, updateStory, getMcpConfigById, findManyStatuses } =
 // never evaluate the Prisma client. Mirror only what story-sync.ts and
 // gitlab-rest-story-sync.ts actually import.
 vi.mock("@repo/database", () => ({
+	// The organization gate on the config owner (Fizzy #2903): a member whose
+	// role allows MCP read and connect.
+	canConnectOrganizationMcpConfigs: vi.fn(async () => true),
+	canReadOrganizationMcpConfigs: vi.fn(async () => true),
+	isOrganizationMember: vi.fn(async () => true),
 	createStory: vi.fn(),
 	deleteStory: vi.fn(),
 	getStoryById,

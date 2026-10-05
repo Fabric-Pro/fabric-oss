@@ -2,7 +2,9 @@
  * Shared helpers for v1 API routes
  */
 import { db, resolveUserOrganization } from "@repo/database";
+import { projectBoundRefusal } from "../external-api/project-bound";
 import {
+	credentialMayReachProject,
 	type ExternalApiContext,
 	isOrganizationBoundKey,
 } from "../external-api/types";
@@ -33,11 +35,16 @@ export interface V1TenantContext {
  * every entry point: several organizations and none named is answerable by
  * naming one, and gets 400; belonging to none is not answerable at all, and
  * gets 403.
+ *
+ * An agent that signed in for one project resolves only for a route that names
+ * that project, `projectId`, and its organization is the one hosting it. Every
+ * other route is organization-wide, which it may not be, and gets 403.
  */
 export async function resolveV1Context(
 	apiCtx: ExternalApiContext,
 	orgSlug?: string,
 	personal?: boolean,
+	projectId?: string,
 ): Promise<V1TenantContext | { error: string; status: 400 | 403 | 404 }> {
 	// An organization key, or an agent that signed in for one organization,
 	// names its own tenant, so asking for another context with it is incoherent
@@ -47,6 +54,20 @@ export async function resolveV1Context(
 			error: "Cannot use personal context with an organization-bound credential",
 			status: 403,
 		};
+	}
+
+	if (apiCtx.boundProjectId !== undefined) {
+		if (
+			projectId !== undefined &&
+			credentialMayReachProject(apiCtx, projectId) &&
+			apiCtx.organizationId
+		) {
+			return {
+				userId: apiCtx.userId,
+				organizationId: apiCtx.organizationId,
+			};
+		}
+		return projectBoundRefusal(apiCtx.boundProjectId);
 	}
 
 	// An organization-bound credential always scopes to its organization.

@@ -115,6 +115,7 @@ import {
 	getDocumentPollInterval,
 	isDocumentGenerationRunning,
 } from "../lib/document-pipeline";
+import { buildDocumentSaveInput } from "../lib/document-save-input";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
 import {
@@ -3413,8 +3414,18 @@ function DocumentEditorInner({
 				setIsSaving(false);
 			},
 			onSuccess: (data, variables) => {
+				// An explicit Save asks the server to complete a draft (see
+				// `buildDocumentSaveInput`). Say so when this save did: the
+				// editor shows no status of its own, so the toast is the only
+				// sign. The server's own answer is used, not a comparison
+				// with the cached status, which may be older than the row.
+				const completedDraft = data?.draftCompleted === true;
 				if (isManualSaveRef.current) {
-					toast.success("Document saved successfully");
+					toast.success(
+						completedDraft
+							? "Document saved and marked as complete"
+							: "Document saved successfully",
+					);
 				} else if (isConfirmSaveRef.current) {
 					// Confirm-initiated saves must never be silent (I3/AC3/AC5):
 					// a version-bearing success, an informational no-op, or the
@@ -3457,6 +3468,15 @@ function DocumentEditorInner({
 							...(data?.document?.version != null
 								? { version: data.document.version }
 								: {}),
+							// The document is complete — by this save or by
+							// someone else before it. The Save button reads
+							// the status to know there is nothing left to
+							// finish. Only COMPLETE is taken from the response:
+							// any other status comes with timestamps this
+							// cache entry would not have.
+							...(data?.document?.status === "COMPLETE"
+								? { status: "COMPLETE" }
+								: {}),
 						},
 					};
 				});
@@ -3470,6 +3490,16 @@ function DocumentEditorInner({
 						},
 					}),
 				});
+				// An explicit Save may have completed a draft. The Documents
+				// tab would otherwise keep showing "Draft" from its cache
+				// until that goes stale on its own.
+				if (variables.completeDraft) {
+					queryClient.invalidateQueries({
+						queryKey: orpc.projects.documents.list.queryKey({
+							input: { projectId, organizationId },
+						}),
+					});
+				}
 				// Only redirect when the user explicitly chose "Save & Close".
 				// "Save" (primary), auto-save, and confirm/reject saves all keep
 				// the user on the document.
@@ -3590,6 +3620,9 @@ function DocumentEditorInner({
 
 	const handleSave = () => {
 		if (!document) {
+			// As below: no save runs, so clear the intent here.
+			isManualSaveRef.current = false;
+			shouldRedirectAfterSaveRef.current = false;
 			return;
 		}
 		// Clear auto-save timeout when manually saving
@@ -3607,6 +3640,12 @@ function DocumentEditorInner({
 			viewMode === "raw" ? null : getEditorMarkdownForSave(editor);
 		if (viewMode !== "raw" && editorMarkdown === null) {
 			setIsSaving(false);
+			// No save runs, so `onSettled` never clears the manual-save
+			// intent. Left set, the next autosave would go out as an explicit
+			// Save — completing a draft nobody asked to complete, and
+			// following a Save & Close that never saved.
+			isManualSaveRef.current = false;
+			shouldRedirectAfterSaveRef.current = false;
 			toast.error(
 				"Couldn't save your changes — the editor content could not be read. Your text is still here; please copy it somewhere safe and reload the page.",
 			);
@@ -3629,11 +3668,14 @@ function DocumentEditorInner({
 			document: content,
 			streamingContent: content,
 		}));
-		saveMutation.mutate({
-			projectId,
-			id: documentId,
-			content,
-		});
+		saveMutation.mutate(
+			buildDocumentSaveInput({
+				projectId,
+				documentId,
+				content,
+				isManualSave: isManualSaveRef.current,
+			}),
+		);
 	};
 
 	// Expose document state to CopilotKit (memoized to avoid re-registrations on every render)
@@ -6495,8 +6537,37 @@ function DocumentEditorInner({
 						{saveSlot &&
 							createPortal(
 								(() => {
+									// A draft with content is still owed its
+									// completion once its text is saved, and
+									// Save is what completes it. An autosave
+									// clears the unsaved state ten seconds
+									// after the last keystroke, so without
+									// this the button would be disabled by the
+									// time anyone reached for it.
+									//
+									// Not while the editor holds text nobody
+									// has accepted — an assistant run
+									// streaming in, a proposal or a context
+									// update awaiting review, a regeneration.
+									// Save would store that text and complete
+									// the document on it; the autosave stands
+									// down in the same states. And not for an
+									// integration contract, whose status the
+									// server never lets a save change.
+									const completesDraft =
+										document?.status === "DRAFT" &&
+										document.type !==
+											"INTEGRATION_CONTRACT" &&
+										(document.content ?? "").trim() !==
+											"" &&
+										!isLoading &&
+										!isRegenerating &&
+										!showConfirmDialog &&
+										!isDiffReviewActive;
 									const isSaved =
-										!isSaving && !hasUnsavedChanges;
+										!isSaving &&
+										!hasUnsavedChanges &&
+										!completesDraft;
 									const isPrimaryDisabled =
 										isSaving || isSaved;
 									const primaryLabel = isSaving
@@ -6513,7 +6584,11 @@ function DocumentEditorInner({
 										? "Saving…"
 										: isSaved
 											? "No changes to save"
-											: "Save document";
+											: completesDraft
+												? tTooltips(
+														"saveCompletesDraft",
+													)
+												: "Save document";
 									const PrimaryIcon = isSaving
 										? Loader2
 										: isSaved

@@ -13,6 +13,8 @@ export default defineConfig({
 		globals: true,
 		environment: "node",
 		include: ["__tests__/**/*.test.ts"],
+		// Keeps every test off the machine's real coding tools; see the file.
+		setupFiles: ["__tests__/helpers/no-real-agent-tools.ts"],
 		testTimeout: 10000,
 		pool: "forks",
 		// Mirrors packages/sdk: Vitest 4 removed `poolOptions`, and

@@ -43,7 +43,8 @@ import { requireEligibleProjectForTopic } from "../../lib/publishing-topic-proje
 export async function startPlanningAnalysisRun(input: {
 	projectId: string;
 	topicId: string;
-	organizationId?: string | null;
+	/** The caller's organization, a guard only — see below. */
+	clientOrganizationId?: string | null;
 	requestedById: string;
 }) {
 	await assertPublishingSuiteFeatureEnabled(input.projectId);
@@ -51,10 +52,11 @@ export async function startPlanningAnalysisRun(input: {
 	// Security ratchet, identical to generate-now.ts: the permission
 	// middleware proved the caller is authorized for THIS project, but it
 	// never inspects the org. The tenant is derived from the loaded Project
-	// row, and `input.organizationId` is a guard only — never a scoping key.
+	// row, and `input.clientOrganizationId` is a guard only — never a scoping
+	// key.
 	const project = await requireEligibleProjectForTopic({
 		projectId: input.projectId,
-		clientOrganizationId: input.organizationId,
+		clientOrganizationId: input.clientOrganizationId,
 	});
 
 	// Temporal is checked BEFORE the row is created. Creating it first and
@@ -181,7 +183,7 @@ export const generatePlanningAnalysisProcedure = tenantProtectedProcedure
 		startPlanningAnalysisRun({
 			projectId: input.projectId,
 			topicId: input.topicId,
-			organizationId: input.organizationId,
+			clientOrganizationId: input.organizationId,
 			requestedById: context.user.id,
 		}),
 	);

@@ -83,6 +83,8 @@ export async function enqueueTestCaseAutoSync(
 					project.projectManagementMcpServerId,
 				projectManagementMcpConfigId:
 					project.projectManagementMcpConfigId,
+				projectManagementAdditionalContext:
+					project.projectManagementAdditionalContext,
 				organizationId: project.organizationId,
 			},
 			userId: input.userId,

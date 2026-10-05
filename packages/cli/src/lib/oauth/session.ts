@@ -9,13 +9,18 @@
  * the other's fresh tokens and does no refresh of its own.
  */
 
-import { closeSync, openSync, statSync, unlinkSync, writeSync } from "node:fs";
 import {
 	getConfigPath,
 	getOAuth,
 	type OAuthCredentials,
 	saveOAuth,
 } from "../config.js";
+import {
+	ExclusiveLockBusyError,
+	withExclusiveLock,
+} from "../exclusive-lock.js";
+import { fabricCommand } from "../launcher.js";
+import { type AuthFailure, recordAuthFailure } from "./auth-failure.js";
 import {
 	type FetchLike,
 	parseTokenResponse,
@@ -37,9 +42,37 @@ const LOCK_POLL_MS = 100;
 const LOCK_WAIT_MS = LOCK_STALE_MS + 5_000;
 
 export class OAuthSessionExpiredError extends Error {
-	constructor() {
-		super("The sign-in has expired. Run: fabric auth login");
+	/**
+	 * `origin` names the deployment whose sign-in it is, when the caller knows
+	 * it, and `projectId` the project when it is a project's.
+	 */
+	constructor(origin?: string, projectId?: string) {
+		super(
+			`The sign-in has expired. Run: ${fabricCommand(
+				projectId === undefined
+					? "auth login"
+					: `auth login --project ${projectId}`,
+				origin,
+			)}`,
+		);
 		this.name = "OAuthSessionExpiredError";
+	}
+}
+
+/**
+ * A request for one origin was about to carry a sign-in issued by another.
+ * Thrown before anything is sent: a bearer token goes only where it was
+ * issued.
+ */
+export class OAuthIssuerMismatchError extends Error {
+	constructor(
+		readonly requestOrigin: string,
+		readonly issuerOrigin: string,
+	) {
+		super(
+			`This sign-in was issued by ${issuerOrigin} and is not sent to ${requestOrigin}.`,
+		);
+		this.name = "OAuthIssuerMismatchError";
 	}
 }
 
@@ -52,70 +85,31 @@ export class OAuthRefreshBusyError extends Error {
 	}
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isExistsError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		error.code === "EEXIST"
-	);
-}
-
 /**
  * Run `work` while holding the profile's refresh lock.
  *
- * `O_EXCL` creation is the lock. A holder that crashed leaves the file behind,
- * so one older than `LOCK_STALE_MS` (by the file's own clock) is removed and the
- * creation retried. `work` never runs without the lock: a waiter that cannot
- * take it within `LOCK_WAIT_MS`, or whose `signal` aborts, gives up instead,
- * because two refreshes of one rotating token end the whole sign-in.
+ * The lock is `exclusive-lock.ts`'s: `O_EXCL` creation, with a holder that
+ * crashed removed once its file is older than `LOCK_STALE_MS`. `work` never
+ * runs without the lock: a waiter that cannot take it within `LOCK_WAIT_MS`,
+ * or whose `signal` aborts, gives up instead, because two refreshes of one
+ * rotating token end the whole sign-in.
  */
 export async function withRefreshLock<T>(
 	work: () => Promise<T>,
 	options: { lockPath?: string; signal?: AbortSignal; waitMs?: number } = {},
 ): Promise<T> {
-	const lockPath = options.lockPath ?? `${getConfigPath()}.refresh.lock`;
-	const deadline = Date.now() + (options.waitMs ?? LOCK_WAIT_MS);
-	let descriptor: number | undefined;
-
-	while (descriptor === undefined) {
-		options.signal?.throwIfAborted();
-		try {
-			descriptor = openSync(lockPath, "wx", 0o600);
-			writeSync(descriptor, String(process.pid));
-		} catch (error) {
-			if (!isExistsError(error)) {
-				throw error;
-			}
-			try {
-				if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-					unlinkSync(lockPath);
-					continue;
-				}
-			} catch {
-				// Released between the failed create and the stat: retry now.
-				continue;
-			}
-			if (Date.now() >= deadline) {
-				throw new OAuthRefreshBusyError();
-			}
-			await sleep(LOCK_POLL_MS);
-		}
-	}
-
 	try {
-		return await work();
-	} finally {
-		closeSync(descriptor);
-		try {
-			unlinkSync(lockPath);
-		} catch {
-			// Already removed as stale by another process.
-		}
+		return await withExclusiveLock(work, {
+			lockPath: options.lockPath ?? `${getConfigPath()}.refresh.lock`,
+			staleMs: LOCK_STALE_MS,
+			waitMs: options.waitMs ?? LOCK_WAIT_MS,
+			pollMs: LOCK_POLL_MS,
+			signal: options.signal,
+		});
+	} catch (error) {
+		throw error instanceof ExclusiveLockBusyError
+			? new OAuthRefreshBusyError()
+			: error;
 	}
 }
 
@@ -123,6 +117,10 @@ interface RefreshDeps {
 	fetch: FetchLike;
 	now: () => number;
 	lockPath?: string;
+	/** The deployment whose profile holds the sign-in; the active one when omitted. */
+	origin?: string;
+	/** The project the sign-in is for, when it is one project's and not the deployment's. */
+	projectId?: string;
 }
 
 function defaults(deps: Partial<RefreshDeps>): RefreshDeps {
@@ -130,7 +128,22 @@ function defaults(deps: Partial<RefreshDeps>): RefreshDeps {
 		fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
 		now: deps.now ?? Date.now,
 		lockPath: deps.lockPath,
+		origin: deps.origin,
+		projectId: deps.projectId,
 	};
+}
+
+/** The origin a request is for, from whatever `fetch` was given. */
+function requestOrigin(input: Parameters<typeof fetch>[0]): string | null {
+	try {
+		return new URL(
+			typeof input === "string" || input instanceof URL
+				? input
+				: input.url,
+		).origin;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -150,15 +163,15 @@ export async function refreshAccessToken(
 
 	return withRefreshLock(
 		async () => {
-			const current = getOAuth();
+			const current = getOAuth(deps.origin, deps.projectId);
 			if (!current) {
-				throw new OAuthSessionExpiredError();
+				throw new OAuthSessionExpiredError(deps.origin, deps.projectId);
 			}
 			if (!needsRefresh(current)) {
 				return current.accessToken;
 			}
 			if (!current.refreshToken) {
-				throw new OAuthSessionExpiredError();
+				throw new OAuthSessionExpiredError(deps.origin, deps.projectId);
 			}
 
 			const response = await postTokenRequest(
@@ -172,21 +185,29 @@ export async function refreshAccessToken(
 				signal,
 			);
 			if (!response.ok) {
-				throw new OAuthSessionExpiredError();
+				throw new OAuthSessionExpiredError(deps.origin, deps.projectId);
 			}
 
 			const tokens = parseTokenResponse(
 				await response.json().catch(() => null),
 				deps.now(),
 			);
-			saveOAuth({
-				...current,
-				accessToken: tokens.accessToken,
-				// Rotation: the old refresh token is spent. A response without a
-				// new one leaves the profile with none rather than a dead one.
-				refreshToken: tokens.refreshToken,
-				expiresAt: tokens.expiresAt,
-			});
+			saveOAuth(
+				{
+					...current,
+					accessToken: tokens.accessToken,
+					// Rotation: the old refresh token is spent. A response without a
+					// new one leaves the profile with none rather than a dead one.
+					refreshToken: tokens.refreshToken,
+					expiresAt: tokens.expiresAt,
+				},
+				{
+					origin: deps.origin,
+					...(deps.projectId === undefined
+						? {}
+						: { projectId: deps.projectId }),
+				},
+			);
 			return tokens.accessToken;
 		},
 		{ lockPath: deps.lockPath, signal },
@@ -218,21 +239,52 @@ export function createOAuthFetch(
 		return apiFetch(input, { ...init, headers });
 	};
 
+	const expired = (origin: string): AuthFailure => ({
+		kind: "expired",
+		origin,
+		...(deps.projectId === undefined ? {} : { project: deps.projectId }),
+	});
+
 	return async (input, init) => {
-		const stored = getOAuth();
+		const target = requestOrigin(input);
+		const stored = getOAuth(deps.origin, deps.projectId);
 		if (!stored) {
-			throw new OAuthSessionExpiredError();
+			recordAuthFailure(expired(deps.origin ?? target ?? ""));
+			throw new OAuthSessionExpiredError(
+				deps.origin ?? target ?? undefined,
+				deps.projectId,
+			);
+		}
+		// Before anything is refreshed or sent: a sign-in belongs to the
+		// deployment that issued it, and to no other.
+		const issuer = requestOrigin(stored.issuer);
+		if (target === null || issuer === null || target !== issuer) {
+			recordAuthFailure({
+				kind: "wrong-deployment",
+				origin: target ?? "",
+			});
+			throw new OAuthIssuerMismatchError(
+				target ?? "an unknown origin",
+				issuer ?? stored.issuer,
+			);
 		}
 		const signal = init?.signal ?? undefined;
 
 		let token = stored.accessToken;
 		if (stored.expiresAt - deps.now() <= REFRESH_WINDOW_MS) {
-			token = await refreshAccessToken(
-				(current) =>
-					current.expiresAt - deps.now() <= REFRESH_WINDOW_MS,
-				deps,
-				signal,
-			);
+			try {
+				token = await refreshAccessToken(
+					(current) =>
+						current.expiresAt - deps.now() <= REFRESH_WINDOW_MS,
+					deps,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof OAuthSessionExpiredError) {
+					recordAuthFailure(expired(target));
+				}
+				throw error;
+			}
 		}
 
 		const response = await send(input, init, token);
@@ -259,6 +311,9 @@ export function createOAuthFetch(
 				error instanceof OAuthSessionExpiredError ||
 				error instanceof OAuthRefreshBusyError
 			) {
+				if (error instanceof OAuthSessionExpiredError) {
+					recordAuthFailure(expired(target));
+				}
 				return response;
 			}
 			throw error;

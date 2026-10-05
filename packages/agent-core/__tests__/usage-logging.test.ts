@@ -229,28 +229,44 @@ describe("logAgentUsageFromRunnableConfig — cache accounting", () => {
 		return requestBody;
 	}
 
-	it("removes native Anthropic cache reads from full-rate input tokens", async () => {
+	// One contract for every writer: `inputTokens`/`totalTokens` are the
+	// provider's inclusive totals and the cache columns break them down. The
+	// AI SDK path already records it this way, and the estimator subtracts the
+	// cache buckets back out for every Anthropic provider.
+	it("keeps native Anthropic cache reads inside the inclusive input total", async () => {
 		await expect(
 			captureUsageBody("ANTHROPIC_DIRECT", 4570, 0),
 		).resolves.toMatchObject({
-			inputTokens: 3,
+			inputTokens: 4573,
 			outputTokens: 4,
-			totalTokens: 7,
+			totalTokens: 4577,
 			cachedInputTokens: 4570,
 			cacheCreationInputTokens: 0,
 		});
 	});
 
-	it("removes native Anthropic cache writes from full-rate input tokens", async () => {
+	it("keeps native Anthropic cache writes inside the inclusive input total", async () => {
 		await expect(
 			captureUsageBody("ANTHROPIC_DIRECT", 0, 4570),
 		).resolves.toMatchObject({
-			inputTokens: 3,
+			inputTokens: 4573,
 			outputTokens: 4,
-			totalTokens: 7,
+			totalTokens: 4577,
 			cachedInputTokens: 0,
 			cacheCreationInputTokens: 4570,
 		});
+	});
+
+	it("records native Anthropic and Databricks Claude with the same inclusive shape", async () => {
+		const native = await captureUsageBody("ANTHROPIC_DIRECT");
+		const databricks = await captureUsageBody("DATABRICKS");
+		const pick = (body: Record<string, unknown> | undefined) => ({
+			inputTokens: body?.inputTokens,
+			totalTokens: body?.totalTokens,
+			cachedInputTokens: body?.cachedInputTokens,
+			cacheCreationInputTokens: body?.cacheCreationInputTokens,
+		});
+		expect(pick(native)).toEqual(pick(databricks));
 	});
 
 	it("keeps Databricks Claude cache buckets inside input tokens", async () => {

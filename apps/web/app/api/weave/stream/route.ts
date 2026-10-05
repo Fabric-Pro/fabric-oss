@@ -8,7 +8,13 @@
  * - executionId: WeaveExecution record ID
  */
 
+import { ORPCError } from "@orpc/client";
+import { assertRowInAuthorizedOrganization } from "@repo/api/modules/weave/lib/plan-organization";
 import { createWeaveExecutionStream } from "@repo/api/modules/weave/procedures/stream-execution";
+import {
+	assertProjectPermission,
+	Permissions,
+} from "@repo/api/orpc/procedures";
 import { db } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
@@ -32,33 +38,57 @@ export async function GET(request: NextRequest) {
 
 	const userId = session.user.id;
 
-	// Accept organizationId from query param, but validate against session.
-	// This prevents stale session.activeOrganizationId when user has multiple
-	// tabs open in different org contexts.
-	const queryOrgId = request.nextUrl.searchParams.get("organizationId");
-	const sessionOrgId = session.session?.activeOrganizationId ?? null;
-	const organizationId =
-		queryOrgId && queryOrgId === sessionOrgId ? queryOrgId : sessionOrgId;
+	const notFound = () =>
+		new Response(JSON.stringify({ error: "Execution not found" }), {
+			status: 404,
+			headers: { "Content-Type": "application/json" },
+		});
 
-	// Verify access to this execution with XOR tenant isolation
+	// The caller's own execution, loaded by id and creator only — the same
+	// lookup as `getExecution`. `startExecution` stamps an execution with its
+	// AUTHORIZED project's organization (Fizzy #2904), which is not the
+	// session's for a project guest or for a member whose active organization
+	// is another; filtering on the session's would hide the caller's own run.
 	const execution = await db.weaveExecution.findFirst({
-		where: {
-			id: executionId,
-			userId,
-			...(organizationId ? { organizationId } : { organizationId: null }),
-		},
+		where: { id: executionId, userId },
 		select: {
 			id: true,
 			workflowId: true,
 			status: true,
+			projectId: true,
+			organizationId: true,
 		},
 	});
 
 	if (!execution) {
-		return new Response(JSON.stringify({ error: "Execution not found" }), {
-			status: 404,
-			headers: { "Content-Type": "application/json" },
-		});
+		return notFound();
+	}
+
+	// Then the project, as `getExecution` authorizes it: the caller must still
+	// be allowed to read its agents, and the row must be in the project's
+	// organization (`lib/plan-organization.ts`). A caller-named organization
+	// other than the project's is refused, as the resolvers refuse it.
+	try {
+		const authorized = await assertProjectPermission(
+			execution.projectId,
+			userId,
+			Permissions.AGENT_READ,
+		);
+		assertRowInAuthorizedOrganization(
+			request.nextUrl.searchParams.get("organizationId"),
+			execution,
+			authorized,
+		);
+	} catch (error) {
+		if (error instanceof ORPCError) {
+			return error.code === "BAD_REQUEST"
+				? new Response(JSON.stringify({ error: error.message }), {
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					})
+				: notFound();
+		}
+		throw error;
 	}
 
 	// If already in a terminal state, return a single-shot event

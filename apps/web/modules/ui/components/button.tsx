@@ -80,6 +80,8 @@ function Button({
 	const isMountedRef = React.useRef(true);
 
 	React.useEffect(() => {
+		// Strict Mode replays setup after cleanup without replacing this ref.
+		isMountedRef.current = true;
 		return () => {
 			isMountedRef.current = false;
 		};

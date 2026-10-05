@@ -47,8 +47,9 @@ export class CliFailure extends Error {
 	constructor(
 		message: string,
 		readonly exitCode: number,
+		options?: ErrorOptions,
 	) {
-		super(message);
+		super(message, options);
 		this.name = "CliFailure";
 	}
 }
@@ -74,11 +75,7 @@ export async function withDeadline(
 	const deadline = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(() => {
 			controller.abort();
-			reject(
-				new Error(
-					`gave up after ${totalMs}ms so the session is not held up`,
-				),
-			);
+			reject(new Error(`gave up after ${describeDuration(totalMs)}`));
 		}, totalMs);
 	});
 	try {
@@ -88,6 +85,15 @@ export async function withDeadline(
 			clearTimeout(timer);
 		}
 	}
+}
+
+/** `10 s`, `1.5 s`, or `250 ms` below a second. */
+export function describeDuration(ms: number): string {
+	if (ms < 1000) {
+		return `${ms} ms`;
+	}
+	const seconds = ms / 1000;
+	return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
 }
 
 export function describeError(error: unknown): string {

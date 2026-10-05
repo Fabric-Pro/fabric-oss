@@ -33,6 +33,10 @@
 			"types": "./src/ci-trigger/index.ts",
 			"default": "./src/ci-trigger/index.ts"
 		},
+		"./gitlab/connection-legacy-adoption": {
+			"types": "./src/gitlab/connection-legacy-adoption.ts",
+			"default": "./src/gitlab/connection-legacy-adoption.ts"
+		},
 		"./gitlab/pm-adapter": {
 			"types": "./src/gitlab/pm-adapter.ts",
 			"default": "./src/gitlab/pm-adapter.ts"

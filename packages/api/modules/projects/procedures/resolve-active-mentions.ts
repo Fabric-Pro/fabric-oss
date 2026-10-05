@@ -4,6 +4,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../lib/project-organization";
 import { filterAuthorizedMentionRecipients } from "../lib/user-mention";
 
 /**
@@ -24,10 +25,17 @@ export const resolveActiveMentionsProcedure = tenantProtectedProcedure
 		if (input.userIds.length === 0) {
 			return { activeIds: [] as string[] };
 		}
+		// The organization whose members are matched must be the project's own.
+		// A caller-named one turned this into an oracle for which users belong
+		// to an organization the caller has no tie to; it is refused instead.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			input.projectId,
+		);
 		const activeIds = await filterAuthorizedMentionRecipients(
 			input.userIds,
 			input.projectId,
-			input.organizationId,
+			organizationId,
 		);
 		return { activeIds };
 	});

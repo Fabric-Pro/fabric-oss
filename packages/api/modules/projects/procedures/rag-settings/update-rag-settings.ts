@@ -6,6 +6,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 const ChunkSplitMethodSchema = z.enum([
 	"PARAGRAPH",
@@ -52,14 +53,24 @@ export const updateRagSettingsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, ...updateData } = input;
+		const {
+			projectId,
+			organizationId: _inputOrganizationId,
+			...updateData
+		} = input;
 		const user = context.user;
+		// The project's own organization, stamped on the settings row. A
+		// different input organization is refused before anything is written.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 
 		// Check project access
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -82,7 +93,7 @@ export const updateRagSettingsProcedure = tenantProtectedProcedure
 		const settings = await upsertProjectRagSettings(projectId, {
 			...updateData,
 			userId: user.id,
-			organizationId: organizationId ?? undefined,
+			organizationId,
 		});
 
 		return { settings };

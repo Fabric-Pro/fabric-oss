@@ -6,6 +6,8 @@ const { projectFindUnique, resolvePMConfigForUser } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	db: { project: { findUnique: projectFindUnique } },
 	resolvePMConfigForUser,
 }));

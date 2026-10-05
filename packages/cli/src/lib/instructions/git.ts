@@ -1,24 +1,49 @@
 /**
- * The only way this CLI runs `git`, and it only ever READS (Fizzy #2708).
+ * The only way this CLI runs `git`: a fixed vocabulary of read-only questions
+ * and three bounded writes — `cloneInto`, `fetchRef` and `fastForwardTo`
+ * (Fizzy #2708, #2878).
  *
  * A repository-sourced project's session hook compares the checkout it runs
  * in with the commit the project last published from. That needs a handful
  * of facts about the checkout — where its work tree is, which remotes it
- * fetches from, which branch is checked out, whether the published commit is
- * in its history — and nothing else. So this module exports exactly those
- * questions, one function each, and no way to run an arbitrary git command:
- * nothing here fetches, pulls, merges, checks out, stashes, or writes to a
- * checkout, and a caller cannot make it.
+ * fetches from, which branch is checked out and what it tracks, whether the
+ * published commit is in its history, whether anything else is writing — and
+ * nothing else. So this module exports exactly those questions, one function
+ * each, and no way to run an arbitrary git command. The process runner is
+ * `git-run.ts` and the two writes to an existing checkout are `git-write.ts`;
+ * callers import only this file.
+ *
+ * The three writes are callable only from `init` and the session hook:
+ *
+ *   - `cloneInto` clones a project's repository into an EMPTY folder, with
+ *     the person at the keyboard;
+ *   - `fetchRef` fetches one branch into its remote-tracking ref, never
+ *     forced, so a rewritten upstream is refused rather than followed;
+ *   - `fastForwardTo` moves the checked-out branch to a commit that descends
+ *     from HEAD (`merge --ff-only`).
+ *
+ * Nothing here pulls, rebases, stashes or checks out, and a caller cannot make
+ * it.
  *
  * Every call is bounded and quiet:
  *
  *   - `spawn` with no shell, stdin closed, and a timeout taken from the
- *     caller's absolute deadline (SIGTERM, then SIGKILL a second later);
+ *     caller's absolute deadline (SIGTERM, then SIGKILL a second later unless
+ *     the process has exited by then);
  *   - an environment with every `FABRIC_*` variable removed (the API key
  *     never reaches git or anything git might run), the variables that
  *     redirect git at a different repository removed, prompts disabled, and
  *     optional locks, lazy fetches and fsmonitor turned off;
  *   - stdout capped at 64 KiB, stderr captured and never printed.
+ *
+ * The clone differs in one way: it needs the developer's own git credentials,
+ * so `init --clone` keeps their credential helpers and their `GIT_ASKPASS` and
+ * `SSH_ASKPASS` programs on purpose. That makes it interactive by design: a
+ * helper may ask the person in its own window. git's own terminal prompt is
+ * still off, and the clone is bounded by `CLONE_TIMEOUT_MS`, 5 minutes. The
+ * session hook's fetch and merge run unattended: `hookWriteEnvironment` strips
+ * both askpass programs, so nothing can open a prompt nobody is there to
+ * answer.
  *
  * Every function answers with a discriminated result rather than throwing for
  * the expected failures: `absent` means "not a git repository", and
@@ -27,17 +52,37 @@
  * its `.git` points nowhere. The reason is fixed text chosen here, never
  * git's own message, which can quote paths and configuration.
  */
-import { spawn } from "node:child_process";
 import { lstat, stat } from "node:fs/promises";
 import path from "node:path";
+import {
+	COMMIT_SHA,
+	cloneableUrl,
+	isBranchLiteral,
+	isRemoteName,
+} from "./git-literals.js";
+import {
+	exitReason,
+	type GitDeadline,
+	type GitResult,
+	isNotARepository,
+	lines,
+	runGit,
+	simple,
+} from "./git-run.js";
 
-export type GitResult<T> =
-	| { kind: "ok"; value: T }
-	| { kind: "absent" }
-	| { kind: "unavailable"; reason: string };
-
-/** An absolute point in time, in epoch milliseconds, that no call may pass. */
-export type GitDeadline = number;
+export {
+	cloneableUrl,
+	isBranchLiteral,
+	isCommitSha,
+	isRemoteName,
+} from "./git-literals.js";
+export {
+	type GitDeadline,
+	type GitResult,
+	gitEnvironment,
+	hookWriteEnvironment,
+} from "./git-run.js";
+export { fastForwardTo, fetchRef } from "./git-write.js";
 
 export interface WorkTree {
 	/** The work tree's top level, as git reports it. */
@@ -60,51 +105,6 @@ export interface CheckoutTraits {
 	sparse: boolean;
 	superproject: boolean;
 }
-
-const STDOUT_CAP_BYTES = 64 * 1024;
-const STDERR_CAP_BYTES = 8 * 1024;
-const KILL_GRACE_MS = 1_000;
-
-/** A full, lowercase object name. Anything else is never passed to git. */
-const COMMIT_SHA = /^[0-9a-f]{40}$/;
-
-/**
- * The branch names this module will pass to git or print as a command: a
- * conservative literal on top of `git check-ref-format --branch`, which alone
- * would accept (and expand) `@{-1}` and friends.
- */
-const BRANCH_LITERAL = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-
-/** Remote names as `git remote` lists them; never one that reads as an option. */
-const REMOTE_NAME = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
-
-/**
- * Removed from the inherited environment, alongside every `FABRIC_*` and
- * every `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`. Compared in upper
- * case, because Windows environment names are case-insensitive.
- *
- * The first group redirects git at a different repository; the
- * `GIT_CONFIG_*` group injects or relocates configuration — an `insteadOf`
- * there would change which URL a remote fetches from, and so which
- * repository this checkout is taken to be.
- */
-const STRIPPED_VARIABLES = new Set([
-	"GIT_DIR",
-	"GIT_WORK_TREE",
-	"GIT_INDEX_FILE",
-	"GIT_OBJECT_DIRECTORY",
-	"GIT_NAMESPACE",
-	"GIT_COMMON_DIR",
-	"GIT_ASKPASS",
-	"SSH_ASKPASS",
-	"GIT_CONFIG_COUNT",
-	"GIT_CONFIG_PARAMETERS",
-	"GIT_CONFIG_GLOBAL",
-	"GIT_CONFIG_SYSTEM",
-	"GIT_CONFIG_NOSYSTEM",
-]);
-
-const STRIPPED_PATTERN = /^(?:FABRIC_|GIT_CONFIG_(?:KEY|VALUE)_\d+$)/;
 
 /** The files and directories git leaves while each operation is in progress. */
 const OPERATION_MARKERS: ReadonlyArray<{
@@ -129,154 +129,6 @@ const OPERATION_MARKERS: ReadonlyArray<{
  * working tree has changes" would make every such checkout permanently dirty.
  */
 const OWN_PATHS = [".claude/settings.local.json", ".codex/hooks.json"];
-
-/** The environment every git call runs with, derived from `source`. */
-export function gitEnvironment(
-	source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {};
-	for (const [name, value] of Object.entries(source)) {
-		const upper = name.toUpperCase();
-		if (STRIPPED_VARIABLES.has(upper) || STRIPPED_PATTERN.test(upper)) {
-			continue;
-		}
-		env[name] = value;
-	}
-	env.GIT_TERMINAL_PROMPT = "0";
-	env.GIT_OPTIONAL_LOCKS = "0";
-	env.GIT_NO_LAZY_FETCH = "1";
-	env.LC_ALL = "C";
-	return env;
-}
-
-type Spawned =
-	| { kind: "exited"; code: number; stdout: string; stderr: string }
-	| { kind: "unavailable"; reason: string; missing?: boolean };
-
-/**
- * Run one read-only git command. Private on purpose: the exported functions
- * below are the whole vocabulary.
- */
-function runGit(
-	cwd: string,
-	args: readonly string[],
-	deadline: GitDeadline,
-): Promise<Spawned> {
-	const remaining = deadline - Date.now();
-	if (remaining <= 0) {
-		return Promise.resolve({
-			kind: "unavailable",
-			reason: "git timed out",
-		});
-	}
-	return new Promise((resolve) => {
-		let settled = false;
-		const finish = (result: Spawned): void => {
-			if (!settled) {
-				settled = true;
-				clearTimeout(timer);
-				resolve(result);
-			}
-		};
-		let child: ReturnType<typeof spawn>;
-		try {
-			child = spawn("git", ["-c", "core.fsmonitor=false", ...args], {
-				cwd,
-				env: gitEnvironment(),
-				stdio: ["ignore", "pipe", "pipe"],
-				shell: false,
-				windowsHide: true,
-			});
-		} catch (error) {
-			resolve(spawnFailure(error));
-			return;
-		}
-		const out: Buffer[] = [];
-		let outBytes = 0;
-		const err: Buffer[] = [];
-		let errBytes = 0;
-		child.stdout?.on("data", (chunk: Buffer) => {
-			if (outBytes < STDOUT_CAP_BYTES) {
-				const room = STDOUT_CAP_BYTES - outBytes;
-				out.push(chunk.subarray(0, room));
-				outBytes += Math.min(room, chunk.length);
-			}
-		});
-		child.stderr?.on("data", (chunk: Buffer) => {
-			if (errBytes < STDERR_CAP_BYTES) {
-				const room = STDERR_CAP_BYTES - errBytes;
-				err.push(chunk.subarray(0, room));
-				errBytes += Math.min(room, chunk.length);
-			}
-		});
-		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			const escalate = setTimeout(() => {
-				child.kill("SIGKILL");
-			}, KILL_GRACE_MS);
-			escalate.unref();
-			finish({ kind: "unavailable", reason: "git timed out" });
-		}, remaining);
-		timer.unref();
-		child.on("error", (error) => {
-			finish(spawnFailure(error));
-		});
-		child.on("close", (code) => {
-			finish({
-				kind: "exited",
-				code: code ?? -1,
-				stdout: Buffer.concat(out).toString("utf8"),
-				stderr: Buffer.concat(err).toString("utf8"),
-			});
-		});
-	});
-}
-
-function spawnFailure(error: unknown): Spawned {
-	const code = (error as NodeJS.ErrnoException | null)?.code;
-	if (code === "ENOENT") {
-		return {
-			kind: "unavailable",
-			reason: "git is not installed",
-			missing: true,
-		};
-	}
-	if (code === "EACCES" || code === "EPERM") {
-		return { kind: "unavailable", reason: "git could not be run" };
-	}
-	return { kind: "unavailable", reason: "git could not be run" };
-}
-
-/**
- * git's refusal as a fixed reason. Only the SHAPE of stderr is read (with
- * `LC_ALL=C` it is English); none of it is ever returned.
- */
-function exitReason(result: { code: number; stderr: string }): string {
-	const text = result.stderr;
-	if (/dubious ownership/i.test(text)) {
-		return "git does not trust this repository's owner (safe.directory)";
-	}
-	if (/must be run in a work tree/i.test(text)) {
-		return "not a working tree (a bare repository, or inside .git)";
-	}
-	if (/not a git repository/i.test(text)) {
-		return "its .git points to a repository that does not exist";
-	}
-	if (/permission denied/i.test(text)) {
-		return "permission denied";
-	}
-	return `git exited with status ${result.code}`;
-}
-
-/** `not a git repository (or any of the parent directories)` — and only that. */
-function isNotARepository(stderr: string): boolean {
-	return /not a git repository \(or any/i.test(stderr);
-}
-
-function lines(stdout: string): string[] {
-	const trimmed = stdout.replace(/\r?\n$/, "");
-	return trimmed === "" ? [] : trimmed.split(/\r?\n/);
-}
 
 /** The nearest existing directory at or above `dir`, or null. */
 async function nearestExistingDirectory(dir: string): Promise<string | null> {
@@ -376,24 +228,6 @@ export async function findWorkTree(
 	};
 }
 
-async function simple(
-	root: string,
-	args: readonly string[],
-	deadline: GitDeadline,
-): Promise<GitResult<{ code: number; stdout: string }>> {
-	const result = await runGit(root, args, deadline);
-	if (result.kind === "unavailable") {
-		return { kind: "unavailable", reason: result.reason };
-	}
-	if (result.code === 128 && isNotARepository(result.stderr)) {
-		return { kind: "absent" };
-	}
-	return {
-		kind: "ok",
-		value: { code: result.code, stdout: result.stdout },
-	};
-}
-
 /** The configured remote names. */
 export async function remotes(
 	root: string,
@@ -424,7 +258,7 @@ export async function effectiveFetchUrl(
 	remote: string,
 	deadline: GitDeadline,
 ): Promise<GitResult<string | null>> {
-	if (!REMOTE_NAME.test(remote)) {
+	if (!isRemoteName(remote)) {
 		return { kind: "ok", value: null };
 	}
 	const result = await simple(
@@ -683,21 +517,259 @@ export async function checkRefFormat(
 	return { kind: "ok", value: result.value.code === 0 && normalized === ref };
 }
 
-/** The literal half of `checkRefFormat`, exported for tests and callers that must not spawn. */
-export function isBranchLiteral(ref: string): boolean {
-	return (
-		ref.length <= 255 &&
-		BRANCH_LITERAL.test(ref) &&
-		!ref.includes("..") &&
-		!ref.includes("@{") &&
-		!ref.includes("//") &&
-		!ref.endsWith("/") &&
-		!ref.endsWith(".") &&
-		!ref.endsWith(".lock")
+/**
+ * The upstream a local branch tracks, as `<remote>/<branch>`, or `null` when
+ * it tracks nothing. A branch name that is not a plain literal is never passed
+ * to git and has none.
+ */
+export async function upstreamOf(
+	root: string,
+	branch: string,
+	deadline: GitDeadline,
+): Promise<GitResult<string | null>> {
+	if (!isBranchLiteral(branch)) {
+		return { kind: "ok", value: null };
+	}
+	const result = await simple(
+		root,
+		["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`],
+		deadline,
 	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	if (result.value.code !== 0) {
+		return {
+			kind: "unavailable",
+			reason: `git exited with status ${result.value.code}`,
+		};
+	}
+	const [upstream] = lines(result.value.stdout);
+	return { kind: "ok", value: upstream ? upstream : null };
 }
 
-/** Whether `sha` is a full commit name this module would pass to git. */
-export function isCommitSha(sha: string): boolean {
-	return COMMIT_SHA.test(sha);
+/**
+ * Whether git is writing in this checkout right now: an `index.lock` or a
+ * `HEAD.lock` exists. Asked of git for the paths (a linked worktree keeps its
+ * own), then `lstat`.
+ */
+export async function lockFilesPresent(
+	root: string,
+	deadline: GitDeadline,
+): Promise<GitResult<boolean>> {
+	const result = await simple(
+		root,
+		["rev-parse", "--git-path", "index.lock", "--git-path", "HEAD.lock"],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	const paths = lines(result.value.stdout);
+	if (result.value.code !== 0 || paths.length !== 2) {
+		return { kind: "unavailable", reason: "git answered unexpectedly" };
+	}
+	for (const lock of paths) {
+		if (
+			(await lstat(path.resolve(root, lock)).catch(() => null)) !== null
+		) {
+			return { kind: "ok", value: true };
+		}
+	}
+	return { kind: "ok", value: false };
+}
+
+/**
+ * The work trees of this repository that have the branch `ref` checked out,
+ * this one included: `git worktree list --porcelain`.
+ */
+export async function worktreesOnBranch(
+	root: string,
+	ref: string,
+	deadline: GitDeadline,
+): Promise<GitResult<string[]>> {
+	if (!isBranchLiteral(ref)) {
+		return { kind: "ok", value: [] };
+	}
+	const result = await simple(
+		root,
+		["worktree", "list", "--porcelain"],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	if (result.value.code !== 0) {
+		return {
+			kind: "unavailable",
+			reason: `git exited with status ${result.value.code}`,
+		};
+	}
+	const holders: string[] = [];
+	let current: string | null = null;
+	for (const line of lines(result.value.stdout)) {
+		if (line.startsWith("worktree ")) {
+			current = line.slice("worktree ".length);
+		} else if (current !== null && line === `branch refs/heads/${ref}`) {
+			holders.push(current);
+		}
+	}
+	return { kind: "ok", value: holders };
+}
+
+/**
+ * The repository's common directory (`.git` of the main checkout, which a
+ * linked worktree shares), as an absolute path.
+ */
+export async function commonDir(
+	root: string,
+	deadline: GitDeadline,
+): Promise<GitResult<string>> {
+	const result = await simple(
+		root,
+		["rev-parse", "--git-common-dir"],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	const [dir] = lines(result.value.stdout);
+	if (result.value.code !== 0 || !dir) {
+		return { kind: "unavailable", reason: "git answered unexpectedly" };
+	}
+	return { kind: "ok", value: path.resolve(root, dir) };
+}
+
+/**
+ * Where git keeps this checkout's local, untracked ignore rules
+ * (`info/exclude`), as an absolute path. Asked of git rather than guessed,
+ * because a linked worktree shares the main checkout's file and a `.git`
+ * that is a pointer has no `info` directory of its own.
+ */
+export async function excludeFilePath(
+	root: string,
+	deadline: GitDeadline,
+): Promise<GitResult<string>> {
+	const result = await simple(
+		root,
+		["rev-parse", "--git-path", "info/exclude"],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	const [answer] = lines(result.value.stdout);
+	if (result.value.code !== 0 || !answer) {
+		return { kind: "unavailable", reason: "git answered unexpectedly" };
+	}
+	return { kind: "ok", value: path.resolve(root, answer) };
+}
+
+/**
+ * Whether git already ignores `relativePath` (relative to `root`, the work
+ * tree's top level) by any rule — a repository's `.gitignore`, the developer's
+ * global one, or `info/exclude`. The path need not exist.
+ */
+export async function isIgnored(
+	root: string,
+	relativePath: string,
+	deadline: GitDeadline,
+): Promise<GitResult<boolean>> {
+	if (relativePath.startsWith("-") || relativePath === "") {
+		return {
+			kind: "unavailable",
+			reason: "not a path git can be asked about",
+		};
+	}
+	const result = await simple(
+		root,
+		["check-ignore", "-q", "--", relativePath],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	if (result.value.code === 0) {
+		return { kind: "ok", value: true };
+	}
+	if (result.value.code === 1) {
+		return { kind: "ok", value: false };
+	}
+	return {
+		kind: "unavailable",
+		reason: "git could not say whether it is ignored",
+	};
+}
+
+export type CloneFailure =
+	| "auth"
+	| "network"
+	| "missing-ref"
+	| "not-empty"
+	| "other";
+
+export type CloneResult =
+	| { kind: "cloned" }
+	| { kind: "failed"; reason: CloneFailure }
+	| { kind: "unavailable"; reason: string };
+
+/** git's refusal to clone as a class. Only the SHAPE of stderr is read. */
+export function cloneFailureOf(stderr: string): CloneFailure {
+	if (/already exists and is not an empty directory/i.test(stderr)) {
+		return "not-empty";
+	}
+	if (/Remote branch .* not found/i.test(stderr)) {
+		return "missing-ref";
+	}
+	if (
+		/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Permission denied|HTTP (401|403)|error: (401|403)|returned error: (401|403)|Repository not found|access denied/i.test(
+			stderr,
+		)
+	) {
+		return "auth";
+	}
+	if (
+		/Could not resolve host|Failed to connect|Connection (refused|timed out|reset)|Operation timed out|unable to access|SSL|TLS/i.test(
+			stderr,
+		)
+	) {
+		return "network";
+	}
+	return "other";
+}
+
+/**
+ * The one write: clone `url` at `ref` into `dir`, which must be an existing,
+ * EMPTY directory (git refuses otherwise, and so does the caller, first).
+ *
+ * Exactly `git clone --branch <ref> -- <url> .`: the clone and its config are
+ * what the developer gets cloning by hand, tags included, so later fetches and
+ * pulls behave as git's own do. It uses the developer's own credentials and
+ * never a prompt (`gitEnvironment`'s `write`). `url` must be a `cloneableUrl`.
+ * git's own words are never returned.
+ */
+export async function cloneInto(
+	dir: string,
+	url: string,
+	ref: string,
+	deadline: GitDeadline,
+): Promise<CloneResult> {
+	if (cloneableUrl(url) !== url || !isBranchLiteral(ref)) {
+		return {
+			kind: "unavailable",
+			reason: "not a repository this will clone",
+		};
+	}
+	const result = await runGit(
+		dir,
+		["clone", "--quiet", "--branch", ref, "--", url, "."],
+		deadline,
+		{ write: true },
+	);
+	if (result.kind === "unavailable") {
+		return { kind: "unavailable", reason: result.reason };
+	}
+	return result.code === 0
+		? { kind: "cloned" }
+		: { kind: "failed", reason: cloneFailureOf(result.stderr) };
 }

@@ -14,6 +14,8 @@ const slackThreadMappingUpdateMany = vi.fn(async () => ({ count: 1 }));
 const channelThreadMappingUpdateMany = vi.fn(async () => ({ count: 1 }));
 const workflowIntegrationFindFirst = vi.fn();
 vi.mock("@repo/database", () => ({
+	resolveWorkflowIntegrationForProvider: (...args: unknown[]) =>
+		workflowIntegrationFindFirst(...args),
 	isProjectReadOnly: (...a: unknown[]) => isProjectReadOnly(...(a as [])),
 	hasProjectAccess: vi.fn(async () => true),
 	db: {

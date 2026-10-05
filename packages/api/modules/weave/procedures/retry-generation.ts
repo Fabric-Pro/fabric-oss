@@ -14,8 +14,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { requireAuthorizedRowOrganization } from "../lib/plan-organization";
 import { runInBackground } from "../lib/run-in-background";
 import { runPatternGeneration } from "../lib/run-pattern-generation";
 import { assertWeaveServiceHealthy } from "../lib/weave-preflight";
@@ -77,19 +77,10 @@ export const retryGenerationProcedure = protectedProcedure
 	.output(RetryGenerationOutputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const plan = await db.weavePlan.findFirst({
 			where: {
 				id: input.planId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 			include: {
 				project: {
@@ -114,10 +105,19 @@ export const retryGenerationProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names a plan, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			plan.projectId,
 			userId,
 			Permissions.AGENT_UPDATE,
+		);
+		// From here on the AUTHORIZED project's organization, not the one
+		// resolved from the input before the project was known. A row stamped
+		// with another organization is refused before anything is written —
+		// see `lib/plan-organization.ts`.
+		const projectOrganizationId = requireAuthorizedRowOrganization(
+			input.organizationId,
+			plan,
+			authorized,
 		);
 
 		if (plan.status !== "FAILED") {
@@ -153,7 +153,7 @@ export const retryGenerationProcedure = protectedProcedure
 				patternUrl,
 				message,
 				userId,
-				organizationId: organizationId ?? null,
+				organizationId: projectOrganizationId,
 				projectContext: {
 					projectId: plan.projectId,
 					projectName: plan.project.name || plan.name,

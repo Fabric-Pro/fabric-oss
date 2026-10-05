@@ -21,21 +21,26 @@
  */
 import {
 	db,
+	getMcpConfigById,
+	isGitLabPersonalMcpServerKey,
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
+	resolvePMConfigForUser,
 } from "@repo/database";
-import { decryptApiKey } from "@repo/utils";
+import { mcpRowOrigin } from "./connection";
+import { executeGitLabTool, GitLabConnectionOriginChangedError } from "./index";
 import {
-	executeGitLabTool,
-	getGitLabAccessToken,
-	refreshMcpConfigToken,
-} from "./index";
-import { createGitLabRefreshFailureWriter } from "./refresh-failure-writer";
+	GitLabPmOriginMismatchError,
+	gitlabPmOriginMatches,
+} from "./pm-origin";
 import {
 	callMcpWithRestFallback,
 	type GitLabSource,
 	resolveGitLabSource,
 } from "./source";
+
+// Re-exported for the `@repo/integrations/gitlab/pm-adapter` entry point.
+export { GitLabPmOriginMismatchError } from "./pm-origin";
 
 export const GITLAB_OFFICIAL_MCP_KEY = "gitlab-official";
 
@@ -73,33 +78,164 @@ export async function getProjectPMServerKey(
 	return server?.key ?? null;
 }
 
+function originOfApiBase(apiBase: string): string | null {
+	try {
+		return new URL(apiBase).origin.toLowerCase();
+	} catch {
+		return null;
+	}
+}
+
 /**
- * Resolve the GitLab source (MCP or REST) for the calling user.
- * Wraps `resolveGitLabSource` with the project's db/decrypt/token-refresh
- * dependencies so the procedures stay free of integration plumbing.
+ * Resolve the GitLab source (MCP or REST) for the calling user — always the
+ * calling user's own GitLab connection, never a project repository grant.
+ * Throws `GitLabPmOriginMismatchError`, before anything is sent to GitLab,
+ * when that connection is on another instance than the project's container.
  */
 export async function resolveGitLabPMSource(opts: {
 	userId: string;
 	organizationId: string | null;
+	/**
+	 * Accepted for call-site compatibility only: the personal connection is
+	 * per (user, organization), and a project's repository grant is never
+	 * borrowed for PM calls.
+	 */
 	projectId?: string;
+	/**
+	 * The project's `projectManagementAdditionalContext`: it records which
+	 * GitLab instance the container lives on. Required so no caller can skip
+	 * the instance check by leaving it out.
+	 */
+	pmAdditionalContext: unknown;
 }): Promise<GitLabSource | null> {
-	return resolveGitLabSource({
+	const source = await resolveGitLabSource({
 		userId: opts.userId,
 		organizationId: opts.organizationId,
-		projectId: opts.projectId,
-		db: db as never,
-		decrypt: decryptApiKey,
-		refresh: (configId) =>
-			refreshMcpConfigToken({ configId, db: db as never }),
-		getRestToken: async ({ userId, organizationId }) =>
-			(await getGitLabAccessToken(userId, organizationId ?? undefined)) ??
-			null,
-		// Record the failure so a dead grant is condemned once instead of
-		// being retried on every request. See the writer's own doc comment
-		// for what it persists and why only a provider rejection may set
-		// `needsReauth`.
-		markRefreshFailure: createGitLabRefreshFailureWriter(db as never),
 	});
+	if (
+		source &&
+		!gitlabPmOriginMatches(
+			opts.pmAdditionalContext,
+			originOfApiBase(source.credential.apiBase),
+		)
+	) {
+		throw new GitLabPmOriginMismatchError();
+	}
+	return source;
+}
+
+/** The parts of an MCP config the instance check reads. */
+type PmMcpConfigShape = {
+	baseUrl?: string | null;
+	mcpServer?: { key?: string | null; defaultUrl?: string | null } | null;
+};
+
+/**
+ * Whether an MCP config may serve a project's selected PM container. A
+ * personal GitLab config (`gitlab` / `gitlab-official`) only on the
+ * container's instance: its requests go to its own endpoint, where the
+ * container id names an unrelated project. Every other config is not a
+ * GitLab instance binding and passes.
+ */
+export function gitlabPmConfigOriginMatches(
+	pmAdditionalContext: unknown,
+	config: PmMcpConfigShape,
+): boolean {
+	if (!isGitLabPersonalMcpServerKey(config.mcpServer?.key)) {
+		return true;
+	}
+	return gitlabPmOriginMatches(
+		pmAdditionalContext,
+		mcpRowOrigin({
+			baseUrl: config.baseUrl ?? null,
+			mcpServer: config.mcpServer ?? null,
+		}),
+	);
+}
+
+/**
+ * `resolvePMConfigForUser` for a project's PM selection: the caller's own
+ * MCP config for the project's PM tool, refused with
+ * `GitLabPmOriginMismatchError` when it is a personal GitLab config on
+ * another instance than the selected container. Every PM path resolves the
+ * actor's config through here (a guard test keeps direct
+ * `resolvePMConfigForUser` calls out of the API and the worker), so the MCP
+ * branch cannot skip the instance check that `resolveGitLabPMSource` and the
+ * worker's `resolvePmSource` apply to the REST branch.
+ */
+export async function resolveProjectPMConfigForUser(
+	args: Parameters<typeof resolvePMConfigForUser>[0] & {
+		/** The project's `projectManagementAdditionalContext`. */
+		pmAdditionalContext: unknown;
+	},
+): Promise<Awaited<ReturnType<typeof resolvePMConfigForUser>>> {
+	const { pmAdditionalContext, ...lookup } = args;
+	const config = await resolvePMConfigForUser(lookup);
+	if (config && !gitlabPmConfigOriginMatches(pmAdditionalContext, config)) {
+		throw new GitLabPmOriginMismatchError();
+	}
+	return config;
+}
+
+/**
+ * The same check for code that already holds the config's id (a worker
+ * activity's `mcpConfigId`): throws `GitLabPmOriginMismatchError` when the
+ * caller's config with that id is a personal GitLab config on another
+ * instance than the container. A config the caller cannot read is left to
+ * the caller's own not-found handling.
+ */
+export async function assertGitLabPmMcpConfigOrigin(args: {
+	mcpConfigId: string;
+	userId: string;
+	organizationId?: string | null;
+	/** The `projectManagementAdditionalContext` the container came with. */
+	pmAdditionalContext: unknown;
+}): Promise<void> {
+	const config = await getMcpConfigById(args.mcpConfigId, {
+		userId: args.userId,
+		organizationId: args.organizationId ?? undefined,
+	});
+	if (
+		config &&
+		!gitlabPmConfigOriginMatches(args.pmAdditionalContext, config)
+	) {
+		throw new GitLabPmOriginMismatchError();
+	}
+}
+
+/**
+ * The REST half of an MCP-with-REST-fallback call, kept on the instance the
+ * source was validated for. `executeGitLabTool` reads the connection again
+ * (it refreshes a token GitLab refused), so without `expectedOrigin` a
+ * reconnect to another instance between `resolveGitLabPMSource` and this
+ * call would send the container id and payload there.
+ */
+function restOnSourceInstance(
+	source: GitLabSource,
+	userId: string,
+	organizationId: string | null,
+): (method: string, args: Record<string, unknown>) => Promise<unknown> {
+	const expectedOrigin = originOfApiBase(source.credential.apiBase);
+	return async (method, args) => {
+		if (!expectedOrigin) {
+			throw new GitLabPmOriginMismatchError();
+		}
+		try {
+			return await executeGitLabTool(
+				method,
+				args,
+				userId,
+				organizationId ?? undefined,
+				undefined,
+				{ expectedOrigin },
+			);
+		} catch (error) {
+			if (error instanceof GitLabConnectionOriginChangedError) {
+				throw new GitLabPmOriginMismatchError();
+			}
+			throw error;
+		}
+	};
 }
 
 /**
@@ -205,12 +341,11 @@ export async function listGitLabIssuesForPM(input: {
 		method: "list_issues",
 		args,
 		restFallback: () =>
-			executeGitLabTool(
-				"list_issues",
-				args,
+			restOnSourceInstance(
+				input.source,
 				input.userId,
-				input.organizationId ?? undefined,
-			),
+				input.organizationId,
+			)("list_issues", args),
 	});
 
 	const rawList: GitLabIssueResponse[] = Array.isArray(result)
@@ -259,12 +394,11 @@ export async function getGitLabIssueForPM(input: {
 		method: "get_issue",
 		args,
 		restFallback: () =>
-			executeGitLabTool(
-				"get_issue",
-				args,
+			restOnSourceInstance(
+				input.source,
 				input.userId,
-				input.organizationId ?? undefined,
-			),
+				input.organizationId,
+			)("get_issue", args),
 	})) as GitLabIssueResponse | null;
 
 	const raw: GitLabIssueResponse = result ?? {};
@@ -333,12 +467,11 @@ export async function getGitLabIssueNotesForPM(input: {
 		method: "list_issue_notes",
 		args,
 		restFallback: () =>
-			executeGitLabTool(
-				"list_issue_notes",
-				args,
+			restOnSourceInstance(
+				input.source,
 				input.userId,
-				input.organizationId ?? undefined,
-			),
+				input.organizationId,
+			)("list_issue_notes", args),
 	})) as GitLabNoteResponse[] | null;
 
 	const raw = Array.isArray(result) ? result : [];
@@ -490,12 +623,11 @@ export async function createGitLabIssueFromStory(input: {
 		// error — the issue may already have been created server-side.
 		idempotent: false,
 		restFallback: () =>
-			executeGitLabTool(
-				"create_issue",
-				args,
+			restOnSourceInstance(
+				source,
 				userId,
-				organizationId ?? undefined,
-			),
+				organizationId,
+			)("create_issue", args),
 	})) as GitLabIssueWriteResponse;
 
 	return toWriteResult(raw);
@@ -534,12 +666,11 @@ export async function updateGitLabIssueFromStory(input: {
 		// error — the update may already have been applied server-side.
 		idempotent: false,
 		restFallback: () =>
-			executeGitLabTool(
-				"update_issue",
-				args,
+			restOnSourceInstance(
+				source,
 				userId,
-				organizationId ?? undefined,
-			),
+				organizationId,
+			)("update_issue", args),
 	})) as GitLabIssueWriteResponse;
 
 	return toWriteResult(raw);

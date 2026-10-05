@@ -157,6 +157,7 @@ const context = {
 /** The row `update-project` loads via findUnique. Mutated per test. */
 let existingProject: {
 	repositoryUrl: string | null;
+	organizationId: string | null;
 	pmTerminalStatuses: string[];
 	attachmentRetentionDays: number | null;
 };
@@ -178,6 +179,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	existingProject = {
 		repositoryUrl: null,
+		organizationId: "org-1",
 		pmTerminalStatuses: [],
 		attachmentRetentionDays: null,
 	};
@@ -254,10 +256,11 @@ describe("updateProjectProcedure — attachment retention write-through", () => 
 	});
 
 	it("does not stamp the timestamp when a project with no override is sent null", async () => {
-		// `existingProject` is null-valued here. Without the `?? null` normalisation
-		// on the comparison a MISSING row would read as `undefined`, and
-		// `null !== undefined` would stamp on a request that changed nothing.
-		mockProjectFindUnique.mockResolvedValue(null);
+		// The stored override is null here and the request sends null: nothing
+		// changed, so nothing is stamped. (A MISSING row, which this test used
+		// to cover, is now refused NOT_FOUND before the comparison — pinned in
+		// update-project-tenant.test.ts.)
+		existingProject.attachmentRetentionDays = null;
 		await callUpdateProject({ id: "p1", attachmentRetentionDays: null });
 		const data = mockUpdateProject.mock.calls[0][2];
 		expect(data).not.toHaveProperty("attachmentRetentionDaysUpdatedAt");

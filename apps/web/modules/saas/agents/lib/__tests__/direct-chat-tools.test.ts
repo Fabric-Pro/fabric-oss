@@ -57,3 +57,37 @@ describe("direct chat tool metadata", () => {
 		).toBe("direct");
 	});
 });
+
+describe("direct chat instance pin control", () => {
+	it("clears an instance explicitly with null while preserving unrelated metadata", () => {
+		expect(
+			mergeDirectConversationMetadata({
+				existing: {
+					instanceId: "example-agent",
+					mode: "research",
+					custom: true,
+					documentChatId: "example-document-chat",
+				},
+				instanceId: null,
+			}),
+		).toEqual({
+			mode: "research",
+			custom: true,
+			documentChatId: "example-document-chat",
+		});
+	});
+	it("preserves an existing instance when the caller leaves it unspecified", () => {
+		const existing = {
+			instanceId: "example-agent",
+			mode: "direct",
+			custom: true,
+		};
+		expect(mergeDirectConversationMetadata({ existing })).toEqual(existing);
+		expect(
+			mergeDirectConversationMetadata({
+				existing,
+				instanceId: undefined,
+			}),
+		).toEqual(existing);
+	});
+});

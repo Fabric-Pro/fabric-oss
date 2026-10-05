@@ -23,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { assertNoGitLabCredentialInput } from "../lib/gitlab-data-connection";
 import { toClientConnection } from "../lib/serialize-connection";
 
 export const createProcedure = tenantProtectedProcedure
@@ -65,6 +66,10 @@ export const createProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// A GitLab Data Connection holds no credential (each sync uses the
+		// starting person's own GitLab connection).
+		assertNoGitLabCredentialInput(input);
+
 		// Check if connection already exists for this provider
 		const existing = await getDataConnectionByProvider({
 			provider: input.provider as DataConnectionProvider,
@@ -83,7 +88,6 @@ export const createProcedure = tenantProtectedProcedure
 			"SNOWFLAKE",
 			"BIGQUERY",
 			"LINEAR",
-			"GITLAB",
 			"BITBUCKET",
 			"S3",
 			"GOOGLE_STORAGE",
@@ -136,9 +140,12 @@ export const createProcedure = tenantProtectedProcedure
 
 		// API-key and manual-credential providers can become connected immediately
 		// when credentials are supplied. OAuth providers start as PENDING.
+		// GitLab needs nothing more on the connection itself: a sync checks the
+		// starting person's GitLab connection when it runs.
 		const status: DataConnectionStatus =
-			(isApiKeyProvider || isManualCredentialProvider) &&
-			(input.credentials || credentialId)
+			input.provider === "GITLAB" ||
+			((isApiKeyProvider || isManualCredentialProvider) &&
+				(input.credentials || credentialId))
 				? "CONNECTED"
 				: "PENDING";
 
@@ -148,7 +155,11 @@ export const createProcedure = tenantProtectedProcedure
 			provider: input.provider as DataConnectionProvider,
 			name: input.name,
 			createdBy: user.id,
-			credentials: input.credentials as Prisma.InputJsonValue | undefined,
+			// GitLab: only an empty object can get here; store nothing.
+			credentials:
+				input.provider === "GITLAB"
+					? undefined
+					: (input.credentials as Prisma.InputJsonValue | undefined),
 			config: input.config as Prisma.InputJsonValue | undefined,
 			credentialId,
 			status,

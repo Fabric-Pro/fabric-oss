@@ -20,6 +20,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chooseFileAction } from "./file-actions-menu";
 
 function resolve(path: string): unknown {
 	return path.split(".").reduce<unknown>((node, key) => {
@@ -95,6 +96,13 @@ const editMocks = vi.hoisted(() => ({
 vi.mock("@saas/projects/lib/edit-snapshot", () => ({
 	editInstructionSnapshot: (...a: unknown[]) =>
 		editMocks.editInstructionSnapshot(...a),
+}));
+// The app's confirmation dialog, mounted once in the (saas) layout and so
+// absent here. `confirmMock` records what each destructive action asked and,
+// unless a test says otherwise, confirms, as pressing the dialog's button would.
+const confirmMock = vi.hoisted(() => vi.fn());
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
 vi.mock("sonner", () => ({
 	toast: {
@@ -195,6 +203,10 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 
 describe("InstructionFileView", () => {
 	beforeEach(() => {
+		confirmMock.mockReset();
+		confirmMock.mockImplementation((options: { onConfirm: () => void }) =>
+			options.onConfirm(),
+		);
 		fileResponse.current = { ...TEXT_FILE };
 		branchResponse.current = {
 			branch: null,
@@ -236,6 +248,28 @@ describe("InstructionFileView", () => {
 		).toBeInTheDocument();
 		expect(screen.getByText("Read, Glob")).toBeInTheDocument();
 		expect(screen.queryByText(/^---$/)).not.toBeInTheDocument();
+	});
+
+	// jsdom does not lay anything out. A device sweep at 375px found the
+	// header's Copy path, Edit and Delete file buttons clipped by the card,
+	// because the toolbar could not wrap. They are now a Copy path icon, Edit
+	// and a File actions menu in one group, and the bar around the path and
+	// that group is what wraps.
+	it("lets the header's actions wrap instead of being clipped on a narrow screen", async () => {
+		render(
+			<InstructionFileView
+				projectId="p"
+				snapshotId="s"
+				path=".claude/skills/example-qa-test/SKILL.md"
+				canEdit
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		const bar = (await screen.findByRole("button", { name: "Edit" }))
+			.parentElement?.parentElement;
+		expect(bar?.className).toContain("flex-wrap");
+		expect(bar?.firstElementChild?.className).toContain("flex-wrap");
 	});
 
 	// Task 14 finding 4: the two branches the server can return besides a
@@ -296,7 +330,7 @@ describe("InstructionFileView", () => {
 		);
 		expect(
 			await screen.findByText(
-				"Showing the first 200000 characters. Download the snapshot for the full file.",
+				"Showing the first 200000 characters. Download the version for the full file.",
 			),
 		).toBeInTheDocument();
 	});
@@ -311,9 +345,40 @@ describe("InstructionFileView", () => {
 			{ wrapper: TestQueryProvider },
 		);
 		await screen.findByRole("heading", { name: "example-qa-test" });
+		expect(screen.queryByText(/for the full file/)).not.toBeInTheDocument();
+	});
+
+	// "Copy MCP call" put a pseudo-call no MCP client accepts on the
+	// clipboard. The one thing a person actually wants from a file in the
+	// tree is its path, so that is what the button copies now.
+	it("copies the file's path, and offers no pseudo-call", async () => {
+		const user = userEvent.setup();
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText },
+		});
+		render(
+			<InstructionFileView
+				projectId="p"
+				snapshotId="s"
+				path=".claude/skills/example-qa-test/SKILL.md"
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		await screen.findByRole("heading", { name: "example-qa-test" });
 		expect(
-			screen.queryByText(/Download the snapshot for the full file/),
+			screen.queryByRole("button", { name: /MCP call/ }),
 		).not.toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Copy path" }));
+
+		expect(writeText).toHaveBeenCalledWith(
+			".claude/skills/example-qa-test/SKILL.md",
+		);
+		await waitFor(() =>
+			expect(editMocks.toastSuccess).toHaveBeenCalledWith("Path copied"),
+		);
 	});
 	/**
 	 * Fizzy #2546. Editing a file in the tab has to produce a NEW VERSION
@@ -368,7 +433,7 @@ describe("InstructionFileView", () => {
 				screen.queryByRole("button", { name: "Edit" }),
 			).not.toBeInTheDocument();
 			expect(
-				screen.queryByRole("button", { name: "Delete file" }),
+				screen.queryByRole("button", { name: "File actions" }),
 			).not.toBeInTheDocument();
 		});
 
@@ -469,7 +534,6 @@ describe("InstructionFileView", () => {
 
 		it("sends a delete change once the confirmation is accepted", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			render(
 				<InstructionFileView
 					projectId="p"
@@ -479,9 +543,7 @@ describe("InstructionFileView", () => {
 				/>,
 				{ wrapper: TestQueryProvider },
 			);
-			await user.click(
-				await screen.findByRole("button", { name: "Delete file" }),
-			);
+			await chooseFileAction(user, "Delete file");
 
 			await waitFor(() =>
 				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
@@ -495,12 +557,19 @@ describe("InstructionFileView", () => {
 					}),
 				),
 			);
-			confirm.mockRestore();
+			// Asked in the app's own dialog, destructively, with the action
+			// named on the button rather than a bare "Confirm".
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: "Delete .claude/skills/example-qa-test/SKILL.md and publish a new version?",
+					confirmLabel: "Delete file",
+					destructive: true,
+				}),
+			);
 		});
 
 		it("submits a reader deletion as a proposal", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			render(
 				<InstructionFileView
 					projectId="p"
@@ -510,9 +579,7 @@ describe("InstructionFileView", () => {
 				/>,
 				{ wrapper: TestQueryProvider },
 			);
-			await user.click(
-				await screen.findByRole("button", { name: "Delete file" }),
-			);
+			await chooseFileAction(user, "Delete file");
 
 			await waitFor(() =>
 				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
@@ -528,10 +595,13 @@ describe("InstructionFileView", () => {
 					}),
 				),
 			);
-			expect(confirm).toHaveBeenCalledWith(
-				"Submit a deletion proposal for .claude/skills/example-qa-test/SKILL.md?",
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: "Submit a deletion proposal for .claude/skills/example-qa-test/SKILL.md?",
+					confirmLabel: "Submit proposal",
+					destructive: true,
+				}),
 			);
-			confirm.mockRestore();
 		});
 
 		// Fizzy #2563 spec §12: on a repository-backed project a suggestion
@@ -579,7 +649,6 @@ describe("InstructionFileView", () => {
 
 		it("names the repository and branch when confirming a suggested deletion", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			render(
 				<InstructionFileView
 					projectId="p"
@@ -593,23 +662,24 @@ describe("InstructionFileView", () => {
 				/>,
 				{ wrapper: TestQueryProvider },
 			);
-			await user.click(
-				await screen.findByRole("button", { name: "Delete file" }),
-			);
-			expect(confirm).toHaveBeenCalledWith(
-				"Suggest deleting .claude/skills/example-qa-test/SKILL.md? Once the change passes its checks, Fabric opens a pull request in example-org/example-repo against main.",
+			await chooseFileAction(user, "Delete file");
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: "Suggest deleting .claude/skills/example-qa-test/SKILL.md? Once the change passes its checks, Fabric opens a pull request in example-org/example-repo against main.",
+					confirmLabel: "Suggest deletion",
+					destructive: true,
+				}),
 			);
 			await waitFor(() =>
 				expect(editMocks.editInstructionSnapshot).toHaveBeenCalledWith(
 					expect.objectContaining({ proposal: true }),
 				),
 			);
-			confirm.mockRestore();
 		});
 
 		it("deletes nothing when the confirmation is declined", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+			confirmMock.mockImplementation(() => undefined);
 			render(
 				<InstructionFileView
 					projectId="p"
@@ -619,12 +689,10 @@ describe("InstructionFileView", () => {
 				/>,
 				{ wrapper: TestQueryProvider },
 			);
-			await user.click(
-				await screen.findByRole("button", { name: "Delete file" }),
-			);
+			await chooseFileAction(user, "Delete file");
 
+			expect(confirmMock).toHaveBeenCalledTimes(1);
 			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
-			confirm.mockRestore();
 		});
 
 		it("refuses to edit a binary file and says why", async () => {
@@ -654,7 +722,61 @@ describe("InstructionFileView", () => {
 
 			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 			expect(editMocks.toastInfo).toHaveBeenCalledWith(
-				"This file is not text. Use Add file to replace it.",
+				"This file is not text, so it can't be edited here. Replace it with Add file.",
+			);
+		});
+
+		it("names the same way out for a file that is too large, not a different one", async () => {
+			const user = userEvent.setup();
+			fileResponse.current = {
+				...TEXT_FILE,
+				size: 6_000_000,
+				truncated: true,
+				nextOffset: 200_000,
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"This file is too large to edit here. Replace it with Add file.",
+			);
+		});
+
+		it("tells a reader to replace a file with the control they actually have", async () => {
+			const user = userEvent.setup();
+			fileResponse.current = {
+				...TEXT_FILE,
+				path: "assets/logo.png",
+				kind: "OTHER",
+				isText: false,
+				body: null,
+				url: "https://storage.example.com/signed/logo.png",
+			};
+			render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path="assets/logo.png"
+					canPropose
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+
+			expect(editMocks.toastInfo).toHaveBeenCalledWith(
+				"This file is not text, so it can't be edited here. Replace it with Propose file.",
 			);
 		});
 
@@ -1225,7 +1347,7 @@ describe("InstructionFileView", () => {
 			await user.click(screen.getByRole("button", { name: "Edit" }));
 			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 			expect(editMocks.toastInfo).toHaveBeenCalledWith(
-				"This file is not text. Use Add file to replace it.",
+				"This file is not text, so it can't be edited here. Replace it with Suggest a change.",
 			);
 			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
 		});
@@ -1272,7 +1394,7 @@ describe("InstructionFileView", () => {
 			);
 			expect(
 				await screen.findByText(
-					"Showing the first 200000 characters. Download the snapshot for the full file.",
+					"Showing the first 200000 characters. Download the version for the full file.",
 				),
 			).toBeInTheDocument();
 			await user.click(screen.getByRole("button", { name: "Edit" }));
@@ -1280,7 +1402,7 @@ describe("InstructionFileView", () => {
 			// branch's file, so no textarea is offered at all.
 			expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 			expect(editMocks.toastInfo).toHaveBeenCalledWith(
-				"This file is too large to edit here. Upload the folder again to replace it.",
+				"This file is too large to edit here. Replace it with Suggest a change.",
 			);
 			expect(editMocks.editInstructionSnapshot).not.toHaveBeenCalled();
 		});

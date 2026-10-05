@@ -1,6 +1,7 @@
 "use client";
 
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -101,6 +102,7 @@ export function InstructionProposalBranchPanel({
 }) {
 	const readOnly = userId !== undefined;
 	const actionError = useInstructionActionError();
+	const { confirm } = useConfirmationAlert();
 	const t = useTranslations(
 		"projects.codingInstructions.proposalReview.branch",
 	);
@@ -345,23 +347,24 @@ export function InstructionProposalBranchPanel({
 									size="sm"
 									variant="outline"
 									disabled={busy}
-									onClick={() => {
-										if (
-											window.confirm(
-												t("closeConfirm", {
-													count: liveChanges,
+									onClick={() =>
+										confirm({
+											title: t("close"),
+											message: t("closeConfirm", {
+												count: liveChanges,
+											}),
+											confirmLabel: t("close"),
+											destructive: true,
+											onConfirm: () =>
+												close.mutate({
+													projectId,
+													branchId: branch.id,
+													expectedAttempt: attemptFor(
+														branch.id,
+													),
 												}),
-											)
-										) {
-											close.mutate({
-												projectId,
-												branchId: branch.id,
-												expectedAttempt: attemptFor(
-													branch.id,
-												),
-											});
-										}
-									}}
+										})
+									}
 								>
 									{t("close")}
 								</Button>
@@ -371,17 +374,22 @@ export function InstructionProposalBranchPanel({
 									size="sm"
 									variant="outline"
 									disabled={busy}
-									onClick={() => {
-										if (window.confirm(t("retryConfirm"))) {
-											retry.mutate({
-												projectId,
-												branchId: branch.id,
-												expectedAttempt: attemptFor(
-													branch.id,
-												),
-											});
-										}
-									}}
+									onClick={() =>
+										confirm({
+											title: t("retryOpening"),
+											message: t("retryConfirm"),
+											confirmLabel: t("retryOpening"),
+											destructive: true,
+											onConfirm: () =>
+												retry.mutate({
+													projectId,
+													branchId: branch.id,
+													expectedAttempt: attemptFor(
+														branch.id,
+													),
+												}),
+										})
+									}
 								>
 									{t("retryOpening")}
 								</Button>
@@ -391,23 +399,24 @@ export function InstructionProposalBranchPanel({
 									size="sm"
 									variant="outline"
 									disabled={busy}
-									onClick={() => {
-										if (
-											window.confirm(
-												t("startOverConfirm", {
-													count: liveChanges,
+									onClick={() =>
+										confirm({
+											title: t("startOver"),
+											message: t("startOverConfirm", {
+												count: liveChanges,
+											}),
+											confirmLabel: t("startOver"),
+											destructive: true,
+											onConfirm: () =>
+												startOver.mutate({
+													projectId,
+													branchId: branch.id,
+													expectedAttempt: attemptFor(
+														branch.id,
+													),
 												}),
-											)
-										) {
-											startOver.mutate({
-												projectId,
-												branchId: branch.id,
-												expectedAttempt: attemptFor(
-													branch.id,
-												),
-											});
-										}
-									}}
+										})
+									}
 								>
 									{t("startOver")}
 								</Button>
@@ -422,21 +431,22 @@ export function InstructionProposalBranchPanel({
 									size="sm"
 									variant="outline"
 									disabled={busy}
-									onClick={() => {
-										if (
-											window.confirm(
-												t("stopTrackingConfirm"),
-											)
-										) {
-											stopTracking.mutate({
-												projectId,
-												branchId: branch.id,
-												expectedAttempt: attemptFor(
-													branch.id,
-												),
-											});
-										}
-									}}
+									onClick={() =>
+										confirm({
+											title: t("stopTracking"),
+											message: t("stopTrackingConfirm"),
+											confirmLabel: t("stopTracking"),
+											destructive: true,
+											onConfirm: () =>
+												stopTracking.mutate({
+													projectId,
+													branchId: branch.id,
+													expectedAttempt: attemptFor(
+														branch.id,
+													),
+												}),
+										})
+									}
 								>
 									{t("stopTracking")}
 								</Button>

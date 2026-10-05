@@ -4,7 +4,9 @@
  * Toggles a document as the active version for its type.
  * Deactivates the previous active document and manages Qdrant embeddings.
  *
- * AUTHORIZATION: Uses hasProjectAccess() - verifies org membership + project access
+ * AUTHORIZATION: `requireProjectPermission(DOCUMENT_UPDATE)` authorizes the
+ * project. Every tenant use (RAG provider config, embedding, embedding removal)
+ * takes the project row's organization, never `input.organizationId`.
  */
 
 import { ORPCError } from "@orpc/client";
@@ -20,9 +22,9 @@ import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { loadProjectOrganizationId } from "../../lib/project-organization";
 
 export const setActiveDocumentProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
@@ -36,15 +38,20 @@ export const setActiveDocumentProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			id: z.string(),
+			// Accepted for client compatibility and ignored: the tenant is the
+			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+
+		// The tenant is the organization that owns the project
+		// `requireProjectPermission` authorized. `input.organizationId` is the
+		// caller's own string: used here it would pick another organization's
+		// RAG provider and key, and its embedding index. A project with no
+		// organization is refused before anything is changed.
+		const organizationId = await loadProjectOrganizationId(input.projectId);
 
 		// Check project access
 		const hasAccess = await hasProjectAccess(
@@ -72,7 +79,7 @@ export const setActiveDocumentProcedure = tenantProtectedProcedure
 				try {
 					await removeDocumentEmbedding(
 						deactivatedDocId,
-						organizationId ?? undefined,
+						organizationId,
 					);
 				} catch (error) {
 					logger.warn(

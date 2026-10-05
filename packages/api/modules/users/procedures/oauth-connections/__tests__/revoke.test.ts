@@ -52,6 +52,7 @@ describe("revoking a connected agent", () => {
 			clientId: "client-public-id",
 			clientName: "Example Agent",
 			organizationId: "org-example-alpha",
+			projectId: null,
 		});
 
 		await expect(revoke("consent-1")).resolves.toEqual({ success: true });
@@ -71,6 +72,28 @@ describe("revoking a connected agent", () => {
 					name: "Example Agent",
 				},
 				metadata: { consentId: "consent-1" },
+			}),
+		);
+	});
+
+	it("audits a project grant in the organization hosting the project, naming the project", async () => {
+		revokeOAuthConnection.mockResolvedValueOnce({
+			clientId: "client-public-id",
+			clientName: "Example Agent",
+			organizationId: "org-example-alpha",
+			projectId: "project-example-one",
+		});
+
+		await revoke("consent-1");
+
+		expect(recordAuditFromRequest).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				organizationId: "org-example-alpha",
+				metadata: {
+					consentId: "consent-1",
+					projectId: "project-example-one",
+				},
 			}),
 		);
 	});

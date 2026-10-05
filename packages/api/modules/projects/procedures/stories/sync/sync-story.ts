@@ -5,8 +5,12 @@ import {
 	hasProjectAccess,
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
-	resolvePMConfigForUser,
 } from "@repo/database";
+import {
+	findUsableGitLabConnection,
+	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+	gitlabPmOriginMatches,
+} from "@repo/integrations/gitlab";
 import { READ_ONLY_MODE_ERROR_CODE, READ_ONLY_MODE_MESSAGE } from "@repo/utils";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
@@ -17,6 +21,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { assertCapabilityAvailable } from "../../../../capabilities/assert";
+import { resolveProjectPmConfig } from "../../../lib/gitlab-pm-source";
 import { stripInternalStoryFields } from "../../../lib/strip-internal-story-fields";
 
 const SyncDirectionSchema = z.enum(["push", "pull"]);
@@ -108,8 +113,9 @@ export const syncStoryProcedure = tenantProtectedProcedure
 		}
 
 		// Resolve the CALLING USER's MCP config — prefers configId, falls back to serverId
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
@@ -141,21 +147,27 @@ export const syncStoryProcedure = tenantProtectedProcedure
 				serverKey = server?.key ?? null;
 			}
 			if (serverKey === "gitlab-official") {
-				const tenantFilter = project.organizationId
-					? {
-							organizationId: project.organizationId,
-							userId: user.id,
-						}
-					: { organizationId: null, userId: user.id };
-				const integration = await db.workflowIntegration.findFirst({
-					where: {
-						...tenantFilter,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-					},
-					select: { id: true },
+				// The caller's own usable GitLab connection (exclusive tenant); a
+				// reconnect-required connection, or a legacy `gitlab-official` MCP
+				// token copy with no connection, reads as not connected.
+				const integration = await findUsableGitLabConnection({
+					userId: user.id,
+					organizationId: project.organizationId ?? null,
 				});
+				// The worker refuses a connection on another GitLab instance
+				// than the container's; say so here instead of enqueuing a
+				// sync that cannot run.
+				if (
+					integration &&
+					!gitlabPmOriginMatches(
+						project.projectManagementAdditionalContext,
+						integration.origin,
+					)
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+					});
+				}
 				restGitLab = Boolean(integration);
 			}
 		}

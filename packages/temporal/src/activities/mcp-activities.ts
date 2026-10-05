@@ -13,7 +13,16 @@ import {
 	setMcpConfigHealth,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { closeMcpClient, createMcpClient, type McpClientType } from "@repo/mcp";
+import {
+	checkMcpConfigOrganizationAccess,
+	closeMcpClient,
+	createMcpClient,
+	GitLabMcpCredentialError,
+	type GitLabMcpFetch,
+	getValidMcpTransportAuth,
+	isGitLabPersonalMcpConfig,
+	type McpClientType,
+} from "@repo/mcp";
 
 /**
  * Health-check an MCP config using proper MCP protocol.
@@ -40,7 +49,38 @@ async function checkMcpServerHealth(configId: string): Promise<boolean> {
 
 		// Get auth headers - use getValidAccessToken for OAuth2 to trigger refresh if expired
 		const headers: Record<string, string> = {};
-		if (config.authType === "OAUTH2" && config.userId) {
+		let transportFetch: GitLabMcpFetch | undefined;
+		if (isGitLabPersonalMcpConfig(config)) {
+			// GitLab personal servers: the owner's GitLab connection token,
+			// and nothing else, whatever auth type the config names. These
+			// configs hold no token of their own, so they never reach the
+			// direct-decrypt fallback below: a config with no owner (an
+			// organization-level config has no personal connection behind it)
+			// is refused as unhealthy.
+			// The URL checked is the one this probe connects to — the
+			// failover URL when one is set — so a failover on another origin
+			// than the credential's gets no token; the token then travels
+			// only through the GitLab fetch.
+			if (!config.userId) {
+				return false;
+			}
+			const auth = await getValidMcpTransportAuth({
+				configId,
+				userId: config.userId,
+				organizationId: config.organizationId,
+				endpoint: baseUrl,
+			}).catch((error: unknown) => {
+				if (error instanceof GitLabMcpCredentialError) {
+					return null;
+				}
+				throw error;
+			});
+			if (!auth?.accessToken || !auth.fetch) {
+				return false;
+			}
+			headers.Authorization = `Bearer ${auth.accessToken}`;
+			transportFetch = auth.fetch;
+		} else if (config.authType === "OAUTH2" && config.userId) {
 			// Use getValidAccessToken which handles token refresh automatically
 			const token = await getValidAccessToken({
 				configId,
@@ -79,6 +119,7 @@ async function checkMcpServerHealth(configId: string): Promise<boolean> {
 			serverUrl: baseUrl,
 			transport,
 			headers,
+			...(transportFetch ? { fetch: transportFetch } : {}),
 		});
 
 		// Attempt to list tools - this validates the full MCP protocol
@@ -105,6 +146,31 @@ export async function checkAndUpdateMcpHealth(configId: string) {
 	const cfg = await getMcpConfigByIdInternal(configId);
 	if (!cfg) {
 		return;
+	}
+	// The probe lists tools with the owner's stored credential (or their
+	// GitLab connection). An organization config whose owner has left the
+	// organization, or whose role no longer allows reading through MCP, is
+	// not probed: its credential is not used, and its health status is left
+	// as it was, since nothing was learned about the server. The offboarding
+	// cascade deletes such a config; until then it is unusable through every
+	// client factory (Fizzy #2903). A failed read throws, so the activity
+	// fails rather than probing.
+	if (cfg.organizationId && cfg.userId) {
+		const refusal = await checkMcpConfigOrganizationAccess({
+			userId: cfg.userId,
+			organizationId: cfg.organizationId,
+			access: "read",
+		});
+		if (refusal) {
+			logger.info(
+				"[MCP Health] Skipped: the config owner may not use it",
+				{
+					configId,
+					code: refusal.code,
+				},
+			);
+			return;
+		}
 	}
 	const baseUrl = cfg.failoverUrl || cfg.baseUrl || cfg.mcpServer?.defaultUrl;
 	if (!baseUrl) {

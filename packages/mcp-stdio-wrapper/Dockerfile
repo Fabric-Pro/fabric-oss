@@ -22,6 +22,7 @@ WORKDIR /app
 
 # Copy workspace root files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 
 # Copy package.json files for all workspace packages
 COPY packages/mcp-stdio-wrapper/package.json packages/mcp-stdio-wrapper/
@@ -53,6 +54,7 @@ COPY --from=deps /app/packages ./packages
 COPY --from=deps /app/tooling ./tooling
 COPY --from=deps /app/package.json ./package.json
 COPY --from=deps /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=deps /app/patches ./patches
 
 # Copy source files
 COPY packages/mcp-stdio-wrapper packages/mcp-stdio-wrapper
@@ -90,6 +92,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=builder /app/patches ./patches
 
 # Apache-2.0 §4(a) and §4(d): a recipient of the Work gets the licence and the
 # NOTICE attributions. Publishing this image for someone else to pull is

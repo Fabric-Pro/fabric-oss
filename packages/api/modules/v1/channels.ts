@@ -10,7 +10,7 @@
  * SDK consumers see no change.
  */
 
-import { db } from "@repo/database";
+import { type db, resolveWorkflowIntegrationForProvider } from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
@@ -31,20 +31,11 @@ async function resolveCredentialsFor(
 			: never
 		: never;
 
-	const where = tenantOrgId
-		? { organizationId: tenantOrgId, isActive: true }
-		: { userId: tenantUserId, organizationId: null, isActive: true };
-
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			...where,
-			provider: providerKey as unknown as ProviderEnum,
-			// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
-			// not a connection.
-			NOT: { name: `${providerKey}_OAUTH_APP` },
-		},
-		orderBy: { lastUsedAt: "desc" },
-	});
+	const integration = await resolveWorkflowIntegrationForProvider(
+		providerKey as unknown as ProviderEnum,
+		tenantUserId,
+		tenantOrgId,
+	);
 	if (!integration) {
 		return undefined;
 	}

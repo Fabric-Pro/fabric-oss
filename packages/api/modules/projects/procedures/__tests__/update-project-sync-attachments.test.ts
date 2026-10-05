@@ -92,7 +92,7 @@ beforeEach(() => {
 	mockGetProject.mockResolvedValue({
 		id: "p1",
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 	});
 	mockUpdateProject.mockResolvedValue({ id: "p1" });
 	vi.stubEnv("FABRIC_FEATURE_PM_ATTACHMENT_SYNC", "true");
@@ -103,11 +103,11 @@ afterEach(() => {
 });
 
 describe("updateProject syncAttachments write-through (Fizzy #1746)", () => {
-	it("persists the flag when supplied by an owner", async () => {
+	it("persists the flag when supplied by the project owner (an accepted OWNER member)", async () => {
 		mockResolveAccess.mockResolvedValue({
-			source: "owner",
-			permissions: [],
-			organizationId: null,
+			source: "project-member",
+			permissions: ["PROJECT_UPDATE", "PROJECT_SETTINGS_EDIT"],
+			organizationId: "org-1",
 		});
 		const handler = await loadHandler();
 		await handler({
@@ -156,9 +156,9 @@ describe("updateProject syncAttachments write-through (Fizzy #1746)", () => {
 
 	it("disconnect wins over an explicit syncAttachments:true in the same request", async () => {
 		mockResolveAccess.mockResolvedValue({
-			source: "owner",
-			permissions: [],
-			organizationId: null,
+			source: "project-member",
+			permissions: ["PROJECT_UPDATE", "PROJECT_SETTINGS_EDIT"],
+			organizationId: "org-1",
 		});
 		const handler = await loadHandler();
 		await handler({
@@ -211,11 +211,11 @@ describe("updateProjectProcedure — syncAttachments field guard", () => {
 		expect(dataArg.syncAttachments).toBe(true);
 	});
 
-	it("allows the personal-project owner unconditionally", async () => {
+	it("allows the project owner (an accepted OWNER member)", async () => {
 		mockResolveAccess.mockResolvedValue({
-			source: "owner",
-			permissions: [],
-			organizationId: null,
+			source: "project-member",
+			permissions: ["PROJECT_UPDATE", "PROJECT_SETTINGS_EDIT"],
+			organizationId: "org-1",
 		});
 		const handler = await loadHandler();
 		await handler({

@@ -16,6 +16,10 @@ import {
 } from "@repo/database";
 import type { Context, Next } from "hono";
 import { verifyUserApiKey } from "../../users/procedures/api-keys/verify";
+import {
+	projectBoundRefusal,
+	projectBoundRouteAllowed,
+} from "../project-bound";
 import type { ExternalApiContext, ExternalApiVariables } from "../types";
 
 /**
@@ -162,6 +166,33 @@ export function requireApiKey(requiredScope?: string) {
 				);
 			}
 
+			// A token issued for one project's MCP gateway reaches that gateway
+			// and nothing here. The refusal is the one a dead token gets, in
+			// words that say which door it was for.
+			if (token.audience === "mcp") {
+				return c.json(
+					{
+						error: "This access token was issued for the MCP gateway, not the REST API",
+					},
+					401,
+				);
+			}
+
+			// A token bound to one project reaches only the routes
+			// `projectBoundRouteAllowed` names. Decided here, before the scope,
+			// so that a route nobody classified is refused for every route
+			// there is or will be, and with one answer.
+			if (
+				token.projectId &&
+				!projectBoundRouteAllowed(c.req.path, token.projectId)
+			) {
+				const refusal = await projectBoundRefusal(token.projectId);
+				return c.json(
+					{ error: { message: refusal.error } },
+					refusal.status,
+				);
+			}
+
 			if (requiredScope && !hasScope(token.scopes, requiredScope)) {
 				return c.json(
 					{ error: `Missing required scope: ${requiredScope}` },
@@ -178,6 +209,7 @@ export function requireApiKey(requiredScope?: string) {
 				userId: token.userId,
 				organizationId: token.organizationId,
 				scopes: token.scopes,
+				...(token.projectId ? { boundProjectId: token.projectId } : {}),
 			};
 		} else if (isUserKey) {
 			const result = await verifyUserApiKey(apiKey);

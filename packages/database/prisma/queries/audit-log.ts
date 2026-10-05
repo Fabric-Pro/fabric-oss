@@ -339,6 +339,22 @@ export const AUDIT_ACTIONS = [
 	// Branch id, operation id, provider, external id and codes only, never a
 	// URL, ref content or file content.
 	"project.instructions.pull_request_branch_updated",
+	// A direct commit to a repository-backed project's synced branch (Fizzy
+	// #2878 §10): the commit Fabric pushed on a member's behalf, and the
+	// pull request it became when the branch refused or kept moving under
+	// the push. Written in the transaction that settles the snapshot. Commit
+	// id, ref, file count and a code only, never a message, path or content.
+	"project.instructions.committed",
+	"project.instructions.commit_fell_back_to_pull_request",
+	// Moving a project's uploaded coding instructions into a repository
+	// (Fizzy #2878 §9): the admin started the move (the pull request is
+	// opened by the member branch workflow), the move was canceled or its pull
+	// request closed unmerged and uploads resumed, or the first sync from the
+	// repository succeeded and the move is over. Repository, branch, folder and
+	// counts or codes only, never a path or content.
+	"project.instructions.repository_migration_started",
+	"project.instructions.repository_migration_canceled",
+	"project.instructions.repository_migration_completed",
 	// story (11)
 	"story.created",
 	"story.updated",

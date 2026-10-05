@@ -246,4 +246,44 @@ describe("resolveEffectiveProjectPermissions", () => {
 		expect(access?.source).toBe("org");
 		expect(access?.permissions).toContain(Permissions.STORY_DELETE);
 	});
+
+	// The permission check refuses a project whose organization is deleted
+	// (Fizzy #2904). The flag is read in the SAME project query — no extra
+	// round trip on every project-scoped request.
+	it("reports a deleted host organization from the project query itself", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+			organization: { deletedAt: new Date("2026-09-01T00:00:00.000Z") },
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+		expect(access?.source).toBe("org");
+		expect(access?.organizationDeleted).toBe(true);
+		expect(mocks.projectFindUnique).toHaveBeenCalledTimes(1);
+		expect(mocks.projectFindUnique.mock.calls[0]?.[0]).toMatchObject({
+			select: { organization: { select: { deletedAt: true } } },
+		});
+	});
+
+	it("reports a live host organization as not deleted", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+			organization: { deletedAt: null },
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "EDITOR",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+		const resolve = await load();
+		expect((await resolve(PROJECT_ID, USER_ID))?.organizationDeleted).toBe(
+			false,
+		);
+	});
 });

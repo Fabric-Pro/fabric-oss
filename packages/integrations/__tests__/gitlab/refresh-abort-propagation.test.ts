@@ -1,50 +1,46 @@
 /**
  * Integration test for the abort/timeout propagation path from a GitLab
- * token exchange down to the source resolver.
+ * token exchange up to the source resolver.
  *
  * A body-read abort inside `refreshGitLabToken`'s non-OK branch must reach
- * `resolveGitLabSource` as the SAME `DOMException`, not a generic Error that
- * `isNoVerdictTransientError` cannot recognise — otherwise it lands as a
- * strike against the 3-strike refresh circuit breaker for an outcome that is
- * not a verdict at all.
+ * the connection service as the SAME `DOMException`, not as a generic status
+ * Error and never as `GitLabReauthRequiredError` — otherwise a timeout would
+ * condemn a working connection.
  *
- * Every layer under test here is the REAL implementation —
- * `refreshGitLabToken`, `refreshMcpConfigToken`, and `resolveGitLabSource`
- * are all imported directly, not mocked. Only `fetch` and the Prisma-backed
- * persistence helper (`updateMcpConfigTokens`) are faked. This is
- * deliberate: injecting the DOMException directly into `resolveGitLabSource`
- * via a hand-rolled `refresh()` stub (as `source.test.ts`'s suite does)
- * proves the RESOLVER classifies the error correctly but cannot prove the
- * error actually SURVIVES the two real layers underneath it. A try/catch
- * wrapped around a body read is an easy place for that survival to quietly
- * break: the same `AbortSignal` that bounds the whole exchange also governs
- * the body read, so a timeout firing after non-OK headers arrive throws from
- * THAT read — and a catch written only to handle "body wasn't JSON" will
- * swallow it into a generic error unless it explicitly checks for and
- * rethrows the abort. This file exists to catch a regression in that
- * specific seam.
+ * Every layer under test is the REAL implementation: `refreshGitLabToken`,
+ * the connection service's refresh, and `resolveGitLabSource`. Only `fetch`
+ * and the database (an in-memory fake that applies `where` clauses) are
+ * faked. Injecting the DOMException into a hand-rolled exchange stub would
+ * prove the service classifies it, but not that it SURVIVES the real
+ * exchange's body-read catch, which is the seam this file guards.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+	readCredential,
+} from "./helpers/gitlab-fake-db";
 
-vi.mock("@repo/database", () => ({
-	updateMcpConfigTokens: vi.fn(),
-}));
-vi.mock("@repo/utils", () => ({
-	encryptApiKey: (v: string) => `enc_${v}`,
-	decryptApiKey: (v: string) => v.replace(/^enc_/, ""),
-	hashApiKey: (v: string) => `hash_${v}`,
-}));
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import("./helpers/gitlab-fake-db");
+	return {
+		...(await importOriginal<object>()),
+		decryptApiKey: helpers.fakeDecrypt,
+		encryptApiKey: helpers.fakeEncrypt,
+	};
+});
+
+import { resolveGitLabSource } from "../../src/gitlab/source";
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 });
 
 /**
- * A `Response` whose body stream errors on read — models a timeout firing
- * AFTER headers have already arrived (so `response.ok` is already decided)
- * but before the body finished. That is exactly what the SAME
- * `AbortSignal.timeout` used for the whole exchange produces when it fires
- * mid-body rather than before `fetch` ever resolves.
+ * A `Response` whose body stream errors on read — a timeout firing AFTER
+ * headers arrived (so `response.ok` is already decided) but before the body
+ * finished.
  */
 function nonOkResponseWithAbortedBody(status: number): Response {
 	const stream = new ReadableStream({
@@ -57,68 +53,71 @@ function nonOkResponseWithAbortedBody(status: number): Response {
 	return new Response(stream, { status });
 }
 
-describe("GitLab refresh abort propagation: refreshGitLabToken -> refreshMcpConfigToken -> resolveGitLabSource", () => {
-	beforeEach(() => {
-		vi.resetModules();
-	});
+describe("GitLab refresh abort propagation: refreshGitLabToken -> connection service -> resolveGitLabSource", () => {
+	it("keeps the connection usable and uncondemned when a non-OK exchange's body read itself times out", async () => {
+		vi.stubEnv("GITLAB_CLIENT_ID", "app-client");
+		vi.stubEnv("GITLAB_CLIENT_SECRET", "app-secret");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(nonOkResponseWithAbortedBody(400));
 
-	it("does not record a markRefreshFailure strike when a non-OK exchange's body read itself times out", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-			nonOkResponseWithAbortedBody(400),
-		);
-
-		const { refreshMcpConfigToken } = await import(
-			"../../src/gitlab/refresh-mcp-config-token"
-		);
-		const { resolveGitLabSource } = await import("../../src/gitlab/source");
-
-		const fakeDb = {
-			mCPConfig: {
-				// resolveGitLabSource's own pre-refresh lookup.
-				findFirst: vi.fn().mockResolvedValue({
-					id: "cfg-1",
-					baseUrl: null,
-					encryptedAccessToken: "enc_stale-access",
-					encryptedRefreshToken: "enc_old-refresh",
-					// Already expired: forces the refresh path.
-					tokenExpiresAt: new Date("2026-05-15T11:00:00Z"),
-					mcpServer: { defaultUrl: "https://gitlab.com/api/v4/mcp" },
-				}),
-				// refreshMcpConfigToken's own re-read inside the refresh call.
-				findUnique: vi.fn().mockResolvedValue({
-					id: "cfg-1",
-					encryptedRefreshToken: "enc_old-refresh",
-					oauthClientId: "client-id",
-					encryptedOauthClientSecret: "enc_secret",
-					baseUrl: null,
-					needsReauth: false,
-				}),
-			},
-			workflowIntegration: {
-				findFirst: vi.fn().mockResolvedValue(null),
-			},
-		};
-
-		const markRefreshFailure = vi.fn(async () => {});
-		const getRestToken = vi.fn(async () => "rest-token");
+		const fake = createGitLabFakeDb({
+			workflowIntegration: [
+				{
+					id: "wi-1",
+					userId: "u1",
+					organizationId: "org-1",
+					provider: "GITLAB",
+					name: "GitLab: dev",
+					workflowId: null,
+					credentials: encryptedCredential({
+						access_token: "stale-access",
+						refresh_token: "old-refresh",
+						expires_in: 7200,
+						// Already expired: forces the refresh path.
+						token_obtained_at: new Date(
+							Date.now() - 3 * 3_600_000,
+						).toISOString(),
+						issuer: {
+							kind: "app",
+							clientId: "app-client",
+							origin: "https://gitlab.com",
+						},
+						connectionGeneration: 1,
+					}),
+					settings: {},
+					isActive: true,
+					createdAt: new Date("2026-01-01T00:00:00Z"),
+					updatedAt: new Date("2026-01-01T00:00:00Z"),
+				},
+			],
+		});
 
 		const src = await resolveGitLabSource({
 			userId: "u1",
-			organizationId: null,
-			db: fakeDb as never,
-			decrypt: (c: string) => c.replace(/^enc_/, ""),
-			refresh: (configId: string) =>
-				refreshMcpConfigToken({ configId, db: fakeDb as never }),
-			getRestToken,
-			markRefreshFailure,
-			now: () => new Date("2026-05-15T12:00:00Z"),
+			organizationId: "org-1",
+			deps: { db: fake.db as never, withLock: fake.withLock as never },
 		});
 
-		// Degrades to REST — the resolver's normal recovery path.
-		expect(src).toEqual({ kind: "rest-adapter", token: "rest-token" });
-		// The whole point: the abort reached the resolver AS an abort, so it
-		// was classified as a no-verdict transient outcome and never
-		// consumed a strike against the 3-strike breaker.
-		expect(markRefreshFailure).not.toHaveBeenCalled();
+		// The exchange really ran (the real `refreshGitLabToken`)…
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(String(fetchSpy.mock.calls[0][0])).toBe(
+			"https://gitlab.com/oauth/token",
+		);
+		// …and its abort was a no-verdict outcome: the current token is still
+		// handed out (lenient), and nothing condemned or rotated the grant.
+		expect(src).toEqual({
+			kind: "rest-adapter",
+			credential: {
+				token: "stale-access",
+				apiBase: "https://gitlab.com/api/v4",
+			},
+		});
+		const row = fake.tables.workflowIntegration[0];
+		expect((row.settings as Record<string, unknown>).needsReauth).not.toBe(
+			true,
+		);
+		expect(readCredential(row).refresh_token).toBe("old-refresh");
 	});
 });

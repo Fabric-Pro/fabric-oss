@@ -5,8 +5,11 @@ import {
 } from "@repo/database";
 import {
 	describePortableNameRefusal,
+	excludedPathSchema,
 	formatByteSize,
 	formatByteSizeOver,
+	MAX_EXCLUDED_PATHS,
+	mergeExcludedPaths,
 	type PlanRefusal,
 	planSnapshotFiles,
 	resolveIgnoreGlobs,
@@ -23,6 +26,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { migrationOpenError } from "./migration-freeze";
 import { versionContentionAsConflict } from "./version-contention";
 
 /** The sentence a person reads for each planner refusal. Unchanged from the inline loop it replaced. */
@@ -115,6 +119,15 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 				.min(0)
 				.max(1_000_000)
 				.optional(),
+			// The first of those entries, with the rule that left each one out,
+			// so the published view can list what "N files left out" means.
+			// Names only: nothing is enforced from them and the count above
+			// stays the authoritative number. Optional, so a client from before
+			// this field keeps working and its version shows the count alone.
+			clientExcluded: z
+				.array(excludedPathSchema)
+				.max(MAX_EXCLUDED_PATHS)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -151,6 +164,14 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
+		// A move into the repository is open (Fizzy #2878 §9): the uploads are
+		// what its pull request carries, so nothing is uploaded until it ends.
+		if (settings.migration) {
+			throw await migrationOpenError(settings.migration, {
+				projectId: input.projectId,
+				organizationId,
+			});
+		}
 		// Spec §4: one source of truth per project. While a repository is
 		// the source, an upload would publish files the repository never
 		// had and nothing would reconcile them until the next sync — the
@@ -205,6 +226,9 @@ export const beginSnapshotProcedure = tenantProtectedProcedure
 			publishOnReady: input.publishOnReady,
 			...(input.publishBeforeScan ? { publishBeforeScan: true } : {}),
 			excludedCount,
+			// What this server left out comes first, then what the client
+			// reported, one entry per path and no more than the cap.
+			excludedPaths: mergeExcludedPaths(excluded, input.clientExcluded),
 			files: kept,
 		}).catch(versionContentionAsConflict);
 

@@ -7,17 +7,31 @@
 import {
 	deleteMcpConfig,
 	getMcpConfigById,
+	getOrganizationMembership,
 	getValidAccessToken,
+	isGitLabPersonalMcpServerKey,
 	listCustomMcpServersForTenant,
 	listMcpConfigsForTenant,
 	listSystemMcpServers,
 } from "@repo/database";
 import { logDataEvent, logger } from "@repo/logs";
+import {
+	GitLabMcpCredentialError,
+	getValidMcpAccessToken,
+	isGitLabPersonalMcpConfig,
+} from "@repo/mcp";
+import {
+	hasPermission,
+	Permissions,
+	resolveOrgPermissions,
+} from "@repo/permissions";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
+import { projectBoundRefusal } from "../external-api/project-bound";
 import type { ExternalApiVariables } from "../external-api/types";
-import { notFound, ok, resolveV1Context } from "./helpers";
+import { removeGitLabPersonalMcpConfig } from "../mcp/lib/gitlab-config-removal";
+import { forbidden, notFound, ok, resolveV1Context } from "./helpers";
 
 const DEFAULT_EXPORT_TIMEOUT_MS = 5000;
 const EXPORT_VERSION = "1.0";
@@ -113,7 +127,14 @@ async function buildExportableServer(
 	);
 	const name = ensureUniqueName(baseName, seenNames);
 
-	if (config.authType === "API_KEY") {
+	// A GitLab personal server exports the caller's GitLab connection token,
+	// whatever auth type its config names: an API key stored on such a row is
+	// never exported (nor read).
+	const isGitLabPersonalServer = isGitLabPersonalMcpServerKey(
+		config.mcpServer?.key,
+	);
+
+	if (config.authType === "API_KEY" && !isGitLabPersonalServer) {
 		const apiKey = await getValidAccessToken({
 			configId: config.id,
 			userId: ctx.userId,
@@ -146,11 +167,19 @@ async function buildExportableServer(
 		};
 	}
 
-	if (config.authType === "OAUTH2") {
-		const accessToken = await getValidAccessToken({
+	if (config.authType === "OAUTH2" || isGitLabPersonalServer) {
+		// GitLab personal servers resolve to the caller's GitLab connection
+		// token (`getValidMcpAccessToken`); a missing or unusable connection
+		// skips the server like a missing token does.
+		const accessToken = await getValidMcpAccessToken({
 			configId: config.id,
 			userId: ctx.userId,
 			organizationId: ctx.organizationId,
+		}).catch((error: unknown) => {
+			if (error instanceof GitLabMcpCredentialError) {
+				return null;
+			}
+			throw error;
 		});
 
 		if (!accessToken) {
@@ -166,9 +195,15 @@ async function buildExportableServer(
 			return null;
 		}
 
-		const refreshToken = refreshedConfig.encryptedRefreshToken
-			? decryptApiKey(refreshedConfig.encryptedRefreshToken)
-			: undefined;
+		// A GitLab personal config's token columns are a legacy copy of the
+		// person's GitLab grant: never export its refresh token (a client
+		// spending it would rotate the grant out from under the connection)
+		// nor its stale expiry.
+		const isGitLabPersonal = isGitLabPersonalMcpConfig(refreshedConfig);
+		const refreshToken =
+			!isGitLabPersonal && refreshedConfig.encryptedRefreshToken
+				? decryptApiKey(refreshedConfig.encryptedRefreshToken)
+				: undefined;
 
 		return {
 			name,
@@ -177,7 +212,7 @@ async function buildExportableServer(
 			oauth: {
 				accessToken,
 				...(refreshToken ? { refreshToken } : {}),
-				...(refreshedConfig.tokenExpiresAt
+				...(!isGitLabPersonal && refreshedConfig.tokenExpiresAt
 					? { expiresAt: refreshedConfig.tokenExpiresAt.getTime() }
 					: {}),
 				...(refreshedConfig.scopes.length > 0
@@ -240,6 +275,15 @@ export function registerMcpRoutes(
 	 */
 	app.get("/user/mcp-config", requireScope("mcp:read"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
+		// The export is the organization's connected servers, which an agent
+		// that signed in for one project may not have.
+		if (apiCtx.boundProjectId !== undefined) {
+			const refusal = await projectBoundRefusal(apiCtx.boundProjectId);
+			return c.json(
+				{ error: { message: refusal.error } },
+				refusal.status,
+			);
+		}
 		const tenantContext = {
 			userId: apiCtx.userId,
 			organizationId: apiCtx.organizationId ?? null,
@@ -307,6 +351,15 @@ export function registerMcpRoutes(
 		requireScope("mcp:read"),
 		async (c) => {
 			const apiCtx = c.get("externalApiContext");
+			if (apiCtx.boundProjectId !== undefined) {
+				const refusal = await projectBoundRefusal(
+					apiCtx.boundProjectId,
+				);
+				return c.json(
+					{ error: { message: refusal.error } },
+					refusal.status,
+				);
+			}
 			const response = await buildMcpConfigExportResponse({
 				userId: apiCtx.userId,
 				organizationId: apiCtx.organizationId ?? null,
@@ -499,6 +552,17 @@ export function registerMcpRoutes(
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
 
+		// A key never grants more than the app: the in-app Delete requires
+		// `MCP_DELETE`, so the key's owner must hold it now, in this
+		// organization. Checked after `requireScope` and unconditionally —
+		// `mcp:write` and a `*` key pass the scope check alike, and a demoted
+		// owner's key still carries the scope it was minted with. A separate
+		// refusal from the scope one, before the config is looked up.
+		const permissionRefusal = await mcpDeletePermissionRefusal(ctx);
+		if (permissionRefusal) {
+			return c.json(forbidden(permissionRefusal), 403);
+		}
+
 		const config = await getMcpConfigById(c.req.param("id")!, {
 			userId: ctx.userId,
 			organizationId: ctx.organizationId ?? undefined,
@@ -508,8 +572,52 @@ export function registerMcpRoutes(
 			return c.json(notFound("MCP config"), 404);
 		}
 
+		// GitLab personal servers: the same Delete the MCP server tile does —
+		// the one personal GitLab disconnect plus `enabled: false`, keeping
+		// the row and its client registration for a reconnect.
+		if (isGitLabPersonalMcpServerKey(config.mcpServer?.key)) {
+			await removeGitLabPersonalMcpConfig({
+				config,
+				surface: "v1.mcp.configs.delete",
+				audit: { headers: c.req.raw.headers },
+				actor: { type: "api_key", userId: ctx.userId },
+			});
+			return c.json(
+				ok({ id: config.id, deleted: false, disconnected: true }),
+			);
+		}
+
 		await deleteMcpConfig(config.id);
 
 		return c.json(ok({ id: config.id, deleted: true }));
 	});
+}
+
+/**
+ * Null when the key's owner currently holds `MCP_DELETE` in the request's
+ * organization; otherwise why not. `resolveV1Context` always resolves an
+ * organization on success (`helpers.ts`), so a missing one is refused rather
+ * than read as personal context.
+ */
+async function mcpDeletePermissionRefusal(ctx: {
+	userId: string;
+	organizationId: string | null;
+}): Promise<string | null> {
+	if (!ctx.organizationId) {
+		return "Deleting an MCP config requires an organization";
+	}
+	const membership = await getOrganizationMembership(
+		ctx.organizationId,
+		ctx.userId,
+	);
+	if (
+		!membership ||
+		!hasPermission(
+			resolveOrgPermissions(membership.role),
+			Permissions.MCP_DELETE,
+		)
+	) {
+		return "The key's owner does not have permission to delete MCP configs in this organization";
+	}
+	return null;
 }

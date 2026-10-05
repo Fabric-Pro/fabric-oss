@@ -22,8 +22,11 @@ Install and authenticate as for the coding-instructions commands (see
 
 ```bash
 npm install -g @fabricorg/cli
-fabric auth login --key <api-key> --base-url https://example.com
+fabric auth login --base-url https://example.com
 ```
+
+With no key, `login` signs in through your browser. For CI and machines with
+no browser, add `--key <api-key>` with an organization API key instead.
 
 ## The command
 

@@ -32,12 +32,8 @@ export const getReviewProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId } = input;
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			context.user.id,
-			organizationId ?? undefined,
-		);
+		const { projectId } = input;
+		const hasAccess = await hasProjectAccess(projectId, context.user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",

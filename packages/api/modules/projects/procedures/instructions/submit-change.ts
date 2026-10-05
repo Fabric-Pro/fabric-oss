@@ -80,9 +80,21 @@
  * that kept publishing out of this file until the second scope existed.
  *
  * The runtime is fail-CLOSED on the mode: anything that is not exactly
- * `"publish"` proposes. A JavaScript caller that forgets the field, or sends a
- * mode this file does not know, gets the reviewed path rather than the
- * unreviewed one.
+ * `"publish"` or `"commit"` proposes. A JavaScript caller that forgets the
+ * field, or sends a mode this file does not know, gets the reviewed path
+ * rather than an unreviewed one.
+ *
+ * ## A third mode: commit (Fizzy #2878 §10)
+ *
+ * `mode: "commit"` is a member with `INSTRUCTION_CREATE` committing straight
+ * to a repository-backed project's synced branch, as they would with git.
+ * It takes the same derivation, validation and secret scan as a publish and
+ * stops at READY: a workflow it starts before validation then pushes ONE
+ * commit and settles the snapshot (`commitOutcome`), or, when the branch
+ * refuses the push, turns the same rows into a pull request. No git write can
+ * precede the scan. It has no route on v1 and no API-key scope; only the
+ * oRPC `commitChange` procedure (a signed-in member) reaches it, so the
+ * "scope describes what the key can do" property above is untouched.
  *
  * A key-backed caller has already had its declared scope checked by
  * `requireScope` at the route; this is the live per-call permission check that
@@ -130,6 +142,7 @@ import {
 	type RawInstructionChange,
 	validateInstructionChanges,
 } from "./change-set";
+import { startDirectCommitWorkflow } from "./direct-commit-workflow";
 import { finalizeInstructionSnapshot } from "./finalize";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import {
@@ -184,13 +197,17 @@ const MAX_INLINE_ENCODED_CHARS = 4 * 1024 * 1024;
 type InlineContentEncoding = "utf8" | "base64";
 
 /**
- * Which of the two authorities a change set is exercising.
+ * Which authority a change set is exercising.
  *
  * Spelled out as a type rather than a boolean so a call site reads as what it
  * does — `mode: "publish"` at a route gated on `instructions:publish` — and so
- * a third mode, if one is ever needed, is an addition rather than a rewrite.
+ * a further mode is an addition rather than a rewrite. `"commit"` (Fizzy #2878
+ * §10) is a member with `INSTRUCTION_CREATE` committing straight to a
+ * repository-backed project's synced branch: the change is validated and
+ * scanned like any other, and is pushed only once it is READY. It has no
+ * route on v1; the oRPC `commitChange` procedure is its one entry.
  */
-export type InstructionChangeMode = "proposal" | "publish";
+export type InstructionChangeMode = "proposal" | "publish" | "commit";
 
 export type InlineInstructionChange =
 	| {
@@ -243,6 +260,12 @@ export type SubmitInstructionChangeInput = {
 	 * `NOTE_REJECTED` naming the field. Ignored in publish mode.
 	 */
 	note?: unknown;
+	/**
+	 * `commit` mode only: the committer's message, rendered by admission
+	 * (refused as 422 naming `message`, never quoting it) and frozen with the
+	 * snapshot. Ignored in the other modes.
+	 */
+	message?: string;
 };
 
 export type SubmitInstructionChangeResult = {
@@ -387,17 +410,24 @@ function decodeChanges(changes: readonly InlineInstructionChange[]): {
 export async function submitInstructionChange(
 	input: SubmitInstructionChangeInput,
 ): Promise<SubmitInstructionChangeResult> {
-	// Compared against the publish literal, never against the proposal one:
-	// an absent or unrecognised mode has to land on the REVIEWED path, and a
-	// truthiness test or a `!== "proposal"` would land it on the other one.
-	const proposal = input.mode !== "publish";
-	const mode: InstructionChangeMode = proposal ? "proposal" : "publish";
+	// Compared against the publish and commit literals, never against the
+	// proposal one: an absent or unrecognised mode has to land on the REVIEWED
+	// path, and a truthiness test or a `!== "proposal"` would land it on one
+	// of the others.
+	const mode: InstructionChangeMode =
+		input.mode === "publish"
+			? "publish"
+			: input.mode === "commit"
+				? "commit"
+				: "proposal";
+	const proposal = mode === "proposal";
+	const commit = mode === "commit";
 
 	// Live permission FIRST, before any tenant data is read: proposing needs
-	// INSTRUCTION_READ, publishing needs INSTRUCTION_CREATE. This is the check
-	// an API key never exceeds, and it runs for every key type including a
-	// wildcard one — the scope at the route is a ceiling, and this is the
-	// floor underneath it.
+	// INSTRUCTION_READ, publishing and committing need INSTRUCTION_CREATE.
+	// This is the check an API key never exceeds, and it runs for every key
+	// type including a wildcard one — the scope at the route is a ceiling,
+	// and this is the floor underneath it.
 	await assertInstructionDeriveAccess({
 		projectId: input.projectId,
 		userId: input.userId,
@@ -421,6 +451,7 @@ export async function submitInstructionChange(
 		note: input.note,
 		proposerName: input.audit.user?.name,
 		fileCount: input.changes.length,
+		...(commit ? { message: input.message ?? "" } : {}),
 	});
 	const repository = admission.destination === "REPOSITORY";
 	const pullRequestOf = (snapshotId: string) =>
@@ -530,7 +561,9 @@ export async function submitInstructionChange(
 		// (`derive-snapshot.ts` with `proposal: false`). Nothing here reaches
 		// past the gate: the same verify → scan → publish workflow decides,
 		// and a change set that fails it publishes nothing.
-		publishOnReady: !proposal,
+		// A direct commit is never published either: the sync it triggers
+		// publishes the branch's real tree once the branch holds the commit.
+		publishOnReady: !proposal && !commit,
 		proposal,
 		changes,
 		limits: {
@@ -556,6 +589,15 @@ export async function submitInstructionChange(
 							via: input.via,
 						}),
 					),
+				}
+			: {}),
+		...(admission.destination === "REPOSITORY_COMMIT"
+			? {
+					commit: {
+						context: admission.context,
+						syncId: admission.context.syncId,
+						syncGeneration: admission.context.syncGeneration,
+					},
 				}
 			: {}),
 	}).catch(versionContentionAsConflict);
@@ -654,7 +696,7 @@ export async function submitInstructionChange(
 					// `project.instructions.published`, by the workflow activity
 					// that moves the pointer — the same row the tab produces,
 					// because it IS the same activity.
-					mode: proposal ? "proposal" : "derived",
+					mode: commit ? "commit" : proposal ? "proposal" : "derived",
 					via: input.via,
 					baseSnapshotId: base.id,
 					baseVersion: base.version,
@@ -663,6 +705,18 @@ export async function submitInstructionChange(
 					inheritedCount: created.inheritedCount,
 					keptCount: created.fileCount,
 				},
+			});
+		}
+
+		// A direct commit's workflow starts BEFORE the bytes are written and
+		// the validation workflow exists, and inside this compensated section:
+		// a failed start closes the row out here, and a start that succeeded
+		// ahead of a later failure waits on a REJECTED row and stops. It owns
+		// no snapshot state: it waits for READY on its own timers.
+		if (commit) {
+			await startDirectCommitWorkflow({
+				snapshotId: created.id,
+				organizationId,
 			});
 		}
 
@@ -812,7 +866,7 @@ export async function submitInstructionChange(
 	// match or a stray `publishedAt` on a proposal row is not this request's
 	// doing, whatever either signal happens to show.
 	const published = Boolean(
-		!proposal &&
+		mode === "publish" &&
 			current &&
 			(current.publishedAt != null || publishedNow?.id === current.id),
 	);

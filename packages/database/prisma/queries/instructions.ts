@@ -22,9 +22,17 @@ import type {
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
 import {
+	PENDING_COMMIT_WINDOW_MS,
+	STALE_COMMIT_AFTER_MS,
+} from "./instruction-direct-commit";
+import {
 	type InheritedInstructionSource,
 	isAcceptableInheritedSource,
 } from "./instruction-inherited-source";
+import {
+	type InstructionMigrationPointer,
+	migrationOfSettings,
+} from "./instruction-migration-pointer";
 import {
 	currentAppend,
 	type EvidenceOp,
@@ -51,9 +59,15 @@ import {
 } from "./instruction-proposal-pull-requests";
 import {
 	getInstructionRepositorySync,
+	getLatestInstructionSyncRunOutcome,
+	type InstructionSyncError,
+	type InstructionSyncPausedReason,
+	type InstructionSyncRunStatus,
+	type InstructionSyncTrigger,
 	repositorySyncPublishRefusal,
 	writeProjectInstructionSettings,
 } from "./instruction-repository-sync";
+import { parseRepoUrl } from "./project-repository-integrations";
 import { canUpdateProjectInstructions } from "./projects/projects";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
@@ -204,6 +218,11 @@ const summarySelect = {
 	repositoryIntegrationId: true,
 	sourceRef: true,
 	sourceCommitSha: true,
+	// A direct commit's destination kind and what became of it (Fizzy #2878
+	// §10): the tab polls `commitOutcome` until it is set. Null on every
+	// snapshot that is not a direct commit.
+	proposalDestination: true,
+	commitOutcome: true,
 	// The snapshot this one was derived from (a single-file edit, add or
 	// delete in the tab). Read by the validation gate, which needs it to
 	// rebuild an inherited row's key in the BASE's immutable prefix, and by
@@ -236,6 +255,16 @@ const summarySelect = {
 	progressDone: true,
 	progressTotal: true,
 	progressUpdatedAt: true,
+} satisfies Prisma.ProjectInstructionSnapshotSelect;
+
+/**
+ * The published version also names the files it left out (up to 500 paths).
+ * Only the pointer read carries them: `list` returns every version and is
+ * polled, so the same names on each row would be paid for on every tick.
+ */
+const publishedSelect = {
+	...summarySelect,
+	excludedPaths: true,
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 
 /** The progress columns of a row nothing is currently checking. */
@@ -285,6 +314,13 @@ type CreateInstructionSnapshotInput = {
 	 */
 	publishBeforeScan?: boolean;
 	excludedCount: number;
+	/**
+	 * The names behind `excludedCount`, already capped by the caller
+	 * (`mergeExcludedPaths` in `@repo/instructions`, which this package cannot
+	 * import). The count stays the authoritative number; absent means no names
+	 * were kept.
+	 */
+	excludedPaths?: ReadonlyArray<{ path: string; rule: string }>;
 	/** Repository sync only (design 2026-09-23 §4.2). */
 	repositoryIntegrationId?: string | null;
 	sourceRef?: string | null;
@@ -601,6 +637,7 @@ function allocateAndCreateSnapshot(input: CreateInstructionSnapshotInput) {
 					? { publishBeforeScan: true }
 					: {}),
 				excludedCount: input.excludedCount,
+				excludedPaths: input.excludedPaths ?? [],
 				fileCount: input.files.length,
 				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
 				sourceRef: input.sourceRef ?? null,
@@ -830,7 +867,11 @@ export type DerivedInstructionRefusal =
 	| "too_many_files"
 	| "too_large"
 	| "proposal_proposer_limit"
-	| "proposal_project_limit";
+	| "proposal_project_limit"
+	/** A direct commit: the member already has the cap of commits waiting to be pushed. */
+	| "commit_proposer_limit"
+	/** A direct commit: the project already has the cap of commits waiting to be pushed. */
+	| "commit_project_limit";
 
 /**
  * The active proposal an identical change set already opened.
@@ -970,6 +1011,36 @@ type CreateDerivedInstructionSnapshotInput = {
 	 * operation (spec §5.1 step 8) and is refused unless `proposal` is set.
 	 */
 	destination?: RepositoryProposalDestination;
+	/**
+	 * A direct commit to the synced branch (Fizzy #2878 §10): the snapshot is
+	 * written `REPOSITORY_COMMIT` with the frozen `directCommitContextSchema`
+	 * context, is not a proposal, and is never published (the sync the commit
+	 * triggers publishes the branch's real tree). Refuses
+	 * `proposal`, `publishOnReady`, `publishBeforeScan` and `destination`.
+	 *
+	 * Capped and replayed as a proposal is: a member may have five commits
+	 * waiting to be pushed and a project twenty-five, and the same change set
+	 * from the same member against the same base and the same frozen
+	 * destination (`syncId`, `syncGeneration`, which are also in `context`)
+	 * is the SAME commit while it is pending, returned as a duplicate.
+	 */
+	commit?: {
+		context: Prisma.InputJsonValue;
+		syncId: string;
+		syncGeneration: number;
+	};
+	/**
+	 * A move of the published tree into the repository (Fizzy #2878 §9): a
+	 * REPOSITORY proposal that carries EVERY file of the base, unchanged
+	 * (`changes` is empty), and is stored with NO base. A proposal's change is
+	 * what its files add to, change in or remove from its base, so a snapshot
+	 * with a base of null is a tree to be added whole: the branch machinery's
+	 * delta reads the missing base as an empty one, and the pull request's
+	 * commit adds the folder's every file. The inherited rows still point at
+	 * the published version's objects (`inheritedFromFileId`), so nothing is
+	 * uploaded again. Requires `proposal` and a REPOSITORY `destination`.
+	 */
+	migration?: boolean;
 };
 
 /** `proposalNote`: the shape `proposalNoteSchema` produces. */
@@ -1121,9 +1192,9 @@ async function nextIntentOrder(tx: Prisma.TransactionClient): Promise<bigint> {
  * admitted under those ignore rules and those caps, so re-resolving the
  * project's live settings here would produce a snapshot whose stored
  * `.fabricignore` no longer matches its frozen rules — which the validation
- * gate's provenance check refuses, correctly. `excludedCount` is copied for
- * the same reason: it counts what that upload left out, and this derivation
- * left out nothing further.
+ * gate's provenance check refuses, correctly. `excludedCount` and
+ * `excludedPaths` are copied for the same reason: they say what that upload
+ * left out, and this derivation left out nothing further.
  *
  * Version allocation is the same optimistic read-then-insert as
  * `createInstructionSnapshot`, with the same bounded, jittered retry on a
@@ -1149,6 +1220,32 @@ export async function createDerivedInstructionSnapshot(
 		// and publishing before the scan is a way of publishing itself.
 		throw new Error(
 			"createDerivedInstructionSnapshot: publishBeforeScan requires publishOnReady and no proposal",
+		);
+	}
+	if (
+		input.commit !== undefined &&
+		(input.proposal ||
+			input.publishOnReady ||
+			input.publishBeforeScan === true ||
+			input.destination !== undefined)
+	) {
+		// Also a programming error: a direct commit is neither a proposal nor
+		// a snapshot that publishes itself, and has no pull request.
+		throw new Error(
+			"createDerivedInstructionSnapshot: a direct commit is not a proposal and does not publish on ready",
+		);
+	}
+	if (
+		input.migration === true &&
+		(!input.proposal ||
+			input.destination?.kind !== "REPOSITORY" ||
+			input.changes.length > 0 ||
+			input.commit !== undefined)
+	) {
+		// Also a programming error: a move carries the published tree whole,
+		// as a pull request, and changes nothing of it.
+		throw new Error(
+			"createDerivedInstructionSnapshot: a migration is a repository proposal with no changes",
 		);
 	}
 	return withVersionRetry(() => allocateAndCreateDerivedSnapshot(input));
@@ -1181,7 +1278,9 @@ function allocateAndCreateDerivedSnapshot(
 			// conditional write is the second half of the same rule, and this
 			// is the half that stops the second snapshot being created at all.
 			const claimsPublishedPointer =
-				input.proposal || input.publishOnReady;
+				input.proposal ||
+				input.publishOnReady ||
+				input.commit !== undefined;
 			if (claimsPublishedPointer) {
 				// Serialize on the project row. For a proposal this also
 				// serializes admission: counting without the lock lets
@@ -1350,6 +1449,103 @@ function allocateAndCreateDerivedSnapshot(
 					return { ok: false, reason: "proposal_project_limit" };
 				}
 			}
+			if (input.commit) {
+				// A direct commit is capped and replayed as a proposal is, under
+				// the same project row lock (see `claimsPublishedPointer`): a
+				// retried request after a lost response must find its own
+				// pending commit instead of opening a second one that would push
+				// the same change twice, and a member or a script cannot queue an
+				// unbounded number of them. Pending means no outcome yet, not
+				// refused by the scan, and younger than a day (the workflow's
+				// execution timeout: an older row has nothing behind it, and
+				// five of them would lock the member out for good); a commit
+				// that ended any way, or whose creation failed and was closed
+				// out as REJECTED, frees its slot. A retried request is handed
+				// back only a commit younger than two hours: one that old is
+				// not the commit a lost response was about.
+				const now = Date.now();
+				const pendingCommit = {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					proposalDestination: "REPOSITORY_COMMIT" as const,
+					commitOutcome: { equals: Prisma.DbNull },
+					status: { not: "REJECTED" as const },
+					createdAt: { gt: new Date(now - STALE_COMMIT_AFTER_MS) },
+				} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
+				const existing = await tx.projectInstructionSnapshot.findFirst({
+					where: {
+						...pendingCommit,
+						createdAt: {
+							gt: new Date(now - PENDING_COMMIT_WINDOW_MS),
+						},
+						userId: input.userId,
+						baseSnapshotId: input.baseSnapshotId,
+						changeSetDigest: digest,
+						AND: [
+							{
+								commitContext: {
+									path: ["syncId"],
+									equals: input.commit.syncId,
+								},
+							},
+							{
+								commitContext: {
+									path: ["syncGeneration"],
+									equals: input.commit.syncGeneration,
+								},
+							},
+						],
+					},
+					orderBy: { version: "desc" },
+					select: DUPLICATE_PROPOSAL_SELECT,
+				});
+				if (existing) {
+					const staged = await tx.projectInstructionFile.findMany({
+						where: {
+							snapshotId: existing.id,
+							projectId: input.projectId,
+							organizationId: input.organizationId,
+							inheritedFromFileId: null,
+						},
+						select: { id: true, path: true },
+					});
+					return {
+						ok: false,
+						reason: "duplicate_proposal",
+						auditWritten: false,
+						existing: {
+							id: existing.id,
+							version: existing.version,
+							status: existing.status,
+							proposalStatus: existing.proposalStatus,
+							fileCount: existing.fileCount,
+							inheritedCount: existing.fileCount - staged.length,
+							staged,
+							proposalIntentOrder: existing.proposalIntentOrder,
+						},
+					};
+				}
+				const committerCount =
+					await tx.projectInstructionSnapshot.count({
+						where: { ...pendingCommit, userId: input.userId },
+					});
+				if (
+					committerCount >=
+					MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROPOSER
+				) {
+					return { ok: false, reason: "commit_proposer_limit" };
+				}
+				const projectCommitCount =
+					await tx.projectInstructionSnapshot.count({
+						where: pendingCommit,
+					});
+				if (
+					projectCommitCount >=
+					MAX_ACTIVE_INSTRUCTION_PROPOSALS_PER_PROJECT
+				) {
+					return { ok: false, reason: "commit_project_limit" };
+				}
+			}
 			// Tenant-scoped on BOTH columns, like every other read here: the
 			// caller has already resolved the project's hosting organization,
 			// and a base row naming this project while carrying another
@@ -1367,6 +1563,7 @@ function allocateAndCreateDerivedSnapshot(
 					version: true,
 					settingsFrozen: true,
 					excludedCount: true,
+					excludedPaths: true,
 				},
 			});
 			if (!base) {
@@ -1539,7 +1736,10 @@ function allocateAndCreateDerivedSnapshot(
 					// `baseSnapshotId`, not the source enum.
 					source: "UPLOAD",
 					status: "RECEIVING",
-					baseSnapshotId: base.id,
+					// Null for a move into the repository: its files are the
+					// published version's, carried whole, and "no base" is how
+					// the branch commit knows to add all of them.
+					baseSnapshotId: input.migration === true ? null : base.id,
 					// The DURABLE half of the provenance. `baseSnapshotId` is
 					// `SetNull`, so it is gone the moment the base is deleted
 					// or pruned — and "was this derived?" still has to be
@@ -1580,6 +1780,15 @@ function allocateAndCreateDerivedSnapshot(
 									: {}),
 							}
 						: {}),
+					// A direct commit (Fizzy #2878 §10): not a proposal, and
+					// its destination and commit text are frozen with the row.
+					...(input.commit
+						? {
+								proposalDestination:
+									"REPOSITORY_COMMIT" as const,
+								commitContext: input.commit.context,
+							}
+						: {}),
 					// A REPOSITORY proposal is admitted as a pull-request
 					// operation in this same transaction (spec §5.1 step 8):
 					// QUEUED, or BLOCKED when admission refused its
@@ -1607,6 +1816,7 @@ function allocateAndCreateDerivedSnapshot(
 							}
 						: {}),
 					excludedCount: base.excludedCount,
+					excludedPaths: base.excludedPaths as Prisma.InputJsonValue,
 					fileCount,
 				},
 				select: { id: true, version: true },
@@ -1732,6 +1942,12 @@ export type InstructionSnapshotVisibility = {
  * so a REPOSITORY proposal stays in its proposer's History once its pull
  * request is MERGED or CLOSED (Fizzy #2563). The list and the single read share
  * it so a snapshot the list hides cannot be fetched by id.
+ *
+ * A direct commit (`REPOSITORY_COMMIT`, Fizzy #2878 §10) is never a version
+ * itself: it holds the change stated against its base, not the tree the
+ * branch ended up with, so only its committer and a reviewer see the row,
+ * whatever became of it. The version readers see is the REPOSITORY snapshot
+ * the sync makes from the branch after the push.
  */
 function snapshotVisibilityFilter(visibility: InstructionSnapshotVisibility) {
 	if (visibility.canReviewProposals) {
@@ -1739,7 +1955,11 @@ function snapshotVisibilityFilter(visibility: InstructionSnapshotVisibility) {
 	}
 	return {
 		OR: [
-			{ proposalStatus: null },
+			{
+				proposalStatus: null,
+				proposalDestination: { not: "REPOSITORY_COMMIT" as const },
+			},
+			{ proposalStatus: null, source: "REPOSITORY" as const },
 			{ proposalStatus: "APPROVED" as const },
 			{ userId: visibility.viewerUserId },
 		],
@@ -1882,7 +2102,7 @@ export async function getInstructionProposal(
 export async function getPublishedInstructionSnapshot(projectId: string) {
 	const project = await db.project.findUnique({
 		where: { id: projectId },
-		select: { publishedInstructionSnapshot: { select: summarySelect } },
+		select: { publishedInstructionSnapshot: { select: publishedSelect } },
 	});
 	return project?.publishedInstructionSnapshot ?? null;
 }
@@ -1929,10 +2149,26 @@ export type PublishedInstructionSource =
  *
  * `host` is the bare, lowercased hostname of the integration's
  * `repositoryUrl` — never the URL itself, and never any userinfo it might
- * carry. `path` is `"<owner>/<name>"`. `rootPath` is `""` for the repository
- * root. `generation` is the sync's CURRENT generation counter (distinct from
- * any one snapshot, which never recorded the generation it was produced
- * under).
+ * carry. `path` is `"<owner>/<name>"`, except on Azure DevOps, where it is
+ * the URL path as the provider spells it, `_git` included
+ * (`<org>/<project>/_git/<repo>`, or `<org>/_git/<repo>` when the URL names
+ * no project) and `host` is always `dev.azure.com` even for a repository
+ * stored under a `<org>.visualstudio.com` URL, so one repository has one
+ * identity however its remote is spelled. `rootPath` is `""` for the
+ * repository root. `generation` is the sync's CURRENT generation counter
+ * (distinct from any one snapshot, which never recorded the generation it
+ * was produced under).
+ *
+ * `cloneUrl` is the canonical, credential-free HTTPS URL a developer's own
+ * git clones from (`parseRepoUrl`'s `url`: userinfo stripped, no query, no
+ * trailing `.git`); `null` only for a legacy stored value that is not one.
+ * Fabric never hands out a repository token with it.
+ *
+ * `sync` is the sync's own state, read beside the configuration so a session
+ * hook can tell "this checkout is behind" from "Fabric's copy is behind and
+ * why". It is NOT part of the configuration's identity: a client that
+ * compares two responses to decide whether the configuration changed must
+ * leave it out, because `lastRun` moves on every sync.
  */
 export type PublishedInstructionRepositoryConfig = {
 	provider: RepositoryProvider;
@@ -1941,6 +2177,29 @@ export type PublishedInstructionRepositoryConfig = {
 	ref: string;
 	rootPath: string;
 	generation: number;
+	cloneUrl: string | null;
+	sync: PublishedInstructionRepositorySync;
+};
+
+/**
+ * The newest run of the CURRENT sync configuration. `status` and
+ * `finishedAt` are `null` while it is still open; `error` is the closed
+ * vocabulary (`TREE_REFUSED` is the secret scan refusing a tree), never free
+ * text; `commitSha` is the branch tip the run evaluated, `null` when it never
+ * got that far.
+ */
+export type PublishedInstructionSyncRun = {
+	trigger: InstructionSyncTrigger;
+	status: InstructionSyncRunStatus | null;
+	error: InstructionSyncError | null;
+	commitSha: string | null;
+	finishedAt: string | null;
+};
+
+export type PublishedInstructionRepositorySync = {
+	automatic: boolean;
+	pausedReason: InstructionSyncPausedReason | null;
+	lastRun: PublishedInstructionSyncRun | null;
 };
 
 /**
@@ -2014,20 +2273,83 @@ function repositoryHost(repositoryUrl: string): string | null {
 	}
 }
 
-function toRepositoryConfig(
-	sync: NonNullable<Awaited<ReturnType<typeof getInstructionRepositorySync>>>,
-): PublishedInstructionRepositoryConfig | null {
-	const host = repositoryHost(sync.repositoryIntegration.repositoryUrl);
+/**
+ * How Fabric names a connected repository on the wire: the `host` and `path`
+ * a developer's remote is compared with, and the credential-free `cloneUrl`
+ * to clone it from. Shared by the published response and the checkout
+ * resolver so the two can never name one repository two ways.
+ *
+ * `null` when the stored `repositoryUrl` cannot be read as a host at all.
+ * Azure DevOps is named by the URL's own path, `_git` included, under the one
+ * host `dev.azure.com`: `<org>.visualstudio.com/<project>/_git/<repo>` and
+ * `dev.azure.com/<org>/<project>/_git/<repo>` are the same repository, and the
+ * provider's `owner`/`name` columns drop the project that tells two
+ * repositories of one organization apart.
+ */
+export function repositoryIdentity(integration: {
+	provider: RepositoryProvider;
+	repositoryUrl: string;
+	repositoryOwner: string;
+	repositoryName: string;
+}): { host: string; path: string; cloneUrl: string | null } | null {
+	const parsed = parseRepoUrl(integration.repositoryUrl);
+	const cloneUrl = parsed?.url ?? null;
+	if (integration.provider === "AZURE_DEVOPS" && parsed) {
+		const project = parsed.project === undefined ? [] : [parsed.project];
+		return {
+			host: "dev.azure.com",
+			path: [parsed.owner, ...project, "_git", parsed.name].join("/"),
+			cloneUrl,
+		};
+	}
+	const host = repositoryHost(integration.repositoryUrl);
 	if (host === null) {
 		return null;
 	}
 	return {
-		provider: sync.repositoryIntegration.provider,
 		host,
-		path: `${sync.repositoryIntegration.repositoryOwner}/${sync.repositoryIntegration.repositoryName}`,
+		path: `${integration.repositoryOwner}/${integration.repositoryName}`,
+		cloneUrl,
+	};
+}
+
+/**
+ * The repository block for one sync row, with the sync's newest run read
+ * beside it. The one extra query a published response costs, made only here:
+ * a project that is not repository-backed never reaches it, nor does a row
+ * whose URL cannot be read.
+ */
+async function currentRepositoryConfig(
+	sync: NonNullable<Awaited<ReturnType<typeof getInstructionRepositorySync>>>,
+): Promise<PublishedInstructionRepositoryConfig | null> {
+	const identity = repositoryIdentity(sync.repositoryIntegration);
+	if (identity === null) {
+		return null;
+	}
+	const lastRun = await getLatestInstructionSyncRunOutcome(
+		sync.id,
+		sync.projectId,
+		sync.organizationId,
+	);
+	return {
+		provider: sync.repositoryIntegration.provider,
+		...identity,
 		ref: sync.ref,
 		rootPath: sync.rootPath,
 		generation: sync.generation,
+		sync: {
+			automatic: sync.automatic,
+			pausedReason: sync.automaticPausedReason,
+			lastRun: lastRun
+				? {
+						trigger: lastRun.trigger,
+						status: lastRun.status,
+						error: lastRun.error,
+						commitSha: lastRun.commitSha,
+						finishedAt: lastRun.finishedAt?.toISOString() ?? null,
+					}
+				: null,
+		},
 	};
 }
 
@@ -2082,7 +2404,7 @@ export async function resolveCurrentInstructionSource(
 	const sync = await getInstructionRepositorySync(projectId, organizationId);
 	return {
 		sourceOfTruth,
-		repository: sync ? toRepositoryConfig(sync) : null,
+		repository: sync ? await currentRepositoryConfig(sync) : null,
 	};
 }
 
@@ -2145,7 +2467,7 @@ export async function resolveInstructionSnapshotSource(
 
 	const repository =
 		settings.sourceOfTruth === "REPOSITORY" && sync
-			? toRepositoryConfig(sync)
+			? await currentRepositoryConfig(sync)
 			: null;
 
 	if (snapshot.source === "UPLOAD") {
@@ -2214,9 +2536,7 @@ export async function getInstructionSnapshotWithPublishedPointer(
 	organizationId: string,
 ): Promise<{
 	snapshot: Awaited<ReturnType<typeof getInstructionSnapshot>>;
-	publishedPointer: Awaited<
-		ReturnType<typeof getPublishedInstructionSnapshot>
-	>;
+	publishedPointer: Awaited<ReturnType<typeof getInstructionSnapshot>>;
 }> {
 	const project = await db.project.findFirst({
 		where: { id: projectId, organizationId },
@@ -3454,6 +3774,20 @@ export type InstructionProposalDecisionResult =
 	  };
 
 /**
+ * An approval's answer: a decision's, or `migration_open` when a move of the
+ * project's uploads into its repository is open (Fizzy #2878 §9), read under
+ * the same lock. Approving publishes, and the published version is what the
+ * move's pull request was made from. `migration` is the pointer the lock found.
+ */
+export type InstructionProposalApprovalResult =
+	| InstructionProposalDecisionResult
+	| {
+			ok: false;
+			reason: "migration_open";
+			migration: InstructionMigrationPointer;
+	  };
+
+/**
  * `pullRequest` says what a cancel did to a REPOSITORY proposal's operation
  * (Fizzy #2563 spec §4.4): `canceled` when nothing had been pushed or
  * created, `close_requested` when settlement now has to close what Fabric
@@ -3508,7 +3842,7 @@ export async function approveInstructionProposal(input: {
 	organizationId: string;
 	reviewerUserId: string;
 	audit: RecordAuditInput;
-}): Promise<InstructionProposalDecisionResult> {
+}): Promise<InstructionProposalApprovalResult> {
 	return db.$transaction(async (tx) => {
 		const locked = await tx.$queryRaw<
 			Array<{ pointerId: string | null; instructionSettings: unknown }>
@@ -3569,6 +3903,14 @@ export async function approveInstructionProposal(input: {
 				.sourceOfTruth === "REPOSITORY"
 		) {
 			return { ok: false as const, reason: "repository_backed" as const };
+		}
+		const openMove = migrationOfSettings(pointer.instructionSettings);
+		if (openMove !== null) {
+			return {
+				ok: false as const,
+				reason: "migration_open" as const,
+				migration: openMove,
+			};
 		}
 		if (proposal.status !== "READY") {
 			return { ok: false as const, reason: "not_ready" as const };
@@ -4943,8 +5285,33 @@ type PublishInstructionSnapshotResult =
 				 * publishing before its scan no longer holds the publish
 				 * permission (Fizzy #2737).
 				 */
-				| "fast_path_not_authorized";
+				| "fast_path_not_authorized"
+				/**
+				 * A move of the project's uploads into its repository is open
+				 * (Fizzy #2878 §9), read under the project lock: nothing but
+				 * the move's own first sync may change what is published
+				 * until it is over. `migration` is the pointer the lock found.
+				 */
+				| "migration_open";
+			migration?: InstructionMigrationPointer;
 	  };
+
+/**
+ * Whether `snapshot` is what the sync row of the open move produced: a
+ * REPOSITORY snapshot that froze the move's own sync row. The only kind of
+ * snapshot the move lets take the pointer.
+ */
+function isOwnSyncOfMove(
+	snapshot: { source: string; settingsFrozen: unknown },
+	move: InstructionMigrationPointer,
+): boolean {
+	const frozen =
+		snapshot.settingsFrozen !== null &&
+		typeof snapshot.settingsFrozen === "object"
+			? (snapshot.settingsFrozen as { syncId?: unknown })
+			: {};
+	return snapshot.source === "REPOSITORY" && frozen.syncId === move.syncId;
+}
 
 /**
  * Atomic and safe under concurrent retries. Refuses a snapshot that is not
@@ -5313,6 +5680,22 @@ export async function publishInstructionSnapshot(input: {
 		// published before is the whole point of History.
 		if (input.allowRollback !== true && snapshot.publishedAt !== null) {
 			return { published: true as const, changed: false as const };
+		}
+		// The move fence (Fizzy #2878 §9), on every path, read from the same
+		// locked settings as the fences below: while a move of the project's
+		// uploads into its repository is open, what is published is the version
+		// the move's pull request was made from, so only the move's own first
+		// sync (a snapshot its sync row produced) may replace it. An upload,
+		// an edit or a History choice that got past the API's own check before
+		// the move started is refused here as the move is over it.
+		const openMove = migrationOfSettings(pointer.instructionSettings);
+		if (openMove !== null && !isOwnSyncOfMove(snapshot, openMove)) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "migration_open" as const,
+				migration: openMove,
+			};
 		}
 		// Publish-first fence (Fizzy #2737). Automatic path only, after the
 		// `publishedAt` arm for the same reason as the repository fence below.
@@ -6505,11 +6888,22 @@ function isForeignKeyViolation(error: unknown): boolean {
  * (`status: { in: DELETABLE_STATUSES }`), not in a read above it, so a run that
  * starts between a caller's check and this statement cannot be deleted out from
  * under its own activities.
+ *
+ * `abandonedUpload` is the one widening, for the caller that is discarding an
+ * upload nobody finished (the browser could not reach storage, or the tab was
+ * closed): the DELETE then also matches a RECEIVING row that no workflow can
+ * own yet. `finalize` writes `validationAttemptId` BEFORE it starts the run, so
+ * a row without one has not been claimed, and one that has is refused like any
+ * other row being checked. Only a plain upload or edit qualifies: a repository
+ * sync's snapshot is RECEIVING while its run copies the files in, and a
+ * proposal or a direct commit answers to its pull request, so neither is an
+ * upload someone walked away from.
  */
 export async function deleteInstructionSnapshot(
 	id: string,
 	projectId: string,
 	organizationId: string,
+	options: { abandonedUpload?: boolean } = {},
 ): Promise<{
 	deleted: boolean;
 	reason?:
@@ -6553,7 +6947,19 @@ export async function deleteInstructionSnapshot(
 					id,
 					projectId,
 					organizationId,
-					status: { in: DELETABLE_STATUSES },
+					...(options.abandonedUpload
+						? {
+								OR: [
+									{ status: { in: DELETABLE_STATUSES } },
+									{
+										status: "RECEIVING",
+										validationAttemptId: null,
+										source: "UPLOAD",
+										proposalStatus: null,
+									},
+								],
+							}
+						: { status: { in: DELETABLE_STATUSES } }),
 					// A snapshot that something is still DERIVING from cannot
 					// go: the derived snapshot's inherited rows point at THIS
 					// snapshot's promoted objects until its own promotion
@@ -6687,6 +7093,9 @@ export async function getProjectInstructionSettings(
 	return {
 		ignoreGlobs: s.ignoreGlobs ?? null,
 		sourceOfTruth: s.sourceOfTruth ?? null,
+		// The pointer of a move from uploads into a repository that is still
+		// open (Fizzy #2878 §9), or null: present means a move is open.
+		migration: migrationOfSettings(project?.instructionSettings),
 	};
 }
 

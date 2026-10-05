@@ -136,6 +136,8 @@ export class FabricHttpClient {
 	private readonly timeoutMs: number;
 	private readonly retry: Required<FabricRetryOptions>;
 	private readonly onEvent?: (event: FabricTelemetryEvent) => void;
+	private readonly userAgent?: string;
+	private readonly onUpgradeNotice?: (line: string) => void;
 
 	constructor(options: FabricClientOptions = {}) {
 		const apiKey = options.apiKey ?? env("FABRIC_API_KEY");
@@ -168,6 +170,8 @@ export class FabricHttpClient {
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.retry = { ...DEFAULT_RETRY, ...(options.retry ?? {}) };
 		this.onEvent = options.onEvent;
+		this.userAgent = options.userAgent;
+		this.onUpgradeNotice = options.onUpgradeNotice;
 	}
 
 	/** Build a sibling client with patched context defaults (immutable; original untouched). */
@@ -195,6 +199,8 @@ export class FabricHttpClient {
 			timeoutMs: this.timeoutMs,
 			retry: this.retry,
 			onEvent: this.onEvent,
+			userAgent: this.userAgent,
+			onUpgradeNotice: this.onUpgradeNotice,
 		});
 		return clone;
 	}
@@ -319,6 +325,9 @@ export class FabricHttpClient {
 		if (idempotencyKey) {
 			headers["Idempotency-Key"] = idempotencyKey;
 		}
+		if (this.userAgent) {
+			headers["User-Agent"] = this.userAgent;
+		}
 
 		const controller = new AbortController();
 		const timeoutHandle = setTimeout(
@@ -364,6 +373,11 @@ export class FabricHttpClient {
 			);
 		}
 		clearTimeout(timeoutHandle);
+
+		const upgradeNotice = res.headers?.get("X-Fabric-Cli-Upgrade");
+		if (upgradeNotice) {
+			this.notifyUpgrade(upgradeNotice);
+		}
 
 		let json: unknown;
 		try {
@@ -452,6 +466,17 @@ export class FabricHttpClient {
 		}
 		// HTTP-level retry: only retryable status codes.
 		return RETRYABLE_STATUS.has(err.status);
+	}
+
+	private notifyUpgrade(line: string): void {
+		if (!this.onUpgradeNotice) {
+			return;
+		}
+		try {
+			this.onUpgradeNotice(line);
+		} catch {
+			// A notice handler must never break the request path.
+		}
 	}
 
 	private emit(event: FabricTelemetryEvent): void {

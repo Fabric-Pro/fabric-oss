@@ -24,6 +24,7 @@
  * cannot start because Fabric is unreachable would be a far worse failure
  * than instructions that are one version stale.
  */
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
 	FabricClient,
@@ -38,21 +39,34 @@ import type {
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import {
-	asCliFailure,
 	CliFailure,
 	describeError,
 	type OutputFormat,
 	outputFormatFor,
 	withDeadline,
 } from "../../lib/command-boundary.js";
-import { getApiKey, getConfigPath } from "../../lib/config.js";
+import {
+	getApiKey,
+	getBaseUrl,
+	getConfigPath,
+	getOAuth,
+	hasStoredApiKey,
+} from "../../lib/config.js";
+import { runningInCi } from "../../lib/environment.js";
+import {
+	adoptionFor,
+	cloneUrlFor,
+	folderForCommand,
+	providerLoginCommand,
+} from "../../lib/instructions/adoption.js";
+import {
+	agentMcpLines,
+	agentRegistrationFacts,
+	registerAgentMcp,
+} from "../../lib/instructions/agent-mcp.js";
+import { createAgentRunner } from "../../lib/instructions/agent-run.js";
 import { applyPlan } from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
-import {
-	fetchFilesByUrl,
-	PER_FILE_MAX_WRITES,
-	PublishedChangedError,
-} from "../../lib/instructions/file-downloads.js";
 import {
 	type CheckoutClassification,
 	type CheckoutJson,
@@ -60,15 +74,35 @@ import {
 	classLine,
 	currentLine,
 	downloadsIn,
-	installedLine,
 	nothingPublishedLine,
 	reportForClassification,
+	repositoryName,
+	shellQuote,
 } from "../../lib/instructions/checkout.js";
+import { sanitizeDisplayText } from "../../lib/instructions/checks.js";
+import { resolveCloneFolder } from "../../lib/instructions/clone-target.js";
 import {
 	buildFabricCommand,
 	formatDoctorText,
 	runDoctor,
 } from "../../lib/instructions/doctor.js";
+import { dropOwnLock } from "../../lib/instructions/drop-lock.js";
+import {
+	asFixedFailure,
+	scrubForOutput,
+	UpgradeRequiredFailure,
+} from "../../lib/instructions/failure.js";
+import {
+	type FastForwardResult,
+	runFastForward,
+} from "../../lib/instructions/fast-forward-run.js";
+import {
+	fetchFilesByUrl,
+	PER_FILE_MAX_WRITES,
+	PublishedChangedError,
+} from "../../lib/instructions/file-downloads.js";
+import * as git from "../../lib/instructions/git.js";
+import { excludeLocalFiles } from "../../lib/instructions/git-exclude.js";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
@@ -76,11 +110,12 @@ import {
 	CLAUDE_SETTINGS_RELATIVE_PATH,
 	CODEX_HOOKS_RELATIVE_PATH,
 	type InstructionsHookTool,
-	mergeCommandHook,
-	mergeSessionStartHook,
-	removeCommandHook,
 } from "../../lib/instructions/hook.js";
+import { resolveHookLauncher } from "../../lib/instructions/hook-launcher.js";
 import { hookTiming } from "../../lib/instructions/hook-timing.js";
+import { traceFile } from "../../lib/instructions/hook-trace.js";
+import { isIdentifier } from "../../lib/instructions/identifiers.js";
+import { installHooks } from "../../lib/instructions/init-hooks.js";
 import {
 	readAllStdin,
 	runLessonPrompt,
@@ -93,11 +128,17 @@ import {
 	readLockSafely,
 	writeLock,
 } from "../../lib/instructions/lock.js";
+import { machine } from "../../lib/instructions/machine.js";
 import {
 	assertValidManifest,
 	maxArchiveBytes,
 } from "../../lib/instructions/manifest.js";
 import { lookUpOpenProposals } from "../../lib/instructions/open-proposals.js";
+import {
+	HOOK_PREFIX,
+	outcomeFailure,
+	outcomeLine,
+} from "../../lib/instructions/outcome.js";
 import {
 	computeSyncPlan,
 	describeLedgerDrift,
@@ -107,6 +148,11 @@ import {
 	reconcileKeptInLock,
 	type SyncPlan,
 } from "../../lib/instructions/plan.js";
+import {
+	canPrompt,
+	chooseProject,
+	confirm,
+} from "../../lib/instructions/prompt.js";
 import {
 	branchStoppedByFailure,
 	type PullRequestWait,
@@ -119,11 +165,33 @@ import {
 	MAX_PUSH_CHANGES,
 	setAsideProposed,
 } from "../../lib/instructions/push.js";
+import { resolveProjectFromCheckout } from "../../lib/instructions/resolve-project.js";
 import {
 	resolveDestinationRoot,
 	resolveExistingRoot,
 } from "../../lib/instructions/safe-write.js";
+import {
+	refreshKeptCopy,
+	selfUpdateLine,
+} from "../../lib/instructions/self-update.js";
+import {
+	type DetectedTools,
+	detectTools,
+} from "../../lib/instructions/tools.js";
+import {
+	bundleScriptPath,
+	bundleTarballPath,
+	fabricCommand,
+	isServedBundle,
+	launcherPathText,
+	setLauncherOrigin,
+} from "../../lib/launcher.js";
+import { takeAuthFailure } from "../../lib/oauth/auth-failure.js";
+import { signInWithBrowser } from "../../lib/oauth/sign-in.js";
+import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
 import { printOutput } from "../../lib/output.js";
+import { isPlainOrigin } from "../../lib/shell-words.js";
+import { takeUpgradeNotice } from "../../lib/user-agent.js";
 
 /**
  * The whole of hook mode, end to end, including the bundle download.
@@ -183,11 +251,33 @@ function collectAdded(value: string, previous: string[]): string[] {
 	return [...previous, value];
 }
 
+const PROJECT_HELP =
+	"Project ID (default: the project this checkout's repository is connected to)";
+const BASE_URL_HELP =
+	"Deployment to talk to, such as https://example.com (default: the one you are signed in to)";
+const REMOTE_HELP =
+	"Use this remote of the checkout (default: whichever fetches from the project's repository)";
+
+/** What a command is given, before the project is known. */
+interface RawOptions {
+	project?: string;
+	dest?: string;
+	org?: string;
+	hook?: boolean;
+	baseUrl?: string;
+	remote?: string;
+	format?: string;
+}
+
 interface CommonOptions {
 	project: string;
 	dest?: string;
 	org?: string;
 	hook?: boolean;
+	/** The deployment, as an origin, when `--base-url` named one. */
+	baseUrl?: string;
+	/** The one remote to look at, when `--remote` named one. */
+	remote?: string;
 	/**
 	 * Declared for `--help` and read through `optsWithGlobals()`, never off
 	 * this object: Commander stores a flag both a parent and a subcommand
@@ -206,7 +296,9 @@ export function buildInstructionsCommand(): Command {
 		.description(
 			"Report whether the local copy is behind the published one",
 		)
-		.requiredOption("--project <id>", "Project ID")
+		.option("--project <id>", PROJECT_HELP)
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.option("--remote <name>", REMOTE_HELP)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
 		.option(
@@ -222,10 +314,13 @@ export function buildInstructionsCommand(): Command {
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & { verify?: boolean },
+			opts: RawOptions & { verify?: boolean },
 		) {
-			await run(opts, "check", () =>
-				runCheck(opts, outputFormatFor(this)),
+			await run(opts, "check", async () =>
+				runCheck(
+					await withProject(opts, "check"),
+					outputFormatFor(this),
+				),
 			);
 		});
 
@@ -234,7 +329,9 @@ export function buildInstructionsCommand(): Command {
 		.description(
 			"Check whether this machine is set up the way the project's coding instructions expect",
 		)
-		.requiredOption("--project <id>", "Project ID")
+		.option("--project <id>", PROJECT_HELP)
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.option("--remote <name>", REMOTE_HELP)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
 		.option(
@@ -244,12 +341,15 @@ export function buildInstructionsCommand(): Command {
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & { probeNetwork?: boolean },
+			opts: RawOptions & { probeNetwork?: boolean },
 		) {
 			// Never hook mode: doctor is run by a person (or an agent acting
 			// for one), and a failed check is a real exit code.
-			await run({ ...opts, hook: false }, "doctor", () =>
-				runDoctorCommand(opts, outputFormatFor(this)),
+			await run({ ...opts, hook: false }, "doctor", async () =>
+				runDoctorCommand(
+					await withProject({ ...opts, hook: false }, "doctor"),
+					outputFormatFor(this),
+				),
 			);
 		});
 
@@ -258,7 +358,9 @@ export function buildInstructionsCommand(): Command {
 		.description(
 			"Write the published coding instructions into the checkout",
 		)
-		.requiredOption("--project <id>", "Project ID")
+		.option("--project <id>", PROJECT_HELP)
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.option("--remote <name>", REMOTE_HELP)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
 		.option("--dry-run", "Print the plan and write nothing")
@@ -267,15 +369,25 @@ export function buildInstructionsCommand(): Command {
 			"Replace local edits to synced files with the published version; without it, sync keeps them",
 		)
 		.option(
+			"--no-fast-forward",
+			"Under --hook in a checkout of a repository project: only report, never fetch or fast-forward",
+		)
+		.option(
 			"--hook",
 			"Session-hook mode: plain text, never fails, never blocks a session",
 		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & { dryRun?: boolean; repair?: boolean },
+			opts: RawOptions & {
+				dryRun?: boolean;
+				repair?: boolean;
+				fastForward?: boolean;
+			},
 		) {
-			await run(opts, "sync", () => runSync(opts, outputFormatFor(this)));
+			await run(opts, "sync", async () =>
+				runSync(await withProject(opts, "sync"), outputFormatFor(this)),
+			);
 		});
 
 	instructions
@@ -283,7 +395,9 @@ export function buildInstructionsCommand(): Command {
 		.description(
 			"Propose this checkout's edits to the project's coding instructions, or publish them with --publish",
 		)
-		.requiredOption("--project <id>", "Project ID")
+		.option("--project <id>", PROJECT_HELP)
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.option("--remote <name>", REMOTE_HELP)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
 		.option(
@@ -312,7 +426,7 @@ export function buildInstructionsCommand(): Command {
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & {
+			opts: RawOptions & {
 				add?: string[];
 				publish?: boolean;
 				message?: string;
@@ -324,45 +438,75 @@ export function buildInstructionsCommand(): Command {
 			// Never hook mode: a session start does not push. Stated rather
 			// than inherited, because `run`'s never-fail branch exists for
 			// commands a hook runs and this is not one.
-			await run({ ...opts, hook: false }, "push", () =>
-				runPush(opts, outputFormatFor(this)),
+			await run({ ...opts, hook: false }, "push", async () =>
+				runPush(
+					await withProject({ ...opts, hook: false }, "push"),
+					outputFormatFor(this),
+				),
 			);
 		});
 
 	instructions
 		.command("init")
 		.description(
-			"Write a SessionStart hook for a coding tool and take the first copy",
+			"Set this checkout up for a project's coding instructions: clone its repository into an empty folder, and write the session hook for each coding tool found",
 		)
-		.requiredOption("--project <id>", "Project ID")
-		.requiredOption(
+		.option("--project <id>", PROJECT_HELP)
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.option("--remote <name>", REMOTE_HELP)
+		.option(
 			"--tool <tool>",
-			"Coding tool to configure: claude-code|codex",
+			"Coding tool to configure: claude-code|codex (default: every one found on this machine)",
+		)
+		.option(
+			"--clone [folder]",
+			"Clone the project's repository without asking: into this folder when it is empty, or into <folder> (made if missing, and not allowed to hold anything yet), then finish setting up inside it. <folder> needs --project",
 		)
 		.option("--dest <dir>", "Destination directory (default: cwd)")
 		.option("--org <slug>", "Organization context")
 		.option(
 			"--apply",
-			"Let the hook apply changes instead of only reporting them",
+			"Let the hook apply changes instead of only reporting them (an uploaded project; a repository project's hook already fast-forwards)",
+		)
+		.option(
+			"--report-only",
+			"Write a hook that only reports: never fetch, never fast-forward",
 		)
 		.option(
 			"--lessons",
 			"Also install a Stop hook that asks, once per session after the assistant has edited files, whether a mistake from the session should become a team lesson",
 		)
+		.option(
+			"--no-mcp",
+			"Do not register the project's MCP server with the coding tools found",
+		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
 			this: Command,
-			opts: CommonOptions & {
+			opts: RawOptions & {
 				tool: string;
 				apply?: boolean;
+				reportOnly?: boolean;
 				lessons?: boolean;
+				clone?: boolean | string;
+				mcp?: boolean;
 			},
 		) {
 			// Never hook mode: `init` is run by a person, so its failures
 			// are real failures with real exit codes.
-			await run({ ...opts, hook: false }, "init", () =>
-				runInit(opts, outputFormatFor(this)),
-			);
+			await run({ ...opts, hook: false }, "init", async () => {
+				// A new folder has no checkout to find the project from.
+				if (
+					typeof opts.clone === "string" &&
+					opts.project === undefined
+				) {
+					throw outcomeFailure("clone-needs-project", {});
+				}
+				return runInit(
+					await withProject({ ...opts, hook: false }, "init"),
+					outputFormatFor(this),
+				);
+			});
 		});
 
 	instructions
@@ -405,10 +549,21 @@ export function buildInstructionsCommand(): Command {
  * no stored context at all.
  */
 async function run(
-	opts: { hook?: boolean },
+	opts: {
+		hook?: boolean;
+		baseUrl?: string;
+		dest?: string;
+		project?: string;
+	},
 	verb: string,
 	body: () => Promise<void>,
 ): Promise<void> {
+	activeOrigin = describedOrigin(opts);
+	activeProject = opts.project;
+	setLauncherOrigin(activeOrigin);
+	takeAuthFailure();
+	takeUpgradeNotice();
+	let hookDeadlineAt: number | undefined;
 	try {
 		if (opts.hook) {
 			// The deadline's signal is published for the bundle download
@@ -416,6 +571,7 @@ async function run(
 			// whichever side won it.
 			const totalMs = hookDeadlineMs();
 			activeDeadlineAt = Date.now() + totalMs;
+			hookDeadlineAt = activeDeadlineAt;
 			await withDeadline(totalMs, (signal) => {
 				activeDeadline = signal;
 				return body();
@@ -427,15 +583,147 @@ async function run(
 			await body();
 		}
 	} catch (error) {
-		const message = describeError(error);
+		const failure = presentable(error, opts);
+		if (process.env.FABRIC_DEBUG) {
+			const original =
+				error instanceof CliFailure && error.cause !== undefined
+					? error.cause
+					: error;
+			process.stderr.write(`debug: ${describeError(original)}\n`);
+		}
 		if (opts.hook) {
-			process.stderr.write(
-				`fabric: coding instructions ${verb} skipped: ${message}\n`,
-			);
+			// A sign-in that cannot be used is the one failure the agent must
+			// hear about: on stdout, with the line that fixes it. Everything
+			// else is a skip, on stderr.
+			const authFailure = takeAuthFailure();
+			const signedOutOf =
+				error instanceof NotSignedInError
+					? error.origin
+					: (authFailure?.origin ??
+						(failure.exitCode === 3
+							? describedOrigin(opts)
+							: null));
+			if (signedOutOf !== null) {
+				line(
+					`${HOOK_PREFIX}: ${outcomeLine("hook-signed-out", { origin: signedOutOf || describedOrigin(opts), project: opts.project })}`,
+				);
+			} else if (error instanceof UpgradeRequiredFailure) {
+				line(error.line);
+			} else {
+				process.stderr.write(
+					`${HOOK_PREFIX} ${verb} skipped: ${failure.message === outcomeLine("project-not-found", {}) ? "no project for this checkout" : failure.message}\n`,
+				);
+			}
+			showUpgradeNotice(true);
+			if (error instanceof UpgradeRequiredFailure) {
+				// The failure a newer copy fixes: the deployment will not talk
+				// to this build, so this is the run that most needs the daily
+				// update.
+				await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
+			}
 			process.exit(0);
 		}
-		process.stderr.write(`✗ ${message}\n`);
-		process.exit(error instanceof CliFailure ? error.exitCode : 1);
+		// A list a person has to read (several projects) keeps its lines.
+		process.stderr.write(`✗ ${failure.message}\n`);
+		showUpgradeNotice(false);
+		process.exit(failure.exitCode);
+	}
+	showUpgradeNotice(Boolean(opts.hook));
+	if (opts.hook) {
+		await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
+	}
+}
+
+/**
+ * After a hook run has said what it has to say: the kept copy of the served
+ * build asks its deployment for a newer one (`self-update.ts`). Only the
+ * deployment the hook is bound to with `--base-url` is ever asked. Its one line,
+ * when there is one, goes to stderr, never stdout.
+ */
+async function refreshKeptCopyAfterHook(
+	opts: { baseUrl?: string },
+	deadlineAt: number | undefined,
+): Promise<void> {
+	const origin =
+		opts.baseUrl === undefined ? null : normalizeOrigin(opts.baseUrl);
+	if (origin === null || deadlineAt === undefined) {
+		return;
+	}
+	const outcome = await refreshKeptCopy({
+		origin,
+		script: bundleScriptPath(),
+		configDirectory: path.dirname(getConfigPath()),
+		runningTarball: bundleTarballPath(),
+		env: process.env,
+		deadlineAt,
+		timing: {
+			budgetMs: hookTiming.selfUpdateBudgetMs,
+			marginMs: hookTiming.selfUpdateMarginMs,
+		},
+	});
+	if (outcome.kind === "failed" && process.env.FABRIC_DEBUG) {
+		process.stderr.write(
+			`debug: ${describeError(outcome.cause ?? outcome.reason)}\n`,
+		);
+	}
+	const message = selfUpdateLine(outcome);
+	if (message !== null) {
+		process.stderr.write(`${message}\n`);
+	}
+}
+
+/** The deployment the run in progress talks to, for the sentences that name it. */
+let activeOrigin: string = DEFAULT_ORIGIN;
+
+/** The project the run in progress is for, once it is known, for the sign-in line a sentence suggests. */
+let activeProject: string | undefined;
+
+function fixedFailure(error: unknown): CliFailure {
+	return asFixedFailure(error, activeOrigin, activeProject);
+}
+
+/**
+ * What a person or an agent reads for a failure: a failure this CLI wrote
+ * with its paths and digests taken out, a request's failure as the fixed
+ * sentence for its status, and anything else as the message it carries,
+ * likewise scrubbed. The original is under `FABRIC_DEBUG=1`.
+ */
+function presentable(
+	error: unknown,
+	opts: { dest?: string },
+): { message: string; exitCode: number } {
+	const scrub = (message: string): string =>
+		scrubForOutput(message, {
+			destination: destinationOf(opts),
+			destinationTyped: opts.dest !== undefined,
+			home: machine.home(),
+			keep: launcherPathText(),
+		});
+	if (error instanceof CliFailure) {
+		return { message: scrub(error.message), exitCode: error.exitCode };
+	}
+	if (typeof (error as { status?: unknown } | null)?.status === "number") {
+		const mapped = fixedFailure(error);
+		return { message: mapped.message, exitCode: mapped.exitCode };
+	}
+	return { message: scrub(describeError(error)), exitCode: 1 };
+}
+
+/**
+ * The deployment's own words about this CLI being out of date, once. A hook
+ * prints it on stdout, where an agent reads it; a person gets it on stderr.
+ * Nothing is updated here: a kept copy of the served build updates itself
+ * afterwards (`refreshKeptCopyAfterHook`), and no other build does.
+ */
+function showUpgradeNotice(hook: boolean): void {
+	const notice = takeUpgradeNotice();
+	if (notice === null) {
+		return;
+	}
+	if (hook) {
+		line(notice);
+	} else {
+		process.stderr.write(`${notice}\n`);
 	}
 }
 
@@ -485,20 +773,22 @@ function destinationOf(opts: { dest?: string }): string {
  * non-zero for any reason.
  */
 function instructionsClient(
-	opts: { hook?: boolean },
+	opts: { hook?: boolean; baseUrl?: string; project?: string },
 	timeoutMs: number,
 	{ neverRetry = false }: { neverRetry?: boolean } = {},
 ): FabricClient {
-	if (!getApiKey()) {
-		throw new CliFailure("Not authenticated. Run: fabric auth login", 3);
+	if (!getApiKey(deploymentOrigin(opts), opts.project)) {
+		throw new NotSignedInError(deploymentOrigin(opts), opts.project);
 	}
 	// `withoutContext()`: the SDK constructor adopts `FABRIC_ORG` /
 	// `FABRIC_PERSONAL` and injects them into every URL that does not name a
 	// context. On a project-authoritative surface that ambient default is not
 	// a default, it is a contradiction waiting to be refused — see
 	// `orgSlugFor`.
-	return getClient(
-		opts.hook
+	return getClient({
+		...(opts.baseUrl === undefined ? {} : { baseUrl: opts.baseUrl }),
+		...(opts.project === undefined ? {} : { project: opts.project }),
+		...(opts.hook
 			? {
 					// Hook mode has ONE absolute deadline covering every
 					// call it makes, so it cannot spend it on retries: a
@@ -509,8 +799,190 @@ function instructionsClient(
 				}
 			: neverRetry
 				? { timeoutMs, retry: { maxRetries: 0 } }
-				: { timeoutMs },
-	).withoutContext();
+				: { timeoutMs }),
+	}).withoutContext();
+}
+
+/**
+ * The deployment this run talks to, as an origin: `--base-url`, else what
+ * `FABRIC_BASE_URL` or the profile names, else the default. What a hook is
+ * bound to and the credential is picked by, so an address that is not a URL
+ * is a failure here and never the default deployment.
+ */
+function deploymentOrigin(opts: { baseUrl?: string }): string {
+	const origin = normalizeOrigin(
+		opts.baseUrl ?? getBaseUrl() ?? DEFAULT_ORIGIN,
+	);
+	if (origin === null) {
+		throw outcomeFailure("bad-base-url", {});
+	}
+	return origin;
+}
+
+/**
+ * The deployment a sentence names, for lines that only describe a run that is
+ * already ending. Unlike `deploymentOrigin` it never throws and never picks a
+ * credential.
+ */
+function describedOrigin(opts: { baseUrl?: string }): string {
+	return (
+		normalizeOrigin(opts.baseUrl ?? getBaseUrl() ?? DEFAULT_ORIGIN) ??
+		DEFAULT_ORIGIN
+	);
+}
+
+/** There is no sign-in stored for the deployment this run talks to. */
+class NotSignedInError extends CliFailure {
+	constructor(
+		readonly origin: string,
+		project?: string,
+	) {
+		super(outcomeLine("not-signed-in", { origin, project }), 3);
+		this.name = "NotSignedInError";
+	}
+}
+
+/**
+ * The longest `init` waits for a browser sign-in, from the first request to
+ * the last: a little more than the five minutes the browser callback is
+ * waited for, so the wait is always the callback's and a run nobody is
+ * watching still ends.
+ */
+const SIGN_IN_TIMEOUT_MS = 6 * 60_000;
+
+/**
+ * Before `init` goes further, a person who is not signed in to the deployment
+ * signs in right here, through the browser. A terminal is not required: an
+ * agent running the line for a developer has none, and the URL on stderr is
+ * what it hands over. Under CI, and for any other command, it is a refusal
+ * that says the one line to run. A hook never gets here: it has no person, and
+ * must never open a port or a browser.
+ */
+async function ensureSignedIn(opts: {
+	baseUrl?: string;
+	hook?: boolean;
+	project?: string;
+}): Promise<void> {
+	const origin = deploymentOrigin(opts);
+	// Only `init` gets here, and the hook it writes carries this address into a
+	// command a shell runs at every session start: one a shell would read is
+	// refused before anything is signed in to or written.
+	if (!isPlainOrigin(origin)) {
+		throw outcomeFailure("unusable-base-url", {});
+	}
+	if (hasSignInFor(origin, opts.project)) {
+		return;
+	}
+	if (opts.hook || runningInCi()) {
+		throw new NotSignedInError(origin, opts.project);
+	}
+	const forProject =
+		opts.project === undefined ? "" : ` for project ${opts.project}`;
+	try {
+		const who = await signInWithBrowser({
+			baseUrl: opts.baseUrl ?? getBaseUrl() ?? origin,
+			origin,
+			explicit: opts.baseUrl !== undefined,
+			signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
+			...(opts.project === undefined ? {} : { project: opts.project }),
+			announce: (url) => {
+				process.stderr.write(
+					`Opening your browser to sign in to ${origin}${forProject}.\nIf it does not open, visit:\n\n  ${url}\n\nWaiting up to 5 minutes for the sign-in to finish.\n\n`,
+				);
+			},
+		});
+		process.stderr.write(
+			`Signed in to ${origin}${forProject} as ${sanitizeDisplayText(who.name, 80)}.\n`,
+		);
+	} catch {
+		throw outcomeFailure("sign-in-failed", {
+			origin,
+			project: opts.project,
+		});
+	}
+}
+
+/**
+ * Whether the run has what it needs to talk to the deployment. Without a project
+ * any credential will do. For a project it is a key, or that project's own
+ * sign-in: an organization-wide sign-in reaches every project, which is what a
+ * project's setup is there to stop relying on, so it is replaced by one for the
+ * project.
+ */
+function hasSignInFor(origin: string, project: string | undefined): boolean {
+	if (project === undefined) {
+		return Boolean(getApiKey(origin));
+	}
+	return hasStoredApiKey(origin) || getOAuth(origin, project) !== undefined;
+}
+
+/**
+ * The options with the project filled in: the one named, or the one this
+ * checkout's repository is connected to. `--base-url` is normalised to an
+ * origin here, once, so the client, the hook and the credential all see the
+ * same spelling.
+ *
+ * A hook never resolves: it runs unattended at session start, and what it
+ * would answer could change between two sessions. It names its project.
+ */
+async function withProject<T extends RawOptions>(
+	opts: T,
+	verb: string,
+): Promise<T & { project: string }> {
+	const baseUrl =
+		opts.baseUrl === undefined ? undefined : normalizeOrigin(opts.baseUrl);
+	if (opts.baseUrl !== undefined && baseUrl === null) {
+		throw outcomeFailure("bad-base-url", {});
+	}
+	if (opts.project !== undefined && !isIdentifier(opts.project)) {
+		throw outcomeFailure("bad-project-id", {});
+	}
+	if (opts.org !== undefined && !isIdentifier(opts.org)) {
+		throw outcomeFailure("bad-org-slug", {});
+	}
+	if (opts.remote !== undefined && !git.isRemoteName(opts.remote)) {
+		throw outcomeFailure("bad-remote-name", {});
+	}
+	const bound = { ...opts, baseUrl: baseUrl ?? undefined };
+	if (verb === "init") {
+		await ensureSignedIn(bound);
+	}
+	if (opts.project !== undefined) {
+		return { ...bound, project: opts.project };
+	}
+	if (opts.hook) {
+		throw outcomeFailure("hook-needs-project", {});
+	}
+	const client = instructionsClient(bound, CHECK_TIMEOUT_MS);
+	const match = await resolveProjectFromCheckout({
+		destination: destinationOf(opts),
+		verb,
+		remote: opts.remote,
+		deadline: gitDeadline(),
+		deps: {
+			resolveCheckout: async (candidates) => {
+				try {
+					return await client.instructions.resolveCheckout(
+						candidates,
+					);
+				} catch (error) {
+					throw fixedFailure(error);
+				}
+			},
+			...(canPrompt()
+				? { choose: (projects) => chooseProject(projects) }
+				: {}),
+		},
+	});
+	activeProject = match.projectId;
+	if (verb === "init") {
+		// Finding the project used whatever credential there was, an
+		// organization-wide sign-in perhaps. What the setup that follows relies
+		// on is the project's own sign-in, so it is taken now that the project
+		// is known.
+		await ensureSignedIn({ ...bound, project: match.projectId });
+	}
+	return { ...bound, project: match.projectId };
 }
 
 /**
@@ -531,7 +1003,10 @@ function instructionsClient(
  * stays never-retry even if `createDownloadUrl` is ever swapped for a call
  * that does not make that guarantee itself.
  */
-function downloadUrlClient(opts: { hook?: boolean }): FabricClient {
+function downloadUrlClient(opts: {
+	hook?: boolean;
+	baseUrl?: string;
+}): FabricClient {
 	return instructionsClient(
 		opts,
 		opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
@@ -574,7 +1049,7 @@ async function fetchPublished(
 			sinceDigest,
 		});
 	} catch (error) {
-		throw asCliFailure(error);
+		throw fixedFailure(error);
 	}
 	await guard?.admit(published);
 	return published;
@@ -601,18 +1076,30 @@ class SourceGuard {
 	/** `null` until admitted, and for a project that is not repository-sourced. */
 	checkout: CheckoutClassification | null = null;
 
-	constructor(private readonly destination: string) {}
+	constructor(
+		private readonly destination: string,
+		private readonly remote?: string,
+		/**
+		 * The destination is a folder `init --clone <folder>` is about to make
+		 * or fill, so what encloses it is not a checkout of anything: it is
+		 * classified as no checkout rather than asked of git.
+		 */
+		private readonly fresh = false,
+	) {}
 
 	async admit(published: PublishedInstructions): Promise<void> {
 		const identity = sourceIdentity(published);
 		if (this.first === undefined) {
 			this.first = identity;
 			if (published.sourceOfTruth === "REPOSITORY") {
-				this.checkout = await classifyCheckout({
-					destination: this.destination,
-					repository: published.repository,
-					deadline: gitDeadline(),
-				});
+				this.checkout = this.fresh
+					? { class: "not-git" }
+					: await classifyCheckout({
+							destination: this.destination,
+							repository: published.repository,
+							deadline: gitDeadline(),
+							remote: this.remote,
+						});
 			}
 			return;
 		}
@@ -625,7 +1112,12 @@ class SourceGuard {
 	}
 }
 
-/** The fields whose change between two responses stops a command. */
+/**
+ * The fields whose change between two responses stops a command. The
+ * repository's `cloneUrl` and `sync` are left out on purpose: they describe
+ * how Fabric's own copy is doing, `lastRun` moves on every sync, and neither
+ * changes which repository the instructions come from.
+ */
 function sourceIdentity(published: PublishedInstructions): string {
 	const repository = published.repository ?? null;
 	return JSON.stringify([
@@ -659,10 +1151,7 @@ async function readLockForProject(
 ): Promise<InstructionsLock | null> {
 	const lock = await readLock(destination);
 	if (lock !== null && lock.projectId !== projectId) {
-		throw new CliFailure(
-			`${lockPath(destination)} belongs to project ${lock.projectId}, not ${projectId}. Use a different --dest, or remove that lock if this directory should now follow ${projectId}.`,
-			7,
-		);
+		throw outcomeFailure("lock-of-other-project", {});
 	}
 	return lock;
 }
@@ -749,6 +1238,16 @@ function line(text: string): void {
 	process.stdout.write(`${text}\n`);
 }
 
+/** The command that makes this checkout current, as this install runs it. */
+function syncCommand(opts: { project: string }): string {
+	return fabricCommand(`instructions sync --project ${opts.project}`);
+}
+
+/** What a push says when the published version has moved past the lock. */
+function pullFirstLine(): string {
+	return `published instructions moved past your last sync; run \`${fabricCommand("instructions sync")}\` then push again`;
+}
+
 function listPaths(label: string, paths: string[]): void {
 	if (paths.length === 0) {
 		return;
@@ -774,7 +1273,7 @@ async function runCheck(
 	// macOS, so the string a user passes and the directory they mean differ.
 	const root = await resolveExistingRoot(destination);
 	const client = instructionsClient(opts, CHECK_TIMEOUT_MS);
-	const guard = new SourceGuard(destination);
+	const guard = new SourceGuard(destination, opts.remote);
 	const hint = await lockDigestHint(root, opts.project);
 	let published = await fetchPublished(client, opts, hint, guard);
 
@@ -853,23 +1352,50 @@ async function runCheck(
 		return;
 	}
 
-	reportPublishedState(opts, destination, lock, published);
+	// A checkout of the project's own repository has no lock and needs no
+	// copy: git keeps it current. The lock-based report would tell its owner
+	// it is "not synced" and to run `sync` "to take a copy", so here the
+	// report is where the published commit came from, then where this
+	// checkout stands against it.
+	const repositoryCheckout =
+		checkout?.classification.class === "matching" &&
+		published.published &&
+		published.repository &&
+		published.snapshot
+			? { repository: published.repository, snapshot: published.snapshot }
+			: null;
+	if (repositoryCheckout === null) {
+		reportPublishedState(opts, lock, published);
+	} else if (repositoryCheckout.snapshot.source?.kind === "REPOSITORY") {
+		line(
+			describeRepositorySource(
+				repositoryCheckout.snapshot.source,
+				repositoryCheckout.repository,
+			),
+		);
+	}
 
 	// The common tail. Every text-mode branch returns through here, because
 	// `--verify` promises to report local drift and three of those branches
 	// used to return before saying a word about it.
 	if (opts.verify) {
-		reportDrift(opts, destination, drift);
+		reportDrift(opts, drift);
 	}
 	if (checkout?.line) {
 		line(checkout.line);
+	} else if (repositoryCheckout !== null) {
+		line(
+			currentLine(
+				repositoryCheckout.repository,
+				repositoryCheckout.snapshot,
+			),
+		);
 	}
 }
 
 /** What the server said about the published snapshot, in text. */
 function reportPublishedState(
 	opts: CommonOptions,
-	destination: string,
 	lock: InstructionsLock | null,
 	published: PublishedInstructions,
 ): void {
@@ -886,29 +1412,31 @@ function reportPublishedState(
 
 	if (!lock) {
 		line(
-			`Coding instructions have not been synced into ${destination} yet (published version ${version}, ${published.snapshot?.fileCount} files).`,
+			`Coding instructions have not been synced into this folder yet (published version ${version}, ${published.snapshot?.fileCount} files).`,
 		);
-		line(
-			`Run \`fabric instructions sync --project ${opts.project}\` to take a copy.`,
-		);
+		line(`Run \`${syncCommand(opts)}\` to take a copy.`);
 		return;
 	}
 
 	if (published.unchanged) {
 		// "the published version has not moved" — NOT "your files are
 		// correct". Without `--verify` nothing local has been read at all, and
-		// saying "up to date" invited exactly the wrong conclusion.
-		line(`Published coding instructions unchanged (version ${version}).`);
+		// saying "up to date" invited exactly the wrong conclusion. A session
+		// hook says nothing: its stdout becomes the agent's context at every
+		// session start, and "nothing moved" is not worth that.
+		if (!opts.hook) {
+			line(
+				`Published coding instructions unchanged (version ${version}).`,
+			);
+		}
 		return;
 	}
 
 	if (published.changes === null || published.changes === undefined) {
 		line(
-			`Coding instructions changed, and the version in ${destination} is not one the server still recognises, so what changed cannot be listed. A full sync is needed (published version ${version}).`,
+			`Coding instructions changed, and the version in this folder is not one the server still recognises, so what changed cannot be listed. A full sync is needed (published version ${version}).`,
 		);
-		line(
-			`Run \`fabric instructions sync --project ${opts.project}\` to apply.`,
-		);
+		line(`Run \`${syncCommand(opts)}\` to apply.`);
 		return;
 	}
 
@@ -919,9 +1447,7 @@ function reportPublishedState(
 	listPaths("added", added);
 	listPaths("changed", changed);
 	listPaths("removed", removed);
-	line(
-		`Run \`fabric instructions sync --project ${opts.project}\` to apply.`,
-	);
+	line(`Run \`${syncCommand(opts)}\` to apply.`);
 }
 
 /**
@@ -948,13 +1474,9 @@ function describeRepositorySource(
 }
 
 /** What `--verify` found, in the two places the report can end. */
-function reportDrift(
-	opts: CommonOptions,
-	destination: string,
-	drift: LedgerDrift[],
-): void {
+function reportDrift(opts: CommonOptions, drift: LedgerDrift[]): void {
 	if (drift.length === 0) {
-		line(`Every file in ${destination} matches the lock.`);
+		line("Every file in this folder matches the lock.");
 		return;
 	}
 	line(`${drift.length} local file(s) no longer match the lock:`);
@@ -964,7 +1486,7 @@ function reportDrift(
 	const edits = drift.filter((entry) => entry.reason === "edited").length;
 	if (edits < drift.length) {
 		line(
-			`Run \`fabric instructions sync --project ${opts.project}\` to put ${edits === 0 ? "them" : "the others"} back.`,
+			`Run \`${syncCommand(opts)}\` to put ${edits === 0 ? "them" : "the others"} back.`,
 		);
 	}
 	if (edits > 0) {
@@ -996,22 +1518,37 @@ async function runDoctorCommand(
 ): Promise<void> {
 	const destination = destinationOf(opts);
 	const root = await resolveExistingRoot(destination);
+	const origin = deploymentOrigin(opts);
+	const tree = await git.findWorkTree(root, Date.now() + GIT_BUDGET_MS);
 	const report = await runDoctor({
 		projectId: opts.project,
 		org: orgSlugFor(opts),
 		destination,
 		root,
 		commandDest: opts.dest === undefined ? undefined : destination,
+		baseUrl: origin,
+		remote: opts.remote,
 		probeNetwork: Boolean(opts.probeNetwork),
 		env: process.env,
 		platform: process.platform,
-		apiKeyPresent: Boolean(getApiKey()),
-		client: () => instructionsClient({ hook: false }, CHECK_TIMEOUT_MS),
+		apiKeyPresent: Boolean(getApiKey(origin, opts.project)),
+		projectSignIn: getOAuth(origin, opts.project) !== undefined,
+		agentMcp: await agentRegistrationFacts({
+			root,
+			cwd: tree.kind === "ok" ? tree.value.toplevel : root,
+			projectId: opts.project,
+			origin,
+			home: machine.home(),
+			env: machine.env(),
+			platform: machine.platform(),
+		}),
+		client: () =>
+			instructionsClient({ ...opts, hook: false }, CHECK_TIMEOUT_MS),
 		createDownloadUrl: (projectId, options) =>
-			downloadUrlClient({ hook: false }).instructions.createDownloadUrl(
-				projectId,
-				options,
-			),
+			downloadUrlClient({
+				...opts,
+				hook: false,
+			}).instructions.createDownloadUrl(projectId, options),
 		fetchArchive: (url, maxBytes) =>
 			fetchBundle(url, { timeoutMs: BUNDLE_TIMEOUT_MS, maxBytes }),
 	});
@@ -1019,7 +1556,12 @@ async function runDoctorCommand(
 	if (format === "json") {
 		printOutput(report, { format: "json" });
 	} else {
-		process.stdout.write(formatDoctorText(report, destination));
+		process.stdout.write(
+			formatDoctorText(
+				report,
+				opts.dest === undefined ? undefined : destination,
+			),
+		);
 	}
 
 	if (!report.ok) {
@@ -1035,7 +1577,11 @@ async function runDoctorCommand(
 // ---------------------------------------------------------------------------
 
 async function runSync(
-	opts: CommonOptions & { dryRun?: boolean; repair?: boolean },
+	opts: CommonOptions & {
+		dryRun?: boolean;
+		repair?: boolean;
+		fastForward?: boolean;
+	},
 	format: OutputFormat,
 ): Promise<void> {
 	const synced = await syncOnce(opts);
@@ -1049,12 +1595,28 @@ async function runSync(
 					projectId: opts.project,
 					destination: synced.destination,
 					published: synced.published,
-					reportOnly: true,
+					reportOnly: synced.fastForward === null,
 					version: synced.version,
 					checkout: synced.checkout,
+					...(synced.fastForward === null
+						? {}
+						: {
+								fastForward: {
+									outcome: synced.fastForward.outcome.kind,
+								},
+							}),
 				},
 				{ format: "json" },
 			);
+		} else if (synced.fastForward !== null) {
+			// The hook's own fast-forward has said what happened: what the
+			// session must know on stdout, the rest in the log.
+			for (const text of synced.fastForward.stdout) {
+				line(text);
+			}
+			for (const text of synced.fastForward.stderr) {
+				process.stderr.write(`${text}\n`);
+			}
 		} else if (synced.checkout.line !== null) {
 			line(synced.checkout.line);
 		} else if (!opts.hook && synced.current !== null) {
@@ -1153,12 +1715,16 @@ type SyncResult =
 			checkout: CheckoutJson;
 			/** A manual run's words for "already current"; the hook says nothing. */
 			current: string | null;
+			/** What the session hook's fast-forward did, when it ran. */
+			fastForward: FastForwardResult | null;
 	  };
 
 async function syncOnce(
 	opts: CommonOptions & {
 		dryRun?: boolean;
 		repair?: boolean;
+		/** `false` for `--no-fast-forward`: a hook that only reports. */
+		fastForward?: boolean;
 		/**
 		 * `init`'s guard, already holding the response it classified the
 		 * checkout from, so this sync's own responses are held to it.
@@ -1177,7 +1743,7 @@ async function syncOnce(
 	const keepLocalEdits = !opts.repair;
 
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
-	const guard = opts.guard ?? new SourceGuard(destination);
+	const guard = opts.guard ?? new SourceGuard(destination, opts.remote);
 	const hint = await lockDigestHint(existing, opts.project);
 	let published = await fetchPublished(client, opts, hint, guard);
 
@@ -1194,11 +1760,30 @@ async function syncOnce(
 			snapshot: published.snapshot,
 			deadline: gitDeadline(),
 		});
+		// A session hook in a checkout of the repository brings it up to date
+		// when that is safe; `check` never does, and neither does a person's
+		// own `sync`.
+		const fastForward =
+			opts.hook &&
+			guard.checkout.class === "matching" &&
+			published.repository
+				? await runFastForward({
+						classification: guard.checkout,
+						repository: published.repository,
+						snapshot: published.snapshot,
+						report,
+						projectId: opts.project,
+						deadline: gitDeadline(),
+						optedOut: opts.fastForward === false,
+						traceFile: traceFile(path.dirname(getConfigPath())),
+					})
+				: null;
 		return {
 			kind: "reported",
 			destination: existing,
 			published: published.published,
 			version: published.snapshot?.version ?? null,
+			fastForward,
 			checkout: report.json,
 			current:
 				report.line === null &&
@@ -1333,7 +1918,7 @@ async function syncOnce(
 				});
 			} catch (error) {
 				if (!(error instanceof PublishedChangedError)) {
-					throw asCliFailure(error);
+					throw fixedFailure(error);
 				}
 				// The published version moved after this plan was made. One
 				// fresh manifest and a new plan, then the archive of what is
@@ -1372,7 +1957,7 @@ async function syncOnce(
 					opts,
 				).instructions.createDownloadUrl(opts.project, { org });
 			} catch (error) {
-				throw asCliFailure(error);
+				throw fixedFailure(error);
 			}
 			const sizes = new Map(
 				manifest.map((entry) => [entry.path, entry.size] as const),
@@ -1490,16 +2075,13 @@ function reportSync(
 	listPaths("removed", outcome.removed);
 	listPaths("kept, modified locally", outcome.keptModified);
 	listPaths("kept, renamed in the published snapshot", outcome.keptRenamed);
-	if (!opts.dryRun) {
-		line(`Lock: ${outcome.lockPath}`);
-	}
 	if (
 		total === 0 &&
 		outcome.keptModified.length === 0 &&
 		outcome.keptRenamed.length === 0 &&
 		outcome.keptEdited.length === 0
 	) {
-		line(`Everything in ${outcome.destination} already matched.`);
+		line("Everything in this folder already matched.");
 	}
 	reportKeptEdits(outcome, opts);
 }
@@ -1519,18 +2101,21 @@ function reportKeptEdits(outcome: SyncOutcome, opts: CommonOptions): void {
 }
 
 /**
- * The command that replaces kept edits. It carries the `--org` and the
- * resolved `--dest` this run was given, so a pasted copy acts on the same
- * project, context and checkout: the rule doctor's generated fixes follow,
+ * The command that replaces kept edits. It carries the `--base-url` (when it
+ * is not the default deployment), the `--org` and the resolved `--dest` this
+ * run was given, so a pasted copy acts on the same deployment, project,
+ * context and checkout: the rule doctor's generated fixes follow,
  * through the same guarded builder (Decision 42). `undefined` when a word
  * cannot be pasted safely, such as a `--dest` holding a newline.
  */
 function repairCommand(opts: CommonOptions): string | undefined {
+	const origin = deploymentOrigin(opts);
 	return buildFabricCommand([
 		"instructions",
 		"sync",
 		"--project",
 		opts.project,
+		...(origin !== DEFAULT_ORIGIN ? ["--base-url", origin] : []),
 		...(opts.org !== undefined ? ["--org", opts.org] : []),
 		...(opts.dest !== undefined ? ["--dest", destinationOf(opts)] : []),
 		"--repair",
@@ -1542,7 +2127,7 @@ function repairInstruction(opts: CommonOptions): string {
 	const command = repairCommand(opts);
 	return command !== undefined
 		? `\`${command}\``
-		: "`fabric instructions sync --repair` with this run's --project and --dest";
+		: `\`${fabricCommand("instructions sync --repair")}\` with this run's --project and --dest`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,7 +2285,7 @@ async function runPush(
 	const lock = await readLockForProject(root, opts.project);
 	if (lock === null) {
 		throw new CliFailure(
-			`No coding-instructions lock in ${destination}. Run \`fabric instructions sync --project ${opts.project}\` first: a push is a diff against the version that was last applied here, and without that ledger there is nothing to diff against.`,
+			`No coding-instructions lock in this folder. Run \`${syncCommand(opts)}\` first: a push is a diff against the version that was last applied here, and without that ledger there is nothing to diff against.`,
 			7,
 		);
 	}
@@ -1728,10 +2313,7 @@ async function runPush(
 	if (published.snapshot.id !== lock.snapshotId) {
 		// Exactly what the server would answer, decided locally so nothing is
 		// read or sent first.
-		throw new CliFailure(
-			"published instructions moved past your last sync; run `fabric instructions sync` then push again",
-			7,
-		);
+		throw new CliFailure(pullFirstLine(), 7);
 	}
 
 	const computed = await computePushPlan({
@@ -1890,7 +2472,7 @@ async function runPush(
 				{ org: orgSlugFor(opts), observe: noteBranch },
 			);
 		} catch (error) {
-			const failure = asCliFailure(error);
+			const failure = fixedFailure(error);
 			throw new CliFailure(
 				`Suggested as version ${outcome.version}, but its pull request could not be checked (${failure.message}); see the project's Coding Instructions tab.`,
 				failure.exitCode,
@@ -2119,7 +2701,7 @@ function pullRequestVerdict(
 		}
 		case "MERGED":
 			return {
-				text: `Its pull request was already merged${url}. Run \`fabric instructions sync\` once the project has synced it.`,
+				text: `Its pull request was already merged${url}. Run \`${fabricCommand("instructions sync")}\` once the project has synced it.`,
 				fails: false,
 			};
 		case "CLOSED":
@@ -2180,18 +2762,14 @@ function pullRequestVerdict(
  * The refusals a push has to say something useful about, by the reason code
  * the route sends (`packages/api/modules/v1/instructions.ts`).
  *
- * Everything else falls through to `asCliFailure`'s status mapping, which is
+ * Everything else falls through to `asFixedFailure`'s status mapping, which is
  * already right for auth, permission and rate limits.
  */
 function asPushFailure(error: unknown): CliFailure {
 	const code = (error as { code?: string }).code;
-	const message = error instanceof Error ? error.message : String(error);
 	switch (code) {
 		case "PULL_FIRST":
-			return new CliFailure(
-				"published instructions moved past your last sync; run `fabric instructions sync` then push again",
-				7,
-			);
+			return new CliFailure(pullFirstLine(), 7);
 		case "REPOSITORY_SOURCE_OF_TRUTH":
 			return new CliFailure(
 				"this project's coding instructions come from its repository, so they are changed there and mirrored into Fabric — commit and push to the repository instead; nothing was sent",
@@ -2203,26 +2781,21 @@ function asPushFailure(error: unknown): CliFailure {
 				4,
 			);
 		case "PROPOSAL_PROPOSER_LIMIT":
+			return outcomeFailure("proposal-limit-proposer", {});
 		case "PROPOSAL_PROJECT_LIMIT":
-			return new CliFailure(`${message} Nothing was sent.`, 7);
+			return outcomeFailure("proposal-limit-project", {});
 		// A repository-backed project's admission (Fizzy #2563 spec §5.3).
 		case "REPOSITORY_UNAVAILABLE":
-			return new CliFailure(
-				`this project's repository connection needs attention before a change can be suggested to it (${message}); nothing was sent`,
-				7,
-			);
+			return outcomeFailure("repository-needs-attention", {});
 		case "REPOSITORY_BASE_UNAVAILABLE":
 			return new CliFailure(
-				"this project's published instructions are not a sync of its repository as it is configured now; sync the project from its Coding Instructions tab, run `fabric instructions sync`, then push again; nothing was sent",
+				`this project's published instructions are not a sync of its repository as it is configured now; sync the project from its Coding Instructions tab, run \`${fabricCommand("instructions sync")}\`, then push again; nothing was sent`,
 				7,
 			);
 		case "NOTE_REJECTED":
-			return new CliFailure(
-				`${message} Change --message and push again; nothing was sent.`,
-				7,
-			);
+			return outcomeFailure("note-rejected", {});
 		default:
-			return asCliFailure(error);
+			return fixedFailure(error);
 	}
 }
 
@@ -2255,12 +2828,12 @@ function pushVerdict(outcome: PushOutcome): string {
 	// this never guesses at it with words like "superseded" or "moved".
 	if (outcome.publish) {
 		if (outcome.published) {
-			return `Published version ${outcome.version}. Run \`fabric instructions sync\` to bring this checkout onto it.`;
+			return `Published version ${outcome.version}. Run \`${fabricCommand("instructions sync")}\` to bring this checkout onto it.`;
 		}
 		if (outcome.status === "FAILED" || outcome.status === "REJECTED") {
 			return `Version ${outcome.version} did not pass its checks (${outcome.status}), so nothing was published; open the project's Coding Instructions tab to see why.`;
 		}
-		const sent = `Sent as version ${outcome.version}. It publishes on its own once its checks pass (${outcome.status}) — then run \`fabric instructions sync\` to bring this checkout onto it.`;
+		const sent = `Sent as version ${outcome.version}. It publishes on its own once its checks pass (${outcome.status}) — then run \`${fabricCommand("instructions sync")}\` to bring this checkout onto it.`;
 		// READY gets one more sentence: the checks are done, so what remains
 		// unknown is only whether the publish step has landed, and the tab is
 		// where that is answered — not a guess printed here.
@@ -2307,7 +2880,7 @@ function pushVerdict(outcome: PushOutcome): string {
 		return `Proposed as version ${outcome.version}. It is pending review — nothing is published until somebody who can edit this project's coding instructions approves it in the Coding Instructions tab.`;
 	}
 	if (outcome.proposalStatus === "APPROVED") {
-		return `Version ${outcome.version} has already been approved and published — run \`fabric instructions sync\` to bring this checkout up to it.`;
+		return `Version ${outcome.version} has already been approved and published — run \`${fabricCommand("instructions sync")}\` to bring this checkout up to it.`;
 	}
 	return `Version ${outcome.version} is no longer open for review (${outcome.proposalStatus ?? outcome.status}): an earlier attempt at this same change was closed out, so push again.`;
 }
@@ -2347,8 +2920,8 @@ function reportPush(outcome: PushOutcome): void {
 	line(pushVerdict(outcome));
 	line(
 		outcome.publish
-			? `Your lock was not changed: it still names version ${outcome.baseVersion}, which is what \`fabric instructions sync\` compares against.`
-			: "Your lock was not changed: it still names the published version, which is what `fabric instructions sync` compares against.",
+			? `Your lock was not changed: it still names version ${outcome.baseVersion}, which is what \`${fabricCommand("instructions sync")}\` compares against.`
+			: `Your lock was not changed: it still names the published version, which is what \`${fabricCommand("instructions sync")}\` compares against.`,
 	);
 }
 
@@ -2402,7 +2975,7 @@ function reportAlreadyProposed(outcome: PushOutcome): void {
 	}
 	line(
 		outcome.publish
-			? "Left out because an open proposal of yours already carries the same change, and publishing it from here would skip that proposal's review; add --include-proposed to publish it anyway. Once this version publishes, that proposal is stated against an older version and can no longer be approved: run `fabric instructions sync`, then push again to propose those files afresh."
+			? `Left out because an open proposal of yours already carries the same change, and publishing it from here would skip that proposal's review; add --include-proposed to publish it anyway. Once this version publishes, that proposal is stated against an older version and can no longer be approved: run \`${fabricCommand("instructions sync")}\`, then push again to propose those files afresh.`
 			: "Left out because an open proposal of yours already carries the same change; add --include-proposed to send it anyway.",
 	);
 }
@@ -2411,63 +2984,214 @@ function reportAlreadyProposed(outcome: PushOutcome): void {
 // init
 // ---------------------------------------------------------------------------
 
+/** A clone of a large repository may take a while; nothing else here does. */
+const CLONE_TIMEOUT_MS = 5 * 60_000;
+
+async function isEmptyFolder(folder: string): Promise<boolean> {
+	try {
+		return (await readdir(folder)).length === 0;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT";
+	}
+}
+
+/**
+ * Clone the project's repository into the (empty) folder, when the person
+ * wants that: `--clone`, or a yes at the prompt. Returns what the folder is
+ * now, for the same classification as for any checkout.
+ */
+async function cloneProjectRepository(
+	opts: CommonOptions & { clone?: boolean | string },
+	destination: string,
+	repository: PublishedInstructionRepository | null,
+): Promise<CheckoutClassification> {
+	if (repository === null) {
+		throw outcomeFailure("no-clone-url", { repo: "its repository" });
+	}
+	const repo = repositoryName(repository);
+	// Before anyone is asked: a clone that could only contact some other host
+	// than the one shown is never offered.
+	const url = cloneUrlFor(repository);
+	if (url === null) {
+		throw outcomeFailure("no-clone-url", { repo });
+	}
+	const ref = sanitizeDisplayText(repository.ref, 255);
+	const wanted =
+		opts.clone !== undefined ||
+		(canPrompt() &&
+			(await confirm(`Clone ${repo} (${ref}) into this folder?`)));
+	if (!wanted) {
+		throw outcomeFailure("empty-folder", { repo, ref });
+	}
+	const root = await resolveDestinationRoot(destination);
+	await assertKeyOutside(root);
+	const result = await git.cloneInto(
+		root,
+		url,
+		repository.ref,
+		Date.now() + CLONE_TIMEOUT_MS,
+	);
+	if (result.kind !== "cloned") {
+		throw outcomeFailure("clone-failed", {
+			repo,
+			ref: repository.ref,
+			host: repository.host,
+			url: shellQuote(url),
+			reason:
+				result.kind === "failed" && result.reason !== "not-empty"
+					? result.reason
+					: "other",
+			login: providerLoginCommand(
+				repository.provider,
+				`git ls-remote ${shellQuote(url)}`,
+			),
+		});
+	}
+	return classifyCheckout({
+		destination: root,
+		repository,
+		deadline: gitDeadline(),
+		remote: opts.remote,
+	});
+}
+
+function toHookTool(tool: string): InstructionsHookTool {
+	if (!isInstructionsHookTool(tool)) {
+		throw outcomeFailure("unknown-tool", { tool });
+	}
+	return tool;
+}
+
 async function runInit(
-	opts: CommonOptions & { tool: string; apply?: boolean; lessons?: boolean },
+	opts: CommonOptions & {
+		tool?: string;
+		apply?: boolean;
+		reportOnly?: boolean;
+		lessons?: boolean;
+		clone?: boolean | string;
+		/** False under `--no-mcp`: the tools' MCP servers are left alone. */
+		mcp?: boolean;
+	},
 	format: OutputFormat,
 ): Promise<void> {
-	if (!isInstructionsHookTool(opts.tool)) {
-		throw new CliFailure(
-			`Unsupported tool "${opts.tool}". Use --tool claude-code or --tool codex.`,
-			2,
-		);
-	}
-	const tool = opts.tool;
+	const explicitTool =
+		opts.tool === undefined ? undefined : toHookTool(opts.tool);
 
 	// Before any write: Codex has no wired Stop hook for lesson capture yet,
 	// so a `--lessons` request against it is refused rather than silently
 	// dropped or half-applied.
-	if (opts.lessons && tool === "codex") {
-		throw new CliFailure(
-			"--lessons is not yet supported for codex; Codex hooks for lesson capture are not wired.",
-			2,
-		);
+	if (opts.lessons && explicitTool === "codex") {
+		throw outcomeFailure("lessons-need-claude", {});
 	}
 
-	const destination = destinationOf(opts);
+	// `--clone <folder>` names a folder of its own, under the current one (or
+	// `--dest`): refused now if it holds anything, made when the clone is.
+	const cloneFolder = typeof opts.clone === "string" ? opts.clone : undefined;
+	let destination = destinationOf(opts);
+	if (cloneFolder !== undefined) {
+		destination = await resolveCloneFolder(destination, cloneFolder);
+	}
 	// Not created yet: a refusal below must leave nothing behind.
-	const existing = await resolveExistingRoot(destination);
+	let existing = await resolveExistingRoot(destination);
 
 	// A local precondition answered before any network call: a credential
 	// file that would end up inside the checkout.
 	await assertKeyOutside(existing);
 
 	const client = instructionsClient(opts, SYNC_TIMEOUT_MS);
-	const guard = new SourceGuard(destination);
+	const guard = new SourceGuard(
+		destination,
+		opts.remote,
+		cloneFolder !== undefined,
+	);
 	const published = await fetchPublished(client, opts, undefined, guard);
 
-	// A repository-sourced project (Fizzy #2708), classified once, here. In a
-	// checkout of the repository the files arrive with git: the hook is
-	// written and reports, and nothing is copied. Outside any checkout the
-	// upload behaviour applies. Anywhere in between, nothing is written.
-	const checkout = guard.checkout;
-	if (
-		checkout !== null &&
-		checkout.class !== "matching" &&
-		checkout.class !== "not-git"
-	) {
-		throw new CliFailure(
-			classLine(checkout, published.repository ?? null),
-			7,
-		);
+	// A repository-sourced project, classified once, here. The folder is, or
+	// becomes, a clone of the repository with its own `.git`: nothing is
+	// downloaded and no lock is written, so existing files are never touched.
+	// A folder that cannot be set up as one is refused with the command that
+	// gets the person to a state that can (`adoption.ts`).
+	const repository = published.repository ?? null;
+	let checkout = guard.checkout;
+	if (cloneFolder !== undefined && checkout === null) {
+		throw outcomeFailure("clone-needs-repository", {});
 	}
-	const repositoryCheckout =
-		checkout?.class === "matching" && published.repository
-			? published.repository
-			: null;
+	if (checkout !== null) {
+		const rerun = {
+			project: opts.project,
+			tool: opts.tool,
+			dest: opts.dest,
+		};
+		const planned = adoptionFor({
+			classification: checkout,
+			repository,
+			destination: existing,
+			folderEmpty: await isEmptyFolder(existing),
+			rerun,
+		});
+		if (planned.kind === "refused") {
+			throw planned.failure;
+		}
+		if (planned.kind === "empty-folder") {
+			checkout = await cloneProjectRepository(
+				opts,
+				destination,
+				repository,
+			);
+			// The instructions may live in a folder of the repository. With a
+			// folder of its own the run carries on there; without one it stops
+			// and says where, below.
+			if (cloneFolder !== undefined && checkout.class === "unmapped") {
+				destination = path.join(checkout.toplevel, checkout.rootPath);
+				existing = await resolveExistingRoot(destination);
+				checkout = await classifyCheckout({
+					destination: existing,
+					repository,
+					deadline: gitDeadline(),
+					remote: opts.remote,
+				});
+			}
+			const after = adoptionFor({
+				classification: checkout,
+				repository,
+				destination: existing,
+				folderEmpty: false,
+				rerun,
+			});
+			if (after.kind === "refused") {
+				if (
+					cloneFolder === undefined &&
+					checkout.class === "unmapped" &&
+					repository !== null
+				) {
+					const next = outcomeLine("cloned-needs-folder", {
+						repo: repositoryName(repository),
+						ref: repository.ref,
+						where: folderForCommand(opts.dest, repository.rootPath),
+					});
+					if (format === "json") {
+						printOutput(
+							{
+								projectId: opts.project,
+								cloned: true,
+								checkout: { class: checkout.class },
+							},
+							{ format: "json" },
+						);
+					} else {
+						line(next);
+					}
+					return;
+				}
+				throw after.failure;
+			}
+		}
+	}
+	const matching = checkout?.class === "matching" ? checkout : null;
 	// A lock that belongs to another project, checked only where a lock is
 	// used: a checkout of the repository never has one, and whatever is left
 	// there must not stop the hook being installed (Fizzy #2708 review).
-	if (repositoryCheckout === null) {
+	if (matching === null) {
 		await readLockForProject(existing, opts.project);
 	}
 
@@ -2478,8 +3202,25 @@ async function runInit(
 		await assertKeyOutside(root);
 	}
 
+	// Which coding tools get a hook: the one named, or every one found. Read
+	// after any clone, because a repository may carry `.claude` or `.codex`.
+	const tools: DetectedTools =
+		explicitTool === undefined
+			? await detectTools({
+					root,
+					home: machine.home(),
+					lookup: {
+						env: machine.env(),
+						platform: machine.platform(),
+					},
+				})
+			: { tools: [explicitTool], detected: true };
+	if (opts.lessons && !tools.tools.includes("claude-code")) {
+		throw outcomeFailure("lessons-need-claude", {});
+	}
+
 	let outcome: SyncOutcome | null = null;
-	if (repositoryCheckout === null && published.published) {
+	if (checkout === null && published.published) {
 		// A second manifest call, deliberately: the one above answered "may a
 		// hook be installed for this project at all", and this one is the
 		// sync's own — held to the first by the same guard. Do it before the
@@ -2495,65 +3236,129 @@ async function runInit(
 		outcome = synced.outcome;
 	}
 
+	// A repository project's hook fast-forwards the checkout when that is safe
+	// (`sync`); `--report-only` writes one that only reports (`check`). An
+	// uploaded project's hook reports unless `--apply`.
+	const fastForwards = matching !== null && !opts.reportOnly;
+	const applies = opts.reportOnly
+		? false
+		: matching !== null
+			? true
+			: Boolean(opts.apply);
+	// What the hook runs to start this CLI. A person with only the npx line has
+	// no `fabric`, so the served build keeps a copy of itself for the hook.
+	const launcher = await resolveHookLauncher({
+		origin: deploymentOrigin(opts),
+		configDirectory: path.dirname(getConfigPath()),
+		lookup: { env: machine.env(), platform: machine.platform() },
+		bundle: isServedBundle() ? { scriptPath: bundleScriptPath() } : null,
+	});
 	const command = buildHookCommand(
 		opts.project,
-		Boolean(opts.apply),
+		applies,
 		opts.org,
+		{ baseUrl: deploymentOrigin(opts), remote: opts.remote },
+		launcher.prefix,
 	);
-	const merged = await mergeSessionStartHook({
+	const hooks = await installHooks({
 		root,
 		projectId: opts.project,
+		tools: tools.tools,
 		command,
-		tool,
+		lessonsCommand: buildLessonPromptCommand(
+			opts.project,
+			opts.org,
+			launcher.prefix,
+		),
+		lessons: Boolean(opts.lessons),
 	});
 
-	// The Stop hook for lesson capture describes the DESIRED state, same as
-	// the SessionStart hook above: `--lessons` installs it, and its absence
-	// uninstalls whatever an earlier `init` installed. Always after the
-	// SessionStart write, so a failure here never leaves that one half-done,
-	// and always attempted (even for a plain re-run with no lessons hook
-	// ever installed) because the removal is a no-op — and writes nothing —
-	// when there is nothing to remove.
-	const lessonsHook = Boolean(opts.lessons);
-	let lessonsHookLine: string | null = null;
-	if (lessonsHook) {
-		const installed = await mergeCommandHook({
-			root,
-			projectId: opts.project,
-			command: buildLessonPromptCommand(opts.project, opts.org),
-			tool,
-			event: "Stop",
-		});
-		lessonsHookLine = `Added a Stop hook for lesson capture to ${installed.settingsPath}.`;
-	} else {
-		const removed = await removeCommandHook({
-			root,
-			projectId: opts.project,
-			subcommand: "lesson-prompt",
-			tool,
-			event: "Stop",
-		});
-		if (removed.changed) {
-			lessonsHookLine = `Removed the Stop hook for lesson capture from ${removed.settingsPath}.`;
-		}
+	// Keep the per-machine files out of the developer's commits, in the
+	// repository's own local ignore file and never in `.gitignore`.
+	let toplevel: string | null = matching?.toplevel ?? null;
+	if (checkout === null) {
+		const tree = await git.findWorkTree(root, gitDeadline());
+		toplevel = tree.kind === "ok" ? tree.value.toplevel : null;
 	}
+	const excluded =
+		toplevel === null
+			? null
+			: await excludeLocalFiles({
+					toplevel,
+					directory: root,
+					files: [
+						...hooks.map((hook) => hookPathFor(hook.tool)),
+						...(checkout === null ? [LOCK_DIRECTORY] : []),
+					],
+					deadline: gitDeadline(),
+				});
 
+	// An upload-era lock has no use in a checkout git keeps current.
+	const lockRemoved =
+		matching === null ? false : await dropOwnLock(root, opts.project);
+
+	// The project's own MCP server, for each tool found: after the hook, so
+	// nothing here can leave the hook unwritten. A tool that was only the
+	// fallback, because none was found, is not asked.
+	const mcp =
+		opts.mcp === false || (!tools.detected && explicitTool === undefined)
+			? []
+			: await registerAgentMcp({
+					tools: tools.tools,
+					projectId: opts.project,
+					origin: deploymentOrigin(opts),
+					cwd: toplevel ?? root,
+					home: machine.home(),
+					env: machine.env(),
+					platform: machine.platform(),
+					run: createAgentRunner({
+						lookup: {
+							env: machine.env(),
+							platform: machine.platform(),
+						},
+					}),
+					interactive:
+						format !== "json" &&
+						canPrompt() &&
+						process.stdout.isTTY === true &&
+						!runningInCi(),
+				});
+
+	const first = hooks[0];
 	if (format === "json") {
 		printOutput(
 			{
 				projectId: opts.project,
 				destination: root,
-				settingsPath: merged.settingsPath,
-				hookCommand: merged.command,
-				createdSettingsFile: merged.createdFile,
-				replacedHooks: merged.replacedCount,
-				lessonsHook,
+				settingsPath: first?.settingsPath,
+				hookCommand: command,
+				hookWarning: launcher.warning,
+				createdSettingsFile: first?.createdFile,
+				replacedHooks: first?.replacedCount,
+				hooks: hooks.map((hook) => ({
+					tool: hook.tool,
+					settingsPath: hook.settingsPath,
+					createdSettingsFile: hook.createdFile,
+					replacedHooks: hook.replacedCount,
+				})),
+				lessonsHook: Boolean(opts.lessons),
+				mcp: mcp.map((result) => ({
+					tool: result.tool,
+					name: result.name,
+					url: result.url,
+					outcome: result.outcome.kind,
+					login: result.login,
+					registerLine: result.registerLine,
+					loginLine: result.loginLine,
+				})),
 				sync: outcome,
+				lockRemoved,
+				excluded: excluded?.kind ?? null,
 				checkout:
 					checkout === null
 						? null
-						: checkout.class === "matching"
-							? { class: checkout.class, remote: checkout.remote }
+						: matching !== null
+							? { class: matching.class, remote: matching.remote }
 							: { class: checkout.class },
 			},
 			{ format: "json" },
@@ -2561,54 +3366,66 @@ async function runInit(
 		return;
 	}
 
-	line(
-		merged.replacedCount > 0
-			? `Updated the SessionStart hook in ${merged.settingsPath}.`
-			: `Added a SessionStart hook to ${merged.settingsPath}.`,
-	);
-	line(`  ${command}`);
-	if (repositoryCheckout !== null) {
-		line(`  ${installedLine(repositoryCheckout, Boolean(opts.apply))}`);
-	} else {
-		line(
-			opts.apply
-				? "  It applies changes at session start."
-				: "  It only reports changes; add --apply to init to have it apply them.",
-		);
-	}
-	if (lessonsHookLine !== null) {
-		line(lessonsHookLine);
-	}
-	if (tool === "codex") {
-		line(
-			"  Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
-		);
-	}
-
-	if (repositoryCheckout !== null) {
-		if (published.snapshot?.source?.kind !== "REPOSITORY") {
-			line(nothingPublishedLine(repositoryCheckout));
+	for (const hook of hooks) {
+		if (hook.lessons === "added") {
+			line("Added a Stop hook for lesson capture.");
+		} else if (hook.lessons === "removed") {
+			line("Removed the Stop hook for lesson capture.");
 		}
-		line("");
-		// No lock in a checkout of the repository: nothing is copied into it.
-		line(
-			`${hookPathFor(tool)} is local to this machine. If this repository does not ignore it already, add it to your own ignore rules — this command does not edit .gitignore.`,
-		);
-		return;
 	}
-
-	if (outcome === null) {
+	if (matching !== null && repository !== null) {
+		if (published.snapshot?.source?.kind !== "REPOSITORY") {
+			line(nothingPublishedLine(repository));
+		}
+	} else if (outcome === null) {
 		line(
 			"This project has nothing published yet, so there is nothing to copy — the hook will pick it up once there is.",
 		);
 	} else {
-		line("");
 		reportSync(outcome, opts);
 	}
-
-	line("");
+	if (lockRemoved && repository !== null) {
+		line(outcomeLine("lock-removed", { repo: repositoryName(repository) }));
+	}
+	if (excluded?.kind === "failed") {
+		line(outcomeLine("exclude-failed", { entries: excluded.entries }));
+	}
+	if (!tools.detected) {
+		line(outcomeLine("no-tool-detected", {}));
+	}
+	if (launcher.warning !== null) {
+		line(launcher.warning);
+	}
+	for (const mcpLine of agentMcpLines(mcp)) {
+		line(mcpLine);
+	}
+	if (cloneFolder !== undefined) {
+		line(
+			outcomeLine("cloned-into", {
+				where: folderForCommand(
+					opts.dest,
+					path.relative(
+						await resolveExistingRoot(destinationOf(opts)),
+						root,
+					),
+				),
+			}),
+		);
+	}
 	line(
-		`${hookPathFor(tool)} and ${LOCK_DIRECTORY}/ are local to this machine. If this repository does not ignore them already, add them to your own ignore rules — this command does not edit .gitignore.`,
+		outcomeLine("set-up", {
+			repo:
+				matching !== null && repository !== null
+					? repositoryName(repository)
+					: null,
+			ref:
+				matching !== null && repository !== null
+					? repository.ref
+					: null,
+			tools: hooks.map((hook) => hook.tool),
+			applies: applies && matching === null,
+			fastForwards,
+		}),
 	);
 }
 

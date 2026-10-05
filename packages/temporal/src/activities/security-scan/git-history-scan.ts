@@ -220,7 +220,11 @@ export async function runGitHistorySecretScanActivity(
 
 	try {
 		return await withHeartbeat(async () => {
-			const authUrl = await buildAuthenticatedCloneUrl(repo);
+			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+				projectId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
 			if (!authUrl) {
 				return empty("clone-failed", repoSlug);
 			}

@@ -19,6 +19,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY tooling ./tooling
 
 # Copy the temporal package.json
@@ -63,7 +64,34 @@ COPY config/package.json ./config/
 RUN pnpm install --frozen-lockfile --filter @repo/temporal...
 
 # =============================================================================
-# Stage 2: Build - Generate Prisma client and prepare
+# Prisma client, generated from the schema alone
+# =============================================================================
+# Only the files `generate` reads are copied in, so this stage stays cached
+# until the schema or the generate scripts change. After the full source copy
+# it reran a five-minute generate on every change. tsconfig.json is one of
+# those inputs: the generator takes the client's import extensions from it.
+FROM base AS prisma
+COPY packages/database/tsconfig.json ./packages/database/
+COPY packages/database/prisma/schema.prisma packages/database/prisma/zod-generator.config.json packages/database/prisma/tsconfig.generated.json ./packages/database/prisma/
+COPY packages/database/prisma/zod ./packages/database/prisma/zod
+COPY packages/database/scripts/generate-client.mts packages/database/scripts/fix-zod-imports.ts ./packages/database/scripts/
+
+# Provide dummy DATABASE_URL for Prisma client generation
+# The actual DATABASE_URL will be provided at runtime via environment variables
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
+
+# The `|| true` tolerates a transient generate failure (historic flake), but a
+# STALE client shipping silently has caused real outages ("worker client
+# missing newer columns") — so the builder asserts that the generated client
+# actually contains a model this build's activities write (StoryPriorityChange,
+# written by the AI-backlog apply path). A stale or missing client fails the
+# IMAGE BUILD instead of every apply at runtime. `mkdir -p` leaves the
+# builder's COPY a source when generate failed early.
+RUN (pnpm --filter @repo/database generate || true) \
+	&& mkdir -p packages/database/prisma/generated
+
+# =============================================================================
+# Stage 2: Build - Bring in the Prisma client and prepare
 # =============================================================================
 FROM base AS builder
 
@@ -71,17 +99,8 @@ FROM base AS builder
 COPY packages ./packages
 COPY config ./config
 
-# Provide dummy DATABASE_URL for Prisma client generation
-# The actual DATABASE_URL will be provided at runtime via environment variables
-ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
-
-# Generate Prisma client. The `|| true` tolerates a transient generate failure
-# (historic flake), but a STALE client shipping silently has caused real
-# outages ("worker client missing newer columns") — so assert afterwards that
-# the generated client actually contains a model this build's activities write
-# (StoryPriorityChange, written by the AI-backlog apply path). A stale or
-# missing client now fails the IMAGE BUILD instead of every apply at runtime.
-RUN pnpm --filter @repo/database generate || true
+COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated
+COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 RUN grep -rq "storyPriorityChange" packages/database/prisma/generated/ || \
 	(echo "FATAL: generated Prisma client is missing StoryPriorityChange — prisma generate failed or shipped stale output" && exit 1)
 
@@ -177,6 +196,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/patches ./patches
 COPY --from=builder /app/tooling ./tooling
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages

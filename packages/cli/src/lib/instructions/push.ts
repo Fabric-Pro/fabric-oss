@@ -53,6 +53,7 @@ import type {
 	OpenInstructionProposal,
 	ProposalPullRequestState,
 } from "@fabricorg/sdk";
+import { fabricCommand } from "../launcher.js";
 import type { InstructionsLock } from "./lock.js";
 import {
 	checkRelativePath,
@@ -152,7 +153,7 @@ function sha256Of(bytes: Uint8Array): string {
  */
 function refuseStaleLedger(detail: string): never {
 	throw new Error(
-		`Refusing to push: the sync lock does not match the published version — ${detail}. Run \`fabric instructions sync\` and try again. Nothing was read and nothing was sent.`,
+		`Refusing to push: the sync lock does not match the published version — ${detail}. Run \`${fabricCommand("instructions sync")}\` and try again. Nothing was read and nothing was sent.`,
 	);
 }
 

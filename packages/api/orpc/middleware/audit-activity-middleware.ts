@@ -81,6 +81,7 @@ import {
 	recordAuditFromRequest,
 } from "../../lib/audit";
 import {
+	auditOrganizationId,
 	readOrganizationIdFromInput,
 	readProjectIdFromInput,
 } from "./audit-error-middleware";
@@ -347,11 +348,13 @@ export const auditActivityMiddleware = os
 			// Unlike that middleware this one mounts INSIDE the auth chain, so
 			// `context.session` is already populated and no header re-resolution
 			// is needed.
-			const inputOrg = readOrganizationIdFromInput(input);
-			const organizationId =
-				inputOrg !== undefined
-					? inputOrg
-					: (auditContext.session?.activeOrganizationId ?? null);
+			//
+			// An authorized project's organization outranks both — see
+			// `auditOrganizationId`.
+			const organizationId = auditOrganizationId(
+				readOrganizationIdFromInput(input),
+				auditContext.session?.activeOrganizationId,
+			);
 			const projectId = readProjectIdFromInput(input);
 
 			recordAuditFromRequest(auditContext, {

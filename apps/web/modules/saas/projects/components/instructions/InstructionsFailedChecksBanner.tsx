@@ -67,7 +67,12 @@ export function InstructionsFailedChecksBanner({
 				{body}
 				{publishedVersion === null
 					? null
-					: ` ${t("failedPublishedStays", { published: publishedVersion })}`}
+					: ` ${t(
+							mode === "repository"
+								? "failedPublishedStaysRepository"
+								: "failedPublishedStays",
+							{ published: publishedVersion },
+						)}`}
 			</p>
 			{canRetry ? (
 				<div className="flex flex-wrap gap-2">

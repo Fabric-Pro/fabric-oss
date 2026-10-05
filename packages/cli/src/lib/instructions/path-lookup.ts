@@ -120,6 +120,18 @@ export async function isOnPath(
 	name: string,
 	lookup: PathLookupEnvironment,
 ): Promise<boolean> {
+	return (await findOnPath(name, lookup)) !== null;
+}
+
+/**
+ * Where a bare executable name — no separators, validated by the caller — is
+ * found in the absolute PATH directories, or null. The first match wins, as it
+ * does for a shell; on Windows `PATHEXT` decides which extension.
+ */
+export async function findOnPath(
+	name: string,
+	lookup: PathLookupEnvironment,
+): Promise<string | null> {
 	if (
 		name.length === 0 ||
 		name.includes("/") ||
@@ -127,7 +139,7 @@ export async function isOnPath(
 		name === "." ||
 		name === ".."
 	) {
-		return false;
+		return null;
 	}
 	const api = pathApi(lookup.platform);
 	let candidates = [name];
@@ -143,16 +155,11 @@ export async function isOnPath(
 	}
 	for (const directory of searchDirectories(lookup)) {
 		for (const candidate of candidates) {
-			if (
-				await isExecutableFile(
-					api.join(directory, candidate),
-					lookup.platform,
-					lookup.stat,
-				)
-			) {
-				return true;
+			const found = api.join(directory, candidate);
+			if (await isExecutableFile(found, lookup.platform, lookup.stat)) {
+				return found;
 			}
 		}
 	}
-	return false;
+	return null;
 }

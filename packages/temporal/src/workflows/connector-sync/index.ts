@@ -11,6 +11,8 @@
  */
 
 import {
+	ActivityFailure,
+	ApplicationFailure,
 	continueAsNew,
 	defineQuery,
 	defineSignal,
@@ -30,6 +32,8 @@ import {
 	type ConnectorSyncState,
 	createInitialSyncState,
 	DEFAULT_SYNC_CONFIG,
+	GITLAB_SYNC_CONNECTION_REQUIRED,
+	GITLAB_SYNC_STOP_FAILURE_TYPES,
 	type SyncPhase,
 } from "./types";
 
@@ -169,13 +173,29 @@ export async function connectorSyncWorkflow(
 			throw new Error(`Connector ${input.connectorId} not found`);
 		}
 
+		// What is handed to the provider activities. For GitLab, nothing: its
+		// activities resolve the acting person's live connection themselves.
+		// Decided here, not only inside `loadConnectorConfig`, because a run
+		// that loaded its config before GitLab connections stopped holding
+		// tokens replays that recorded result — legacy token included — and
+		// would otherwise copy it into every later activity input. Activity
+		// inputs are not compared on replay, so this needs no patch gate.
+		const providerCredentials: typeof connectorConfig.credentials =
+			input.provider === "GITLAB" ? {} : connectorConfig.credentials;
+
 		// Test connection
 		updateProgress("authenticating", "Testing connection...");
 
+		// `userId` / `organizationId`: the person who started the sync. GitLab
+		// activities act with that person's own GitLab connection, resolved
+		// inside the activity — no GitLab token is in this workflow's history.
 		const isConnected = await activities.testConnection({
 			connectorId: input.connectorId,
 			provider: input.provider,
-			credentials: connectorConfig.credentials,
+			credentials: providerCredentials,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			providerConfig: connectorConfig.providerConfig,
 		});
 
 		if (!isConnected) {
@@ -195,7 +215,9 @@ export async function connectorSyncWorkflow(
 			connectorId: input.connectorId,
 			provider: input.provider,
 			providerConfig: connectorConfig.providerConfig,
-			credentials: connectorConfig.credentials,
+			credentials: providerCredentials,
+			userId: input.userId,
+			organizationId: input.organizationId,
 		});
 
 		log.info("Resources discovered", {
@@ -236,11 +258,13 @@ export async function connectorSyncWorkflow(
 						connectorId: input.connectorId,
 						provider: input.provider,
 						resource,
-						credentials: connectorConfig.credentials,
+						credentials: providerCredentials,
 						providerConfig: connectorConfig.providerConfig,
 						syncType: state.syncType,
 						cursor: state.cursor,
 						batchSize: config.batchSize,
+						userId: input.userId,
+						organizationId: input.organizationId,
 					},
 				);
 
@@ -342,7 +366,8 @@ export async function connectorSyncWorkflow(
 				}
 			} catch (error) {
 				const errorMsg =
-					error instanceof Error ? error.message : "Unknown error";
+					gitlabActivityFailureMessage(input.provider, error) ??
+					(error instanceof Error ? error.message : "Unknown error");
 
 				state.errors.push({
 					resource: resource.id,
@@ -355,7 +380,10 @@ export async function connectorSyncWorkflow(
 					error: errorMsg,
 				});
 
-				if (!config.continueOnError) {
+				// A GitLab sync whose acting person has no usable connection,
+				// or whose address is refused, fails every resource the same
+				// way: stop instead of recording a partial success.
+				if (!config.continueOnError || gitlabSyncStopFailure(error)) {
 					throw error;
 				}
 			}
@@ -370,7 +398,7 @@ export async function connectorSyncWorkflow(
 			const gcResult = await longActivities.garbageCollect({
 				connectorId: input.connectorId,
 				provider: input.provider,
-				credentials: connectorConfig.credentials,
+				credentials: providerCredentials,
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
@@ -443,8 +471,12 @@ export async function connectorSyncWorkflow(
 
 		return buildOutput(state, true, undefined, nextSyncAt);
 	} catch (error) {
+		// A GitLab activity failure is reported with its own message (what
+		// the person has to do, or what GitLab answered), not the generic
+		// "Activity task failed".
 		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+			gitlabActivityFailureMessage(input.provider, error) ??
+			(error instanceof Error ? error.message : "Unknown error");
 
 		log.error("Connector sync failed", {
 			executionId: state.executionId,
@@ -517,6 +549,19 @@ export async function connectorScheduledSyncWorkflow(input: {
 		cancelled = true;
 	});
 
+	// A GitLab sync acts with the GitLab connection of the person who starts
+	// it; a scheduled run has no such person, so it is refused. Patch-gated
+	// so an execution recorded before the refusal replays as it ran.
+	if (
+		input.provider === "GITLAB" &&
+		patched("connector-scheduled-sync-refuses-gitlab-2026-10")
+	) {
+		throw ApplicationFailure.nonRetryable(
+			"GitLab connections sync only when a person starts the sync; a scheduled GitLab sync is not supported.",
+			GITLAB_SYNC_CONNECTION_REQUIRED,
+		);
+	}
+
 	// Initial full sync
 	if (!cancelled) {
 		await connectorSyncWorkflow({
@@ -580,6 +625,42 @@ export async function connectorScheduledSyncWorkflow(input: {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/**
+ * The activity's `ApplicationFailure` when `error` is a GitLab sync failure
+ * that must stop the sync (`GITLAB_SYNC_STOP_FAILURE_TYPES`), else null.
+ */
+function gitlabSyncStopFailure(error: unknown): ApplicationFailure | null {
+	if (
+		error instanceof ActivityFailure &&
+		error.cause instanceof ApplicationFailure &&
+		typeof error.cause.type === "string" &&
+		GITLAB_SYNC_STOP_FAILURE_TYPES.includes(error.cause.type)
+	) {
+		return error.cause;
+	}
+	return null;
+}
+
+/**
+ * For a GitLab sync, the message of the error an activity raised (a stop
+ * failure's instruction, or e.g. GitLab's status on the `/user` check);
+ * null for other providers and for failures not raised by an activity.
+ */
+function gitlabActivityFailureMessage(
+	provider: string,
+	error: unknown,
+): string | null {
+	if (
+		provider === "GITLAB" &&
+		error instanceof ActivityFailure &&
+		error.cause instanceof Error &&
+		error.cause.message
+	) {
+		return error.cause.message;
+	}
+	return null;
+}
 
 function buildOutput(
 	state: ConnectorSyncState,

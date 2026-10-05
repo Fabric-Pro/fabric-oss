@@ -496,7 +496,7 @@ export function CliConnectionNudge({
 				projectId={projectId}
 			/>
 
-			{organizationId && (
+			{organizationId && projectId !== "" && (
 				<ConnectCliDialog
 					onKeyIssued={() => {
 						// Stand the prompt down. Nothing else will: the server
@@ -516,6 +516,7 @@ export function CliConnectionNudge({
 					open={issuingViewOpen}
 					organizationId={organizationId}
 					organizationSlug={organizationSlug}
+					projectId={projectId}
 					projectName={projectName}
 				/>
 			)}

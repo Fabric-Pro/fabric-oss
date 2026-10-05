@@ -40,6 +40,7 @@ for (const [modulePath, name] of [
 	["../documents", "registerDocumentRoutes"],
 	["../features", "registerFeatureRoutes"],
 	["../frames", "registerFrameRoutes"],
+	["../instruction-checkouts", "registerInstructionCheckoutRoutes"],
 	["../instructions", "registerInstructionRoutes"],
 	["../integrations", "registerIntegrationRoutes"],
 	["../knowledge", "registerKnowledgeRoutes"],

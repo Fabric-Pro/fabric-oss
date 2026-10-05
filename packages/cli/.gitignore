@@ -1,0 +1,3 @@
+# Intermediate output of `pnpm pack:deployment`; the tarball it produces is
+# written to apps/web/public/cli, which is ignored there.
+/dist-bundle/

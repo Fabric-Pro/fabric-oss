@@ -5,14 +5,17 @@ import {
 	parseFrontmatter,
 	SNAPSHOT_LIMITS,
 } from "@repo/instructions";
+import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import {
 	editInstructionSnapshot,
 	type InstructionEdit,
 } from "@saas/projects/lib/edit-snapshot";
+import type { ChangeMark } from "@saas/projects/lib/instructions-base-changes";
+import { defaultCommitMessage } from "@saas/projects/lib/instructions-direct-commit";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Markdown } from "@ui/components/markdown";
 import { Skeleton } from "@ui/components/skeleton";
@@ -22,58 +25,39 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
+import { PencilIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Fragment, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { CommitMessageField } from "./CommitMessageField";
+import {
+	extraFrontmatterFields,
+	InstructionFileHeader,
+} from "./InstructionFileHeader";
+import { InstructionFileToolbar } from "./InstructionFileToolbar";
+import { RenameInstructionFileDialog } from "./RenameInstructionFileDialog";
 
 // Script/settings/other files render as plain preformatted text — no
 // Markdown or frontmatter parsing, since they are not Markdown documents.
 const PLAIN_KINDS = new Set(["SCRIPT", "SETTINGS", "OTHER"]);
 
-/**
- * Frontmatter keys the header already shows, as its heading, its
- * description, or a row of its own. Every other top-level key is shown as
- * written, so a Guild-shaped file's `owner`, `tags`, `status`, `since` and
- * `areas` (design 2026-09-23 §5.8) are readable in the tab.
- */
-const HEADER_FIELD_KEYS = new Set([
-	"name",
-	"description",
-	"argument-hint",
-	"allowed-tools",
-	"tools",
-	"model",
-	"paths",
-	"disable-model-invocation",
-]);
-
-async function copyMcpCall(
+/** Resolves true when `text` reached the clipboard, and says which way it went. */
+async function copyText(
 	text: string,
 	copied: string,
 	failed: string,
-): Promise<void> {
+): Promise<boolean> {
 	try {
 		if (!navigator.clipboard) {
 			throw new Error("clipboard unavailable");
 		}
 		await navigator.clipboard.writeText(text);
 		toast.success(copied);
+		return true;
 	} catch {
 		toast.error(failed);
+		return false;
 	}
-}
-
-function invocationLabel(
-	fields: Record<string, string>,
-	t: (key: string) => string,
-): string | null {
-	if (fields["disable-model-invocation"] === "true") {
-		return t("invocationDisabled");
-	}
-	if ("disable-model-invocation" in fields) {
-		return t("invocationAllowed");
-	}
-	return null;
 }
 
 /**
@@ -88,14 +72,19 @@ function invocationLabel(
  *
  * Three things are deliberately NOT editable:
  *
- *  - a binary file, which has no text to put in a textarea. Replacing it goes
- *    through "Add file" at the same path.
+ *  - a binary file, which has no text to put in a textarea.
  *  - a file past `maxInlineTextBytes`, or one whose shown body was cut short
  *    (offset paging or the 200,000-character reader cap) — saving a
  *    truncated body would silently delete the rest of the file.
  *  - `.fabricignore`, because it decides what the version excludes and the
  *    validation gate binds it to the snapshot's frozen rules. The server
  *    refuses it too; this is the explanation, not the enforcement.
+ *
+ * The first two have ONE way out, and the refusal names it: pick the file
+ * again with the add control at the same path (`replaceAction`, which is that
+ * control's own label for this viewer). The two used to name different routes
+ * — "Add file" for one, "upload the folder again" for the other — for what is
+ * the same replacement.
  *
  * `file` is always the EFFECTIVE (display) response — the branch's own
  * `written` bytes when the viewer is looking at one, the published file's
@@ -110,16 +99,22 @@ function editRefusal(
 		size: number;
 		truncated: boolean;
 	},
-	t: (key: string) => string,
+	t: (key: string, values?: Record<string, string>) => string,
+	replaceAction: string,
+	repositoryBacked: boolean,
 ): string | null {
 	if (file.path === FABRIC_IGNORE_FILE) {
-		return t("editFabricignore");
+		return t(
+			repositoryBacked
+				? "editFabricignoreRepository"
+				: "editFabricignore",
+		);
 	}
 	if (file.body === null) {
-		return t("editBinary");
+		return t("editBinary", { action: replaceAction });
 	}
 	if (file.truncated || file.size > SNAPSHOT_LIMITS.maxInlineTextBytes) {
-		return t("editTooLarge");
+		return t("editTooLarge", { action: replaceAction });
 	}
 	return null;
 }
@@ -142,19 +137,47 @@ export function InstructionFileView({
 	snapshotId,
 	path,
 	canEdit = false,
+	canCommit = false,
 	canPropose = false,
 	repositoryTarget = null,
+	existingPaths,
+	pausedReason = null,
+	change = null,
+	publishedVersion = 0,
 	onChanged,
+	onCommitted,
 }: {
 	projectId: string;
 	snapshotId: string;
 	path: string;
+	/**
+	 * How the published version differs from the one it was edited from, for
+	 * this file: it is new, or its bytes changed. Named in the header's badge
+	 * with `publishedVersion`.
+	 */
+	change?: ChangeMark | null;
+	publishedVersion?: number;
+	/**
+	 * Why every change is paused (a move of the uploaded instructions into a
+	 * repository is open, Fizzy #2878 §9): Edit, Rename and Delete stay on the
+	 * page, disabled, and pressing one gives this sentence.
+	 */
+	pausedReason?: string | null;
 	/**
 	 * Whether to offer Edit and Delete file. A UI gate only: every save goes
 	 * through `derive`, which re-checks `INSTRUCTION_CREATE` and the project's
 	 * source of truth server-side.
 	 */
 	canEdit?: boolean;
+	/**
+	 * Whether this member may commit straight to the synced branch of a
+	 * repository-backed project (INSTRUCTION_CREATE; Fizzy #2878 §10). Needs
+	 * `repositoryTarget`. Such a project has no versions to save, so the editor
+	 * offers Commit to the branch, and a pull request as the alternative.
+	 */
+	canCommit?: boolean;
+	/** The paths of the version on screen, so a rename never lands on a file that exists. */
+	existingPaths?: ReadonlySet<string>;
 	/** Whether this reader may submit a version for an editor to review. */
 	canPropose?: boolean;
 	/**
@@ -165,8 +188,11 @@ export function InstructionFileView({
 	repositoryTarget?: { repository: string; ref: string } | null;
 	/** Refresh the tab's snapshot list and published pointer after a save. */
 	onChanged?: () => void;
+	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
+	onCommitted?: (commit: { sha: string; ref: string }) => void;
 }) {
 	const actionError = useInstructionActionError();
+	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("projects.codingInstructions.fileView");
 	const kindLabels = t.raw("kindLabels") as Record<string, string>;
 	const q = useQuery(
@@ -295,7 +321,23 @@ export function InstructionFileView({
 		snapshotId: string;
 		path: string;
 		text: string;
+		/** The commit message once the person has typed one; the default until then. */
+		message?: string;
 	} | null>(null);
+	const [renameOpen, setRenameOpen] = useState(false);
+	/** Whether a commit to the branch is what the editor's primary action does. */
+	const committing = canCommit && repositoryTarget !== null;
+	// "Suggest as a pull request" for the draft on screen, reached from the
+	// branch-moved dialog. A ref, so the hook below is built before the
+	// function that needs the loaded file exists.
+	const suggestDraftRef = useRef<() => void>(() => undefined);
+	const commit = useDirectCommit({
+		projectId,
+		branch: repositoryTarget?.ref ?? "",
+		onChanged: () => onChanged?.(),
+		onCommitted,
+		onFinished: () => setDraft(null),
+	});
 
 	const save = useMutation({
 		mutationFn: (input: {
@@ -333,12 +375,7 @@ export function InstructionFileView({
 		return <p className="text-muted-foreground">{t("couldNotLoad")}</p>;
 	}
 	const f = q.data;
-	const extraFields = parsed
-		? Object.entries(parsed.fields).filter(
-				([key, value]) =>
-					!HEADER_FIELD_KEYS.has(key) && value.length > 0,
-			)
-		: [];
+	const extraFields = parsed ? extraFrontmatterFields(parsed.fields) : [];
 	const showHeader = Boolean(
 		f.name || f.description || extraFields.length > 0,
 	);
@@ -378,7 +415,7 @@ export function InstructionFileView({
 	// resolved (or there is no branch to wait on), refusal reads the
 	// EFFECTIVE (display) file — the branch's own binary/size/truncated
 	// state when the viewer is looking at one, never the published file's.
-	const refusal = branchFilePending
+	const ordinaryRefusal = branchFilePending
 		? t("branchFileLoading")
 		: branchFileFailed
 			? t("branchFileError")
@@ -390,7 +427,63 @@ export function InstructionFileView({
 						truncated: displayTruncated,
 					},
 					t,
+					// The label of the control that replaces a file for this
+					// viewer: the suggest button on a repository project, Add
+					// file for an editor, Propose file for a reader.
+					t(
+						repositoryTarget
+							? "replaceActionSuggest"
+							: canEdit
+								? "replaceActionAdd"
+								: "replaceActionPropose",
+					),
+					repositoryTarget !== null,
 				);
+	// A paused move says why before anything about this file does.
+	const refusal = pausedReason ?? ordinaryRefusal;
+
+	// The commit message the editor shows: what the person typed, else the
+	// default for this file.
+	const commitMessage =
+		draftForPath?.message ??
+		defaultCommitMessage({ kind: "update", path: f.path });
+
+	function commitDraft() {
+		if (editingText === null || !repositoryTarget) {
+			return;
+		}
+		// The commit is stated against the published file, so that is what an
+		// unchanged text is compared with, whatever the editor was seeded from.
+		if (editingText === f.body) {
+			setDraft(null);
+			toast.info(t("noChangesRepository"));
+			return;
+		}
+		commit.start({
+			baseSnapshotId: snapshotId,
+			message: commitMessage,
+			changes: [
+				{
+					op: "put",
+					path: f.path,
+					content: editingText,
+					encoding: "utf8",
+				},
+			],
+			suggest: canPropose ? () => suggestDraftRef.current() : undefined,
+		});
+	}
+
+	function commitDeletion() {
+		if (!repositoryTarget) {
+			return;
+		}
+		commit.start({
+			baseSnapshotId: snapshotId,
+			message: defaultCommitMessage({ kind: "delete", path: f.path }),
+			changes: [{ op: "delete", path: f.path }],
+		});
+	}
 
 	function saveDraft(publishOnReady: boolean, proposal = false) {
 		if (editingText === null) {
@@ -431,121 +524,193 @@ export function InstructionFileView({
 			],
 		});
 	}
-	return (
-		<div className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-border">
-			<div className="flex items-center justify-between border-border border-b bg-muted/40 px-4 py-3">
-				<code className="min-w-0 truncate text-muted-foreground text-xs">
-					{f.path}
-				</code>
-				<div className="flex items-center gap-2">
-					<Badge variant="secondary">
-						{kindLabels[f.kind] ?? kindLabels.OTHER}
-					</Badge>
-					{editorText === null && showFromBranch ? (
-						<Badge variant="outline">{t("fromBranchLabel")}</Badge>
-					) : null}
-					<span className="text-muted-foreground text-xs">
-						{Math.round(f.size / 1024)} KB
-					</span>
-					<Button
-						size="sm"
-						variant="ghost"
-						onClick={() => {
-							// Not returned: the shared Button keeps a spinner up
-							// until a returned promise settles, and a clipboard
-							// write can stay pending indefinitely (document not
-							// focused, permission blocked), so the button spun
-							// forever. Fire it, report the outcome, move on.
-							void copyMcpCall(
-								`fabric_get_project_instruction({ projectId: "${projectId}", path: "${f.path}" })`,
-								t("copied"),
-								t("copyFailed"),
-							);
-						}}
-					>
-						{t("copyMcpCall")}
-					</Button>
-					{(canEdit || canPropose) && editorText === null ? (
-						<>
-							{refusal ? (
-								/* `aria-disabled`, not `disabled`: a disabled
+	suggestDraftRef.current = () => saveDraft(false, true);
+	// The way into an edit: Edit, which the page tour points at as the way to
+	// commit on a repository project.
+	const editControl = refusal ? (
+		/* `aria-disabled`, not `disabled`: a disabled
 								   button is not focusable, so the reason would
 								   be mouse-only — and a tooltip is the whole
 								   point of showing the action at all. Pressing
 								   it says why instead of doing nothing. */
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<Button
-											size="sm"
-											variant="ghost"
-											aria-disabled
-											className="opacity-50"
-											onClick={() => toast.info(refusal)}
-										>
-											{t("editButton")}
-										</Button>
-									</TooltipTrigger>
-									<TooltipContent>{refusal}</TooltipContent>
-								</Tooltip>
-							) : (
-								<Button
-									size="sm"
-									variant="ghost"
-									onClick={() =>
-										setDraft({
-											snapshotId,
-											path: f.path,
-											// Seeded from the resolved DISPLAY
-											// body — the branch's, when the
-											// viewer is looking at one — never
-											// the published body underneath
-											// it, so a small edit cannot
-											// silently overwrite the branch's
-											// own change.
-											text: displayBody ?? "",
-										})
-									}
-								>
-									{t("editButton")}
-								</Button>
-							)}
-							<Button
-								size="sm"
-								variant="ghost"
-								className="text-destructive"
-								disabled={save.isPending}
-								onClick={() => {
-									const proposal = !canEdit;
-									if (
-										!window.confirm(
-											t(
-												proposal
-													? repositoryTarget
-														? "deleteSuggestionConfirm"
-														: "deleteProposalConfirm"
-													: "deleteConfirm",
-												{
-													path: f.path,
-													...(repositoryTarget ?? {}),
-												},
-											),
-										)
-									) {
-										return;
-									}
-									save.mutate({
-										publishOnReady: !proposal,
-										proposal,
-										edits: [{ op: "delete", path: f.path }],
-									});
-								}}
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<Button
+					size="sm"
+					variant="outline"
+					aria-disabled
+					className="opacity-50"
+					onClick={() => toast.info(refusal)}
+				>
+					<PencilIcon className="size-3.5" aria-hidden="true" />
+					{t("editButton")}
+				</Button>
+			</TooltipTrigger>
+			<TooltipContent>{refusal}</TooltipContent>
+		</Tooltip>
+	) : (
+		<Button
+			size="sm"
+			variant="outline"
+			onClick={() =>
+				setDraft({
+					snapshotId,
+					path: f.path,
+					// Seeded from the resolved DISPLAY
+					// body — the branch's, when the
+					// viewer is looking at one — never
+					// the published body underneath
+					// it, so a small edit cannot
+					// silently overwrite the branch's
+					// own change.
+					text: displayBody ?? "",
+				})
+			}
+		>
+			<PencilIcon className="size-3.5" aria-hidden="true" />
+			{t("editButton")}
+		</Button>
+	);
+	const mayChange =
+		(canEdit || committing || canPropose) && editorText === null;
+	const busy = save.isPending || commit.busy;
+
+	// Delete file, as the File actions menu runs it: a commit to the branch
+	// where this member may commit (with a pull request as the alternative for
+	// one who may also suggest), a deletion proposal for a reader, a published
+	// version for an editor.
+	function requestDeletion() {
+		if (pausedReason) {
+			toast.info(pausedReason);
+			return;
+		}
+		if (committing) {
+			confirm({
+				title: t("deleteConfirmRepository", {
+					path: f.path,
+					ref: repositoryTarget?.ref ?? "",
+				}),
+				message: t("deleteCommitNote", {
+					message: defaultCommitMessage({
+						kind: "delete",
+						path: f.path,
+					}),
+				}),
+				confirmLabel: t("deleteConfirmActionRepository"),
+				destructive: true,
+				onConfirm: commitDeletion,
+				secondaryAction: canPropose
+					? {
+							label: t("submitSuggestionButton"),
+							onSelect: () =>
+								save.mutate({
+									publishOnReady: false,
+									proposal: true,
+									edits: [{ op: "delete", path: f.path }],
+								}),
+						}
+					: undefined,
+			});
+			return;
+		}
+		const proposal = !canEdit;
+		confirm({
+			title: t(
+				proposal
+					? repositoryTarget
+						? "deleteSuggestionConfirm"
+						: "deleteProposalConfirm"
+					: "deleteConfirm",
+				{ path: f.path, ...(repositoryTarget ?? {}) },
+			),
+			confirmLabel: t(
+				proposal
+					? repositoryTarget
+						? "deleteSuggestionAction"
+						: "deleteProposalAction"
+					: "deleteConfirmAction",
+			),
+			destructive: true,
+			onConfirm: () =>
+				save.mutate({
+					publishOnReady: !proposal,
+					proposal,
+					edits: [{ op: "delete", path: f.path }],
+				}),
+		});
+	}
+
+	return (
+		<div className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-border">
+			<InstructionFileToolbar
+				path={f.path}
+				kindLabel={kindLabels[f.kind] ?? kindLabels.OTHER ?? f.kind}
+				fromBranch={editorText === null && showFromBranch}
+				change={change}
+				version={publishedVersion}
+				size={displaySize}
+				onCopyPath={() =>
+					copyText(f.path, t("copied"), t("copyFailed"))
+				}
+				edit={
+					mayChange ? (
+						committing ? (
+							<span
+								className="inline-flex"
+								data-onboarding-target="coding-instructions-commit"
 							>
-								{t("deleteButton")}
-							</Button>
-						</>
-					) : null}
-				</div>
+								{editControl}
+							</span>
+						) : (
+							editControl
+						)
+					) : null
+				}
+				menu={
+					mayChange
+						? {
+								rename: repositoryTarget
+									? {
+											onSelect: () =>
+												refusal
+													? toast.info(refusal)
+													: setRenameOpen(true),
+											refusal,
+											busy,
+										}
+									: undefined,
+								delete: {
+									onSelect: requestDeletion,
+									refusal: pausedReason,
+									busy,
+								},
+							}
+						: null
+				}
+			/>
+			{/* What became of a commit: the "Committing…" pill while it waits and,
+			    when the branch refused the push, the pull request it became.
+			    Outside the editor, so the notice outlives the draft it closed. */}
+			<div className="flex flex-col gap-3 px-5 pt-4 empty:hidden">
+				{commit.status}
 			</div>
+			{repositoryTarget ? (
+				<RenameInstructionFileDialog
+					key={`${f.path}@${snapshotId}`}
+					open={renameOpen}
+					onOpenChange={setRenameOpen}
+					projectId={projectId}
+					baseSnapshotId={snapshotId}
+					path={f.path}
+					content={displayBody}
+					existingPaths={existingPaths}
+					repositoryTarget={repositoryTarget}
+					canCommit={committing}
+					canPropose={canPropose}
+					onChanged={() => onChanged?.()}
+					onCommitted={onCommitted}
+				/>
+			) : null}
 			{editorText !== null ? (
 				/* The editor replaces the rendered body rather than sitting beside
 				   it: a markdown preview next to the source would be a second
@@ -556,7 +721,14 @@ export function InstructionFileView({
 							role="alert"
 							className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
 						>
-							{t("staleNotice")}
+							{t(
+								committing
+									? "staleNoticeRepository"
+									: "staleNotice",
+								{
+									ref: repositoryTarget?.ref ?? "",
+								},
+							)}
 						</p>
 					) : null}
 					<Textarea
@@ -568,6 +740,7 @@ export function InstructionFileView({
 								snapshotId,
 								path: f.path,
 								text: e.target.value,
+								message: draftForPath?.message,
 							})
 						}
 						spellCheck={false}
@@ -588,15 +761,33 @@ export function InstructionFileView({
 						</div>
 					) : (
 						<div className="flex flex-col gap-2">
-							{canPropose && !canEdit && repositoryTarget ? (
+							{repositoryTarget && (committing || canPropose) ? (
 								<p className="text-muted-foreground text-sm">
 									{t(
-										"repositoryProposalNotice",
+										committing
+											? "commitNotice"
+											: "repositoryProposalNotice",
 										repositoryTarget,
 									)}
 								</p>
 							) : null}
-							<div className="flex items-center gap-2">
+							{committing ? (
+								<CommitMessageField
+									value={commitMessage}
+									refusal={commit.messageRefusal}
+									disabled={save.isPending || commit.busy}
+									onChange={(message) => {
+										commit.clearMessageRefusal();
+										setDraft({
+											snapshotId,
+											path: f.path,
+											text: editorText,
+											message,
+										});
+									}}
+								/>
+							) : null}
+							<div className="flex flex-wrap items-center gap-2">
 								{canEdit ? (
 									<>
 										<Button
@@ -616,13 +807,31 @@ export function InstructionFileView({
 										</Button>
 									</>
 								) : null}
+								{committing ? (
+									<Button
+										size="sm"
+										data-onboarding-target="coding-instructions-commit"
+										disabled={
+											save.isPending ||
+											commit.busy ||
+											commitMessage.trim() === ""
+										}
+										onClick={commitDraft}
+									>
+										{t("saveAndPublishButtonRepository", {
+											ref: repositoryTarget?.ref ?? "",
+										})}
+									</Button>
+								) : null}
 								{canPropose ? (
 									<Button
 										size="sm"
 										variant={
-											canEdit ? "outline" : "default"
+											canEdit || committing
+												? "outline"
+												: "default"
 										}
-										disabled={save.isPending}
+										disabled={save.isPending || commit.busy}
 										onClick={() => saveDraft(false, true)}
 									>
 										{t(
@@ -635,7 +844,7 @@ export function InstructionFileView({
 								<Button
 									size="sm"
 									variant="ghost"
-									disabled={save.isPending}
+									disabled={save.isPending || commit.busy}
 									onClick={() => setDraft(null)}
 								>
 									{t("cancelButton")}
@@ -645,155 +854,78 @@ export function InstructionFileView({
 					)}
 				</div>
 			) : (
-				<div className="flex min-w-0 flex-col gap-4 overflow-auto p-5 [overflow-wrap:anywhere]">
-					{branchFilePending || branchFileFailed ? (
-						// A `written` projection promises Fabric-held bytes
-						// this view has not resolved yet: showing the
-						// published body underneath would be exactly the
-						// silent substitution the spec rules out, so this
-						// says why instead (Fizzy #2738 spec §10 "Editor").
-						<p
-							role={branchFileFailed ? "alert" : "status"}
-							className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
-						>
-							{t(
-								branchFileFailed
-									? "branchFileError"
-									: "branchFileLoading",
-							)}
-						</p>
-					) : (
-						<>
-							{showHeader ? (
-								<div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-4">
-									{f.name ? (
-										<h2 className="font-semibold text-base">
-											{f.name}
-										</h2>
-									) : null}
-									{f.description ? (
-										<p>{f.description}</p>
-									) : null}
-									{parsed ? (
-										<dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-											{parsed.fields["argument-hint"] ? (
-												<>
-													<dt className="text-muted-foreground">
-														{t("argumentHint")}
-													</dt>
-													<dd>
-														{
-															parsed.fields[
-																"argument-hint"
-															]
-														}
-													</dd>
-												</>
-											) : null}
-											{(parsed.fields["allowed-tools"] ??
-											parsed.fields.tools) ? (
-												<>
-													<dt className="text-muted-foreground">
-														{t("allowedTools")}
-													</dt>
-													<dd>
-														{parsed.fields[
-															"allowed-tools"
-														] ??
-															parsed.fields.tools}
-													</dd>
-												</>
-											) : null}
-											{parsed.fields.model ? (
-												<>
-													<dt className="text-muted-foreground">
-														{t("model")}
-													</dt>
-													<dd>
-														{parsed.fields.model}
-													</dd>
-												</>
-											) : null}
-											{parsed.fields.paths ? (
-												<>
-													<dt className="text-muted-foreground">
-														{t("appliesTo")}
-													</dt>
-													<dd className="whitespace-pre-line font-mono text-xs">
-														{parsed.fields.paths}
-													</dd>
-												</>
-											) : null}
-											{invocationLabel(
-												parsed.fields,
-												t,
-											) ? (
-												<>
-													<dt className="text-muted-foreground">
-														{t("modelInvocation")}
-													</dt>
-													<dd>
-														{invocationLabel(
-															parsed.fields,
-															t,
-														)}
-													</dd>
-												</>
-											) : null}
-											{extraFields.map(([key, value]) => (
-												<Fragment key={key}>
-													<dt className="text-muted-foreground">
-														{key}
-													</dt>
-													<dd className="whitespace-pre-line">
-														{value}
-													</dd>
-												</Fragment>
-											))}
-										</dl>
-									) : null}
-								</div>
-							) : null}
-							{showBranchVersionUnavailable ? (
-								<p
-									role="alert"
-									className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
-								>
-									{t("branchVersionUnavailable")}
-								</p>
-							) : null}
-							{displayBody == null ? (
-								<p className="text-muted-foreground">
-									{t("binaryFile")}{" "}
-									{displayUrl ? (
-										<a
-											href={displayUrl}
-											target="_blank"
-											rel="noopener noreferrer"
-											className="underline"
-										>
-											{t("downloadIt")}
-										</a>
-									) : null}
-								</p>
-							) : PLAIN_KINDS.has(f.kind) ? (
-								<pre className="whitespace-pre-wrap font-mono text-xs">
-									{displayBody}
-								</pre>
-							) : (
-								<Markdown>
-									{parsed ? parsed.body : displayBody}
-								</Markdown>
-							)}
-							{displayTruncated ? (
-								<p className="text-muted-foreground text-xs">
-									{t("truncated", {
-										offset: displayNextOffset ?? 0,
-									})}
-								</p>
-							) : null}
-						</>
-					)}
+				<div className="min-w-0 overflow-auto px-7 py-6 [overflow-wrap:anywhere]">
+					{/* A reading column: a long line of prose is hard to follow, so
+					    the file's text stops near 72 characters however wide the
+					    pane is. */}
+					<div className="flex max-w-[72ch] min-w-0 flex-col gap-4">
+						{branchFilePending || branchFileFailed ? (
+							// A `written` projection promises Fabric-held bytes
+							// this view has not resolved yet: showing the
+							// published body underneath would be exactly the
+							// silent substitution the spec rules out, so this
+							// says why instead (Fizzy #2738 spec §10 "Editor").
+							<p
+								role={branchFileFailed ? "alert" : "status"}
+								className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
+							>
+								{t(
+									branchFileFailed
+										? "branchFileError"
+										: "branchFileLoading",
+								)}
+							</p>
+						) : (
+							<>
+								{showHeader ? (
+									<InstructionFileHeader
+										name={f.name}
+										description={f.description}
+										fields={parsed ? parsed.fields : null}
+										extraFields={extraFields}
+									/>
+								) : null}
+								{showBranchVersionUnavailable ? (
+									<p
+										role="alert"
+										className="rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground text-sm"
+									>
+										{t("branchVersionUnavailable")}
+									</p>
+								) : null}
+								{displayBody == null ? (
+									<p className="text-muted-foreground">
+										{t("binaryFile")}{" "}
+										{displayUrl ? (
+											<a
+												href={displayUrl}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="underline"
+											>
+												{t("downloadIt")}
+											</a>
+										) : null}
+									</p>
+								) : PLAIN_KINDS.has(f.kind) ? (
+									<pre className="whitespace-pre-wrap font-mono text-xs">
+										{displayBody}
+									</pre>
+								) : (
+									<Markdown>
+										{parsed ? parsed.body : displayBody}
+									</Markdown>
+								)}
+								{displayTruncated ? (
+									<p className="text-muted-foreground text-xs">
+										{t("truncated", {
+											offset: displayNextOffset ?? 0,
+										})}
+									</p>
+								) : null}
+							</>
+						)}
+					</div>
 				</div>
 			)}
 		</div>

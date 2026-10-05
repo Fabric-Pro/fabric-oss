@@ -544,6 +544,9 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 					configId,
 					userId,
 					organizationId,
+					// The same MCP_READ this procedure requires: it runs only
+					// the server's list/get tools.
+					access: "read",
 				});
 				mcpClient = clientResult.client;
 			} catch (clientError) {

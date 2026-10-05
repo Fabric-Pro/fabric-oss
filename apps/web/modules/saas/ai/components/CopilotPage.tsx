@@ -28,8 +28,10 @@ import {
 	VendorLogo,
 } from "@saas/agents/components/FabricChat/shared/AgentIdentity";
 import { AgentModelPicker } from "@saas/agents/components/FabricChat/shared/AgentModelPicker";
+import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import {
 	buildInstanceAgentConfig,
+	getSelectedAgentInstanceId,
 	type SelectedAgent,
 } from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
@@ -274,6 +276,9 @@ interface BrowserAgent {
 	workspaceIds?: string[];
 	/** agent instance ID for memory/skills loading */
 	instanceId?: string;
+	instanceVersion?: number;
+	enabledFabricToolIds?: string[];
+	boundProjectId?: string | null;
 	/** Raw OAuth provider names from toolConnections (e.g. ["GITHUB"]) */
 	enabledIntegrationProviders?: string[];
 }
@@ -612,6 +617,8 @@ function deriveSelectedAgentsFromHistory(
 			enabledMcpConfigIds: string[];
 			workspaceIds: string[];
 			instanceId?: string;
+			enabledFabricToolIds?: string[];
+			boundProjectId?: string | null;
 			enabledIntegrationIds?: string[];
 		}
 	>,
@@ -657,7 +664,11 @@ function deriveSelectedAgentsFromHistory(
 				instructions: config?.instructions ?? null,
 				enabledMcpConfigIds: config?.enabledMcpConfigIds ?? [], // default: no servers (not all)
 				workspaceIds: config?.workspaceIds ?? [],
-				instanceId: config?.instanceId,
+				instanceId:
+					config?.instanceId ??
+					agentId.slice("template-instance:".length),
+				enabledFabricToolIds: config?.enabledFabricToolIds,
+				boundProjectId: config?.boundProjectId,
 				enabledIntegrationIds: config?.enabledIntegrationIds,
 			};
 		}
@@ -744,7 +755,15 @@ function SelectedAgentsInline({
 					)}
 			</div>
 			<span className="truncate text-sm font-medium text-foreground">
-				{selectedAgents.map((a) => a.name).join(", ")}
+				{selectedAgents.map((agent, index) => (
+					<span key={agent.agentId}>
+						{index > 0 ? ", " : ""}
+						<AgentVersionIdentity
+							name={agent.name}
+							instanceId={getSelectedAgentInstanceId(agent)}
+						/>
+					</span>
+				))}
 			</span>
 		</div>
 	);
@@ -1031,6 +1050,7 @@ function AgentBrowserSection({
 				id: instance.id,
 				agentId: `template-instance:${instance.id}`,
 				displayName: instance.name,
+				instanceVersion: instance.version,
 				description: instance.description,
 				scope: instance.organizationId ? "ORGANIZATION" : "USER",
 				framework: instance.template?.displayName ?? "Custom Agent",
@@ -1047,6 +1067,8 @@ function AgentBrowserSection({
 				enabledMcpConfigIds: config.enabledMcpConfigIds,
 				workspaceIds: config.workspaceIds,
 				instanceId: config.instanceId ?? instance.id,
+				enabledFabricToolIds: config.enabledFabricToolIds,
+				boundProjectId: config.boundProjectId,
 				enabledIntegrationProviders: config.enabledIntegrationProviders,
 			};
 		},
@@ -1393,6 +1415,10 @@ function AgentBrowserSection({
 												agent.enabledMcpConfigIds,
 											workspaceIds: agent.workspaceIds,
 											instanceId: agent.instanceId,
+											enabledFabricToolIds:
+												agent.enabledFabricToolIds,
+											boundProjectId:
+												agent.boundProjectId,
 											enabledIntegrationProviders:
 												agent.enabledIntegrationProviders,
 										})
@@ -1415,6 +1441,9 @@ function AgentBrowserSection({
 										<div className="flex items-center gap-1.5">
 											<p className="text-sm font-semibold truncate text-foreground/85">
 												{agent.displayName}
+												{agent.instanceVersion != null
+													? ` · v${agent.instanceVersion}`
+													: ""}
 											</p>
 											{isSelected && (
 												<CheckCircle2Icon className="size-3.5 text-primary shrink-0" />
@@ -2038,7 +2067,15 @@ export function ComposeInput({
 							) : (
 								<AgentAvatar name={agent.name} size="sm" />
 							)}
-							<span>@{agent.name}</span>
+							<span>
+								@
+								<AgentVersionIdentity
+									name={agent.name}
+									instanceId={getSelectedAgentInstanceId(
+										agent,
+									)}
+								/>
+							</span>
 							<button
 								type="button"
 								onClick={() => onRemoveAgent(agent.agentId)}
@@ -4122,6 +4159,8 @@ export function CopilotPage({
 				enabledMcpConfigIds: string[];
 				workspaceIds: string[];
 				instanceId?: string;
+				enabledFabricToolIds?: string[];
+				boundProjectId?: string | null;
 				enabledIntegrationIds: string[];
 			}
 		>();

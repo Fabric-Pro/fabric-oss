@@ -41,17 +41,47 @@ describe("estimateAiUsageCostUsd — cache-aware pricing", () => {
 		near(cost, 0.003 + 0.0075);
 	});
 
-	it("Anthropic: cache reads added at 0.1x, writes at 1.25x, on top of input", async () => {
+	// One contract for every writer (both the AI SDK middleware and the
+	// LangChain agent path): `inputTokens` is the provider's TOTAL input,
+	// INCLUDING cache reads and writes, and the cache columns are breakdowns of
+	// it. AI SDK 7 providers report `inputTokens.total = noCache + cacheRead +
+	// cacheWrite`, and `@langchain/anthropic` reports `input_tokens` the same
+	// way. Pricing the inclusive total at full rate AND adding cache on top
+	// would double-charge every cached token.
+	it.each([
+		["direct", AIProvider.ANTHROPIC_DIRECT, "claude-sonnet-4-5"],
+		["gateway", AIProvider.VERCEL_GATEWAY, "anthropic/claude-sonnet-4.5"],
+		["Databricks", AIProvider.DATABRICKS, "databricks-claude-sonnet-4-5"],
+	])(
+		"Anthropic via %s: 100 inclusive input = 0 uncached + 80 read + 20 write → reads 0.1x, writes 1.25x, nothing at full rate",
+		async (_label, provider, providerModelId) => {
+			const cost = await estimateAiUsageCostUsd({
+				provider,
+				providerModelId,
+				inputTokens: 100,
+				outputTokens: 0,
+				cachedInputTokens: 80,
+				cacheCreationInputTokens: 20,
+			});
+			// 0 full-rate + 80*0.1 + 20*1.25 = the cost of 33 full-rate input
+			// tokens, not 133 (the double-charge this contract removes).
+			near(cost, 80 * 3e-6 * 0.1 + 20 * 3e-6 * 1.25);
+			near(cost, 33 * 3e-6);
+		},
+	);
+
+	it("Anthropic: a cache hit costs less than the same inclusive input uncached", async () => {
 		const cost = await estimateAiUsageCostUsd({
 			provider: AIProvider.ANTHROPIC_DIRECT,
 			providerModelId: "anthropic/claude-cache",
 			inputTokens: 1000,
 			outputTokens: 500,
 			cachedInputTokens: 800,
-			cacheCreationInputTokens: 200,
+			cacheCreationInputTokens: 100,
 		});
-		// 1000*3e-6 + 800*3e-6*0.1 + 200*3e-6*1.25 + 500*15e-6
-		near(cost, 0.003 + 0.00024 + 0.00075 + 0.0075);
+		// (1000-800-100)*3e-6 + 800*3e-6*0.1 + 100*3e-6*1.25 + 500*15e-6
+		near(cost, 0.0003 + 0.00024 + 0.000375 + 0.0075);
+		expect(cost).toBeLessThan(1000 * 3e-6 + 500 * 15e-6);
 	});
 
 	it("OpenAI: cached reads are within inputTokens, discounted to 0.5x", async () => {
@@ -90,14 +120,10 @@ describe("estimateAiUsageCostUsd — cache-aware pricing", () => {
 	});
 
 	// Databricks Foundation Model API serves Claude behind an OpenAI-compatible
-	// surface: same Anthropic 0.1x/1.25x cache multipliers, but `prompt_tokens`
-	// is reported INCLUSIVE of BOTH the cache-read AND the cache-write portion
-	// (live evidence: prompt_tokens 4573 = 4570 cache_creation_input_tokens + 3
-	// uncached), unlike direct/Bedrock/Vertex Anthropic where both are reported
-	// separately from inputTokens. Charging it like direct Anthropic (both
-	// added on top of the full, un-discounted inputTokens) double-counts both:
-	// a cache HIT would cost MORE than an uncached call, and a cache-WRITE call
-	// would bill its write tokens at input-rate PLUS the write multiplier.
+	// surface and reports `prompt_tokens` INCLUSIVE of both cache buckets (live
+	// evidence: prompt_tokens 4573 = 4570 cache_creation_input_tokens + 3
+	// uncached) — the same inclusive contract every other Anthropic writer now
+	// records, so it prices exactly like direct Anthropic.
 	it("Databricks Claude: both reads and writes are subsets of inclusive inputTokens", async () => {
 		const cost = await estimateAiUsageCostUsd({
 			provider: AIProvider.DATABRICKS,
@@ -132,7 +158,7 @@ describe("estimateAiUsageCostUsd — cache-aware pricing", () => {
 		near(cost, 0.0003 + 0.003375 + 0.0075);
 	});
 
-	it("guard: identical tokens diverge between direct-Anthropic (exclusive) and Databricks-Claude (inclusive) accounting", async () => {
+	it("guard: identical tokens price identically for direct-Anthropic and Databricks-Claude", async () => {
 		const shared = {
 			providerModelId: "claude-sonnet-5",
 			inputTokens: 1000,
@@ -148,21 +174,27 @@ describe("estimateAiUsageCostUsd — cache-aware pricing", () => {
 			provider: AIProvider.DATABRICKS,
 			...shared,
 		});
-		// Direct Anthropic: reads/writes ADDED on top of the full inputTokens.
 		near(
 			direct,
-			1000 * 3e-6 + 800 * 3e-6 * 0.1 + 100 * 3e-6 * 1.25 + 500 * 15e-6,
-		);
-		// Databricks: reads AND writes DISCOUNTED within the already-inclusive
-		// inputTokens — only 1000 - 800 - 100 = 100 tokens at full rate.
-		near(
-			databricks,
 			(1000 - 800 - 100) * 3e-6 +
 				800 * 3e-6 * 0.1 +
 				100 * 3e-6 * 1.25 +
 				500 * 15e-6,
 		);
-		expect(databricks).toBeLessThan(direct);
+		near(databricks, direct);
+	});
+
+	it("OpenAI via the gateway: unchanged — reads discounted within input, a reported write is not charged", async () => {
+		const cost = await estimateAiUsageCostUsd({
+			provider: AIProvider.VERCEL_GATEWAY,
+			providerModelId: "openai/gpt-5",
+			inputTokens: 100,
+			outputTokens: 0,
+			cachedInputTokens: 80,
+			cacheCreationInputTokens: 20,
+		});
+		// (100-80)*3e-6 + 80*3e-6*0.5; OpenAI has no write charge.
+		near(cost, 20 * 3e-6 + 80 * 3e-6 * 0.5);
 	});
 
 	it("Databricks non-Claude model keeps the unknown-family fallback (no Anthropic multipliers)", async () => {

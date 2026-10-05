@@ -90,67 +90,18 @@ const RUNTIME_ONLY: ReadonlyArray<{
  * because they barely depend on the workspace at all.
  */
 const AGENT_GAPS: Record<string, readonly string[]> = {
-	"api-agent": [
-		"agent-prompts",
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"backlog-updater": [
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"data-analyst": [
-		"agent-prompts",
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"document-generator": [
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"project-document-generator": [
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"prompt-enhancer": [
-		"agent-prompts",
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"story-breakdown": [
-		"agent-prompts",
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
-	"task-planner": [
-		"agent-prompts",
-		"integrations",
-		"openapi-tools",
-		"payments",
-		"permissions",
-		"storage",
-	],
+	// 2026-10-02: the eight agents below now copy the manifests of
+	// `@repo/integrations` and its closure (integrations, payments,
+	// permissions, storage, agent-prompts) — `@repo/mcp` depends on it since
+	// the GitLab connection service — so only `openapi-tools` remains.
+	"api-agent": ["openapi-tools"],
+	"backlog-updater": ["openapi-tools"],
+	"data-analyst": ["openapi-tools"],
+	"document-generator": ["openapi-tools"],
+	"project-document-generator": ["openapi-tools"],
+	"prompt-enhancer": ["openapi-tools"],
+	"story-breakdown": ["openapi-tools"],
+	"task-planner": ["openapi-tools"],
 	"weave-readers": ["agent-prompts", "permissions"],
 };
 

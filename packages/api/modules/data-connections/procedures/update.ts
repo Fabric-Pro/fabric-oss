@@ -21,6 +21,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { assertNoGitLabCredentialInput } from "../lib/gitlab-data-connection";
 import { toClientConnection } from "../lib/serialize-connection";
 
 export const updateProcedure = tenantProtectedProcedure
@@ -76,6 +77,14 @@ export const updateProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A GitLab Data Connection holds no credential (each sync uses the
+		// starting person's own GitLab connection).
+		assertNoGitLabCredentialInput({
+			provider: connection.provider,
+			credentials: input.credentials,
+			credentialId: input.credentialId,
+		});
+
 		if (input.credentialId) {
 			const credential = await getDataConnectionCredentialById({
 				id: input.credentialId,
@@ -109,9 +118,11 @@ export const updateProcedure = tenantProtectedProcedure
 				...(input.config && {
 					config: input.config as Prisma.InputJsonValue,
 				}),
-				...(input.credentials && {
-					credentials: input.credentials as Prisma.InputJsonValue,
-				}),
+				// GitLab: only an empty object can get here; store nothing.
+				...(input.credentials &&
+					connection.provider !== "GITLAB" && {
+						credentials: input.credentials as Prisma.InputJsonValue,
+					}),
 				...(input.credentialId !== undefined && {
 					credentialId: input.credentialId,
 				}),

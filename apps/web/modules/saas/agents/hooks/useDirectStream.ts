@@ -24,6 +24,7 @@ import {
 	settleUnfinishedToolCalls,
 	trimHistoryForRequest,
 } from "../lib/direct-chat-turns";
+import { loadInstanceAgentConfig } from "../lib/load-instance-agent-config";
 
 /**
  * Stream-level status surfaced on assistant messages so the renderer can
@@ -46,6 +47,8 @@ export interface UseDirectStreamOptions {
 	 */
 	modelOverride?: string | null;
 	enabledMcpConfigIds?: string[] | null;
+	/** Picker-selected instances restrict MCP access even when they have no bindings. */
+	restrictInstanceMcpScope?: boolean;
 	enabledFabricToolIds?: string[] | null;
 	/** Agent template instance ID (for tracking/persistence) */
 	instanceId?: string;
@@ -57,7 +60,7 @@ export interface UseDirectStreamOptions {
 	workspaceIds?: string[];
 	/** Optional document IDs to scope workspace retrieval to */
 	workspaceDocumentIds?: string[];
-	/** Attached project ID for project-aware context retrieval */
+	/** Explicit project context; undefined uses the instance default, null clears it. */
 	projectId?: string | null;
 	/**
 	 * Repository the chat was launched from; the default scope of the
@@ -401,6 +404,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		reasoningMode = "balanced",
 		modelOverride,
 		enabledMcpConfigIds = null,
+		restrictInstanceMcpScope = false,
 		enabledFabricToolIds = null,
 		instanceId,
 		chatId,
@@ -570,6 +574,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			// Cancel any existing request
 			abortControllerRef.current?.abort();
 			abortControllerRef.current = new AbortController();
+			const requestSignal = abortControllerRef.current.signal;
 
 			// Check if we should start fresh
 			const shouldStartFresh = forceNewChat || startFreshRef.current;
@@ -628,6 +633,10 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			try {
 				// Use messageChatId if provided (from document upload), otherwise use default chatId
 				const effectiveChatId = messageChatId || chatId;
+				const agentConfig = instanceId
+					? await loadInstanceAgentConfig(instanceId, organizationId)
+					: null;
+				requestSignal.throwIfAborted();
 
 				const response = await fetch("/api/agents/fabric-ai/stream", {
 					method: "POST",
@@ -643,24 +652,37 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						organizationId,
 						reasoningMode,
 						modelOverride,
-						enabledMcpConfigIds,
-						enabledFabricToolIds,
+						enabledMcpConfigIds:
+							agentConfig &&
+							(restrictInstanceMcpScope ||
+								agentConfig.hasMcpConfiguration)
+								? agentConfig.enabledMcpConfigIds
+								: enabledMcpConfigIds,
+						enabledFabricToolIds:
+							agentConfig?.enabledFabricToolIds ??
+							enabledFabricToolIds,
 						instanceId,
 						chatId: effectiveChatId,
 						attachedDocumentIds,
 						inlineAttachmentContexts,
 						workspaceIds,
 						workspaceDocumentIds,
-						projectId,
+						projectId:
+							projectId !== undefined
+								? projectId
+								: agentConfig?.boundProjectId,
 						repositoryUrl,
 						storyId,
 						documentId,
 						taskId,
 						// Pass conversation ID so backend can fetch attached workspaces if needed
 						conversationId,
-						systemPrompt,
+						systemPrompt:
+							systemPrompt ??
+							agentConfig?.instructions ??
+							undefined,
 					}),
-					signal: abortControllerRef.current.signal,
+					signal: requestSignal,
 				});
 
 				if (!response.ok) {
@@ -818,6 +840,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			reasoningMode,
 			modelOverride,
 			enabledMcpConfigIds,
+			restrictInstanceMcpScope,
 			enabledFabricToolIds,
 			instanceId,
 			chatId,

@@ -22,6 +22,11 @@ const m = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 }));
 
+vi.mock("../../migration-freeze", () => ({
+	assertNoOpenMigration: async () => undefined,
+	withMigrationFreeze: async (_tenant: unknown, write: () => unknown) =>
+		write(),
+}));
 vi.mock("@repo/database", () => ({
 	db: {},
 	getOrganizationMembership: vi.fn(),

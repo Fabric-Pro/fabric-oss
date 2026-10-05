@@ -1,9 +1,12 @@
 "use client";
 
 import type { InstructionRejection } from "@repo/database";
+import { useDiscardUpload } from "@saas/projects/hooks/use-discard-upload";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { publishedChanged } from "@saas/projects/lib/instructions-action-error";
+import { isStalledUpload } from "@saas/projects/lib/instructions-discardable-upload";
 import { countPendingPublishes } from "@saas/projects/lib/instructions-pending-publishes";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
@@ -56,7 +59,7 @@ const SCAN_PENDING_STATUS = "PENDING";
  * found possible secrets, or could not finish checking every file. History's
  * ordinary publish of such a row is refused with `deferred_scan_unresolved`
  * unless the caller acknowledges publishing it anyway; the row's button
- * opens `PublishFlaggedVersionDialog` instead of the plain `window.confirm`
+ * opens `PublishFlaggedVersionDialog` instead of the plain confirmation
  * used everywhere else (Fizzy #2760). Neither verdict is ever revisited by a
  * later scan, so the acknowledgement is always answering the version's real,
  * final state. Rolling back AWAY from such a version is a different row's
@@ -203,6 +206,7 @@ export function InstructionsHistory({
 	onChanged: () => void;
 }) {
 	const actionError = useInstructionActionError();
+	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("projects.codingInstructions.history");
 	// "See why" shows the same rejection rows as the banner, so it reads the
 	// banner's own label maps rather than a second copy: a new scan rule then
@@ -228,7 +232,11 @@ export function InstructionsHistory({
 		rollback: boolean;
 		scanStatus: "ISSUES_FOUND" | "INCOMPLETE";
 	} | null>(null);
-	const publishAllowed = canPublish ?? canMutate;
+	// Fabric's copy of a repository project follows its branch, so there is no
+	// version to publish or roll back to: the pointer is never moved by hand.
+	// (A confirmed repository project sees Commits instead of this list; this
+	// is what the list offers while that is not yet known.)
+	const publishAllowed = !repositoryBacked && (canPublish ?? canMutate);
 	// Checks still running that will publish themselves when they finish: a
 	// rollback made now is replaced by whichever of them finishes last.
 	const pendingPublishes = countPendingPublishes({
@@ -248,13 +256,22 @@ export function InstructionsHistory({
 			: { expectedPublishedSnapshotId: publishedId }),
 	});
 
-	function confirmText(version: number, rollback: boolean) {
-		const lead = t(rollback ? "rollbackConfirm" : "publishConfirm", {
-			version,
-		});
-		return rollback && pendingPublishes > 0
-			? `${lead} ${t("rollbackPendingNote", { count: pendingPublishes })}`
-			: lead;
+	/** What the confirmation says before a version is published or rolled back to. */
+	function publishConfirmation(version: number, rollback: boolean) {
+		if (!rollback) {
+			return {
+				title: t("publishConfirm", { version }),
+				confirmLabel: t("publishConfirmAction"),
+			};
+		}
+		return {
+			title: t("rollbackConfirm", { version }),
+			message:
+				pendingPublishes > 0
+					? `${t("rollbackConfirmBody")} ${t("rollbackPendingNote", { count: pendingPublishes })}`
+					: t("rollbackConfirmBody"),
+			confirmLabel: t("rollbackConfirmAction"),
+		};
 	}
 
 	const publish = useMutation(
@@ -293,6 +310,9 @@ export function InstructionsHistory({
 			},
 		}),
 	);
+	// An upload that never finished is discarded, not deleted as a version:
+	// it was never one, and what the confirmation says reflects that.
+	const discardUpload = useDiscardUpload({ projectId, onChanged });
 	const download = useMutation(
 		orpc.projects.instructions.createDownloadUrl.mutationOptions({
 			onSuccess: (data) => window.open(data.url, "_blank", "noopener"),
@@ -303,6 +323,11 @@ export function InstructionsHistory({
 	function statusBadge(snapshot: HistorySnapshot, isPublished: boolean) {
 		if (isPublished) {
 			return { label: t("publishedPill"), variant: "success" as const };
+		}
+		// An upload that stayed RECEIVING for an hour is not being checked: the
+		// browser never finished it, so no run was ever started for it.
+		if (isStalledUpload(snapshot)) {
+			return { label: t("stalledPill"), variant: "outline" as const };
 		}
 		if (RECEIVING_STATUSES.has(snapshot.status)) {
 			return { label: t("checkingPill"), variant: "outline" as const };
@@ -387,9 +412,17 @@ export function InstructionsHistory({
 			<Dialog open={open} onOpenChange={onOpenChange}>
 				<DialogContent className="max-w-2xl">
 					<DialogHeader>
-						<DialogTitle>{t("title")}</DialogTitle>
+						{/* A repository project's versions are the commits Fabric
+						    took from the branch, not uploads, so the dialog says so. */}
+						<DialogTitle>
+							{t(repositoryBacked ? "titleRepository" : "title")}
+						</DialogTitle>
 						<DialogDescription>
-							{t("description")}
+							{t(
+								repositoryBacked
+									? "descriptionRepository"
+									: "description",
+							)}
 						</DialogDescription>
 					</DialogHeader>
 					{publishedUnknown ? (
@@ -454,7 +487,7 @@ export function InstructionsHistory({
 									key={s.id}
 									className="flex flex-col gap-2 rounded-lg border border-border p-3"
 								>
-									<div className="flex items-center justify-between gap-3">
+									<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 										<div className="flex flex-col gap-0.5">
 											<div className="flex items-center gap-2">
 												<span className="font-medium text-sm">
@@ -502,7 +535,7 @@ export function InstructionsHistory({
 													: ""}
 											</p>
 										</div>
-										<div className="flex shrink-0 gap-2">
+										<div className="flex flex-wrap gap-2 sm:justify-end">
 											{publishable ? (
 												<Button
 													size="sm"
@@ -534,23 +567,22 @@ export function InstructionsHistory({
 															});
 															return;
 														}
-														if (
-															window.confirm(
-																confirmText(
+														confirm({
+															...publishConfirmation(
+																s.version,
+																isRollback(
 																	s.version,
-																	isRollback(
-																		s.version,
-																		publishedVersion,
+																	publishedVersion,
+																),
+															),
+															destructive: true,
+															onConfirm: () =>
+																publish.mutate(
+																	publishInput(
+																		s.id,
 																	),
 																),
-															)
-														) {
-															publish.mutate(
-																publishInput(
-																	s.id,
-																),
-															);
-														}
+														});
 													}}
 												>
 													{t(
@@ -632,6 +664,25 @@ export function InstructionsHistory({
 													{t("seeFindingsAction")}
 												</Button>
 											) : null}
+											{isStalledUpload(s) &&
+											canMutate &&
+											!repositoryBacked ? (
+												<Button
+													size="sm"
+													variant="ghost"
+													className="text-destructive"
+													disabled={
+														discardUpload.pending
+													}
+													onClick={() =>
+														discardUpload.discard(
+															s.id,
+														)
+													}
+												>
+													{t("discardAction")}
+												</Button>
+											) : null}
 											{/* Not while its scan is still running: the
 											    scan reads this version's rows, and
 											    deleting them mid-scan only turns a
@@ -639,6 +690,7 @@ export function InstructionsHistory({
 											{!isPublished &&
 											!awaitingProposalDecision &&
 											canMutate &&
+											!repositoryBacked &&
 											DELETABLE_STATUSES.has(s.status) &&
 											s.deferredScanStatus !==
 												"PENDING" ? (
@@ -647,25 +699,31 @@ export function InstructionsHistory({
 													variant="ghost"
 													className="text-destructive"
 													disabled={remove.isPending}
-													onClick={() => {
-														if (
-															window.confirm(
+													onClick={() =>
+														confirm({
+															title: t(
+																"deleteConfirm",
+																{
+																	version:
+																		s.version,
+																},
+															),
+															message:
 																t(
-																	"deleteConfirm",
-																	{
-																		version:
-																			s.version,
-																	},
+																	"deleteConfirmBody",
 																),
-															)
-														) {
-															remove.mutate({
-																projectId,
-																snapshotId:
-																	s.id,
-															});
-														}
-													}}
+															confirmLabel: t(
+																"deleteConfirmAction",
+															),
+															destructive: true,
+															onConfirm: () =>
+																remove.mutate({
+																	projectId,
+																	snapshotId:
+																		s.id,
+																}),
+														})
+													}
 												>
 													{t("deleteAction")}
 												</Button>

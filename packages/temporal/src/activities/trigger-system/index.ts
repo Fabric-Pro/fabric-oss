@@ -7,7 +7,12 @@
  * - slackMentionHandlerWorkflow
  */
 
-import { db, hasProjectAccess, isProjectReadOnly } from "@repo/database";
+import {
+	db,
+	hasProjectAccess,
+	isProjectReadOnly,
+	resolveWorkflowIntegrationForProvider,
+} from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
 import { sendSlackMessage } from "@repo/integrations/slack";
 import { decryptApiKey } from "@repo/utils";
@@ -836,19 +841,11 @@ async function resolveChannelCredentials(
 			? P
 			: never
 		: never;
-	const where = organizationId
-		? { organizationId, isActive: true }
-		: { userId, organizationId: null, isActive: true };
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			...where,
-			provider: providerKey as unknown as ProviderEnum,
-			// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
-			// not a connection.
-			NOT: { name: `${providerKey}_OAUTH_APP` },
-		},
-		orderBy: { lastUsedAt: "desc" },
-	});
+	const integration = await resolveWorkflowIntegrationForProvider(
+		providerKey as unknown as ProviderEnum,
+		userId,
+		organizationId,
+	);
 	if (!integration) {
 		return undefined;
 	}

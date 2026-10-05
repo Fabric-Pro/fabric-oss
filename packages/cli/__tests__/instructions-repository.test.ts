@@ -13,7 +13,14 @@
  *    nothing is written;
  *  - a response whose source differs from the first one stops the command.
  */
-import { readdir, readFile, stat, symlink } from "node:fs/promises";
+import {
+	readdir,
+	readFile,
+	realpath,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hookTiming } from "../src/lib/instructions/hook-timing.js";
@@ -45,6 +52,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -100,7 +109,7 @@ const NAME = "git.example.com/example-org/rules";
  * byte-identical.
  */
 const withUser = (user: string, rest: string): string => [user, rest].join("@");
-const CLASS_TAIL = "nothing was checked or changed";
+const CLASS_TAIL = "nothing was checked.";
 
 const REPOSITORY = {
 	provider: "GITHUB" as const,
@@ -182,7 +191,8 @@ async function exists(file: string): Promise<boolean> {
 	);
 }
 
-const BEHIND = `fabric: coding instructions v7 (aaaaaaa) is published on main of ${NAME}; this checkout is behind`;
+const BEHIND =
+	"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout is behind";
 
 // ---------------------------------------------------------------------------
 // Every class that is neither matching nor not-git
@@ -193,7 +203,18 @@ interface ClassCase {
 	arrange: (dest: string) => void;
 	response: () => ReturnType<typeof served>;
 	line: string;
+	/**
+	 * What `init` says instead, when it names the command that fixes the
+	 * folder. A function when the line names a folder behind the `--dest`
+	 * the test typed.
+	 */
+	initLine?: string | ((dest: string) => string);
 }
+
+/** A folder as `init` spells it behind a typed `--dest`: forward slashes. */
+const typed = (dest: string): string => dest.replace(/\\/g, "/");
+
+const CLONE_THEN_INIT = `This folder is not a clone of ${NAME}. Run: fabric instructions init --project project-1 --tool claude-code --clone rules`;
 
 const REPORT_ONLY_CLASSES: ClassCase[] = [
 	{
@@ -203,14 +224,16 @@ const REPORT_ONLY_CLASSES: ClassCase[] = [
 				origin: "https://git.example.com/example-org/other.git",
 			}),
 		response: () => served(),
-		line: `fabric: coding instructions: no remote of this checkout fetches from ${NAME} (foreign checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: no remote of this checkout fetches from ${NAME}; ${CLASS_TAIL}`,
+		initLine: CLONE_THEN_INIT,
 	},
 	{
 		label: "foreign (the effective URL is a local mirror)",
 		arrange: (dest) =>
 			inCheckout(dest, { origin: "/srv/mirrors/rules.git" }),
 		response: () => served(),
-		line: `fabric: coding instructions: no remote of this checkout fetches from ${NAME} (foreign checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: no remote of this checkout fetches from ${NAME}; ${CLASS_TAIL}`,
+		initLine: CLONE_THEN_INIT,
 	},
 	{
 		label: "unknown",
@@ -219,7 +242,7 @@ const REPORT_ONLY_CLASSES: ClassCase[] = [
 			fakeGit.state.unavailable = "git timed out";
 		},
 		response: () => served(),
-		line: `fabric: coding instructions: this git checkout could not be read (git timed out; unknown checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: this git checkout could not be read (git timed out); ${CLASS_TAIL}`,
 	},
 	{
 		label: "unknown (a branch name git would expand)",
@@ -228,27 +251,27 @@ const REPORT_ONLY_CLASSES: ClassCase[] = [
 			fakeGit.state.refValid = false;
 		},
 		response: () => served(),
-		line: `fabric: coding instructions: this git checkout could not be read (the project's branch name is not one this hook will use; unknown checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: this git checkout could not be read (the project's branch name is not one this hook will use); ${CLASS_TAIL}`,
 	},
 	{
 		label: "unknown (a root path outside the repository)",
 		arrange: (dest) => inCheckout(dest),
 		response: () =>
 			served({ repository: { ...REPOSITORY, rootPath: "../elsewhere" } }),
-		line: `fabric: coding instructions: this git checkout could not be read (the project's instruction folder is not a path inside the repository; unknown checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: this git checkout could not be read (the project's instruction folder is not a path inside the repository); ${CLASS_TAIL}`,
 	},
 	{
 		label: "unknown-identity",
 		arrange: (dest) => inCheckout(dest),
 		response: () => served({ repository: null }),
-		line: `fabric: coding instructions: the project is repository-sourced but reports no repository to compare with (unknown repository); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: the project is repository-sourced but reports no repository to compare with; ${CLASS_TAIL}`,
 	},
 	{
 		label: "unsupported-provider",
 		arrange: (dest) => inCheckout(dest),
 		response: () =>
-			served({ repository: { ...REPOSITORY, provider: "AZURE_DEVOPS" } }),
-		line: `fabric: coding instructions: AZURE_DEVOPS repositories are not compared yet (unsupported provider); ${CLASS_TAIL}`,
+			served({ repository: { ...REPOSITORY, provider: "BITBUCKET" } }),
+		line: `fabric: coding instructions: BITBUCKET repositories are not compared yet; ${CLASS_TAIL}`,
 	},
 	{
 		label: "ambiguous",
@@ -261,14 +284,17 @@ const REPORT_ONLY_CLASSES: ClassCase[] = [
 				),
 			}),
 		response: () => served(),
-		line: `fabric: coding instructions: remotes origin, upstream all fetch from ${NAME} (ambiguous checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: remotes origin, upstream all fetch from ${NAME}; ${CLASS_TAIL} Run: fabric instructions init --remote origin`,
+		initLine: `Remotes origin, upstream all fetch from ${NAME}. Run: fabric instructions init --remote origin`,
 	},
 	{
 		label: "unmapped",
 		arrange: (dest) => inCheckout(dest),
 		response: () =>
 			served({ repository: { ...REPOSITORY, rootPath: "instructions" } }),
-		line: `fabric: coding instructions: this checkout is ${NAME}, but the project's instructions are at instructions, not this directory (unmapped checkout); ${CLASS_TAIL}`,
+		line: `fabric: coding instructions: this checkout is ${NAME}, but the project's instructions are at instructions, not this directory; ${CLASS_TAIL}`,
+		initLine: (dest) =>
+			`This checkout is ${NAME}, but its instructions are in ${typed(dest)}/instructions. Run: fabric instructions init --dest ${typed(dest)}/instructions`,
 	},
 ];
 
@@ -327,8 +353,12 @@ describe("a directory that may be a checkout but is not this one", () => {
 
 	it.each(REPORT_ONLY_CLASSES)(
 		"init in the $label class: refused with exit 7, nothing written",
-		async ({ arrange, response, line }) => {
+		async ({ arrange, response, line: classLine, initLine }) => {
 			const dest = await makeTree();
+			const line =
+				typeof initLine === "function"
+					? initLine(dest)
+					: (initLine ?? classLine);
 			arrange(dest);
 			mocks.getPublished.mockResolvedValue(response());
 			stubDownload();
@@ -425,7 +455,7 @@ describe("a directory that may be a checkout but is not this one", () => {
 			(dest) => inCheckout(dest),
 			() =>
 				served({
-					repository: { ...REPOSITORY, provider: "AZURE_DEVOPS" },
+					repository: { ...REPOSITORY, provider: "BITBUCKET" },
 				}),
 		],
 		[
@@ -452,7 +482,7 @@ describe("a directory that may be a checkout but is not this one", () => {
 			expect(result.code).toBe(7);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toMatch(
-				/^✗ fabric: coding instructions: .*; nothing was checked or changed\n$/,
+				/^✗ fabric: coding instructions: .*; nothing was checked\.( Run: .*)?\n$/,
 			);
 			expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 			expect(await readdir(dest)).toEqual([]);
@@ -500,7 +530,7 @@ describe("a directory that may be a checkout but is not this one", () => {
 		expect(result.stdout).toContain("have not been synced");
 		const lines = result.stdout.trimEnd().split("\n");
 		expect(lines.at(-1)).toBe(
-			`fabric: coding instructions: no remote of this checkout fetches from ${NAME} (foreign checkout); ${CLASS_TAIL}`,
+			`fabric: coding instructions: no remote of this checkout fetches from ${NAME}; ${CLASS_TAIL}`,
 		);
 	});
 });
@@ -551,7 +581,7 @@ describe("a directory that is not a git checkout", () => {
 		).toBe(true);
 	});
 
-	it("init takes the first copy and writes the hook", async () => {
+	it("init in an empty folder says how to clone, and writes and downloads nothing", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockResolvedValue(served());
 		stubDownload();
@@ -566,13 +596,164 @@ describe("a directory that is not a git checkout", () => {
 			dest,
 		]);
 
-		expect(result.code).toBe(0);
-		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
-			"published\n",
+		expect(result.code).toBe(2);
+		expect(result.stderr).toBe(
+			`✗ This folder is empty. Run: fabric instructions init --clone to clone ${NAME} (main) into it.\n`,
 		);
+		expect(fakeGit.clones).toEqual([]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(await readdir(dest)).toEqual([]);
+	});
+
+	it("init --clone clones the repository into the empty folder, then sets it up", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue(served());
+		stubDownload();
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--clone",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.clones).toEqual([
+			{
+				dir: await realpath(dest),
+				url: "https://git.example.com/example-org/rules",
+				ref: "main",
+			},
+		]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		expect(
 			await exists(path.join(dest, ".claude", "settings.local.json")),
 		).toBe(true);
+		expect(await exists(path.join(dest, ".fabric"))).toBe(false);
+		expect(result.stdout).toBe(
+			`Set up for ${NAME} (main). Claude Code fast-forwards main at session start when safe.\n`,
+		);
+	});
+
+	it("init --clone creates the folder when it does not exist yet", async () => {
+		const parent = await makeTree();
+		const dest = path.join(parent, "rules");
+		mocks.getPublished.mockResolvedValue(served());
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--clone",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.clones).toHaveLength(1);
+		expect(
+			await exists(path.join(dest, ".claude", "settings.local.json")),
+		).toBe(true);
+	});
+
+	it("init never clones into a folder that has anything in it, --clone or not", async () => {
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "mine\n", "utf8");
+		mocks.getPublished.mockResolvedValue(served());
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--clone",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toBe(`✗ ${CLONE_THEN_INIT}\n`);
+		expect(fakeGit.clones).toEqual([]);
+		expect(await readdir(dest)).toEqual(["AGENTS.md"]);
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"mine\n",
+		);
+	});
+
+	it.each([
+		[
+			"auth",
+			3,
+			`✗ Could not clone ${NAME}: git has no credentials for git.example.com. Run: gh auth login\n`,
+		],
+		[
+			"network",
+			1,
+			`✗ Could not clone ${NAME}: git.example.com did not answer. Check your network and try again.\n`,
+		],
+		[
+			"missing-ref",
+			7,
+			`✗ Could not clone ${NAME}: it has no branch main.\n`,
+		],
+		[
+			"other",
+			1,
+			`✗ Could not clone ${NAME}. Run: git clone -- https://git.example.com/example-org/rules to see why.\n`,
+		],
+	] as const)(
+		"init --clone that fails with %s says so in one line and writes no hook",
+		async (reason, code, stderr) => {
+			const dest = await makeTree();
+			mocks.getPublished.mockResolvedValue(served());
+			fakeGit.state.cloneResult = { kind: "failed", reason };
+
+			const result = await runCli([
+				"init",
+				"--project",
+				"project-1",
+				"--tool",
+				"claude-code",
+				"--clone",
+				"--dest",
+				dest,
+			]);
+
+			expect(result.code).toBe(code);
+			expect(result.stderr).toBe(stderr);
+			expect(await readdir(dest)).toEqual([]);
+		},
+	);
+
+	it("init --clone of a project whose instructions live in a subfolder says to go there", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue(
+			served({ repository: { ...REPOSITORY, rootPath: "docs/ai" } }),
+		);
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--clone",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe(
+			`Cloned ${NAME} (main). Its instructions are in ${typed(dest)}/docs/ai. Run: fabric instructions init --dest ${typed(dest)}/docs/ai\n`,
+		);
+		expect(await readdir(dest)).toEqual([]);
 	});
 });
 
@@ -599,6 +780,9 @@ describe("a checkout of the project's repository", () => {
 			"--dest",
 			dest,
 			"--hook",
+			// Report-only: these cases are the lines both verbs share. What
+			// `sync --hook` does beyond reporting is in fast-forward-hook.test.ts.
+			...(verb === "sync" ? ["--no-fast-forward"] : []),
 			...extra,
 		]);
 		// Report-only, whatever it said: nothing downloaded, nothing written.
@@ -632,7 +816,7 @@ describe("a checkout of the project's repository", () => {
 		{
 			label: "the published commit has not been fetched",
 			arrange: () => {},
-			line: `fabric: coding instructions v7 (aaaaaaa) is published on main of ${NAME}; this checkout has not fetched it yet — run: git pull --ff-only origin main`,
+			line: "fabric: coding instructions v7 (aaaaaaa) is on main; this checkout has not fetched it yet — run: git pull --ff-only origin main",
 		},
 		{
 			label: "behind with local changes",
@@ -640,7 +824,7 @@ describe("a checkout of the project's repository", () => {
 				fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
 				fakeGit.state.clean = false;
 			},
-			line: `${BEHIND}; your working tree has changes — pull when it is clean`,
+			line: `${BEHIND} and has uncommitted changes — commit or stash, then pull.`,
 		},
 		{
 			label: "behind with a merge in progress",
@@ -648,7 +832,7 @@ describe("a checkout of the project's repository", () => {
 				fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
 				fakeGit.state.operation = "merge";
 			},
-			line: `${BEHIND}; a merge is in progress`,
+			line: `${BEHIND}; a merge is in progress; nothing was changed.`,
 		},
 		{
 			label: "behind on a detached HEAD",
@@ -656,7 +840,7 @@ describe("a checkout of the project's repository", () => {
 				fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
 				fakeGit.state.branch = null;
 			},
-			line: `${BEHIND}; HEAD is detached — check out main and pull`,
+			line: `${BEHIND}; HEAD is detached — check out main and pull.`,
 		},
 		{
 			label: "behind on another branch",
@@ -664,7 +848,7 @@ describe("a checkout of the project's repository", () => {
 				fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
 				fakeGit.state.branch = "feature/x";
 			},
-			line: `${BEHIND}; you are on feature/x — pull main when you switch to it`,
+			line: `${BEHIND}; you are on feature/x — pull main when you switch to it.`,
 		},
 		{
 			label: "behind in a shallow, sparse submodule checkout",
@@ -676,7 +860,7 @@ describe("a checkout of the project's repository", () => {
 					superproject: true,
 				};
 			},
-			line: `${BEHIND} — run: git pull --ff-only origin main (shallow clone) (sparse checkout) (inside a superproject)`,
+			line: `${BEHIND} (shallow clone) (sparse checkout) (inside a superproject) — run: git pull --ff-only origin main`,
 		},
 		{
 			label: "the published snapshot is from an earlier configuration",
@@ -789,6 +973,34 @@ describe("a checkout of the project's repository", () => {
 		);
 	});
 
+	// The lock-based report used to follow the source line here: "have not
+	// been synced into this folder yet" and "run sync to take a copy", which
+	// is wrong for a checkout git keeps current (seen on staging).
+	it("manual check in a current checkout says so, and offers no copy", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(served());
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("have not been synced");
+		expect(result.stdout).not.toContain("take a copy");
+		const lines = result.stdout.trimEnd().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("published from aaaaaaaaaaaa… on main");
+		expect(lines[1]).toBe(
+			`fabric: coding instructions v7 (aaaaaaa) from main of ${NAME} is already in this checkout's history; nothing to sync`,
+		);
+	});
+
 	it("manual check prints its report, then the line", async () => {
 		const dest = await makeTree();
 		inCheckout(dest);
@@ -804,6 +1016,7 @@ describe("a checkout of the project's repository", () => {
 		]);
 
 		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("take a copy");
 		const lines = result.stdout.trimEnd().split("\n");
 		expect(lines[0]).toContain("published from aaaaaaaaaaaa… on main");
 		expect(lines.at(-1)).toBe(
@@ -842,7 +1055,7 @@ describe("a checkout of the project's repository", () => {
 			operation: null,
 			contains: false,
 			traits: ["shallow"],
-			line: `${BEHIND} — run: git pull --ff-only origin main (shallow clone)`,
+			line: `${BEHIND} (shallow clone) — run: git pull --ff-only origin main`,
 		});
 	});
 
@@ -888,15 +1101,24 @@ describe("a checkout of the project's repository", () => {
 	});
 
 	it.each([
-		[[], "check", ""],
+		[
+			[],
+			"sync",
+			"Claude Code fast-forwards main at session start when safe.",
+		],
 		[
 			["--apply"],
 			"sync",
-			" — automatic updates are not available for repository checkouts yet; the hook reports and you (or your agent) run the pull",
+			"Claude Code fast-forwards main at session start when safe.",
+		],
+		[
+			["--report-only"],
+			"check",
+			"Claude Code checks for updates at every session start.",
 		],
 	])(
-		"init %j writes the %s hook, copies nothing, and says the hook only reports",
-		async (extra, verb, suffix) => {
+		"init %j writes the %s hook, copies nothing, and says one line",
+		async (extra, verb, clause) => {
 			const dest = await makeTree();
 			inCheckout(dest);
 			mocks.getPublished.mockResolvedValue(served());
@@ -927,16 +1149,15 @@ describe("a checkout of the project's repository", () => {
 					hooks: [
 						{
 							type: "command",
-							command: `fabric instructions ${verb} --project project-1 --hook`,
+							command: `fabric instructions ${verb} --project project-1 --base-url https://fabric.pro --hook`,
 							timeout: 15,
 						},
 					],
 				},
 			]);
-			expect(result.stdout).toContain(
-				`  installed; this checkout is ${NAME}: the hook reports when main has newer instructions and never changes the checkout${suffix}\n`,
+			expect(result.stdout).toBe(
+				`Set up for ${NAME} (main). ${clause}\n`,
 			);
-			expect(result.stdout).not.toContain(".fabric");
 		},
 	);
 
@@ -1045,6 +1266,7 @@ describe("a lock left in a checkout of the repository (Fizzy #2708 review)", () 
 				"--dest",
 				dest,
 				"--hook",
+				"--no-fast-forward",
 			]);
 
 			expect(result).toEqual({
@@ -1117,7 +1339,7 @@ describe("a git that never answers (Fizzy #2708 review)", () => {
 
 			expect(result).toEqual({
 				code: 0,
-				stdout: `fabric: coding instructions: this git checkout could not be read (git timed out; unknown checkout); ${CLASS_TAIL}\n`,
+				stdout: `fabric: coding instructions: this git checkout could not be read (git timed out); ${CLASS_TAIL}\n`,
 				stderr: "",
 			});
 			// Every git question was given the margin, never the outer deadline.
@@ -1173,6 +1395,69 @@ describe("a source that changes between two responses", () => {
 		expect(await readdir(dest)).toEqual([".fabric"]);
 	});
 
+	it("does not count the clone URL or the sync's own state as a change of source", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, computeSnapshotDigest([FILE]), {
+			"AGENTS.md": { sha256: FILE.sha256, mode: 0o100644 },
+		});
+		mocks.getPublished
+			.mockResolvedValueOnce({
+				...served(),
+				unchanged: true,
+				changes: { added: [], removed: [], changed: [] },
+				manifest: undefined,
+				repository: {
+					...REPOSITORY,
+					cloneUrl: "https://git.example.com/example-org/rules",
+					sync: {
+						automatic: true,
+						pausedReason: null,
+						lastRun: {
+							trigger: "WEBHOOK",
+							status: "SUCCEEDED",
+							error: null,
+							commitSha: "b".repeat(40),
+							finishedAt: "2026-10-02T10:00:00.000Z",
+						},
+					},
+				},
+			})
+			.mockResolvedValueOnce(
+				served({
+					repository: {
+						...REPOSITORY,
+						cloneUrl: null,
+						sync: {
+							automatic: false,
+							pausedReason: "MIGRATING",
+							lastRun: {
+								trigger: "MANUAL",
+								status: null,
+								error: null,
+								commitSha: null,
+								finishedAt: null,
+							},
+						},
+					} as Repository,
+				}),
+			);
+		stubDownload();
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.stderr).not.toContain("instruction source changed");
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published\n",
+		);
+	});
+
 	it("never prints a URL or credential from a remote", async () => {
 		const dest = await makeTree();
 		inCheckout(dest, {
@@ -1192,5 +1477,86 @@ describe("a source that changes between two responses", () => {
 		expect(result.stdout).not.toContain("https://");
 		expect(result.stdout).not.toContain("token-value");
 		expect(result.stdout).not.toContain("dev:");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Azure DevOps
+// ---------------------------------------------------------------------------
+
+describe("an Azure DevOps project", () => {
+	const AZURE = {
+		provider: "AZURE_DEVOPS",
+		host: "dev.azure.com",
+		path: "Example-Org/Example Project/_git/rules",
+		ref: "main",
+		rootPath: "",
+		generation: 1,
+	};
+	async function hookIn(
+		origin: string,
+		repository: typeof AZURE = AZURE,
+	): Promise<string> {
+		const dest = await makeTree();
+		inCheckout(dest, { origin });
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false };
+		mocks.getPublished.mockResolvedValue(served({ repository }));
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stderr).toBe("");
+		return result.stdout;
+	}
+
+	it.each([
+		[
+			"https",
+			"https://dev.azure.com/Example-Org/Example%20Project/_git/rules",
+		],
+		[
+			"visualstudio.com",
+			"https://example-org.visualstudio.com/Example%20Project/_git/rules",
+		],
+		[
+			"scp-like ssh",
+			withUser(
+				"git",
+				"ssh.dev.azure.com:v3/Example-Org/Example%20Project/rules",
+			),
+		],
+	])(
+		"treats a checkout cloned over %s as a checkout of the repository",
+		async (_label, origin) => {
+			const stdout = await hookIn(origin);
+
+			expect(stdout).toContain("is on main; this checkout is behind");
+			expect(stdout).not.toContain("foreign");
+			expect(stdout).not.toContain("not compared yet");
+		},
+	);
+
+	it("calls a checkout of another Azure DevOps repository foreign", async () => {
+		const stdout = await hookIn(
+			"https://dev.azure.com/Example-Org/Example%20Project/_git/other",
+		);
+
+		expect(stdout).toContain("no remote of this checkout fetches from");
+	});
+
+	it("says it cannot compare when the project's path names no Azure DevOps project", async () => {
+		const stdout = await hookIn(
+			"https://dev.azure.com/Example-Org/Example%20Project/_git/rules",
+			{ ...AZURE, path: "Example-Org/rules" },
+		);
+
+		expect(stdout).toContain("reports no repository to compare with");
 	});
 });

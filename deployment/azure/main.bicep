@@ -51,12 +51,6 @@ param enablePolicyGuardrails bool = false
 @description('Encrypt all traffic inside the Container Apps environment (SOC 2 CC6.7). Without it, TLS ends at the environment edge and the edge-to-replica hop is plaintext HTTP. Certificates are platform-managed and rotated by Azure; callers need no change. Turning it on restarts every replica in the environment once.')
 param enablePeerTrafficEncryption bool = false
 
-@description('DEPRECATED: This parameter is no longer used. Azure Container Apps now uses a managed OpenTelemetry agent configured in the environment. Telemetry is automatically routed to Application Insights.')
-param enableMultiDestinationOtlp bool = false
-
-@description('Enable external access to Jaeger UI')
-param enableJaegerExternalAccess bool = false
-
 @description('Enable RAG/storage features (requires qdrant-url, qdrant-api-key, blob-read-write-token, blob-store-id secrets in Key Vault)')
 param enableRag bool = true
 

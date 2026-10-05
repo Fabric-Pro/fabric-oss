@@ -77,6 +77,7 @@ export function registerProjectRoutes(
 			apiCtx,
 			org,
 			c.req.query("personal") === "1",
+			c.req.param("id"),
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
@@ -177,6 +178,7 @@ export function registerProjectRoutes(
 			apiCtx,
 			c.req.query("org"),
 			c.req.query("personal") === "1",
+			c.req.param("id"),
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);

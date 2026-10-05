@@ -17,7 +17,10 @@ vi.mock("@repo/utils", () => ({ decryptApiKey: (s: string) => s }));
 import { getGitLabIssueNotesForPM } from "../../src/gitlab/pm-adapter";
 import type { GitLabSource } from "../../src/gitlab/source";
 
-const REST_SOURCE: GitLabSource = { kind: "rest-adapter", token: "tok" };
+const REST_SOURCE: GitLabSource = {
+	kind: "rest-adapter",
+	credential: { token: "tok", apiBase: "https://gitlab.com/api/v4" },
+};
 
 beforeEach(() => vi.clearAllMocks());
 

@@ -4,11 +4,9 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
-import { cn } from "@ui/lib";
-import { diffLines } from "diff";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
-import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
+import { useState } from "react";
+import { InstructionDiffBody } from "./InstructionDiffBody";
 
 /** The cap `getFile` accepts, and the one the file reader already uses. */
 const BODY_MAX_LENGTH = 200_000;
@@ -88,12 +86,6 @@ export function InstructionFileDiff({
 		}),
 		enabled: shouldFetch,
 	});
-	const before = (fromQuery.data as FileBody | undefined)?.body ?? "";
-	const after = (toQuery.data as FileBody | undefined)?.body ?? "";
-	const parts = useMemo(() => diffLines(before, after), [before, after]);
-	const counts = useMemo(() => countDiffLines(parts), [parts]);
-	const rows = useMemo(() => toDiffRows(parts), [parts]);
-
 	if (!isText) {
 		return (
 			<p className="text-muted-foreground text-sm">
@@ -129,52 +121,15 @@ export function InstructionFileDiff({
 	if (!fromQuery.isSuccess || !toQuery.isSuccess) {
 		return <Skeleton className="h-24 w-full" />;
 	}
-	const truncated =
-		(fromQuery.data as FileBody).truncated ||
-		(toQuery.data as FileBody).truncated;
-	// Equal bodies with unequal `sha256` is a real state: a mode change is
-	// derived from content at upload time, and two files can agree for their
-	// first 200k characters and differ after it. An empty <pre> would read as
-	// a loading failure, so both cases say so in words — but NOT in the same
-	// words. The manifest already proved this file changed; with a truncated
-	// side, "the text did not change" would contradict it and send a reviewer
-	// away believing the file is untouched. Only the loaded prefix is
-	// unchanged, and the message says exactly that much.
-	if (before === after) {
-		return (
-			<p className="text-muted-foreground text-sm">
-				{t(truncated ? "noChangesInLoadedPrefix" : "noTextualChanges")}
-			</p>
-		);
-	}
 	return (
-		<div className="flex flex-col gap-1">
-			<p className="text-muted-foreground text-xs">
-				{t("lineCounts", counts)}
-			</p>
-			{truncated ? (
-				<p className="text-muted-foreground text-xs">
-					{t("diffTruncated")}
-				</p>
-			) : null}
-			<pre
-				data-testid={`instruction-file-diff-${path}`}
-				className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs"
-			>
-				{rows.map((row, index) => (
-					<span
-						key={`${index}-${row.text.length}`}
-						className={cn(
-							row.added &&
-								"bg-emerald-500/15 text-emerald-800 dark:text-emerald-300",
-							row.removed &&
-								"bg-red-500/15 text-red-800 dark:text-red-300",
-						)}
-					>
-						{row.text}
-					</span>
-				))}
-			</pre>
-		</div>
+		<InstructionDiffBody
+			path={path}
+			before={(fromQuery.data as FileBody).body ?? ""}
+			after={(toQuery.data as FileBody).body ?? ""}
+			truncated={
+				(fromQuery.data as FileBody).truncated ||
+				(toQuery.data as FileBody).truncated
+			}
+		/>
 	);
 }

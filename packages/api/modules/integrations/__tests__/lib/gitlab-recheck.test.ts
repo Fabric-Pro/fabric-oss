@@ -1,444 +1,226 @@
+/**
+ * `recheckGitlabCapabilities` re-probes the person's GitLab connection against
+ * GitLab's official MCP server and records the answer through the connection
+ * service's fenced settings write. The service is a double here (its own
+ * tests live in `@repo/integrations`); these tests pin what the recheck asks
+ * of it and what it does in the same transaction.
+ */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+type Row = Record<string, unknown> & { id: string };
+
+const getGitLabConnectionTokenMock = vi.fn();
+const patchGitLabConnectionSettingsMock = vi.fn();
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	getGitLabConnectionToken: (...args: unknown[]) =>
+		getGitLabConnectionTokenMock(...args),
+	patchGitLabConnectionSettings: (...args: unknown[]) =>
+		patchGitLabConnectionSettingsMock(...args),
+}));
+
+import { GitLabReauthRequiredError } from "@repo/integrations/gitlab";
 import {
 	GitLabIntegrationNotConnectedError,
 	recheckGitlabCapabilities,
 } from "../../lib/gitlab-recheck";
 
-// Mock @repo/utils encrypt/hash to be identity so we can assert on values.
-vi.mock("@repo/utils", () => ({
-	encryptApiKey: (s: string) => `enc:${s}`,
-	decryptApiKey: (s: string) =>
-		s.startsWith("plain:")
-			? s.slice("plain:".length)
-			: JSON.stringify({ access_token: "at", refresh_token: "rt" }),
-	hashApiKey: (s: string) => `hash:${s}`,
-}));
+function buildTx(configs: Row[] = []) {
+	const rows = [...configs];
+	const matches = (row: Row, where: Record<string, unknown>) =>
+		Object.entries(where).every(([key, value]) => row[key] === value);
+	return {
+		rows,
+		mCPServer: { findFirst: vi.fn(async () => ({ id: "srv-official" })) },
+		mCPConfig: {
+			findFirst: vi.fn(
+				async ({ where }: { where: Record<string, unknown> }) =>
+					rows.find((row) => matches(row, where)) ?? null,
+			),
+			create: vi.fn(
+				async ({ data }: { data: Record<string, unknown> }) => {
+					const row = { id: `cfg-${rows.length + 1}`, ...data };
+					rows.push(row);
+					return row;
+				},
+			),
+			delete: vi.fn(async ({ where }: { where: { id: string } }) => {
+				const index = rows.findIndex((row) => row.id === where.id);
+				return rows.splice(index, 1)[0];
+			}),
+		},
+	};
+}
 
-// Mock @repo/integrations/gitlab to avoid loading the barrel (which pulls in
-// @repo/database → Prisma client, not available in unit-test environments).
-vi.mock("@repo/integrations/gitlab", () => ({
-	probeGitLabMcp: vi.fn(),
-	readUseOfficialMcp: (
-		settings: { useOfficialMcp?: boolean } | null | undefined,
-	): true | false | "legacy" => {
-		if (!settings || typeof settings !== "object") {
-			return "legacy";
-		}
-		if (settings.useOfficialMcp === true) {
+let tx: ReturnType<typeof buildTx>;
+
+function token(overrides: Record<string, unknown> = {}) {
+	return {
+		ok: true,
+		accessToken: "connection-token",
+		issuer: {
+			kind: "app",
+			clientId: "app-client",
+			origin: "https://gitlab.com",
+		},
+		origin: "https://gitlab.com",
+		integrationId: "wi-1",
+		generation: 4,
+		settings: {},
+		...overrides,
+	};
+}
+
+const probe = (status: string, capable: boolean, httpStatus = 200) =>
+	vi.fn(async () => ({ status, capable, httpStatus }));
+
+const input = { userId: "u1", organizationId: "org-1" };
+
+beforeEach(() => {
+	getGitLabConnectionTokenMock.mockReset();
+	patchGitLabConnectionSettingsMock.mockReset();
+	tx = buildTx();
+	patchGitLabConnectionSettingsMock.mockImplementation(
+		async (
+			_tenant: unknown,
+			args: { alsoInTransaction?: (tx: unknown) => Promise<void> },
+		) => {
+			await args.alsoInTransaction?.(tx);
 			return true;
-		}
-		if (settings.useOfficialMcp === false) {
-			return false;
-		}
-		return "legacy";
-	},
-}));
-
-// Mock getValidGitLabToken so the recheck test focuses on probe + sync wiring,
-// not the token refresh subsystem (covered by gitlab-token.test.ts).
-const { getValidGitLabTokenMock } = vi.hoisted(() => ({
-	getValidGitLabTokenMock: vi.fn(),
-}));
-vi.mock("../../lib/gitlab-token", () => ({
-	getValidGitLabToken: getValidGitLabTokenMock,
-}));
+		},
+	);
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(console, "error").mockImplementation(() => {});
+});
 
 describe("recheckGitlabCapabilities", () => {
-	const baseInput = { userId: "u1", organizationId: null };
-
-	beforeEach(() => {
-		getValidGitLabTokenMock.mockReset();
-		getValidGitLabTokenMock.mockResolvedValue("fresh-access-token");
-	});
-
-	function makeDb(opts: {
-		integration: { id: string; settings: unknown } | null;
-		officialServerId: string | null;
-		existingOfficialConfigId: string | null;
-		existingOfficialConfigBaseUrl?: string | null;
-		/** Whether the existing official row's circuit breaker has tripped. */
-		existingOfficialConfigNeedsReauth?: boolean;
-	}) {
-		// Inner tx writes (called inside $transaction)
-		const tx = {
-			workflowIntegration: {
-				findFirst: vi.fn(async () => opts.integration),
-				update: vi.fn(async () => ({ id: opts.integration?.id })),
-			},
-			mCPServer: {
-				findFirst: vi.fn(async () =>
-					opts.officialServerId
-						? { id: opts.officialServerId }
-						: null,
-				),
-			},
-			mCPConfig: {
-				// Tx-side findFirst — used by syncGitlabOfficialMcpConfig to look up
-				// the existing official config by mcpServerId. Returns the two
-				// columns that select names: the id and the breaker flag that
-				// gates the delete branch.
-				findFirst: vi.fn(async () =>
-					opts.existingOfficialConfigId
-						? {
-								id: opts.existingOfficialConfigId,
-								needsReauth: Boolean(
-									opts.existingOfficialConfigNeedsReauth,
-								),
-							}
-						: null,
-				),
-				create: vi.fn(async () => ({ id: "new" })),
-				update: vi.fn(async () => ({ id: "updated" })),
-				delete: vi.fn(async () => undefined),
-			},
-		};
-
-		// Outer db needs: workflowIntegration.findFirst (for the initial
-		// not-connected check), mCPConfig.findFirst (for probe baseUrl derivation),
-		// and $transaction (wraps the writes).
-		const outer = {
-			workflowIntegration: {
-				findFirst: tx.workflowIntegration.findFirst,
-				update: tx.workflowIntegration.update,
-			},
-			mCPServer: tx.mCPServer,
-			mCPConfig: {
-				...tx.mCPConfig,
-				findFirst: vi.fn(async () =>
-					opts.existingOfficialConfigId
-						? {
-								id: opts.existingOfficialConfigId,
-								baseUrl:
-									opts.existingOfficialConfigBaseUrl ?? null,
-								tokenExpiresAt: null,
-							}
-						: null,
-				),
-			},
-			$transaction: vi.fn(
-				async (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
-			),
-		};
-
-		return { outer, tx };
-	}
-
-	it("throws when no GitLab integration is connected", async () => {
-		const { outer } = makeDb({
-			integration: null,
-			officialServerId: "srv-1",
-			existingOfficialConfigId: null,
+	it("throws not-connected when the person has no GitLab connection", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue({
+			ok: false,
+			reason: "not-connected",
+			message: "GitLab is not connected",
 		});
 		await expect(
-			recheckGitlabCapabilities({ db: outer as never, input: baseInput }),
-		).rejects.toThrow(GitLabIntegrationNotConnectedError);
+			recheckGitlabCapabilities({ input, probe: probe("ok", true) }),
+		).rejects.toBeInstanceOf(GitLabIntegrationNotConnectedError);
+		expect(patchGitLabConnectionSettingsMock).not.toHaveBeenCalled();
 	});
 
-	it("only looks at an active connection row, so a disconnected integration is 'not connected'", async () => {
-		// `gitlab.disconnect` deactivates the row and leaves its credentials, so
-		// the lookup must require `isActive` or a recheck would probe GitLab with
-		// a disconnected user's token. (Call-shape assertion: this fake applies no
-		// `where`; the behaviour itself is covered in
-		// procedures/gitlab-disconnect-token-resolution.test.ts.)
-		const { outer } = makeDb({
-			integration: null,
-			officialServerId: "srv-1",
-			existingOfficialConfigId: null,
+	it("throws reauth-required, without probing, when the connection needs reconnecting", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue({
+			ok: false,
+			reason: "needs-reauth",
+			message: "the GitLab connection needs to be reconnected",
 		});
-		await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-		}).catch(() => undefined);
+		const probeFn = probe("ok", true);
+		await expect(
+			recheckGitlabCapabilities({ input, probe: probeFn }),
+		).rejects.toBeInstanceOf(GitLabReauthRequiredError);
+		expect(probeFn).not.toHaveBeenCalled();
+	});
 
-		expect(outer.workflowIntegration.findFirst).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					provider: "GITLAB",
-					isActive: true,
-				}),
-			}),
+	it("probes the credential's own origin with the connection's (strictly fresh) token", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue(
+			token({ origin: "https://gitlab.example.com" }),
 		);
+		const probeFn = probe("ok", true);
+		await recheckGitlabCapabilities({ input, probe: probeFn });
+
+		expect(getGitLabConnectionTokenMock).toHaveBeenCalledWith(
+			{ userId: "u1", organizationId: "org-1" },
+			{ mode: "strict", anyOrigin: true },
+			undefined,
+		);
+		expect(probeFn).toHaveBeenCalledWith({
+			baseUrl: "https://gitlab.example.com",
+			accessToken: "connection-token",
+		});
 	});
 
-	it("writes useOfficialMcp=true + creates MCPConfig when probe returns ok", async () => {
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: false, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: null,
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
-		});
-
+	it("records a capable result fenced on the generation the token came from, and creates the official row", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue(token());
 		const result = await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
+			input,
+			probe: probe("ok", true),
 		});
 
 		expect(result.useOfficialMcp).toBe(true);
-		expect(result.mcpProbe).toMatchObject({
-			status: "ok",
-			httpStatus: 200,
+		const [tenant, args] = patchGitLabConnectionSettingsMock.mock.calls[0];
+		expect(tenant).toEqual({ userId: "u1", organizationId: "org-1" });
+		expect(args).toMatchObject({
+			expectedGeneration: 4,
+			patch: {
+				useOfficialMcp: true,
+				mcpProbe: { status: "ok", baseUrl: "https://gitlab.com" },
+			},
 		});
-		expect(tx.workflowIntegration.update).toHaveBeenCalledOnce();
-		expect(tx.mCPConfig.create).toHaveBeenCalledOnce();
-		expect(outer.$transaction).toHaveBeenCalledOnce();
+		expect(tx.rows).toHaveLength(1);
+		expect(tx.rows[0]).not.toHaveProperty("encryptedAccessToken");
 	});
 
-	it("preserves useOfficialMcp on network-error and does NOT touch MCPConfig", async () => {
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: false,
-			status: "network-error",
-			httpStatus: null,
-		});
-
-		const result = await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(result.useOfficialMcp).toBe(true); // preserved
-		expect(result.mcpProbe).toMatchObject({ status: "network-error" });
-		expect(tx.workflowIntegration.update).toHaveBeenCalledOnce();
-		expect(tx.mCPConfig.create).not.toHaveBeenCalled();
-		expect(tx.mCPConfig.update).not.toHaveBeenCalled();
-		expect(tx.mCPConfig.delete).not.toHaveBeenCalled();
-	});
-
-	it("flips true→false and deletes the MCPConfig when probe says not-found", async () => {
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: false,
-			status: "not-found",
-			httpStatus: 404,
-		});
-
-		const result = await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(result.useOfficialMcp).toBe(false);
-		expect(tx.mCPConfig.delete).toHaveBeenCalledOnce();
-	});
-
-	it("does NOT delete a condemned MCPConfig when the probe says not-found", async () => {
-		// A recheck probes with the EXISTING credential, so it holds no
-		// authority over the breaker — and deleting the row erases it more
-		// completely than any update could: the next capable recheck recreates
-		// the row clean, laundering a flag only a fresh grant may lift.
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-			existingOfficialConfigNeedsReauth: true,
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: false,
-			status: "not-found",
-			httpStatus: 404,
-		});
-
-		const result = await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(tx.mCPConfig.delete).not.toHaveBeenCalled();
-		expect(tx.mCPConfig.update).not.toHaveBeenCalled();
-		// The capability decision still lands — it is the settings flag, not
-		// the row's existence, that routes traffic away from the official
-		// server.
-		expect(result.useOfficialMcp).toBe(false);
-		expect(tx.workflowIntegration.update).toHaveBeenCalledOnce();
-	});
-
-	it("does not resurrect a condemned MCPConfig on a later capable recheck", async () => {
-		// Having survived the incapable probe above, the row must survive a
-		// capable one too: it is updated in place with its breaker intact,
-		// never recreated clean.
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: false, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-			existingOfficialConfigNeedsReauth: true,
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
-		});
-
-		await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(tx.mCPConfig.create).not.toHaveBeenCalled();
-		expect(tx.mCPConfig.update).toHaveBeenCalledOnce();
-		const updateCall = tx.mCPConfig.update.mock.calls[0][0] as {
-			where: { id: string };
-			data: Record<string, unknown>;
-		};
-		expect(updateCall.where).toEqual({ id: "cfg-1" });
-		expect("needsReauth" in updateCall.data).toBe(false);
-	});
-
-	it("uses MCPConfig.baseUrl origin as the probe baseUrl when present (self-hosted)", async () => {
-		const { outer } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-			existingOfficialConfigBaseUrl:
-				"https://gitlab.example.com/api/v4/mcp",
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
-		});
-
-		const result = await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(probe).toHaveBeenCalledWith(
-			expect.objectContaining({ baseUrl: "https://gitlab.example.com" }),
+	it("keeps the previous flag and touches no MCP row on a non-authoritative probe", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue(
+			token({ settings: { useOfficialMcp: true } }),
 		);
-		expect(result.mcpProbe.baseUrl).toBe("https://gitlab.example.com");
+		tx = buildTx([
+			{
+				id: "cfg-official",
+				userId: "u1",
+				organizationId: "org-1",
+				mcpServerId: "srv-official",
+				oauthClientId: null,
+			},
+		]);
+		const result = await recheckGitlabCapabilities({
+			input,
+			probe: probe("network-error", false, 0),
+		});
+		expect(result.useOfficialMcp).toBe(true);
+		expect(tx.mCPConfig.delete).not.toHaveBeenCalled();
+		expect(tx.mCPConfig.create).not.toHaveBeenCalled();
 	});
 
-	it("omits tokenExpiresAt from the sync update payload (does not clobber MCPConfig expiry)", async () => {
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
+	it("never deletes the official row holding the registration that issued the credential", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue(
+			token({
+				issuer: {
+					kind: "mcp-dcr",
+					mcpConfigId: "cfg-official",
+					serverKey: "gitlab-official",
+					clientId: "dcr-client",
+					origin: "https://gitlab.com",
+				},
+			}),
+		);
+		tx = buildTx([
+			{
+				id: "cfg-official",
+				userId: "u1",
+				organizationId: "org-1",
+				mcpServerId: "srv-official",
+				oauthClientId: "dcr-client",
 			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
+		]);
+
+		const result = await recheckGitlabCapabilities({
+			input,
+			probe: probe("not-found", false, 404),
 		});
 
-		await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(tx.mCPConfig.update).toHaveBeenCalledOnce();
-		const updateCall = tx.mCPConfig.update.mock.calls[0][0] as {
-			data: Record<string, unknown>;
-		};
-		expect("tokenExpiresAt" in updateCall.data).toBe(false);
+		expect(result.useOfficialMcp).toBe(false);
+		expect(tx.mCPConfig.delete).not.toHaveBeenCalled();
+		expect(tx.rows).toHaveLength(1);
 	});
 
-	it("does NOT clear the circuit breaker on the synced MCPConfig (a recheck is not a new grant)", async () => {
-		// A capability probe reuses the EXISTING credential — it even passes
-		// `encryptedRefreshToken: null`. If it reset `needsReauth` and the
-		// failure counters, any recheck would resurrect a config whose refresh
-		// token is still dead, which is exactly what the enforced breaker
-		// exists to prevent.
-		const { outer, tx } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: "cfg-1",
-		});
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
-		});
+	it("drops its result (and says so) when the connection moved during the probe", async () => {
+		getGitLabConnectionTokenMock.mockResolvedValue(token());
+		patchGitLabConnectionSettingsMock.mockResolvedValue(false);
 
-		await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
+		await recheckGitlabCapabilities({ input, probe: probe("ok", true) });
 
-		expect(tx.mCPConfig.update).toHaveBeenCalledOnce();
-		const updateCall = tx.mCPConfig.update.mock.calls[0][0] as {
-			data: Record<string, unknown>;
-		};
-		for (const field of [
-			"needsReauth",
-			"status",
-			"refreshFailureCount",
-			"lastRefreshFailedAt",
-			"lastRefreshError",
-			"consecutiveFailures",
-		]) {
-			expect(field in updateCall.data).toBe(false);
-		}
-	});
-
-	it("uses the refreshed token from getValidGitLabToken (not stale credentials)", async () => {
-		const { outer } = makeDb({
-			integration: {
-				id: "wi-1",
-				settings: { useOfficialMcp: true, mcpProbe: null },
-			},
-			officialServerId: "srv-1",
-			existingOfficialConfigId: null,
-		});
-		getValidGitLabTokenMock.mockResolvedValueOnce("just-refreshed-token");
-		const probe = vi.fn().mockResolvedValue({
-			capable: true,
-			status: "ok",
-			httpStatus: 200,
-		});
-
-		await recheckGitlabCapabilities({
-			db: outer as never,
-			input: baseInput,
-			probe,
-		});
-
-		expect(getValidGitLabTokenMock).toHaveBeenCalledOnce();
-		expect(probe).toHaveBeenCalledWith(
-			expect.objectContaining({ accessToken: "just-refreshed-token" }),
+		expect(console.warn).toHaveBeenCalledWith(
+			expect.stringContaining("result not recorded"),
+			expect.anything(),
 		);
 	});
 });

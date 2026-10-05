@@ -3,11 +3,11 @@
  * multiplication bug (Codex round-2 review): the SSE transform's per-chunk
  * cache-key stripping + trailing usage-event synthesis
  * (`applyChunkCacheUsageHandling` / `buildSynthesizedUsageEvent` in
- * `databricks-compat.ts`) must survive the REAL `@langchain/openai` +
+ * `@repo/agent-types`' `databricks-compat.ts`) must survive the REAL `@langchain/openai` +
  * `@langchain/core` streaming merge without the cache counts being summed
  * across chunks.
  *
- * Unlike the unit tests in `databricks-compat.test.ts` (which assert the SSE
+ * Unlike the unit tests in `@repo/ai`'s `databricks-compat.test.ts` (which assert the SSE
  * transform's OWN output shape) and `usage-logging.test.ts` (which feed
  * hand-built message shapes straight to the extractor), this test drives the
  * transform's output through the ACTUALLY-INSTALLED
@@ -24,8 +24,8 @@
  */
 import { AIMessageChunk } from "@langchain/core/messages";
 import { convertCompletionsDeltaToBaseMessageChunk } from "@langchain/openai";
+import { createDatabricksSseTransform } from "@repo/agent-types/databricks-compat";
 import { describe, expect, it } from "vitest";
-import { createDatabricksSseTransform } from "../src/services/databricks-compat";
 import { extractUsageFromLangChainResponse } from "../src/services/usage-logging";
 
 async function runSseTransform(input: string): Promise<string> {
@@ -60,14 +60,14 @@ function parseDataChunks(sse: string): Record<string, unknown>[] {
 /**
  * Build the post-loop synthetic usage chunk the same way
  * `ChatOpenAICompletions._streamResponseChunks` does once the SSE stream's
- * final `usage` object is known (`@langchain/openai` 1.2.7,
+ * final `usage` object is known (`@langchain/openai` 1.5.11,
  * `dist/chat_models/completions.cjs`): `response_metadata.usage` is the raw
- * usage object spread verbatim, and `usage_metadata.input_token_details
- * .cache_read` is mapped from `prompt_tokens_details.cached_tokens` — the
- * only cache field `@langchain/openai` itself maps into `usage_metadata`; it
- * never maps a cache-WRITE detail there (see the `rawUsage` fallback in
- * `usage-logging.ts`), which is why `cache_creation_input_tokens` surviving
- * on `response_metadata.usage` exactly once is the crux of this test.
+ * usage object spread verbatim, and `usage_metadata.input_token_details`
+ * maps `cache_read` from `prompt_tokens_details.cached_tokens` and
+ * `cache_creation` from `prompt_tokens_details.cache_write_tokens`. The
+ * Databricks transform only adds those aliases on the one choices-less usage
+ * event, so the raw `cache_*_input_tokens` fields surviving on
+ * `response_metadata.usage` exactly once is the crux of this test.
  */
 function buildSyntheticUsageChunk(
 	usage: Record<string, unknown>,
@@ -78,6 +78,10 @@ function buildSyntheticUsageChunk(
 	const inputTokenDetails: Record<string, unknown> = {};
 	if (promptTokensDetails?.cached_tokens !== undefined) {
 		inputTokenDetails.cache_read = promptTokensDetails.cached_tokens;
+	}
+	if (promptTokensDetails?.cache_write_tokens != null) {
+		inputTokenDetails.cache_creation =
+			promptTokensDetails.cache_write_tokens;
 	}
 	return new AIMessageChunk({
 		content: "",
@@ -96,30 +100,42 @@ function buildSyntheticUsageChunk(
 /**
  * Replay one SSE-transform output (already stripped/synthesized by
  * `createDatabricksSseTransform`) through the real LangChain converters and
- * `.concat()` chain, exactly as `ChatOpenAICompletions._generate`'s streaming
- * branch does, and return the fully merged message.
+ * `.concat()` chain, in the order `ChatOpenAICompletions._streamResponseChunks`
+ * uses: every chunk's `usage` replaces the retained one, a choices-less chunk
+ * contributes no content chunk of its own, and ONE usage chunk built from the
+ * last retained `usage` is appended after the loop. Returns the fully merged
+ * message.
  */
 function replayThroughRealLangChainMerge(
 	dataChunks: Record<string, unknown>[],
 ): AIMessageChunk {
 	let merged: AIMessageChunk | undefined;
-	for (const chunk of dataChunks) {
-		const choices = chunk.choices as Array<Record<string, unknown>>;
-		const messageChunk =
-			choices.length > 0
-				? (convertCompletionsDeltaToBaseMessageChunk({
-						delta: choices[0].delta as Record<string, unknown>,
-						// biome-ignore lint/suspicious/noExplicitAny: the real converter's
-						// param type is the OpenAI SDK's ChatCompletionChunk; our canned
-						// fixture is structurally compatible for every field it reads.
-						rawResponse: chunk as any,
-					}) as AIMessageChunk)
-				: buildSyntheticUsageChunk(
-						chunk.usage as Record<string, unknown>,
-					);
+	let retainedUsage: Record<string, unknown> | undefined;
+	const append = (messageChunk: AIMessageChunk) => {
 		merged = merged
 			? (merged.concat(messageChunk) as AIMessageChunk)
 			: messageChunk;
+	};
+	for (const chunk of dataChunks) {
+		if (chunk.usage) {
+			retainedUsage = chunk.usage as Record<string, unknown>;
+		}
+		const choices = (chunk.choices ?? []) as Array<Record<string, unknown>>;
+		if (choices.length === 0) {
+			continue;
+		}
+		append(
+			convertCompletionsDeltaToBaseMessageChunk({
+				delta: choices[0].delta as Record<string, unknown>,
+				// The real converter's param type is the OpenAI SDK's
+				// ChatCompletionChunk; our canned fixture is structurally
+				// compatible for every field it reads.
+				rawResponse: chunk as never,
+			}) as AIMessageChunk,
+		);
+	}
+	if (retainedUsage) {
+		append(buildSyntheticUsageChunk(retainedUsage));
 	}
 	if (!merged) {
 		throw new Error("no chunks to merge");
@@ -190,5 +206,80 @@ describe("Databricks streaming cache usage survives the real LangChain merge", (
 		// cache-miss contract: a miss is absent, never a fabricated zero).
 		expect(usage?.cachedInputTokens).toBeUndefined();
 		expect(usage?.outputTokens).toBe(6);
+	});
+
+	// Fizzy #2911: the cache read reported only on an earlier chunk must still
+	// be recorded once, whichever shape the stream's final usage takes.
+	it("reports an earlier chunk's cache read once when the final content chunk's usage omits the cache keys", async () => {
+		const firstChunk =
+			'data: {"id":"c3","model":"m","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":null,"total_tokens":null}}\n\n';
+		const finalChunk =
+			'data: {"id":"c3","model":"m","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":4,"total_tokens":104}}\n\n';
+		const sse = await runSseTransform(
+			firstChunk + finalChunk + "data: [DONE]\n\n",
+		);
+
+		const dataChunks = parseDataChunks(sse);
+		// 2 content chunks + 1 synthesized usage-only event.
+		expect(dataChunks).toHaveLength(3);
+
+		const merged = replayThroughRealLangChainMerge(dataChunks);
+		const rawMergedUsage = merged.response_metadata?.usage as
+			| Record<string, unknown>
+			| undefined;
+		expect(rawMergedUsage?.cache_read_input_tokens).toBe(90);
+
+		const usage = extractUsageFromLangChainResponse(merged);
+		expect(usage?.cachedInputTokens).toBe(90);
+		expect(usage?.cacheCreationInputTokens).toBe(0);
+		expect(usage?.inputTokens).toBe(100);
+		expect(usage?.outputTokens).toBe(4);
+	});
+
+	it("reports an earlier chunk's cache read once when a native usage-only chunk without cache keys ends the stream", async () => {
+		const contentChunk =
+			'data: {"id":"c4","model":"m","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const nativeUsageChunk =
+			'data: {"id":"c4","model":"m","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const sse = await runSseTransform(
+			contentChunk + nativeUsageChunk + "data: [DONE]\n\n",
+		);
+
+		const dataChunks = parseDataChunks(sse);
+		// content chunk + the native usage-only chunk; nothing synthesized.
+		expect(dataChunks).toHaveLength(2);
+
+		const merged = replayThroughRealLangChainMerge(dataChunks);
+		const rawMergedUsage = merged.response_metadata?.usage as
+			| Record<string, unknown>
+			| undefined;
+		expect(rawMergedUsage?.cache_read_input_tokens).toBe(90);
+
+		const usage = extractUsageFromLangChainResponse(merged);
+		expect(usage?.cachedInputTokens).toBe(90);
+		expect(usage?.inputTokens).toBe(100);
+		expect(usage?.outputTokens).toBe(2);
+	});
+	it("reports the cache read once when usage-bearing content follows an earlier native usage-only chunk", async () => {
+		const contentChunk =
+			'data: {"id":"c5","model":"m","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}],"usage":{"cache_read_input_tokens":90,"cache_creation_input_tokens":0,"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}\n\n';
+		const nativeUsageChunk =
+			'data: {"id":"c5","model":"m","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}}\n\n';
+		const finalChunk =
+			'data: {"id":"c5","model":"m","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":2,"total_tokens":102}}\n\n';
+		const sse = await runSseTransform(
+			contentChunk + nativeUsageChunk + finalChunk + "data: [DONE]\n\n",
+		);
+
+		const merged = replayThroughRealLangChainMerge(parseDataChunks(sse));
+		const rawMergedUsage = merged.response_metadata?.usage as
+			| Record<string, unknown>
+			| undefined;
+		expect(rawMergedUsage?.cache_read_input_tokens).toBe(90);
+
+		const usage = extractUsageFromLangChainResponse(merged);
+		expect(usage?.cachedInputTokens).toBe(90);
+		expect(usage?.inputTokens).toBe(100);
+		expect(usage?.outputTokens).toBe(2);
 	});
 });

@@ -1,15 +1,8 @@
 import { execFileSync } from "node:child_process";
-import {
-	chmod,
-	mkdir,
-	mkdtemp,
-	readdir,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	buildGitEnv,
@@ -25,6 +18,14 @@ import {
 // Real git, real partial clone, real sparse checkout. The paths below are
 // the ones gitignore syntax treats specially, each next to the neighbour a
 // wrong escape would also select.
+//
+// A backslash is a path separator on Windows: its file systems cannot hold such
+// a name and git there refuses it (core.protectNTFS), so that one path is
+// present wherever a name can carry it.
+const BACKSLASH_PATHS: Record<string, string> =
+	process.platform === "win32"
+		? {}
+		: { "agents/back\\slash.md": "backslash" };
 const FILES: Record<string, string> = {
 	"agents/x[1].md": "bracket",
 	"agents/x1.md": "neighbour of the bracket",
@@ -33,7 +34,7 @@ const FILES: Record<string, string> = {
 	"agents/a b.md": "inner space",
 	"agents/ab.md": "neighbour of the space",
 	"agents/ lead.md": "leading space",
-	"agents/back\\slash.md": "backslash",
+	...BACKSLASH_PATHS,
 	"agents/run.sh": "#!/bin/sh\necho hi\n",
 	"outside.md": "not under the root",
 };
@@ -43,7 +44,7 @@ const KEPT = [
 	"agents/!bang.md",
 	"agents/a b.md",
 	"agents/ lead.md",
-	"agents/back\\slash.md",
+	...Object.keys(BACKSLASH_PATHS),
 	"agents/run.sh",
 ];
 
@@ -63,7 +64,7 @@ let work: string;
 let source: string;
 let firstCommit: string;
 
-function git(cwd: string, args: string[]): string {
+function git(cwd: string, args: string[], input?: string): string {
 	return execFileSync("git", args, {
 		cwd,
 		env: {
@@ -72,6 +73,7 @@ function git(cwd: string, args: string[]): string {
 			GIT_CONFIG_NOSYSTEM: "1",
 			GIT_CONFIG_GLOBAL: "/dev/null",
 		},
+		input,
 		encoding: "utf8",
 	}).trim();
 }
@@ -86,7 +88,7 @@ function git(cwd: string, args: string[]): string {
  */
 function syncEnv(home: string): NodeJS.ProcessEnv {
 	return {
-		...buildGitEnv({ home, host: new URL(`file://${source}`).host }),
+		...buildGitEnv({ home, host: pathToFileURL(source).host }),
 		GIT_CONFIG_COUNT: "1",
 		GIT_CONFIG_KEY_0: "protocol.file.allow",
 		GIT_CONFIG_VALUE_0: "always",
@@ -118,7 +120,7 @@ async function freshClone(
 	const env = syncEnv(run);
 	await cloneTreeless({
 		cwd: run,
-		url: `file://${source}`,
+		url: pathToFileURL(source).href,
 		ref: "main",
 		dir,
 		env,
@@ -134,12 +136,21 @@ describe.skipIf(!hasGit)("repository sync against real git", () => {
 		for (const [name, body] of Object.entries(FILES)) {
 			await writeFile(path.join(source, name), body);
 		}
-		await chmod(path.join(source, "agents/run.sh"), 0o755);
-		await symlink("x1.md", path.join(source, "agents/link.md"));
 		git(source, ["init", "-q", "-b", "main"]);
 		git(source, ["config", "uploadpack.allowFilter", "true"]);
 		git(source, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
 		git(source, ["add", "-A"]);
+		// The executable bit and the symlink go into the index directly: a
+		// Windows file has no executable bit for `add` to read, and a symlink
+		// there needs a privilege.
+		git(source, ["update-index", "--chmod=+x", "agents/run.sh"]);
+		const linkBlob = git(source, ["hash-object", "-w", "--stdin"], "x1.md");
+		git(source, [
+			"update-index",
+			"--add",
+			"--cacheinfo",
+			`120000,${linkBlob},agents/link.md`,
+		]);
 		git(source, [
 			"-c",
 			"user.name=Example",
@@ -155,6 +166,7 @@ describe.skipIf(!hasGit)("repository sync against real git", () => {
 			path.join(source, "agents/x1.md"),
 			"changed on the second commit",
 		);
+		git(source, ["add", "agents/x1.md"]);
 		git(source, [
 			"-c",
 			"user.name=Example",
@@ -162,7 +174,7 @@ describe.skipIf(!hasGit)("repository sync against real git", () => {
 			"user.email=dev@example.com",
 			"commit",
 			"-q",
-			"-am",
+			"-m",
 			"two",
 		]);
 	});

@@ -114,20 +114,51 @@ describe("isOnPath on win32", () => {
 });
 
 describe("isOnPath on POSIX, same files", () => {
-	it("requires an execute bit and ignores PATHEXT", async () => {
+	// A Windows file has no execute bit to set: `chmod` only toggles the
+	// read-only attribute and `stat` reports 666 either way. The rule is
+	// pinned on every platform by the injected-mode test below.
+	it.skipIf(process.platform === "win32")(
+		"requires an execute bit and ignores PATHEXT",
+		async () => {
+			const lookup: PathLookupEnvironment = {
+				platform: "linux",
+				env: { PATH: binDir, PATHEXT: ".CMD" },
+			};
+
+			await expect(isOnPath("tool", lookup)).resolves.toBe(false);
+			await expect(isOnPath("tool.CMD", lookup)).resolves.toBe(false);
+
+			await chmod(path.join(binDir, "bare"), 0o755);
+			try {
+				await expect(isOnPath("bare", lookup)).resolves.toBe(true);
+			} finally {
+				await chmod(path.join(binDir, "bare"), 0o644);
+			}
+		},
+	);
+
+	it("requires an execute bit and ignores PATHEXT, whatever mode the disk reports", async () => {
+		// A POSIX PATH entry, which a Windows temp folder is not: the injected
+		// `stat` maps each candidate onto the real file and says its mode.
+		const executable = new Set<string>();
 		const lookup: PathLookupEnvironment = {
 			platform: "linux",
-			env: { PATH: binDir, PATHEXT: ".CMD" },
+			env: { PATH: "/fake/bin", PATHEXT: ".CMD" },
+			stat: async (candidate) => {
+				const real = await stat(
+					path.join(binDir, path.posix.basename(candidate)),
+				);
+				return {
+					isFile: () => real.isFile(),
+					mode: executable.has(candidate) ? 0o100755 : 0o100644,
+				};
+			},
 		};
 
 		await expect(isOnPath("tool", lookup)).resolves.toBe(false);
 		await expect(isOnPath("tool.CMD", lookup)).resolves.toBe(false);
 
-		await chmod(path.join(binDir, "bare"), 0o755);
-		try {
-			await expect(isOnPath("bare", lookup)).resolves.toBe(true);
-		} finally {
-			await chmod(path.join(binDir, "bare"), 0o644);
-		}
+		executable.add("/fake/bin/bare");
+		await expect(isOnPath("bare", lookup)).resolves.toBe(true);
 	});
 });

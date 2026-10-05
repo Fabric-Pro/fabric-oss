@@ -22,6 +22,7 @@ import {
 	seedSteps,
 } from "@repo/database";
 import { getGitHubAccessToken } from "@repo/integrations/github";
+import { getGitLabAccessToken } from "@repo/integrations/gitlab";
 import { resolveFreshRepoTokenForRow } from "@repo/integrations/repo-auth";
 import { decryptApiKey } from "@repo/utils";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -257,6 +258,10 @@ async function startLegacyOAuthIndexing(opts: {
 	let token: string | null = null;
 	if (parsed.provider === "GITHUB") {
 		token = await getGitHubAccessToken(userId, organizationId ?? undefined);
+	} else if (parsed.provider === "GITLAB") {
+		// The person's one GitLab connection, refreshed with its issuing
+		// client — never a raw read of whichever row was touched last.
+		token = await getGitLabAccessToken(userId, organizationId ?? undefined);
 	} else {
 		const integration = await db.workflowIntegration.findFirst({
 			where: {

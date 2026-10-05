@@ -13,10 +13,12 @@ import {
 } from "@repo/instructions";
 import { describe, expect, it } from "vitest";
 import {
+	INSTRUCTIONS_COMMIT_SYNC_WAIT_MS,
 	INSTRUCTIONS_FAST_POLL_MS,
 	INSTRUCTIONS_FAST_POLL_WINDOW_MS,
 	INSTRUCTIONS_PUBLISH_CONVERGENCE_POLLS,
 	INSTRUCTIONS_SLOW_POLL_MS,
+	instructionsAwaitsCommitSync,
 	instructionsAwaitsPublish,
 	instructionsPollInterval,
 } from "../instructions-poll";
@@ -481,5 +483,115 @@ describe("instructionsPollInterval — deferred secret scan", () => {
 				{ now: NOW },
 			),
 		).toBe(INSTRUCTIONS_SLOW_POLL_MS);
+	});
+});
+
+/**
+ * Fizzy #2878 §10. A commit made from the tab is recorded when the push lands;
+ * the published version follows from a sync of the real tree a few seconds
+ * later, so the tab keeps reading until the published row names the commit,
+ * for a bounded time, and then falls back to the ordinary current/behind state.
+ */
+describe("instructionsAwaitsCommitSync", () => {
+	const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+	it("is not waiting for anything when no commit was made", () => {
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: null,
+				publishedSha: SHA,
+				now: NOW,
+			}),
+		).toBe(false);
+	});
+
+	it("waits while the published version is some other commit", () => {
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "main", at: NOW },
+				publishedSha: "f".repeat(40),
+				now: NOW + 10_000,
+			}),
+		).toBe(true);
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "main", at: NOW },
+				publishedSha: null,
+				now: NOW + 10_000,
+			}),
+		).toBe(true);
+	});
+
+	it("stops the moment the published version is the commit", () => {
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "main", at: NOW },
+				publishedSha: SHA,
+				now: NOW + 10_000,
+			}),
+		).toBe(false);
+	});
+
+	it("gives up after the bounded wait", () => {
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "main", at: NOW },
+				publishedSha: null,
+				now: NOW + INSTRUCTIONS_COMMIT_SYNC_WAIT_MS - 1,
+			}),
+		).toBe(true);
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "main", at: NOW },
+				publishedSha: null,
+				now: NOW + INSTRUCTIONS_COMMIT_SYNC_WAIT_MS,
+			}),
+		).toBe(false);
+	});
+
+	it("stops once the sync follows another branch than the one the commit went to", () => {
+		expect(
+			instructionsAwaitsCommitSync({
+				awaited: { sha: SHA, ref: "e2e-scratch", at: NOW },
+				publishedSha: null,
+				configuredRef: "main",
+				now: NOW + 10_000,
+			}),
+		).toBe(false);
+	});
+
+	it("keeps waiting while the sync still follows the branch the commit went to, or the configuration is not known", () => {
+		for (const configuredRef of ["main", null, undefined]) {
+			expect(
+				instructionsAwaitsCommitSync({
+					awaited: { sha: SHA, ref: "main", at: NOW },
+					publishedSha: null,
+					configuredRef,
+					now: NOW + 10_000,
+				}),
+			).toBe(true);
+		}
+	});
+
+	it("keeps an otherwise idle tab polling, at the interval in force, while waiting", () => {
+		expect(
+			instructionsPollInterval([{ status: "READY" }], 0, {
+				now: NOW,
+				awaitingCommitSync: true,
+			}),
+		).toBe(INSTRUCTIONS_FAST_POLL_MS);
+		expect(
+			instructionsPollInterval(
+				[{ status: "READY" }],
+				INSTRUCTIONS_FAST_POLL_WINDOW_MS,
+				{ now: NOW, awaitingCommitSync: true },
+			),
+		).toBe(INSTRUCTIONS_SLOW_POLL_MS);
+		expect(
+			instructionsPollInterval([{ status: "READY" }], 0, {
+				now: NOW,
+				awaitingCommitSync: false,
+			}),
+		).toBe(false);
 	});
 });

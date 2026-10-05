@@ -28,6 +28,7 @@ export function getSelectedConversationToolIds(
 export function mergeDirectConversationMetadata(params: {
 	existing?: Record<string, unknown> | null;
 	documentChatId?: string | null;
+	/** Undefined preserves the existing pin; null explicitly removes it. */
 	instanceId?: string | null;
 	selectedMcpConfigIds?: string[];
 }): Record<string, unknown> {
@@ -49,7 +50,9 @@ export function mergeDirectConversationMetadata(params: {
 		next.documentChatId = params.documentChatId;
 	}
 
-	if (params.instanceId) {
+	if (params.instanceId === null) {
+		delete next.instanceId;
+	} else if (params.instanceId) {
 		next.instanceId = params.instanceId;
 	}
 

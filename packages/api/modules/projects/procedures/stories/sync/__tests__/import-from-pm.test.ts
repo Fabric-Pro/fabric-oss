@@ -14,6 +14,8 @@ const mockCreateStory = vi.fn();
 const mockUpdateStory = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	resolvePMConfigForUser: vi.fn(),
 	createStory: (...args: unknown[]) => mockCreateStory(...args),
 	updateStory: (...args: unknown[]) => mockUpdateStory(...args),
@@ -853,7 +855,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			mockGetGitLabIssueForPM.mockResolvedValue({
 				title: "Add OAuth reconnect flow",
@@ -938,7 +943,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
 				id: "story-1",
@@ -973,7 +981,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
 				id: "story-1",
@@ -1031,7 +1042,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			mockGetGitLabIssueForPM.mockResolvedValue({
 				title: "Racey issue",
@@ -1095,7 +1109,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			mockGetGitLabIssueForPM.mockResolvedValue({
 				title: "Some issue",
@@ -1143,7 +1160,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
 				id: "story-1",
@@ -1209,7 +1229,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			mockGetGitLabIssueForPM.mockResolvedValue({
 				title: "Add OAuth reconnect flow",
@@ -1252,7 +1275,10 @@ describe("importFromPMProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
 				id: "story-1",

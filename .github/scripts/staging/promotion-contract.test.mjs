@@ -36,6 +36,21 @@ test("contract reads the exact committed tree, requires consumed releases and va
 			verifyCandidateMetadata(repo, head).tree,
 			git("rev-parse", `${head}^{tree}`),
 		);
+		git("rm", "-qr", ".changeset");
+		const missing = commit();
+		assert.throws(
+			() => verifyCandidateMetadata(repo, missing),
+			/changeset/,
+		);
+		git("checkout", "-q", "--detach", head);
+		git("rm", "-qr", ".changeset");
+		write(".changeset", "Invalid changeset metadata");
+		const invalidChangesetTree = commit();
+		assert.throws(
+			() => verifyCandidateMetadata(repo, invalidChangesetTree),
+			/changeset metadata is unavailable/,
+		);
+		git("checkout", "-q", "--detach", head);
 		write(".changeset/untracked.md", "Not in the committed tree");
 		verifyCandidateMetadata(repo, head);
 		rmSync(join(repo, ".changeset/untracked.md"));

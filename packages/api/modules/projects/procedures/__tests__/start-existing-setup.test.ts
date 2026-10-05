@@ -70,6 +70,68 @@ vi.mock("@repo/database", () => ({
 	ProjectMemberRole: { OWNER: "OWNER", ADMIN: "ADMIN", MEMBER: "MEMBER" },
 }));
 
+// The person's GitLab connection, read through the connection service. The
+// double derives it from the same seeded rows the GitHub arm reads, the way
+// the service's evidence-based adoption classifies a stored credential: PAT
+// fields alone are a personal access token, anything with an OAuth
+// `access_token` an OAuth grant.
+vi.mock("@repo/integrations/gitlab", () => ({
+	getGitLabConnectionToken: async (tenant: {
+		userId: string;
+		organizationId: string | null;
+	}) => {
+		const row = (await mockWorkflowIntegrationFindFirst({
+			where: {
+				userId: tenant.userId,
+				provider: "GITLAB",
+				NOT: { name: "GITLAB_OAUTH_APP" },
+				isActive: true,
+				organizationId: tenant.organizationId,
+			},
+		})) as { credentials?: string } | null;
+		if (!row?.credentials) {
+			return {
+				ok: false,
+				reason: "not-connected",
+				message: "not connected",
+			};
+		}
+		const { decryptApiKey } = await import("@repo/utils");
+		let cred: Record<string, string | undefined>;
+		try {
+			cred = JSON.parse(decryptApiKey(row.credentials));
+		} catch {
+			// The service reports an unreadable credential as a failure.
+			return { ok: false, reason: "transient", message: "unreadable" };
+		}
+		const pat = cred.GITLAB_ACCESS_TOKEN || cred.apiToken || cred.pat;
+		const isPat = !cred.access_token && !cred.refresh_token && Boolean(pat);
+		const accessToken = isPat ? pat : cred.access_token;
+		if (!accessToken) {
+			return {
+				ok: false,
+				reason: "not-connected",
+				message: "not connected",
+			};
+		}
+		return {
+			ok: true,
+			accessToken,
+			issuer: isPat
+				? { kind: "pat", origin: "https://gitlab.com" }
+				: {
+						kind: "app",
+						clientId: "app-client",
+						origin: "https://gitlab.com",
+					},
+			origin: "https://gitlab.com",
+			integrationId: "wi-gitlab",
+			generation: 1,
+			settings: {},
+		};
+	},
+}));
+
 vi.mock("@repo/ai-token", () => ({
 	issueAIToken: (...args: unknown[]) => mockIssueAIToken(...args),
 }));
@@ -166,6 +228,7 @@ beforeEach(() => {
 	mockValidateGitLabPat.mockResolvedValue({ ok: true });
 	mockProjectFindUnique.mockResolvedValue({
 		id: "p1",
+		organizationId: "org-1",
 		name: "Proj",
 		codeAnalysisStatus: "NOT_STARTED",
 		defaultBranch: "main",
@@ -346,6 +409,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		const GITHUB_URL = "https://github.com/my-org/my-repo";
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			codeAnalysisStatus: "NOT_STARTED",
 			defaultBranch: null,
@@ -404,10 +468,11 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		);
 	});
 
-	it("auto-detects default branch from GitLab API if project.defaultBranch is null", async () => {
+	it("resolves the GitLab default branch with the PAT if project.defaultBranch is null", async () => {
 		const GITLAB_URL = "https://gitlab.com/my-org/my-repo";
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			codeAnalysisStatus: "NOT_STARTED",
 			defaultBranch: null,
@@ -421,7 +486,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			.mockResolvedValueOnce({
 				id: "wi-2",
 				credentials: encryptApiKey(
-					JSON.stringify({ access_token: "fake-gitlab-token" }),
+					JSON.stringify({ GITLAB_ACCESS_TOKEN: "glpat-example" }),
 				),
 			});
 
@@ -432,14 +497,6 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			url: "https://gitlab.com/my-org/my-repo",
 		});
 		mockRepoIntegrationFindFirst.mockResolvedValue(null);
-
-		// The probe payload already carries default_branch; the GitLab arm must
-		// reuse it like the GitHub arm does, so resolveDefaultBranch's second
-		// identical fetch short-circuits.
-		mockVerifyRepositoryAccess.mockResolvedValue({
-			outcome: "accessible",
-			defaultBranch: "gitlab-probed",
-		});
 		mockResolveDefaultBranch.mockResolvedValueOnce("gitlab-dev");
 
 		const handler = await loadHandler();
@@ -456,9 +513,9 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		});
 
 		expect(mockResolveDefaultBranch).toHaveBeenCalledWith({
-			providedBranch: "gitlab-probed",
+			providedBranch: undefined,
 			provider: "GITLAB",
-			token: "fake-gitlab-token",
+			token: "glpat-example",
 			repositoryUrl: GITLAB_URL,
 			owner: "my-org",
 			repo: "my-repo",
@@ -608,9 +665,11 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			expect.objectContaining({
 				authMethod: "PAT",
 				encryptedPat: "encrypted:glpat_123",
-				encryptedAccessToken: undefined,
 			}),
 		);
+		const created = mockCreateProjectRepoIntegration.mock.calls[0][0];
+		expect(created.encryptedAccessToken).toBeUndefined();
+		expect(created.encryptedRefreshToken).toBeUndefined();
 		expect(mockSyncLegacyProjectRepoOnConnect).toHaveBeenCalledWith(
 			"p1",
 			"https://gitlab.com/my-org/my-repo",
@@ -619,6 +678,66 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			"main",
 		);
 	});
+
+	// The connection read can classify (write) a row in the organization it is
+	// given, so it runs in the project's organization (the tenant
+	// `requireProjectPermission` authorized), never one the input names. A
+	// project with no organization is refused before any read (see "tenant
+	// comes from the project" below).
+	it.each([{ projectOrg: "org-1", inputOrg: "org-other", reads: ["org-1"] }])(
+		"reads the GitLab connection in the project's organization ($projectOrg), not the input's ($inputOrg)",
+		async ({ projectOrg, inputOrg, reads }) => {
+			mockProjectFindUnique.mockResolvedValue({
+				id: "p1",
+				organizationId: projectOrg,
+				name: "Proj",
+				codeAnalysisStatus: "NOT_STARTED",
+				defaultBranch: "main",
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: null,
+				projectManagementAdditionalContext: null,
+			});
+			mockParseRepoUrl.mockReturnValue({
+				provider: "GITLAB",
+				owner: "my-org",
+				name: "my-repo",
+				url: "https://gitlab.com/my-org/my-repo",
+			});
+			mockWorkflowIntegrationFindFirst.mockResolvedValue({
+				credentials: encryptApiKey(
+					JSON.stringify({ apiToken: "glpat_123" }),
+				),
+			});
+			mockRepoIntegrationFindFirst.mockResolvedValue(null);
+
+			const handler = await loadHandler();
+			await handler({
+				input: {
+					projectId: "p1",
+					organizationId: inputOrg,
+					repoUrls: ["https://gitlab.com/my-org/my-repo"],
+					selectedDocumentTypes: [],
+					projectTypes: [],
+					projectName: "Proj",
+				},
+				context: baseContext,
+			});
+
+			const gitlabReads = mockWorkflowIntegrationFindFirst.mock.calls
+				.map(
+					(call) =>
+						call[0] as {
+							where?: {
+								provider?: string;
+								organizationId?: unknown;
+							};
+						},
+				)
+				.filter((arg) => arg.where?.provider === "GITLAB")
+				.map((arg) => arg.where?.organizationId);
+			expect(gitlabReads).toEqual(reads);
+		},
+	);
 
 	it("skips GitHub repo integration but continues project setup when the repo probe says the credential cannot read it", async () => {
 		mockParseRepoUrl.mockReturnValue({
@@ -671,6 +790,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		const GITHUB_URL = "https://github.com/my-org/legacy-repo";
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			codeAnalysisStatus: "NOT_STARTED",
 			defaultBranch: null,
@@ -1129,44 +1249,57 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		expect(mockWorkflowStart).toHaveBeenCalled();
 	});
 
-	it("still connects a self-hosted GitLab repo over OAuth", async () => {
-		mockParseRepoUrl.mockReturnValue({
-			provider: "GITLAB",
-			owner: "example-org",
-			name: "example-repo",
-			url: "https://gitlab.example.com/example-org/example-repo",
-		});
-		mockWorkflowIntegrationFindFirst.mockResolvedValue({
-			credentials: encryptApiKey(
-				JSON.stringify({ access_token: "gl_oauth_token" }),
-			),
-		});
-		mockRepoIntegrationFindFirst.mockResolvedValue(null);
-
-		const handler = await loadHandler();
-		const result = await handler({
-			input: {
-				projectId: "p1",
-				organizationId: "org-1",
-				repoUrls: [
-					"https://gitlab.example.com/example-org/example-repo",
-				],
-				selectedDocumentTypes: [],
-				projectTypes: [],
-				projectName: "Proj",
-			},
-			context: baseContext,
-		});
-
-		expect(result.skippedRepos).toBeUndefined();
-		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
-			expect.objectContaining({
+	it.each([
+		"https://gitlab.com/example-org/example-repo",
+		"https://gitlab.example.com/example-org/example-repo",
+	])(
+		"never copies a personal OAuth grant into a repository link (%s is skipped for its own authorization)",
+		async (repoUrl) => {
+			mockParseRepoUrl.mockReturnValue({
 				provider: "GITLAB",
-				authMethod: "OAUTH",
-			}),
-		);
-		expect(mockWorkflowStart).toHaveBeenCalled();
-	});
+				owner: "example-org",
+				name: "example-repo",
+				url: repoUrl,
+			});
+			mockWorkflowIntegrationFindFirst.mockImplementation(
+				async (args: { where: { provider: string } }) =>
+					args.where.provider === "GITLAB"
+						? {
+								credentials: encryptApiKey(
+									JSON.stringify({
+										access_token: "gl_oauth_token",
+										refresh_token: "gl_oauth_refresh",
+									}),
+								),
+							}
+						: null,
+			);
+			mockRepoIntegrationFindFirst.mockResolvedValue(null);
+
+			const handler = await loadHandler();
+			const result = await handler({
+				input: {
+					projectId: "p1",
+					organizationId: "org-1",
+					repoUrls: [repoUrl],
+					selectedDocumentTypes: [],
+					projectTypes: [],
+					projectName: "Proj",
+				},
+				context: baseContext,
+			});
+
+			expect(result.skippedRepos).toEqual([
+				"GitLab: example-org/example-repo",
+			]);
+			expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+			// The grant was not even used to probe the repository.
+			for (const [args] of mockVerifyRepositoryAccess.mock.calls) {
+				expect(JSON.stringify(args)).not.toContain("gl_oauth_token");
+			}
+			expect(mockWorkflowStart).toHaveBeenCalled();
+		},
+	);
 
 	it("auto-populates GitHub PAT credential when only `pat` fallback key is present", async () => {
 		mockParseRepoUrl.mockReturnValue({
@@ -1336,7 +1469,7 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		});
 		mockWorkflowIntegrationFindFirst.mockResolvedValue({
 			credentials: encryptApiKey(
-				JSON.stringify({ access_token: "fake-gitlab-token" }),
+				JSON.stringify({ GITLAB_ACCESS_TOKEN: "glpat-example" }),
 			),
 		});
 		mockRepoIntegrationFindFirst.mockResolvedValue(null);
@@ -1355,15 +1488,11 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			context: baseContext,
 		});
 
-		// The OAuth arm's own repository probe — one of the call sites that
-		// used to forward the raw, uncanonicalized URL.
-		expect(mockVerifyRepositoryAccess).toHaveBeenCalledWith({
-			provider: "GITLAB",
-			token: "fake-gitlab-token",
-			gitlabAuth: "bearer",
-			repositoryUrl: "https://gitlab.com/my-org/my-repo",
-			owner: "my-org",
-			repo: "my-repo",
+		// The PAT's own validation reads the canonical project path.
+		expect(mockValidateGitLabPat).toHaveBeenCalledWith({
+			pat: "glpat-example",
+			host: "https://gitlab.com",
+			projectPath: "my-org/my-repo",
 		});
 		expect(mockResolveDefaultBranch).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -1434,5 +1563,101 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 			(auditCall?.[0] as { metadata: { repoUrls: string[] } })?.metadata
 				.repoUrls,
 		).toEqual(["https://github.com/my-org/my-repo"]);
+	});
+});
+
+// The AI token is exchanged by the workflow's agent for the named
+// organization's decrypted provider key, and the GitHub credential copied into
+// the project is read in that organization too. Both — and the workflow and its
+// activity rows — use the project's own organization, the tenant
+// `requireProjectPermission` authorized, never one the input names.
+describe("startExistingSetupProcedure — tenant comes from the project", () => {
+	it("issues the AI token, reads credentials and starts the workflow in the project's organization when the input names another", async () => {
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
+		});
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-other",
+				repoUrls: ["https://github.com/my-org/my-repo"],
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		expect(mockIssueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: "org-1" }),
+		);
+		const [, options] = mockWorkflowStart.mock.calls[0];
+		const args = (options as { args: unknown[] }).args[0] as {
+			organizationId?: string;
+		};
+		expect(args.organizationId).toBe("org-1");
+
+		const githubReads = mockWorkflowIntegrationFindFirst.mock.calls
+			.map(
+				(call) =>
+					call[0] as {
+						where?: { provider?: string; organizationId?: unknown };
+					},
+			)
+			.filter((arg) => arg.where?.provider === "GITHUB")
+			.map((arg) => arg.where?.organizationId);
+		expect(githubReads).toEqual(["org-1"]);
+
+		for (const call of mockLogRepoIntegrationActivity.mock.calls) {
+			expect(
+				(call[0] as { organizationId?: string }).organizationId,
+			).toBe("org-1");
+		}
+	});
+
+	it("refuses a project with no organization before any token, credential read, workflow start or write", async () => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: null,
+			name: "Proj",
+			codeAnalysisStatus: "NOT_STARTED",
+			defaultBranch: "main",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			projectManagementAdditionalContext: null,
+		});
+		mockParseRepoUrl.mockReturnValue({
+			provider: "GITHUB",
+			owner: "my-org",
+			name: "my-repo",
+			url: "https://github.com/my-org/my-repo",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "p1",
+					organizationId: "org-1",
+					repoUrls: ["https://github.com/my-org/my-repo"],
+					selectedDocumentTypes: [],
+					projectTypes: [],
+					projectName: "Proj",
+				},
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+		expect(mockIssueAIToken).not.toHaveBeenCalled();
+		expect(mockWorkflowIntegrationFindFirst).not.toHaveBeenCalled();
+		expect(mockCreateProjectRepoIntegration).not.toHaveBeenCalled();
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
+		expect(mockProjectUpdate).not.toHaveBeenCalled();
+		expect(mockLogRepoIntegrationActivity).not.toHaveBeenCalled();
 	});
 });

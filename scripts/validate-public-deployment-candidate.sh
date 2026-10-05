@@ -241,7 +241,7 @@ readonly JSON_PARAMETER_FIXTURE="$BICEP_DIR/main.parameters.json"
 readonly STRING_BOOLEAN_FIXTURE="$VALIDATION_TEMP_DIR/string-boolean.parameters.json"
 readonly NULL_REFERENCE_FIXTURE="$VALIDATION_TEMP_DIR/null-reference.parameters.json"
 
-jq '.parameters.enableMultiDestinationOtlp = { value: "false" }' \
+jq '.parameters.enableMonitoring = { value: "false" }' \
   "$JSON_PARAMETER_FIXTURE" > "$STRING_BOOLEAN_FIXTURE"
 if validate_json_parameter_file "$STRING_BOOLEAN_FIXTURE" >/dev/null 2>&1; then
   echo 'String boolean parameter value unexpectedly passed validation' >&2

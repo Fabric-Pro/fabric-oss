@@ -50,6 +50,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -150,12 +152,13 @@ describe("fabric instructions init", () => {
 		);
 		expect(hooks.hooks.SessionStart[0].hooks[0]).toEqual({
 			type: "command",
-			command: "fabric instructions check --project project-1 --hook",
+			command:
+				"fabric instructions check --project project-1 --base-url https://fabric.pro --hook",
 			timeout: 15,
 		});
 		expect(JSON.stringify(hooks)).not.toContain("fab_test");
 		expect(result.stdout).toContain(
-			"Start Codex in this checkout, then use `/hooks` to review and trust the project hook.",
+			"Set up. Codex checks for updates at every session start. In Codex, run /hooks once to trust the project hook.",
 		);
 	});
 
@@ -184,7 +187,9 @@ describe("fabric instructions init", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(result.stderr).toContain("(foreign checkout)");
+		expect(result.stderr).toBe(
+			"✗ This folder is not a clone of git.example.com/example-org/rules. Run: fabric instructions init --project project-1 --tool claude-code --clone rules\n",
+		);
 		expect(await readdir(dest)).toEqual([]);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
@@ -250,7 +255,7 @@ describe("fabric instructions init", () => {
 			),
 		);
 		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
-			"fabric instructions check --project project-1 --hook",
+			"fabric instructions check --project project-1 --base-url https://fabric.pro --hook",
 		);
 		// The command a session runs must never carry the credential.
 		expect(JSON.stringify(settings).includes("fab_test")).toBe(false);
@@ -258,7 +263,10 @@ describe("fabric instructions init", () => {
 			"hello\n",
 		);
 		expect(result.stdout).toContain("1 added");
-		expect(result.stdout).toContain("does not edit .gitignore");
+		expect(result.stdout).toContain(
+			"Set up. Claude Code checks for updates at every session start.",
+		);
+		expect(result.stdout).not.toContain("gitignore");
 		// Init makes more than one manifest client (its own eligibility read,
 		// then the sync's): manifest budget with the SDK's default retries.
 		// The one file is fetched by name, so the archive's separate client
@@ -266,8 +274,12 @@ describe("fabric instructions init", () => {
 		const clientOptions = mocks.getClient.mock.calls.map(
 			([options]) => options,
 		);
-		expect(clientOptions).toContainEqual({ timeoutMs: 15_000 });
+		expect(clientOptions).toContainEqual({
+			project: "project-1",
+			timeoutMs: 15_000,
+		});
 		expect(clientOptions).not.toContainEqual({
+			project: "project-1",
 			timeoutMs: 60_000,
 			retry: { maxRetries: 0 },
 		});
@@ -363,7 +375,7 @@ describe("fabric instructions init", () => {
 			),
 		);
 		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
-			"fabric instructions sync --project project-1 --hook",
+			"fabric instructions sync --project project-1 --base-url https://fabric.pro --hook",
 		);
 		expect(result.stdout).toContain("nothing published yet");
 	});
@@ -394,7 +406,7 @@ describe("fabric instructions init", () => {
 			),
 		);
 		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
-			"fabric instructions check --project project-1 --hook",
+			"fabric instructions check --project project-1 --base-url https://fabric.pro --hook",
 		);
 		expect(settings.hooks.Stop[0].hooks[0]).toEqual({
 			type: "command",
@@ -441,7 +453,7 @@ describe("fabric instructions init", () => {
 			),
 		);
 		expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(
-			"fabric instructions check --project project-1 --hook",
+			"fabric instructions check --project project-1 --base-url https://fabric.pro --hook",
 		);
 		expect(settings.hooks.Stop).toEqual([]);
 		expect(result.stdout).toContain(
@@ -555,12 +567,13 @@ describe("a source of truth that changed after the hook was installed", () => {
 			"--dest",
 			dest,
 			"--hook",
+			"--no-fast-forward",
 		]);
 
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe("");
 		expect(result.stdout).toBe(
-			"fabric: coding instructions v7 (aaaaaaa) is published on main of git.example.com/example-org/rules; this checkout has not fetched it yet — run: git pull --ff-only origin main\n",
+			"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout has not fetched it yet — run: git pull --ff-only origin main\n",
 		);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		expect(await readdir(dest)).toEqual([]);

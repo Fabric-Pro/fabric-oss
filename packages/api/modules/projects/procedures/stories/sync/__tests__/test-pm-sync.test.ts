@@ -30,6 +30,8 @@ vi.mock("../../../../../../lib/audit", () => ({
 
 vi.mock("@repo/database", () => ({
 	resolvePMConfigForUser: vi.fn(),
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
 	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
 	db: {
@@ -39,10 +41,17 @@ vi.mock("@repo/database", () => ({
 		mCPServer: {
 			findUnique: vi.fn(),
 		},
-		workflowIntegration: {
-			findFirst: vi.fn(),
-		},
 	},
+}));
+
+// The GitLab REST gate asks the connection service for the caller's usable
+// personal connection; its own behaviour (classification, reconnect-required) is
+// covered against the real service in
+// modules/projects/__tests__/gitlab-personal-connection-gates.test.ts.
+const mockFindUsableGitLabConnection = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: mockFindUsableGitLabConnection,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -51,7 +60,10 @@ vi.mock("@repo/temporal", () => ({
 	executeMcpTool: (...args: unknown[]) => mockExecuteMcpTool(...args),
 }));
 
-vi.mock("@repo/integrations/gitlab/pm-adapter", () => ({
+vi.mock("@repo/integrations/gitlab/pm-adapter", async (importOriginal) => ({
+	// The real `resolveProjectPMConfigForUser` (the instance check on the
+	// MCP branch) runs on top of the `resolvePMConfigForUser` mock above.
+	...(await importOriginal<object>()),
 	resolveGitLabPMSource: (...args: unknown[]) =>
 		mockResolveGitLabPMSource(...args),
 	createGitLabIssueFromStory: (...args: unknown[]) =>
@@ -301,9 +313,9 @@ describe("testPMSyncProcedure — GitLab REST fallback", () => {
 		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
 			key: "gitlab-official",
 		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "int-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "int-1",
+		});
 		mockResolveGitLabPMSource.mockResolvedValue({ kind: "rest" });
 		mockCreateGitLabIssueFromStory.mockResolvedValue({
 			externalId: "42",
@@ -333,9 +345,9 @@ describe("testPMSyncProcedure — GitLab REST fallback", () => {
 			projectManagementAdditionalContext: {},
 		} as never);
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "int-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "int-1",
+		});
 		mockResolveGitLabPMSource.mockResolvedValue({ kind: "rest" });
 		mockCreateGitLabIssueFromStory.mockResolvedValue({
 			externalId: "7",
@@ -384,9 +396,9 @@ describe("testPMSyncProcedure — soft-failure audit emission (PR #1221 gap)", (
 			projectManagementAdditionalContext: {},
 		} as never);
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "int-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "int-1",
+		});
 		mockResolveGitLabPMSource.mockResolvedValue({ kind: "rest" });
 		mockCreateGitLabIssueFromStory.mockRejectedValue(
 			new Error(
@@ -478,5 +490,62 @@ describe("testPMSyncProcedure — soft-failure audit emission (PR #1221 gap)", (
 
 		expect(result.success).toBe(true);
 		expect(mockRecordAuditFromRequest).not.toHaveBeenCalled();
+	});
+});
+
+describe("testPMSyncProcedure — the GitLab container's instance on the MCP branch", () => {
+	const handler = (
+		testPMSyncProcedure as unknown as {
+			handler: (args: {
+				input: unknown;
+				context: unknown;
+			}) => Promise<unknown>;
+		}
+	).handler;
+
+	function setupGitLabMcpActor(baseUrl: string) {
+		setupProject();
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+			id: "user-mcp-cfg-1",
+			enabled: true,
+			baseUrl,
+			mcpServer: {
+				key: "gitlab-official",
+				defaultUrl: "https://gitlab.com/api/v4/mcp",
+			},
+		} as never);
+		setupCapabilities({
+			toolName: "create_issue",
+			containerParam: "project_id",
+			titleParam: "title",
+			descriptionParam: "description",
+		});
+		defaultExecuteSuccess();
+	}
+
+	it("refuses a GitLab MCP config on another instance before discovery or dispatch", async () => {
+		// The container was chosen on gitlab.com (none recorded); the
+		// caller's own GitLab MCP config is on a self-hosted instance.
+		setupGitLabMcpActor("https://gitlab.example.com/api/v4/mcp");
+
+		await expect(
+			handler({ input: { projectId: "proj-1" }, context: baseCtx }),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("different GitLab instance"),
+		});
+		expect(mockDiscoverPMToolCapabilities).not.toHaveBeenCalled();
+		expect(mockExecuteMcpTool).not.toHaveBeenCalled();
+	});
+
+	it("creates the test item through a GitLab MCP config on the container's instance", async () => {
+		setupGitLabMcpActor("https://gitlab.com/api/v4/mcp");
+
+		await handler({ input: { projectId: "proj-1" }, context: baseCtx });
+
+		expect(mockExecuteMcpTool).toHaveBeenCalledTimes(1);
+		expect(mockExecuteMcpTool.mock.calls[0][0].args).toMatchObject({
+			project_id: "container-1",
+		});
 	});
 });

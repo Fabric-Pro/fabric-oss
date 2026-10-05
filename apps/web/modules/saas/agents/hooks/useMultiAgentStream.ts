@@ -16,7 +16,9 @@ import {
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getSelectedAgentInstanceId } from "../components/FabricChat/shared/agent-selection";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import { loadInstanceAgentConfig } from "../lib/load-instance-agent-config";
 
 function isMcpDebugEnabled(): boolean {
 	if (typeof window === "undefined") {
@@ -38,6 +40,8 @@ export interface MultiAgentExecutionOptions {
 	enabledAgentIds?: string[] | null;
 	enabledMcpConfigIds?: string[] | null;
 	enabledFabricToolIds?: string[] | null;
+	/** Explicit project selection; null disables the agent default. */
+	projectId?: string | null;
 	enabledIntegrationIds?: string[] | null;
 	attachedImageUrls?: string[];
 	attachedDocumentIds?: string[];
@@ -466,7 +470,7 @@ export function useMultiAgentStream({
 	const streamFromAgent = useCallback(
 		async (
 			turnId: string,
-			agent: {
+			selectedAgent: {
 				agentId: string;
 				name: string;
 				description?: string | null;
@@ -482,6 +486,8 @@ export function useMultiAgentStream({
 				vendor?: string;
 				/** agent instance ID for memory loading */
 				instanceId?: string;
+				enabledFabricToolIds?: string[];
+				boundProjectId?: string | null;
 				/** OAuth integration IDs this agent has access to (overrides executionOptions) */
 				enabledIntegrationIds?: string[];
 			},
@@ -491,6 +497,7 @@ export function useMultiAgentStream({
 			executionOptions?: MultiAgentExecutionOptions,
 			resumeExecutionId?: string,
 		) => {
+			let agent = selectedAgent;
 			const updateResponse = (
 				updater: (prev: AgentResponse) => AgentResponse,
 			) => {
@@ -524,8 +531,21 @@ export function useMultiAgentStream({
 				});
 			};
 
-			// Chatbot-specific formatting policy to keep responses compact and readable.
-			const chatFormattingPolicy = `
+			try {
+				const instanceId = getSelectedAgentInstanceId(agent);
+				if (instanceId) {
+					agent = {
+						...agent,
+						...(await loadInstanceAgentConfig(
+							instanceId,
+							organizationId,
+						)),
+					};
+				}
+				signal.throwIfAborted();
+
+				// Chatbot-specific formatting policy to keep responses compact and readable.
+				const chatFormattingPolicy = `
 
 Respond for a chat interface:
 - Be concise by default.
@@ -535,55 +555,56 @@ Respond for a chat interface:
 - Do not write like a blog post, essay, or newsletter unless asked.
 `.trim();
 
-			// Build system prompt: use full instructions if available (template instances),
-			// otherwise fall back to a default prompt built from name + description
-			const systemPrompt = agent.instructions
-				? agent.instructions
-				: agent.description
-					? `You are ${agent.name}. ${agent.description}\n\n${chatFormattingPolicy}`
-					: `You are ${agent.name}, an AI assistant.\n\n${chatFormattingPolicy}`;
+				// Build system prompt: use full instructions if available (template instances),
+				// otherwise fall back to a default prompt built from name + description
+				const systemPrompt = agent.instructions
+					? agent.instructions
+					: agent.description
+						? `You are ${agent.name}. ${agent.description}\n\n${chatFormattingPolicy}`
+						: `You are ${agent.name}, an AI assistant.\n\n${chatFormattingPolicy}`;
 
-			// Agent-level MCP configs take precedence over execution options
-			const resolvedMcpConfigIds =
-				agent.enabledMcpConfigIds !== undefined
-					? agent.enabledMcpConfigIds
-					: (executionOptions?.enabledMcpConfigIds ?? null);
+				// Agent-level MCP configs take precedence over execution options
+				const resolvedMcpConfigIds =
+					agent.enabledMcpConfigIds !== undefined
+						? agent.enabledMcpConfigIds
+						: (executionOptions?.enabledMcpConfigIds ?? null);
 
-			// For focused agents (specific MCP servers configured), default Fabric AI tools
-			// to [] so only the agent's own MCP tools are available via search_tools.
-			// Fabric tools (web search, RAG, file creation, etc.) are only added back when
-			// the user explicitly enables a capability (e.g. discover-knowledge, web-search-browse).
-			// General agents (null = all servers) keep full Fabric tool access.
-			const isFocusedAgent =
-				resolvedMcpConfigIds !== null &&
-				resolvedMcpConfigIds.length > 0;
+				// For focused agents (specific MCP servers configured), default Fabric AI tools
+				// to [] so only the agent's own MCP tools are available via search_tools.
+				// Fabric tools (web search, RAG, file creation, etc.) are only added back when
+				// the user explicitly enables a capability (e.g. discover-knowledge, web-search-browse).
+				// General agents (null = all servers) keep full Fabric tool access.
+				const isFocusedAgent =
+					resolvedMcpConfigIds !== null &&
+					resolvedMcpConfigIds.length > 0;
 
-			// For focused agents, default to [] (no Fabric tools), but always include
-			// workspace RAG tools if the agent has workspaces configured.
-			// This ensures agents can query their own knowledge base even in focused mode.
-			const RAG_TOOLS = [
-				"workspace_rag_query",
-				"workspace_rag_summarize",
-			] as const;
-			const baseFabricToolIds = isFocusedAgent
-				? (executionOptions?.enabledFabricToolIds ?? [])
-				: (executionOptions?.enabledFabricToolIds ?? null);
-			const resolvedFabricToolIds: string[] | null = (() => {
-				if (!isFocusedAgent) {
-					return baseFabricToolIds as string[] | null;
-				}
-				// Focused agent: merge base tools with RAG tools if workspaces exist
-				const base = Array.isArray(baseFabricToolIds)
-					? baseFabricToolIds
-					: [];
-				const withRag =
-					agent.workspaceIds && agent.workspaceIds.length > 0
-						? [...new Set([...base, ...RAG_TOOLS])]
-						: base;
-				return withRag;
-			})();
+				// For focused agents, default to [] (no Fabric tools), but always include
+				// workspace RAG tools if the agent has workspaces configured.
+				// This ensures agents can query their own knowledge base even in focused mode.
+				const RAG_TOOLS = [
+					"workspace_rag_query",
+					"workspace_rag_summarize",
+				] as const;
+				const baseFabricToolIds =
+					agent.enabledFabricToolIds ??
+					(isFocusedAgent
+						? (executionOptions?.enabledFabricToolIds ?? [])
+						: (executionOptions?.enabledFabricToolIds ?? null));
+				const resolvedFabricToolIds: string[] | null = (() => {
+					if (!isFocusedAgent) {
+						return baseFabricToolIds as string[] | null;
+					}
+					// Focused agent: merge base tools with RAG tools if workspaces exist
+					const base = Array.isArray(baseFabricToolIds)
+						? baseFabricToolIds
+						: [];
+					const withRag =
+						agent.workspaceIds && agent.workspaceIds.length > 0
+							? [...new Set([...base, ...RAG_TOOLS])]
+							: base;
+					return withRag;
+				})();
 
-			try {
 				const responseKey = `${turnId}::${agent.agentId}`;
 				const response = await fetch(
 					"/api/agents/fabric-ai/orchestrator-temporal/stream",
@@ -622,6 +643,10 @@ Respond for a chat interface:
 								executionOptions?.prioritizedAgentIds,
 							workspaceIds: agent.workspaceIds ?? [],
 							instanceId: agent.instanceId,
+							projectId:
+								executionOptions?.projectId !== undefined
+									? executionOptions.projectId
+									: agent.boundProjectId,
 							systemPrompt,
 							// Omit-when-undefined so non-opting callers
 							// (doc-editor copilot, agent template runner,
@@ -1203,6 +1228,8 @@ Respond for a chat interface:
 				modelOverride?: string;
 				vendor?: string;
 				instanceId?: string;
+				enabledFabricToolIds?: string[];
+				boundProjectId?: string | null;
 				enabledIntegrationIds?: string[];
 			}>,
 			historyOrResolver: ConversationHistory | AgentHistoryResolver,
@@ -1463,6 +1490,8 @@ Respond for a chat interface:
 					modelOverride?: string;
 					vendor?: string;
 					instanceId?: string;
+					enabledFabricToolIds?: string[];
+					boundProjectId?: string | null;
 					enabledIntegrationIds?: string[];
 				};
 				executionId: string;

@@ -20,11 +20,13 @@ import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
 import {
+	assertProjectPermission,
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { assertNotMigrationSnapshot } from "./migration-freeze";
 
 const BUCKET = config.storage.bucketNames.skills;
 
@@ -44,6 +46,31 @@ const BUCKET = config.storage.bucketNames.skills;
  * the published pointer below.
  */
 const DELETABLE_STATUSES = new Set(["READY", "REJECTED", "FAILED"]);
+
+/**
+ * An upload nobody finished: the browser began it and could not reach storage
+ * (or the tab was closed), so `finalize` never ran and no workflow owns the
+ * row, which stays RECEIVING for hours until the reaper closes it. The tab
+ * hides Upload while it is there and used to offer no way out of it, so it may
+ * be discarded.
+ *
+ * Only a plain upload or edit: a repository sync's snapshot is RECEIVING while
+ * its run copies files in, and a proposal or a direct commit answers to its
+ * pull request. Whether `finalize` has claimed the row since this was read is
+ * what the DELETE's own predicate decides (`abandonedUpload` in
+ * `deleteInstructionSnapshot`); this is the fast, friendly half.
+ */
+function isUnfinishedUpload(snapshot: {
+	status: string;
+	source?: string | null;
+	proposalStatus?: string | null;
+}): boolean {
+	return (
+		snapshot.status === "RECEIVING" &&
+		snapshot.source === "UPLOAD" &&
+		(snapshot.proposalStatus ?? null) === null
+	);
+}
 
 /**
  * `deleteObjects` is best-effort: it NEVER throws on a delete failure and
@@ -92,7 +119,12 @@ async function deleteObjectsUnderPrefix(
 }
 
 /**
- * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_DELETE).
+ * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
+ * requireProjectPermission(INSTRUCTION_CREATE), and INSTRUCTION_DELETE
+ * asserted in the handler for everything except the creator discarding their
+ * own unfinished upload (see `isUnfinishedUpload`). The middleware is the
+ * weaker permission because it is the one a creator holds; a version that is
+ * finished, or another member's, still needs the delete permission.
  *
  * Deletes one coding-instructions snapshot: its database rows first, then its
  * files' storage objects. Tenant-scoped via `getInstructionSnapshot(id,
@@ -110,7 +142,7 @@ async function deleteObjectsUnderPrefix(
  */
 export const deleteSnapshotProcedure = tenantProtectedProcedure
 	.use(projectNotFoundUnlessVisible)
-	.use(requireProjectPermission(Permissions.INSTRUCTION_DELETE))
+	.use(requireProjectPermission(Permissions.INSTRUCTION_CREATE))
 	.route({
 		method: "DELETE",
 		path: "/projects/:projectId/instructions/snapshots/:snapshotId",
@@ -137,10 +169,27 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 		if (!snapshot) {
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
 		}
+		const unfinished = isUnfinishedUpload(snapshot);
+		// Anyone who may create passed the middleware; deleting what is not
+		// their own unfinished upload takes the delete permission.
+		if (!(unfinished && snapshot.userId === context.user.id)) {
+			await assertProjectPermission(
+				input.projectId,
+				context.user.id,
+				Permissions.INSTRUCTION_DELETE,
+			);
+		}
+		// The proposal of a move into the repository is the pull request's own
+		// rows (Fizzy #2878 §9): it goes with the move, not before it.
+		await assertNotMigrationSnapshot({
+			projectId: input.projectId,
+			organizationId,
+			snapshotId: snapshot.id,
+		});
 		// Same read-then-delete caveat as the published check below: a run
 		// that starts after this read still has to be refused, which is why
 		// the DELETE carries the predicate too.
-		if (!DELETABLE_STATUSES.has(snapshot.status)) {
+		if (!DELETABLE_STATUSES.has(snapshot.status) && !unfinished) {
 			throw new ORPCError("CONFLICT", {
 				message:
 					"This upload is still being checked and cannot be deleted yet",
@@ -205,6 +254,7 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 			snapshot.id,
 			input.projectId,
 			organizationId,
+			{ abandonedUpload: unfinished },
 		);
 		if (removal.reason === "published") {
 			throw new ORPCError("CONFLICT", {

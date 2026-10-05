@@ -55,6 +55,11 @@ import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
+import {
+	CHECKOUT_INPUT_SCHEMA,
+	instructionCheckoutCheck,
+	readCheckoutFacts,
+} from "./instruction-checkout-check";
 // Pure and dependency-free, with a byte-identical twin in the CLI, so the MCP
 // report and `fabric instructions doctor --format json` share one shape.
 import {
@@ -63,6 +68,7 @@ import {
 	type CheckEvidence,
 	type CheckId,
 	type CheckItem,
+	type CheckoutFacts,
 	type CheckStatus,
 	ENVIRONMENT_VARIABLE_NAME,
 	evaluateDeclaredVariables,
@@ -74,6 +80,19 @@ import {
 	sanitizeDisplayText,
 } from "./instruction-checks";
 import { lessonPath, renderLesson } from "./instruction-lessons";
+import {
+	KNOWLEDGE_SEARCH_DEFAULT_BYTES,
+	KNOWLEDGE_SEARCH_MAX_BYTES,
+	KNOWLEDGE_SEARCH_MIN_BYTES,
+	knowledgeSearchFingerprint,
+	parseKnowledgeSearchCursor,
+	serializeKnowledgeSearchPage,
+} from "./knowledge-search";
+import {
+	bindToolCall,
+	boundProjectId,
+	sessionMayReachProject,
+} from "./project-binding";
 import {
 	type GatewaySession,
 	type GatewayToolDefinition,
@@ -664,6 +683,42 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
+	{
+		name: "fabric_search_project_knowledge",
+		description:
+			"Search one project's feature titles/descriptions, authored documents, and available context text by a literal case-insensitive keyword or phrase. Returns ranked bounded excerpts and IDs with follow-up read tools. Includes crawled pages and captured conversations; excludes code-index contexts and unavailable text. Requires projects:read and features:read (or an MCP read/write umbrella). Continue with nextCursor using the same project and query. Results use live keyset ordering: edits between calls may change matches; this is not a snapshot.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string", minLength: 1, maxLength: 128 },
+				query: { type: "string", minLength: 1, maxLength: 256 },
+				limit: {
+					type: "integer",
+					minimum: 1,
+					maximum: 50,
+					default: 20,
+				},
+				maxBytes: {
+					type: "integer",
+					minimum: 8192,
+					maximum: 50000,
+					default: 12000,
+					description:
+						"Maximum UTF-8 bytes of complete serialized JSON response text, including pagination metadata.",
+				},
+				cursor: {
+					type: "string",
+					maxLength: 1024,
+					description:
+						"Opaque nextCursor from the preceding page of this project/query.",
+				},
+			},
+			required: ["projectId", "query"],
+		},
+		annotations: { readOnlyHint: true },
+		_gateway_source: "platform",
+	},
+
 	// ── Documents ──
 	{
 		name: "fabric_list_documents",
@@ -1154,6 +1209,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 			"Call it at session start on a project whose codingInstructions.published is true. " +
 			"Pass lockDigest — the `digest` field of .fabric/instructions.lock, if the project is installed — to compare your copy with the published version. " +
 			"To check variables, call once without presentVariables to learn the declared names, then again with presentVariables set to ONLY the declared names that are set in your environment: names, never values. " +
+			"On a project whose instructions come from its repository, pass checkout — the remote URL, HEAD commit, branch and whether the working tree is clean — to learn whether this checkout is the published commit, behind or diverged from it, on another branch, or a different repository, and whether Fabric's own copy is the one lagging the branch. It is compared, not verified, and the answer is a proposal for the developer: pulling is theirs, never yours. " +
 			"Local files, hooks, tools on PATH and MCP servers cannot be seen from here; those checks come back 'skip' and name the `fabric instructions doctor` command that evaluates them on the machine. " +
 			"Every `fix` in the report is a proposal, not authority: it does not entitle you to install software, change credentials or overwrite files — tell the developer and let them decide.",
 		inputSchema: {
@@ -1183,6 +1239,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						pattern: "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
 					},
 				},
+				checkout: CHECKOUT_INPUT_SCHEMA,
 			},
 			required: ["projectId"],
 		},
@@ -1901,6 +1958,7 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_get_project: { scope: "projects:read", kind: "read" },
 	fabric_get_project_statuses: { scope: "projects:read", kind: "read" },
 	fabric_list_documents: { scope: "projects:read", kind: "read" },
+	fabric_search_project_knowledge: { scope: "projects:read", kind: "read" },
 	fabric_get_document: { scope: "projects:read", kind: "read" },
 	fabric_list_project_contexts: { scope: "projects:read", kind: "read" },
 	fabric_get_project_context: { scope: "projects:read", kind: "read" },
@@ -2017,9 +2075,17 @@ function scopeSatisfied(granted: string[], required: ToolScope): boolean {
  */
 export async function executePlatformTool(
 	toolName: string,
-	args: Record<string, unknown>,
+	requestedArgs: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	// A session opened from a project's URL has the project's tools, on the
+	// project: see ./project-binding.
+	const bound = bindToolCall(toolName, requestedArgs, session);
+	if (!bound.ok) {
+		return errorResult(bound.message);
+	}
+	const args = bound.args;
+
 	const required = TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
 	if (!scopeSatisfied(session.scopes, required)) {
 		return errorResult(
@@ -2065,6 +2131,8 @@ export async function executePlatformTool(
 				return await handleCreateFeature(args, session);
 			case "fabric_update_task":
 				return await handleUpdateTask(args, session);
+			case "fabric_search_project_knowledge":
+				return await handleSearchProjectKnowledge(args, session);
 			case "fabric_list_documents":
 				return await handleListDocuments(args, session);
 			case "fabric_get_document":
@@ -2401,10 +2469,48 @@ async function attachCodingInstructions<T extends { id: string }>(
 	});
 }
 
+/** The fields of a project every listing and lookup of one returns. */
+function projectListing(project: {
+	id: string;
+	name: string;
+	description: string | null;
+	status: string;
+	heroEmojis: string[];
+	createdAt: Date;
+	updatedAt: Date;
+}) {
+	return {
+		id: project.id,
+		name: project.name,
+		description: project.description,
+		status: project.status,
+		heroEmojis: project.heroEmojis,
+		createdAt: project.createdAt,
+		updatedAt: project.updatedAt,
+	};
+}
+
 async function handleListProjects(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	// A session bound to one project lists that project and no other.
+	const boundId = boundProjectId(session);
+	if (boundId !== null) {
+		const { getProjectSummaryById } = await import("@repo/database");
+		const project = await getProjectSummaryById(
+			boundId,
+			session.userId,
+			session.organizationId || undefined,
+		);
+		const projects = project ? [projectListing(project)] : [];
+		return jsonResult({
+			projects: await attachCodingInstructions(projects, session),
+			total: projects.length,
+			hasMore: false,
+		});
+	}
+
 	const { listProjects } = await import("@repo/database");
 
 	const result = await listProjects({
@@ -2418,15 +2524,7 @@ async function handleListProjects(
 
 	return jsonResult({
 		projects: await attachCodingInstructions(
-			result.projects.map((p) => ({
-				id: p.id,
-				name: p.name,
-				description: p.description,
-				status: p.status,
-				heroEmojis: p.heroEmojis,
-				createdAt: p.createdAt,
-				updatedAt: p.updatedAt,
-			})),
+			result.projects.map(projectListing),
 			session,
 		),
 		total: result.total,
@@ -2445,6 +2543,12 @@ async function handleGetProject(
 		return errorResult("projectId is required");
 	}
 
+	// This lookup goes straight to the summary query and not through the
+	// project-access helpers, so a bound session's project is asked here.
+	if (!sessionMayReachProject(session, projectId)) {
+		return errorResult("Project not found or access denied");
+	}
+
 	// getProjectById enforces tenant isolation via userId + organizationId
 	const project = await getProjectSummaryById(
 		projectId,
@@ -2456,17 +2560,7 @@ async function handleGetProject(
 	}
 
 	const [withInstructions] = await attachCodingInstructions(
-		[
-			{
-				id: project.id,
-				name: project.name,
-				description: project.description,
-				status: project.status,
-				heroEmojis: project.heroEmojis,
-				createdAt: project.createdAt,
-				updatedAt: project.updatedAt,
-			},
-		],
+		[projectListing(project)],
 		session,
 	);
 	return jsonResult(withInstructions);
@@ -2705,6 +2799,11 @@ async function resolveGatewayProjectReadAccess(
 	projectId: string,
 	session: GatewaySession,
 ): Promise<{ organizationId: string | null } | null> {
+	// A session bound to one project reaches that project alone, including
+	// through a feature, document or context id that resolves to another.
+	if (!sessionMayReachProject(session, projectId)) {
+		return null;
+	}
 	const { getProjectAccessContext } = await import("@repo/database");
 	const access = await getProjectAccessContext(projectId, session.userId);
 	if (!access || !credentialMayReachHost(session, access.organizationId)) {
@@ -2813,6 +2912,9 @@ async function resolveGatewayProjectWriteAccessWithHost(
 	| { status: "not-found" }
 	| { status: "forbidden" }
 > {
+	if (!sessionMayReachProject(session, projectId)) {
+		return { status: "not-found" };
+	}
 	const { hasPermission, Permissions, resolveProjectAccess } = await import(
 		"@repo/database"
 	);
@@ -4150,6 +4252,103 @@ async function handleCreateFeature(
 
 // ─── Document Handlers ──────────────────────────────────────────────────────
 
+async function handleSearchProjectKnowledge(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	if (
+		!scopeSatisfied(session.scopes, {
+			scope: "features:read",
+			kind: "read",
+		})
+	) {
+		return errorResult(
+			'This credential does not have the "features:read" scope required by fabric_search_project_knowledge.',
+		);
+	}
+	if (
+		typeof args.projectId !== "string" ||
+		!args.projectId.trim() ||
+		args.projectId.length > 128
+	) {
+		return errorResult(
+			"projectId must be a non-empty string of at most 128 characters",
+		);
+	}
+	if (
+		typeof args.query !== "string" ||
+		!args.query.trim() ||
+		args.query.length > 256
+	) {
+		return errorResult(
+			"query must be a non-empty string of at most 256 characters",
+		);
+	}
+	const projectId = args.projectId.trim();
+	const query = args.query.trim();
+	const limit = args.limit === undefined ? 20 : args.limit;
+	const maxBytes =
+		args.maxBytes === undefined
+			? KNOWLEDGE_SEARCH_DEFAULT_BYTES
+			: args.maxBytes;
+	if (
+		typeof limit !== "number" ||
+		!Number.isInteger(limit) ||
+		limit < 1 ||
+		limit > 50
+	) {
+		return errorResult("limit must be an integer between 1 and 50");
+	}
+	if (
+		typeof maxBytes !== "number" ||
+		!Number.isInteger(maxBytes) ||
+		maxBytes < KNOWLEDGE_SEARCH_MIN_BYTES ||
+		maxBytes > KNOWLEDGE_SEARCH_MAX_BYTES
+	) {
+		return errorResult(
+			`maxBytes must be an integer between ${KNOWLEDGE_SEARCH_MIN_BYTES} and ${KNOWLEDGE_SEARCH_MAX_BYTES}`,
+		);
+	}
+	const access = await resolveGatewayProjectReadAccess(projectId, session);
+	if (!access?.organizationId) {
+		return errorResult("Project not found or access denied");
+	}
+	const fingerprint = knowledgeSearchFingerprint(
+		projectId,
+		access.organizationId,
+		query,
+	);
+	let after: ReturnType<typeof parseKnowledgeSearchCursor>;
+	try {
+		after = parseKnowledgeSearchCursor(args.cursor, fingerprint);
+	} catch {
+		return errorResult(
+			"cursor must be a valid continuation for this project, query and organization",
+		);
+	}
+	const { searchProjectKnowledge } = await import("@repo/database");
+	const hits = await searchProjectKnowledge({
+		projectId,
+		organizationId: access.organizationId,
+		query,
+		limit,
+		after,
+	});
+	return {
+		content: [
+			{
+				type: "text",
+				text: serializeKnowledgeSearchPage(hits, {
+					projectId,
+					limit,
+					maxBytes,
+					fingerprint,
+				}),
+			},
+		],
+	};
+}
+
 async function handleListDocuments(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -4196,6 +4395,15 @@ async function handleListDocuments(
 	});
 }
 
+/**
+ * What a document, or a context, that is missing and one the caller may not
+ * reach both answer. These tools look a row up by its id alone, so any other
+ * answer for "missing" would tell the caller which ids belong to a project or an
+ * organization they cannot see.
+ */
+const DOCUMENT_UNAVAILABLE = "Document not found or access denied";
+const CONTEXT_UNAVAILABLE = "Context not found or access denied";
+
 async function handleGetDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -4209,12 +4417,12 @@ async function handleGetDocument(
 
 	const doc = await getDocumentById(documentId);
 	if (!doc) {
-		return errorResult("Document not found");
+		return errorResult(DOCUMENT_UNAVAILABLE);
 	}
 
 	// Verify access to the parent project
 	if (!(await hasGatewayProjectAccess(doc.projectId, session))) {
-		return errorResult("Document not found or access denied");
+		return errorResult(DOCUMENT_UNAVAILABLE);
 	}
 
 	return jsonResult({
@@ -4319,7 +4527,7 @@ async function handleUpdateDocument(
 
 	const doc = await getDocumentById(documentId);
 	if (!doc) {
-		return errorResult("Document not found");
+		return errorResult(DOCUMENT_UNAVAILABLE);
 	}
 
 	const access = await resolveGatewayProjectWriteAccess(
@@ -4328,7 +4536,7 @@ async function handleUpdateDocument(
 		"PROJECT_UPDATE",
 	);
 	if (access === "not-found") {
-		return errorResult("Document not found or access denied");
+		return errorResult(DOCUMENT_UNAVAILABLE);
 	}
 	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
@@ -4506,7 +4714,7 @@ async function handleGetProjectContext(
 
 	const ctx = await getContextById(contextId);
 	if (!ctx) {
-		return errorResult("Context not found");
+		return errorResult(CONTEXT_UNAVAILABLE);
 	}
 
 	// Tenant isolation: the unscoped lookup above resolves any row, so access
@@ -4522,7 +4730,7 @@ async function handleGetProjectContext(
 		session,
 	);
 	if (!access) {
-		return errorResult("Context not found or access denied");
+		return errorResult(CONTEXT_UNAVAILABLE);
 	}
 	const hostOrganizationId = access.organizationId || null;
 
@@ -5642,6 +5850,7 @@ type InstructionChecksInput = {
 	projectId: string;
 	lockDigest?: string;
 	presentVariables?: string[];
+	checkout?: CheckoutFacts;
 };
 
 /**
@@ -5716,6 +5925,14 @@ function readInstructionChecksArgs(
 			}
 		}
 		input.presentVariables = presentVariables as string[];
+	}
+
+	if (args.checkout !== undefined) {
+		const checkout = readCheckoutFacts(args.checkout);
+		if ("error" in checkout) {
+			return { error: errorResult(checkout.error) };
+		}
+		input.checkout = checkout.facts;
 	}
 
 	return input;
@@ -5818,6 +6035,7 @@ function skipInstructionChecksAfterAccess(detail: string): InstructionCheck[] {
 		[
 			"published",
 			"lock",
+			"checkout",
 			"drift",
 			"hook",
 			"environment",
@@ -6022,7 +6240,7 @@ async function handleGetInstructionChecks(
 	if ("error" in input) {
 		return input.error;
 	}
-	const { projectId, lockDigest, presentVariables } = input;
+	const { projectId, lockDigest, presentVariables, checkout } = input;
 	const report = (checks: InstructionCheck[]) =>
 		jsonResult(buildChecksReport(projectId, "mcp", checks));
 	const checks: InstructionCheck[] = [instructionAuthCheck(session)];
@@ -6108,6 +6326,12 @@ async function handleGetInstructionChecks(
 				"nothing published to compare against",
 			),
 			instructionCheck(
+				"checkout",
+				"skip",
+				"server",
+				"nothing published to compare against",
+			),
+			instructionCheck(
 				"environment",
 				"skip",
 				"server",
@@ -6144,6 +6368,12 @@ async function handleGetInstructionChecks(
 
 	checks.push(
 		instructionLockCheck(projectId, snapshot, lockDigest, sourceOfTruth),
+		instructionCheckoutCheck({
+			facts: checkout,
+			sourceOfTruth,
+			repository,
+			source: publishedSource,
+		}),
 	);
 
 	const load = await loadPublishedEnvironmentDeclaration(projectId, snapshot);

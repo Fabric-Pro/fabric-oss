@@ -49,6 +49,8 @@ const { userStoryUpdateMock, userStoryUpdateManyMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// No caller-owned config: the GitLab instance check has nothing to refuse.
+	getMcpConfigById: async () => null,
 	setAiUsageRecorder: vi.fn(),
 	// Read-only mode gate — default: project is writable
 	isProjectReadOnly: vi.fn(async () => false),
@@ -58,7 +60,7 @@ vi.mock("@repo/database", () => ({
 			updateMany: userStoryUpdateManyMock,
 		},
 		mCPConfig: {
-			findUnique: vi.fn().mockResolvedValue(null),
+			findFirst: vi.fn().mockResolvedValue(null),
 		},
 	},
 	PmSyncStatus: {
@@ -1115,11 +1117,11 @@ describe("syncWorkItemToPM", () => {
 			const { db } = (await import("@repo/database")) as unknown as {
 				db: {
 					mCPConfig: {
-						findUnique: ReturnType<typeof vi.fn>;
+						findFirst: ReturnType<typeof vi.fn>;
 					};
 				};
 			};
-			db.mCPConfig.findUnique.mockResolvedValueOnce({
+			db.mCPConfig.findFirst.mockResolvedValueOnce({
 				baseUrl: null,
 				mcpServerId: "mcp-server-ado",
 				mcpServer: { defaultUrl: null },

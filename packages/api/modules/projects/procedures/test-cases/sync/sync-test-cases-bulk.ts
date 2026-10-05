@@ -95,6 +95,8 @@ export const syncTestCasesBulkProcedure = tenantProtectedProcedure
 					project.projectManagementMcpServerId,
 				projectManagementMcpConfigId:
 					project.projectManagementMcpConfigId,
+				projectManagementAdditionalContext:
+					project.projectManagementAdditionalContext,
 				organizationId: project.organizationId,
 			},
 			userId: user.id,

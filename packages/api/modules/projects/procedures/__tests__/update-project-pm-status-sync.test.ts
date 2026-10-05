@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
 	resolveAccess: vi.fn(),
 	governanceAllowed: vi.fn(),
 	recordAudit: vi.fn(),
+	gitlabConnectionRead: vi.fn(),
 	JSON_NULL: Symbol("JsonNull"),
 	DB_NULL: Symbol("DbNull"),
 	tables: { project: [] as Row[], mCPServer: [] as Row[] },
@@ -70,6 +71,17 @@ function selectHonouringFindUnique(table: "project" | "mCPServer") {
 	};
 }
 
+// The real GitLab container-instance binding runs (its own cases are in
+// lib/__tests__/gitlab-pm-origin.test.ts); the actor's GitLab connection is
+// on gitlab.com, so a newly chosen GitLab container records that instance.
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: async (tenant: unknown) => {
+		mocks.gitlabConnectionRead(tenant);
+		return { integrationId: "wi-1", origin: "https://gitlab.com" };
+	},
+}));
+
 vi.mock("@repo/database", async () => ({
 	engagementProfileSchema: (await import("zod")).z.enum([
 		"EXPLORE",
@@ -83,6 +95,8 @@ vi.mock("@repo/database", async () => ({
 			update: (args: unknown) => mocks.projectUpdate(args),
 		},
 		mCPServer: { findUnique: selectHonouringFindUnique("mCPServer") },
+		// No caller-owned GitLab MCP config: the connection names the instance.
+		mCPConfig: { findFirst: async () => null },
 		userStory: {
 			updateMany: (args: unknown) => mocks.userStoryUpdateMany(args),
 		},
@@ -96,6 +110,9 @@ vi.mock("@repo/database", async () => ({
 		mocks.buildUpdateProjectOperation(...a),
 	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
 	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
+	pmSelectionUnchangedWhere: (expected: Row) => ({ pmSelection: expected }),
 	seedTerminalStatusesIfEmpty: vi.fn(),
 	Prisma: { JsonNull: mocks.JSON_NULL, DbNull: mocks.DB_NULL },
 	cleanupCodeSearchOnRepoUnlink: vi.fn(async () => ({
@@ -342,6 +359,135 @@ beforeEach(() => {
 afterEach(() => {
 	vi.useRealTimers();
 	vi.unstubAllEnvs();
+});
+
+describe("the GitLab container's instance", () => {
+	it("records the actor's instance for a newly chosen container, never the client's", async () => {
+		mocks.tables.project = [restGitLabRow()];
+
+		await call({
+			id: "proj-rest",
+			...restSave("5151", {
+				projectManagementAdditionalContext: {
+					...LABEL_MAP_CONTEXT,
+					gitlabOrigin: "https://client-chosen.example.com",
+				},
+			}),
+		});
+
+		expect(writtenData().projectManagementAdditionalContext).toEqual({
+			...LABEL_MAP_CONTEXT,
+			gitlabOrigin: "https://gitlab.com",
+		});
+		// The write only applies while the row still has the selection the
+		// binding was derived from.
+		expect(mocks.updateProject.mock.calls[0][4]).toEqual({
+			serverId: "srv-gitlab-official",
+			configId: null,
+			containerId: "4242",
+			additionalContext: LABEL_MAP_CONTEXT,
+		});
+	});
+
+	// The read can classify (write) a row in the organization it is given, so
+	// it runs in the project's organization (the tenant
+	// `requireProjectPermission` authorized), never one the input names.
+	it("reads the actor's GitLab connection in the project's organization, not the input's", async () => {
+		mocks.tables.project = [restGitLabRow()];
+		mocks.gitlabConnectionRead.mockClear();
+
+		await call({
+			id: "proj-rest",
+			organizationId: "org-other",
+			...restSave("5151"),
+		});
+
+		expect(mocks.gitlabConnectionRead.mock.calls).toEqual([
+			[{ userId: "owner-1", organizationId: "org-1" }],
+		]);
+	});
+
+	it("re-binds from the current row when another save changed the container first", async () => {
+		// This save read container 4242 (recorded on gitlab.com) and edits only
+		// the label map. Before it writes, another save switches the project
+		// to container 7777 on a self-hosted instance.
+		mocks.tables.project = [
+			restGitLabRow({
+				projectManagementAdditionalContext: {
+					...LABEL_MAP_CONTEXT,
+					gitlabOrigin: "https://gitlab.com",
+				},
+			}),
+		];
+		const relabelled = {
+			labelStatusMap: { "workflow::done": "status-done" },
+		};
+		mocks.updateProject.mockImplementationOnce(async () => {
+			mocks.tables.project = [
+				restGitLabRow({
+					projectManagementContainerId: "7777",
+					projectManagementAdditionalContext: {
+						...LABEL_MAP_CONTEXT,
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				}),
+			];
+			// The guarded update matched no row.
+			throw Object.assign(new Error("Record to update not found."), {
+				code: "P2025",
+			});
+		});
+
+		await call({
+			id: "proj-rest",
+			projectManagementAdditionalContext: relabelled,
+		});
+
+		expect(mocks.updateProject).toHaveBeenCalledTimes(2);
+		const [, , retried, , expected] = mocks.updateProject.mock.calls[1];
+		// Container 7777 keeps the instance it was chosen on.
+		expect((retried as Row).projectManagementAdditionalContext).toEqual({
+			...relabelled,
+			gitlabOrigin: "https://gitlab.example.com",
+		});
+		expect(expected).toMatchObject({ containerId: "7777" });
+	});
+
+	it("guards the transactional writes the same way (status-sync start and governance change)", async () => {
+		const relabelled = {
+			labelStatusMap: { "workflow::done": "status-done" },
+		};
+
+		// Status sync off → on: the project update inside the session
+		// transaction carries the selection the binding read.
+		mocks.tables.project = [restGitLabRow({ adoStatePollActive: false })];
+		await call({
+			id: "proj-rest",
+			pmStatusSyncEnabled: true,
+			projectManagementAdditionalContext: relabelled,
+		});
+		expect(mocks.buildUpdateProjectOperation).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.buildUpdateProjectOperation.mock.calls[0][3],
+		).toMatchObject({ containerId: "4242" });
+
+		// A governance change: the raw update in its transaction requires it.
+		mocks.tables.project = [restGitLabRow()];
+		await call({
+			id: "proj-rest",
+			enforceSpecifyGate: true,
+			projectManagementAdditionalContext: relabelled,
+		});
+		expect(mocks.projectUpdate).toHaveBeenCalledTimes(1);
+		const [{ where }] = mocks.projectUpdate.mock.calls[0] as [
+			{ where: Row },
+		];
+		expect(where).toMatchObject({
+			id: "proj-rest",
+			organizationId: "org-1",
+			pmSelection: { containerId: "4242" },
+		});
+	});
 });
 
 describe("D1.1 — the disconnect rule", () => {

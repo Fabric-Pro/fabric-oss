@@ -78,6 +78,13 @@ export const getRepositorySyncProcedure = tenantProtectedProcedure
 				settings.sourceOfTruth === "REPOSITORY"
 					? ("REPOSITORY" as const)
 					: ("UPLOAD" as const),
+			// A move of uploaded instructions into a repository is open (Fizzy
+			// #2878 §9): `configured` is then the sync row the move created,
+			// paused `MIGRATING` and not yet the source of truth, and the
+			// move's own read (`getMigration`) says where it stands.
+			migration: settings.migration
+				? { state: settings.migration.state }
+				: null,
 			canConfigure,
 			running,
 			configured: sync

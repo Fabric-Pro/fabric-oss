@@ -34,6 +34,7 @@ import {
 	type AuditRequestContext,
 	recordAuditFromRequest,
 } from "../../lib/audit";
+import { peekAuthorizedProject } from "../../lib/authorized-project-binding";
 import {
 	extractCorrelationId,
 	getCorrelationIdFromContext,
@@ -224,6 +225,29 @@ export function readProjectIdFromInput(input: unknown): string | undefined {
  * Returns `undefined` when the input doesn't carry the field at all so
  * downstream resolution (session.activeOrganizationId) can still apply.
  */
+/**
+ * The organization an automatic audit row (error or activity) is attributed to.
+ *
+ * When the request authorized a project, its organization — never a
+ * caller-named one. Otherwise a request that paired a reachable project with
+ * another organization's id wrote a row into THAT organization's audit trail,
+ * visible to its admins, whether or not the handler then refused it. A project
+ * with no organization attributes to null (personal), not to the input.
+ *
+ * Without an authorized project: explicit input (including explicit null), else
+ * the session's active organization, else null. Pure; never throws.
+ */
+export function auditOrganizationId(
+	inputOrg: string | null | undefined,
+	sessionOrg: string | null | undefined,
+): string | null {
+	const authorized = peekAuthorizedProject();
+	if (authorized) {
+		return authorized.organizationId;
+	}
+	return inputOrg !== undefined ? inputOrg : (sessionOrg ?? null);
+}
+
 export function readOrganizationIdFromInput(
 	input: unknown,
 ): string | null | undefined {
@@ -368,17 +392,19 @@ async function captureError(
 			metadata.correlationId = correlationId;
 		}
 
-		// Resolve organizationId: explicit input wins (including explicit
-		// null for personal context), else session.activeOrganizationId,
-		// else null. This mirrors `resolveOrganizationId` in procedures.ts
-		// but is intentionally simpler since the middleware can't pull
-		// from `getTenantContext()` (no AsyncLocalStorage frame yet at
-		// outermost wrap).
-		const inputOrg = readOrganizationIdFromInput(input);
-		const organizationId =
-			inputOrg !== undefined
-				? inputOrg
-				: (context.session?.activeOrganizationId ?? null);
+		// Resolve organizationId: the project the request was authorized on
+		// wins when there is one (`auditOrganizationId`), else explicit input
+		// (including explicit null for personal context), else
+		// session.activeOrganizationId, else null. This mirrors
+		// `resolveOrganizationId` in procedures.ts but is intentionally simpler
+		// since the middleware can't pull from `getTenantContext()` (no
+		// AsyncLocalStorage frame yet at outermost wrap). It never throws: a
+		// mismatched input organization is what the request was refused FOR,
+		// and the row is still written — to the project's organization.
+		const organizationId = auditOrganizationId(
+			readOrganizationIdFromInput(input),
+			context.session?.activeOrganizationId,
+		);
 
 		recordAuditFromRequest(context, {
 			action: classification.action,

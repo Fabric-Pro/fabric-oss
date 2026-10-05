@@ -20,6 +20,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY tooling ./tooling
 
 # Copy the agent package.json
@@ -37,6 +38,14 @@ COPY packages/databricks/package.json ./packages/databricks/
 COPY packages/utils/package.json ./packages/utils/
 COPY packages/logs/package.json ./packages/logs/
 COPY packages/mcp/package.json ./packages/mcp/
+# @repo/mcp depends on @repo/integrations: its workspace manifest closure must be
+# present for the filtered frozen install to register (not dangle) those packages.
+COPY config/package.json ./config/
+COPY packages/agent-prompts/package.json ./packages/agent-prompts/
+COPY packages/integrations/package.json ./packages/integrations/
+COPY packages/payments/package.json ./packages/payments/
+COPY packages/permissions/package.json ./packages/permissions/
+COPY packages/storage/package.json ./packages/storage/
 COPY packages/rag/package.json ./packages/rag/
 COPY packages/mail/package.json ./packages/mail/
 COPY packages/observability/package.json ./packages/observability/
@@ -45,16 +54,33 @@ COPY packages/observability/package.json ./packages/observability/
 RUN pnpm install --frozen-lockfile --filter task-planner-agent...
 
 # =============================================================================
+# Prisma client, generated from the schema alone
+# =============================================================================
+# Only the files `generate` reads are copied in, so this stage stays cached
+# until the schema or the generate scripts change. After the full source copy
+# it reran a five-minute generate on every change. tsconfig.json is one of
+# those inputs: the generator takes the client's import extensions from it.
+FROM base AS prisma
+COPY packages/database/tsconfig.json ./packages/database/
+COPY packages/database/prisma/schema.prisma packages/database/prisma/zod-generator.config.json packages/database/prisma/tsconfig.generated.json ./packages/database/prisma/
+COPY packages/database/prisma/zod ./packages/database/prisma/zod
+COPY packages/database/scripts/generate-client.mts packages/database/scripts/fix-zod-imports.ts ./packages/database/scripts/
+
+# Provide dummy DATABASE_URL for Prisma client generation (agents are stateless and don't need DB)
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
+# `mkdir -p` leaves the builder's COPY a source when generate failed early.
+RUN (pnpm --filter @repo/database generate || true) \
+	&& mkdir -p packages/database/prisma/generated
+
+# =============================================================================
 # Stage 2: Build - Compile TypeScript
 # =============================================================================
 FROM base AS builder
 
 COPY packages ./packages
 COPY agents/langchain/task-planner ./agents/langchain/task-planner
-
-# Provide dummy DATABASE_URL for Prisma client generation (agents are stateless and don't need DB)
-ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
-RUN pnpm --filter @repo/database generate || true
+COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated
+COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 RUN pnpm --filter task-planner-agent build
 
 # =============================================================================
@@ -74,6 +100,7 @@ WORKDIR /app
 
 # Copy workspace configuration for pnpm install
 COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/patches ./patches
 COPY --from=builder /app/tooling ./tooling
 
 # Copy package.json files for all workspace packages
@@ -90,6 +117,14 @@ COPY --from=builder /app/packages/utils/package.json ./packages/utils/
 COPY --from=builder /app/packages/utils/lib/log-redaction.ts /app/packages/utils/lib/sensitive-keys.ts ./packages/utils/lib/
 COPY --from=builder /app/packages/logs/package.json ./packages/logs/
 COPY --from=builder /app/packages/mcp/package.json ./packages/mcp/
+# @repo/mcp depends on @repo/integrations: its workspace manifest closure must be
+# present for the filtered frozen install to register (not dangle) those packages.
+COPY --from=builder /app/config/package.json ./config/
+COPY --from=builder /app/packages/agent-prompts/package.json ./packages/agent-prompts/
+COPY --from=builder /app/packages/integrations/package.json ./packages/integrations/
+COPY --from=builder /app/packages/payments/package.json ./packages/payments/
+COPY --from=builder /app/packages/permissions/package.json ./packages/permissions/
+COPY --from=builder /app/packages/storage/package.json ./packages/storage/
 COPY --from=builder /app/packages/rag/package.json ./packages/rag/
 COPY --from=builder /app/packages/mail/package.json ./packages/mail/
 # Observability is external (not bundled) - copy full source for runtime dynamic import

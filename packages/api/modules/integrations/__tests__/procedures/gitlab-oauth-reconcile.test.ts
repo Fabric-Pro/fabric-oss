@@ -1,37 +1,29 @@
 /**
- * Procedure-level tests for `integrations.gitlab.reconcile`.
+ * Procedure-level tests for `integrations.gitlab.reconcile`, and the paired
+ * callback path.
  *
- * Reconcile validates a stored GitLab token and backfills the missing token
- * store. Its failure path used to condemn the credential on ANY error — a
- * GitLab outage, a probe hiccup or a failed database write all returned
- * NEEDS_REAUTH and called `markNeedsReauth`. That flag is a circuit breaker
- * (a flagged MCPConfig is refused at client creation and filtered out of tool
- * discovery, and only a fresh OAuth grant clears it), so a false positive
- * hard-blocks a working integration.
+ * Reconcile adds the `gitlab` registry entry the MCP page lists for a person
+ * whose GitLab connection is usable. It adopts nothing (a legacy MCP token
+ * copy is not a connection), never writes a credential, never refreshes one
+ * with a client
+ * other than its issuer, and never condemns: a `/user` 401/403 is only an
+ * ADVISORY prompt to reconnect (the access token is unusable now; the grant
+ * behind it may be fine). Everything else surfaces as an error.
  *
- * Reconcile now never writes that flag at all. A 401/403 on `/user` still
- * returns NEEDS_REAUTH, but only as an ADVISORY prompt to reconnect: a probe
- * 401 shows the ACCESS token is unusable right now — usually just expired —
- * while the refresh token behind it may be perfectly good, and a 403 may be
- * scope or an administrator restriction. Everything else surfaces as an error.
- *
- * The breaker also runs in the other direction: a credential that is ALREADY
- * condemned must not be reconciled back to life. Only a fresh OAuth grant
- * clears the flag, so reconcile — which reuses the existing token — declines
- * up front rather than probing and re-persisting, and hands
- * `persistGitLabToken` no reset authority even on the paths that do write.
- * The last describe below pins the other end of that contract: the OAuth
- * callback, the one caller that DOES hold a new grant, still clears it.
+ * A connection already marked reconnect-required is not reconciled back to
+ * life: only a fresh grant — the OAuth callback — clears that, and the last
+ * describe pins that the callback still passes it.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockGitlabFetch,
-	mockLoadGitLabToken,
+	mockGetGitLabConnectionToken,
+	mockGetGitLabConnectionGeneration,
+	mockIdentifyGitLabIssuer,
 	mockPersistGitLabToken,
-	mockMarkNeedsReauth,
-	mockWorkflowIntegrationFindFirst,
+	mockEnsureGitLabRegistryRow,
 	mockMcpConfigFindFirst,
 	mockMcpConfigFindMany,
 	mockDataConnectionUpdateMany,
@@ -42,10 +34,11 @@ const {
 	mockGetOAuthCredentialsWithDb,
 } = vi.hoisted(() => ({
 	mockGitlabFetch: vi.fn(),
-	mockLoadGitLabToken: vi.fn(),
+	mockGetGitLabConnectionToken: vi.fn(),
+	mockGetGitLabConnectionGeneration: vi.fn(),
+	mockIdentifyGitLabIssuer: vi.fn(),
 	mockPersistGitLabToken: vi.fn(),
-	mockMarkNeedsReauth: vi.fn(),
-	mockWorkflowIntegrationFindFirst: vi.fn(),
+	mockEnsureGitLabRegistryRow: vi.fn(),
 	mockMcpConfigFindFirst: vi.fn(),
 	mockMcpConfigFindMany: vi.fn(),
 	mockDataConnectionUpdateMany: vi.fn(),
@@ -56,46 +49,19 @@ const {
 	mockGetOAuthCredentialsWithDb: vi.fn(),
 }));
 
-vi.mock("@repo/integrations/gitlab", async () => {
-	// Pull `GitLabApiError` from the real leaf module so the SUT's
-	// `instanceof` check matches the errors these tests throw.
-	const { fileURLToPath } = await import("node:url");
-	const path = await import("node:path");
-	const here = path.dirname(fileURLToPath(import.meta.url));
-	const restClientPath = path.resolve(
-		here,
-		"../../../../../integrations/src/gitlab/rest-client.ts",
-	);
-	const { GitLabApiError } =
-		await vi.importActual<typeof import("@repo/integrations/gitlab")>(
-			restClientPath,
-		);
-	return {
-		GitLabApiError,
-		getValidGitLabAccessToken: vi.fn(),
-		gitlabFetch: mockGitlabFetch,
-	};
-});
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	getGitLabConnectionToken: mockGetGitLabConnectionToken,
+	getGitLabConnectionGeneration: mockGetGitLabConnectionGeneration,
+	identifyGitLabIssuer: mockIdentifyGitLabIssuer,
+	gitlabFetch: mockGitlabFetch,
+}));
 
-vi.mock("../../lib/gitlab-token", async () => {
-	const { fileURLToPath } = await import("node:url");
-	const path = await import("node:path");
-	const here = path.dirname(fileURLToPath(import.meta.url));
-	const oauthRefreshPath = path.resolve(
-		here,
-		"../../../../../integrations/src/gitlab/oauth-refresh.ts",
-	);
-	const { GitLabReauthRequiredError } =
-		await vi.importActual<typeof import("@repo/integrations/gitlab")>(
-			oauthRefreshPath,
-		);
-	return {
-		GitLabReauthRequiredError,
-		loadGitLabToken: mockLoadGitLabToken,
-		persistGitLabToken: mockPersistGitLabToken,
-		markNeedsReauth: mockMarkNeedsReauth,
-	};
-});
+vi.mock("../../lib/gitlab-token", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	persistGitLabToken: mockPersistGitLabToken,
+	ensureGitLabRegistryRow: mockEnsureGitLabRegistryRow,
+}));
 
 vi.mock("../../lib/gitlab-recheck", () => ({
 	recheckGitlabCapabilities: vi.fn(),
@@ -106,9 +72,10 @@ vi.mock("../../lib/gitlab-recheck", () => ({
 // Temporal / permissions wiring. Reconcile reads only the finders; the
 // callback describe additionally reaches `mCPConfig.findMany` (tool ingestion)
 // and `dataConnection.updateMany` (auto-heal).
+// Stub heavy barrel imports so the procedure file loads without real DB /
+// Temporal / permissions wiring.
 vi.mock("@repo/database", () => ({
 	db: {
-		workflowIntegration: { findFirst: mockWorkflowIntegrationFindFirst },
 		mCPConfig: {
 			findFirst: mockMcpConfigFindFirst,
 			findMany: mockMcpConfigFindMany,
@@ -116,8 +83,7 @@ vi.mock("@repo/database", () => ({
 		dataConnection: { updateMany: mockDataConnectionUpdateMany },
 	},
 	// The callback guard's live membership check for the organization the
-	// state names; this suite is about the breaker, so the caller is always
-	// still a member there.
+	// state names; the caller is always still a member there.
 	getOrganizationMembership: vi
 		.fn()
 		.mockImplementation(async (organizationId: string) => ({
@@ -192,6 +158,30 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chain,
 		protectedProcedure: chain,
+		// The resolution `authorizeInputOrganization` performs (input, else
+		// session; an explicit null suppresses the session fallback; none
+		// refused when required). It models no guest write organization
+		// (`effectiveWriteOrgId`), which the real resolver lets win even over
+		// an explicit null. Membership and role are exercised for real in
+		// gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		requirePermission: () => (handler: unknown) => handler,
 		requireInputOrgPermission: () => (handler: unknown) => handler,
 		requireOrganizationMembership: vi.fn(),
@@ -200,6 +190,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	};
 });
 
+import { GitLabApiError } from "@repo/integrations/gitlab";
 import { gitlabOAuthProcedures } from "../../procedures/gitlab-oauth";
 
 const baseCtx = {
@@ -214,7 +205,7 @@ const GITLAB_USER = {
 	avatar_url: "https://gitlab.example.com/avatar.png",
 };
 
-function getReconcileHandler() {
+function runReconcile(organizationId: string | null = "org-1") {
 	return (
 		gitlabOAuthProcedures.reconcile as unknown as {
 			handler: (args: {
@@ -222,257 +213,186 @@ function getReconcileHandler() {
 				context: typeof baseCtx;
 			}) => Promise<{ status: string }>;
 		}
-	).handler;
+	).handler({ input: { organizationId }, context: baseCtx });
 }
 
-function runReconcile() {
-	return getReconcileHandler()({
-		input: { organizationId: null },
-		context: baseCtx,
-	});
-}
+const okToken = {
+	ok: true,
+	accessToken: "tok",
+	issuer: {
+		kind: "app",
+		clientId: "client-id",
+		origin: "https://gitlab.com",
+	},
+	origin: "https://gitlab.com",
+	integrationId: "wi-1",
+	generation: 2,
+	settings: {},
+};
 
-/**
- * Reconcile makes two `mCPConfig.findFirst` reads — the presence check on the
- * primary `gitlab` row and the breaker check on `gitlab-official` — so the
- * double keys off the server key. Defaults: no primary row (the case reconcile
- * exists for) and a healthy official row.
- */
-function mockMcpConfigRows(rows: {
-	gitlab?: { id: string } | null;
-	official?: { needsReauth: boolean } | null;
-}) {
-	mockMcpConfigFindFirst.mockImplementation(
-		async (args: { where?: { mcpServer?: { key?: string } } }) =>
-			args?.where?.mcpServer?.key === "gitlab-official"
-				? (rows.official ?? { needsReauth: false })
-				: (rows.gitlab ?? null),
-	);
-}
+const apiError = (status: number, message: string) =>
+	new GitLabApiError(status, message);
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockLoadGitLabToken.mockResolvedValue({
-		accessToken: "tok",
-		refreshToken: "ref",
-		expiresAt: null,
-	});
-	// One store present, the other missing — the case reconcile exists for.
-	mockWorkflowIntegrationFindFirst.mockResolvedValue({ id: "wi-1" });
-	mockMcpConfigRows({});
+	mockGetGitLabConnectionToken.mockResolvedValue(okToken);
+	// The registry entry is missing — the case reconcile exists for.
+	mockMcpConfigFindFirst.mockResolvedValue(null);
+	mockGitlabFetch.mockResolvedValue({ id: 7 });
+	mockEnsureGitLabRegistryRow.mockResolvedValue(undefined);
 });
 
-describe("integrations.gitlab.reconcile — never writes the breaker", () => {
-	it("backfills the missing store when GitLab accepts the token", async () => {
-		mockGitlabFetch.mockResolvedValue(GITLAB_USER);
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "RECONCILED",
-		});
-		expect(mockGitlabFetch).toHaveBeenCalledWith("tok", "/user");
-		expect(mockPersistGitLabToken).toHaveBeenCalledOnce();
-		expect(mockPersistGitLabToken.mock.calls[0]![1]).toMatchObject({
-			gitlabUser: {
-				id: 7,
-				username: "example-user",
-				name: "Example User",
-			},
-		});
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-	});
-
-	it("prompts a reconnect on a 401 WITHOUT condemning the credential", async () => {
-		// A `/user` 401 only proves the access token is unusable right now.
-		// The refresh token may be fine, so the advisory status goes out but
-		// the enforced breaker stays unwritten — otherwise a routinely expired
-		// access token would hard-block an integration a refresh would heal.
-		const { GitLabApiError } = await import("@repo/integrations/gitlab");
-		mockGitlabFetch.mockRejectedValue(
-			new GitLabApiError(401, "401 Unauthorized"),
+describe("integrations.gitlab.reconcile", () => {
+	it("adds the registry entry after GitLab accepts the token", async () => {
+		await expect(runReconcile()).resolves.toEqual({ status: "RECONCILED" });
+		expect(mockGitlabFetch).toHaveBeenCalledWith(
+			{ token: "tok", apiBase: "https://gitlab.com/api/v4" },
+			"/user",
 		);
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
+		expect(mockEnsureGitLabRegistryRow).toHaveBeenCalledOnce();
+		// Reconcile never writes a credential.
 		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
 	});
 
-	it("prompts a reconnect on a 403 WITHOUT condemning the credential", async () => {
-		// 403 may be scope, user/instance policy or an administrator
-		// restriction — none of which say the stored grant is dead.
-		const { GitLabApiError } = await import("@repo/integrations/gitlab");
-		mockGitlabFetch.mockRejectedValue(
-			new GitLabApiError(403, "403 Forbidden"),
+	it("checks a self-hosted token against its own instance", async () => {
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			...okToken,
+			origin: "https://gitlab.example.com",
+		});
+
+		await runReconcile();
+
+		expect(mockGitlabFetch).toHaveBeenCalledWith(
+			{ token: "tok", apiBase: "https://gitlab.example.com/api/v4" },
+			"/user",
 		);
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
 	});
 
-	it("prompts a reconnect on GitLabReauthRequiredError without writing the breaker", async () => {
-		// `gitlabFetch` does no refresh and only throws `GitLabApiError`, so
-		// this cannot arrive in production today; the handler still maps the
-		// typed error to the prompt rather than a 500 in case a refreshing
-		// probe is wired in later. Either way reconcile writes nothing —
-		// persisting the flag is the refresh path's job, at the point it has
-		// an `invalid_grant` in hand.
-		const { GitLabReauthRequiredError } = await import(
-			"../../lib/gitlab-token"
+	it("reads the token strictly, from the connection alone", async () => {
+		await runReconcile();
+		expect(mockGetGitLabConnectionToken).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-1" },
+			{ mode: "strict", anyOrigin: true },
 		);
-		mockGitlabFetch.mockRejectedValue(new GitLabReauthRequiredError());
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
 	});
 
-	it("does NOT condemn on a 5xx from GitLab — the error surfaces instead", async () => {
-		const { GitLabApiError } = await import("@repo/integrations/gitlab");
-		const outage = new GitLabApiError(503, "503 Service Unavailable");
-		mockGitlabFetch.mockRejectedValue(outage);
-
-		await expect(runReconcile()).rejects.toBe(outage);
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
-	});
-
-	it("does NOT condemn on a 429 from GitLab", async () => {
-		const { GitLabApiError } = await import("@repo/integrations/gitlab");
-		const throttled = new GitLabApiError(429, "Too many requests");
-		mockGitlabFetch.mockRejectedValue(throttled);
-
-		await expect(runReconcile()).rejects.toBe(throttled);
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-	});
-
-	it("does NOT condemn on a network error (untyped rejection)", async () => {
-		const network = new TypeError("fetch failed");
-		mockGitlabFetch.mockRejectedValue(network);
-
-		await expect(runReconcile()).rejects.toBe(network);
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-	});
-
-	it("does NOT condemn when the write fails after the token validated", async () => {
-		mockGitlabFetch.mockResolvedValue(GITLAB_USER);
-		const dbDown = new Error("could not connect to the database");
-		mockPersistGitLabToken.mockRejectedValueOnce(dbDown);
-
-		await expect(runReconcile()).rejects.toBe(dbDown);
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
-	});
-
-	it("short-circuits without probing when both stores already exist", async () => {
-		mockMcpConfigRows({ gitlab: { id: "mcp-1" } });
-
+	it("short-circuits without probing when nothing is missing", async () => {
+		mockMcpConfigFindFirst.mockResolvedValue({ id: "cfg-gitlab" });
 		await expect(runReconcile()).resolves.toEqual({
 			status: "ALREADY_BOTH",
 		});
 		expect(mockGitlabFetch).not.toHaveBeenCalled();
-		expect(mockMarkNeedsReauth).not.toHaveBeenCalled();
 	});
 
-	it("declines an already-condemned credential without probing or persisting", async () => {
-		// The ACCESS token may still work even after the REFRESH token died,
-		// so the `/user` probe would pass and `persistGitLabToken` would clear
-		// needsReauth, refreshFailureCount and the UNAVAILABLE status —
-		// resurrecting a config whose grant is dead and restarting the failure
-		// cycle without the user ever completing a fresh OAuth grant.
-		mockLoadGitLabToken.mockResolvedValue({
-			accessToken: "tok",
-			refreshToken: "dead-ref",
-			expiresAt: null,
-			needsReauth: true,
+	it("scopes the registry lookup exclusively to the tenant context", async () => {
+		await runReconcile("org-1");
+		expect(mockMcpConfigFindFirst.mock.calls[0][0].where).toMatchObject({
+			userId: "user-1",
+			organizationId: "org-1",
+			mcpServer: { key: "gitlab" },
 		});
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockGitlabFetch).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
-	});
-
-	it("declines a condemned credential even when both stores already exist", async () => {
-		// Ordering guard: the condemned check must run BEFORE the
-		// ALREADY_BOTH short-circuit, or a condemned-but-complete pair
-		// reports a healthy no-op and the UI never offers the Connect flow.
-		mockLoadGitLabToken.mockResolvedValue({
-			accessToken: "tok",
-			refreshToken: "dead-ref",
-			expiresAt: null,
-			needsReauth: true,
-		});
-		mockMcpConfigRows({ gitlab: { id: "mcp-1" } });
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockGitlabFetch).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
-	});
-
-	it("declines when only the gitlab-official row is condemned", async () => {
-		// `loadGitLabToken` reads the primary `gitlab` row (falling back to
-		// WorkflowIntegration) and never looks at `gitlab-official` — but that
-		// is the row the PM adapter and the Temporal resolver condemn, and
-		// reconcile runs precisely when the two have diverged. Without the
-		// second read the guard passes on a healthy primary, the `/user` probe
-		// succeeds on a still-live access token, and the official row is
-		// rewritten with the same dead refresh token behind it.
-		mockMcpConfigRows({ official: { needsReauth: true } });
-
-		await expect(runReconcile()).resolves.toEqual({
-			status: "NEEDS_REAUTH",
-		});
-		expect(mockGitlabFetch).not.toHaveBeenCalled();
-		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
-	});
-
-	it("scopes the gitlab-official breaker read to the tenant (XOR)", async () => {
-		mockGitlabFetch.mockResolvedValue(GITLAB_USER);
-
-		await runReconcile();
-
-		expect(mockMcpConfigFindFirst).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					userId: "user-1",
-					// Personal context: null is REQUIRED, never omitted — an
-					// absent field would match another tenant's row.
-					organizationId: null,
-					mcpServer: { key: "gitlab-official" },
-				}),
-			}),
+		mockMcpConfigFindFirst.mockClear();
+		// No organization: refused before any read (ADR-018).
+		await expect(runReconcile(null)).rejects.toThrow(
+			/requires an organization context/,
 		);
+		expect(mockMcpConfigFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("persists without breaker-reset authority when it does write", async () => {
-		// Reconcile reuses the token it read out of the other store, so it has
-		// no new grant and `persistGitLabToken` must write the token fields
-		// only. Passing `freshGrant: true` from here would clear needsReauth,
-		// the failure counters and the UNAVAILABLE status on a credential
-		// nobody re-authorized.
-		mockGitlabFetch.mockResolvedValue(GITLAB_USER);
-
+	it("prompts a reconnect on a /user 401 without writing anything", async () => {
+		mockGitlabFetch.mockRejectedValue(apiError(401, "Unauthorized"));
 		await expect(runReconcile()).resolves.toEqual({
-			status: "RECONCILED",
+			status: "NEEDS_REAUTH",
 		});
-		expect(mockPersistGitLabToken.mock.calls[0]![1]).toMatchObject({
-			freshGrant: false,
+		expect(mockEnsureGitLabRegistryRow).not.toHaveBeenCalled();
+		expect(mockPersistGitLabToken).not.toHaveBeenCalled();
+	});
+
+	it("prompts a reconnect on a /user 403 without writing anything", async () => {
+		mockGitlabFetch.mockRejectedValue(apiError(403, "Forbidden"));
+		await expect(runReconcile()).resolves.toEqual({
+			status: "NEEDS_REAUTH",
 		});
+		expect(mockEnsureGitLabRegistryRow).not.toHaveBeenCalled();
+	});
+
+	it("declines a connection already marked reconnect-required, without probing", async () => {
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: false,
+			reason: "needs-reauth",
+			message: "the GitLab connection needs to be reconnected",
+		});
+		await expect(runReconcile()).resolves.toEqual({
+			status: "NEEDS_REAUTH",
+		});
+		expect(mockGitlabFetch).not.toHaveBeenCalled();
+		expect(mockEnsureGitLabRegistryRow).not.toHaveBeenCalled();
+	});
+
+	it("asks for a reconnect when the client that issued the token is gone", async () => {
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: false,
+			reason: "client-unavailable",
+			message:
+				"the OAuth client that issued the GitLab token is not available",
+		});
+		await expect(runReconcile()).resolves.toEqual({
+			status: "NEEDS_REAUTH",
+		});
+		expect(mockGitlabFetch).not.toHaveBeenCalled();
+	});
+
+	it("reports NOT_FOUND when there is no connection to reconcile", async () => {
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: false,
+			reason: "not-connected",
+			message: "GitLab is not connected",
+		});
+		await expect(runReconcile()).rejects.toMatchObject({
+			code: "NOT_FOUND",
+		});
+	});
+
+	it("surfaces a transient token failure as an error, not a reconnect prompt", async () => {
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: false,
+			reason: "transient",
+			message: "the GitLab token refresh did not complete",
+		});
+		await expect(runReconcile()).rejects.toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+		});
+	});
+
+	it("surfaces a 5xx from GitLab instead of prompting", async () => {
+		const outage = apiError(503, "503 Service Unavailable");
+		mockGitlabFetch.mockRejectedValue(outage);
+		await expect(runReconcile()).rejects.toBe(outage);
+	});
+
+	it("surfaces a 429 from GitLab instead of prompting", async () => {
+		const limited = apiError(429, "Too many requests");
+		mockGitlabFetch.mockRejectedValue(limited);
+		await expect(runReconcile()).rejects.toBe(limited);
+	});
+
+	it("surfaces a network error instead of prompting", async () => {
+		const network = new TypeError("fetch failed");
+		mockGitlabFetch.mockRejectedValue(network);
+		await expect(runReconcile()).rejects.toBe(network);
+	});
+
+	it("surfaces a failed registry write after the token validated", async () => {
+		const dbDown = new Error("could not connect to the database");
+		mockEnsureGitLabRegistryRow.mockRejectedValue(dbDown);
+		await expect(runReconcile()).rejects.toBe(dbDown);
 	});
 });
 
 /**
- * The paired half of the same authority: withholding it everywhere would leave
- * a condemned credential with no way back, so the one caller that completes an
- * authorization-code exchange must still carry it.
+ * The paired half: the one caller that completes an authorization-code
+ * exchange writes through the connection service with the issuing client, a
+ * fresh grant, and the generation it read before the exchange.
  */
 describe("integrations.gitlab.callback — the path that DOES hold a fresh grant", () => {
 	function runCallback() {
@@ -485,15 +405,17 @@ describe("integrations.gitlab.callback — the path that DOES hold a fresh grant
 			}
 		).handler({
 			input: { code: "auth-code", state: "signed-state" },
-			// The callback is session-bound: the caller must be the user the
-			// state names, which `baseCtx` is.
 			context: baseCtx,
 		});
 	}
 
+	const ISSUER = {
+		kind: "app",
+		clientId: "client-id",
+		origin: "https://gitlab.com",
+	};
+
 	beforeEach(() => {
-		// A state always names the organization the flow was started from;
-		// the decoder refuses one that does not (ADR-018).
 		mockDecodeOAuthState.mockReturnValue({
 			provider: "gitlab",
 			nonce: "nonce-1",
@@ -514,29 +436,70 @@ describe("integrations.gitlab.callback — the path that DOES hold a fresh grant
 			scope: "api read_user",
 		});
 		mockGetGitLabUser.mockResolvedValue(GITLAB_USER);
+		mockGetGitLabConnectionGeneration.mockResolvedValue(5);
+		mockIdentifyGitLabIssuer.mockResolvedValue(ISSUER);
 		mockPersistGitLabToken.mockResolvedValue({
-			mcpConfigId: "mcp-1",
+			written: true,
 			workflowIntegrationId: "wi-1",
+			generation: 6,
 		});
 		mockDataConnectionUpdateMany.mockResolvedValue({ count: 0 });
 		mockMcpConfigFindMany.mockResolvedValue([]);
 	});
 
-	it("persists the exchanged token WITH breaker-reset authority", async () => {
+	it("persists the exchanged token as a fresh grant, with its issuer, fenced on the generation read before the exchange", async () => {
 		await expect(runCallback()).resolves.toMatchObject({ success: true });
 
+		expect(mockIdentifyGitLabIssuer).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-1" },
+			{ clientId: "client-id", origin: "https://gitlab.com" },
+		);
 		expect(mockPersistGitLabToken).toHaveBeenCalledOnce();
-		expect(mockPersistGitLabToken.mock.calls[0]![1]).toMatchObject({
+		expect(mockPersistGitLabToken.mock.calls[0]![0]).toMatchObject({
 			userId: "user-1",
 			organizationId: "org-1",
 			token: expect.objectContaining({
 				accessToken: "brand-new-access",
 				refreshToken: "brand-new-refresh",
 			}),
-			// The user just re-authorized: this is the only signal that clears
-			// `needsReauth` and the failure counters, so a reconnect has to be
-			// able to lift a tripped breaker.
+			issuer: ISSUER,
 			freshGrant: true,
+			expectedGeneration: 5,
 		});
+		// The generation was read before the code exchange.
+		expect(
+			mockGetGitLabConnectionGeneration.mock.invocationCallOrder[0],
+		).toBeLessThan(mockExchangeCodeForToken.mock.invocationCallOrder[0]);
+	});
+
+	it("heals an EXPIRED GitLab Data Connection's status without copying the token onto it", async () => {
+		await expect(runCallback()).resolves.toMatchObject({ success: true });
+
+		expect(mockDataConnectionUpdateMany).toHaveBeenCalledOnce();
+		const [args] = mockDataConnectionUpdateMany.mock.calls[0]!;
+		expect(args.where).toMatchObject({
+			userId: "user-1",
+			organizationId: "org-1",
+			provider: "GITLAB",
+			status: "EXPIRED",
+		});
+		expect(args.data).toEqual({
+			accessToken: null,
+			refreshToken: null,
+			tokenExpiresAt: null,
+			credentialId: null,
+			status: "CONNECTED",
+		});
+		expect(JSON.stringify(args)).not.toContain("brand-new");
+	});
+
+	it("reports failure (and writes nothing further) when a disconnect landed during the exchange", async () => {
+		mockPersistGitLabToken.mockResolvedValue({
+			written: false,
+			reason: "stale",
+		});
+
+		await expect(runCallback()).resolves.toMatchObject({ success: false });
+		expect(mockDataConnectionUpdateMany).not.toHaveBeenCalled();
 	});
 });

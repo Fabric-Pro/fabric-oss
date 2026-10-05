@@ -15,11 +15,17 @@
  * as unknown.
  *
  * Membership and the owner's account are re-read on EVERY verification, like an
- * organization API key. A token proves who is asking and which organization the
- * person chose at consent time; it never proves they still belong there.
+ * organization API key. A token proves who is asking and which organization, or
+ * which single project, the person chose at consent time; it never proves they
+ * still belong there.
  */
 
+import {
+	type OAuthProjectAudience,
+	parseOAuthReference,
+} from "@repo/utils/oauth-project-resource";
 import { db } from "../client";
+import { resolveOAuthProjectGrantTarget } from "./oauth-project-grant";
 import {
 	hashOAuthToken,
 	OAUTH_ACCESS_TOKEN_PREFIX,
@@ -52,8 +58,15 @@ export type OAuthAccessTokenVerification =
 			userName: string;
 			email: string;
 			role: string | null;
-			/** The organization the token is bound to. Fixed at consent time. */
+			/**
+			 * The organization the token is bound to, fixed at consent time. For a
+			 * project grant, the organization hosting the project.
+			 */
 			organizationId: string;
+			/** The one project a project grant reaches; null for an organization grant. */
+			projectId: string | null;
+			/** Which surface a project grant reaches; null for an organization grant. */
+			audience: OAuthProjectAudience | null;
 			scopes: string[];
 	  }
 	| { valid: false; reason: OAuthAccessTokenRefusal };
@@ -119,18 +132,14 @@ export async function verifyOAuthAccessToken(
 	) {
 		return { valid: false, reason: "user_banned" };
 	}
-	if (!row.referenceId) {
+	const reference = row.referenceId
+		? parseOAuthReference(row.referenceId)
+		: null;
+	if (!reference) {
 		return { valid: false, reason: "no_organization" };
 	}
 
-	// The same helper the API-key paths ask, so a liveness rule added there
-	// reaches signed-in agents too.
-	if (!(await isOrganizationMember(row.user.id, row.referenceId))) {
-		return { valid: false, reason: "not_a_member" };
-	}
-
-	return {
-		valid: true,
+	const holder = {
 		tokenId: row.id,
 		clientRowId: row.client.id,
 		clientName: row.client.name,
@@ -138,8 +147,38 @@ export async function verifyOAuthAccessToken(
 		userName: row.user.name,
 		email: row.user.email,
 		role: row.user.role,
-		organizationId: row.referenceId,
 		scopes: row.scopes,
+	};
+
+	if (reference.kind === "project") {
+		const target = await resolveOAuthProjectGrantTarget(
+			row.user.id,
+			reference.projectId,
+		);
+		if (!target) {
+			return { valid: false, reason: "not_a_member" };
+		}
+		return {
+			valid: true,
+			...holder,
+			organizationId: target.organizationId,
+			projectId: reference.projectId,
+			audience: reference.audience,
+		};
+	}
+
+	// The same helper the API-key paths ask, so a liveness rule added there
+	// reaches signed-in agents too.
+	if (!(await isOrganizationMember(row.user.id, reference.organizationId))) {
+		return { valid: false, reason: "not_a_member" };
+	}
+
+	return {
+		valid: true,
+		...holder,
+		organizationId: reference.organizationId,
+		projectId: null,
+		audience: null,
 	};
 }
 
@@ -147,32 +186,82 @@ export interface OAuthConnection {
 	/** `OauthConsent.id`. Pass it back to `revokeOAuthConnection`. */
 	consentId: string;
 	clientName: string | null;
+	/** The organization of an organization grant, or hosting a project grant's project. */
 	organizationId: string | null;
 	organizationName: string | null;
+	/** Set for a project grant; null for an organization grant. */
+	projectId: string | null;
+	/** Null when the person can no longer read the project, or it is gone. */
+	projectName: string | null;
+	audience: OAuthProjectAudience | null;
 	scopes: string[];
 	createdAt: Date | null;
 }
 
-/** The agents a person has signed in, one row per (client, organization). */
+function grantKey(clientId: string, referenceId: string | null): string {
+	return `${clientId}\u0000${referenceId ?? ""}`;
+}
+
+/**
+ * The agents a person has signed in, one row per grant: a (client, organization)
+ * pair or a (client, project) pair.
+ *
+ * Only a grant that can still do something is listed: a consent whose access and
+ * refresh tokens are all expired, spent or deleted is a record of the past. A
+ * CLI that signed out leaves exactly that behind, and listing it told the person
+ * an agent stayed signed in when nothing would let it back in.
+ */
 export async function listOAuthConnections(
 	userId: string,
+	now: Date = new Date(),
 ): Promise<OAuthConnection[]> {
-	const consents = await db.oauthConsent.findMany({
-		where: { userId },
-		orderBy: { createdAt: "desc" },
-		select: {
-			id: true,
-			referenceId: true,
-			scopes: true,
-			createdAt: true,
-			client: { select: { name: true } },
-		},
-	});
+	const [consents, liveAccess, liveRefresh] = await Promise.all([
+		db.oauthConsent.findMany({
+			where: { userId },
+			orderBy: { createdAt: "desc" },
+			select: {
+				id: true,
+				clientId: true,
+				referenceId: true,
+				scopes: true,
+				createdAt: true,
+				client: { select: { name: true } },
+			},
+		}),
+		db.oauthAccessToken.findMany({
+			where: { userId, expiresAt: { gt: now } },
+			select: { clientId: true, referenceId: true },
+			distinct: ["clientId", "referenceId"],
+		}),
+		db.oauthRefreshToken.findMany({
+			where: { userId, revoked: null, expiresAt: { gt: now } },
+			select: { clientId: true, referenceId: true },
+			distinct: ["clientId", "referenceId"],
+		}),
+	]);
+
+	const liveGrants = new Set(
+		[...liveAccess, ...liveRefresh].map((token) =>
+			grantKey(token.clientId, token.referenceId),
+		),
+	);
+	const live = consents
+		.filter((consent) =>
+			liveGrants.has(grantKey(consent.clientId, consent.referenceId)),
+		)
+		.map((consent) => ({
+			consent,
+			reference: consent.referenceId
+				? parseOAuthReference(consent.referenceId)
+				: null,
+		}));
 
 	const organizationIds = [
 		...new Set(
-			consents.flatMap((consent) =>
-				consent.referenceId ? [consent.referenceId] : [],
+			live.flatMap(({ reference }) =>
+				reference?.kind === "organization"
+					? [reference.organizationId]
+					: [],
 			),
 		),
 	];
@@ -189,23 +278,64 @@ export async function listOAuthConnections(
 		]),
 	);
 
-	return consents.map((consent) => ({
-		consentId: consent.id,
-		clientName: consent.client.name,
-		organizationId: consent.referenceId,
-		organizationName: consent.referenceId
-			? (organizationNames.get(consent.referenceId) ?? null)
-			: null,
-		scopes: consent.scopes,
-		createdAt: consent.createdAt,
-	}));
+	const projectIds = [
+		...new Set(
+			live.flatMap(({ reference }) =>
+				reference?.kind === "project" ? [reference.projectId] : [],
+			),
+		),
+	];
+	const projectTargets = new Map(
+		await Promise.all(
+			projectIds.map(
+				async (projectId) =>
+					[
+						projectId,
+						await resolveOAuthProjectGrantTarget(userId, projectId),
+					] as const,
+			),
+		),
+	);
+
+	return live.map(({ consent, reference }) => {
+		const base = {
+			consentId: consent.id,
+			clientName: consent.client.name,
+			scopes: consent.scopes,
+			createdAt: consent.createdAt,
+		};
+		if (reference?.kind === "project") {
+			const target = projectTargets.get(reference.projectId) ?? null;
+			return {
+				...base,
+				organizationId: target?.organizationId ?? null,
+				organizationName: target?.organizationName ?? null,
+				projectId: reference.projectId,
+				projectName: target?.projectName ?? null,
+				audience: reference.audience,
+			};
+		}
+		return {
+			...base,
+			organizationId: consent.referenceId,
+			organizationName:
+				reference?.kind === "organization"
+					? (organizationNames.get(reference.organizationId) ?? null)
+					: null,
+			projectId: null,
+			projectName: null,
+			audience: null,
+		};
+	});
 }
 
 export interface RevokedOAuthConnection {
 	/** The public `client_id`, not the row id. */
 	clientId: string;
 	clientName: string | null;
+	/** The organization of the grant, or hosting its project. */
 	organizationId: string | null;
+	projectId: string | null;
 }
 
 /**
@@ -252,10 +382,26 @@ export async function revokeOAuthConnection(params: {
 		await tx.oauthRefreshToken.deleteMany({ where: scope });
 		await tx.oauthConsent.delete({ where: { id: consentId } });
 
+		const reference = consent.referenceId
+			? parseOAuthReference(consent.referenceId)
+			: null;
+		if (reference?.kind === "project") {
+			const project = await tx.project.findUnique({
+				where: { id: reference.projectId },
+				select: { organizationId: true },
+			});
+			return {
+				clientId: consent.clientId,
+				clientName: consent.client.name,
+				organizationId: project?.organizationId ?? null,
+				projectId: reference.projectId,
+			};
+		}
 		return {
 			clientId: consent.clientId,
 			clientName: consent.client.name,
 			organizationId: consent.referenceId,
+			projectId: null,
 		};
 	});
 }

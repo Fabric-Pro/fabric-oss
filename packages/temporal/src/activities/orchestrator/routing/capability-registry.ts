@@ -168,10 +168,12 @@ async function discoverMcpToolCapabilities(
 
 		for (const config of mcpConfigs) {
 			try {
+				// Only lists the server's tools.
 				const result = await getMcpClient(
 					config.id,
 					input.userId,
 					input.organizationId,
+					{ access: "read" },
 				);
 				if (!result) {
 					continue;
@@ -743,10 +745,12 @@ export async function getAvailableMcpToolsList(
 
 		for (const config of mcpConfigs) {
 			try {
+				// Only lists the server's tools.
 				const result = await getMcpClient(
 					config.id,
 					userId,
 					organizationId,
+					{ access: "read" },
 				);
 				if (!result) {
 					continue;

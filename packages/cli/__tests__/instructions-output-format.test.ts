@@ -38,6 +38,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -200,7 +202,7 @@ describe("output format", () => {
 		expect(result.code).toBe(0);
 		const parsed = JSON.parse(result.stdout);
 		expect(parsed.hookCommand).toBe(
-			"fabric instructions check --project project-1 --hook",
+			"fabric instructions check --project project-1 --base-url https://fabric.pro --hook",
 		);
 		expect(parsed.sync).toBeNull();
 	});

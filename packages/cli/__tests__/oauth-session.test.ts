@@ -1,11 +1,14 @@
 import { access, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { FabricClient } from "@fabricorg/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthCredentials } from "../src/lib/config.js";
+import { takeAuthFailure } from "../src/lib/oauth/auth-failure.js";
 import {
 	createOAuthFetch,
 	LOCK_STALE_MS,
+	OAuthIssuerMismatchError,
 	OAuthRefreshBusyError,
 	OAuthSessionExpiredError,
 	REFRESH_WINDOW_MS,
@@ -37,6 +40,7 @@ function credentials(
 	overrides: Partial<OAuthCredentials> = {},
 ): OAuthCredentials {
 	return {
+		issuer: "https://deployment.example",
 		clientId: "client-example",
 		redirectUri: "http://127.0.0.1:49152/callback",
 		tokenEndpoint: "https://deployment.example/api/auth/oauth2/token",
@@ -305,6 +309,155 @@ describe("the signed fetch", () => {
 		expect(response.status).toBe(401);
 		expect(api).toHaveBeenCalledTimes(1);
 		expect(endpoint.calls).toEqual([]);
+	});
+});
+
+describe("a sign-in belongs to the deployment that issued it", () => {
+	function stubApi() {
+		const api = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", api);
+		return api;
+	}
+
+	it.each([
+		"https://other.example/api/v1/auth/whoami",
+		"https://deployment.example.evil.example/api/v1/auth/whoami",
+		"http://deployment.example/api/v1/auth/whoami",
+		"https://deployment.example:8443/api/v1/auth/whoami",
+	])("refuses to send the token to %s, before any request", async (url) => {
+		const api = stubApi();
+		const endpoint = rotatingTokenEndpoint();
+
+		await expect(
+			createOAuthFetch({
+				fetch: endpoint.fetchImpl,
+				now: () => NOW,
+				lockPath,
+			})(url),
+		).rejects.toBeInstanceOf(OAuthIssuerMismatchError);
+
+		expect(api).not.toHaveBeenCalled();
+		expect(endpoint.calls).toEqual([]);
+	});
+
+	it("does not refresh an expired token for a deployment that did not issue it", async () => {
+		profile.oauth = credentials({ expiresAt: NOW + 1_000 });
+		const api = stubApi();
+		const endpoint = rotatingTokenEndpoint();
+
+		await expect(
+			createOAuthFetch({
+				fetch: endpoint.fetchImpl,
+				now: () => NOW,
+				lockPath,
+			})("https://other.example/api/v1/auth/whoami"),
+		).rejects.toBeInstanceOf(OAuthIssuerMismatchError);
+
+		expect(endpoint.calls).toEqual([]);
+		expect(api).not.toHaveBeenCalled();
+		expect(profile.oauth?.refreshToken).toBe("frt_1");
+	});
+
+	it("names both origins in the refusal and never the token", async () => {
+		stubApi();
+
+		const error = await createOAuthFetch({
+			now: () => NOW,
+			lockPath,
+		})("https://other.example/api/v1/auth/whoami").catch(
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(OAuthIssuerMismatchError);
+		expect((error as Error).message).toBe(
+			"This sign-in was issued by https://deployment.example and is not sent to https://other.example.",
+		);
+		expect((error as Error).message).not.toContain("fat_old");
+	});
+
+	it("refuses a stored sign-in that records no issuer at all", async () => {
+		profile.oauth = credentials({ issuer: undefined as never });
+		const api = stubApi();
+
+		await expect(
+			createOAuthFetch({ now: () => NOW, lockPath })(
+				"https://deployment.example/api/v1/auth/whoami",
+			),
+		).rejects.toBeInstanceOf(OAuthIssuerMismatchError);
+		expect(api).not.toHaveBeenCalled();
+	});
+
+	it("still sends it to the deployment that issued it, on another path", async () => {
+		const api = stubApi();
+
+		const response = await createOAuthFetch({ now: () => NOW, lockPath })(
+			"https://deployment.example/api/mcp-gateway",
+		);
+
+		expect(response.status).toBe(200);
+		expect(api).toHaveBeenCalledOnce();
+	});
+
+	it("records why a sign-in could not be used, for the command boundary", async () => {
+		takeAuthFailure();
+		stubApi();
+
+		await createOAuthFetch({ now: () => NOW, lockPath })(
+			"https://other.example/api/v1/auth/whoami",
+		).catch(() => undefined);
+
+		expect(takeAuthFailure()).toEqual({
+			kind: "wrong-deployment",
+			origin: "https://other.example",
+		});
+		expect(takeAuthFailure()).toBeNull();
+	});
+
+	it("records an expired sign-in too", async () => {
+		takeAuthFailure();
+		profile.oauth = credentials({
+			expiresAt: NOW + 1_000,
+			refreshToken: undefined,
+		});
+		stubApi();
+
+		await expect(
+			createOAuthFetch({ now: () => NOW, lockPath })(
+				"https://deployment.example/api/v1/auth/whoami",
+			),
+		).rejects.toBeInstanceOf(OAuthSessionExpiredError);
+
+		expect(takeAuthFailure()).toEqual({
+			kind: "expired",
+			origin: "https://deployment.example",
+		});
+	});
+});
+
+describe("a session hook's request, with the refresh lock held by another process", () => {
+	it("gives up when the request's own timeout passes instead of waiting out the lock", async () => {
+		profile.oauth = credentials({ expiresAt: NOW + 1_000 });
+		await writeFile(lockPath, "12345");
+		const api = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", api);
+		const client = new FabricClient({
+			apiKey: "fat_old",
+			baseUrl: "https://deployment.example",
+			fetch: createOAuthFetch({ now: () => NOW, lockPath }),
+			// What the CLI gives a hook: no retries, and a timeout inside the
+			// hook's own deadline.
+			timeoutMs: 200,
+			retry: { maxRetries: 0 },
+		});
+		const started = Date.now();
+
+		await expect(client.auth.whoami()).rejects.toMatchObject({
+			code: "TIMEOUT",
+		});
+
+		// The lock's own wait is 35 seconds; the request's bound ended it.
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(api).not.toHaveBeenCalled();
 	});
 });
 

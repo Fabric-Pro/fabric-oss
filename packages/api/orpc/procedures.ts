@@ -20,6 +20,11 @@ import {
 // at module load, which crashes any test with an incomplete vi.mock for
 // @repo/database.
 import type { AiUsageLimitExceededError as AiUsageLimitExceededErrorType } from "@repo/payments";
+import {
+	peekAuthorizedProject,
+	resolveBoundOrganization,
+	runWithProjectBindingHolder,
+} from "../lib/authorized-project-binding";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "../lib/rate-limit";
 import {
 	type ActivityCaptureMeta,
@@ -40,7 +45,10 @@ import { touchLastSeenMiddleware } from "./middleware/touch-last-seen";
 /**
  * Root of every procedure chain — observability only, no policy.
  *
- * Three middlewares are mounted here, in this order:
+ * The authorized-project binding holder is opened here too, so it exists for
+ * every builder — {@link projectBindingMiddleware}.
+ *
+ * Three observability middlewares are mounted here, in this order:
  *   1. {@link requestCounterMiddleware} — increments `http_requests_total`
  *      for EVERY request (success or failure). This is the denominator
  *      for the burn-rate alert rules in app-errors.yml; if a request
@@ -69,6 +77,24 @@ import { touchLastSeenMiddleware } from "./middleware/touch-last-seen";
  * protected builder, and `orpc/__tests__/public-procedure-allowlist.test.ts`
  * polices the former. A third choice would be a way around both.
  */
+/**
+ * Opens a fresh authorized-project binding holder for the call
+ * (`lib/authorized-project-binding.ts`). `assertProjectPermission` records the
+ * project it authorized into it and the organization resolvers enforce it.
+ *
+ * Mounted on the ROOT chain rather than the protected one for two reasons. The
+ * holder has to exist for every authenticated builder — including plain
+ * `protectedProcedure`, which two weave procedures use with project permission
+ * middleware and which has no tenant context to carry it. And it has to be
+ * opened OUTSIDE the two audit middlewares, so that both the error capture
+ * (outermost) and the activity capture (innermost) can attribute their row to
+ * the authorized project's organization instead of a caller-named one. A public
+ * call gets an empty holder and never fills it.
+ */
+const projectBindingMiddleware = os.middleware(async ({ next }) =>
+	runWithProjectBindingHolder(() => next()),
+);
+
 const rootProcedure = os
 	.$context<{
 		headers: Headers;
@@ -85,6 +111,7 @@ const rootProcedure = os
 	.$meta<{ auditActivity?: ActivityCaptureMeta }>({})
 	.use(requestCounterMiddleware)
 	.use(errorMetricsMiddleware)
+	.use(projectBindingMiddleware)
 	.use(auditErrorMiddleware)
 	// auditTimingMiddleware mounts INSIDE auditErrorMiddleware so the
 	// ALS frame is active for every audit row emitted during the
@@ -271,6 +298,7 @@ export { getOrganizationIdFromContext, getTenantFilterFromContext };
 export { Permissions } from "@repo/permissions";
 export {
 	assertProjectPermission,
+	authorizeInputOrganization,
 	getPermissionFromMiddleware,
 	PERMISSION_MIDDLEWARE_TAG,
 	requireInputOrgPermission,
@@ -421,37 +449,40 @@ export const adminProcedure = protectedProcedure.use(
 );
 
 /**
- * Helper to resolve organizationId from input or session.
- * Fallback priority (highest → lowest):
- * 1. **Explicit non-null `input.organizationId`.** Caller knows exactly
- * which org they want.
- * 2. **`tenantContext.effectiveWriteOrgId`.** Set by the permission
- * middleware *this request* via `grantProjectAccess` AFTER verifying
- * the caller has an accepted ProjectMember row on a project in that
- * org. Required for the cross-org guest write path: the guest's
- * session has no active org, so their client sends
- * `organizationId: null`, but their writes must still land in the
- * host org. This signal is safe to prefer over explicit-null because
- * (a) it was set *this* request, not carried from stale session, and
- * (b) the only production caller of `grantProjectAccess` is the
- * permission middleware's guest path, which verifies access first.
- * See the authorization contract on `grantProjectAccess` itself.
- * 3. **Explicit `input.organizationId === null`.** Explicit personal
- * context. Used by clients that want to force the personal tenant
- * even though their session may have an active org.
- * 4. **`session.activeOrganizationId`.** Session-level fallback when
- * input was `undefined` (not explicitly passed).
- * 5. **`undefined`.** Fully personal, no org context.
- * Clients SHOULD pass `null` when they want personal context (e.g.
- * /app/projects), but be aware that a verified guest write inside the
- * same request will still be routed to the host org via #2 above. That
- * is the intended security invariant: once authorized, writes go to the
- * correct tenant regardless of what the client passed.
+ * Resolve the organization a request runs in.
+ *
+ * Precedence (highest → lowest):
+ * 1. **The authorized project's organization.** Once this request has passed a
+ * project permission check (`requireProjectPermission` or a handler-side
+ * `assertProjectPermission`), that project's organization is the only tenant
+ * the caller was authorized in (`lib/authorized-project-binding.ts`):
+ * - a non-null `inputOrganizationId` that differs from it → BAD_REQUEST
+ * "organizationId does not match the project";
+ * - `null`, `undefined` or the same id → the project's organization;
+ * - a project with no organization → FORBIDDEN (ADR-018: an organization is
+ * the only tenant context).
+ * The check must therefore run BEFORE this is called; a handler that
+ * resolves first and authorizes later gets rules 2–6 instead.
+ * 2. **Explicit non-null `inputOrganizationId`**, returned verbatim when no
+ * project was authorized. This does NOT check membership — use
+ * {@link resolveOrganizationIdForCaller} or `requireInputOrgPermission` for an
+ * organization-level procedure.
+ * 3. **`tenantContext.effectiveWriteOrgId`.** Set by `grantProjectAccess` on the
+ * guest path. Its only production caller is `assertProjectPermission`, which
+ * records the binding in the same step, so inside an oRPC call rule 1 answers
+ * first; this is reached only outside one (e.g. a test that opens a tenant
+ * context itself).
+ * 4. **Explicit `inputOrganizationId === null`** → `undefined`. Never falls
+ * back to the session.
+ * 5. **`session.activeOrganizationId`** when the input was `undefined`.
+ * 6. **`undefined`.**
  * @example
  * ```ts
- * export const myProcedure = protectedProcedure
- *.input(z.object({ organizationId: z.string.nullable.optional,.. }))
+ * export const myProcedure = tenantProtectedProcedure
+ *.use(requireProjectPermission(Permissions.PROJECT_READ))
+ *.input(z.object({ projectId: z.string(), organizationId: z.string().nullable().optional() }))
  *.handler(async ({ input, context }) => {
+ * // The project's organization; a different input organization is refused.
  * const organizationId = resolveOrganizationId(input.organizationId, context.session);
  * });
  * ```
@@ -460,19 +491,18 @@ export function resolveOrganizationId(
 	inputOrganizationId: string | null | undefined,
 	session: { activeOrganizationId?: string | null },
 ): string | undefined {
+	const bound = resolveBoundOrganization(inputOrganizationId);
+	if (bound.bound) {
+		return bound.organizationId;
+	}
 	// Explicit organizationId string provided
 	if (inputOrganizationId) {
 		return inputOrganizationId;
 	}
-	// The permission middleware's `effectiveWriteOrgId` is the strongest
-	// signal available — it was set THIS request after verifying the caller
-	// has project-scoped access to a project in that org. It wins over
-	// *every* other source, including explicit-null input, because:
-	// - Cross-org guests hit pages with `organizationId: null` in input
-	// (their session has no active org) but their writes must land in
-	// the host org, not in a personal tenant.
-	// - Stale session leakage is not a concern here: this value was set
-	// by the middleware on THIS request, not carried from session.
+	// The guest path's write organization, set THIS request by
+	// `grantProjectAccess` after the permission check verified the caller's
+	// project membership. Kept for callers outside an oRPC call, where there is
+	// no binding holder (see rule 3 above).
 	const ctx = getTenantContext();
 	if (ctx.effectiveWriteOrgId) {
 		return ctx.effectiveWriteOrgId;
@@ -488,6 +518,53 @@ export function resolveOrganizationId(
 		return session.activeOrganizationId;
 	}
 	return undefined;
+}
+
+/**
+ * The organization under which the CALLER'S OWN source connection is selected —
+ * e.g. the Microsoft account a personal meeting transcript is read through —
+ * as distinct from the organization the request's results are stored in.
+ *
+ * Use {@link resolveOrganizationId} for the destination (rows, AI providers,
+ * workflows). This exists because the authorized-project binding changed what
+ * that returns for a `null`/`undefined` input — the project's organization
+ * rather than personal context or the session's — and the connection a
+ * transcript is fetched through must not switch silently with it: with an
+ * organization, the connection lookup falls back to a teammate's SHARED
+ * connection when the caller has none of their own.
+ *
+ * So it keeps the precedence `resolveOrganizationId` had before the binding
+ * (rules 2–6 there), with one rule from the binding kept: a non-null input
+ * organization that differs from the authorized project's is still refused, so
+ * a caller cannot pick another organization's connections either. It returns
+ * a caller-named organization unverified, like rule 2 — pair it with
+ * `requireInputOrgPermission`, which checks the caller's membership of it.
+ */
+export function resolveSourceCredentialOrganizationId(
+	inputOrganizationId: string | null | undefined,
+	session: { activeOrganizationId?: string | null },
+): string | undefined {
+	const authorized = peekAuthorizedProject();
+	if (
+		authorized &&
+		inputOrganizationId &&
+		inputOrganizationId !== authorized.organizationId
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "organizationId does not match the project",
+		});
+	}
+	if (inputOrganizationId) {
+		return inputOrganizationId;
+	}
+	const ctx = getTenantContext();
+	if (ctx.effectiveWriteOrgId) {
+		return ctx.effectiveWriteOrgId;
+	}
+	if (inputOrganizationId === null) {
+		return undefined;
+	}
+	return session.activeOrganizationId ?? undefined;
 }
 
 /**

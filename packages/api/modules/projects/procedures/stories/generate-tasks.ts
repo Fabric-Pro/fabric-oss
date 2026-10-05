@@ -7,9 +7,9 @@ import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireProjectOrganization } from "../../lib/project-organization";
 
 /**
  * Generate tasks for a user story using AI
@@ -29,17 +29,15 @@ export const generateTasksProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			storyId: z.string(),
+			// Accepted for client compatibility and ignored: the tenant is the
+			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
-		// Fetch the story
+		// Fetch the story, with its project's organization
 		const story = await db.userStory.findFirst({
 			where: {
 				id: input.storyId,
@@ -47,6 +45,7 @@ export const generateTasksProcedure = tenantProtectedProcedure
 			},
 			include: {
 				tasks: true,
+				project: { select: { organizationId: true } },
 			},
 		});
 
@@ -55,6 +54,14 @@ export const generateTasksProcedure = tenantProtectedProcedure
 				message: "Story not found",
 			});
 		}
+
+		// The AI tenant is the organization that owns the project
+		// `requireProjectPermission` authorized, never `input.organizationId`:
+		// that is the caller's own string, and it would pick another
+		// organization's AI provider and key. A project guest without
+		// organization membership resolves to the host organization this way.
+		// A project with no organization is refused before any AI call.
+		const organizationId = requireProjectOrganization(story.project);
 
 		// Build prompt for task generation. Fizzy #1767 Stage 4: append the
 		// project's function-tag role-composition clause (flag-gated,

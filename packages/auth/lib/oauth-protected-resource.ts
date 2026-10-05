@@ -10,7 +10,11 @@
  * issuer is passed in from the provider rather than rebuilt here.
  */
 
-import { OAUTH_GATEWAY_RESOURCE_PATH, OAUTH_SCOPES } from "./oauth-scopes";
+import {
+	buildProjectResource,
+	OAUTH_GATEWAY_RESOURCE_PATH,
+} from "@repo/utils/oauth-project-resource";
+import { OAUTH_SCOPES } from "./oauth-scopes";
 
 export interface ProtectedResourceMetadata {
 	resource: string;
@@ -20,12 +24,21 @@ export interface ProtectedResourceMetadata {
 	resource_name: string;
 }
 
+/**
+ * The document for the organization-wide gateway, or for one project's gateway
+ * URL when `projectId` is given. A project URL is its own resource: a client
+ * compares `resource` with the URL it was configured with, and asks for exactly
+ * that value when it signs in.
+ */
 export function buildGatewayProtectedResourceMetadata(params: {
 	appUrl: string;
 	issuer: string;
+	projectId?: string;
 }): ProtectedResourceMetadata {
 	return {
-		resource: `${params.appUrl.replace(/\/+$/, "")}${OAUTH_GATEWAY_RESOURCE_PATH}`,
+		resource: params.projectId
+			? buildProjectResource(params.appUrl, "mcp", params.projectId)
+			: `${params.appUrl.replace(/\/+$/, "")}${OAUTH_GATEWAY_RESOURCE_PATH}`,
 		authorization_servers: [params.issuer],
 		scopes_supported: [...OAUTH_SCOPES],
 		bearer_methods_supported: ["header"],

@@ -8,13 +8,33 @@ import {
 } from "@repo/rag";
 import { z } from "zod";
 import {
+	assertProjectPermission,
+	authorizeInputOrganization,
 	Permissions,
-	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { loadProjectOrganizationId } from "../../projects/lib/project-organization";
 
+/**
+ * AUTHORIZATION: PROJECT_UPDATE, checked in the handler before any model or
+ * RAG provider is resolved, against the tenant this call will run in. Which
+ * check applies depends on the input, which is why it is not a middleware:
+ *
+ * - With `projectId` (the wizard's DRAFT project): the same project decision
+ *   `requireProjectPermission` makes (`assertProjectPermission`), and the AI
+ *   model, RAG provider and retrieval run in that project's organization. A
+ *   project guest without membership of the project's organization keeps
+ *   working, as they did when only the session organization's role was read.
+ * - Without `projectId`: membership and the PROJECT_UPDATE role in the
+ *   organization the input resolves to (`authorizeInputOrganization`, the
+ *   check `requireInputOrgPermission` runs), not merely the session
+ *   organization. `requireOrganization` refuses a request that resolves none:
+ *   the organization is the only tenant context (ADR-018), and an explicit
+ *   `organizationId: null` would otherwise skip the check.
+ *
+ * Either way `input.organizationId` alone never picks whose AI provider runs.
+ */
 export const refineDescriptionProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.PROJECT_UPDATE))
 	.route({
 		method: "POST",
 		path: "/wizard/refine-description",
@@ -51,9 +71,38 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 			projectTypes,
 			projectId,
 			attachmentSummaries,
-			organizationId,
 		} = input;
 		const user = context.user;
+
+		// Authorize first; nothing below runs for a refused caller. The
+		// organization used from here on is the one the applicable check
+		// authorized.
+		let organizationId: string;
+		if (projectId) {
+			await assertProjectPermission(
+				projectId,
+				user.id,
+				Permissions.PROJECT_UPDATE,
+				context,
+			);
+			organizationId = await loadProjectOrganizationId(projectId);
+		} else {
+			const authorized = await authorizeInputOrganization(
+				Permissions.PROJECT_UPDATE,
+				input.organizationId,
+				context,
+				{ requireOrganization: true },
+			);
+			if (!authorized) {
+				// Unreachable: `requireOrganization` refuses an unresolved
+				// organization. Fail closed if that ever stops being true.
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message:
+						"Organization authorization resolved no organization",
+				});
+			}
+			organizationId = authorized;
+		}
 
 		// Import AI utilities
 		const {
@@ -65,13 +114,13 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 		// Use centralized single entry point for AI model access
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "SIMPLE" },
-			{ userId: user.id, organizationId: organizationId ?? undefined },
+			{ userId: user.id, organizationId },
 		);
 
 		// Get RAG provider config for embedding operations
 		const ragConfig = await getRAGProviderConfig({
 			userId: user.id,
-			organizationId: organizationId ?? undefined,
+			organizationId,
 		});
 
 		// Track usage (fire-and-forget)
@@ -108,14 +157,14 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 				const canAccess = await hasProjectAccess(
 					projectId,
 					user.id,
-					organizationId ?? undefined,
+					organizationId,
 				);
 				if (canAccess) {
 					const projectContexts = await retrieveProjectContexts({
 						projectId,
 						query: description,
 						userId: user.id,
-						organizationId: organizationId ?? undefined,
+						organizationId,
 						topK: 5,
 						similarityThreshold: 0.5,
 					});
@@ -149,7 +198,7 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 				sessionId,
 				query: description,
 				userId: user.id,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 				topK: 5,
 				similarityThreshold: 0.5,
 				apiKey: {
@@ -230,7 +279,7 @@ Refined description:`;
 			logModelUsageAsync({
 				context: {
 					userId: user.id,
-					organizationId: organizationId ?? undefined,
+					organizationId,
 				},
 				metadata,
 				taskType: "SIMPLE",

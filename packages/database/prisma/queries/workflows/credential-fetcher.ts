@@ -10,6 +10,11 @@ import { decryptApiKey } from "@repo/utils";
 import { db } from "../../client";
 import type { WorkflowIntegrationProvider } from "../../generated/enums";
 import { OAUTH_APP_ROW_NAMES } from "../lib/oauth-app-row";
+import {
+	canUseWorkflowIntegrations,
+	resolveWorkflowIntegrationForProvider,
+	workflowIntegrationAccessWhere,
+} from "./integration-access";
 
 /**
  * Mapped credentials ready for use in step execution
@@ -167,6 +172,25 @@ const credentialMappers: Partial<
 };
 
 /**
+ * GitLab rows are personal connections: one per person per organization,
+ * owned and refreshed by the GitLab connection service in
+ * `@repo/integrations/gitlab` (which this package cannot import). They are
+ * never shared with the organization (`workflowIntegrationAccessWhere`
+ * leaves shared GitLab rows out, and sharing refuses them); this re-check
+ * keeps a GitLab row from reaching another member even if one was marked
+ * shared some other way.
+ */
+function isOtherMembersGitLabRow(
+	integration: {
+		provider: WorkflowIntegrationProvider;
+		userId: string | null;
+	},
+	userId: string,
+): boolean {
+	return integration.provider === "GITLAB" && integration.userId !== userId;
+}
+
+/**
  * Fetch credentials for an integration by ID
  * Enforces strict isolation between personal and organizational integrations
  */
@@ -175,32 +199,17 @@ export async function fetchCredentialsById(
 	userId: string,
 	organizationId?: string,
 ): Promise<WorkflowCredentials | null> {
-	// Strict isolation: if no organizationId, only allow fetching personal integration credentials
-	const orgFilter = organizationId
-		? { organizationId }
-		: { organizationId: null };
-
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			id: integrationId,
-			userId,
-			...orgFilter,
-			isActive: true,
-		},
-	});
-
-	if (!integration) {
-		return null;
-	}
-
-	return mapIntegrationCredentials(integration);
+	return fetchActiveIntegrationCredentials(
+		{ id: integrationId },
+		userId,
+		organizationId,
+	);
 }
 
 /**
  * Fetch credentials for a specific integration by ID with tenant-level
- * (not owner-level) authorization: in org context any member's runtime may
- * use the org's integration; in personal context the row must belong to
- * the user. Use for runtime paths bound to a stored integrationId.
+ * authorization: the actor must own the connection or have explicit shared
+ * access in the same organization. Use for runtime paths bound to a stored ID.
  */
 export async function fetchCredentialsByIdInTenant(
 	integrationId: string,
@@ -214,52 +223,31 @@ export async function fetchCredentialsByIdInTenant(
 	);
 }
 
-/**
- * Shared body of the two exact-ID fetchers: an active row matching `match`,
- * scoped by the tenant XOR (org context is member-wide, personal context is
- * owner-only), mapped to credentials.
- *
- * SECURITY: in org context, "member-wide" means MEMBERS — the caller must
- * actually hold a `Member` row for the organization, not merely arrive with
- * an organizationId in hand. Project-guest authorization
- * (`requireProjectPermission`) promotes the HOST project's organizationId
- * into the request context for an external `ProjectMember` who is NOT an org
- * member, and runtime paths thread that organizationId down here. Filtering
- * `WorkflowIntegration` by organizationId alone would therefore hand the
- * org's real credentials (e.g. its Databricks service principal) to a
- * project-only guest. The membership check makes that caller resolve `null`
- * — the same safe silent no-op as a personal-context caller — while every
- * legitimate org caller (who by definition has a Member row) is unaffected.
- */
+/** Resolve the exact active connection for a current member who owns it or has explicit shared access. */
 async function fetchActiveIntegrationCredentials(
 	match: { id: string; provider?: WorkflowIntegrationProvider },
 	userId: string,
 	organizationId?: string,
 ): Promise<WorkflowCredentials | null> {
-	if (organizationId) {
-		const membership = await db.member.findFirst({
-			where: { organizationId, userId },
-			select: { id: true },
-		});
-		if (!membership) {
-			console.warn(
-				`[CredentialFetcher] Org-context credential lookup by non-member denied (user ${userId}, org ${organizationId})`,
-			);
-			return null;
-		}
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		return null;
 	}
 
 	const integration = await db.workflowIntegration.findFirst({
 		where: {
 			...match,
 			isActive: true,
-			...(organizationId
-				? { organizationId }
-				: { userId, organizationId: null }),
+			...workflowIntegrationAccessWhere(userId, organizationId),
 		},
 	});
 
 	if (!integration) {
+		return null;
+	}
+	if (isOtherMembersGitLabRow(integration, userId)) {
+		console.warn(
+			`[CredentialFetcher] Org-context lookup of another member's personal GitLab connection denied (user ${userId}, org ${organizationId})`,
+		);
 		return null;
 	}
 
@@ -268,7 +256,7 @@ async function fetchActiveIntegrationCredentials(
 
 /**
  * Fetch credentials for an integration the caller has already identified by ID
- * AND provider, with tenant-level (not owner-level) authorization.
+ * AND provider, requiring current membership plus ownership or explicit sharing.
  *
  * Stricter than {@link fetchCredentialsByIdInTenant}: the stored row must also
  * be of the expected provider, so a tampered or stale synthetic tool reference
@@ -291,92 +279,21 @@ export async function fetchCredentialsByIdAndProviderInTenant(
 }
 
 /**
- * Fetch credentials for a provider type with XOR tenant isolation.
- *
- * TENANT ISOLATION (XOR Pattern):
- * - ORGANIZATION CONTEXT: Only org-level integrations
- * - PERSONAL CONTEXT: Only user-level and workflow-level integrations
- *
- * Personal credentials are NEVER accessible in org context and vice versa.
+ * Resolve the acting user's connection first, then an explicitly shared
+ * connection in the same organization. Current membership is required in org
+ * context; the legacy null-organization arm remains owner-scoped.
  */
 export async function fetchCredentialsByProvider(
 	provider: WorkflowIntegrationProvider,
 	userId: string,
 	organizationId?: string,
 ): Promise<WorkflowCredentials | null> {
-	console.log(
-		`[CredentialFetcher] Looking for ${provider} credentials for user ${userId}, org: ${organizationId || "none"}`,
+	const integration = await resolveWorkflowIntegrationForProvider(
+		provider,
+		userId,
+		organizationId,
 	);
-
-	// XOR PATTERN: Strict context isolation
-	if (organizationId) {
-		// ORGANIZATION CONTEXT: Only org-level integrations (no user fallback)
-		const orgIntegration = await db.workflowIntegration.findFirst({
-			where: {
-				provider,
-				NOT: { name: `${provider}_OAUTH_APP` },
-				organizationId,
-				isActive: true,
-			},
-			orderBy: { lastUsedAt: "desc" },
-		});
-
-		if (orgIntegration) {
-			console.log(
-				`[CredentialFetcher] Found org-level ${provider} integration: ${orgIntegration.id}`,
-			);
-			return mapIntegrationCredentials(orgIntegration);
-		}
-
-		// NO FALLBACK to user credentials in org context
-		console.log(
-			`[CredentialFetcher] No org-level ${provider} integration found (XOR: no user fallback in org context)`,
-		);
-		return null;
-	}
-
-	// PERSONAL CONTEXT: Only user-level and workflow-level integrations
-	// Try user-level first (no workflowId, organizationId must be null)
-	const userIntegration = await db.workflowIntegration.findFirst({
-		where: {
-			provider,
-			NOT: { name: `${provider}_OAUTH_APP` },
-			userId,
-			organizationId: null,
-			workflowId: null,
-			isActive: true,
-		},
-		orderBy: { lastUsedAt: "desc" },
-	});
-
-	if (userIntegration) {
-		console.log(
-			`[CredentialFetcher] Found user-level ${provider} integration: ${userIntegration.id}`,
-		);
-		return mapIntegrationCredentials(userIntegration);
-	}
-
-	// Try workflow-level (any workflowId for this user in personal context)
-	const workflowIntegration = await db.workflowIntegration.findFirst({
-		where: {
-			provider,
-			NOT: { name: `${provider}_OAUTH_APP` },
-			userId,
-			organizationId: null,
-			isActive: true,
-		},
-		orderBy: { lastUsedAt: "desc" },
-	});
-
-	if (workflowIntegration) {
-		console.log(
-			`[CredentialFetcher] Found workflow-level ${provider} integration: ${workflowIntegration.id}`,
-		);
-		return mapIntegrationCredentials(workflowIntegration);
-	}
-
-	console.log(`[CredentialFetcher] No ${provider} integration found`);
-	return null;
+	return integration ? mapIntegrationCredentials(integration) : null;
 }
 
 /**

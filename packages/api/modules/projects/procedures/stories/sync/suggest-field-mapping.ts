@@ -1,11 +1,12 @@
 import { ORPCError } from "@orpc/client";
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { resolveProjectPmConfig } from "../../../lib/gitlab-pm-source";
 
 /**
  * Suggest an inbound field mapping from real work items.
@@ -74,6 +75,7 @@ export const suggestFieldMappingProcedure = tenantProtectedProcedure
 				organizationId: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
+				projectManagementAdditionalContext: true,
 				projectManagementContainerId: true,
 				projectManagementContainerName: true,
 			},
@@ -91,8 +93,9 @@ export const suggestFieldMappingProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
@@ -109,6 +112,7 @@ export const suggestFieldMappingProcedure = tenantProtectedProcedure
 
 		try {
 			const result = await suggestPmFieldMapping({
+				pmAdditionalContext: project.projectManagementAdditionalContext,
 				mcpConfigId: userMcpConfig.id,
 				containerId,
 				containerName:

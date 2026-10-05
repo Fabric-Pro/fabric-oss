@@ -24,6 +24,7 @@ import {
 	DEFAULT_AI_CHAT_MIME_ALLOWLIST,
 } from "@repo/utils/ai-chat-attachment";
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
+import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
@@ -155,6 +156,7 @@ import {
 	isConversationSwitch,
 	settleUnfinishedToolCalls,
 } from "../../lib/direct-chat-turns";
+import { loadInstanceAgentConfig } from "../../lib/load-instance-agent-config";
 import {
 	persistedToToolCallStatus,
 	toolCallToPersistedStatus,
@@ -173,6 +175,7 @@ import {
 	ToolCallList,
 	useTypewriterPlaceholder,
 } from "./shared";
+import { getSelectedAgentInstanceId } from "./shared/agent-selection";
 import { shouldShowAssistantActionCards } from "./shared/assistant-action-cards";
 import { MemoizedRow } from "./shared/MemoizedRow";
 import { SkillAutocomplete } from "./shared/SkillAutocomplete";
@@ -641,6 +644,10 @@ function readPersistedModel(
 	};
 }
 
+// Keep writes ordered across chat remounts without blocking other conversations.
+// Entries are released after the last pending write settles.
+const pendingConversationMetadataWrites = new Map<string, Promise<void>>();
+
 function getOriginalToolName(toolName: string | undefined | null): string {
 	// Guard against undefined/null tool names
 	if (!toolName) {
@@ -680,7 +687,7 @@ export const FabricDirectChat = forwardRef<
 		onUsageChange,
 		attachedWorkspaceIds,
 		attachedDocumentIds,
-		attachedProjectId,
+		attachedProjectId: providedAttachedProjectId,
 		onProjectRemove,
 		attachedStoryId,
 		attachedTaskId,
@@ -792,9 +799,38 @@ export const FabricDirectChat = forwardRef<
 	const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>(
 		() => initialAttachedFiles ?? [],
 	);
+	const [selectedAgent, setSelectedAgent] = useState<SelectedAgent | null>(
+		null,
+	);
+	const [removedAgentProjectId, setRemovedAgentProjectId] = useState<
+		string | null
+	>(null);
+	// A new token on every context change also invalidates an A → B → A
+	// removal completion. The detach hook invokes this callback after awaiting I/O.
+	const projectRemovalContext = useMemo(
+		() => ({
+			conversationId,
+			externalConversationId,
+			agentId: selectedAgent?.agentId ?? null,
+			organizationId: organizationId ?? activeOrgId,
+		}),
+		[
+			conversationId,
+			externalConversationId,
+			selectedAgent?.agentId,
+			organizationId,
+			activeOrgId,
+		],
+	);
+	const currentProjectRemovalContextRef = useRef(projectRemovalContext);
+	currentProjectRemovalContextRef.current = projectRemovalContext;
 	const handleProjectRemoved = useCallback(() => {
+		if (currentProjectRemovalContextRef.current !== projectRemovalContext) {
+			return;
+		}
+		setRemovedAgentProjectId(projectRemovalContext.agentId);
 		onProjectRemove?.();
-	}, [onProjectRemove]);
+	}, [onProjectRemove, projectRemovalContext]);
 	const { removeProject, isRemoving: isRemovingProject } =
 		useRemoveConversationProject({
 			conversationId,
@@ -955,15 +991,15 @@ export const FabricDirectChat = forwardRef<
 	// several responses against one user message still lives in `CopilotPage`;
 	// until it is shared, a multi-select here would look like it worked and
 	// silently drop every response after the first (#2040).
-	const [selectedAgent, setSelectedAgent] = useState<SelectedAgent | null>(
-		null,
-	);
 
 	// Last-used agent is persisted server-side per (user × org). This reuses
 	// the store Nexus already writes to rather than standing up a second one,
 	// so the selection follows the user across surfaces — which is the point
 	// of consolidating them (#2040).
 	//
+	// A dedicated launch or restored conversation supplies its own concrete
+	// instance. Global preferences must not replace that version; explicit
+	// picker choices in this chat can still override it.
 	// Gated on `showAgentPicker`: a surface that cannot show the picker must
 	// neither hydrate a chip the user has no way to clear, nor overwrite the
 	// stored selection on their behalf.
@@ -975,16 +1011,15 @@ export const FabricDirectChat = forwardRef<
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
 		retry: 1,
-		enabled: Boolean(user?.id) && showAgentPicker,
+		enabled: Boolean(user?.id) && showAgentPicker && !instanceId,
 	});
 
 	const persistAgentSelection = useMutation({
 		mutationFn: async (agents: SelectedAgent[]) =>
 			orpcClient.users.chatAgentSelection.set({
 				// The persisted schema is a strict subset of SelectedAgent —
-				// `instructions` has no column, so an instance-backed agent
-				// rehydrates without them. Same fidelity Nexus has always had;
-				// widening the schema is a separate change.
+				// instance configuration is resolved from its current authorized
+				// record when restored and before dispatch.
 				selectedAgents: agents.map((agent) => ({
 					agentId: agent.agentId,
 					name: agent.name,
@@ -1015,7 +1050,11 @@ export const FabricDirectChat = forwardRef<
 	// to its first entry rather than being dropped.
 	const agentSelectionHydratedRef = useRef(false);
 	useEffect(() => {
-		if (agentSelectionHydratedRef.current || !showAgentPicker) {
+		if (
+			agentSelectionHydratedRef.current ||
+			!showAgentPicker ||
+			instanceId
+		) {
 			return;
 		}
 		const data = agentSelectionQuery.data;
@@ -1034,10 +1073,11 @@ export const FabricDirectChat = forwardRef<
 		}
 		// The FR13 "no longer available" notice is the surface's, not this
 		// engine's — see `useSavedAgentUnavailableNotice`.
-	}, [agentSelectionQuery.data, showAgentPicker]);
+	}, [agentSelectionQuery.data, showAgentPicker, instanceId]);
 
 	const handleToggleAgent = useCallback(
 		(agent: SelectedAgent) => {
+			setRemovedAgentProjectId(null);
 			setSelectedAgent((current) => {
 				const next = current?.agentId === agent.agentId ? null : agent;
 				persistAgentSelection.mutate(next ? [next] : []);
@@ -1055,10 +1095,61 @@ export const FabricDirectChat = forwardRef<
 	// `enabledMcpConfigIds` is coalesced with `??` on purpose: the agent's
 	// `null` means "fall back to user preferences" while `[]` means "no MCP at
 	// all", and that distinction has to survive.
+	// Saved selections contain identity, not the complete instance config. Resolve
+	// the current default for the context chip; the stream also resolves it before
+	// dispatch so sending while this query is pending still uses the binding.
+	const selectedInstanceId = selectedAgent
+		? getSelectedAgentInstanceId(selectedAgent)
+		: undefined;
+	const selectedInstanceConfigQuery = useQuery({
+		queryKey: [
+			"chat-agent-instance-config",
+			organizationId ?? activeOrgId,
+			selectedInstanceId,
+		],
+		queryFn: () => {
+			if (!selectedInstanceId) {
+				throw new Error("No agent instance selected.");
+			}
+			return loadInstanceAgentConfig(
+				selectedInstanceId,
+				organizationId ?? activeOrgId ?? undefined,
+			);
+		},
+		enabled: Boolean(selectedInstanceId && (organizationId ?? activeOrgId)),
+		retry: false,
+	});
+	const selectedInstanceConfig = selectedInstanceConfigQuery.data;
+	// An attached conversation project wins over the agent default. Removing the
+	// agent's default is explicit for this selection, so it is sent as null.
+	const attachedProjectId =
+		providedAttachedProjectId ??
+		(selectedInstanceId && selectedAgent
+			? removedAgentProjectId === selectedAgent.agentId
+				? null
+				: selectedInstanceConfig
+					? selectedInstanceConfig.boundProjectId
+					: selectedAgent.boundProjectId
+			: providedAttachedProjectId);
+	const requestProjectId =
+		selectedInstanceId && selectedAgent
+			? (providedAttachedProjectId ??
+				(removedAgentProjectId === selectedAgent.agentId
+					? null
+					: undefined))
+			: providedAttachedProjectId;
+	const activeFabricToolIds =
+		selectedInstanceConfig?.enabledFabricToolIds ??
+		selectedAgent?.enabledFabricToolIds ??
+		enabledFabricToolIds;
 	const activeModelOverride = selectedAgent?.modelOverride;
-	const activeInstanceId = selectedAgent?.instanceId ?? instanceId;
-	const activeSystemPrompt = selectedAgent?.instructions ?? systemPrompt;
+	const activeInstanceId = selectedInstanceId ?? instanceId;
+	const activeSystemPrompt =
+		selectedInstanceConfig?.instructions ??
+		selectedAgent?.instructions ??
+		systemPrompt;
 	const activeMcpConfigIds =
+		selectedInstanceConfig?.enabledMcpConfigIds ??
 		selectedAgent?.enabledMcpConfigIds ??
 		selectedConversationMcpIds ??
 		enabledMcpConfigIds;
@@ -1070,10 +1161,12 @@ export const FabricDirectChat = forwardRef<
 			Array.from(
 				new Set([
 					...(attachedWorkspaceIds ?? []),
-					...(selectedAgent?.workspaceIds ?? []),
+					...(selectedInstanceConfig?.workspaceIds ??
+						selectedAgent?.workspaceIds ??
+						[]),
 				]),
 			),
-		[attachedWorkspaceIds, selectedAgent],
+		[attachedWorkspaceIds, selectedAgent, selectedInstanceConfig],
 	);
 
 	// Use the streaming hook for real-time responses
@@ -1094,11 +1187,12 @@ export const FabricDirectChat = forwardRef<
 		reasoningMode,
 		modelOverride: activeModelOverride,
 		enabledMcpConfigIds: activeMcpConfigIds,
-		enabledFabricToolIds,
+		restrictInstanceMcpScope: Boolean(selectedInstanceId),
+		enabledFabricToolIds: activeFabricToolIds,
 		instanceId: activeInstanceId,
 		workspaceIds: activeWorkspaceIds,
 		workspaceDocumentIds: attachedDocumentIds,
-		projectId: attachedProjectId,
+		projectId: requestProjectId,
 		repositoryUrl,
 		// Focused entity the user is viewing (the page the agent was opened on),
 		// so the backend can ground on its FULL content — sections, acceptance
@@ -1385,13 +1479,15 @@ export const FabricDirectChat = forwardRef<
 			// may not have landed yet) — but the user opening a different
 			// conversation must: skipping that left thread A on screen while
 			// saves and the next send went to B (review F27).
-			const switched =
-				streamMessages.length > 0 &&
-				isConversationSwitch({
-					externalConversationId,
-					currentConversationId: conversationId,
-					ownCreatedConversationId: savedConversationIdRef.current,
-				});
+			const switchedConversation = isConversationSwitch({
+				externalConversationId,
+				currentConversationId: conversationId,
+				ownCreatedConversationId: savedConversationIdRef.current,
+			});
+			if (switchedConversation) {
+				setRemovedAgentProjectId(null);
+			}
+			const switched = streamMessages.length > 0 && switchedConversation;
 			if (switched) {
 				conversationEpochRef.current += 1;
 				savedConversationIdRef.current = null;
@@ -1524,6 +1620,7 @@ export const FabricDirectChat = forwardRef<
 			);
 			setLoadedMessages([]);
 			setConversationId(null);
+			setRemovedAgentProjectId(null);
 			setCurrentDocumentChatId(null);
 			setSelectedConversationMcpIds(null);
 			resetStream();
@@ -1597,7 +1694,7 @@ export const FabricDirectChat = forwardRef<
 							],
 							metadata: mergeDirectConversationMetadata({
 								documentChatId: currentDocumentChatId,
-								instanceId,
+								instanceId: activeInstanceId ?? null,
 								selectedMcpConfigIds:
 									selectedConversationMcpIds ?? undefined,
 							}),
@@ -1640,7 +1737,7 @@ export const FabricDirectChat = forwardRef<
 		[
 			organizationId,
 			currentDocumentChatId,
-			instanceId,
+			activeInstanceId,
 			selectedConversationMcpIds,
 			attachedProjectId,
 			onConversationCreated,
@@ -2018,19 +2115,19 @@ export const FabricDirectChat = forwardRef<
 			return;
 		}
 
+		const updateInput = {
+			id: conversationId,
+			organizationId,
+			metadata: mergeDirectConversationMetadata({
+				existing: activeConversation?.metadata ?? undefined,
+				documentChatId: currentDocumentChatId,
+				instanceId: activeInstanceId ?? null,
+				selectedMcpConfigIds: selectedConversationMcpIds ?? undefined,
+			}),
+		};
 		const persistSelection = async () => {
 			try {
-				await orpcClient.agents.conversations.update({
-					id: conversationId,
-					organizationId,
-					metadata: mergeDirectConversationMetadata({
-						existing: activeConversation?.metadata ?? undefined,
-						documentChatId: currentDocumentChatId,
-						instanceId,
-						selectedMcpConfigIds:
-							selectedConversationMcpIds ?? undefined,
-					}),
-				});
+				await orpcClient.agents.conversations.update(updateInput);
 			} catch (error) {
 				console.error(
 					"[FabricDirectChat] Failed to persist conversation tool selection:",
@@ -2039,13 +2136,27 @@ export const FabricDirectChat = forwardRef<
 			}
 		};
 
-		void persistSelection();
+		const previous = pendingConversationMetadataWrites.get(conversationId);
+		const pending = (previous ?? Promise.resolve()).then(
+			persistSelection,
+			persistSelection,
+		);
+		pendingConversationMetadataWrites.set(conversationId, pending);
+		const release = () => {
+			if (
+				pendingConversationMetadataWrites.get(conversationId) ===
+				pending
+			) {
+				pendingConversationMetadataWrites.delete(conversationId);
+			}
+		};
+		void pending.then(release, release);
 	}, [
 		conversationId,
 		organizationId,
 		activeConversation?.metadata,
 		currentDocumentChatId,
-		instanceId,
+		activeInstanceId,
 		selectedConversationMcpIds,
 	]);
 
@@ -3246,32 +3357,49 @@ export const FabricDirectChat = forwardRef<
 										    the only way to see what is
 										    picked is to reopen the
 										    popover. */}
-										{showAgentPicker && selectedAgent ? (
+										{activeInstanceId ||
+										(showAgentPicker && selectedAgent) ? (
 											<Badge
 												variant="secondary"
 												className="gap-1 rounded-full"
 											>
 												<RobotIcon className="h-3 w-3" />
-												{selectedAgent.name}
-												<button
-													type="button"
-													onClick={() =>
-														handleToggleAgent(
-															selectedAgent,
-														)
+												<AgentVersionIdentity
+													name={
+														selectedInstanceId ||
+														!activeInstanceId
+															? selectedAgent?.name
+															: undefined
 													}
-													aria-label={`Clear ${selectedAgent.name}`}
-													className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
-												>
-													<XIcon className="h-3 w-3" />
-												</button>
+													instanceId={
+														activeInstanceId
+													}
+													organizationId={
+														organizationId
+													}
+												/>
+												{selectedAgent && (
+													<button
+														type="button"
+														onClick={() =>
+															handleToggleAgent(
+																selectedAgent,
+															)
+														}
+														aria-label={`Clear ${selectedAgent.name}`}
+														className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
+													>
+														<XIcon className="h-3 w-3" />
+													</button>
+												)}
 											</Badge>
 										) : null}
 										<ActiveContextIndicator
 											workspaceIds={attachedWorkspaceIds}
 											projectId={attachedProjectId}
 											onProjectRemove={
-												onProjectRemove
+												onProjectRemove ||
+												selectedInstanceId
 													? removeProject
 													: undefined
 											}

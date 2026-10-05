@@ -4,7 +4,9 @@
  * Covers the dynamic-sourcing + overflow behaviour (plan
  * docs/plans/2026-07-07-001-feat-document-pipeline-overflow-plan.md, U1/U2):
  * empty state, real titles + correct type labels, status badges, the 6-card
- * cap, and the "View More" -> Documents-tab navigation.
+ * cap, and the "View More" -> Documents-tab navigation. Also that a row opens
+ * its document: the rows used to be plain text, with no way into the document
+ * they name.
  *
  * The two heavy child components are stubbed so the test isolates the section.
  * next-intl is mocked globally in apps/web/vitest.setup.ts.
@@ -22,6 +24,15 @@ vi.mock("@saas/get-started/components/PageTourButton", () => ({
 }));
 vi.mock("../ProjectSectionEditDialog", () => ({
 	ProjectSectionEditDialog: () => null,
+}));
+// The pipeline rows link to their documents, and the link is built from the
+// organization's route base.
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({
+		organizationId: "org_1",
+		organizationSlug: "example-org",
+		basePath: "/app/example-org",
+	}),
 }));
 
 import { ProjectOverview } from "../ProjectOverview";
@@ -180,5 +191,36 @@ describe("ProjectOverview — Document Pipeline", () => {
 		expect(
 			screen.queryByRole("button", { name: /view more/i }),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("ProjectOverview — opening a document from the pipeline", () => {
+	it("links each row to its document", () => {
+		renderOverview([
+			{
+				id: "d1",
+				type: "PROPOSAL",
+				title: "Project Proposal",
+				status: "COMPLETE",
+			},
+			{ id: "d2", type: "PRD", title: "Draft Doc", status: "DRAFT" },
+		]);
+
+		expect(
+			screen.getByRole("link", { name: /Project Proposal/ }),
+		).toHaveAttribute("href", "/app/example-org/projects/p1/documents/d1");
+		expect(screen.getByRole("link", { name: /Draft Doc/ })).toHaveAttribute(
+			"href",
+			"/app/example-org/projects/p1/documents/d2",
+		);
+	});
+
+	it("does not link a document whose generation failed, which may have nothing to open", () => {
+		renderOverview([
+			{ id: "d1", type: "PRD", title: "Failed Doc", status: "FAILED" },
+		]);
+
+		expect(screen.getByText("Failed Doc")).toBeInTheDocument();
+		expect(screen.queryByRole("link")).not.toBeInTheDocument();
 	});
 });

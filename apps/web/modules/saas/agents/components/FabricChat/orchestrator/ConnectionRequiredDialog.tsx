@@ -12,6 +12,7 @@
  */
 
 import type { MissingIntegration, RequiredConnection } from "@repo/temporal";
+import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -37,6 +38,7 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -56,6 +58,38 @@ interface ConnectionStatus {
 	isConnecting: boolean;
 	isConnected: boolean;
 	error?: string;
+	/**
+	 * Connected, but the server is not set up to be used here: no config
+	 * row for it in this organization, or a row that is turned off. Its
+	 * tools are neither offered nor run until the person adds it or turns
+	 * it on on the MCP Servers page; the dialog never writes one itself.
+	 */
+	serverSetup?: "missing" | "disabled";
+}
+
+/** What `getConnectInfo` says about a server that matters here. */
+type ConnectInfoReadiness = {
+	isConnected: boolean;
+	needsReauth: boolean;
+	configProvisioned: boolean;
+	configEnabled: boolean;
+};
+
+/**
+ * Ready only when connected AND provisioned AND turned on. A connected
+ * server without a usable row (a GitLab server reads as connected from the
+ * person's GitLab connection alone) is reported as such, not as ready.
+ */
+function connectedServerSetup(
+	info: ConnectInfoReadiness,
+): "ready" | "missing" | "disabled" | "not-connected" {
+	if (!info.isConnected || info.needsReauth) {
+		return "not-connected";
+	}
+	if (!info.configProvisioned) {
+		return "missing";
+	}
+	return info.configEnabled ? "ready" : "disabled";
 }
 
 export function ConnectionRequiredDialog({
@@ -85,6 +119,8 @@ export function ConnectionRequiredDialog({
 	const [showApiKeys, setShowApiKeys] = useState<Map<string, boolean>>(
 		new Map(),
 	);
+	// Where a person adds an MCP server, or turns one back on.
+	const mcpServersPath = useContextPath("connections?tab=mcp");
 	const pollingIntervals = useRef<Map<string, NodeJS.Timeout>>(new Map());
 	const integrationPollingIntervals = useRef<Map<string, NodeJS.Timeout>>(
 		new Map(),
@@ -186,12 +222,17 @@ export function ConnectionRequiredDialog({
 
 	// Auto-close and proceed when all connected
 	useEffect(() => {
-		if (allConnected && open) {
-			toast.success("All integrations connected!");
-			setTimeout(() => {
-				onConnectionComplete();
-			}, 500);
+		if (!allConnected || !open) {
+			return;
 		}
+		toast.success("All integrations connected!");
+		// Cancelled if the dialog closes, unmounts or stops being connected
+		// within the delay, so completion never fires for a dialog that is
+		// gone.
+		const timer = setTimeout(() => {
+			onConnectionComplete();
+		}, 500);
+		return () => clearTimeout(timer);
 	}, [allConnected, open, onConnectionComplete]);
 
 	const updateConnectionStatus = useCallback(
@@ -210,6 +251,32 @@ export function ConnectionRequiredDialog({
 		[],
 	);
 
+	/**
+	 * Apply what `getConnectInfo` says to a server's row: ready, connected
+	 * but not set up here (missing or turned off), or not connected (left
+	 * for the caller to continue the connect path). Returns which.
+	 */
+	const applyConnectInfo = useCallback(
+		(serverId: string, info: ConnectInfoReadiness) => {
+			const setup = connectedServerSetup(info);
+			if (setup === "ready") {
+				updateConnectionStatus(serverId, {
+					isConnecting: false,
+					isConnected: true,
+					serverSetup: undefined,
+				});
+			} else if (setup === "missing" || setup === "disabled") {
+				updateConnectionStatus(serverId, {
+					isConnecting: false,
+					isConnected: false,
+					serverSetup: setup,
+				});
+			}
+			return setup;
+		},
+		[updateConnectionStatus],
+	);
+
 	const startOAuthFlow = useCallback(
 		async (connection: RequiredConnection) => {
 			updateConnectionStatus(connection.serverId, {
@@ -218,35 +285,53 @@ export function ConnectionRequiredDialog({
 			});
 
 			try {
-				// Get connection info from API
+				// Get connection info from API. The organization is the one
+				// this chat runs in; with none, the session's resolves on the
+				// server, which refuses when there is none at all — never a
+				// no-organization read. Nothing below runs unless this
+				// succeeded: every write uses the organization it authorized.
 				const info = await orpcClient.mcp.connect.getConnectInfo({
 					serverId: connection.serverId,
-					organizationId: organizationId ?? null,
+					organizationId: organizationId ?? undefined,
 				});
+				const authorizedOrganizationId = info.organizationId;
 
-				if (info.isConnected && !info.needsReauth) {
-					updateConnectionStatus(connection.serverId, {
-						isConnecting: false,
-						isConnected: true,
-					});
+				if (
+					applyConnectInfo(connection.serverId, info) !==
+					"not-connected"
+				) {
 					return;
 				}
 
 				// Check if there's an existing config to use, or create one
 				let configId: string;
 				if (info.configId) {
+					// Found in the authorized organization.
 					configId = info.configId;
 				} else {
-					// Create a config for this server using the defaultUrl from info
+					// Create a config for this server using the defaultUrl
+					// from info, in the organization the read authorized —
+					// not the chat's raw value, which is absent when the
+					// session's organization was resolved.
 					const config = await orpcClient.mcp.configs.upsert({
 						mcpServerId: connection.serverId,
 						baseUrl: info.defaultUrl || "",
 						authType: "OAUTH2",
 						enabled: true,
-						organizationId: organizationId ?? undefined,
+						organizationId: authorizedOrganizationId,
 					});
 					configId = config.id;
 				}
+
+				/** Re-read in the same organization and apply readiness. */
+				const recheck = async () =>
+					applyConnectInfo(
+						connection.serverId,
+						await orpcClient.mcp.connect.getConnectInfo({
+							serverId: connection.serverId,
+							organizationId: authorizedOrganizationId,
+						}),
+					);
 
 				// Start OAuth flow
 				const redirectUri = `${window.location.origin}/api/mcp/oauth/callback`;
@@ -289,11 +374,35 @@ export function ConnectionRequiredDialog({
 							pollingIntervals.current.get(connection.serverId),
 						);
 						pollingIntervals.current.delete(connection.serverId);
-						updateConnectionStatus(connection.serverId, {
-							isConnecting: false,
-							isConnected: true,
-						});
-						toast.success(`${connection.serverName} connected!`);
+						// A completed sign-in is not readiness: the server's
+						// row may still be missing or turned off (a tile
+						// Delete keeps it off across a reconnect). Read it
+						// again and apply the same gate as everywhere else.
+						recheck()
+							.then((setup) => {
+								if (setup === "ready") {
+									toast.success(
+										`${connection.serverName} connected!`,
+									);
+								} else if (setup === "not-connected") {
+									updateConnectionStatus(
+										connection.serverId,
+										{
+											isConnecting: false,
+											error: `${connection.serverName} still reads as not connected. Try again.`,
+										},
+									);
+								}
+							})
+							.catch((error: unknown) => {
+								updateConnectionStatus(connection.serverId, {
+									isConnecting: false,
+									error:
+										error instanceof Error
+											? error.message
+											: "Could not confirm the connection",
+								});
+							});
 					} else if (event.data.type === "oauth_error") {
 						window.removeEventListener("message", handleMessage);
 						clearInterval(
@@ -317,9 +426,9 @@ export function ConnectionRequiredDialog({
 						const status =
 							await orpcClient.mcp.connect.getConnectInfo({
 								serverId: connection.serverId,
-								organizationId: organizationId ?? null,
+								organizationId: authorizedOrganizationId,
 							});
-						if (status.isConnected && !status.needsReauth) {
+						if (connectedServerSetup(status) !== "not-connected") {
 							clearInterval(pollInterval);
 							pollingIntervals.current.delete(
 								connection.serverId,
@@ -328,13 +437,15 @@ export function ConnectionRequiredDialog({
 								"message",
 								handleMessage,
 							);
-							updateConnectionStatus(connection.serverId, {
-								isConnecting: false,
-								isConnected: true,
-							});
-							toast.success(
-								`${connection.serverName} connected!`,
+							const setup = applyConnectInfo(
+								connection.serverId,
+								status,
 							);
+							if (setup === "ready") {
+								toast.success(
+									`${connection.serverName} connected!`,
+								);
+							}
 							popup?.close();
 						}
 					} catch {
@@ -387,7 +498,12 @@ export function ConnectionRequiredDialog({
 				});
 			}
 		},
-		[organizationId, updateConnectionStatus, connectionStatuses],
+		[
+			organizationId,
+			updateConnectionStatus,
+			applyConnectInfo,
+			connectionStatuses,
+		],
 	);
 
 	const saveApiKey = useCallback(
@@ -405,12 +521,15 @@ export function ConnectionRequiredDialog({
 
 			try {
 				// Get connection info to get the defaultUrl
+				// Resolves and authorizes the organization first; a refusal
+				// throws here, before anything is saved.
 				const info = await orpcClient.mcp.connect.getConnectInfo({
 					serverId: connection.serverId,
-					organizationId: organizationId ?? null,
+					organizationId: organizationId ?? undefined,
 				});
 
-				// Create/update config with API key
+				// Create/update config with API key, in the organization the
+				// read above authorized.
 				await orpcClient.mcp.configs.upsert({
 					mcpServerId: connection.serverId,
 					baseUrl: info.defaultUrl || "",
@@ -418,7 +537,7 @@ export function ConnectionRequiredDialog({
 					apiKey: apiKey.trim(),
 					apiKeyMethod: "BEARER",
 					enabled: true,
-					organizationId: organizationId ?? undefined,
+					organizationId: info.organizationId,
 				});
 
 				updateConnectionStatus(connection.serverId, {
@@ -613,6 +732,7 @@ export function ConnectionRequiredDialog({
 						const isConnecting = status?.isConnecting ?? false;
 						const isConnected = status?.isConnected ?? false;
 						const error = status?.error;
+						const serverSetup = status?.serverSetup;
 
 						return (
 							<div
@@ -712,8 +832,51 @@ export function ConnectionRequiredDialog({
 											</p>
 										)}
 
+										{/* Connected, but not set up here */}
+										{!isConnected && serverSetup && (
+											<div className="mt-3 space-y-2">
+												<p className="text-sm text-muted-foreground">
+													{serverSetup === "missing"
+														? `You're connected, but ${connection.serverName} has not been added as an MCP server in this organization. Add it on the MCP Servers page, then check again.`
+														: `You're connected, but the ${connection.serverName} MCP server is turned off in this organization. Turn it on on the MCP Servers page, then check again.`}
+												</p>
+												<div className="flex flex-wrap gap-2">
+													<Button
+														size="sm"
+														variant="outline"
+														asChild
+													>
+														<Link
+															href={
+																mcpServersPath
+															}
+														>
+															<ExternalLink className="h-4 w-4 mr-2" />
+															Open MCP Servers
+														</Link>
+													</Button>
+													<Button
+														size="sm"
+														onClick={() =>
+															startOAuthFlow(
+																connection,
+															)
+														}
+														disabled={isConnecting}
+													>
+														{isConnecting ? (
+															<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+														) : (
+															<RefreshCw className="h-4 w-4 mr-2" />
+														)}
+														Check again
+													</Button>
+												</div>
+											</div>
+										)}
+
 										{/* Auth actions */}
-										{!isConnected && (
+										{!isConnected && !serverSetup && (
 											<div className="mt-3">
 												{connection.authType ===
 												"OAUTH2" ? (

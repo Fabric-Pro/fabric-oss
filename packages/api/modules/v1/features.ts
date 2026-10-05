@@ -39,6 +39,7 @@ export function registerFeatureRoutes(
 				apiCtx,
 				c.req.query("org"),
 				c.req.query("personal") === "1",
+				c.req.param("projectId"),
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
@@ -91,6 +92,7 @@ export function registerFeatureRoutes(
 				apiCtx,
 				c.req.query("org"),
 				c.req.query("personal") === "1",
+				c.req.param("projectId"),
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
@@ -130,6 +132,7 @@ export function registerFeatureRoutes(
 				apiCtx,
 				c.req.query("org"),
 				c.req.query("personal") === "1",
+				c.req.param("projectId"),
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
@@ -245,6 +248,7 @@ export function registerFeatureRoutes(
 				apiCtx,
 				c.req.query("org"),
 				c.req.query("personal") === "1",
+				c.req.param("projectId"),
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);
@@ -387,6 +391,7 @@ export function registerFeatureRoutes(
 				apiCtx,
 				c.req.query("org"),
 				c.req.query("personal") === "1",
+				c.req.param("projectId"),
 			);
 			if ("error" in ctx) {
 				return c.json({ error: { message: ctx.error } }, ctx.status);

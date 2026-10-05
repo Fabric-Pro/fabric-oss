@@ -3,14 +3,22 @@
 import {
 	FABRIC_IGNORE_FILE,
 	isSecretFileName,
+	type PathRejectReason,
+	type PortableNameRejectReason,
 	type ProposalNote,
 	proposalNoteSchema,
 	SNAPSHOT_LIMITS,
 	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
+import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
+import {
+	COMMIT_MAX_INLINE_BYTES,
+	defaultCommitMessage,
+	fileToBase64,
+} from "@saas/projects/lib/instructions-direct-commit";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
@@ -28,6 +36,7 @@ import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
+import { CommitMessageField } from "./CommitMessageField";
 import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
 /** The admission refusals the dialog names with its own copy (spec §5.3). */
@@ -97,22 +106,31 @@ export function proposedPath(fileName: string, folder: string | null): string {
 }
 
 /**
+ * Why a path cannot be added: a validator's own reason, or one of the two
+ * refusals this dialog adds. A CODE, never a sentence — the component words it
+ * from `addFileDialog.pathRefusals`, so no validator vocabulary ("traversal",
+ * "reserved_device_name") reaches the screen.
+ */
+export type PathRefusalCode =
+	| PathRejectReason
+	| PortableNameRejectReason
+	| "fabricignore"
+	| "secret";
+
+/**
  * The reason a path cannot be added, previewed client-side, or null.
  *
  * Every one of these is re-checked by `derive` on the server, which is the
  * authority. Checking here means a mistyped path is reported before a file is
  * read and a version is registered, rather than as a refused request.
  */
-function pathRefusal(
-	path: string,
-	t: (key: string, values?: Record<string, string>) => string,
-): string | null {
+export function pathRefusal(path: string): PathRefusalCode | null {
 	const v = validateRelativePath(path);
 	if (!v.ok) {
-		return t("pathInvalid", { reason: v.reason });
+		return v.reason;
 	}
 	if (v.path === FABRIC_IGNORE_FILE) {
-		return t("pathFabricignore");
+		return "fabricignore";
 	}
 	// This dialog only ever ADDS or REPLACES a file, so the portability rules
 	// apply to every path it accepts. A delete goes through a different
@@ -120,11 +138,10 @@ function pathRefusal(
 	// stay removable.
 	const portable = validatePortableName(v.path);
 	if (!portable.ok) {
-		return t("pathInvalid", { reason: portable.reason });
+		return portable.reason;
 	}
-	const secretRule = isSecretFileName(v.path);
-	if (secretRule) {
-		return t("pathSecret", { rule: secretRule });
+	if (isSecretFileName(v.path)) {
+		return "secret";
 	}
 	return null;
 }
@@ -158,7 +175,9 @@ export function AddInstructionFileDialog({
 	canPropose = false,
 	repositoryTarget = null,
 	canPublishBeforeScan = false,
+	canCommit = false,
 	onAdded,
+	onCommitted,
 }: {
 	projectId: string;
 	/** The published snapshot the new version is derived from. */
@@ -183,7 +202,16 @@ export function AddInstructionFileDialog({
 	 * a proposal. A UI gate; `derive` re-checks it.
 	 */
 	canPublishBeforeScan?: boolean;
+	/**
+	 * Commit the file straight to the synced branch (INSTRUCTION_CREATE on a
+	 * repository-backed project; Fizzy #2878 §10), with a pull request as the
+	 * alternative. Needs `repositoryTarget`. A UI gate; `commitChange`
+	 * re-checks.
+	 */
+	canCommit?: boolean;
 	onAdded: () => void;
+	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
+	onCommitted?: (commit: { sha: string; ref: string }) => void;
 }) {
 	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
@@ -196,12 +224,18 @@ export function AddInstructionFileDialog({
 	const [noteTitle, setNoteTitle] = useState("");
 	const [noteBody, setNoteBody] = useState("");
 	// The server's NOTE_REJECTED, shown under the field it names until that
-	// field is edited.
+	// field is edited. Only the field is kept: the server's message is not
+	// translated and is never shown.
 	const [serverNoteRefusal, setServerNoteRefusal] = useState<{
 		field: NoteField;
-		message: string;
 	} | null>(null);
 	const offersProposal = proposalOnly || canPropose;
+	// A repository project has no versions to publish: the file is committed
+	// to its branch, or suggested as a pull request.
+	const commitMode = canCommit && repositoryTarget !== null;
+	const [message, setMessage] = useState<string | null>(null);
+	const [pullRequestOpened, setPullRequestOpened] = useState(false);
+	const [reading, setReading] = useState(false);
 	// A direct version only: the option is not rendered in reader mode, and a
 	// proposal never sends it.
 	const fastPath =
@@ -219,6 +253,8 @@ export function AddInstructionFileDialog({
 		setNoteTitle("");
 		setNoteBody("");
 		setServerNoteRefusal(null);
+		setMessage(null);
+		setPullRequestOpened(false);
 		if (inputRef.current) {
 			inputRef.current.value = "";
 		}
@@ -262,7 +298,6 @@ export function AddInstructionFileDialog({
 			if (data?.reason === "NOTE_REJECTED") {
 				setServerNoteRefusal({
 					field: data.field === "body" ? "body" : "title",
-					message: error.message,
 				});
 				return;
 			}
@@ -274,27 +309,56 @@ export function AddInstructionFileDialog({
 		},
 	});
 
+	const commit = useDirectCommit({
+		projectId,
+		branch: repositoryTarget?.ref ?? "",
+		onChanged: onAdded,
+		onCommitted,
+		onFinished: (result) => {
+			// A pull request keeps the dialog open: its link is the next step.
+			if (result.kind === "pull-request") {
+				setPullRequestOpened(true);
+				return;
+			}
+			reset();
+			onOpenChange(false);
+		},
+	});
+	const defaultMessage = defaultCommitMessage({
+		kind: "add",
+		path: path.trim(),
+	});
+	const commitMessage = message ?? defaultMessage;
+
+	const tooLargeToCommit =
+		commitMode && file !== null && file.size > COMMIT_MAX_INLINE_BYTES;
 	const tooLarge = file !== null && file.size > SNAPSHOT_LIMITS.maxFileBytes;
-	const refusal = path.trim().length > 0 ? pathRefusal(path.trim(), t) : null;
+	const refusalCode =
+		path.trim().length > 0 ? pathRefusal(path.trim()) : null;
+	const refusal =
+		refusalCode === null ? null : t(`pathRefusals.${refusalCode}`);
 	const noteField = offersProposal ? noteRefusalField(note) : null;
 	const titleError =
 		noteField === "title"
 			? t("noteTitleInvalid")
 			: serverNoteRefusal?.field === "title"
-				? serverNoteRefusal.message
+				? t("noteTitleRejected")
 				: null;
 	const bodyError =
 		noteField === "body"
 			? t("noteBodyInvalid")
 			: serverNoteRefusal?.field === "body"
-				? serverNoteRefusal.message
+				? t("noteBodyRejected")
 				: null;
 	const canSubmit =
 		file !== null &&
 		path.trim().length > 0 &&
 		!tooLarge &&
 		refusal === null &&
-		!add.isPending;
+		!tooLargeToCommit &&
+		!add.isPending &&
+		!commit.busy &&
+		!reading;
 	// The note only rides with a proposal, so only the proposal button waits
 	// on it.
 	const canSubmitProposal = canSubmit && noteField === null;
@@ -312,12 +376,18 @@ export function AddInstructionFileDialog({
 			<DialogContent>
 				<DialogHeader>
 					<DialogTitle>
-						{repositoryTarget ? t("repositoryTitle") : t("title")}
+						{commitMode
+							? t("repositoryCommitTitle", repositoryTarget)
+							: repositoryTarget
+								? t("repositoryTitle")
+								: t("title")}
 					</DialogTitle>
 					<DialogDescription>
-						{repositoryTarget
-							? t("repositoryDescription", repositoryTarget)
-							: t("description")}
+						{commitMode
+							? t("repositoryCommitDescription", repositoryTarget)
+							: repositoryTarget
+								? t("repositoryDescription", repositoryTarget)
+								: t("description")}
 					</DialogDescription>
 				</DialogHeader>
 				<div className="flex flex-col gap-4">
@@ -357,6 +427,27 @@ export function AddInstructionFileDialog({
 							{t("pathHint")}
 						</p>
 					</div>
+					{tooLargeToCommit ? (
+						<p className="text-destructive text-sm">
+							{t("commitTooLarge", {
+								limit: Math.round(
+									COMMIT_MAX_INLINE_BYTES / 1024 / 1024,
+								),
+							})}
+						</p>
+					) : null}
+					{commitMode && !pullRequestOpened ? (
+						<CommitMessageField
+							value={commitMessage}
+							refusal={commit.messageRefusal}
+							disabled={commit.busy || reading}
+							onChange={(value) => {
+								commit.clearMessageRefusal();
+								setMessage(value);
+							}}
+						/>
+					) : null}
+					{commit.status}
 					{tooLarge ? (
 						<p className="text-destructive text-sm">
 							{t("tooLarge", {
@@ -453,7 +544,7 @@ export function AddInstructionFileDialog({
 							) : null}
 						</>
 					) : null}
-					{!proposalOnly ? (
+					{!proposalOnly && !commitMode ? (
 						<label
 							htmlFor="add-instruction-publish"
 							className="flex items-center gap-2 text-muted-foreground text-sm"
@@ -468,7 +559,7 @@ export function AddInstructionFileDialog({
 							{t("publishOnReady")}
 						</label>
 					) : null}
-					{!proposalOnly && canPublishBeforeScan ? (
+					{!proposalOnly && !commitMode && canPublishBeforeScan ? (
 						<PublishBeforeScanOption
 							idPrefix="add-instruction"
 							publishOnReady={publishOnReady}
@@ -481,48 +572,107 @@ export function AddInstructionFileDialog({
 					) : null}
 				</div>
 				<DialogFooter>
-					<Button
-						variant="ghost"
-						disabled={add.isPending}
-						onClick={() => onOpenChange(false)}
-					>
-						{t("cancel")}
-					</Button>
-					{!proposalOnly ? (
+					{pullRequestOpened ? (
 						<Button
-							disabled={!canSubmit || (fastPath && !acknowledged)}
 							onClick={() => {
-								if (file) {
-									add.mutate({
-										picked: file,
-										proposal: false,
-									});
-								}
+								reset();
+								onOpenChange(false);
 							}}
 						>
-							{t("addButton")}
+							{t("done")}
 						</Button>
-					) : null}
-					{offersProposal ? (
-						<Button
-							variant={proposalOnly ? "default" : "outline"}
-							disabled={!canSubmitProposal}
-							onClick={() => {
-								if (file) {
-									add.mutate({
-										picked: file,
-										proposal: true,
-									});
-								}
-							}}
-						>
-							{t(
-								repositoryTarget
-									? "submitPullRequestButton"
-									: "submitProposalButton",
-							)}
-						</Button>
-					) : null}
+					) : (
+						<>
+							<Button
+								variant="ghost"
+								disabled={add.isPending || commit.busy}
+								onClick={() => onOpenChange(false)}
+							>
+								{t("cancel")}
+							</Button>
+							{commitMode ? (
+								<Button
+									disabled={
+										!canSubmit ||
+										commitMessage.trim() === ""
+									}
+									onClick={async () => {
+										if (!file) {
+											return;
+										}
+										setReading(true);
+										try {
+											const content =
+												await fileToBase64(file);
+											commit.start({
+												baseSnapshotId,
+												message: commitMessage,
+												changes: [
+													{
+														op: "put",
+														path: path.trim(),
+														content,
+														encoding: "base64",
+													},
+												],
+												suggest: () =>
+													add.mutate({
+														picked: file,
+														proposal: true,
+													}),
+											});
+										} finally {
+											setReading(false);
+										}
+									}}
+								>
+									{t("commitButton", {
+										ref: repositoryTarget?.ref ?? "",
+									})}
+								</Button>
+							) : null}
+							{!proposalOnly && !commitMode ? (
+								<Button
+									disabled={
+										!canSubmit ||
+										(fastPath && !acknowledged)
+									}
+									onClick={() => {
+										if (file) {
+											add.mutate({
+												picked: file,
+												proposal: false,
+											});
+										}
+									}}
+								>
+									{t("addButton")}
+								</Button>
+							) : null}
+							{offersProposal ? (
+								<Button
+									variant={
+										proposalOnly ? "default" : "outline"
+									}
+									disabled={!canSubmitProposal}
+									onClick={() => {
+										if (file) {
+											add.mutate({
+												picked: file,
+												proposal: true,
+											});
+										}
+									}}
+								>
+									{t(
+										repositoryTarget
+											? "submitPullRequestButton"
+											: "submitProposalButton",
+									)}
+								</Button>
+							) : null}
+						</>
+					)}
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

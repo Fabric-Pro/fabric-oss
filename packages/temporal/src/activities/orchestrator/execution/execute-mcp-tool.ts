@@ -19,15 +19,21 @@ import type { WorkflowIntegrationProvider } from "@repo/database";
 import { db, fetchCredentialsByIdAndProviderInTenant } from "@repo/database";
 import type { OperationDefinition } from "@repo/integrations/executor-registry";
 import { executeGitHubTool } from "@repo/integrations/github";
+import {
+	GitLabPmOriginMismatchError,
+	requireRecordedGitLabPmOrigin,
+} from "@repo/integrations/gitlab";
 import { executeSlackTool } from "@repo/integrations/slack";
 import {
 	getCachedMcpClientForConfig,
 	invalidateMcpClientCache,
+	McpGitLabOriginMismatchError,
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
 import { getBaseUrl } from "@repo/utils";
 import { splitIntegrationToolRef } from "@repo/utils/integration-tool-ref";
 import { heartbeat } from "@temporalio/activity";
+import { ApplicationFailure } from "@temporalio/common";
 import {
 	MCP_TOOL_RESULT_MAX_BYTES,
 	truncateMcpTextOutput,
@@ -580,6 +586,13 @@ function normalizeExcalidrawCreateViewArgs(
 interface CachedToolList {
 	tools: Record<string, unknown>;
 	cachedAt: number;
+	/**
+	 * The client the tools were listed from. Each tool's `execute` sends
+	 * through that client, so a list is only reused with the same client —
+	 * never with a newer one built for the config after it changed (the
+	 * client is what is checked against a PM container's instance).
+	 */
+	client: unknown;
 }
 
 // Cache tool lists per configId+userId
@@ -605,7 +618,11 @@ async function getCachedToolList(
 	const cacheKey = getToolListCacheKey(configId, userId, organizationId);
 	const cached = toolListCache.get(cacheKey);
 
-	if (cached && Date.now() - cached.cachedAt < TOOL_LIST_CACHE_TTL) {
+	if (
+		cached &&
+		cached.client === client &&
+		Date.now() - cached.cachedAt < TOOL_LIST_CACHE_TTL
+	) {
 		return cached.tools;
 	}
 
@@ -614,6 +631,7 @@ async function getCachedToolList(
 	toolListCache.set(cacheKey, {
 		tools,
 		cachedAt: Date.now(),
+		client,
 	});
 
 	return tools;
@@ -709,6 +727,23 @@ export async function executeMcpTool(
 		return { ...result, output: bounded.output };
 	} finally {
 		clearInterval(heartbeatInterval);
+	}
+}
+
+/** The non-retryable refusal for a PM call bound to another GitLab instance. */
+function gitlabPmOriginMismatchFailure(message: string): ApplicationFailure {
+	return ApplicationFailure.nonRetryable(message, "GitLabPmOriginMismatch");
+}
+
+/** See `ExecuteMcpToolInput.pmTarget`. */
+function pmTargetGitLabOrigin(additionalContext: unknown): string {
+	try {
+		return requireRecordedGitLabPmOrigin(additionalContext);
+	} catch (error) {
+		if (error instanceof GitLabPmOriginMismatchError) {
+			throw gitlabPmOriginMismatchFailure(error.message);
+		}
+		throw error;
 	}
 }
 
@@ -1864,6 +1899,12 @@ async function executeMcpToolImpl(
 	const baseUrl = getBaseUrl();
 	const redirectUri = `${baseUrl}/api/mcp/oauth/callback`;
 
+	// A PM container's instance, which the client running the tool must be
+	// bound to (`pmTarget`); checked on the client actually acquired below.
+	const expectedGitLabOrigin = input.pmTarget
+		? pmTargetGitLabOrigin(input.pmTarget.additionalContext)
+		: undefined;
+
 	// Helper function to execute tool on a specific config
 	// isRetry=true skips closed-client retry to prevent infinite recursion
 	const executeOnConfig = async (
@@ -1888,6 +1929,7 @@ async function executeMcpToolImpl(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				redirectUri, // Enable OAuth2 token refresh
+				expectedGitLabOrigin,
 			});
 
 			if (!fromCache) {
@@ -2056,6 +2098,12 @@ async function executeMcpToolImpl(
 				mcpAppConfigId: mcpAppResourceUri ? configId : undefined,
 			};
 		} catch (execError) {
+			// The client is bound to another GitLab instance than the PM
+			// container: nothing was sent, and no retry or other config may
+			// run the tool instead.
+			if (execError instanceof McpGitLabOriginMismatchError) {
+				throw gitlabPmOriginMismatchFailure(execError.message);
+			}
 			// Handle OAuth authorization required errors specially
 			// Return authRequired result so workflow can pause and signal UI
 			if (execError instanceof OAuthAuthorizationRequiredError) {

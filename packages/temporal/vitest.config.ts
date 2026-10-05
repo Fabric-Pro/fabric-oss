@@ -8,6 +8,15 @@ import { defineConfig } from "vitest/config";
 // packages/database/vitest.config.ts.
 const runDbIntegration = process.env.RUN_DB_INTEGRATION === "1";
 
+// Starting a process is far slower on Windows than on Linux, and this
+// package's real-git suites start dozens of git processes per test. Measured
+// on a Windows 11 machine, run alone: the branch activity tests take up to 17s
+// against the 20s ceiling Linux CI runs them under, and importing the whole
+// activities barrel takes 23s, so a full-suite run there timed out several
+// tests that pass alone. The longer ceilings are for that host only; Linux
+// keeps its own.
+const slowHost = process.platform === "win32";
+
 export default defineConfig({
 	test: {
 		environment: "node",
@@ -30,7 +39,10 @@ export default defineConfig({
 		// vite-node) transforms it more slowly than v3 — heavy-import tests were
 		// observed tipping just past the old 5s default (5012ms). 20s gives
 		// headroom without letting truly hung tests block CI.
-		testTimeout: 20000,
+		testTimeout: slowHost ? 120_000 : 20000,
+		// The hook ceiling is vitest's own 10s default, which fixture-building
+		// `beforeAll`s in the real-git suites would also outgrow on a slow host.
+		hookTimeout: slowHost ? 120_000 : 10_000,
 		// Force vitest to exit even if open handles remain — see
 		// vitest.global-teardown.ts. Without this, the main vitest
 		// process hangs 2-5 min between turbo packages because tests

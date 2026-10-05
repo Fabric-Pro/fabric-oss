@@ -24,6 +24,10 @@ import {
 } from "../../../../orpc/procedures";
 import { runInBackground } from "../../../weave/lib/run-in-background";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import {
+	assertNoOpenMigration,
+	migrationOpenFromRefusal,
+} from "./migration-freeze";
 import { canReviewInstructionProposals } from "./proposal-authorization";
 import { wakeBranchAfterCommand } from "./proposal-branch";
 import {
@@ -96,7 +100,12 @@ async function proposalRow(
 			proposal.pullRequestState !== "CLOSE_REQUESTED" &&
 			["RECEIVING", "FAILED", "READY"].includes(proposal.status),
 		isProposer,
-		destination: proposal.proposalDestination,
+		// A proposal is Fabric's or a pull request; a direct commit
+		// (`REPOSITORY_COMMIT`) is not a proposal and never reaches this list.
+		destination:
+			proposal.proposalDestination === "REPOSITORY"
+				? ("REPOSITORY" as const)
+				: ("FABRIC" as const),
 		note: noteOf(proposal.proposalNote),
 		pullRequest: await pullRequestStatusOf(
 			proposal,
@@ -553,6 +562,12 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// Approving publishes, and the published version is what a move into
+		// the repository carries (Fizzy #2878 §9).
+		await assertNoOpenMigration({
+			projectId: input.projectId,
+			organizationId,
+		});
 		const metadata = await getInstructionProposal(
 			input.snapshotId,
 			input.projectId,
@@ -574,6 +589,14 @@ export const approveInstructionProposalProcedure = tenantProtectedProcedure
 			}),
 		});
 		if (!result.ok) {
+			if (result.reason === "migration_open") {
+				// Decided under the project lock: a move started after the
+				// check above (Fizzy #2878 §9).
+				throw await migrationOpenFromRefusal(result, {
+					projectId: input.projectId,
+					organizationId,
+				});
+			}
 			return decisionError(result.reason);
 		}
 		// Approving a proposal publishes it, so the same pre-build the manual

@@ -42,6 +42,7 @@ vi.mock("@repo/database", () => ({
 	},
 	// Re-exports used by other parts of mcp-tools.ts (tested elsewhere).
 	listMcpConfigsForTenant: vi.fn(),
+	GITLAB_PERSONAL_MCP_SERVER_KEYS: ["gitlab", "gitlab-official"],
 }));
 
 // mcp-tools.ts also imports from @repo/mcp for client creation — mock it
@@ -196,9 +197,18 @@ describe("getDetailedMcpToolInfo", () => {
 					// retired OAuth grant and can only be cleared by an OAuth
 					// reconnect the config no longer has. The predicate must
 					// exclude a tripped config only while it is still OAuth.
+					//
+					// GitLab personal servers are exempt: their column
+					// describes a legacy token copy, never the person's GitLab
+					// connection, which is checked when the client is built.
 					OR: [
 						{ authType: { not: "OAUTH2" } },
 						{ needsReauth: false },
+						{
+							mcpServer: {
+								key: { in: ["gitlab", "gitlab-official"] },
+							},
+						},
 					],
 				}),
 			}),
@@ -225,7 +235,15 @@ describe("getDetailedMcpToolInfo", () => {
 				userId: "user-1",
 				organizationId: "org-7",
 				enabled: true,
-				OR: [{ authType: { not: "OAUTH2" } }, { needsReauth: false }],
+				OR: [
+					{ authType: { not: "OAUTH2" } },
+					{ needsReauth: false },
+					{
+						mcpServer: {
+							key: { in: ["gitlab", "gitlab-official"] },
+						},
+					},
+				],
 				id: { in: ["cfg-a", "cfg-b"] },
 			},
 			include: { mcpServer: true },

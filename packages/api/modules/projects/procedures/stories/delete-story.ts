@@ -27,6 +27,14 @@ export const deleteStoryProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Resolved at handler entry, BEFORE anything is written: it can still
+		// refuse (a project with no organization), and refusing after the
+		// write would leave it committed behind a failed response.
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+
 		// Snapshot the story title BEFORE the delete fires so the audit row
 		// preserves a name even when the underlying row is gone (D11).
 		const snapshot = await db.userStory.findFirst({
@@ -65,11 +73,6 @@ export const deleteStoryProcedure = tenantProtectedProcedure
 				}),
 			);
 		}
-
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
 		// Audit-log emission. Resource name was snapshotted above
 		// pre-delete so the row reflects what was destroyed.

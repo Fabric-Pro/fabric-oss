@@ -7,6 +7,10 @@
  */
 
 import { recordAudit } from "@repo/database";
+import {
+	issuedGrantOfConsent,
+	type OAuthIssuedGrantContext,
+} from "./oauth-project-binding";
 
 export interface OAuthConsentHookContext {
 	path: string;
@@ -14,7 +18,6 @@ export interface OAuthConsentHookContext {
 	context: {
 		session?: {
 			user?: { id?: string; email?: string | null; name?: string | null };
-			session?: { activeOrganizationId?: string | null };
 		} | null;
 		returned?: unknown;
 	};
@@ -38,13 +41,25 @@ function acceptedBody(body: unknown): { oauth_query?: string } | null {
 }
 
 /**
+ * What the consent issued: the organization, and the one project when it was
+ * bound to one. A project whose organization could not be read back has none.
+ */
+export interface OAuthConsentAuditGrant {
+	organizationId: string | null;
+	projectId: string | null;
+}
+
+/**
  * Record `account.oauth.consent_granted` for a successful, accepted consent.
  * A denial writes nothing, and neither does a failed request: `returned` is the
  * error itself when the endpoint threw.
+ *
+ * A project grant is recorded in the organization hosting the project, with the
+ * project in the metadata.
  */
 export function emitOAuthConsentAudit(
 	ctx: OAuthConsentHookContext,
-	organizationId: string | null,
+	grant: OAuthConsentAuditGrant | null,
 ): void {
 	if (ctx.path !== "/oauth2/consent") {
 		return;
@@ -75,8 +90,25 @@ export function emitOAuthConsentAudit(
 			emailSnapshot: user.email ?? null,
 			nameSnapshot: user.name ?? null,
 		},
-		organizationId,
+		organizationId: grant?.organizationId ?? null,
 		resource: { type: "oauth_client", id: clientId, name: null },
-		metadata: { scopes: scope ? scope.split(" ") : [] },
+		metadata: {
+			scopes: scope ? scope.split(" ") : [],
+			...(grant?.projectId ? { projectId: grant.projectId } : {}),
+		},
 	});
+}
+
+/**
+ * Audit an approved consent with the grant it actually issued. A grant that
+ * cannot be read back is still audited as an approval, in no organization.
+ */
+export async function auditOAuthConsent(
+	ctx: OAuthConsentHookContext & OAuthIssuedGrantContext,
+): Promise<void> {
+	const consenting = ctx.context.session?.user;
+	const grant = consenting?.id
+		? await issuedGrantOfConsent(ctx, consenting.id).catch(() => null)
+		: null;
+	emitOAuthConsentAudit(ctx, grant);
 }

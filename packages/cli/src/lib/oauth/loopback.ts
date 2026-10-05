@@ -12,7 +12,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const CALLBACK_PATH = "/callback";
-const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * How long the browser is waited for when the caller does not say. Finite on
+ * purpose: `init` runs this for an agent that has no terminal, and a run
+ * nobody is watching has to end.
+ */
+export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface CallbackResult {
 	code: string;

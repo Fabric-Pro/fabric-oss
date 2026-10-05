@@ -21,10 +21,14 @@ const {
 	mockHasProjectAccess,
 	mockListScanCheckpoints,
 	mockGetLatestProjectScan,
+	mockFindProject,
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
 	mockListScanCheckpoints: vi.fn(),
 	mockGetLatestProjectScan: vi.fn(),
+	// The handler takes its organization from the project row (no binding
+	// exists when the handler is called without its middleware).
+	mockFindProject: vi.fn(),
 }));
 
 // Spread the REAL @repo/database exports (so transitively-eager consumers find
@@ -37,7 +41,11 @@ vi.mock("@repo/database", async () => {
 		);
 	return {
 		...actual,
-		db: {},
+		db: {
+			project: {
+				findUnique: (...a: unknown[]) => mockFindProject(...a),
+			},
+		},
 		hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 		listScanCheckpoints: (...a: unknown[]) => mockListScanCheckpoints(...a),
 		getLatestProjectScan: (...a: unknown[]) =>
@@ -49,8 +57,14 @@ vi.mock("@repo/database", async () => {
 const { mockListBranches } = vi.hoisted(() => ({
 	mockListBranches: vi.fn(),
 }));
+const { mockAtlasConstructed } = vi.hoisted(() => ({
+	mockAtlasConstructed: vi.fn(),
+}));
 vi.mock("@repo/atlas", () => ({
 	AtlasService: class {
+		constructor(options: unknown) {
+			mockAtlasConstructed(options);
+		}
 		listBranches = (...a: unknown[]) => mockListBranches(...a);
 	},
 }));
@@ -100,6 +114,7 @@ beforeEach(() => {
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockListScanCheckpoints.mockResolvedValue([]);
 	mockGetLatestProjectScan.mockResolvedValue(null);
+	mockFindProject.mockResolvedValue({ organizationId: "org-example" });
 });
 
 // =============================================================================
@@ -379,5 +394,37 @@ describe("listBranchScanStatusProcedure", () => {
 		expect(mockListBranches).not.toHaveBeenCalled();
 		expect(mockListScanCheckpoints).not.toHaveBeenCalled();
 		expect(mockGetLatestProjectScan).not.toHaveBeenCalled();
+	});
+
+	// The repository credentials AtlasService selects are the PROJECT's
+	// organization's. A caller-named organization never chooses them.
+	it("lists branches with the project's organization, not the input's", async () => {
+		mockListBranches.mockResolvedValue([]);
+		const handler = await loadHandler();
+
+		await handler({
+			input: { projectId: "proj-1", organizationId: null },
+			context: ctx,
+		});
+
+		expect(mockAtlasConstructed).toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: "org-example" }),
+		);
+	});
+
+	it("refuses a different input organization before touching the repository", async () => {
+		const handler = await loadHandler();
+
+		await expect(
+			handler({
+				input: { projectId: "proj-1", organizationId: "org-other" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "organizationId does not match the project",
+		});
+		expect(mockAtlasConstructed).not.toHaveBeenCalled();
+		expect(mockListBranches).not.toHaveBeenCalled();
 	});
 });

@@ -10,6 +10,7 @@ import {
 	getDetailedMcpToolInfo,
 } from "@repo/agent-core/backend";
 import { auth } from "@repo/auth";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -58,6 +59,18 @@ export async function POST(request: Request) {
 		}
 
 		const { message, organizationId, enabledMcpConfigIds } = parsed.data;
+
+		// Discovery connects to every config the caller holds in the named
+		// organization, on each config's stored token, and lists its tools:
+		// the caller must still be a member there with MCP_READ.
+		const authorization = await authorizeMcpConfigRequest({
+			userId,
+			organizationId,
+			action: "read",
+		});
+		if (!authorization.ok) {
+			return authorization.response;
+		}
 
 		// Skip very short messages
 		if (message.trim().length < 3) {

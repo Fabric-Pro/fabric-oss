@@ -1,10 +1,13 @@
 /**
  * Telegram channel adapter.
  *
- * Inbound: Telegram Bot API webhooks. Verification uses the optional
+ * Inbound: Telegram Bot API webhooks. Verification uses the
  * `X-Telegram-Bot-Api-Secret-Token` header set when calling `setWebhook` with
- * `secret_token`. We compare it constant-time against the secret stored in
- * credentials.
+ * `secret_token`. We compare it constant-time against the deployment's
+ * `TELEGRAM_WEBHOOK_SECRET`, and reject everything in production when that is
+ * unset. The secret is never read from a tenant's stored connection: a
+ * Telegram update carries no bot id, so nothing in the unauthenticated
+ * request can pick the right tenant (Fizzy #2860).
  *
  * Outbound: POST https://api.telegram.org/bot<token>/sendMessage
  *
@@ -68,12 +71,17 @@ export const telegramChannelAdapter: ChannelAdapter = {
 	name: "Telegram",
 	providerKey: "TELEGRAM",
 
-	verifyInbound(ctx: InboundContext, credentials): VerifyOutcome {
-		// 1. Optional shared-secret header check. Skip if no secret configured.
-		const expectedSecret =
-			typeof credentials?.webhook_secret === "string"
-				? credentials.webhook_secret
-				: undefined;
+	verifyInbound(ctx: InboundContext): VerifyOutcome {
+		// 1. Shared-secret header check. Fail closed in deployed environments
+		// (NODE_ENV=production on every deploy), as the Slack adapter does;
+		// allow local dev without a secret for testing.
+		const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+		if (!expectedSecret && process.env.NODE_ENV === "production") {
+			return {
+				kind: "invalid",
+				reason: "no telegram webhook secret configured",
+			};
+		}
 		if (expectedSecret) {
 			const actual = ctx.headers[SECRET_HEADER];
 			if (!actual || !constantTimeEqual(actual, expectedSecret)) {

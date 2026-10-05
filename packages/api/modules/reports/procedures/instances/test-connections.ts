@@ -135,6 +135,8 @@ export const testInstanceConnectionsProcedure = tenantProtectedProcedure
 						configId,
 						userId: context.user.id,
 						organizationId: organizationId ?? undefined,
+						// Only lists the server's tools.
+						access: "read",
 					});
 					const serverName =
 						result.serverName || displayNames[configId] || configId;

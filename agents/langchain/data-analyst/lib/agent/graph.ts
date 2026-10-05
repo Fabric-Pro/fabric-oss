@@ -313,7 +313,16 @@ interface McpConfigResponse {
 	accessToken?: string;
 	serverName?: string;
 	serverDefaultUrl?: string;
+	mcpServer?: { key?: string | null } | null;
 }
+
+/**
+ * MCP server keys whose credential is the person's GitLab connection, held by
+ * Fabric's GitLab connection service (the list in `@repo/database`'s
+ * `gitlab-personal-keys`, which this agent cannot import). Their config rows
+ * carry no credential this agent could use, so it skips them.
+ */
+const GITLAB_PERSONAL_MCP_SERVER_KEYS = new Set(["gitlab", "gitlab-official"]);
 
 /**
  * Fetch MCP configs from Fabric API (stateless - no database access)
@@ -381,6 +390,16 @@ async function discoverMcpTools(
 		// Create MCP clients and extract tools
 		for (const mcpConfig of configs) {
 			try {
+				if (
+					GITLAB_PERSONAL_MCP_SERVER_KEYS.has(
+						mcpConfig.mcpServer?.key ?? "",
+					)
+				) {
+					console.log(
+						`[DataAnalyst] Skipping GitLab MCP config ${mcpConfig.name}: its credential is the person's GitLab connection`,
+					);
+					continue;
+				}
 				const serverUrl =
 					mcpConfig.baseUrl || mcpConfig.serverDefaultUrl;
 				if (!serverUrl) {

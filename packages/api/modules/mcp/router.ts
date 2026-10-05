@@ -17,6 +17,7 @@ import { fetchResourcesProcedure } from "./procedures/fetch-resources";
 import { healthProcedures } from "./procedures/health";
 import { listToolsProcedure } from "./procedures/list-tools";
 import { oauthProcedures } from "./procedures/oauth";
+import { revokeMcpOAuthProcedure } from "./procedures/oauth-revoke";
 import { publicRegistryProcedures } from "./procedures/public-registry";
 import { refreshToolsProcedure } from "./procedures/refresh-tools";
 import { registryProcedures } from "./procedures/registry";
@@ -27,7 +28,7 @@ export const mcpRouter = {
 	publicRegistry: publicRegistryProcedures,
 	configs: configProcedures,
 	connect: connectProcedures,
-	oauth: oauthProcedures,
+	oauth: { ...oauthProcedures, revoke: revokeMcpOAuthProcedure },
 	atlassianCloud: atlassianCloudProcedures,
 	dcr: dcrProcedures,
 	discovery: discoveryProcedures,

@@ -68,22 +68,6 @@ vi.mock("../../../../orpc/procedures", () => {
 		requirePermission: () => () => undefined,
 		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_target, prop) => String(prop) }),
-		resolveOrganizationIdForCaller: async (
-			inputOrganizationId: string | null | undefined,
-			session: { activeOrganizationId?: string | null },
-		) => {
-			// Mirrors the resolution half only. The membership half it adds is
-			// covered directly in the orpc procedure tests; these suites are
-			// about weave's own behaviour, and a caller who is not a member
-			// never reaches them.
-			if (inputOrganizationId) {
-				return inputOrganizationId;
-			}
-			if (inputOrganizationId === null) {
-				return undefined;
-			}
-			return session.activeOrganizationId ?? undefined;
-		},
 		resolveOrganizationId: (
 			inputOrganizationId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -137,7 +121,12 @@ beforeEach(() => {
 	savedPlannersUrl = process.env.WEAVE_PLANNERS_URL;
 	process.env.WEAVE_PLANNERS_URL = "http://planners.test:8142";
 	mockHasProjectAccess.mockResolvedValue(true);
-	mockAssertProjectPermission.mockResolvedValue(undefined);
+	// Returns the project it authorized and that project's organization
+	// (Fizzy #2904); the handler runs in it.
+	mockAssertProjectPermission.mockResolvedValue({
+		projectId: "proj-1",
+		organizationId: "org-1",
+	});
 	mockPlanFindFirst.mockResolvedValue(failedPlan);
 	mockPlanUpdate.mockResolvedValue({});
 	mockRunPatternGeneration.mockResolvedValue(undefined);
@@ -158,7 +147,7 @@ afterEach(() => {
 });
 
 describe("retryGenerationProcedure — guards", () => {
-	it("throws NOT_FOUND when the tenant-XOR lookup misses", async () => {
+	it("throws NOT_FOUND when the caller's lookup misses", async () => {
 		mockPlanFindFirst.mockResolvedValue(null);
 
 		const handler = await loadHandler();
@@ -169,20 +158,17 @@ describe("retryGenerationProcedure — guards", () => {
 
 		expect(error).toBeInstanceOf(ORPCError);
 		expect((error as { code: string }).code).toBe("NOT_FOUND");
-		// Org context: lookup is scoped to the organization.
+		// By id and creator only — the organization is checked against the
+		// authorized project after the row is found (Fizzy #2904 review).
 		expect(mockPlanFindFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: {
-					id: "plan-1",
-					userId: "user-1",
-					organizationId: "org-1",
-				},
+				where: { id: "plan-1", userId: "user-1" },
 			}),
 		);
 		expect(mockPlanUpdate).not.toHaveBeenCalled();
 	});
 
-	it("scopes the lookup to organizationId: null in personal context", async () => {
+	it("does not filter the lookup on a null input organization", async () => {
 		mockPlanFindFirst.mockResolvedValue(null);
 
 		const handler = await loadHandler();
@@ -193,11 +179,7 @@ describe("retryGenerationProcedure — guards", () => {
 
 		expect(mockPlanFindFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: {
-					id: "plan-1",
-					userId: "user-1",
-					organizationId: null,
-				},
+				where: { id: "plan-1", userId: "user-1" },
 			}),
 		);
 	});

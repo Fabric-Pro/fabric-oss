@@ -27,6 +27,14 @@ export interface ExternalApiContext {
 	organizationId: string | undefined;
 	/** Scopes granted to this API key */
 	scopes: string[];
+	/**
+	 * Set for an OAuth token that reaches one project: that project. Such a
+	 * credential is bound to the project and to the organization hosting it.
+	 * `requireApiKey` lets it reach only the routes of `projectBoundRouteAllowed`,
+	 * and those ask {@link credentialMayReachProject} again before they read or
+	 * write anything of a project.
+	 */
+	boundProjectId?: string;
 }
 
 /**
@@ -39,6 +47,19 @@ export function isOrganizationBoundKey(
 	ctx: Pick<ExternalApiContext, "keyType">,
 ): boolean {
 	return ctx.keyType === "organization" || ctx.keyType === "oauth";
+}
+
+/**
+ * Whether this credential may act on `projectId`. Only an OAuth token bound to
+ * one project says no, and then for every project but its own. Callers answer
+ * `false` as they answer a project that does not exist, never as a refusal that
+ * says the project is there.
+ */
+export function credentialMayReachProject(
+	ctx: Pick<ExternalApiContext, "boundProjectId">,
+	projectId: string,
+): boolean {
+	return ctx.boundProjectId === undefined || ctx.boundProjectId === projectId;
 }
 
 /**

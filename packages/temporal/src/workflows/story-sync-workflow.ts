@@ -425,6 +425,8 @@ export async function storySyncWorkflow(
 		}
 
 		const result = await executeMcpTool({
+			// Bound to the PM container's GitLab instance at dispatch.
+			pmTarget: { additionalContext },
 			toolName,
 			args,
 			userId,
@@ -866,6 +868,10 @@ export async function storySyncWorkflow(
 				userId,
 				organizationId,
 				containerId,
+				// This workflow dispatches to the container itself
+				// (`executeMcpTool`), so discovery refuses a personal GitLab
+				// config on another instance than the container's.
+				pmTarget: { additionalContext },
 			});
 		} catch (preflightError) {
 			const detail = extractActivityError(preflightError);
@@ -1457,6 +1463,8 @@ export async function storySyncWorkflow(
 						});
 
 						const updateResult = await executeMcpTool({
+							// Bound to the PM container's GitLab instance at dispatch.
+							pmTarget: { additionalContext },
 							toolName: updateTool.toolName,
 							args: updateArgs,
 							userId,
@@ -1638,6 +1646,8 @@ export async function storySyncWorkflow(
 						});
 
 						const createResult = await executeMcpTool({
+							// Bound to the PM container's GitLab instance at dispatch.
+							pmTarget: { additionalContext },
 							toolName: createTool.toolName,
 							args: createArgs,
 							userId,

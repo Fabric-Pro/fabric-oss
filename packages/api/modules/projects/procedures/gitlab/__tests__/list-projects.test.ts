@@ -32,11 +32,6 @@ class GitLabApiErrorMock extends Error {
 // Hoisted mock factories for the resolver symbols
 // ---------------------------------------------------------------------------
 const mockResolveGitLabSource = vi.fn();
-const mockRefreshMcpConfigToken = vi.fn();
-const mockMarkRefreshFailure = vi.fn();
-const mockCreateGitLabRefreshFailureWriter = vi.fn(
-	() => mockMarkRefreshFailure,
-);
 
 // Pre-existing mock factories
 const mockGetAuthenticatedUser = vi.fn();
@@ -44,13 +39,12 @@ const mockGetGitLabAccessToken = vi.fn();
 const mockListUserProjects = vi.fn();
 const mockSearchGitLabProjects = vi.fn();
 
+const mockReadGitLabPersonalConnection = vi.fn();
 vi.mock("@repo/integrations/gitlab", () => ({
 	resolveGitLabSource: (...args: unknown[]) =>
 		mockResolveGitLabSource(...args),
-	refreshMcpConfigToken: (...args: unknown[]) =>
-		mockRefreshMcpConfigToken(...args),
-	createGitLabRefreshFailureWriter: (...args: unknown[]) =>
-		mockCreateGitLabRefreshFailureWriter(...args),
+	readGitLabPersonalConnection: (...args: unknown[]) =>
+		mockReadGitLabPersonalConnection(...args),
 	getAuthenticatedUser: (...args: unknown[]) =>
 		mockGetAuthenticatedUser(...args),
 	getGitLabAccessToken: (...args: unknown[]) =>
@@ -88,6 +82,28 @@ vi.mock("../../../../../orpc/procedures", () => {
 			orgId ?? null,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		// The real resolver's rule for the organization a request names (the
+		// input's, else the session's; an explicit null suppresses the session
+		// fallback; none refused when required). Membership and role are
+		// exercised for real in gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		requireProjectPermission: () => (c: unknown) => c,
 	};
 });
@@ -112,7 +128,9 @@ async function loadHandler(): Promise<Handler> {
 		.handler;
 }
 
-const baseInput = { organizationId: null };
+// The organization the request acts in: a person's GitLab connection lives
+// in one (ADR-018), and a request with none is refused before any read.
+const baseInput = { organizationId: "org-1" };
 const baseContext = {
 	user: { id: "user-1" },
 	session: { id: "session-1" },
@@ -121,7 +139,15 @@ const baseContext = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockListUserProjects.mockResolvedValue([]);
+	mockReadGitLabPersonalConnection.mockResolvedValue({
+		summary: { state: "not-connected" },
+	});
 });
+
+const WI_CREDENTIAL = {
+	token: "wi-token",
+	apiBase: "https://gitlab.com/api/v4",
+};
 
 describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("returns 'not connected' when resolveGitLabSource returns null", async () => {
@@ -138,26 +164,25 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 		expect(mockGetAuthenticatedUser).not.toHaveBeenCalled();
 	});
 
-	it("hands the resolver the shared refresh-failure writer", async () => {
-		// Without it a revoked grant is retried on every poll of the picker
-		// and never recorded (issue #2795). What the writer then persists is
-		// covered in list-projects-refresh-breaker.test.ts.
+	it("resolves the caller's own connection in the request's tenant context", async () => {
+		// The resolver records refresh failures on the connection itself
+		// (issue #2795; see list-projects-refresh-breaker.test.ts), so the
+		// procedure hands it nothing but the tenant.
 		mockResolveGitLabSource.mockResolvedValue(null);
 
 		const handler = await loadHandler();
 		await handler({ input: baseInput, context: baseContext });
 
-		expect(mockCreateGitLabRefreshFailureWriter).toHaveBeenCalledOnce();
-		const opts = mockResolveGitLabSource.mock.calls[0]![0] as {
-			markRefreshFailure?: unknown;
-		};
-		expect(opts.markRefreshFailure).toBe(mockMarkRefreshFailure);
+		expect(mockResolveGitLabSource).toHaveBeenCalledWith({
+			userId: baseContext.user.id,
+			organizationId: baseInput.organizationId ?? null,
+		});
 	});
 
 	it("uses REST token when resolveGitLabSource returns rest-adapter; never queries MCPConfig directly", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue({
 			login: "alice",
@@ -174,7 +199,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 		expect(result.error).toBeNull();
 		expect(result.username).toBe("alice");
 		// The procedure must pass the resolver's token directly to getAuthenticatedUser
-		expect(mockGetAuthenticatedUser).toHaveBeenCalledWith("wi-token");
+		expect(mockGetAuthenticatedUser).toHaveBeenCalledWith(WI_CREDENTIAL);
 		// MCPConfig is not queried by the procedure itself — only by the resolver
 		expect(mockMcpConfigFindFirst).not.toHaveBeenCalled();
 	});
@@ -218,7 +243,10 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("returns rejected-token error when REST path receives 401 from getAuthenticatedUser", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "stale-token",
+			credential: {
+				token: "stale-token",
+				apiBase: "https://gitlab.com/api/v4",
+			},
 		});
 		mockGetAuthenticatedUser.mockRejectedValueOnce(
 			new GitLabApiErrorMock("invalid_token", 401),
@@ -238,7 +266,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("surfaces network errors as 'Could not reach GitLab' (not auth)", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockRejectedValueOnce(
 			new TypeError("fetch failed: ECONNREFUSED"),
@@ -257,7 +285,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("filters by searchGroup when input.searchGroup is provided", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue({
 			login: "alice",
@@ -286,7 +314,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 
 		expect(result.error).toBeNull();
 		expect(mockSearchGitLabProjects).toHaveBeenCalledWith(
-			"wi-token",
+			WI_CREDENTIAL,
 			"my-org",
 			100,
 		);
@@ -297,7 +325,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("lists user projects via REST when no searchGroup provided", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue({
 			login: "alice",
@@ -326,7 +354,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 
 		expect(result.error).toBeNull();
 		expect(result.username).toBe("alice");
-		expect(mockListUserProjects).toHaveBeenCalledWith("wi-token", 100);
+		expect(mockListUserProjects).toHaveBeenCalledWith(WI_CREDENTIAL, 100);
 		expect(result.groups).toHaveLength(1);
 		expect((result.groups[0] as { ownerType: string }).ownerType).toBe(
 			"user",
@@ -340,7 +368,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 		// the filter excluded the entry — dropping the user's projects entirely.
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue({
 			login: "alice",
@@ -383,7 +411,7 @@ describe("listGitLabProjectsProcedure — credential resolution", () => {
 	it("returns configured:true with empty groups when searchGroup finds no matching projects", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue({
 			login: "alice",
@@ -532,7 +560,7 @@ describe("listGitLabProjectsProcedure — numericId (spec D1.1b, Fizzy #2304)", 
 	it("returns GitLab's numeric project id on the REST path", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue(restUser);
 		mockListUserProjects.mockResolvedValue([raw({ id: 4711 })]);
@@ -571,7 +599,7 @@ describe("listGitLabProjectsProcedure — numericId (spec D1.1b, Fizzy #2304)", 
 	it("returns null when the listing carries no usable id", async () => {
 		mockResolveGitLabSource.mockResolvedValue({
 			kind: "rest-adapter",
-			token: "wi-token",
+			credential: WI_CREDENTIAL,
 		});
 		mockGetAuthenticatedUser.mockResolvedValue(restUser);
 		const handler = await loadHandler();

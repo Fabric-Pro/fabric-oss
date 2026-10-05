@@ -13,6 +13,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Start an on-demand AI false-positive review (G7) over the project's current
@@ -43,13 +44,21 @@ export const startReviewProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, scanId } = input;
+		const { projectId, scanId } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const user = context.user;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -68,7 +77,7 @@ export const startReviewProcedure = tenantProtectedProcedure
 		const review = await createScanFindingReview({
 			projectId,
 			userId: user.id,
-			organizationId: organizationId ?? null,
+			organizationId,
 		});
 
 		// Lazy-load @repo/temporal so importing this procedure doesn't pull the
@@ -88,7 +97,7 @@ export const startReviewProcedure = tenantProtectedProcedure
 							projectId,
 							scanId: scanId ?? null,
 							userId: user.id,
-							organizationId: organizationId ?? null,
+							organizationId,
 						},
 					],
 					workflowExecutionTimeout: "30 minutes",
@@ -105,7 +114,7 @@ export const startReviewProcedure = tenantProtectedProcedure
 				projectId,
 				type: "REVIEW_STARTED",
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 				scanId: null,
 				summary: "Started an AI false-positive review",
 			}).catch(() => {});

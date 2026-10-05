@@ -2,7 +2,7 @@
  * `fabric instructions doctor` — is this machine set up the way the project's
  * coding instructions expect?
  *
- * Nine checks, in `CHECK_IDS` order, each one a finding with at most one
+ * Ten checks, in `CHECK_IDS` order, each one a finding with at most one
  * proposed remedy. The shape is the one the MCP `fabric_instruction_checks`
  * tool returns (`checks.ts`), so an agent reads either surface the same way.
  *
@@ -38,6 +38,7 @@
  *     from the config, no redirects followed, and the body never read.
  */
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import type {
 	InstructionDownload,
@@ -48,6 +49,13 @@ import type {
 	PublishedInstructions,
 	WhoamiResult,
 } from "@fabricorg/sdk";
+import {
+	fabricCommand,
+	pathAsCommandWord,
+	printableLauncherWords,
+} from "../launcher.js";
+import { DEFAULT_ORIGIN } from "../origin.js";
+import { NO_LINE_FOR_ADDRESS } from "../shell-words.js";
 import { extractBundle } from "./bundle.js";
 import {
 	type CheckoutReport,
@@ -63,6 +71,7 @@ import {
 	type CheckId,
 	type CheckItem,
 	type CheckStatus,
+	decideCheckoutVerdict,
 	evaluateDeclaredVariables,
 	INSTRUCTION_ENVIRONMENT_FILE,
 	INSTRUCTION_ENVIRONMENT_MAX_BYTES,
@@ -73,10 +82,13 @@ import {
 	sanitizeDisplayText,
 	TOOL_NAME,
 } from "./checks.js";
+import type { AgentMcpFact } from "./agent-mcp-config.js";
 import {
-	buildHookCommand,
+	buildHookArguments,
 	findSessionStartHooks,
+	hookArgumentsOf,
 	type InstructionsHookTool,
+	parseHookCommand,
 } from "./hook.js";
 import {
 	type InstructionsLock,
@@ -128,11 +140,34 @@ export interface DoctorInput {
 	 */
 	commandDest?: string;
 	probeNetwork: boolean;
+	/**
+	 * The deployment, as an origin, that a hook for this run should be bound
+	 * to. When absent, hooks are not judged on whether they name one.
+	 */
+	baseUrl?: string;
+	/** `--remote` exactly as given, or undefined. */
+	remote?: string;
+	/**
+	 * Whether a file exists, for the CLI copy a hook runs. A regular-file
+	 * `stat` unless given.
+	 */
+	fileExists?: (file: string) => Promise<boolean>;
 	/** Names are read from here; values are read only for PATH and PATHEXT. */
 	env: Readonly<Record<string, string | undefined>>;
 	platform: NodeJS.Platform;
 	/** Whether a key is configured at all. The key itself never reaches this module. */
 	apiKeyPresent: boolean;
+	/**
+	 * Whether this project has a browser sign-in of its own on this machine, one
+	 * that reaches it and nothing else. Absent when the caller did not look.
+	 */
+	projectSignIn?: boolean;
+	/**
+	 * What each coding tool's configuration says about this project's Fabric MCP
+	 * server, for the tools found on this machine. Absent when the caller did not
+	 * look.
+	 */
+	agentMcp?: AgentMcpFact[];
 	/** Built lazily, and only once a key is known to exist. */
 	client: () => DoctorClient;
 	createDownloadUrl: (
@@ -176,11 +211,12 @@ const PROBE_BUDGET_MS = 15_000;
 const MAX_PROBES = 20;
 const PROBE_CONCURRENCY = 4;
 
-const LOGIN_COMMAND = "fabric auth login";
 const CLI_INSTALL_COMMAND = "npm install -g @fabricorg/cli";
 /** The read-only git inspection's whole budget. */
 const GIT_BUDGET_MS = 10_000;
 const LOCK_NOT_USED = "not used in a checkout of the repository";
+const LOCK_NOT_HERE =
+	"not used here: this folder is not a checkout of the project's repository";
 const SKIP_AFTER_AUTH = "not evaluated: the API key check failed";
 const SKIP_AFTER_ACCESS = "not evaluated: the project could not be read";
 const SKIP_AFTER_PUBLISHED =
@@ -195,6 +231,21 @@ const DECLARATION_FORMAT_FIX = `fix ${INSTRUCTION_ENVIRONMENT_FILE} in the instr
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The folder as the person typed it (`--dest`), or "this folder": a detail
+ * never carries the working directory's absolute path, which they did not type.
+ */
+function folderOf(input: DoctorInput): string {
+	return input.commandDest ?? "this folder";
+}
+
+/** The lock's path, absolute only when `--dest` was typed. */
+function lockFileOf(input: DoctorInput): string {
+	return input.commandDest === undefined
+		? ".fabric/instructions.lock"
+		: lockPath(input.commandDest);
+}
 
 function makeCheck(
 	id: CheckId,
@@ -341,18 +392,44 @@ function shellQuote(value: string): string {
 }
 
 /**
- * `fabric <args>` as one pasteable POSIX command, or `undefined` when any
- * word carries a control character: a newline in a path cannot be quoted
- * into something a person can safely paste, so no command is offered at all.
- * Doctor's fixes and the sync report's repair command both come from here.
+ * One argument as one word of a pasteable command, or `null` when no spelling
+ * of it reads the same where it will be pasted. POSIX single quotes reach
+ * cmd.exe as literal characters and are a parse error in PowerShell once the
+ * word holds an apostrophe, so on Windows an argument is spelled the way the
+ * launcher spells a file path: forward slashes, double quotes only where a
+ * shell would split or interpret the word.
+ */
+function commandWord(value: string, platform: NodeJS.Platform): string | null {
+	return platform === "win32"
+		? pathAsCommandWord(value, platform)
+		: shellQuote(value);
+}
+
+/**
+ * `fabric <args>`, started the way this install starts the CLI, as one
+ * pasteable command, or `undefined` when any word carries a control
+ * character or has no spelling every shell on `platform` reads the same: a
+ * newline in a path cannot be quoted into something a person can safely
+ * paste, so no command is offered at all. Doctor's fixes and the sync
+ * report's repair command both come from here.
  */
 export function buildFabricCommand(
 	args: readonly string[],
+	platform: NodeJS.Platform = process.platform,
 ): string | undefined {
 	if (args.some(hasControlCharacter)) {
 		return undefined;
 	}
-	return ["fabric", ...args].map(shellQuote).join(" ");
+	const words: string[] = [];
+	for (const arg of args) {
+		const word = commandWord(arg, platform);
+		if (word === null) {
+			return undefined;
+		}
+		words.push(word);
+	}
+	const launcher = printableLauncherWords();
+	return launcher === null ? undefined : [...launcher, ...words].join(" ");
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -388,17 +465,44 @@ function plural(count: number, noun: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * `--base-url <origin>` when doctor ran against a deployment other than the
+ * default one, so a pasted fix acts on the deployment doctor checked, as the
+ * hook command does.
+ */
+function deploymentArguments(input: DoctorInput): string[] {
+	return input.baseUrl !== undefined && input.baseUrl !== DEFAULT_ORIGIN
+		? ["--base-url", input.baseUrl]
+		: [];
+}
+
+/** `fabric auth login` for the deployment doctor ran against. */
+function loginCommand(input: DoctorInput): string {
+	return (
+		buildFabricCommand(
+			["auth", "login", ...deploymentArguments(input)],
+			input.platform,
+		) ?? fabricCommand("auth login")
+	);
+}
+
+async function isRegularFile(file: string): Promise<boolean> {
+	return (await stat(file).catch(() => null))?.isFile() ?? false;
+}
+
+/**
  * The fix commands doctor proposes, built ONLY from arguments the person
- * gave it. Every one carries `--org` and `--dest` when doctor had them, so a
- * pasted command acts on the same project, context and checkout. A value with
- * a control character produces no command at all rather than one that would
- * not survive a paste.
+ * gave it. Every one carries `--base-url` (when it is not the default
+ * deployment), `--org` and `--dest` when doctor had them, so a pasted command
+ * acts on the same deployment, project, context and checkout. A value with a
+ * control character produces no command at all rather than one that would not
+ * survive a paste.
  */
 class Commands {
 	constructor(private readonly input: DoctorInput) {}
 
 	private context(): string[] {
 		return [
+			...deploymentArguments(this.input),
 			...(this.input.org !== undefined ? ["--org", this.input.org] : []),
 			...(this.input.commandDest !== undefined
 				? ["--dest", this.input.commandDest]
@@ -407,7 +511,7 @@ class Commands {
 	}
 
 	private build(args: string[]): string | undefined {
-		return buildFabricCommand(args);
+		return buildFabricCommand(args, this.input.platform);
 	}
 
 	sync(): string | undefined {
@@ -450,6 +554,9 @@ class Commands {
 			"--tool",
 			tool,
 			...this.context(),
+			...(this.input.remote !== undefined
+				? ["--remote", this.input.remote]
+				: []),
 		]);
 	}
 
@@ -575,6 +682,9 @@ export async function runDoctor(
 		{ kind: "not-evaluated" },
 		() => checkLock(input, commands, snapshot, checkout),
 	);
+	const checkoutCheck = await guarded("checkout", "machine", async () =>
+		checkCheckout(accessState, snapshot, checkout),
+	);
 	const drift = await guarded("drift", "machine", () =>
 		checkDrift(input, commands, snapshot, lockState, checkout),
 	);
@@ -615,6 +725,7 @@ export async function runDoctor(
 		access,
 		published,
 		lock,
+		checkoutCheck,
 		drift,
 		hook,
 		environment,
@@ -647,6 +758,7 @@ async function resolveCheckout(
 					repository,
 					snapshot,
 					deadline: Date.now() + GIT_BUDGET_MS,
+					remote: input.remote,
 				});
 	} catch {
 		return reportFor(repository, {
@@ -665,6 +777,7 @@ async function checkAuth(
 	client: () => DoctorClient,
 ): Promise<[InstructionCheck, boolean]> {
 	const id = "auth";
+	const login = loginCommand(input);
 	if (!input.apiKeyPresent) {
 		return [
 			makeCheck(
@@ -675,7 +788,7 @@ async function checkAuth(
 				{
 					fix: fixOf(
 						"sign in through your browser, or for CI log in with an organization API key that carries instructions:read (create one in the organization's Settings → API keys)",
-						LOGIN_COMMAND,
+						login,
 					),
 				},
 			),
@@ -697,7 +810,7 @@ async function checkAuth(
 					{
 						fix: fixOf(
 							"the key is invalid, revoked or expired: log in with a current organization API key that carries instructions:read",
-							LOGIN_COMMAND,
+							login,
 						),
 					},
 				),
@@ -726,8 +839,22 @@ async function checkAuth(
 		typeof who.keyPrefix === "string" && who.keyPrefix.length > 0
 			? sanitizeDisplayText(who.keyPrefix, 24)
 			: "(no prefix)";
+	const limitedToProject =
+		keyType === "oauth" && who.projectContext === input.projectId;
 	const label =
-		keyType === "oauth" ? "signed-in session" : `${keyType} key ${prefix}`;
+		keyType === "oauth"
+			? limitedToProject
+				? "signed-in session limited to this project"
+				: "signed-in session"
+			: `${keyType} key ${prefix}`;
+	// A sign-in that reaches every project is what a project's own sign-in
+	// replaces: the person is told, once, that this one has none.
+	const ownSignIn =
+		keyType === "oauth" &&
+		!limitedToProject &&
+		input.projectSignIn === false
+			? "; this project has no sign-in of its own"
+			: "";
 
 	if (!Array.isArray(who.scopes)) {
 		// Not a refusal: the project read below is the real test.
@@ -751,7 +878,12 @@ async function checkAuth(
 			: null;
 	if (satisfying !== null) {
 		return [
-			makeCheck(id, "server", "pass", `${label} with ${satisfying}`),
+			makeCheck(
+				id,
+				"server",
+				"pass",
+				`${label} with ${satisfying}${ownSignIn}`,
+			),
 			true,
 		];
 	}
@@ -765,7 +897,7 @@ async function checkAuth(
 				{
 					fix: fixOf(
 						"personal API keys cannot carry instructions scopes: create an ORGANIZATION API key with instructions:read in the organization's Settings → API keys, then log in with it",
-						LOGIN_COMMAND,
+						login,
 					),
 				},
 			),
@@ -780,7 +912,7 @@ async function checkAuth(
 			`${label} is missing the instructions:read scope`,
 			{
 				fix: fixOf(
-					`add instructions:read to this key in the organization's Settings → API keys, or create a new key with it and run \`${LOGIN_COMMAND}\``,
+					`add instructions:read to this key in the organization's Settings → API keys, or create a new key with it and run \`${login}\``,
 				),
 			},
 		),
@@ -821,7 +953,7 @@ async function checkAccess(
 		];
 	} catch (error) {
 		return [
-			accessFailure(displayId, error),
+			accessFailure(displayId, error, loginCommand(input)),
 			{ kind: "unavailable", reason: SKIP_AFTER_ACCESS },
 		];
 	}
@@ -833,7 +965,11 @@ async function checkAccess(
  * middleware's bare-string 403, which the SDK codes `MISSING_SCOPE`; any other
  * 403 is the live project permission; 404 is "no such project for this key".
  */
-function accessFailure(displayId: string, error: unknown): InstructionCheck {
+function accessFailure(
+	displayId: string,
+	error: unknown,
+	login: string,
+): InstructionCheck {
 	const id = "access";
 	const status = statusOf(error);
 	if (status === 403 && codeOf(error) === "MISSING_SCOPE") {
@@ -845,7 +981,7 @@ function accessFailure(displayId: string, error: unknown): InstructionCheck {
 			{
 				fix: fixOf(
 					"add instructions:read to the key in the organization's Settings → API keys, or log in with an organization API key that carries it",
-					LOGIN_COMMAND,
+					login,
 				),
 			},
 		);
@@ -885,7 +1021,7 @@ function accessFailure(displayId: string, error: unknown): InstructionCheck {
 			{
 				fix: fixOf(
 					"log in with a current organization API key that carries instructions:read",
-					LOGIN_COMMAND,
+					login,
 				),
 			},
 		);
@@ -1017,7 +1153,7 @@ function unreadableLockCheck(
 	commands: Commands,
 	reason: LockUnreadable,
 ): InstructionCheck {
-	const where = lockPath(input.destination);
+	const where = lockFileOf(input);
 	if (reason === "refused") {
 		// Never "remove it": through a symlinked `.fabric`, the path names a
 		// file outside the checkout, which is exactly what was refused.
@@ -1048,6 +1184,83 @@ function unreadableLockCheck(
 			),
 		},
 	);
+}
+
+// ---------------------------------------------------------------------------
+// checkout
+// ---------------------------------------------------------------------------
+
+const NO_CHECKOUT_FOR_UPLOAD =
+	"the project's instructions are uploaded, so there is no repository checkout to compare";
+const NO_CHECKOUT_HERE =
+	"this directory is not a git checkout, so there is no HEAD to compare";
+const PUBLISHED_NOT_SYNCED =
+	"the published version was uploaded, not synced from the repository, so there is no commit to compare";
+const NO_COMMIT_YET = "this checkout has no commit yet";
+
+/**
+ * The twin's verdict on this checkout against the published commit, from the
+ * facts an editor's agent reports over MCP plus the ancestry answer the
+ * classifier already has. Only the `matching` class has a HEAD to compare;
+ * the classifier matched the real fetch URL, so the facts name the
+ * repository by the pair it matched.
+ */
+function checkCheckout(
+	access: AccessState,
+	snapshot: SnapshotState,
+	checkout: CheckoutState,
+): InstructionCheck {
+	const id = "checkout";
+	if (checkout === null) {
+		return makeCheck(
+			id,
+			"machine",
+			"skip",
+			access.kind === "ok" ? NO_CHECKOUT_FOR_UPLOAD : access.reason,
+		);
+	}
+	const cls = checkoutClass(checkout);
+	if (cls === "upload") {
+		return makeCheck(id, "machine", "skip", NO_CHECKOUT_HERE);
+	}
+	if (cls !== "matching" || checkout.state === null) {
+		return makeCheck(id, "machine", "skip", checkoutDetail(checkout));
+	}
+	if (snapshot.kind === "unavailable") {
+		return makeCheck(id, "machine", "skip", snapshot.reason);
+	}
+	if (snapshot.kind === "unpublished") {
+		return makeCheck(id, "machine", "skip", NOTHING_PUBLISHED);
+	}
+	const source = snapshot.snapshot.source;
+	const repository =
+		access.kind === "ok" ? (access.published.repository ?? null) : null;
+	if (
+		source === undefined ||
+		source.kind !== "REPOSITORY" ||
+		repository === null
+	) {
+		return makeCheck(id, "machine", "skip", PUBLISHED_NOT_SYNCED);
+	}
+	if (checkout.state.head === null) {
+		return makeCheck(id, "machine", "skip", NO_COMMIT_YET);
+	}
+	const decision = decideCheckoutVerdict({
+		checkout: {
+			remoteUrl: `https://${repository.host}/${repository.path}`,
+			headSha: checkout.state.head,
+			branch: checkout.state.branch,
+			clean: checkout.state.clean,
+			containsPublished: checkout.contains ?? null,
+		},
+		repository,
+		published: source,
+	});
+	return makeCheck(id, "machine", decision.status, decision.detail, {
+		fix: decision.fix,
+		source,
+		repository,
+	});
 }
 
 async function checkLock(
@@ -1096,12 +1309,18 @@ async function checkLock(
 		];
 	}
 	if (read.kind === "absent") {
+		// Nobody synced here by hand, and the folder is a checkout of some
+		// other repository: the checkout line names the project's repository,
+		// so a first copy is not proposed into this one.
+		if (checkoutClass(checkout) === "other") {
+			return [makeCheck(id, "machine", "skip", LOCK_NOT_HERE), read];
+		}
 		return [
 			makeCheck(
 				id,
 				"machine",
 				"fail",
-				`no lock: ${input.destination} has not been synced`,
+				`no lock: ${folderOf(input)} has not been synced`,
 				{
 					fix: fixOf(
 						"takes a first copy of the published version and writes the lock",
@@ -1126,7 +1345,7 @@ async function checkLock(
 					// Not `sync`: sync refuses a lock that belongs to another
 					// project, and it is right to.
 					fix: fixOf(
-						`the lock in ${input.destination} was written for project ${other}; run doctor with the --dest that was synced for this project`,
+						`the lock in ${folderOf(input)} was written for project ${other}; run doctor with the --dest that was synced for this project`,
 					),
 				},
 			),
@@ -1285,7 +1504,7 @@ async function checkDrift(
 			"the lock names a path this tool will not touch",
 			{
 				fix: fixOf(
-					`remove the lock at ${lockPath(input.destination)}, then run this sync to take a fresh copy`,
+					`remove the lock at ${lockFileOf(input)}, then run this sync to take a fresh copy`,
 					commands.sync(),
 				),
 			},
@@ -1301,7 +1520,7 @@ async function checkDrift(
 			`all ${plural(total, "file")} the last sync wrote still match the lock`,
 		);
 	}
-	const push = commands.push() ?? "fabric instructions push";
+	const push = commands.push() ?? fabricCommand("instructions push");
 	const edits = drift.filter((entry) => entry.reason === "edited").length;
 	// Spec §6.4: `sync` keeps a local edit unless it is given `--repair`, so
 	// an edit is the intended state and only a warning. Anything else is
@@ -1336,7 +1555,8 @@ async function checkDrift(
 			},
 		);
 	}
-	const repair = commands.repair() ?? "fabric instructions sync --repair";
+	const repair =
+		commands.repair() ?? fabricCommand("instructions sync --repair");
 	return makeCheck(
 		id,
 		"machine",
@@ -1402,10 +1622,12 @@ const HOOK_TARGETS: ReadonlyArray<{
 ];
 
 /**
- * Template recognition, per target. The hook stores no binary path and no
- * CLI version, so "points at the current CLI" is verifiable in exactly one
- * sense: its command is one of the two strings this CLI would write today for
- * this project and this `--org`.
+ * Template recognition, per target. The hook stores no CLI version, so
+ * "points at the current CLI" is verifiable in exactly one sense: its
+ * arguments are one of the two this CLI would write today for this project and
+ * this `--org`, behind either launcher this tool writes (`fabric`, or `node`
+ * and the copy of the served build `init` keeps). A hook that runs the copy is
+ * also checked for the copy being there.
  */
 async function checkHook(
 	input: DoctorInput,
@@ -1428,12 +1650,39 @@ async function checkHook(
 			? `; init refuses in this directory (${checkoutDetail(checkout)})`
 			: "";
 
-	const reportOnly = buildHookCommand(input.projectId, false, input.org);
-	const applies = buildHookCommand(input.projectId, true, input.org);
+	const binding = { baseUrl: input.baseUrl, remote: input.remote };
+	const reportOnly = buildHookArguments(
+		input.projectId,
+		false,
+		input.org,
+		binding,
+	);
+	const applies = buildHookArguments(
+		input.projectId,
+		true,
+		input.org,
+		binding,
+	);
+	// The form written before hooks named a deployment: the same command
+	// with no `--base-url`. It still runs, but it follows whichever
+	// deployment the machine is signed in to, so it is only recognised.
+	const unbound = new Set([
+		buildHookArguments(input.projectId, false, input.org, {
+			remote: input.remote,
+		}),
+		buildHookArguments(input.projectId, true, input.org, {
+			remote: input.remote,
+		}),
+	]);
+	const fileExists = input.fileExists ?? isRegularFile;
 	const items: CheckItem[] = [];
 	const passing: InstructionsHookTool[] = [];
 	const differing: InstructionsHookTool[] = [];
 	const unreadable: InstructionsHookTool[] = [];
+	/** Tools whose canonical hook runs `fabric` (which has to be on PATH). */
+	const runsFabric: InstructionsHookTool[] = [];
+	/** Tools whose canonical hook runs a copy of the CLI that is gone. */
+	const missingCopy: InstructionsHookTool[] = [];
 
 	for (const target of HOOK_TARGETS) {
 		const name = `${target.tool} (${target.file})`;
@@ -1455,29 +1704,50 @@ async function checkHook(
 			items.push({ name, status: "skip", detail: "not configured" });
 			continue;
 		}
-		if (scan.commands.includes(applies)) {
+		const argumentsOf = scan.commands.map(hookArgumentsOf);
+		const canonical = scan.commands.filter((_, index) =>
+			[applies, reportOnly].includes(argumentsOf[index] ?? ""),
+		);
+		if (canonical.length > 0) {
 			passing.push(target.tool);
 			items.push({
 				name,
 				status: "pass",
-				detail: "canonical hook; applies changes at session start",
+				detail: argumentsOf.includes(applies)
+					? mode === "matching"
+						? "canonical hook; fast-forwards the checkout at session start when safe"
+						: "canonical hook; applies changes at session start"
+					: "canonical hook; reports changes at session start",
 			});
-			continue;
-		}
-		if (scan.commands.includes(reportOnly)) {
-			passing.push(target.tool);
-			items.push({
-				name,
-				status: "pass",
-				detail: "canonical hook; reports changes at session start",
-			});
+			// What starts the CLI: `fabric` has to be on PATH, and a copy
+			// of the served build has to still be where the hook says.
+			for (const command of canonical) {
+				const launcher = parseHookCommand(command)?.launcher;
+				if (launcher?.kind === "global") {
+					runsFabric.push(target.tool);
+				} else if (
+					launcher?.kind === "script" &&
+					!(await fileExists(launcher.path))
+				) {
+					missingCopy.push(target.tool);
+					items.push({
+						name: `${target.tool} hook's CLI copy`,
+						status: "warn",
+						detail: "not found; run init again to put it back",
+					});
+				}
+			}
 			continue;
 		}
 		differing.push(target.tool);
 		items.push({
 			name,
 			status: "warn",
-			detail: "differs from the canonical command (different context or older syntax)",
+			detail:
+				input.baseUrl !== undefined &&
+				argumentsOf.some((args) => args !== null && unbound.has(args))
+					? "unbound to a deployment: it names no --base-url, so it follows whichever deployment this machine is signed in to"
+					: "differs from the canonical command (different context or older syntax)",
 		});
 	}
 
@@ -1486,16 +1756,36 @@ async function checkHook(
 		platform: input.platform,
 	};
 	const fabricFound = await isOnPath("fabric", lookup);
-	items.push({
-		name: "fabric on PATH",
-		status: fabricFound ? "pass" : "warn",
-		detail: fabricFound
-			? "found (not executed)"
-			: `not found; install it with ${CLI_INSTALL_COMMAND}`,
-	});
+	// Only a hook that runs `fabric` depends on it; one that runs its own copy
+	// of the CLI does not care what is on PATH.
+	if (runsFabric.length > 0 || passing.length === 0) {
+		items.push({
+			name: "fabric on PATH",
+			status: fabricFound ? "pass" : "warn",
+			detail: fabricFound
+				? "found (not executed)"
+				: `not found; install it with ${CLI_INSTALL_COMMAND}`,
+		});
+	}
 
 	if (passing.length > 0) {
-		if (!fabricFound) {
+		if (missingCopy.length > 0) {
+			const tool = missingCopy[0] as InstructionsHookTool;
+			return makeCheck(
+				id,
+				"machine",
+				"warn",
+				`hook configured for ${passing.join(" and ")}, but the copy of the CLI it runs is missing; ${HOOK_NOT_VERIFIED}`,
+				{
+					items,
+					fix: fixOf(
+						"run init again: it puts the CLI copy back and rewrites the hook",
+						init(tool),
+					),
+				},
+			);
+		}
+		if (runsFabric.length > 0 && !fabricFound) {
 			return makeCheck(
 				id,
 				"machine",
@@ -2078,15 +2368,103 @@ async function checkTools(
 // mcp-servers
 // ---------------------------------------------------------------------------
 
+const AGENT_TITLE: Record<InstructionsHookTool, string> = {
+	"claude-code": "Claude Code",
+	codex: "Codex",
+};
+
+/** One item per coding tool: is this project's Fabric server registered with it. */
+function agentRegistrationItems(input: DoctorInput): CheckItem[] {
+	return (input.agentMcp ?? []).map((fact): CheckItem => {
+		const name = `Fabric server in ${AGENT_TITLE[fact.tool]}`;
+		switch (fact.state) {
+			case "registered":
+				return {
+					name,
+					status: "pass",
+					detail: "registered at this project's gateway",
+				};
+			case "elsewhere":
+				return {
+					name,
+					status: "warn",
+					detail: `"${fact.name}" is registered, but not at this project's gateway`,
+				};
+			case "missing":
+				return {
+					name,
+					status: "skip",
+					detail: "not registered; init registers it, unless it was run with --no-mcp or, for Codex, with no terminal to sign in at",
+				};
+			case "unreadable":
+				return {
+					name,
+					status: "skip",
+					detail: "its configuration could not be read",
+				};
+			default: {
+				const unreachable: never = fact.state;
+				return unreachable;
+			}
+		}
+	});
+}
+
+/**
+ * The fix for the first tool that has a server of the name `init` uses, at
+ * another URL. A tool with none is only reported: leaving it out is the
+ * person's to choose.
+ */
+function agentRegistrationFix(input: DoctorInput): CheckFix | undefined {
+	const first = (input.agentMcp ?? []).find(
+		(fact) => fact.state === "elsewhere",
+	);
+	if (first === undefined) {
+		return undefined;
+	}
+	const removal = `remove the "${first.name}" server from ${AGENT_TITLE[first.tool]} so it can be registered for this project, then`;
+	return first.registerLine === null
+		? fixOf(`${removal} register it by hand. ${NO_LINE_FOR_ADDRESS}`)
+		: fixOf(`${removal} run init or this line`, first.registerLine);
+}
+
+function agentRegistrationFixField(input: DoctorInput): { fix?: CheckFix } {
+	const fix = agentRegistrationFix(input);
+	return fix === undefined ? {} : { fix };
+}
+
 async function checkMcpServers(input: DoctorInput): Promise<InstructionCheck> {
 	const id = "mcp-servers";
+	const registration = agentRegistrationItems(input);
 	const config = await readMcpConfig(input.root);
+	if (
+		registration.length > 0 &&
+		(config.state === "absent" ||
+			(config.state !== "invalid" && config.servers.length === 0))
+	) {
+		const status: CheckStatus = registration.some(
+			(item) => item.status === "warn",
+		)
+			? "warn"
+			: registration.some((item) => item.status === "pass")
+				? "pass"
+				: "skip";
+		return makeCheck(
+			id,
+			"machine",
+			status,
+			status === "skip"
+				? `no ${MCP_CONFIG_FILE} in ${folderOf(input)}`
+				: "the project's Fabric MCP server, per coding tool",
+			{ items: registration, ...agentRegistrationFixField(input) },
+		);
+	}
 	if (config.state === "absent") {
 		return makeCheck(
 			id,
 			"machine",
 			"skip",
-			`no ${MCP_CONFIG_FILE} in ${input.destination}`,
+			`no ${MCP_CONFIG_FILE} in ${folderOf(input)}`,
 		);
 	}
 	if (config.state === "invalid") {
@@ -2124,6 +2502,8 @@ async function checkMcpServers(input: DoctorInput): Promise<InstructionCheck> {
 	if (probes.length > 0) {
 		await runProbes(probes, items, input.fetchImpl ?? fetch);
 	}
+	// After the servers the file names, so their positions are unchanged.
+	items.push(...registration);
 
 	const failing = config.servers
 		.filter((_, index) => items[index]?.status === "fail")
@@ -2143,6 +2523,10 @@ async function checkMcpServers(input: DoctorInput): Promise<InstructionCheck> {
 			? "; reachable means an HTTP response arrived, not that a working MCP server answered"
 			: "; url servers not probed (rerun with --probe-network)";
 	}
+	const stale = config.servers
+		.filter((server) => staleAuthorization(input, server))
+		.map((server) => server.name);
+	const registrationFix = agentRegistrationFix(input);
 	return makeCheck(id, "machine", status, detail, {
 		items,
 		...(failing.length > 0
@@ -2151,8 +2535,43 @@ async function checkMcpServers(input: DoctorInput): Promise<InstructionCheck> {
 						`fix or remove the failing server${failing.length === 1 ? "" : "s"} in ${MCP_CONFIG_FILE}: ${listNames(failing)}`,
 					),
 				}
-			: {}),
+			: stale.length > 0
+				? {
+						fix: fixOf(
+							`remove the Authorization header from ${listNames(stale)} in ${MCP_CONFIG_FILE}; the deployment's sign-in replaces it`,
+						),
+					}
+				: registrationFix === undefined
+					? {}
+					: { fix: registrationFix }),
 	});
+}
+
+const STALE_AUTHORIZATION_DETAIL =
+	"carries an Authorization header; sign-in replaces it — remove the header";
+
+/**
+ * Whether this server entry names the deployment doctor ran against and
+ * carries an `Authorization` header. The deployment's sign-in supplies that
+ * credential itself, and a stale header committed beside it wins and fails.
+ * Another service's header is not this check's business.
+ */
+function staleAuthorization(
+	input: DoctorInput,
+	server: McpServerEntry,
+): boolean {
+	if (
+		server.kind !== "url" ||
+		!server.hasAuthorizationHeader ||
+		input.baseUrl === undefined
+	) {
+		return false;
+	}
+	try {
+		return new URL(server.url).origin === input.baseUrl;
+	} catch {
+		return false;
+	}
 }
 
 async function evaluateServer(
@@ -2180,6 +2599,13 @@ async function evaluateServer(
 			: { name, status: "fail", detail: "command not found" };
 	}
 
+	if (staleAuthorization(input, server)) {
+		return {
+			name,
+			status: "warn",
+			detail: STALE_AUTHORIZATION_DETAIL,
+		};
+	}
 	if (!input.probeNetwork) {
 		return {
 			name,
@@ -2413,10 +2839,11 @@ const MAX_TEXT_ITEMS = 20;
 
 export function formatDoctorText(
 	report: InstructionChecksReport,
-	destination: string,
+	/** `--dest` as typed; the header names a folder only then. */
+	destination: string | undefined,
 ): string {
 	const lines: string[] = [
-		`Coding instructions doctor: project ${sanitizeDisplayText(report.projectId, 128)} in ${sanitizeDisplayText(destination, 1024)}`,
+		`Coding instructions doctor: project ${sanitizeDisplayText(report.projectId, 128)}${destination === undefined ? "" : ` in ${sanitizeDisplayText(destination, 1024)}`}`,
 		"",
 	];
 	const titleWidth =

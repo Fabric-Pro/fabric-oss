@@ -104,9 +104,10 @@ const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 
 let apiContext: {
-	keyType: "personal" | "organization";
+	keyType: "personal" | "organization" | "oauth";
 	userId: string;
 	organizationId?: string;
+	boundProjectId?: string;
 	scopes: string[];
 };
 
@@ -400,6 +401,46 @@ describe("PUT /projects/:projectId/contexts/synced-files — the tenant", () => 
 
 		expect(res.status).toBe(403);
 		expect(mocks.findOrganization).not.toHaveBeenCalled();
+	});
+});
+
+describe("synced-files — an agent that signed in for one project", () => {
+	function boundTo(projectId: string) {
+		return {
+			keyType: "oauth" as const,
+			userId: "user-1",
+			organizationId: ORG,
+			boundProjectId: projectId,
+			scopes: ["*"],
+		};
+	}
+
+	it("pushes a file into its own project", async () => {
+		mocks.scopes = ["*"];
+		apiContext = boundTo(PROJECT);
+
+		const res = await buildApp().fetch(put(fileBody()));
+
+		expect(res.status).toBe(200);
+		expect(mocks.upsertSyncedContext).toHaveBeenCalledOnce();
+	});
+
+	it("is told another project does not exist, without any lookup, for a push and a delete", async () => {
+		mocks.scopes = ["*"];
+		apiContext = boundTo("project-other");
+
+		const pushed = await buildApp().fetch(put(fileBody()));
+		const deleted = await buildApp().fetch(del(deleteBody()));
+
+		for (const res of [pushed, deleted]) {
+			expect(res.status).toBe(404);
+			expect(await res.json()).toEqual({
+				error: { message: "Project not found" },
+			});
+		}
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.upsertSyncedContext).not.toHaveBeenCalled();
+		expect(mocks.deleteSyncedContext).not.toHaveBeenCalled();
 	});
 });
 

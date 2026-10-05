@@ -20,6 +20,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { assertNoOpenMigration } from "./migration-freeze";
 import { assertInstructionSnapshotMutationAccess } from "./proposal-authorization";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts:167), imported the
@@ -100,6 +101,13 @@ export const createUploadUrlsProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// An upload that began before a move from uploads into the
+		// repository started may not carry on (Fizzy #2878 §9): the move's
+		// pull request was made from the version that is published now.
+		await assertNoOpenMigration({
+			projectId: input.projectId,
+			organizationId,
+		});
 		const snapshot = await getInstructionSnapshot(
 			input.snapshotId,
 			input.projectId,

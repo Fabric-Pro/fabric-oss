@@ -22,11 +22,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  classify-relay-batch:
+    name: Authenticate public relay batch
+    runs-on: ubuntu-24.04-arm
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-oss' &&
+      vars.STAGING_RELEASE_ENABLED == 'true' &&
+      vars.OSS_RELAY_APP_LOGIN != '' &&
+      github.event.pull_request.user.login == vars.OSS_RELAY_APP_LOGIN &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'relay/staging-pr-') &&
+      github.event.pull_request.base.ref == 'master'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relay_batch: ${{ steps.classify.outputs.relay_batch }}
+    steps:
+      - name: Checkout authenticated relay candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Authenticate current public relay batch
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE_ENABLED: ${{ vars.STAGING_RELEASE_ENABLED }}
+          OSS_RELAY_APP_LOGIN: ${{ vars.OSS_RELAY_APP_LOGIN }}
+        run: node .github/scripts/staging/public-relay-changeset.mjs
+
   check:
     name: Require changeset
     # arm64: checkout, pnpm/node setup, `pnpm dlx @changesets/cli`, and jq/git
     # are all architecture-neutral.
     runs-on: ubuntu-24.04-arm
+    needs: classify-relay-batch
     # Skip the check if:
     # - PR carries the opt-out label, OR
     # - PR is the auto-generated release PR from changesets/action, opened by
@@ -41,6 +73,7 @@ jobs:
     # before setup, so it incurs no duplicate runner work.
     if: >-
       ${{
+        always() && !cancelled() &&
         !contains(github.event.pull_request.labels.*.name, 'skip-changeset') &&
         !(
           vars.STAGING_RELEASE_ENABLED == 'true' &&
@@ -63,12 +96,23 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           # Full history so `pnpm changeset status --since=origin/$BASE_REF`
           # can diff against the merge base.
           fetch-depth: 0
 
+      - name: Verify consumed authenticated public relay metadata
+        if: >-
+          github.event_name == 'pull_request' &&
+          needs.classify-relay-batch.outputs.relay_batch == 'true'
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/staging/promotion-contract.mjs . "$CANDIDATE_SHA"
+
       - name: Require a changeset file or explicit skip label
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          needs.classify-relay-batch.outputs.relay_batch != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -83,7 +127,9 @@ jobs:
           echo "$CHANGESET_FILES"
 
       - name: Setup pnpm
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          needs.classify-relay-batch.outputs.relay_batch != 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
           # The action bootstraps pnpm with `npm ci`, whose audit request has stalled for
@@ -92,14 +138,18 @@ jobs:
           npm_config_audit: "false"
 
       - name: Setup Node.js
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          needs.classify-relay-batch.outputs.relay_batch != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
 
       - name: Verify a changeset exists and declares package bumps
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          needs.classify-relay-batch.outputs.relay_batch != 'true'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |

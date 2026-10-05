@@ -1,0 +1,17 @@
+-- Resolving a developer's checkout to its Fabric project (Fizzy #2878) looks an
+-- integration up by the canonical repository URL, and so do the webhook
+-- handlers and the pull-request review fan-out (`findByRepoUrl`,
+-- `findAllByRepoUrl`), which scanned this table sequentially until now. The
+-- table has no tenant column, so this changes no RLS policy.
+--
+-- CONCURRENTLY because the table is populated and a plain build takes a write
+-- lock on it for the length of the build. NO `IF NOT EXISTS`: a failed
+-- concurrent build leaves an invalid index behind under this name, and the
+-- clause would then skip the rebuild and record the migration as applied with
+-- no index. Recovery per docs/database-promotion.md: find it with
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- then DROP INDEX that name before re-running the migration.
+--
+-- KEEP THIS MIGRATION TO ONE STATEMENT: CONCURRENTLY cannot run inside the
+-- transaction Prisma wraps a multi-statement migration in.
+CREATE INDEX CONCURRENTLY "project_repository_integration_repositoryUrl_idx" ON "project_repository_integration"("repositoryUrl");

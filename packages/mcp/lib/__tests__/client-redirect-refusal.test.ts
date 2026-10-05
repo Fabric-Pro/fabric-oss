@@ -23,6 +23,11 @@ vi.mock("@ai-sdk/mcp", () => ({
 vi.mock("@repo/database", () => ({
 	getMcpConfigById: vi.fn(),
 	getValidAccessToken: vi.fn(),
+	// The config owner is a member whose role allows MCP read and connect
+	// (the organization gate in ../organization-access).
+	canConnectOrganizationMcpConfigs: async () => true,
+	canReadOrganizationMcpConfigs: async () => true,
+	isOrganizationMember: async () => true,
 }));
 
 vi.mock("../server-url-guard", () => ({

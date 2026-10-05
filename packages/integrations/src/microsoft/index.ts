@@ -18,7 +18,12 @@ import {
 	type RawExtractableMessage,
 	type RelevantExcerpt,
 } from "@repo/ai";
-import { db } from "@repo/database";
+import {
+	canUseWorkflowIntegrations,
+	db,
+	resolveWorkflowIntegrationForProvider,
+	workflowIntegrationAccessWhere,
+} from "@repo/database";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import sharp from "sharp";
 import type { PendingAttachmentRef } from "../shared/attachment-types";
@@ -652,29 +657,28 @@ export async function executeMicrosoftTeamsTool(
 	args: Record<string, unknown>,
 	userId: string,
 	organizationId?: string,
+	integrationId?: string,
 ): Promise<unknown> {
-	// Get Microsoft Graph token from user's workflow integrations
-	// Uses XOR pattern with per-user isolation: org context requires both userId AND organizationId
-	// to prevent one org member from using another member's credentials
-	const integration = organizationId
-		? await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId,
-					provider: "MICROSOFT_GRAPH",
-					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
-					isActive: true,
-				},
-			})
-		: await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId: null,
-					provider: "MICROSOFT_GRAPH",
-					NOT: { name: "MICROSOFT_GRAPH_OAUTH_APP" },
-					isActive: true,
-				},
-			});
+	// Recheck access when a workflow pins a shared connection; refresh updates that row only.
+	const integration = integrationId
+		? (await canUseWorkflowIntegrations(userId, organizationId))
+			? await db.workflowIntegration.findFirst({
+					where: {
+						...workflowIntegrationAccessWhere(
+							userId,
+							organizationId,
+						),
+						id: integrationId,
+						provider: "MICROSOFT_GRAPH",
+						isActive: true,
+					},
+				})
+			: null
+		: await resolveWorkflowIntegrationForProvider(
+				"MICROSOFT_GRAPH",
+				userId,
+				organizationId,
+			);
 
 	if (!integration?.credentials) {
 		throw new Error(

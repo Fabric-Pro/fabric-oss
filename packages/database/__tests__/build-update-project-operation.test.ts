@@ -12,15 +12,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { projectUpdate, JSON_NULL, DB_NULL } = vi.hoisted(() => ({
+const { projectUpdate, JSON_NULL, DB_NULL, ANY_NULL } = vi.hoisted(() => ({
 	projectUpdate: vi.fn(),
 	JSON_NULL: Symbol("JsonNull"),
 	DB_NULL: Symbol("DbNull"),
+	ANY_NULL: Symbol("AnyNull"),
 }));
 
 vi.mock("../prisma/client", () => ({
 	db: { project: { update: projectUpdate } },
-	Prisma: { JsonNull: JSON_NULL, DbNull: DB_NULL },
+	Prisma: { JsonNull: JSON_NULL, DbNull: DB_NULL, AnyNull: ANY_NULL },
 	ProjectMemberRole: { OWNER: "OWNER" },
 }));
 
@@ -110,6 +111,53 @@ describe("updateProject", () => {
 				name: "Renamed",
 				projectManagementAdditionalContext: JSON_NULL,
 			},
+		});
+	});
+});
+
+describe("buildUpdateProjectOperation — conditional on the PM selection", () => {
+	it("applies only while the row still has the selection the caller bound from", () => {
+		projectUpdate.mockReturnValue({});
+		buildUpdateProjectOperation(
+			"proj-1",
+			{ projectManagementAdditionalContext: { gitlabOrigin: "x" } },
+			"org-1",
+			{
+				serverId: "srv-gitlab",
+				configId: null,
+				containerId: "42",
+				additionalContext: { gitlabOrigin: "https://gitlab.com" },
+			},
+		);
+		expect(projectUpdate.mock.calls[0][0].where).toEqual({
+			id: "proj-1",
+			organizationId: "org-1",
+			projectManagementMcpServerId: "srv-gitlab",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "42",
+			projectManagementAdditionalContext: {
+				equals: { gitlabOrigin: "https://gitlab.com" },
+			},
+		});
+	});
+
+	it("matches a stored null context as either null, and adds nothing when not asked", () => {
+		projectUpdate.mockReturnValue({});
+		buildUpdateProjectOperation("proj-1", { name: "A" }, "org-1", {
+			serverId: null,
+			configId: null,
+			containerId: null,
+			additionalContext: null,
+		});
+		expect(
+			projectUpdate.mock.calls[0][0].where
+				.projectManagementAdditionalContext,
+		).toEqual({ equals: ANY_NULL });
+
+		buildUpdateProjectOperation("proj-1", { name: "A" }, "org-1");
+		expect(projectUpdate.mock.calls[1][0].where).toEqual({
+			id: "proj-1",
+			organizationId: "org-1",
 		});
 	});
 });

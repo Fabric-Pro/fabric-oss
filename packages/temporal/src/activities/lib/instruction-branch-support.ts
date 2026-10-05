@@ -14,6 +14,7 @@ import {
 	type BranchRow,
 	canCreateProjectInstructions,
 	canReadProjectInstructions,
+	destinationSourceOfTruth,
 	getInstructionRepositorySyncForProposal,
 	getProjectInstructionSettings,
 	type PullRequestPhase,
@@ -111,9 +112,12 @@ export async function assertBranchCreationAllowed(i: {
 		),
 		getProjectInstructionSettings(branch.projectId, branch.organizationId),
 	]);
+	// While a move from uploads into the repository is proposing (Fizzy #2878
+	// §9) the project is still upload-backed and its sync row is the
+	// destination all the same: `destinationSourceOfTruth` reads the pointer.
 	if (
 		!sync ||
-		settings.sourceOfTruth !== "REPOSITORY" ||
+		destinationSourceOfTruth(settings, sync.id) !== "REPOSITORY" ||
 		sync.id !== destination.syncId ||
 		sync.repositoryIntegrationId !== destination.integrationId ||
 		sync.ref !== destination.targetRef ||
@@ -426,6 +430,14 @@ export function observationOf(
 export const BRANCH_PULL_REQUEST_PARAGRAPH =
 	"This pull request collects the coding instruction changes one member proposed in Fabric, one commit each. Review, merge or close it here.";
 
+/** The title of the pull request that moves a project's uploaded instructions into this repository (Fizzy #2878 §9). */
+const MIGRATION_PULL_REQUEST_TITLE =
+	"Move coding instructions into the repository";
+
+/** The paragraph above the footer of that pull request. */
+const MIGRATION_PULL_REQUEST_PARAGRAPH =
+	"This pull request adds the coding instructions this project had uploaded to Fabric to this folder, in one commit. Once it is merged Fabric syncs the project from this folder instead of from uploads, so later changes are made here. Closing it without merging leaves the uploads as they are.";
+
 /**
  * The branch pull request's title and description (Decision 13), rendered
  * at the branch's first claim in #2563's order (spec §5.2): names
@@ -436,14 +448,25 @@ export const BRANCH_PULL_REQUEST_PARAGRAPH =
 export function renderBranchPresentation(i: {
 	memberName: string | null;
 	projectName: string | null;
+	/** The branch carries a move of the project's uploads into this repository (Fizzy #2878 §9). */
+	migration?: boolean;
 }): { ok: true; presentation: BranchPresentation } | { ok: false } {
 	const member = normaliseName(i.memberName ?? "");
 	const project = normaliseName(i.projectName ?? "");
 	const memberName = unsafeName(member) ? FALLBACK_PROPOSER_NAME : member;
 	const projectName = unsafeName(project) ? FALLBACK_PROJECT_NAME : project;
-	const title = `Coding instruction changes from ${memberName}`;
+	const title =
+		i.migration === true
+			? MIGRATION_PULL_REQUEST_TITLE
+			: `Coding instruction changes from ${memberName}`;
 	const footer = `Opened from Fabric project ${projectName} by ${memberName}`;
-	const body = [BRANCH_PULL_REQUEST_PARAGRAPH, "---", footer].join("\n\n");
+	const body = [
+		i.migration === true
+			? MIGRATION_PULL_REQUEST_PARAGRAPH
+			: BRANCH_PULL_REQUEST_PARAGRAPH,
+		"---",
+		footer,
+	].join("\n\n");
 	if (
 		scanTextForSecrets(title).length > 0 ||
 		scanTextForSecrets(body).length > 0

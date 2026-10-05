@@ -17,11 +17,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { workflowIntegrationAccessWhere } from "../prisma/queries/workflows/integration-access";
 
 const {
 	projectFindFirst,
 	projectFindUnique,
 	integrationFindFirst,
+	memberFindFirst,
 	upsert,
 	deleteMock,
 	MockPrismaKnownError,
@@ -37,6 +39,7 @@ const {
 		projectFindFirst: vi.fn(),
 		projectFindUnique: vi.fn(),
 		integrationFindFirst: vi.fn(),
+		memberFindFirst: vi.fn(),
 		upsert: vi.fn(),
 		deleteMock: vi.fn(),
 		MockPrismaKnownError,
@@ -45,6 +48,7 @@ const {
 
 vi.mock("../prisma/client", () => {
 	const tx = {
+		member: { findFirst: memberFindFirst },
 		project: { findUnique: projectFindUnique },
 		workflowIntegration: { findFirst: integrationFindFirst },
 		projectDatabricksKnowledgeBinding: { upsert },
@@ -70,6 +74,7 @@ import {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	memberFindFirst.mockResolvedValue({ id: "member-example" });
 });
 
 describe("loadProjectDatabricksKnowledgeBinding — tenant scoping", () => {
@@ -238,7 +243,7 @@ describe("saveProjectDatabricksKnowledgeBinding — write-time validation", () =
 
 		expect(integrationFindFirst.mock.calls[0][0].where).toEqual({
 			id: "int_1",
-			organizationId: "org_1",
+			...workflowIntegrationAccessWhere("user_1", "org_1"),
 		});
 	});
 
@@ -258,9 +263,21 @@ describe("saveProjectDatabricksKnowledgeBinding — write-time validation", () =
 
 		expect(integrationFindFirst.mock.calls[0][0].where).toEqual({
 			id: "int_1",
-			userId: "owner_1",
-			organizationId: null,
+			...workflowIntegrationAccessWhere("user_1", null),
 		});
+	});
+
+	it("denies organization binding after caller membership is revoked", async () => {
+		projectFindUnique.mockResolvedValue({
+			userId: "owner_1",
+			organizationId: "org_1",
+		});
+		memberFindFirst.mockResolvedValue(null);
+		await expect(
+			saveProjectDatabricksKnowledgeBinding(baseInput),
+		).rejects.toThrow("Organization membership is required");
+		expect(integrationFindFirst).not.toHaveBeenCalled();
+		expect(upsert).not.toHaveBeenCalled();
 	});
 
 	it("rejects an integrationId outside the project's tenant", async () => {

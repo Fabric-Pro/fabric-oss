@@ -515,6 +515,7 @@ export async function getAdoActiveProjects(): Promise<PmActiveProject[]> {
 				userId: p.userId,
 				organizationId: p.organizationId,
 				containerId: p.projectManagementContainerId,
+				additionalContext: p.projectManagementAdditionalContext,
 				// Fizzy #2304 follow-up — a dead token that cannot be refreshed
 				// skips the project with its reason, rather than failing every
 				// ticket read one by one.

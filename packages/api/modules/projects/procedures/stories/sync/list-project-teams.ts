@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
 import { isContainerListingTool } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -7,6 +7,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import {
+	resolveProjectPmConfig,
+	rethrowGitLabPmOriginMismatch,
+} from "../../../lib/gitlab-pm-source";
 
 /**
  * List teams/boards for an Azure DevOps project.
@@ -51,6 +55,7 @@ export const listProjectTeamsProcedure = tenantProtectedProcedure
 				organizationId: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
+				projectManagementAdditionalContext: true,
 				projectManagementContainerId: true,
 				projectManagementContainerName: true,
 			},
@@ -66,8 +71,9 @@ export const listProjectTeamsProcedure = tenantProtectedProcedure
 			return { teams: [], error: "Project management not configured" };
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
@@ -113,7 +119,10 @@ export const listProjectTeamsProcedure = tenantProtectedProcedure
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
 			mcpConfigId: userMcpConfig.id,
-		});
+			pmTarget: {
+				additionalContext: project.projectManagementAdditionalContext,
+			},
+		}).catch(rethrowGitLabPmOriginMismatch);
 
 		if (!result.success) {
 			let errorDetail = "Unknown error";

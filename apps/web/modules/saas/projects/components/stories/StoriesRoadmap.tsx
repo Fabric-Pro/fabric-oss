@@ -115,6 +115,7 @@ import { useDuplicateScan } from "../../hooks/useDuplicateScan";
 import { useFeatureMaturationV2Enabled } from "../../hooks/useFeatureMaturationV2Enabled";
 import { useRoadmapFilters } from "../../hooks/useRoadmapFilters";
 import {
+	DEFAULT_ROADMAP_MODE,
 	PRIORITY_VIEW_ENABLED,
 	type RoadmapViewMode,
 	useRoadmapStoryOrder,
@@ -137,7 +138,8 @@ import {
 } from "../../lib/roadmap-search-relevance";
 import {
 	compareStoriesBy,
-	DEFAULT_ROADMAP_SORT,
+	isManualRoadmapSort,
+	MANUAL_ROADMAP_SORT,
 } from "../../lib/roadmap-sorts";
 import {
 	formatPhasePoints,
@@ -492,9 +494,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 		projectId,
 		organizationId,
 	);
-	const isSortDefault =
-		sort.key === DEFAULT_ROADMAP_SORT.key &&
-		sort.direction === DEFAULT_ROADMAP_SORT.direction;
+	// Drag-to-reorder writes the manual order, so it is offered only while that
+	// order is what the list shows.
+	const isManualOrder = isManualRoadmapSort(sort);
 	// Only the "Plain" layout flattens into a single list (global sort). Table
 	// and Board keep their lanes and sort WITHIN each lane.
 	const useFlatList = mode === "plain";
@@ -504,9 +506,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 	// existing kill-switch (PRIORITY_VIEW_ENABLED) keeps working unchanged.
 	const showingPriority = mode === "priority";
 	// Where "Work items" returns you. Without it, leaving Priority would always
-	// dump you on Table even if you had been on Board all week.
+	// dump you on the default layout even if you had been on Board all week.
 	const [lastLayoutMode, setLastLayoutMode] = useState<RoadmapViewMode>(() =>
-		mode === "priority" ? "table" : mode,
+		mode === "priority" ? DEFAULT_ROADMAP_MODE : mode,
 	);
 	const handleSectionChange = useCallback(
 		(next: "items" | "priority") => {
@@ -1229,7 +1231,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		// the manual roadmap order. The per-user order map overrides the shared
 		// story.roadmapOrder so each teammate's drag sequence is personal.
 		const fallbackSort = compareStoriesBy(
-			sortsGroups ? DEFAULT_ROADMAP_SORT : sort,
+			sortsGroups ? MANUAL_ROADMAP_SORT : sort,
 			roadmapOrderMap,
 		);
 		// Revealing keeps the collapsed COUNT so the control can toggle back.
@@ -2572,9 +2574,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 			// Reorder is disabled while filters are active because the visible
 			// bucket is a subset of the persisted bucket. Suppress the drag
 			// overlay so the gesture has no visual feedback. Also disabled
-			// when sort is non-default — the visible order no longer matches
-			// the persisted roadmapOrder.
-			if (hasActiveRoadmapFilters || !isSortDefault) {
+			// under any sort but the manual order — the visible order no
+			// longer matches the persisted roadmapOrder.
+			if (hasActiveRoadmapFilters || !isManualOrder) {
 				return;
 			}
 			// A drop may have a deferred lane-clear still pending — cancel it so it
@@ -2596,7 +2598,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		[
 			stories,
 			hasActiveRoadmapFilters,
-			isSortDefault,
+			isManualOrder,
 			baseLaneIds,
 			cancelDropClear,
 		],
@@ -2676,7 +2678,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 			// later (scheduleDndLanesClear), by which point the optimistic cache
 			// write has caught up and the swap is seamless.
 			setActiveStory(null);
-			if (hasActiveRoadmapFilters || !isSortDefault) {
+			if (hasActiveRoadmapFilters || !isManualOrder) {
 				clearDndLanes();
 				toast.info(
 					hasActiveRoadmapFilters
@@ -2790,7 +2792,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 			moveStoryRoadmapMutation,
 			moveStoryStageMutation,
 			hasActiveRoadmapFilters,
-			isSortDefault,
+			isManualOrder,
 			clearDndLanes,
 			scheduleDndLanesClear,
 		],
@@ -2809,7 +2811,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 			key={story.id}
 			story={story}
 			matchPercent={matchPercentById.get(story.id)}
-			canReorder={isSortDefault && !hasActiveRoadmapFilters}
+			canReorder={isManualOrder && !hasActiveRoadmapFilters}
 			projectId={projectId}
 			basePath={basePath}
 			organizationId={organizationId}
@@ -2849,7 +2851,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		<StoryTile
 			key={story.id}
 			story={story}
-			canReorder={isSortDefault && !hasActiveRoadmapFilters}
+			canReorder={isManualOrder && !hasActiveRoadmapFilters}
 			projectId={projectId}
 			organizationId={organizationId}
 			basePath={basePath}

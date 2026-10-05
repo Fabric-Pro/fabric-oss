@@ -32,6 +32,8 @@ export function GitHubSettings({
 	// hasKey is part of IntegrationSettingsProps but not used for OAuth flow
 	onApiKeyChange,
 	organizationId,
+	hasPersistedCredential,
+	connectionStatus = "unknown",
 }: IntegrationSettingsProps) {
 	const [showPat, setShowPat] = useState(false);
 	const [usePatMode, setUsePatMode] = useState(false);
@@ -41,14 +43,9 @@ export function GitHubSettings({
 	const { data: githubStatus, isLoading: isLoadingStatus } = useQuery({
 		queryKey: ["github-oauth-status", organizationId],
 		queryFn: async () => {
-			try {
-				return await orpcClient.integrations.github.status({
-					organizationId: organizationId ?? null,
-				});
-			} catch (error) {
-				console.debug("[GitHubSettings] Status check failed:", error);
-				return { connected: false };
-			}
+			return await orpcClient.integrations.github.status({
+				organizationId: organizationId ?? null,
+			});
 		},
 		staleTime: 30000,
 	});
@@ -166,14 +163,16 @@ export function GitHubSettings({
 		disconnectMutation.mutate();
 	}, [disconnectMutation]);
 
-	// Show OAuth status if connected
-	if (githubStatus?.connected) {
+	// Saved account metadata alone does not prove that authorization still works.
+	if (githubStatus?.connected || hasPersistedCredential) {
 		return (
 			<div className="space-y-6">
-				{/* Connected Status */}
-				<div className="p-4 rounded-lg bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
+				{/* Current connection check outcome */}
+				<div
+					className={`p-4 rounded-lg border ${connectionStatus === "connected" ? "bg-success/10 border-success/30" : connectionStatus === "reconnect_required" ? "bg-destructive/10 border-destructive/30" : "bg-muted border-border"}`}
+				>
 					<div className="flex items-start gap-4">
-						{githubStatus.avatarUrl ? (
+						{githubStatus?.avatarUrl ? (
 							<Image
 								src={githubStatus.avatarUrl}
 								alt={githubStatus.login || "GitHub avatar"}
@@ -189,50 +188,71 @@ export function GitHubSettings({
 						)}
 						<div className="flex-1">
 							<div className="flex items-center gap-2">
-								<CheckCircle2Icon className="h-5 w-5 text-success dark:text-green-400" />
-								<span className="font-medium text-success">
-									GitHub Connected
+								{connectionStatus === "connected" ? (
+									<CheckCircle2Icon className="h-5 w-5 text-success" />
+								) : (
+									<GithubIcon className="h-5 w-5 text-muted-foreground" />
+								)}
+								<span className="font-medium text-foreground">
+									{connectionStatus === "connected"
+										? "GitHub Connected"
+										: connectionStatus ===
+												"reconnect_required"
+											? "Reconnect required"
+											: "Connection needs checking"}
 								</span>
 							</div>
-							<p className="text-sm text-green-700 dark:text-green-300 mt-1">
-								Signed in as{" "}
-								<span className="font-semibold">
-									@{githubStatus.login}
-								</span>
-								{githubStatus.name && ` (${githubStatus.name})`}
-							</p>
-							{githubStatus.connectedAt && (
-								<p className="text-xs text-success dark:text-green-400 mt-1">
-									Connected{" "}
+							{githubStatus?.login ? (
+								<p className="text-sm text-muted-foreground mt-1">
+									Saved account:{" "}
+									<span className="font-semibold">
+										@{githubStatus.login}
+									</span>
+									{githubStatus.name &&
+										` (${githubStatus.name})`}
+								</p>
+							) : null}
+							{githubStatus?.connectedAt && (
+								<p className="text-xs text-muted-foreground mt-1">
+									Saved{" "}
 									{new Date(
 										githubStatus.connectedAt,
 									).toLocaleDateString()}
 								</p>
 							)}
 						</div>
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={handleDisconnect}
-							disabled={disconnectMutation.isPending}
-							className="text-destructive hover:text-red-700 hover:bg-red-50"
-						>
-							{disconnectMutation.isPending ? (
-								<Loader2Icon className="h-4 w-4 animate-spin" />
-							) : (
-								<>
-									<LogOutIcon className="h-4 w-4 mr-1" />
-									Disconnect
-								</>
-							)}
-						</Button>
+						<div className="flex flex-wrap gap-2">
+							{connectionStatus === "reconnect_required" ? (
+								<Button onClick={handleConnectGitHub}>
+									Reconnect GitHub
+								</Button>
+							) : null}
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={handleDisconnect}
+								disabled={disconnectMutation.isPending}
+								className="text-destructive hover:text-red-700 hover:bg-red-50"
+							>
+								{disconnectMutation.isPending ? (
+									<Loader2Icon className="h-4 w-4 animate-spin" />
+								) : (
+									<>
+										<LogOutIcon className="h-4 w-4 mr-1" />
+										Disconnect
+									</>
+								)}
+							</Button>
+						</div>
 					</div>
 				</div>
 
 				<p className="text-sm text-muted-foreground">
-					Your GitHub account is connected via OAuth. The task agent
-					can access repositories, create issues, and submit pull
-					requests on your behalf.
+					{connectionStatus === "connected"
+						? "Your GitHub connection has been checked successfully."
+						: connectionStatus === "reconnect_required"
+							? "Reconnect GitHub to renew authorization. Your saved connection stays in place until you reconnect."
+							: "Credentials are saved. Test the connection to verify current access."}
 				</p>
 			</div>
 		);

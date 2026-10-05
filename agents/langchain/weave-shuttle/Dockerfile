@@ -17,6 +17,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY tooling ./tooling
 
 # Copy only package.json files for stable dependency layer caching
@@ -39,14 +40,31 @@ COPY config/package.json ./config/
 
 RUN pnpm install --frozen-lockfile --filter weave-shuttle...
 
+# =============================================================================
+# Prisma client, generated from the schema alone
+# =============================================================================
+# Only the files `generate` reads are copied in, so this stage stays cached
+# until the schema or the generate scripts change. After the full source copy
+# it reran a five-minute generate on every change. tsconfig.json is one of
+# those inputs: the generator takes the client's import extensions from it.
+FROM base AS prisma
+COPY packages/database/tsconfig.json ./packages/database/
+COPY packages/database/prisma/schema.prisma packages/database/prisma/zod-generator.config.json packages/database/prisma/tsconfig.generated.json ./packages/database/prisma/
+COPY packages/database/prisma/zod ./packages/database/prisma/zod
+COPY packages/database/scripts/generate-client.mts packages/database/scripts/fix-zod-imports.ts ./packages/database/scripts/
+
+# Provide dummy DATABASE_URL for Prisma client generation
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
+# `mkdir -p` leaves the builder's COPY a source when generate failed early.
+RUN (pnpm --filter @repo/database generate || true) \
+	&& mkdir -p packages/database/prisma/generated
+
 FROM base AS builder
 COPY packages ./packages
 COPY config ./config
 COPY agents/langchain/weave-shuttle ./agents/langchain/weave-shuttle
-
-# Provide dummy DATABASE_URL for Prisma client generation
-ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
-RUN pnpm --filter @repo/database generate || true
+COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated
+COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 
 # Bundle the agent with tsup
 RUN pnpm --filter weave-shuttle build
@@ -64,6 +82,7 @@ WORKDIR /app
 
 # Copy workspace configuration for pnpm install
 COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/patches ./patches
 COPY --from=builder /app/tooling ./tooling
 
 # Copy package.json files for all workspace packages (needed for pnpm to resolve workspace deps)

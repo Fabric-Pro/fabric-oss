@@ -29,7 +29,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockUseOrganizationContext,
@@ -138,7 +138,12 @@ function renderPageWithToolbar() {
 }
 
 function renderPage(
-	integrations: Array<{ provider: string; hasCredentials: boolean }> = [],
+	integrations: Array<{
+		provider: string;
+		hasCredentials: boolean;
+		name?: string;
+		connectionState?: "connected" | "needs-reconnect" | "not-connected";
+	}> = [],
 	connectionsState: {
 		data: unknown[];
 		isLoading: boolean;
@@ -173,6 +178,13 @@ beforeEach(() => {
 });
 
 describe("ConnectionsPageContent — Databricks Vector Search catalog card", () => {
+	it("links the Gmail card to provider settings even without an action plugin", async () => {
+		renderPage();
+		expect(
+			await screen.findByRole("link", { name: /Gmail/i }),
+		).toHaveAttribute("href", expect.stringContaining("/providers/GMAIL"));
+	});
+
 	it("renders the Databricks card deep-linking to the actions setup page", async () => {
 		renderPage();
 
@@ -289,6 +301,344 @@ describe("ConnectionsPageContent — Databricks Vector Search catalog card", () 
 
 		await waitFor(() => {
 			expect(screen.getByText("1 actions connected")).toBeInTheDocument();
+		});
+	});
+});
+
+describe("ConnectionsPageContent — GitLab that needs a reconnect", () => {
+	it("shows the GitLab card as needing a reconnect, not as not connected", async () => {
+		renderPage([
+			{
+				provider: "GITLAB",
+				hasCredentials: false,
+				connectionState: "needs-reconnect",
+			},
+		]);
+
+		const link = await screen.findByRole("link", { name: /GitLab/i });
+		await waitFor(() => {
+			expect(within(link).getByText("Reconnect")).toBeInTheDocument();
+		});
+		expect(within(link).getByText("needed")).toBeInTheDocument();
+		expect(
+			within(link).queryByText("Not connected"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows a working GitLab connection without the reconnect chip", async () => {
+		renderPage([
+			{
+				provider: "GITLAB",
+				hasCredentials: true,
+				connectionState: "connected",
+			},
+		]);
+
+		const link = await screen.findByRole("link", { name: /GitLab/i });
+		await waitFor(() => {
+			expect(
+				within(link).queryByText("Not connected"),
+			).not.toBeInTheDocument();
+		});
+		expect(within(link).queryByText("Reconnect")).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Every kind of record that feeds the GitLab tile and the header counts,
+ * each present on its own. The tile and the counts must match the person's
+ * own GitLab state (`connectionState` on their personal row), whatever else
+ * the lists hold.
+ */
+describe("ConnectionsPageContent — GitLab follows the person's own connection", () => {
+	const gitlabTile = async () =>
+		screen.findByRole("link", { name: /GitLab/i });
+	const header = () => screen.getByText(/search connected/).parentElement;
+
+	// The three GitLab rows the integration list returns without a state:
+	// none is the person's connection, and all keep their raw credentials.
+	it.each([
+		["a workflow-scoped GitLab credential", "GitLab (workflow)"],
+		["the GitLab OAuth app row", "GITLAB_OAUTH_APP"],
+		["another member's personal GitLab row", "GitLab: other-member"],
+	])(
+		"shows GitLab as not connected when the only GitLab record is %s",
+		async (_kind, name) => {
+			renderPage([{ provider: "GITLAB", name, hasCredentials: true }]);
+
+			const link = await gitlabTile();
+			await waitFor(() => {
+				expect(
+					within(link).getByText("Not connected"),
+				).toBeInTheDocument();
+			});
+			expect(
+				within(link).queryByText("Partly connected"),
+			).not.toBeInTheDocument();
+			expect(
+				within(link).queryByText("Connected"),
+			).not.toBeInTheDocument();
+			expect(header()).toHaveTextContent("0 actions connected");
+		},
+	);
+
+	it.each([
+		// Actions only, no search source: the tile's existing "partly".
+		["connected", "Partly connected", "1 actions connected"],
+		["not-connected", "Not connected", "0 actions connected"],
+	] as const)(
+		"shows the person's own GitLab row as %s",
+		async (connectionState, label, actions) => {
+			renderPage([
+				{
+					provider: "GITLAB",
+					name: "GitLab: example-user",
+					hasCredentials: connectionState === "connected",
+					connectionState,
+				},
+			]);
+
+			const link = await gitlabTile();
+			await waitFor(() => {
+				expect(within(link).getByText(label)).toBeInTheDocument();
+			});
+			await waitFor(() => {
+				expect(header()).toHaveTextContent(actions);
+			});
+		},
+	);
+
+	it("keeps the person's own state when a workflow-scoped credential is also listed", async () => {
+		renderPage([
+			{
+				provider: "GITLAB",
+				name: "GitLab (workflow)",
+				hasCredentials: true,
+			},
+			{
+				provider: "GITLAB",
+				name: "GitLab: example-user",
+				hasCredentials: false,
+				connectionState: "needs-reconnect",
+			},
+		]);
+
+		const link = await gitlabTile();
+		await waitFor(() => {
+			expect(within(link).getByText("Reconnect")).toBeInTheDocument();
+		});
+		expect(header()).toHaveTextContent("0 actions connected");
+	});
+
+	it("counts only the search sources that can search in the header", async () => {
+		renderPage([], {
+			data: [
+				{
+					id: "dc-1",
+					provider: "NOTION",
+					name: "Notion",
+					status: "EXPIRED",
+				},
+				{
+					id: "dc-2",
+					provider: "GOOGLE_DRIVE",
+					name: "Drive",
+					status: "PENDING",
+				},
+				{
+					id: "dc-3",
+					provider: "GITLAB",
+					name: "GitLab",
+					status: "CONNECTED",
+				},
+				{
+					id: "dc-4",
+					provider: "CONFLUENCE",
+					name: "Confluence",
+					status: "CONNECTED",
+				},
+			],
+			isLoading: false,
+			error: null,
+		});
+
+		await waitFor(() => {
+			expect(header()).toHaveTextContent("1 search connected");
+		});
+	});
+
+	it("counts a GitLab source in the header while the person's GitLab is connected", async () => {
+		renderPage(
+			[
+				{
+					provider: "GITLAB",
+					name: "GitLab: example-user",
+					hasCredentials: true,
+					connectionState: "connected",
+				},
+			],
+			{
+				data: [
+					{
+						id: "dc-3",
+						provider: "GITLAB",
+						name: "GitLab",
+						status: "CONNECTED",
+					},
+				],
+				isLoading: false,
+				error: null,
+			},
+		);
+
+		await waitFor(() => {
+			expect(header()).toHaveTextContent("1 search connected");
+		});
+		const link = await gitlabTile();
+		expect(within(link).getByText("Connected")).toBeInTheDocument();
+	});
+});
+
+describe("ConnectionsPageContent — the GitLab MCP server tiles", () => {
+	const registry = [
+		{
+			id: "srv-gitlab-official",
+			key: "gitlab-official",
+			name: "GitLab (Official)",
+			category: "Developer tools",
+		},
+		{
+			id: "srv-gitlab",
+			key: "gitlab",
+			name: "GitLab MCP",
+			category: "Developer tools",
+		},
+		{
+			id: "srv-other",
+			key: "other-server",
+			name: "Other Server",
+			category: "Developer tools",
+		},
+	];
+	const personalRow = (
+		connectionState: "connected" | "needs-reconnect" | "not-connected",
+	) => ({
+		provider: "GITLAB",
+		name: "GitLab: example-user",
+		hasCredentials: connectionState === "connected",
+		connectionState,
+	});
+	const tile = (name: RegExp) => screen.findByRole("link", { name });
+	afterEach(() => {
+		listMcpRegistryMock.mockReset();
+	});
+
+	it.each([
+		["connected", "Connected"],
+		["needs-reconnect", "Reconnect"],
+		["not-connected", "Not connected"],
+	] as const)(
+		"shows both GitLab servers as the person's GitLab when it is %s",
+		async (connectionState, label) => {
+			listMcpRegistryMock.mockResolvedValue(registry);
+			renderPage([personalRow(connectionState)]);
+
+			for (const name of [/^GitLab \(Official\)/, /^GitLab MCP/]) {
+				const link = await tile(name);
+				await waitFor(() => {
+					expect(within(link).getByText(label)).toBeInTheDocument();
+				});
+			}
+			// Another server's tile carries no status.
+			const other = await tile(/^Other Server/);
+			expect(
+				within(other).getByText("Not connected"),
+			).toBeInTheDocument();
+		},
+	);
+});
+
+describe("ConnectionsPageContent — a source whose grant is gone", () => {
+	const gitlabSource = (status: string) => ({
+		id: "dc-gitlab",
+		provider: "GITLAB",
+		name: "GitLab",
+		status,
+	});
+
+	it("shows a disconnected GitLab with a retained source as not connected, not partly connected", async () => {
+		// After a personal disconnect the GitLab Data Connection stays,
+		// marked EXPIRED, and the person has no GitLab connection.
+		renderPage([], {
+			data: [gitlabSource("EXPIRED")],
+			isLoading: false,
+			error: null,
+		});
+
+		const link = await screen.findByRole("link", { name: /GitLab/i });
+		await waitFor(() => {
+			expect(within(link).getByText("Not connected")).toBeInTheDocument();
+		});
+		expect(
+			within(link).queryByText("Partly connected"),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not count a CONNECTED GitLab source while the person's GitLab is disconnected", async () => {
+		renderPage([], {
+			data: [gitlabSource("CONNECTED")],
+			isLoading: false,
+			error: null,
+		});
+
+		const link = await screen.findByRole("link", { name: /GitLab/i });
+		await waitFor(() => {
+			expect(within(link).getByText("Not connected")).toBeInTheDocument();
+		});
+	});
+
+	it("counts the GitLab source while the person's GitLab is connected", async () => {
+		renderPage(
+			[
+				{
+					provider: "GITLAB",
+					hasCredentials: true,
+					connectionState: "connected",
+				},
+			],
+			{
+				data: [gitlabSource("CONNECTED")],
+				isLoading: false,
+				error: null,
+			},
+		);
+
+		const link = await screen.findByRole("link", { name: /GitLab/i });
+		await waitFor(() => {
+			expect(within(link).getByText("Connected")).toBeInTheDocument();
+		});
+		expect(
+			within(link).queryByText("Not connected"),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not count an expired source for any other provider either", async () => {
+		renderPage([], {
+			data: [
+				{
+					id: "dc-notion",
+					provider: "NOTION",
+					name: "Notion",
+					status: "EXPIRED",
+				},
+			],
+			isLoading: false,
+			error: null,
+		});
+
+		const link = await screen.findByRole("link", { name: /^Notion/i });
+		await waitFor(() => {
+			expect(within(link).getByText("Not connected")).toBeInTheDocument();
 		});
 	});
 });

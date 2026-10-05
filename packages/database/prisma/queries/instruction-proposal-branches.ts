@@ -26,6 +26,7 @@ import type {
 	ProjectInstructionPullRequestState,
 } from "../generated/client";
 import { type RecordAuditInput, recordAuditTx } from "./audit-log";
+import { migrationOfSettings } from "./instruction-migration-pointer";
 import {
 	acceptsAppends,
 	type EvidenceOp,
@@ -1490,7 +1491,14 @@ type SyncDestinationRow = {
 	sourceOfTruth: string | null;
 };
 
-/** The project's current destination, with its sync row locked `FOR SHARE` (§4.7 step 1). */
+/**
+ * The project's current destination, with its sync row locked `FOR SHARE`
+ * (§4.7 step 1). While a move from uploads into the repository is
+ * `PROPOSING` (Fizzy #2878 §9) its sync row is the destination although
+ * `sourceOfTruth` is still UPLOAD: the move's pull request is a member
+ * branch proposal like any other. The pointer must name this very row, so a
+ * stale pointer never lends a destination to another one.
+ */
 async function lockCurrentDestination(
 	tx: Prisma.TransactionClient,
 	i: { projectId: string; organizationId: string },
@@ -1499,7 +1507,13 @@ async function lockCurrentDestination(
 	const [sync] = await tx.$queryRaw<SyncDestinationRow[]>`
 		SELECT s."id", s."repositoryIntegrationId", s."ref", s."rootPath",
 			ri."projectId" AS "integrationProjectId", ri."provider"::text AS "provider",
-			ri."repositoryUrl", p."instructionSettings"->>'sourceOfTruth' AS "sourceOfTruth"
+			ri."repositoryUrl",
+			CASE
+				WHEN p."instructionSettings"->'migration'->>'state' = 'PROPOSING'
+					AND p."instructionSettings"->'migration'->>'syncId' = s."id"
+				THEN 'REPOSITORY'
+				ELSE p."instructionSettings"->>'sourceOfTruth'
+			END AS "sourceOfTruth"
 		FROM "project_instruction_repository_sync" s
 		JOIN "project" p ON p."id" = s."projectId"
 		LEFT JOIN "project_repository_integration" ri ON ri."id" = s."repositoryIntegrationId"
@@ -3410,11 +3424,20 @@ export async function listMemberBranchWrites(i: {
 	}));
 }
 
-/** The names the branch's presentation is rendered from (spec §6.1, Decision 13). */
+/**
+ * The names the branch's presentation is rendered from (spec §6.1, Decision
+ * 13), and whether the branch carries a move from uploads into the repository
+ * (Fizzy #2878 §9): the project's open move names a proposal that is on this
+ * branch, so its pull request says what it is for.
+ */
 export async function getBranchPresentationInputs(i: {
 	branchId: string;
 	organizationId: string;
-}): Promise<{ memberName: string | null; projectName: string | null } | null> {
+}): Promise<{
+	memberName: string | null;
+	projectName: string | null;
+	migration: boolean;
+} | null> {
 	const branch = await db.projectInstructionProposalBranch.findFirst({
 		where: { id: i.branchId, organizationId: i.organizationId },
 		select: { userId: true, projectId: true },
@@ -3429,12 +3452,25 @@ export async function getBranchPresentationInputs(i: {
 		}),
 		db.project.findFirst({
 			where: { id: branch.projectId, organizationId: i.organizationId },
-			select: { name: true },
+			select: { name: true, instructionSettings: true },
 		}),
 	]);
+	const pointer = migrationOfSettings(project?.instructionSettings);
+	const migration =
+		pointer !== null &&
+		pointer.snapshotId !== null &&
+		(await db.projectInstructionSnapshot.count({
+			where: {
+				id: pointer.snapshotId,
+				projectId: branch.projectId,
+				organizationId: i.organizationId,
+				proposalBranchId: i.branchId,
+			},
+		})) > 0;
 	return {
 		memberName: user?.name ?? null,
 		projectName: project?.name ?? null,
+		migration,
 	};
 }
 

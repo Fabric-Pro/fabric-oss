@@ -135,6 +135,28 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chain,
 		protectedProcedure: chain,
 		requirePermission: () => (handler: unknown) => handler,
+		// The real resolver's rule for the organization a request names (the
+		// input's, else the session's; an explicit null suppresses the session
+		// fallback; none refused when required). Membership and role are
+		// exercised for real in gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		requireInputOrgPermission: () => (handler: unknown) => handler,
 		requireOrganizationMembership: vi.fn(),
 		resolveOrganizationIdForCaller: vi.fn(),
@@ -144,6 +166,9 @@ vi.mock("../../../../orpc/procedures", () => {
 
 import { gitlabOAuthProcedures } from "../../procedures/gitlab-oauth";
 
+// Each call names an organization: re-checking with none is refused before
+// the helper runs (gitlab-request-authorization.test.ts covers that and the
+// membership check), and these tests are about mapping the helper's errors.
 const baseCtx = {
 	user: { id: "user-1" },
 	session: { id: "session-1", activeOrganizationId: null },
@@ -175,7 +200,7 @@ describe("integrations.gitlab.recheckCapabilities — error mapping", () => {
 
 		await expect(
 			getRecheckHandler()({
-				input: { organizationId: null },
+				input: { organizationId: "org-1" },
 				context: baseCtx,
 			}),
 		).rejects.toMatchObject({
@@ -196,7 +221,7 @@ describe("integrations.gitlab.recheckCapabilities — error mapping", () => {
 
 		await expect(
 			getRecheckHandler()({
-				input: { organizationId: null },
+				input: { organizationId: "org-1" },
 				context: baseCtx,
 			}),
 		).rejects.toMatchObject({
@@ -213,7 +238,7 @@ describe("integrations.gitlab.recheckCapabilities — error mapping", () => {
 
 		await expect(
 			getRecheckHandler()({
-				input: { organizationId: null },
+				input: { organizationId: "org-1" },
 				context: baseCtx,
 			}),
 		).rejects.toBe(original);
@@ -232,7 +257,7 @@ describe("integrations.gitlab.recheckCapabilities — error mapping", () => {
 		mockRecheckGitlabCapabilities.mockResolvedValue(expected);
 
 		const result = await getRecheckHandler()({
-			input: { organizationId: null },
+			input: { organizationId: "org-1" },
 			context: baseCtx,
 		});
 		expect(result).toEqual(expected);

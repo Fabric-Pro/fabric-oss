@@ -224,6 +224,9 @@ async function applyRLS() {
 			{ name: "registered_agent_suggestion", policy: "user_owned" }, // USER/ORG agent suggestion state
 			{ name: "workflow", policy: "user_owned" },
 			{ name: "workflow_execution", policy: "user_owned" },
+			// Tenant floor only: credential readers additionally enforce owner-only or
+			// explicit ORGANIZATION_SHARED usage scope and current membership. The
+			// floor also serves OAuth app configuration and admin metadata reads.
 			{ name: "workflow_integration", policy: "user_owned" },
 			{ name: "workflow_version", policy: "user_owned" }, // Workflow version history
 			{ name: "workflow_api_key", policy: "user_owned" }, // API keys for workflows

@@ -8,6 +8,12 @@
  *
  * Only providers that share the same OAuth app across both paths are
  * supported (currently GITHUB).
+ *
+ * GitLab is the exception to the token copy: a GitLab Data Connection holds
+ * no token (see `lib/gitlab-data-connection.ts`). Linking it only checks that
+ * the caller has a usable GitLab connection and marks the Data Connection
+ * connected; each sync then acts with the GitLab connection of the person
+ * who starts it.
  */
 
 import { ORPCError } from "@orpc/client";
@@ -18,6 +24,7 @@ import {
 	type Prisma,
 	updateDataConnection,
 } from "@repo/database";
+import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -26,7 +33,9 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { authorizeGitLabTenant } from "../../integrations/lib/gitlab-request-tenant";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { GITLAB_DATA_CONNECTION_CLEARED_TOKENS } from "../lib/gitlab-data-connection";
 import { toClientConnection } from "../lib/serialize-connection";
 
 /**
@@ -123,6 +132,25 @@ export const linkFromWorkflowIntegrationProcedure = tenantProtectedProcedure
 		}
 
 		const orgIdForQuery = organizationId ?? null;
+
+		if (providerInfo.dataConnectionProvider === "GITLAB") {
+			// The person's GitLab connection is read (and can be classified) in
+			// this tenant, and the Data Connection is written there: resolve
+			// and authorize the target first — ORG_DATA_CONNECTIONS_MANAGE in
+			// the organization the request resolves to, not only the
+			// session's, and no organization refused (ADR-018).
+			const tenant = await authorizeGitLabTenant(
+				Permissions.ORG_DATA_CONNECTIONS_MANAGE,
+				input.organizationId,
+				context,
+			);
+			return linkGitLabDataConnection({
+				userId: tenant.userId,
+				organizationId: tenant.organizationId,
+				name: input.name,
+				config: input.config,
+			});
+		}
 
 		// Look up the existing workflow integration for this provider
 		const workflowIntegration = await db.workflowIntegration.findFirst({
@@ -222,3 +250,67 @@ export const linkFromWorkflowIntegrationProcedure = tenantProtectedProcedure
 
 		return { connection: toClientConnection(connection) };
 	});
+
+/**
+ * Link the GitLab Data Connection without copying a token. The caller must
+ * have a usable personal GitLab connection in this tenant (the connection
+ * service's exclusive `(userId, organizationId)` lookup). An existing row keeps
+ * its stored `config` unless the caller sends one, and any legacy token copy
+ * on it is cleared.
+ */
+async function linkGitLabDataConnection(input: {
+	userId: string;
+	organizationId: string | null;
+	name: string;
+	config: Record<string, unknown> | undefined;
+}) {
+	const usable = await findUsableGitLabConnection({
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+	if (!usable) {
+		throw new ORPCError("NOT_FOUND", {
+			message:
+				"No active GitLab connection found. Connect GitLab for actions first.",
+		});
+	}
+
+	const existing = await getDataConnectionByProvider({
+		provider: "GITLAB",
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+
+	if (existing) {
+		await updateDataConnection({
+			id: existing.id,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			data: {
+				name: input.name,
+				status: "CONNECTED",
+				...GITLAB_DATA_CONNECTION_CLEARED_TOKENS,
+				...(input.config !== undefined && {
+					config: input.config as Prisma.InputJsonValue,
+				}),
+			},
+		});
+		const updated = await getDataConnectionByProvider({
+			provider: "GITLAB",
+			userId: input.userId,
+			organizationId: input.organizationId,
+		});
+		return { connection: toClientConnection(updated) };
+	}
+
+	const connection = await createDataConnection({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		provider: "GITLAB",
+		name: input.name,
+		createdBy: input.userId,
+		config: (input.config ?? {}) as Prisma.InputJsonValue,
+		status: "CONNECTED",
+	});
+	return { connection: toClientConnection(connection) };
+}

@@ -1,4 +1,15 @@
-import type { SyncCursor } from "../../../workflows/connector-sync/types";
+import { gitlabOutboundFetch } from "@repo/integrations/gitlab";
+import { ApplicationFailure } from "@temporalio/common";
+import {
+	GITLAB_SYNC_ACCESS_DENIED,
+	GITLAB_SYNC_CONNECTION_REQUIRED,
+	GITLAB_SYNC_RESOURCE_FORBIDDEN,
+	type SyncCursor,
+} from "../../../workflows/connector-sync/types";
+import {
+	type GitLabSyncActor,
+	resolveGitLabSyncCredential,
+} from "./gitlab-credential";
 import type { ConnectorCredentials, Document, Resource } from "./types";
 
 interface GitHubSyncConfig {
@@ -42,13 +53,6 @@ function buildGithubHeaders(token: string) {
 		"X-GitHub-Api-Version": "2022-11-28",
 		"User-Agent": "Fabric-App",
 	};
-}
-
-function normalizeGitLabApiBaseUrl(baseUrl?: string): string {
-	const normalized = (baseUrl ?? "https://gitlab.com/api/v4")
-		.trim()
-		.replace(/\/+$/, "");
-	return normalized.endsWith("/api/v4") ? normalized : `${normalized}/api/v4`;
 }
 
 function buildGitLabHeaders(token: string) {
@@ -108,22 +112,59 @@ async function fetchBitbucketJson<T>(input: {
 	return (await response.json()) as T;
 }
 
+/**
+ * A GitLab REST call with the acting person's credential: only to the
+ * credential's own instance (`apiBase` comes from
+ * `resolveGitLabSyncCredential`), through the guarded GitLab fetch, and never
+ * following a redirect.
+ *
+ * GitLab refusing the credential is a typed, non-retryable failure, never a
+ * plain error the sync could skip past:
+ *   - 401 (token revoked, expired or replaced): the whole sync stops and asks
+ *     the person to reconnect GitLab;
+ *   - 403 on an account-level call (`scope: "account"` — the `/user` check,
+ *     project discovery): the whole sync stops;
+ *   - 403 on one project's issues or merge requests (`scope: "resource"`):
+ *     only that resource fails. GitLab answers 403 there when the project
+ *     has that feature switched off or the person's role on that one project
+ *     does not allow it, which says nothing about the other projects.
+ */
 async function fetchGitLabJson<T>(input: {
 	token: string;
-	baseUrl?: string;
+	apiBase: string;
 	path: string;
 	query?: Record<string, string>;
+	scope: "account" | "resource";
 }): Promise<T> {
 	const queryString = input.query
 		? `?${new URLSearchParams(input.query).toString()}`
 		: "";
-	const response = await fetch(
-		`${normalizeGitLabApiBaseUrl(input.baseUrl)}${input.path}${queryString}`,
+	const response = await gitlabOutboundFetch(
+		`${input.apiBase}${input.path}${queryString}`,
 		{
 			headers: buildGitLabHeaders(input.token),
+			redirect: "error",
 		},
 	);
 
+	if (response.status === 401) {
+		throw ApplicationFailure.nonRetryable(
+			"GitLab rejected your GitLab connection (401): it was revoked or has expired. Reconnect your GitLab account, then sync again.",
+			GITLAB_SYNC_CONNECTION_REQUIRED,
+		);
+	}
+	if (response.status === 403) {
+		if (input.scope === "account") {
+			throw ApplicationFailure.nonRetryable(
+				"GitLab refused your GitLab account access (403). Check that your account is active and that your connection grants API access, then reconnect GitLab.",
+				GITLAB_SYNC_ACCESS_DENIED,
+			);
+		}
+		throw ApplicationFailure.nonRetryable(
+			`Your GitLab account cannot read ${input.path} (403): the project may have this feature switched off, or your role on it does not allow it.`,
+			GITLAB_SYNC_RESOURCE_FORBIDDEN,
+		);
+	}
 	if (!response.ok) {
 		throw new Error(
 			`GitLab API error ${response.status} for ${input.path}`,
@@ -322,27 +363,30 @@ function buildBitbucketWorkItemDocument(params: {
 	};
 }
 
-export async function testGitLabConnection(
-	credentials: ConnectorCredentials,
-): Promise<boolean> {
-	const token = credentials.accessToken ?? credentials.apiKey;
-	if (!token) {
-		return false;
-	}
-
-	try {
-		await fetchGitLabJson({
-			token,
-			path: "/user",
-			baseUrl:
-				typeof credentials.baseUrl === "string"
-					? credentials.baseUrl
-					: undefined,
-		});
-		return true;
-	} catch {
-		return false;
-	}
+/**
+ * GitLab connections are checked with the acting person's own connection,
+ * against the connection's configured GitLab address when it has one (a
+ * sub-path install's `/gitlab/api/v4`), which must be on the credential's
+ * instance. Every failure is thrown with its reason rather than folded into
+ * `false`: a missing connection, a refused address and a rejected `/user`
+ * call are typed non-retryable failures (see `fetchGitLabJson`); anything
+ * else (5xx, network) is a plain error the activity retries.
+ */
+export async function testGitLabConnection(input: {
+	actor: GitLabSyncActor;
+	providerConfig?: Record<string, unknown>;
+}): Promise<boolean> {
+	const gitlabConfig = (input.providerConfig ?? {}) as GitLabSyncConfig;
+	const credential = await resolveGitLabSyncCredential(input.actor, [
+		gitlabConfig.baseUrl,
+	]);
+	await fetchGitLabJson({
+		token: credential.token,
+		apiBase: credential.apiBase,
+		path: "/user",
+		scope: "account",
+	});
+	return true;
 }
 
 export async function testBitbucketConnection(
@@ -510,19 +554,14 @@ export async function discoverGitHubResources(input: {
 }
 
 export async function discoverGitLabResources(input: {
-	credentials: ConnectorCredentials;
+	actor: GitLabSyncActor;
 	providerConfig: Record<string, unknown>;
 }): Promise<Resource[]> {
-	const token = input.credentials.accessToken ?? input.credentials.apiKey;
-	if (!token) {
-		throw new Error("GitLab access token is required");
-	}
-
 	const gitlabConfig = input.providerConfig as GitLabSyncConfig;
-	const baseUrl =
-		typeof gitlabConfig.baseUrl === "string"
-			? gitlabConfig.baseUrl
-			: undefined;
+	const credential = await resolveGitLabSyncCredential(input.actor, [
+		gitlabConfig.baseUrl,
+	]);
+	const apiBase = credential.apiBase;
 	const configuredProjects = gitlabConfig.projects?.filter(Boolean);
 
 	if (configuredProjects && configuredProjects.length > 0) {
@@ -530,10 +569,10 @@ export async function discoverGitLabResources(input: {
 			id: projectPath,
 			name: projectPath,
 			type: "gitlab-project",
-			path: `${normalizeGitLabApiBaseUrl(baseUrl).replace(/\/api\/v4$/, "")}/${projectPath}`,
+			path: `${apiBase.replace(/\/api\/v4$/, "")}/${projectPath}`,
 			metadata: {
 				fullPath: projectPath,
-				baseUrl: normalizeGitLabApiBaseUrl(baseUrl),
+				baseUrl: apiBase,
 			},
 		}));
 	}
@@ -558,10 +597,11 @@ export async function discoverGitLabResources(input: {
 			path_with_namespace: string;
 		}>
 	>({
-		token,
-		baseUrl,
+		token: credential.token,
+		apiBase,
 		path: "/projects",
 		query,
+		scope: "account",
 	});
 
 	return projects
@@ -580,7 +620,7 @@ export async function discoverGitLabResources(input: {
 			metadata: {
 				fullPath: project.path_with_namespace,
 				projectId: project.id,
-				baseUrl: normalizeGitLabApiBaseUrl(baseUrl),
+				baseUrl: apiBase,
 			},
 		}));
 }
@@ -814,27 +854,26 @@ export async function fetchGitHubResourceDocuments(input: {
 
 export async function fetchGitLabResourceDocuments(input: {
 	resource: Resource;
-	credentials: ConnectorCredentials;
+	actor: GitLabSyncActor;
 	providerConfig?: Record<string, unknown>;
 	cursor?: SyncCursor;
 	batchSize: number;
 	syncType: "full" | "incremental" | "gc";
 }): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
-	const token = input.credentials.accessToken ?? input.credentials.apiKey;
-	if (!token) {
-		throw new Error("GitLab access token is required");
-	}
-
 	const gitlabConfig = (input.providerConfig ?? {}) as GitLabSyncConfig;
+	// The resource's recorded base URL (from discovery) and the connection's
+	// configured one must both be on the credential's instance.
+	const credential = await resolveGitLabSyncCredential(input.actor, [
+		input.resource.metadata?.baseUrl,
+		gitlabConfig.baseUrl,
+	]);
+	const token = credential.token;
+	const baseUrl = credential.apiBase;
 	const projectPath =
 		(typeof input.resource.metadata?.fullPath === "string" &&
 			input.resource.metadata.fullPath) ||
 		input.resource.id;
 	const encodedProjectPath = encodeURIComponent(projectPath);
-	const baseUrl =
-		typeof input.resource.metadata?.baseUrl === "string"
-			? input.resource.metadata.baseUrl
-			: gitlabConfig.baseUrl;
 	const updatedAfter =
 		input.syncType === "incremental"
 			? input.cursor?.lastSyncedAt
@@ -856,8 +895,9 @@ export async function fetchGitLabResourceDocuments(input: {
 			}>
 		>({
 			token,
-			baseUrl,
+			apiBase: baseUrl,
 			path: `/projects/${encodedProjectPath}/issues`,
+			scope: "resource",
 			query: {
 				state: "all",
 				per_page: String(input.batchSize),
@@ -891,8 +931,9 @@ export async function fetchGitLabResourceDocuments(input: {
 			}>
 		>({
 			token,
-			baseUrl,
+			apiBase: baseUrl,
 			path: `/projects/${encodedProjectPath}/merge_requests`,
+			scope: "resource",
 			query: {
 				state: "all",
 				per_page: String(input.batchSize),

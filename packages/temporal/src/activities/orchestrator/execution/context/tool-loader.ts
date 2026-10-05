@@ -8,7 +8,10 @@
 import { tool } from "@repo/ai";
 import { db } from "@repo/database";
 import { executeGitHubTool } from "@repo/integrations/github";
-import { executeGitLabTool } from "@repo/integrations/gitlab";
+import {
+	executeGitLabTool,
+	findUsableGitLabConnection,
+} from "@repo/integrations/gitlab";
 import { executeSlackTool } from "@repo/integrations/slack";
 import {
 	getCachedMcpClientForConfig,
@@ -557,26 +560,15 @@ async function loadOAuthIntegrationTools(
 		}
 	}
 
-	// Check for GitLab integration (uses XOR pattern for tenant isolation)
-	const gitlabIntegration = organizationId
-		? await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			})
-		: await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId: null,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			});
+	// The caller's own GitLab connection (exclusive tenant: the
+	// (userId, organizationId) connection, or (userId, null) in personal
+	// context). The connection service reports a reconnect-required one as
+	// unusable, so its tools are not offered; a legacy `gitlab-official` MCP
+	// token copy is not a connection.
+	const gitlabIntegration = await findUsableGitLabConnection({
+		userId,
+		organizationId: organizationId ?? null,
+	});
 
 	if (gitlabIntegration) {
 		try {

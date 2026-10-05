@@ -14,7 +14,11 @@
  * @see https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools
  */
 
-import { getMcpConfigById, getMcpConfigCachedTools } from "@repo/database";
+import {
+	getMcpConfigById,
+	getMcpConfigCachedTools,
+	isGitLabPersonalMcpServerKey,
+} from "@repo/database";
 import {
 	closeMcpClient,
 	createMcpClientForConfig,
@@ -22,11 +26,12 @@ import {
 } from "@repo/mcp";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { gitlabMcpConnectionBlocker } from "../lib/gitlab-connection-gate";
 
 export const listToolsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.MCP_READ))
@@ -129,11 +134,17 @@ export const listToolsProcedure = tenantProtectedProcedure
 			error: string;
 		}> = [];
 
-		// Use resolveOrganizationId for proper tenant isolation
-		// This handles: explicit string (org context), null (personal context), undefined (session fallback)
-		const organizationId = resolveOrganizationId(
+		// The organization this request resolves to (the input's, else a
+		// guest write organization, else the session's), with the caller's
+		// membership and role there checked before any GitLab connection read
+		// below (which can classify, and so write, a connection row there).
+		// Every lookup below uses this returned value, so authorization and
+		// the reads cannot target different organizations. No organization
+		// passes through; the GitLab gate then only inspects.
+		const organizationId = await authorizeInputOrganization(
+			Permissions.MCP_READ,
 			input.organizationId,
-			context.session,
+			context,
 		);
 
 		for (const serverId of input.serverIds) {
@@ -176,6 +187,27 @@ export const listToolsProcedure = tenantProtectedProcedure
 						serverName,
 						error: "MCP server is disabled",
 					});
+					continue;
+				}
+
+				// GitLab personal servers: the person's GitLab connection
+				// decides, not this config's (legacy) token columns. Checked
+				// BEFORE the cache: tools cached while GitLab was connected
+				// must not be served after a disconnect (or while it needs
+				// reconnecting) just because the request did not force a
+				// refresh.
+				// Keyed on the server, not `authType`: an API-key GitLab
+				// config is gated the same way.
+				const gitlabBlocker = isGitLabPersonalMcpServerKey(
+					mcpServer?.key,
+				)
+					? await gitlabMcpConnectionBlocker({
+							userId: context.user.id,
+							organizationId,
+						})
+					: undefined;
+				if (gitlabBlocker) {
+					errors.push({ serverId, serverName, error: gitlabBlocker });
 					continue;
 				}
 
@@ -245,7 +277,10 @@ export const listToolsProcedure = tenantProtectedProcedure
 				const transport = configTransport || serverTransport || "HTTP";
 
 				// For OAuth2 servers, check if we have valid tokens before attempting to connect
-				if (mcpConfig.authType === "OAUTH2") {
+				if (
+					mcpConfig.authType === "OAUTH2" &&
+					gitlabBlocker === undefined
+				) {
 					if (!mcpConfig.encryptedAccessToken) {
 						console.log(
 							`[MCP Tools] Skipping OAuth2 server ${serverName} - not yet authenticated`,
@@ -314,6 +349,9 @@ export const listToolsProcedure = tenantProtectedProcedure
 						configId: serverId,
 						userId,
 						organizationId,
+						// The same MCP_READ this procedure requires: it only
+						// lists the server's tools.
+						access: "read",
 					});
 					mcpClient = clientResult.client;
 				} catch (clientError) {

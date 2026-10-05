@@ -196,6 +196,51 @@ export async function canExecuteOrganizationAgents(
 }
 
 /**
+ * Returns `true` if `userId` may read through their MCP configs in
+ * `organizationId` — list a server's tools or resources, read a resource, but
+ * not execute a tool — matching `requirePermission(MCP_READ)` on the oRPC tool and resource
+ * listings.
+ *
+ * Asked by the Next.js routes that run a stored MCP config (Fizzy #2897). The
+ * config row and its token outlive its owner's membership, so the owner match
+ * on the config lookup says nothing about whether they may still use it.
+ */
+export async function canReadOrganizationMcpConfigs(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.MCP_READ,
+	);
+}
+
+/**
+ * Returns `true` if `userId` may execute tools through their MCP configs in
+ * `organizationId`, matching `requirePermission(MCP_CONNECT)` on
+ * `mcp.executeTool`.
+ *
+ * This is the question for executing ANY tool, including one that only reads
+ * (a board or column lookup): the permission follows the protocol operation,
+ * not what the tool happens to do.
+ *
+ * Separate from the read question because the matrix separates them: a viewer
+ * holds `MCP_READ` but not `MCP_CONNECT`, so collapsing the two would let a
+ * viewer run tools on a route that the oRPC procedure refuses them.
+ */
+export async function canConnectOrganizationMcpConfigs(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.MCP_CONNECT,
+	);
+}
+
+/**
  * Returns `true` if `userId` may start a workflow run in `organizationId`,
  * matching `requirePermission(WORKSPACE_UPDATE)` on the in-app start.
  *

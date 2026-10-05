@@ -29,6 +29,11 @@ import type {
 } from "../generated/client";
 import { recordAuditTx } from "./audit-log";
 import {
+	InstructionMigrationOpenError,
+	type InstructionMigrationPointer,
+	migrationOfSettings,
+} from "./instruction-migration-pointer";
+import {
 	type InstructionSyncLimitDetail,
 	parseInstructionSyncLimitDetail,
 } from "./instruction-sync-limit-detail";
@@ -74,6 +79,14 @@ export type InstructionSyncError =
 	| "CONFIGURATION_CHANGED"
 	| "TREE_REFUSED";
 export type InstructionSyncPause = "PERMISSION_REVOKED" | "REF_MISSING";
+
+/**
+ * Everything a sync row's `automaticPausedReason` can hold: the pauses a sync
+ * run or poll writes, and `MIGRATING`, set for the whole of a move from
+ * uploads into the repository (Fizzy #2878 §9) by the move's own writers
+ * only. The context sync shares the run-written half, not this one.
+ */
+export type InstructionSyncPausedReason = InstructionSyncPause | "MIGRATING";
 export { type InstructionSyncLimitDetail, parseInstructionSyncLimitDetail };
 
 type SourceOfTruth = "UPLOAD" | "REPOSITORY";
@@ -156,11 +169,23 @@ export async function writeProjectInstructionSettings(
 	tx: Prisma.TransactionClient,
 	projectId: string,
 	organizationId: string,
-	patch: { ignoreGlobs?: string[] | null; sourceOfTruth?: SourceOfTruth },
+	patch: {
+		ignoreGlobs?: string[] | null;
+		sourceOfTruth?: SourceOfTruth;
+		/**
+		 * The move-from-uploads pointer (Fizzy #2878 §9): written whole, or
+		 * `null` to remove the key. Written only by the migration functions in
+		 * `./instruction-migration` and by the two writers below that end a
+		 * sync row's life.
+		 */
+		migration?: InstructionMigrationPointer | null;
+	},
 ): Promise<{
 	written: boolean;
 	syncGenerationBumped: boolean;
 	ignoreGlobsChanged: boolean;
+	/** The move's pointer as the lock found it, before this write; null when no move was open. */
+	previousMigration: InstructionMigrationPointer | null;
 }> {
 	const rows = await tx.$queryRaw<Array<{ instructionSettings: unknown }>>`
 		SELECT "instructionSettings"
@@ -174,6 +199,7 @@ export async function writeProjectInstructionSettings(
 			written: false,
 			syncGenerationBumped: false,
 			ignoreGlobsChanged: false,
+			previousMigration: null,
 		};
 	}
 	const current: InstructionSettingsRecord =
@@ -182,14 +208,27 @@ export async function writeProjectInstructionSettings(
 		!Array.isArray(row.instructionSettings)
 			? (row.instructionSettings as InstructionSettingsRecord)
 			: {};
+	const previousMigration = migrationOfSettings(current);
+	if (
+		previousMigration !== null &&
+		patch.migration === undefined &&
+		(patch.ignoreGlobs !== undefined || patch.sourceOfTruth !== undefined)
+	) {
+		// The freeze (Fizzy #2878 §9), decided under the lock: while a move
+		// from uploads is open, only the move's own writers (which name the
+		// pointer in their patch) may change the source of truth or the ignore
+		// rules. A configure that read the settings before the move started
+		// and gets here after it committed would otherwise replace the sync
+		// row the move created and flip the project under its pull request.
+		throw new InstructionMigrationOpenError(previousMigration);
+	}
+	const next: InstructionSettingsRecord = { ...current, ...patch };
+	if (patch.migration === null) {
+		delete next.migration;
+	}
 	await tx.project.update({
 		where: { id: projectId, organizationId },
-		data: {
-			instructionSettings: {
-				...current,
-				...patch,
-			} as Prisma.InputJsonValue,
-		},
+		data: { instructionSettings: next as Prisma.InputJsonValue },
 	});
 	let syncGenerationBumped = false;
 	const ignoreGlobsChanged =
@@ -212,7 +251,12 @@ export async function writeProjectInstructionSettings(
 		});
 		syncGenerationBumped = count > 0;
 	}
-	return { written: true, syncGenerationBumped, ignoreGlobsChanged };
+	return {
+		written: true,
+		syncGenerationBumped,
+		ignoreGlobsChanged,
+		previousMigration,
+	};
 }
 
 /**
@@ -314,6 +358,39 @@ export function getInstructionRepositorySync(
 	return db.projectInstructionRepositorySync.findFirst({
 		where: { projectId, organizationId },
 		select: syncViewSelect,
+	});
+}
+
+/**
+ * The repository syncs configured on any of these integrations, oldest first,
+ * with the project's name and the hosting organization's slug a checkout
+ * resolver shows (Fizzy #2878).
+ *
+ * UNSCOPED by design: the caller holds integration ids that a repository URL
+ * matched, not a tenant, and must put every row through the per-project read
+ * gate before it reveals anything about it. `limit` bounds what one request
+ * can pull in when a URL is connected to many projects.
+ */
+export async function listInstructionSyncsByIntegrationIds(
+	integrationIds: string[],
+	limit: number,
+) {
+	if (integrationIds.length === 0) {
+		return [];
+	}
+	return db.projectInstructionRepositorySync.findMany({
+		where: { repositoryIntegrationId: { in: integrationIds } },
+		orderBy: { createdAt: "asc" },
+		take: limit,
+		select: {
+			projectId: true,
+			organizationId: true,
+			repositoryIntegrationId: true,
+			ref: true,
+			rootPath: true,
+			project: { select: { name: true } },
+			organization: { select: { slug: true } },
+		},
 	});
 }
 
@@ -440,7 +517,15 @@ export function getInstructionRepositorySyncForProposal(
  * configures of one project, including two first configures, still
  * serialize on the project row lock, so the second sees the first's row.
  */
-export async function upsertInstructionRepositorySync(input: {
+export function upsertInstructionRepositorySync(
+	input: UpsertInstructionRepositorySyncInput,
+) {
+	return db.$transaction((tx) =>
+		upsertInstructionRepositorySyncWithin(tx, input),
+	);
+}
+
+export type UpsertInstructionRepositorySyncInput = {
 	projectId: string;
 	organizationId: string;
 	userId: string;
@@ -449,130 +534,154 @@ export async function upsertInstructionRepositorySync(input: {
 	rootPath: string;
 	automatic?: boolean;
 	ignoreGlobs?: string[] | null;
-}) {
-	return db.$transaction(async (tx) => {
-		const written = await writeProjectInstructionSettings(
-			tx,
-			input.projectId,
-			input.organizationId,
-			{
-				sourceOfTruth: "REPOSITORY",
-				...(input.ignoreGlobs === undefined
-					? {}
-					: { ignoreGlobs: input.ignoreGlobs }),
-			},
-		);
-		if (!written.written) {
-			return null;
-		}
-		const [existing] = await tx.$queryRaw<
-			Array<{
-				id: string;
-				ref: string;
-				rootPath: string;
-				repositoryIntegrationId: string;
-				automatic: boolean;
-				now: Date;
-			}>
-		>`
+	/**
+	 * Leave `sourceOfTruth` as it is instead of flipping it to REPOSITORY:
+	 * the row is created for a move from uploads into the repository (Fizzy
+	 * #2878 §9), where uploads stay the source until the move's pull request
+	 * merges.
+	 */
+	keepSourceOfTruth?: boolean;
+	/**
+	 * The pause the row is created, or re-pointed, with instead of none:
+	 * `MIGRATING` holds every automatic run until the move completes.
+	 */
+	automaticPausedReason?: "MIGRATING";
+};
+
+/**
+ * The body of `upsertInstructionRepositorySync` for a caller that already
+ * holds the transaction and has taken the project row's lock first (a move
+ * from uploads checks the project's settings under that lock, then creates
+ * the row in the same transaction). Same lock order, same rules.
+ */
+export async function upsertInstructionRepositorySyncWithin(
+	tx: Prisma.TransactionClient,
+	input: UpsertInstructionRepositorySyncInput,
+) {
+	const written = await writeProjectInstructionSettings(
+		tx,
+		input.projectId,
+		input.organizationId,
+		{
+			...(input.keepSourceOfTruth === true
+				? {}
+				: { sourceOfTruth: "REPOSITORY" as const }),
+			...(input.ignoreGlobs === undefined
+				? {}
+				: { ignoreGlobs: input.ignoreGlobs }),
+		},
+	);
+	if (!written.written) {
+		return null;
+	}
+	const [existing] = await tx.$queryRaw<
+		Array<{
+			id: string;
+			ref: string;
+			rootPath: string;
+			repositoryIntegrationId: string;
+			automatic: boolean;
+			now: Date;
+		}>
+	>`
 			SELECT "id", "ref", "rootPath", "repositoryIntegrationId", "automatic", (clock_timestamp() AT TIME ZONE 'UTC') AS "now"
 			FROM "project_instruction_repository_sync"
 			WHERE "projectId" = ${input.projectId}
 				AND "organizationId" = ${input.organizationId}
 			FOR UPDATE
 		`;
-		const select = {
-			id: true,
-			generation: true,
-			repositoryIntegrationId: true,
-			ref: true,
-			rootPath: true,
-			automatic: true,
-		} as const;
-		const previous = existing
-			? {
-					ref: existing.ref,
-					rootPath: existing.rootPath,
-					repositoryIntegrationId: existing.repositoryIntegrationId,
-				}
-			: null;
+	const select = {
+		id: true,
+		generation: true,
+		repositoryIntegrationId: true,
+		ref: true,
+		rootPath: true,
+		automatic: true,
+	} as const;
+	const previous = existing
+		? {
+				ref: existing.ref,
+				rootPath: existing.rootPath,
+				repositoryIntegrationId: existing.repositoryIntegrationId,
+			}
+		: null;
 
-		// What is synced is unchanged: keep the generation and the cursors
-		// bound to it, and date the due time on the lock's clock so a held
-		// poll lease still ends (Fizzy #2744).
-		if (
-			existing &&
-			!written.ignoreGlobsChanged &&
-			existing.repositoryIntegrationId ===
-				input.repositoryIntegrationId &&
-			existing.ref === input.ref &&
-			existing.rootPath === input.rootPath
-		) {
-			const sync = await tx.projectInstructionRepositorySync.update({
-				where: { id: existing.id },
-				data: {
-					userId: input.userId,
-					automatic: input.automatic ?? existing.automatic,
-					automaticPausedReason: null,
-					automaticPausedAt: null,
-					failureCount: 0,
-					nextCheckAt: existing.now,
-				},
-				select,
-			});
-			return {
-				sync,
-				previous,
-				ignoreGlobsChanged: written.ignoreGlobsChanged,
-			};
-		}
-
-		// A first configure, or a change of what is synced: a new
-		// configuration is evaluated afresh, now.
-		const reset = {
-			automaticPausedReason: null,
-			automaticPausedAt: null,
-			suppressedCommitSha: null,
-			suppressedGeneration: null,
-			lastEvaluatedCommitSha: null,
-			lastEvaluatedGeneration: null,
-			pendingCommitSha: null,
-			failureCount: 0,
-			nextCheckAt: new Date(),
-		};
-		const sync = existing
-			? await tx.projectInstructionRepositorySync.update({
-					where: { id: existing.id },
-					data: {
-						userId: input.userId,
-						repositoryIntegrationId: input.repositoryIntegrationId,
-						ref: input.ref,
-						rootPath: input.rootPath,
-						automatic: input.automatic ?? existing.automatic,
-						generation: { increment: 1 },
-						...reset,
-					},
-					select,
-				})
-			: await tx.projectInstructionRepositorySync.create({
-					data: {
-						projectId: input.projectId,
-						organizationId: input.organizationId,
-						userId: input.userId,
-						repositoryIntegrationId: input.repositoryIntegrationId,
-						ref: input.ref,
-						rootPath: input.rootPath,
-						automatic: input.automatic ?? false,
-						...reset,
-					},
-					select,
-				});
+	// What is synced is unchanged: keep the generation and the cursors
+	// bound to it, and date the due time on the lock's clock so a held
+	// poll lease still ends (Fizzy #2744).
+	if (
+		existing &&
+		!written.ignoreGlobsChanged &&
+		existing.repositoryIntegrationId === input.repositoryIntegrationId &&
+		existing.ref === input.ref &&
+		existing.rootPath === input.rootPath
+	) {
+		const sync = await tx.projectInstructionRepositorySync.update({
+			where: { id: existing.id },
+			data: {
+				userId: input.userId,
+				automatic: input.automatic ?? existing.automatic,
+				automaticPausedReason: input.automaticPausedReason ?? null,
+				automaticPausedAt: input.automaticPausedReason
+					? existing.now
+					: null,
+				failureCount: 0,
+				nextCheckAt: existing.now,
+			},
+			select,
+		});
 		return {
 			sync,
 			previous,
 			ignoreGlobsChanged: written.ignoreGlobsChanged,
 		};
-	});
+	}
+
+	// A first configure, or a change of what is synced: a new
+	// configuration is evaluated afresh, now.
+	const reset = {
+		automaticPausedReason: input.automaticPausedReason ?? null,
+		automaticPausedAt: input.automaticPausedReason ? new Date() : null,
+		suppressedCommitSha: null,
+		suppressedGeneration: null,
+		lastEvaluatedCommitSha: null,
+		lastEvaluatedGeneration: null,
+		pendingCommitSha: null,
+		failureCount: 0,
+		nextCheckAt: new Date(),
+	};
+	const sync = existing
+		? await tx.projectInstructionRepositorySync.update({
+				where: { id: existing.id },
+				data: {
+					userId: input.userId,
+					repositoryIntegrationId: input.repositoryIntegrationId,
+					ref: input.ref,
+					rootPath: input.rootPath,
+					automatic: input.automatic ?? existing.automatic,
+					generation: { increment: 1 },
+					...reset,
+				},
+				select,
+			})
+		: await tx.projectInstructionRepositorySync.create({
+				data: {
+					projectId: input.projectId,
+					organizationId: input.organizationId,
+					userId: input.userId,
+					repositoryIntegrationId: input.repositoryIntegrationId,
+					ref: input.ref,
+					rootPath: input.rootPath,
+					automatic: input.automatic ?? true,
+					...reset,
+				},
+				select,
+			});
+	return {
+		sync,
+		previous,
+		ignoreGlobsChanged: written.ignoreGlobsChanged,
+	};
 }
 
 /**
@@ -634,16 +743,22 @@ export async function updateInstructionRepositorySyncProposalSettings(input: {
 export async function deleteInstructionRepositorySync(input: {
 	projectId: string;
 	organizationId: string;
+	/** Who switched, for the audit row of a move this ends; the system when absent. */
+	actorUserId?: string | null;
 }): Promise<{
 	deleted: boolean;
 	repositoryIntegrationId: string | null;
 } | null> {
 	return db.$transaction(async (tx) => {
+		// A move from uploads that is still open is over with the row it
+		// created (Fizzy #2878 §9), so its pointer goes with it, and is
+		// recorded as canceled: this is the escape hatch for a move that is
+		// switching or blocked, which no cancel can end.
 		const written = await writeProjectInstructionSettings(
 			tx,
 			input.projectId,
 			input.organizationId,
-			{ sourceOfTruth: "UPLOAD" },
+			{ sourceOfTruth: "UPLOAD", migration: null },
 		);
 		if (!written.written) {
 			return null;
@@ -658,6 +773,25 @@ export async function deleteInstructionRepositorySync(input: {
 		if (existing) {
 			await tx.projectInstructionRepositorySync.delete({
 				where: { id: existing.id },
+			});
+		}
+		if (written.previousMigration !== null) {
+			await recordAuditTx(tx, {
+				action: "project.instructions.repository_migration_canceled",
+				category: "project",
+				actor: input.actorUserId
+					? { type: "user", userId: input.actorUserId }
+					: { type: "system" },
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				resource: {
+					type: "project_instruction_repository_sync",
+					id: written.previousMigration.syncId,
+				},
+				metadata: {
+					reason: "switched_to_uploads",
+					state: written.previousMigration.state,
+				},
 			});
 		}
 		return {
@@ -695,17 +829,35 @@ export async function releaseInstructionRepositorySyncForIntegration(
 	if (!sync) {
 		return null;
 	}
-	await writeProjectInstructionSettings(
+	const written = await writeProjectInstructionSettings(
 		tx,
 		input.projectId,
 		sync.organizationId,
 		{
 			sourceOfTruth: "UPLOAD",
+			migration: null,
 		},
 	);
 	await tx.projectInstructionRepositorySync.delete({
 		where: { id: sync.id },
 	});
+	if (written.previousMigration !== null) {
+		await recordAuditTx(tx, {
+			action: "project.instructions.repository_migration_canceled",
+			category: "project",
+			actor: { type: "system" },
+			organizationId: sync.organizationId,
+			projectId: input.projectId,
+			resource: {
+				type: "project_instruction_repository_sync",
+				id: written.previousMigration.syncId,
+			},
+			metadata: {
+				reason: "integration_disconnected",
+				state: written.previousMigration.state,
+			},
+		});
+	}
 	return { organizationId: sync.organizationId };
 }
 
@@ -1436,6 +1588,39 @@ export async function findInstructionSyncsForPush(input: {
 }
 
 /**
+ * Lifts the pause `reason` from the sync row, for a run that has proof the
+ * pause is over (a direct commit just pushed to the branch with the
+ * integration's credential: the ref exists and the credential works). A
+ * compare-and-set on the row, its tenant, its generation and the reason it
+ * read, so a pause a later check wrote, a re-configure that already cleared
+ * it, or a row replaced since matches nothing and is left alone. The row is
+ * due again at once, as a re-configure leaves it. True when this call lifted
+ * the pause.
+ */
+export async function clearInstructionSyncPause(input: {
+	syncId: string;
+	organizationId: string;
+	generation: number;
+	reason: InstructionSyncPause;
+}): Promise<boolean> {
+	const { count } = await db.projectInstructionRepositorySync.updateMany({
+		where: {
+			id: input.syncId,
+			organizationId: input.organizationId,
+			generation: input.generation,
+			automaticPausedReason: input.reason,
+		},
+		data: {
+			automaticPausedReason: null,
+			automaticPausedAt: null,
+			failureCount: 0,
+			nextCheckAt: new Date(),
+		},
+	});
+	return count === 1;
+}
+
+/**
  * Asks the open run's completion for a re-check (Fizzy #2682; see
  * `completeInstructionRepositorySyncRun`), when a push or a poll check found
  * a run already open on the row. The open run may have read the branch
@@ -1953,6 +2138,31 @@ export async function getLatestInstructionRepositorySyncRun(
 		1,
 	);
 	return latest ?? null;
+}
+
+/**
+ * The newest run of ONE configuration, in the few columns a published
+ * response reports: whether the last sync took the branch tip, was refused,
+ * failed, or is still open (`status` and `finishedAt` null). One indexed
+ * point read (`syncId, startedAt`), unlike `getLatestInstructionRepositorySyncRun`,
+ * which also resolves the snapshot version for the tab.
+ */
+export function getLatestInstructionSyncRunOutcome(
+	syncId: string,
+	projectId: string,
+	organizationId: string,
+) {
+	return db.projectInstructionRepositorySyncRun.findFirst({
+		where: { syncId, projectId, organizationId },
+		orderBy: { startedAt: "desc" },
+		select: {
+			trigger: true,
+			status: true,
+			error: true,
+			commitSha: true,
+			finishedAt: true,
+		},
+	});
 }
 
 /** The published tree, for the unchanged-by-SHA and tree-equality checks (spec §5.3.2 steps 4, 10). */

@@ -11,6 +11,7 @@ import {
 import { finalizeInstructionSnapshot } from "./finalize";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { unwrapInstructionWorkflowError } from "./instruction-workflow-start";
+import { assertNoOpenMigration } from "./migration-freeze";
 import { assertInstructionSnapshotMutationAccess } from "./proposal-authorization";
 
 /**
@@ -57,6 +58,13 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 			input.projectId,
 			context.user.id,
 		);
+		// Finishing an upload that began before a move from uploads into the
+		// repository started would publish over the version the move was made
+		// from (Fizzy #2878 §9): it is refused until the move ends.
+		await assertNoOpenMigration({
+			projectId: input.projectId,
+			organizationId,
+		});
 		const snapshot = await getInstructionSnapshot(
 			input.snapshotId,
 			input.projectId,

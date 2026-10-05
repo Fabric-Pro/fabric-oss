@@ -23,8 +23,11 @@ export type StoredRow = {
 	name: string;
 	isActive: boolean;
 	credentials: string | null;
+	/** Null for a connection; set only on a workflow-scoped credential. */
+	workflowId?: string | null;
 	settings?: unknown;
 	lastUsedAt?: Date | null;
+	usageScope?: "OWNER_ONLY" | "ORGANIZATION_SHARED";
 };
 
 type Where = Record<string, unknown>;
@@ -53,6 +56,12 @@ function matchesWhere(row: StoredRow, where: Where): boolean {
 		// Prisma drops a condition whose value is `undefined`.
 		if (condition === undefined) {
 			return true;
+		}
+		if (key === "OR" || key === "AND") {
+			const clauses = Array.isArray(condition) ? condition : [condition];
+			return key === "OR"
+				? clauses.some((clause) => matchesWhere(row, clause as Where))
+				: clauses.every((clause) => matchesWhere(row, clause as Where));
 		}
 		if (key === "NOT") {
 			return !matchesWhere(row, condition as Where);
@@ -96,6 +105,8 @@ export function createWorkflowIntegrationStore() {
 					name: "",
 					isActive: true,
 					credentials: null,
+					// Prisma's column default.
+					workflowId: null,
 					...data,
 				};
 				rows.push(created);

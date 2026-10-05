@@ -53,22 +53,6 @@ vi.mock("../../../../orpc/procedures", () => {
 		requirePermission: () => () => undefined,
 		requireProjectPermission: () => () => undefined,
 		Permissions: new Proxy({}, { get: (_target, prop) => String(prop) }),
-		resolveOrganizationIdForCaller: async (
-			inputOrganizationId: string | null | undefined,
-			session: { activeOrganizationId?: string | null },
-		) => {
-			// Mirrors the resolution half only. The membership half it adds is
-			// covered directly in the orpc procedure tests; these suites are
-			// about weave's own behaviour, and a caller who is not a member
-			// never reaches them.
-			if (inputOrganizationId) {
-				return inputOrganizationId;
-			}
-			if (inputOrganizationId === null) {
-				return undefined;
-			}
-			return session.activeOrganizationId ?? undefined;
-		},
 		resolveOrganizationId: (
 			inputOrganizationId: string | null | undefined,
 			session: { activeOrganizationId?: string | null },
@@ -103,7 +87,12 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	vi.resetModules();
 	mockHasProjectAccess.mockResolvedValue(true);
-	mockAssertProjectPermission.mockResolvedValue(undefined);
+	// Returns the project it authorized and that project's organization
+	// (Fizzy #2904); the handler runs in it.
+	mockAssertProjectPermission.mockResolvedValue({
+		projectId: "proj-1",
+		organizationId: "org-1",
+	});
 	mockPlanFindFirst.mockResolvedValue(plan);
 	mockExecutionFindFirst.mockResolvedValue(null);
 	mockPlanDelete.mockResolvedValue({});
@@ -185,16 +174,22 @@ describe("deletePlanProcedure", () => {
 		});
 	});
 
-	it("scopes the lookup to personal context when organizationId is null", async () => {
-		const handler = await loadHandler();
+	// Fizzy #2904 review: the plan is loaded by id and creator only, then
+	// held to its authorized project's organization. Filtering on the
+	// organization the input named hid a guest's own plan, which create-plan
+	// now stamps with the project's organization.
+	it.each([null, "org-1", undefined])(
+		"loads the caller's plan by id and creator whatever the input organization (%s)",
+		async (organizationId) => {
+			const handler = await loadHandler();
 
-		await handler({
-			input: { planId: "plan-1", organizationId: null },
-			context,
-		});
+			await handler({
+				input: { planId: "plan-1", organizationId },
+				context,
+			});
 
-		const where = mockPlanFindFirst.mock.calls[0][0].where;
-		expect(where.userId).toBe("user-1");
-		expect(where.organizationId).toBeNull();
-	});
+			const where = mockPlanFindFirst.mock.calls[0][0].where;
+			expect(where).toEqual({ id: "plan-1", userId: "user-1" });
+		},
+	);
 });

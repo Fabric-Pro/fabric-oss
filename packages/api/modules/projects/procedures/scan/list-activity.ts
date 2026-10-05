@@ -72,7 +72,6 @@ export const listActivityProcedure = tenantProtectedProcedure
 		const hasAccess = await hasProjectAccess(
 			input.projectId,
 			context.user.id,
-			input.organizationId ?? undefined,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {

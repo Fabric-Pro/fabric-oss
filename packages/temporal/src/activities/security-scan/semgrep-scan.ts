@@ -35,6 +35,7 @@ import {
 	type RepoIntegrationRow,
 	resolveRepoAuth,
 } from "../daily-brief/resolve-repo-auth";
+import { resolveRepositoryAuthContext } from "../lib/repository-auth-context";
 import {
 	computeFindingFingerprint,
 	normalizeSeverity,
@@ -414,8 +415,20 @@ export async function withHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
  */
 export async function buildAuthenticatedCloneUrl(
 	repo: RepoIntegrationRow,
+	context: {
+		projectId: string;
+		userId?: string | null;
+		organizationId?: string | null;
+	},
 ): Promise<string | null> {
-	const auth = await resolveRepoAuth(repo);
+	const authContext = await resolveRepositoryAuthContext({
+		...context,
+		integrationId: repo.integrationId,
+	});
+	if (!authContext) {
+		return null;
+	}
+	const auth = await resolveRepoAuth(repo, authContext);
 	const parsed = new URL(repo.repositoryUrl);
 
 	if (auth.kind === "github") {
@@ -563,7 +576,11 @@ export async function runSemgrepScanActivity(
 	try {
 		return await withHeartbeat(async () => {
 			// 2. Build the authenticated clone URL + shallow-clone the branch.
-			const authUrl = await buildAuthenticatedCloneUrl(repo);
+			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+				projectId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
 			if (!authUrl) {
 				return empty("clone-failed", repoSlug);
 			}

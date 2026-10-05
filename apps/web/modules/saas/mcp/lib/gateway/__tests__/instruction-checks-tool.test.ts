@@ -220,6 +220,7 @@ describe("fabric_instruction_checks definition", () => {
 		expect(def?.inputSchema.required).toEqual(["projectId"]);
 		const props = def?.inputSchema.properties as Record<string, unknown>;
 		expect(Object.keys(props).sort()).toEqual([
+			"checkout",
 			"lockDigest",
 			"presentVariables",
 			"projectId",
@@ -333,7 +334,7 @@ describe("argument validation", () => {
 });
 
 describe("report shape", () => {
-	it("returns all nine checks in CHECK_IDS order with surface mcp", async () => {
+	it("returns all ten checks in CHECK_IDS order with surface mcp", async () => {
 		const report = reportOf(await run({ projectId: PROJECT }));
 		expect(report.projectId).toBe(PROJECT);
 		expect(report.surface).toBe("mcp");
@@ -406,7 +407,7 @@ describe("report shape", () => {
 				failing.summary.fail +
 				failing.summary.warn +
 				failing.summary.skip,
-		).toBe(9);
+		).toBe(10);
 	});
 });
 

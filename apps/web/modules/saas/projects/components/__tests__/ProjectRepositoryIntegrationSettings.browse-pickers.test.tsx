@@ -170,28 +170,41 @@ describe("ProjectRepositoryIntegrationSettings — repo browse parity (#2196)", 
 		).not.toBeInTheDocument();
 	});
 
+	it.each([
+		[
+			"with its three-state value",
+			{ connected: true, needsReauth: true, state: "needs-reconnect" },
+		],
+		[
+			"from an older status without the state",
+			{ connected: true, needsReauth: true },
+		],
+	])(
+		"asks for a reconnect, not a browse, when the connection needs reconnecting (%s)",
+		async (_shape, status) => {
+			// `connected` stays true for a connection whose grant died: it
+			// cannot list repositories, so offering Browse would fail.
+			gitlabStatusFn.mockResolvedValue(status);
+			const user = userEvent.setup({ pointerEventsCheck: 0 });
+			renderSettings();
+			await openAddPanel(user);
+
+			expect(
+				await screen.findByText(
+					/reconnect gitlab to browse repositories/i,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /reconnect gitlab/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/browse gitlab repositories/i),
+			).not.toBeInTheDocument();
+		},
+	);
+
 	it("still prompts to connect GitLab when it is not connected", async () => {
 		gitlabStatusFn.mockResolvedValue({ connected: false });
-		const user = userEvent.setup({ pointerEventsCheck: 0 });
-		renderSettings();
-		await openAddPanel(user);
-
-		expect(
-			await screen.findByText(/connect gitlab to browse repositories/i),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByText(/browse gitlab repositories/i),
-		).not.toBeInTheDocument();
-	});
-
-	it("keeps prompting to connect, not browsing, for a token that exists only on the MCP config", async () => {
-		// `gitlab.status` reports that state as `partialConnection`, with
-		// `connected` still false: the browse backend needs the connection the
-		// partial state lacks and would answer "GitLab not connected".
-		gitlabStatusFn.mockResolvedValue({
-			connected: false,
-			partialConnection: true,
-		});
 		const user = userEvent.setup({ pointerEventsCheck: 0 });
 		renderSettings();
 		await openAddPanel(user);

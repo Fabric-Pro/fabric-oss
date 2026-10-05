@@ -10,6 +10,7 @@
  */
 
 import { db, isFeatureEnabled, type ProjectStatus } from "@repo/database";
+import { parseOAuthReference } from "@repo/utils/oauth-project-resource";
 import type { ReadinessEvidence } from "./types";
 
 /** Document statuses that mean the document is actually usable. */
@@ -178,29 +179,79 @@ async function resolveOrganizationCliConnected(
 						},
 						select: { id: true },
 					}),
-			// A signed-in agent is alive while the consent that bound it to this
-			// organization exists: revoking removes the consent with the tokens,
-			// and a disabled client or a departed person ends it the same way.
 			oauthClientIds.length === 0
-				? null
-				: db.oauthConsent.findFirst({
-						where: {
-							referenceId: organizationId,
-							client: {
-								id: { in: oauthClientIds },
-								disabled: { not: true },
-							},
-							user: ownerStillAMember,
-						},
-						select: { id: true },
-					}),
+				? false
+				: organizationHasLiveOAuthConsent(
+						organizationId,
+						oauthClientIds,
+						ownerStillAMember,
+					),
 		]);
 
 	// One surviving credential is enough; a dead one beside it changes nothing.
 	return (
 		aliveUserKey !== null ||
 		aliveOrganizationKey !== null ||
-		aliveOAuthConsent !== null
+		aliveOAuthConsent
+	);
+}
+
+/**
+ * How many project grants one question reads. A bound, not a cutoff the answer
+ * depends on: the grants of one client set that belong to an organization's
+ * members are far fewer, and this answer drives a nudge.
+ */
+const PROJECT_GRANT_READ_LIMIT = 200;
+
+/**
+ * A signed-in agent is alive while the consent that bound it to this
+ * organization exists: revoking removes the consent with the tokens, and a
+ * disabled client or a departed person ends it the same way. The consent is
+ * either the organization's own or one for a project hosted by it, the grant an
+ * agent connected from a project holds.
+ */
+async function organizationHasLiveOAuthConsent(
+	organizationId: string,
+	oauthClientIds: string[],
+	ownerStillAMember: { members: { some: { organizationId: string } } },
+): Promise<boolean> {
+	const consenting = {
+		client: { id: { in: oauthClientIds }, disabled: { not: true } },
+		user: ownerStillAMember,
+	};
+
+	const organizationGrant = await db.oauthConsent.findFirst({
+		where: { referenceId: organizationId, ...consenting },
+		select: { id: true },
+	});
+	if (organizationGrant) {
+		return true;
+	}
+
+	const projectGrants = await db.oauthConsent.findMany({
+		where: { referenceId: { startsWith: "project:" }, ...consenting },
+		select: { referenceId: true },
+		take: PROJECT_GRANT_READ_LIMIT,
+	});
+	const projectIds = [
+		...new Set(
+			projectGrants.flatMap(({ referenceId }) => {
+				const reference = referenceId
+					? parseOAuthReference(referenceId)
+					: null;
+				return reference?.kind === "project"
+					? [reference.projectId]
+					: [];
+			}),
+		),
+	];
+	if (projectIds.length === 0) {
+		return false;
+	}
+	return (
+		(await db.project.count({
+			where: { id: { in: projectIds }, organizationId, deletedAt: null },
+		})) > 0
 	);
 }
 

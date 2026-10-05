@@ -43,6 +43,7 @@ const m = vi.hoisted(() => ({
 	admit: vi.fn(),
 	startAdmittedProposalPullRequest: vi.fn(),
 	readProposalPullRequest: vi.fn(),
+	startDirectCommitWorkflow: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -90,6 +91,10 @@ vi.mock("../proposal-pull-request", () => ({
 		m.startAdmittedProposalPullRequest(...a),
 	readProposalPullRequest: (...a: unknown[]) =>
 		m.readProposalPullRequest(...a),
+}));
+vi.mock("../direct-commit-workflow", () => ({
+	startDirectCommitWorkflow: (...a: unknown[]) =>
+		m.startDirectCommitWorkflow(...a),
 }));
 vi.mock("../proposal-authorization", () => ({
 	assertInstructionDeriveAccess: (...a: unknown[]) =>
@@ -214,6 +219,222 @@ beforeEach(() => {
 	m.admit.mockResolvedValue({ destination: "FABRIC", note: null });
 	m.startAdmittedProposalPullRequest.mockResolvedValue(undefined);
 	m.readProposalPullRequest.mockResolvedValue(null);
+	m.startDirectCommitWorkflow.mockResolvedValue(undefined);
+});
+
+describe("commit mode (Fizzy #2878 §10)", () => {
+	const COMMIT_CONTEXT = {
+		v: 1,
+		integrationId: "int_1",
+		syncId: "sync_1",
+		syncGeneration: 2,
+		targetRef: "main",
+		message: "Tighten the rules",
+	};
+
+	beforeEach(() => {
+		m.admit.mockResolvedValue({
+			destination: "REPOSITORY_COMMIT",
+			note: null,
+			context: COMMIT_CONTEXT,
+		});
+	});
+
+	function commit(overrides: Record<string, unknown> = {}) {
+		return submit({
+			mode: "commit",
+			message: "Tighten the rules",
+			...overrides,
+		});
+	}
+
+	it("asks for the publishing-grade permission, not the proposal one, before reading anything", async () => {
+		m.assertInstructionDeriveAccess.mockRejectedValue(
+			new ORPCError("FORBIDDEN", { message: "no" }),
+		);
+
+		await expect(commit()).rejects.toThrow("no");
+
+		expect(m.assertInstructionDeriveAccess).toHaveBeenCalledWith({
+			projectId: PROJECT,
+			userId: USER,
+			proposal: false,
+		});
+		expect(m.admit).not.toHaveBeenCalled();
+		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("admits as a commit with the message and the member's name", async () => {
+		await commit({
+			audit: {
+				user: {
+					id: USER,
+					email: "dev@example.com",
+					name: "Pat Example",
+				},
+			},
+		});
+
+		expect(m.admit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mode: "commit",
+				message: "Tighten the rules",
+				proposerName: "Pat Example",
+			}),
+		);
+	});
+
+	it("derives a snapshot that is neither a proposal nor self-publishing and carries the frozen context", async () => {
+		const result = await commit();
+
+		expect(result.mode).toBe("commit");
+		expect(m.createDerivedInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposal: false,
+				publishOnReady: false,
+				commit: {
+					context: COMMIT_CONTEXT,
+					syncId: "sync_1",
+					syncGeneration: 2,
+				},
+			}),
+		);
+		expect(
+			m.createDerivedInstructionSnapshot.mock.calls[0]?.[0],
+		).not.toHaveProperty("destination");
+	});
+
+	it("starts the commit workflow for the new snapshot before the validation workflow", async () => {
+		const order: string[] = [];
+		m.startDirectCommitWorkflow.mockImplementation(async () => {
+			order.push("commit-workflow");
+		});
+		m.finalizeInstructionSnapshot.mockImplementation(async () => {
+			order.push("validation");
+			return { status: "VALIDATING" };
+		});
+
+		await commit();
+
+		expect(m.startDirectCommitWorkflow).toHaveBeenCalledWith({
+			snapshotId: "snap_new",
+			organizationId: ORG,
+		});
+		expect(order).toEqual(["commit-workflow", "validation"]);
+	});
+
+	it("never reports the commit as published, whatever the pointer says", async () => {
+		const result = await commit();
+
+		expect(result.published).toBe(false);
+	});
+
+	it("records the upload as a commit, with no path in the metadata", async () => {
+		await commit();
+
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			audit,
+			expect.objectContaining({
+				action: "project.instructions.upload_started",
+				metadata: expect.objectContaining({
+					mode: "commit",
+					via: "test",
+				}),
+			}),
+		);
+		expect(
+			JSON.stringify(m.recordAuditFromRequest.mock.calls),
+		).not.toContain("AGENTS.md");
+	});
+
+	it("closes the snapshot out when the commit workflow cannot be started, and never finalizes it", async () => {
+		m.startDirectCommitWorkflow.mockRejectedValue(
+			new Error("temporal is down"),
+		);
+
+		await expect(commit()).rejects.toThrow("temporal is down");
+
+		expect(m.rejectAbandonedInstructionSnapshot).toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["commit_proposer_limit", "COMMIT_PROPOSER_LIMIT", /five commits/],
+		["commit_project_limit", "COMMIT_PROJECT_LIMIT", /25 commits/],
+	])(
+		"answers the %s refusal in the commit's own words, starting nothing",
+		async (reason, code, wording) => {
+			m.createDerivedInstructionSnapshot.mockResolvedValue({
+				ok: false,
+				reason,
+			});
+
+			await expect(commit()).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: code },
+				message: expect.stringMatching(wording),
+			});
+
+			expect(m.startDirectCommitWorkflow).not.toHaveBeenCalled();
+			expect(m.uploadFile).not.toHaveBeenCalled();
+		},
+	);
+
+	it("answers a retried commit with the pending one it duplicates, starting no second workflow and writing no second audit row", async () => {
+		m.createDerivedInstructionSnapshot.mockResolvedValue({
+			ok: false,
+			reason: "duplicate_proposal",
+			auditWritten: false,
+			existing: {
+				id: "snap_pending",
+				version: 9,
+				status: "VALIDATING",
+				proposalStatus: null,
+				fileCount: 3,
+				inheritedCount: 2,
+				staged: [{ id: "file_1", path: "CLAUDE.md" }],
+			},
+		});
+
+		const result = await commit();
+
+		expect(result).toMatchObject({
+			mode: "commit",
+			snapshotId: "snap_pending",
+			version: 9,
+			status: "VALIDATING",
+			published: false,
+		});
+		expect(m.startDirectCommitWorkflow).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.finalizeInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("starts no commit workflow for a proposal or a publish", async () => {
+		m.admit.mockResolvedValue({ destination: "FABRIC", note: null });
+
+		await submit();
+		await submit({ mode: "publish" });
+
+		expect(m.startDirectCommitWorkflow).not.toHaveBeenCalled();
+	});
+
+	it("passes an admission refusal through before any row is written", async () => {
+		m.admit.mockRejectedValue(
+			new ORPCError("PRECONDITION_FAILED", {
+				message: "uploaded, not synced",
+				data: { reason: "NOT_REPOSITORY_SOURCED" },
+			}),
+		);
+
+		await expect(commit()).rejects.toMatchObject({
+			data: { reason: "NOT_REPOSITORY_SOURCED" },
+		});
+
+		expect(m.createDerivedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.startDirectCommitWorkflow).not.toHaveBeenCalled();
+	});
 });
 
 describe("authorization", () => {

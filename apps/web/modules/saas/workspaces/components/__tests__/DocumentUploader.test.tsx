@@ -1169,3 +1169,30 @@ describe("DocumentUploader — expanded vocabulary, capacity, and refusals", () 
 		).toBeInTheDocument();
 	});
 });
+
+/**
+ * A queued row writes the file's size in the unit that fits it, so a small
+ * file reads as bytes or kilobytes instead of rounding down to "0.00 MB".
+ */
+describe("DocumentUploader — queued file size", () => {
+	it.each([
+		[212, "212 B"],
+		[6349, "6.2 KB"],
+		[1.5 * 1024 * 1024, "1.5 MB"],
+	])("writes a %d-byte file as %s", async (sizeBytes, written) => {
+		const user = userEvent.setup();
+		wrap(
+			<DocumentUploader open onOpenChange={vi.fn()} workspaceId="ws_1" />,
+		);
+
+		await selectFile(
+			user,
+			new File([new Uint8Array(sizeBytes)], "notes.pdf", {
+				type: "application/pdf",
+			}),
+		);
+
+		expect(await screen.findByText("notes.pdf")).toBeInTheDocument();
+		expect(screen.getByText(written)).toBeInTheDocument();
+	});
+});

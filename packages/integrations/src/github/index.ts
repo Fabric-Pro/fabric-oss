@@ -29,6 +29,10 @@ import {
 	refreshOAuthToken,
 	sanitizeCredential,
 } from "@repo/utils/oauth-refresh";
+import type {
+	ConnectionCheckStatus,
+	ConnectionTestResult,
+} from "../connection-test-result";
 import {
 	type BeforeExchange,
 	isExchangeRefusal,
@@ -256,7 +260,7 @@ async function getGitHubClientCredentials(
 
 	// Fall back to DB-stored app credentials.
 	// Mirror the same lookup chain as getOAuthCredentialsWithDb():
-	// org-scoped → personal → any/global (admin-configured)
+	// org-scoped → caller's personal app. Only env credentials are global.
 	try {
 		const whereConditions: Record<string, unknown>[] = [];
 		if (organizationId) {
@@ -276,12 +280,6 @@ async function getGitHubClientCredentials(
 				isActive: true,
 			});
 		}
-		// Also check for any record with this name (admin-configured)
-		whereConditions.push({
-			provider: "GITHUB",
-			name: "GITHUB_OAUTH_APP",
-			isActive: true,
-		});
 
 		for (const where of whereConditions) {
 			const appConfig = await db.workflowIntegration.findFirst({
@@ -350,6 +348,12 @@ async function performTokenRefresh(
 	writer: RefreshWriter = db,
 	/** Pre-resolved app credentials, looked up outside the lock. */
 	preResolvedCreds?: { clientId: string; clientSecret: string } | null,
+	/** A connection test must not overwrite a reconnect or resurrect a disconnect. */
+	expectedConnection?: {
+		userId: string;
+		organizationId: string;
+		credentials: string;
+	},
 ): Promise<string> {
 	const creds =
 		preResolvedCreds !== undefined
@@ -401,21 +405,41 @@ async function performTokenRefresh(
 			? integration.settings
 			: {};
 
-	await writer.workflowIntegration.update({
-		where: { id: integration.id },
-		data: {
-			credentials: encryptApiKey(newCredentials),
-			settings: {
-				...(existingSettings as Record<string, unknown>),
-				tokenExpiresAt: result.expiresIn
-					? new Date(
-							Date.now() + result.expiresIn * 1000,
-						).toISOString()
-					: null,
-			},
-			updatedAt: new Date(),
+	const data = {
+		credentials: encryptApiKey(newCredentials),
+		settings: {
+			...(existingSettings as Record<string, unknown>),
+			tokenExpiresAt: result.expiresIn
+				? new Date(Date.now() + result.expiresIn * 1000).toISOString()
+				: null,
 		},
-	});
+		updatedAt: new Date(),
+	};
+	if (expectedConnection) {
+		const updated = await writer.workflowIntegration.updateMany({
+			where: {
+				id: integration.id,
+				userId: expectedConnection.userId,
+				organizationId: expectedConnection.organizationId,
+				workflowId: null,
+				provider: "GITHUB",
+				isActive: true,
+				NOT: { name: "GITHUB_OAUTH_APP" },
+				credentials: expectedConnection.credentials,
+			},
+			data,
+		});
+		if (updated.count !== 1) {
+			throw new Error(
+				"GitHub connection changed while checking. Please test again.",
+			);
+		}
+	} else {
+		await writer.workflowIntegration.update({
+			where: { id: integration.id },
+			data,
+		});
+	}
 
 	console.log("[GitHub] Successfully refreshed access token");
 	return result.accessToken;
@@ -455,7 +479,7 @@ const PROJECT_REPO_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
  *
  * Client credentials are resolved via `getGitHubClientCredentials()`, which
  * first tries env vars (`FABRIC_GITHUB_CLIENT_ID/SECRET`) and then falls back
- * to an admin/org/user `GITHUB_OAUTH_APP` workflow_integration record, so
+ * to a caller-scoped org/user `GITHUB_OAUTH_APP` workflow_integration record, so
  * deployments that configure the OAuth app in the DB still refresh.
  *
  * Returns the plaintext access token on success, or `null` if no refresh
@@ -473,8 +497,8 @@ export async function refreshProjectRepoGitHubToken(input: {
 	encryptedRefreshToken: string;
 	expectedUpdatedAt: Date;
 	/**
-	 * Optional — used to scope the `GITHUB_OAUTH_APP` DB fallback lookup so
-	 * an org-specific OAuth app is preferred over the global admin record.
+	 * Used to scope the `GITHUB_OAUTH_APP` DB fallback lookup. Without either
+	 * identity, only environment-configured client credentials can be used.
 	 */
 	userId?: string;
 	organizationId?: string;
@@ -937,6 +961,205 @@ async function refreshTokenIfNeeded(
 		console.error("[GitHub] Pre-emptive token refresh failed:", error);
 		// Return current token and let the 401 retry handle it
 		return currentToken;
+	}
+}
+
+export interface GitHubConnectionTestResult extends ConnectionTestResult {
+	status: ConnectionCheckStatus;
+}
+
+/** A 401 proves rejection; throttling, server failures and network errors do not. */
+export async function testGitHubAccessToken(
+	token: string,
+): Promise<GitHubConnectionTestResult> {
+	if (!token) {
+		return {
+			success: false,
+			status: "unknown",
+			error: "GitHub token is required",
+		};
+	}
+	try {
+		const response = await fetch(`${GITHUB_API_URL}/user`, {
+			headers: githubHeaders(token),
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (response.status === 401) {
+			return {
+				success: false,
+				status: "reconnect_required",
+				error: "GitHub authorization is no longer valid. Please reconnect GitHub.",
+			};
+		}
+		if (!response.ok) {
+			return {
+				success: false,
+				status: "unknown",
+				error: `GitHub connection could not be checked (HTTP ${response.status}). Please try again.`,
+			};
+		}
+		const user = (await response.json()) as { login?: string };
+		if (!user.login) {
+			return {
+				success: false,
+				status: "unknown",
+				error: "GitHub returned an unexpected response. Please try again.",
+			};
+		}
+		return {
+			success: true,
+			status: "connected",
+			message: `Connected as ${user.login}`,
+		};
+	} catch {
+		return {
+			success: false,
+			status: "unknown",
+			error: "GitHub connection could not be checked. Please try again.",
+		};
+	}
+}
+
+/** Check and refresh only the exact account connection authorized by the caller. */
+export async function testSavedGitHubConnection(input: {
+	integrationId: string;
+	userId: string;
+	organizationId: string;
+}): Promise<GitHubConnectionTestResult> {
+	if (!input.integrationId || !input.userId || !input.organizationId) {
+		return {
+			success: false,
+			status: "unknown",
+			error: "GitHub connection could not be checked. Please try again.",
+		};
+	}
+	const accountWhere = {
+		userId: input.userId,
+		organizationId: input.organizationId,
+		workflowId: null,
+		provider: "GITHUB" as const,
+		isActive: true,
+		NOT: { name: "GITHUB_OAUTH_APP" },
+	};
+	const where = { id: input.integrationId, ...accountWhere };
+	const select = { id: true, credentials: true, settings: true } as const;
+	const readCurrentAccount = () =>
+		db.workflowIntegration.findFirst({
+			where: accountWhere,
+			select,
+			orderBy: { createdAt: "desc" },
+		});
+	const unknown: GitHubConnectionTestResult = {
+		success: false,
+		status: "unknown",
+		error: "GitHub connection could not be checked. Please try again.",
+	};
+	let exchangedCredentials: string | undefined;
+	try {
+		const integration = await db.workflowIntegration.findFirst({
+			where,
+			select,
+		});
+		if (!integration) {
+			return unknown;
+		}
+		const credentialsJson = decryptApiKey(integration.credentials);
+		const parsed = safeParseCredentials(credentialsJson);
+		let token = extractAccessToken(credentialsJson);
+		let renewed = false;
+		const refresh = async (rejectedToken?: string) => {
+			const app = await getGitHubClientCredentials(
+				input.userId,
+				input.organizationId,
+			);
+			if (!app) {
+				throw new Error("GitHub OAuth is not configured");
+			}
+			return withRefreshLock(
+				`wfint:${integration.id}`,
+				async (tx, assertBudget) => {
+					const current = await tx.workflowIntegration.findFirst({
+						where,
+						select,
+					});
+					if (!current) {
+						throw new Error("GitHub connection changed");
+					}
+					const json = decryptApiKey(current.credentials);
+					const creds = safeParseCredentials(json);
+					const currentToken = extractAccessToken(json);
+					if (
+						creds &&
+						!isTokenExpired(creds) &&
+						currentToken !== rejectedToken
+					) {
+						return currentToken;
+					}
+					if (!creds?.refresh_token) {
+						throw new Error("GitHub connection changed");
+					}
+					assertBudget(GITHUB_TOKEN_EXCHANGE_TIMEOUT_MS);
+					exchangedCredentials = current.credentials;
+					renewed = true;
+					return performTokenRefresh(
+						current,
+						creds.refresh_token,
+						input.userId,
+						input.organizationId,
+						tx,
+						app,
+						{ ...input, credentials: current.credentials },
+					);
+				},
+			);
+		};
+		if (parsed?.refresh_token && isTokenExpired(parsed)) {
+			token = await refresh();
+		}
+		let result = await testGitHubAccessToken(token);
+		if (
+			result.status === "reconnect_required" &&
+			parsed?.refresh_token &&
+			!renewed
+		) {
+			token = await refresh(token);
+			result = await testGitHubAccessToken(token);
+		}
+		// The probe can outlive a reconnect or disconnect in another request.
+		// Publish evidence only for the currently selected row and token probed.
+		const current = await readCurrentAccount();
+		if (
+			!current ||
+			current.id !== integration.id ||
+			extractAccessToken(decryptApiKey(current.credentials)) !== token
+		) {
+			return unknown;
+		}
+		return result;
+	} catch (error) {
+		if (
+			error instanceof GitHubTokenRefreshError &&
+			isGrantRejected(error.errorCode)
+		) {
+			// A reconnect arriving during the exchange supersedes this rejection.
+			let current: Awaited<ReturnType<typeof readCurrentAccount>>;
+			try {
+				current = await readCurrentAccount();
+			} catch {
+				return unknown;
+			}
+			if (
+				current?.id === input.integrationId &&
+				current.credentials === exchangedCredentials
+			) {
+				return {
+					success: false,
+					status: "reconnect_required",
+					error: "GitHub authorization could not be renewed. Please reconnect GitHub.",
+				};
+			}
+		}
+		return unknown;
 	}
 }
 

@@ -8,12 +8,10 @@
 import { getAIModelWithMetadata } from "@repo/ai";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { auth } from "@repo/auth";
-import { logAiUsage } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { streamText } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import { after } from "next/server";
 import { z } from "zod";
 
 const SectionSchema = z.object({
@@ -154,8 +152,6 @@ Do not include any meta-commentary or explanations outside the PRD itself. Outpu
 }
 
 export async function POST(req: NextRequest) {
-	const startTime = Date.now();
-
 	try {
 		const headersList = await headers();
 		const session = await auth.api.getSession({
@@ -190,6 +186,8 @@ export async function POST(req: NextRequest) {
 		const organizationId =
 			session.session.activeOrganizationId ?? undefined;
 
+		// The resolved model records its own AiUsageLog row for each provider
+		// call, so this route writes none of its own.
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{
 				taskType: "COMPLEX",
@@ -226,7 +224,6 @@ export async function POST(req: NextRequest) {
 
 		const usage = await result.usage;
 		const finishReason = await result.finishReason;
-		const latencyMs = Date.now() - startTime;
 
 		// Surface truncation for observability. The bytes already streamed cannot
 		// be retracted (the HTTP contract is unchanged); a "length" finish means
@@ -244,33 +241,6 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		after(() => {
-			logAiUsage({
-				userId,
-				organizationId: organizationId ?? undefined,
-				provider: metadata.provider,
-				providerModelId: metadata.modelString,
-				modelCanonicalName: metadata.canonicalName,
-				billingCategory:
-					metadata.billingMode === "included_credit"
-						? "INCLUDED_CREDIT"
-						: metadata.billingMode === "metered_stripe"
-							? "STRIPE_METERED"
-							: metadata.billingMode === "platform_unbilled"
-								? "PLATFORM_UNBILLED"
-								: "EXTERNAL_BYOK",
-				billingCustomerId: metadata.billingCustomerId,
-				taskType: "COMPLEX",
-				inputTokens: usage.inputTokens ?? 0,
-				outputTokens: usage.outputTokens ?? 0,
-				totalTokens: usage.totalTokens ?? 0,
-				latencyMs,
-				success: true,
-			}).catch((error) => {
-				console.error("[AI Generate PRD] Failed to log usage:", error);
-			});
-		});
-
 		return new Response(
 			JSON.stringify({
 				text: fullText,
@@ -282,7 +252,6 @@ export async function POST(req: NextRequest) {
 			},
 		);
 	} catch (error: unknown) {
-		const latencyMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : "Internal server error";
 
@@ -312,20 +281,6 @@ export async function POST(req: NextRequest) {
 		}
 
 		console.error("[AI Generate PRD] Error:", error);
-
-		after(() => {
-			logAiUsage({
-				provider: "UNKNOWN" as any,
-				providerModelId: "unknown",
-				taskType: "COMPLEX",
-				inputTokens: 0,
-				outputTokens: 0,
-				totalTokens: 0,
-				latencyMs,
-				success: false,
-				errorMessage,
-			}).catch(() => {});
-		});
 
 		return new Response(JSON.stringify({ error: errorMessage }), {
 			status: 500,

@@ -1,5 +1,18 @@
 # @fabricorg/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- 88b322e: One `fabric instructions init` sets a repository project's checkout up: it finds the project, signs in, and writes each coding tool's hook.
+
+### Patch Changes
+
+- 88b322e: `init` no longer runs Codex's add where it would wait for a browser, and tells a rerun that a registered server may not be signed in.
+- 88b322e: `fabric auth logout` takes `--base-url`, so a person signed in to two deployments can sign out of one.
+- 88b322e: The npm CLI signs in through the browser like the served one, and `instructions init --clone` makes the same clone as `git clone`.
+- 88b322e: The CLI signs in for one project and `init` registers that project's MCP server with Claude Code and Codex.
+
 ## 0.4.0
 
 ### Minor Changes

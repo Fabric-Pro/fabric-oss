@@ -36,6 +36,8 @@ vi.mock("../src/activities/orchestrator/execution/execute-mcp-tool", () => ({
 // real @repo/database load (prisma singleton), keeping pg.Pool handles
 // alive past vitest exit.
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	setAiUsageRecorder: vi.fn(),
 	// Read-only mode gate — default: project is writable
 	isProjectReadOnly: vi.fn(async () => false),
@@ -1555,6 +1557,8 @@ describe("Tenant Isolation", () => {
 			"mcp-ado",
 			"user-1",
 			"org-99",
+			// Discovery for this activity names no PM container: unbound.
+			{ expectedGitLabOrigin: undefined },
 		);
 
 		// executeMcpTool calls should include organizationId
@@ -1591,6 +1595,8 @@ describe("Tenant Isolation", () => {
 			"mcp-ado",
 			"user-1",
 			"org-99",
+			// Discovery for this activity names no PM container: unbound.
+			{ expectedGitLabOrigin: undefined },
 		);
 
 		// All executeMcpTool calls should include organizationId

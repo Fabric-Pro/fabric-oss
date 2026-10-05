@@ -739,7 +739,7 @@ describe("the API Key for CLI row", () => {
 		await user.click(row.getByRole("button", { name: CLI_ACTION }));
 
 		const dialog = await screen.findByRole("dialog");
-		expect(dialog).toHaveTextContent("Connect Fabric to your coding tool");
+		expect(dialog).toHaveTextContent("Connect your coding tool");
 		// The row's own `target` was never followed.
 		expect(assignedHref).toBeNull();
 		// And opening the view reads nothing: everything it needs, the project's
@@ -765,7 +765,7 @@ describe("the API Key for CLI row", () => {
 			}),
 		);
 		await user.click(
-			await screen.findByRole("button", { name: /create the key/i }),
+			await screen.findByRole("button", { name: /create key/i }),
 		);
 
 		const instruction = await screen.findByTestId(
@@ -791,7 +791,7 @@ describe("the API Key for CLI row", () => {
 			}),
 		);
 		await user.click(
-			await screen.findByRole("button", { name: /create the key/i }),
+			await screen.findByRole("button", { name: /create key/i }),
 		);
 
 		const instruction = await screen.findByTestId(
@@ -843,7 +843,7 @@ describe("the API Key for CLI row", () => {
 		await user.click(action);
 		await screen.findByRole("dialog");
 
-		await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+		await user.click(screen.getByRole("button", { name: /^done$/i }));
 
 		await waitFor(() =>
 			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -875,7 +875,7 @@ describe("the API Key for CLI row", () => {
 
 		expect(screen.queryByText(CLI_ITEM_NAME)).not.toBeInTheDocument();
 		expect(screen.getByRole("dialog")).toHaveTextContent(
-			"Connect Fabric to your coding tool",
+			"Connect your coding tool",
 		);
 	});
 });

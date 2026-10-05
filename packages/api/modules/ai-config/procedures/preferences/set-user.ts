@@ -11,7 +11,7 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
@@ -29,7 +29,18 @@ const AiTaskTypeEnum = z.enum([
 ]);
 
 export const setUserModelPreferenceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_AI_CONFIG_EDIT))
+	// Against the organization the handler resolves (whose provider decides
+	// which model the preference is for), not the session's.
+	// `requireOrganization`: with a null organization nothing resolves and
+	// the role check would be skipped, so a member whose role cannot edit AI
+	// configuration could still write a personal preference — which applies
+	// inside the organization through user-preference precedence. Before the
+	// input-organization gate the session role refused them.
+	.use(
+		requireInputOrgPermission(Permissions.ORG_AI_CONFIG_EDIT, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/ai-config/preferences/user",
@@ -140,7 +151,18 @@ export const setUserModelPreferenceProcedure = tenantProtectedProcedure
 	});
 
 export const deleteUserModelPreferenceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_AI_CONFIG_EDIT))
+	// Against the organization the handler resolves (whose provider decides
+	// which model the preference is for), not the session's.
+	// `requireOrganization`: with a null organization nothing resolves and
+	// the role check would be skipped, so a member whose role cannot edit AI
+	// configuration could still write a personal preference — which applies
+	// inside the organization through user-preference precedence. Before the
+	// input-organization gate the session role refused them.
+	.use(
+		requireInputOrgPermission(Permissions.ORG_AI_CONFIG_EDIT, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "DELETE",
 		path: "/ai-config/preferences/user",

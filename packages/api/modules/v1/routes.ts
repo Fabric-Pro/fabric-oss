@@ -12,6 +12,7 @@
  *   POST /auth/keys          → Create an API key
  *   DELETE /auth/keys/:id    → Revoke an API key
  *   GET  /orgs               → List orgs the caller belongs to
+ *   POST /instructions/checkouts/resolve → The coding-instructions projects a repository URL belongs to
  *   POST /projects/:id/instructions/changes  → Propose a coding-instructions change, for review
  *   POST /projects/:id/instructions/versions → Publish a coding-instructions change directly
  *   GET  /projects/:id/instructions/proposals/:snapshotId/pull-request → A repository proposal's pull request
@@ -37,6 +38,7 @@ import { registerContextRoutes } from "./contexts";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
+import { registerInstructionCheckoutRoutes } from "./instruction-checkouts";
 import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
 import { registerKnowledgeRoutes } from "./knowledge";
@@ -185,14 +187,22 @@ export function createPublicV1Routes() {
 		}
 
 		const { members, ...userFields } = user;
-		const orgs = members.map((m) => ({
-			id: m.organization.id,
-			name: m.organization.name,
-			slug: m.organization.slug,
-			logo: m.organization.logo,
-			role: m.role,
-			joinedAt: m.createdAt,
-		}));
+		const orgs = members
+			.map((m) => ({
+				id: m.organization.id,
+				name: m.organization.name,
+				slug: m.organization.slug,
+				logo: m.organization.logo,
+				role: m.role,
+				joinedAt: m.createdAt,
+			}))
+			// An agent that signed in for one project is told of the organization
+			// hosting it and of no other the person belongs to.
+			.filter(
+				(org) =>
+					ctx.boundProjectId === undefined ||
+					org.id === ctx.organizationId,
+			);
 
 		return c.json(
 			ok({
@@ -202,6 +212,9 @@ export function createPublicV1Routes() {
 				scopes: ctx.scopes,
 				...(ctx.organizationId
 					? { organizationContext: ctx.organizationId }
+					: {}),
+				...(ctx.boundProjectId
+					? { projectContext: ctx.boundProjectId }
 					: {}),
 				orgs,
 			}),
@@ -428,6 +441,7 @@ export function createPublicV1Routes() {
 	registerChannelRoutes(app);
 	registerKnowledgeRoutes(app);
 	registerInstructionRoutes(app);
+	registerInstructionCheckoutRoutes(app);
 	registerContextRoutes(app);
 
 	return app;

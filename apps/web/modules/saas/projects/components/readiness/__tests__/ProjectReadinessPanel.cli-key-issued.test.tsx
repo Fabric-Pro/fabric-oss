@@ -198,7 +198,7 @@ import { ProjectReadinessProvider } from "../ProjectReadinessProvider";
 const CLI_ITEM_NAME = "Organization connected over MCP";
 const CLI_ACTION = "Connect CLI";
 const PROMPT_LABEL = "CLI connection prompt";
-const CREATE_KEY_LABEL = "Create the key";
+const CREATE_KEY_LABEL = "Create key";
 
 /**
  * The funnel names, restated rather than imported.
@@ -353,7 +353,7 @@ describe("a key issued from the checklist row", () => {
 		await waitFor(() => expect(promptElement()).not.toBeInTheDocument());
 		// ...while the view holding the only copy of the secret is untouched.
 		expect(
-			screen.getByText("Connect Fabric to your coding tool"),
+			screen.getByText("Connect your coding tool"),
 		).toBeInTheDocument();
 	});
 

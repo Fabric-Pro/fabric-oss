@@ -16,9 +16,24 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { getMcpConfigById, getValidAccessToken } from "@repo/database";
 import {
+	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+	parseGitLabOrigin,
+} from "@repo/integrations/gitlab";
+import {
+	GitLabMcpCredentialError,
+	type GitLabMcpFetch,
+	getGitLabMcpTransportAuth,
+	isCachedGitLabClientUsable,
+	isGitLabPersonalMcpConfig,
+} from "./gitlab-credential";
+import {
 	createOAuthClientProvider,
 	OAuthAuthorizationRequiredError,
 } from "./oauth-provider";
+import {
+	checkMcpConfigOrganizationAccess,
+	type McpConfigAccess,
+} from "./organization-access";
 import { assertMcpServerUrlResolved, fetchMcpServer } from "./server-url-guard";
 
 export type McpClientType = Awaited<ReturnType<typeof createMCPClient>>;
@@ -44,6 +59,13 @@ export interface CreateMcpClientOptions {
 	 * including token refresh and re-authorization when needed.
 	 */
 	authProvider?: OAuthClientProvider;
+	/**
+	 * The fetch every transport request goes through. Defaults to
+	 * `fetchMcpServer`. A GitLab personal server passes the fetch from
+	 * `getGitLabMcpTransportAuth`, which keeps its credential on its own
+	 * GitLab origin behind the GitLab outbound guard.
+	 */
+	fetch?: GitLabMcpFetch;
 }
 
 export interface CreateMcpClientForConfigOptions {
@@ -62,6 +84,26 @@ export interface CreateMcpClientForConfigOptions {
 	 * In server contexts, this should throw or signal the need for auth.
 	 */
 	onAuthorizationRequired?: (authUrl: URL) => void | Promise<void>;
+	/**
+	 * The GitLab instance (origin) the caller's request must go to, for a
+	 * caller acting on a project's GitLab PM container (a container id names
+	 * a project on one instance only). A GitLab personal server whose endpoint
+	 * is on any other instance is refused with `McpGitLabOriginMismatchError`
+	 * before a token is read or a connection is made, and a cached client
+	 * bound to another instance is refused before it is used. Other servers
+	 * ignore it.
+	 */
+	expectedGitLabOrigin?: string;
+	/**
+	 * What the caller will do with the client, checked against the config
+	 * owner's current role in `organizationId` before the config is read
+	 * (`checkMcpConfigOrganizationAccess`): `read` for listing tools or
+	 * resources and reading a resource (MCP_READ), `connect` for executing a
+	 * tool (MCP_CONNECT). Defaults to `connect`, so a caller that does not say
+	 * is held to the stricter check. A cached client is re-checked on every
+	 * call. Ignored without an `organizationId` (the personal arm).
+	 */
+	access?: McpConfigAccess;
 }
 
 /**
@@ -92,6 +134,81 @@ export class McpClientError extends Error {
 		this.isRateLimitError = options.isRateLimitError ?? false;
 		this.retryAfter = options.retryAfter;
 		this.originalCause = options.cause;
+	}
+}
+
+/**
+ * A GitLab personal MCP server on another GitLab instance than the caller's
+ * `expectedGitLabOrigin`. Nothing was sent to it, and retrying cannot change
+ * that: the config or the connection has to move back first.
+ */
+export class McpGitLabOriginMismatchError extends McpClientError {
+	constructor(serverName?: string) {
+		super({
+			message: GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
+			code: "GITLAB_PM_ORIGIN_MISMATCH",
+			serverName,
+		});
+		this.name = "McpGitLabOriginMismatchError";
+	}
+}
+
+/**
+ * Refuses, with an `McpClientError` carrying `ORGANIZATION_MEMBERSHIP_REQUIRED`
+ * or `MCP_PERMISSION_DENIED`, a caller whose current organization role does
+ * not allow `access` (default `connect`) on their config in `organizationId`.
+ * A failed permission read rejects with that read's error: it never allows.
+ * No `organizationId` is the personal arm and is not checked.
+ */
+async function assertMcpConfigOrganizationAccess(args: {
+	userId: string;
+	organizationId?: string | null;
+	access?: McpConfigAccess;
+	serverName?: string;
+}): Promise<void> {
+	const refusal = await checkMcpConfigOrganizationAccess(args);
+	if (refusal) {
+		throw new McpClientError({
+			message: refusal.message,
+			code: refusal.code,
+			serverName: args.serverName,
+		});
+	}
+}
+
+/**
+ * The GitLab origin a client for this config connects to: the endpoint's
+ * origin for a GitLab personal server (`null` when the endpoint is not an
+ * allowed GitLab address), `undefined` for every other server. The endpoint
+ * is the one the client is built for (`baseUrl`, else the server default),
+ * and a GitLab personal transport keeps every request on it.
+ */
+function gitlabEndpointOrigin(config: {
+	baseUrl?: string | null;
+	mcpServer?: unknown;
+}): string | null | undefined {
+	const server = config.mcpServer as {
+		key?: string | null;
+		defaultUrl?: string | null;
+	} | null;
+	if (!isGitLabPersonalMcpConfig({ mcpServer: server })) {
+		return undefined;
+	}
+	const checked = parseGitLabOrigin(config.baseUrl || server?.defaultUrl);
+	return checked.ok ? checked.origin : null;
+}
+
+/** Refuses a GitLab client bound to another origin than `expected`. */
+function assertGitLabOriginExpected(
+	expected: string | undefined,
+	actual: string | null | undefined,
+	serverName: string | undefined,
+): void {
+	if (expected === undefined || actual === undefined) {
+		return;
+	}
+	if (actual !== expected) {
+		throw new McpGitLabOriginMismatchError(serverName);
 	}
 }
 
@@ -194,6 +311,7 @@ export async function createMcpClient(
 		headers = {},
 		sessionId,
 		authProvider,
+		fetch: transportFetch = fetchMcpServer,
 	} = options;
 
 	// Validate URL
@@ -253,12 +371,12 @@ export async function createMcpClient(
 				: undefined;
 		return transport === "SSE"
 			? new SSEClientTransport(url, {
-					fetch: fetchMcpServer,
+					fetch: transportFetch,
 					requestInit,
 					authProvider,
 				})
 			: new StreamableHTTPClientTransport(url, {
-					fetch: fetchMcpServer,
+					fetch: transportFetch,
 					requestInit,
 					authProvider,
 				});
@@ -455,12 +573,35 @@ export async function createMcpClient(
  */
 export async function createMcpClientForConfig(
 	options: CreateMcpClientForConfigOptions,
-): Promise<{
+): Promise<McpClientForConfig> {
+	return buildMcpClientForConfig(options, {
+		organizationAccessChecked: false,
+	});
+}
+
+interface McpClientForConfig {
 	client: McpClientType;
 	serverName: string;
 	serverUrl: string;
 	transport: string;
-}> {
+	/** See `gitlabEndpointOrigin`; `undefined` for a non-GitLab server. */
+	gitlabOrigin?: string | null;
+	/**
+	 * For a GitLab personal server over OAuth: the generation of the GitLab
+	 * connection whose token the client carries. `undefined` otherwise.
+	 */
+	gitlabConnectionGeneration?: number;
+}
+
+/**
+ * `createMcpClientForConfig`, with the organization check skipped only when
+ * `getCachedMcpClientForConfig` has just made it for this same call (so an
+ * uncached call pays one permission read, not two).
+ */
+async function buildMcpClientForConfig(
+	options: CreateMcpClientForConfigOptions,
+	internal: { organizationAccessChecked: boolean },
+): Promise<McpClientForConfig> {
 	const {
 		configId,
 		userId,
@@ -472,6 +613,16 @@ export async function createMcpClientForConfig(
 	// Avoid logging config IDs in production
 	if (process.env.NODE_ENV === "development") {
 		console.log("[MCP Client] Creating client for config", { configId });
+	}
+
+	// Before the config (and its credential) is read: the owner must still be
+	// a member of the organization with a role that allows this access.
+	if (!internal.organizationAccessChecked) {
+		await assertMcpConfigOrganizationAccess({
+			userId,
+			organizationId,
+			access: options.access,
+		});
 	}
 
 	const mcpConfig = await getMcpConfigById(configId, {
@@ -494,6 +645,15 @@ export async function createMcpClientForConfig(
 		});
 	}
 
+	// Bound to a GitLab PM container's instance: refuse a GitLab server on
+	// another one before any token is read or anything is connected.
+	const gitlabOrigin = gitlabEndpointOrigin(mcpConfig);
+	assertGitLabOriginExpected(
+		options.expectedGitLabOrigin,
+		gitlabOrigin,
+		mcpConfig.displayName || undefined,
+	);
+
 	// Read before the breaker gate below, which is auth-type scoped.
 	const authType = mcpConfig.authType;
 
@@ -509,7 +669,15 @@ export async function createMcpClientForConfig(
 	// config no longer has — with no user-reachable way to clear it. The edit
 	// path clears the flag on that transition going forward; this scoping is
 	// what rescues rows that already carry a stale one.
-	if (authType === "OAUTH2" && mcpConfig.needsReauth) {
+	// GitLab personal servers carry no credential of their own (see
+	// `./gitlab-credential`): their `needsReauth` column describes a legacy
+	// token copy, not the person's GitLab connection, so it does not gate
+	// them — the connection's own state does, below. Keyed on the server,
+	// not `authType`: an API-key or no-auth config of a GitLab personal
+	// server still resolves through the connection and never sends a key
+	// stored on its row.
+	const isGitLabPersonal = isGitLabPersonalMcpConfig(mcpConfig);
+	if (authType === "OAUTH2" && !isGitLabPersonal && mcpConfig.needsReauth) {
 		throw new McpClientError({
 			message: `Authentication expired for "${mcpConfig.displayName || "MCP server"}". Please re-authenticate in MCP Settings.`,
 			code: "OAUTH_AUTH_REQUIRED",
@@ -530,15 +698,28 @@ export async function createMcpClientForConfig(
 	const serverTransport = mcpServer?.transport?.toUpperCase();
 	const transport = configTransport || serverTransport || "HTTP";
 
-	// Handle STDIO transport via wrapper service
+	// Handle STDIO transport via wrapper service. Not for a GitLab personal
+	// server: the wrapper is handed the config's own stored key, and these
+	// configs hold none — their credential is the person's connection, which
+	// only travels over HTTP to its own GitLab origin.
+	if (transport === "STDIO" && isGitLabPersonal) {
+		throw new McpClientError({
+			message:
+				"GitLab MCP servers connect over HTTP with your GitLab connection; a STDIO transport is not supported for them.",
+			code: "OAUTH_AUTH_REQUIRED",
+			serverName: mcpConfig.displayName || undefined,
+			isAuthError: true,
+		});
+	}
 	if (transport === "STDIO") {
-		return createStdioMcpClientForConfig({
+		const stdio = await createStdioMcpClientForConfig({
 			configId,
 			userId,
 			organizationId,
 			mcpConfig,
 			mcpServer,
 		});
+		return { ...stdio, gitlabOrigin };
 	}
 
 	const serverUrl = mcpConfig.baseUrl || mcpServer?.defaultUrl;
@@ -561,6 +742,49 @@ export async function createMcpClientForConfig(
 		console.log(
 			`[MCP Client] Server: ${serverName}, Auth type: ${authType}, API Key Method: ${apiKeyMethod}`,
 		);
+	}
+
+	// GitLab personal servers: the caller's GitLab connection token as a
+	// bearer header. `getMcpConfigById` above already scoped the config to
+	// this user in this tenant context; `getGitLabMcpTransportAuth` re-checks
+	// ownership, refuses an endpoint on another GitLab origin, and hands back
+	// the fetch that keeps every request on that origin behind the GitLab
+	// outbound guard.
+	if (isGitLabPersonal) {
+		let gitlabAuth: Awaited<ReturnType<typeof getGitLabMcpTransportAuth>>;
+		try {
+			gitlabAuth = await getGitLabMcpTransportAuth({
+				config: mcpConfig,
+				userId,
+				organizationId,
+				endpoint: serverUrl,
+			});
+		} catch (error) {
+			if (error instanceof GitLabMcpCredentialError) {
+				throw new McpClientError({
+					message: error.message,
+					code: "OAUTH_AUTH_REQUIRED",
+					serverName,
+					isAuthError: true,
+					cause: error,
+				});
+			}
+			throw error;
+		}
+		const client = await createMcpClient({
+			serverUrl,
+			transport,
+			headers: { Authorization: `Bearer ${gitlabAuth.accessToken}` },
+			fetch: gitlabAuth.fetch,
+		});
+		return {
+			client,
+			serverName,
+			serverUrl,
+			transport,
+			gitlabOrigin,
+			gitlabConnectionGeneration: gitlabAuth.generation,
+		};
 	}
 
 	// Use AI SDK v7 authProvider for OAuth2 authentication
@@ -592,6 +816,7 @@ export async function createMcpClientForConfig(
 				serverName,
 				serverUrl,
 				transport,
+				gitlabOrigin,
 			};
 		} catch (error) {
 			// Re-throw OAuth authorization required errors
@@ -665,6 +890,7 @@ export async function createMcpClientForConfig(
 			serverName,
 			serverUrl,
 			transport,
+			gitlabOrigin,
 		};
 	} catch (error) {
 		// Enhance error with server name context
@@ -707,6 +933,15 @@ interface CachedMcpClient {
 	serverName: string;
 	serverUrl: string;
 	transport: string;
+	/** The GitLab origin the client is bound to (see `gitlabEndpointOrigin`). */
+	gitlabOrigin?: string | null;
+	/**
+	 * Set for a GitLab personal server's client, which carries the person's
+	 * GitLab connection token as a fixed bearer header: the connection
+	 * generation of that token. Such a client is re-checked before every
+	 * cached use (`isCachedGitLabClientUsable`).
+	 */
+	gitlabConnectionGeneration?: number;
 	createdAt: number;
 	lastUsedAt: number;
 }
@@ -749,6 +984,7 @@ export async function getCachedMcpClientForConfig(
 	serverName: string;
 	serverUrl: string;
 	transport: string;
+	gitlabOrigin?: string | null;
 	fromCache: boolean;
 }> {
 	const {
@@ -758,13 +994,94 @@ export async function getCachedMcpClientForConfig(
 		forceNew = false,
 		redirectUri,
 		onAuthorizationRequired,
+		expectedGitLabOrigin,
+		access,
 	} = options;
 	const cacheKey = getMcpCacheKey(configId, userId, organizationId);
+	// Set once this call has passed the organization check, so a client built
+	// below (after a cached one was dropped) does not ask again.
+	let organizationAccessChecked = false;
 
 	// Check cache first (unless forcing new)
 	if (!forceNew) {
-		const cached = mcpClientCache.get(cacheKey);
+		let cached = mcpClientCache.get(cacheKey);
+		// Every server's cached client is re-checked against the owner's
+		// current organization role before it is used: membership or a role
+		// can be lost while the client sits in the cache. A refused (or
+		// unprovable: the read failed) client is closed and dropped, and the
+		// call fails as an uncached call would.
 		if (cached) {
+			try {
+				await assertMcpConfigOrganizationAccess({
+					userId,
+					organizationId,
+					access,
+					serverName: cached.serverName,
+				});
+				organizationAccessChecked = true;
+			} catch (error) {
+				// Only this entry: a concurrent call may already have
+				// replaced it with a freshly built client.
+				if (mcpClientCache.get(cacheKey) === cached) {
+					mcpClientCache.delete(cacheKey);
+				}
+				try {
+					await cached.client.close();
+				} catch {
+					// Ignore close errors
+				}
+				throw error;
+			}
+		}
+		// A GitLab personal server's client keeps the token it was built
+		// with for the whole cache lifetime. Once the caller has left the
+		// config's organization, the config is turned off (the tile's
+		// Delete), or the connection is disconnected, needs reconnecting or
+		// was replaced by a reconnect, that client must not be used again:
+		// it is closed and dropped here, and the connection is built anew
+		// below, which refuses a non-member, a disabled config or an
+		// unusable connection with the same errors as an uncached call. A
+		// check that could not be made (a read failed) drops it the same
+		// way: an unproven client is never reused.
+		if (cached && cached.gitlabConnectionGeneration !== undefined) {
+			let usable = false;
+			try {
+				usable = await isCachedGitLabClientUsable({
+					configId,
+					userId,
+					organizationId,
+					generation: cached.gitlabConnectionGeneration,
+				});
+			} catch (error) {
+				console.warn(
+					`[MCP Client Cache] Could not re-check the cached GitLab client for ${cached.serverName}; dropping it`,
+					error instanceof Error ? error.message : error,
+				);
+			}
+			if (!usable) {
+				// Only this entry: a concurrent call may already have
+				// replaced it with a freshly built client.
+				if (mcpClientCache.get(cacheKey) === cached) {
+					mcpClientCache.delete(cacheKey);
+				}
+				try {
+					await cached.client.close();
+				} catch {
+					// Ignore close errors
+				}
+				cached = undefined;
+			}
+		}
+		if (cached) {
+			// A cached client stays bound to the instance it was built for,
+			// even after the config or the connection moved. Refuse it for a
+			// caller bound elsewhere before it is used (the health check
+			// below already sends a request).
+			assertGitLabOriginExpected(
+				expectedGitLabOrigin,
+				cached.gitlabOrigin,
+				cached.serverName,
+			);
 			const age = Date.now() - cached.createdAt;
 			const timeSinceLastUse = Date.now() - cached.lastUsedAt;
 
@@ -781,6 +1098,7 @@ export async function getCachedMcpClientForConfig(
 						serverName: cached.serverName,
 						serverUrl: cached.serverUrl,
 						transport: cached.transport,
+						gitlabOrigin: cached.gitlabOrigin,
 						fromCache: true,
 					};
 				}
@@ -805,6 +1123,7 @@ export async function getCachedMcpClientForConfig(
 						serverName: cached.serverName,
 						serverUrl: cached.serverUrl,
 						transport: cached.transport,
+						gitlabOrigin: cached.gitlabOrigin,
 						fromCache: true,
 					};
 				} catch {
@@ -858,13 +1177,18 @@ export async function getCachedMcpClientForConfig(
 
 	// Create new client with proper error handling
 	try {
-		const result = await createMcpClientForConfig({
-			configId,
-			userId,
-			organizationId,
-			redirectUri,
-			onAuthorizationRequired,
-		});
+		const result = await buildMcpClientForConfig(
+			{
+				configId,
+				userId,
+				organizationId,
+				redirectUri,
+				onAuthorizationRequired,
+				expectedGitLabOrigin,
+				access,
+			},
+			{ organizationAccessChecked },
+		);
 
 		// Cache it
 		mcpClientCache.set(cacheKey, {
@@ -872,6 +1196,8 @@ export async function getCachedMcpClientForConfig(
 			serverName: result.serverName,
 			serverUrl: result.serverUrl,
 			transport: result.transport,
+			gitlabOrigin: result.gitlabOrigin,
+			gitlabConnectionGeneration: result.gitlabConnectionGeneration,
 			createdAt: Date.now(),
 			lastUsedAt: Date.now(),
 		});

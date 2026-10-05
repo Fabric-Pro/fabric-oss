@@ -54,7 +54,10 @@ export const revokeOAuthConnectionProcedure = tenantProtectedProcedure
 				id: revoked.clientId,
 				name: revoked.clientName,
 			},
-			metadata: { consentId: input.consentId },
+			metadata: {
+				consentId: input.consentId,
+				...(revoked.projectId ? { projectId: revoked.projectId } : {}),
+			},
 		});
 
 		return { success: true as const };

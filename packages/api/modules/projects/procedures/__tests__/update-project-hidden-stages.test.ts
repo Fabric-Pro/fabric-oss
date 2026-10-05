@@ -19,6 +19,8 @@ vi.mock("@repo/database", async () => ({
 			findUnique: vi.fn().mockResolvedValue({
 				repositoryUrl: null,
 				pmTerminalStatuses: [],
+				// The handler's tenant is the project's own organization.
+				organizationId: "org-1",
 			}),
 		},
 	},
@@ -171,6 +173,8 @@ describe("updateProjectProcedure — hidden stage configurations", () => {
 				hiddenMaturationStatuses: ["DISCOVERY"],
 			}),
 			"org-1",
+			// No PM field is written: the save is not conditional on it.
+			undefined,
 		);
 		expect(mockRecordAudit).toHaveBeenCalledWith(
 			context,
@@ -223,6 +227,8 @@ describe("updateProjectProcedure — hidden stage configurations", () => {
 				hiddenMaturationStatuses: ["DISCOVERY", "TO_DO"],
 			}),
 			"org-1",
+			// No PM field is written: the save is not conditional on it.
+			undefined,
 		);
 	});
 

@@ -42,6 +42,7 @@ import {
 	showSyncError,
 	showSyncSuccess,
 } from "../hooks/useAgentConfigPersistence";
+import { integrationCredentialBadge } from "../lib/integration-credential-badge";
 
 // Fabric AI tools available for semantic routing
 const FABRIC_AI_TOOLS = [
@@ -373,6 +374,8 @@ interface Integration {
 	name: string;
 	isActive: boolean;
 	hasCredentials: boolean;
+	/** GitLab: a stored connection whose grant died needs a reconnect. */
+	connectionState?: "connected" | "needs-reconnect" | "not-connected";
 }
 
 interface OrchestratorConfigPanelProps {
@@ -622,6 +625,7 @@ export function OrchestratorConfigPanel({
 					integration.provider,
 				isActive: integration.isActive,
 				hasCredentials: integration.hasCredentials,
+				connectionState: integration.connectionState,
 			}));
 	}, [integrationsData]);
 
@@ -1568,12 +1572,16 @@ export function OrchestratorConfigPanel({
 															{integration.name}
 														</span>
 													)}
-													{!integration.hasCredentials && (
+													{integrationCredentialBadge(
+														integration,
+													) && (
 														<Badge
 															variant="outline"
 															className="text-[9px] h-4 px-1 flex-shrink-0 text-amber-600"
 														>
-															No creds
+															{integrationCredentialBadge(
+																integration,
+															)}
 														</Badge>
 													)}
 												</div>

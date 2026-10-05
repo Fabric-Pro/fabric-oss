@@ -8,6 +8,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	gitlabConnectionRowStatus,
+	readGitLabStateForList,
+} from "../../../integrations/lib/gitlab-list-status";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 /**
@@ -102,6 +106,15 @@ export const listIntegrationStatusProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// GitLab first: reading the person's connection classifies a legacy
+		// row, so the list below sees its current state, and that state
+		// decides what the GitLab row reports.
+		const gitlabState = await readGitLabStateForList({
+			userId: user.id,
+			organizationId,
+			provider: input.provider,
+		});
+
 		const integrations = await listWorkflowIntegrationsInTenant({
 			userId: user.id,
 			organizationId,
@@ -119,6 +132,8 @@ export const listIntegrationStatusProcedure = tenantProtectedProcedure
 					name: string;
 					isActive: boolean;
 					credentials: string;
+					userId: string;
+					workflowId: string | null;
 				}) => {
 					let hasCredentials = false;
 
@@ -154,12 +169,26 @@ export const listIntegrationStatusProcedure = tenantProtectedProcedure
 						);
 					}
 
+					// The caller's own GitLab connection row reports the
+					// connection's state (a row whose grant is dead has
+					// credentials but is not connected).
+					const gitlab = gitlabConnectionRowStatus(
+						integration,
+						user.id,
+						gitlabState,
+					);
+
 					return {
 						id: integration.id,
 						provider: integration.provider,
 						name: integration.name,
 						isActive: integration.isActive,
-						hasCredentials,
+						hasCredentials: gitlab
+							? gitlab.hasCredentials
+							: hasCredentials,
+						...(gitlab
+							? { connectionState: gitlab.connectionState }
+							: {}),
 					};
 				},
 			),

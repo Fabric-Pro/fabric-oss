@@ -7,6 +7,10 @@ import {
 } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
 import { getSession } from "@saas/auth/lib/server";
+import {
+	authorizeMcpConfigRequest,
+	type McpConfigAction,
+} from "@saas/mcp/lib/authorize-mcp-config-request";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
@@ -65,6 +69,23 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// Checked on every request, before the cache is consulted, so a cached
+		// client never outlives the caller's membership. Listing and reading
+		// need MCP_READ; anything else executes a tool and needs MCP_CONNECT.
+		const isReadAction =
+			action === "list_tools" ||
+			action === "listResources" ||
+			action === "readResource";
+		const mcpAction: McpConfigAction = isReadAction ? "read" : "connect";
+		const authorization = await authorizeMcpConfigRequest({
+			userId: session.user.id,
+			organizationId: resolvedOrganizationId,
+			action: mcpAction,
+		});
+		if (!authorization.ok) {
+			return authorization.response;
+		}
+
 		// Use cached MCP client for connection reuse across requests.
 		// Include redirectUri for OAuth2 token refresh support.
 		const siteUrl =
@@ -76,6 +97,8 @@ export async function POST(request: NextRequest) {
 			userId: session.user.id,
 			organizationId: resolvedOrganizationId,
 			redirectUri,
+			// The client factory re-checks the same action, on a cached client too.
+			access: mcpAction,
 		};
 
 		// Get cached client and discover tools, with one retry on stale connection.

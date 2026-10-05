@@ -1,38 +1,29 @@
 "use client";
 
-import type { InstructionRejection } from "@repo/database";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
+import { useDiscardUpload } from "@saas/projects/hooks/use-discard-upload";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
+import { useMigrationPauseReason } from "@saas/projects/hooks/use-migration-pause-reason";
+import { canDiscardUpload } from "@saas/projects/lib/instructions-discardable-upload";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
-import { Button } from "@ui/components/button";
-import { Progress } from "@ui/components/progress";
-import {
-	AlertTriangleIcon,
-	CheckIcon,
-	ClipboardCheckIcon,
-	DownloadIcon,
-	FilePlusIcon,
-	GitBranchIcon,
-	HistoryIcon,
-	Loader2Icon,
-	PlugIcon,
-	RefreshCwIcon,
-	SettingsIcon,
-	UploadIcon,
-} from "lucide-react";
+import { CheckIcon, Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import {
-	checkPhaseMessageKey,
-	checkProgressMessageKey,
-	snapshotCheckProgress,
-} from "../../lib/instructions-check-progress";
+	type BaseComparison,
+	changeMarks,
+} from "../../lib/instructions-base-changes";
+import { defaultSelectedPath } from "../../lib/instructions-default-file";
+import { leftOutListing } from "../../lib/instructions-left-out";
+import {
+	countAwaitingDecision,
+	PROPOSALS_PAGE_SIZE,
+} from "../../lib/instructions-proposal-review";
 import {
 	localSetupRouteFor,
 	offersSyncFromRepository,
@@ -40,106 +31,37 @@ import {
 	type RepositorySyncControls,
 	shortCommit,
 } from "../../lib/instructions-repository-sync";
+import type { InstructionsSnapshot } from "../../lib/instructions-snapshot";
+import { supersededEdit } from "../../lib/instructions-superseded";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
-import {
-	InstructionFindingsTable,
-	SCAN_FAILED_REASON,
-} from "./InstructionFindingsTable";
 import { InstructionProposals } from "./InstructionProposals";
+import {
+	InstructionsActionBar,
+	type InstructionsActions,
+} from "./InstructionsActionBar";
+import { InstructionsCheckingStatus } from "./InstructionsCheckingStatus";
+import { InstructionsCommits } from "./InstructionsCommits";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
+import { InstructionsDeferredScanAlerts } from "./InstructionsDeferredScanAlerts";
 import { InstructionsFailedChecksBanner } from "./InstructionsFailedChecksBanner";
 import { InstructionsHistory } from "./InstructionsHistory";
-import { InstructionsRejectedBanner } from "./InstructionsRejectedBanner";
+import {
+	InstructionsRejectedBanner,
+	REJECTED_BANNER_ID,
+} from "./InstructionsRejectedBanner";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
+import { InstructionsStatusStrip } from "./InstructionsStatusStrip";
+import { InstructionsSupersededNotice } from "./InstructionsSupersededNotice";
 import { InstructionsTree, type TreeFile } from "./InstructionsTree";
+import { RepositoryPublishedSummary } from "./RepositoryPublishedSummary";
 import { RepositorySyncRuns } from "./RepositorySyncRuns";
 import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
 import { RepositorySyncStatus } from "./RepositorySyncStatus";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
-/**
- * `rejection` and `settingsFrozen` are read straight off a Prisma `Json`
- * column (see `ProjectInstructionSnapshot` in schema.prisma), so the oRPC
- * client infers them as generic JSON rather than their actual shape. This
- * type states the real shape the scan/validation activity writes; the
- * caller (`CodingInstructionsTab.tsx`) casts the raw query result into it
- * once, at the boundary, rather than every read site re-deriving it.
- */
-export type InstructionsSnapshot = {
-	id: string;
-	version: number;
-	status: string;
-	source: string;
-	/** A synced version's branch and commit, and the integration it came from. */
-	sourceRef?: string | null;
-	sourceCommitSha?: string | null;
-	repositoryIntegrationId?: string | null;
-	fileCount: number;
-	excludedCount: number;
-	createdAt: string | Date;
-	rejection?: InstructionRejection[] | null;
-	user?: { id: string; name: string | null } | null;
-	settingsFrozen?: { layer?: string } | null;
-	/** Set when this version came from an in-tab edit rather than an upload. */
-	baseSnapshotId?: string | null;
-	/**
-	 * The version this one was edited from. Unlike `baseSnapshotId`, which is
-	 * `SetNull` in the database, this survives the base being deleted or
-	 * pruned — so it, not the id, is what says a version is an edit at all.
-	 */
-	baseVersion?: number | null;
-	/** Whether this version meant to publish itself when its checks passed. */
-	publishOnReady?: boolean;
-	/**
-	 * When this version last held the published pointer, and null for one
-	 * that never has. Nothing clears it, so it is the difference between an
-	 * edit that never published and one that published and was then replaced
-	 * — which is what the superseded line below turns on.
-	 */
-	publishedAt?: string | Date | null;
-	/**
-	 * Proposal lifecycle is rendered in the proposal review dialog. A
-	 * suggestion's pull request settles as MERGED or CLOSED (Fizzy #2563).
-	 */
-	proposalStatus?:
-		| "PENDING"
-		| "APPROVED"
-		| "REJECTED"
-		| "MERGED"
-		| "CLOSED"
-		| null;
-	/**
-	 * Publish first, scan afterwards (Fizzy #2737). `publishBeforeScan` is the
-	 * member's opt-in; `deferredScanStatus` is null for every ordinary version
-	 * and otherwise the scan's state, and `deferredScanFindings` carries its
-	 * findings in the same shape as `rejection`.
-	 */
-	publishBeforeScan?: boolean;
-	deferredScanStatus?:
-		| "PENDING"
-		| "PASSED"
-		| "ISSUES_FOUND"
-		| "INCOMPLETE"
-		| null;
-	deferredScanFindings?: InstructionRejection[] | null;
-	/** When the version became readable; what a pending scan is dated from. */
-	readyAt?: string | Date | null;
-	/**
-	 * How far the running checks have got (`recordInstructionSnapshotProgress`):
-	 * the pass, and the files it has fully decided out of the files it has to
-	 * decide. Null when nothing has reported yet, and for runs that started
-	 * before progress existed.
-	 */
-	progressPhase?: "CHECKING" | "SAVING" | "SCANNING" | null;
-	progressDone?: number | null;
-	progressTotal?: number | null;
-};
-
-function sourceLabel(source: string, t: (key: string) => string): string {
-	return source === "REPOSITORY" ? t("sourceRepository") : t("sourceUpload");
-}
+export type { InstructionsSnapshot };
 
 function reasonLabel(
 	layer: string | undefined,
@@ -175,10 +97,16 @@ export function InstructionsPublishedView({
 	repositorySync,
 	publishedUnknown = false,
 	awaitingPublish = false,
+	readOnlyMode = false,
+	onCommitted,
+	syncingCommit = null,
+	notice = null,
 }: {
 	projectId: string;
-	/** Named in the "Connect your agent" starter instruction. */
+	/** Named in the "Connect your agent" dialog. */
 	projectName: string;
+	/** A notice the tab puts above everything else, such as a failed settings read. */
+	notice?: ReactNode;
 	published: InstructionsSnapshot | null;
 	snapshots: InstructionsSnapshot[];
 	onReplaceClick: () => void;
@@ -197,6 +125,16 @@ export function InstructionsPublishedView({
 	 * never left up for a version whose publish was refused.
 	 */
 	awaitingPublish?: boolean;
+	/**
+	 * The project is in Read-only mode, which refuses every write to its
+	 * connected sources: no commit to the branch, however the member is
+	 * permitted. A UI gate; the server refuses it too.
+	 */
+	readOnlyMode?: boolean;
+	/** A commit landed on the synced branch: the tab keeps reading until Fabric's copy has it. */
+	onCommitted?: (commit: { sha: string; ref: string }) => void;
+	/** A commit made from this tab that Fabric's copy has not taken yet. */
+	syncingCommit?: { sha: string; ref: string } | null;
 	/**
 	 * Whether this viewer may change the published files. A UI gate only:
 	 * `derive` re-checks `INSTRUCTION_CREATE` server-side on every save.
@@ -240,6 +178,9 @@ export function InstructionsPublishedView({
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [connectOpen, setConnectOpen] = useState(false);
 	const [compareOpen, setCompareOpen] = useState(false);
+	// One switch for the two places that offer the left-out files: the status
+	// strip's Show/Hide and the tree footer's toggle.
+	const [leftOutShown, setLeftOutShown] = useState(false);
 	// Mirrors ProjectReadinessPanel: minting must fail closed. With no
 	// organization id there is nothing to mint the key against. An invited
 	// guest views this project under the HOST organization's thin record
@@ -249,6 +190,13 @@ export function InstructionsPublishedView({
 	const { organizationId, organizationSlug, isGuest } =
 		useOrganizationContext();
 	const canConnectAgent = Boolean(organizationId) && !isGuest;
+	// A move of the uploaded instructions into a repository pauses every way of
+	// changing them (Fizzy #2878 §9); the controls stay and say why.
+	const pausedReason = useMigrationPauseReason(
+		Boolean(repositorySync?.state.migration),
+		repositorySync?.migration?.read?.migration ?? null,
+	);
+	const discardUpload = useDiscardUpload({ projectId, onChanged });
 
 	// Editing is offered only on a published version: a derivation needs a
 	// READY base with promoted objects to inherit, and the tab only ever shows
@@ -258,29 +206,20 @@ export function InstructionsPublishedView({
 	// Approve and Reject stay FABRIC-only: a repository-backed project's
 	// suggestions are decided on their pull requests (Fizzy #2563 spec §12).
 	const canReviewProposals = Boolean(canReview) && !repositoryBacked;
+	// How many proposals wait for this viewer's decision, for the Review button
+	// in the header. The page the proposals dialog opens on, so both read one
+	// cache entry; the tab's invalidations refresh it with the rest.
+	const awaitingReview = useQuery({
+		...orpc.projects.instructions.proposals.list.queryOptions({
+			input: { projectId, limit: PROPOSALS_PAGE_SIZE },
+		}),
+		enabled: canReviewProposals,
+		select: (page) => countAwaitingDecision(page.items),
+	});
 	// Publishing before the scan (Fizzy #2737) is a direct, publishing save,
 	// so it needs both what an edit needs and the publish permission, which
 	// is what `canReview` carries (INSTRUCTION_UPDATE).
 	const canPublishBeforeScan = editable && Boolean(canReview);
-	// The published version's own deferred scan, read off the pointer row so
-	// the alert follows the query that polls it (see `CodingInstructionsTab`).
-	const deferredScan = published?.deferredScanStatus ?? null;
-	// An INCOMPLETE scan names each file that defeated its last attempt
-	// (`scan_failed`) and keeps whatever it established around them.
-	const incompleteFindings =
-		deferredScan === "INCOMPLETE"
-			? (published?.deferredScanFindings ?? [])
-			: [];
-	// Whether it found anything besides the files it could not read, which is
-	// what decides between "found possible secrets" and "nothing was found".
-	// A truncation sentinel counts as found: the rows it stands for are not
-	// here to say otherwise, and the stronger warning is the safe mistake.
-	const incompleteFoundSomething = incompleteFindings.some(
-		(r) => r.reason !== SCAN_FAILED_REASON,
-	);
-	const incompleteNamesUnreadable = incompleteFindings.some(
-		(r) => r.reason === SCAN_FAILED_REASON,
-	);
 	// A repository-backed proposal opens a pull request into the configured
 	// repository, so it is offered only once repository mode is CONFIRMED and
 	// a configuration names that repository: `repositoryBacked` fails closed
@@ -299,6 +238,15 @@ export function InstructionsPublishedView({
 				ref: repositoryConfiguration.ref,
 			}
 		: null;
+	// "Commit to <branch>" (Fizzy #2878 §10): a member with write rights on a
+	// repository project whose branch is confirmed commits straight to it, as
+	// they would with git, instead of saving a version. The server re-checks
+	// INSTRUCTION_CREATE, and a reader never gets it whatever the opt-in.
+	const canCommit =
+		Boolean(canEdit) &&
+		!readOnlyMode &&
+		repositoryTarget !== null &&
+		Boolean(published);
 	const canPropose =
 		Boolean(published) &&
 		(repositoryBacked
@@ -331,8 +279,14 @@ export function InstructionsPublishedView({
 	// from REJECTED, which is a verdict about the files: FAILED means the
 	// check itself broke, the staged bytes are still there, and re-running
 	// `finalize` is a real recovery rather than a re-upload.
+	//
+	// Not for a direct commit: its watcher reports a failed commit where the
+	// person made it, and "Try again" here would re-check files nobody uploads.
 	const failed =
-		newest && newest.status === "FAILED" && newerThanPublished
+		newest &&
+		newest.status === "FAILED" &&
+		newerThanPublished &&
+		newest.proposalDestination !== "REPOSITORY_COMMIT"
 			? newest
 			: null;
 	// `finalize` re-checks the staged files in place, which serves an upload
@@ -347,9 +301,6 @@ export function InstructionsPublishedView({
 		newest && RECEIVING_STATUSES.has(newest.status) && newerThanPublished
 			? newest
 			: null;
-	// Where the checks have got, from the snapshot's own progress columns; null
-	// (and so today's plain "Checking your upload") whenever they are unset.
-	const checkProgress = checking ? snapshotCheckProgress(checking) : null;
 	// The checks passed and the tab is waiting for the pointer to move onto
 	// this version. Not for a proposal, which publishes only through review.
 	const publishing =
@@ -358,48 +309,11 @@ export function InstructionsPublishedView({
 		newest !== null &&
 		newest.status === "READY" &&
 		newerThanPublished;
-	// An edit that passed its checks but did NOT publish, because the version
-	// it was made from stopped being the published one while it was being
-	// checked. The auto-publish is a fast-forward for exactly this reason
-	// (`publishInstructionSnapshot`, `requireBaseUnmoved`): publishing it
-	// would have reverted whoever got there first, whose change this edit
-	// never saw. The edit itself is intact and sits in History.
-	//
-	// `baseVersion` is what makes this an EDIT — `baseSnapshotId` is null
-	// once the base has been deleted or pruned, which is one of the ways the
-	// fast-forward is refused and precisely the case with nothing else to
-	// explain it.
-	//
-	// Deliberately only about the NEWEST row. If the two edits finish out of
-	// version order the stranded one is not the newest and says nothing here
-	// — History still shows it as an unpublished version, which is the
-	// durable answer; this line is the cheap one for the ordinary case.
-	//
-	// `publishedAt == null` is what keeps a ROLLBACK out of this line. After
-	// a rollback from v9 to v7, v9 is still the newest READY row, is still
-	// newer than the pointer, and its base is no longer published — every
-	// condition above holds — but it was not stranded: it published, and a
-	// person deliberately replaced it. Telling them it "was not published"
-	// would be false, and would invite them to re-publish something they had
-	// just chosen to leave behind.
-	const supersededCandidate =
-		newest &&
-		newest.status === "READY" &&
-		newerThanPublished &&
-		newest.publishOnReady !== false &&
-		typeof newest.baseVersion === "number" &&
-		newest.baseSnapshotId !== published?.id
-			? newest
-			: null;
-	const superseded =
-		supersededCandidate &&
-		(supersededCandidate.publishedAt ?? null) === null &&
-		typeof supersededCandidate.baseVersion === "number"
-			? {
-					version: supersededCandidate.version,
-					baseVersion: supersededCandidate.baseVersion,
-				}
-			: null;
+	const superseded = supersededEdit({
+		newest,
+		published,
+		newerThanPublished,
+	});
 	const rejectionRows = rejected?.rejection;
 	const settingsLayer = published?.settingsFrozen?.layer;
 	const syncConfigured = repositorySync?.state.configured ?? null;
@@ -417,12 +331,15 @@ export function InstructionsPublishedView({
 	);
 	// Named only when the published version came from the integration still
 	// configured; a version synced before a re-point says "the repository".
-	const summaryRepository =
+	const publishedRepository =
 		syncConfigured &&
 		published?.repositoryIntegrationId ===
 			syncConfigured.repositoryIntegrationId
 			? `${syncConfigured.repositoryOwner}/${syncConfigured.repositoryName}`
-			: t("repositoryUnknown");
+			: null;
+	const summaryRepository = publishedRepository ?? t("repositoryUnknown");
+	const leftOutFiles = published?.excludedPaths ?? [];
+	const leftOut = leftOutListing(published?.excludedCount ?? 0, leftOutFiles);
 
 	// listFiles is only ever queried here against the PUBLISHED snapshot,
 	// which is always READY, so the server always returns the full per-file
@@ -435,26 +352,27 @@ export function InstructionsPublishedView({
 		enabled: Boolean(published),
 	});
 	const treeFiles = (files.data ?? []) as TreeFile[];
+	const treePaths = new Set(treeFiles.map((file) => file.path));
 	// The selection is a PATH, and a path outlives the version it was chosen
 	// in: a Delete file publishes a new version without that path, the poll
 	// swaps the version in, and the pane went on asking the new version for
 	// a file it does not have ("Could not load this file"). So a path counts
 	// as selected only while the version on screen lists it; otherwise the
-	// pane shows the pick-a-file prompt. Derived rather than reset in an
-	// effect: nothing has to run after render, and a path that comes back
-	// in a later version is simply selected again.
+	// tab opens on the project's entry file (root CLAUDE.md, else AGENTS.md),
+	// and shows the pick-a-file prompt when there is neither. Derived rather
+	// than reset in an effect: nothing has to run after render, and a path that
+	// comes back in a later version is simply selected again.
 	//
 	// Gated on the list having LOADED, not merely on `files.data`: between a
 	// version change and its list arriving `data` is undefined, and reading
 	// that as "no files" flashed the pick-a-file prompt at someone whose file
 	// was about to turn out to still be there.
 	const fileListLoaded = files.isSuccess;
-	const selectedFile =
-		fileListLoaded &&
-		selected !== null &&
-		treeFiles.some((file) => file.path === selected)
+	const selectedFile = !fileListLoaded
+		? null
+		: selected !== null && treeFiles.some((file) => file.path === selected)
 			? selected
-			: null;
+			: defaultSelectedPath(treeFiles);
 	// The folder a new file lands in by default — the selected file's own
 	// folder, which is where someone reading `.claude/skills/review/SKILL.md`
 	// and pressing "Add file" means to put it. From the EFFECTIVE selection:
@@ -465,13 +383,14 @@ export function InstructionsPublishedView({
 
 	// What this published version changed relative to the version it was
 	// EDITED FROM. Only an edit has a base at all; an uploaded folder answers
-	// no such question, so the line simply does not appear for one.
+	// no such question, so the strip's "Since version" fact and the tree's
+	// markers simply do not appear for one.
 	//
 	// `retry: false` and a silent failure on purpose: `baseSnapshotId` is
 	// `SetNull`, and a base that was deleted or pruned out of the kept window
 	// makes `compare` 404 — a normal, expected state for an old version, not
-	// something to retry or to show an error about. The summary above it is
-	// the page's real content and stays whole either way.
+	// something to retry or to show an error about. The rest of the page is
+	// its real content and stays whole either way.
 	const baseSnapshotId = published?.baseSnapshotId ?? null;
 	const changedFromBase = useQuery({
 		...orpc.projects.instructions.compare.queryOptions({
@@ -484,14 +403,8 @@ export function InstructionsPublishedView({
 		enabled: Boolean(baseSnapshotId) && Boolean(published),
 		retry: false,
 	});
-	const baseComparison = changedFromBase.data as
-		| {
-				from: { version: number };
-				added: unknown[];
-				removed: unknown[];
-				changed: unknown[];
-		  }
-		| undefined;
+	const baseComparison = changedFromBase.data as BaseComparison | undefined;
+	const marks = changeMarks(baseComparison);
 
 	const retry = useMutation(
 		orpc.projects.instructions.finalize.mutationOptions({
@@ -513,8 +426,96 @@ export function InstructionsPublishedView({
 		}),
 	);
 
+	// The status block's "See findings": take the reader to the rejected
+	// banner that lists them.
+	function seeFindings() {
+		const banner = document.getElementById(REJECTED_BANNER_ID);
+		banner?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+		banner?.focus();
+	}
+
+	const actions: InstructionsActions = {
+		upload: editable
+			? {
+					published: Boolean(published),
+					onClick: onReplaceClick,
+					pausedReason,
+				}
+			: undefined,
+		history: {
+			onOpen: () => setHistoryOpen(true),
+			commits: repositoryConfiguration !== null,
+		},
+		download: published
+			? {
+					pending: download.isPending,
+					onDownload: () =>
+						download.mutate({
+							projectId,
+							snapshotId: published.id,
+						}),
+				}
+			: undefined,
+		proposals: canBrowseProposals
+			? {
+					label: repositoryBacked
+						? "suggestionsButton"
+						: canReviewProposals
+							? "reviewProposalsButton"
+							: "proposalsButton",
+					onOpen: () => setProposalsOpen(true),
+					awaitingReview: canReviewProposals
+						? (awaitingReview.data ?? 0)
+						: 0,
+				}
+			: undefined,
+		syncNow:
+			repositorySync && offersSyncNow(repositorySync.state)
+				? {
+						running: repositorySync.state.running,
+						busy: syncBusy,
+						onSync: repositorySync.onSyncNow,
+					}
+				: undefined,
+		syncFromRepository:
+			repositorySync && offersSyncFromRepository(repositorySync.state)
+				? { onOpen: repositorySync.onConfigure }
+				: undefined,
+		// A repository-backed project is never `editable` (it has no versions
+		// to save). Someone who may commit adds a file to the branch; anyone
+		// else can only suggest it as a pull request.
+		addFile: canCommit
+			? { mode: "add", onOpen: () => setAddFileOpen(true), pausedReason }
+			: canPropose && repositoryTarget
+				? {
+						mode: "suggest",
+						onOpen: () => setAddFileOpen(true),
+						pausedReason,
+					}
+				: editable || canPropose
+					? {
+							mode: editable ? "add" : "propose",
+							onOpen: () => setAddFileOpen(true),
+							pausedReason,
+						}
+					: undefined,
+		settings: { onOpen: () => setSettingsOpen(true) },
+	};
+
+	// The repository's sync runs, listed under History (or Commits) as they
+	// have always been.
+	const syncRunsList =
+		repositorySync &&
+		(repositorySync.state.configured || repositorySync.state.latestRun) ? (
+			<RepositorySyncRuns
+				projectId={projectId}
+				running={repositorySync.state.running}
+			/>
+		) : null;
+
 	return (
 		<div className="flex h-full min-h-[600px] flex-col gap-4">
+			{notice}
 			{/* Wraps rather than squeezes: the action row outgrew the space
 			    beside the heading, and with the actions unshrinkable the
 			    heading column collapsed to its minimum width, breaking the
@@ -535,323 +536,124 @@ export function InstructionsPublishedView({
 									className="size-3"
 									aria-hidden="true"
 								/>
-								{t("publishedBadge", {
-									version: published.version,
-								})}
+								{published.source === "REPOSITORY" &&
+								published.sourceRef &&
+								published.sourceCommitSha
+									? t("publishedBadgeRepository", {
+											ref: published.sourceRef,
+											sha7:
+												shortCommit(
+													published.sourceCommitSha,
+												) ?? "",
+										})
+									: t("publishedBadge", {
+											version: published.version,
+										})}
 							</span>
 						) : null}
 					</div>
-					{published ? (
-						<p className="text-muted-foreground">
-							{published.source === "REPOSITORY" &&
-							published.sourceRef
-								? t("repositorySummary", {
-										repository: summaryRepository,
-										ref: published.sourceRef,
-										commit:
-											shortCommit(
-												published.sourceCommitSha,
-											) ?? "",
-										name:
-											published.user?.name ??
-											t("anonymousUser"),
-										time: formatRelativeTime(
-											published.createdAt,
-										),
-										fileCount:
-											published.fileCount.toLocaleString(),
-										excludedCount:
-											published.excludedCount.toLocaleString(),
-										reason: reasonLabel(settingsLayer, t),
-									})
-								: t("publishedSummary", {
-										name:
-											published.user?.name ??
-											t("anonymousUser"),
-										time: formatRelativeTime(
-											published.createdAt,
-										),
-										source: sourceLabel(
-											published.source,
-											t,
-										),
-										fileCount:
-											published.fileCount.toLocaleString(),
-										excludedCount:
-											published.excludedCount.toLocaleString(),
-										reason: reasonLabel(settingsLayer, t),
-									})}
-						</p>
-					) : checking || publishing ? null : (
+					{published || checking || publishing ? null : (
 						<p className="text-muted-foreground">
 							{t("emptySummary")}
 						</p>
 					)}
-					{baseComparison ? (
-						<div className="flex flex-wrap items-center gap-2">
-							<p className="text-muted-foreground text-sm">
-								{baseComparison.added.length === 0 &&
-								baseComparison.removed.length === 0 &&
-								baseComparison.changed.length === 0
-									? t("noChangesFromBase", {
-											baseVersion:
-												baseComparison.from.version,
-										})
-									: t("changedInThisVersion", {
-											baseVersion:
-												baseComparison.from.version,
-											added: baseComparison.added.length,
-											removed:
-												baseComparison.removed.length,
-											changed:
-												baseComparison.changed.length,
-										})}
-							</p>
-							{baseComparison.added.length > 0 ||
-							baseComparison.removed.length > 0 ||
-							baseComparison.changed.length > 0 ? (
-								<Button
-									variant="link"
-									className="h-auto px-0"
-									onClick={() => setCompareOpen(true)}
-								>
-									{t("compareButton")}
-								</Button>
-							) : null}
-						</div>
-					) : null}
-					{/* Rendered outside the published/empty choice above, not
-					    as a third branch of it: a REPLACE upload is checked
-					    while the previous version is still published, so as a
-					    branch this line was unreachable in the one case that
-					    needs it and the tab looked untouched until the poll
-					    swapped the new version in. `aria-live` because it
-					    appears on a poll, with no interaction to announce it.
-					    With nothing published yet it replaces the empty-state
-					    line rather than sitting under it. Styled as a pill
-					    in the primary colour with a spinner, like the
-					    published badge above: as a plain muted sentence it
-					    sat under the summary and read as part of it. The
-					    element is always rendered so the live region exists
-					    before the text arrives; the pill classes apply only
-					    while there is something to say. */}
-					<div className="flex flex-col gap-1.5">
-						{/* Only the phase is announced (the sr-only span); the
-						    count beside it changes on every poll and is
-						    `aria-hidden`, so it is not read out each time. */}
-						<p
-							aria-live="polite"
-							className={
-								checking || publishing
-									? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm"
-									: "text-sm"
-							}
-						>
-							{checking || publishing ? (
-								<Loader2Icon
-									className="size-3.5 motion-safe:animate-spin"
-									aria-hidden="true"
-								/>
-							) : null}
-							{checkProgress ? (
-								<>
-									<span className="sr-only">
-										{t(
-											checkPhaseMessageKey(
-												checkProgress.phase,
-											),
-										)}
-									</span>
-									<span aria-hidden="true">
-										{t(
-											checkProgressMessageKey(
-												checkProgress.phase,
-											),
-											{
-												done: checkProgress.done,
-												total: checkProgress.total,
-											},
-										)}
-									</span>
-								</>
-							) : checking ? (
-								t("checkingSummary")
-							) : publishing ? (
-								t("publishing")
-							) : (
-								""
-							)}
-						</p>
-						{checkProgress && checkProgress.total > 0 ? (
-							<Progress
-								aria-hidden="true"
-								className="h-1 w-48"
-								value={
-									(checkProgress.done / checkProgress.total) *
-									100
-								}
-							/>
-						) : null}
-					</div>
-					{repositorySync ? (
-						<RepositorySyncStatus
-							state={repositorySync.state}
-							publishedVersion={published?.version ?? null}
-							onSyncNow={
-								repositorySync.state.canConfigure
-									? repositorySync.onSyncNow
-									: undefined
-							}
-							onConfigure={
-								repositorySync.state.canConfigure
-									? repositorySync.onConfigure
-									: undefined
-							}
-						/>
-					) : null}
 				</div>
-				<div className="flex flex-wrap gap-2">
-					{canBrowseProposals ? (
-						<Button
-							variant="outline"
-							onClick={() => setProposalsOpen(true)}
-						>
-							<ClipboardCheckIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t(
-								repositoryBacked
-									? "suggestionsButton"
-									: canReviewProposals
-										? "reviewProposalsButton"
-										: "proposalsButton",
-							)}
-						</Button>
-					) : null}
-					<Button
-						variant="outline"
-						data-onboarding-target="coding-instructions-history"
-						onClick={() => setHistoryOpen(true)}
-					>
-						<HistoryIcon className="size-4" aria-hidden="true" />
-						{t("historyButton")}
-					</Button>
-					{published ? (
-						<Button
-							variant="outline"
-							onClick={() =>
-								download.mutate({
-									projectId,
-									snapshotId: published.id,
-								})
-							}
-							disabled={download.isPending}
-						>
-							<DownloadIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t("downloadButton")}
-						</Button>
-					) : null}
-					{repositorySync && offersSyncNow(repositorySync.state) ? (
-						<Button
-							variant="outline"
-							data-onboarding-target="instructions-sync-now"
-							disabled={syncBusy}
-							onClick={repositorySync.onSyncNow}
-						>
-							{syncBusy ? (
-								<Loader2Icon
-									className="size-4 animate-spin"
-									aria-hidden="true"
+				<InstructionsActionBar actions={actions} />
+			</div>
+			<div className="flex flex-col gap-3">
+				{published ? (
+					<InstructionsStatusStrip
+						published={published}
+						repository={summaryRepository}
+						reason={reasonLabel(settingsLayer, t)}
+						publishedBy={
+							published.source === "REPOSITORY" &&
+							published.sourceRef ? (
+								<RepositoryPublishedSummary
+									projectId={projectId}
+									commitSha={
+										published.sourceCommitSha ?? null
+									}
+									version={published.version}
+									fallbackName={
+										published.user?.name ??
+										t("anonymousUser")
+									}
+									fallbackTime={published.createdAt}
+									enabled={repositoryConfiguration !== null}
 								/>
 							) : (
-								<RefreshCwIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-							)}
-							{t(
-								repositorySync.state.running
-									? "syncingButton"
-									: "syncNowButton",
-							)}
-						</Button>
-					) : null}
-					{repositorySync &&
-					offersSyncFromRepository(repositorySync.state) ? (
-						<Button
-							variant="outline"
-							data-onboarding-target="instructions-sync-from-repository"
-							onClick={repositorySync.onConfigure}
-						>
-							<GitBranchIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t("syncFromRepositoryButton")}
-						</Button>
-					) : null}
-					<Button
-						variant="outline"
-						onClick={() => setSettingsOpen(true)}
-					>
-						<SettingsIcon className="size-4" aria-hidden="true" />
-						{t("settingsButton")}
-					</Button>
-					{/* Fails closed: with no organization id there is nothing
-					    to mint the key against, and an invited guest has no
-					    membership row in the host organization to mint one
-					    with either (mirrors ProjectReadinessPanel). */}
-					{canConnectAgent ? (
-						<Button
-							variant="outline"
-							data-onboarding-target="coding-instructions-connect"
-							onClick={() => setConnectOpen(true)}
-						>
-							<PlugIcon className="size-4" aria-hidden="true" />
-							{t("connectButton")}
-						</Button>
-					) : null}
-					{canPropose && repositoryTarget ? (
-						// A repository-backed project is never `editable`,
-						// so this is its only add button. The page tour's
-						// "Suggest a change as a pull request" step points
-						// here.
-						<Button
-							variant="outline"
-							data-onboarding-target="instructions-propose-pull-request"
-							onClick={() => setAddFileOpen(true)}
-						>
-							<FilePlusIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t("suggestChangeButton")}
-						</Button>
-					) : editable || canPropose ? (
-						<Button
-							variant="outline"
-							onClick={() => setAddFileOpen(true)}
-						>
-							<FilePlusIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{editable
-								? t("addFileButton")
-								: t("proposeFileButton")}
-						</Button>
-					) : null}
-					{editable ? (
-						<Button onClick={onReplaceClick}>
-							<UploadIcon className="size-4" aria-hidden="true" />
-							{published ? t("replaceButton") : t("uploadButton")}
-						</Button>
-					) : null}
-				</div>
+								<span>
+									{t("statusPublishedBy", {
+										name:
+											published.user?.name ??
+											t("anonymousUser"),
+										time: formatRelativeTime(
+											published.createdAt,
+										),
+									})}
+								</span>
+							)
+						}
+						comparison={baseComparison}
+						leftOutShown={leftOutShown}
+						onToggleLeftOut={() =>
+							setLeftOutShown((shown) => !shown)
+						}
+						onCompare={() => setCompareOpen(true)}
+						onConnect={
+							canConnectAgent
+								? () => setConnectOpen(true)
+								: undefined
+						}
+					/>
+				) : null}
+				<InstructionsCheckingStatus
+					checking={checking}
+					publishing={publishing}
+					// An upload that never finished (its browser could not
+					// reach storage, or its tab was closed) stays here with
+					// nothing to move it: the way out is to discard it.
+					onDiscard={
+						checking && canEdit && canDiscardUpload(checking)
+							? () => discardUpload.discard(checking.id)
+							: undefined
+					}
+					discarding={discardUpload.pending}
+				/>
+				{repositorySync ? (
+					<RepositorySyncStatus
+						projectId={projectId}
+						state={repositorySync.state}
+						migration={repositorySync.migration}
+						// Cancel move and Retry write what Move writes:
+						// they need create and update.
+						canManageMigration={Boolean(canEdit && canReview)}
+						onMigrationChanged={repositorySync.onChanged}
+						publishedVersion={published?.version ?? null}
+						published={
+							published && published.source === "REPOSITORY"
+								? {
+										sourceCommitSha:
+											published.sourceCommitSha ?? null,
+										sourceRef: published.sourceRef ?? null,
+									}
+								: null
+						}
+						syncingCommit={syncingCommit}
+						onSeeFindings={rejectionRows ? seeFindings : undefined}
+						onSyncNow={
+							repositorySync.state.canConfigure
+								? repositorySync.onSyncNow
+								: undefined
+						}
+						onConfigure={
+							repositorySync.state.canConfigure
+								? repositorySync.onConfigure
+								: undefined
+						}
+					/>
+				) : null}
 			</div>
 			{rejectionRows ? (
 				<InstructionsRejectedBanner
@@ -862,10 +664,21 @@ export function InstructionsPublishedView({
 						repositoryBacked ? undefined : onReplaceClick
 					}
 					repositoryBacked={repositoryConfirmed ?? repositoryBacked}
+					publishedVersion={published?.version ?? null}
 					mode={
 						rejected?.source === "REPOSITORY"
 							? "repository"
-							: "upload"
+							: rejected?.proposalDestination ===
+									"REPOSITORY_COMMIT"
+								? "commit"
+								: "upload"
+					}
+					branch={repositoryTarget?.ref ?? null}
+					commit={rejected?.sourceCommitSha ?? null}
+					publishedCommit={
+						published?.source === "REPOSITORY"
+							? (published.sourceCommitSha ?? null)
+							: null
 					}
 					onSyncAgain={
 						repositorySync && offersSyncNow(repositorySync.state)
@@ -895,165 +708,50 @@ export function InstructionsPublishedView({
 					onUploadAgain={canMutateDirect ? onReplaceClick : undefined}
 				/>
 			) : null}
-			{published && deferredScan === "PENDING" ? (
-				// `status`, not `alert`: the scan is running and nothing is
-				// wrong yet. It appears on a poll, with nothing to announce it.
-				<Alert variant="warning" role="status">
-					<AlertTriangleIcon aria-hidden="true" />
-					<AlertTitle>
-						{t("deferredScanPendingTitle", {
-							version: published.version,
-						})}
-					</AlertTitle>
-					<AlertDescription>
-						{t("deferredScanPendingBody")}
-					</AlertDescription>
-				</Alert>
-			) : null}
-			{published && deferredScan === "ISSUES_FOUND" ? (
-				<Alert variant="error">
-					<AlertTriangleIcon aria-hidden="true" />
-					<AlertTitle>
-						{t("deferredScanIssuesTitle", {
-							version: published.version,
-						})}
-					</AlertTitle>
-					<AlertDescription className="flex flex-col gap-3">
-						<p>
-							{t("deferredScanIssuesBody", {
-								version: published.version,
-							})}
-						</p>
-						{published.deferredScanFindings &&
-						published.deferredScanFindings.length > 0 ? (
-							<InstructionFindingsTable
-								findings={published.deferredScanFindings}
-								className="text-foreground"
-							/>
-						) : null}
-						<div>
-							<Button
-								variant="outline"
-								onClick={() => setHistoryOpen(true)}
-							>
-								<HistoryIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-								{t("deferredScanHistoryButton")}
-							</Button>
-						</div>
-					</AlertDescription>
-				</Alert>
-			) : null}
-			{published &&
-			deferredScan === "INCOMPLETE" &&
-			incompleteFoundSomething ? (
-				// A scan that could not check every file but found something
-				// in the rest: what it found is shown, as for ISSUES_FOUND,
-				// with the files it could not read among the rows.
-				<Alert variant="error">
-					<AlertTriangleIcon aria-hidden="true" />
-					<AlertTitle>
-						{t("deferredScanIncompleteFindingsTitle", {
-							version: published.version,
-						})}
-					</AlertTitle>
-					<AlertDescription className="flex flex-col gap-3">
-						<p>
-							{/* "Marked" copy only when a row IS marked: a
-							    verdict recorded before the scan named its
-							    unreadable files has none to point at. */}
-							{t(
-								incompleteNamesUnreadable
-									? "deferredScanIncompleteFindingsUnreadableBody"
-									: "deferredScanIncompleteFindingsBody",
-								{ version: published.version },
-							)}
-						</p>
-						<InstructionFindingsTable
-							findings={incompleteFindings}
-							className="text-foreground"
-						/>
-						<div>
-							<Button
-								variant="outline"
-								onClick={() => setHistoryOpen(true)}
-							>
-								<HistoryIcon
-									className="size-4"
-									aria-hidden="true"
-								/>
-								{t("deferredScanHistoryButton")}
-							</Button>
-						</div>
-					</AlertDescription>
-				</Alert>
-			) : null}
-			{published &&
-			deferredScan === "INCOMPLETE" &&
-			!incompleteFoundSomething ? (
-				// Nothing found. When the scan named the files it could not
-				// read, they are listed; a verdict with no file to name (the
-				// workflow's last resort, or the reaper's) keeps the plain copy.
-				<Alert variant="warning">
-					<AlertTriangleIcon aria-hidden="true" />
-					<AlertTitle>
-						{t("deferredScanIncompleteTitle", {
-							version: published.version,
-						})}
-					</AlertTitle>
-					{incompleteFindings.length > 0 ? (
-						<AlertDescription className="flex flex-col gap-3">
-							<p>{t("deferredScanIncompleteUnreadableBody")}</p>
-							<InstructionFindingsTable
-								findings={incompleteFindings}
-								className="text-foreground"
-							/>
-						</AlertDescription>
-					) : (
-						<AlertDescription>
-							{t("deferredScanIncompleteBody")}
-						</AlertDescription>
-					)}
-				</Alert>
+			{published ? (
+				<InstructionsDeferredScanAlerts
+					published={published}
+					onOpenHistory={() => setHistoryOpen(true)}
+				/>
 			) : null}
 			{superseded && published ? (
-				// `role="status"`, not `alert`: nothing was lost and there is
-				// nothing to do urgently. It appears on a poll, with no
-				// interaction of the viewer's own to announce it.
-				<div
-					role="status"
-					className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-4"
-				>
-					<p className="text-muted-foreground text-sm">
-						{t("supersededBody", {
-							version: superseded.version,
-							baseVersion: superseded.baseVersion,
-							publishedVersion: published.version,
-						})}
-					</p>
-					<div>
-						<Button
-							variant="outline"
-							onClick={() => setHistoryOpen(true)}
-						>
-							<HistoryIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t("supersededHistoryButton")}
-						</Button>
-					</div>
-				</div>
+				<InstructionsSupersededNotice
+					superseded={superseded}
+					publishedVersion={published.version}
+					onOpenHistory={() => setHistoryOpen(true)}
+				/>
 			) : null}
 			{published ? (
-				<div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)] gap-4">
+				<div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)]">
+					{/* Side by side only where the file keeps a reading width:
+					    at md the app's sidebar leaves it ~110px beside a 340px
+					    tree. */}
 					<div data-onboarding-target="coding-instructions-tree">
 						<InstructionsTree
 							files={treeFiles}
 							selectedPath={selectedFile}
 							onSelect={setSelected}
+							changes={
+								baseComparison && marks.size > 0
+									? {
+											baseVersion:
+												baseComparison.from.version,
+											marks,
+										}
+									: undefined
+							}
+							leftOut={
+								leftOut.listable
+									? {
+											files: leftOutFiles,
+											shown: leftOutShown,
+											onToggle: () =>
+												setLeftOutShown(
+													(shown) => !shown,
+												),
+										}
+									: undefined
+							}
 						/>
 					</div>
 					<div
@@ -1065,10 +763,16 @@ export function InstructionsPublishedView({
 								projectId={projectId}
 								snapshotId={published.id}
 								path={selectedFile}
+								change={marks.get(selectedFile) ?? null}
+								publishedVersion={published.version}
 								canEdit={editable}
+								canCommit={canCommit}
 								canPropose={canPropose}
 								repositoryTarget={repositoryTarget}
+								existingPaths={treePaths}
+								pausedReason={pausedReason}
 								onChanged={onChanged}
+								onCommitted={onCommitted}
 							/>
 						) : fileListLoaded ? (
 							<div className="flex h-full items-center justify-center rounded-lg border border-border text-muted-foreground">
@@ -1098,11 +802,13 @@ export function InstructionsPublishedView({
 					open={addFileOpen}
 					onOpenChange={setAddFileOpen}
 					folder={selectedFolder}
-					proposalOnly={!editable}
-					canPropose={editable}
+					proposalOnly={!editable && !canCommit}
+					canPropose={editable || canCommit}
+					canCommit={canCommit}
 					repositoryTarget={repositoryTarget}
 					canPublishBeforeScan={canPublishBeforeScan}
 					onAdded={onChanged}
+					onCommitted={onCommitted}
 				/>
 			) : null}
 			{published && baseSnapshotId ? (
@@ -1115,42 +821,61 @@ export function InstructionsPublishedView({
 					onOpenChange={setCompareOpen}
 				/>
 			) : null}
-			<InstructionsHistory
-				projectId={projectId}
-				open={historyOpen}
-				onOpenChange={setHistoryOpen}
-				snapshots={snapshots}
-				publishedId={published?.id ?? null}
-				// Both straight off the published row this view already holds.
-				// History must not re-derive the version by matching the id
-				// against the list: when the pointer query has failed there is
-				// no id to match and the miss is indistinguishable from
-				// "nothing published", which silently mislabels every rollback
-				// as a forward publish.
-				publishedVersion={published?.version ?? null}
-				publishedUnknown={publishedUnknown}
-				canMutate={canMutateDirect}
-				canPublish={repositoryBacked ? canReview : canMutateDirect}
-				repositoryBacked={repositoryBacked}
-				// An open sync run with no snapshot yet has no row in the list
-				// to stand for the publish it will make.
-				syncRunPendingPublish={
-					repositorySync !== undefined &&
-					repositorySync.state.running &&
-					(repositorySync.state.inFlightSnapshot ?? null) === null
-				}
-				syncRuns={
-					repositorySync &&
-					(repositorySync.state.configured ||
-						repositorySync.state.latestRun) ? (
-						<RepositorySyncRuns
-							projectId={projectId}
-							running={repositorySync.state.running}
-						/>
-					) : null
-				}
-				onChanged={onChanged}
-			/>
+			{repositoryConfiguration ? (
+				// Mounted only while open: a fresh list every time, and nothing
+				// is read from the repository until someone asks for it.
+				historyOpen ? (
+					<InstructionsCommits
+						projectId={projectId}
+						open
+						onOpenChange={setHistoryOpen}
+						provider={repositoryConfiguration.provider}
+						branch={repositoryConfiguration.ref}
+						rootPath={repositoryConfiguration.rootPath}
+						published={{
+							sha:
+								published?.source === "REPOSITORY"
+									? (published.sourceCommitSha ?? null)
+									: null,
+							version: published?.version ?? null,
+						}}
+						canRevert={Boolean(canEdit) && !readOnlyMode}
+						pausedReason={pausedReason}
+						canCompare={Boolean(canEdit)}
+						syncRuns={syncRunsList}
+						onChanged={onChanged}
+						onCommitted={onCommitted}
+					/>
+				) : null
+			) : (
+				<InstructionsHistory
+					projectId={projectId}
+					open={historyOpen}
+					onOpenChange={setHistoryOpen}
+					snapshots={snapshots}
+					publishedId={published?.id ?? null}
+					// Both straight off the published row this view already holds.
+					// History must not re-derive the version by matching the id
+					// against the list: when the pointer query has failed there is
+					// no id to match and the miss is indistinguishable from
+					// "nothing published", which silently mislabels every rollback
+					// as a forward publish.
+					publishedVersion={published?.version ?? null}
+					publishedUnknown={publishedUnknown}
+					canMutate={canMutateDirect}
+					canPublish={canMutateDirect}
+					repositoryBacked={repositoryBacked}
+					// An open sync run with no snapshot yet has no row in the list
+					// to stand for the publish it will make.
+					syncRunPendingPublish={
+						repositorySync !== undefined &&
+						repositorySync.state.running &&
+						(repositorySync.state.inFlightSnapshot ?? null) === null
+					}
+					syncRuns={syncRunsList}
+					onChanged={onChanged}
+				/>
+			)}
 			{canBrowseProposals ? (
 				<InstructionProposals
 					projectId={projectId}
@@ -1171,11 +896,14 @@ export function InstructionsPublishedView({
 				projectId={projectId}
 				open={settingsOpen}
 				onOpenChange={setSettingsOpen}
+				canEdit={canEdit}
+				pausedReason={pausedReason}
 				repositorySection={
 					repositorySync ? (
 						<RepositorySyncSettingsSection
 							projectId={projectId}
 							state={repositorySync.state}
+							migration={repositorySync.migration}
 							onChange={() => {
 								setSettingsOpen(false);
 								repositorySync.onConfigure();
@@ -1184,6 +912,22 @@ export function InstructionsPublishedView({
 								await repositorySync.onChanged();
 								setSettingsOpen(false);
 							}}
+							// Moving writes the sync configuration and carries the
+							// published version into a repository: it needs both
+							// create and update, a published version, and a project
+							// whose source is confirmed to be uploads.
+							onMove={
+								canEdit &&
+								canReview &&
+								published &&
+								!repositoryBacked &&
+								repositorySync.onMove
+									? () => {
+											setSettingsOpen(false);
+											repositorySync.onMove?.();
+										}
+									: undefined
+							}
 						/>
 					) : null
 				}

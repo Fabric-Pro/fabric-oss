@@ -6,15 +6,16 @@
  * data from the MCP servers via Temporal workflow.
  */
 
-import { getMcpConfigById } from "@repo/database";
+import { getMcpConfigById, isGitLabPersonalMcpServerKey } from "@repo/database";
 import { triggerMcpToolIngestion } from "@repo/temporal";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { gitlabMcpConnectionBlocker } from "../lib/gitlab-connection-gate";
 
 export const refreshToolsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.MCP_CONNECT))
@@ -56,9 +57,17 @@ export const refreshToolsProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = resolveOrganizationId(
+		// The organization this request resolves to (the input's, else a
+		// guest write organization, else the session's), with the caller's
+		// membership and role there checked before any GitLab connection read
+		// below (which can classify, and so write, a connection row there).
+		// Every lookup below uses this returned value, so authorization and
+		// the reads cannot target different organizations. No organization
+		// passes through; the GitLab gate then only inspects.
+		const organizationId = await authorizeInputOrganization(
+			Permissions.MCP_CONNECT,
 			input.organizationId,
-			context.session,
+			context,
 		);
 
 		const results: Array<{
@@ -88,6 +97,7 @@ export const refreshToolsProcedure = tenantProtectedProcedure
 				}
 
 				const mcpServer = mcpConfig.mcpServer as {
+					key?: string;
 					name?: string;
 				} | null;
 
@@ -106,8 +116,32 @@ export const refreshToolsProcedure = tenantProtectedProcedure
 					continue;
 				}
 
+				// GitLab personal servers: the person's GitLab connection
+				// decides, not this config's (legacy) token columns.
+				// Keyed on the server, not `authType`: an API-key GitLab
+				// config is gated the same way.
+				const isGitLabPersonal = isGitLabPersonalMcpServerKey(
+					mcpServer?.key,
+				);
+				if (isGitLabPersonal) {
+					const blocker = await gitlabMcpConnectionBlocker({
+						userId,
+						organizationId,
+					});
+					if (blocker) {
+						results.push({
+							serverId,
+							serverName,
+							success: false,
+							error: blocker,
+						});
+						continue;
+					}
+				}
+
 				// For OAuth2 servers, check if authenticated
 				if (
+					!isGitLabPersonal &&
 					mcpConfig.authType === "OAUTH2" &&
 					!mcpConfig.encryptedAccessToken
 				) {

@@ -28,9 +28,16 @@ const m = vi.hoisted(() => ({
 	refreshProposalPullRequest: vi.fn(),
 	proposalBranchIdOf: vi.fn(),
 	wakeBranchAfterCommand: vi.fn(),
+	assertNoOpenMigration: vi.fn(),
 	requiredPermissions: [] as string[],
 }));
 
+// The pre-check is mocked; `migrationOpenFromRefusal`, which answers the
+// writer's own refusal under the project lock, is the real one.
+vi.mock("../migration-freeze", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../migration-freeze")>()),
+	assertNoOpenMigration: (...a: unknown[]) => m.assertNoOpenMigration(...a),
+}));
 vi.mock("@repo/database", () => ({
 	listInstructionProposals: (...args: unknown[]) =>
 		m.listInstructionProposals(...args),
@@ -196,6 +203,7 @@ beforeEach(() => {
 	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
 	m.proposalBranchIdOf.mockResolvedValue(null);
 	m.wakeBranchAfterCommand.mockResolvedValue(undefined);
+	m.assertNoOpenMigration.mockResolvedValue(undefined);
 });
 
 describe("projects.instructions.proposals", () => {
@@ -533,6 +541,61 @@ describe("projects.instructions.proposals", () => {
 			}),
 		]);
 		expect(m.downloadFile).toHaveBeenCalledOnce();
+	});
+
+	it("refuses approval while a move into the repository is open, publishing and warming nothing (Fizzy #2878 §9)", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.assertNoOpenMigration.mockRejectedValue(
+			new ORPCError("CONFLICT", {
+				message: "moving",
+				data: { reason: "MIGRATION_OPEN" },
+			}),
+		);
+
+		await expect(
+			run(APPROVE, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { reason: "MIGRATION_OPEN" },
+		});
+
+		expect(m.assertNoOpenMigration).toHaveBeenCalledWith({
+			projectId: "project_1",
+			organizationId: "org_1",
+		});
+		expect(m.approveInstructionProposal).not.toHaveBeenCalled();
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+	});
+
+	it("answers MIGRATION_OPEN, with the move the lock found, when the approval is refused after the pre-check passed: a move started in between (Fizzy #2878 §9)", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal);
+		m.approveInstructionProposal.mockResolvedValue({
+			ok: false,
+			reason: "migration_open",
+			migration: {
+				v: 1,
+				state: "PROPOSING",
+				branchId: null,
+				snapshotId: "snap_move",
+				syncId: "sync_move",
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_2",
+			},
+		});
+
+		await expect(
+			run(APPROVE, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				reason: "MIGRATION_OPEN",
+				state: "PROPOSING",
+				pullRequest: null,
+			},
+		});
+
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
 	});
 
 	it("maps an exact-base approval failure to a resubmission conflict", async () => {

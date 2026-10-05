@@ -78,10 +78,12 @@ import {
 	deleteInstructionRepositorySync,
 	findInstructionSyncsForPush,
 	getInstructionRepositorySyncForProposal,
+	getLatestInstructionSyncRunOutcome,
 	insertInstructionRepositorySyncRun,
 	instructionSyncBackoffMs,
 	instructionSyncLeaseHeld,
 	listInstructionRepositorySyncRuns,
+	listInstructionSyncsByIntegrationIds,
 	listUnfinishedInstructionRepositorySyncRunReceipts,
 	parseInstructionSyncLimitDetail,
 	recordInstructionSyncCheckFailure,
@@ -159,7 +161,7 @@ describe("upsertInstructionRepositorySync", () => {
 		rootPath: "agents",
 	};
 
-	it("creates the row with automatic off and flips the project to REPOSITORY in the same transaction", async () => {
+	it("creates the row with automatic sync on and flips the project to REPOSITORY in the same transaction", async () => {
 		lockedSettings({ ignoreGlobs: ["dist/**"] });
 		lockedSync(null);
 		m.sync.create.mockResolvedValue({
@@ -167,7 +169,7 @@ describe("upsertInstructionRepositorySync", () => {
 			generation: 1,
 			ref: "main",
 			rootPath: "agents",
-			automatic: false,
+			automatic: true,
 		});
 
 		const result = await upsertInstructionRepositorySync(input);
@@ -181,7 +183,7 @@ describe("upsertInstructionRepositorySync", () => {
 					repositoryIntegrationId: "int_1",
 					ref: "main",
 					rootPath: "agents",
-					automatic: false,
+					automatic: true,
 				}),
 			}),
 		);
@@ -200,11 +202,31 @@ describe("upsertInstructionRepositorySync", () => {
 				generation: 1,
 				ref: "main",
 				rootPath: "agents",
-				automatic: false,
+				automatic: true,
 			},
 			previous: null,
 			ignoreGlobsChanged: false,
 		});
+	});
+
+	it("keeps automatic sync off when the caller creates the row with it off", async () => {
+		lockedSettings({});
+		lockedSync(null);
+		m.sync.create.mockResolvedValue({
+			id: "sync_1",
+			generation: 1,
+			ref: "main",
+			rootPath: "agents",
+			automatic: false,
+		});
+
+		await upsertInstructionRepositorySync({ ...input, automatic: false });
+
+		expect(m.sync.create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ automatic: false }),
+			}),
+		);
 	});
 
 	it("re-configuring bumps the generation, re-delegates to the caller and clears every scheduling cursor", async () => {
@@ -2835,5 +2857,57 @@ describe("getInstructionRepositorySyncForProposal", () => {
 		expect(
 			await getInstructionRepositorySyncForProposal("p", "org_1"),
 		).toBeNull();
+	});
+});
+
+describe("listInstructionSyncsByIntegrationIds (Fizzy #2878)", () => {
+	it("reads the syncs of exactly these integrations, oldest first, bounded, with only the names a resolver shows", async () => {
+		m.sync.findMany.mockResolvedValue([]);
+
+		await listInstructionSyncsByIntegrationIds(["int_1", "int_2"], 20);
+
+		expect(m.sync.findMany).toHaveBeenCalledExactlyOnceWith({
+			where: { repositoryIntegrationId: { in: ["int_1", "int_2"] } },
+			orderBy: { createdAt: "asc" },
+			take: 20,
+			select: {
+				projectId: true,
+				organizationId: true,
+				repositoryIntegrationId: true,
+				ref: true,
+				rootPath: true,
+				project: { select: { name: true } },
+				organization: { select: { slug: true } },
+			},
+		});
+	});
+
+	it("asks nothing when there are no integrations", async () => {
+		expect(await listInstructionSyncsByIntegrationIds([], 20)).toEqual([]);
+		expect(m.sync.findMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("getLatestInstructionSyncRunOutcome (Fizzy #2878)", () => {
+	it("reads the newest run of one configuration in one tenant, in the columns a published response reports", async () => {
+		m.run.findFirst.mockResolvedValue(null);
+
+		await getLatestInstructionSyncRunOutcome("sync_1", "p", "org_1");
+
+		expect(m.run.findFirst).toHaveBeenCalledExactlyOnceWith({
+			where: {
+				syncId: "sync_1",
+				projectId: "p",
+				organizationId: "org_1",
+			},
+			orderBy: { startedAt: "desc" },
+			select: {
+				trigger: true,
+				status: true,
+				error: true,
+				commitSha: true,
+				finishedAt: true,
+			},
+		});
 	});
 });

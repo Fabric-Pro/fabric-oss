@@ -125,6 +125,19 @@ type BoundedProcessOptions = {
 type BoundedProcessResult = { stdout: Buffer; stoppedEarly: boolean };
 
 /**
+ * Windows has no process groups, so `process.kill(-pid)` reaches nothing
+ * there and the transport helpers git forked would outlive a watchdog kill.
+ * `taskkill /T` ends the whole tree instead, which is what the group kill does
+ * on POSIX.
+ */
+function killWindowsProcessTree(pid: number): void {
+	spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+		stdio: "ignore",
+		windowsHide: true,
+	}).on("error", () => {});
+}
+
+/**
  * Spawn `command` in its own process group and bound it: disk (sampled, and
  * once more at exit), stdout size, cancellation and timeout each SIGKILL the
  * whole group.
@@ -161,7 +174,11 @@ export function runBoundedProcess(
 			verdict ??= why;
 			try {
 				if (child.pid !== undefined) {
-					process.kill(-child.pid, "SIGKILL");
+					if (process.platform === "win32") {
+						killWindowsProcessTree(child.pid);
+					} else {
+						process.kill(-child.pid, "SIGKILL");
+					}
 				}
 			} catch {
 				// The group is already gone.

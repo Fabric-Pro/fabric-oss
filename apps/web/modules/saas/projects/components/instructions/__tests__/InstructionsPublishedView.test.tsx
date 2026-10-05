@@ -5,9 +5,9 @@
  * counts, an uploader's name) are threaded correctly into that copy. The
  * shared `next-intl` mock in `vitest.setup.ts` only echoes the translation
  * KEY back and ignores interpolation values entirely, which would make that
- * unverifiable — so this suite overrides it with one that resolves the REAL
- * `en.json` copy and performs the `{name}`-style substitution, the same
- * technique `components/__tests__/DocumentsList-queued.test.tsx` uses.
+ * unverifiable — so this suite overrides it with the shared `en-copy` helper,
+ * which resolves the REAL `en.json` copy and performs the `{name}`-style and
+ * plural substitution.
  */
 import type { InstructionRejection } from "@repo/database";
 import en from "@repo/i18n/translations/en.json";
@@ -17,42 +17,9 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-function resolve(path: string): unknown {
-	return path.split(".").reduce<unknown>((node, key) => {
-		if (node && typeof node === "object") {
-			return (node as Record<string, unknown>)[key];
-		}
-		return undefined;
-	}, en);
-}
-
-function makeT(namespace: string) {
-	const t = (key: string, values?: Record<string, unknown>) => {
-		const raw = resolve(`${namespace}.${key}`);
-		if (typeof raw !== "string") {
-			throw new Error(`missing translation: ${namespace}.${key}`);
-		}
-		let out = raw;
-		for (const [name, value] of Object.entries(values ?? {})) {
-			out = out.replaceAll(`{${name}}`, String(value));
-		}
-		return out;
-	};
-	t.raw = (key: string) => resolve(`${namespace}.${key}`);
-	return t;
-}
-
-vi.mock("next-intl", () => ({
-	useTranslations: (namespace: string) => makeT(namespace),
-	useLocale: () => "en",
-	useFormatter: () => ({
-		dateTime: (d: Date) => d.toISOString(),
-		number: (n: number) => String(n),
-		relativeTime: (d: Date) => d.toISOString(),
-	}),
-	useMessages: () => ({}),
-	NextIntlClientProvider: ({ children }: { children: ReactNode }) => children,
-}));
+vi.mock("next-intl", async () =>
+	(await import("../../../__tests__/en-copy")).nextIntlMock(),
+);
 
 // `PageTourButton` (rendered in the header) calls `useFeatureFlag`, which
 // throws without a `FeatureFlagProvider` ancestor — this view has none, so
@@ -111,6 +78,14 @@ const toastMock = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast: toastMock }));
 
+// The app's confirmation dialog is mounted once in the (saas) layout and is
+// absent here; History, mounted inside this view, asks it before publishing.
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({
+		confirm: (options: { onConfirm: () => void }) => options.onConfirm(),
+	}),
+}));
+
 /**
  * The file list per snapshot id, so a test can publish a new version whose
  * list differs from the one a file was selected in. Empty for every
@@ -129,6 +104,21 @@ const compareState = vi.hoisted(() => ({
 	result: null as Record<string, unknown> | null,
 	error: null as Error | null,
 	inputs: [] as Array<Record<string, unknown>>,
+}));
+
+/**
+ * What `proposals.list` answers: the rows the header's Review button counts
+ * from, and every input it was asked with.
+ */
+const proposalsState = vi.hoisted(() => ({
+	items: [] as Array<Record<string, unknown>>,
+	inputs: [] as Array<Record<string, unknown>>,
+}));
+
+/** What `listCommits` answers: the branch's first page, or a failure to read it. */
+const commitsState = vi.hoisted(() => ({
+	rows: [] as Array<Record<string, unknown>>,
+	fails: false,
 }));
 
 function queryOptionsStub(queryFn: (input: unknown) => Promise<unknown>) {
@@ -177,6 +167,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						defaultIgnoreGlobs: [],
 						sourceOfTruth: null,
 					})),
+				},
+				proposals: {
+					list: {
+						queryOptions: queryOptionsStub(async (input) => {
+							proposalsState.inputs.push(
+								input as Record<string, unknown>,
+							);
+							return {
+								items: proposalsState.items,
+								nextCursor: null,
+							};
+						}),
+					},
 				},
 				createDownloadUrl: {
 					mutationOptions: mutationOptionsStub(async () => ({
@@ -233,6 +236,25 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							hadConfiguration: true,
 						})),
 					},
+					// The Commits dialog of a repository project: the branch's
+					// history, which it reads once it is opened.
+					listCommits: {
+						queryOptions: queryOptionsStub(async () => {
+							if (commitsState.fails) {
+								throw new Error("unreachable");
+							}
+							return {
+								commits: commitsState.rows,
+								nextCursor: null,
+							};
+						}),
+						key: () => ["stub-query"],
+					},
+				},
+				revertCommit: {
+					mutationOptions: mutationOptionsStub(async () => ({
+						outcome: "reverted",
+					})),
 				},
 			},
 		},
@@ -240,11 +262,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 }));
 
 // The file pane has its own query (`getFile`) and its own tests; here it
-// only needs to say WHICH path it was asked to show.
+// only needs to say WHICH path it was asked to show, and keep the props it was
+// given (the change badge's inputs among them).
+const fileViewProps: Array<Record<string, unknown>> = [];
 vi.mock("../InstructionFileView", () => ({
-	InstructionFileView: ({ path }: { path: string }) => (
-		<div data-testid="file-view">{path}</div>
-	),
+	InstructionFileView: (props: Record<string, unknown>) => {
+		fileViewProps.push(props);
+		return <div data-testid="file-view">{props.path as string}</div>;
+	},
 }));
 /** The props the proposals dialog was last mounted with. */
 const proposalsProps: Array<Record<string, unknown>> = [];
@@ -266,6 +291,25 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 	);
 }
 
+/**
+ * The header keeps Connect your agent, Upload or Replace, History and Download
+ * in view and puts everything else under More. Opening it is the first step of
+ * reaching any of those, and what it holds are `menuitem`s.
+ */
+async function openMore() {
+	const user = userEvent.setup();
+	await user.click(screen.getByRole("button", { name: "More" }));
+	return user;
+}
+
+function menuItem(name: string) {
+	return screen.getByRole("menuitem", { name });
+}
+
+function queryMenuItem(name: string) {
+	return screen.queryByRole("menuitem", { name });
+}
+
 beforeEach(() => {
 	orgContextState.organizationId = "org-hosting-the-project";
 	orgContextState.organizationSlug = "example-org";
@@ -276,7 +320,12 @@ beforeEach(() => {
 	compareState.error = null;
 	compareState.inputs = [];
 	proposalsProps.length = 0;
+	proposalsState.items = [];
+	proposalsState.inputs = [];
+	fileViewProps.length = 0;
 	finalizeResult.status = "VALIDATING";
+	commitsState.rows = [];
+	commitsState.fails = false;
 	toastMock.info.mockClear();
 	toastMock.error.mockClear();
 });
@@ -329,10 +378,10 @@ describe("InstructionsPublishedView — selection across versions", () => {
 
 	it("drops the selection when the published version no longer has that file", async () => {
 		filesBySnapshot.set("s8", [
-			treeFile("f1", "AGENTS.md"),
+			treeFile("f1", "guide.md"),
 			treeFile("f2", "notes.md"),
 		]);
-		filesBySnapshot.set("s9", [treeFile("f1", "AGENTS.md")]);
+		filesBySnapshot.set("s9", [treeFile("f1", "guide.md")]);
 		const user = userEvent.setup();
 		const view = render(renderVersion("s8", 8), {
 			wrapper: TestQueryProvider,
@@ -350,7 +399,7 @@ describe("InstructionsPublishedView — selection across versions", () => {
 		// path once the list arrives.
 		view.rerender(renderVersion("s9", 9));
 		expect(
-			await screen.findByRole("button", { name: "AGENTS.md" }),
+			await screen.findByRole("button", { name: "guide.md" }),
 		).toBeInTheDocument();
 
 		expect(screen.queryByTestId("file-view")).not.toBeInTheDocument();
@@ -359,6 +408,90 @@ describe("InstructionsPublishedView — selection across versions", () => {
 				en.projects.codingInstructions.publishedView.selectFilePrompt,
 			),
 		).toBeInTheDocument();
+	});
+
+	it("falls back to the entry file, not to the file that is gone, when the version has one", async () => {
+		filesBySnapshot.set("s8", [
+			treeFile("f1", "AGENTS.md"),
+			treeFile("f2", "notes.md"),
+		]);
+		filesBySnapshot.set("s9", [treeFile("f1", "AGENTS.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
+
+		view.rerender(renderVersion("s9", 9));
+		await waitFor(() =>
+			expect(screen.getByTestId("file-view")).toHaveTextContent(
+				"AGENTS.md",
+			),
+		);
+
+		expect(screen.getByTestId("file-view")).not.toHaveTextContent(
+			"notes.md",
+		);
+	});
+
+	describe("the file the tab opens on", () => {
+		function renderFiles(paths: string[]) {
+			filesBySnapshot.set(
+				"s8",
+				paths.map((path, i) => treeFile(`f${i}`, path)),
+			);
+			return render(renderVersion("s8", 8), {
+				wrapper: TestQueryProvider,
+			});
+		}
+
+		it("is the root CLAUDE.md, before the root AGENTS.md", async () => {
+			renderFiles(["AGENTS.md", "CLAUDE.md", "README.md"]);
+
+			expect(await screen.findByTestId("file-view")).toHaveTextContent(
+				"CLAUDE.md",
+			);
+			expect(
+				screen.getByRole("button", { name: "CLAUDE.md" }),
+			).toHaveAttribute("aria-current", "true");
+		});
+
+		it("is the root AGENTS.md when there is no CLAUDE.md", async () => {
+			renderFiles(["README.md", "AGENTS.md"]);
+
+			expect(await screen.findByTestId("file-view")).toHaveTextContent(
+				"AGENTS.md",
+			);
+		});
+
+		it("is nothing when neither is at the root, which asks the reader to pick one", async () => {
+			renderFiles(["docs/CLAUDE.md", "README.md"]);
+
+			expect(
+				await screen.findByText(
+					en.projects.codingInstructions.publishedView
+						.selectFilePrompt,
+				),
+			).toBeInTheDocument();
+			expect(screen.queryByTestId("file-view")).not.toBeInTheDocument();
+		});
+
+		it("gives way to the file the reader picks, and opens the folders above it", async () => {
+			const user = userEvent.setup();
+			renderFiles(["CLAUDE.md", "docs/guides/setup.md"]);
+			await screen.findByTestId("file-view");
+
+			await user.click(screen.getByRole("button", { name: /docs/ }));
+			await user.click(screen.getByRole("button", { name: /guides/ }));
+			await user.click(screen.getByRole("button", { name: "setup.md" }));
+
+			expect(screen.getByTestId("file-view")).toHaveTextContent(
+				"docs/guides/setup.md",
+			);
+		});
 	});
 
 	it("keeps the selection when the file survives into the new version, without flashing the prompt while its list loads", async () => {
@@ -401,7 +534,7 @@ describe("InstructionsPublishedView — selection across versions", () => {
 });
 
 describe("InstructionsPublishedView", () => {
-	it("states the published version in one sentence and shows the rejected banner for a newer rejected upload", async () => {
+	it("states the published version as labelled facts and shows the rejected banner for a newer rejected upload", async () => {
 		const rejection: InstructionRejection[] = [
 			{
 				path: ".claude/settings.json",
@@ -443,11 +576,14 @@ describe("InstructionsPublishedView", () => {
 			{ wrapper: TestQueryProvider },
 		);
 		expect(screen.getByText("Version 7 is published")).toBeInTheDocument();
-		expect(
-			screen.getByText(
-				/Uploaded by A\. Member .* from a folder\. 452 files stored, 2,164 left out/,
-			),
-		).toBeInTheDocument();
+		const strip = screen.getByTestId("instructions-status-strip");
+		expect(strip).toHaveTextContent("SourceFolder upload");
+		expect(strip).toHaveTextContent(/PublishedA\. Member · \d+m ago/);
+		expect(strip).toHaveTextContent("Stored452 files");
+		expect(strip).toHaveTextContent(
+			"Left out2,164 files by the rules in .fabricignore",
+		);
+		expect(screen.queryByText(/^Uploaded by/)).not.toBeInTheDocument();
 		expect(
 			screen.getByRole("heading", {
 				name: "Upload rejected: 1 file contains secrets",
@@ -696,7 +832,7 @@ describe("InstructionsPublishedView", () => {
 		// the new upload is visibly in progress.
 		expect(screen.getByText("Version 7 is published")).toBeInTheDocument();
 		const checking = screen.getByText(
-			en.projects.codingInstructions.publishedView.checkingSummary,
+			en.projects.codingInstructions.publishedView.checkingSummaryUpload,
 		);
 		expect(checking).toBeInTheDocument();
 		// Announced without an interaction, so it needs a live region.
@@ -756,7 +892,7 @@ describe("InstructionsPublishedView", () => {
 			expect(
 				screen.getByText("Checking 40 of 120 files"),
 			).toBeInTheDocument();
-			expect(screen.queryByText(copy.checkingSummary)).toBeNull();
+			expect(screen.queryByText(copy.checkingSummaryUpload)).toBeNull();
 		});
 
 		it("words the saving pass as saving", () => {
@@ -794,7 +930,9 @@ describe("InstructionsPublishedView", () => {
 		it("keeps today's copy when nothing has reported yet", () => {
 			view({ status: "VALIDATING" });
 
-			expect(screen.getByText(copy.checkingSummary)).toBeInTheDocument();
+			expect(
+				screen.getByText(copy.checkingSummaryUpload),
+			).toBeInTheDocument();
 		});
 
 		it("keeps today's copy for a count that does not add up", () => {
@@ -805,7 +943,9 @@ describe("InstructionsPublishedView", () => {
 				progressTotal: 120,
 			});
 
-			expect(screen.getByText(copy.checkingSummary)).toBeInTheDocument();
+			expect(
+				screen.getByText(copy.checkingSummaryUpload),
+			).toBeInTheDocument();
 		});
 
 		it("says Publishing while the pointer catches up with a version that passed its checks", () => {
@@ -1021,45 +1161,67 @@ describe("InstructionsPublishedView — editing entry points", () => {
 		);
 	}
 
-	it("offers Add file to an editor", () => {
+	it("offers Add file to an editor, under More", async () => {
 		renderPublished({ canEdit: true });
 		expect(
-			screen.getByRole("button", { name: "Add file" }),
-		).toBeInTheDocument();
+			screen.queryByRole("button", { name: "Add file" }),
+		).not.toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Add file")).toBeInTheDocument();
 	});
 
-	it("offers proposal review from its capability even when direct editing is unavailable", () => {
+	it("offers proposal review from its capability even when direct editing is unavailable", async () => {
 		renderPublished({ canEdit: false, canReview: true });
-		expect(
-			screen.getByRole("button", { name: "Review proposals" }),
-		).toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Review proposals")).toBeInTheDocument();
 	});
 
-	it("lets a viewer propose a file without offering direct editing", () => {
+	it("lets a viewer propose a file without offering direct editing", async () => {
 		renderPublished();
-		expect(
-			screen.getByRole("button", { name: "Propose file" }),
-		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: "Your proposals" }),
-		).toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Propose file")).toBeInTheDocument();
+		expect(menuItem("Your proposals")).toBeInTheDocument();
 	});
 
-	it("offers nothing for a repository-backed project, even to an editor", () => {
+	// jsdom does not lay anything out, so these pin the classes a device sweep
+	// found missing: at 375px the fixed 340px tree column pushed the file pane
+	// off the right edge, and a menu item's icon touched its label.
+	it("stacks the tree above the file pane below the lg breakpoint", () => {
+		renderPublished();
+
+		const tree = document.querySelector(
+			'[data-onboarding-target="coding-instructions-tree"]',
+		);
+		const columns = tree?.parentElement?.className ?? "";
+		expect(columns).toContain("grid-cols-1");
+		// Side by side only from lg: at md the app sidebar left the file pane
+		// about 110px wide beside a 340px tree.
+		expect(columns).toContain("lg:grid-cols-[280px_minmax(0,1fr)]");
+		expect(columns).toContain("xl:grid-cols-[340px_minmax(0,1fr)]");
+		expect(columns).not.toMatch(/(^|\s)md:grid-cols-/);
+		expect(columns).not.toMatch(/(^|\s)grid-cols-\[340px/);
+	});
+
+	it("separates a menu item's icon from its label", async () => {
+		renderPublished({ canEdit: true });
+		await openMore();
+
+		expect(menuItem("Add file").className).toContain("gap-2");
+		expect(menuItem("Settings").className).toContain("gap-2");
+	});
+
+	it("offers nothing for a repository-backed project, even to an editor", async () => {
 		renderPublished({
 			canEdit: true,
 			canReview: true,
 			repositoryBacked: true,
 		});
-		expect(
-			screen.queryByRole("button", { name: "Add file" }),
-		).not.toBeInTheDocument();
+		await openMore();
+		expect(queryMenuItem("Add file")).not.toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", { name: "Replace" }),
 		).not.toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: "Review proposals" }),
-		).not.toBeInTheDocument();
+		expect(queryMenuItem("Review proposals")).not.toBeInTheDocument();
 	});
 });
 
@@ -1228,7 +1390,7 @@ describe("InstructionsPublishedView — an edit the published version outran", (
  * routinely gone and `compare` answers NOT_FOUND — a normal state that must
  * leave the header whole rather than showing a half-written line.
  */
-describe("InstructionsPublishedView — changed in this version", () => {
+describe("InstructionsPublishedView — since the version it was edited from", () => {
 	function renderPublished(published: Record<string, unknown>) {
 		render(
 			<InstructionsPublishedView
@@ -1270,17 +1432,85 @@ describe("InstructionsPublishedView — changed in this version", () => {
 		};
 		renderPublished(editedVersion());
 
+		const strip = screen.getByTestId("instructions-status-strip");
+		const since = await within(strip).findByText("Since version 8");
+		const fact = since.parentElement as HTMLElement;
+		expect(within(fact).getByText("1 added")).toHaveClass("text-success");
+		expect(within(fact).getByText("2 changed")).toHaveClass(
+			"text-highlight-ink",
+		);
+		// Nothing was removed, so nothing says so.
+		expect(within(fact).queryByText(/removed/)).toBeNull();
+		expect(fact).toHaveTextContent("1 added · 2 changed");
 		expect(
-			await screen.findByText(
-				"Changed from version 8: 1 added, 0 removed, 2 changed.",
-			),
-		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: "See what changed" }),
+			within(fact).getByRole("button", { name: "See what changed" }),
 		).toBeInTheDocument();
 		expect(compareState.inputs).toEqual([
 			{ projectId: "p", fromSnapshotId: "s8", toSnapshotId: "s9" },
 		]);
+	});
+
+	it("counts the removed files too, in the destructive colour", async () => {
+		compareState.result = {
+			from: { id: "s8", version: 8 },
+			to: { id: "s9", version: 9 },
+			added: [],
+			removed: [{ path: "old.md" }],
+			changed: [{ path: "AGENTS.md" }],
+			unchangedCount: 9,
+		};
+		renderPublished(editedVersion());
+
+		const since = await screen.findByText("Since version 8");
+		const fact = since.parentElement as HTMLElement;
+		expect(fact).toHaveTextContent("1 changed · 1 removed");
+		expect(within(fact).getByText("1 removed")).toHaveClass(
+			"text-destructive",
+		);
+	});
+
+	it("marks the added and changed files in the tree and names them in the file's own header", async () => {
+		compareState.result = {
+			from: { id: "s8", version: 8 },
+			to: { id: "s9", version: 9 },
+			added: [{ path: "new.md" }],
+			removed: [],
+			changed: [{ path: "AGENTS.md" }],
+			unchangedCount: 9,
+		};
+		filesBySnapshot.set("s9", [
+			treeFile("f1", "AGENTS.md"),
+			treeFile("f2", "new.md"),
+			treeFile("f3", "plain.md"),
+		]);
+		renderPublished(editedVersion());
+
+		const agents = await screen.findByRole("button", {
+			name: /AGENTS\.md/,
+		});
+		await waitFor(() =>
+			expect(within(agents).getByText("M")).toBeInTheDocument(),
+		);
+		expect(
+			within(screen.getByRole("button", { name: /new\.md/ })).getByText(
+				"A",
+			),
+		).toBeInTheDocument();
+		expect(
+			within(
+				screen.getByRole("button", { name: /plain\.md/ }),
+			).queryByText(/^[AM]$/),
+		).toBeNull();
+		expect(
+			screen.getByTestId("instructions-tree-legend"),
+		).toHaveTextContent("A added M changed");
+		// The tab opens on AGENTS.md, which the published version changed.
+		expect(screen.getByTestId("file-view")).toHaveTextContent("AGENTS.md");
+		expect(fileViewProps.at(-1)).toMatchObject({
+			path: "AGENTS.md",
+			change: "changed",
+			publishedVersion: 9,
+		});
 	});
 
 	it("opens the comparison for that exact pair", async () => {
@@ -1313,12 +1543,14 @@ describe("InstructionsPublishedView — changed in this version", () => {
 		};
 		renderPublished(editedVersion());
 
-		expect(
-			await screen.findByText("No file changes from version 8."),
-		).toBeInTheDocument();
+		const since = await screen.findByText("Since version 8");
+		expect(since.parentElement).toHaveTextContent("No file changes");
 		expect(
 			screen.queryByRole("button", { name: "See what changed" }),
 		).toBeNull();
+		expect(
+			screen.queryByTestId("instructions-tree-legend"),
+		).not.toBeInTheDocument();
 	});
 
 	it("says nothing at all for an uploaded version with no base", async () => {
@@ -1326,21 +1558,32 @@ describe("InstructionsPublishedView — changed in this version", () => {
 			editedVersion({ baseSnapshotId: null, baseVersion: null }),
 		);
 
-		expect(await screen.findByText(/Uploaded by A\. Member/)).toBeTruthy();
-		expect(screen.queryByText(/Changed from version/)).toBeNull();
-		expect(screen.queryByText(/No file changes from version/)).toBeNull();
+		const strip = screen.getByTestId("instructions-status-strip");
+		expect(within(strip).getByText("Folder upload")).toBeInTheDocument();
+		expect(within(strip).queryByText(/^Since version/)).toBeNull();
+		expect(screen.queryByTestId("instructions-tree-legend")).toBeNull();
 		// Nothing to compare, so nothing was asked of the server.
 		expect(compareState.inputs).toEqual([]);
 	});
 
-	it("renders no line when the base version can no longer be read", async () => {
+	it("shows no such fact when the base version can no longer be read", async () => {
 		compareState.error = new Error("Snapshot not found");
 		renderPublished(editedVersion());
 
-		expect(await screen.findByText(/Uploaded by A\. Member/)).toBeTruthy();
+		const strip = screen.getByTestId("instructions-status-strip");
 		await waitFor(() => expect(compareState.inputs).toHaveLength(1));
-		expect(screen.queryByText(/Changed from version/)).toBeNull();
-		expect(screen.queryByText(/No file changes from version/)).toBeNull();
+		expect(within(strip).queryByText(/^Since version/)).toBeNull();
+		expect(within(strip).getByText("Stored")).toBeInTheDocument();
+	});
+
+	it("calls an edit an edit, not a folder upload", () => {
+		renderPublished(editedVersion());
+
+		const strip = screen.getByTestId("instructions-status-strip");
+		expect(
+			within(strip).getByText("Edited from version 8"),
+		).toBeInTheDocument();
+		expect(within(strip).queryByText("Folder upload")).toBeNull();
 	});
 });
 
@@ -1423,28 +1666,26 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 	// pull request, so proposing comes back — for a member holding
 	// INSTRUCTION_CREATE, or a reader once the project allows it — while
 	// direct mutation stays off.
-	it("offers an editor Suggest a change, anchored for the page tour, and no direct edit", () => {
+	//
+	// Fizzy #2878 §10: someone who may commit adds a file to the branch, as
+	// they would with git; suggesting is the reader's way and the editor's
+	// alternative, inside the same dialog.
+	it("offers an editor Add file, which commits to the branch, and no Replace or version save", async () => {
 		render(view(controls(), { canEdit: true, canRead: true }), {
 			wrapper: TestQueryProvider,
 		});
-		const suggest = screen.getByRole("button", {
-			name: "Suggest a change",
-		});
-		expect(suggest).toHaveAttribute(
-			"data-onboarding-target",
-			"instructions-propose-pull-request",
-		);
-		expect(screen.queryByRole("button", { name: "Add file" })).toBeNull();
+		await openMore();
+		expect(menuItem("Add file")).toBeInTheDocument();
+		expect(queryMenuItem("Suggest a change")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Replace" })).toBeNull();
 	});
 
-	it("offers a reader Suggest a change only once read-only members may propose", () => {
+	it("offers a reader Suggest a change only once read-only members may propose", async () => {
 		const off = render(view(controls(), { canRead: true }), {
 			wrapper: TestQueryProvider,
 		});
-		expect(
-			screen.queryByRole("button", { name: "Suggest a change" }),
-		).toBeNull();
+		await openMore();
+		expect(queryMenuItem("Suggest a change")).toBeNull();
 		off.unmount();
 		render(
 			view(
@@ -1456,50 +1697,106 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 			),
 			{ wrapper: TestQueryProvider },
 		);
-		expect(
-			screen.getByRole("button", { name: "Suggest a change" }),
-		).toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Suggest a change")).toBeInTheDocument();
 	});
 
-	it("offers no suggestion while repository mode is unconfirmed or nothing is configured", () => {
+	it("offers no suggestion while repository mode is unconfirmed or nothing is configured", async () => {
 		const unconfirmed = render(
 			view(controls(), { canEdit: true, repositoryConfirmed: false }),
 			{ wrapper: TestQueryProvider },
 		);
-		expect(
-			screen.queryByRole("button", { name: "Suggest a change" }),
-		).toBeNull();
+		await openMore();
+		expect(queryMenuItem("Suggest a change")).toBeNull();
 		unconfirmed.unmount();
 		render(view(controls({ configured: null }), { canEdit: true }), {
 			wrapper: TestQueryProvider,
 		});
-		expect(
-			screen.queryByRole("button", { name: "Suggest a change" }),
-		).toBeNull();
+		await openMore();
+		expect(queryMenuItem("Suggest a change")).toBeNull();
 	});
 
-	it("opens the suggestion dialog naming the repository and branch the pull request targets", async () => {
-		const user = userEvent.setup();
-		render(view(controls(), { canEdit: true }), {
+	// Read-only mode refuses every write to a connected source, a commit to
+	// the branch included, whatever the member's role.
+	it("offers an editor no commit while the project is in Read-only mode, only the pull request", async () => {
+		render(view(controls(), { canEdit: true, readOnlyMode: true }), {
 			wrapper: TestQueryProvider,
 		});
-		await user.click(
-			screen.getByRole("button", { name: "Suggest a change" }),
+		await openMore();
+
+		expect(queryMenuItem("Add file")).toBeNull();
+		expect(menuItem("Suggest a change")).toBeInTheDocument();
+	});
+
+	it("says in the status block that Fabric's copy is syncing a commit made from this tab", () => {
+		render(
+			view(controls(), {
+				syncingCommit: {
+					sha: "0123456789abcdef0123456789abcdef01234567",
+					ref: "main",
+				},
+			}),
+			{ wrapper: TestQueryProvider },
 		);
+
+		expect(
+			screen.getByText(
+				"Committed 0123456 to main · Fabric's copy is syncing…",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("opens the suggestion dialog for a reader naming the repository and branch the pull request targets", async () => {
+		render(
+			view(
+				controls({
+					canConfigure: false,
+					configured: { ...configured, allowReaderProposals: true },
+				}),
+				{ canRead: true },
+			),
+			{ wrapper: TestQueryProvider },
+		);
+		const user = await openMore();
+		await user.click(menuItem("Suggest a change"));
 		expect(
 			await screen.findByText(
 				/This opens a pull request in example-org\/instructions against main\./,
 			),
 		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Commit to main" }),
+		).toBeNull();
 	});
 
-	it("lets a reviewer browse suggestions, but never decide them here", () => {
+	it("opens the add dialog for an editor naming the branch the file is committed to", async () => {
+		render(view(controls(), { canEdit: true }), {
+			wrapper: TestQueryProvider,
+		});
+		const user = await openMore();
+		await user.click(menuItem("Add file"));
+		expect(
+			await screen.findByText(
+				/This commits the file to main in example-org\/instructions/,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Commit to main" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Suggest as a pull request" }),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText("Commit message")).toHaveValue(
+			"Add a file",
+		);
+	});
+
+	it("lets a reviewer browse suggestions, but never decide them here", async () => {
 		render(view(controls(), { canEdit: true, canReview: true }), {
 			wrapper: TestQueryProvider,
 		});
-		expect(
-			screen.getByRole("button", { name: "Suggested changes" }),
-		).toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Suggested changes")).toBeInTheDocument();
 		const last = proposalsProps.at(-1);
 		expect(last).toMatchObject({
 			canReview: true,
@@ -1509,13 +1806,12 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		});
 	});
 
-	it("keeps a reader's own suggestions browsable after read-only proposals are turned off", () => {
+	it("keeps a reader's own suggestions browsable after read-only proposals are turned off", async () => {
 		render(view(controls({ canConfigure: false }), { canRead: true }), {
 			wrapper: TestQueryProvider,
 		});
-		expect(
-			screen.getByRole("button", { name: "Suggested changes" }),
-		).toBeInTheDocument();
+		await openMore();
+		expect(menuItem("Suggested changes")).toBeInTheDocument();
 		expect(proposalsProps.at(-1)).toMatchObject({ canReview: false });
 	});
 
@@ -1524,19 +1820,16 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 	// suggested under the opt-in keeps "Suggested changes" (status, Refresh,
 	// Retry, Withdraw) then; only proposing needs a configured target. The
 	// server lists a non-reviewer only their own rows either way.
-	it("keeps a reader's suggestions browsable once the sync configuration is gone, with no Suggest", () => {
+	it("keeps a reader's suggestions browsable once the sync configuration is gone, with no Suggest", async () => {
 		const gone = render(
 			view(controls({ canConfigure: false, configured: null }), {
 				canRead: true,
 			}),
 			{ wrapper: TestQueryProvider },
 		);
-		expect(
-			screen.getByRole("button", { name: "Suggested changes" }),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: "Suggest a change" }),
-		).toBeNull();
+		await openMore();
+		expect(menuItem("Suggested changes")).toBeInTheDocument();
+		expect(queryMenuItem("Suggest a change")).toBeNull();
 		expect(proposalsProps.at(-1)).toMatchObject({ canReview: false });
 		gone.unmount();
 
@@ -1549,22 +1842,18 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 			}),
 			{ wrapper: TestQueryProvider },
 		);
-		expect(
-			screen.queryByRole("button", { name: "Suggested changes" }),
-		).toBeNull();
+		await openMore();
+		expect(queryMenuItem("Suggested changes")).toBeNull();
 	});
 
 	it("offers Sync from repository to a configurer with an ACTIVE integration and nothing configured", async () => {
 		const c = controls({ sourceOfTruth: "UPLOAD", configured: null });
-		const user = userEvent.setup();
 		render(view(c, { repositoryBacked: false }), {
 			wrapper: TestQueryProvider,
 		});
-		await user.click(
-			screen.getByRole("button", { name: "Sync from repository" }),
-		);
+		const user = await openMore();
+		await user.click(menuItem("Sync from repository"));
 		expect(c.onConfigure).toHaveBeenCalled();
-		expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
 	});
 
 	// `localSetupRouteFor` (Fizzy #2721): the Connect dialog's CLI route for a
@@ -1609,17 +1898,13 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 
 	it("offers Sync now once configured, and holds it with a spinner while a run is open", async () => {
 		const c = controls();
-		const user = userEvent.setup();
 		const rendered = render(view(c), { wrapper: TestQueryProvider });
-		await user.click(screen.getByRole("button", { name: "Sync now" }));
+		const user = await openMore();
+		await user.click(menuItem("Sync now"));
 		expect(c.onSyncNow).toHaveBeenCalled();
-		expect(
-			document.querySelector(
-				'[data-onboarding-target="instructions-sync-now"]',
-			),
-		).not.toBeNull();
 		rendered.rerender(view(controls({ running: true })));
-		expect(screen.getByRole("button", { name: "Syncing…" })).toBeDisabled();
+		await user.click(screen.getByRole("button", { name: "More" }));
+		expect(menuItem("Syncing…")).toHaveAttribute("data-disabled");
 	});
 
 	it("shows a reader the last sync but neither button", () => {
@@ -1649,19 +1934,160 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		expect(
 			screen.queryByRole("button", { name: "Sync from repository" }),
 		).toBeNull();
-		expect(screen.getByText(/published version 7/)).toBeInTheDocument();
+		expect(screen.getByText(/took commit 0123456/)).toBeInTheDocument();
 	});
 
-	it("summarises a synced version by repository, branch and short commit", () => {
-		render(view(controls()), { wrapper: TestQueryProvider });
-		expect(
-			screen.getByText(
-				/^Synced from example-org\/instructions @ main \(0123456\) and published by A\. Member/,
-			),
-		).toBeInTheDocument();
+	// Fizzy #2878 §10: the header reads like git. The pill names the branch
+	// and the commit Fabric's copy is of; under it, the commit's own author,
+	// age and subject, from the branch's history.
+	describe("the header of a repository project", () => {
+		const PUBLISHED_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+		function publishedCommit(over: Record<string, unknown> = {}) {
+			return {
+				sha: PUBLISHED_SHA,
+				author: { name: "Jane Doe" },
+				date: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+				message: "Tighten lint rules\n\nA longer body.",
+				url: `https://github.com/example-org/instructions/commit/${PUBLISHED_SHA}`,
+				parent: "9".repeat(40),
+				published: 7,
+				refused: false,
+				isFabric: false,
+				...over,
+			};
+		}
+
+		it("names the branch and the short commit in the pill, not a version number", () => {
+			render(view(controls()), { wrapper: TestQueryProvider });
+
+			expect(screen.getByText("main @ 0123456")).toBeInTheDocument();
+			expect(screen.queryByText("Version 7 is published")).toBeNull();
+		});
+
+		it("says who made the commit, when, and what they said, from the branch's history", async () => {
+			commitsState.rows = [
+				publishedCommit({ sha: "f".repeat(40), published: null }),
+				publishedCommit(),
+			];
+			render(view(controls()), { wrapper: TestQueryProvider });
+
+			const line = await screen.findByTestId(
+				"repository-published-summary",
+			);
+
+			expect(line).toHaveTextContent(
+				/^Jane Doe · 2h ago · “Tighten lint rules”$/,
+			);
+			// The body of the message is not the subject.
+			expect(line).not.toHaveTextContent(/longer body/);
+			// It is the Published fact of the strip, whose other facts say
+			// where the version came from and what it holds.
+			const strip = screen.getByTestId("instructions-status-strip");
+			expect(within(strip).getByText("Published")).toBeInTheDocument();
+			expect(strip).toHaveTextContent(
+				"Sourceexample-org/instructions @ main",
+			);
+			expect(strip).toHaveTextContent("Stored4 files");
+			expect(strip).toHaveTextContent(
+				"Left out1 file by the default rules",
+			);
+		});
+
+		it("finds the published commit by its version when the version records no commit", async () => {
+			commitsState.rows = [publishedCommit({ sha: "e".repeat(40) })];
+			render(
+				view(controls(), {
+					published: {
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 4,
+						excludedCount: 1,
+						createdAt: new Date(),
+						source: "REPOSITORY",
+						sourceRef: "main",
+						sourceCommitSha: null,
+						repositoryIntegrationId: "int_1",
+						user: { id: "u", name: "A. Member" },
+					},
+				}),
+				{ wrapper: TestQueryProvider },
+			);
+
+			expect(
+				await screen.findByTestId("repository-published-summary"),
+			).toHaveTextContent(/^Jane Doe · 2h ago/);
+		});
+
+		it("says the message was withheld when the secret scan withheld it", async () => {
+			commitsState.rows = [
+				publishedCommit({ message: null, messageWithheld: true }),
+			];
+			render(view(controls()), { wrapper: TestQueryProvider });
+
+			expect(
+				await screen.findByTestId("repository-published-summary"),
+			).toHaveTextContent(/^Jane Doe · 2h ago · message withheld$/);
+		});
+
+		it("falls back to what the version itself knows when the commit is not on the first page", async () => {
+			commitsState.rows = [
+				publishedCommit({ sha: "f".repeat(40), published: null }),
+			];
+			render(view(controls()), { wrapper: TestQueryProvider });
+
+			expect(
+				await screen.findByTestId("repository-published-summary"),
+			).toHaveTextContent(/^A\. Member · \d+m ago$/);
+			expect(
+				screen.getByTestId("instructions-status-strip"),
+			).toHaveTextContent("Sourceexample-org/instructions @ main");
+		});
+
+		it("falls back the same way when the history cannot be read, and says nothing wrong", async () => {
+			commitsState.fails = true;
+			render(view(controls()), { wrapper: TestQueryProvider });
+
+			expect(
+				await screen.findByTestId("repository-published-summary"),
+			).toHaveTextContent(/^A\. Member · \d+m ago$/);
+		});
+
+		it("reads no history at all for an upload project, whose header is unchanged", () => {
+			render(
+				view(controls({ sourceOfTruth: "UPLOAD", configured: null }), {
+					repositoryBacked: false,
+					published: {
+						id: "s7",
+						version: 7,
+						status: "READY",
+						fileCount: 2,
+						excludedCount: 0,
+						createdAt: new Date(),
+						source: "UPLOAD",
+						user: { id: "u", name: "A. Member" },
+					},
+				}),
+				{ wrapper: TestQueryProvider },
+			);
+
+			expect(
+				screen.getByText("Version 7 is published"),
+			).toBeInTheDocument();
+			const strip = screen.getByTestId("instructions-status-strip");
+			expect(strip).toHaveTextContent("SourceFolder upload");
+			expect(strip).toHaveTextContent(/PublishedA\. Member · \d+m ago/);
+			expect(
+				screen.queryByTestId("repository-published-summary"),
+			).toBeNull();
+		});
 	});
 
-	it("lets a reviewer publish a synced version from History, but not delete one", async () => {
+	// Fizzy #2878 §10: a repository project's History is the branch's commits;
+	// its copy follows the branch, so nothing is published, rolled back or
+	// deleted by hand, even by a reviewer.
+	it("opens the branch's commits, not a list of versions to publish, and keeps the sync runs under it", async () => {
 		const user = userEvent.setup();
 		render(
 			view(controls(), {
@@ -1682,10 +2108,12 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 			}),
 			{ wrapper: TestQueryProvider },
 		);
-		await user.click(screen.getByRole("button", { name: "History" }));
+		await user.click(screen.getByRole("button", { name: "Commits" }));
+
+		expect(await screen.findByText("Commits on main")).toBeInTheDocument();
 		expect(
-			await screen.findByRole("button", { name: "Publish this version" }),
-		).toBeInTheDocument();
+			screen.queryByRole("button", { name: "Publish this version" }),
+		).toBeNull();
 		expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
 		expect(await screen.findByText("Sync runs")).toBeInTheDocument();
 	});
@@ -1723,6 +2151,175 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Sync again" }));
 		expect(c.onSyncNow).toHaveBeenCalled();
+	});
+
+	// Fizzy #2878 §10: a direct commit the scan refused is a snapshot of its
+	// own (never pushed, so still an upload-sourced row). It reads as a refused
+	// commit to the branch, with nothing to upload or sync again.
+	it("words a refused direct commit as a commit that was not made, with no upload or sync to repeat", () => {
+		const c = controls();
+		render(
+			view(c, {
+				canEdit: true,
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "UPLOAD",
+						proposalDestination: "REPOSITORY_COMMIT",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [
+							{
+								path: "a.md",
+								reason: "secret",
+								detail: "github-token",
+							},
+						],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit not made: 1 file contains secrets",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/Nothing was pushed to main\./),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Sync again" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Upload again" }),
+		).toBeNull();
+	});
+
+	it("names the commit being checked when a synced version is", () => {
+		const c = controls();
+		render(
+			view(c, {
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "VALIDATING",
+						source: "REPOSITORY",
+						sourceCommitSha:
+							"b1c2d3e4f5061728394a5b6c7d8e9f0123456789",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.getByText("Checking commit b1c2d3e."),
+		).toBeInTheDocument();
+	});
+
+	it("names the refused commit and the commit Fabric's copy stays at in the rejected banner", () => {
+		const c = controls();
+		render(
+			view(c, {
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "REJECTED",
+						source: "REPOSITORY",
+						sourceCommitSha:
+							"b1c2d3e4f5061728394a5b6c7d8e9f0123456789",
+						fileCount: 1,
+						excludedCount: 0,
+						createdAt: new Date(),
+						rejection: [
+							{
+								path: "a.md",
+								reason: "secret",
+								detail: "github-token",
+							},
+						],
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.getByRole("heading", {
+				name: "Commit b1c2d3e refused: 1 file contains secrets",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Fabric's copy stays at commit 0123456."),
+		).toBeInTheDocument();
+	});
+
+	it("says a direct commit is being checked before it is committed, not that an upload is", () => {
+		const c = controls();
+		render(
+			view(c, {
+				canEdit: true,
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "VALIDATING",
+						source: "UPLOAD",
+						proposalDestination: "REPOSITORY_COMMIT",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.publishedView
+					.checkingSummaryCommit,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.publishedView
+					.checkingSummaryUpload,
+			),
+		).toBeNull();
+	});
+
+	it("leaves a direct commit whose checks broke to the editor that made it, with no banner to retry an upload", () => {
+		const c = controls();
+		render(
+			view(c, {
+				canEdit: true,
+				snapshots: [
+					{
+						id: "s8",
+						version: 8,
+						status: "FAILED",
+						source: "UPLOAD",
+						proposalDestination: "REPOSITORY_COMMIT",
+						fileCount: 4,
+						excludedCount: 0,
+						createdAt: new Date(),
+					},
+				],
+			}),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		expect(screen.queryByText(/didn't finish/i)).toBeNull();
 	});
 
 	// Spec §4: while the repository is the source of truth, uploads are off
@@ -2136,7 +2733,8 @@ describe("InstructionsPublishedView — deferred secret scan", () => {
 			{ publishBeforeScan: false, deferredScanStatus: null },
 			{ canEdit: true, canReview: true },
 		);
-		await user.click(screen.getByRole("button", { name: "Add file" }));
+		await user.click(screen.getByRole("button", { name: "More" }));
+		await user.click(menuItem("Add file"));
 		expect(await screen.findByLabelText(label)).toBeInTheDocument();
 		unmount();
 
@@ -2144,8 +2742,519 @@ describe("InstructionsPublishedView — deferred secret scan", () => {
 			{ publishBeforeScan: false, deferredScanStatus: null },
 			{ canEdit: true, canReview: false },
 		);
-		await user.click(screen.getByRole("button", { name: "Add file" }));
+		await user.click(screen.getByRole("button", { name: "More" }));
+		await user.click(menuItem("Add file"));
 		await screen.findByRole("dialog");
 		expect(screen.queryByLabelText(label)).toBeNull();
+	});
+});
+
+/**
+ * Nine buttons in a row wrapped to four lines on a phone. The header now keeps
+ * the actions that set the tab up and read it (Connect your agent, Upload or
+ * Replace, History, Download) in view and puts everything else under More,
+ * while every page-tour anchor stays on an element that is rendered.
+ */
+describe("InstructionsPublishedView — the header", () => {
+	const published = {
+		id: "s7",
+		version: 7,
+		status: "READY",
+		fileCount: 4,
+		excludedCount: 0,
+		createdAt: new Date(),
+		source: "UPLOAD",
+		user: { id: "u", name: "A. Member" },
+	};
+
+	function renderHeader(props: Record<string, unknown> = {}) {
+		return render(
+			<InstructionsPublishedView
+				projectId="p"
+				projectName="Checkout Rewrite"
+				published={published as never}
+				snapshots={[] as never}
+				onReplaceClick={() => undefined}
+				onChanged={() => undefined}
+				{...props}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("keeps History, Download, More and the primary action in view for an editor, and puts the rest under More", async () => {
+		renderHeader({ canEdit: true, canReview: true });
+
+		const bar = screen.getByTestId("instructions-actions");
+		expect(
+			within(bar)
+				.getAllByRole("button")
+				.map(
+					(button) =>
+						button.getAttribute("aria-label") ?? button.textContent,
+				),
+		).toEqual(["History", "Download", "More", "Upload new version"]);
+		await openMore();
+		expect(
+			screen.getAllByRole("menuitem").map((item) => item.textContent),
+		).toEqual(["Review proposals", "Add file", "Settings"]);
+	});
+
+	it("moves Connect your agent out of the header and beside Fabric MCP in the status strip", async () => {
+		const user = userEvent.setup();
+		renderHeader({ canEdit: true });
+
+		const bar = screen.getByTestId("instructions-actions");
+		expect(
+			within(bar).queryByRole("button", { name: "Connect your agent" }),
+		).toBeNull();
+		const strip = screen.getByTestId("instructions-status-strip");
+		const fact = within(strip).getByText("Agents read it through")
+			.parentElement as HTMLElement;
+		expect(fact).toHaveTextContent("Fabric MCP");
+		await user.click(
+			within(fact).getByRole("button", { name: "Connect your agent" }),
+		);
+		expect(
+			await screen.findByTestId("connect-cli-dialog-stub"),
+		).toBeInTheDocument();
+	});
+
+	describe("Review proposals", () => {
+		const awaiting = (over: Record<string, unknown> = {}) => ({
+			id: "p1",
+			version: 3,
+			status: "READY",
+			proposalStatus: "PENDING",
+			destination: "FABRIC",
+			...over,
+		});
+
+		it("reads the first page of proposals for a reviewer and shows how many wait for a decision", async () => {
+			proposalsState.items = [
+				awaiting({ id: "p1" }),
+				awaiting({ id: "p2", status: "REJECTED" }),
+				awaiting({ id: "p3", status: "VALIDATING" }),
+				awaiting({ id: "p4", proposalStatus: "APPROVED" }),
+				awaiting({ id: "p5", destination: "REPOSITORY" }),
+			];
+			renderHeader({ canEdit: true, canReview: true });
+
+			expect(
+				await screen.findByRole("button", {
+					name: "Review proposals, 2 waiting",
+				}),
+			).toBeInTheDocument();
+			expect(proposalsState.inputs).toEqual([
+				{ projectId: "p", limit: 25 },
+			]);
+			const bar = screen.getByTestId("instructions-actions");
+			expect(
+				within(bar)
+					.getAllByRole("button")
+					.map(
+						(button) =>
+							button.getAttribute("aria-label") ??
+							button.textContent,
+					),
+			).toEqual([
+				"Review proposals, 2 waiting",
+				"History",
+				"Download",
+				"More",
+				"Upload new version",
+			]);
+			await openMore();
+			expect(queryMenuItem("Review proposals")).toBeNull();
+		});
+
+		it("opens the proposals dialog from the header button", async () => {
+			proposalsState.items = [awaiting()];
+			renderHeader({ canEdit: true, canReview: true });
+
+			await userEvent.click(
+				await screen.findByRole("button", {
+					name: "Review proposals, 1 waiting",
+				}),
+			);
+
+			expect(proposalsProps.at(-1)).toMatchObject({ open: true });
+		});
+
+		it("keeps Review proposals under More when nothing waits for a decision", async () => {
+			proposalsState.items = [
+				awaiting({ proposalStatus: "APPROVED" }),
+				awaiting({ id: "p2", status: "RECEIVING" }),
+			];
+			renderHeader({ canEdit: true, canReview: true });
+
+			await waitFor(() => expect(proposalsState.inputs).toHaveLength(1));
+			expect(
+				screen.queryByRole("button", { name: /Review proposals/ }),
+			).toBeNull();
+			await openMore();
+			expect(menuItem("Review proposals")).toBeInTheDocument();
+		});
+
+		it("reads no proposals for someone who cannot review them", async () => {
+			proposalsState.items = [awaiting()];
+			renderHeader({ canEdit: true, canReview: false, canRead: true });
+
+			await openMore();
+			expect(proposalsState.inputs).toEqual([]);
+			expect(
+				screen.queryByRole("button", { name: /Review proposals/ }),
+			).toBeNull();
+		});
+
+		it("reads no proposals for a repository project, whose suggestions are decided on their pull requests", async () => {
+			proposalsState.items = [awaiting()];
+			renderHeader({
+				canEdit: true,
+				canReview: true,
+				repositoryBacked: true,
+				repositoryConfirmed: true,
+			});
+
+			await openMore();
+			expect(proposalsState.inputs).toEqual([]);
+			expect(
+				screen.queryByRole("button", { name: /Review proposals/ }),
+			).toBeNull();
+		});
+	});
+
+	describe("the status strip's left-out files", () => {
+		const leftOutVersion = (over: Record<string, unknown> = {}) => ({
+			...published,
+			excludedCount: 3,
+			excludedPaths: [
+				{ path: "tasks/a.md", rule: "tasks/" },
+				{ path: "tasks/b.md", rule: "tasks/" },
+				{ path: "retro.md", rule: "retro.md" },
+			],
+			settingsFrozen: { layer: "fabricignore" },
+			...over,
+		});
+
+		it("names the rule layer beside the count and offers to show the files", () => {
+			renderHeader({ published: leftOutVersion() });
+
+			const strip = screen.getByTestId("instructions-status-strip");
+			expect(strip).toHaveTextContent(
+				"Left out3 files by the rules in .fabricignoreShow",
+			);
+			expect(
+				within(strip).getByRole("button", { name: "Show" }),
+			).toHaveAttribute("aria-pressed", "false");
+		});
+
+		it("lists them greyed in the tree from the strip, and hides them again", async () => {
+			const user = userEvent.setup();
+			filesBySnapshot.set(String(published.id), [
+				treeFile("f1", "CLAUDE.md"),
+			]);
+			renderHeader({ published: leftOutVersion() });
+			await screen.findByRole("button", { name: /CLAUDE\.md/ });
+
+			await user.click(screen.getByRole("button", { name: "Show" }));
+
+			const row = screen.getByText("retro.md").closest("div");
+			expect(row).toHaveAttribute("title", "Left out by retro.md");
+			expect(row).toHaveTextContent("left out · retro.md");
+			expect(
+				screen.getByRole("button", { name: "Hide" }),
+			).toHaveAttribute("aria-pressed", "true");
+
+			await user.click(screen.getByRole("button", { name: "Hide" }));
+
+			expect(screen.queryByText("retro.md")).toBeNull();
+		});
+
+		it("keeps the strip's switch and the tree footer's in step", async () => {
+			const user = userEvent.setup();
+			filesBySnapshot.set(String(published.id), [
+				treeFile("f1", "CLAUDE.md"),
+			]);
+			renderHeader({ published: leftOutVersion() });
+			await screen.findByRole("button", { name: /CLAUDE\.md/ });
+
+			await user.click(
+				screen.getByRole("button", { name: "Show 3 left-out files" }),
+			);
+
+			expect(
+				screen.getByRole("button", { name: "Hide" }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Hide left-out files" }),
+			).toBeInTheDocument();
+			expect(screen.getByText("retro.md")).toBeInTheDocument();
+		});
+
+		it("says it shows the first few when the version kept fewer names than files it left out", async () => {
+			const user = userEvent.setup();
+			filesBySnapshot.set(String(published.id), [
+				treeFile("f1", "CLAUDE.md"),
+			]);
+			renderHeader({
+				published: leftOutVersion({ excludedCount: 4000 }),
+			});
+			await screen.findByRole("button", { name: /CLAUDE\.md/ });
+			expect(screen.queryByText(/Showing the first/)).toBeNull();
+
+			await user.click(screen.getByRole("button", { name: "Show" }));
+
+			expect(screen.getByText("Showing the first 3")).toBeInTheDocument();
+			expect(
+				screen.getByTestId("instructions-status-strip"),
+			).toHaveTextContent("4,000 files");
+		});
+
+		it("keeps the count alone, with no Show and no tree toggle, for a version that stored no names", async () => {
+			filesBySnapshot.set(String(published.id), [
+				treeFile("f1", "CLAUDE.md"),
+			]);
+			renderHeader({
+				published: leftOutVersion({
+					excludedPaths: [],
+					excludedCount: 4,
+				}),
+			});
+			await screen.findByRole("button", { name: /CLAUDE\.md/ });
+
+			const strip = screen.getByTestId("instructions-status-strip");
+			expect(strip).toHaveTextContent("Left out4 files by the rules");
+			expect(
+				within(strip).queryByRole("button", { name: "Show" }),
+			).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: /left-out/ }),
+			).toBeNull();
+		});
+
+		it("says nothing about left-out files when nothing was left out", () => {
+			renderHeader({
+				published: leftOutVersion({
+					excludedPaths: [],
+					excludedCount: 0,
+				}),
+			});
+
+			expect(
+				within(
+					screen.getByTestId("instructions-status-strip"),
+				).queryByText("Left out"),
+			).toBeNull();
+		});
+
+		it("says one file in the singular", () => {
+			renderHeader({
+				published: leftOutVersion({
+					excludedCount: 1,
+					fileCount: 1,
+					excludedPaths: [{ path: "retro.md", rule: "retro.md" }],
+				}),
+			});
+
+			const strip = screen.getByTestId("instructions-status-strip");
+			expect(strip).toHaveTextContent("Stored1 file");
+			expect(strip).toHaveTextContent("Left out1 file by the rules");
+		});
+	});
+
+	it("keeps Settings reachable for a reader too, since the dialog shows them read-only", async () => {
+		renderHeader();
+
+		await openMore();
+
+		expect(menuItem("Settings")).toBeInTheDocument();
+	});
+
+	// Fizzy #2878 §10: a repository project's History is Commits, and the same
+	// anchor (and so the same tour step) stays on the button.
+	it("calls the history button Commits on a repository project, with its tour anchor kept", () => {
+		renderHeader({
+			canEdit: true,
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			repositorySync: {
+				state: {
+					sourceOfTruth: "REPOSITORY",
+					canConfigure: true,
+					running: false,
+					configured: {
+						syncId: "sync_1",
+						repositoryIntegrationId: "int_1",
+						provider: "GITHUB",
+						repositoryOwner: "example-org",
+						repositoryName: "instructions",
+						repositoryUrl:
+							"https://github.com/example-org/instructions.git",
+						integrationStatus: "ACTIVE",
+						ref: "main",
+						rootPath: "",
+						automatic: false,
+						automaticPausedReason: null,
+						automaticPausedAt: null,
+						delegateName: "A. Member",
+					},
+					latestRun: null,
+					availableIntegrations: [],
+				},
+				onConfigure: vi.fn(),
+				onSyncNow: vi.fn(),
+				syncNowPending: false,
+				onChanged: vi.fn(),
+			},
+		});
+
+		expect(screen.getByRole("button", { name: "Commits" })).toHaveAttribute(
+			"data-onboarding-target",
+			"coding-instructions-history",
+		);
+		expect(screen.queryByRole("button", { name: "History" })).toBeNull();
+	});
+
+	it("keeps the Connect, History and More tour anchors on the buttons themselves", () => {
+		renderHeader({ canEdit: true });
+
+		expect(
+			screen.getByRole("button", { name: "Connect your agent" }),
+		).toHaveAttribute(
+			"data-onboarding-target",
+			"coding-instructions-connect",
+		);
+		expect(screen.getByRole("button", { name: "History" })).toHaveAttribute(
+			"data-onboarding-target",
+			"coding-instructions-history",
+		);
+		expect(screen.getByRole("button", { name: "More" })).toHaveAttribute(
+			"data-onboarding-target",
+			"instructions-more-actions",
+		);
+	});
+
+	// A spotlight on an element nobody can see is a broken tour. The menu's
+	// items are not rendered while it is closed, so the one step for what lives
+	// there is anchored on the More button, and nothing else carries an anchor
+	// while hidden from view.
+	it("anchors the menu's tour step on the More button, with no anchor on a hidden element", () => {
+		renderHeader({
+			canEdit: true,
+			repositoryBacked: true,
+			repositoryConfirmed: true,
+			canRead: true,
+			repositorySync: {
+				state: {
+					sourceOfTruth: "REPOSITORY",
+					canConfigure: true,
+					running: false,
+					configured: {
+						syncId: "sync_1",
+						repositoryIntegrationId: "int_1",
+						provider: "GITHUB",
+						repositoryOwner: "example-org",
+						repositoryName: "instructions",
+						repositoryUrl:
+							"https://github.com/example-org/instructions.git",
+						integrationStatus: "ACTIVE",
+						ref: "main",
+						rootPath: "",
+						automatic: false,
+						automaticPausedReason: null,
+						automaticPausedAt: null,
+						delegateName: "A. Member",
+					},
+					latestRun: null,
+					availableIntegrations: [],
+				},
+				onConfigure: vi.fn(),
+				onSyncNow: vi.fn(),
+				syncNowPending: false,
+				onChanged: vi.fn(),
+			},
+		});
+
+		const anchors = document.querySelectorAll("[data-onboarding-target]");
+		expect(anchors.length).toBeGreaterThan(0);
+		for (const anchor of anchors) {
+			expect(
+				anchor.closest('[aria-hidden="true"]'),
+				`${anchor.getAttribute("data-onboarding-target")} sits on or inside an aria-hidden element`,
+			).toBeNull();
+		}
+		expect(
+			document.querySelector(
+				'[data-onboarding-target="instructions-more-actions"]',
+			),
+		).toBe(screen.getByRole("button", { name: "More" }));
+		for (const gone of [
+			"instructions-sync-now",
+			"instructions-sync-from-repository",
+			"instructions-propose-pull-request",
+		]) {
+			expect(
+				document.querySelector(`[data-onboarding-target="${gone}"]`),
+			).toBeNull();
+		}
+	});
+
+	it("says a synced commit is being checked, not an upload", () => {
+		renderHeader({
+			snapshots: [
+				{
+					id: "s8",
+					version: 8,
+					status: "VALIDATING",
+					source: "REPOSITORY",
+					fileCount: 4,
+					excludedCount: 0,
+					createdAt: new Date(),
+				},
+			] as never,
+		});
+
+		expect(
+			screen.getByText(
+				en.projects.codingInstructions.publishedView
+					.checkingSummaryRepository,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.publishedView
+					.checkingSummaryUpload,
+			),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens Settings read-only for a viewer and editable for an editor", async () => {
+		const reader = renderHeader({ canEdit: false });
+		const user = await openMore();
+		await user.click(menuItem("Settings"));
+		expect(
+			await screen.findByTestId("instructions-settings-read-only"),
+		).toBeInTheDocument();
+		reader.unmount();
+
+		renderHeader({ canEdit: true });
+		const editor = await openMore();
+		await editor.click(menuItem("Settings"));
+		await screen.findByRole("dialog");
+		expect(
+			screen.queryByTestId("instructions-settings-read-only"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Save" }),
+		).toBeInTheDocument();
+	});
+
+	it("shows what the settings failure notice puts above everything, when the tab passes one", () => {
+		renderHeader({
+			notice: <p data-testid="tab-notice">Settings failed</p>,
+		});
+
+		expect(screen.getByTestId("tab-notice")).toBeInTheDocument();
 	});
 });

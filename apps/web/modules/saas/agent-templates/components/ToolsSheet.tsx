@@ -10,6 +10,7 @@ import {
 	type CapabilitySubTool,
 	getBuiltInCapabilitiesByType,
 } from "@saas/agents/lib/builtin-capabilities";
+import { providerConnectedInIntegrationList } from "@saas/data-connections/lib/provider-connection-state";
 import { McpServerIcon } from "@saas/mcp/components/McpServerIcon";
 import { IntegrationBrandIcon } from "@saas/workflows/components/integrations/IntegrationBrandIcon";
 import {
@@ -223,9 +224,9 @@ export function ToolsSheet({
 	};
 
 	const isIntegrationConfigured = (type: IntegrationType): boolean => {
-		return configuredIntegrations.some(
-			(i) => i.provider === type && i.hasCredentials,
-		);
+		// Provider-level: for GitLab, the person's own connection, never a
+		// workflow-scoped credential (`provider-connection-state`).
+		return providerConnectedInIntegrationList(configuredIntegrations, type);
 	};
 
 	// Save integration mutation

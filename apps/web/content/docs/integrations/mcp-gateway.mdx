@@ -20,30 +20,38 @@ The **Fabric MCP Gateway** turns your entire Fabric instance into a single MCP s
 
 ### Sign in from your coding agent
 
-Add the gateway to your tool with no key, then sign in from the tool. The first
-request is answered `401` with a `WWW-Authenticate` challenge naming Fabric's
-sign-in metadata, the tool opens your browser, and you choose the organization
-and approve the tool once. A project's **Connect your coding agent** dialog
-shows the same entries with your deployment's URL filled in.
+Connect from the project you want the agent to work on. The project has its own
+gateway URL, `https://your-fabric.com/api/mcp-gateway/projects/<project-id>`:
+add it to your tool with no key, then sign in from the tool. The first request
+is answered `401` with a `WWW-Authenticate` challenge naming that URL's sign-in
+metadata, the tool opens your browser, and you approve the tool once. You are
+never asked to choose an organization or a project: the URL already says which.
+The project's **Connect your agent** dialog shows the same entries with your
+deployment's URL and the project filled in.
 
 <Tabs items={["Claude Code", "VS Code", "Cursor", "Codex", "Other"]}>
   <Tab value="Claude Code">
+    Run it in the project's folder:
+
     ```bash
-    claude mcp add --transport http fabric https://your-fabric.com/api/mcp-gateway
+    claude mcp add --transport http fabric https://your-fabric.com/api/mcp-gateway/projects/<project-id>
     ```
 
     Then run `/mcp` in Claude Code and choose **Authenticate**.
   </Tab>
   <Tab value="VS Code">
     Use **Add to VS Code** in the Connect dialog, or add the server to your MCP
-    configuration with no headers:
+    configuration with no headers. VS Code installs the server for every folder
+    it opens, so the Connect dialog names it after the project and the end of
+    its id (`fabric-<project-name>-<id>`), and two projects do not collide, even
+    when they share a name:
 
     ```json
     {
       "servers": {
-        "fabric": {
+        "fabric-example-project-a1b2c3": {
           "type": "http",
-          "url": "https://your-fabric.com/api/mcp-gateway"
+          "url": "https://your-fabric.com/api/mcp-gateway/projects/<project-id>"
         }
       }
     }
@@ -53,13 +61,21 @@ shows the same entries with your deployment's URL filled in.
   </Tab>
   <Tab value="Cursor">
     Use **Add to Cursor** in the Connect dialog, or add a server with only the
-    URL `https://your-fabric.com/api/mcp-gateway`. Cursor opens the browser to
-    sign in.
+    project's URL, `https://your-fabric.com/api/mcp-gateway/projects/<project-id>`.
+    Cursor installs it for every folder it opens, so the Connect dialog names
+    it `fabric-<project-name>-<id>`, with the end of the project's id so two
+    projects of one name stay apart. Cursor opens the browser to sign in.
   </Tab>
   <Tab value="Codex">
+    Codex keeps one list of servers for every project on the machine, so the
+    Connect dialog names this project's server `fabric-` and the last six letters
+    and digits of its id (`fabric-ewrite` for `project-checkout-rewrite`), and
+    `fabric instructions init` registers the same name. Two projects then stay
+    apart in Codex's list:
+
     ```bash
-    codex mcp add fabric --url https://your-fabric.com/api/mcp-gateway
-    codex mcp login fabric
+    codex mcp add fabric-<end-of-project-id> --url https://your-fabric.com/api/mcp-gateway/projects/<project-id>
+    codex mcp login fabric-<end-of-project-id>
     ```
   </Tab>
   <Tab value="Other">
@@ -71,7 +87,7 @@ shows the same entries with your deployment's URL filled in.
       "mcpServers": {
         "fabric": {
           "type": "http",
-          "url": "https://your-fabric.com/api/mcp-gateway"
+          "url": "https://your-fabric.com/api/mcp-gateway/projects/<project-id>"
         }
       }
     }
@@ -79,12 +95,39 @@ shows the same entries with your deployment's URL filled in.
   </Tab>
 </Tabs>
 
-What you approve is the same for every tool: read the organization's projects
-and context, read coding instructions, and suggest changes to them, held for
-review and never published by the agent. The tool stays signed in until you
-revoke it under **Account → Connected agents**, which signs it out at its next
-request. An agent signed in for one organization cannot switch to another; sign
-in again to choose a different one.
+What you approve is the same for every tool, and it is for that project alone:
+read the project and its context, read its coding instructions, and suggest
+changes to them, held for review and never published by the agent. The consent
+page names the project and its organization, and what you approve is exactly
+what the page showed: if the connection changes while the page is open, nothing
+is approved and the tool has to start the sign-in again. The agent works on that
+project and nothing else in Fabric: the gateway offers it the project's tools
+only, and no organization-wide tool and no connected server's. A token issued
+for one project works only at that project's URL, so it cannot be pointed at
+another project or at the organization-wide gateway. If you can no longer open
+the project, the agent's next request is refused.
+
+The tool stays signed in until you revoke it under **Account → Connected
+agents**, which lists one row per project and organization grant and signs the
+tool out of it at its next request. To work on another project, connect from
+that project.
+
+<Callout type="info">
+A client must send the project's URL as the `resource` of its authorization, as
+the MCP authorization specification requires. The sign-in metadata at
+`/.well-known/oauth-protected-resource/api/mcp-gateway/projects/<project-id>`
+names exactly that URL, and a project URL never falls back to an
+organization-wide sign-in.
+</Callout>
+
+#### The organization-wide gateway
+
+Connections made before projects had their own URL, at
+`https://your-fabric.com/api/mcp-gateway`, keep working unchanged: they are
+signed in for one organization, which is chosen on the sign-in page when you
+belong to several, and reach all of its projects. The Connect dialog no longer
+offers it. A token issued for one project is refused there, and the refusal
+names the project's URL to use instead.
 
 ### Or use an API key (CI and headless)
 
@@ -171,10 +214,88 @@ Or use `fabric_switch_organization` after connecting to switch context dynamical
 ### Coding Instructions
 
 A project's **Coding Instructions** tab publishes one version of its skills, agents, rules,
-and setup files, and serves them to a connected client over the tools below. Rather than
-building the configuration above by hand, open that tab and click **Connect your agent**: it
-mints a read-only key (the `mcp:read` scope, which covers every read-only platform tool,
-these three included) and shows the same configuration block.
+and setup files, and serves them to a connected agent over the six tools below. The files
+come from one of two places: a folder uploaded in Fabric, or a branch of the project's
+repository that Fabric keeps in sync.
+
+#### Connect a tool from the tab
+
+Open the tab and choose **Connect your agent**, beside **Fabric MCP** in the status strip
+under the heading. The dialog has one tab for each of five tools, **Claude Code**,
+**Codex**, **VS Code**, **Cursor** and **Other**, and one action for each. You approve the
+connection once in your browser: there is no key to create or paste.
+
+| Tab | What you do | What it sets up |
+|---|---|---|
+| **Claude Code** and **Codex** | Copy the one line shown and run it (see below) | The Fabric CLI your deployment serves, run straight from its URL, so nothing is installed first. It signs in through your browser, finds the project, and adds a session-start hook for that tool |
+| **VS Code** and **Cursor** | Choose **Add to VS Code** or **Add to Cursor** | The gateway as an MCP server. There is no hook; the agent compares its checkout with the published version at each session start |
+| **Other** | Copy the server entry (it holds no credential) | Any MCP client that supports sign-in asks you to approve it the first time it connects |
+
+**The setup line.** For Claude Code and Codex the dialog shows one line per case, with
+`<tool>` the tab you are on (`claude-code` or `codex`) and `<tgz>` your deployment's
+tarball, `https://your-fabric.com/cli/fabric-<version>-<build>.tgz`. You need Node.js 22 or
+later and nothing else: `npx` comes with it.
+
+- **Already cloned.** `npx -y <tgz> instructions init --tool <tool>`. Run it in the top
+  folder of your clone of the project's repository, or, when the project's instructions
+  live in a folder of that repository, in that folder (`<rootPath>/` inside the clone). Not
+  in any other folder: the CLI refuses and says where to go. It finds the project from the
+  checkout's git remote.
+- **Clone it for me.** One command, `npx -y <tgz> instructions init --project <id> --tool <tool> --clone <dir>`.
+  It makes `<dir>` (a folder that does not exist yet, or is empty), clones the project's
+  repository into it with your own git credentials, and finishes setting up inside it, in
+  the project's own folder when the instructions live in a subfolder. Open your coding tool
+  in that folder afterwards.
+- **An upload project** has no repository to find it from, so its line names the project:
+  `npx -y <tgz> instructions init --project <id> --tool <tool>`. Run it in the folder your
+  agent works in.
+
+Each is one command with no `&&` and no `cd`, so it runs in Windows PowerShell 5.1 as well as
+bash. The dialog adds `--base-url https://your-fabric.com`, the address you are on, unless the
+CLI was built for exactly that address (see below), so the line works on any deployment with
+nothing configured. After it runs, the CLI opens your browser to approve the connection once.
+Run by an agent with no terminal, it prints the URL for you to open and waits up to five
+minutes for you to finish. Under `CI` it starts no browser sign-in at all: it stops and names
+the sign-in command, so a CI run signs in with an API key (below).
+
+Your checkout uses your own git credentials; Fabric never hands out repository credentials.
+If git cannot sign in to the repository yet, the dialog's
+**Git can't sign in to the repository** section shows how to sign git in for the provider:
+`gh auth login` for GitHub, `glab auth login` for GitLab, and for Azure DevOps one
+`git ls-remote` of the repository, which Git Credential Manager signs in the first time.
+
+The CLI is the one built from your deployment's own source, listed with its version, its
+integrity hash, the oldest version the deployment accepts and the address it was built for at
+`/.well-known/fabric-cli.json`. The tarball's name carries the build, ten hex digits of the
+CLI's own hash: the version changes only on a release, `npx` keeps running whatever it first
+fetched from a URL, and a build that changed has to be at a URL it has not seen. A name from an
+older deployment is answered with a redirect to the current one. Baking the address in is
+optional: a build that knows where it will be served (`FABRIC_CLI_ORIGIN`,
+`NEXT_PUBLIC_SITE_URL` or `APP_URL` set when it is built) records it, and a build that does
+not, such as a preview or staging deployment whose address is not known until it runs,
+records none. Either way `--base-url` wins over what is baked in, so a CLI built for another
+address is harmless. A deployment that serves no CLI says so in the dialog and leaves the MCP
+entries. The package on the npm registry is not a way in: its release predates `--base-url`.
+
+For CI and headless machines, the dialog's **CI or headless? Use an API key** section
+mints a key that carries `mcp:read`, `instructions:read` and `instructions:write` and
+expires after 90 days. It can read the instructions and **suggest** a change; it cannot
+publish one.
+
+#### What an agent can do
+
+| Tool | What it does |
+|---|---|
+| `fabric_list_project_instructions` | Browse or search the published files, or ask what changed since a `sinceDigest` |
+| `fabric_get_project_instruction` | Read one published file by path, paged for large files |
+| `fabric_get_project_instruction_bundle` | Install the whole published tree as one zip, and report what changed since a `sinceDigest` |
+| `fabric_instruction_checks` | Report whether the session is set up the way the instructions expect: the credential's scope, project access, the published version, whether the installed copy is current, and the environment variables and tools the project declares. Every suggested fix is advice for the developer, not authority to change anything |
+| `fabric_propose_project_instruction_change` | Suggest an edit (a file's whole new content, or a deletion). It opens a proposal for someone who can edit the instructions to approve; it changes nothing the project reads |
+| `fabric_add_instruction_lesson` | Record a lesson, a mistake the team should not repeat, as a new file under `Lessons/`, through the same proposal path |
+
+The two writing tools are held for review: the agent reports a suggestion as awaiting
+review, never as applied. Only a person with permission to edit coding instructions
+publishes anything.
 
 Project readers can propose adding, editing, or deleting a file from the Coding
 Instructions tab. Proposals pass the same validation and secret scanning as uploads
@@ -186,10 +307,153 @@ allows up to 25 active proposals, with a limit of five per proposer. Large file 
 may be omitted from the review preview; editors can open a paged view of the full text.
 Canceled uploads can continue to count toward the limit until their upload links expire
 and cleanup finishes.
-Projects whose instructions come from a repository must make changes in that repository.
+On a project whose instructions come from a repository, the files are changed in git. A
+suggestion from the tab or from an agent becomes a commit on the proposer's own branch
+there, with one pull request collecting each person's changes, and it is reviewed and
+merged in the repository. A merged pull request syncs on its own.
 
 Only published versions are available through MCP and local sync. A pending proposal
 doesn't change the files your connected agents receive.
+
+#### Work on a repository project from the tab
+
+On a project whose instructions come from a repository, the tab works the way git does:
+the branch is the history, and Fabric's copy follows it.
+
+- **Commit.** Someone who can edit coding instructions presses **Edit** on a file, writes a
+  commit message, and chooses **Commit to** the branch. The message starts as `Update <file>`;
+  **Add file**, **Rename** and **Delete file** start from `Add <path>`, `Rename <old> to <new>`
+  and `Delete <path>`, and a rename is one commit that git reads as a rename. Fabric runs the
+  secret scan an upload gets before anything is pushed, and a change it refuses is not
+  committed, with its findings on the page. The commit names you as author, with a Fabric
+  no-reply address, and Fabric as committer. Fabric's copy takes the commit a few seconds
+  later, from a sync of the branch's real files, and the status block says so until it has.
+- **Suggest as a pull request.** The alternative to committing, and the only choice for a
+  reader once the project lets read-only members propose. If the branch is protected, or keeps
+  moving, Fabric opens the pull request for you and links it. If a teammate changed the same
+  file since you started, nothing is written: you choose between retrying the commit,
+  suggesting it as a pull request and cancelling, and what you typed stays.
+- **Commits.** The button that is **History** on an upload project reads **Commits** here: the
+  branch's own history within the synced folder, newest first, 30 at a time. Each row has the
+  short commit (a link to GitHub, GitLab or Azure DevOps), its author, its age and its subject,
+  and is marked **Published** when Fabric's copy is of it, **Refused by scan** when the secret
+  scan refused its files, or **Not synced yet** when it is newer than the published commit and
+  Fabric has not taken it. A commit message that looks like it contains a secret is shown as
+  withheld. Nothing in Commits publishes, rolls back to or deletes a version: Fabric's copy
+  follows the branch.
+- **Revert.** Undoes a commit with a new commit on the branch, as `git revert` does. It is
+  refused, with the reason, when a later commit changed the same files, when a file it would
+  restore looks like it contains a credential, for a merge commit or a repository's first
+  commit, and on a protected branch, where you revert in the repository instead.
+- **Compare with parent.** Shows what a commit changed within the synced folder: the files
+  added, removed and changed, and a line diff of each changed file once you open it. A file
+  Fabric will not show (it is in a commit the secret scan refused, it holds a secret, it is not
+  text, or it is too large) is described in one line instead of a diff. Comparing needs the same
+  right as committing; everyone who can read the tab sees the commits themselves.
+
+A project in Read-only mode makes no commit and no revert from Fabric, whatever the member's
+role, and says so; suggesting and reading are unchanged.
+
+#### Move uploaded instructions into a repository
+
+An upload project can hand its published files to a repository without anyone copying them.
+**Settings** offers **Move to a repository…** to a member who can create and update coding
+instructions, once something is published and a repository is connected to the project.
+
+- **Start.** Choose the repository, the branch and a folder. The folder must not hold any
+  files yet, and a new folder is fine; leave it empty to put the files at the repository
+  root, as long as they would not overwrite anything there. Fabric opens one pull request
+  carrying the published files. It refuses, with the reason, a folder that already has files,
+  a project that already has a repository sync set up, and a project with nothing published.
+- **While it is open.** The status under the summary follows the pull request: *Preparing the
+  pull request…* while it is opened, then the repository, the branch and the pull request
+  awaiting its merge, with a link to it. The instructions stay as published until it merges.
+  Uploads, edits, publishing, ignore rules, repository settings, reverts and manual syncs
+  are paused, and each says why: *Moving to the repository: pull request #n is open*.
+  Everyone who reads the tab sees the status; **Cancel move** is for members who can create
+  and update.
+- **If it is blocked.** The status gives the reason in a sentence and offers **Retry** when a
+  retry can help. A failure no retry can fix says to cancel the move and start it again. If
+  the project was switched to the repository by something other than the move, Cancel move
+  and Retry are refused and the status says so: the only way out is **Switch to upload mode**
+  in Settings.
+- **When it merges.** The status reads *Merged — switching the project to the repository…*
+  until the first sync from the repository has succeeded. The repository is then the source
+  of truth and the tab works as on any repository project. If the pull request is closed
+  without merging, the move ends, the instructions stay as published, and the tab says so
+  once. A pull request that was merged into a different branch than the one the project
+  reads ends the move the same way: Fabric does not sync it, and the status says it was
+  merged into another branch.
+- **If the first sync cannot finish.** While the project is switching over, **Switch to
+  upload mode** in Settings ends the move and gives the tab back its uploads. It is offered
+  only while a move is switching over or blocked, and nowhere else a move is open; whatever
+  was already merged in the repository stays there.
+- **Cancel.** **Cancel move** closes the pull request without merging it and gives the tab its
+  controls back. A pull request that has already merged cannot be canceled: its files are in
+  the repository and the project is switching to them.
+
+#### Keep a checkout current
+
+The session-start hook asks, every time a Claude Code or Codex session starts, whether the
+published version moved, and tells the agent when it did.
+
+- **A project that syncs from a repository.** The hook fast-forwards the branch the project
+  follows to its newest commit when your checkout is clean and on that branch. It is a
+  fast-forward and nothing else: it never merges, rebases, resets or stashes, and when it
+  cannot (uncommitted changes, another branch, a detached `HEAD`, a diverged history, a
+  shallow clone) it leaves the checkout exactly as it was and prints one line saying why.
+  `init --report-only` writes a hook that only reports and never fetches.
+- **An upload project.** The hook reports when the published instructions changed; it applies
+  nothing unless `init` was given `--apply`.
+
+Codex asks whether to trust the folder the first time it opens it. Trust it, then run `/hooks`
+once to trust the project hook. VS Code and Cursor have no hook, so the agent makes the
+comparison through `fabric_instruction_checks` at the start of a session. An agent connected
+over MCP only reports: it never pulls, and the pull itself stays with you.
+
+**What setup leaves on your machine, and how to check it and undo it.** Two things, and
+neither is in your repository's history:
+
+- A hook entry in the checkout: `.claude/settings.local.json` for Claude Code,
+  `.codex/hooks.json` for Codex. `init` adds both files to the repository's own
+  `.git/info/exclude`. The entry is a `SessionStart` command that starts with `node`, then the
+  CLI's own copy, then `instructions check` (or `sync`) with your project and your deployment.
+- That copy of the CLI, one file per deployment: `cli/<deployment>/fabric.mjs` inside the
+  CLI's config folder (`%APPDATA%\fabricai-nodejs\Config` on Windows,
+  `~/.config/fabricai-nodejs` on Linux, `~/Library/Preferences/fabricai-nodejs` on macOS).
+  It is why the hook works with no `fabric` command installed. Each run of the setup line
+  replaces it, and the copy also keeps itself current (below). A small
+  `update-check.json` beside it records when it last asked.
+
+**The copy updates itself.** Once a day, at the end of a session-start hook run and after the
+hook has printed what it has to say, the copy asks the deployment the hook is bound to which
+CLI it serves now. When that is a different build from the one running, the copy downloads it
+from that deployment, checks it against the integrity hash the deployment publishes, and
+replaces itself. The new copy runs from the next session. Only that deployment is ever asked
+(over `https`, or plain `http` to `localhost` for a deployment you run yourself), nothing
+downloaded is run, and only the copy and its `update-check.json` are written, inside the CLI's
+config folder. It only runs when at least five seconds of the hook's ten-second limit are
+still unspent, and any failure (no network, a hash that does not match, a copy another session
+holds open) leaves the earlier copy as it was, prints at most one line on stderr and never
+touches the hook's own output. To turn it off, set `FABRIC_CLI_NO_SELF_UPDATE=1`; it is also
+off whenever `CI` is set. Run the setup line again to update by hand.
+
+When a message from the CLI tells you to run a command, it gives the short `npx` line for the
+deployment, even from the copy the hook runs. That line keeps working after the deployment
+moves on, because a tarball name it served earlier answers with a redirect to the current one.
+
+To check it, run the setup line's CLI with `instructions doctor --project <id>`: it reads the
+hook entry, says whether it is in the form this CLI would write, and warns when the file it
+runs is gone. To undo it, delete the project's `instructions check` or `instructions sync`
+entry from the hook file (and its `lesson-prompt` entry, if you set up lesson capture), and
+delete the deployment's folder under `cli/` if no other checkout uses it. `auth logout`
+removes the saved sign-in.
+
+The tab says the other half. For a repository project, a status block under the summary
+states which version, commit and branch are published, whether Fabric's copy is current or
+was held back because a commit was refused by the secret scan (with a link to the
+findings), and whether automatic sync is on. Your own checkout is not tracked there: the
+hook in your coding tool is what tells you when it is behind.
 
 A connected agent finds them on its own. Every project `fabric_get_project` and
 `fabric_list_projects` return carries a `codingInstructions` field — `{ "published": false }`
@@ -214,14 +478,9 @@ Keeping an installed copy current does not always mean downloading it again. Pas
   `"changes": null` alongside the same full response, which means treat it as a fresh
   install.
 
-The Connect dialog also offers a starter sentence to paste into your tool. It is optional
-now that the project response advertises the instructions, and useful mainly to point an
-agent at one specific project:
-
-```
-Use the Fabric MCP server to load the published coding instructions for the project
-"Your Project" and follow them while you help me work on it.
-```
+You do not need to tell the agent any of this: the connection handshake already carries it.
+To point an agent at one specific project in a chat, name the project and ask it to load
+that project's coding instructions.
 
 ### Bootstrap a Project
 
@@ -268,7 +527,7 @@ agents, hooks, rules and scripts — do not go through this flow. The agent prop
 tab for a person to review. The agent should also leave out secrets, `.env` files and
 generated output.
 
-Pushing context needs a key with the `projects:write` or `mcp:write` scope — the read-only key
+Pushing context needs a key with the `projects:write` or `mcp:write` scope — the key
 that **Connect your agent** mints cannot do it — and, as with every key, your own permission to
 add context sources to that project. If those docs already sit together in one folder, the
 Fabric CLI can push the whole folder instead: `fabric context push <dir> --project <id>` sends
@@ -298,6 +557,7 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_project` | Get full project details, including its published `codingInstructions` |
 | `fabric_create_project` | Create a new project |
 | `fabric_update_project` | Update project name or description |
+| `fabric_search_project_knowledge` | Search feature descriptions, document contents, and available project source text with ranked excerpts |
 | `fabric_list_documents` | List documents in a project (PRDs, specs, etc.) |
 | `fabric_get_document` | Get full document content in markdown |
 | `fabric_list_project_contexts` | List a project's Context tab sources — uploads, meeting transcripts, crawled links, notes |
@@ -306,6 +566,9 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_list_project_instructions` | Browse or search a project's published coding-instruction files, or ask what changed since a `sinceDigest` |
 | `fabric_get_project_instruction` | Read one published coding-instruction file by path, paged for large files |
 | `fabric_get_project_instruction_bundle` | Install the whole published tree as one zip, and report what changed since a `sinceDigest` |
+| `fabric_instruction_checks` | Check that this session is set up the way the project's coding instructions expect: scope, access, published version, whether your installed copy is current, and the variables and tools the project declares |
+| `fabric_propose_project_instruction_change` | Suggest an edit to the published coding instructions; held for review, never published by the agent |
+| `fabric_add_instruction_lesson` | Record a lesson as a new file under `Lessons/`, through the same review-gated proposal path |
 | `fabric_list_workspaces` | List your knowledge base workspaces |
 | `fabric_get_workspace` | Get workspace details and document list |
 | `fabric_query_workspace` | Semantic search (RAG) across workspace documents |
@@ -315,6 +578,46 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_workflow_execution` | Check workflow execution status |
 | `fabric_list_chats` | List recent AI conversations |
 | `fabric_list_connected_servers` | See all your connected MCP servers |
+
+#### Search project knowledge
+
+Call `fabric_search_project_knowledge` with an explicit `projectId` and a nonempty
+`query` to find a literal, case-insensitive keyword or phrase across feature
+(including bug) titles and descriptions, authored document titles and contents,
+and available project context text. Crawled URL pages and captured channel
+conversations participate; repository code-index contexts and sources without
+readable text are excluded. Feature rich-text descriptions are searched as text
+nodes rather than editor attributes. Search performs no model or embedding calls.
+
+The tool requires both `projects:read` and `features:read`, or an existing
+`mcp:read`, `mcp:write`, or wildcard umbrella. Every call checks the creator's
+current project access. Organization keys and OAuth credentials remain bound to
+the organization that issued them; invited guests using browser or personal-key
+credentials read the project's hosting organization.
+
+Exact titles or feature identifiers rank first (3), title substrings next (2),
+and body matches last (1). Ties sort by source kind, then ID. Each result provides
+its ID, source kind, bounded title and match-centered excerpt, `excerptField`
+(`body`, `title`, or `identifier`), truncation flags, and a `readTool`
+with `readArguments` for reading the source in full. Child page and conversation
+matches also include their parent `contextId` and `pageId` or `bundleId`.
+An unusually long source URL is omitted with `sourceUrlOmitted: true`; the ID-based
+read remains available.
+
+`limit` defaults to 20 and accepts 1–50 results. `maxBytes` defaults to 12000 and
+accepts 8192–50000 UTF-8 bytes of the complete serialized JSON response text,
+including pagination metadata. Results are complete records from the ranked
+prefix; the response never cuts JSON. `returnedCount`, `hasMore`, and
+`omissionReason` distinguish a complete response from a page stopped by
+`result_limit` or `response_budget`. The tool reports exclusions rather than
+presenting unavailable source text as an empty search match.
+
+When `hasMore` is true, pass `nextCursor` with the same project and query to
+continue. You may change `limit` or `maxBytes`. Cursors bind to the project,
+query, and hosting organization and resume after the last emitted record, so a
+record omitted for the byte budget remains eligible on the next page. This is
+live keyset pagination, not a snapshot: edits between calls can change ranks or
+matches. Restart the search when you need to include changed material.
 
 ### Connected Server Tools (Require Authority)
 

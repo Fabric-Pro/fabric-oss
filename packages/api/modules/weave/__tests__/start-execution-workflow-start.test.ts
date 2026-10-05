@@ -97,7 +97,12 @@ vi.mock("../../../orpc/procedures", () => {
 		resolveOrganizationIdForCaller: async (
 			organizationId: string | null | undefined,
 		) => organizationId ?? null,
-		assertProjectPermission: async () => undefined,
+		// Returns the project it authorized and that project's organization
+		// (Fizzy #2904); the handler runs in it.
+		assertProjectPermission: async (projectId: string) => ({
+			projectId,
+			organizationId: "org-1",
+		}),
 		protectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,

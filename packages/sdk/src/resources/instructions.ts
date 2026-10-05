@@ -103,7 +103,10 @@ export type InstructionRepositoryProvider =
  *
  * `host` is the bare, lowercased hostname the sync reads from — never the
  * full repository URL, and never any credential or userinfo it might carry.
- * `path` is `"<owner>/<name>"`. `rootPath` is `""` for the repository root.
+ * `path` is `"<owner>/<name>"` — on GitLab every subgroup segment, on Azure
+ * DevOps the repository's URL path including `_git`
+ * (`"<organization>/<project>/_git/<repository>"`). `rootPath` is `""` for the
+ * repository root.
  */
 export interface PublishedInstructionRepository {
 	provider: InstructionRepositoryProvider;
@@ -112,6 +115,60 @@ export interface PublishedInstructionRepository {
 	ref: string;
 	rootPath: string;
 	generation: number;
+	/**
+	 * The provider's canonical HTTPS clone URL, with no credential in it. A
+	 * developer's own git credentials do the authenticating. `null` only for
+	 * a legacy stored value that is not a URL a clone can use; absent when
+	 * talking to a server that does not report it yet.
+	 */
+	cloneUrl?: string | null;
+	/**
+	 * How Fabric's own copy follows the branch. Absent when talking to a
+	 * server that does not report it yet.
+	 */
+	sync?: PublishedInstructionRepositorySync;
+}
+
+/** The latest repository-sync run, as far as a checkout needs to say. */
+export interface PublishedInstructionSyncRun {
+	trigger: string;
+	/** `null` while the run is still open. */
+	status: string | null;
+	/** A stable error code (for instance `TREE_REFUSED`), or `null` on success. */
+	error: string | null;
+	commitSha: string | null;
+	/** ISO 8601, or `null` while the run has not finished. */
+	finishedAt: string | null;
+}
+
+export interface PublishedInstructionRepositorySync {
+	/** Whether Fabric re-syncs on every push and on a timer. */
+	automatic: boolean;
+	/** Why automatic sync is paused, or `null` when it is not. */
+	pausedReason: string | null;
+	lastRun: PublishedInstructionSyncRun | null;
+}
+
+/**
+ * A project whose repository one of the caller's own checkout remotes names.
+ * `cloneUrl` is credential-free; `rootPath` is `""` for the repository root.
+ */
+export interface InstructionCheckoutMatch {
+	projectId: string;
+	projectName: string;
+	/** `null` for a personal project. */
+	organizationSlug: string | null;
+	provider: InstructionRepositoryProvider;
+	host: string;
+	path: string;
+	ref: string;
+	rootPath: string;
+	cloneUrl: string;
+}
+
+export interface ResolvedInstructionCheckouts {
+	/** Empty when no project the caller can read uses any of the candidates. */
+	matches: InstructionCheckoutMatch[];
 }
 
 export interface PublishedInstructions {
@@ -487,6 +544,28 @@ export class InstructionsResource {
 	): Promise<PublishedInstructions> {
 		return this.http.get<PublishedInstructions>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/published${buildQuery(options)}`,
+		);
+	}
+
+	/**
+	 * Which projects use the repository a checkout was cloned from.
+	 *
+	 * `candidates` are credential-free HTTPS spellings of the checkout's
+	 * remotes, as the server stores them (see `canonicalRemoteCandidates` in
+	 * the CLI): one to eight URLs. The answer lists only projects the caller
+	 * can read and that sync their instructions from one of those
+	 * repositories; an empty list is the ordinary "none" answer. The call
+	 * names no project and no organization, so it ignores any default
+	 * context, so call it on a client built `withoutContext()`: a default
+	 * `org` would be appended to the URL. POST because the candidate list is
+	 * a body, not because anything changes.
+	 */
+	resolveCheckout(
+		candidates: string[],
+	): Promise<ResolvedInstructionCheckouts> {
+		return this.http.post<ResolvedInstructionCheckouts>(
+			"/instructions/checkouts/resolve",
+			{ candidates },
 		);
 	}
 

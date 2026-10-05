@@ -1,15 +1,19 @@
 "use client";
 
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Switch } from "@ui/components/switch";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
+import { useSyncActionError } from "../../hooks/use-sync-action-error";
+import { migrationActions } from "../../lib/instructions-migration";
 import {
-	configureErrorMessage,
+	offersMoveIntoRepository,
+	type RepositoryMigrationControls,
+	type RepositorySyncConfiguration,
 	type RepositorySyncState,
-	syncActionErrorKey,
 } from "../../lib/instructions-repository-sync";
 import { instructionsSettingsSummary } from "../repository-sync/lib/instructions-selection";
 import { translateSelectionMessage } from "../repository-sync/lib/selection-row";
@@ -55,28 +59,40 @@ export function RepositorySyncSettingsSection({
 	state,
 	onChange,
 	onChanged,
+	onMove,
+	migration,
 }: {
 	projectId: string;
 	state: RepositorySyncState;
+	/**
+	 * The tab's read of the move while one is open: it says whether a blocked
+	 * move leaves switching back to upload mode as the way out.
+	 */
+	migration?: RepositoryMigrationControls;
 	/** Reopen the configure dialog. */
 	onChange: () => void;
+	/**
+	 * Open "Move these instructions into a repository". Given only when the
+	 * member may both create and update and something is published; the section
+	 * adds that the project is an upload one with a repository to move into.
+	 */
+	onMove?: () => void;
 	/** Re-read what a change moved; resolves once the new state is loaded. */
 	onChanged: () => Promise<void>;
 }) {
+	const { confirm } = useConfirmationAlert();
 	const t = useTranslations(
 		"projects.codingInstructions.repositorySync.settings",
 	);
 	const tSync = useTranslations("projects.codingInstructions.repositorySync");
+	const syncActionError = useSyncActionError();
 	const disable = useMutation(
 		orpc.projects.instructions.repositorySync.disable.mutationOptions({
 			onSuccess: async () => {
 				toast.success(t("switched"));
 				await onChanged();
 			},
-			onError: (error) =>
-				toast.error(
-					tSync(syncActionErrorKey(error, "disable"), { ref: "" }),
-				),
+			onError: (error) => toast.error(syncActionError(error, "disable")),
 		}),
 	);
 	const configure = useMutation(
@@ -91,10 +107,8 @@ export function RepositorySyncSettingsSection({
 				);
 				await onChanged();
 			},
-			onError: (error, variables) => {
-				const mapped = configureErrorMessage(error);
-				toast.error(tSync(mapped.key, { ref: variables.ref }));
-			},
+			onError: (error, variables) =>
+				toast.error(syncActionError(error, "configure", variables.ref)),
 		}),
 	);
 	const updateProposalSettings = useMutation(
@@ -112,12 +126,7 @@ export function RepositorySyncSettingsSection({
 				},
 				onError: (error) =>
 					toast.error(
-						tSync(
-							syncActionErrorKey(error, "updateProposalSettings"),
-							{
-								ref: "",
-							},
-						),
+						syncActionError(error, "updateProposalSettings"),
 					),
 			},
 		),
@@ -134,21 +143,92 @@ export function RepositorySyncSettingsSection({
 		updateProposalSettings.isPending;
 	const configured = state.configured;
 	if (!configured && state.sourceOfTruth !== "REPOSITORY") {
-		return null;
+		// An upload project has no repository settings; what it can do is move
+		// its published files into one, when the tab says the member may.
+		return onMove && offersMoveIntoRepository(state) ? (
+			<section
+				aria-labelledby="instructions-repository-move"
+				className="flex flex-col gap-3 rounded-lg border border-border p-4"
+			>
+				<h3 id="instructions-repository-move" className="font-medium">
+					{t("moveTitle")}
+				</h3>
+				<p className="text-muted-foreground text-sm">{t("moveHint")}</p>
+				<div>
+					<Button size="sm" variant="outline" onClick={onMove}>
+						{t("moveButton")}
+					</Button>
+				</div>
+			</section>
+		) : null;
 	}
 	const repository = configured
 		? `${configured.repositoryOwner}/${configured.repositoryName}`
 		: null;
+	// A move of uploaded instructions into this repository is open: the sync
+	// is the one the move created, and the server refuses every setting below,
+	// so the section says where the move goes and offers none of them. The one
+	// exception is the way out of a move Cancel cannot end: a project that is
+	// switching over, and a blocked move.
+	if (configured && state.migration) {
+		const canLeave =
+			state.canConfigure &&
+			migrationActions(
+				migration?.read?.migration ?? null,
+				state.migration.state,
+			).switchToUpload;
+		return (
+			<section
+				aria-labelledby="instructions-repository-settings"
+				className="flex flex-col gap-3 rounded-lg border border-border p-4"
+			>
+				<h3
+					id="instructions-repository-settings"
+					className="font-medium"
+				>
+					{t("title")}
+				</h3>
+				<dl className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-sm">
+					<RepositoryRows
+						repository={repository}
+						configured={configured}
+					/>
+				</dl>
+				<p className="text-muted-foreground text-sm">
+					{t("migrationPaused")}
+				</p>
+				{canLeave ? (
+					<div>
+						<Button
+							size="sm"
+							variant="outline"
+							className="text-destructive"
+							disabled={busy}
+							onClick={switchToUpload}
+						>
+							{t("switchToUpload")}
+						</Button>
+					</div>
+				) : null}
+			</section>
+		);
+	}
 
 	function switchToUpload() {
-		const question = repository
-			? t(state.running ? "switchConfirmRunning" : "switchConfirm", {
-					repository,
-				})
+		const message = repository
+			? state.migration
+				? t("switchMoveConfirm", { repository })
+				: t(state.running ? "switchConfirmRunning" : "switchConfirm", {
+						repository,
+					})
 			: t("switchConfirmDisconnected");
-		if (window.confirm(question)) {
-			disable.mutate({ projectId });
-		}
+		confirm({
+			title: t("switchConfirmTitle"),
+			message,
+			confirmLabel: t("switchToUpload"),
+			destructive: true,
+			onConfirm: () => disable.mutate({ projectId }),
+		});
 	}
 
 	function setAutomatic(next: boolean) {
@@ -174,20 +254,10 @@ export function RepositorySyncSettingsSection({
 			</h3>
 			{configured ? (
 				<dl className="grid grid-cols-[100px_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-sm">
-					<dt className="text-muted-foreground">{t("repository")}</dt>
-					<dd>{repository}</dd>
-					<dt className="text-muted-foreground">{t("branch")}</dt>
-					<dd>
-						<code>{configured.ref}</code>
-					</dd>
-					<dt className="text-muted-foreground">{t("folder")}</dt>
-					<dd>
-						{configured.rootPath === "" ? (
-							t("folderRoot")
-						) : (
-							<code>{configured.rootPath}</code>
-						)}
-					</dd>
+					<RepositoryRows
+						repository={repository}
+						configured={configured}
+					/>
 					<dt
 						id="instructions-sync-automatic-setting"
 						className="text-muted-foreground"
@@ -302,5 +372,36 @@ export function RepositorySyncSettingsSection({
 				</div>
 			) : null}
 		</section>
+	);
+}
+
+/** The repository, branch and folder rows of the section's `<dl>`. */
+function RepositoryRows({
+	repository,
+	configured,
+}: {
+	repository: string | null;
+	configured: RepositorySyncConfiguration;
+}) {
+	const t = useTranslations(
+		"projects.codingInstructions.repositorySync.settings",
+	);
+	return (
+		<>
+			<dt className="text-muted-foreground">{t("repository")}</dt>
+			<dd>{repository}</dd>
+			<dt className="text-muted-foreground">{t("branch")}</dt>
+			<dd>
+				<code>{configured.ref}</code>
+			</dd>
+			<dt className="text-muted-foreground">{t("folder")}</dt>
+			<dd>
+				{configured.rootPath === "" ? (
+					t("folderRoot")
+				) : (
+					<code>{configured.rootPath}</code>
+				)}
+			</dd>
+		</>
 	);
 }

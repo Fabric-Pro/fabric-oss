@@ -33,6 +33,7 @@
  * (DSU 2026-05-21 known limitation).
  */
 import { config } from "@repo/config";
+import { gitlabOutboundFetch } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
 
@@ -1434,7 +1435,9 @@ export async function uploadGitLabImagesAndRewriteDescription(
 				new Blob([new Uint8Array(bytes)], { type: contentType }),
 				fileName,
 			);
-			const up = await fetch(uploadUrl, {
+			// The connection's instance (user-supplied when self-hosted):
+			// guarded unless it is gitlab.com.
+			const up = await gitlabOutboundFetch(uploadUrl, {
 				method: "POST",
 				headers: { Authorization: `Bearer ${opts.token}` },
 				body: form,
@@ -1566,7 +1569,7 @@ export async function uploadGitLabFileAttachmentsAndRewrite(
 				new Blob([new Uint8Array(bytes)], { type: contentType }),
 				fileName,
 			);
-			const up = await fetch(uploadUrl, {
+			const up = await gitlabOutboundFetch(uploadUrl, {
 				method: "POST",
 				headers: { Authorization: `Bearer ${opts.token}` },
 				body: form,

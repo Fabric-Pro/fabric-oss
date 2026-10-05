@@ -2,6 +2,8 @@
  * MCP configuration utilities for report templates
  */
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+
 export interface McpConfigForDisplay {
 	id: string;
 	displayName?: string | null;
@@ -91,4 +93,51 @@ export function findMatchingMcpConfigs<
 			normalizeKey(serverName).includes(normalizedKey)
 		);
 	});
+}
+
+/** The fields `isReportMcpConfigAuthenticated` reads from an MCP config. */
+export interface McpConfigForAuthentication {
+	enabled: boolean;
+	authType: string;
+	encryptedApiKey?: string | null;
+	encryptedAccessToken?: string | null;
+	tokenExpiresAt?: string | Date | null;
+	mcpServer?: { key?: string | null } | null;
+}
+
+/**
+ * Whether a report can authenticate with an MCP config.
+ *
+ * A GitLab personal server (`gitlab`, `gitlab-official`) holds no token of
+ * its own: it is authenticated exactly when the person's GitLab connection
+ * is (`gitlabConnectionState`, the `state` from `gitlab.status`), whatever
+ * its own token columns say. Every other config is judged from its own row.
+ */
+export function isReportMcpConfigAuthenticated(
+	config: McpConfigForAuthentication,
+	gitlabConnectionState: string | undefined,
+	now: Date = new Date(),
+): boolean {
+	if (!config.enabled) {
+		return false;
+	}
+	if (isGitLabPersonalMcpServerKey(config.mcpServer?.key)) {
+		return gitlabConnectionState === "connected";
+	}
+	if (config.authType === "NONE") {
+		return true;
+	}
+	if (config.authType === "API_KEY") {
+		return !!config.encryptedApiKey;
+	}
+	if (config.authType === "OAUTH2") {
+		if (!config.encryptedAccessToken) {
+			return false;
+		}
+		if (config.tokenExpiresAt) {
+			return new Date(config.tokenExpiresAt) > now;
+		}
+		return true;
+	}
+	return false;
 }

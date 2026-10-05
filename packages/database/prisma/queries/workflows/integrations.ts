@@ -5,6 +5,10 @@
 import { db, type Prisma } from "../../client";
 import type { WorkflowIntegrationProvider } from "../../generated/enums";
 import { OAUTH_APP_ROW_NAMES } from "../lib/oauth-app-row";
+import {
+	canUseWorkflowIntegrations,
+	workflowIntegrationAccessWhere,
+} from "./integration-access";
 
 /**
  * Excludes the `<PROVIDER>_OAUTH_APP` rows, which hold a provider's stored
@@ -67,21 +71,21 @@ export async function getWorkflowIntegrationById(
 
 /**
  * Fetch a workflow integration by ID with tenant-level (not owner-level)
- * authorization: in org context any member may reference the org's
- * integration (callers must have verified membership); in personal context
- * the row must belong to the user.
+ * authorization: current members may reference their own connection or an
+ * explicitly shared connection in the same organization.
  */
 export async function getWorkflowIntegrationByIdInTenant(
 	integrationId: string,
 	userId: string,
 	organizationId?: string,
 ) {
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		return null;
+	}
 	return db.workflowIntegration.findFirst({
 		where: {
 			id: integrationId,
-			...(organizationId
-				? { organizationId }
-				: { userId, organizationId: null }),
+			...workflowIntegrationAccessWhere(userId, organizationId),
 		},
 	});
 }
@@ -117,9 +121,7 @@ export async function listWorkflowIntegrations(options: {
 }
 
 /**
- * List workflow integrations with tenant-level (not owner-level)
- * authorization. Callers must verify organization membership before using
- * this helper in org context.
+ * List owned or explicitly shared connections, revalidating current membership.
  */
 export async function listWorkflowIntegrationsInTenant(options: {
 	workflowId?: string;
@@ -128,12 +130,13 @@ export async function listWorkflowIntegrationsInTenant(options: {
 	provider?: WorkflowIntegrationProvider;
 }) {
 	const { workflowId, userId, organizationId, provider } = options;
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		return [];
+	}
 
 	return await db.workflowIntegration.findMany({
 		where: {
-			...(organizationId
-				? { organizationId }
-				: { userId, organizationId: null }),
+			...workflowIntegrationAccessWhere(userId, organizationId),
 			...(workflowId ? { workflowId } : {}),
 			...(provider ? { provider } : {}),
 			isActive: true,

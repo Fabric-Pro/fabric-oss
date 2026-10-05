@@ -13,9 +13,12 @@
  *     (`disableJwtPlugin`, `storeTokens.hash`). The gateway and the v1 API
  *     verify one with a single indexed lookup by our own digest, and revoking
  *     takes effect at the next request. See `verifyOAuthAccessToken`.
- *   - The organization is bound at consent time. `consentReferenceId` returns
- *     it and the plugin writes it to the consent and to every token, so a token
- *     reaches one organization however many its owner belongs to. Membership is
+ *   - The organization, or the one project, is bound at consent time.
+ *     `consentReferenceId` returns it and the plugin writes it to the consent
+ *     and to every token, so a token reaches one organization however many its
+ *     owner belongs to, or one project of it. A project is bound when the
+ *     client asked for it as the `resource` of its authorization; see
+ *     `./oauth-project-binding`. Membership, or access to the project, is
  *     re-read live on every request.
  *   - Scopes are the ceiling of the Connect dialog's coding-instructions key
  *     and nothing more. See `./oauth-scopes`.
@@ -27,14 +30,19 @@ import {
 } from "@better-auth/oauth-provider";
 import {
 	db,
+	findLiveOAuthAuthorizationResource,
 	hashOAuthToken,
 	isOrganizationMember,
 	OAUTH_ACCESS_TOKEN_PREFIX,
 	OAUTH_REFRESH_TOKEN_PREFIX,
+	type OAuthAuthorizationResourceBinding,
+	resolveOAuthProjectGrantTarget,
 	resolveUserOrganization,
 } from "@repo/database";
+import { buildProjectReference } from "@repo/utils/oauth-project-resource";
 import { APIError } from "better-auth/api";
 import { parse as parseCookies } from "cookie";
+import { PROJECT_ACCESS_DENIED_DESCRIPTION } from "./oauth-project-binding";
 import {
 	OAUTH_ORGANIZATION_CHOSEN_COOKIE,
 	OAUTH_SCOPES,
@@ -87,6 +95,79 @@ async function mustChangePasswordFirst(userId: string): Promise<boolean> {
 	return user?.mustChangePassword === true;
 }
 
+async function refuseUntilPasswordChanged(userId: string): Promise<void> {
+	if (await mustChangePasswordFirst(userId)) {
+		throw new APIError("FORBIDDEN", {
+			error: "access_denied",
+			error_description:
+				"Change your password before authorizing an agent.",
+		});
+	}
+}
+
+/**
+ * The authorization in flight, as the plugin keeps it in its signed query:
+ * which client asked, with which PKCE challenge. Set at `/oauth2/authorize`
+ * itself and again from the query the consent and continue calls carry.
+ */
+async function authorizationInFlight(): Promise<{
+	clientId: string;
+	codeChallenge: string;
+} | null> {
+	const query = (await getOAuthProviderState())?.query;
+	if (!query) {
+		return null;
+	}
+	const params = new URLSearchParams(query);
+	const clientId = params.get("client_id");
+	const codeChallenge = params.get("code_challenge");
+	return clientId && codeChallenge ? { clientId, codeChallenge } : null;
+}
+
+/** The project the authorization in flight asked to be bound to, while that is still live. */
+async function liveProjectBinding(): Promise<OAuthAuthorizationResourceBinding | null> {
+	const inFlight = await authorizationInFlight();
+	return inFlight
+		? findLiveOAuthAuthorizationResource(
+				inFlight.clientId,
+				inFlight.codeChallenge,
+			)
+		: null;
+}
+
+/**
+ * What an authorization is for, as the reference the plugin stores on the
+ * consent and on every token: the one project its client asked for as the
+ * `resource`, or the organization it is for.
+ *
+ * Both arms refuse a pending password change, here, so no route around the
+ * consent pages skips it. A project arm also refuses a person who cannot read
+ * the project, and says so in words the consent and error pages show: a project
+ * that does not exist, or is deleted, is answered the same way.
+ */
+async function resolveConsentReferenceId(
+	userId: string,
+	activeOrganizationId: unknown,
+): Promise<string> {
+	const binding = await liveProjectBinding();
+	if (!binding) {
+		return resolveConsentOrganizationId(userId, activeOrganizationId);
+	}
+
+	await refuseUntilPasswordChanged(userId);
+	const target = await resolveOAuthProjectGrantTarget(
+		userId,
+		binding.projectId,
+	);
+	if (!target) {
+		throw new APIError("FORBIDDEN", {
+			error: "access_denied",
+			error_description: PROJECT_ACCESS_DENIED_DESCRIPTION,
+		});
+	}
+	return buildProjectReference(binding.audience, binding.projectId);
+}
+
 /**
  * The organization an authorization is for: the session's active one when the
  * person still belongs to it, else the only one they have.
@@ -102,17 +183,11 @@ async function mustChangePasswordFirst(userId: string): Promise<boolean> {
  * hook that resumes an authorization — always before the code is issued, so
  * no route around the consent pages skips it.
  */
-export async function resolveConsentOrganizationId(
+async function resolveConsentOrganizationId(
 	userId: string,
 	activeOrganizationId: unknown,
 ): Promise<string> {
-	if (await mustChangePasswordFirst(userId)) {
-		throw new APIError("FORBIDDEN", {
-			error: "access_denied",
-			error_description:
-				"Change your password before authorizing an agent.",
-		});
-	}
+	await refuseUntilPasswordChanged(userId);
 
 	if (
 		typeof activeOrganizationId === "string" &&
@@ -135,28 +210,39 @@ export async function resolveConsentOrganizationId(
 }
 
 /**
- * Whether this authorization still has to ask which organization it is for.
+ * Whether this authorization has to stop at the organization page before the
+ * consent page.
  *
- * More than one organization means the person has to say which, once per
- * authorization. The plugin re-runs `/oauth2/authorize` when the organization
- * page continues and asks this again, so the answer has to change once the
- * choice is made: the page records it in a cookie holding this authorization's
- * `code_challenge`, and a match ends the question for this authorization only.
- * The cookie only skips a question — the organization itself is the session's
- * active one, set by the page and re-checked for membership in
- * `resolveConsentOrganizationId` — so a forged cookie gains nothing.
+ * An authorization bound to a project has no organization to choose: the
+ * project's own is the one. It stops there only when the person cannot read the
+ * project, so the page can say so instead of the browser landing on a bare
+ * error answer.
+ *
+ * Otherwise, more than one organization means the person has to say which, once
+ * per authorization. The plugin re-runs `/oauth2/authorize` when the
+ * organization page continues and asks this again, so the answer has to change
+ * once the choice is made: the page records it in a cookie holding this
+ * authorization's `code_challenge`, and a match ends the question for this
+ * authorization only. The cookie only skips a question — the organization
+ * itself is the session's active one, set by the page and re-checked for
+ * membership in `resolveConsentOrganizationId` — so a forged cookie gains
+ * nothing.
  */
-async function needsOrganizationChoice(
+async function needsPostLoginPage(
 	userId: string,
 	headers: Headers,
 ): Promise<boolean> {
+	const binding = await liveProjectBinding();
+	if (binding) {
+		return !(await resolveOAuthProjectGrantTarget(
+			userId,
+			binding.projectId,
+		));
+	}
 	if ((await db.member.count({ where: { userId } })) <= 1) {
 		return false;
 	}
-	const query = (await getOAuthProviderState())?.query;
-	const challenge = query
-		? new URLSearchParams(query).get("code_challenge")
-		: null;
+	const challenge = (await authorizationInFlight())?.codeChallenge;
 	const chosen = parseCookies(headers.get("cookie") ?? "")[
 		OAUTH_ORGANIZATION_CHOSEN_COOKIE
 	];
@@ -174,9 +260,9 @@ export function createOAuthProviderPlugin(appUrl: string) {
 			// can act instead of on the 403 `consentReferenceId` would answer.
 			shouldRedirect: async ({ user, headers }) =>
 				(await mustChangePasswordFirst(user.id)) ||
-				needsOrganizationChoice(user.id, headers),
+				needsPostLoginPage(user.id, headers),
 			consentReferenceId: ({ user, session }) =>
-				resolveConsentOrganizationId(
+				resolveConsentReferenceId(
 					user.id,
 					session.activeOrganizationId,
 				),

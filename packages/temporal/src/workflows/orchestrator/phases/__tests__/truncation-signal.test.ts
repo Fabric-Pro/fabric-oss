@@ -33,7 +33,18 @@ describe("orchestrator truncation signal", () => {
 		expect(finalBranch).toMatch(
 			/recordTruncation\(state, iterationResult\.truncated\);[\s\S]*data: \{ finalResponse \}/,
 		);
-		expect(loop).toContain("recordTruncation(state, synthesisTruncated);");
+		// Both synthesis callers — budget exhaustion and the per-round tool
+		// failure breaker — record what `synthesizeFinalAnswer` returned.
+		expect(
+			loop.split("recordTruncation(state, synthesis.truncated);"),
+		).toHaveLength(3);
+		const synthesis = loop.slice(
+			loop.indexOf("async function synthesizeFinalAnswer("),
+			loop.indexOf("export async function executeIterativePhase("),
+		);
+		expect(synthesis).toContain(
+			"return { content: synthesisContent, truncated: synthesisTruncated };",
+		);
 	});
 
 	it("puts it on the workflow output", () => {

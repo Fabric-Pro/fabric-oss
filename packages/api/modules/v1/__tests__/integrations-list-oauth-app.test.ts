@@ -20,7 +20,13 @@ const { store } = await vi.hoisted(async () => {
 	return { store: createWorkflowIntegrationStore() };
 });
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	canUseWorkflowIntegrations: vi.fn().mockResolvedValue(true),
+	workflowIntegrationAccessWhere: (
+		await import(
+			"@repo/database/prisma/queries/workflows/integration-access"
+		)
+	).workflowIntegrationAccessWhere,
 	db: { workflowIntegration: store.delegate },
 }));
 

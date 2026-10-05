@@ -162,4 +162,77 @@ describe("POST /api/internal/code-search", () => {
 			defaultBranch: true,
 		});
 	});
+
+	describe("search passes the connector's error through", () => {
+		const repoRow = {
+			provider: "GITHUB",
+			owner: "example-org",
+			repo: "example-repo",
+			branch: "main",
+			repositoryUrl: "https://github.com/example-org/example-repo",
+			azureOrganization: null,
+		};
+
+		beforeEach(async () => {
+			getProjectReposForCodeSearch.mockResolvedValue([repoRow]);
+			const { resolveFreshRepoTokenForRow } = await import(
+				"@repo/integrations/repo-auth"
+			);
+			vi.mocked(resolveFreshRepoTokenForRow).mockResolvedValue({
+				token: "token-example",
+				stale: false,
+			} as never);
+		});
+
+		it("a failed search is HTTP 200 with the connector's error beside empty results", async () => {
+			const { searchRepositoryCode } = await import("@repo/connectors");
+			const error = {
+				kind: "rate_limited",
+				status: 429,
+				message:
+					"The repository provider rate-limited the request (HTTP 429); try again shortly.",
+			};
+			vi.mocked(searchRepositoryCode).mockResolvedValue({
+				results: [],
+				error,
+			} as never);
+			const { POST } = await import(
+				"../../../app/api/internal/code-search/route"
+			);
+
+			const response = await callRoute(POST, body);
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				results: [],
+				totalCount: 0,
+				error,
+			});
+		});
+
+		it("a successful search carries no error key", async () => {
+			const { searchRepositoryCode } = await import("@repo/connectors");
+			const results = [
+				{
+					filePath: "src/a.ts",
+					fileName: "a.ts",
+					repository: "example-org/example-repo",
+					matchedSnippets: [],
+				},
+			];
+			vi.mocked(searchRepositoryCode).mockResolvedValue({
+				results,
+			} as never);
+			const { POST } = await import(
+				"../../../app/api/internal/code-search/route"
+			);
+
+			const response = await callRoute(POST, body);
+
+			expect(response.status).toBe(200);
+			const json = await response.json();
+			expect(json).toEqual({ results, totalCount: 1 });
+			expect(json).not.toHaveProperty("error");
+		});
+	});
 });

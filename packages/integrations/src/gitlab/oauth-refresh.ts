@@ -1,76 +1,30 @@
 /**
  * Stand-alone OAuth refresh helper for GitLab.
  *
- * Lives in @repo/integrations so both the api package (oauth callbacks),
- * the temporal package (step activities), and the new MCP-config refresh
- * helper can share a single implementation. Previously this lived in
- * `packages/api/.../gitlab-oauth.ts` and was duplicated inline inside the
- * Temporal resolver — both call sites should now import from here.
+ * Lives in @repo/integrations so the GitLab connection service
+ * (`./connection`) and the project repository grant refresher
+ * (`./get-valid-access-token`) share a single implementation.
  *
  * Note: GitLab requires `application/x-www-form-urlencoded` for token
  * exchange and refresh (NOT JSON).
  */
 
+import { gitlabOutboundFetch } from "./outbound";
+
 /**
  * Thrown when GitLab has permanently rejected the stored grant — an
  * `invalid_grant` or `invalid_token` OAuth error from the token endpoint.
- * Callers should surface a one-shot "Reconnect GitLab" prompt and call
- * `markNeedsReauth` to persist the state across the tenant's stores.
+ * Callers should surface a one-shot "Reconnect GitLab" prompt; the
+ * connection service persists the state on the connection itself.
  *
  * Deliberately NOT thrown for a bare 401/403: an HTTP status alone does not
  * identify the user's grant as the thing that failed. See the classification
  * comment in `refreshGitLabToken`.
  */
 export class GitLabReauthRequiredError extends Error {
-	/**
-	 * Ciphertext of the refresh token this rejection actually describes, as
-	 * read from the row before it was posted. Writers use it as a version
-	 * token so the condemning write can only land while the row still holds
-	 * that exact value — see `createGitLabRefreshFailureWriter`.
-	 *
-	 * Stamped by `refreshMcpConfigToken`, which is the only layer that knows
-	 * which stored value a given attempt spent (its rotation-race retry posts
-	 * a DIFFERENT token from the one first loaded). Undefined when the error
-	 * comes straight from the token exchange, which has no row context.
-	 */
-	spentEncryptedRefreshToken?: string;
-
 	constructor(message = "NEEDS_REAUTH") {
 		super(message);
 		this.name = "GitLabReauthRequiredError";
-	}
-}
-
-/**
- * Thrown when a refresh is declined locally because the circuit breaker
- * has already condemned the credential (`MCPConfig.needsReauth`). No
- * provider contact happened, so this says nothing new about the grant —
- * callers must NOT record it as a refresh failure. The row is already
- * flagged; incrementing its diagnostics again only muddies triage.
- */
-export class GitLabRefreshSuppressedError extends Error {
-	constructor(message = "REFRESH_SUPPRESSED") {
-		super(message);
-		this.name = "GitLabRefreshSuppressedError";
-	}
-}
-
-/**
- * Thrown when the provider rejected the refresh token this call posted, but
- * the token stored on the row has since been rotated by a concurrent
- * refresh. The rejection is then stale evidence about a credential that has
- * already been replaced — it says nothing about the grant that is now live.
- *
- * Deliberately NOT a `GitLabReauthRequiredError`: it must reach callers as
- * an ordinary failure so the request degrades to REST and the diagnostics
- * are recorded, WITHOUT condemning a grant the next request will use
- * successfully. Raised only by `refreshMcpConfigToken`, never by the token
- * exchange itself — see the rotation invariant there.
- */
-export class GitLabRefreshRaceLostError extends Error {
-	constructor(message = "REFRESH_RACE_LOST") {
-		super(message);
-		this.name = "GitLabRefreshRaceLostError";
 	}
 }
 
@@ -151,7 +105,9 @@ export async function refreshGitLabToken(
 		body.set("client_secret", clientSecret);
 	}
 
-	const response = await fetch(tokenUrl, {
+	// The instance is the connection's (user-supplied for self-hosted):
+	// anything but gitlab.com goes through the outbound guard.
+	const response = await gitlabOutboundFetch(tokenUrl, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/x-www-form-urlencoded",
@@ -182,9 +138,9 @@ export async function refreshGitLabToken(
 			// all", and it must propagate UNCHANGED rather than fall
 			// through to the generic status Error below: folding it in
 			// would erase the one thing downstream needs to recognise it as
-			// a no-verdict transient outcome (see `isNoVerdictTransientError`
-			// in source.ts) rather than a strike against the refresh
-			// circuit breaker.
+			// a no-verdict transient outcome rather than a dead grant (the
+			// connection service treats anything but
+			// `GitLabReauthRequiredError` as transient).
 			if (
 				err instanceof DOMException &&
 				(err.name === "TimeoutError" || err.name === "AbortError")

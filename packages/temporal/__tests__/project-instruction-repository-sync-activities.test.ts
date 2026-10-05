@@ -19,6 +19,7 @@ const databaseErrors = vi.hoisted(() => ({
 
 const m = vi.hoisted(() => ({
 	getInstructionRepositorySyncForRun: vi.fn(),
+	clearInstructionSyncPause: vi.fn(),
 	listUnfinishedInstructionRepositorySyncRunReceipts: vi.fn(),
 	insertInstructionRepositorySyncRun: vi.fn(),
 	canCreateProjectInstructions: vi.fn(),
@@ -35,6 +36,7 @@ const m = vi.hoisted(() => ({
 	markAbandonedInstructionSnapshotSwept: vi.fn(),
 	rotateAbandonedInstructionSnapshot: vi.fn(),
 	completeInstructionRepositorySyncRun: vi.fn(),
+	settleInstructionMigrationAfterSync: vi.fn(),
 	deleteInstructionSnapshot: vi.fn(),
 	listPrunableInstructionSnapshots: vi.fn(),
 	resolveFreshRepoToken: vi.fn(),
@@ -61,6 +63,7 @@ vi.mock("@repo/database", () => ({
 	InstructionInheritedSourceError:
 		databaseErrors.InstructionInheritedSourceError,
 	getInstructionRepositorySyncForRun: m.getInstructionRepositorySyncForRun,
+	clearInstructionSyncPause: m.clearInstructionSyncPause,
 	listUnfinishedInstructionRepositorySyncRunReceipts:
 		m.listUnfinishedInstructionRepositorySyncRunReceipts,
 	insertInstructionRepositorySyncRun: m.insertInstructionRepositorySyncRun,
@@ -83,6 +86,7 @@ vi.mock("@repo/database", () => ({
 		m.completeInstructionRepositorySyncRun,
 	deleteInstructionSnapshot: m.deleteInstructionSnapshot,
 	listPrunableInstructionSnapshots: m.listPrunableInstructionSnapshots,
+	settleInstructionMigrationAfterSync: m.settleInstructionMigrationAfterSync,
 }));
 vi.mock("@repo/connectors", () => ({
 	readRepositoryBlobSizes: m.readRepositoryBlobSizes,
@@ -543,6 +547,212 @@ describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
 		});
 	});
 
+	describe("a commit-triggered run (Fizzy #2878 §10)", () => {
+		const pushed = {
+			...input,
+			trigger: "COMMIT_PUSHED" as const,
+			requesterUserId: undefined,
+		};
+
+		it("runs with automatic sync off: the toggle does not apply", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue({
+				...row,
+				automatic: false,
+			});
+
+			expect(
+				await beginInstructionRepositorySyncRun(pushed),
+			).toMatchObject({
+				ok: true,
+				context: {
+					actingUserId: "delegate_1",
+					trigger: "COMMIT_PUSHED",
+				},
+			});
+			expect(m.canCreateProjectInstructions).toHaveBeenCalledWith(
+				"proj_1",
+				"delegate_1",
+			);
+		});
+
+		describe("a pause the push itself proved is over", () => {
+			beforeEach(() => {
+				m.clearInstructionSyncPause.mockResolvedValue(true);
+			});
+
+			it.each(["REF_MISSING", "PERMISSION_REVOKED"] as const)(
+				"clears a %s pause and runs: the commit reached the branch with the integration's credential",
+				async (reason) => {
+					m.getInstructionRepositorySyncForRun.mockResolvedValue({
+						...row,
+						automaticPausedReason: reason,
+					});
+
+					const result = await beginInstructionRepositorySyncRun({
+						...pushed,
+						expected: { syncId: "sync_1", generation: 3 },
+					});
+
+					expect(result).toMatchObject({
+						ok: true,
+						context: { trigger: "COMMIT_PUSHED" },
+					});
+					expect(m.clearInstructionSyncPause).toHaveBeenCalledWith({
+						syncId: "sync_1",
+						organizationId: "org_1",
+						generation: 3,
+						reason,
+					});
+				},
+			);
+
+			it("clears the pause even with automatic sync off: the toggle does not apply to a commit's own run", async () => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automatic: false,
+					automaticPausedReason: "REF_MISSING",
+				});
+
+				expect(
+					await beginInstructionRepositorySyncRun(pushed),
+				).toMatchObject({ ok: true });
+			});
+
+			it("keeps a PERMISSION_REVOKED pause while the delegate still cannot write: the push proves the credential, not the delegate", async () => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automaticPausedReason: "PERMISSION_REVOKED",
+				});
+				m.canCreateProjectInstructions.mockResolvedValue(false);
+
+				expect(
+					await beginInstructionRepositorySyncRun(pushed),
+				).toMatchObject({
+					ok: false,
+					skipped: "paused",
+					context: { trigger: "COMMIT_PUSHED" },
+				});
+				expect(m.clearInstructionSyncPause).not.toHaveBeenCalled();
+			});
+
+			it("is skipped when the pause was lifted or replaced between the read and the write", async () => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automaticPausedReason: "REF_MISSING",
+				});
+				m.clearInstructionSyncPause.mockResolvedValue(false);
+
+				expect(
+					await beginInstructionRepositorySyncRun(pushed),
+				).toMatchObject({ ok: false, skipped: "paused" });
+			});
+
+			it("never clears a pause for a row the commit was not made against", async () => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automaticPausedReason: "REF_MISSING",
+				});
+
+				expect(
+					await beginInstructionRepositorySyncRun({
+						...pushed,
+						expected: { syncId: "sync_1", generation: 2 },
+					}),
+				).toMatchObject({ ok: false, skipped: "paused" });
+				expect(m.clearInstructionSyncPause).not.toHaveBeenCalled();
+			});
+
+			it("is a pause only a COMMIT_PUSHED run lifts: a merged proposal's run still waits for a member", async () => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automaticPausedReason: "REF_MISSING",
+				});
+
+				expect(
+					await beginInstructionRepositorySyncRun({
+						...pushed,
+						trigger: "PULL_REQUEST_MERGED",
+					}),
+				).toMatchObject({ ok: false, skipped: "paused" });
+				expect(m.clearInstructionSyncPause).not.toHaveBeenCalled();
+			});
+		});
+	});
+
+	describe("while the project is being moved from uploads into this repository (Fizzy #2878 §9)", () => {
+		it.each([
+			["MANUAL", input],
+			[
+				"POLL",
+				{
+					...input,
+					trigger: "POLL" as const,
+					requesterUserId: undefined,
+				},
+			],
+			[
+				"WEBHOOK",
+				{
+					...input,
+					trigger: "WEBHOOK" as const,
+					requesterUserId: undefined,
+				},
+			],
+			[
+				"PULL_REQUEST_MERGED",
+				{
+					...input,
+					trigger: "PULL_REQUEST_MERGED" as const,
+					requesterUserId: undefined,
+				},
+			],
+			[
+				"COMMIT_PUSHED",
+				{
+					...input,
+					trigger: "COMMIT_PUSHED" as const,
+					requesterUserId: undefined,
+				},
+			],
+		])(
+			"skips a %s run as paused: the folder holds nothing yet, and publishing from it would replace the uploads with an empty tree",
+			async (_trigger, started) => {
+				m.getInstructionRepositorySyncForRun.mockResolvedValue({
+					...row,
+					automatic: true,
+					automaticPausedReason: "MIGRATING",
+				});
+
+				const result = await beginInstructionRepositorySyncRun(started);
+
+				expect(result).toMatchObject({ ok: false, skipped: "paused" });
+				expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
+				expect(
+					m.clearInstructionSyncPause,
+					"a pushed commit never lifts the move's own pause",
+				).not.toHaveBeenCalled();
+				expect(
+					m.insertInstructionRepositorySyncRun,
+					"the receipt still goes in first, so the tab can show the skip",
+				).toHaveBeenCalledTimes(1);
+			},
+		);
+
+		it("runs again once the move cleared the pause", async () => {
+			m.getInstructionRepositorySyncForRun.mockResolvedValue({
+				...row,
+				automatic: true,
+				automaticPausedReason: null,
+			});
+
+			expect(
+				await beginInstructionRepositorySyncRun(input),
+			).toMatchObject({
+				ok: true,
+			});
+		});
+	});
+
 	it("never skips a manual run for the automatic switches", async () => {
 		m.getInstructionRepositorySyncForRun.mockResolvedValue({
 			...row,
@@ -683,6 +893,7 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			publishOnReady: true,
 			promotedKeyFor: expect.any(Function),
 			excludedCount: 0,
+			excludedPaths: [],
 			settingsFrozen: {
 				ignoreGlobs: expect.any(Array),
 				layer: "default",
@@ -937,6 +1148,44 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 				created.files.find((f) => f.path === "CLAUDE.md")
 					?.inheritedFromFileId,
 			).toBeUndefined();
+		});
+
+		it("publishes the real tree after a direct commit landed on a tip that moved past its base, staging both the commit's file and the teammate's", async () => {
+			// The commit changed rules/r0.md; a teammate changed rules/r1.md
+			// before it. The published version still names the base commit, so
+			// the run must read the tree instead of answering "unchanged".
+			serveRepo(
+				[
+					{ path: "rules/r0.md", body: "# rule 0 from the commit" },
+					{ path: "rules/r1.md", body: "# rule 1 from a teammate" },
+					...unchangedFiles.slice(2),
+				],
+				{ head: SHA },
+			);
+			publish(
+				unchangedFiles.map((f, i) =>
+					publishedRow(`pub_${i}`, f.path, f.body),
+				),
+			);
+
+			const result = await acquireInstructionTreeFromRepository({
+				...CONTEXT,
+				trigger: "COMMIT_PUSHED",
+			});
+
+			expect(result).toMatchObject({ outcome: "staged", commitSha: SHA });
+			const created = m.createInstructionSnapshot.mock.calls[0]?.[0] as {
+				sourceCommitSha: string;
+				files: Array<{ path: string; inheritedFromFileId?: string }>;
+			};
+			expect(created.sourceCommitSha).toBe(SHA);
+			expect(
+				created.files
+					.filter((f) => f.inheritedFromFileId === undefined)
+					.map((f) => f.path)
+					.sort(),
+			).toEqual(["rules/r0.md", "rules/r1.md"]);
+			expect(m.uploadFile).toHaveBeenCalledTimes(2);
 		});
 
 		it("never sets a base on a sync snapshot: the tab reads that as 'edited from vN'", async () => {
@@ -1341,6 +1590,9 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			"CLAUDE.md",
 		]);
 		expect(created.excludedCount).toBe(1);
+		// No rule left it out, so there is no rule to name: the count says
+		// more than the list does.
+		expect(created.excludedPaths).toEqual([]);
 		expect(created.settingsFrozen.layer).toBe("default");
 		expect(m.sparseCheckout).toHaveBeenCalledWith(
 			expect.objectContaining({ repoPaths: ["agents/CLAUDE.md"] }),
@@ -1360,6 +1612,55 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			created.files.map((f: { path: string }) => f.path).sort(),
 		).toEqual([".fabricignore", "CLAUDE.md"]);
 		expect(created.excludedCount).toBe(1);
+	});
+
+	it("names the files the ignore rules left out, with the rule that left each one out", async () => {
+		serveRepo([
+			{ path: ".fabricignore", body: "drafts/**\n" },
+			{ path: "CLAUDE.md", body: "keep" },
+			{ path: "drafts/x.md", body: "drop" },
+			{ path: ".git/HEAD", body: "drop" },
+		]);
+
+		await acquireInstructionTreeFromRepository(CONTEXT);
+
+		const created = m.createInstructionSnapshot.mock.calls[0]?.[0];
+		expect(created.excludedCount).toBe(2);
+		expect(created.excludedPaths).toEqual([
+			{ path: "drafts/x.md", rule: "drafts/**" },
+			{ path: ".git/HEAD", rule: "**/.git/**" },
+		]);
+	});
+
+	it("stores no more than 500 names while the count keeps the whole number", async () => {
+		serveRepo([
+			{ path: ".fabricignore", body: "drafts/**\n" },
+			{ path: "CLAUDE.md", body: "keep" },
+			...Array.from({ length: 520 }, (_, i) => ({
+				path: `drafts/note-${i}.md`,
+				body: "drop",
+			})),
+		]);
+
+		await acquireInstructionTreeFromRepository(CONTEXT);
+
+		const created = m.createInstructionSnapshot.mock.calls[0]?.[0];
+		expect(created.excludedCount).toBe(520);
+		expect(created.excludedPaths).toHaveLength(500);
+		expect(created.excludedPaths[0]).toEqual({
+			path: "drafts/note-0.md",
+			rule: "drafts/**",
+		});
+	});
+
+	it("stores an empty list when nothing was left out by a rule", async () => {
+		serveRepo([{ path: "CLAUDE.md", body: "keep" }]);
+
+		await acquireInstructionTreeFromRepository(CONTEXT);
+
+		const created = m.createInstructionSnapshot.mock.calls[0]?.[0];
+		expect(created.excludedCount).toBe(0);
+		expect(created.excludedPaths).toEqual([]);
 	});
 
 	it("freezes no rules from a .fabricignore that is not UTF-8 text, and keeps the file for the gate to refuse", async () => {
@@ -2004,6 +2305,150 @@ describe("recordInstructionRepositorySyncRun (spec §5.4)", () => {
 		rejection: null,
 		sourceCommitSha: SHA,
 		...overrides,
+	});
+
+	describe("the first sync after a move from uploads into this repository (Fizzy #2878 §9)", () => {
+		const switching = {
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+			migration: {
+				v: 1,
+				state: "SWITCHING",
+				branchId: "branch_1",
+				snapshotId: "snap_move",
+				syncId: "sync_1",
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_1",
+			},
+		};
+
+		beforeEach(() => {
+			m.completeInstructionRepositorySyncRun.mockResolvedValue({
+				completed: true,
+				configurationCurrent: true,
+			});
+			m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+				snapshot: summary(),
+				publishedPointer: { id: "snap_1" },
+			});
+		});
+
+		it("completes the move when the run succeeded, and says which snapshot it published", async () => {
+			m.getProjectInstructionSettings.mockResolvedValue(switching);
+
+			await recordInstructionRepositorySyncRun(base);
+
+			expect(m.settleInstructionMigrationAfterSync).toHaveBeenCalledWith({
+				projectId: "proj_1",
+				organizationId: "org_1",
+				syncId: "sync_1",
+				snapshotId: "snap_1",
+			});
+		});
+
+		it("completes it too when the run found the tree unchanged", async () => {
+			m.getProjectInstructionSettings.mockResolvedValue(switching);
+
+			await recordInstructionRepositorySyncRun({
+				...base,
+				unchanged: true,
+				snapshotId: null,
+				childResult: null,
+			});
+
+			expect(m.settleInstructionMigrationAfterSync).toHaveBeenCalledWith(
+				expect.objectContaining({ syncId: "sync_1", snapshotId: null }),
+			);
+		});
+
+		it.each([
+			[
+				"failed",
+				{
+					error: "CLONE_FAILED" as const,
+					snapshotId: null,
+					childResult: null,
+				},
+			],
+			[
+				"was skipped",
+				{
+					skipped: true,
+					snapshotId: null,
+					childResult: null,
+				},
+			],
+		])(
+			"leaves the move switching when the run %s",
+			async (_label, over) => {
+				m.getProjectInstructionSettings.mockResolvedValue(switching);
+
+				await recordInstructionRepositorySyncRun({ ...base, ...over });
+
+				expect(
+					m.settleInstructionMigrationAfterSync,
+				).not.toHaveBeenCalled();
+			},
+		);
+
+		it("leaves the move switching when the scan refused the tree: nothing was published", async () => {
+			m.getProjectInstructionSettings.mockResolvedValue(switching);
+			m.getInstructionSnapshotWithPublishedPointer.mockResolvedValue({
+				snapshot: summary({
+					status: "REJECTED",
+					publishedAt: null,
+					rejection: [{ path: "CLAUDE.md", reason: "secret" }],
+				}),
+				publishedPointer: null,
+			});
+
+			await recordInstructionRepositorySyncRun({
+				...base,
+				childResult: { status: "REJECTED", published: false },
+			});
+
+			expect(
+				m.settleInstructionMigrationAfterSync,
+			).not.toHaveBeenCalled();
+		});
+
+		it("ignores a run of another sync row, and a project whose move is still proposing or gone", async () => {
+			m.getProjectInstructionSettings.mockResolvedValue({
+				...switching,
+				migration: { ...switching.migration, syncId: "sync_other" },
+			});
+			await recordInstructionRepositorySyncRun(base);
+			m.getProjectInstructionSettings.mockResolvedValue({
+				...switching,
+				migration: { ...switching.migration, state: "PROPOSING" },
+			});
+			await recordInstructionRepositorySyncRun(base);
+			m.getProjectInstructionSettings.mockResolvedValue({
+				ignoreGlobs: null,
+				sourceOfTruth: "REPOSITORY",
+				migration: null,
+			});
+			await recordInstructionRepositorySyncRun(base);
+
+			expect(
+				m.settleInstructionMigrationAfterSync,
+			).not.toHaveBeenCalled();
+		});
+
+		it("does nothing when the configuration moved on and the run's own bookkeeping did not complete", async () => {
+			m.getProjectInstructionSettings.mockResolvedValue(switching);
+			m.completeInstructionRepositorySyncRun.mockResolvedValue({
+				completed: false,
+				configurationCurrent: false,
+			});
+
+			await recordInstructionRepositorySyncRun(base);
+
+			expect(
+				m.settleInstructionMigrationAfterSync,
+			).not.toHaveBeenCalled();
+		});
 	});
 
 	it("passes the recorded limit to the run row, and none when the run carries none", async () => {

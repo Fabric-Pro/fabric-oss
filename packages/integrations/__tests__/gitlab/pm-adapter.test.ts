@@ -33,7 +33,7 @@ import type { GitLabSource } from "../../src/gitlab/source";
 
 const REST_SOURCE: GitLabSource = {
 	kind: "rest-adapter",
-	token: "tok",
+	credential: { token: "tok", apiBase: "https://gitlab.com/api/v4" },
 };
 
 beforeEach(() => {

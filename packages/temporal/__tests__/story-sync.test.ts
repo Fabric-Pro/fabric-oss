@@ -68,6 +68,11 @@ vi.mock("@repo/database", () => {
 	const isFizzy = (p: string | null | undefined) =>
 		(p ?? "").toLowerCase() === "fizzy";
 	return {
+		// The organization gate on the config owner (Fizzy #2903): a member whose
+		// role allows MCP read and connect.
+		canConnectOrganizationMcpConfigs: vi.fn(async () => true),
+		canReadOrganizationMcpConfigs: vi.fn(async () => true),
+		isOrganizationMember: vi.fn(async () => true),
 		db: {
 			userStory: {
 				findMany: vi.fn(),

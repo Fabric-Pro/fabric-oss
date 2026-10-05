@@ -16,6 +16,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockCreateProject = vi.fn();
 const mockProjectFindFirst = vi.fn();
 
+// The real GitLab container-instance binding runs; the actor's GitLab
+// connection is on a self-hosted instance and `srv-gl` is GitLab.
+const mockProjectUpdate = vi.hoisted(() => vi.fn());
+const mockProjectFindUnique = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: async () => ({
+		integrationId: "wi-1",
+		origin: "https://gitlab.example.com",
+	}),
+}));
+
 vi.mock("@repo/database", async () => ({
 	getEngagementProfileConfig: () => ({
 		kanbanTemplateId: "default",
@@ -32,11 +44,24 @@ vi.mock("@repo/database", async () => ({
 	]),
 
 	createProject: (...args: unknown[]) => mockCreateProject(...args),
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
+	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
+	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
+	pmSelectionUnchangedWhere: (expected: unknown) => ({
+		pmSelection: expected,
+	}),
 	db: {
 		project: {
 			findFirst: (...args: unknown[]) => mockProjectFindFirst(...args),
-			update: vi.fn(),
+			findUnique: (...args: unknown[]) => mockProjectFindUnique(...args),
+			update: (...args: unknown[]) => mockProjectUpdate(...args),
 		},
+		mCPServer: {
+			findUnique: async (args: { where: { id: string } }) =>
+				args.where.id === "srv-gl" ? { key: "gitlab-official" } : null,
+		},
+		mCPConfig: { findFirst: async () => null },
 		projectDocument: {
 			findFirst: vi.fn(),
 			create: vi.fn(),
@@ -470,5 +495,128 @@ describe("createProjectProcedure — no-double-sync invariant (O1)", () => {
 		expect(result.storySyncStarted).toBe(false);
 		expect(resolvePmTarget).not.toHaveBeenCalled();
 		expect(mockWorkflowStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("createProjectProcedure — the GitLab container's instance", () => {
+	const GITLAB_SELECTION = {
+		projectManagementMcpServerId: "srv-gl",
+		projectManagementContainerId: "42",
+	};
+
+	beforeEach(() => {
+		vi.mocked(resolvePmTarget).mockResolvedValue(null);
+	});
+
+	it("records the actor's instance on a fresh project, never the client's", async () => {
+		mockCreateProject.mockResolvedValue(projectFixture(GITLAB_SELECTION));
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: "org-1",
+				...GITLAB_SELECTION,
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://client-chosen.example.com",
+				},
+			},
+			context: baseCtx,
+		});
+
+		expect(
+			mockCreateProject.mock.calls[0][0]
+				.projectManagementAdditionalContext,
+		).toEqual({ gitlabOrigin: "https://gitlab.example.com" });
+	});
+
+	// A person's GitLab connection lives in an organization (ADR-018), and
+	// reading it can classify (write) a row in the organization it is given,
+	// so a create with none reads nothing and records no instance.
+	it("records no instance, and drops the client's, when the create has no organization", async () => {
+		mockCreateProject.mockResolvedValue(projectFixture(GITLAB_SELECTION));
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				...GITLAB_SELECTION,
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://client-chosen.example.com",
+				},
+			},
+			context: baseCtx,
+		});
+
+		expect(
+			mockCreateProject.mock.calls[0][0]
+				.projectManagementAdditionalContext,
+		).toEqual({});
+	});
+
+	it("activates a draft only while its selection is the one bound, re-binding after a concurrent change", async () => {
+		const draft = {
+			...projectFixture({
+				projectManagementMcpServerId: "srv-gl",
+				projectManagementContainerId: "42",
+			}),
+			id: "draft-1",
+			status: "DRAFT",
+			projectManagementAdditionalContext: {
+				gitlabOrigin: "https://gitlab.com",
+			},
+			engagementProfile: "GOVERNED",
+		};
+		mockProjectFindFirst.mockImplementation(
+			async (args: { where: { draftKey?: string } }) =>
+				args.where.draftKey ? draft : null,
+		);
+		// Another save switched the draft to container 77 first.
+		mockProjectFindUnique.mockResolvedValue({
+			projectManagementMcpServerId: "srv-gl",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "77",
+			projectManagementAdditionalContext: {
+				gitlabOrigin: "https://gitlab.example.com",
+			},
+		});
+		mockProjectUpdate
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Record to update not found."), {
+					code: "P2025",
+				}),
+			)
+			.mockResolvedValueOnce({ ...draft, status: "ACTIVE" });
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				draftKey: "550e8400-e29b-41d4-a716-446655440000",
+				// Writes the PM context, so the activation is conditional.
+				projectManagementAdditionalContext: { areaPath: "Team" },
+			},
+			context: baseCtx,
+		});
+
+		expect(mockProjectUpdate).toHaveBeenCalledTimes(2);
+		const [first, retried] = mockProjectUpdate.mock.calls.map(
+			(call) => call[0],
+		);
+		expect(first.where).toEqual({
+			id: "draft-1",
+			pmSelection: {
+				serverId: "srv-gl",
+				configId: null,
+				containerId: "42",
+				additionalContext: { gitlabOrigin: "https://gitlab.com" },
+			},
+		});
+		expect(retried.where.pmSelection).toMatchObject({ containerId: "77" });
+		// Container 77 keeps the instance it was chosen on.
+		expect(retried.data.projectManagementAdditionalContext).toEqual({
+			areaPath: "Team",
+			gitlabOrigin: "https://gitlab.example.com",
+		});
+		expect(mockCreateProject).not.toHaveBeenCalled();
 	});
 });

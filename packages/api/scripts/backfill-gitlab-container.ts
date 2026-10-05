@@ -15,13 +15,23 @@
  * credentials, so it works even when stored tokens are expired. Token refresh
  * is handled at use-time by the integration layer.
  *
+ * The container is recorded with the repository's GitLab instance
+ * (`gitlabOrigin`, see `recordedGitLabPmOrigin`): the path names a project on
+ * that instance only. A repository whose address is not an allowed GitLab
+ * address is skipped.
+ *
  * Idempotent: only fills NULL containers; never overwrites an existing one.
  *
  * Run from the repo root with the target environment's DATABASE_URL loaded:
  *   npx dotenv -c -e .env.local -- npx tsx packages/api/scripts/backfill-gitlab-container.ts --dry-run
  *   npx dotenv -c -e .env.local -- npx tsx packages/api/scripts/backfill-gitlab-container.ts
  */
-import { db } from "@repo/database";
+import { db, type Prisma } from "@repo/database";
+import {
+	GITLAB_DEFAULT_ORIGIN,
+	parseGitLabOrigin,
+	withGitLabPmOrigin,
+} from "@repo/integrations/gitlab";
 
 const GITLAB_OFFICIAL_KEY = "gitlab-official";
 
@@ -44,7 +54,11 @@ async function main() {
 			projectManagementMcpServerId: server.id,
 			projectManagementContainerId: null,
 		},
-		select: { id: true, name: true },
+		select: {
+			id: true,
+			name: true,
+			projectManagementAdditionalContext: true,
+		},
 	});
 
 	console.log(
@@ -59,7 +73,11 @@ async function main() {
 	for (const project of projects) {
 		const repo = await db.projectRepositoryIntegration.findFirst({
 			where: { projectId: project.id, provider: "GITLAB" },
-			select: { repositoryOwner: true, repositoryName: true },
+			select: {
+				repositoryOwner: true,
+				repositoryName: true,
+				repositoryUrl: true,
+			},
 			orderBy: { createdAt: "desc" },
 		});
 		if (!repo) {
@@ -71,6 +89,17 @@ async function main() {
 		}
 
 		const containerPath = `${repo.repositoryOwner}/${repo.repositoryName}`;
+		// A repository recorded without a URL predates self-hosted GitLab.
+		const repositoryOrigin = repo.repositoryUrl
+			? parseGitLabOrigin(repo.repositoryUrl)
+			: ({ ok: true, origin: GITLAB_DEFAULT_ORIGIN } as const);
+		if (!repositoryOrigin.ok) {
+			skipped++;
+			console.log(
+				`[skip] ${project.name} (${project.id}): the repository's GitLab address is not allowed (${repositoryOrigin.reason})`,
+			);
+			continue;
+		}
 		if (dryRun) {
 			console.log(
 				`[dry-run] would set container for ${project.name} -> ${containerPath}`,
@@ -84,6 +113,10 @@ async function main() {
 			data: {
 				projectManagementContainerId: containerPath,
 				projectManagementContainerName: containerPath,
+				projectManagementAdditionalContext: withGitLabPmOrigin(
+					project.projectManagementAdditionalContext,
+					repositoryOrigin.origin,
+				) as Prisma.InputJsonValue,
 			},
 		});
 		updated++;

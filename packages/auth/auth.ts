@@ -15,7 +15,11 @@ import { cancelSubscription } from "@repo/payments";
 import { encryptApiKey, getBaseUrl, isEncryptedApiKey } from "@repo/utils";
 import { type BetterAuthOptions, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import {
+	APIError,
+	createAuthMiddleware,
+	getSessionFromCtx,
+} from "better-auth/api";
 import { deleteSessionCookie } from "better-auth/cookies";
 import {
 	admin,
@@ -43,11 +47,11 @@ import {
 	syncSeatsAfterDeparture,
 } from "./lib/member-offboarding";
 import { notifySignupAttempt } from "./lib/notify-signup-attempt";
-import { emitOAuthConsentAudit } from "./lib/oauth-audit";
+import { auditOAuthConsent } from "./lib/oauth-audit";
+import { enforceOAuthResourceBinding } from "./lib/oauth-project-binding";
 import {
 	createOAuthProviderPlugin,
 	OAUTH_DISABLED_PATHS,
-	resolveConsentOrganizationId,
 } from "./lib/oauth-provider";
 import { enforceRegistrationPolicy } from "./lib/oauth-registration-policy";
 import { updateSeatsInOrganizationSubscription } from "./lib/organization";
@@ -493,18 +497,12 @@ const authOptions = {
 			await recordStepUpVerificationOutcome(ctx, stepUpLockoutDeps);
 
 			// An agent was approved. Never throws: an audit gap must not turn
-			// an approval that already committed into an error page.
+			// an approval that already committed into an error page. The grant
+			// recorded is the one the response's code carries, not a fresh
+			// reading of the project binding.
 			if (ctx.path === "/oauth2/consent") {
 				try {
-					const consenting = ctx.context.session?.user;
-					const organizationId = consenting
-						? await resolveConsentOrganizationId(
-								consenting.id,
-								ctx.context.session?.session
-									.activeOrganizationId,
-							).catch(() => null)
-						: null;
-					emitOAuthConsentAudit(ctx, organizationId);
+					await auditOAuthConsent(ctx);
 				} catch (error) {
 					logger.error(
 						"[Auth] Failed to audit OAuth consent:",
@@ -1028,6 +1026,28 @@ const authOptions = {
 			// ./lib/oauth-registration-policy.ts.
 			if (ctx.path === "/oauth2/register") {
 				enforceRegistrationPolicy(ctx.body);
+			}
+
+			// An agent that was configured with a project's URL asks for that
+			// project as the `resource` of its authorization. The plugin drops
+			// the value at authorize and refuses it at token, so this hook
+			// records it, checks at consent that the page showed the grant that
+			// is about to be issued, and matches it against the grant at token;
+			// see ./lib/oauth-project-binding.ts. The token endpoint's answer is
+			// the context it should run with.
+			if (
+				ctx.path === "/oauth2/authorize" ||
+				ctx.path === "/oauth2/consent" ||
+				ctx.path === "/oauth2/token"
+			) {
+				const resourceContext = await enforceOAuthResourceBinding(ctx, {
+					appUrl,
+					getSessionUserId: async () =>
+						(await getSessionFromCtx(ctx))?.user.id ?? null,
+				});
+				if (resourceContext) {
+					return resourceContext;
+				}
 			}
 
 			// Server-enforced step-up for the 2FA MANAGEMENT endpoints

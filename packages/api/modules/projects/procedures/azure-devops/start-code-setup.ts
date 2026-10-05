@@ -38,9 +38,9 @@ import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireProjectOrganization } from "../../lib/project-organization";
 
 export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_EDIT))
@@ -53,16 +53,14 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			projectId: z.string(),
+			// Accepted for client compatibility and ignored: the tenant is the
+			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 		const { projectId } = input;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
 		// Authorization enforced by `requireProjectPermission` above.
 
@@ -76,6 +74,13 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 				message: "Project not found",
 			});
 		}
+
+		// The tenant for the AI token and the workflow is the organization that
+		// owns the project `requireProjectPermission` authorized. The token is
+		// exchanged for that organization's provider key, so it must never come
+		// from `input.organizationId`, the caller's own string. A project with no
+		// organization is refused before any token or workflow start.
+		const organizationId = requireProjectOrganization(project);
 
 		// Verify project has repository info (connect → syncLegacyProjectRepoOnConnect
 		// sets these for the most-recently-connected repo).

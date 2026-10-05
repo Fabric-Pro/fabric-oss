@@ -38,7 +38,7 @@ describe("searchRepositoryCode (Azure DevOps) — Project filter", () => {
 
 	it("returns [] (no throw) when azureProject is missing", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch");
-		const results = await searchRepositoryCode({
+		const { results } = await searchRepositoryCode({
 			provider: "AZURE_DEVOPS",
 			token: "pat",
 			owner: "myorg",

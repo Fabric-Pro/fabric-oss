@@ -64,20 +64,20 @@ export async function executeGitLabGetFileStep(
 				ref: interpolatedRef,
 			},
 			restFallback: async () => {
-				const token =
+				const credential =
 					source.kind === "rest-adapter"
-						? source.token
+						? source.credential
 						: await resolveGitLabRestTokenForStep({
 								userId: params.userId,
 								organizationId: params.organizationId,
 							});
-				if (!token) {
+				if (!credential) {
 					throw new Error(
 						"GitLab REST fallback unavailable: connect a GitLab integration in Settings",
 					);
 				}
 				return (await gitlabFetch(
-					token,
+					credential,
 					`/projects/${encodeURIComponent(interpolatedProjectId)}/repository/files/${encodeURIComponent(interpolatedPath)}`,
 					{ ref: interpolatedRef },
 				)) as {
