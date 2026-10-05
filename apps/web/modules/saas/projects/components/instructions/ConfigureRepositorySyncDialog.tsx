@@ -20,6 +20,8 @@ import { useTranslations } from "next-intl";
 import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useSettledValue } from "../../hooks/use-settled-value";
+import { useSyncActionError } from "../../hooks/use-sync-action-error";
+import { migrationOpenRefusal } from "../../lib/instructions-action-error";
 import {
 	configureErrorMessage,
 	type RepositorySyncConfiguration,
@@ -27,7 +29,6 @@ import {
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
 	type SyncNowResult,
-	syncActionErrorKey,
 	syncNowResultMessage,
 } from "../../lib/instructions-repository-sync";
 import {
@@ -60,6 +61,7 @@ import {
 import { RepositorySyncSelectionTree } from "../repository-sync/RepositorySyncSelectionTree";
 import { SelectedPathsList } from "../repository-sync/SelectedPathsList";
 import { SelectionSummary } from "../repository-sync/SelectionSummary";
+import { RepositoryChoice } from "./RepositoryChoice";
 
 const NAMESPACE = "projects.codingInstructions.repositorySync";
 
@@ -164,6 +166,7 @@ export function ConfigureRepositorySyncDialog({
 	onSaved: () => void;
 }) {
 	const t = useTranslations(NAMESPACE);
+	const syncActionError = useSyncActionError();
 	const id = useId();
 	const seed =
 		(current &&
@@ -217,7 +220,6 @@ export function ConfigureRepositorySyncDialog({
 		orpc.projects.instructions.repositorySync.syncNow.mutationOptions(),
 	);
 	const pending = readingRules || configure.isPending || syncNow.isPending;
-	const selected = integrations.find((i) => i.id === integrationId) ?? null;
 	const branch = ref.trim();
 	const root = selection.root;
 
@@ -413,6 +415,10 @@ export function ConfigureRepositorySyncDialog({
 				...(ignoreGlobs === undefined ? {} : { ignoreGlobs }),
 			});
 		} catch (error) {
+			if (migrationOpenRefusal(error) !== null) {
+				toast.error(syncActionError(error, "configure", branch));
+				return;
+			}
 			const mapped = configureErrorMessage(error);
 			const message = t(mapped.key, { ref: branch });
 			if (mapped.inline) {
@@ -456,9 +462,7 @@ export function ConfigureRepositorySyncDialog({
 			const announced = syncNowResultMessage(result);
 			toast[announced.tone](t(announced.key));
 		} catch (error) {
-			toast.error(
-				t(syncActionErrorKey(error, "syncNow"), { ref: branch }),
-			);
+			toast.error(syncActionError(error, "syncNow", branch));
 		}
 		onSaved();
 		onOpenChange(false);
@@ -515,48 +519,22 @@ export function ConfigureRepositorySyncDialog({
 					</DialogDescription>
 				</DialogHeader>
 				<div className="flex flex-col gap-4">
-					{integrations.length > 1 ? (
-						<div className="flex flex-col gap-1.5">
-							<Label htmlFor="instructions-sync-repository">
-								{t("configureDialog.repositoryLabel")}
-							</Label>
-							<select
-								id="instructions-sync-repository"
-								className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-								value={integrationId}
-								onChange={(e) => {
-									const next = integrations.find(
-										(i) => i.id === e.target.value,
-									);
-									setIntegrationId(e.target.value);
-									if (next) {
-										setRef(next.defaultBranch);
-									}
-									// Another repository's folders: start
-									// again from the saved rules.
-									setSelection((prev) => ({
-										...prev,
-										edits: NO_EXCLUSION_EDITS,
-									}));
-									setMovedCleared(null);
-									clearInlineError();
-								}}
-							>
-								{integrations.map((i) => (
-									<option key={i.id} value={i.id}>
-										{`${t(`providers.${i.provider}`)} · ${i.repositoryOwner}/${i.repositoryName}`}
-									</option>
-								))}
-							</select>
-						</div>
-					) : selected ? (
-						<p className="text-sm">
-							<span className="text-muted-foreground">
-								{t("configureDialog.repositoryLabel")}:{" "}
-							</span>
-							<span>{`${selected.repositoryOwner}/${selected.repositoryName}`}</span>
-						</p>
-					) : null}
+					<RepositoryChoice
+						integrations={integrations}
+						integrationId={integrationId}
+						onChoose={(next) => {
+							setIntegrationId(next.id);
+							setRef(next.defaultBranch);
+							// Another repository's folders: start again from
+							// the saved rules.
+							setSelection((prev) => ({
+								...prev,
+								edits: NO_EXCLUSION_EDITS,
+							}));
+							setMovedCleared(null);
+							clearInlineError();
+						}}
+					/>
 					<div className="flex flex-col gap-1.5">
 						<Label htmlFor="instructions-sync-branch">
 							{t("configureDialog.branchLabel")}

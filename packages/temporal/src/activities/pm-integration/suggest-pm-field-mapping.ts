@@ -25,6 +25,7 @@
 import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/activity";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import { parseAdoFormMetadata } from "./ado-form-metadata";
 import {
 	type AdoToolOp,
@@ -49,6 +50,12 @@ const PROSE_MIN_AVERAGE_CHARS = 80;
 const NON_PROSE_PENALTY = 0.35;
 
 export interface SuggestPmFieldMappingInput {
+	/**
+	 * The project's `projectManagementAdditionalContext`: it records the
+	 * GitLab instance `containerId` lives on. Required, so a personal GitLab
+	 * config on another instance is always refused.
+	 */
+	pmAdditionalContext: unknown;
 	mcpConfigId: string;
 	containerId: string;
 	containerName?: string;
@@ -230,6 +237,15 @@ export async function suggestPmFieldMapping(
 		organizationId,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: input.pmAdditionalContext,
+	});
+
 	const capabilities = await discoverPMToolCapabilities({
 		mcpConfigId,
 		userId,
@@ -257,6 +273,7 @@ export async function suggestPmFieldMapping(
 	let exampleResult: { success: boolean; output?: unknown };
 	try {
 		exampleResult = await executeMcpTool({
+			pmTarget: { additionalContext: input.pmAdditionalContext },
 			toolName: getCall.toolName,
 			args: getCall.args,
 			userId,
@@ -297,6 +314,7 @@ export async function suggestPmFieldMapping(
 		});
 		try {
 			const typeResult = await executeMcpTool({
+				pmTarget: { additionalContext: input.pmAdditionalContext },
 				toolName: typeCall.toolName,
 				args: typeCall.args,
 				userId,

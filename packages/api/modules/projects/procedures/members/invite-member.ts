@@ -36,6 +36,11 @@ export const inviteMemberProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Resolved at handler entry, BEFORE anything is written: it can still
+		// refuse (a project with no organization), and refusing after the
+		// write would leave it committed behind a failed response.
+		const auditOrgId = resolveOrganizationId(undefined, context.session);
+
 		const user = context.user;
 		// Authorization is already enforced by the permission middleware above.
 		// We still need to verify the project exists and run invite-specific
@@ -105,7 +110,6 @@ export const inviteMemberProcedure = tenantProtectedProcedure
 		// row (external email invite), so `resourceId` is the invitation id
 		// and `resourceName` is the invited email — the actual user link is
 		// resolved later when they accept.
-		const auditOrgId = resolveOrganizationId(undefined, context.session);
 		recordAuditFromRequest(context, {
 			action: "project.member.invited",
 			category: "project",

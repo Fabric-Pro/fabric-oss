@@ -8,6 +8,7 @@
  * `next-intl` is left on the shared echoing mock (`vitest.setup.ts`): what is
  * under test is which value is written, not the copy.
  */
+import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -68,11 +69,12 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 	);
 }
 
-function renderDialog() {
+function renderDialog({ canEdit = true }: { canEdit?: boolean } = {}) {
 	return render(
 		<InstructionsSettingsDialog
 			projectId="p"
 			open
+			canEdit={canEdit}
 			onOpenChange={() => undefined}
 		/>,
 		{ wrapper: TestQueryProvider },
@@ -149,6 +151,7 @@ describe("InstructionsSettingsDialog", () => {
 			<InstructionsSettingsDialog
 				projectId="p"
 				open
+				canEdit
 				onOpenChange={() => undefined}
 				repositorySection={<section data-testid="repository-section" />}
 			/>,
@@ -157,5 +160,130 @@ describe("InstructionsSettingsDialog", () => {
 		expect(
 			await screen.findByTestId("repository-section"),
 		).toBeInTheDocument();
+	});
+});
+
+/**
+ * Someone who may not change the settings still sees them. The save used to be
+ * offered to everyone and refused afterwards with a FORBIDDEN toast; now the
+ * list reads as text, there is no Save or Reset, and one sentence says why.
+ */
+describe("InstructionsSettingsDialog — a reader", () => {
+	beforeEach(() => {
+		updateCalls.length = 0;
+		settingsResponse.current = {
+			ignoreGlobs: ["dist/**"],
+			defaultIgnoreGlobs: ["**/node_modules/**"],
+			sourceOfTruth: null,
+		};
+	});
+
+	it("shows the rules the project has, read-only", async () => {
+		renderDialog({ canEdit: false });
+
+		const textarea = (await screen.findByLabelText(
+			"textareaLabel",
+		)) as HTMLTextAreaElement;
+		await waitFor(() => expect(textarea.value).toBe("dist/**"));
+		expect(textarea).toHaveAttribute("readonly");
+	});
+
+	it("offers neither Save nor Reset to defaults, and says why in one sentence", async () => {
+		renderDialog({ canEdit: false });
+
+		await screen.findByLabelText("textareaLabel");
+		expect(screen.queryByRole("button", { name: "save" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "resetToDefaults" }),
+		).toBeNull();
+		expect(
+			screen.getByTestId("instructions-settings-read-only"),
+		).toHaveTextContent("readOnlyNotice");
+		expect(
+			en.projects.codingInstructions.settingsDialog.readOnlyNotice,
+		).toBe(
+			"You can see these settings, but only people who can change coding instructions can edit them.",
+		);
+	});
+
+	it("can still be closed", async () => {
+		const onOpenChange = vi.fn();
+		render(
+			<InstructionsSettingsDialog
+				projectId="p"
+				open
+				canEdit={false}
+				onOpenChange={onOpenChange}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: "close" }),
+		);
+
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+		expect(updateCalls).toHaveLength(0);
+	});
+
+	it("an editor sees no read-only notice", async () => {
+		renderDialog({ canEdit: true });
+
+		await screen.findByLabelText("textareaLabel");
+		expect(
+			screen.queryByTestId("instructions-settings-read-only"),
+		).toBeNull();
+	});
+
+	// A move of the uploaded instructions into a repository pauses the ignore
+	// rules too (Fizzy #2878 §9): the server would refuse the save, so the
+	// dialog says why and offers none.
+	describe("while a move into a repository has paused changes", () => {
+		const REASON =
+			"Moving to example-org/instructions: pull request #12 is open. Changes are paused until it is merged and synced, or the move is canceled.";
+
+		function renderPaused() {
+			return render(
+				<InstructionsSettingsDialog
+					projectId="p"
+					open
+					canEdit
+					pausedReason={REASON}
+					onOpenChange={() => undefined}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+		}
+
+		it("says why the rules cannot be changed, in the sentence a refused save gives", async () => {
+			renderPaused();
+
+			const notice = await screen.findByTestId(
+				"instructions-settings-read-only",
+			);
+
+			expect(notice).toHaveTextContent(REASON);
+		});
+
+		it("offers no Save or Reset, and the rules read as text", async () => {
+			renderPaused();
+
+			const textarea = (await screen.findByLabelText(
+				"textareaLabel",
+			)) as HTMLTextAreaElement;
+
+			expect(textarea).toHaveAttribute("readonly");
+			expect(screen.queryByRole("button", { name: "save" })).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: "resetToDefaults" }),
+			).toBeNull();
+			expect(screen.getByRole("button", { name: "close" })).toBeVisible();
+		});
+	});
+
+	it("names the dialog 'Coding instructions settings', not 'Coding-instructions settings'", () => {
+		expect(en.projects.codingInstructions.settingsDialog.title).toBe(
+			"Coding instructions settings",
+		);
 	});
 });

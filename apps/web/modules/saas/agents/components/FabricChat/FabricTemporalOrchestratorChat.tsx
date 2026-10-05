@@ -23,6 +23,8 @@ import {
 	DEFAULT_AI_CHAT_MIME_ALLOWLIST,
 	isClientRenderableAiChatImage,
 } from "@repo/utils/ai-chat-attachment";
+import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
+import { getSelectedAgentInstanceId } from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
@@ -4502,7 +4504,17 @@ export function FabricTemporalOrchestratorChat({
 														}
 													>
 														<RobotIcon className="h-3 w-3" />
-														{selectedAgent.name}
+														<AgentVersionIdentity
+															name={
+																selectedAgent.name
+															}
+															instanceId={getSelectedAgentInstanceId(
+																selectedAgent,
+															)}
+															organizationId={
+																organizationId
+															}
+														/>
 														{/* An agent carries no
 														    model of its own, so
 														    it cannot drive this

@@ -1,4 +1,6 @@
 export * from "./automatic-sync";
+export * from "./direct-commit";
+export * from "./excluded-paths";
 export * from "./file-typing";
 export * from "./frontmatter";
 export * from "./ignore";
@@ -13,5 +15,6 @@ export * from "./proposal-note";
 export * from "./pull-request-context";
 export * from "./pull-request-text";
 export * from "./secrets";
+export * from "./snapshot-rules";
 export * from "./storage-keys";
 export * from "./workflow-ids";

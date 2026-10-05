@@ -9,6 +9,7 @@ import {
 	moveWizardTempContextsToProject,
 	Prisma,
 	type ProjectDocumentType,
+	pmSelectionUnchangedWhere,
 	seedTerminalStatusesIfEmpty,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -23,6 +24,12 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	bindGitLabPmContainerOrigin,
+	pmSelectionOf,
+	readProjectPmSelection,
+	saveWithGitLabPmBinding,
+} from "../lib/gitlab-pm-origin";
 import {
 	failPmStorySyncJob,
 	openPmStorySyncJob,
@@ -164,65 +171,120 @@ export const createProjectProcedure = tenantProtectedProcedure
 					},
 				});
 				if (existingDraft) {
-					project = await db.project.update({
-						where: { id: existingDraft.id },
-						data: {
-							name: input.name,
-							description: input.description,
-							projectPhase: input.projectPhase,
-							expectedDevelopmentStartDate:
-								input.expectedDevelopmentStartDate,
-							goals: input.goals,
-							techStack: input.techStack || [],
-							features: input.features || [],
-							projectTypes: input.projectTypes || [],
-							tags: input.tags || [],
-							color: input.color,
-							icon: input.icon,
-							repositoryUrl: input.repositoryUrl,
-							repositoryOwner: input.repositoryOwner,
-							repositoryName: input.repositoryName,
-							defaultBranch: input.defaultBranch,
-							projectManagementMcpServerId:
-								input.projectManagementMcpServerId ?? undefined,
-							projectManagementMcpConfigId:
-								input.projectManagementMcpConfigId ?? undefined,
-							projectManagementContainerId:
-								input.projectManagementContainerId ?? undefined,
-							projectManagementContainerName:
-								input.projectManagementContainerName ??
-								undefined,
-							projectManagementAdditionalContext:
-								input.projectManagementAdditionalContext ===
-								null
-									? Prisma.JsonNull
-									: (input.projectManagementAdditionalContext as Prisma.InputJsonValue),
-							primaryWebsiteUrl:
-								input.primaryWebsiteUrl?.trim() || undefined,
-							additionalWebsiteUrls:
-								input.additionalWebsiteUrls?.filter((u) =>
-									u?.trim(),
-								),
-							status: "ACTIVE",
-							// Drop wizard-only ephemera now that the draft is being promoted
-							wizardState: Prisma.JsonNull,
-							// Profile/vision: the activation payload wins; fall back to
-							// what the draft already stored so an older client cannot
-							// silently reset an EXPLORE draft to the default profile.
-							engagementProfile:
-								input.engagementProfile ??
-								existingDraft.engagementProfile,
-							quotedPhases: input.quotedPhases,
-							visionPurpose: input.visionPurpose,
-							visionCoreActions: input.visionCoreActions,
-							visionCycle: input.visionCycle,
+					// The GitLab container's instance is the server's to
+					// record, never the client's, and is bound from the draft
+					// as it is when the activation applies
+					// (`saveWithGitLabPmBinding`).
+					project = await saveWithGitLabPmBinding({
+						actor: {
+							userId: user.id,
+							organizationId: organizationId ?? null,
 						},
+						stored: pmSelectionOf(existingDraft),
+						next: {
+							// `?? undefined`: the activation keeps a draft's
+							// stored selection when the request omits it.
+							serverId:
+								input.projectManagementMcpServerId ?? undefined,
+							configId:
+								input.projectManagementMcpConfigId ?? undefined,
+							containerId:
+								input.projectManagementContainerId ?? undefined,
+							additionalContext:
+								input.projectManagementAdditionalContext,
+						},
+						reread: () => readProjectPmSelection(existingDraft.id),
+						write: (draftAdditionalContext, expectedPmSelection) =>
+							db.project.update({
+								where: {
+									id: existingDraft.id,
+									...(expectedPmSelection
+										? pmSelectionUnchangedWhere(
+												expectedPmSelection,
+											)
+										: {}),
+								},
+								data: {
+									name: input.name,
+									description: input.description,
+									projectPhase: input.projectPhase,
+									expectedDevelopmentStartDate:
+										input.expectedDevelopmentStartDate,
+									goals: input.goals,
+									techStack: input.techStack || [],
+									features: input.features || [],
+									projectTypes: input.projectTypes || [],
+									tags: input.tags || [],
+									color: input.color,
+									icon: input.icon,
+									repositoryUrl: input.repositoryUrl,
+									repositoryOwner: input.repositoryOwner,
+									repositoryName: input.repositoryName,
+									defaultBranch: input.defaultBranch,
+									projectManagementMcpServerId:
+										input.projectManagementMcpServerId ??
+										undefined,
+									projectManagementMcpConfigId:
+										input.projectManagementMcpConfigId ??
+										undefined,
+									projectManagementContainerId:
+										input.projectManagementContainerId ??
+										undefined,
+									projectManagementContainerName:
+										input.projectManagementContainerName ??
+										undefined,
+									projectManagementAdditionalContext:
+										draftAdditionalContext === null
+											? Prisma.JsonNull
+											: (draftAdditionalContext as
+													| Prisma.InputJsonValue
+													| undefined),
+									primaryWebsiteUrl:
+										input.primaryWebsiteUrl?.trim() ||
+										undefined,
+									additionalWebsiteUrls:
+										input.additionalWebsiteUrls?.filter(
+											(u) => u?.trim(),
+										),
+									status: "ACTIVE",
+									// Drop wizard-only ephemera now that the draft is being promoted
+									wizardState: Prisma.JsonNull,
+									// Profile/vision: the activation payload wins; fall back to
+									// what the draft already stored so an older client cannot
+									// silently reset an EXPLORE draft to the default profile.
+									engagementProfile:
+										input.engagementProfile ??
+										existingDraft.engagementProfile,
+									quotedPhases: input.quotedPhases,
+									visionPurpose: input.visionPurpose,
+									visionCoreActions: input.visionCoreActions,
+									visionCycle: input.visionCycle,
+								},
+							}),
 					});
 				}
 			}
 
 			// No draft to activate — create a fresh project as ACTIVE
 			if (!project) {
+				const freshAdditionalContext =
+					await bindGitLabPmContainerOrigin({
+						actor: {
+							userId: user.id,
+							organizationId: organizationId ?? null,
+						},
+						stored: null,
+						next: {
+							serverId:
+								input.projectManagementMcpServerId ?? null,
+							configId:
+								input.projectManagementMcpConfigId ?? null,
+							containerId:
+								input.projectManagementContainerId ?? null,
+							additionalContext:
+								input.projectManagementAdditionalContext,
+						},
+					});
 				project = await createProject({
 					name: input.name,
 					description: input.description,
@@ -251,7 +313,7 @@ export const createProjectProcedure = tenantProtectedProcedure
 					projectManagementContainerName:
 						input.projectManagementContainerName ?? undefined,
 					projectManagementAdditionalContext:
-						input.projectManagementAdditionalContext as
+						freshAdditionalContext as
 							| Prisma.InputJsonValue
 							| null
 							| undefined,
@@ -590,6 +652,8 @@ export const createProjectProcedure = tenantProtectedProcedure
 								project.projectManagementMcpServerId,
 							projectManagementMcpConfigId:
 								project.projectManagementMcpConfigId,
+							projectManagementAdditionalContext:
+								project.projectManagementAdditionalContext,
 							organizationId: project.organizationId,
 						},
 						userId: user.id,

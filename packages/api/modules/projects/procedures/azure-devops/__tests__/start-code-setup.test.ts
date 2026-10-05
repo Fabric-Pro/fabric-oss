@@ -113,6 +113,7 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 	it("throws BAD_REQUEST when the project has no repository info", async () => {
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			repositoryOwner: null,
 			repositoryName: null,
@@ -134,6 +135,7 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 	it("throws CONFLICT when analysis is already SCANNING", async () => {
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			repositoryOwner: "my-org",
 			repositoryName: "repo",
@@ -153,6 +155,7 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 	it("starts existingProjectSetupWorkflow with the ACTIVE ADO repo URLs and returns SCANNING", async () => {
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			repositoryOwner: "my-org",
 			repositoryName: "repo",
@@ -223,6 +226,7 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 	it("falls back to the legacy repositoryUrl when no ADO integration row surfaces a URL", async () => {
 		mockProjectFindUnique.mockResolvedValue({
 			id: "p1",
+			organizationId: "org-1",
 			name: "Proj",
 			repositoryOwner: "my-org",
 			repositoryName: "repo",
@@ -242,5 +246,64 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 		expect(args.repoUrls).toEqual([
 			"https://dev.azure.com/my-org/Proj/_git/repo",
 		]);
+	});
+});
+
+// The AI token is exchanged by the workflow's agent for the named
+// organization's decrypted provider key, so the organization on the token and
+// on the workflow is the project's own — the tenant `requireProjectPermission`
+// authorized — never one the caller put in the input.
+describe("startAzureDevOpsCodeSetupProcedure — tenant comes from the project", () => {
+	it("issues the AI token and starts the workflow for the project's organization when the input names another", async () => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-a",
+			name: "Proj",
+			repositoryOwner: "my-org",
+			repositoryName: "repo",
+			repositoryUrl: "https://dev.azure.com/my-org/Proj/_git/repo",
+			projectTypes: [],
+			codeAnalysisStatus: "NOT_STARTED",
+		});
+
+		const handler = await loadHandler();
+		await handler({
+			input: { projectId: "p1", organizationId: "org-b" },
+			context: baseContext,
+		});
+
+		expect(mockIssueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				organizationId: "org-a",
+			}),
+		);
+		const [, options] = mockWorkflowStart.mock.calls[0];
+		const args = (options as { args: unknown[] }).args[0] as {
+			organizationId?: string;
+		};
+		expect(args.organizationId).toBe("org-a");
+	});
+
+	it("refuses a project with no organization before any token or workflow start", async () => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: null,
+			name: "Proj",
+			repositoryOwner: "my-org",
+			repositoryName: "repo",
+			repositoryUrl: "https://dev.azure.com/my-org/Proj/_git/repo",
+			projectTypes: [],
+			codeAnalysisStatus: "NOT_STARTED",
+		});
+
+		const handler = await loadHandler();
+		await expect(
+			handler({ input: { projectId: "p1" }, context: baseContext }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+		expect(mockListProjectRepoIntegrations).not.toHaveBeenCalled();
+		expect(mockIssueAIToken).not.toHaveBeenCalled();
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
 	});
 });

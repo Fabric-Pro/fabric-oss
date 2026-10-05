@@ -32,7 +32,14 @@ const mcp = vi.hoisted(() => ({
 	invalidateMcpClientCache: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@repo/mcp", () => mcp);
+// The container-instance checks are covered in pm-mcp-instance-binding.test.ts;
+// these configs are not GitLab, so the checks pass.
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	assertGitLabPmMcpConfigOrigin: vi.fn(async () => undefined),
+}));
 vi.mock("../../pm-source", () => ({
+	assertPmMcpTargetOrigin: vi.fn(async () => undefined),
 	resolvePmSource: vi.fn(),
 	resolvePmServerKey: vi.fn(),
 	PMSourceNotFound: class extends Error {},

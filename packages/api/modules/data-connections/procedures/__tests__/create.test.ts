@@ -166,4 +166,83 @@ describe("createProcedure", () => {
 		);
 		expect(result.connection.credentialId).toBe("cred-1");
 	});
+
+	describe("GitLab holds no credential", () => {
+		const context = {
+			user: { id: "user-1" },
+			session: { activeOrganizationId: "org-1" },
+		};
+
+		it("refuses client-supplied token credentials", async () => {
+			const error = await handlers
+				.create({
+					input: {
+						organizationId: "org-1",
+						provider: "GITLAB",
+						name: "GitLab",
+						credentials: { accessToken: "glpat-example" },
+					},
+					context,
+				})
+				.catch((e: unknown) => e);
+
+			expect(error).toBeInstanceOf(ORPCError);
+			expect((error as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect((error as Error).message).toContain(
+				"the GitLab account of the person who starts it",
+			);
+			expect(createDataConnection).not.toHaveBeenCalled();
+		});
+
+		it("refuses a saved credential reference", async () => {
+			vi.mocked(getDataConnectionCredentialById).mockResolvedValueOnce({
+				id: "cred-1",
+				provider: "GITLAB",
+			} as any);
+
+			const error = await handlers
+				.create({
+					input: {
+						organizationId: "org-1",
+						provider: "GITLAB",
+						name: "GitLab",
+						credentialId: "cred-1",
+					},
+					context,
+				})
+				.catch((e: unknown) => e);
+
+			expect((error as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect(createDataConnection).not.toHaveBeenCalled();
+		});
+
+		it("creates a connected GitLab connection with its config and no credential", async () => {
+			await handlers.create({
+				input: {
+					organizationId: "org-1",
+					provider: "GITLAB",
+					name: "GitLab",
+					credentials: {},
+					config: { baseUrl: "https://gitlab.example.com" },
+				},
+				context,
+			});
+
+			expect(createDataConnection).toHaveBeenCalledOnce();
+			const written = vi.mocked(createDataConnection).mock.calls[0]![0];
+			expect(written).toMatchObject({
+				provider: "GITLAB",
+				status: "CONNECTED",
+				config: { baseUrl: "https://gitlab.example.com" },
+			});
+			expect(written.credentials).toBeUndefined();
+			expect(written.credentialId).toBeUndefined();
+			expect(written.accessToken).toBeUndefined();
+			expect(written.refreshToken).toBeUndefined();
+		});
+	});
 });

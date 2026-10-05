@@ -65,6 +65,7 @@ import {
 	formatPushReport,
 } from "../../lib/context-sync/report.js";
 import { resolveExistingRoot } from "../../lib/instructions/safe-write.js";
+import { fabricCommand } from "../../lib/launcher.js";
 import { printOutput } from "../../lib/output.js";
 
 /**
@@ -177,7 +178,10 @@ async function run(
  */
 function contextClient(opts: { hook?: boolean }): FabricClient {
 	if (!getApiKey()) {
-		throw new CliFailure("Not authenticated. Run: fabric auth login", 3);
+		throw new CliFailure(
+			`Not authenticated. Run: ${fabricCommand("auth login")}`,
+			3,
+		);
 	}
 	return getClient(
 		opts.hook

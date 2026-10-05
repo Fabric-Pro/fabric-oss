@@ -979,7 +979,7 @@ export function CreateAgentPage({
 					queryKey: ["agentMemory"],
 				});
 				await queryClient.invalidateQueries({
-					queryKey: ["agentTemplates", "instances"],
+					queryKey: orpc.agentTemplates.instances.key(),
 				});
 				toast.success("Agent updated successfully!");
 				router.push(
@@ -1045,7 +1045,7 @@ export function CreateAgentPage({
 				createPayload as never,
 			);
 			await queryClient.invalidateQueries({
-				queryKey: ["agentTemplates", "instances"],
+				queryKey: orpc.agentTemplates.instances.key(),
 			});
 			toast.success("Agent created successfully!");
 			router.push(

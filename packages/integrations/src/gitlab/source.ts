@@ -1,6 +1,14 @@
-import { RefreshLockBudgetExhaustedError } from "@repo/database/prisma/queries/lib/refresh-lock-key";
+import {
+	type GitLabConnectionDeps,
+	type GitLabTenant,
+	getGitLabConnectionToken,
+	mcpRowOrigin,
+	patchGitLabConnectionSettings,
+	resolveGitLabConnectionDeps,
+} from "./connection";
 import {
 	type GitLabIntegrationSettings,
+	type GitLabMcpProbeRecord,
 	readUseOfficialMcp,
 } from "./integration-settings";
 import {
@@ -10,449 +18,219 @@ import {
 	GitLabMcpMethodNotFoundError,
 } from "./mcp-client";
 import {
-	GitLabReauthRequiredError,
-	GitLabRefreshSuppressedError,
-} from "./oauth-refresh";
-
-/**
- * True for the two NO-VERDICT transient outcomes a `refresh()` implementation
- * wired into this resolver can now produce:
- *
- *   - An aborted/timed-out provider HTTP call. `AbortSignal.timeout(ms)`
- *     rejects with a `DOMException` named `"TimeoutError"`; a plain
- *     `AbortController.abort()` with no reason rejects with one named
- *     `"AbortError"`. Either way, this process gave up waiting — it is not
- *     evidence GitLab rejected anything.
- *   - `RefreshLockBudgetExhaustedError`: the advisory-lock transaction
- *     declined to even START the exchange because too little of its budget
- *     remained after the lock wait. No provider contact happened at all.
- *
- * Neither says anything about the credential, so recording either against
- * `refreshFailureCount` would inflate the circuit breaker's strike counter
- * (`MAX_REFRESH_FAILURES` in `@repo/database`) on evidence that isn't a
- * strike — the next GENUINE permanent failure would then trip the breaker
- * immediately instead of on its own third occurrence, eroding the tolerance
- * that counter exists to provide.
- *
- * Also unwraps ONE level of `Error.cause`, as defence in depth for a wrapper
- * this codebase hasn't introduced yet: if some future layer wraps the abort
- * (e.g. `new Error("refresh failed", { cause: timeoutError })`) instead of
- * rethrowing it unchanged, the underlying signal is still recognised here.
- * This must NOT be treated as a substitute for rethrowing unchanged at the
- * source — every body read on the way here (`refreshGitLabToken`'s
- * `!response.ok` branch in particular; see its comment) is fixed to do
- * exactly that, and any NEW swallow found in the future belongs fixed the
- * same way, not papered over by widening this unwrap.
- */
-function isNoVerdictTransientError(err: unknown): boolean {
-	if (isAbortOrBudgetError(err)) {
-		return true;
-	}
-	if (err instanceof Error && isAbortOrBudgetError(err.cause)) {
-		return true;
-	}
-	return false;
-}
-
-function isAbortOrBudgetError(err: unknown): boolean {
-	if (err instanceof RefreshLockBudgetExhaustedError) {
-		return true;
-	}
-	return (
-		err instanceof DOMException &&
-		(err.name === "TimeoutError" || err.name === "AbortError")
-	);
-}
+	type GitLabApiCredential,
+	gitlabApiBaseForOrigin,
+} from "./rest-client";
 
 export type GitLabSource =
-	| { kind: "official-mcp"; callTool: GitLabMcpClient["callTool"] }
-	| { kind: "rest-adapter"; token: string };
-
-const REFRESH_BUFFER_MS = 60_000;
+	| {
+			kind: "official-mcp";
+			callTool: GitLabMcpClient["callTool"];
+			/**
+			 * Record that the official MCP endpoint is gone for this
+			 * connection (it answered 404), so later calls pick REST. Fenced
+			 * on the connection generation the source was built from.
+			 */
+			onCapabilityLost?: () => Promise<void>;
+			/**
+			 * The same connection's token for REST, on the same instance as
+			 * the endpoint — for a call that has to fall back.
+			 */
+			credential: GitLabApiCredential;
+	  }
+	| {
+			kind: "rest-adapter";
+			/** The token with the REST base of the instance that issued it. */
+			credential: GitLabApiCredential;
+	  };
 
 export interface ResolveGitLabSourceOpts {
 	userId: string;
 	organizationId: string | null;
-	projectId?: string;
-	db: {
-		mCPConfig: {
-			findFirst: (args: {
-				where: Record<string, unknown>;
-				select: Record<string, unknown>;
-			}) => Promise<{
-				id: string;
-				baseUrl: string | null;
-				encryptedAccessToken: string;
-				encryptedRefreshToken: string | null;
-				tokenExpiresAt: Date | null;
-				mcpServer: { defaultUrl: string | null } | null;
-			} | null>;
-		};
-		workflowIntegration: {
-			findFirst: (args: {
-				where: Record<string, unknown>;
-				select: Record<string, unknown>;
-			}) => Promise<{ settings: unknown } | null>;
-		};
-	};
-	decrypt: (cipher: string) => string;
-	refresh: (configId: string) => Promise<string>;
-	getRestToken: (opts: {
-		userId: string;
-		organizationId: string | null;
-		projectId?: string;
-	}) => Promise<string | null>;
-	/**
-	 * Best-effort callback invoked when `refresh()` rejects. Callers wire
-	 * this to record the failure, and — only when `reauthRequired` says the
-	 * credential is genuinely dead — to flip `MCPConfig.needsReauth=true` so
-	 * the Settings reconnect banner surfaces.
-	 *
-	 * REQUIRED, and deliberately so: it used to be optional, and a caller
-	 * that omitted it degraded to REST while persisting nothing, so the very
-	 * next request refreshed the same dead token again — the retry storm in
-	 * issue #2795. Every production caller passes
-	 * `createGitLabRefreshFailureWriter`; a test with no interest in the
-	 * failure path should pass an explicit no-op rather than reopen that
-	 * hole by omission.
-	 *
-	 * If this callback itself rejects, the resolver swallows the error: the
-	 * REST fallback is the real recovery path and must not be blocked by a DB
-	 * outage during the marking step.
-	 *
-	 * Not invoked at all when `refresh()` declines locally
-	 * (`GitLabRefreshSuppressedError`) — no provider contact happened, so
-	 * there is no outcome to record against a row the breaker already
-	 * condemned.
-	 */
-	markRefreshFailure: (
-		args: {
-			mcpConfigId: string;
-			error: string;
-		} & (
-			| {
-					/**
-					 * True only when the provider positively rejected the grant
-					 * — i.e. `refresh()` threw `GitLabReauthRequiredError`
-					 * (GitLab answered `invalid_grant` or `invalid_token`),
-					 * which no retry can recover. A bare 401/403 does not
-					 * qualify: OAuth uses 401 for `invalid_client` too, so the
-					 * status alone never proves the user's grant is the thing
-					 * that died. False for transient network errors, 5xx
-					 * responses, missing/invalid configuration and DB or
-					 * encryption failures: none of those say anything about the
-					 * credential itself. Also false for
-					 * `GitLabRefreshRaceLostError`, where the provider did
-					 * reject the token we posted but a concurrent refresh has
-					 * already rotated it away — the rejection describes a
-					 * credential that no longer exists. Writers must gate
-					 * `needsReauth` on this flag — that column is enforced
-					 * downstream (a flagged config is refused at MCP client
-					 * creation and filtered out of tool discovery), so
-					 * condemning on a transient failure hard-blocks a working
-					 * integration until the user manually reconnects.
-					 *
-					 * Typed `boolean` rather than `true` so callers can pass a
-					 * computed classification straight through; what this
-					 * member forbids is a caller that MIGHT condemn holding no
-					 * evidence. Mirrors `RecordRefreshFailureArgs.permanent` in
-					 * `@repo/database`, which expresses the same invariant for
-					 * the generic providers.
-					 */
-					reauthRequired: boolean;
-					/**
-					 * Ciphertext of the refresh token the rejection describes,
-					 * as read before it was posted. Writers gate the
-					 * `needsReauth` write on the row still holding this exact
-					 * value: `reauthRequired` is decided from evidence gathered
-					 * before the write, and with providers that rotate on every
-					 * exchange (GitLab does) the winning refresh can persist a
-					 * live replacement in between.
-					 *
-					 * Required here, and non-null: the condemning write is
-					 * conditional on it, so a condemnation arriving without
-					 * one has nothing to bind to and falls back to the
-					 * breaker guard alone. Every production rejection carries
-					 * one — `refreshMcpConfigToken` stamps the spent
-					 * ciphertext on every `GitLabReauthRequiredError` it lets
-					 * escape — so requiring it costs no caller anything and
-					 * keeps the unbound write out of reach.
-					 */
-					expectedRefreshToken: string;
-			  }
-			| {
-					/** Transient unless classified — see the sibling member. */
-					reauthRequired?: false;
-					/**
-					 * Accepted but unused, unlike the `never` its
-					 * `recordRefreshFailure` counterpart uses: a transient
-					 * failure here still POSTED a token, so callers do hold a
-					 * row version and there is no reason to make them strip it.
-					 * Writers must not put it in the predicate — a network blip
-					 * is no evidence about any particular row version.
-					 */
-					expectedRefreshToken?: string | null;
-			  }
-		),
-	) => Promise<void>;
-	now?: () => Date;
+	/** Test seam: replaces the connection service's database/lock/clock. */
+	deps?: Partial<GitLabConnectionDeps>;
 }
 
+/**
+ * Pick the transport for a person's GitLab calls. Both transports carry the
+ * SAME credential — the person's one GitLab connection
+ * (`getGitLabConnectionToken`). `useOfficialMcp` only chooses whether calls
+ * go through GitLab's official MCP endpoint or the REST adapter; the
+ * `gitlab-official` MCPConfig contributes its server URL, never a token of
+ * its own.
+ *
+ * Returns null when the person has no usable GitLab connection. The token is
+ * only sent to the official MCP endpoint when that endpoint is on the same
+ * GitLab origin the credential was issued by; otherwise the REST adapter
+ * (which talks to the credential's own origin) is used.
+ */
 export async function resolveGitLabSource(
 	opts: ResolveGitLabSourceOpts,
 ): Promise<GitLabSource | null> {
-	const now = (opts.now ?? (() => new Date()))().getTime();
-
-	const integration = await opts.db.workflowIntegration.findFirst({
-		where: {
-			userId: opts.userId,
-			organizationId: opts.organizationId,
-			provider: "GITLAB",
-			NOT: { name: "GITLAB_OAUTH_APP" },
-		},
-		select: { settings: true },
-	});
-	const flag = readUseOfficialMcp(
-		integration?.settings as GitLabIntegrationSettings | null | undefined,
-	);
-
-	const shouldCheckMcp = flag === true || flag === "legacy";
-	const mcpConfig = shouldCheckMcp
-		? await opts.db.mCPConfig.findFirst({
-				where: {
-					userId: opts.userId,
-					organizationId: opts.organizationId,
-					enabled: true,
-					// Two separate exclusions, both landing on the documented
-					// REST degradation. A null access token (disconnect or
-					// revoke nulled the column) would otherwise reach
-					// `decrypt()` as `null` and throw. `needsReauth` marks a
-					// row whose refresh token the circuit breaker has already
-					// condemned — the column stays populated when it trips, so
-					// without this the row is still selected and drives a
-					// refresh that can only fail again.
-					encryptedAccessToken: { not: null },
-					needsReauth: false,
-					mcpServer: { key: "gitlab-official" },
-				},
-				select: {
-					id: true,
-					baseUrl: true,
-					encryptedAccessToken: true,
-					encryptedRefreshToken: true,
-					tokenExpiresAt: true,
-					mcpServer: { select: { defaultUrl: true } },
-				},
-			})
-		: null;
-
-	if (mcpConfig) {
-		const serverUrl =
-			mcpConfig.baseUrl ?? mcpConfig.mcpServer?.defaultUrl ?? null;
-		if (!serverUrl) {
-			// No URL at all — treat as not connected, fall through to REST.
-			// (This is defensive: a properly seeded gitlab-official server
-			// always has defaultUrl, but a corrupt config row could lack both.)
-			const restToken = await opts.getRestToken({
-				userId: opts.userId,
-				organizationId: opts.organizationId,
-				projectId: opts.projectId,
-			});
-			if (restToken) {
-				return { kind: "rest-adapter", token: restToken };
-			}
-			return null;
-		}
-		// Null tokenExpiresAt means "expiry not recorded" — treat as
-		// must-refresh rather than "never expires". Matches the stance in
-		// get-valid-access-token.ts:82-86. Defaulting to POSITIVE_INFINITY
-		// hid token expiry until callers saw a 401.
-		const expiresAt = mcpConfig.tokenExpiresAt?.getTime() ?? 0;
-		const unknownExpiry = !mcpConfig.tokenExpiresAt;
-		const needsRefresh = expiresAt - now < REFRESH_BUFFER_MS;
-
-		// PAT / legacy short-circuit. When refresh would be triggered but no
-		// refresh credential exists AND expiry is unknown, this row is most
-		// likely a PAT-style grant or a legacy row whose expiry was never
-		// recorded. The stored access token may still be valid — return it
-		// directly rather than forcing a doomed refresh. Mirrors the policy
-		// in get-valid-access-token.ts:91-100. A KNOWN-expired token with no
-		// refresh token would still need reconnect, so we let the
-		// refresh-then-fall-through path (below) handle that case so the
-		// caller still gets a fresh REST attempt.
-		if (needsRefresh && !mcpConfig.encryptedRefreshToken && unknownExpiry) {
-			const token = opts.decrypt(mcpConfig.encryptedAccessToken);
-			const client = createGitLabMcpClient({ serverUrl, token });
-			return { kind: "official-mcp", callTool: client.callTool };
-		}
-
-		let token: string;
-		if (needsRefresh) {
-			try {
-				token = await opts.refresh(mcpConfig.id);
-			} catch (err) {
-				// Refresh failed (revoked grant, expired refresh token, transient
-				// DB / encryption failure). Don't bubble as INTERNAL_SERVER_ERROR
-				// — fall through to REST so the user keeps working while
-				// reconnect is offered out of band.
-				const errMessage =
-					err instanceof Error ? err.message : String(err);
-				// Classify here, where the error object still exists: the
-				// callback only receives a string, so a writer downstream
-				// could not tell a revoked grant from a network blip.
-				const reauthRequired = err instanceof GitLabReauthRequiredError;
-
-				// A suppressed refresh never contacted GitLab: the breaker had
-				// already condemned this row and `refresh()` declined locally.
-				// There is nothing to record — the `needsReauth: false` filter
-				// above normally keeps such a row out of this path entirely,
-				// but it loses the race where the flag trips between our
-				// select and the refresh's own reload. Skip the marking only;
-				// the REST degradation below still runs.
-				const suppressed = err instanceof GitLabRefreshSuppressedError;
-
-				// Same skip, different reason: an abort/timeout or a budget
-				// exhaustion never got an answer from GitLab at all (or never
-				// even tried), so — like a suppressed refresh — there is no
-				// outcome to record. Recording it anyway would still count
-				// toward the breaker's 3-strike threshold even though
-				// `reauthRequired` stays false, letting a burst of transient
-				// timeouts set up the NEXT genuine permanent failure to trip
-				// the breaker immediately. See `isNoVerdictTransientError`.
-				// `reauthRequired` takes precedence over the cause-unwrap in
-				// `isNoVerdictTransientError`: an error can be BOTH a genuine
-				// `GitLabReauthRequiredError` verdict AND carry an abort as its
-				// `cause` (e.g. a future wrapper attaching the underlying
-				// `TimeoutError` for diagnostics). Checking `reauthRequired`
-				// first means a real verdict is always recorded regardless of
-				// what its `cause` chain contains — the cause-unwrap only ever
-				// widens what counts as no-verdict, and must never cost a
-				// genuine verdict its recording.
-				const noVerdict =
-					suppressed ||
-					(!reauthRequired && isNoVerdictTransientError(err));
-
-				// The row version the failure describes. Prefer the value
-				// `refresh()` stamped on the error: its rotation-race retry
-				// posts a token this resolver never loaded, and the write must
-				// be bound to whichever one the provider judged. Our own
-				// selected ciphertext is the fallback for every other failure
-				// shape.
-				const expectedRefreshToken =
-					(err instanceof GitLabReauthRequiredError
-						? err.spentEncryptedRefreshToken
-						: undefined) ?? mcpConfig.encryptedRefreshToken;
-
-				// Best-effort: record the failure, and let the writer flip
-				// `MCPConfig.needsReauth=true` when `reauthRequired` says the
-				// grant is genuinely dead, so the Settings reconnect banner
-				// surfaces. Without that signal the user is permanently
-				// degraded to REST with no prompt to reconnect. If marking
-				// itself fails (DB outage), swallow — the REST fallback below
-				// is the real recovery path.
-				if (!noVerdict) {
-					// A condemnation may only travel with the row version it
-					// is bound to, which is why the callback's type refuses
-					// `reauthRequired: true` without a ciphertext. Unreachable
-					// in production — `refreshMcpConfigToken` stamps every
-					// `GitLabReauthRequiredError` it lets escape, and a row
-					// holding no refresh token fails earlier with a plain
-					// Error — but a custom `refresh()` could still get here, so
-					// report it as transient rather than condemn on no
-					// evidence. Fail-safe: a row with no refresh token has
-					// nothing to re-hammer, so declining costs no retry storm.
-					// Logged because a dropped condemnation is otherwise
-					// invisible.
-					if (reauthRequired && !expectedRefreshToken) {
-						console.warn(
-							"[gitlab-source] refresh rejection carried no refresh-token ciphertext — recording a transient failure instead of condemning on no evidence",
-							{ mcpConfigId: mcpConfig.id },
-						);
-					}
-					try {
-						await opts.markRefreshFailure(
-							reauthRequired && expectedRefreshToken
-								? {
-										mcpConfigId: mcpConfig.id,
-										error: errMessage,
-										reauthRequired,
-										expectedRefreshToken,
-									}
-								: {
-										mcpConfigId: mcpConfig.id,
-										error: errMessage,
-										reauthRequired: false,
-										expectedRefreshToken,
-									},
-						);
-					} catch (markErr) {
-						console.warn(
-							"[gitlab-source] failed to mark MCPConfig needsReauth",
-							{
-								mcpConfigId: mcpConfig.id,
-								markErr:
-									markErr instanceof Error
-										? markErr.message
-										: String(markErr),
-							},
-						);
-					}
-				}
-
-				// Capture structured error context (status/code when
-				// present) so production triage can distinguish "revoked"
-				// from "transient outage".
-				const errCtx =
-					err && typeof err === "object" && "status" in err
-						? {
-								status: (err as { status?: number }).status,
-								message: errMessage,
-							}
-						: { message: errMessage };
-				console.warn(
-					"[gitlab-source] MCP refresh failed; falling through to REST",
-					{ mcpConfigId: mcpConfig.id, ...errCtx },
-				);
-
-				const restToken = await opts.getRestToken({
-					userId: opts.userId,
-					organizationId: opts.organizationId,
-					projectId: opts.projectId,
-				});
-				if (restToken) {
-					return { kind: "rest-adapter", token: restToken };
-				}
-				return null;
-			}
-		} else {
-			token = opts.decrypt(mcpConfig.encryptedAccessToken);
-		}
-		const client = createGitLabMcpClient({
-			serverUrl,
-			token,
-		});
-		return { kind: "official-mcp", callTool: client.callTool };
-	}
-	if (flag === true) {
-		// Corrupt state: settings flag says capable but the MCPConfig row
-		// we need is missing. Use console.error so production telemetry
-		// surfaces this (most log shippers drop warn-level by default).
-		// TODO(observability): wire @repo/logs here when the integrations
-		// package can take that dep without circulars.
-		console.error(
-			"[gitlab-source] settings.useOfficialMcp=true but gitlab-official MCPConfig missing — falling back to REST",
-		);
-	}
-
-	const restToken = await opts.getRestToken({
+	const tenant: GitLabTenant = {
 		userId: opts.userId,
 		organizationId: opts.organizationId,
-		projectId: opts.projectId,
-	});
-	if (restToken) {
-		return { kind: "rest-adapter", token: restToken };
+	};
+	// `anyOrigin`: the REST adapter talks to the credential's own instance
+	// (`credential.apiBase`), and the official MCP endpoint is only used
+	// when it is on that same instance (checked below).
+	const token = await getGitLabConnectionToken(
+		tenant,
+		{ mode: "lenient", anyOrigin: true },
+		opts.deps,
+	);
+	if (!token.ok) {
+		if (token.reason !== "not-connected") {
+			console.warn("[gitlab-source] GitLab connection unusable", {
+				userId: opts.userId,
+				organizationId: opts.organizationId,
+				connectionReason: token.reason,
+			});
+		}
+		return null;
 	}
-	return null;
+
+	const rest: GitLabSource = {
+		kind: "rest-adapter",
+		credential: {
+			token: token.accessToken,
+			apiBase: gitlabApiBaseForOrigin(token.origin),
+		},
+	};
+	const flag = readUseOfficialMcp(
+		token.settings as GitLabIntegrationSettings | null | undefined,
+	);
+	if (flag !== true && flag !== "legacy") {
+		return rest;
+	}
+
+	const serverUrl = await findOfficialMcpServerUrl(tenant, opts.deps);
+	if (!serverUrl) {
+		if (flag === true) {
+			// Settings say capable but the row that names the endpoint is
+			// missing or disabled. console.error so production telemetry
+			// surfaces it (most log shippers drop warn-level by default).
+			console.error(
+				"[gitlab-source] settings.useOfficialMcp=true but gitlab-official MCPConfig missing — falling back to REST",
+			);
+		}
+		return rest;
+	}
+	// A config naming a refused address has no origin (`mcpRowOrigin`), so
+	// it never matches and the token never goes there.
+	if (serverUrl.origin !== token.origin) {
+		console.warn(
+			"[gitlab-source] official MCP endpoint is on a different GitLab instance than the connection; using REST",
+			{ userId: opts.userId, organizationId: opts.organizationId },
+		);
+		return rest;
+	}
+	const client = createGitLabMcpClient({
+		serverUrl: serverUrl.url,
+		token: token.accessToken,
+	});
+	const generation = token.generation;
+	return {
+		kind: "official-mcp",
+		callTool: client.callTool,
+		credential: rest.credential,
+		// Capability reconciliation the connection refresher used to do at
+		// refresh time: a 404 from the endpoint says this instance/tier no
+		// longer serves official MCP. Only the routing flag changes — under
+		// the lifecycle lock, only at the generation this source was built
+		// from, so it never overwrites a newer connect, disconnect or reauth
+		// mark — and the issuer's MCPConfig registration is kept.
+		onCapabilityLost: async () => {
+			const mcpProbe: GitLabMcpProbeRecord = {
+				status: "not-found",
+				httpStatus: 404,
+				checkedAt: new Date().toISOString(),
+				baseUrl: token.origin,
+			};
+			await patchGitLabConnectionSettings(
+				tenant,
+				{
+					expectedGeneration: generation,
+					patch: { useOfficialMcp: false, mcpProbe },
+				},
+				opts.deps,
+			);
+		},
+	};
+}
+
+async function findOfficialMcpServerUrl(
+	tenant: GitLabTenant,
+	overrides?: Partial<GitLabConnectionDeps>,
+): Promise<{ url: string; origin: string | null } | null> {
+	const deps = await resolveGitLabConnectionDeps(overrides);
+	const tenantFilter = tenant.organizationId
+		? { organizationId: tenant.organizationId, userId: tenant.userId }
+		: { organizationId: null, userId: tenant.userId };
+	const row = (await deps.db.mCPConfig.findFirst({
+		where: {
+			...tenantFilter,
+			enabled: true,
+			mcpServer: { key: "gitlab-official" },
+		},
+		select: {
+			id: true,
+			baseUrl: true,
+			mcpServer: { select: { defaultUrl: true } },
+		},
+	} as never)) as {
+		baseUrl: string | null;
+		mcpServer: { defaultUrl: string | null } | null;
+	} | null;
+	if (!row) {
+		return null;
+	}
+	const url = row.baseUrl ?? row.mcpServer?.defaultUrl ?? null;
+	if (!url) {
+		return null;
+	}
+	return { url, origin: mcpRowOrigin(row) };
+}
+
+/**
+ * HTTP 404 answered by the official MCP endpoint itself — not by a URL a
+ * redirect led to: the endpoint is gone (the instance or tier stopped serving
+ * official MCP), so the call never ran there. A 404 reached through a
+ * redirect proves nothing (the endpoint may have run the call, then pointed
+ * elsewhere), and neither does a redirect the client refused to follow.
+ */
+export function isGitLabMcpEndpointGone(err: unknown): boolean {
+	return (
+		err instanceof GitLabMcpError &&
+		err.httpStatus === 404 &&
+		err.answeredByEndpoint
+	);
+}
+
+/**
+ * Record a capability loss the endpoint just reported, so later calls go
+ * straight to REST. A failure to record it never fails the caller's call.
+ */
+export async function recordGitLabMcpCapabilityLoss(
+	source: Extract<GitLabSource, { kind: "official-mcp" }>,
+	method: string,
+): Promise<void> {
+	console.warn(
+		`[gitlab] official MCP endpoint answered 404 on ${method}; using REST and recording the capability loss`,
+	);
+	try {
+		await source.onCapabilityLost?.();
+	} catch (recordError) {
+		console.error(
+			"[gitlab] could not record the official MCP capability loss",
+			{
+				error:
+					recordError instanceof Error
+						? recordError.message
+						: String(recordError),
+			},
+		);
+	}
 }
 
 /**
@@ -483,6 +261,12 @@ export async function callMcpWithRestFallback<T>(args: {
 	try {
 		return (await args.source.callTool(args.method, args.args)) as T;
 	} catch (err) {
+		// The endpoint itself is gone, so the call never ran — REST is safe
+		// even for a write.
+		if (isGitLabMcpEndpointGone(err)) {
+			await recordGitLabMcpCapabilityLoss(args.source, args.method);
+			return args.restFallback();
+		}
 		// Method-not-found proves the call never executed server-side, so a
 		// REST retry can never duplicate — always fall back, even for writes.
 		if (err instanceof GitLabMcpMethodNotFoundError) {

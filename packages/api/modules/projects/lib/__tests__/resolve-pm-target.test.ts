@@ -4,37 +4,149 @@
  * Returns a discriminated descriptor of how a project's PM tool is configured:
  *   - { kind: "mcp", mcpConfigId, mcpConfig } — usable MCPConfig pinned
  *   - { kind: "rest-gitlab", mcpConfigId: null } — gitlab-official server +
- *     active WorkflowIntegration, no MCPConfig (REST fallback path)
+ *     the caller's usable personal GitLab connection (REST fallback path)
  *   - null — nothing resolves
  *
- * Tenant scoping uses XOR (organizationId !== null ? {organizationId,userId} :
- * {organizationId:null,userId}).
+ * The GitLab branch runs against the REAL GitLab connection service and an
+ * in-memory database that applies `where` clauses (the integrations
+ * package's GitLab fake). A legacy token copy on a `gitlab-official` MCP
+ * config with no WorkflowIntegration row behind it is not a connection, and
+ * nothing adopts it on read. Mirrors temporal `pm-source`.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+} from "../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db";
+
+const state = vi.hoisted(() => ({
+	fake: null as unknown as ReturnType<
+		typeof import("../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db").createGitLabFakeDb
+	>,
+}));
 
 vi.mock("@repo/database", () => ({
-	resolvePMConfigForUser: vi.fn(),
-	db: {
-		mCPServer: { findUnique: vi.fn() },
-		workflowIntegration: { findFirst: vi.fn() },
+	get db() {
+		return state.fake.db;
 	},
+	resolvePMConfigForUser: vi.fn(),
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	isPmServerIdKeySentinel: (id: string) => id.startsWith("key:"),
 	readPmServerIdKeySentinel: (id: string) => id.slice("key:".length),
 }));
 
-import { db, resolvePMConfigForUser } from "@repo/database";
-import {
-	createWorkflowIntegrationStore,
-	type StoredRow,
-} from "../../../integrations/__tests__/procedures/workflow-integration-store";
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		keys: string | readonly string[],
+		fn: (
+			tx: unknown,
+			assertBudget: (ms: number) => void,
+		) => Promise<unknown>,
+	) => state.fake.withLock(keys, fn as never),
+}));
+
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import(
+		"../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db"
+	);
+	return {
+		...(await importOriginal<object>()),
+		encryptApiKey: helpers.fakeEncrypt,
+		decryptApiKey: helpers.fakeDecrypt,
+	};
+});
+
+import { resolvePMConfigForUser } from "@repo/database";
+import { resetGitLabConnectionDepsForTests } from "@repo/integrations/gitlab";
 import { resolvePmTarget } from "../resolve-pm-target";
+
+const officialServer = {
+	id: "srv-gl",
+	key: "gitlab-official",
+	defaultUrl: "https://gitlab.com/api/v4/mcp",
+};
+
+function personalRow(
+	id: string,
+	userId: string,
+	organizationId: string | null,
+	extra: Record<string, unknown> = {},
+) {
+	return {
+		id,
+		userId,
+		organizationId,
+		provider: "GITLAB",
+		name: "GitLab: dev",
+		workflowId: null,
+		isActive: true,
+		credentials: encryptedCredential({
+			access_token: `${id}-access`,
+			refresh_token: `${id}-refresh`,
+			expires_in: 7200,
+			token_obtained_at: new Date().toISOString(),
+			issuer: {
+				kind: "app",
+				clientId: "app-client",
+				origin: "https://gitlab.com",
+			},
+			connectionGeneration: 1,
+		}),
+		settings: {},
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+		...extra,
+	};
+}
+
+function officialCopy(userId: string, organizationId: string | null) {
+	return {
+		id: `cfg-official-${userId}`,
+		userId,
+		organizationId,
+		mcpServerId: officialServer.id,
+		baseUrl: null,
+		oauthClientId: "dcr-client",
+		encryptedOauthClientSecret: null,
+		dcrClientMetadata: { token_endpoint_auth_method: "none" },
+		encryptedAccessToken: "enc:dcr-access",
+		encryptedRefreshToken: "enc:dcr-refresh",
+		tokenExpiresAt: new Date(Date.now() + 3_600_000),
+		needsReauth: false,
+		enabled: true,
+		authType: "OAUTH2",
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+	};
+}
+
+function seed(tables: Parameters<typeof createGitLabFakeDb>[0] = {}) {
+	state.fake = createGitLabFakeDb({
+		mCPServer: [
+			officialServer,
+			{ id: "srv-fz", key: "fizzy", defaultUrl: null },
+		],
+		...tables,
+	});
+}
+
+const gitlabProject = (organizationId: string | null) => ({
+	projectManagementMcpServerId: "key:gitlab-official",
+	projectManagementMcpConfigId: null,
+	organizationId,
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.stubGlobal("fetch", vi.fn());
+	vi.stubEnv("GITLAB_CLIENT_ID", "app-client");
+	resetGitLabConnectionDepsForTests();
+	seed();
 });
 
-describe("resolvePmTarget", () => {
+describe("resolvePmTarget — MCP path", () => {
 	it("returns kind=mcp when mcpConfigId resolves to an enabled config", async () => {
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
 			id: "cfg1",
@@ -51,19 +163,16 @@ describe("resolvePmTarget", () => {
 			organizationId: null,
 		});
 
-		expect(result).toMatchObject({
-			kind: "mcp",
-			mcpConfigId: "cfg1",
-		});
+		expect(result).toMatchObject({ kind: "mcp", mcpConfigId: "cfg1" });
 	});
 
-	it("returns null when mcpConfigId is set but resolves to a disabled config", async () => {
-		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+	it("returns null when mcpConfigId resolves to a disabled or missing config", async () => {
+		vi.mocked(resolvePMConfigForUser).mockResolvedValueOnce({
 			id: "cfg1",
 			enabled: false,
 		} as never);
-
-		const result = await resolvePmTarget({
+		vi.mocked(resolvePMConfigForUser).mockResolvedValueOnce(null);
+		const args = {
 			project: {
 				projectManagementMcpServerId: "srv-x",
 				projectManagementMcpConfigId: "cfg1",
@@ -71,272 +180,251 @@ describe("resolvePmTarget", () => {
 			},
 			userId: "u1",
 			organizationId: null,
+		};
+
+		expect(await resolvePmTarget(args)).toBeNull();
+		expect(await resolvePmTarget(args)).toBeNull();
+	});
+
+	it("returns null when the server is not gitlab-official, or there is no server", async () => {
+		seed({ workflowIntegration: [personalRow("wi-1", "u1", null)] });
+
+		expect(
+			await resolvePmTarget({
+				project: {
+					projectManagementMcpServerId: "srv-fz",
+					projectManagementMcpConfigId: null,
+					organizationId: null,
+				},
+				userId: "u1",
+				organizationId: null,
+			}),
+		).toBeNull();
+		expect(
+			await resolvePmTarget({
+				project: {
+					projectManagementMcpServerId: null,
+					projectManagementMcpConfigId: null,
+					organizationId: null,
+				},
+				userId: "u1",
+				organizationId: null,
+			}),
+		).toBeNull();
+	});
+});
+
+describe("resolvePmTarget — GitLab REST path", () => {
+	it("does not resolve a legacy gitlab-official MCP token copy with no connection behind it", async () => {
+		seed({ mCPConfig: [officialCopy("user-2", "org-example")] });
+
+		const result = await resolvePmTarget({
+			project: gitlabProject("org-example"),
+			userId: "user-2",
+			organizationId: "org-example",
 		});
 
 		expect(result).toBeNull();
+		expect(state.fake.tables.workflowIntegration).toHaveLength(0);
 	});
 
-	it("returns null when mcpConfigId is set but resolvePMConfigForUser returns null", async () => {
-		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null);
+	it("resolves through the catalog id as well as the sentinel, without touching the catalog for the sentinel", async () => {
+		seed({ workflowIntegration: [personalRow("wi-1", "u1", null)] });
+		const catalog = vi.spyOn(state.fake.db.mCPServer, "findUnique");
 
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-x",
-				projectManagementMcpConfigId: "cfg-missing",
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject(null),
+				userId: "u1",
 				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
+			}),
+		).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
+		expect(catalog).not.toHaveBeenCalled();
 
-		expect(result).toBeNull();
-	});
-
-	it("returns kind=rest-gitlab when configId is null, server is gitlab-official, integration is active", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi1",
-		} as never);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
+		expect(
+			await resolvePmTarget({
+				project: {
+					projectManagementMcpServerId: "srv-gl",
+					projectManagementMcpConfigId: null,
+					organizationId: null,
+				},
+				userId: "u1",
 				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		expect(result).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
+			}),
+		).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
 	});
 
-	it("returns null when server is gitlab-official but no active WorkflowIntegration", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
+	it("returns null when the caller has no GitLab connection", async () => {
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject(null),
+				userId: "u1",
 				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		expect(result).toBeNull();
+			}),
+		).toBeNull();
 	});
 
-	it("returns null when configId is null and server is not gitlab-official", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "fizzy",
-		} as never);
+	it("returns null for a reconnect-required connection", async () => {
+		seed({
+			workflowIntegration: [
+				personalRow("wi-2", "user-2", "org-example", {
+					settings: { needsReauth: true },
+				}),
+			],
+		});
 
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-fz",
-				projectManagementMcpConfigId: null,
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject("org-example"),
+				userId: "user-2",
+				organizationId: "org-example",
+			}),
+		).toBeNull();
+	});
+
+	// --- Connection owner (mirrors temporal pm-source.ts) -------------------
+
+	it("org context: returns null when only a teammate has GitLab connected (WI or MCP copy)", async () => {
+		seed({
+			workflowIntegration: [personalRow("wi-1", "user-1", "org-example")],
+			mCPConfig: [officialCopy("user-1", "org-example")],
+		});
+
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject("org-example"),
+				userId: "user-2",
+				organizationId: "org-example",
+			}),
+		).toBeNull();
+	});
+
+	it("org context: resolves from the caller's own connection", async () => {
+		seed({
+			workflowIntegration: [
+				personalRow("wi-1", "user-1", "org-example"),
+				personalRow("wi-2", "user-2", "org-example"),
+			],
+		});
+
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject("org-example"),
+				userId: "user-2",
+				organizationId: "org-example",
+			}),
+		).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
+	});
+
+	it("keeps the tenant filter exclusive between personal and org context", async () => {
+		seed({ workflowIntegration: [personalRow("wi-p", "u1", null)] });
+
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject("org-example"),
+				userId: "u1",
+				organizationId: "org-example",
+			}),
+		).toBeNull();
+		expect(
+			await resolvePmTarget({
+				project: gitlabProject(null),
+				userId: "u1",
 				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		expect(result).toBeNull();
+			}),
+		).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
 	});
+});
 
-	it("returns null when both configId and serverId are null", async () => {
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: null,
-				projectManagementMcpConfigId: null,
-				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		expect(result).toBeNull();
-	});
-
-	it("uses XOR tenant filter for the WorkflowIntegration lookup (org context)", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi1",
-		} as never);
-
-		await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
-				organizationId: "org-x",
-			},
-			userId: "u1",
-			organizationId: "org-x",
-		});
-
-		const call = vi.mocked(db.workflowIntegration.findFirst).mock
-			.calls[0]?.[0];
-		expect(call?.where).toMatchObject({
-			provider: "GITLAB",
-			isActive: true,
-			userId: "u1",
-			organizationId: "org-x",
-		});
-	});
-
-	it("uses XOR tenant filter for the WorkflowIntegration lookup (personal context)", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi1",
-		} as never);
-
-		await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
-				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		const call = vi.mocked(db.workflowIntegration.findFirst).mock
-			.calls[0]?.[0];
-		expect(call?.where).toMatchObject({
-			provider: "GITLAB",
-			isActive: true,
-			userId: "u1",
-			organizationId: null,
-		});
-	});
-
-	it("returns kind=rest-gitlab for the key:gitlab-official sentinel when WorkflowIntegration is active", async () => {
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi1",
-		} as never);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "key:gitlab-official",
-				projectManagementMcpConfigId: null,
-				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		// Sentinel must not hit the catalog.
-		expect(vi.mocked(db.mCPServer.findUnique)).not.toHaveBeenCalled();
-		expect(result).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
-	});
-
-	it("returns null for the sentinel when no active WorkflowIntegration exists", async () => {
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "key:gitlab-official",
-				projectManagementMcpConfigId: null,
-				organizationId: null,
-			},
-			userId: "u1",
-			organizationId: null,
-		});
-
-		expect(vi.mocked(db.mCPServer.findUnique)).not.toHaveBeenCalled();
-		expect(result).toBeNull();
-	});
-
-	// --- Connection owner (mirrors temporal pm-source.ts) ---------------------
-	// A GitLab WorkflowIntegration is a member's personal OAuth connection; in
-	// org context the REST target resolves only through the CALLER's own
-	// connection, never a teammate's. Rows are seeded in an in-memory store
-	// (teammate first) so a lookup without `userId` would pick the teammate.
-
-	const gitlabRow = (id: string, userId: string): StoredRow => ({
-		id,
-		userId,
-		organizationId: "org-example",
-		provider: "GITLAB",
-		name: "GITLAB",
-		isActive: true,
-		credentials: "{}",
-	});
-	const teammateGitLab = gitlabRow("wi-teammate", "user-1");
-	const callerGitLab = gitlabRow("wi-caller", "user-2");
-
-	function seed(rows: StoredRow[]) {
-		const store = createWorkflowIntegrationStore();
-		store.rows.push(...rows);
-		vi.mocked(db.workflowIntegration.findFirst).mockImplementation(
-			store.delegate.findFirst as never,
-		);
+describe("resolvePmTarget — the container's GitLab instance", () => {
+	function selfHostedRow() {
+		const row = personalRow("wi-1", "u1", null);
+		return {
+			...row,
+			credentials: encryptedCredential({
+				access_token: "wi-1-access",
+				refresh_token: "wi-1-refresh",
+				expires_in: 7200,
+				token_obtained_at: new Date().toISOString(),
+				issuer: {
+					kind: "app",
+					clientId: "app-client",
+					origin: "https://gitlab.example.com",
+				},
+				connectionGeneration: 1,
+			}),
+		};
 	}
 
-	const gitlabProject = {
-		projectManagementMcpServerId: "key:gitlab-official",
-		projectManagementMcpConfigId: null,
-		organizationId: "org-example",
-	};
+	it("refuses a self-hosted connection for a container chosen on gitlab.com (none recorded)", async () => {
+		seed({ workflowIntegration: [selfHostedRow()] });
 
-	it("org context: returns null when only a teammate has GitLab connected", async () => {
-		seed([teammateGitLab]);
-
-		const result = await resolvePmTarget({
-			project: gitlabProject,
-			userId: "user-2",
-			organizationId: "org-example",
-		});
-
-		expect(result).toBeNull();
-	});
-
-	it("org context: resolves rest-gitlab from the caller's own connection", async () => {
-		seed([teammateGitLab, callerGitLab]);
-
-		const result = await resolvePmTarget({
-			project: gitlabProject,
-			userId: "user-2",
-			organizationId: "org-example",
-		});
-
-		expect(result).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
 		expect(
-			vi.mocked(db.workflowIntegration.findFirst).mock.calls[0]?.[0]
-				?.where,
-		).toMatchObject({ userId: "user-2", organizationId: "org-example" });
-	});
-
-	it("personal context: does not fall back to another user's integration", async () => {
-		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
-			key: "gitlab-official",
-		} as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue(null);
-
-		const result = await resolvePmTarget({
-			project: {
-				projectManagementMcpServerId: "srv-gl",
-				projectManagementMcpConfigId: null,
+			await resolvePmTarget({
+				project: {
+					...gitlabProject(null),
+					projectManagementAdditionalContext: null,
+				},
+				userId: "u1",
 				organizationId: null,
-			},
-			userId: "u2",
-			organizationId: null,
-		});
+			}),
+		).toBeNull();
+	});
 
-		expect(result).toBeNull();
-		// Only the single user-scoped lookup in personal context.
+	it("refuses a gitlab.com connection for a container recorded on a self-hosted instance", async () => {
+		seed({ workflowIntegration: [personalRow("wi-1", "u1", null)] });
+
 		expect(
-			vi.mocked(db.workflowIntegration.findFirst),
-		).toHaveBeenCalledTimes(1);
+			await resolvePmTarget({
+				project: {
+					...gitlabProject(null),
+					projectManagementAdditionalContext: {
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				},
+				userId: "u1",
+				organizationId: null,
+			}),
+		).toBeNull();
+	});
+
+	it("resolves a connection on the container's recorded instance", async () => {
+		seed({ workflowIntegration: [selfHostedRow()] });
+
+		expect(
+			await resolvePmTarget({
+				project: {
+					...gitlabProject(null),
+					projectManagementAdditionalContext: {
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				},
+				userId: "u1",
+				organizationId: null,
+			}),
+		).toEqual({ kind: "rest-gitlab", mcpConfigId: null });
+	});
+
+	it("refuses the caller's own GitLab MCP config on another instance than the container", async () => {
+		seed();
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+			id: "cfg-own",
+			enabled: true,
+			baseUrl: "https://gitlab.example.com/api/v4/mcp",
+			mcpServer: officialServer,
+		} as never);
+
+		expect(
+			await resolvePmTarget({
+				project: {
+					projectManagementMcpServerId: officialServer.id,
+					projectManagementMcpConfigId: "cfg-pinned",
+					projectManagementAdditionalContext: null,
+					organizationId: null,
+				},
+				userId: "u1",
+				organizationId: null,
+			}),
+		).toBeNull();
 	});
 });

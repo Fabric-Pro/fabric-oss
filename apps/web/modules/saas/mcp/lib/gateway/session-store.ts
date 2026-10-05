@@ -38,6 +38,7 @@ if (typeof setInterval !== "undefined") {
 export async function createGatewaySession(params: {
 	userId: string;
 	organizationId: string | null;
+	projectId?: string | null;
 	userName: string;
 	email: string;
 	role: "user" | "admin";
@@ -52,6 +53,7 @@ export async function createGatewaySession(params: {
 		sessionId,
 		userId: params.userId,
 		organizationId: params.organizationId,
+		projectId: params.projectId ?? null,
 		userName: params.userName,
 		email: params.email,
 		role: params.role,

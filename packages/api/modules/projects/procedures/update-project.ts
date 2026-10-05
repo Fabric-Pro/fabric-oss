@@ -7,8 +7,10 @@ import {
 	fieldMappingConfigSchema,
 	isPmServerIdKeySentinel,
 	moveWizardTempContextsToProject,
+	type PmSelectionSnapshot,
 	Prisma,
 	type ProjectDocumentType,
+	pmSelectionUnchangedWhere,
 	readPmServerIdKeySentinel,
 	seedTerminalStatusesIfEmpty,
 	syncLegacyProjectRepoOnDisconnect,
@@ -36,7 +38,6 @@ import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import {
@@ -44,12 +45,18 @@ import {
 	startCodeIndexingForProject,
 } from "../lib/code-indexing-trigger";
 import {
+	pmSelectionOf,
+	readProjectPmSelection,
+	saveWithGitLabPmBinding,
+} from "../lib/gitlab-pm-origin";
+import {
 	activityUserName,
 	buildGovernanceActivityCreate,
 	diffGovernanceFields,
 	GOVERNANCE_FIELDS,
 	userHasProjectPermissionStrict,
 } from "../lib/governance";
+import { requireProjectOrganization } from "../lib/project-organization";
 
 /**
  * PM server keys that mean "GitLab" — the same set `enableGitLabPMForProject`
@@ -100,6 +107,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			id: z.string(),
+			// Accepted for client compatibility and ignored: the tenant is the
+			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 			name: z.string().min(1).max(255).optional(),
 			description: z.string().max(INPUT_BOUNDS.description).optional(),
@@ -230,10 +239,6 @@ export const updateProjectProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
 		// Authorization for PROJECT_UPDATE is enforced by `requireProjectPermission`
 		// above. Governance fields need the stricter PROJECT_GOVERNANCE_MANAGE.
@@ -266,8 +271,17 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				projectManagementAdditionalContext: true,
 				adoStatePollActive: true,
 				pmStatusSyncEnabled: true,
+				organizationId: true,
 			},
 		});
+		// Every tenant use below (the update's tenant filter, the activity and
+		// audit rows, the code-analysis AI token and its workflow) runs in the
+		// organization that owns the project `requireProjectPermission`
+		// authorized. `input.organizationId` is the caller's own string; the AI
+		// token is exchanged for the named organization's provider key, so it
+		// must never pick the tenant. A missing project is NOT_FOUND and one with
+		// no organization is refused, both before any write.
+		const organizationId = requireProjectOrganization(existingProject);
 		const previousRepoUrl = existingProject?.repositoryUrl ?? null;
 		const storedServerId =
 			existingProject?.projectManagementMcpServerId ?? null;
@@ -660,8 +674,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			projectManagementContainerId: input.projectManagementContainerId,
 			projectManagementContainerName:
 				input.projectManagementContainerName,
-			projectManagementAdditionalContext:
-				input.projectManagementAdditionalContext,
+			// Bound per write attempt below (`saveWithGitLabPmBinding`).
+			projectManagementAdditionalContext: undefined,
 			prdSourceTitle: input.prdSourceTitle,
 			prdSourceUrl: input.prdSourceUrl,
 			repositoryUrl: input.repositoryUrl,
@@ -823,7 +837,6 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			visionCycle: input.visionCycle,
 		};
 
-		let project: Awaited<ReturnType<typeof updateProject>>;
 		const governanceActivity =
 			Object.keys(governanceChanged).length > 0
 				? {
@@ -835,54 +848,101 @@ export const updateProjectProcedure = tenantProtectedProcedure
 						changed: governanceChanged,
 					}
 				: null;
-		if (startsStatusSyncSession) {
-			// D1.5 — status sync went from off to on. One transaction saves
-			// the switch and the new session (in `updateData`) and clears
-			// every story's sync base, so the session's first poll treats each
-			// linked item as a first observation. The org-filtered project
-			// update runs FIRST: for a project outside the caller's tenant it
-			// fails (record not found) and the story reset rolls back with it.
-			const [updated] = await db.$transaction([
-				buildUpdateProjectOperation(
-					input.id,
-					updateData,
-					organizationId,
-				),
-				db.userStory.updateMany({
-					where: { projectId: input.id },
-					data: {
-						pmStatusSyncBaseId: null,
-						pmStatusSyncBaseAt: null,
-						pmStatusSyncBaseLink: null,
-						pmStatusSyncBaseFabricId: null,
-					},
-				}),
-				...(governanceActivity
-					? [buildGovernanceActivityCreate(governanceActivity)]
-					: []),
-			]);
-			project = updated;
-		} else if (governanceActivity) {
-			// Governance change: the update and its audit row commit together.
-			// Tenant isolation mirrors `updateProject` (XOR org filter).
-			const orgFilter = organizationId
-				? { organizationId }
-				: { organizationId: null };
-			[project] = await db.$transaction([
-				db.project.update({
-					where: { id: input.id, ...orgFilter },
-					data: updateData,
-				}),
-				buildGovernanceActivityCreate(governanceActivity),
-			]);
-		} else {
-			project = await updateProject(
+		// The GitLab container's instance is the server's to record, never
+		// the client's, and is bound from the row as it is when the write
+		// applies: a write that changes any PM field only lands while the row
+		// still has the selection it was bound from (`saveWithGitLabPmBinding`).
+		const writeProject = async (
+			data: typeof updateData,
+			expected: PmSelectionSnapshot | undefined,
+		): Promise<Awaited<ReturnType<typeof updateProject>>> => {
+			if (startsStatusSyncSession) {
+				// D1.5 — status sync went from off to on. One transaction saves
+				// the switch and the new session (in `updateData`) and clears
+				// every story's sync base, so the session's first poll treats each
+				// linked item as a first observation. The org-filtered project
+				// update runs FIRST: for a project outside the caller's tenant it
+				// fails (record not found) and the story reset rolls back with it.
+				const [updated] = await db.$transaction([
+					buildUpdateProjectOperation(
+						input.id,
+						data,
+						organizationId,
+						expected,
+					),
+					db.userStory.updateMany({
+						where: { projectId: input.id },
+						data: {
+							pmStatusSyncBaseId: null,
+							pmStatusSyncBaseAt: null,
+							pmStatusSyncBaseLink: null,
+							pmStatusSyncBaseFabricId: null,
+						},
+					}),
+					...(governanceActivity
+						? [buildGovernanceActivityCreate(governanceActivity)]
+						: []),
+				]);
+				return updated;
+			}
+			if (governanceActivity) {
+				// Governance change: the update and its audit row commit together.
+				// Tenant isolation mirrors `updateProject` (XOR org filter).
+				const orgFilter = organizationId
+					? { organizationId }
+					: { organizationId: null };
+				const [updated] = await db.$transaction([
+					db.project.update({
+						where: {
+							id: input.id,
+							...orgFilter,
+							...(expected
+								? pmSelectionUnchangedWhere(expected)
+								: {}),
+						},
+						data,
+					}),
+					buildGovernanceActivityCreate(governanceActivity),
+				]);
+				return updated;
+			}
+			return updateProject(
 				input.id,
 				user.id,
-				updateData,
+				data,
 				organizationId,
+				expected,
 			);
-		}
+		};
+		const project = await saveWithGitLabPmBinding({
+			// The project's own organization: the tenant
+			// `requireProjectPermission` authorized this caller in. The
+			// input-resolved organization can name another one, and the
+			// binding reads (and can classify) the caller's GitLab connection
+			// there.
+			actor: {
+				userId: user.id,
+				organizationId: existingProject?.organizationId ?? null,
+			},
+			stored: existingProject ? pmSelectionOf(existingProject) : null,
+			next: {
+				serverId: input.projectManagementMcpServerId,
+				configId: input.projectManagementMcpConfigId,
+				containerId: input.projectManagementContainerId,
+				additionalContext: input.projectManagementAdditionalContext,
+			},
+			reread: () => readProjectPmSelection(input.id),
+			write: (pmAdditionalContext, expected) =>
+				writeProject(
+					{
+						...updateData,
+						projectManagementAdditionalContext:
+							pmAdditionalContext as typeof updateData.projectManagementAdditionalContext,
+					},
+					// A row that was not there has no selection to require.
+					expected ?? undefined,
+				),
+		});
 
 		// Seed terminal statuses on first PM connect (best-effort, non-blocking).
 		// A PM connection is identified by EITHER the pinned config id OR the

@@ -70,6 +70,10 @@ vi.mock("../proposal-pull-request", () => ({
 	startAdmittedProposalPullRequest: vi.fn(),
 	readProposalPullRequest: vi.fn(),
 }));
+// The direct commit's workflow start reaches the Temporal client the same way.
+vi.mock("../direct-commit-workflow", () => ({
+	startDirectCommitWorkflow: vi.fn(),
+}));
 
 import { submitInstructionChange } from "../submit-change";
 

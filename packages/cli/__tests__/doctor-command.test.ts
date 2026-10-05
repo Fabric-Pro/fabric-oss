@@ -52,6 +52,8 @@ import {
 import { lockPath, writeLock } from "../src/lib/instructions/lock.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import { nextLock } from "../src/lib/instructions/plan.js";
+import { commandPath } from "./helpers/command-path.js";
+import { useEmptyMachine } from "./helpers/empty-machine.js";
 import { fakeGit } from "./helpers/git-fake.js";
 
 /**
@@ -77,6 +79,7 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
 	getConfigPath: () => path.join(tmpdir(), "fabricai", "config.json"),
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -344,7 +347,10 @@ async function writeHookFile(
 
 const CLAUDE_HOOK = ".claude/settings.local.json";
 const CODEX_HOOK = ".codex/hooks.json";
-const CANONICAL_CHECK = "fabric instructions check --project project-1 --hook";
+const CANONICAL_CHECK =
+	"fabric instructions check --project project-1 --base-url https://fabric.pro --hook";
+/** The form written before a hook named a deployment. */
+const UNBOUND_CHECK = "fabric instructions check --project project-1 --hook";
 const COULD_NOT_RUN_FIX =
 	"rerun doctor; if this check keeps failing, report the failure class shown above";
 const LOCK_REFUSED =
@@ -354,15 +360,20 @@ const READ_REFUSED =
 
 /**
  * A PATH directory holding exactly `names`, each an executable that would
- * leave a marker file behind if anything ever ran it.
+ * leave a marker file behind if anything ever ran it. On Windows a command is
+ * found through PATHEXT, not an execute bit, so each is a `.cmd` file there.
  */
 async function binDirWith(names: string[]): Promise<string> {
 	const dir = await makeTree();
+	const windows = process.platform === "win32";
 	for (const name of names) {
-		const target = path.join(dir, name);
+		const target = path.join(dir, windows ? `${name}.cmd` : name);
+		const marker = path.join(dir, `${name}.ran`);
 		await writeFile(
 			target,
-			`#!/bin/sh\ntouch "${path.join(dir, `${name}.ran`)}"\n`,
+			windows
+				? `@echo off\r\ntype nul > "${marker}"\r\n`
+				: `#!/bin/sh\ntouch "${marker}"\n`,
 			"utf8",
 		);
 		await chmod(target, 0o755);
@@ -415,6 +426,7 @@ let originalPath: string | undefined;
 let binDir: string;
 
 beforeEach(async () => {
+	useEmptyMachine();
 	mocks.whoami.mockReset();
 	mocks.whoami.mockResolvedValue(ORG_KEY);
 	mocks.getPublished.mockReset();
@@ -465,6 +477,7 @@ describe("auth", () => {
 			"access",
 			"published",
 			"lock",
+			"checkout",
 			"drift",
 			"hook",
 			"environment",
@@ -782,7 +795,7 @@ describe("published, lock and drift", () => {
 		expect(lock.status).toBe("fail");
 		expect(lock.detail).toBe(`no lock: ${dest} has not been synced`);
 		expect(lock.fix?.command).toBe(
-			`fabric instructions sync --project project-1 --org example-org --dest ${dest}`,
+			`fabric instructions sync --project project-1 --org example-org --dest ${commandPath(dest)}`,
 		);
 		expect(checkOf(report, "drift").status).toBe("skip");
 	});
@@ -797,8 +810,15 @@ describe("published, lock and drift", () => {
 
 		const { report } = await doctorJson(dest);
 
+		// POSIX single quotes with the apostrophe closed and escaped. On
+		// Windows that form is a parse error in PowerShell and literal quotes
+		// in cmd.exe, so the word is double-quoted with forward slashes.
+		const quoted =
+			process.platform === "win32"
+				? `"${parent.replace(/\\/g, "/")}/it's here"`
+				: `'${parent}/it'\\''s here'`;
 		expect(checkOf(report, "lock").fix?.command).toBe(
-			`fabric instructions sync --project project-1 --dest '${parent}/it'\\''s here'`,
+			`fabric instructions sync --project project-1 --dest ${quoted}`,
 		);
 	});
 
@@ -918,7 +938,7 @@ describe("published, lock and drift", () => {
 				detail: LOCK_REFUSED,
 			});
 			expect(lock.fix?.command).toBe(
-				`fabric instructions sync --project project-1 --dest ${dest}`,
+				`fabric instructions sync --project project-1 --dest ${commandPath(dest)}`,
 			);
 			// Never "remove it": that path names the file outside.
 			expect(lock.fix?.description).toContain(
@@ -1003,13 +1023,13 @@ describe("published, lock and drift", () => {
 			{ name: "rules/two.md", status: "fail", detail: "missing" },
 		]);
 		expect(drift.fix?.command).toBe(
-			`fabric instructions sync --project project-1 --dest ${dest}`,
+			`fabric instructions sync --project project-1 --dest ${commandPath(dest)}`,
 		);
 		expect(drift.fix?.description).toContain(
-			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+			`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair`,
 		);
 		expect(drift.fix?.description).toContain(
-			`fabric instructions push --project project-1 --dest ${dest}`,
+			`fabric instructions push --project project-1 --dest ${commandPath(dest)}`,
 		);
 	});
 
@@ -1053,10 +1073,10 @@ describe("published, lock and drift", () => {
 			{ name: "rules/one.md", status: "warn", detail: "edited" },
 		]);
 		expect(drift.fix?.command).toBe(
-			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+			`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair`,
 		);
 		expect(drift.fix?.description).toContain(
-			`fabric instructions push --project project-1 --dest ${dest}`,
+			`fabric instructions push --project project-1 --dest ${commandPath(dest)}`,
 		);
 	});
 });
@@ -1100,7 +1120,7 @@ describe("hook", () => {
 	it("passes a canonical applying Codex hook for the --org doctor was given", async () => {
 		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
 		await writeHookFile(dest, CODEX_HOOK, [
-			"fabric instructions sync --project project-1 --org example-org --hook",
+			"fabric instructions sync --project project-1 --base-url https://fabric.pro --org example-org --hook",
 		]);
 
 		const { report } = await doctorJson(dest, ["--org", "example-org"]);
@@ -1129,8 +1149,39 @@ describe("hook", () => {
 			detail: "differs from the canonical command (different context or older syntax)",
 		});
 		expect(hook.fix?.command).toBe(
-			`fabric instructions init --project project-1 --tool claude-code --org example-org --dest ${dest}`,
+			`fabric instructions init --project project-1 --tool claude-code --org example-org --dest ${commandPath(dest)}`,
 		);
+	});
+
+	it("warns on a hook written before hooks named a deployment, and says so", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeHookFile(dest, CLAUDE_HOOK, [UNBOUND_CHECK]);
+
+		const { report } = await doctorJson(dest);
+
+		const hook = checkOf(report, "hook");
+		expect(hook.status).toBe("warn");
+		expect(hook.items?.[0]).toEqual({
+			name: "claude-code (.claude/settings.local.json)",
+			status: "warn",
+			detail: "unbound to a deployment: it names no --base-url, so it follows whichever deployment this machine is signed in to",
+		});
+		expect(hook.fix?.command).toMatch(
+			/^fabric instructions init --project project-1 --tool claude-code /,
+		);
+	});
+
+	it("passes a hook bound to the deployment doctor ran against", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeHookFile(dest, CLAUDE_HOOK, [CANONICAL_CHECK]);
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "hook").items?.[0]).toEqual({
+			name: "claude-code (.claude/settings.local.json)",
+			status: "pass",
+			detail: "canonical hook; reports changes at session start",
+		});
 	});
 
 	it("fails with no hook and proposes the real init invocation", async () => {
@@ -1146,7 +1197,7 @@ describe("hook", () => {
 		expect(hook.status).toBe("fail");
 		expect(hook.detail).toBe("no hook configured for this project");
 		expect(hook.fix?.command).toBe(
-			`fabric instructions init --project project-1 --tool claude-code --dest ${dest}`,
+			`fabric instructions init --project project-1 --tool claude-code --dest ${commandPath(dest)}`,
 		);
 		expect(hook.fix?.description).toContain("--tool codex");
 	});
@@ -1223,6 +1274,92 @@ describe("hook", () => {
 			name: "fabric on PATH",
 			status: "warn",
 			detail: "not found; install it with npm install -g @fabricorg/cli",
+		});
+	});
+
+	describe("a hook that runs the CLI's own copy", () => {
+		/** The copy of the served build `init` keeps; what matters here is that it is there or not. */
+		async function copyIn(dir: string): Promise<string> {
+			const folder = path.join(dir, "cli", "https-fabric.pro");
+			await mkdir(folder, { recursive: true });
+			const file = path.join(folder, "fabric.mjs");
+			await writeFile(file, "// the served build\n", "utf8");
+			return file.replace(/\\/g, "/");
+		}
+
+		const ARGUMENTS =
+			"instructions check --project project-1 --base-url https://fabric.pro --hook";
+
+		it("passes with no fabric on PATH, which it does not need", async () => {
+			const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+			const copy = await copyIn(await makeTree());
+			await writeHookFile(dest, CLAUDE_HOOK, [
+				`node "${copy}" ${ARGUMENTS}`,
+			]);
+			process.env.PATH = await binDirWith([]);
+
+			const { report } = await doctorJson(dest);
+
+			const hook = checkOf(report, "hook");
+			expect(hook.status).toBe("pass");
+			expect(hook.items).toEqual([
+				{
+					name: "claude-code (.claude/settings.local.json)",
+					status: "pass",
+					detail: "canonical hook; reports changes at session start",
+				},
+				{
+					name: "codex (.codex/hooks.json)",
+					status: "skip",
+					detail: "not configured",
+				},
+			]);
+		});
+
+		it("warns, without naming the path, when the copy it runs is gone, and proposes init", async () => {
+			const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+			const gone = `${(await makeTree()).replace(/\\/g, "/")}/cli/https-fabric.pro/fabric.mjs`;
+			await writeHookFile(dest, CLAUDE_HOOK, [
+				`node ${gone} ${ARGUMENTS}`,
+			]);
+
+			const { report } = await doctorJson(dest);
+
+			const hook = checkOf(report, "hook");
+			expect(hook.status).toBe("warn");
+			expect(hook.items).toContainEqual({
+				name: "claude-code hook's CLI copy",
+				status: "warn",
+				detail: "not found; run init again to put it back",
+			});
+			expect(hook.fix?.command).toMatch(
+				/ instructions init --project project-1 --tool claude-code/,
+			);
+			expect(JSON.stringify(report)).not.toContain(gone);
+		});
+
+		it("still takes a hook that runs `fabric` as canonical, in the same report", async () => {
+			const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+			const copy = await copyIn(await makeTree());
+			await writeHookFile(dest, CLAUDE_HOOK, [
+				`node "${copy}" ${ARGUMENTS}`,
+			]);
+			await writeHookFile(dest, CODEX_HOOK, [CANONICAL_CHECK]);
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkOf(report, "hook").items?.slice(0, 2)).toEqual([
+				{
+					name: "claude-code (.claude/settings.local.json)",
+					status: "pass",
+					detail: "canonical hook; reports changes at session start",
+				},
+				{
+					name: "codex (.codex/hooks.json)",
+					status: "pass",
+					detail: "canonical hook; reports changes at session start",
+				},
+			]);
 		});
 	});
 
@@ -1308,6 +1445,11 @@ describe("a repository-backed project", () => {
 			status: "pass",
 			detail: "history contains the published commit aaaaaaa (ancestry, not a file comparison)",
 		});
+		expect(checkOf(report, "checkout")).toMatchObject({
+			status: "pass",
+			evidence: "machine",
+			detail: "this checkout is at 1111111 on main, ahead of the published commit aaaaaaa: its history contains it",
+		});
 		expect(checkOf(report, "hook").status).toBe("pass");
 		expect(checkOf(report, "environment")).toMatchObject({
 			status: "pass",
@@ -1342,9 +1484,239 @@ describe("a repository-backed project", () => {
 
 		expect(checkOf(report, "drift")).toMatchObject({
 			status: "warn",
-			detail: "coding instructions v7 (aaaaaaa) is published on main of git.example.com/example-org/rules; this checkout is behind — run: git pull --ff-only origin main",
+			detail: "coding instructions v7 (aaaaaaa) is on main; this checkout is behind — run: git pull --ff-only origin main",
+		});
+		// The twin's verdict agrees with the drift line: ancestry said no.
+		expect(checkOf(report, "checkout")).toMatchObject({
+			status: "warn",
+			detail: "this checkout is at 1111111, not the published commit aaaaaaa of main: its history does not contain it",
+		});
+		expect(checkOf(report, "checkout").fix?.description).not.toContain(
+			"the session hook",
+		);
+	});
+
+	describe("the checkout check", () => {
+		const TIP = "c".repeat(40);
+
+		function checkoutCheck(report: InstructionChecksReport) {
+			return checkOf(report, "checkout");
+		}
+
+		it("passes when HEAD is the published commit and the tree is clean", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.head = PUBLISHED_SHA;
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report)).toMatchObject({
+				evidence: "machine",
+				status: "pass",
+				detail: "this checkout is at the published commit aaaaaaa of main",
+			});
+		});
+
+		it("warns when HEAD is the published commit but the tree has changes", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.head = PUBLISHED_SHA;
+			fakeGit.state.clean = false;
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report).status).toBe("warn");
+			expect(checkoutCheck(report).detail).toContain(
+				"has uncommitted changes",
+			);
+			expect(checkoutCheck(report).fix?.description).toContain(
+				"commit or stash",
+			);
+		});
+
+		it("warns that the checkout is behind or diverged, and says where the ancestry answer comes from without a command someone who ran only the npx line cannot run", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report).status).toBe("warn");
+			expect(checkoutCheck(report).detail).toContain(
+				"it is behind it or has diverged from it",
+			);
+			expect(checkoutCheck(report).fix?.description).toContain(
+				"the session hook settles which at each session start (to check now, run the setup line from the project's Connect dialog again)",
+			);
+			expect(checkoutCheck(report).fix?.description).not.toContain(
+				"fabric instructions check",
+			);
+		});
+
+		it("skips on another branch, where the published commit cannot be compared", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.branch = "feature/x";
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report).status).toBe("skip");
+			expect(checkoutCheck(report).detail).toContain(
+				"feature/x, not main",
+			);
+		});
+
+		it("says Fabric's copy lags, and why, when HEAD is the tip its last sync saw", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.head = TIP;
+			mocks.getPublished.mockResolvedValue(
+				publishedFor([], {
+					repository: true,
+					source: repositorySource,
+					repositoryConfig: {
+						...repositoryConfig,
+						sync: {
+							automatic: true,
+							pausedReason: null,
+							lastRun: {
+								trigger: "WEBHOOK",
+								status: "FAILED",
+								error: "TREE_REFUSED",
+								commitSha: TIP,
+								finishedAt: "2026-10-02T10:00:00.000Z",
+							},
+						},
+					},
+				}),
+			);
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report).status).toBe("warn");
+			expect(checkoutCheck(report).detail).toContain(
+				"a commit was refused by the secret scan",
+			);
+		});
+
+		it("never prints the remote URL or anything in it", async () => {
+			const dest = await makeTree();
+			// `user@host` joined at runtime: the publication scan reads a
+			// literal one as an email address.
+			inCheckout(
+				dest,
+				[
+					`https://dev:${SENTINEL}`,
+					"git.example.com/example-org/rules.git",
+				].join("@"),
+			);
+			servedRepository();
+
+			const text = await runCli([
+				"doctor",
+				"--project",
+				"project-1",
+				"--dest",
+				dest,
+			]);
+			const { stdout } = await doctorJson(dest);
+
+			for (const output of [stdout, text.stdout, text.stderr]) {
+				expect(output).not.toContain(SENTINEL);
+				expect(output).not.toContain(
+					"git.example.com/example-org/rules.git",
+				);
+			}
+		});
+
+		it("skips for an uploaded project", async () => {
+			const dest = await makeTree();
+			mocks.getPublished.mockResolvedValue(
+				publishedFor([], { repository: false }),
+			);
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report)).toMatchObject({
+				status: "skip",
+				detail: "the project's instructions are uploaded, so there is no repository checkout to compare",
+			});
+		});
+
+		it("skips outside a git checkout", async () => {
+			const dest = await makeTree();
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report)).toMatchObject({
+				status: "skip",
+				detail: "this directory is not a git checkout, so there is no HEAD to compare",
+			});
+		});
+
+		it("skips in some other repository's checkout", async () => {
+			const dest = await makeTree();
+			inCheckout(dest, "https://git.example.com/example-org/other.git");
+			servedRepository();
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report).status).toBe("skip");
+			expect(checkoutCheck(report).detail).toContain(
+				"no remote of this checkout",
+			);
+		});
+
+		it("skips when the published version was uploaded rather than synced from the repository", async () => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			mocks.getPublished.mockResolvedValue(
+				publishedFor([], {
+					repository: true,
+					source: { kind: "UPLOAD" },
+					repositoryConfig,
+				}),
+			);
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkoutCheck(report)).toMatchObject({
+				status: "skip",
+				detail: "the published version was uploaded, not synced from the repository, so there is no commit to compare",
+			});
 		});
 	});
+
+	it.each([
+		[
+			"sync",
+			"canonical hook; fast-forwards the checkout at session start when safe",
+		],
+		["check", "canonical hook; reports changes at session start"],
+	])(
+		"accepts the %s hook in a checkout of the repository, and says what it does",
+		async (verb, detail) => {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+			servedRepository();
+			await writeHookFile(dest, CLAUDE_HOOK, [
+				`fabric instructions ${verb} --project project-1 --base-url https://fabric.pro --hook`,
+			]);
+
+			const { report } = await doctorJson(dest);
+
+			expect(checkOf(report, "hook").items?.[0]).toEqual({
+				name: "claude-code (.claude/settings.local.json)",
+				status: "pass",
+				detail,
+			});
+		},
+	);
 
 	it("proposes init for a missing hook in a checkout of the repository", async () => {
 		const dest = await makeTree();
@@ -1357,7 +1729,7 @@ describe("a repository-backed project", () => {
 		const hook = checkOf(report, "hook");
 		expect(hook.status).toBe("fail");
 		expect(hook.fix?.command).toBe(
-			`fabric instructions init --project project-1 --tool claude-code --dest ${dest}`,
+			`fabric instructions init --project project-1 --tool claude-code --dest ${commandPath(dest)}`,
 		);
 		expect(hook.fix?.description).toContain("copies nothing");
 	});
@@ -1396,7 +1768,7 @@ describe("a repository-backed project", () => {
 
 		expect(checkOf(report, "drift")).toMatchObject({
 			status: "skip",
-			detail: "coding instructions: no remote of this checkout fetches from git.example.com/example-org/rules (foreign checkout); nothing was checked or changed",
+			detail: "coding instructions: no remote of this checkout fetches from git.example.com/example-org/rules; nothing was checked.",
 		});
 		const hook = checkOf(report, "hook");
 		expect(hook.status).toBe("fail");
@@ -1411,6 +1783,50 @@ describe("a repository-backed project", () => {
 		expect(stdout).not.toContain("instructions init");
 	});
 
+	it("in some other repository's checkout: skips the lock instead of proposing a sync into it", async () => {
+		const dest = await makeTree();
+		inCheckout(dest, "https://git.example.com/example-org/other.git");
+		servedRepository([manifestEntry("AGENTS.md", "# a\n")]);
+
+		const { stdout, report } = await doctorJson(dest);
+
+		const lock = checkOf(report, "lock");
+		expect(lock).toMatchObject({
+			status: "skip",
+			detail: "not used here: this folder is not a checkout of the project's repository",
+		});
+		expect(lock.fix).toBeUndefined();
+		expect(stdout).not.toContain("instructions sync");
+	});
+
+	it("in some other repository's checkout that was synced by hand: still checks that lock", async () => {
+		const dest = await makeTree();
+		await writeTreeFiles(dest, { "AGENTS.md": "# a\n" });
+		const manifest = [manifestEntry("AGENTS.md", "# a\n")];
+		const published = publishedFor(manifest, {
+			repository: true,
+			source: repositorySource,
+			repositoryConfig,
+		});
+		await writeLock(
+			dest,
+			nextLock({
+				projectId: "project-1",
+				snapshot: published.snapshot,
+				manifest,
+			}),
+		);
+		mocks.getPublished.mockResolvedValue(published);
+		inCheckout(dest, "https://git.example.com/example-org/other.git");
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "lock")).toMatchObject({
+			status: "pass",
+			detail: "lock is at the published version 7",
+		});
+	});
+
 	it("reports an unreadable checkout as unknown rather than failing a check", async () => {
 		const dest = await makeTree();
 		fakeGit.state.toplevel = dest;
@@ -1420,7 +1836,7 @@ describe("a repository-backed project", () => {
 		const { report } = await doctorJson(dest);
 
 		const unknown =
-			"coding instructions: this git checkout could not be read (git timed out; unknown checkout); nothing was checked or changed";
+			"coding instructions: this git checkout could not be read (git timed out); nothing was checked.";
 		expect(checkOf(report, "drift")).toMatchObject({
 			status: "skip",
 			detail: unknown,
@@ -1776,7 +2192,8 @@ describe("environment", () => {
 describe("tools", () => {
 	it("finds declared tools by PATH lookup alone and never runs them", async () => {
 		const bin = await binDirWith(["fabric", "doctor-tool-present"]);
-		// A regular file with no execute bit is not a tool a shell would run.
+		// A regular file with no execute bit is not a tool a shell would run;
+		// on Windows, neither is one with no PATHEXT extension.
 		await writeFile(path.join(bin, "doctor-tool-noexec"), "x", "utf8");
 		await chmod(path.join(bin, "doctor-tool-noexec"), 0o644);
 		process.env.PATH = `relative/dir${path.delimiter}${bin}`;
@@ -1862,6 +2279,112 @@ async function writeMcpConfig(root: string, body: unknown): Promise<void> {
 		"utf8",
 	);
 }
+
+describe("mcp-servers: an Authorization header the sign-in replaces", () => {
+	const GATEWAY = "https://fabric.pro/api/mcp-gateway";
+	const STALE =
+		"carries an Authorization header; sign-in replaces it — remove the header";
+
+	it("warns, naming the server and not the header's value", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeMcpConfig(dest, {
+			mcpServers: {
+				fabric: {
+					type: "http",
+					url: GATEWAY,
+					headers: { Authorization: `Bearer ${SENTINEL}` },
+				},
+			},
+		});
+
+		const text = await runCli([
+			"doctor",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+		const { stdout, report } = await doctorJson(dest);
+
+		const mcp = checkOf(report, "mcp-servers");
+		expect(mcp.status).toBe("warn");
+		expect(mcp.items).toEqual([
+			{ name: "fabric", status: "warn", detail: STALE },
+		]);
+		expect(mcp.fix?.description).toBe(
+			"remove the Authorization header from fabric in .mcp.json; the deployment's sign-in replaces it",
+		);
+		for (const output of [stdout, text.stdout, text.stderr]) {
+			expect(output).not.toContain(SENTINEL);
+		}
+	});
+
+	it("reads the header's name in any case", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeMcpConfig(dest, {
+			mcpServers: {
+				fabric: {
+					url: GATEWAY,
+					headers: { authorization: `Bearer ${SENTINEL}` },
+				},
+			},
+		});
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "mcp-servers").items?.[0]?.status).toBe("warn");
+	});
+
+	it("is quiet about the same server with no header", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeMcpConfig(dest, {
+			mcpServers: { fabric: { url: GATEWAY } },
+		});
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "mcp-servers").items?.[0]).toEqual({
+			name: "fabric",
+			status: "skip",
+			detail: "network probe disabled (rerun with --probe-network)",
+		});
+	});
+
+	it("is quiet about another service's header", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeMcpConfig(dest, {
+			mcpServers: {
+				other: {
+					url: "https://other.example/mcp",
+					headers: { Authorization: `Bearer ${SENTINEL}` },
+				},
+			},
+		});
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "mcp-servers").items?.[0]?.status).toBe("skip");
+	});
+
+	it("compares against the deployment doctor was told to use", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+		await writeMcpConfig(dest, {
+			mcpServers: {
+				fabric: {
+					url: "https://staging.example/api/mcp-gateway",
+					headers: { Authorization: `Bearer ${SENTINEL}` },
+				},
+			},
+		});
+
+		const { report } = await doctorJson(dest, [
+			"--base-url",
+			"https://staging.example",
+		]);
+
+		expect(checkOf(report, "mcp-servers").items?.[0]?.status).toBe("warn");
+	});
+});
 
 describe("mcp-servers", () => {
 	it("skips when there is no .mcp.json", async () => {
@@ -2054,6 +2577,95 @@ describe("mcp-servers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The deployment a fix is for
+// ---------------------------------------------------------------------------
+describe("fix commands and the deployment", () => {
+	const OTHER = "https://deploy.example.com";
+
+	it("carries --base-url on the login fix when the deployment is not the default", async () => {
+		const dest = await makeTree();
+		mocks.getApiKey.mockReturnValue(undefined);
+
+		const { report } = await doctorJson(dest, ["--base-url", OTHER]);
+
+		expect(checkOf(report, "auth").fix?.command).toBe(
+			`fabric auth login --base-url ${OTHER}`,
+		);
+	});
+
+	it("carries --base-url right after --project on the sync fix", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockResolvedValue(
+			publishedFor([manifestEntry("AGENTS.md", "# a\n")]),
+		);
+
+		const { report } = await doctorJson(dest, ["--base-url", OTHER]);
+
+		expect(checkOf(report, "lock").fix?.command).toContain(
+			`fabric instructions sync --project project-1 --base-url ${OTHER} `,
+		);
+	});
+
+	it("carries --base-url, then --remote, on the init fix", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+
+		const { report } = await doctorJson(dest, [
+			"--base-url",
+			OTHER,
+			"--remote",
+			"upstream",
+		]);
+
+		const command = checkOf(report, "hook").fix?.command ?? "";
+		expect(command).toContain(
+			`fabric instructions init --project project-1 --tool claude-code --base-url ${OTHER} `,
+		);
+		expect(command.endsWith(" --remote upstream")).toBe(true);
+	});
+
+	it("names the deployment as its origin, whatever path the address had", async () => {
+		const dest = await makeTree();
+		mocks.getApiKey.mockReturnValue(undefined);
+
+		const { report } = await doctorJson(dest, [
+			"--base-url",
+			`${OTHER}/app/?x=1`,
+		]);
+
+		expect(checkOf(report, "auth").fix?.command).toBe(
+			`fabric auth login --base-url ${OTHER}`,
+		);
+	});
+
+	it("leaves --base-url out for the default deployment", async () => {
+		const dest = await makeTree();
+		mocks.getApiKey.mockReturnValue(undefined);
+		mocks.getPublished.mockResolvedValue(
+			publishedFor([manifestEntry("AGENTS.md", "# a\n")]),
+		);
+
+		const { report } = await doctorJson(dest, [
+			"--base-url",
+			"https://fabric.pro",
+		]);
+
+		expect(checkOf(report, "auth").fix?.command).toBe("fabric auth login");
+		const lock = await doctorJson(dest);
+		expect(JSON.stringify(lock.report)).not.toContain("--base-url");
+	});
+
+	it("leaves --base-url out when nothing names a deployment", async () => {
+		const { dest } = await syncedTree({ "AGENTS.md": "# a\n" });
+
+		const { report } = await doctorJson(dest);
+
+		expect(checkOf(report, "hook").fix?.command).not.toContain(
+			"--base-url",
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // The report as a whole
 // ---------------------------------------------------------------------------
 describe("the report", () => {
@@ -2089,7 +2701,11 @@ describe("the report", () => {
 			expect(["server", "machine"]).toContain(check.evidence);
 			expect(typeof check.detail).toBe("string");
 		}
-		expect(report.summary).toEqual({ pass: 8, fail: 0, warn: 0, skip: 1 });
+		expect(checkOf(report, "checkout")).toMatchObject({
+			status: "skip",
+			detail: "the project's instructions are uploaded, so there is no repository checkout to compare",
+		});
+		expect(report.summary).toEqual({ pass: 8, fail: 0, warn: 0, skip: 2 });
 		expect(report.ok).toBe(true);
 		expect(stdout).not.toContain(SENTINEL);
 	});
@@ -2137,7 +2753,10 @@ describe("the report", () => {
 			"    fix: set DOCTOR_TEST_PRESENT in your shell environment (values are never read by this tool)",
 		);
 		expect(stdout).toContain("- MCP servers");
-		expect(stdout).toContain("7 passed, 1 failed, 0 warnings, 1 skipped");
+		expect(stdout).toContain(
+			"- Checkout                the project's instructions are uploaded, so there is no repository checkout to compare",
+		);
+		expect(stdout).toContain("7 passed, 1 failed, 0 warnings, 2 skipped");
 		expect(stdout).toContain(
 			"Fixes are proposals: doctor installed nothing, changed no credentials and wrote no files.",
 		);

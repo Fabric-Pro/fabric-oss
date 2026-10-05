@@ -116,11 +116,18 @@
 			"ignoreDependencies": [
 				"sharp",
 				"@repo/code-validation",
-				"content-collections"
+				"content-collections",
+				"@fabricorg/cli"
 			]
 		},
 		"packages/api": {
 			"entry": ["scripts/*.ts"]
+		},
+		"packages/cli": {
+			"entry": [
+				"__tests__/helpers/config-writer.ts",
+				"__tests__/helpers/runner-driver.ts"
+			]
 		},
 		"packages/database": {
 			"entry": [
@@ -147,6 +154,9 @@
 		},
 		"services/sandbox-worker": {
 			"ignoreDependencies": ["cloudflare"]
+		},
+		"tooling/scripts": {
+			"ignoreDependencies": ["@whatwg-node/node-fetch"]
 		},
 		"tooling/tailwind": {
 			"ignoreDependencies": ["tailwindcss"]

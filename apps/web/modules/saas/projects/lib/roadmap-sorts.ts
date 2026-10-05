@@ -49,10 +49,29 @@ export const SORT_KEY_DEFAULT_DIRECTIONS: Record<
 	recentlyApproved: "desc",
 };
 
+/** The sort a user gets until they pick one: newest work items first. */
 export const DEFAULT_ROADMAP_SORT: RoadmapSort = {
+	key: "created",
+	direction: "desc",
+};
+
+/**
+ * The project's saved manual order. Kept apart from the default because the
+ * two answer different questions: drag-to-reorder writes this order, so it is
+ * only offered while this order is what the list shows, and lanes ordered by
+ * their own dimension keep it within each lane.
+ */
+export const MANUAL_ROADMAP_SORT: RoadmapSort = {
 	key: "roadmapOrder",
 	direction: "asc",
 };
+
+export function isManualRoadmapSort(sort: RoadmapSort): boolean {
+	return (
+		sort.key === MANUAL_ROADMAP_SORT.key &&
+		sort.direction === MANUAL_ROADMAP_SORT.direction
+	);
+}
 
 /**
  * Validate a persisted/loaded sort value (from the DB `roadmapView` JSON column

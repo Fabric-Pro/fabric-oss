@@ -334,6 +334,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 		requireProjectPermission: () => (c: unknown) => c,
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? undefined,
+		// Selects the caller's Microsoft connection with the pre-binding rule;
+		// with no binding in this test it answers as the resolver above.
+		resolveSourceCredentialOrganizationId: (
+			organizationId: string | null | undefined,
+		) => organizationId ?? undefined,
 	};
 });
 

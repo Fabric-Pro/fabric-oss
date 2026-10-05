@@ -41,6 +41,9 @@ scripts/
 **/dist/
 **/.next/
 **/node_modules/
+# Every image generates its own Prisma client; a local copy in the build
+# context would mix stale files into it.
+packages/database/prisma/generated/
 **/.turbo/
 **/coverage/
 

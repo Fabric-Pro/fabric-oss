@@ -1,3 +1,9 @@
+import { ORPCError } from "@orpc/client";
+import { requireAuthorizedRowOrganization } from "@repo/api/modules/weave/lib/plan-organization";
+import {
+	assertProjectPermission,
+	Permissions,
+} from "@repo/api/orpc/procedures";
 import { db } from "@repo/database";
 import type {
 	CodingRunExecutionChannel,
@@ -41,6 +47,17 @@ export interface WeaveCodingRunResponse {
 	pullRequestUrl?: string;
 	summary: string;
 }
+
+/** Every refusal before a run exists reads the same (see the caller). */
+const PLAN_NOT_FOUND = "Weave plan not found or access denied";
+
+/** Weave execution statuses a coding run may still attach to. */
+const ACTIVE_WEAVE_EXECUTION_STATUSES = [
+	"PENDING",
+	"RUNNING",
+	"PAUSED",
+	"CHECKPOINT",
+] as const;
 
 function tenantWhere(userId: string, organizationId: string | null) {
 	return organizationId
@@ -295,11 +312,12 @@ async function startDirectExecutionSession(input: {
 export async function executeWeaveCodingRun(
 	input: WeaveCodingRunRequest,
 ): Promise<WeaveCodingRunResponse> {
+	// Loaded by id and creator only, then authorized below — never filtered on
+	// the request's organization. A plan a project guest created before Fizzy
+	// #2904 is stamped with no organization while its execution runs in the
+	// project's, so an exact filter would refuse that plan's own run.
 	const plan = await db.weavePlan.findFirst({
-		where: {
-			id: input.planId,
-			...tenantWhere(input.userId, input.organizationId),
-		},
+		where: { id: input.planId, userId: input.userId },
 		include: {
 			project: {
 				select: {
@@ -336,24 +354,80 @@ export async function executeWeaveCodingRun(
 	});
 
 	if (!plan) {
-		throw new Error("Weave plan not found or access denied");
+		throw new Error(PLAN_NOT_FOUND);
 	}
 
-	const linkedWeaveExecutionId =
-		input.weaveExecutionId ??
-		(
+	// The service token authenticates the calling service, not the user, and a
+	// queued delegation can run after its creator lost the project. So the
+	// creator is re-authorized on the plan's project here — the permission
+	// `startExecution` checks — and the plan held to that project's
+	// organization exactly as the oRPC weave readers hold it
+	// (`lib/plan-organization.ts`): a request naming another organization, or
+	// a plan stamped with one, is refused; a legacy plan with none is
+	// accepted. Everything below uses the AUTHORIZED organization, never the
+	// request's. All of this happens before any row or workflow exists, and
+	// every refusal reads the same, so a refused caller learns nothing about
+	// whether the plan exists.
+	let organizationId: string;
+	try {
+		const authorized = await assertProjectPermission(
+			plan.projectId,
+			input.userId,
+			Permissions.AGENT_EXECUTE,
+		);
+		organizationId = requireAuthorizedRowOrganization(
+			input.organizationId,
+			plan,
+			authorized,
+		);
+	} catch (error) {
+		if (error instanceof ORPCError) {
+			throw new Error(PLAN_NOT_FOUND);
+		}
+		throw error;
+	}
+
+	// An execution id the caller names is held to the same rules as one this
+	// function would find: this plan's, the creator's, in the authorized
+	// organization (a legacy one with none accepted, as for the plan), and
+	// still active — a delegation arriving after a cancellation must not start
+	// a run. Checked before anything is written, refused like a missing plan,
+	// and never replaced by the lookup below: a wrong id is an error, not a
+	// hint.
+	let linkedWeaveExecutionId: string | undefined;
+	if (input.weaveExecutionId) {
+		const named = await db.weaveExecution.findFirst({
+			where: {
+				id: input.weaveExecutionId,
+				planId: input.planId,
+				userId: input.userId,
+			},
+			select: { id: true, organizationId: true, status: true },
+		});
+		if (
+			!named ||
+			(named.organizationId != null &&
+				named.organizationId !== organizationId) ||
+			!(ACTIVE_WEAVE_EXECUTION_STATUSES as readonly string[]).includes(
+				named.status,
+			)
+		) {
+			throw new Error(PLAN_NOT_FOUND);
+		}
+		linkedWeaveExecutionId = named.id;
+	} else {
+		linkedWeaveExecutionId = (
 			await db.weaveExecution.findFirst({
 				where: {
 					planId: input.planId,
-					...tenantWhere(input.userId, input.organizationId),
-					status: {
-						in: ["PENDING", "RUNNING", "PAUSED", "CHECKPOINT"],
-					},
+					...tenantWhere(input.userId, organizationId),
+					status: { in: [...ACTIVE_WEAVE_EXECUTION_STATUSES] },
 				},
 				orderBy: { createdAt: "desc" },
 				select: { id: true },
 			})
 		)?.id;
+	}
 
 	if (!plan.project.repositoryOwner || !plan.project.repositoryName) {
 		throw new Error(
@@ -361,12 +435,10 @@ export async function executeWeaveCodingRun(
 		);
 	}
 
-	const organization = plan.project.organizationId
-		? await db.organization.findUnique({
-				where: { id: plan.project.organizationId },
-				select: { name: true },
-			})
-		: null;
+	const organization = await db.organization.findUnique({
+		where: { id: organizationId },
+		select: { name: true },
+	});
 
 	const executionPolicy = resolveExecutionPolicy(
 		plan.project,
@@ -432,7 +504,7 @@ export async function executeWeaveCodingRun(
 			where: {
 				storyId: plan.userStory.id,
 				status: { in: [...ACTIVE_CODING_RUN_STATUSES] },
-				...tenantWhere(input.userId, input.organizationId),
+				...tenantWhere(input.userId, organizationId),
 			},
 			orderBy: { createdAt: "desc" },
 		});
@@ -476,7 +548,7 @@ export async function executeWeaveCodingRun(
 			storyId: plan.userStory.id,
 			storyTaskId: plan.storyTask?.id,
 			userId: input.userId,
-			organizationId: input.organizationId ?? undefined,
+			organizationId,
 			weaveExecutionId: linkedWeaveExecutionId,
 			executionChannel: executionPolicy.executionChannel,
 			provider: executionPolicy.provider,
@@ -509,7 +581,7 @@ export async function executeWeaveCodingRun(
 				storyId: plan.userStory.id,
 				storyTaskId: plan.storyTask?.id,
 				userId: input.userId,
-				organizationId: input.organizationId ?? undefined,
+				organizationId,
 				provider: executionPolicy.provider,
 				projectName: plan.project.name,
 				organizationName: organization?.name ?? undefined,

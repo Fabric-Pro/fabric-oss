@@ -7,7 +7,10 @@
  * know, per server, whether the thing it names can be reached — and nothing
  * else. So this keeps the server's key, its `command` or its `url`, and drops
  * every other field on the floor: `env` and `headers` are where credentials
- * live, and a value that is never held cannot be printed by mistake.
+ * live, and a value that is never held cannot be printed by mistake. The one
+ * thing kept about `headers` is whether it has an `Authorization` key — the
+ * key's presence, never its value — because a stale one blocks the sign-in
+ * that would replace it.
  *
  * Every failure reason is content-free. A parse error says "not valid JSON",
  * never the parser's message (which quotes the input), and never the path the
@@ -25,7 +28,16 @@ const MAX_SERVER_NAME_CHARS = 64;
 
 export type McpServerEntry =
 	| { name: string; kind: "command"; command: string }
-	| { name: string; kind: "url"; url: string }
+	| {
+			name: string;
+			kind: "url";
+			url: string;
+			/**
+			 * Whether the entry's `headers` has an `Authorization` key. The
+			 * key's presence only: its value is never read.
+			 */
+			hasAuthorizationHeader: boolean;
+	  }
 	| { name: string; kind: "invalid"; reason: string };
 
 export type McpConfigRead =
@@ -88,7 +100,16 @@ function parseMcpConfig(text: string): McpConfigRead {
 					reason: "url is not a non-empty string",
 				};
 			}
-			return { name, kind: "url", url: entry.url };
+			return {
+				name,
+				kind: "url",
+				url: entry.url,
+				hasAuthorizationHeader:
+					isRecord(entry.headers) &&
+					Object.keys(entry.headers).some(
+						(header) => header.toLowerCase() === "authorization",
+					),
+			};
 		}
 		return {
 			name,

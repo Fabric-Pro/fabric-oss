@@ -78,6 +78,12 @@ export async function fetchBundle(
 	}
 }
 
+function bundleTooLarge(maxBytes: number): Error {
+	return new Error(
+		`The coding-instructions bundle is larger than the ${maxBytes} bytes this snapshot's manifest allows. Nothing was written.`,
+	);
+}
+
 /**
  * Read a response body, refusing it the moment it passes `maxBytes`.
  *
@@ -86,18 +92,20 @@ export async function fetchBundle(
  * readable stream — an older polyfill, a test double built from a string —
  * falls back to `arrayBuffer()` and is length-checked after the fact, which
  * is the best available answer when the body cannot be consumed in pieces.
+ *
+ * `exceeded` makes the failure a caller states in its own words; the default
+ * is the coding-instructions bundle's.
  */
-async function readBounded(
+export async function readBounded(
 	response: Response,
 	maxBytes: number,
+	exceeded: (maxBytes: number) => Error = bundleTooLarge,
 ): Promise<Uint8Array> {
 	const body = response.body;
 	if (!body) {
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		if (bytes.length > maxBytes) {
-			throw new Error(
-				`The coding-instructions bundle is larger than the ${maxBytes} bytes this snapshot's manifest allows. Nothing was written.`,
-			);
+			throw exceeded(maxBytes);
 		}
 		return bytes;
 	}
@@ -116,9 +124,7 @@ async function readBounded(
 			}
 			total += value.length;
 			if (total > maxBytes) {
-				throw new Error(
-					`The coding-instructions bundle is larger than the ${maxBytes} bytes this snapshot's manifest allows. Nothing was written.`,
-				);
+				throw exceeded(maxBytes);
 			}
 			chunks.push(value);
 		}

@@ -74,17 +74,12 @@ When `STAGING_RELEASE_ENABLED=true`, internal feature PRs target protected
 private `staging` and execute checks before private snapshot deployment. The
 trusted private ops pipeline freezes a twice-weekly batch, composes it onto
 canonical master, performs changeset versioning, and validates the pinned
-candidate before public publication. For validated version/changelog/consumed
-changeset differences only, trusted ops may retain the healthy frozen staging
-deployment with its original image and web provenance; dependency fields,
-lockfiles, build inputs and runtime changes require fresh candidate images and
-deployment. Automatic promotion images and web previews defer until trusted
-ops selects the fresh fallback; normal staging builds continue automatically.
-Automated validation binds the final candidate and original deployment
-separately before authorizing promotion.
-Staging can show the original build version during reuse; public release builds
-use the final versioned source. OSS receives one sanitized squash commit
-per approved batch; the private master synchronizes to that exact public result.
+candidate in immutable CI-only mode before public publication. New candidates
+do not require candidate image builds or a shared-staging deployment; CI
+validates the frozen staging source, composed candidate, and exact master SHA.
+Staging builds and deployments continue normally for feature work. OSS receives
+one sanitized squash commit per approved batch; the private master synchronizes
+to that exact public result.
 
 In this mode `release.yml` publishes already-versioned approved content and
 refuses unconsumed changesets. The public scheduled Version-PR cutting path is

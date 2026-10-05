@@ -486,6 +486,9 @@ export async function loadMcpConfiguration(
 				userId,
 				organizationId,
 				redirectUri, // Enable OAuth2 token refresh
+				// Only lists tool names; running one goes through
+				// `executeTaskAgentTool` above, which needs `connect`.
+				access: "read",
 			});
 
 			const serverTools = await client.tools();

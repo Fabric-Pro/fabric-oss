@@ -13,7 +13,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { getAIModelWithMetadata } from "@repo/ai/model-selector";
-import { createUserApiKey, db } from "@repo/database";
+import { createUserApiKey, db, hasOrganizationTie } from "@repo/database";
 import { streamText } from "ai";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -398,6 +398,26 @@ export function createVscodeAuthRoutes() {
 
 		const userId = authedUserId;
 		const organizationId = orgHeader || undefined;
+
+		// The header picks whose AI provider (and provider key) runs this
+		// completion, and the key identifies only a user. Honour a named
+		// organization only when that user has a tie to it — membership or an
+		// accepted project-guest invitation, the rule
+		// `resolveRequestedOrganization` applies to session routes. With no
+		// header there is no session here to supply an active organization, so
+		// that request keeps resolving without one.
+		if (
+			organizationId &&
+			!(await hasOrganizationTie(userId, organizationId))
+		) {
+			return c.json(
+				{
+					error: "Forbidden",
+					message: "You are not a member of this organization",
+				},
+				403,
+			);
+		}
 
 		// Parse request body
 		let body: {

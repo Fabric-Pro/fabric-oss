@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { workflowIntegrationAccessWhere } from "../prisma/queries/workflows/integration-access";
 
 const findFirstMock = vi.fn();
 vi.mock("../prisma/client", () => ({
@@ -59,7 +60,7 @@ describe("DATABRICKS_VECTOR_SEARCH credential mapper", () => {
 describe("fetchCredentialsByIdInTenant", () => {
 	beforeEach(() => findFirstMock.mockReset());
 
-	it("looks up by organization in org context, without a userId filter", async () => {
+	it("looks up an owned or explicitly shared connection in the organization", async () => {
 		findFirstMock.mockResolvedValue({
 			id: "int-1",
 			provider: "DATABRICKS_VECTOR_SEARCH",
@@ -81,7 +82,7 @@ describe("fetchCredentialsByIdInTenant", () => {
 			where: {
 				id: "int-1",
 				isActive: true,
-				organizationId: "org-1",
+				...workflowIntegrationAccessWhere("user-1", "org-1"),
 			},
 		});
 		expect(creds).toMatchObject({
@@ -109,8 +110,7 @@ describe("fetchCredentialsByIdInTenant", () => {
 			where: {
 				id: "int-2",
 				isActive: true,
-				userId: "user-1",
-				organizationId: null,
+				...workflowIntegrationAccessWhere("user-1", null),
 			},
 		});
 		expect(creds).toMatchObject({

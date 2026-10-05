@@ -64,9 +64,10 @@ export type { InstructionSyncTrigger };
  * constant — is treated like MANUAL for both: never skipped for the
  * automatic switches, and never paused on permission revocation, though it
  * still passes the configuration, generation and permission checks every
- * trigger passes. A follow-up is expected to add `PULL_REQUEST_MERGED`
- * WITHOUT joining this set, because a merge-triggered run must not be
- * skipped merely because automatic sync is off.
+ * trigger passes. `PULL_REQUEST_MERGED` and `COMMIT_PUSHED` (a direct
+ * commit's confirming run, Fizzy #2878) deliberately do NOT join this set,
+ * because a run they trigger must not be skipped merely because automatic
+ * sync is off; `begin` still honours a pause for both.
  */
 export const AUTOMATIC_INSTRUCTION_SYNC_TRIGGERS = [
 	"POLL",

@@ -538,8 +538,9 @@ type WrapMiddleware = Parameters<typeof wrapLanguageModel>[0]["middleware"];
 
 /**
  * Build the usage-logging middleware for one resolved model. Returns a
- * `LanguageModelV2Middleware` that logs exactly one row per model round-trip
- * (`doGenerate` or a completed `doStream`).
+ * `LanguageModelV2Middleware` that logs exactly one row per model round-trip:
+ * `doGenerate`, or a `doStream` that finishes, errors, closes early or is
+ * cancelled.
  */
 export function createUsageLoggingMiddleware(
 	context: UsageLoggingContext,
@@ -621,57 +622,161 @@ export function createUsageLoggingMiddleware(
 			const originalStream = result.stream as ReadableStream<
 				Record<string, unknown>
 			>;
-			let captured = false;
-			const tap = new TransformStream<
-				Record<string, unknown>,
-				Record<string, unknown>
-			>({
-				transform(chunk, controller) {
-					// The terminal chunk of a stream ('finish') carries final usage.
-					if (!captured && chunk?.type === "finish") {
-						captured = true;
-						try {
-							emit(
-								context,
-								normalizeUsage(chunk.usage),
-								Date.now() - start,
+			// At most one row per stream, settled at the first terminal state
+			// (`emit` still drops a SUCCESSFUL zero-usage row, see there):
+			//  - `finish`: its usage — successful, or FAILED with the earlier
+			//    error's attribution when an `error` chunk preceded it. Some
+			//    providers keep going after an in-stream error: `@ai-sdk/openai`
+			//    4's chat and completion models enqueue `error` and still emit
+			//    `finish` with the accumulated usage from `flush`, so writing the
+			//    failure at the `error` chunk would drop those tokens.
+			//  - the source closes (`flush`) or the consumer cancels / the
+			//    source errors (`cancel`) without a `finish`: a zero-token FAILED
+			//    marker (Fizzy #1894 FR7) carrying the pending in-stream error if
+			//    there was one, otherwise a message naming how the stream ended.
+			//    Without this a stream cut off mid-response left no row at all.
+			// Accepted trade-off of holding the error: a consumer that stops
+			// reading after an `error` chunk and never cancels leaves no row,
+			// because none of these callbacks runs. Breaking out of a
+			// `for await` loop cancels the stream, so it is still recorded.
+			let settled = false;
+			let pendingError:
+				| {
+						message: string;
+						usage: unknown;
+						statusCode?: number;
+						details?: Record<string, unknown>;
+				  }
+				| undefined;
+			const settle = (
+				usage: unknown,
+				success: boolean,
+				errorMessage?: string,
+				gatewayGenerationId?: string,
+				errorStatusCode?: number,
+				errorDetails?: Record<string, unknown>,
+			) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				try {
+					emit(
+						context,
+						normalizeUsage(usage),
+						Date.now() - start,
+						success,
+						errorMessage,
+						gatewayGenerationId,
+						errorStatusCode,
+						errorDetails,
+					);
+				} catch {
+					/* never let logging break the stream */
+				}
+			};
+			const settleWithoutFinish = (fallbackMessage: string) => {
+				if (pendingError) {
+					settle(
+						pendingError.usage,
+						false,
+						pendingError.message,
+						undefined,
+						pendingError.statusCode,
+						pendingError.details,
+					);
+					return;
+				}
+				settle(undefined, false, fallbackMessage);
+			};
+			// `cancel` is part of the WHATWG Transformer (Node 21.5+, and verified
+			// on Node 22 and 24) but missing from TypeScript 5.9's lib.dom
+			// `Transformer`. The object is typed by hand, not as `Transformer`,
+			// because packages that compile this source with `lib: ["ES2022"]`
+			// and Node's types (no DOM lib) have no global `Transformer`; passing
+			// it as a variable also avoids the excess-property check on `cancel`.
+			const transformer = {
+				transform(
+					chunk: Record<string, unknown>,
+					controller: TransformStreamDefaultController<
+						Record<string, unknown>
+					>,
+				) {
+					if (!settled && chunk?.type === "finish") {
+						// The terminal chunk of a stream carries final usage.
+						const gatewayGenerationId = gatewayGenerationIdOf(
+							chunk.providerMetadata,
+						);
+						if (pendingError) {
+							settle(
+								chunk.usage,
+								false,
+								pendingError.message,
+								gatewayGenerationId,
+								pendingError.statusCode,
+								pendingError.details,
+							);
+						} else {
+							settle(
+								chunk.usage,
 								true,
 								undefined,
-								gatewayGenerationIdOf(chunk.providerMetadata),
+								gatewayGenerationId,
 							);
-						} catch {
-							/* ignore */
 						}
-					} else if (!captured && chunk?.type === "error") {
-						// An errored stream never reaches 'finish'; record the
-						// failure so the invocation is visible in the ledger
-						// instead of vanishing (Fizzy #1894 FR7).
-						captured = true;
+					} else if (
+						!settled &&
+						!pendingError &&
+						chunk?.type === "error"
+					) {
+						// Held until the stream's terminal state (see above); the
+						// first in-stream error is the one recorded.
 						try {
-							const err = (chunk as Record<string, unknown>)
-								.error;
+							const err = chunk.error;
 							const described = describeModelCallError(err);
-							emit(
-								context,
-								normalizeUsage(chunk.usage),
-								Date.now() - start,
-								false,
-								err instanceof Error
-									? err.message
-									: typeof err === "string"
-										? err
-										: "stream error",
-								undefined,
-								described.statusCode,
-								described.details,
-							);
+							pendingError = {
+								message:
+									err instanceof Error
+										? err.message
+										: typeof err === "string"
+											? err
+											: "stream error",
+								usage: chunk.usage,
+								statusCode: described.statusCode,
+								details: described.details,
+							};
 						} catch {
-							/* ignore */
+							pendingError = {
+								message: "stream error",
+								usage: undefined,
+							};
 						}
 					}
 					controller.enqueue(chunk);
 				},
-			});
+				flush() {
+					settleWithoutFinish(
+						"Model stream closed without a finish chunk; no usage was reported",
+					);
+				},
+				cancel(reason: unknown) {
+					// Called when the consumer cancels the tapped stream and when
+					// the source stream errors (pipeThrough aborts the writable).
+					const detail =
+						reason instanceof Error
+							? reason.message
+							: typeof reason === "string"
+								? reason
+								: undefined;
+					settleWithoutFinish(
+						`Model stream cancelled or aborted before a finish chunk; no usage was reported${detail ? ` (${detail})` : ""}`,
+					);
+				},
+			};
+			const tap = new TransformStream<
+				Record<string, unknown>,
+				Record<string, unknown>
+			>(transformer);
 			return { ...result, stream: originalStream.pipeThrough(tap) };
 		},
 	};

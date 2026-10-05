@@ -326,6 +326,14 @@ vi.mock("../../settings-tab-navigation", () => ({
 	navigateToProjectSettingsTab: (...a: unknown[]) => state.navigate(...a),
 }));
 
+// The app's confirmation dialog is mounted once in the (saas) layout and is
+// absent here. `confirmMock` records what each action asked and, unless a test
+// says otherwise, confirms, as pressing the dialog's button would.
+const confirmMock = vi.hoisted(() => vi.fn());
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
+}));
+
 import { InstructionProposals } from "../InstructionProposals";
 
 function Wrapper({ children }: { children: ReactNode }) {
@@ -383,6 +391,10 @@ function branchOwner(
 }
 
 beforeEach(() => {
+	confirmMock.mockReset();
+	confirmMock.mockImplementation((options: { onConfirm: () => void }) =>
+		options.onConfirm(),
+	);
 	state.rows = [row()];
 	state.detail = {
 		...row(),
@@ -465,6 +477,61 @@ describe("InstructionProposals", () => {
 			}),
 		);
 		expect(onChanged).toHaveBeenCalled();
+	});
+
+	it("asks in the app's own dialog, destructively, before rejecting a proposal", async () => {
+		const user = userEvent.setup();
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		await user.click(await screen.findByRole("button", { name: "Reject" }));
+
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.rejectConfirmTitle,
+				message: reviewCopy.rejectConfirmBody,
+				confirmLabel: reviewCopy.reject,
+				destructive: true,
+			}),
+		);
+		await waitFor(() =>
+			expect(state.reject).toHaveBeenCalledWith({
+				projectId: "p",
+				snapshotId: "proposal-8",
+			}),
+		);
+	});
+
+	it("rejects nothing when the dialog is dismissed", async () => {
+		confirmMock.mockImplementation(() => undefined);
+		const user = userEvent.setup();
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		await user.click(await screen.findByRole("button", { name: "Reject" }));
+
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(state.reject).not.toHaveBeenCalled();
 	});
 
 	it("withholds review actions for a stale proposal", async () => {
@@ -1026,7 +1093,6 @@ describe("InstructionProposals", () => {
 
 	it("lets a reader cancel their own stable proposal without loading its diff", async () => {
 		const user = userEvent.setup();
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		state.rows = [row({ status: "FAILED", canCancel: true })];
 		render(
 			<InstructionProposals
@@ -1041,6 +1107,14 @@ describe("InstructionProposals", () => {
 
 		await user.click(
 			await screen.findByRole("button", { name: "Cancel proposal" }),
+		);
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.cancelConfirmTitle,
+				message: reviewCopy.cancelConfirmBody,
+				confirmLabel: reviewCopy.cancel,
+				destructive: true,
+			}),
 		);
 		await waitFor(() =>
 			expect(state.cancel).toHaveBeenCalledWith({
@@ -1585,20 +1659,25 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 
 	it("withdraws a suggestion and says Fabric is closing its pull request", async () => {
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 		state.cancelPullRequest = "close_requested";
 		state.rows = [repositoryRow({ state: "OPEN" }, { canCancel: true })];
 		renderList();
 		await user.click(
 			await screen.findByRole("button", { name: reviewCopy.withdraw }),
 		);
-		expect(confirm).toHaveBeenCalledWith(reviewCopy.withdrawConfirm);
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.withdrawConfirmTitle,
+				message: reviewCopy.withdrawConfirmBody,
+				confirmLabel: reviewCopy.withdraw,
+				destructive: true,
+			}),
+		);
 		await waitFor(() =>
 			expect(state.toastSuccess).toHaveBeenCalledWith(
 				reviewCopy.withdrawClosing,
 			),
 		);
-		confirm.mockRestore();
 	});
 
 	it("offers no Withdraw on a card whose closing is already requested", async () => {
@@ -1886,7 +1965,7 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 
 	it("confirms Withdraw with the pending-append text before a branch proposal has been added to the branch", async () => {
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		confirmMock.mockImplementation(() => undefined);
 		state.rows = [
 			repositoryRow(
 				{ state: "QUEUED", branch: memberBranch, append: null },
@@ -1897,13 +1976,18 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 		await user.click(
 			await screen.findByRole("button", { name: reviewCopy.withdraw }),
 		);
-		expect(confirm).toHaveBeenCalledWith(branchCopy.withdrawConfirmPending);
-		confirm.mockRestore();
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.withdrawConfirmTitle,
+				message: branchCopy.withdrawConfirmPending,
+				destructive: true,
+			}),
+		);
 	});
 
 	it("confirms Withdraw with the post-append text once the change is on the branch", async () => {
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		confirmMock.mockImplementation(() => undefined);
 		state.rows = [
 			repositoryRow(
 				{
@@ -1922,22 +2006,30 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 		await user.click(
 			await screen.findByRole("button", { name: reviewCopy.withdraw }),
 		);
-		expect(confirm).toHaveBeenCalledWith(
-			branchCopy.withdrawConfirmAppended,
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.withdrawConfirmTitle,
+				message: branchCopy.withdrawConfirmAppended,
+				destructive: true,
+			}),
 		);
-		confirm.mockRestore();
 	});
 
 	it("still confirms Withdraw with the #2563 text for a non-branch repository proposal", async () => {
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		confirmMock.mockImplementation(() => undefined);
 		state.rows = [repositoryRow({ state: "OPEN" }, { canCancel: true })];
 		renderList();
 		await user.click(
 			await screen.findByRole("button", { name: reviewCopy.withdraw }),
 		);
-		expect(confirm).toHaveBeenCalledWith(reviewCopy.withdrawConfirm);
-		confirm.mockRestore();
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: reviewCopy.withdrawConfirmTitle,
+				message: reviewCopy.withdrawConfirmBody,
+				destructive: true,
+			}),
+		);
 	});
 
 	it("shows the 'Your branch' panel above the list once the member has a branch", async () => {
@@ -2275,7 +2367,6 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 
 		it("refreshes the aggregate's other-member panels after Stop tracking on one of them", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			state.branchOwners = [
 				branchOwner("member_2", "Case Worker", [
 					{
@@ -2312,7 +2403,6 @@ describe("member proposal branches (Fizzy #2738 spec §10)", () => {
 			await waitFor(() =>
 				expect(state.stopTrackingBranch).toHaveBeenCalled(),
 			);
-			confirm.mockRestore();
 		});
 	});
 });

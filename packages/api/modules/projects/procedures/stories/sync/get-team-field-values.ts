@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
@@ -7,6 +7,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { resolveProjectPmConfig } from "../../../lib/gitlab-pm-source";
 
 /**
  * Fetch an Azure DevOps team's configured area paths (its "team field values").
@@ -52,6 +53,7 @@ export const getTeamFieldValuesProcedure = tenantProtectedProcedure
 				organizationId: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
+				projectManagementAdditionalContext: true,
 			},
 		});
 
@@ -59,8 +61,9 @@ export const getTeamFieldValuesProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,

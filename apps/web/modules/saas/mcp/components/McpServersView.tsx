@@ -1,5 +1,7 @@
 "use client";
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import { invalidateGitLabConnectionViews } from "@saas/data-connections/lib/gitlab-status-query";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -53,6 +55,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { useMcpConnection } from "../hooks/useMcpConnection";
+import { effectiveMcpAuthType } from "../lib/config-auth-type";
 import { McpChatDialog } from "./McpChatDialog";
 import { McpConfigTile } from "./McpConfigTile";
 import { McpServerCard } from "./McpServerCard";
@@ -475,8 +478,9 @@ export function McpServersView({
 				if (config.status === "UNAVAILABLE") {
 					return false;
 				}
-				// Skip OAuth servers that aren't authenticated yet
-				if (config.authType === "OAUTH2") {
+				// Skip OAuth servers that aren't authenticated yet (a GitLab
+				// server is OAuth whatever its row names)
+				if (effectiveMcpAuthType(config) === "OAUTH2") {
 					const status = oauthStatuses[config.id];
 					if (!status?.authenticated || status.tokenExpired) {
 						return false;
@@ -743,15 +747,41 @@ export function McpServersView({
 		{} as Record<string, number>,
 	);
 
-	// Delete mutation (not in shared hook since it's specific to this view)
+	// Delete mutation (not in shared hook since it's specific to this view).
+	// For a GitLab server the server disconnects the person's GitLab and
+	// turns the server off, keeping its registration (see the dialog copy).
 	const deleteMutation = useMutation({
-		mutationFn: async (id: string) => {
-			await orpcClient.mcp.configs.delete({ id, organizationId });
+		mutationFn: async (config: { id: string; mcpServer?: any }) => {
+			await orpcClient.mcp.configs.delete({
+				id: config.id,
+				organizationId,
+			});
+			return config;
 		},
-		onSuccess: () => {
-			qc.invalidateQueries({ queryKey: ["mcp-configs"] });
-			toast.success("MCP server deleted");
+		onSuccess: async (config) => {
+			const isGitLab = isGitLabPersonalMcpServerKey(
+				config.mcpServer?.key,
+			);
+			toast.success(
+				isGitLab
+					? "GitLab disconnected and the server turned off"
+					: "MCP server deleted",
+			);
 			setDeletingConfig(null);
+			if (isGitLab) {
+				// The person's GitLab is disconnected everywhere: refresh
+				// every screen showing it, and both GitLab server tiles.
+				await Promise.all([
+					invalidateGitLabConnectionViews(qc),
+					checkOAuthStatuses(
+						configs.filter((each: any) =>
+							isGitLabPersonalMcpServerKey(each.mcpServer?.key),
+						),
+					),
+				]);
+				return;
+			}
+			qc.invalidateQueries({ queryKey: ["mcp-configs"] });
 		},
 		onError: (e: any) => {
 			toast.error("Failed to delete MCP server", {
@@ -861,6 +891,11 @@ export function McpServersView({
 	function getDefaultAuthTypeFromServer(
 		server: any,
 	): "NONE" | "API_KEY" | "OAUTH2" {
+		// A GitLab server is OAuth through the person's connection,
+		// whatever its registry entry lists.
+		if (isGitLabPersonalMcpServerKey(server?.key)) {
+			return "OAUTH2";
+		}
 		if (!server || !Array.isArray(server.authMethods)) {
 			return "NONE";
 		}
@@ -899,7 +934,7 @@ export function McpServersView({
 		let urlToShow = config.baseUrl || config.mcpServer?.defaultUrl || "";
 		let extractedApiKey = "";
 
-		if (config.authType === "API_KEY" && config.baseUrl) {
+		if (effectiveMcpAuthType(config) === "API_KEY" && config.baseUrl) {
 			// Check if the server has a template URL with {YOUR_API_KEY}
 			const templateUrl = config.mcpServer?.defaultUrl;
 			if (templateUrl?.includes("{YOUR_API_KEY}")) {
@@ -930,7 +965,11 @@ export function McpServersView({
 
 		setBaseUrl(urlToShow);
 		setCommandArgs(config.commandArgs || []);
-		setAuthType(config.authType || "NONE");
+		// A GitLab server's form is OAuth whatever its row names: it takes
+		// no API key (the API refuses one) and connects through the
+		// person's GitLab connection.
+		setAuthType(effectiveMcpAuthType(config));
+		setAuthOverride(false);
 		setApiKeyMethod(config.apiKeyMethod || "BEARER");
 		// Don't show the actual API key for security - only extracted from URL template
 		// For Bearer token auth, user can leave empty to keep existing key
@@ -2016,11 +2055,22 @@ export function McpServersView({
 											: server.description
 										: null;
 
-									const authMethod =
-										server.authMethods?.[0] || "NONE";
+									// A GitLab server is OAuth through the
+									// person's connection, whatever its
+									// registry entry advertises.
+									const isGitLab =
+										isGitLabPersonalMcpServerKey(
+											server.key,
+										);
+									const authMethod = isGitLab
+										? "OAUTH2"
+										: server.authMethods?.[0] || "NONE";
 									const noAuth =
-										!server.authMethods?.length ||
-										server.authMethods.includes("NONE");
+										!isGitLab &&
+										(!server.authMethods?.length ||
+											server.authMethods.includes(
+												"NONE",
+											));
 									const authLabel = noAuth
 										? "Public"
 										: authMethod === "API_KEY"
@@ -2344,8 +2394,11 @@ export function McpServersView({
 							Delete Configuration
 						</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete this MCP server
-							configuration? This action cannot be undone.
+							{isGitLabPersonalMcpServerKey(
+								deletingConfig?.mcpServer?.key,
+							)
+								? "This disconnects your GitLab account from Fabric and turns this server off. Its registration is kept, so you can reconnect later without setting it up again. Project repository links are not affected."
+								: "Are you sure you want to delete this MCP server configuration? This action cannot be undone."}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -2353,7 +2406,7 @@ export function McpServersView({
 						<AlertDialogAction
 							onClick={() =>
 								deletingConfig &&
-								deleteMutation.mutate(deletingConfig.id)
+								deleteMutation.mutate(deletingConfig)
 							}
 						>
 							Delete

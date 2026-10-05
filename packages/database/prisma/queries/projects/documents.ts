@@ -594,6 +594,40 @@ export async function updateDocument(
 }
 
 /**
+ * Complete a document that is still a draft. Resolves to whether this call
+ * did it.
+ *
+ * A document written by hand has no generation run to complete it, so its
+ * author does: the editor's explicit Save and the Documents tab's Mark as
+ * complete both end here.
+ *
+ * The status is in the WHERE clause on purpose. A caller decides to complete
+ * from a row it read earlier — a list card, an editor tab, the save that has
+ * just returned — and a generation may have picked the document up since.
+ * Writing COMPLETE by id alone would overwrite that run's QUEUED or
+ * GENERATING. Here the database arbitrates, and a document that has moved on
+ * is left as it is. An integration contract is never completed this way: its
+ * status belongs to its discovery run.
+ *
+ * The result is the only reliable answer to "did this request complete it?".
+ * Comparing a status read before the call with one read after cannot tell
+ * this request's write from someone else's.
+ */
+export async function completeDraftDocument(
+	documentId: string,
+): Promise<boolean> {
+	const { count } = await db.projectDocument.updateMany({
+		where: {
+			id: documentId,
+			status: "DRAFT",
+			type: { not: "INTEGRATION_CONTRACT" },
+		},
+		data: { status: "COMPLETE" },
+	});
+	return count === 1;
+}
+
+/**
  * Delete document (cascade deletes versions)
  *
  * Also removes every Document-Assistant chat history attached to this

@@ -32,6 +32,13 @@ export interface GatewaySession {
 	sessionId: string;
 	userId: string;
 	organizationId: string | null;
+	/**
+	 * The one project this session reaches, when it was opened from a project's
+	 * URL; absent or null for an organization-wide session. A bound session's
+	 * organization is the one hosting the project, and `./project-binding` is
+	 * what keeps every tool call on it.
+	 */
+	projectId?: string | null;
 	userName: string;
 	email: string;
 	role: "user" | "admin";

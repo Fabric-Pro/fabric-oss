@@ -711,6 +711,59 @@ export type UpdateProjectData = {
 };
 
 /**
+ * A project's PM selection as a save read it before deriving what to write
+ * (the GitLab container's recorded instance in particular).
+ */
+export type PmSelectionSnapshot = {
+	serverId: string | null;
+	configId: string | null;
+	containerId: string | null;
+	additionalContext: unknown;
+};
+
+/**
+ * WHERE conditions that hold only while the row still has `expected`'s PM
+ * selection and PM context. A save that derived the GitLab container's
+ * recorded instance from that read then updates nothing (Prisma `P2025`)
+ * once a concurrent save changed them, instead of pairing the instance it
+ * read with another container; the caller reads again and re-derives.
+ */
+export function pmSelectionUnchangedWhere(
+	expected: PmSelectionSnapshot,
+): Pick<
+	Prisma.ProjectWhereInput,
+	| "projectManagementMcpServerId"
+	| "projectManagementMcpConfigId"
+	| "projectManagementContainerId"
+	| "projectManagementAdditionalContext"
+> {
+	return {
+		projectManagementMcpServerId: expected.serverId,
+		projectManagementMcpConfigId: expected.configId,
+		projectManagementContainerId: expected.containerId,
+		projectManagementAdditionalContext:
+			expected.additionalContext === null ||
+			expected.additionalContext === undefined
+				? { equals: Prisma.AnyNull }
+				: {
+						equals: expected.additionalContext as Prisma.InputJsonValue,
+					},
+	};
+}
+
+/**
+ * A draft save found the draft's PM selection changed (or the draft created)
+ * since it read it. Carries `P2025` like the guarded update it stands for.
+ */
+export class PmSelectionChangedError extends Error {
+	override name = "PmSelectionChangedError";
+	readonly code = "P2025";
+	constructor() {
+		super("The project's PM selection changed while it was being saved.");
+	}
+}
+
+/**
  * The write `updateProject` performs, returned UN-awaited so a caller can put
  * it in a batch `db.$transaction([...])` next to other writes (Fizzy #2304:
  * turning status sync on saves the switch and resets every story's sync base
@@ -721,6 +774,11 @@ export function buildUpdateProjectOperation(
 	projectId: string,
 	data: UpdateProjectData,
 	organizationId?: string,
+	/**
+	 * The PM selection the caller derived `data` from: the update then only
+	 * applies while the row still has it (`pmSelectionUnchangedWhere`).
+	 */
+	expectedPmSelection?: PmSelectionSnapshot,
 ) {
 	// Authorization is enforced upstream (e.g. `requireProjectPermission` in
 	// oRPC procedures, `requireScope` + tenant check in the v1 REST API,
@@ -749,6 +807,9 @@ export function buildUpdateProjectOperation(
 		where: {
 			id: projectId,
 			...orgFilter,
+			...(expectedPmSelection
+				? pmSelectionUnchangedWhere(expectedPmSelection)
+				: {}),
 		},
 		data: updateData,
 	});
@@ -771,8 +832,14 @@ export async function updateProject(
 	_userId: string,
 	data: UpdateProjectData,
 	organizationId?: string,
+	expectedPmSelection?: PmSelectionSnapshot,
 ) {
-	return await buildUpdateProjectOperation(projectId, data, organizationId);
+	return await buildUpdateProjectOperation(
+		projectId,
+		data,
+		organizationId,
+		expectedPmSelection,
+	);
 }
 
 /**
@@ -1656,6 +1723,13 @@ export async function upsertDraftProjectByKey(data: {
 	projectManagementContainerId?: string | null;
 	projectManagementContainerName?: string | null;
 	projectManagementAdditionalContext?: Prisma.InputJsonValue;
+	/**
+	 * The draft's PM selection the caller derived the PM fields from: `null`
+	 * when it read no draft. The save then applies only while that still
+	 * holds, and throws `PmSelectionChangedError` otherwise. Left out, the
+	 * save is unconditional.
+	 */
+	expectedPmSelection?: PmSelectionSnapshot | null;
 	// Engagement profile + vision (typed columns; carried into activation)
 	engagementProfile?: EngagementProfile;
 	quotedPhases?: string[];
@@ -1769,11 +1843,37 @@ export async function upsertDraftProjectByKey(data: {
 		orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
 	});
 
+	// Applies the save to a draft row, conditionally when the caller read
+	// the PM selection first.
+	const updateDraft = async (draftId: string) => {
+		if (data.expectedPmSelection === null) {
+			// The caller read no draft; one exists now.
+			throw new PmSelectionChangedError();
+		}
+		try {
+			return await db.project.update({
+				where: {
+					id: draftId,
+					...(data.expectedPmSelection
+						? pmSelectionUnchangedWhere(data.expectedPmSelection)
+						: {}),
+				},
+				data: buildUpdateData(),
+			});
+		} catch (error) {
+			if (
+				data.expectedPmSelection &&
+				error instanceof Prisma.PrismaClientKnownRequestError &&
+				error.code === "P2025"
+			) {
+				throw new PmSelectionChangedError();
+			}
+			throw error;
+		}
+	};
+
 	if (existingDraft) {
-		const updated = await db.project.update({
-			where: { id: existingDraft.id },
-			data: buildUpdateData(),
-		});
+		const updated = await updateDraft(existingDraft.id);
 		return { project: updated, created: false };
 	}
 
@@ -1850,10 +1950,7 @@ export async function upsertDraftProjectByKey(data: {
 			});
 
 			if (existing) {
-				const updated = await db.project.update({
-					where: { id: existing.id },
-					data: buildUpdateData(),
-				});
+				const updated = await updateDraft(existing.id);
 				return { project: updated, created: false };
 			}
 		}

@@ -5,13 +5,13 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { Switch } from "@ui/components/switch";
-import { cn } from "@ui/lib";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
+import { cn } from "@ui/lib";
 import { formatDistanceToNow } from "date-fns";
 import {
 	CheckCircleIcon,
@@ -26,6 +26,7 @@ import {
 	WrenchIcon,
 } from "lucide-react";
 import { SparklesIcon } from "../../shared/components/icons/SparklesIcon";
+import { effectiveMcpAuthType } from "../lib/config-auth-type";
 import { McpServerIcon } from "./McpServerIcon";
 
 interface McpServersListViewProps {
@@ -110,17 +111,35 @@ function McpServerListItem({
 	const displayName =
 		config.displayName || config.mcpServer?.name || "Unnamed Server";
 	const baseUrl = config.baseUrl || config.mcpServer?.defaultUrl;
+	// A GitLab server is OAuth whatever its row names: its state is the
+	// person's GitLab connection, never a stored key or transport health.
+	const authType = effectiveMcpAuthType(config);
+	// Same predicate as the tile: an OAuth config is usable only while its
+	// sign-in is, whatever health status was last recorded for its transport.
+	const isConnected =
+		config.enabled &&
+		(authType !== "OAUTH2"
+			? config.status === "HEALTHY"
+			: oauthStatus?.authenticated && !oauthStatus?.tokenExpired);
 
 	// Determine status badge
 	const getStatusBadge = () => {
 		// For OAuth2 configurations, always use OAuth status if available
-		if (config.authType === "OAUTH2") {
+		if (authType === "OAUTH2") {
 			if (oauthStatus) {
 				if (oauthStatus.authenticated && !oauthStatus.tokenExpired) {
 					return (
 						<Badge className="bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0">
 							<CheckCircleIcon className="mr-1 size-3" />
 							Connected
+						</Badge>
+					);
+				}
+				if (oauthStatus.needsReauth) {
+					return (
+						<Badge className="bg-yellow-500/10 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
+							<RefreshCwIcon className="mr-1 size-3" />
+							Reconnect needed
 						</Badge>
 					);
 				}
@@ -168,7 +187,7 @@ function McpServerListItem({
 
 	// Determine auth type badge
 	const getAuthBadge = () => {
-		if (config.authType === "OAUTH2") {
+		if (authType === "OAUTH2") {
 			return (
 				<Badge variant="secondary" className="text-xs">
 					<ShieldCheckIcon className="mr-1 size-3" />
@@ -176,7 +195,7 @@ function McpServerListItem({
 				</Badge>
 			);
 		}
-		if (config.authType === "API_KEY") {
+		if (authType === "API_KEY") {
 			return (
 				<Badge variant="secondary" className="text-xs">
 					<KeyIcon className="mr-1 size-3" />
@@ -245,7 +264,7 @@ function McpServerListItem({
 							)}
 
 							{/* Auth Type and Token Expiration */}
-							{config.authType === "OAUTH2" &&
+							{authType === "OAUTH2" &&
 								oauthStatus?.authenticated &&
 								oauthStatus.expiresAt && (
 									<span className="text-xs text-muted-foreground">
@@ -288,30 +307,27 @@ function McpServerListItem({
 						<TooltipProvider>
 							<div className="flex gap-1">
 								{/* Try MCP */}
-								{onChat &&
-									config.enabled &&
-									config.status === "HEALTHY" && (
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<Button
-													size="icon"
-													variant="outline"
-													onClick={(e) => {
-														e.stopPropagation();
-														onChat(config);
-													}}
-												>
-													<SparklesIcon className="size-4" />
-												</Button>
-											</TooltipTrigger>
-											<TooltipContent>
-												Try MCP
-											</TooltipContent>
-										</Tooltip>
-									)}
+								{onChat && isConnected && (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Button
+												size="icon"
+												variant="outline"
+												aria-label="Try MCP"
+												onClick={(e) => {
+													e.stopPropagation();
+													onChat(config);
+												}}
+											>
+												<SparklesIcon className="size-4" />
+											</Button>
+										</TooltipTrigger>
+										<TooltipContent>Try MCP</TooltipContent>
+									</Tooltip>
+								)}
 
 								{/* OAuth Connect - Only show if NOT authenticated */}
-								{config.authType === "OAUTH2" &&
+								{authType === "OAUTH2" &&
 									onConnect &&
 									!oauthStatus?.authenticated && (
 										<Tooltip>
@@ -334,7 +350,7 @@ function McpServerListItem({
 									)}
 
 								{/* OAuth Refresh - Only show if authenticated and token expired */}
-								{config.authType === "OAUTH2" &&
+								{authType === "OAUTH2" &&
 									onRefresh &&
 									oauthStatus?.authenticated &&
 									oauthStatus?.tokenExpired && (

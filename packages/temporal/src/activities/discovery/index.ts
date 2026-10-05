@@ -498,6 +498,8 @@ async function listMcpToolsForConfig(input: {
 			configId: input.configId,
 			userId: input.userId,
 			organizationId: input.organizationId,
+			// Only lists the server's tools.
+			access: "read",
 		});
 		client = created.client;
 		const tools = await client.tools();

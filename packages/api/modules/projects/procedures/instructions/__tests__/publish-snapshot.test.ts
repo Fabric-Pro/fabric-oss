@@ -7,6 +7,13 @@ const m = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	runInBackground: vi.fn(),
 	warmInstructionSnapshotExport: vi.fn(),
+	assertNoOpenMigration: vi.fn(),
+}));
+// The pre-check is mocked; `migrationOpenFromRefusal`, which answers the
+// writer's own refusal under the project lock, is the real one.
+vi.mock("../migration-freeze", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../migration-freeze")>()),
+	assertNoOpenMigration: (...a: unknown[]) => m.assertNoOpenMigration(...a),
 }));
 vi.mock("@repo/database", () => ({
 	publishInstructionSnapshot: (...a: unknown[]) =>
@@ -53,6 +60,8 @@ beforeEach(() => {
 	m.runInBackground.mockReset();
 	m.warmInstructionSnapshotExport.mockReset();
 	m.warmInstructionSnapshotExport.mockResolvedValue(undefined);
+	m.assertNoOpenMigration.mockReset();
+	m.assertNoOpenMigration.mockResolvedValue(undefined);
 	m.resolveEffectiveProjectPermissions.mockResolvedValue({
 		permissions: [],
 		source: "org",
@@ -61,6 +70,61 @@ beforeEach(() => {
 });
 
 describe("projects.instructions.publish", () => {
+	it("is refused while a move into the repository is open, publishing and warming nothing (Fizzy #2878 §9)", async () => {
+		m.assertNoOpenMigration.mockRejectedValue(
+			Object.assign(new Error("MIGRATION_OPEN"), { code: "CONFLICT" }),
+		);
+
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "proj_1", snapshotId: "snap_1" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+
+		expect(m.assertNoOpenMigration).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(m.publishInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+	});
+
+	it("answers MIGRATION_OPEN, with the move the lock found, when the writer refuses after the pre-check passed: a move started in between (Fizzy #2878 §9)", async () => {
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: false,
+			changed: false,
+			reason: "migration_open",
+			migration: {
+				v: 1,
+				state: "SWITCHING",
+				branchId: null,
+				snapshotId: "snap_move",
+				syncId: "sync_move",
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_2",
+			},
+		});
+
+		await expect(
+			m.handlers.publish!({
+				input: { projectId: "proj_1", snapshotId: "snap_1" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				reason: "MIGRATION_OPEN",
+				state: "SWITCHING",
+				pullRequest: null,
+			},
+		});
+
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
+		expect(m.warmInstructionSnapshotExport).not.toHaveBeenCalled();
+	});
+
 	// Spec §4: while a repository is the source of truth, History may not
 	// publish an uploaded version — the same refusal an edit gets.
 	it("maps published_changed to CONFLICT PUBLISHED_CHANGED with the current version, and audits and warms nothing", async () => {

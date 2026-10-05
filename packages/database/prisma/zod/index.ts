@@ -70,6 +70,12 @@ export const OauthConsentScalarFieldEnumSchema = z.enum(['id', 'clientId', 'user
 
 export type OauthConsentScalarFieldEnum = z.infer<typeof OauthConsentScalarFieldEnumSchema>;
 
+// File: OauthAuthorizationResourceScalarFieldEnum.schema.ts
+
+export const OauthAuthorizationResourceScalarFieldEnumSchema = z.enum(['id', 'clientId', 'codeChallenge', 'resource', 'projectId', 'audience', 'createdAt', 'expiresAt'])
+
+export type OauthAuthorizationResourceScalarFieldEnum = z.infer<typeof OauthAuthorizationResourceScalarFieldEnumSchema>;
+
 // File: TwoFactorScalarFieldEnum.schema.ts
 
 export const TwoFactorScalarFieldEnumSchema = z.enum(['id', 'secret', 'backupCodes', 'userId', 'verified', 'failedVerificationCount', 'lockedUntil', 'stepUpFailedCount', 'stepUpLockedUntil', 'stepUpEpoch'])
@@ -216,7 +222,7 @@ export type AgentApprovalScalarFieldEnum = z.infer<typeof AgentApprovalScalarFie
 
 // File: IntegrationApprovalScalarFieldEnum.schema.ts
 
-export const IntegrationApprovalScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'pluginSlug', 'endpoint', 'args', 'riskLevel', 'status', 'expiresAt', 'createdAt', 'decidedAt', 'decidedById'])
+export const IntegrationApprovalScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'integrationId', 'pluginSlug', 'endpoint', 'args', 'riskLevel', 'status', 'expiresAt', 'createdAt', 'decidedAt', 'decidedById'])
 
 export type IntegrationApprovalScalarFieldEnum = z.infer<typeof IntegrationApprovalScalarFieldEnumSchema>;
 
@@ -1410,7 +1416,7 @@ export type WorkflowExecutionLogScalarFieldEnum = z.infer<typeof WorkflowExecuti
 
 // File: WorkflowIntegrationScalarFieldEnum.schema.ts
 
-export const WorkflowIntegrationScalarFieldEnumSchema = z.enum(['id', 'workflowId', 'userId', 'organizationId', 'provider', 'name', 'credentials', 'settings', 'isActive', 'createdAt', 'updatedAt', 'lastUsedAt'])
+export const WorkflowIntegrationScalarFieldEnumSchema = z.enum(['id', 'workflowId', 'userId', 'organizationId', 'provider', 'name', 'credentials', 'usageScope', 'settings', 'isActive', 'createdAt', 'updatedAt', 'lastUsedAt'])
 
 export type WorkflowIntegrationScalarFieldEnum = z.infer<typeof WorkflowIntegrationScalarFieldEnumSchema>;
 
@@ -1992,7 +1998,7 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'excludedPaths', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'commitContext', 'commitOutcome', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
@@ -3136,6 +3142,12 @@ export const WorkflowIntegrationProviderSchema = z.enum(['AI_GATEWAY', 'ASANA', 
 
 export type WorkflowIntegrationProvider = z.infer<typeof WorkflowIntegrationProviderSchema>;
 
+// File: WorkflowIntegrationUsageScope.schema.ts
+
+export const WorkflowIntegrationUsageScopeSchema = z.enum(['OWNER_ONLY', 'ORGANIZATION_SHARED'])
+
+export type WorkflowIntegrationUsageScope = z.infer<typeof WorkflowIntegrationUsageScopeSchema>;
+
 // File: BrowserTaskStatus.schema.ts
 
 export const BrowserTaskStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'])
@@ -3552,7 +3564,7 @@ export type ProjectInstructionSnapshotProgressPhase = z.infer<typeof ProjectInst
 
 // File: ProjectInstructionProposalDestination.schema.ts
 
-export const ProjectInstructionProposalDestinationSchema = z.enum(['FABRIC', 'REPOSITORY'])
+export const ProjectInstructionProposalDestinationSchema = z.enum(['FABRIC', 'REPOSITORY', 'REPOSITORY_COMMIT'])
 
 export type ProjectInstructionProposalDestination = z.infer<typeof ProjectInstructionProposalDestinationSchema>;
 
@@ -3582,13 +3594,13 @@ export type ProjectInstructionFileKind = z.infer<typeof ProjectInstructionFileKi
 
 // File: ProjectInstructionSyncPause.schema.ts
 
-export const ProjectInstructionSyncPauseSchema = z.enum(['PERMISSION_REVOKED', 'REF_MISSING'])
+export const ProjectInstructionSyncPauseSchema = z.enum(['PERMISSION_REVOKED', 'REF_MISSING', 'MIGRATING'])
 
 export type ProjectInstructionSyncPause = z.infer<typeof ProjectInstructionSyncPauseSchema>;
 
 // File: ProjectInstructionSyncTrigger.schema.ts
 
-export const ProjectInstructionSyncTriggerSchema = z.enum(['MANUAL', 'POLL', 'WEBHOOK', 'PULL_REQUEST_MERGED'])
+export const ProjectInstructionSyncTriggerSchema = z.enum(['MANUAL', 'POLL', 'WEBHOOK', 'PULL_REQUEST_MERGED', 'COMMIT_PUSHED'])
 
 export type ProjectInstructionSyncTrigger = z.infer<typeof ProjectInstructionSyncTriggerSchema>;
 
@@ -3917,6 +3929,22 @@ export const OauthConsentSchema = z.object({
 });
 
 export type OauthConsentType = z.infer<typeof OauthConsentSchema>;
+
+
+// File: OauthAuthorizationResource.schema.ts
+
+export const OauthAuthorizationResourceSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  codeChallenge: z.string(),
+  resource: z.string(),
+  projectId: z.string(),
+  audience: z.string(),
+  createdAt: z.date(),
+  expiresAt: z.date(),
+});
+
+export type OauthAuthorizationResourceType = z.infer<typeof OauthAuthorizationResourceSchema>;
 
 
 // File: TwoFactor.schema.ts
@@ -4419,6 +4447,7 @@ export const IntegrationApprovalSchema = z.object({
   id: z.string(),
   userId: z.string(),
   organizationId: z.string().nullish(),
+  integrationId: z.string().nullish(),
   pluginSlug: z.string(),
   endpoint: z.string(),
   args: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
@@ -9231,6 +9260,7 @@ export const WorkflowIntegrationSchema = z.object({
   provider: WorkflowIntegrationProviderSchema,
   name: z.string(),
   credentials: z.string(),
+  usageScope: WorkflowIntegrationUsageScopeSchema.default("OWNER_ONLY"),
   settings: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   isActive: z.boolean().default(true),
   createdAt: z.date(),
@@ -11442,6 +11472,7 @@ export const ProjectInstructionSnapshotSchema = z.object({
   fileCount: z.number().int(),
   storedBytes: z.number().int(),
   excludedCount: z.number().int(),
+  excludedPaths: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("[]"),
   digest: z.string().nullish(),
   changeSetDigest: z.string().nullish(),
   repositoryIntegrationId: z.string().nullish(),
@@ -11477,6 +11508,8 @@ export const ProjectInstructionSnapshotSchema = z.object({
   mergeSyncDispatchedAt: z.date().nullish(),
   mergeSyncRunId: z.string().nullish(),
   mergeSyncExpected: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  commitContext: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  commitOutcome: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   proposalBranchId: z.string().nullish(),
   proposalBranchSequence: z.number().int().nullish(),
   withdrawRequestedAt: z.date().nullish(),
@@ -11621,7 +11654,7 @@ export const ProjectInstructionRepositorySyncSchema = z.object({
   repositoryIntegrationId: z.string(),
   ref: z.string(),
   rootPath: z.string(),
-  automatic: z.boolean(),
+  automatic: z.boolean().default(true),
   generation: z.number().int().default(1),
   nextCheckAt: z.date().nullish(),
   failureCount: z.number().int(),

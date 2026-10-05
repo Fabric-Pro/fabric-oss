@@ -8,11 +8,14 @@ import {
 } from "@repo/database";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { disconnectPersonalGitLab } from "../../../integrations/lib/gitlab-personal-disconnect";
+import { authorizeGitLabTenant } from "../../../integrations/lib/gitlab-request-tenant";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 
 /**
@@ -53,6 +56,73 @@ export const disconnectByTypeProcedure = tenantProtectedProcedure
 					message: "You are not a member of this organization",
 				});
 			}
+		}
+
+		if (input.type === "GITLAB") {
+			// The personal GitLab connection goes through the one personal
+			// GitLab disconnect (lifecycle lock, generation bump, revocation,
+			// MCP token columns emptied, audit). Deleting the row instead would
+			// skip the revocation, the audit row and the generation fence on an
+			// in-flight refresh.
+			// Project repository links are untouched.
+			// Resolved and authorized against the organization the input
+			// names; a request with no organization is refused rather than
+			// disconnecting into a no-organization tenant. Both writes below
+			// use this tenant, so they act where the check ran.
+			const tenant = await authorizeGitLabTenant(
+				Permissions.MCP_CONNECT,
+				input.organizationId,
+				context,
+			);
+			// Workflow-scoped GitLab credentials are not the personal
+			// connection; deleting them is this procedure's own
+			// WORKSPACE_DELETE, and the procedure's permission middleware
+			// evaluates that in the SESSION's organization only. Check it in
+			// the target organization too — before anything is written, so
+			// a refusal leaves both the connection and the rows as they were
+			// — and delete exactly the rows that were checked. With none to
+			// delete, the personal disconnect stays on MCP_CONNECT alone.
+			const scopedRows = await db.workflowIntegration.findMany({
+				where: {
+					provider: "GITLAB",
+					userId: user.id,
+					organizationId: tenant.organizationId,
+					workflowId: { not: null },
+				},
+				select: { id: true },
+			});
+			if (scopedRows.length > 0) {
+				await authorizeInputOrganization(
+					Permissions.WORKSPACE_DELETE,
+					tenant.organizationId,
+					context,
+					{ requireOrganization: true },
+				);
+			}
+			const personal = await disconnectPersonalGitLab({
+				tenant,
+				surface: "workflows.integrations.disconnectByType",
+				audit: context,
+			});
+			const scoped =
+				scopedRows.length > 0
+					? await db.workflowIntegration.deleteMany({
+							where: {
+								id: { in: scopedRows.map((row) => row.id) },
+								userId: user.id,
+								organizationId: tenant.organizationId,
+							},
+						})
+					: { count: 0 };
+			if (personal.integrationIds.length === 0 && scoped.count === 0) {
+				throw new ORPCError("NOT_FOUND", {
+					message: "Integration not found",
+				});
+			}
+			return {
+				success: true,
+				message: "GITLAB integration disconnected",
+			};
 		}
 
 		// Fail loudly (naming the dependent projects) instead of surfacing the

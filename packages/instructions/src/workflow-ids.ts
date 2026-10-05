@@ -52,6 +52,32 @@ export function instructionRepositorySyncWorkflowId(projectId: string): string {
 	return `project-instruction-repository-sync-${projectId}`;
 }
 
+/**
+ * The deterministic Temporal workflow id of a direct commit (Fizzy #2878
+ * §10): one per `REPOSITORY_COMMIT` snapshot. The API starts it before the
+ * snapshot's validation is, and a repeated start finds the open run by this
+ * id rather than starting a second commit.
+ */
+export function instructionDirectCommitWorkflowId(snapshotId: string): string {
+	return `project-instruction-direct-commit-${snapshotId}`;
+}
+
+/**
+ * The Temporal workflow id of a project's revert of a commit on its synced
+ * branch (Fizzy #2878 §10).
+ *
+ * ONE id per project, not per request: the API starts it with
+ * `workflowIdConflictPolicy: "FAIL"`, so a second revert while one is open is
+ * refused by Temporal itself and reported as `REVERT_BUSY`, with no lock row
+ * to leak. Two reverts of one branch race for the same tip. The request id
+ * stays the commit's `Fabric-Commit` trailer (it is in the workflow input),
+ * so an activity retry finds the revert it already pushed instead of pushing
+ * a second.
+ */
+export function instructionRevertCommitWorkflowId(projectId: string): string {
+	return `project-instruction-revert-commit-${projectId}`;
+}
+
 /** The one proposal pull-request sweeper (spec §9), started by its schedule. */
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID =
 	"instruction-proposal-pull-request-sweep";

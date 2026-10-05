@@ -2,11 +2,11 @@ import {
 	db,
 	isPmServerIdKeySentinel,
 	readPmServerIdKeySentinel,
-	resolvePMConfigForUser,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { ContextItem } from "@repo/temporal";
 import { pmServerKeyToDetectedType } from "@repo/utils";
+import { resolveProjectPmConfig } from "../../lib/gitlab-pm-source";
 
 /** Common structural comment shape (matches `PmComment` / `GitLabPMComment`). */
 export interface PmCommentLike {
@@ -104,10 +104,13 @@ export async function fetchStoryPmComments(args: {
 		if (detectedFromKey === "gitlab") {
 			const { resolveGitLabPMSource, getGitLabIssueNotesForPM } =
 				await import("@repo/integrations/gitlab");
+			// A connection on another GitLab instance than the container's
+			// throws here, before any request: no comments, like a failure.
 			const source = await resolveGitLabPMSource({
 				userId,
 				organizationId: project.organizationId,
 				projectId,
+				pmAdditionalContext: project.projectManagementAdditionalContext,
 			});
 			if (!source) {
 				return [];
@@ -126,8 +129,9 @@ export async function fetchStoryPmComments(args: {
 		}
 
 		// Generic MCP path.
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId,
 			organizationId: project.organizationId || undefined,

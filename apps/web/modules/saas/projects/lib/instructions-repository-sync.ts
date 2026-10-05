@@ -19,6 +19,10 @@ import {
 	type SnapshotCheckPhase,
 	snapshotCheckProgress,
 } from "./instructions-check-progress";
+import type {
+	MigrationEndedNotice,
+	RepositoryMigrationRead,
+} from "./instructions-migration";
 
 type SyncRunStatus =
 	| "SUCCEEDED"
@@ -150,12 +154,25 @@ export type RepositorySyncState = {
 	/** Set while the latest run is open and has already created its snapshot. */
 	inFlightSnapshot?: SyncInFlightSnapshotView | null;
 	availableIntegrations: RepositorySyncIntegration[];
+	/**
+	 * A move of the uploaded instructions into a repository is open (Fizzy
+	 * #2878 §9). `configured` is then the sync the move created, paused and not
+	 * yet the source of truth; `PROPOSING` covers the pull request being
+	 * opened, open, blocked or merged and not yet settled, `SWITCHING` the
+	 * wait for the first sync from the repository. Absent reads as no move.
+	 */
+	migration?: { state: "PROPOSING" | "SWITCHING" } | null;
 };
 
 /** What the tab hands the published view and the empty state. */
 export type RepositorySyncControls = {
 	state: RepositorySyncState;
 	onConfigure: () => void;
+	/**
+	 * Open "Move these instructions into a repository" (Fizzy #2878 §9). Absent
+	 * reads as a tab that offers no move.
+	 */
+	onMove?: () => void;
 	onSyncNow: () => void;
 	syncNowPending: boolean;
 	/**
@@ -164,6 +181,19 @@ export type RepositorySyncControls = {
 	 * leaves its busy state (Decision 53).
 	 */
 	onChanged: () => Promise<void>;
+	/**
+	 * The move of uploaded instructions into a repository, while the state says
+	 * one is open (Fizzy #2878 §9): what the server reports of it, and the
+	 * notice a move that ended without its files landing leaves behind.
+	 */
+	migration?: RepositoryMigrationControls;
+};
+
+export type RepositoryMigrationControls = {
+	/** Undefined until the first read of the move has arrived. */
+	read: RepositoryMigrationRead | undefined;
+	endedNotice: MigrationEndedNotice | null;
+	onDismissEndedNotice: () => void;
 };
 
 export type SyncNowResult =
@@ -177,7 +207,7 @@ export type SyncNowResult =
 	  };
 
 /** A translation key under `projects.codingInstructions.repositorySync`. */
-type SyncMessage = {
+export type SyncMessage = {
 	key: string;
 	values?: Record<string, string | number>;
 };
@@ -192,8 +222,9 @@ export const REPOSITORY_SYNC_POLL_MS = 3_000;
 export const REPOSITORY_SYNC_IDLE_POLL_MS = 60_000;
 
 /**
- * `refetchInterval` for `repositorySync.get`: every 3 s while a run is open,
- * every 60 s while automatic sync is on and not paused, and not at all
+ * `refetchInterval` for `repositorySync.get`: every 3 s while a run is open or
+ * a merged move waits for its first sync, every 60 s while automatic sync is on
+ * and not paused or a move is open (so its end is found), and not at all
  * otherwise.
  */
 export function repositorySyncPollInterval(
@@ -204,12 +235,16 @@ export function repositorySyncPollInterval(
 					automatic: boolean;
 					automaticPausedReason: string | null;
 				} | null;
+				migration?: { state: string } | null;
 		  }
 		| null
 		| undefined,
 ): number | false {
-	if (state?.running) {
+	if (state?.running || state?.migration?.state === "SWITCHING") {
 		return REPOSITORY_SYNC_POLL_MS;
+	}
+	if (state?.migration) {
+		return REPOSITORY_SYNC_IDLE_POLL_MS;
 	}
 	const configured = state?.configured;
 	return configured?.automatic && !configured.automaticPausedReason
@@ -311,8 +346,31 @@ export function offersSyncFromRepository(state: RepositorySyncState): boolean {
 	);
 }
 
+/**
+ * "Move these instructions into a repository" (Fizzy #2878 §9): an upload
+ * project with a connected repository to move into and no sync or move yet.
+ * The tab adds what it alone knows, that something is published and that the
+ * member may both create and update.
+ */
+export function offersMoveIntoRepository(state: RepositorySyncState): boolean {
+	return (
+		offersSyncFromRepository(state) &&
+		state.sourceOfTruth === "UPLOAD" &&
+		!state.migration
+	);
+}
+
+/**
+ * Not while a move into a repository is `PROPOSING`: the sync it created is
+ * paused and its folder holds nothing yet, so the server refuses. Once the
+ * project is `SWITCHING` it is the way to hurry the first sync along.
+ */
 export function offersSyncNow(state: RepositorySyncState): boolean {
-	return state.canConfigure && state.configured !== null;
+	return (
+		state.canConfigure &&
+		state.configured !== null &&
+		state.migration?.state !== "PROPOSING"
+	);
 }
 
 export function shortCommit(sha: string | null | undefined): string | null {
@@ -380,7 +438,23 @@ export function syncRunOutcome(
 	}
 }
 
-export function syncOutcomeMessage(outcome: SyncRunOutcome): SyncMessage {
+/**
+ * What a finished run's outcome reads as. A run that knows the commit it took
+ * (or refused) says so, as git does: "took commit a1b2c3d", "commit a1b2c3d
+ * refused by the scan" (Fizzy #2878); one that does not keeps the version
+ * wording.
+ */
+export function syncOutcomeMessage(
+	outcome: SyncRunOutcome,
+	commitSha: string | null = null,
+): SyncMessage {
+	const sha7 = shortCommit(commitSha);
+	if (sha7 !== null && outcome.kind === "published") {
+		return { key: "outcomes.publishedCommit", values: { sha7 } };
+	}
+	if (sha7 !== null && outcome.kind === "rejected") {
+		return { key: "outcomes.rejectedCommit", values: { sha7 } };
+	}
 	switch (outcome.kind) {
 		case "published":
 			return outcome.version === null
@@ -570,6 +644,15 @@ function orpcErrorCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * The commit history could not be read because the synced folder is no
+ * longer on the branch: trying again cannot help, choosing the folder again
+ * can.
+ */
+export function isFolderNotFoundError(error: unknown): boolean {
+	return orpcErrorCode(error) === "FOLDER_NOT_FOUND";
+}
+
 const INLINE_CONFIGURE_CODES = new Set([
 	"BRANCH_NOT_FOUND",
 	"REPOSITORY_CREDENTIALS_EXPIRED",
@@ -596,17 +679,23 @@ export function configureErrorMessage(error: unknown): {
 	return { key: "configureDialog.errors.generic", inline: false };
 }
 
-export type SyncAction = "syncNow" | "disable" | "updateProposalSettings";
+export type SyncAction =
+	| "syncNow"
+	| "disable"
+	| "updateProposalSettings"
+	| "configure";
 
 /**
  * The message key for a failed sync action: the typed code's own words where
  * `configureErrorMessage` has them, else a translated generic line naming the
- * action. The server's `error.message` is never shown: it is not translated,
- * and it can carry a provider's or a proxy's text.
+ * action (for `configure` itself, the configure dialog's own generic line).
+ * The server's `error.message` is never shown: it is not translated, and it
+ * can carry a provider's or a proxy's text.
  */
 export function syncActionErrorKey(error: unknown, action: SyncAction): string {
 	const mapped = configureErrorMessage(error);
-	return mapped.key === "configureDialog.errors.generic"
+	return mapped.key === "configureDialog.errors.generic" &&
+		action !== "configure"
 		? `actionErrors.${action}`
 		: mapped.key;
 }
@@ -659,20 +748,40 @@ export function syncNowResultMessage(result: SyncNowResult): {
 /* -------------------------------------------------------------------------- */
 /* The Connect dialog's local-checkout route (Fizzy #2721)                    */
 /*                                                                             */
-/* `ConnectCliDialog`'s "keep the files in your checkout" block used to be a  */
-/* single boolean: Fabric authors the files, or the CLI refuses the project   */
-/* outright. A repository-sourced project now has a real command too — a      */
-/* checkout of the repository the sync follows — so the gate is a discriminated */
-/* route instead. Declared here, not in the dialog itself, so the tab and the */
-/* empty state compute the SAME answer from the SAME state (mirrors why      */
-/* `RepositorySyncState` and the outcome/message helpers above live here).   */
+/* `ConnectCliDialog`'s one-line setup differs by where the instructions come  */
+/* from: an upload project runs it in any folder, a repository project runs it */
+/* in a checkout of the repository the sync follows (and can offer to clone    */
+/* it). The gate is therefore a discriminated route. Declared here, not in the */
+/* dialog itself, so the tab and the empty state compute the SAME answer from  */
+/* the SAME state (mirrors why `RepositorySyncState` and the outcome/message   */
+/* helpers above live here).                                                   */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The repository providers a checkout can be set up for: the ones the CLI
+ * compares a checkout's remote against (GitHub, GitLab and Azure DevOps
+ * spellings). An unrecognised future value is refused the same way, matching
+ * the CLI's own closed set.
+ */
+type SetupRepositoryProvider = "GITHUB" | "GITLAB" | "AZURE_DEVOPS";
+
+const SETUP_REPOSITORY_PROVIDERS: ReadonlySet<string> =
+	new Set<SetupRepositoryProvider>(["GITHUB", "GITLAB", "AZURE_DEVOPS"]);
+
+function isSetupRepositoryProvider(
+	provider: string,
+): provider is SetupRepositoryProvider {
+	return SETUP_REPOSITORY_PROVIDERS.has(provider);
+}
 
 /** Which local-checkout route the Connect dialog offers, if any. */
 export type LocalSetupRoute =
 	| { kind: "upload" }
 	| {
 			kind: "repository";
+			provider: SetupRepositoryProvider;
+			/** `owner/name`, as the person knows the repository. */
+			repositoryLabel: string;
 			cloneUrl: string;
 			/** The directory `git clone <cloneUrl>` creates. */
 			directory: string;
@@ -753,17 +862,6 @@ export function quoteShellArgIfNeeded(value: string): string {
 }
 
 /**
- * Providers the CLI actually compares a checkout against. `init` classifies
- * Azure DevOps as an "unsupported provider" and refuses outright
- * (`docs/guides/coding-instructions-cli.md`, "Repository-sourced projects"),
- * so offering the repository route for it would be a "Recommended" command
- * that cannot succeed. `RepositoryProvider` in `schema.prisma` also has
- * `AZURE_DEVOPS`; an unrecognised future value is refused the same way,
- * matching the CLI's own closed set.
- */
-const SUPPORTED_REPOSITORY_PROVIDERS = new Set(["GITHUB", "GITLAB"]);
-
-/**
  * `false` for a checkout directory or root-folder segment that would break or
  * mislead the printed commands: empty, `.` (the shell would `cd` to nowhere
  * new) or `..` (a path escape). A leading `-` is deliberately NOT rejected
@@ -787,7 +885,8 @@ function hasParentSegment(path: string): boolean {
  *   which fails closed while they load or after they fail) → `null`;
  * - an upload project → `{ kind: "upload" }`;
  * - a repository project with a configured sync naming a repository on a
- *   provider the CLI compares against → the `git clone` route;
+ *   provider the CLI compares against (GitHub, GitLab, Azure DevOps) → the
+ *   `git clone` route;
  * - a repository project with no configured sync, no clone URL, an
  *   unsupported provider, or a derived checkout directory/root folder the
  *   printed commands could not use safely → `null`. The CLI would refuse
@@ -809,7 +908,7 @@ export function localSetupRouteFor(args: {
 	if (!configured || !configured.repositoryUrl) {
 		return null;
 	}
-	if (!SUPPORTED_REPOSITORY_PROVIDERS.has(configured.provider)) {
+	if (!isSetupRepositoryProvider(configured.provider)) {
 		return null;
 	}
 	const directory =
@@ -824,6 +923,8 @@ export function localSetupRouteFor(args: {
 	}
 	return {
 		kind: "repository",
+		provider: configured.provider,
+		repositoryLabel: `${configured.repositoryOwner}/${configured.repositoryName}`,
 		cloneUrl: configured.repositoryUrl,
 		directory,
 		ref: configured.ref,

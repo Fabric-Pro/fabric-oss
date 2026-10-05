@@ -3,6 +3,8 @@ import {
 	coerceSort,
 	compareStoriesBy,
 	DEFAULT_ROADMAP_SORT,
+	isManualRoadmapSort,
+	MANUAL_ROADMAP_SORT,
 	type RoadmapSort,
 	SORT_KEY_DEFAULT_DIRECTIONS,
 	SORT_KEY_LABELS,
@@ -271,6 +273,76 @@ describe("metadata exports", () => {
 		expect(SORT_KEYS_REQUIRING_FLAT_LIST.has("roadmapOrder")).toBe(false);
 		expect(SORT_KEYS_REQUIRING_FLAT_LIST.has("priority")).toBe(false);
 		expect(SORT_KEYS_REQUIRING_FLAT_LIST.has("updated")).toBe(true);
+	});
+});
+
+describe("default sort — what a user with no saved sort gets", () => {
+	it("is created date, newest first", () => {
+		expect(DEFAULT_ROADMAP_SORT).toEqual({
+			key: "created",
+			direction: "desc",
+		});
+	});
+
+	it("puts the most recently created story first", () => {
+		// roadmapOrder runs the opposite way, so an order that still followed
+		// the manual sequence would come out reversed.
+		const stories = [
+			makeStory({
+				id: "oldest",
+				roadmapOrder: 1,
+				createdAt: new Date("2026-01-01T00:00:00Z"),
+			}),
+			makeStory({
+				id: "newest",
+				roadmapOrder: 3,
+				createdAt: new Date("2026-03-01T00:00:00Z"),
+			}),
+			makeStory({
+				id: "middle",
+				roadmapOrder: 2,
+				createdAt: new Date("2026-02-01T00:00:00Z"),
+			}),
+		];
+		expect(sortIds(stories, DEFAULT_ROADMAP_SORT)).toEqual([
+			"newest",
+			"middle",
+			"oldest",
+		]);
+	});
+});
+
+describe("manual roadmap order", () => {
+	it("is the saved roadmap order, ascending", () => {
+		expect(MANUAL_ROADMAP_SORT).toEqual({
+			key: "roadmapOrder",
+			direction: "asc",
+		});
+	});
+
+	it("recognises the manual order", () => {
+		expect(isManualRoadmapSort(MANUAL_ROADMAP_SORT)).toBe(true);
+	});
+
+	it("does not treat the default sort as the manual order", () => {
+		// Drag-to-reorder writes roadmapOrder and is offered only under the
+		// manual order. Under the default the list is ordered by created date,
+		// so a drag there would move a row the sort immediately puts back.
+		expect(isManualRoadmapSort(DEFAULT_ROADMAP_SORT)).toBe(false);
+	});
+
+	it("does not treat any other sort as the manual order", () => {
+		for (const key of Object.keys(SORT_KEY_LABELS)) {
+			if (key === "roadmapOrder") {
+				continue;
+			}
+			expect(
+				isManualRoadmapSort({
+					key: key as RoadmapSort["key"],
+					direction: "asc",
+				}),
+			).toBe(false);
+		}
 	});
 });
 

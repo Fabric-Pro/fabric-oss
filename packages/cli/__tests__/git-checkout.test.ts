@@ -185,7 +185,8 @@ function expectNoUrl(report: CheckoutReport): void {
 	expect(text).not.toMatch(/[^\s]+:[^\s]+@/);
 }
 
-const BEHIND = `fabric: coding instructions v4 (SHA7) is published on main of ${NAME}; this checkout is behind`;
+const BEHIND =
+	"fabric: coding instructions v4 (SHA7) is on main; this checkout is behind";
 
 describe("a checkout classified and read with real git", () => {
 	itWithGit(
@@ -203,7 +204,7 @@ describe("a checkout classified and read with real git", () => {
 
 			expect(report.classification.class).toBe("foreign");
 			expect(report.line).toBe(
-				`fabric: coding instructions: no remote of this checkout fetches from ${NAME} (foreign checkout); nothing was checked or changed`,
+				`fabric: coding instructions: no remote of this checkout fetches from ${NAME}; nothing was checked.`,
 			);
 			expectNoUrl(report);
 		},
@@ -272,7 +273,7 @@ describe("a checkout classified and read with real git", () => {
 		git(f.checkout, "checkout", "-q", "-b", "topic", f.first);
 
 		expect((await inspect(f.checkout, f.second)).line).toBe(
-			`${BEHIND.replace("SHA7", f.second.slice(0, 7))}; you are on topic — pull main when you switch to it`,
+			`${BEHIND.replace("SHA7", f.second.slice(0, 7))}; you are on topic — pull main when you switch to it.`,
 		);
 	});
 
@@ -281,7 +282,7 @@ describe("a checkout classified and read with real git", () => {
 		git(f.checkout, "checkout", "-q", "--detach", f.first);
 
 		expect((await inspect(f.checkout, f.second)).line).toBe(
-			`${BEHIND.replace("SHA7", f.second.slice(0, 7))}; HEAD is detached — check out main and pull`,
+			`${BEHIND.replace("SHA7", f.second.slice(0, 7))}; HEAD is detached — check out main and pull.`,
 		);
 	});
 
@@ -291,7 +292,7 @@ describe("a checkout classified and read with real git", () => {
 		await writeFile(path.join(f.checkout, "AGENTS.md"), "edited\n");
 
 		expect((await inspect(f.checkout, f.second)).line).toContain(
-			"; your working tree has changes — pull when it is clean",
+			" and has uncommitted changes — commit or stash, then pull.",
 		);
 	});
 
@@ -313,7 +314,7 @@ describe("a checkout classified and read with real git", () => {
 			await writeFile(path.join(f.checkout, "NOTES.md"), "mine\n");
 
 			expect((await inspect(f.checkout, f.second)).line).toContain(
-				"; your working tree has changes — pull when it is clean",
+				" and has uncommitted changes — commit or stash, then pull.",
 			);
 		},
 	);
@@ -336,7 +337,7 @@ describe("a checkout classified and read with real git", () => {
 			);
 
 			expect((await inspect(f.checkout, f.second)).line).toContain(
-				"; your working tree has changes — pull when it is clean",
+				" and has uncommitted changes — commit or stash, then pull.",
 			);
 		},
 	);
@@ -403,7 +404,9 @@ describe("a checkout classified and read with real git", () => {
 		const report = await inspect(f.checkout, f.second);
 
 		expect(report.json.operation).toBe("merge");
-		expect(report.line).toContain("; a merge is in progress");
+		expect(report.line).toContain(
+			"; a merge is in progress; nothing was changed.",
+		);
 	});
 
 	itWithGit(

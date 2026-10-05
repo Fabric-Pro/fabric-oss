@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "../hosting-organization";
+import { assertNoOpenMigration } from "../migration-freeze";
 import { startInstructionRepositorySync } from "./start-sync-workflow";
 
 /**
@@ -36,6 +37,13 @@ export const syncRepositoryNowProcedure = tenantProtectedProcedure
 		const organizationId = await requireHostingOrganizationId(
 			input.projectId,
 			context.user.id,
+		);
+		// While a move from uploads is proposing, the row is paused and the
+		// folder holds nothing yet: a run would only be skipped. Once it is
+		// switching a manual run is the way to hurry it along (Fizzy #2878 §9).
+		await assertNoOpenMigration(
+			{ projectId: input.projectId, organizationId },
+			{ onlyWhile: "PROPOSING" },
 		);
 		const sync = await getInstructionRepositorySync(
 			input.projectId,

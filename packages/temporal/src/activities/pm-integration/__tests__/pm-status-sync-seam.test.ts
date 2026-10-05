@@ -109,14 +109,12 @@ const gitlab = vi.hoisted(() => {
 });
 
 // No importOriginal: gitlab/index.ts re-exports ./pm-adapter, which imports
-// ./index back — importOriginal here would recurse into this very mock. These
-// are exactly the three names pm-adapter imports from ./index.
+// ./index back — importOriginal here would recurse into this very mock. This
+// is exactly the one name pm-adapter imports from ./index.
 vi.mock("@repo/integrations/gitlab", () => ({
 	executeGitLabTool: gitlab.execute,
-	getGitLabAccessToken: async () => null,
-	refreshMcpConfigToken: async () => {
-		throw new Error("fake GitLab: token refresh is off this seam");
-	},
+	// pm-adapter also reads this one from ./index (in its error path).
+	GitLabConnectionOriginChangedError: class extends Error {},
 }));
 
 const seam = vi.hoisted(() => ({ resolvePmSource: vi.fn() }));
@@ -600,6 +598,9 @@ describe("fetch seam: GitLab JSON → real adapter → REST fetch → verdict �
 			{ project_id: CONTAINER, issue_iid: 7 },
 			OWNER_ID,
 			ORG_ID,
+			undefined,
+			// Kept on the instance the source was resolved on.
+			{ expectedOrigin: "https://gitlab.com" },
 		);
 		const verdict = onlyVerdict(fetched);
 		expect(verdict.itemUrl).toBe(ISSUE_JSON.web_url);
@@ -682,6 +683,8 @@ describe("update seam: verbatim PUT JSON → real updateGitLabIssueFromStory →
 			},
 			EDITOR_ID,
 			ORG_ID,
+			undefined,
+			{ expectedOrigin: "https://gitlab.com" },
 		);
 		const stamp = fakeStore.calls.find(
 			(c) => c.table === "userStory" && c.method === "updateMany",

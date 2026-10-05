@@ -417,47 +417,86 @@ describe("resolveOrgIdForQuery", () => {
 });
 
 describe("recordToolIngestError", () => {
-	it("writes a structured error to WorkflowIntegration.settings", async () => {
-		const updateMock = vi.fn().mockResolvedValue(undefined);
-		const fakeDb = {
-			workflowIntegration: {
-				update: updateMock,
-			},
-		};
+	it("merges a structured error into the connection's settings, fenced on its generation", async () => {
+		const patchSettings = vi.fn().mockResolvedValue(true);
 
 		await recordToolIngestError({
-			db: fakeDb as never,
-			integrationId: "wi_1",
+			tenant: { userId: "u1", organizationId: "org-1" },
+			generation: 7,
 			error: new Error("ingestion exploded"),
+			patchSettings,
 		});
 
-		expect(updateMock).toHaveBeenCalledTimes(1);
-		const call = updateMock.mock.calls[0][0];
-		expect(call.where).toEqual({ id: "wi_1" });
-		const settingsUpdate = call.data.settings;
-		expect(settingsUpdate.lastToolIngestError.message).toBe(
+		expect(patchSettings).toHaveBeenCalledTimes(1);
+		const [tenant, args] = patchSettings.mock.calls[0];
+		expect(tenant).toEqual({ userId: "u1", organizationId: "org-1" });
+		// A merge patch, never a whole-settings replace.
+		expect(Object.keys(args.patch)).toEqual(["lastToolIngestError"]);
+		expect(args.expectedGeneration).toBe(7);
+		expect(args.patch.lastToolIngestError.message).toBe(
 			"ingestion exploded",
 		);
-		expect(settingsUpdate.lastToolIngestError.at).toMatch(/T\d\d:/); // ISO timestamp
+		expect(args.patch.lastToolIngestError.at).toMatch(/T\d\d:/); // ISO timestamp
 	});
 
 	it("coerces non-Error error values to string message", async () => {
-		const updateMock = vi.fn().mockResolvedValue(undefined);
-		const fakeDb = {
-			workflowIntegration: {
-				update: updateMock,
-			},
-		};
+		const patchSettings = vi.fn().mockResolvedValue(true);
 
 		await recordToolIngestError({
-			db: fakeDb as never,
-			integrationId: "wi_2",
+			tenant: { userId: "u1", organizationId: null },
+			generation: 1,
 			error: "string error",
+			patchSettings,
 		});
 
-		const call = updateMock.mock.calls[0][0];
-		expect(call.data.settings.lastToolIngestError.message).toBe(
-			"string error",
+		expect(
+			patchSettings.mock.calls[0][1].patch.lastToolIngestError.message,
+		).toBe("string error");
+	});
+});
+
+describe("picker helpers with a self-hosted credential", () => {
+	const credential = {
+		token: "instance-token",
+		apiBase: "https://gitlab.example.com/api/v4",
+	};
+	const ok = (body: unknown) => ({
+		ok: true,
+		status: 200,
+		json: async () => body,
+	});
+
+	it("getGitLabUser asks the credential's own instance", async () => {
+		mockFetch.mockResolvedValueOnce(ok({ id: 1, username: "dev" }));
+		await getGitLabUser(credential);
+		const [url, init] = mockFetch.mock.calls[0];
+		expect(url).toBe("https://gitlab.example.com/api/v4/user");
+		expect(init.headers).toMatchObject({
+			Authorization: "Bearer instance-token",
+		});
+	});
+
+	it("listGitLabProjects lists on the credential's own instance", async () => {
+		mockFetch.mockResolvedValueOnce(ok([]));
+		await listGitLabProjects(credential);
+		expect(String(mockFetch.mock.calls[0][0])).toMatch(
+			/^https:\/\/gitlab\.example\.com\/api\/v4\/projects\?/,
+		);
+	});
+
+	it("listGitLabBranches lists on the credential's own instance", async () => {
+		mockFetch.mockResolvedValueOnce(ok([]));
+		await listGitLabBranches(credential, "group/app");
+		expect(mockFetch.mock.calls[0][0]).toBe(
+			"https://gitlab.example.com/api/v4/projects/group%2Fapp/repository/branches",
+		);
+	});
+
+	it("a bare token still means gitlab.com", async () => {
+		mockFetch.mockResolvedValueOnce(ok({ id: 1, username: "dev" }));
+		await getGitLabUser("dotcom-token");
+		expect(mockFetch.mock.calls[0][0]).toBe(
+			"https://gitlab.com/api/v4/user",
 		);
 	});
 });

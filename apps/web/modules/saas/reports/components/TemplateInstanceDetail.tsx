@@ -1,11 +1,14 @@
 "use client";
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import {
 	findMatchingMcpConfigs,
 	getMcpConfigDisplayName,
+	isReportMcpConfigAuthenticated,
 	normalizeKey,
 } from "@saas/reports/lib/mcp-utils";
 import {
@@ -287,6 +290,18 @@ export function TemplateInstanceDetail({
 	const userMcpConfigs = Array.isArray(mcpConfigsData)
 		? mcpConfigsData
 		: (mcpConfigsData?.configs ?? []);
+
+	// GitLab personal servers hold no token of their own: whether one is
+	// authenticated is the person's GitLab connection, read through the same
+	// `gitlab.status` query every GitLab screen shares.
+	const hasGitLabMcpConfig = userMcpConfigs.some(
+		(config: { mcpServer?: { key?: string | null } | null }) =>
+			isGitLabPersonalMcpServerKey(config.mcpServer?.key),
+	);
+	const { data: gitlabStatus } = useQuery({
+		...gitlabStatusQueryOptions(instanceOrgId),
+		enabled: hasGitLabMcpConfig,
+	});
 	const userIntegrations = integrationsData?.integrations ?? [];
 
 	// Config ids the user can actually access in this tenant context — the SAME
@@ -1170,29 +1185,10 @@ export function TemplateInstanceDetail({
 		} | null;
 	};
 
-	// Check if MCP config has valid authentication
-	const isMcpConfigAuthenticated = (config: McpConfigItem): boolean => {
-		if (!config.enabled) {
-			return false;
-		}
-		if (config.authType === "NONE") {
-			return true;
-		}
-		if (config.authType === "API_KEY") {
-			return !!config.encryptedApiKey;
-		}
-		if (config.authType === "OAUTH2") {
-			if (!config.encryptedAccessToken) {
-				return false;
-			}
-			if (config.tokenExpiresAt) {
-				const expiresAt = new Date(config.tokenExpiresAt);
-				return expiresAt > new Date();
-			}
-			return true;
-		}
-		return false;
-	};
+	// Check if MCP config has valid authentication (a GitLab personal server
+	// by the person's GitLab connection, every other one by its own row).
+	const isMcpConfigAuthenticated = (config: McpConfigItem): boolean =>
+		isReportMcpConfigAuthenticated(config, gitlabStatus?.state);
 
 	// Find matching MCP configs for a required key (using shared utility)
 	const getMatchingMcpConfigs = (key: string) => {

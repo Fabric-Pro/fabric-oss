@@ -6,11 +6,16 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import {
+	type GitLabAuth,
+	gitlabOutboundFetch,
+	patchGitLabConnectionSettings,
+	toGitLabApiCredential,
+} from "@repo/integrations/gitlab";
 
 // GitLab OAuth configuration
 const GITLAB_AUTH_URL = "https://gitlab.com/oauth/authorize";
 const GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token";
-const GITLAB_API_URL = "https://gitlab.com/api/v4";
 
 // Scopes needed for repo access and user info
 const GITLAB_SCOPES = ["api", "read_user"];
@@ -186,12 +191,15 @@ export async function exchangeCodeForToken(
 export { refreshGitLabToken } from "@repo/integrations/gitlab";
 
 /**
- * Get the authenticated user's GitLab profile
+ * Get the authenticated user's GitLab profile. A bare token is a gitlab.com
+ * token; a token from another instance is passed with its `apiBase`.
  */
-export async function getGitLabUser(accessToken: string): Promise<GitLabUser> {
-	const response = await fetch(`${GITLAB_API_URL}/user`, {
+export async function getGitLabUser(auth: GitLabAuth): Promise<GitLabUser> {
+	const { token, apiBase } = toGitLabApiCredential(auth);
+	// `apiBase` is the credential's instance: guarded unless gitlab.com.
+	const response = await gitlabOutboundFetch(`${apiBase}/user`, {
 		headers: {
-			Authorization: `Bearer ${accessToken}`,
+			Authorization: `Bearer ${token}`,
 		},
 	});
 
@@ -206,10 +214,11 @@ export async function getGitLabUser(accessToken: string): Promise<GitLabUser> {
  * List projects accessible to the user
  */
 export async function listGitLabProjects(
-	accessToken: string,
+	auth: GitLabAuth,
 	page = 1,
 	perPage = 30,
 ): Promise<GitLabProject[]> {
+	const { token, apiBase } = toGitLabApiCredential(auth);
 	const params = new URLSearchParams({
 		membership: "true",
 		order_by: "updated_at",
@@ -218,11 +227,11 @@ export async function listGitLabProjects(
 		page: String(page),
 	});
 
-	const response = await fetch(
-		`${GITLAB_API_URL}/projects?${params.toString()}`,
+	const response = await gitlabOutboundFetch(
+		`${apiBase}/projects?${params.toString()}`,
 		{
 			headers: {
-				Authorization: `Bearer ${accessToken}`,
+				Authorization: `Bearer ${token}`,
 			},
 		},
 	);
@@ -238,14 +247,15 @@ export async function listGitLabProjects(
  * List branches for a GitLab project
  */
 export async function listGitLabBranches(
-	accessToken: string,
+	auth: GitLabAuth,
 	projectId: string,
 ): Promise<GitLabBranch[]> {
-	const response = await fetch(
-		`${GITLAB_API_URL}/projects/${encodeURIComponent(projectId)}/repository/branches`,
+	const { token, apiBase } = toGitLabApiCredential(auth);
+	const response = await gitlabOutboundFetch(
+		`${apiBase}/projects/${encodeURIComponent(projectId)}/repository/branches`,
 		{
 			headers: {
-				Authorization: `Bearer ${accessToken}`,
+				Authorization: `Bearer ${token}`,
 			},
 		},
 	);
@@ -296,27 +306,23 @@ export function resolveOrgIdForQuery(state: {
  * see "connected but broken" state rather than a misleading success toast.
  */
 export async function recordToolIngestError(args: {
-	// update is typed as (args: unknown) so that the real PrismaClient satisfies
-	// this interface structurally — the narrower arg shape is enforced at the call
-	// inside this function, not at the boundary.
-	db: {
-		workflowIntegration: {
-			update: (args: unknown) => Promise<unknown>;
-		};
-	};
-	integrationId: string;
+	tenant: { userId: string; organizationId: string | null };
+	/** The generation the connection was written at; a later change wins. */
+	generation: number;
 	error: unknown;
+	patchSettings?: typeof patchGitLabConnectionSettings;
 }): Promise<void> {
 	const message =
 		args.error instanceof Error ? args.error.message : String(args.error);
-	await args.db.workflowIntegration.update({
-		where: { id: args.integrationId },
-		data: {
-			settings: {
-				lastToolIngestError: {
-					message,
-					at: new Date().toISOString(),
-				},
+	// Merged into the connection's settings — never a whole-object replace,
+	// which wiped the connection's account, expiry and capability fields —
+	// and fenced on the generation, so it cannot land on a newer connection.
+	await (args.patchSettings ?? patchGitLabConnectionSettings)(args.tenant, {
+		expectedGeneration: args.generation,
+		patch: {
+			lastToolIngestError: {
+				message,
+				at: new Date().toISOString(),
 			},
 		},
 	});

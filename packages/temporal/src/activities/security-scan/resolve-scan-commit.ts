@@ -116,7 +116,10 @@ export async function resolveScanCommitActivity(
 		const repos = await getProjectReposForCodeSearch(projectId);
 		const repo = repos[0];
 		if (repo) {
-			const authUrl = await buildAuthenticatedCloneUrl(repo);
+			const authUrl = await buildAuthenticatedCloneUrl(repo, {
+				projectId,
+				organizationId: input.organizationId,
+			});
 			if (authUrl) {
 				const simpleGit = (await import("simple-git")).default;
 				const output = await simpleGit().listRemote([

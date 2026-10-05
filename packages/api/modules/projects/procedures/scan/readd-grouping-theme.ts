@@ -16,6 +16,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { createGroupingTicket } from "../../lib/create-grouping-ticket";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Re-add a previously declined grouping ticket: create it immediately from the
@@ -42,13 +43,20 @@ export const readdGroupingThemeProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { projectId, groupingId, themeKey } = input;
-		const organizationId = input.organizationId ?? null;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const userId = context.user.id;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			userId,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {

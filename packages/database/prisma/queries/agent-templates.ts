@@ -1607,8 +1607,9 @@ export async function searchTemplatesForMention(
 				}
 			}
 			if (enabledBuiltInKeys.length > 0) {
-				// Add fabric-ai-server to MCP config IDs so ToolIndex doesn't
-				// blanket-exclude all Fabric AI tools at the config level
+				// Add fabric-ai-server to MCP config IDs so an agent with only
+				// built-in tools does not send an empty list, which the plan
+				// validator reads as every tool turned off
 				legacyMcpConfigIds.push("fabric-ai-server");
 			}
 		}

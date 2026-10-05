@@ -1,5 +1,8 @@
 import { isProjectReadOnly } from "@repo/database";
-import { GITLAB_REST_CAPABILITIES } from "@repo/integrations/gitlab";
+import {
+	GITLAB_REST_CAPABILITIES,
+	GitLabPmOriginMismatchError,
+} from "@repo/integrations/gitlab";
 import {
 	createGitLabIssueFromStory,
 	getGitLabIssueForPM,
@@ -67,17 +70,46 @@ export async function callPmToolWithFallback(args: {
 	}
 
 	// Adapt the temporal-side rest-gitlab source to the GitLab REST adapter's
-	// GitLabSource shape: { kind: "rest-adapter", token }.
+	// GitLabSource shape, keeping the instance the token was issued by.
 	const gitlabSource = {
 		kind: "rest-adapter" as const,
-		token: source.token,
+		credential: { token: source.token, apiBase: source.baseUrl },
 	};
 
+	try {
+		return await dispatchRest(gitlabSource, source.projectId, call, {
+			userId,
+			organizationId,
+		});
+	} catch (error) {
+		// The adapter keeps every request on the instance `resolvePmSource`
+		// checked; a connection that moved to another one since is refused,
+		// and retrying cannot change that.
+		if (error instanceof GitLabPmOriginMismatchError) {
+			throw ApplicationFailure.nonRetryable(
+				error.message,
+				"GitLabPmOriginMismatch",
+			);
+		}
+		throw error;
+	}
+}
+
+async function dispatchRest(
+	gitlabSource: {
+		kind: "rest-adapter";
+		credential: { token: string; apiBase: string };
+	},
+	gitlabProjectId: string,
+	call: PMToolCall,
+	tenant: { userId: string; organizationId: string | null },
+): Promise<unknown> {
+	const { userId, organizationId } = tenant;
 	switch (call.tool) {
 		case "listWorkItems":
 			return listGitLabIssuesForPM({
 				source: gitlabSource,
-				gitlabProjectId: source.projectId,
+				gitlabProjectId,
 				userId,
 				organizationId,
 				...call.filters,
@@ -85,7 +117,7 @@ export async function callPmToolWithFallback(args: {
 		case "fetchItem":
 			return getGitLabIssueForPM({
 				source: gitlabSource,
-				gitlabProjectId: source.projectId,
+				gitlabProjectId,
 				externalId: call.externalId,
 				userId,
 				organizationId,
@@ -93,7 +125,7 @@ export async function callPmToolWithFallback(args: {
 		case "createItem":
 			return createGitLabIssueFromStory({
 				source: gitlabSource,
-				gitlabProjectId: source.projectId,
+				gitlabProjectId,
 				payload: call.payload as never,
 				userId,
 				organizationId,
@@ -101,7 +133,7 @@ export async function callPmToolWithFallback(args: {
 		case "updateItem":
 			return updateGitLabIssueFromStory({
 				source: gitlabSource,
-				gitlabProjectId: source.projectId,
+				gitlabProjectId,
 				externalId: call.externalId,
 				payload: call.payload as never,
 				userId,

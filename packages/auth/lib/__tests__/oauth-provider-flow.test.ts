@@ -12,153 +12,45 @@
  * configured plugin rather than restated from its documentation.
  */
 
-import { createAuthMiddleware } from "better-auth/api";
-import { getTestInstance } from "better-auth/test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	hashOAuthToken,
 	OAUTH_ACCESS_TOKEN_PREFIX,
 	OAUTH_REFRESH_TOKEN_PREFIX,
 } from "../../../database/prisma/queries/oauth-token-format";
 import {
-	createOAuthProviderPlugin,
-	OAUTH_DISABLED_PATHS,
-} from "../oauth-provider";
-import { enforceRegistrationPolicy } from "../oauth-registration-policy";
-import {
 	OAUTH_ORGANIZATION_CHOSEN_COOKIE,
 	OAUTH_SCOPES,
 	oauthIssuer,
 } from "../oauth-scopes";
+import {
+	ORGANIZATION_ID,
+	oauthFixtures as membership,
+	resetOAuthFixtures,
+} from "./support/oauth-database-mock";
+import {
+	APP_URL,
+	authorizeUrl,
+	boot,
+	challengeOf,
+	type Harness,
+	REDIRECT_URI,
+	register,
+	rowsOf,
+	VERIFIER,
+} from "./support/oauth-flow-harness";
 
-const ORGANIZATION_ID = "org-example-alpha";
+vi.mock("@repo/database", async () =>
+	(await import("./support/oauth-database-mock")).createDatabaseMock(),
+);
 
-/** How many organizations the signed-in person belongs to. */
-const membership = vi.hoisted(() => ({
-	count: 1,
-	/** The signed-in person's `mustChangePassword`. */
-	mustChangePassword: false,
-}));
-
-vi.mock("@repo/database", async () => {
-	const format = await import(
-		"../../../database/prisma/queries/oauth-token-format"
-	);
-	return {
-		...format,
-		db: {
-			member: { count: vi.fn(async () => membership.count) },
-			user: {
-				findUnique: vi.fn(async () => ({
-					mustChangePassword: membership.mustChangePassword,
-				})),
-			},
-		},
-		isOrganizationMember: vi.fn(
-			async (_userId: string, organizationId: string) =>
-				organizationId === "org-example-alpha",
-		),
-		resolveUserOrganization: vi.fn(async () => ({
-			kind: "resolved",
-			organizationId: "org-example-alpha",
-		})),
-	};
+beforeEach(() => {
+	resetOAuthFixtures();
 });
 
-const APP_URL = "http://localhost:3000";
-const REDIRECT_URI = "http://127.0.0.1:49152/callback";
-const VERIFIER = "v".repeat(43);
-
-/** Every stored row of a plugin table, read through the instance's adapter. */
-async function rowsOf(
-	ctx: {
-		instance: {
-			db: { findMany: (args: { model: string }) => Promise<unknown[]> };
-		};
-	},
-	model: string,
-): Promise<Array<Record<string, unknown>>> {
-	const rows = await ctx.instance.db.findMany({ model });
-	return rows.filter(
-		(row): row is Record<string, unknown> =>
-			typeof row === "object" && row !== null,
-	);
-}
-
-async function challengeOf(verifier: string): Promise<string> {
-	const digest = await crypto.subtle.digest(
-		"SHA-256",
-		new TextEncoder().encode(verifier),
-	);
-	return Buffer.from(digest).toString("base64url");
-}
-
-async function boot() {
-	const instance = await getTestInstance({
-		baseURL: APP_URL,
-		plugins: [createOAuthProviderPlugin(APP_URL)],
-		disabledPaths: [...OAUTH_DISABLED_PATHS],
-		// The registration policy lives in the app's global before-hook; the
-		// harness applies the same function so registration goes through it.
-		hooks: {
-			before: createAuthMiddleware(async (ctx) => {
-				if (ctx.path === "/oauth2/register") {
-					enforceRegistrationPolicy(ctx.body);
-				}
-			}),
-		},
-	});
-	const { headers } = await instance.signInWithTestUser();
-	const cookie = headers.get("cookie") ?? "";
-	const auth = instance.auth;
-
-	const call = (path: string, init: RequestInit = {}) =>
-		auth.handler(
-			new Request(`${APP_URL}/api/auth${path}`, {
-				...init,
-				headers: {
-					origin: APP_URL,
-					cookie,
-					...(init.headers as Record<string, string> | undefined),
-				},
-			}),
-		) as Promise<Response>;
-
-	return { instance, auth, call, cookie };
-}
-
-async function register(call: Awaited<ReturnType<typeof boot>>["call"]) {
-	const response = await call("/oauth2/register", {
-		method: "POST",
-		headers: { "content-type": "application/json", cookie: "" },
-		body: JSON.stringify({
-			client_name: "Example Agent",
-			redirect_uris: [REDIRECT_URI],
-			token_endpoint_auth_method: "none",
-			grant_types: ["authorization_code", "refresh_token"],
-			scope: OAUTH_SCOPES.join(" "),
-			type: "native",
-		}),
-	});
-	return { response, body: (await response.json()) as { client_id: string } };
-}
-
-async function authorizeUrl(clientId: string): Promise<string> {
-	const query = new URLSearchParams({
-		response_type: "code",
-		client_id: clientId,
-		redirect_uri: REDIRECT_URI,
-		scope: OAUTH_SCOPES.join(" "),
-		state: "state-example",
-		code_challenge: await challengeOf(VERIFIER),
-		code_challenge_method: "S256",
-		resource: `${APP_URL}/api/mcp-gateway`,
-	});
-	return `/oauth2/authorize?${query.toString()}`;
-}
-
 /** Walk register, authorize and consent, and return the token response. */
-async function signIn(ctx: Awaited<ReturnType<typeof boot>>) {
+async function signIn(ctx: Harness) {
 	const { body: client } = await register(ctx.call);
 
 	const authorize = await ctx.call(await authorizeUrl(client.client_id), {
@@ -173,6 +65,7 @@ async function signIn(ctx: Awaited<ReturnType<typeof boot>>) {
 		body: JSON.stringify({
 			accept: true,
 			oauth_query: consentLocation.split("?")[1],
+			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
 		}),
 	});
 	const { url } = (await consent.json()) as { url: string };
@@ -295,6 +188,7 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 				oauth_query: (authorize.headers.get("location") ?? "").split(
 					"?",
 				)[1],
+				[OAUTH_DISPLAYED_BINDING_FIELD]: null,
 			}),
 		});
 		const code = new URL(
@@ -394,6 +288,7 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 				body: JSON.stringify({
 					accept: true,
 					oauth_query: consentQuery,
+					[OAUTH_DISPLAYED_BINDING_FIELD]: null,
 				}),
 			});
 
@@ -405,11 +300,11 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 
 	describe("for a person in more than one organization", () => {
 		afterEach(() => {
-			membership.count = 1;
+			membership.organizationCount = 1;
 		});
 
 		it("asks which organization once per authorization, then goes on to consent", async () => {
-			membership.count = 2;
+			membership.organizationCount = 2;
 			const ctx = await boot();
 			const { body: client } = await register(ctx.call);
 

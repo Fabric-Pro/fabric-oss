@@ -143,8 +143,13 @@ function addedMode(row: FileRow): "100644" | "100755" {
 const isRegularBlob = (e: TreeEntry | null | undefined): e is TreeEntry =>
 	!!e && e.type === "blob" && (e.mode === "100644" || e.mode === "100755");
 
-/** One intent path (spec §6.4 step 2): the proposal's own entry, or null for a deletion. */
-type Intent = {
+/**
+ * One intent path (spec §6.4 step 2): the proposal's own entry, or null for a
+ * deletion. Exported with `intentsOf` and `hashIntentBlobs` for the direct
+ * commit (Fizzy #2878 §10), which turns a snapshot's rows into the same
+ * entries against the synced branch's tip.
+ */
+export type Intent = {
 	/** Relative to the root, as the proposal stores it. */
 	path: string;
 	/** The repository path. */
@@ -155,7 +160,7 @@ type Intent = {
 	afterSha256: string | null;
 };
 
-type Blob = { oid: string; sha256: string };
+export type Blob = { oid: string; sha256: string };
 
 /** The claim this append runs under. */
 export type AppendInput = {
@@ -660,7 +665,7 @@ async function appendPass(
 // Step 2 helpers
 // ---------------------------------------------------------------------------
 
-const toFileRow = (r: {
+export const toFileRow = (r: {
 	path: string;
 	sha256: string;
 	mode: number | null;
@@ -673,7 +678,7 @@ const toFileRow = (r: {
 });
 
 /** The bytes each added or modified row writes, re-hashed from storage and stored as blobs. */
-async function hashIntentBlobs(
+export async function hashIntentBlobs(
 	credential: BranchCredential,
 	delta: EffectiveDelta,
 ): Promise<Map<FileRow, Blob>> {
@@ -719,7 +724,7 @@ async function hashIntentBlobs(
  * row keeps T's regular-blob mode, else the base commit's, else the row's
  * recorded one; a new path is `100644`, or `100755` when recorded 0755.
  */
-async function intentsOf(i: {
+export async function intentsOf(i: {
 	credential: BranchCredential;
 	delta: EffectiveDelta;
 	blobs: Map<FileRow, Blob>;

@@ -15,6 +15,7 @@ import {
 } from "../../../../orpc/procedures";
 import { assertCapabilityAvailable } from "../../../capabilities/assert";
 import { STALL_MINUTES_BY_SOURCE } from "../../../capabilities/thresholds";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 import { startProjectScan } from "./lib/start-scan";
 
 export const triggerScanProcedure = tenantProtectedProcedure
@@ -51,7 +52,6 @@ export const triggerScanProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const {
 			projectId,
-			organizationId,
 			storyId,
 			mode,
 			purgeUnresolved,
@@ -59,12 +59,20 @@ export const triggerScanProcedure = tenantProtectedProcedure
 			branches,
 			forceFull,
 		} = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const user = context.user;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -114,7 +122,7 @@ export const triggerScanProcedure = tenantProtectedProcedure
 				capabilityKey: "security.run-scan",
 				projectId,
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 			});
 		}
 
@@ -126,13 +134,13 @@ export const triggerScanProcedure = tenantProtectedProcedure
 		if (purge) {
 			const deleted = await deleteOpenProjectScanFindings(projectId, {
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 			});
 			await recordScanActivity({
 				projectId,
 				type: "FINDINGS_PURGED",
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 				summary: `Deleted ${deleted} unresolved finding${
 					deleted === 1 ? "" : "s"
 				} and re-scanned`,
@@ -178,7 +186,7 @@ export const triggerScanProcedure = tenantProtectedProcedure
 				// A purge always re-scans everything fresh.
 				mode: purge ? "FULL" : (mode ?? "FULL"),
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 				securityEnabled: config.securityEnabled,
 				accessibilityEnabled: config.accessibilityEnabled,
 				semgrepEnabled: config.semgrepEnabled,

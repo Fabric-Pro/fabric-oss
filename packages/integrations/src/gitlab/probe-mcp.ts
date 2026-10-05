@@ -1,3 +1,5 @@
+import { gitlabOutboundFetch } from "./outbound";
+
 export type McpProbeStatus =
 	| "ok"
 	| "unauthorized"
@@ -32,7 +34,8 @@ export const GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS = 2000;
 export async function probeGitLabMcp(
 	opts: ProbeGitLabMcpOpts,
 ): Promise<McpProbeResult> {
-	const fetchImpl = opts.fetchImpl ?? fetch;
+	// `baseUrl` is the connection's instance: guarded unless it is gitlab.com.
+	const fetchImpl = opts.fetchImpl ?? gitlabOutboundFetch;
 	const timeoutMs = opts.timeoutMs ?? GITLAB_MCP_PROBE_DEFAULT_TIMEOUT_MS;
 	const url = `${opts.baseUrl.replace(/\/$/, "")}/api/v4/mcp`;
 	const body = JSON.stringify({

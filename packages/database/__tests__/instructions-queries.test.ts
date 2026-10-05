@@ -49,6 +49,11 @@ const mocks = vi.hoisted(() => ({
 	repositorySync: {
 		findFirst: vi.fn(),
 	},
+	// The published response reads the sync's newest run beside the
+	// configuration, through `getLatestInstructionSyncRunOutcome`.
+	repositorySyncRun: {
+		findFirst: vi.fn(),
+	},
 	$transaction: vi.fn(),
 	// The reaper's candidate query is raw SQL: one UNIONed relation, so the
 	// page is a window of ONE order rather than two separately-skipped ones.
@@ -70,6 +75,7 @@ vi.mock("../prisma/client", async () => {
 			projectInstructionFile: mocks.file,
 			project: mocks.project,
 			projectInstructionRepositorySync: mocks.repositorySync,
+			projectInstructionRepositorySyncRun: mocks.repositorySyncRun,
 			$transaction: mocks.$transaction,
 			$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 		},
@@ -108,6 +114,7 @@ import {
 	failStaleValidatingInstructionSnapshot,
 	getInstructionFileByPath,
 	getInstructionSnapshot,
+	getPublishedInstructionSnapshot,
 	InstructionVersionContentionError,
 	listAbandonedReceivingInstructionSnapshots,
 	listInstructionFiles,
@@ -136,6 +143,7 @@ beforeEach(() => {
 		mocks.file,
 		mocks.project,
 		mocks.repositorySync,
+		mocks.repositorySyncRun,
 	]) {
 		for (const fn of Object.values(group)) fn.mockReset();
 	}
@@ -156,10 +164,62 @@ beforeEach(() => {
 	);
 });
 
+describe("where the names of the left-out files are read", () => {
+	it("reads them with the published version", async () => {
+		mocks.project.findUnique.mockResolvedValue({
+			publishedInstructionSnapshot: { id: "snap_1" },
+		});
+
+		await getPublishedInstructionSnapshot("proj_1");
+
+		expect(mocks.project.findUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: {
+					publishedInstructionSnapshot: {
+						select: expect.objectContaining({
+							excludedCount: true,
+							excludedPaths: true,
+						}),
+					},
+				},
+			}),
+		);
+	});
+
+	it("does not read them on every row of the polled list", async () => {
+		mocks.snapshot.findMany.mockResolvedValue([]);
+
+		await listInstructionSnapshots("p", "org_1", {
+			viewerUserId: "reader",
+			canReviewProposals: true,
+		});
+
+		const select = (
+			mocks.snapshot.findMany.mock.calls[0]![0] as {
+				select: Record<string, unknown>;
+			}
+		).select;
+		expect(select.excludedCount).toBe(true);
+		expect(select).not.toHaveProperty("excludedPaths");
+	});
+});
+
 describe("listInstructionSnapshots proposal visibility", () => {
 	// Fizzy #2563: a REPOSITORY proposal ends MERGED or CLOSED on its pull
 	// request, and its proposer follows it to that end in History; other
 	// non-reviewers still see only direct and approved versions.
+	// Fizzy #2878 §10: a direct commit is a version once the branch holds it
+	// (stamped `source: REPOSITORY`); until then only its committer sees it.
+	const NON_REVIEWER_VISIBILITY = [
+		{
+			proposalStatus: null,
+			proposalDestination: { not: "REPOSITORY_COMMIT" },
+		},
+		{ proposalStatus: null, source: "REPOSITORY" },
+		{ proposalStatus: "APPROVED" },
+		{ userId: "reader" },
+	];
+
 	it("limits non-reviewers to direct, approved, and their own proposals in every status", async () => {
 		mocks.snapshot.findMany.mockResolvedValue([]);
 
@@ -173,11 +233,7 @@ describe("listInstructionSnapshots proposal visibility", () => {
 				where: {
 					projectId: "p",
 					organizationId: "org_1",
-					OR: [
-						{ proposalStatus: null },
-						{ proposalStatus: "APPROVED" },
-						{ userId: "reader" },
-					],
+					OR: NON_REVIEWER_VISIBILITY,
 				},
 			}),
 		);
@@ -197,11 +253,7 @@ describe("listInstructionSnapshots proposal visibility", () => {
 					id: "s1",
 					projectId: "p",
 					organizationId: "org_1",
-					OR: [
-						{ proposalStatus: null },
-						{ proposalStatus: "APPROVED" },
-						{ userId: "reader" },
-					],
+					OR: NON_REVIEWER_VISIBILITY,
 				},
 			}),
 		);
@@ -610,6 +662,66 @@ describe("createInstructionSnapshot", () => {
 			version: 7,
 			files: [{ id: "f1", path: "CLAUDE.md", storageKey: "k1" }],
 			validationAttemptId: null,
+		});
+	});
+
+	describe("the files it left out", () => {
+		const base = {
+			projectId: "proj_1",
+			organizationId: "org_1",
+			userId: "user_1",
+			source: "UPLOAD" as const,
+			settingsFrozen: { layer: "default" },
+			publishOnReady: true,
+			excludedCount: 3,
+			files: [
+				{
+					path: "CLAUDE.md",
+					size: 10,
+					sha256: "ab",
+					mimeType: "text/markdown",
+					isText: true,
+					kind: "INSTRUCTIONS" as const,
+					storageKey: "k1",
+				},
+			],
+		};
+
+		beforeEach(() => {
+			mocks.snapshot.findFirst.mockResolvedValue({ version: 6 });
+			mocks.snapshot.create.mockResolvedValue({
+				id: "snap_7",
+				version: 7,
+			});
+			mocks.file.findMany.mockResolvedValue([]);
+		});
+
+		it("stores the names it was given beside the count", async () => {
+			const excludedPaths = [
+				{ path: "tasks/a.md", rule: "tasks/" },
+				{ path: "build/out.js", rule: "build/" },
+			];
+
+			await createInstructionSnapshot({ ...base, excludedPaths });
+
+			expect(mocks.snapshot.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						excludedCount: 3,
+						excludedPaths,
+					}),
+				}),
+			);
+		});
+
+		it("stores an empty list when no names were kept", async () => {
+			await createInstructionSnapshot(base);
+
+			expect(mocks.snapshot.create).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({ excludedPaths: [] }),
+				}),
+			);
 		});
 	});
 
@@ -1774,6 +1886,73 @@ describe("deleteInstructionSnapshot", () => {
 		expect(await deleteInstructionSnapshot("s", "p", "org_1")).toEqual({
 			deleted: false,
 			reason: "active",
+		});
+	});
+
+	// An upload whose browser never reached storage stays RECEIVING with no
+	// workflow behind it. The caller (the delete procedure, for the creator or
+	// someone who may delete) says it is discarding one, and the DELETE's own
+	// predicate then also matches a RECEIVING upload that `finalize` has not
+	// claimed: the claim is `validationAttemptId`, written before the workflow
+	// starts, so a row that has one is being checked and stays.
+	describe("when the caller discards an unfinished upload", () => {
+		function snapshotDeleteWhere() {
+			const call = mocks.snapshot.deleteMany.mock.lastCall;
+			if (!call) {
+				throw new Error("the snapshot DELETE was never issued");
+			}
+			return call[0].where;
+		}
+
+		it("also matches an upload that is RECEIVING, has no validation attempt and is not a proposal or a sync's", async () => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 1 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
+
+			expect(
+				await deleteInstructionSnapshot("s", "p", "org_1", {
+					abandonedUpload: true,
+				}),
+			).toEqual({ deleted: true });
+
+			const where = snapshotDeleteWhere();
+			expect(where.status).toBeUndefined();
+			expect(where.OR).toEqual([
+				{ status: { in: ["READY", "REJECTED", "FAILED"] } },
+				{
+					status: "RECEIVING",
+					validationAttemptId: null,
+					source: "UPLOAD",
+					proposalStatus: null,
+				},
+			]);
+		});
+
+		it("keeps the terminal-only predicate for every other caller", async () => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 1 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
+
+			await deleteInstructionSnapshot("s", "p", "org_1");
+
+			const where = snapshotDeleteWhere();
+			expect(where.status).toEqual({
+				in: ["READY", "REJECTED", "FAILED"],
+			});
+			expect(where.OR).toBeUndefined();
+		});
+
+		it("reports `active` when finalizing claimed the row first, and undoes nothing it did not delete", async () => {
+			mocks.file.deleteMany.mockResolvedValue({ count: 1 });
+			mocks.snapshot.deleteMany.mockResolvedValue({ count: 0 });
+			mocks.snapshot.findFirst.mockResolvedValue({
+				id: "s",
+				status: "RECEIVING",
+			});
+
+			expect(
+				await deleteInstructionSnapshot("s", "p", "org_1", {
+					abandonedUpload: true,
+				}),
+			).toEqual({ deleted: false, reason: "active" });
 		});
 	});
 
@@ -4264,6 +4443,8 @@ describe("resolveInstructionSnapshotSource and resolveCurrentInstructionReposito
 				ref: "main",
 				rootPath: "",
 				generation: 1,
+				cloneUrl: "https://github.com/example-org/example-repo",
+				sync: { automatic: false, pausedReason: null, lastRun: null },
 			});
 			expect(mocks.project.findFirst).toHaveBeenCalledExactlyOnceWith({
 				where: { id: "p", organizationId: "org_1" },
@@ -4470,6 +4651,8 @@ describe("resolveInstructionSnapshotSource and resolveCurrentInstructionReposito
 				ref: "main",
 				rootPath: "",
 				generation: 1,
+				cloneUrl: "https://github.com/example-org/example-repo",
+				sync: { automatic: false, pausedReason: null, lastRun: null },
 			});
 		});
 
@@ -4617,6 +4800,8 @@ describe("resolveInstructionSnapshotSource and resolveCurrentInstructionReposito
 				ref: "main",
 				rootPath: "services/api",
 				generation: 4,
+				cloneUrl: "https://github.com/example-org/example-repo",
+				sync: { automatic: false, pausedReason: null, lastRun: null },
 			});
 		});
 

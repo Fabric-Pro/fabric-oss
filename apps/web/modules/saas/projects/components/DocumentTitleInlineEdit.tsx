@@ -241,7 +241,9 @@ export function DocumentTitleInlineEdit({
 
 	if (isEditing) {
 		return (
-			<div className="flex items-center gap-2">
+			// `pointer-events-auto`: on a document card the title sits in a
+			// region that passes clicks through to the card.
+			<div className="pointer-events-auto flex items-center gap-2">
 				<Input
 					ref={inputRef}
 					value={value}
@@ -279,7 +281,13 @@ export function DocumentTitleInlineEdit({
 							setIsEditing(true);
 							onEditingChange?.(true);
 						}}
-						className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+						// Hidden until hovered, but never invisible while it
+						// can be reached: shown with keyboard focus, and always
+						// with a coarse pointer, which never hovers and gets a
+						// larger target than the icon. `pointer-events-auto`
+						// because on a document card the title around it
+						// passes clicks through to the card.
+						className="pointer-events-auto relative shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-60 hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-60 pointer-coarse:after:absolute pointer-coarse:after:-inset-3.5 pointer-coarse:after:content-[''] transition-opacity cursor-pointer"
 						aria-label="Rename document"
 					>
 						<PencilIcon className="size-3.5" />

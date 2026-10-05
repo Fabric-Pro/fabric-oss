@@ -76,6 +76,7 @@ vi.mock("sonner", () => ({
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	AddInstructionFileDialog,
+	pathRefusal,
 	proposedPath,
 } from "../AddInstructionFileDialog";
 
@@ -227,8 +228,49 @@ describe("AddInstructionFileDialog", () => {
 		await user.clear(pathField);
 		await user.type(pathField, "../escape.md");
 
-		expect(screen.getByText(/cannot be used/)).toBeInTheDocument();
+		expect(
+			screen.getByText(addCopy.pathRefusals.traversal),
+		).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Add file" })).toBeDisabled();
+	});
+
+	// A validator hands back a CODE ("traversal", "reserved_device_name"), and
+	// the dialog words it. No validator vocabulary reaches the screen.
+	it.each([
+		["a/../b.md", "traversal"],
+		["/etc/passwd", "absolute"],
+		["C:/work/a.md", "drive"],
+		["skills/CON.md", "reserved_device_name"],
+		["skills/a.md.", "trailing_dot_or_space"],
+		["skills/a?.md", "forbidden_character"],
+		[".fabricignore", "fabricignore"],
+		[".env", "secret"],
+	] as const)(
+		"words a path like %j as %s, with no validator code on screen",
+		async (path, code) => {
+			const user = userEvent.setup();
+			renderDialog(null);
+
+			await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+			const pathField = screen.getByLabelText("Where it goes");
+			await user.clear(pathField);
+			await user.type(pathField, path);
+
+			expect(
+				screen.getByText(addCopy.pathRefusals[code]),
+			).toBeInTheDocument();
+			expect(document.body.textContent).not.toMatch(
+				/reserved_device_name|trailing_dot_or_space|forbidden_character|control_char|too_deep|too_long/,
+			);
+		},
+	);
+
+	it("exports the refusal as a code for every path it can refuse", () => {
+		expect(pathRefusal("a/../b.md")).toBe("traversal");
+		expect(pathRefusal("skills/CON.md")).toBe("reserved_device_name");
+		expect(pathRefusal(".fabricignore")).toBe("fabricignore");
+		expect(pathRefusal(".env")).toBe("secret");
+		expect(pathRefusal("docs/GUIDE.md")).toBeNull();
 	});
 
 	it("refuses .fabricignore, which decides what the version leaves out", async () => {
@@ -395,12 +437,19 @@ describe("AddInstructionFileDialog — suggesting a change as a pull request", (
 			}),
 		);
 		const description = screen.getByLabelText(addCopy.noteBodyLabel);
+		// Said in the dialog's own words, under the field the code names; the
+		// server's message is not shown.
 		await waitFor(() =>
 			expect(description).toHaveAccessibleDescription(
-				expect.stringContaining("looks like it contains a credential"),
+				expect.stringContaining(addCopy.noteBodyRejected),
 			),
 		);
 		expect(description).toHaveAttribute("aria-invalid", "true");
+		expect(
+			screen.queryByText(
+				/looks like it contains a credential\. Remove it/,
+			),
+		).not.toBeInTheDocument();
 		expect(m.toastError).not.toHaveBeenCalled();
 	});
 

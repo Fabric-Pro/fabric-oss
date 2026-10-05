@@ -12,6 +12,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	readDraftPmSelection,
+	saveWithGitLabPmBinding,
+} from "../lib/gitlab-pm-origin";
 
 /**
  * AUTHORIZATION: Verifies org membership if in org context.
@@ -201,46 +205,66 @@ export const saveDraftProjectProcedure = tenantProtectedProcedure
 					? (wizardStateEntries as Prisma.InputJsonValue)
 					: undefined;
 
-			const projectManagementAdditionalContext =
-				input.projectManagementAdditionalContext === undefined
-					? undefined
-					: (input.projectManagementAdditionalContext as Prisma.InputJsonValue);
-
-			const { project, created } = await upsertDraftProjectByKey({
-				draftKey: input.draftKey,
-				name: input.name.trim(),
+			// The GitLab container's instance is the server's to record,
+			// never the client's, and is bound from the draft as it is when
+			// the save applies (`saveWithGitLabPmBinding`).
+			const actor = {
 				userId: context.user.id,
-				organizationId,
-				description: input.description,
-				projectPhase: input.projectPhase,
-				expectedDevelopmentStartDate:
-					input.expectedDevelopmentStartDate,
-				techStack: input.techStack,
-				features: input.features,
-				projectTypes: input.projectTypes,
-				tags: input.tags,
-				icon: input.icon,
-				color: input.color,
-				goals: input.goals,
-				wizardState,
-				repositoryUrl: input.repositoryUrl,
-				repositoryOwner: input.repositoryOwner,
-				repositoryName: input.repositoryName,
-				defaultBranch: input.defaultBranch,
-				projectManagementMcpServerId:
-					input.projectManagementMcpServerId,
-				projectManagementMcpConfigId:
-					input.projectManagementMcpConfigId,
-				projectManagementContainerId:
-					input.projectManagementContainerId,
-				projectManagementContainerName:
-					input.projectManagementContainerName,
-				projectManagementAdditionalContext,
-				engagementProfile: input.engagementProfile,
-				quotedPhases: input.quotedPhases,
-				visionPurpose: input.visionPurpose,
-				visionCoreActions: input.visionCoreActions,
-				visionCycle: input.visionCycle,
+				organizationId: organizationId ?? null,
+			};
+			const readDraft = () =>
+				readDraftPmSelection({ draftKey: input.draftKey, actor });
+			const { project, created } = await saveWithGitLabPmBinding({
+				actor,
+				stored: await readDraft(),
+				next: {
+					serverId: input.projectManagementMcpServerId,
+					configId: input.projectManagementMcpConfigId,
+					containerId: input.projectManagementContainerId,
+					additionalContext: input.projectManagementAdditionalContext,
+				},
+				reread: readDraft,
+				write: (boundAdditionalContext, expectedPmSelection) =>
+					upsertDraftProjectByKey({
+						draftKey: input.draftKey,
+						name: input.name.trim(),
+						userId: context.user.id,
+						organizationId,
+						description: input.description,
+						projectPhase: input.projectPhase,
+						expectedDevelopmentStartDate:
+							input.expectedDevelopmentStartDate,
+						techStack: input.techStack,
+						features: input.features,
+						projectTypes: input.projectTypes,
+						tags: input.tags,
+						icon: input.icon,
+						color: input.color,
+						goals: input.goals,
+						wizardState,
+						repositoryUrl: input.repositoryUrl,
+						repositoryOwner: input.repositoryOwner,
+						repositoryName: input.repositoryName,
+						defaultBranch: input.defaultBranch,
+						projectManagementMcpServerId:
+							input.projectManagementMcpServerId,
+						projectManagementMcpConfigId:
+							input.projectManagementMcpConfigId,
+						projectManagementContainerId:
+							input.projectManagementContainerId,
+						projectManagementContainerName:
+							input.projectManagementContainerName,
+						projectManagementAdditionalContext:
+							boundAdditionalContext === undefined
+								? undefined
+								: (boundAdditionalContext as Prisma.InputJsonValue),
+						expectedPmSelection,
+						engagementProfile: input.engagementProfile,
+						quotedPhases: input.quotedPhases,
+						visionPurpose: input.visionPurpose,
+						visionCoreActions: input.visionCoreActions,
+						visionCycle: input.visionCycle,
+					}),
 			});
 
 			return {

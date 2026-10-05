@@ -90,13 +90,24 @@ vi.mock("next-intl", () => ({
 		};
 		t.rich = (
 			key: string,
-			tags: Record<string, (chunks: string) => ReactNode>,
+			tags: Record<string, ((chunks: string) => ReactNode) | string>,
 		) => {
 			const raw = resolve(`${namespace}.${key}`);
 			if (typeof raw !== "string") {
 				throw new Error(`missing translation: ${namespace}.${key}`);
 			}
-			return richRender(raw, tags);
+			// Plain values ({ref}) are interpolated before the tags are
+			// rendered, as next-intl does; functions are the tags.
+			let out = raw;
+			const renderers: Record<string, (chunks: string) => ReactNode> = {};
+			for (const [name, value] of Object.entries(tags)) {
+				if (typeof value === "string") {
+					out = out.replaceAll(`{${name}}`, value);
+				} else {
+					renderers[name] = value;
+				}
+			}
+			return richRender(out, renderers);
 		};
 		t.raw = (key: string) => resolve(`${namespace}.${key}`);
 		return t;
@@ -203,6 +214,15 @@ const orgContextState = vi.hoisted(() => ({
 	organizationId: "org-hosting-the-project" as string | null,
 	organizationSlug: "example-org" as string | null,
 	isGuest: false,
+}));
+
+// The app's confirmation dialog is mounted once in the (saas) layout and is
+// absent here; the Repository settings and History mounted inside this view
+// ask it before a destructive change.
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({
+		confirm: (options: { onConfirm: () => void }) => options.onConfirm(),
+	}),
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -573,5 +593,142 @@ describe("InstructionsEmptyState — repository sync (§7.1)", () => {
 		expect(
 			screen.queryByRole("button", { name: emptyStateCopy.syncButton }),
 		).toBeNull();
+	});
+});
+
+describe("InstructionsEmptyState — a repository project (Fizzy #2878 §10)", () => {
+	const configured = {
+		syncId: "sync_1",
+		repositoryIntegrationId: "int_1",
+		provider: "GITHUB",
+		repositoryOwner: "example-org",
+		repositoryName: "instructions",
+		repositoryUrl: "https://github.com/example-org/instructions.git",
+		integrationStatus: "ACTIVE",
+		ref: "main",
+		rootPath: "",
+		automatic: true,
+		automaticPausedReason: null,
+		automaticPausedAt: null,
+		delegateName: "Example Member",
+	};
+	function repositoryControls(state: Record<string, unknown> = {}) {
+		return {
+			state: {
+				sourceOfTruth: "REPOSITORY" as const,
+				canConfigure: true,
+				running: false,
+				configured,
+				latestRun: null,
+				availableIntegrations: [],
+				...state,
+			},
+			onConfigure: vi.fn(),
+			onSyncNow: vi.fn(),
+			syncNowPending: false,
+			onChanged: vi.fn(),
+		};
+	}
+
+	it("says to commit the instruction files to the branch, not to upload a folder", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={repositoryControls()}
+			/>,
+			{ wrapper: Providers },
+		);
+
+		expect(
+			screen.getByText(
+				(_, element) =>
+					element?.tagName === "P" &&
+					element.textContent ===
+						"Commit AGENTS.md, .claude/ or .codex/ to main; Fabric picks it up.",
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/Upload the folder/)).toBeNull();
+	});
+
+	it("says agents read the files from the checkout and Fabric keeps everyone on the branch", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={repositoryControls()}
+			/>,
+			{ wrapper: Providers },
+		);
+
+		expect(
+			screen.getByText(
+				"Your agents read these files from your checkout; Fabric keeps everyone on main.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(emptyStateCopy.developersDescription),
+		).toBeNull();
+	});
+
+	it("keeps the upload wording for an upload project", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				repositorySync={repositoryControls({
+					sourceOfTruth: "UPLOAD",
+					configured: null,
+				})}
+			/>,
+			{ wrapper: Providers },
+		);
+
+		expect(
+			screen.getByText(emptyStateCopy.developersDescription),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/Fabric picks it up/)).toBeNull();
+	});
+});
+
+describe("InstructionsEmptyState — copy", () => {
+	it("no longer carries the 'connected to <repo>' line, which no caller ever passed a repository for", () => {
+		expect(emptyStateCopy).not.toHaveProperty("connectedRepository");
+	});
+
+	it("describes the one-step setup, not an install-and-sign-in sequence", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+			/>,
+		);
+
+		expect(
+			screen.getByText(emptyStateCopy.developersDescription),
+		).toBeInTheDocument();
+		expect(emptyStateCopy.developersDescription).toMatch(
+			/one step.*session-start hook/i,
+		);
+		expect(emptyStateCopy.developersDescription).not.toMatch(
+			/npm|install|fabric auth/i,
+		);
+	});
+
+	it("puts a notice the tab passes above everything else", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				notice={<p data-testid="tab-notice">Settings failed</p>}
+			/>,
+		);
+
+		expect(screen.getByTestId("tab-notice")).toBeInTheDocument();
 	});
 });

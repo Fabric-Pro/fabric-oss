@@ -1,12 +1,17 @@
 "use client";
 
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import { invalidateGitLabConnectionViews } from "@saas/data-connections/lib/gitlab-status-query";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { effectiveMcpAuthType } from "../lib/config-auth-type";
 
 export interface OAuthStatus {
 	authenticated: boolean;
+	/** A grant exists but is dead: the person must reconnect. */
+	needsReauth?: boolean;
 	tokenExpired: boolean;
 	refreshTokenExpired: boolean;
 	hasRefreshToken: boolean;
@@ -43,7 +48,9 @@ export function useMcpConnection() {
 	 * Memoized to prevent unnecessary re-renders and infinite loops
 	 */
 	const checkOAuthStatuses = useCallback(async (configs: any[]) => {
-		const oauthConfigs = configs.filter((c) => c.authType === "OAUTH2");
+		const oauthConfigs = configs.filter(
+			(c) => effectiveMcpAuthType(c) === "OAUTH2",
+		);
 		const statuses: Record<string, OAuthStatus> = {};
 
 		await Promise.all(
@@ -61,6 +68,7 @@ export function useMcpConnection() {
 						if (result.data) {
 							statuses[config.id] = {
 								authenticated: result.data.authenticated,
+								needsReauth: result.data.needsReauth === true,
 								tokenExpired: result.data.tokenExpired,
 								refreshTokenExpired:
 									result.data.refreshTokenExpired || false,
@@ -80,7 +88,20 @@ export function useMcpConnection() {
 			}),
 		);
 
-		setOAuthStatuses(statuses);
+		// Merge: a check of some configs (one tile after a Revoke, say) must
+		// not wipe the others' statuses. A config checked here whose status
+		// could not be read loses its old entry rather than keep a stale one.
+		setOAuthStatuses((previous) => {
+			const next = { ...previous };
+			for (const config of oauthConfigs) {
+				if (statuses[config.id]) {
+					next[config.id] = statuses[config.id];
+				} else {
+					delete next[config.id];
+				}
+			}
+			return next;
+		});
 		return statuses;
 	}, []);
 
@@ -107,7 +128,7 @@ export function useMcpConnection() {
 						config.transport ||
 						config.mcpServer?.transport ||
 						"HTTP",
-					authType: config.authType || "NONE",
+					authType: effectiveMcpAuthType(config),
 				}),
 			});
 			if (!res.ok) {
@@ -177,7 +198,7 @@ export function useMcpConnection() {
 		async (config: any) => {
 			try {
 				// Check auth type - only proceed with OAuth for OAUTH2 configs
-				if (config.authType === "API_KEY") {
+				if (effectiveMcpAuthType(config) === "API_KEY") {
 					toast.error("API Key authentication required", {
 						description:
 							"This server uses API key authentication. Please enter your API key in the configuration.",
@@ -185,7 +206,7 @@ export function useMcpConnection() {
 					return;
 				}
 
-				if (config.authType !== "OAUTH2") {
+				if (effectiveMcpAuthType(config) !== "OAUTH2") {
 					toast.error("No authentication required", {
 						description:
 							"This server doesn't require authentication.",
@@ -391,8 +412,10 @@ export function useMcpConnection() {
 	});
 
 	/**
-	 * Revoke OAuth tokens (for compliance)
-	 * Clears access and refresh tokens, logs the revocation
+	 * Revoke OAuth access. The server checks the config belongs to the caller
+	 * in this organization. For a GitLab server this disconnects the person's
+	 * GitLab; for any other server it clears the config's tokens. Both keep
+	 * the row and its client registration, and both are audited.
 	 */
 	const revokeMutation = useMutation({
 		mutationFn: async (config: any) => {
@@ -402,28 +425,41 @@ export function useMcpConnection() {
 				[config.id]: { ...prev[config.id], revoke: true },
 			}));
 
-			const res = await fetch(`/api/mcp/oauth/revoke/${config.id}`, {
-				method: "DELETE",
+			const data = await orpcClient.mcp.oauth.revoke({
+				configId: config.id,
+				organizationId: config.organizationId ?? null,
 			});
 
-			if (!res.ok) {
-				const error = await res.json();
-				throw new Error(error.message || "Failed to revoke tokens");
-			}
-
-			return { config, data: await res.json() };
+			return { config, data };
 		},
-		onSuccess: async ({ config }) => {
+		onSuccess: async ({ config, data }) => {
 			// Clear loading state
 			setLoadingStates((prev) => ({
 				...prev,
 				[config.id]: { ...prev[config.id], revoke: false },
 			}));
 
-			toast.success("Access revoked successfully", {
+			toast.success("Access revoked", {
 				description:
-					"OAuth tokens have been revoked and logged for compliance",
+					data.revocationWarning ??
+					"Fabric's access was revoked and the change was recorded in the audit log.",
 			});
+
+			if (isGitLabPersonalMcpServerKey(config.mcpServer?.key)) {
+				// The person's GitLab is disconnected everywhere: refresh every
+				// screen showing it, and both GitLab server tiles (`gitlab`
+				// and `gitlab-official` report the one connection).
+				await Promise.all([
+					invalidateGitLabConnectionViews(qc),
+					checkOAuthStatuses([
+						config,
+						...cachedGitLabConfigs(qc).filter(
+							(each) => each.id !== config.id,
+						),
+					]),
+				]);
+				return;
+			}
 
 			// Re-check OAuth status for this config
 			await checkOAuthStatuses([config]);
@@ -511,4 +547,34 @@ export function useMcpConnection() {
 		refreshToolsMutation,
 		loadingStates,
 	};
+}
+
+/**
+ * The person's GitLab personal MCP configs (`gitlab`, `gitlab-official`)
+ * from every cached MCP config list, deduplicated by id.
+ */
+function cachedGitLabConfigs(qc: {
+	getQueriesData: (filters: {
+		queryKey: readonly unknown[];
+	}) => Array<[unknown, unknown]>;
+}): Array<{ id: string; authType?: string; mcpServer?: { key?: string } }> {
+	const found = new Map<
+		string,
+		{ id: string; authType?: string; mcpServer?: { key?: string } }
+	>();
+	for (const [, data] of qc.getQueriesData({ queryKey: ["mcp-configs"] })) {
+		if (!Array.isArray(data)) {
+			continue;
+		}
+		for (const each of data) {
+			if (
+				each &&
+				typeof each.id === "string" &&
+				isGitLabPersonalMcpServerKey(each.mcpServer?.key)
+			) {
+				found.set(each.id, each);
+			}
+		}
+	}
+	return [...found.values()];
 }

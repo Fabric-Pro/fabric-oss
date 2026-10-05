@@ -46,6 +46,9 @@ let updateMcpConfigTokensCalls: Array<{
 }> = [];
 
 vi.mock("@repo/database", () => ({
+	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	getMcpConfigByIdInternal: vi.fn(async (_id: string) => {
 		getMcpConfigCallCount++;
 		return mockConfigState.cfg;

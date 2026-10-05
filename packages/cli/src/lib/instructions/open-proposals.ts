@@ -109,7 +109,16 @@ export async function lookUpOpenProposals(
 				reason: "this Fabric server does not list open proposals yet",
 			};
 		}
-		return { kind: "unavailable", reason: describeError(error) };
+		// The server's own words are never the reason: a status, or that the
+		// request did not go through.
+		const status = (error as { status?: unknown } | null)?.status;
+		return {
+			kind: "unavailable",
+			reason:
+				typeof status === "number" && status > 0
+					? `the server answered ${status}`
+					: "the request did not go through",
+		};
 	} finally {
 		clearTimeout(timer);
 	}

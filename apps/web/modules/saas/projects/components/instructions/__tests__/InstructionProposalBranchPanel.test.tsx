@@ -226,7 +226,19 @@ const branchCopy = en.projects.codingInstructions.proposalReview.branch;
 const failureCopy =
 	en.projects.codingInstructions.proposalReview.pullRequest.failures;
 
+// The app's confirmation dialog is mounted once in the (saas) layout and is
+// absent here. `confirmMock` records what each action asked and, unless a test
+// says otherwise, confirms, as pressing the dialog's button would.
+const confirmMock = vi.hoisted(() => vi.fn());
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
+}));
+
 beforeEach(() => {
+	confirmMock.mockReset();
+	confirmMock.mockImplementation((options: { onConfirm: () => void }) =>
+		options.onConfirm(),
+	);
 	state.branches = [{ branch: branch(), liveChanges: 3 }];
 	state.listError = null;
 	state.commandError = null;
@@ -326,13 +338,18 @@ describe("InstructionProposalBranchPanel", () => {
 
 	it("offers Close, confirms with the live change count, and calls closeBranch", async () => {
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 		const { onChanged } = renderPanel();
 		await user.click(
 			await screen.findByRole("button", { name: branchCopy.close }),
 		);
-		expect(confirm).toHaveBeenCalledWith(
-			"Fabric closes the pull request and withdraws its 3 changes. It deletes the branch only if Fabric made every commit on it.",
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: branchCopy.close,
+				message:
+					"Fabric closes the pull request and withdraws its 3 changes. It deletes the branch only if Fabric made every commit on it.",
+				confirmLabel: branchCopy.close,
+				destructive: true,
+			}),
 		);
 		await waitFor(() =>
 			expect(state.close).toHaveBeenCalledWith({
@@ -342,7 +359,19 @@ describe("InstructionProposalBranchPanel", () => {
 			}),
 		);
 		await waitFor(() => expect(onChanged).toHaveBeenCalled());
-		confirm.mockRestore();
+	});
+
+	it("does nothing when the confirmation is dismissed", async () => {
+		confirmMock.mockImplementation(() => undefined);
+		const user = userEvent.setup();
+		renderPanel();
+
+		await user.click(
+			await screen.findByRole("button", { name: branchCopy.close }),
+		);
+
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(state.close).not.toHaveBeenCalled();
 	});
 
 	it.each([
@@ -386,7 +415,6 @@ describe("InstructionProposalBranchPanel", () => {
 				{ code: "CONFLICT" },
 			);
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			renderPanel();
 			await user.click(
 				await screen.findByRole("button", { name: button }),
@@ -401,7 +429,6 @@ describe("InstructionProposalBranchPanel", () => {
 			expect(state.toastError).not.toHaveBeenCalledWith(
 				"Upstream said: provider detail",
 			);
-			confirm.mockRestore();
 		},
 	);
 
@@ -454,7 +481,6 @@ describe("InstructionProposalBranchPanel", () => {
 			},
 		];
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 		renderPanel();
 		await user.click(
 			await screen.findByRole("button", { name: branchCopy.startOver }),
@@ -466,7 +492,13 @@ describe("InstructionProposalBranchPanel", () => {
 				expectedAttempt: 7,
 			}),
 		);
-		confirm.mockRestore();
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: branchCopy.startOver,
+				confirmLabel: branchCopy.startOver,
+				destructive: true,
+			}),
+		);
 	});
 
 	it("offers no Start over when the CREATE_OUTCOME_UNKNOWN failure is still retryable", async () => {
@@ -501,7 +533,6 @@ describe("InstructionProposalBranchPanel", () => {
 			},
 		];
 		const user = userEvent.setup();
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 		renderPanel();
 		await user.click(
 			await screen.findByRole("button", {
@@ -515,7 +546,13 @@ describe("InstructionProposalBranchPanel", () => {
 				expectedAttempt: 7,
 			}),
 		);
-		confirm.mockRestore();
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: branchCopy.stopTracking,
+				message: branchCopy.stopTrackingConfirm,
+				destructive: true,
+			}),
+		);
 	});
 
 	it("Refresh re-reads the branch", async () => {
@@ -634,7 +671,6 @@ describe("InstructionProposalBranchPanel", () => {
 
 		it("still offers Stop tracking (owner-or-reviewer, spec Decision 19) and Refresh", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			renderPanel({
 				userId: "member_2",
 				ownerName: "Case Worker",
@@ -667,12 +703,10 @@ describe("InstructionProposalBranchPanel", () => {
 					name: new RegExp(branchCopy.refresh),
 				}),
 			).toBeInTheDocument();
-			confirm.mockRestore();
 		});
 
 		it("after Stop tracking, asks the caller to refresh instead of refetching itself", async () => {
 			const user = userEvent.setup();
-			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 			const { onChanged } = renderPanel({
 				userId: "member_2",
 				ownerName: "Case Worker",
@@ -697,7 +731,6 @@ describe("InstructionProposalBranchPanel", () => {
 			// aggregate this view came from is what `onChanged` refreshes.
 			await waitFor(() => expect(onChanged).toHaveBeenCalled());
 			expect(state.myBranchQueryFn).not.toHaveBeenCalled();
-			confirm.mockRestore();
 		});
 
 		it("names the member in a read-only load error", async () => {

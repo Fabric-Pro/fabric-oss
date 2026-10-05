@@ -3,8 +3,10 @@
  *
  * Mocks at the Prisma client boundary; covers default-stub emission,
  * tenant-config dedupe by key, XOR tenant isolation, display-name and
- * icon-key overrides, and the "no frontend changes to add a tool"
- * extensibility guarantee.
+ * icon-key overrides, the "no frontend changes to add a tool"
+ * extensibility guarantee, and GitLab: the caller's connection status (read
+ * by the API layer from the GitLab connection service) alone decides whether
+ * GitLab is offered.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +27,14 @@ vi.mock("../prisma/client", () => ({
 	Prisma: { DbNull: { __dbNull: true } },
 }));
 
-import { listAvailablePmTools } from "../prisma/queries/mcp";
+import {
+	listAvailablePmTools,
+	type PmToolGitLabStatus,
+} from "../prisma/queries/mcp";
+
+const CONNECTED: PmToolGitLabStatus = { state: "connected" };
+const NEEDS_RECONNECT: PmToolGitLabStatus = { state: "needs-reconnect" };
+const NOT_CONNECTED: PmToolGitLabStatus = { state: "not-connected" };
 
 const DEFAULT_FIXTURE_SERVERS = [
 	{ id: "srv_fizzy", key: "fizzy", name: "Fizzy" },
@@ -76,6 +85,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		expect(result.map((o) => o.key)).toEqual([
@@ -94,6 +104,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 		const jira = result.find((o) => o.key === "atlassian");
 		expect(jira?.displayName).toBe("Jira");
@@ -104,6 +115,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 		const gitlab = result.find((o) => o.key === "gitlab-official");
 		expect(gitlab?.displayName).toBe("GitLab");
@@ -114,6 +126,7 @@ describe("listAvailablePmTools", () => {
 		await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 		const call = findManyConfig.mock.calls[0]?.[0];
 		expect(call.where.userId).toBe("u_1");
@@ -124,6 +137,7 @@ describe("listAvailablePmTools", () => {
 		await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: "org_x",
+			gitlab: NOT_CONNECTED,
 		});
 		const call = findManyConfig.mock.calls[0]?.[0];
 		expect(call.where.userId).toBe("u_1");
@@ -134,6 +148,7 @@ describe("listAvailablePmTools", () => {
 		await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 		const call = findManyConfig.mock.calls[0]?.[0];
 		expect(call.where.enabled).toBe(true);
@@ -161,6 +176,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		expect(result.map((o) => o.key)).toEqual([
@@ -194,6 +210,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		const fizzyRows = result.filter((o) => o.key === "fizzy");
@@ -232,6 +249,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: "org_a",
+			gitlab: NOT_CONNECTED,
 		});
 
 		expect(result.map((o) => o.key)).toEqual([
@@ -262,6 +280,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		expect(result[0]).toMatchObject({
@@ -284,6 +303,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		const fizzy = result.find((o) => o.key === "fizzy");
@@ -307,6 +327,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		expect(result.map((o) => o.key)).toEqual([
@@ -329,6 +350,7 @@ describe("listAvailablePmTools", () => {
 		const result = await listAvailablePmTools({
 			userId: "u_1",
 			organizationId: null,
+			gitlab: NOT_CONNECTED,
 		});
 
 		// Only the defaults survive
@@ -340,20 +362,28 @@ describe("listAvailablePmTools", () => {
 		]);
 	});
 
-	describe("GitLab REST-mode synthesis", () => {
-		it("synthesizes gitlab-official REST entry when WorkflowIntegration exists and no MCPConfig", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([
-				{ id: "wi_1", provider: "GITLAB", isActive: true },
-			]);
-
-			const result = await listAvailablePmTools({
-				userId: "u_1",
-				organizationId: null,
+	describe("GitLab — the caller's connection decides", () => {
+		const officialConfig = () =>
+			tenantConfigStub({
+				id: "cfg_gitlab",
+				displayName: "GitLab Premium",
+				mcpServer: {
+					id: "srv_gitlab_official",
+					key: "gitlab-official",
+					name: "GitLab (Official)",
+				},
 			});
 
-			const gitlab = result.find((o) => o.key === "gitlab-official");
-			expect(gitlab).toMatchObject({
-				key: "gitlab-official",
+		it("synthesizes the gitlab-official REST entry when connected and no MCPConfig exists", async () => {
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: CONNECTED,
+			});
+
+			const gitlab = result.filter((o) => o.key === "gitlab-official");
+			expect(gitlab).toHaveLength(1);
+			expect(gitlab[0]).toMatchObject({
 				isDefault: true,
 				isConfigured: true,
 				transport: "rest",
@@ -361,116 +391,106 @@ describe("listAvailablePmTools", () => {
 				mcpServerId: "srv_gitlab_official",
 				configDisplayName: "GitLab (REST)",
 			});
-			expect(
-				result.filter((o) => o.key === "gitlab-official"),
-			).toHaveLength(1);
 		});
 
-		it("MCPConfig wins over WorkflowIntegration when both present", async () => {
-			findManyConfig.mockResolvedValue([
-				tenantConfigStub({
-					id: "cfg_gitlab",
-					displayName: "GitLab Premium",
-					mcpServer: {
-						id: "srv_gitlab_official",
-						key: "gitlab-official",
-						name: "GitLab (Official)",
-					},
-				}),
-			]);
-			findManyWorkflowIntegration.mockResolvedValue([
-				{ id: "wi_1", provider: "GITLAB", isActive: true },
-			]);
+		it("offers the enabled gitlab-official MCPConfig when connected", async () => {
+			findManyConfig.mockResolvedValue([officialConfig()]);
 
 			const result = await listAvailablePmTools({
 				userId: "u_1",
-				organizationId: null,
+				organizationId: "org_1",
+				gitlab: CONNECTED,
 			});
 
-			const gitlabRows = result.filter(
-				(o) => o.key === "gitlab-official",
-			);
-			expect(gitlabRows).toHaveLength(1);
-			expect(gitlabRows[0]).toMatchObject({
+			const gitlab = result.filter((o) => o.key === "gitlab-official");
+			expect(gitlab).toHaveLength(1);
+			expect(gitlab[0]).toMatchObject({
 				transport: "mcp",
 				isConfigured: true,
 				mcpConfigId: "cfg_gitlab",
 			});
 		});
 
-		it("inactive WorkflowIntegration falls through to Not configured stub", async () => {
-			// When isActive=false at the row level, the Prisma filter (provider=GITLAB AND
-			// isActive=true) returns no rows, so the synthesis path is skipped.
-			findManyWorkflowIntegration.mockResolvedValue([]);
+		it("does not offer GitLab after a disconnect, even with an enabled gitlab-official MCPConfig", async () => {
+			// A disconnect keeps the MCPConfig row and `enabled` (only its
+			// tokens are cleared), so the row alone must not make GitLab
+			// configured.
+			findManyConfig.mockResolvedValue([officialConfig()]);
 
 			const result = await listAvailablePmTools({
 				userId: "u_1",
-				organizationId: null,
+				organizationId: "org_1",
+				gitlab: NOT_CONNECTED,
+			});
+
+			const gitlab = result.filter((o) => o.key === "gitlab-official");
+			expect(gitlab).toHaveLength(1);
+			expect(gitlab[0]).toMatchObject({
+				isConfigured: false,
+				mcpConfigId: null,
+				transport: null,
+			});
+		});
+
+		it("does not offer GitLab when the connection needs reconnecting", async () => {
+			// The stored row is still active (the old picker counted it).
+			findManyWorkflowIntegration.mockResolvedValue([{ id: "wi_1" }]);
+
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: NEEDS_RECONNECT,
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
 			expect(gitlab).toMatchObject({
 				isConfigured: false,
+				mcpConfigId: null,
 				transport: null,
 			});
 		});
 
-		it("queries WorkflowIntegration with provider=GITLAB and isActive=true (personal)", async () => {
-			await listAvailablePmTools({
-				userId: "u_1",
-				organizationId: null,
-			});
-			const call = findManyWorkflowIntegration.mock.calls[0]?.[0];
-			expect(call.where).toMatchObject({
-				provider: "GITLAB",
-				isActive: true,
-				userId: "u_1",
-				organizationId: null,
-			});
-		});
-
-		it("queries WorkflowIntegration with org XOR tenant filter", async () => {
-			await listAvailablePmTools({
-				userId: "u_1",
-				organizationId: "org_x",
-			});
-			const call = findManyWorkflowIntegration.mock.calls[0]?.[0];
-			expect(call.where).toMatchObject({
-				provider: "GITLAB",
-				isActive: true,
-				userId: "u_1",
-				organizationId: "org_x",
-			});
-		});
-	});
-
-	describe("personal-scope GitLab fallback in org context", () => {
-		it("emits gitlab-official with connectedInPersonalScope=true when user has personal GitLab but org wizard call", async () => {
-			// Default: no org-scoped WorkflowIntegration, no MCPConfig. The fallback
-			// query for personal-scope GitLab returns one row.
-			findManyWorkflowIntegration.mockImplementation(
-				(args: { where: { organizationId: string | null } }) => {
-					// Org query (org-scoped): returns no rows.
-					if (args.where.organizationId === "org_1") {
-						return Promise.resolve([]);
-					}
-					// Personal-fallback query: returns one active personal row.
-					if (args.where.organizationId === null) {
-						return Promise.resolve([{ id: "wi_personal_gitlab" }]);
-					}
-					return Promise.resolve([]);
-				},
-			);
+		it("does not offer a needs-reconnect GitLab through its MCPConfig either", async () => {
+			findManyConfig.mockResolvedValue([officialConfig()]);
+			findManyWorkflowIntegration.mockResolvedValue([{ id: "wi_1" }]);
 
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: "org_1",
+				gitlab: NEEDS_RECONNECT,
 			});
 
-			const gitlab = result.find((o) => o.key === "gitlab-official");
-			expect(gitlab).toBeDefined();
-			expect(gitlab).toMatchObject({
-				key: "gitlab-official",
+			expect(
+				result.filter(
+					(o) => o.key === "gitlab-official" && o.isConfigured,
+				),
+			).toEqual([]);
+		});
+
+		it("never reads GitLab's status from WorkflowIntegration rows of its own", async () => {
+			await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: CONNECTED,
+			});
+			expect(findManyWorkflowIntegration).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("personal-scope GitLab hint in org context", () => {
+		it("flags the stub connectedInPersonalScope when only the personal-scope connection is usable", async () => {
+			const result = await listAvailablePmTools({
+				userId: "u_1",
+				organizationId: "org_1",
+				gitlab: {
+					state: "not-connected",
+					personalScopeConnected: true,
+				},
+			});
+
+			expect(
+				result.find((o) => o.key === "gitlab-official"),
+			).toMatchObject({
 				isConfigured: false,
 				connectedInPersonalScope: true,
 				mcpServerId: "srv_gitlab_official",
@@ -479,120 +499,53 @@ describe("listAvailablePmTools", () => {
 			});
 		});
 
-		it("emits org-scoped GitLab via REST synthesis when both org and personal GitLab rows exist", async () => {
-			findManyWorkflowIntegration.mockImplementation(
-				(args: { where: { organizationId: string | null } }) => {
-					if (args.where.organizationId === "org_1") {
-						return Promise.resolve([{ id: "wi_org_gitlab" }]);
-					}
-					if (args.where.organizationId === null) {
-						return Promise.resolve([{ id: "wi_personal_gitlab" }]);
-					}
-					return Promise.resolve([]);
-				},
-			);
-
+		it("offers the org connection (REST) without the hint when both are connected", async () => {
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: "org_1",
+				gitlab: { state: "connected", personalScopeConnected: true },
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
 			expect(gitlab).toMatchObject({
-				key: "gitlab-official",
 				isConfigured: true,
 				transport: "rest",
-				configDisplayName: "GitLab (REST)",
 			});
 			expect(gitlab?.connectedInPersonalScope).toBeFalsy();
 		});
 
-		it("does NOT run the personal-fallback query in personal context (organizationId=null)", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([]);
-
-			await listAvailablePmTools({
+		it("ignores the personal-scope flag in personal context", async () => {
+			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: null,
+				gitlab: {
+					state: "not-connected",
+					personalScopeConnected: true,
+				},
 			});
 
-			// Exactly one workflowIntegration query (the org/null one); no second
-			// personal-fallback query when already in personal context.
-			expect(findManyWorkflowIntegration).toHaveBeenCalledTimes(1);
+			expect(
+				result.find((o) => o.key === "gitlab-official")
+					?.connectedInPersonalScope,
+			).toBeFalsy();
 		});
 
-		it("emits default gitlab-official stub (no connectedInPersonalScope) when neither org nor personal GitLab exists", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([]);
-
+		it("emits the plain stub when neither connection is usable", async () => {
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: "org_1",
+				gitlab: {
+					state: "needs-reconnect",
+					personalScopeConnected: false,
+				},
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
 			expect(gitlab).toMatchObject({
-				key: "gitlab-official",
 				isConfigured: false,
-				mcpConfigId: null,
 				transport: null,
 			});
 			expect(gitlab?.connectedInPersonalScope).toBeFalsy();
-		});
-
-		it("ignores a personal GitLab whose settings.needsReauth is true", async () => {
-			findManyWorkflowIntegration.mockImplementation(
-				(args: {
-					where: {
-						organizationId: string | null;
-						settings?: unknown;
-					};
-				}) => {
-					if (args.where.organizationId === "org_1") {
-						return Promise.resolve([]);
-					}
-					// Personal-fallback query MUST filter out needsReauth rows.
-					// The query's `where` should include a needsReauth=false guard;
-					// we assert it does by returning [] when the guard is present
-					// and would not return the reauth-flagged row.
-					if (args.where.organizationId === null) {
-						// Implementation note: the query filters needsReauth at the
-						// Prisma layer. This mock returns [] to simulate the row
-						// being filtered. If the implementation post-filters in JS
-						// instead, return the row here and let the production code
-						// reject it.
-						return Promise.resolve([]);
-					}
-					return Promise.resolve([]);
-				},
-			);
-
-			const result = await listAvailablePmTools({
-				userId: "u_1",
-				organizationId: "org_1",
-			});
-
-			const gitlab = result.find((o) => o.key === "gitlab-official");
-			expect(gitlab?.connectedInPersonalScope).toBeFalsy();
-
-			// Pin the filter shape so a future refactor can't silently drop
-			// the OR/path guards that make this NULL-safe.
-			expect(findManyWorkflowIntegration).toHaveBeenCalledWith(
-				expect.objectContaining({
-					where: expect.objectContaining({
-						organizationId: null,
-						userId: "u_1",
-						provider: "GITLAB",
-						isActive: true,
-						OR: expect.arrayContaining([
-							expect.objectContaining({
-								settings: expect.objectContaining({
-									path: ["needsReauth"],
-									equals: false,
-								}),
-							}),
-						]),
-					}),
-				}),
-			);
 		});
 	});
 
@@ -600,9 +553,9 @@ describe("listAvailablePmTools", () => {
 	// catalog row was missing / not marked `isSystemProvided=true`. The
 	// silent `if (gitlabServer)` gates in the REST-synthesis branch and the
 	// default-stub loop dropped GitLab from the picker entirely, even when
-	// a working WorkflowIntegration existed. The picker must treat the
-	// WorkflowIntegration as ground truth for "GitLab is available via
-	// REST" — the catalog row is a UI label, not a gate.
+	// a working GitLab connection existed. The picker must treat the
+	// connection as ground truth for "GitLab is available via REST" — the
+	// catalog row is a UI label, not a gate.
 	describe("resilience when gitlab-official MCPServer catalog row is missing", () => {
 		const SERVERS_WITHOUT_GITLAB = DEFAULT_FIXTURE_SERVERS.filter(
 			(s) => s.key !== "gitlab-official",
@@ -614,19 +567,11 @@ describe("listAvailablePmTools", () => {
 			warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		});
 
-		it("still emits REST-synthesized GitLab when WorkflowIntegration exists (org context)", async () => {
-			findManyWorkflowIntegration.mockImplementation(
-				(args: { where: { organizationId: string | null } }) => {
-					if (args.where.organizationId === "org_1") {
-						return Promise.resolve([{ id: "wi_org_gitlab" }]);
-					}
-					return Promise.resolve([]);
-				},
-			);
-
+		it("still emits REST-synthesized GitLab when the connection is usable (org context)", async () => {
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: "org_1",
+				gitlab: CONNECTED,
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
@@ -643,14 +588,11 @@ describe("listAvailablePmTools", () => {
 			expect(gitlab?.mcpServerId).toBeTruthy();
 		});
 
-		it("still emits REST-synthesized GitLab when WorkflowIntegration exists (personal context)", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([
-				{ id: "wi_personal_gitlab" },
-			]);
-
+		it("still emits REST-synthesized GitLab when the connection is usable (personal context)", async () => {
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: null,
+				gitlab: CONNECTED,
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
@@ -662,12 +604,11 @@ describe("listAvailablePmTools", () => {
 			});
 		});
 
-		it("still emits the GitLab default stub when no WorkflowIntegration exists", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([]);
-
+		it("still emits the GitLab default stub when GitLab is not connected", async () => {
 			const result = await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: null,
+				gitlab: NOT_CONNECTED,
 			});
 
 			const gitlab = result.find((o) => o.key === "gitlab-official");
@@ -683,11 +624,10 @@ describe("listAvailablePmTools", () => {
 		});
 
 		it("logs a console.error so the missing catalog row is observable", async () => {
-			findManyWorkflowIntegration.mockResolvedValue([]);
-
 			await listAvailablePmTools({
 				userId: "u_1",
 				organizationId: null,
+				gitlab: NOT_CONNECTED,
 			});
 
 			expect(warnSpy).toHaveBeenCalled();

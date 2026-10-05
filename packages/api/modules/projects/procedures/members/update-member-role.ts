@@ -28,6 +28,14 @@ export const updateMemberRoleProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// Resolved at handler entry, BEFORE anything is written: it can still
+		// refuse (a project with no organization), and refusing after the
+		// write would leave it committed behind a failed response.
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+
 		// Authorization (PROJECT_MEMBERS_MANAGE — OWNER and PROJECT_ADMIN)
 		// is enforced by `requireProjectPermission` above. In addition, only
 		// OWNERs may grant the OWNER role or modify an existing OWNER —
@@ -101,10 +109,6 @@ export const updateMemberRoleProcedure = tenantProtectedProcedure
 		// Audit-log emission. Resource is the affected member —
 		// not the actor — so deployment admins reviewing a role-change can
 		// identify who was promoted/demoted at a glance.
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 		recordAuditFromRequest(context, {
 			action: "project.member.role_changed",
 			category: "project",

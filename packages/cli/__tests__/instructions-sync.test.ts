@@ -22,6 +22,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LOCK_VERSION, readLock } from "../src/lib/instructions/lock.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
+import { commandPath } from "./helpers/command-path.js";
 import {
 	makeTree,
 	manifestEntry,
@@ -51,6 +52,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -150,7 +153,7 @@ describe("fabric instructions sync", () => {
 		// and retries. The archive route's own client (bundle budget, NO
 		// retries) is pinned in `instructions-sync-per-file.test.ts`.
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
-			{ timeoutMs: 15_000 },
+			{ project: "project-1", timeoutMs: 15_000 },
 		]);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
@@ -343,7 +346,7 @@ describe("fabric instructions sync", () => {
 		expect(result.stdout).toContain("    AGENTS.md");
 		expect(result.stdout).not.toContain("replaced local edits:");
 		expect(result.stdout).toContain(
-			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+			`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair`,
 		);
 		expect(result.stdout).toContain("CLAUDE.local.md");
 		expect(result.stdout).toContain(".claude/settings.local.json");
@@ -600,6 +603,9 @@ describe("fabric instructions sync", () => {
 // ---------------------------------------------------------------------------
 // A lock belongs to one project
 // ---------------------------------------------------------------------------
+const OTHER_PROJECT_LOCK =
+	"✗ This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.\n";
+
 describe("a lock from another project", () => {
 	/**
 	 * `sync --project B` in a directory synced from project A used to send
@@ -638,8 +644,7 @@ describe("a lock from another project", () => {
 			]);
 
 			expect(result.code).toBe(7);
-			expect(result.stderr).toContain("belongs to project project-A");
-			expect(result.stderr).toContain("project-B");
+			expect(result.stderr).toBe(OTHER_PROJECT_LOCK);
 			expect(mocks.getPublished).toHaveBeenCalledTimes(1);
 			expect(mocks.getPublished).toHaveBeenCalledWith("project-B", {
 				org: undefined,
@@ -666,7 +671,7 @@ describe("a lock from another project", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(result.stderr).toContain("belongs to project project-A");
+		expect(result.stderr).toBe(OTHER_PROJECT_LOCK);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		await expect(
 			stat(path.join(dest, ".claude", "settings.local.json")),
@@ -688,8 +693,8 @@ describe("a lock from another project", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toMatch(
-			/^fabric: coding instructions check skipped: .*belongs to project project-A.*\n$/,
+		expect(result.stderr).toBe(
+			"fabric: coding instructions check skipped: This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.\n",
 		);
 	});
 
@@ -1010,83 +1015,127 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(result.stdout).toContain("AGENTS.md (missing)");
 	});
 
-	it("puts back a mode that drifted, without downloading anything", async () => {
-		const executable = {
-			...manifestEntry("script.sh", "#!/bin/sh\n"),
-			mode: 0o100755,
-		};
-		const manifest = [executable];
-		const dest = await seedSyncedTree(manifest, {
-			"script.sh": "#!/bin/sh\n",
-		});
-		const { chmod } = await import("node:fs/promises");
-		await chmod(path.join(dest, "script.sh"), 0o644);
-		serveUnchangedThenFull(manifest);
+	// Windows files have no POSIX permission bits (`stat` reports 666 whatever
+	// was written, and `chmod` only toggles the read-only attribute), so sync
+	// neither compares nor sets modes there: the two mode tests need a
+	// platform that has them, and the Windows test below pins what it does
+	// instead.
+	it.skipIf(process.platform === "win32")(
+		"puts back a mode that drifted, without downloading anything",
+		async () => {
+			const executable = {
+				...manifestEntry("script.sh", "#!/bin/sh\n"),
+				mode: 0o100755,
+			};
+			const manifest = [executable];
+			const dest = await seedSyncedTree(manifest, {
+				"script.sh": "#!/bin/sh\n",
+			});
+			const { chmod } = await import("node:fs/promises");
+			await chmod(path.join(dest, "script.sh"), 0o644);
+			serveUnchangedThenFull(manifest);
 
-		const result = await runCli([
-			"sync",
-			"--project",
-			"project-1",
-			"--dest",
-			dest,
-		]);
+			const result = await runCli([
+				"sync",
+				"--project",
+				"project-1",
+				"--dest",
+				dest,
+			]);
 
-		expect(result.code).toBe(0);
-		expect(result.stdout).toContain(
-			"script.sh (mode 644, published as 755)",
-		);
-		expect((await stat(path.join(dest, "script.sh"))).mode & 0o777).toBe(
-			0o755,
-		);
-		// Bytes already matched, so there was nothing to fetch.
-		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
-	});
+			expect(result.code).toBe(0);
+			expect(result.stdout).toContain(
+				"script.sh (mode 644, published as 755)",
+			);
+			expect(
+				(await stat(path.join(dest, "script.sh"))).mode & 0o777,
+			).toBe(0o755);
+			// Bytes already matched, so there was nothing to fetch.
+			expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		},
+	);
+
+	it.runIf(process.platform === "win32")(
+		"does not call a published executable bit drift, which Windows cannot hold",
+		async () => {
+			const executable = {
+				...manifestEntry("script.sh", "#!/bin/sh\n"),
+				mode: 0o100755,
+			};
+			const manifest = [executable];
+			const dest = await seedSyncedTree(manifest, {
+				"script.sh": "#!/bin/sh\n",
+			});
+			serveUnchangedThenFull(manifest);
+
+			const result = await runCli([
+				"sync",
+				"--project",
+				"project-1",
+				"--dest",
+				dest,
+			]);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toContain(
+				"Coding instructions are up to date (version 7).",
+			);
+			expect(result.stdout).not.toContain("mode");
+			expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		},
+	);
 
 	// Fizzy #2671: a republish that only flips a file's executable bit now
 	// carries a different digest from the version the lock recorded, so
 	// `sync` fetches the new manifest instead of short-circuiting on
 	// "unchanged" — unlike the drift case above, where the SERVER's digest
 	// never moved and only the local file had drifted.
-	it("chmods a file whose published mode changed and records the new mode in the lock", async () => {
-		const oldManifest = [manifestEntry("script.sh", "#!/bin/sh\n")];
-		const dest = await seedSyncedTree(oldManifest, {
-			"script.sh": "#!/bin/sh\n",
-		});
-		const newManifest = [
-			{ ...manifestEntry("script.sh", "#!/bin/sh\n"), mode: 0o100755 },
-		];
-		// Sanity: the republish really does carry a different digest — a
-		// mode-only version must not look unchanged to begin with.
-		expect(computeSnapshotDigest(newManifest)).not.toBe(
-			computeSnapshotDigest(oldManifest),
-		);
-		mocks.getPublished.mockResolvedValue({
-			published: true,
-			sourceOfTruth: "UPLOAD",
-			snapshot: snapshotFor(newManifest),
-			unchanged: false,
-			changes: { added: [], removed: [], changed: ["script.sh"] },
-			manifest: newManifest,
-		});
+	it.skipIf(process.platform === "win32")(
+		"chmods a file whose published mode changed and records the new mode in the lock",
+		async () => {
+			const oldManifest = [manifestEntry("script.sh", "#!/bin/sh\n")];
+			const dest = await seedSyncedTree(oldManifest, {
+				"script.sh": "#!/bin/sh\n",
+			});
+			const newManifest = [
+				{
+					...manifestEntry("script.sh", "#!/bin/sh\n"),
+					mode: 0o100755,
+				},
+			];
+			// Sanity: the republish really does carry a different digest — a
+			// mode-only version must not look unchanged to begin with.
+			expect(computeSnapshotDigest(newManifest)).not.toBe(
+				computeSnapshotDigest(oldManifest),
+			);
+			mocks.getPublished.mockResolvedValue({
+				published: true,
+				sourceOfTruth: "UPLOAD",
+				snapshot: snapshotFor(newManifest),
+				unchanged: false,
+				changes: { added: [], removed: [], changed: ["script.sh"] },
+				manifest: newManifest,
+			});
 
-		const result = await runCli([
-			"sync",
-			"--project",
-			"project-1",
-			"--dest",
-			dest,
-		]);
+			const result = await runCli([
+				"sync",
+				"--project",
+				"project-1",
+				"--dest",
+				dest,
+			]);
 
-		expect(result.code).toBe(0);
-		expect((await stat(path.join(dest, "script.sh"))).mode & 0o777).toBe(
-			0o755,
-		);
-		// Bytes already matched the new manifest, so nothing was downloaded.
-		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
-		const lock = await readLock(dest);
-		expect(lock?.files["script.sh"]?.mode).toBe(0o100755);
-		expect(lock?.digest).toBe(computeSnapshotDigest(newManifest));
-	});
+			expect(result.code).toBe(0);
+			expect(
+				(await stat(path.join(dest, "script.sh"))).mode & 0o777,
+			).toBe(0o755);
+			// Bytes already matched the new manifest, so nothing was downloaded.
+			expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+			const lock = await readLock(dest);
+			expect(lock?.files["script.sh"]?.mode).toBe(0o100755);
+			expect(lock?.digest).toBe(computeSnapshotDigest(newManifest));
+		},
+	);
 
 	it("still says unchanged when the tree really does match", async () => {
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
@@ -1138,7 +1187,11 @@ describe("an unchanged digest over a drifted tree", () => {
 		// every hook-mode call. The one write is fetched by name, so there is
 		// no separate download-link client.
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
-			{ timeoutMs: 10_000, retry: { maxRetries: 0 } },
+			{
+				project: "project-1",
+				timeoutMs: 10_000,
+				retry: { maxRetries: 0 },
+			},
 		]);
 	});
 
@@ -1164,7 +1217,7 @@ describe("an unchanged digest over a drifted tree", () => {
 			"edited\n",
 		);
 		expect(result.stderr).toBe(
-			`fabric: 1 local edit(s) kept; run \`fabric instructions sync --project project-1 --dest ${dest} --repair\` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+			`fabric: 1 local edit(s) kept; run \`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair\` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
 		);
 		expect(mocks.getPublished).toHaveBeenCalledTimes(1);
 	});
@@ -1239,7 +1292,7 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(text.code).toBe(0);
 		expect(text.stdout).toContain("AGENTS.md (kept)");
 		expect(text.stdout).toContain(
-			`fabric instructions sync --project project-1 --dest ${dest} --repair`,
+			`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair`,
 		);
 		expect(text.stdout).not.toContain("to put");
 
@@ -1456,12 +1509,18 @@ describe("an unchanged digest over a drifted tree", () => {
 	 * Decision 42. A newline in a path cannot be quoted into something a
 	 * person can safely paste, so no command is printed at all; the report
 	 * says what to run instead, in stdout and in the hook's stderr line.
+	 *
+	 * Windows cannot create a folder with a newline in its name, so there a
+	 * `$` stands in: no spelling of it reads the same in bash, PowerShell and
+	 * cmd.exe, so the same refusal applies.
 	 */
-	it("prints no repair command for a --dest with a newline, and says what to run instead", async () => {
+	it("prints no repair command for a --dest that cannot be pasted safely, and says what to run instead", async () => {
+		const [folderPrefix, leaked] =
+			process.platform === "win32"
+				? ["fabric-cmd-$dollar-", "fabric-cmd-$dollar"]
+				: ["fabric-cmd-new\nline-", "fabric-cmd-new"];
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
-		const dest = await mkdtemp(
-			path.join(tmpdir(), "fabric-cmd-new\nline-"),
-		);
+		const dest = await mkdtemp(path.join(tmpdir(), folderPrefix));
 		await writeFile(path.join(dest, "AGENTS.md"), "edited\n");
 		await seedLock(dest, computeSnapshotDigest(manifest), {
 			"AGENTS.md": { sha256: manifest[0].sha256, mode: 0o100644 },
@@ -1484,8 +1543,6 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(result.stderr).toBe(
 			`fabric: 1 local edit(s) kept; run ${instead} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
 		);
-		expect(`${result.stdout}${result.stderr}`).not.toContain(
-			"fabric-cmd-new",
-		);
+		expect(`${result.stdout}${result.stderr}`).not.toContain(leaked);
 	});
 });

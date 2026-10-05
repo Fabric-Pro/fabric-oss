@@ -80,7 +80,7 @@ beforeEach(() => {
 	mockGetProject.mockResolvedValue({
 		id: "proj-1",
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 	});
 	mockUpdateProject.mockResolvedValue({ id: "proj-1" });
 });
@@ -121,11 +121,11 @@ describe("updateProjectProcedure — readOnlyMode field guard", () => {
 		expect(dataArg.readOnlyMode).toBe(true);
 	});
 
-	it("allows the personal-project owner unconditionally", async () => {
+	it("allows the project owner (an accepted OWNER member)", async () => {
 		mockResolveAccess.mockResolvedValue({
-			source: "owner",
-			permissions: [],
-			organizationId: null,
+			source: "project-member",
+			permissions: ["PROJECT_UPDATE", "PROJECT_SETTINGS_EDIT"],
+			organizationId: "org-1",
 		});
 		const handler = await loadHandler();
 		await handler({

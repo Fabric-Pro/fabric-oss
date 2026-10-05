@@ -58,6 +58,11 @@ vi.mock("../../../../../orpc/procedures", () => ({
 	resolveOrganizationId: vi.fn(
 		(orgId: string | null | undefined) => orgId ?? null,
 	),
+	// Selects the caller's Microsoft connection with the pre-binding rule;
+	// with no binding in this test it answers as the resolver above.
+	resolveSourceCredentialOrganizationId: vi.fn(
+		(orgId: string | null | undefined) => orgId ?? null,
+	),
 	tenantProtectedProcedure: {
 		use: vi.fn().mockReturnThis(),
 		route: vi.fn().mockReturnThis(),

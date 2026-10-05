@@ -21,12 +21,12 @@ import {
 	normalizeAzureEndpoint,
 	resolveAzureDeploymentTarget,
 } from "@repo/agent-types";
-import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
-import { isRetryableError } from "../retry";
 import {
 	createDatabricksFetch,
 	isReasoningModelName,
-} from "./databricks-compat";
+} from "@repo/agent-types/databricks-compat";
+import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
+import { isRetryableError } from "../retry";
 import { createLangChainTelemetryCallback } from "./langchain-telemetry";
 
 /**
@@ -66,6 +66,61 @@ class PromptCachingChatAnthropic extends ChatAnthropic {
 			return params;
 		}
 		return { ...params, cache_control: { type: "ephemeral" as const } };
+	}
+
+	/**
+	 * Anthropic's `message_delta.usage.output_tokens` is the cumulative output
+	 * count for the whole reply, but @langchain/anthropic (1.5.9 through at
+	 * least 1.5.12) adds it to the `message_start` count when it builds a
+	 * stream's usage — by chunk `concat()` in `_streamResponseChunks`, and by
+	 * its usage snapshot in `_streamChatModelEvents`. Every streamed reply
+	 * therefore recorded the start count twice. Rewriting each delta's count
+	 * as the increment since the highest count reported so far makes
+	 * LangChain's sum equal that highest count on both paths, since both read
+	 * the raw events through this method. For a normal reply that is the final
+	 * cumulative total; a stream that ends before its delta keeps the start
+	 * count.
+	 */
+	protected override async createStreamWithRetry(
+		...args: Parameters<ChatAnthropic["createStreamWithRetry"]>
+	) {
+		const stream = await super.createStreamWithRetry(...args);
+		const source = {
+			[Symbol.asyncIterator]: stream[Symbol.asyncIterator].bind(stream),
+		};
+		// Patched on the instance rather than wrapped, so callers keep the SDK
+		// `Stream` and its `controller`, which LangChain uses to abort.
+		stream[Symbol.asyncIterator] = async function* () {
+			let reportedOutputTokens = 0;
+			for await (const event of source) {
+				if (event.type === "message_start") {
+					reportedOutputTokens =
+						event.message.usage?.output_tokens ?? 0;
+				} else if (
+					event.type === "message_delta" &&
+					typeof event.usage?.output_tokens === "number"
+				) {
+					const cumulative = event.usage.output_tokens;
+					yield {
+						...event,
+						usage: {
+							...event.usage,
+							output_tokens: Math.max(
+								0,
+								cumulative - reportedOutputTokens,
+							),
+						},
+					};
+					reportedOutputTokens = Math.max(
+						reportedOutputTokens,
+						cumulative,
+					);
+					continue;
+				}
+				yield event;
+			}
+		};
+		return stream;
 	}
 }
 
@@ -883,8 +938,9 @@ export function reasoningOutputAllowance(
  * `RuntimeProviderConfig.isReasoningModel` does NOT mean "this is a
  * reasoning model" in general — its established semantics are narrower:
  * "this model emits DeepSeek-R1-style `<think>` reasoning tags" (see
- * `isReasoningModelName` in `./databricks-compat.ts`, which only matches
- * `deepseek-r1`/`deepseek-reasoner`/`r1-distill` patterns, and the identical
+ * `isReasoningModelName` in `@repo/agent-types`' `databricks-compat.ts`,
+ * which only matches `deepseek-r1`/`deepseek-reasoner`/`r1-distill`
+ * patterns, and the identical
  * doc-comment on `@repo/ai`'s `model-factory.ts`). The producers of this
  * field (`apps/web/app/api/agents/ai-config/route.ts` and its `/task`
  * sibling) set `isReasoningModel: isReasoningModelName(canonicalName)`
@@ -1188,8 +1244,10 @@ function gatewayFetch(
  * content") over `gatewayFetch`, so the extended-timeout dispatcher still applies
  * to these (often long-running) inference calls.
  *
- * The shim lives in `./databricks-compat` (a mirror of `@repo/ai`'s copy — the
- * agent bundle deliberately can't import `@repo/ai`).
+ * The shim lives in `@repo/agent-types` (`src/databricks-compat.ts`), shared
+ * with `@repo/ai` — the agent bundle can't import `@repo/ai`, which the agent
+ * tsup configs mark external. This path uses its default request-body rule (the
+ * plain field strip), not `@repo/ai`'s Vercel-only one.
  *
  * `<think>` reasoning stripping is NOT enabled here — it's decided per model in
  * the DATABRICKS branch of `createProviderModel` (which knows the resolved
@@ -1609,7 +1667,7 @@ function createUninstrumentedProviderModel(
 				// (rejected with HTTP 400) from the request and flatten Claude's
 				// array-shaped response content so the stream loop doesn't drop
 				// every chunk. Both fetch variants route through gatewayFetch's
-				// extended timeout dispatcher. See ./databricks-compat.
+				// extended timeout dispatcher. See `@repo/agent-types`' databricks-compat.
 				fetch: stripReasoning
 					? databricksReasoningFetch()
 					: databricksFetch,

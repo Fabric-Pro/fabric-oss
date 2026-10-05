@@ -11,6 +11,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 import { describeFindingChange } from "./lib/describe-finding-change";
 
 /**
@@ -50,18 +51,19 @@ export const updateFindingProcedure = tenantProtectedProcedure
 			),
 	)
 	.handler(async ({ input, context }) => {
-		const {
+		const { projectId, findingId, status, category, severity } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
 			projectId,
-			organizationId,
-			findingId,
-			status,
-			category,
-			severity,
-		} = input;
+		);
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			context.user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {

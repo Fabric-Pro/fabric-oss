@@ -14,31 +14,34 @@
  * - Concurrent refresh lock to prevent race conditions
  */
 
-import { db } from "@repo/database";
-import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
-import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import { scrubSecrets } from "@repo/utils/scrub-secrets";
-import { GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS } from "./oauth-refresh";
-import { GitLabApiError } from "./rest-client";
+import {
+	type GitLabConnectionTokenResult,
+	getGitLabConnectionToken,
+	refreshGitLabConnection,
+} from "./connection";
+import { gitlabOutboundFetch } from "./outbound";
+import {
+	type GitLabApiCredential,
+	GitLabApiError,
+	type GitLabAuth,
+	gitlabApiBaseForOrigin,
+	toGitLabApiCredential,
+} from "./rest-client";
 
 export * from "./capabilities";
+export * from "./connection";
+export * from "./connection-summary";
 export * from "./get-valid-access-token";
 export * from "./integration-settings";
 export * from "./mcp-client";
 export * from "./oauth-refresh";
+export * from "./outbound";
 export * from "./pm-adapter";
+export * from "./pm-origin";
 export * from "./probe-mcp";
-export * from "./refresh-failure-writer";
-export * from "./refresh-mcp-config-token";
 export * from "./rest-client";
 export * from "./source";
-
-const GITLAB_API_URL = "https://gitlab.com/api/v4";
-
-// Module-level refresh lock to prevent concurrent token refresh races.
-// When multiple concurrent requests hit a 401, only the first one refreshes
-// the token; the rest await the same promise and reuse the result.
-const refreshInProgress = new Map<string, Promise<string>>();
 
 function gitlabHeaders(token: string): Record<string, string> {
 	return {
@@ -49,11 +52,12 @@ function gitlabHeaders(token: string): Record<string, string> {
 }
 
 export async function gitlabFetch(
-	token: string,
+	auth: GitLabAuth,
 	path: string,
 	params?: Record<string, string>,
 ): Promise<unknown> {
-	const url = new URL(`${GITLAB_API_URL}${path}`);
+	const { token, apiBase } = toGitLabApiCredential(auth);
+	const url = new URL(`${apiBase}${path}`);
 	if (params) {
 		for (const [key, value] of Object.entries(params)) {
 			if (value !== undefined && value !== "") {
@@ -62,7 +66,7 @@ export async function gitlabFetch(
 		}
 	}
 
-	const response = await fetch(url.toString(), {
+	const response = await gitlabOutboundFetch(url.toString(), {
 		headers: gitlabHeaders(token),
 	});
 
@@ -88,11 +92,12 @@ export async function gitlabFetch(
 }
 
 export async function gitlabPost(
-	token: string,
+	auth: GitLabAuth,
 	path: string,
 	body: Record<string, unknown>,
 ): Promise<unknown> {
-	const response = await fetch(`${GITLAB_API_URL}${path}`, {
+	const { token, apiBase } = toGitLabApiCredential(auth);
+	const response = await gitlabOutboundFetch(`${apiBase}${path}`, {
 		method: "POST",
 		headers: {
 			...gitlabHeaders(token),
@@ -115,11 +120,12 @@ export async function gitlabPost(
 }
 
 async function gitlabPut(
-	token: string,
+	auth: GitLabAuth,
 	path: string,
 	body: Record<string, unknown>,
 ): Promise<unknown> {
-	const response = await fetch(`${GITLAB_API_URL}${path}`, {
+	const { token, apiBase } = toGitLabApiCredential(auth);
+	const response = await gitlabOutboundFetch(`${apiBase}${path}`, {
 		method: "PUT",
 		headers: {
 			...gitlabHeaders(token),
@@ -141,570 +147,6 @@ async function gitlabPut(
 	return data;
 }
 
-interface ParsedCredentials {
-	access_token?: string;
-	GITLAB_ACCESS_TOKEN?: string;
-	token?: string;
-	apiKey?: string;
-	refresh_token?: string;
-	expires_in?: number;
-	refresh_token_expires_in?: number;
-	token_obtained_at?: string;
-}
-
-/**
- * Prisma client able to persist the refreshed credential. Satisfied by both the
- * root client and a transaction client, so the locked path can hand in its `tx`
- * and avoid checking out a second pooled connection.
- */
-type RefreshWriter = Pick<typeof db, "workflowIntegration">;
-
-/** Parse a stored credentials blob, or null when it is a raw token string. */
-function safeParseCredentials(
-	credentialsJson: string,
-): ParsedCredentials | null {
-	try {
-		const parsed = JSON.parse(credentialsJson) as ParsedCredentials;
-		return typeof parsed === "object" && parsed !== null ? parsed : null;
-	} catch {
-		return null;
-	}
-}
-
-function extractAccessToken(credentialsJson: string): string {
-	try {
-		const parsed = JSON.parse(credentialsJson) as ParsedCredentials;
-		if (typeof parsed !== "object" || parsed === null) {
-			return credentialsJson;
-		}
-		const token =
-			parsed.access_token ||
-			parsed.GITLAB_ACCESS_TOKEN ||
-			parsed.token ||
-			parsed.apiKey ||
-			"";
-		if (!token) {
-			throw new Error("No access token found in GitLab credentials");
-		}
-		return token;
-	} catch (e) {
-		if (e instanceof SyntaxError) {
-			return credentialsJson;
-		}
-		throw e;
-	}
-}
-
-function isTokenExpired(credentials: ParsedCredentials): boolean {
-	if (!credentials.expires_in) {
-		// No expiry info. GitLab OAuth access tokens DO expire (~2h), and rows
-		// persisted before `expires_in` was captured will be missing it. When a
-		// refresh token is present, force a one-time refresh — the refreshed
-		// credentials carry `expires_in`, so subsequent checks are precise.
-		// PATs (no refresh token) genuinely don't expire and are left as-is.
-		return !!credentials.refresh_token;
-	}
-	if (!credentials.token_obtained_at) {
-		// Has expires_in but no timestamp — pre-patch connection.
-		// Conservatively treat as expired to trigger a refresh attempt.
-		return !!credentials.refresh_token;
-	}
-	const obtainedAt = new Date(credentials.token_obtained_at).getTime();
-	const expiresAt = obtainedAt + credentials.expires_in * 1000;
-	const bufferMs = 5 * 60 * 1000; // Refresh 5 minutes before expiry
-	return Date.now() >= expiresAt - bufferMs;
-}
-
-/**
- * True only when the token's real lifetime has run out (no refresh buffer)
- * and the lifetime is KNOWN. Unknown expiry is not "past expiry": legacy rows
- * without `expires_in`/`token_obtained_at` are force-refreshed by
- * `isTokenExpired`, and their token may well still work.
- */
-function isTokenPastExpiry(credentials: ParsedCredentials): boolean {
-	if (!credentials.expires_in || !credentials.token_obtained_at) {
-		return false;
-	}
-	const obtainedAt = new Date(credentials.token_obtained_at).getTime();
-	if (Number.isNaN(obtainedAt)) {
-		return false;
-	}
-	return Date.now() >= obtainedAt + credentials.expires_in * 1000;
-}
-
-async function getGitLabClientCredentials(
-	userId?: string,
-	organizationId?: string,
-): Promise<{ clientId: string; clientSecret: string } | null> {
-	// Check env vars first
-	const envClientId = process.env.GITLAB_CLIENT_ID;
-	const envClientSecret = process.env.GITLAB_CLIENT_SECRET;
-	if (envClientId && envClientSecret) {
-		return { clientId: envClientId, clientSecret: envClientSecret };
-	}
-
-	// Fall back to DB-stored app credentials.
-	// Mirror the same lookup chain as getOAuthCredentialsWithDb():
-	// org-scoped → personal → any/global (admin-configured)
-	try {
-		const whereConditions: Record<string, unknown>[] = [];
-		if (organizationId) {
-			whereConditions.push({
-				organizationId,
-				provider: "GITLAB",
-				name: "GITLAB_OAUTH_APP",
-				isActive: true,
-			});
-		}
-		if (userId) {
-			whereConditions.push({
-				userId,
-				organizationId: null,
-				provider: "GITLAB",
-				name: "GITLAB_OAUTH_APP",
-				isActive: true,
-			});
-		}
-		// Also check for system-level admin-configured credentials
-		// (must have null userId and organizationId to avoid cross-tenant leakage)
-		whereConditions.push({
-			userId: null,
-			organizationId: null,
-			provider: "GITLAB",
-			name: "GITLAB_OAUTH_APP",
-			isActive: true,
-		});
-
-		for (const where of whereConditions) {
-			const appConfig = await db.workflowIntegration.findFirst({
-				where: where as any,
-			});
-			if (appConfig?.credentials) {
-				try {
-					const decrypted = JSON.parse(
-						decryptApiKey(appConfig.credentials),
-					) as Record<string, string>;
-					if (decrypted.client_id && decrypted.client_secret) {
-						return {
-							clientId: decrypted.client_id,
-							clientSecret: decrypted.client_secret,
-						};
-					}
-				} catch {
-					// Decryption failed, try next
-				}
-			}
-		}
-	} catch {
-		// DB lookup failed, fall through
-	}
-
-	return null;
-}
-
-/**
- * Persist `needsReauth=true` plus failure metadata in the WorkflowIntegration's
- * settings JSON when the refresh exchange returns a permanent failure
- * (invalid_grant, revoked refresh token, bad client creds). The
- * `gitlab/status` procedure reads `settings.needsReauth` and surfaces the
- * "Reconnect required" callout on the provider page — without this write,
- * a dead refresh token only reveals itself when the user tries to USE the
- * integration, never proactively.
- *
- * Mirrors `markNeedsReauthOnTx` in packages/api/modules/integrations/lib/
- * gitlab-token.ts; reimplemented here because that helper lives upstream of
- * this package and pulling it in would invert the dependency direction.
- *
- * Best-effort: a write failure here must not mask the original refresh
- * error the caller is about to throw.
- */
-async function markWorkflowIntegrationNeedsReauth(
-	integrationId: string,
-	reason: string,
-	/**
-	 * Runs inside `withRefreshLock` on a permanent refresh failure, so it must
-	 * write through the transaction client — issuing these two queries on the
-	 * outer `db` would request extra pooled connections while the lock already
-	 * holds one, which can starve the pool under concurrency.
-	 */
-	writer: RefreshWriter = db,
-): Promise<void> {
-	try {
-		const wi = await writer.workflowIntegration.findUnique({
-			where: { id: integrationId },
-			select: { settings: true },
-		});
-		const existing =
-			typeof wi?.settings === "object" && wi.settings !== null
-				? (wi.settings as Record<string, unknown>)
-				: {};
-		// Drop cached capability probe alongside marking needsReauth so the
-		// transport badge doesn't keep saying "Connected via REST" after the
-		// refresh died. Same shape `markNeedsReauthOnTx` uses.
-		const {
-			useOfficialMcp: _u,
-			mcpProbe: _p,
-			...preserved
-		} = existing as {
-			useOfficialMcp?: unknown;
-			mcpProbe?: unknown;
-		};
-		await writer.workflowIntegration.update({
-			where: { id: integrationId },
-			data: {
-				settings: {
-					...preserved,
-					needsReauth: true,
-					lastRefreshFailedAt: new Date().toISOString(),
-					lastRefreshError: reason.slice(0, 500),
-				},
-			},
-		});
-		console.warn(
-			"[GitLab] Marked WorkflowIntegration needsReauth after permanent refresh failure",
-			{ integrationId, reason: reason.slice(0, 200) },
-		);
-	} catch (markErr) {
-		console.error(
-			"[GitLab] Failed to persist needsReauth on WorkflowIntegration",
-			{
-				integrationId,
-				error: markErr instanceof Error ? markErr.message : markErr,
-			},
-		);
-	}
-}
-
-/**
- * Perform the actual GitLab token refresh via OAuth endpoint.
- * Separated from refreshTokenIfNeeded so it can be reused by the 401 retry path.
- *
- * NOTE: GitLab requires application/x-www-form-urlencoded for token refresh (not JSON).
- */
-async function performTokenRefresh(
-	integration: {
-		id: string;
-		settings: unknown;
-	},
-	refreshTokenValue: string,
-	userId?: string,
-	organizationId?: string,
-	/**
-	 * Transaction client when running inside `withRefreshLock`. Writes MUST go
-	 * through it: the lock holds one pooled connection for the whole exchange, so
-	 * issuing the persist on the outer `db` would request a SECOND connection
-	 * from the same (default 10) pool and can deadlock it under concurrency.
-	 */
-	writer: RefreshWriter = db,
-	/** Pre-resolved app credentials, looked up outside the lock. */
-	preResolvedCreds?: { clientId: string; clientSecret: string } | null,
-): Promise<string> {
-	const creds =
-		preResolvedCreds !== undefined
-			? preResolvedCreds
-			: await getGitLabClientCredentials(userId, organizationId);
-
-	if (!creds) {
-		throw new Error(
-			"Cannot refresh GitLab token: no client credentials configured. " +
-				"Set GITLAB_CLIENT_ID and GITLAB_CLIENT_SECRET, " +
-				"or reconnect your GitLab account.",
-		);
-	}
-
-	const { clientId, clientSecret } = creds;
-
-	console.log("[GitLab] Refreshing expired access token...");
-
-	const body = new URLSearchParams({
-		client_id: clientId,
-		client_secret: clientSecret,
-		grant_type: "refresh_token",
-		refresh_token: refreshTokenValue,
-	});
-
-	const response = await fetch("https://gitlab.com/oauth/token", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/x-www-form-urlencoded",
-		},
-		body: body.toString(),
-		// This exchange runs INSIDE `withRefreshLock`'s advisory-lock
-		// transaction (see `refreshTokenWithLock` below), which carries the
-		// same 20s budget as the other GitLab refresh paths — bare `fetch` has
-		// no timeout of its own (undici's default is 300s), so a hanging
-		// response here could otherwise run well past that budget, rolling the
-		// transaction back and releasing the lock while GitLab may still honor
-		// the exchange. Reuses the same-package constant so all three locked
-		// GitLab exchanges share one number.
-		//
-		// This signal is NOT scoped to just the headers: it also covers the
-		// body read below (`response.text()`). If headers arrive before the
-		// deadline but the body does not, THAT read rejects with the same
-		// DOMException — `response.ok` being true only proves headers
-		// arrived, not that the body ever will. The body-read branch below
-		// treats a failed read as indeterminate rather than folding it into
-		// the permanent/transient classification, so an abort firing mid-body
-		// can never be misread as evidence GitLab rejected the grant.
-		signal: AbortSignal.timeout(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS),
-	});
-
-	if (!response.ok) {
-		// Read the response body to distinguish permanent (invalid_grant,
-		// revoked refresh token, bad client creds) from transient (5xx,
-		// rate limits) failures. Only the permanent kind warrants flipping
-		// needsReauth — surfacing the red "Reconnect required" callout for
-		// a transient 503 would make every blip look like the user's fault.
-		//
-		// A failed read — including the abort above firing mid-body, which
-		// reuses the same signal as the fetch itself — makes the outcome
-		// INDETERMINATE, not permanent: we never actually saw what GitLab
-		// was about to say. Swallowing that into an empty string (e.g. via a
-		// bare `.catch(() => "")`) would read identically to "GitLab
-		// explained nothing" and still classify a bare 400/401 as permanent
-		// — condemning a credential on evidence this process never
-		// received. Track the failure explicitly instead, and skip
-		// permanent classification (and the reauth write) when it happens;
-		// this still throws below, as an ordinary transient failure the
-		// caller can retry.
-		let errorBody = "";
-		let bodyReadFailed = false;
-		try {
-			errorBody = await response.text();
-		} catch {
-			bodyReadFailed = true;
-		}
-		const isPermanent =
-			!bodyReadFailed &&
-			(response.status === 400 || response.status === 401);
-		if (isPermanent) {
-			await markWorkflowIntegrationNeedsReauth(
-				integration.id,
-				`GitLab refresh returned ${response.status}: ${errorBody.slice(0, 200)}`,
-				writer,
-			);
-		}
-		throw new Error(
-			`GitLab token refresh failed: ${response.status}${
-				bodyReadFailed
-					? " (response body unreadable, possibly a timeout)"
-					: errorBody
-						? ` ${errorBody.slice(0, 200)}`
-						: ""
-			}`,
-		);
-	}
-
-	const data = (await response.json()) as ParsedCredentials & {
-		error?: string;
-		token_type?: string;
-		scope?: string;
-	};
-
-	if (data.error || !data.access_token) {
-		// `error` in a 200 body is the OAuth-spec convention for client-side
-		// failures GitLab will still return as 200; treat them as permanent
-		// the same way as 4xx above.
-		if (data.error) {
-			await markWorkflowIntegrationNeedsReauth(
-				integration.id,
-				`GitLab refresh error: ${data.error}`,
-				writer,
-			);
-		}
-		throw new Error(
-			`GitLab token refresh error: ${data.error || "no access_token in response"}`,
-		);
-	}
-
-	// Store refreshed credentials
-	const newCredentials = JSON.stringify({
-		access_token: data.access_token,
-		token_type: data.token_type || "bearer",
-		scope: data.scope,
-		refresh_token: data.refresh_token || refreshTokenValue,
-		expires_in: data.expires_in,
-		refresh_token_expires_in: data.refresh_token_expires_in,
-		token_obtained_at: new Date().toISOString(),
-	});
-
-	const existingSettings =
-		typeof integration.settings === "object" &&
-		integration.settings !== null
-			? integration.settings
-			: {};
-
-	await writer.workflowIntegration.update({
-		where: { id: integration.id },
-		data: {
-			credentials: encryptApiKey(newCredentials),
-			settings: {
-				...(existingSettings as Record<string, unknown>),
-				tokenExpiresAt: data.expires_in
-					? new Date(
-							Date.now() + data.expires_in * 1000,
-						).toISOString()
-					: null,
-			},
-			updatedAt: new Date(),
-		},
-	});
-
-	console.log("[GitLab] Successfully refreshed access token");
-	return data.access_token;
-}
-
-/**
- * Refresh the token with a per-integration lock to prevent concurrent refresh races.
- * If another request is already refreshing, awaits that result instead of duplicating.
- */
-async function refreshTokenWithLock(
-	integration: {
-		id: string;
-		settings: unknown;
-	},
-	refreshTokenValue: string,
-	userId?: string,
-	organizationId?: string,
-): Promise<string> {
-	const integrationId = integration.id;
-	let existing = refreshInProgress.get(integrationId);
-	if (!existing) {
-		// In-process dedupe first (cheap), then the cross-process advisory lock.
-		// The Map alone only serializes ONE Node process; web and worker are
-		// separate processes and GitLab rotates refresh tokens single-use, so
-		// without the DB lock they burn each other's grant and the loser both
-		// fails AND marks a healthy connection needsReauth. This is what the
-		// staging `invalid_grant` storm was.
-		// App credentials are static config, not per-integration state, so they
-		// are resolved BEFORE the lock. Looking them up inside would hold the
-		// lock's pooled connection while requesting a SECOND one from the same
-		// (default 10) pool — under concurrency that starves the pool until the
-		// transaction times out, and the timeout path then marks healthy
-		// connections needsReauth: the very bug this lock exists to prevent.
-		existing = getGitLabClientCredentials(userId, organizationId)
-			.then((creds) => {
-				// Fail fast: a misconfigured deployment must not acquire an advisory
-				// lock and a pooled transaction just to throw inside it.
-				if (!creds) {
-					throw new Error(
-						"Cannot refresh GitLab token: no client credentials configured. " +
-							"Set GITLAB_CLIENT_ID and GITLAB_CLIENT_SECRET, " +
-							"or reconnect your GitLab account.",
-					);
-				}
-				return withRefreshLock(
-					`wfint:${integrationId}`,
-					async (tx, assertBudget) => {
-						// Re-read inside the lock — a winner may have rotated while
-						// we queued, and exchanging their fresh token again would
-						// kill it. This short-circuit runs BEFORE the budget guard
-						// below on purpose: a caller that queued behind a winner
-						// and finds a still-fresh token here does no bounded HTTP
-						// work at all, so it must never be gated on the exchange's
-						// budget — only the path that is actually about to start
-						// the exchange is.
-						const fresh = await tx.workflowIntegration.findUnique({
-							where: { id: integrationId },
-							select: { credentials: true },
-						});
-						if (fresh?.credentials) {
-							const decrypted = decryptApiKey(fresh.credentials);
-							const parsed = safeParseCredentials(decrypted);
-							if (parsed && !isTokenExpired(parsed)) {
-								return extractAccessToken(decrypted);
-							}
-							if (parsed?.refresh_token) {
-								refreshTokenValue = parsed.refresh_token;
-							}
-						}
-						// About to start the one bounded HTTP call this callback
-						// makes — gate on the budget actually left after the lock
-						// wait, immediately before that call and after every
-						// short-circuit above that returns without touching the
-						// provider.
-						assertBudget(GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS);
-						return performTokenRefresh(
-							integration,
-							refreshTokenValue,
-							userId,
-							organizationId,
-							tx,
-							creds,
-						);
-					},
-				);
-			})
-			.finally(() => {
-				refreshInProgress.delete(integrationId);
-			});
-		refreshInProgress.set(integrationId, existing);
-	}
-	return existing;
-}
-
-async function refreshTokenIfNeeded(
-	integration: {
-		id: string;
-		credentials: string;
-		settings: unknown;
-	},
-	userId?: string,
-	organizationId?: string,
-	options: { strict?: boolean } = {},
-): Promise<string> {
-	const credentialsJson = decryptApiKey(integration.credentials);
-	let parsed: ParsedCredentials;
-	try {
-		parsed = JSON.parse(credentialsJson) as ParsedCredentials;
-	} catch {
-		return credentialsJson; // Raw token string, no refresh possible
-	}
-
-	if (typeof parsed !== "object" || parsed === null) {
-		return credentialsJson;
-	}
-
-	const currentToken = extractAccessToken(credentialsJson);
-
-	if (!isTokenExpired(parsed) || !parsed.refresh_token) {
-		return currentToken;
-	}
-
-	// Token is expired and we have a refresh token — try to refresh
-	try {
-		return await refreshTokenWithLock(
-			integration,
-			parsed.refresh_token,
-			userId,
-			organizationId,
-		);
-	} catch (error) {
-		// Logged in BOTH modes — the strict rethrow below still surfaces this
-		// same error to its own caller, but only as the fixed-vocabulary
-		// `reason` string; the raw error (stack, provider detail) would
-		// otherwise never reach a log at all on that path. `refreshErrorForLog`
-		// withholds the provider's own response body (folded into a
-		// `performTokenRefresh` message) while keeping every other error's
-		// message, since those come from our own code/libraries and are what
-		// makes a "could not be obtained" failure diagnosable.
-		console.error(
-			"[GitLab] Pre-emptive token refresh failed:",
-			refreshErrorForLog(error),
-		);
-		// Lenient callers get the current token back and let the 401 retry
-		// handle it — that token may still be valid inside the pre-expiry
-		// buffer. `strict` callers (the hourly poll) get the failure instead
-		// of a token that is PAST its real expiry and GitLab will reject on
-		// every call.
-		if (options.strict && isTokenPastExpiry(parsed)) {
-			throw error;
-		}
-		// Return current token and let the 401 retry handle it
-		return currentToken;
-	}
-}
-
 // ============================================================================
 // Tool Handlers
 // ============================================================================
@@ -721,7 +163,7 @@ interface GitLabProject {
 }
 
 async function listProjects(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const perPage = String(args.per_page || 30);
@@ -744,7 +186,7 @@ async function listProjects(
 }
 
 async function getProject(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id } = args as { project_id: string | number };
@@ -755,7 +197,7 @@ async function getProject(
 }
 
 async function listIssues(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id } = args as { project_id: string | number };
@@ -801,7 +243,7 @@ async function listIssues(
 }
 
 async function getIssue(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, issue_iid } = args as {
@@ -818,7 +260,7 @@ async function getIssue(
 }
 
 async function listIssueNotes(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, issue_iid } = args as {
@@ -838,7 +280,7 @@ async function listIssueNotes(
 }
 
 async function getMergeRequest(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, merge_request_iid } = args as {
@@ -855,7 +297,7 @@ async function getMergeRequest(
 }
 
 async function listMergeRequests(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id } = args as { project_id: string | number };
@@ -909,7 +351,7 @@ async function listMergeRequests(
 }
 
 async function createMergeRequest(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, title, source_branch, target_branch, description } =
@@ -948,7 +390,7 @@ async function createMergeRequest(
 }
 
 async function createIssue(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, title, description, labels, assignee_ids } = args as {
@@ -991,7 +433,7 @@ async function createIssue(
 }
 
 async function getFileContents(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, path, ref } = args as {
@@ -1004,6 +446,7 @@ async function getFileContents(
 	}
 
 	const branch = ref || "main";
+	const { apiBase } = toGitLabApiCredential(token);
 
 	// Try file endpoint first
 	try {
@@ -1028,7 +471,7 @@ async function getFileContents(
 				size: result.size,
 				content: "(binary file)",
 				encoding: result.encoding,
-				url: `${GITLAB_API_URL}/projects/${encodeURIComponent(project_id)}/repository/files/${encodeURIComponent(path)}`,
+				url: `${apiBase}/projects/${encodeURIComponent(project_id)}/repository/files/${encodeURIComponent(path)}`,
 			};
 		}
 
@@ -1038,7 +481,7 @@ async function getFileContents(
 			sha: result.blob_id,
 			size: result.size,
 			content: decoded,
-			url: `${GITLAB_API_URL}/projects/${encodeURIComponent(project_id)}/repository/files/${encodeURIComponent(path)}`,
+			url: `${apiBase}/projects/${encodeURIComponent(project_id)}/repository/files/${encodeURIComponent(path)}`,
 		};
 	} catch (error) {
 		// If 404, try tree endpoint (directory listing)
@@ -1066,7 +509,7 @@ async function getFileContents(
 }
 
 async function listBranches(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id } = args as { project_id: string | number };
@@ -1094,7 +537,7 @@ async function listBranches(
 }
 
 async function searchCommits(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, search, ref_name } = args as {
@@ -1139,7 +582,7 @@ async function searchCommits(
 }
 
 async function getCommit(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, sha } = args as {
@@ -1222,7 +665,7 @@ async function getCommit(
 }
 
 async function getAuthenticatedUserInfo(
-	token: string,
+	token: GitLabAuth,
 	_args: Record<string, unknown>,
 ): Promise<unknown> {
 	const user = (await gitlabFetch(token, "/user")) as {
@@ -1248,71 +691,113 @@ async function getAuthenticatedUserInfo(
 // Direct API Functions (for project wizard repo picker etc.)
 // ============================================================================
 
-/** Shared active-GitLab-WorkflowIntegration lookup for both access-token getters below. */
-async function findActiveGitLabIntegration(
-	userId: string,
-	organizationId?: string,
-) {
-	return organizationId
-		? await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			})
-		: await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId: null,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			});
+/**
+ * Fixed-vocabulary phrase for a connection-service failure, safe to persist
+ * and show. A transient failure carries the underlying error, which
+ * `describeGitLabRefreshFailure` reduces to its own fixed phrase.
+ */
+/**
+ * A fixed phrase (never provider text) for why the connection could not
+ * produce a token — safe to persist and show.
+ */
+export function describeGitLabConnectionFailure(
+	result: Extract<GitLabConnectionTokenResult, { ok: false }>,
+): string {
+	switch (result.reason) {
+		case "not-connected":
+			return "GitLab is not connected";
+		case "needs-reauth":
+			return "the GitLab connection needs to be reconnected";
+		case "client-unavailable":
+			return "the OAuth client that issued the GitLab token is not available";
+		case "no-refresh-token":
+			return "the GitLab token expired and cannot be refreshed";
+		case "unsupported-origin":
+			return "the GitLab connection belongs to a GitLab instance this feature does not support";
+		default:
+			return result.error !== undefined
+				? describeGitLabRefreshFailure(result.error)
+				: "the GitLab token could not be obtained";
+	}
+}
+
+function logConnectionFailure(
+	where: string,
+	tenant: { userId: string; organizationId?: string },
+	result: Extract<GitLabConnectionTokenResult, { ok: false }>,
+): void {
+	if (result.reason === "not-connected") {
+		return;
+	}
+	console.error(`[GitLab] ${where} failed`, {
+		userId: tenant.userId,
+		organizationId: tenant.organizationId,
+		integrationId: result.integrationId,
+		connectionReason: result.reason,
+		...(result.error !== undefined ? refreshErrorForLog(result.error) : {}),
+	});
 }
 
 /**
- * Get the GitLab access token for a user's workflow integration.
- * Automatically refreshes the token if expired.
- * Returns null if not configured.
+ * Get the GitLab access token for a person's personal GitLab connection,
+ * refreshing it when due (see `getGitLabConnectionToken`). Returns null when
+ * GitLab is not connected or the connection cannot produce a usable token.
+ * A bare token carries no instance, so only a gitlab.com credential is
+ * returned; REST callers that can follow the instance use
+ * `getGitLabApiCredential`.
  */
 export async function getGitLabAccessToken(
 	userId: string,
 	organizationId?: string,
 ): Promise<string | null> {
-	const integration = await findActiveGitLabIntegration(
-		userId,
-		organizationId,
+	const result = await getGitLabConnectionToken(
+		{ userId, organizationId: organizationId ?? null },
+		{ mode: "lenient" },
 	);
-
-	if (!integration?.credentials) {
-		return null;
+	if (result.ok) {
+		return result.accessToken;
 	}
+	logConnectionFailure(
+		"getGitLabAccessToken",
+		{ userId, organizationId },
+		result,
+	);
+	return null;
+}
 
-	try {
-		return await refreshTokenIfNeeded(integration, userId, organizationId);
-	} catch (error) {
-		// Surface decrypt/refresh failures — otherwise callers see only the
-		// downstream `null` (rendered as "Could not resolve your GitLab
-		// connection") with no signal pointing at the actual cause.
-		console.error("[GitLab] getGitLabAccessToken failed", {
-			userId,
-			organizationId,
-			integrationId: integration.id,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
+/**
+ * The person's GitLab token together with the REST base of the instance that
+ * issued it — for REST callers, so a self-hosted credential is sent to its own
+ * instance. Null when GitLab is not connected or the connection cannot
+ * produce a usable token (logged like `getGitLabAccessToken`).
+ */
+export async function getGitLabApiCredential(
+	userId: string,
+	organizationId?: string,
+): Promise<GitLabApiCredential | null> {
+	const result = await getGitLabConnectionToken(
+		{ userId, organizationId: organizationId ?? null },
+		{ mode: "lenient", anyOrigin: true },
+	);
+	if (result.ok) {
+		return {
+			token: result.accessToken,
+			apiBase: gitlabApiBaseForOrigin(result.origin),
+		};
 	}
+	logConnectionFailure(
+		"getGitLabApiCredential",
+		{ userId, organizationId },
+		result,
+	);
+	return null;
 }
 
 /**
  * Why a GitLab token refresh failed, as a FIXED phrase safe to persist and
- * show to users. Never echoes provider text: `performTokenRefresh` folds up to
- * 200 characters of GitLab's response body into its message, and that body is
- * untrusted. Only an OAuth `error` code matching `^[a-z_]{1,40}$` is kept.
+ * show to users. Never echoes provider text: a refresh error message may carry
+ * GitLab response text, which is untrusted. Only an OAuth `error` code
+ * matching `^[a-z_]{1,40}$` is kept.
  */
 export function describeGitLabRefreshFailure(error: unknown): string {
 	const name = error instanceof Error ? error.name : "";
@@ -1367,7 +852,7 @@ export function describeGitLabRefreshFailure(error: unknown): string {
 
 /**
  * A refresh error as it may be written to a server log. The provider's
- * response body, which `performTokenRefresh` folds into its message, is never
+ * response text a refresh error message may carry is never
  * logged — only the fixed-vocabulary reason for those. Other messages come
  * from our own code or libraries (the refresh lock, the database, credential
  * decryption) and are what makes a "could not be obtained" failure
@@ -1395,57 +880,31 @@ export type FreshGitLabToken =
 	| { ok: false; reason: string };
 
 /**
- * Like `getGitLabAccessToken`, but a token that is PAST its real expiry and
- * could not be refreshed is reported as a failure (with a safe reason)
- * instead of being handed back to fail every call with a 401. Everything else
- * matches the lenient getter: a raw token string, a token without a refresh
- * token, an unexpired token, a failed refresh inside the pre-expiry buffer,
- * or unknown expiry all return the current token. `null` ONLY when there is
- * no active integration row or it stores no credentials; every other failure
- * that occurs while REFRESHING a resolved credential (including one that
- * could not be decrypted or parsed) is `{ ok: false }`. A failure to read the
- * integration row itself (a database error from `findActiveGitLabIntegration`)
- * is NOT caught here and rejects the promise instead.
+ * Like `getGitLabAccessToken`, but a token that is PAST its recorded expiry
+ * and could not be refreshed is reported as a failure (with a safe,
+ * fixed-vocabulary reason) instead of being handed back to fail every call
+ * with a 401. `null` ONLY when GitLab is not connected.
  */
 export async function getFreshGitLabAccessToken(
 	userId: string,
 	organizationId?: string,
 ): Promise<FreshGitLabToken | null> {
-	const integration = await findActiveGitLabIntegration(
-		userId,
-		organizationId,
+	const result = await getGitLabConnectionToken(
+		{ userId, organizationId: organizationId ?? null },
+		{ mode: "strict" },
 	);
-	if (!integration?.credentials) {
+	if (result.ok) {
+		return { ok: true, token: result.accessToken };
+	}
+	if (result.reason === "not-connected") {
 		return null;
 	}
-	try {
-		return {
-			ok: true,
-			token: await refreshTokenIfNeeded(
-				integration,
-				userId,
-				organizationId,
-				{
-					strict: true,
-				},
-			),
-		};
-	} catch (error) {
-		// `reason` is fixed-vocabulary (safe to persist and show to users);
-		// `refreshErrorForLog` adds server-log-only fields (never duplicating
-		// `reason`, via the spread) that let a NON-provider failure (the refresh
-		// lock, the database, credential decryption) be diagnosed, while
-		// withholding GitLab's own response body — `scrubSecrets` alone does not
-		// redact every unquoted form a reflected secret can take.
-		const errorForLog = refreshErrorForLog(error);
-		console.error("[GitLab] getFreshGitLabAccessToken failed", {
-			userId,
-			organizationId,
-			integrationId: integration.id,
-			...errorForLog,
-		});
-		return { ok: false, reason: errorForLog.reason };
-	}
+	logConnectionFailure(
+		"getFreshGitLabAccessToken",
+		{ userId, organizationId },
+		result,
+	);
+	return { ok: false, reason: describeGitLabConnectionFailure(result) };
 }
 
 /**
@@ -1455,7 +914,7 @@ export async function getFreshGitLabAccessToken(
  * transport errors and surface a useful message to the user.
  */
 export async function getAuthenticatedUser(
-	token: string,
+	token: GitLabAuth,
 ): Promise<{ login: string; name: string | null; avatar_url: string }> {
 	const data = (await gitlabFetch(token, "/user")) as {
 		username: string;
@@ -1486,7 +945,7 @@ interface GitLabSearchProject {
  * Search GitLab projects using the Projects API.
  */
 export async function searchGitLabProjects(
-	token: string,
+	token: GitLabAuth,
 	query: string,
 	perPage = 100,
 ): Promise<GitLabSearchProject[]> {
@@ -1504,7 +963,7 @@ export async function searchGitLabProjects(
  * List the authenticated user's projects (all accessible).
  */
 export async function listUserProjects(
-	token: string,
+	token: GitLabAuth,
 	perPage = 100,
 ): Promise<GitLabSearchProject[]> {
 	const projects = (await gitlabFetch(token, "/projects", {
@@ -1556,7 +1015,7 @@ export function parseGitLabProjectUrl(
  * Fetch file content from GitLab
  */
 export async function fetchFileContent(
-	token: string,
+	token: GitLabAuth,
 	args: { project_id: string | number; path: string; ref?: string },
 ): Promise<{ content: string; path: string; size: number; url: string }> {
 	const result = (await getFileContents(token, args)) as {
@@ -1578,31 +1037,7 @@ export async function getGitLabToken({
 	userId: string;
 	organizationId?: string;
 }): Promise<string | null> {
-	const integration = organizationId
-		? await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			})
-		: await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId: null,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			});
-
-	if (!integration?.credentials) {
-		return null;
-	}
-
-	return refreshTokenIfNeeded(integration, userId, organizationId);
+	return getGitLabAccessToken(userId, organizationId);
 }
 
 // ============================================================================
@@ -1610,7 +1045,7 @@ export async function getGitLabToken({
 // ============================================================================
 
 async function updateIssue(
-	token: string,
+	token: GitLabAuth,
 	args: Record<string, unknown>,
 ): Promise<unknown> {
 	const { project_id, issue_iid } = args as {
@@ -1669,7 +1104,7 @@ async function updateIssue(
 
 const TOOL_HANDLERS: Record<
 	string,
-	(token: string, args: Record<string, unknown>) => Promise<unknown>
+	(token: GitLabAuth, args: Record<string, unknown>) => Promise<unknown>
 > = {
 	list_projects: listProjects,
 	get_project: getProject,
@@ -1689,6 +1124,23 @@ const TOOL_HANDLERS: Record<
 };
 
 /**
+ * The connection `executeGitLabTool` read is on another GitLab instance than
+ * the caller required (`expectedOrigin`): it was reconnected elsewhere after
+ * the caller checked it. Nothing was sent.
+ */
+export class GitLabConnectionOriginChangedError extends Error {
+	override name = "GitLabConnectionOriginChangedError";
+	constructor(
+		readonly expectedOrigin: string,
+		readonly actualOrigin: string,
+	) {
+		super(
+			"Your GitLab connection is now on another GitLab instance than the one this request was checked for.",
+		);
+	}
+}
+
+/**
  * Execute a GitLab tool using the user's OAuth credentials from WorkflowIntegration,
  * or from project-level credentials if provided.
  *
@@ -1696,6 +1148,11 @@ const TOOL_HANDLERS: Record<
  *
  * @param projectAccessToken - Pre-decrypted token from ProjectRepositoryIntegration.
  *   When provided, skips the WorkflowIntegration lookup entirely.
+ * @param options.expectedOrigin - The instance the caller already checked
+ *   its target against (a PM container's). The connection is read again
+ *   here, so a connection now on any other instance is refused with
+ *   `GitLabConnectionOriginChangedError` before a request is sent, and the
+ *   401 retry stays on that instance too.
  */
 export async function executeGitLabTool(
 	methodName: string,
@@ -1703,6 +1160,7 @@ export async function executeGitLabTool(
 	userId: string,
 	organizationId?: string,
 	projectAccessToken?: string,
+	options: { expectedOrigin?: string } = {},
 ): Promise<unknown> {
 	const handler = TOOL_HANDLERS[methodName];
 	if (!handler) {
@@ -1716,97 +1174,65 @@ export async function executeGitLabTool(
 		return handler(projectAccessToken, args);
 	}
 
-	// Get GitLab integration for token lookup and refresh
-	const integration = organizationId
-		? await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			})
-		: await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					organizationId: null,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-				},
-			});
-
-	if (!integration?.credentials) {
+	const tenant = { userId, organizationId: organizationId ?? null };
+	// `anyOrigin`: every request below goes to the credential's own GitLab
+	// instance (`apiBase` from its origin), never to a hardcoded gitlab.com.
+	const tokenResult = await getGitLabConnectionToken(tenant, {
+		mode: "lenient",
+		anyOrigin: true,
+	});
+	if (!tokenResult.ok) {
+		logConnectionFailure(
+			"executeGitLabTool",
+			{ userId, organizationId },
+			tokenResult,
+		);
 		throw new Error(
-			"GitLab not connected. Please connect your GitLab account in Project Settings or Workflow Integrations.",
+			tokenResult.reason === "not-connected"
+				? "GitLab not connected. Please connect your GitLab account in Project Settings or Workflow Integrations."
+				: "GitLab access token expired and refresh failed. Please reconnect your GitLab account in Settings > Integrations.",
 		);
 	}
 
-	let accessToken = await refreshTokenIfNeeded(
-		integration,
-		userId,
-		organizationId,
-	);
-
-	// First attempt
+	if (
+		options.expectedOrigin !== undefined &&
+		tokenResult.origin !== options.expectedOrigin
+	) {
+		throw new GitLabConnectionOriginChangedError(
+			options.expectedOrigin,
+			tokenResult.origin,
+		);
+	}
+	const apiBase = gitlabApiBaseForOrigin(tokenResult.origin);
 	try {
-		return await handler(accessToken, args);
+		return await handler({ token: tokenResult.accessToken, apiBase }, args);
 	} catch (error) {
-		// If 401 and we have a refresh token, try refreshing and retrying.
-		//
-		// Re-read the row first. The pre-emptive refresh above may already have
-		// rotated (and thereby killed) the refresh token held in our snapshot —
-		// GitLab's rotation is single-use — so reusing `integration.credentials`
-		// here spends a dead token and fails with `invalid_grant`. That produced
-		// the paired "Pre-emptive token refresh failed" / "Token refresh after
-		// 401 failed" lines seen in staging for the same integration in the same
-		// second, and wrongly flagged healthy connections as needing reauth.
-		if (error instanceof GitLabApiError && error.status === 401) {
-			const fresh = await db.workflowIntegration.findUnique({
-				where: { id: integration.id },
-				select: { credentials: true },
-			});
-			const credentialsJson = decryptApiKey(
-				fresh?.credentials ?? integration.credentials,
-			);
-			let refreshTokenValue: string | undefined;
-			try {
-				const parsed = JSON.parse(credentialsJson) as ParsedCredentials;
-				refreshTokenValue =
-					typeof parsed === "object" && parsed !== null
-						? parsed.refresh_token
-						: undefined;
-			} catch {
-				// Can't parse credentials for refresh token
-			}
-
-			if (refreshTokenValue) {
-				console.log(
-					`[GitLab] Got 401 for ${methodName}, attempting token refresh and retry...`,
-				);
-				try {
-					accessToken = await refreshTokenWithLock(
-						integration,
-						refreshTokenValue,
-						userId,
-						organizationId,
-					);
-					return await handler(accessToken, args);
-				} catch (refreshError) {
-					console.error(
-						"[GitLab] Token refresh after 401 failed:",
-						refreshError,
-					);
-					throw new Error(
-						"GitLab access token expired and refresh failed. " +
-							"Please reconnect your GitLab account in Settings > Integrations.",
-					);
-				}
-			}
+		if (!(error instanceof GitLabApiError) || error.status !== 401) {
+			throw error;
 		}
-
-		// Not a 401, or no refresh token — rethrow original error
-		throw error;
+		// GitLab refused the token: refresh once, bound to the token it
+		// refused — a concurrent winner's newer token is reused, not spent
+		// again — and to the connection generation it came from.
+		console.log(
+			`[GitLab] Got 401 for ${methodName}, attempting token refresh and retry...`,
+		);
+		const refreshed = await refreshGitLabConnection(tenant, {
+			force: true,
+			rejectedAccessToken: tokenResult.accessToken,
+			expectedGeneration: tokenResult.generation,
+		});
+		if (!refreshed.ok) {
+			console.error("[GitLab] Token refresh after 401 failed:", {
+				connectionReason: refreshed.reason,
+				...(refreshed.error !== undefined
+					? refreshErrorForLog(refreshed.error)
+					: {}),
+			});
+			throw new Error(
+				"GitLab access token expired and refresh failed. " +
+					"Please reconnect your GitLab account in Settings > Integrations.",
+			);
+		}
+		return handler({ token: refreshed.accessToken, apiBase }, args);
 	}
 }

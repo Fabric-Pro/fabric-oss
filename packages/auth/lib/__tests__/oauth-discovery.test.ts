@@ -6,6 +6,7 @@ import {
 	OAUTH_SCOPES,
 	oauthGatewayMetadataUrl,
 	oauthIssuer,
+	oauthProjectGatewayMetadataUrl,
 	oauthValidAudiences,
 } from "../oauth-scopes";
 
@@ -36,6 +37,22 @@ describe("protected-resource metadata", () => {
 			"https://app.example.com/api/auth",
 		);
 	});
+
+	it("names a project's URL, and only that URL, as the resource of a project's gateway", () => {
+		const issuer = oauthIssuer(APP_URL);
+
+		const metadata = buildGatewayProtectedResourceMetadata({
+			appUrl: `${APP_URL}/`,
+			issuer,
+			projectId: "project-example-one",
+		});
+
+		expect(metadata.resource).toBe(
+			"https://app.example.com/api/mcp-gateway/projects/project-example-one",
+		);
+		expect(metadata.authorization_servers).toEqual([issuer]);
+		expect(metadata.scopes_supported).toEqual([...OAUTH_SCOPES]);
+	});
 });
 
 describe("the 401 challenge", () => {
@@ -45,6 +62,35 @@ describe("the 401 challenge", () => {
 		);
 		expect(oauthGatewayMetadataUrl(`${APP_URL}/`)).toBe(
 			"https://app.example.com/.well-known/oauth-protected-resource/api/mcp-gateway",
+		);
+	});
+
+	it("points a project's URL at that project's own metadata", () => {
+		expect(
+			gatewayAuthenticateHeader(APP_URL, {
+				projectId: "project-example-one",
+			}),
+		).toBe(
+			'Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/project-example-one", scope="mcp:read instructions:read instructions:write offline_access"',
+		);
+		expect(
+			oauthProjectGatewayMetadataUrl(
+				`${APP_URL}/`,
+				"project-example-one",
+			),
+		).toBe(
+			"https://app.example.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/project-example-one",
+		);
+	});
+
+	it("marks a credential that was presented and does not fit as an invalid token", () => {
+		expect(
+			gatewayAuthenticateHeader(APP_URL, {
+				projectId: "project-example-one",
+				invalidToken: true,
+			}),
+		).toBe(
+			'Bearer error="invalid_token", resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/project-example-one", scope="mcp:read instructions:read instructions:write offline_access"',
 		);
 	});
 });

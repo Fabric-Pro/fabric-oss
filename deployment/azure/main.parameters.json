@@ -10,9 +10,6 @@
 		},
 		"imageTag": {
 			"value": "latest"
-		},
-		"enableMultiDestinationOtlp": {
-			"value": false
 		}
 	}
 }

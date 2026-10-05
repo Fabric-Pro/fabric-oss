@@ -137,6 +137,61 @@ function internalApiFailure(tool: string, status: number): string {
 }
 
 /**
+ * Why a repository file or tree read came back empty: the connector's
+ * `RepositoryReadError`, which /api/internal/code-search passes through on
+ * `file.error` and `structure.error`. Absent on a successful read and from a
+ * web app that predates the field. `kind` is typed loosely so a kind added
+ * later still reaches the model through `message`.
+ */
+interface RepositoryReadError {
+	kind: string;
+	status?: number;
+	message?: string;
+}
+
+/**
+ * Tell the model a failed repository read apart from a missing file. A
+ * denied, rate-limited or failed read must not read as "not found or is
+ * empty", or the model concludes the file or directory does not exist.
+ */
+function repositoryReadFailure(
+	tool: string,
+	error: RepositoryReadError,
+	notFound: string,
+): string {
+	if (error.kind === "not_found") {
+		return notFound;
+	}
+	logger.warn(`[ToolNode] ${tool} repository read failed`, {
+		kind: error.kind,
+		status: error.status,
+	});
+	const reason =
+		error.message ??
+		`Repository read failed (${error.kind}${error.status ? `, HTTP ${error.status}` : ""}).`;
+	return `${reason} The repository could not be read, so this says nothing about whether the content exists.`;
+}
+
+/**
+ * Tell the model a failed code search apart from one that found nothing. Every
+ * kind is a failure, `not_found` included: a 404 from a search endpoint means
+ * the repository or the search service was not found, which says nothing about
+ * whether the code exists.
+ */
+function repositorySearchFailure(error: RepositoryReadError): string {
+	logger.warn("[ToolNode] search_repository_code repository search failed", {
+		kind: error.kind,
+		status: error.status,
+	});
+	const reason =
+		error.kind === "not_found"
+			? "The repository or its code search was not found (HTTP 404)."
+			: (error.message ??
+				`Repository search failed (${error.kind}${error.status ? `, HTTP ${error.status}` : ""}).`);
+	return `${reason} The repository could not be searched, so this says nothing about whether the code exists.`;
+}
+
+/**
  * Helper to call the generic /api/internal/teams-tools endpoint.
  * Returns the raw JSON response or an error string.
  */
@@ -1735,7 +1790,17 @@ const searchRepositoryCodeTool = tool(
 					matchedSnippets: string[];
 				}>;
 				totalCount: number;
+				/**
+				 * Set only when the search failed. Absent on a success and from
+				 * a web app that predates the field.
+				 */
+				error?: RepositoryReadError;
 			};
+
+			if (result.error) {
+				// Every kind is a failure, `not_found` included.
+				return repositorySearchFailure(result.error);
+			}
 
 			if (result.totalCount === 0) {
 				return "No code matches found. Try different search terms.";
@@ -1840,8 +1905,17 @@ const getRepositoryFileTool = tool(
 					size: number;
 					isBinary: boolean;
 					isTruncated: boolean;
+					error?: RepositoryReadError;
 				};
 			};
+
+			if (result.file.error) {
+				return repositoryReadFailure(
+					"get_repository_file",
+					result.file.error,
+					`File ${path} not found.`,
+				);
+			}
 
 			if (result.file.isBinary) {
 				return `File ${path} is a binary file and cannot be displayed.`;
@@ -1933,10 +2007,21 @@ const listRepositoryStructureTool = tool(
 						size?: number;
 					}>;
 					truncated: boolean;
+					error?: RepositoryReadError;
 				};
 				totalFiles: number;
 				totalDirectories: number;
 			};
+
+			if (result.structure.error) {
+				return repositoryReadFailure(
+					"list_repository_structure",
+					result.structure.error,
+					directory
+						? `Directory ${directory} not found in the repository.`
+						: "Repository not found.",
+				);
+			}
 
 			if (result.structure.entries.length === 0) {
 				return "No files found in the repository (or directory).";

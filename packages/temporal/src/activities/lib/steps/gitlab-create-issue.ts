@@ -63,14 +63,14 @@ export async function executeGitLabCreateIssueStep(
 				labels: interpolatedLabels,
 			},
 			restFallback: async () => {
-				const token =
+				const credential =
 					source.kind === "rest-adapter"
-						? source.token
+						? source.credential
 						: await resolveGitLabRestTokenForStep({
 								userId: params.userId,
 								organizationId: params.organizationId,
 							});
-				if (!token) {
+				if (!credential) {
 					throw new Error(
 						"GitLab REST fallback unavailable: connect a GitLab integration in Settings",
 					);
@@ -85,7 +85,7 @@ export async function executeGitLabCreateIssueStep(
 					body.labels = interpolatedLabels;
 				}
 				return (await gitlabPost(
-					token,
+					credential,
 					`/projects/${encodeURIComponent(interpolatedProjectId)}/issues`,
 					body,
 				)) as {

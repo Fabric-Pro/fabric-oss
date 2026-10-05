@@ -9,8 +9,8 @@ import {
 	assertProjectPermission,
 	Permissions,
 	protectedProcedure,
-	resolveOrganizationIdForCaller,
 } from "../../../orpc/procedures";
+import { assertRowInAuthorizedOrganization } from "../lib/plan-organization";
 
 const GetPlanInputSchema = z.object({
 	planId: z.string(),
@@ -27,19 +27,10 @@ export const getPlanProcedure = protectedProcedure
 	.input(GetPlanInputSchema)
 	.handler(async ({ input, context }) => {
 		const userId = context.user.id;
-		const organizationId = await resolveOrganizationIdForCaller(
-			input.organizationId,
-			context.session,
-			userId,
-		);
-
 		const plan = await db.weavePlan.findFirst({
 			where: {
 				id: input.planId,
 				userId,
-				...(organizationId
-					? { organizationId }
-					: { organizationId: null }),
 			},
 			include: {
 				executions: {
@@ -58,10 +49,17 @@ export const getPlanProcedure = protectedProcedure
 		// Object-level, and the same decision the middleware makes for a
 		// procedure whose input names the project. This one names a plan, so
 		// the project is only known here.
-		await assertProjectPermission(
+		const authorized = await assertProjectPermission(
 			plan.projectId,
 			userId,
 			Permissions.AGENT_READ,
+		);
+		// The row's stored organization must be its project's — see
+		// `lib/plan-organization.ts`.
+		assertRowInAuthorizedOrganization(
+			input.organizationId,
+			plan,
+			authorized,
 		);
 
 		return plan;

@@ -120,6 +120,78 @@ describe("useRoadmapView — sort persistence", () => {
 });
 
 /**
+ * What someone who has never saved a view for the project sees. Only this
+ * starting state is a default: a saved view is restored exactly as it was saved.
+ */
+describe("useRoadmapView — defaults with no saved view", () => {
+	async function renderWithNothingSaved() {
+		const view = renderRoadmapView();
+		// Let the (empty) database answer land, so the assertions describe the
+		// settled view rather than the first paint.
+		await waitFor(() => expect(mockGet).toHaveBeenCalled());
+		return view;
+	}
+
+	it("sorts by created date, newest first", async () => {
+		const { result } = await renderWithNothingSaved();
+
+		expect(result.current.sort).toEqual({
+			key: "created",
+			direction: "desc",
+		});
+	});
+
+	it("opens in the plain layout", async () => {
+		const { result } = await renderWithNothingSaved();
+
+		expect(result.current.mode).toBe("plain");
+	});
+
+	it("hides the size field and shows every other card field", async () => {
+		const { result } = await renderWithNothingSaved();
+
+		expect(result.current.columns).toEqual({
+			stage: true,
+			sync: true,
+			size: false,
+			source: true,
+			tags: true,
+			flags: true,
+		});
+	});
+
+	it("restores a saved view exactly as it was saved", async () => {
+		mockGet.mockResolvedValue({
+			roadmapView: {
+				mode: "table",
+				groupBy: "stage",
+				sort: { key: "roadmapOrder", direction: "asc" },
+				columns: {
+					stage: true,
+					sync: true,
+					size: true,
+					source: true,
+					tags: true,
+					flags: true,
+				},
+				showClosed: true,
+			},
+			roadmapStoryOrder: null,
+		});
+
+		const { result } = renderRoadmapView();
+
+		await waitFor(() => expect(result.current.showClosed).toBe(true));
+		expect(result.current.mode).toBe("table");
+		expect(result.current.sort).toEqual({
+			key: "roadmapOrder",
+			direction: "asc",
+		});
+		expect(result.current.columns.size).toBe(true);
+	});
+});
+
+/**
  * The layout allowlist is the single point where a persisted mode is validated.
  * A mode that survives the round-trip to the database but is silently dropped on
  * read is the failure this suite exists to prevent.
@@ -139,10 +211,10 @@ describe("useRoadmapView — layout mode persistence", () => {
 		},
 	);
 
-	it("falls back to the table layout for a mode it does not recognise", async () => {
+	it("falls back to the default plain layout for a mode it does not recognise", async () => {
 		mockGet.mockResolvedValue({
 			// `showClosed` rides along purely so the assertion can wait for the
-			// persisted view to actually land — otherwise "mode is table" would
+			// persisted view to actually land — otherwise "mode is plain" would
 			// pass against the pre-load default and prove nothing.
 			roadmapView: { mode: "gantt", showClosed: true },
 			roadmapStoryOrder: null,
@@ -151,10 +223,10 @@ describe("useRoadmapView — layout mode persistence", () => {
 		const { result } = renderRoadmapView();
 
 		await waitFor(() => expect(result.current.showClosed).toBe(true));
-		expect(result.current.mode).toBe("table");
+		expect(result.current.mode).toBe("plain");
 	});
 
-	it("falls back to table when the priority layout is killed by its flag", async () => {
+	it("falls back to the default plain layout when the priority layout is killed by its flag", async () => {
 		// The rollback path: turning the flag off must not strand whoever had
 		// the layout saved on a view that no longer renders.
 		vi.stubEnv("NEXT_PUBLIC_FABRIC_FEATURE_PRIORITY_VIEW", "false");
@@ -183,7 +255,7 @@ describe("useRoadmapView — layout mode persistence", () => {
 		);
 
 		await waitFor(() => expect(result.current.showClosed).toBe(true));
-		expect(result.current.mode).toBe("table");
+		expect(result.current.mode).toBe("plain");
 
 		vi.unstubAllEnvs();
 		vi.resetModules();

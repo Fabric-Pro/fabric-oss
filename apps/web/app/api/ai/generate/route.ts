@@ -1,18 +1,14 @@
 /**
  * AI Text Generation API
  * Generates text using AI models via centralized AI model access
- * Uses Next.js after for non-blocking usage logging.
- * See: server-after-nonblocking rule from Vercel React Best Practices
  */
 
 import { getAIModelWithMetadata } from "@repo/ai";
 import { auth } from "@repo/auth";
-import { logAiUsage } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { streamText } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import { after } from "next/server";
 import { z } from "zod";
 
 const GenerateRequestSchema = z.object({
@@ -24,8 +20,6 @@ const GenerateRequestSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-	const startTime = Date.now();
-
 	try {
 		// Get user session
 		const headersList = await headers();
@@ -65,8 +59,9 @@ export async function POST(req: NextRequest) {
 		const organizationId =
 			session.session.activeOrganizationId ?? undefined;
 
-		// Get AI model using centralized entry point
-		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
+		// The resolved model records its own AiUsageLog row for each provider
+		// call, so this route writes none of its own.
+		const { model, trackUsage } = await getAIModelWithMetadata(
 			{
 				taskType: "SIMPLE",
 				modelOverride: requestedModel || undefined,
@@ -92,36 +87,6 @@ export async function POST(req: NextRequest) {
 
 		// Get usage data
 		const usage = await result.usage;
-		const latencyMs = Date.now() - startTime;
-
-		// Log AI usage after response is sent (non-blocking)
-		// See: server-after-nonblocking rule from Vercel React Best Practices
-		after(() => {
-			logAiUsage({
-				userId,
-				organizationId: organizationId ?? undefined,
-				provider: metadata.provider,
-				providerModelId: metadata.modelString,
-				modelCanonicalName: metadata.canonicalName,
-				billingCategory:
-					metadata.billingMode === "included_credit"
-						? "INCLUDED_CREDIT"
-						: metadata.billingMode === "metered_stripe"
-							? "STRIPE_METERED"
-							: metadata.billingMode === "platform_unbilled"
-								? "PLATFORM_UNBILLED"
-								: "EXTERNAL_BYOK",
-				billingCustomerId: metadata.billingCustomerId,
-				taskType: "SIMPLE",
-				inputTokens: usage.inputTokens ?? 0,
-				outputTokens: usage.outputTokens ?? 0,
-				totalTokens: usage.totalTokens ?? 0,
-				latencyMs,
-				success: true,
-			}).catch((error) => {
-				console.error("[AI Generate] Failed to log usage:", error);
-			});
-		});
 
 		return new Response(
 			JSON.stringify({
@@ -134,7 +99,6 @@ export async function POST(req: NextRequest) {
 			},
 		);
 	} catch (error: unknown) {
-		const latencyMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : "Internal server error";
 
@@ -164,24 +128,6 @@ export async function POST(req: NextRequest) {
 		}
 
 		console.error("[AI Generate] Error:", error);
-
-		// Log failed request (non-blocking)
-		after(() => {
-			// Note: We may not have metadata if error occurred before model resolution
-			logAiUsage({
-				provider: "UNKNOWN" as any,
-				providerModelId: "unknown",
-				taskType: "SIMPLE",
-				inputTokens: 0,
-				outputTokens: 0,
-				totalTokens: 0,
-				latencyMs,
-				success: false,
-				errorMessage,
-			}).catch(() => {
-				// Silent failure for error logging
-			});
-		});
 
 		return new Response(
 			JSON.stringify({

@@ -25,7 +25,13 @@ import {
 	type PendingApproval,
 } from "@fabricorg/integrations-runtime";
 import { slackPlugin } from "@fabricorg/integrations-slack";
-import { db } from "@repo/database";
+import type { WorkflowIntegrationProvider } from "@repo/database";
+import {
+	canUseWorkflowIntegrations,
+	db,
+	resolveWorkflowIntegrationForProvider,
+	workflowIntegrationAccessWhere,
+} from "@repo/database";
 import { OAUTH_APP_ROW_NAMES } from "@repo/database/prisma/queries/lib/oauth-app-row";
 import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
@@ -49,7 +55,14 @@ const SLUG_TO_PROVIDER: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // CredentialStore — backed by WorkflowIntegration
 // ---------------------------------------------------------------------------
+interface ExecutionConnection {
+	userId: string;
+	organizationId: string | null;
+	integrationId: string;
+}
+
 class PortalCredentialStore implements CredentialStore {
+	constructor(private readonly identity: ExecutionConnection) {}
 	async get(
 		tenantId: string,
 		pluginSlug: string,
@@ -58,38 +71,30 @@ class PortalCredentialStore implements CredentialStore {
 		if (!provider) {
 			return undefined;
 		}
-		// tenantId convention here: "user:<id>" or "org:<id>"
-		const [scope, id] = tenantId.split(":", 2);
-		if (!id) {
-			return undefined;
+		if (
+			tenantId !== tenantIdFor(this.identity) ||
+			!(await canUseWorkflowIntegrations(
+				this.identity.userId,
+				this.identity.organizationId,
+			))
+		) {
+			throw new Error(
+				"The original requester no longer has access to this connection",
+			);
 		}
-		const where =
-			scope === "org"
-				? { organizationId: id, isActive: true }
-				: { userId: id, organizationId: null, isActive: true };
-
-		// `provider` is the uppercase enum value (e.g. "SLACK") matching
-		// WorkflowIntegrationProvider. Cast through `unknown` to avoid pulling
-		// the generated enum type into this file.
-		type ProviderEnum = NonNullable<
-			Parameters<typeof db.workflowIntegration.findFirst>[0]
-		>["where"] extends infer W
-			? W extends { provider?: infer P }
-				? P
-				: never
-			: never;
 		const integration = await db.workflowIntegration.findFirst({
 			where: {
-				...where,
-				provider: provider as unknown as ProviderEnum,
-				// The <PROVIDER>_OAUTH_APP row holds OAuth client credentials,
-				// not a connection.
-				NOT: { name: `${provider}_OAUTH_APP` },
+				...workflowIntegrationAccessWhere(
+					this.identity.userId,
+					this.identity.organizationId,
+				),
+				id: this.identity.integrationId,
+				provider: provider as WorkflowIntegrationProvider,
+				isActive: true,
 			},
-			orderBy: { lastUsedAt: "desc" },
 		});
 		if (!integration) {
-			return undefined;
+			throw new Error("The selected connection is no longer available");
 		}
 		try {
 			return JSON.parse(decryptApiKey(integration.credentials)) as Record<
@@ -134,6 +139,7 @@ function rowToApproval(row: {
 }
 
 class PortalApprovalStore implements ApprovalStore {
+	constructor(private readonly identity?: ExecutionConnection) {}
 	async create(
 		input: Omit<PendingApproval, "id" | "createdAt" | "status"> & {
 			id?: string;
@@ -144,9 +150,13 @@ class PortalApprovalStore implements ApprovalStore {
 		if (!id || (scope !== "user" && scope !== "org")) {
 			throw new Error(`Invalid tenantId: "${input.tenantId}"`);
 		}
+		if (!this.identity || input.tenantId !== tenantIdFor(this.identity)) {
+			throw new Error("Approval requester and connection are required");
+		}
 		const row = await db.integrationApproval.create({
 			data: {
-				userId: scope === "user" ? id : "system",
+				userId: this.identity.userId,
+				integrationId: this.identity.integrationId,
 				organizationId: scope === "org" ? id : null,
 				pluginSlug: input.pluginSlug,
 				endpoint: input.endpoint,
@@ -195,34 +205,89 @@ class PortalApprovalStore implements ApprovalStore {
 // ---------------------------------------------------------------------------
 // Lazy singleton: registry + executor
 // ---------------------------------------------------------------------------
-let cached: {
-	registry: IntegrationRegistry;
-	executor: IntegrationExecutor;
-} | null = null;
-
-function getRuntime() {
-	if (cached) {
-		return cached;
+let registry: IntegrationRegistry | null = null;
+function getRegistry() {
+	if (!registry) {
+		registry = new IntegrationRegistry();
+		registry.registerAll([
+			slackPlugin,
+			githubPlugin,
+			gmailPlugin,
+			linearPlugin,
+			notionPlugin,
+		]);
 	}
-	const registry = new IntegrationRegistry();
-	registry.registerAll([
-		slackPlugin,
-		githubPlugin,
-		gmailPlugin,
-		linearPlugin,
-		notionPlugin,
-	]);
-	const executor = new IntegrationExecutor({
-		registry,
-		credentials: new PortalCredentialStore(),
-		approvals: new PortalApprovalStore(),
-		approvalTimeout: "30m",
-	});
-	cached = { registry, executor };
-	return cached;
+	return registry;
 }
 
-function tenantId(ctx: {
+// Only immutable provider definitions are cached. Actors and connection IDs are
+// bound to an individual request, never stored on the process-wide singleton.
+function getExecutor(identity: ExecutionConnection) {
+	return new IntegrationExecutor({
+		registry: getRegistry(),
+		credentials: new PortalCredentialStore(identity),
+		approvals: new PortalApprovalStore(identity),
+		approvalTimeout: "30m",
+	});
+}
+
+/** Approval visibility and decisions require access for both the caller and original requester. */
+async function canAccessApprovalConnection(
+	approval: {
+		userId: string;
+		organizationId: string | null;
+		integrationId: string | null;
+		pluginSlug: string;
+	},
+	caller: { userId: string; organizationId: string | null },
+): Promise<boolean> {
+	const provider = SLUG_TO_PROVIDER[approval.pluginSlug];
+	if (
+		!approval.integrationId ||
+		!provider ||
+		approval.userId === "system" ||
+		approval.organizationId !== caller.organizationId
+	) {
+		return false;
+	}
+	if (
+		!(await canUseWorkflowIntegrations(
+			caller.userId,
+			caller.organizationId,
+		))
+	) {
+		return false;
+	}
+	if (
+		approval.userId !== caller.userId &&
+		!(await canUseWorkflowIntegrations(
+			approval.userId,
+			approval.organizationId,
+		))
+	) {
+		return false;
+	}
+	return !!(await db.workflowIntegration.findFirst({
+		where: {
+			id: approval.integrationId,
+			provider: provider as WorkflowIntegrationProvider,
+			isActive: true,
+			AND: [
+				workflowIntegrationAccessWhere(
+					caller.userId,
+					caller.organizationId,
+				),
+				workflowIntegrationAccessWhere(
+					approval.userId,
+					approval.organizationId,
+				),
+			],
+		},
+		select: { id: true },
+	}));
+}
+
+function tenantIdFor(ctx: {
 	userId: string;
 	organizationId: string | null;
 }): string {
@@ -249,9 +314,18 @@ export function registerIntegrationRoutes(
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
 
-		const where = ctx.organizationId
-			? { organizationId: ctx.organizationId, isActive: true }
-			: { userId: ctx.userId, organizationId: null, isActive: true };
+		if (
+			!(await canUseWorkflowIntegrations(ctx.userId, ctx.organizationId))
+		) {
+			return c.json(
+				{ error: { message: "Organization membership is required" } },
+				403,
+			);
+		}
+		const where = {
+			...workflowIntegrationAccessWhere(ctx.userId, ctx.organizationId),
+			isActive: true,
+		};
 
 		const rows = await db.workflowIntegration.findMany({
 			where: {
@@ -276,7 +350,7 @@ export function registerIntegrationRoutes(
 				continue;
 			}
 			seen.add(slug);
-			const plugin = getRuntime().registry.get(slug);
+			const plugin = getRegistry().get(slug);
 			integrations.push({
 				slug,
 				name: plugin?.name ?? row.name,
@@ -312,7 +386,7 @@ export function registerIntegrationRoutes(
 					400,
 				);
 			}
-			if (!getRuntime().registry.has(slug)) {
+			if (!getRegistry().has(slug)) {
 				return c.json(notFound(`Plugin "${slug}"`), 404);
 			}
 
@@ -324,8 +398,19 @@ export function registerIntegrationRoutes(
 			}
 
 			try {
-				const result = await getRuntime().executor.call({
-					tenantId: tenantId(ctx),
+				const selected = await resolveWorkflowIntegrationForProvider(
+					SLUG_TO_PROVIDER[slug] as WorkflowIntegrationProvider,
+					ctx.userId,
+					ctx.organizationId,
+				);
+				if (!selected) {
+					return c.json(notFound("Available connection"), 404);
+				}
+				const result = await getExecutor({
+					...ctx,
+					integrationId: selected.id,
+				}).call({
+					tenantId: tenantIdFor(ctx),
 					pluginSlug: slug,
 					endpoint: operation,
 					args: body,
@@ -359,12 +444,50 @@ export function registerIntegrationRoutes(
 				: { userId: ctx.userId, organizationId: null };
 			const status = c.req.query("status") ?? "pending";
 
-			const rows = await db.integrationApproval.findMany({
-				where: { ...where, status },
-				orderBy: { createdAt: "desc" },
-				take: Math.min(Number(c.req.query("limit") ?? 50), 100),
-			});
-			return c.json(ok(rows.map(rowToApproval)));
+			const requestedLimit = Number(c.req.query("limit") ?? 50);
+			if (!Number.isInteger(requestedLimit) || requestedLimit <= 0) {
+				return c.json(
+					badRequest("limit must be a positive integer"),
+					400,
+				);
+			}
+			const limit = Math.min(requestedLimit, 100);
+			const batchSize = 100;
+			const visible: Parameters<typeof rowToApproval>[0][] = [];
+			let cursorId: string | undefined;
+			// Limit visible results, not the tenant-wide candidate set. Unique-ID
+			// tie-breaking and an advancing cursor let private rows be skipped
+			// without starving older accessible requests or repeating a batch.
+			while (visible.length < limit) {
+				const rows = await db.integrationApproval.findMany({
+					where: { ...where, status },
+					orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+					take: batchSize,
+					...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+				});
+				if (rows.length === 0) {
+					break;
+				}
+				for (const row of rows) {
+					if (await canAccessApprovalConnection(row, ctx)) {
+						visible.push(row);
+					}
+					if (visible.length === limit) {
+						break;
+					}
+				}
+				const lastId = rows[rows.length - 1].id;
+				if (lastId === cursorId) {
+					throw new Error(
+						"Approval pagination cursor did not advance",
+					);
+				}
+				cursorId = lastId;
+				if (rows.length < batchSize) {
+					break;
+				}
+			}
+			return c.json(ok(visible.map(rowToApproval)));
 		},
 	);
 
@@ -401,19 +524,71 @@ export function registerIntegrationRoutes(
 						? { organizationId: ctx.organizationId }
 						: { userId: ctx.userId, organizationId: null }),
 				},
-				select: { id: true },
+				select: {
+					id: true,
+					userId: true,
+					organizationId: true,
+					integrationId: true,
+					pluginSlug: true,
+				},
 			});
 			if (!owned) {
 				return c.json(notFound("Approval"), 404);
 			}
 
-			const store = new PortalApprovalStore();
+			// Old approvals contain no selected connection (and often a synthetic
+			// requester). They cannot safely select a credential after the fact.
+			if (!owned.integrationId || owned.userId === "system") {
+				return c.json(
+					badRequest(
+						"Approval has no original connection identity; submit the request again",
+					),
+					400,
+				);
+			}
+			if (!(await canAccessApprovalConnection(owned, ctx))) {
+				return c.json(
+					badRequest(
+						"No access to the approval's selected connection",
+					),
+					403,
+				);
+			}
+
+			const identity: ExecutionConnection = {
+				userId: owned.userId,
+				organizationId: owned.organizationId,
+				integrationId: owned.integrationId,
+			};
+			try {
+				await new PortalCredentialStore(identity).get(
+					tenantIdFor(identity),
+					owned.pluginSlug,
+				);
+			} catch {
+				return c.json(
+					badRequest(
+						"The original requester no longer has access to the selected connection",
+					),
+					403,
+				);
+			}
+			const store = new PortalApprovalStore(identity);
 			const resolved = await store.resolve(id, "approved");
 			if (!resolved) {
 				return c.json(notFound("Approval"), 404);
 			}
-			const result = await getRuntime().executor.runApproved(id);
-			return c.json(ok(result));
+			try {
+				const result = await getExecutor(identity).runApproved(id);
+				return c.json(ok(result));
+			} catch {
+				return c.json(
+					badRequest(
+						"The selected connection is no longer available",
+					),
+					403,
+				);
+			}
 		},
 	);
 
@@ -445,10 +620,25 @@ export function registerIntegrationRoutes(
 						? { organizationId: ctx.organizationId }
 						: { userId: ctx.userId, organizationId: null }),
 				},
-				select: { id: true },
+				select: {
+					id: true,
+					userId: true,
+					organizationId: true,
+					integrationId: true,
+					pluginSlug: true,
+				},
 			});
 			if (!owned) {
 				return c.json(notFound("Approval"), 404);
+			}
+
+			if (!(await canAccessApprovalConnection(owned, ctx))) {
+				return c.json(
+					badRequest(
+						"No access to the approval's selected connection",
+					),
+					403,
+				);
 			}
 
 			const store = new PortalApprovalStore();

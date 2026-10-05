@@ -100,6 +100,35 @@ export async function initBranchWorkspace(
 	});
 }
 
+/**
+ * The one ref a direct commit to the synced branch may write (Fizzy #2878
+ * §10): `ref`, the branch the live sync row names, must be exactly
+ * `allowedRef`, the branch the commit's destination froze, never a name a
+ * caller chose. Checked beside `git check-ref-format --branch` for the shapes it
+ * would expand (`@{-1}`) or accept as an option (a leading `-`), so nothing
+ * but the frozen branch reaches a fetch or a push refspec. The member branch
+ * helpers keep `assertMemberBranch`: this is not a widening of them.
+ */
+export function assertSyncedRef(ref: string, allowedRef: string): void {
+	if (
+		ref !== allowedRef ||
+		ref === "" ||
+		ref.startsWith("-") ||
+		ref.startsWith("refs/") ||
+		ref.includes("@{") ||
+		/\s/.test(ref)
+	) {
+		throw new GitCommandError("invalid_argument", null, "", "branch");
+	}
+	try {
+		execFileSync("git", ["check-ref-format", "--branch", ref], {
+			stdio: "ignore",
+		});
+	} catch {
+		throw new GitCommandError("invalid_argument", null, "", "branch");
+	}
+}
+
 /** The local ref `fetchBranchHead` lands the remote tip on, never a name a caller controls. */
 const BRANCH_TIP_REF = "refs/fabric/tip";
 
@@ -115,6 +144,24 @@ export async function fetchBranchHead(
 	input: GitCallBase & { dir: string; branch: string },
 ): Promise<{ kind: "present"; sha: string } | { kind: "absent" }> {
 	assertMemberBranch(input.branch);
+	return fetchRefTip(input);
+}
+
+/**
+ * `fetchBranchHead` for the synced branch a direct commit writes to: the
+ * same fetch, with the ref asserted to be the frozen `allowedRef` instead of
+ * a member branch.
+ */
+export async function fetchSyncedTip(
+	input: GitCallBase & { dir: string; branch: string; allowedRef: string },
+): Promise<{ kind: "present"; sha: string } | { kind: "absent" }> {
+	assertSyncedRef(input.branch, input.allowedRef);
+	return fetchRefTip(input);
+}
+
+async function fetchRefTip(
+	input: GitCallBase & { dir: string; branch: string },
+): Promise<{ kind: "present"; sha: string } | { kind: "absent" }> {
 	try {
 		await runGit({
 			cwd: input.dir,
@@ -416,9 +463,41 @@ export async function pushFastForward(
 		branch: string;
 	},
 ): Promise<{ kind: "pushed" } | { kind: "stale" } | { kind: "refused" }> {
+	assertMemberBranch(input.branch);
+	return pushLeased(input);
+}
+
+/**
+ * `pushFastForward` for the synced branch a direct commit writes to (Fizzy
+ * #2878 §10): the same single-parent assertion and the same
+ * `--force-with-lease=refs/heads/<branch>:<parentSha>` push, allow-listed to
+ * the frozen `allowedRef` alone. The commit is on top of the branch's own tip,
+ * so a push that is not a fast-forward of exactly that tip is `stale`, never
+ * a force.
+ */
+export async function pushToSyncedRef(
+	input: GitCallBase & {
+		dir: string;
+		parentSha: string;
+		sha: string;
+		branch: string;
+		allowedRef: string;
+	},
+): Promise<{ kind: "pushed" } | { kind: "stale" } | { kind: "refused" }> {
+	assertSyncedRef(input.branch, input.allowedRef);
+	return pushLeased(input);
+}
+
+async function pushLeased(
+	input: GitCallBase & {
+		dir: string;
+		parentSha: string;
+		sha: string;
+		branch: string;
+	},
+): Promise<{ kind: "pushed" } | { kind: "stale" } | { kind: "refused" }> {
 	assertObjectId(input.parentSha, "rev-parse");
 	assertObjectId(input.sha, "push");
-	assertMemberBranch(input.branch);
 	const { stdout: parentsOut } = await runGit({
 		cwd: input.dir,
 		args: ["rev-parse", `${input.sha}^@`],

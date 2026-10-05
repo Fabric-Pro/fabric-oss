@@ -5,6 +5,7 @@ import { defineConfig } from "vitest/config";
 // DATABASE_URL. They have dedicated scripts (`test:rls`, etc.) for local
 // or integration-CI invocation.
 const INTEGRATION_TESTS = [
+	"__tests__/workflow-integration-usage-scope.integration.test.ts",
 	"__tests__/authority.test.ts",
 	"__tests__/authority-policy.test.ts",
 	"__tests__/frames.test.ts",

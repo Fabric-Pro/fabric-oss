@@ -17,6 +17,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	assertNoGitLabCredentialInput,
+	GITLAB_DATA_CONNECTION_CREDENTIAL_REFUSED,
+} from "../lib/gitlab-data-connection";
 
 async function ensureTenantAccess(params: {
 	organizationId: string | null | undefined;
@@ -98,6 +102,13 @@ export const credentialsProcedures = {
 				organizationId,
 				userId: context.user.id,
 			});
+			// Nothing could use a saved GitLab credential: a GitLab Data
+			// Connection cannot be given one.
+			if (input.provider === "GITLAB") {
+				throw new ORPCError("BAD_REQUEST", {
+					message: GITLAB_DATA_CONNECTION_CREDENTIAL_REFUSED,
+				});
+			}
 
 			const credential = await createDataConnectionCredential({
 				userId: context.user.id,
@@ -186,6 +197,10 @@ export const credentialsProcedures = {
 					message: "Connection not found",
 				});
 			}
+			assertNoGitLabCredentialInput({
+				provider: connection.provider,
+				credentialId: input.credentialId,
+			});
 
 			const credential = await getDataConnectionCredentialById({
 				id: input.credentialId,
@@ -195,6 +210,13 @@ export const credentialsProcedures = {
 			if (!credential) {
 				throw new ORPCError("NOT_FOUND", {
 					message: "Credential not found",
+				});
+			}
+			// A GitLab credential saved before GitLab connections stopped
+			// holding one stays in place, but is not handed to any connection.
+			if (credential.provider === "GITLAB") {
+				throw new ORPCError("BAD_REQUEST", {
+					message: GITLAB_DATA_CONNECTION_CREDENTIAL_REFUSED,
 				});
 			}
 

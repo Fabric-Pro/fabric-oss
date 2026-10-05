@@ -45,14 +45,10 @@ export const reattachGroupingProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, themeKey, targetStoryId } = input;
+		const { projectId, themeKey, targetStoryId } = input;
 		const user = context.user;
 
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			user.id,
-			organizationId ?? undefined,
-		);
+		const hasAccess = await hasProjectAccess(projectId, user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",

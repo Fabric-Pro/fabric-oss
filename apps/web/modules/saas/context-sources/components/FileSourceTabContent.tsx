@@ -12,6 +12,7 @@ import {
 	oversizeReason,
 	unsupportedTypeReason,
 } from "@saas/projects/lib/context-upload-copy";
+import { formatFileSize } from "@saas/projects/lib/instructions-file-size";
 import { LiveAnnouncerRegion } from "@saas/shared/components/LiveAnnouncer";
 import { TruncatedText } from "@shared/components/TruncatedText";
 import { Button } from "@ui/components/button";
@@ -389,7 +390,7 @@ function FileQueueRow({ row, onRemove, disabled }: FileQueueRowProps) {
 	const FileTypeIcon = getFileIcon(
 		resolveContextUploadMime(row.mimeType, row.name),
 	);
-	const sizeMb = (row.size / (1024 * 1024)).toFixed(2);
+	const sizeLabel = formatFileSize(row.size);
 
 	const isInFlight =
 		row.status === "uploading" || row.status === "processing";
@@ -446,7 +447,7 @@ function FileQueueRow({ row, onRemove, disabled }: FileQueueRowProps) {
 					text={row.name}
 					className="font-medium text-sm text-foreground"
 				/>
-				<p className="text-xs text-muted-foreground">{sizeMb} MB</p>
+				<p className="text-xs text-muted-foreground">{sizeLabel}</p>
 				{isFailed ? (
 					<p className="mt-1 text-destructive text-xs">
 						{failureReason}

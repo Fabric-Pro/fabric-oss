@@ -4,22 +4,37 @@
  *
  * Why this exists alongside `input-org-authorization-guard.test.ts`: that guard
  * only inspects WRITES, and it accepts `requireProjectPermission(` and
- * `hasProjectAccess(` as evidence of org authorization. Neither validates the
- * input org — `requireProjectPermission` resolves on (projectId, userId) and
- * never reads the org, and `hasProjectAccess` declares its third parameter
- * `_organizationId` and ignores it. `resolveOrganizationId` returns
- * `input.organizationId` verbatim with no membership lookup, so a caller can
- * pair a project they legitimately reach with an organization they do not.
+ * `hasProjectAccess(` as evidence of org authorization. `hasProjectAccess`
+ * declares its third parameter `_organizationId` and ignores it, and a
+ * project permission check says nothing about an organization-level procedure.
+ *
+ * ROOT ENFORCEMENT FOR PROJECT-SCOPED PROCEDURES. Since Fizzy #2904,
+ * `assertProjectPermission` — behind `requireProjectPermission` and the
+ * handler-side checks — records the authorized project's organization for the
+ * request (`lib/authorized-project-binding.ts`), and `resolveOrganizationId`,
+ * its mirror in `require-permission.ts` and `resolveOrganizationIdForCaller`
+ * refuse a different input organization and default to the project's. So a
+ * project-scoped procedure that authorizes the project BEFORE it resolves the
+ * organization no longer trusts the input.
+ *
+ * WHY THAT IS NOT FILE-LEVEL CREDIT HERE. A token match cannot tell which
+ * procedure in a file the check guards, whether it runs before or after the
+ * resolution (the weave procedures resolve first and authorize later), or
+ * whether the handler also reads `input.organizationId` somewhere the resolver
+ * never sees. The root enforcement makes these files safer; it does not audit
+ * them. So `requireProjectPermission` still earns nothing below, and the
+ * baseline shrinks only by files fixed one at a time. Handlers that read the
+ * input organization WITHOUT a resolver are policed by the sibling
+ * `input-org-raw-consumer-ratchet.test.ts`.
  *
  * That combination shipped a cross-tenant read in the roadmap's open-decisions
  * endpoint (fixed 2026-07-21). The guard was green throughout, because the
  * endpoint is a read and because it called `hasProjectAccess`.
  *
- * 352 files already match the risky shape. Fixing them is a large, separate
- * piece of work — each needs `requireInputOrgPermission` with the right
- * permission, or a documented reason it is safe. Until then this test freezes
- * the debt: the baseline is a ledger, and anything NOT on it fails. Entries may
- * only be REMOVED (by fixing the file), never added.
+ * The baseline is a ledger, and anything NOT on it fails. Entries may only be
+ * REMOVED (by fixing the file), never added. Each needs
+ * `requireInputOrgPermission` with the right permission, the organization
+ * derived from the loaded record, or a documented reason it is safe.
  *
  * Being on the baseline is not a statement that a file is safe. It means the
  * file predates the ratchet and has not been audited.
@@ -34,8 +49,14 @@ import baseline from "./input-org-unverified-baseline.json";
 const repoRoot = resolve(__dirname, "../../..");
 const modulesRoot = resolve(repoRoot, "packages/api/modules");
 
-/** Resolves the org FROM caller input — the unverified source. */
-const INPUT_ORG_RE = /resolveOrganizationId\(\s*input\.organizationId/;
+/**
+ * Resolves the org FROM caller input — the unverified source.
+ * `resolveSourceCredentialOrganizationId` keeps the pre-binding precedence for
+ * selecting the caller's own connection, so it returns a caller-named
+ * organization just as unverified and is matched too.
+ */
+const INPUT_ORG_RE =
+	/(resolveOrganizationId|resolveSourceCredentialOrganizationId)\(\s*input\??\.organizationId/;
 
 /**
  * Tokens that actually verify membership of the TARGET organization. Deliberately

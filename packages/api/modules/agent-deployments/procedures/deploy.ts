@@ -14,6 +14,7 @@ import {
 	getAgentTemplateInstance,
 	incrementDeploymentQuota,
 	type Prisma,
+	resolveWorkflowIntegrationForProvider,
 	setDeploymentSupervisor,
 } from "@repo/database";
 import { getScheduleClient, getTemporalClient } from "@repo/temporal";
@@ -327,19 +328,11 @@ async function isIntegrationConfigured(
 		return true;
 	}
 
-	// Check for workflow integration credentials with fallback
-	// In org context: org-level credentials OR user's personal credentials
-	// In personal context: user's personal credentials only
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			provider: "SLACK",
-			NOT: { name: "SLACK_OAUTH_APP" },
-			OR: organizationId
-				? [{ organizationId }, { userId, organizationId: null }]
-				: [{ userId, organizationId: null }],
-		},
-		select: { id: true },
-	});
+	const integration = await resolveWorkflowIntegrationForProvider(
+		"SLACK",
+		userId,
+		organizationId,
+	);
 
 	return integration !== null;
 }

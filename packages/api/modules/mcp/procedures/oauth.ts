@@ -12,6 +12,14 @@ import {
 	updateMcpConfigTokens,
 	updateOAuthMetadataCache,
 } from "@repo/database";
+import {
+	getGitLabConnectionGeneration,
+	gitlabApiBaseForOrigin,
+	gitlabOutboundFetch,
+	isGitLabPersonalMcpServerKey,
+	parseGitLabOrigin,
+	refreshGitLabConnection,
+} from "@repo/integrations/gitlab";
 import { triggerMcpToolIngestion } from "@repo/temporal";
 import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
 import {
@@ -20,6 +28,7 @@ import {
 } from "@repo/utils/url-security";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	publicProcedure,
 	requirePermission,
@@ -526,10 +535,20 @@ export const oauthProcedures = {
 			}
 
 			// Attempt automatic discovery and DCR if credentials are missing and auto mode is enabled
+			//
+			// Never for a GitLab personal server that already holds a client:
+			// that registration may be the issuer of the person's GitLab
+			// credential (a public client has no secret, so the generic check
+			// below would re-register it on every start), and replacing it
+			// would leave the credential unable to refresh.
 			if (
 				input.autoDiscoverAndRegister &&
 				cfg.baseUrl &&
-				(!cfg.oauthClientId || !cfg.encryptedOauthClientSecret)
+				(!cfg.oauthClientId || !cfg.encryptedOauthClientSecret) &&
+				!(
+					isGitLabPersonalMcpServerKey(server?.key) &&
+					cfg.oauthClientId
+				)
 			) {
 				try {
 					// Derive discovery URL from base URL
@@ -1032,14 +1051,61 @@ export const oauthProcedures = {
 				body.set("code_verifier", stateRecord.codeVerifier);
 			}
 
-			const res = await safeFetchOutbound(tokenEndpoint, {
+			// GitLab personal servers write the person's ONE GitLab connection,
+			// not this config's token columns. That connection is personal:
+			// refuse a config the person does not own (an organization-level
+			// config cannot issue a personal credential), and read the
+			// connection generation BEFORE the exchange so a disconnect or
+			// another connect landing meanwhile is not overwritten.
+			const isGitLabPersonal = isGitLabPersonalMcpServerKey(server.key);
+			let gitlabGenerationBefore: number | undefined;
+			// The token endpoint's GitLab instance, checked like every recorded
+			// GitLab address (https, no embedded credentials, not a loopback /
+			// private / metadata host) BEFORE the exchange: the code, the PKCE
+			// verifier and any client secret are never sent to a refused
+			// endpoint. The same origin is what gets recorded below.
+			let gitlabOrigin: string | null = null;
+			if (isGitLabPersonal) {
+				if (cfg.userId !== stateRecord.userId) {
+					return {
+						success: false,
+						message:
+							"GitLab connections are personal — connect GitLab from your own MCP server entry.",
+					};
+				}
+				const checkedOrigin = parseGitLabOrigin(tokenEndpoint);
+				if (!checkedOrigin.ok) {
+					return {
+						success: false,
+						message: `GitLab token endpoint refused: ${checkedOrigin.reason}`,
+					};
+				}
+				gitlabOrigin = checkedOrigin.origin;
+				gitlabGenerationBefore = await getGitLabConnectionGeneration({
+					userId: stateRecord.userId,
+					organizationId: stateRecord.organizationId ?? null,
+				});
+			}
+
+			const exchangeInit: RequestInit = {
 				method: "POST",
 				headers: {
 					"content-type": "application/x-www-form-urlencoded",
 					accept: "application/json",
 				},
 				body,
-			});
+			};
+			// A GitLab exchange goes through the GitLab outbound path (a
+			// self-hosted instance through the outbound guard); a redirect
+			// is refused either way, as `safeFetchOutbound` does for every
+			// other server.
+			const res =
+				gitlabOrigin !== null
+					? await gitlabOutboundFetch(tokenEndpoint, {
+							...exchangeInit,
+							redirect: "error",
+						})
+					: await safeFetchOutbound(tokenEndpoint, exchangeInit);
 			const json = await res.json().catch(() => null as any);
 
 			if (!res.ok || !json) {
@@ -1079,19 +1145,24 @@ export const oauthProcedures = {
 				? new Date(now + effectiveExpiresIn * 1000)
 				: null;
 
-			if (server.key === "gitlab") {
-				// Dual-write: GitLab connect via MCP Registry also populates
-				// the WorkflowIntegration row, so PM-side callers (push/pull
-				// to Issues, scraping, repo wiring) work without a second
-				// OAuth dance. See gitlab-oauth-unification design.
+			if (gitlabOrigin !== null) {
+				// The issuer is this config's own client registration on the
+				// token endpoint's GitLab instance: a later refresh uses
+				// exactly that client, and the token is never sent elsewhere.
 				const { getGitLabUser } = await import(
 					"../../integrations/lib/gitlab-oauth"
 				);
 				const { persistGitLabToken } = await import(
 					"../../integrations/lib/gitlab-token"
 				);
-				const glUser = await getGitLabUser(accessToken);
-				await persistGitLabToken(db as never, {
+				// The profile comes from the instance that issued the token —
+				// never a hardcoded gitlab.com, which would hand a self-hosted
+				// token to a different GitLab.
+				const glUser = await getGitLabUser({
+					token: accessToken,
+					apiBase: gitlabApiBaseForOrigin(gitlabOrigin),
+				});
+				const persisted = await persistGitLabToken({
 					userId: stateRecord.userId,
 					organizationId: stateRecord.organizationId ?? null,
 					token: {
@@ -1109,12 +1180,27 @@ export const oauthProcedures = {
 						name: glUser.name,
 						avatarUrl: glUser.avatar_url ?? null,
 					},
+					issuer: {
+						kind: "mcp-dcr",
+						mcpConfigId: cfg.id,
+						serverKey: server.key,
+						clientId: cfg.oauthClientId,
+						origin: gitlabOrigin,
+					},
 					// This IS the OAuth callback: the tokens above come from
 					// the authorization-code exchange a few lines up, so the
-					// user has just authorized a new grant and clearing the
-					// `needsReauth` breaker is warranted.
+					// user has just authorized a new grant.
 					freshGrant: true,
+					expectedGeneration: gitlabGenerationBefore,
 				});
+				if (!persisted.written) {
+					await deleteOauthState(input.state);
+					return {
+						success: false,
+						message:
+							"Your GitLab connection changed while this sign-in was completing. Please connect GitLab again.",
+					};
+				}
 			} else {
 				await updateMcpConfigTokens({
 					configId: cfg.id,
@@ -1292,6 +1378,43 @@ export const oauthProcedures = {
 			// the caller to a dead end.
 			if (cfg.authType !== "OAUTH2") {
 				return { success: false };
+			}
+
+			// GitLab personal servers carry no credential of their own: the
+			// person's GitLab connection does, and only the connection service
+			// refreshes it (with the client that issued it). The ownership
+			// check above already bound `cfg.userId` to the caller; an
+			// organization-level config has no personal connection behind it.
+			const serverKey = (cfg.mcpServer as { key?: string } | null)?.key;
+			if (serverKey && isGitLabPersonalMcpServerKey(serverKey)) {
+				if (!cfg.userId) {
+					return { success: false };
+				}
+				// The refresh writes the connection in the config's
+				// organization: the owner check above does not show the
+				// caller still belongs there, so check membership and
+				// MCP_CONNECT in that organization now, and refuse a config
+				// with no organization rather than refresh one there.
+				const organizationId = await authorizeInputOrganization(
+					Permissions.MCP_CONNECT,
+					cfg.organizationId,
+					context,
+					{ requireOrganization: true },
+				);
+				const refreshed = await refreshGitLabConnection(
+					{
+						userId: cfg.userId,
+						organizationId: organizationId ?? null,
+					},
+					{ force: true },
+				);
+				if (!refreshed.ok && refreshed.reason === "needs-reauth") {
+					throw new ORPCError("PRECONDITION_FAILED", {
+						message:
+							"Your GitLab connection needs to be reconnected. Reconnect GitLab in Settings > Integrations.",
+					});
+				}
+				return { success: refreshed.ok };
 			}
 
 			// Circuit breaker: `recordRefreshFailure` flips `needsReauth` once the

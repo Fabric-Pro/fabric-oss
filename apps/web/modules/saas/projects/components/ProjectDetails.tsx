@@ -1415,10 +1415,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 							<DocumentsList
 								projectId={projectId}
 								enableDelete
-								canEdit={
-									project.userRole === "owner" ||
-									project.userRole === "editor"
-								}
+								// The permission the document update itself
+								// enforces. Reading the role here left out
+								// project admins, who hold it too.
+								canEdit={project.canUpdateProject}
 							/>
 						)}
 						{activeTab === "decisions" && (
@@ -1484,6 +1484,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 								canReview={
 									project.canReviewInstructions ?? false
 								}
+								readOnlyMode={project.readOnlyMode ?? false}
 							/>
 						)}
 						{activeTab === "diagrams" && (

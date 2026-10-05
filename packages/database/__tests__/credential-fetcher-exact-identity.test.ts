@@ -4,10 +4,11 @@
  * `fetchCredentialsByIdAndProviderInTenant` is what stops a runtime path from
  * executing an integration other than the one the user selected. Its query has
  * to pin the row on four things at once — id, provider, active, tenant — and
- * the tenant clause has to stay member-wide in an organization while staying
+ * the tenant clause requires ownership or explicit sharing in an organization while staying
  * owner-scoped in personal context.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OAUTH_APP_ROW_NAMES } from "../prisma/queries/lib/oauth-app-row";
 
 const { findFirstMock, memberFindFirstMock, decryptApiKeyMock } = vi.hoisted(
 	() => ({
@@ -58,6 +59,15 @@ describe("fetchCredentialsByIdAndProviderInTenant predicates", () => {
 				provider: "DATABRICKS_VECTOR_SEARCH",
 				isActive: true,
 				organizationId: "org-1",
+				OR: [
+					{ userId: "member-b" },
+					// A shared connection — never a personal-only (GitLab) one.
+					{
+						usageScope: "ORGANIZATION_SHARED",
+						NOT: { provider: { in: ["GITLAB"] } },
+					},
+				],
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 	});
@@ -77,11 +87,12 @@ describe("fetchCredentialsByIdAndProviderInTenant predicates", () => {
 				isActive: true,
 				userId: "member-b",
 				organizationId: null,
+				NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			},
 		});
 	});
 
-	it("does not add userId to the org predicate, keeping org integrations member-wide", async () => {
+	it("requires ownership or explicit organization sharing inside the org predicate", async () => {
 		await fetchCredentialsByIdAndProviderInTenant(
 			"int-1",
 			"NHTSA_VPIC",
@@ -90,7 +101,13 @@ describe("fetchCredentialsByIdAndProviderInTenant predicates", () => {
 		);
 
 		const where = findFirstMock.mock.calls[0]?.[0]?.where;
-		expect(where).not.toHaveProperty("userId");
+		expect(where.OR).toEqual([
+			{ userId: "member-b" },
+			{
+				usageScope: "ORGANIZATION_SHARED",
+				NOT: { provider: { in: ["GITLAB"] } },
+			},
+		]);
 	});
 
 	it("returns null when nothing matches, rather than falling back", async () => {

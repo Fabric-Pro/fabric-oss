@@ -59,6 +59,12 @@ const ADO_API_VERSION = "7.1";
 const ADO_ITEM_METADATA_MAX_BYTES = 64 * 1024;
 
 export type ReadRepositoryFileInput = ListRepositoryTreeInput & {
+	/**
+	 * What `branch` names: a branch (the default) or a commit id, for a read
+	 * of one commit's version of the file (Fizzy #2878 §10). GitHub takes
+	 * either in the same `ref`; Azure DevOps is told which.
+	 */
+	refType?: "branch" | "commit";
 	/** Repository-relative, in the sync's plain spelling (no leading `/`). */
 	path: string;
 	/** The most bytes read; a longer file is `tooLarge`. */
@@ -343,7 +349,7 @@ async function readAzureDevOpsFile(
 	const itemParams = new URLSearchParams({
 		path: `/${input.path}`,
 		"versionDescriptor.version": input.branch,
-		"versionDescriptor.versionType": "branch",
+		"versionDescriptor.versionType": input.refType ?? "branch",
 		"api-version": ADO_API_VERSION,
 	});
 	const itemResponse = await fetch(

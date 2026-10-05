@@ -14,6 +14,7 @@
  * - Server-level invalidation
  */
 
+import { db } from "@repo/database";
 import {
 	generateEmbedding,
 	generateEmbeddings,
@@ -28,6 +29,45 @@ import {
 	searchCapabilities,
 	upsertCapabilities,
 } from "@repo/rag/lib/vector-store/capability-store";
+
+// =============================================================================
+// Turned-off MCP configs
+// =============================================================================
+
+/** A tool's `configId` that names an `MCPConfig` row (not a virtual source). */
+function isMcpConfigRowId(configId: string | undefined): configId is string {
+	return (
+		typeof configId === "string" &&
+		configId.length > 0 &&
+		configId !== "fabric-ai-server" &&
+		!configId.startsWith("oauth:integration:")
+	);
+}
+
+/**
+ * Of the MCP configs some indexed tools belong to, the ones turned off now
+ * (`enabled: false` on the row). An indexed tool outlives its config's
+ * switch: the vectors stay until something deletes them, and a GitLab
+ * server's tile Delete turns the config off without deleting them (a
+ * deletion keyed by server name could erase the tools of a reconnect made
+ * meanwhile). The caller-selected id lists (`enabledMcpConfigIds`) are a
+ * preference, not the row's state, so every read of the index checks the
+ * rows themselves. A config whose row is gone is left to the deletion that
+ * removed it.
+ */
+async function findDisabledMcpConfigIds(
+	configIds: Iterable<string | undefined>,
+): Promise<Set<string>> {
+	const ids = [...new Set([...configIds].filter(isMcpConfigRowId))];
+	if (ids.length === 0) {
+		return new Set();
+	}
+	const rows = await db.mCPConfig.findMany({
+		where: { id: { in: ids }, enabled: false },
+		select: { id: true },
+	});
+	return new Set(rows.map((row) => row.id));
+}
 
 // =============================================================================
 // Infrastructure Tools
@@ -51,6 +91,33 @@ const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
 	"fabric_list_project_sources",
 	"fabric_get_project_source",
 ]);
+
+/**
+ * How many Qdrant matches `searchQdrant` asks for before filtering them by
+ * the request's enabled lists and cutting to its `limit`.
+ */
+const QDRANT_SEARCH_CANDIDATES = 100;
+
+/**
+ * Whether a Fabric AI tool (`configId: "fabric-ai-server"`) may be offered.
+ * Fabric AI tools answer only to the Fabric tool list (null = all): the MCP
+ * config list names user-added servers, and a chat's list of assigned
+ * servers does not name this virtual server, so applying it here excluded
+ * every Fabric tool, the project repository readers included. The BM25 step of `search_tools`
+ * and the routing pre-check read the Fabric list the same way.
+ */
+function isFabricToolEnabled(
+	toolName: string,
+	enabledFabricToolSet: Set<string> | null,
+): boolean {
+	if (enabledFabricToolSet === null) {
+		return true;
+	}
+	return (
+		INFRASTRUCTURE_FABRIC_TOOLS.has(toolName) ||
+		enabledFabricToolSet.has(toolName)
+	);
+}
 
 // =============================================================================
 // Types
@@ -568,13 +635,20 @@ export class ToolIndex {
 			}
 		}
 
-		// Fall back to in-memory BM25 search
-		return this.searchInMemory(query, {
+		// Fall back to in-memory BM25 search. The in-memory index can hold
+		// tools loaded before their config was turned off.
+		const inMemory = this.searchInMemory(query, {
 			category,
 			limit,
 			minConfidence,
 			readOnlyOnly,
 		});
+		const disabledConfigIds = await findDisabledMcpConfigIds(
+			inMemory.map((result) => result.tool.configId),
+		);
+		return inMemory.filter(
+			(result) => !disabledConfigIds.has(result.tool.configId),
+		);
 	}
 
 	/**
@@ -603,7 +677,11 @@ export class ToolIndex {
 		// embedding model and API key via getAIEmbeddingModelWithMetadata()
 		const result = await generateEmbedding(query, options.tenantContext);
 
-		// Search Qdrant
+		// Search Qdrant. The enabled lists and the turned-off configs are
+		// applied to what comes back, so ask for a wider pool than `limit`:
+		// asking for exactly `limit` let tools of servers this request does
+		// not use fill every slot, and the filter then left nothing (Fizzy
+		// #2924). The result is cut to `limit` after filtering, below.
 		const searchOptions: CapabilitySearchOptions = {
 			queryEmbedding: result.embedding,
 			type: "mcp_tool",
@@ -612,7 +690,7 @@ export class ToolIndex {
 			organizationId: options.organizationId,
 			includeSystem: options.includeSystem,
 			minScore: options.minConfidence,
-			limit: options.limit,
+			limit: Math.max(options.limit, QDRANT_SEARCH_CANDIDATES),
 		};
 
 		const qdrantResults = await searchCapabilities(searchOptions);
@@ -650,7 +728,7 @@ export class ToolIndex {
 		const integrationsExplicitlyDisabled =
 			enabledIntegrationSet !== null && enabledIntegrationSet.size === 0;
 
-		const filteredQdrantResults = qdrantResults.filter((qResult) => {
+		const preferredQdrantResults = qdrantResults.filter((qResult) => {
 			const configId = qResult.capability.metadata?.configId as
 				| string
 				| undefined;
@@ -660,23 +738,18 @@ export class ToolIndex {
 				return true;
 			}
 
-			// Fabric AI tools: configId === "fabric-ai-server"
-			// Apply tool-name-level filtering when enabledFabricToolIds is provided
 			if (configId === "fabric-ai-server") {
-				if (enabledFabricToolSet !== null) {
-					const toolName = qResult.capability.name;
-					if (INFRASTRUCTURE_FABRIC_TOOLS.has(toolName)) {
-						return true;
-					}
-					const isEnabled = enabledFabricToolSet.has(toolName);
-					if (!isEnabled) {
-						console.log(
-							`[ToolIndex] Excluding Fabric AI tool from search (not in enabled list): ${toolName}`,
-						);
-					}
-					return isEnabled;
+				const toolName = qResult.capability.name;
+				const isEnabled = isFabricToolEnabled(
+					toolName,
+					enabledFabricToolSet,
+				);
+				if (!isEnabled) {
+					console.log(
+						`[ToolIndex] Excluding Fabric AI tool from search (not in enabled list): ${toolName}`,
+					);
 				}
-				// No Fabric tool filter = include all (config-level filter still applies below)
+				return isEnabled;
 			}
 
 			// Check if this is an OAuth integration tool (configId format: oauth:integration:{integrationId})
@@ -733,13 +806,31 @@ export class ToolIndex {
 			return true;
 		});
 
+		// Tools of a config turned off now are not offered, whatever the
+		// caller's preference lists say.
+		const disabledConfigIds = await findDisabledMcpConfigIds(
+			preferredQdrantResults.map(
+				(qResult) =>
+					qResult.capability.metadata?.configId as string | undefined,
+			),
+		);
+		const filteredQdrantResults = preferredQdrantResults.filter(
+			(qResult) =>
+				!disabledConfigIds.has(
+					qResult.capability.metadata?.configId as string,
+				),
+		);
+
 		// Debug: Log filter results
 		console.log(
 			`[ToolIndex] After config/integration filter: ${filteredQdrantResults.length} of ${qdrantResults.length} results remain`,
 		);
 
 		// Get BM25 scores for hybrid matching
-		const bm25Results = this.bm25Index.search(query, options.limit * 2);
+		const bm25Results = this.bm25Index.search(
+			query,
+			Math.max(options.limit * 2, QDRANT_SEARCH_CANDIDATES),
+		);
 		const bm25Scores = new Map(
 			bm25Results.map((r) => [
 				r.id,
@@ -1294,21 +1385,17 @@ export class ToolIndex {
 					return true;
 				}
 
-				// Fabric AI tools: apply tool-name-level filtering
 				if (configId === "fabric-ai-server") {
-					if (enabledFabricToolSet !== null) {
-						if (INFRASTRUCTURE_FABRIC_TOOLS.has(cap.name)) {
-							return true;
-						}
-						const isEnabled = enabledFabricToolSet.has(cap.name);
-						if (!isEnabled) {
-							console.log(
-								`[ToolIndex] Excluding Fabric AI tool (not in enabled list): ${cap.name}`,
-							);
-						}
-						return isEnabled;
+					const isEnabled = isFabricToolEnabled(
+						cap.name,
+						enabledFabricToolSet,
+					);
+					if (!isEnabled) {
+						console.log(
+							`[ToolIndex] Excluding Fabric AI tool (not in enabled list): ${cap.name}`,
+						);
 					}
-					// No Fabric tool filter = config-level filter still applies below
+					return isEnabled;
 				}
 
 				// Check if this is an OAuth integration tool (configId format: oauth:integration:{integrationId})
@@ -1367,6 +1454,25 @@ export class ToolIndex {
 				);
 				return true;
 			});
+
+			// Tools of a config turned off now are not loaded, whatever the
+			// caller's preference lists say.
+			const disabledConfigIds = await findDisabledMcpConfigIds(
+				filteredCapabilities.map(
+					(result) =>
+						result.capability.metadata?.configId as
+							| string
+							| undefined,
+				),
+			);
+			if (disabledConfigIds.size > 0) {
+				filteredCapabilities = filteredCapabilities.filter(
+					(result) =>
+						!disabledConfigIds.has(
+							result.capability.metadata?.configId as string,
+						),
+				);
+			}
 
 			console.log(
 				`[ToolIndex] Filtered from ${capabilities.length} to ${filteredCapabilities.length} tools based on enabled configs/integrations`,

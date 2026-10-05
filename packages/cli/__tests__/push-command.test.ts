@@ -317,7 +317,9 @@ describe("preconditions", () => {
 		]);
 
 		expect(result.code).toBe(7);
-		expect(result.stderr).toContain("belongs to project proj-1");
+		expect(result.stderr).toBe(
+			"✗ This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.\n",
+		);
 	});
 });
 
@@ -2141,8 +2143,9 @@ describe("changes an open proposal already carries", () => {
 			"rules.md",
 		]);
 		expect(result.stderr).toContain(
-			"Could not check your open proposals (upstream exploded)",
+			"Could not check your open proposals (the server answered 500)",
 		);
+		expect(result.stderr).not.toContain("upstream exploded");
 	});
 
 	it("warns and sends everything when the answer is not a list of proposals", async () => {

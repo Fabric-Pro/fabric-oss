@@ -1,5 +1,7 @@
+import { type ExcludedPath, MAX_EXCLUDED_PATHS } from "@repo/instructions";
 import { orpcClient } from "@shared/lib/orpc-client"; // the raw client createTanstackQueryUtils wraps (see orpc-query-utils.ts:4)
 import type { FolderEntry } from "./read-folder";
+import { StorageUploadError } from "./upload-storage-error";
 
 const UPLOAD_URL_PAGE_SIZE = 200;
 const UPLOAD_CONCURRENCY = 6;
@@ -46,11 +48,10 @@ export async function putWithRetry(
 	}
 	// A caught-error retry loop (fetch throwing, e.g. a network failure) never
 	// names the path in the thrown error itself, so wrap it here too — every
-	// exit from this function on failure must identify which file failed.
-	if (lastError instanceof Error && !lastError.message.includes(path)) {
-		throw new Error(`Upload failed for ${path}: ${lastError.message}`);
-	}
-	throw lastError;
+	// exit from this function on failure must identify which file failed, and
+	// say it was storage that could not be reached (`StorageUploadError`: the
+	// dialog discards the snapshot it began for exactly this failure).
+	throw new StorageUploadError(path, lastError);
 }
 
 export type UploadSnapshotInput = {
@@ -104,6 +105,20 @@ export type UploadSnapshotResult = {
 	serverExcludedPaths: string[];
 };
 
+/** The entries the preview left out, as `begin` takes them: path and rule, no more than the server stores. */
+function clientExcludedNames(entries: readonly FolderEntry[]): ExcludedPath[] {
+	const names: ExcludedPath[] = [];
+	for (const entry of entries) {
+		if (names.length >= MAX_EXCLUDED_PATHS) {
+			break;
+		}
+		if (entry.excluded) {
+			names.push({ path: entry.path, rule: entry.excluded.rule });
+		}
+	}
+	return names;
+}
+
 /**
  * Uploads a previewed folder: registers the snapshot (or resumes one from a
  * prior failed attempt), pages through `createUploadUrls` in batches of
@@ -141,6 +156,9 @@ export async function uploadSnapshot(
 				// So the stored version's "N files left out" still describes the
 				// whole pick, not just the part the server saw.
 				clientExcludedCount: input.entries.length - kept.length,
+				// The first of them by name, with the rule that left each out,
+				// so the published view can list what the count stands for.
+				clientExcluded: clientExcludedNames(input.entries),
 			})
 		).snapshotId;
 	input.onSnapshotStarted?.(snapshotId);

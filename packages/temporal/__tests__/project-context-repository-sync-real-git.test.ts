@@ -19,16 +19,10 @@
  * Run with: pnpm --filter @repo/temporal exec vitest run __tests__/project-context-repository-sync-real-git.test.ts
  */
 import { execFileSync } from "node:child_process";
-import {
-	mkdir,
-	mkdtemp,
-	rename,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	afterAll,
 	beforeAll,
@@ -166,7 +160,7 @@ try {
 let work: string;
 let source: string;
 
-function git(args: string[]): string {
+function git(args: string[], input?: string): string {
 	return execFileSync("git", args, {
 		cwd: source,
 		env: {
@@ -175,12 +169,24 @@ function git(args: string[]): string {
 			GIT_CONFIG_NOSYSTEM: "1",
 			GIT_CONFIG_GLOBAL: "/dev/null",
 		},
+		input,
 		encoding: "utf8",
 	}).trim();
 }
 
+let linkBlob: string;
+
 function commit(message: string): string {
 	git(["add", "-A"]);
+	// A symlink needs a privilege on Windows, so it enters the index directly;
+	// `add -A` stages its absence from the working tree, so it is restated
+	// after every `add`.
+	git([
+		"update-index",
+		"--add",
+		"--cacheinfo",
+		`120000,${linkBlob},docs/link.md`,
+	]);
 	git([
 		"-c",
 		"user.name=Example",
@@ -255,7 +261,7 @@ describe.skipIf(!hasGit)(
 			await put("docs/diagram.png", "not text");
 			await put("docs/x[1].md", "brackets in the name\n");
 			await put("docs/x1.md", "the bracket file's neighbour\n");
-			await symlink("a.md", path.join(source, "docs/link.md"));
+			linkBlob = git(["hash-object", "-w", "--stdin"], "a.md");
 			await put("notes/glossary.md", "Glossary\n");
 			await put("notes/other.md", "not selected\n");
 			await put("README.md", "not selected\n");
@@ -286,7 +292,7 @@ describe.skipIf(!hasGit)(
 				);
 			});
 			seedIntegration({
-				repositoryUrl: `file://${source}`,
+				repositoryUrl: pathToFileURL(source).href,
 			});
 			seedSync({ paths: PATHS, activeRunKey: null });
 		});

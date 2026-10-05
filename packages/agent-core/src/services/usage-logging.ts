@@ -109,34 +109,25 @@ export function extractUsageFromLangChainResponse(
 	// into (`usage_metadata.input_token_details.cache_creation` is never set),
 	// so this is the only place it survives to this extractor. Safe against
 	// the streaming multiplication bug (chunk `.concat()` sums colliding
-	// numeric fields): the compat layer (`suppressNonFinalCacheUsageFields` in
-	// `databricks-compat.ts`) already deletes this field from every non-final
-	// SSE chunk before `@langchain/openai` ever sees it, so it survives on the
-	// wire exactly once, on the final chunk.
+	// numeric fields): the compat layer (`applyChunkCacheUsageHandling` in
+	// `@repo/agent-types`' `databricks-compat.ts`) already deletes this field
+	// from every choices-bearing SSE chunk before `@langchain/openai` ever sees
+	// it, so it survives on the wire exactly once, on the choices-less usage
+	// event.
 	const cacheCreationInputTokens =
 		readNumber(inputDetails?.cache_creation) ??
 		readNumber(usageMetadata?.cache_creation_input_tokens) ??
 		readNumber(rawUsage?.cache_creation_input_tokens);
-	// @langchain/anthropic 1.5.x normalizes usage_metadata.input_tokens to
-	// include both cache buckets, while Anthropic's raw API reports them
-	// separately. Fabric's direct-Anthropic pricing contract expects that raw,
-	// exclusive shape. The native adapter identifies itself explicitly; the
-	// Databricks ChatOpenAI path does not, so its inclusive accounting remains
-	// unchanged.
-	const isNativeAnthropicUsage =
-		responseMetadata?.model_provider === "anthropic" &&
-		usageMetadata !== undefined;
-	const normalizedCacheTokens = isNativeAnthropicUsage
-		? (cachedInputTokens ?? 0) + (cacheCreationInputTokens ?? 0)
-		: 0;
-	const inputTokens = Math.max(
-		0,
-		reportedInputTokens - normalizedCacheTokens,
-	);
-	const totalTokens = Math.max(
-		0,
-		reportedTotalTokens - normalizedCacheTokens,
-	);
+	// Recorded as reported: `inputTokens`/`totalTokens` are the provider's
+	// TOTAL counts, INCLUDING prompt-cache reads and writes, and the two cache
+	// columns are breakdowns of them — the contract every AiUsageLog writer
+	// shares (see `estimateAiUsageCostUsd` in @repo/database's ai-credits.ts,
+	// which subtracts the buckets back out before pricing). @langchain/anthropic
+	// 1.5.x already builds usage_metadata.input_tokens as input + cache read +
+	// cache write (`buildUsageMetadata`), the Databricks ChatOpenAI path reports
+	// an inclusive `prompt_tokens`, and the AI SDK path records the same.
+	const inputTokens = Math.max(0, reportedInputTokens);
+	const totalTokens = Math.max(0, reportedTotalTokens);
 	const reasoningTokens = readNumber(outputDetails?.reasoning);
 
 	// The gateway generation id, if present, lets the row reconcile to actual cost.

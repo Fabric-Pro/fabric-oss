@@ -879,6 +879,188 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 			});
 		});
 
+		describe("a move from uploads into the repository (Fizzy #2878 §9)", () => {
+			const MOVE_SYNC = "sync_move_example";
+
+			function openMove(over: { branchId?: string | null } = {}) {
+				s.fake.state.settings = {
+					sourceOfTruth: "UPLOAD",
+					migration: {
+						v: 1,
+						state: "PROPOSING",
+						branchId: over.branchId ?? branch(s).id,
+						snapshotId: "snap_p1",
+						syncId: MOVE_SYNC,
+						pullRequestUrl: null,
+						startedAt: "2026-09-26T12:00:00.000Z",
+						userId: "user_example",
+					},
+				};
+			}
+
+			const moveTrace = () =>
+				s.fake.state.trace.filter((entry) =>
+					entry.startsWith("migration:"),
+				);
+
+			it("switches the project over BEFORE the classification asks for the merge sync, when the pull request merged where the sync reads", async () => {
+				const head = await opened();
+				openMove();
+				await observed("MERGED", head);
+				prHead(head);
+				h.adapter.pullRequestHeadRef.mockReturnValue(PR_HEAD_REF);
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:complete:${BRANCH_ID}`,
+				]);
+				const trace = s.fake.state.trace;
+				expect(
+					trace.indexOf(`migration:complete:${BRANCH_ID}`),
+				).toBeLessThan(trace.indexOf(`classified:${BRANCH_ID}:done`));
+				expect(branch(s).mergeSyncRequestedAt).toEqual(
+					s.fake.state.now,
+				);
+			});
+
+			it("ends the move when the pull request was closed without merging", async () => {
+				const head = await opened();
+				openMove();
+				await observed("CLOSED", head);
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:abandon:${MOVE_SYNC}:pull_request_closed`,
+				]);
+			});
+
+			it("does not end the move for a close that is a START OVER's: the proposal is rehomed and its pull request opens again", async () => {
+				const head = await opened();
+				openMove();
+				await observed("CLOSED", head);
+				branch(s).closeIntent = "START_OVER";
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(
+					moveTrace(),
+					"abandoning here would delete the sync row under a move that carries on",
+				).toEqual([]);
+			});
+
+			it("still ends the move for a close the member asked for, which is a withdrawal", async () => {
+				const head = await opened();
+				openMove();
+				await observed("CLOSED", head);
+				branch(s).closeIntent = "WITHDRAW";
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:abandon:${MOVE_SYNC}:pull_request_closed`,
+				]);
+			});
+
+			it("never mistakes a merge for a start over's close: a merge where the sync reads switches the project whatever the intent was", async () => {
+				const head = await opened();
+				openMove();
+				await observed("MERGED", head);
+				prHead(head);
+				h.adapter.pullRequestHeadRef.mockReturnValue(PR_HEAD_REF);
+				branch(s).closeIntent = "START_OVER";
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:complete:${BRANCH_ID}`,
+				]);
+			});
+
+			it("leaves the sync row alone and says so when the project was flipped to the repository behind the move's back", async () => {
+				const head = await opened();
+				openMove();
+				s.fake.state.settings = {
+					...s.fake.state.settings,
+					sourceOfTruth: "REPOSITORY",
+				};
+				await observed("CLOSED", head);
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:abandon:${MOVE_SYNC}:pull_request_closed`,
+				]);
+				const { logger } = await import("@repo/logs");
+				expect(logger.warn).toHaveBeenCalledWith(
+					expect.objectContaining({
+						event: "instruction_migration.source_flipped",
+						syncId: MOVE_SYNC,
+					}),
+					expect.any(String),
+				);
+			});
+
+			it("ends the move, and never switches the project, when the pull request merged into a branch the sync does not read", async () => {
+				const head = await opened();
+				openMove();
+				await observed("MERGED", head);
+				const b = branch(s);
+				b.pullRequestObservation = {
+					...(b.pullRequestObservation as object),
+					targetMismatch: true,
+				};
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([
+					`migration:abandon:${MOVE_SYNC}:pull_request_closed`,
+				]);
+			});
+
+			it("touches nothing for a branch that carries no move, however it ended", async () => {
+				const head = await opened();
+				openMove({ branchId: "another_branch" });
+				await observed("MERGED", head);
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([]);
+			});
+
+			it("touches nothing when the project has no move", async () => {
+				const head = await opened();
+				await observed("MERGED", head);
+
+				expect(await classify()).toEqual({ outcome: "done" });
+
+				expect(moveTrace()).toEqual([]);
+			});
+
+			it("is safe to repeat: a later classification of the same branch asks the writers again, which are idempotent", async () => {
+				const head = await opened();
+				openMove();
+				await observed("MERGED", head);
+				prHead(head);
+				h.adapter.pullRequestHeadRef.mockReturnValue(PR_HEAD_REF);
+				await classify();
+				const b = branch(s);
+				b.membership = {
+					status: "pending",
+					at: s.fake.state.now.toISOString(),
+					attempts: 0,
+				};
+
+				await classify();
+
+				expect(moveTrace()).toEqual([
+					`migration:complete:${BRANCH_ID}`,
+					`migration:complete:${BRANCH_ID}`,
+				]);
+			});
+		});
+
 		it("merge sync is requested once per branch, and never on a target mismatch", async () => {
 			const head = await opened();
 			await observed("MERGED", head);
@@ -1054,6 +1236,47 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 			expect(h.wake).not.toHaveBeenCalled();
 		});
 
+		it("with no pull request: a withdrawal that carried a move from uploads ends the move (Fizzy #2878 §9)", async () => {
+			seedBranch(s);
+			await append("snap_p1", { "rules/a.md": "alpha v2\n" });
+			s.fake.state.settings = {
+				sourceOfTruth: "UPLOAD",
+				migration: {
+					v: 1,
+					state: "PROPOSING",
+					branchId: BRANCH_ID,
+					snapshotId: "snap_p1",
+					syncId: "sync_move_example",
+					pullRequestUrl: null,
+					startedAt: "2026-09-26T12:00:00.000Z",
+					userId: "user_example",
+				},
+			};
+			requestClose();
+
+			expect(await settle()).toEqual({ outcome: "canceled" });
+
+			expect(
+				s.fake.state.trace.filter((entry) =>
+					entry.startsWith("migration:"),
+				),
+			).toEqual(["migration:abandon:sync_move_example:canceled"]);
+		});
+
+		it("with no pull request: a withdrawal of a branch that carries no move leaves moves alone", async () => {
+			seedBranch(s);
+			await append("snap_p1", { "rules/a.md": "alpha v2\n" });
+			requestClose();
+
+			expect(await settle()).toEqual({ outcome: "canceled" });
+
+			expect(
+				s.fake.state.trace.filter((entry) =>
+					entry.startsWith("migration:"),
+				),
+			).toEqual([]);
+		});
+
 		it.each([
 			[
 				"an observed operation (no deletion authority)",
@@ -1145,6 +1368,32 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 				expect.objectContaining({ branchId: moved.proposalBranchId }),
 				expect.anything(),
 			);
+		});
+
+		it("keeps a move from uploads alive: its proposal is rehomed, not withdrawn (Fizzy #2878 §9)", async () => {
+			await unknownCreate();
+			s.fake.state.settings = {
+				sourceOfTruth: "UPLOAD",
+				migration: {
+					v: 1,
+					state: "PROPOSING",
+					branchId: BRANCH_ID,
+					snapshotId: "snap_p1",
+					syncId: "sync_move_example",
+					pullRequestUrl: null,
+					startedAt: "2026-09-26T12:00:00.000Z",
+					userId: "user_example",
+				},
+			};
+			requestClose("START_OVER");
+
+			expect(await settle()).toEqual({ outcome: "rehomed" });
+
+			expect(
+				s.fake.state.trace.filter((entry) =>
+					entry.startsWith("migration:"),
+				),
+			).toEqual([]);
 		});
 
 		it("step 0 refuses a hand push nobody observed: START_OVER_REFUSED, foreignTipAt set, ref and proposals untouched", async () => {

@@ -16,13 +16,20 @@ import {
 	db,
 	getProjectMemberRole,
 	logRepoIntegrationActivity,
-	type Prisma,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
 import {
+	GITLAB_DEFAULT_ORIGIN,
+	type GitLabApiCredential,
 	GitLabApiError,
-	getValidGitLabAccessToken,
+	getGitLabConnectionGeneration,
+	getGitLabConnectionStatus,
+	getGitLabConnectionToken,
+	gitlabApiBaseForOrigin,
 	gitlabFetch,
+	identifyGitLabIssuer,
+	patchGitLabConnectionSettings,
+	readGitLabPersonalConnection,
 } from "@repo/integrations/gitlab";
 import {
 	hasPermission,
@@ -40,25 +47,30 @@ import {
 	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { GITLAB_DATA_CONNECTION_CLEARED_TOKENS } from "../../data-connections/lib/gitlab-data-connection";
 import { startCodeIndexingForProject } from "../../projects/lib/code-indexing-trigger";
-import { enableGitLabPMForProject } from "../lib/enable-gitlab-pm-for-project";
+import {
+	type EnableGitLabPMResult,
+	enableGitLabPMForProject,
+} from "../lib/enable-gitlab-pm-for-project";
 import {
 	exchangeCodeForToken,
-	type GitLabUser,
 	generatePkce,
 	getGitLabOAuthUrl,
 	getGitLabUser,
 	listGitLabBranches,
 	listGitLabProjects,
 	recordToolIngestError,
-	refreshGitLabToken,
 	resolveOrgIdForQuery,
 } from "../lib/gitlab-oauth";
+import { disconnectPersonalGitLab } from "../lib/gitlab-personal-disconnect";
 import {
 	GitLabIntegrationNotConnectedError,
 	recheckGitlabCapabilities,
 } from "../lib/gitlab-recheck";
+import { authorizeGitLabTenant } from "../lib/gitlab-request-tenant";
 import {
+	ensureGitLabRegistryRow,
 	GitLabReauthRequiredError,
 	persistGitLabToken,
 } from "../lib/gitlab-token";
@@ -123,6 +135,36 @@ function isGitLabProbeRejection(err: unknown): boolean {
 		err instanceof GitLabApiError &&
 		(err.status === 401 || err.status === 403)
 	);
+}
+
+/**
+ * The caller's own GitLab token for the repository pickers — the personal
+ * connection, refreshed with whichever client issued it, together with the
+ * REST base of the GitLab instance that issued it (so a self-hosted
+ * credential is only ever sent to its own instance). Requires no
+ * integration-app credentials, so a connection made through the MCP
+ * registry (dynamic client registration) works the same.
+ */
+async function requirePersonalGitLabToken(
+	userId: string,
+	organizationId: string | null,
+): Promise<GitLabApiCredential> {
+	const token = await getGitLabConnectionToken(
+		{ userId, organizationId },
+		{ mode: "strict", anyOrigin: true },
+	);
+	if (token.ok) {
+		return {
+			token: token.accessToken,
+			apiBase: gitlabApiBaseForOrigin(token.origin),
+		};
+	}
+	throw new ORPCError("BAD_REQUEST", {
+		message:
+			token.reason === "not-connected"
+				? "GitLab not connected. Please connect your GitLab account first."
+				: "Your GitLab connection needs to be reconnected. Reconnect GitLab in Settings > Integrations.",
+	});
 }
 
 export const gitlabOAuthProcedures = {
@@ -411,7 +453,27 @@ export const gitlabOAuthProcedures = {
 				};
 			}
 
+			// IMPORTANT: Use null explicitly for personal context.
+			// state.organizationId is undefined when there is no org --
+			// passing undefined to Prisma causes it to skip the field
+			// entirely, which breaks the XOR tenant isolation pattern.
+			// resolveOrgIdForQuery coerces undefined/empty-string to null.
+			const orgIdForQuery = resolveOrgIdForQuery(state);
+			const connectionTenant = {
+				userId: state.userId,
+				organizationId: orgIdForQuery,
+			};
+
 			try {
+				// Read the connection generation BEFORE the exchange: a
+				// disconnect or another connect that lands while GitLab answers
+				// must not be overwritten by this callback's write. Project
+				// repository links never touch the personal connection.
+				const generationBefore =
+					state.targetType === "project"
+						? null
+						: await getGitLabConnectionGeneration(connectionTenant);
+
 				// Exchange code for access token
 				// Use the same redirectUri that was used in the initial request (stored in state)
 				const redirectUri =
@@ -479,7 +541,7 @@ export const gitlabOAuthProcedures = {
 						};
 					}
 
-					const { connectedStatus } =
+					const { connectedStatus, personalConnectionRequiredForPm } =
 						await handleProjectTargetCallback({
 							state: {
 								userId: state.userId,
@@ -507,12 +569,17 @@ export const gitlabOAuthProcedures = {
 					// AC1's "told at connect time" — same composition as the
 					// GitHub callback.
 					const repoSlug = `${state.repositoryOwner}/${state.repositoryName}`;
-					const message =
+					const repoMessage =
 						connectedStatus === "REPO_UNAVAILABLE"
 							? `Connected ${repoSlug} — but Fabric cannot read it. Install the provider app on the repository, or connect it with a personal access token from its row menu.`
 							: connectedStatus === "TOKEN_EXPIRED"
 								? `Connected ${repoSlug} — but the credentials were rejected as invalid or expired. Reconnect from Settings ▸ Development.`
 								: `Connected GitLab repository: ${repoSlug}`;
+					// The repository link is a team grant; GitLab PM runs on the
+					// acting person's own connection.
+					const message = personalConnectionRequiredForPm
+						? `${repoMessage.replace(/\.?$/, ".")} To use GitLab issues for project management, connect your personal GitLab account in Settings ▸ Integrations.`
+						: repoMessage;
 
 					return {
 						success: true,
@@ -521,55 +588,57 @@ export const gitlabOAuthProcedures = {
 					};
 				}
 
-				// IMPORTANT: Use null explicitly for personal context.
-				// state.organizationId is undefined when there is no org --
-				// passing undefined to Prisma causes it to skip the field
-				// entirely, which breaks the XOR tenant isolation pattern.
-				// resolveOrgIdForQuery coerces undefined/empty-string to null.
-				const orgIdForQuery = resolveOrgIdForQuery(state);
-
-				// Unified dual-write: populates both WorkflowIntegration AND
-				// MCPConfig so the official GitLab MCP server (`gitlab-official`)
-				// can resolve the user from the same token used by PM features. See
-				// `docs/superpowers/specs/2026-05-14-gitlab-oauth-unification-design.md`.
-				const { workflowIntegrationId } = await persistGitLabToken(
-					db as never,
-					{
-						userId: state.userId,
-						organizationId: orgIdForQuery,
-						token: {
-							accessToken: tokenResponse.access_token,
-							refreshToken: tokenResponse.refresh_token ?? null,
-							expiresAt: tokenResponse.expires_in
-								? new Date(
-										Date.now() +
-											tokenResponse.expires_in * 1000,
-									)
-								: null,
-							scopes: tokenResponse.scope
-								? tokenResponse.scope.split(" ")
-								: ["api", "read_user"],
-						},
-						gitlabUser: {
-							id: gitlabUser.id,
-							username: gitlabUser.username,
-							name: gitlabUser.name,
-							avatarUrl: gitlabUser.avatar_url ?? null,
-						},
-						// The authorization-code exchange above just returned:
-						// this is the one flow that holds a grant the user has
-						// freshly authorized, so it is the one allowed to lift
-						// the `needsReauth` breaker.
-						freshGrant: true,
+				// The one personal GitLab connection, written through the
+				// connection service with the client that issued this grant.
+				// No MCPConfig receives a token.
+				const issuer = await identifyGitLabIssuer(connectionTenant, {
+					clientId,
+					origin: GITLAB_DEFAULT_ORIGIN,
+				});
+				const persisted = await persistGitLabToken({
+					userId: state.userId,
+					organizationId: orgIdForQuery,
+					token: {
+						accessToken: tokenResponse.access_token,
+						refreshToken: tokenResponse.refresh_token ?? null,
+						expiresAt: tokenResponse.expires_in
+							? new Date(
+									Date.now() +
+										tokenResponse.expires_in * 1000,
+								)
+							: null,
+						scopes: tokenResponse.scope
+							? tokenResponse.scope.split(" ")
+							: ["api", "read_user"],
 					},
-				);
+					gitlabUser: {
+						id: gitlabUser.id,
+						username: gitlabUser.username,
+						name: gitlabUser.name,
+						avatarUrl: gitlabUser.avatar_url ?? null,
+					},
+					issuer,
+					// The authorization-code exchange above just returned:
+					// this is a grant the user has freshly authorized, so it
+					// may lift the reconnect-required state.
+					freshGrant: true,
+					expectedGeneration: generationBefore ?? undefined,
+				});
+				if (!persisted.written) {
+					return {
+						success: false,
+						message:
+							"Your GitLab connection changed while this sign-in was completing. Please connect GitLab again.",
+					};
+				}
+				const workflowIntegrationId = persisted.workflowIntegrationId;
 				const integrationRow = { id: workflowIntegrationId };
 
-				// Auto-heal any EXPIRED DataConnection for this provider.
-				// The schema documents `accessToken` as encrypted-at-rest (see
-				// DataConnection model in schema.prisma); store ciphertext to
-				// match. There is no current GitLab-specific reader of this
-				// column — the WorkflowIntegration row is the source of truth.
+				// Auto-heal any EXPIRED DataConnection for this provider: the
+				// disconnect marked it EXPIRED, and the person is connected
+				// again. Status only — a GitLab Data Connection holds no token
+				// (a sync uses the starting person's live connection), so any
+				// legacy copy is cleared rather than refreshed.
 				await db.dataConnection.updateMany({
 					where: {
 						userId: state.userId,
@@ -580,7 +649,7 @@ export const gitlabOAuthProcedures = {
 							: { organizationId: null }),
 					},
 					data: {
-						accessToken: encryptApiKey(tokenResponse.access_token),
+						...GITLAB_DATA_CONNECTION_CLEARED_TOKENS,
 						status: "CONNECTED",
 					},
 				});
@@ -623,15 +692,8 @@ export const gitlabOAuthProcedures = {
 					);
 					try {
 						await recordToolIngestError({
-							// `db as never`: PrismaClient's update method has a
-							// generic signature returning a custom thenable; it is
-							// not structurally assignable to the helper's narrowed
-							// `(args: unknown) => Promise<unknown>` interface even
-							// though it satisfies it at runtime. The cast is the
-							// established pattern in this package for passing the
-							// real PrismaClient to helpers with narrow db shapes.
-							db: db as never,
-							integrationId: integrationRow.id,
+							tenant: connectionTenant,
+							generation: persisted.generation,
 							error: err,
 						});
 					} catch (recordErr) {
@@ -688,13 +750,18 @@ export const gitlabOAuthProcedures = {
 			z.object({
 				connected: z.boolean(),
 				/**
-				 * True only when `connected` is false but a live GitLab token
-				 * is stored on the MCP registry's `gitlab` config with no
-				 * WorkflowIntegration behind it. Not a usable connection (PM
-				 * sync and repository browsing need the WorkflowIntegration);
-				 * it exists so the settings page can offer Disconnect.
+				 * The person's connection as every screen shows it (see
+				 * `readGitLabPersonalConnection`): connected, needs
+				 * reconnect, or not connected. `connected` stays true for a
+				 * connection that needs reconnecting, with `needsReauth`.
 				 */
-				partialConnection: z.boolean().optional(),
+				state: z.enum([
+					"connected",
+					"needs-reconnect",
+					"not-connected",
+				]),
+				/** The GitLab instance the connection belongs to. */
+				origin: z.string().nullable().optional(),
 				username: z.string().optional(),
 				name: z.string().nullable().optional(),
 				avatarUrl: z.string().optional(),
@@ -730,90 +797,38 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
+			// Resolved and authorized before the read below, which can
+			// classify a legacy connection row in this tenant.
+			const { userId, organizationId } = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_READ,
+				input.organizationId,
+				context,
+			);
 
-			const integration = await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-			});
+			// The one personal connection. Its own reconnect-required state is
+			// the only one that counts: the MCPConfig breaker columns no longer
+			// describe a credential, and those configs hold no token.
+			const { status: connection, summary } =
+				await readGitLabPersonalConnection({ userId, organizationId });
 
-			if (!integration) {
-				// No active WorkflowIntegration, so GitLab is NOT connected in the
-				// sense every caller of `connected` relies on (repository
-				// browsing, PM sync and the like need the WorkflowIntegration).
-				// But a connection made through the MCP registry lives only on
-				// the MCPConfig row until `reconcile` backfills the other store,
-				// and that token is live: agents and `loadGitLabToken` use it. The
-				// same goes for an official GitLab MCP server connected from the
-				// MCP Servers page, which `disconnect` also clears. Say so in a
-				// separate field, so the settings page can offer
-				// Disconnect for it without any other screen treating GitLab as
-				// connected. A disconnected row keeps its MCPConfig but has the
-				// token nulled, so it does not match here.
-				const mcpOnly = await db.mCPConfig.findFirst({
-					where: {
-						userId,
-						...(organizationId
-							? { organizationId }
-							: { organizationId: null }),
-						mcpServer: {
-							key: { in: ["gitlab", "gitlab-official"] },
-						},
-						encryptedAccessToken: { not: null },
-					},
-					select: { needsReauth: true },
-				});
-				if (!mcpOnly) {
-					return { connected: false };
-				}
-				return {
-					connected: false,
-					partialConnection: true,
-					needsReauth: mcpOnly.needsReauth || undefined,
-				};
+			if (summary.state === "not-connected") {
+				return { connected: false, state: summary.state };
 			}
 
-			const settings = integration.settings as Record<
-				string,
-				unknown
-			> | null;
+			const settings = connection.settings;
+			const needsReauth = connection.needsReauth;
 
 			const lastToolIngestError = settings?.lastToolIngestError as
 				| { message: string; at: string }
 				| undefined;
 
-			// Also check the MCPConfig flag — refresh failures on either
-			// side mark the same logical state.
-			const mcp = await db.mCPConfig.findFirst({
-				where: {
-					userId,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-					mcpServer: { key: "gitlab" },
-				},
-				select: { needsReauth: true },
-			});
-			const needsReauth =
-				Boolean(settings?.needsReauth) || Boolean(mcp?.needsReauth);
-
 			return {
 				connected: true,
-				username: settings?.gitlabUsername as string | undefined,
-				name: settings?.gitlabName as string | null | undefined,
-				avatarUrl: settings?.gitlabAvatarUrl as string | undefined,
+				state: summary.state,
+				origin: summary.origin,
+				username: summary.account?.username ?? undefined,
+				name: summary.account?.name ?? null,
+				avatarUrl: summary.account?.avatarUrl ?? undefined,
 				scope: settings?.scope as string | undefined,
 				connectedAt: settings?.connectedAt as string | undefined,
 				needsReauth: needsReauth || undefined,
@@ -862,7 +877,11 @@ export const gitlabOAuthProcedures = {
 	 * IMPORTANT: organizationId must be explicitly passed for proper tenant isolation
 	 */
 	disconnect: tenantProtectedProcedure
-		.use(requirePermission(Permissions.INTEGRATION_DISCONNECT))
+		// Removes only the caller's own connection, so it needs what
+		// connecting one needs on the MCP tile (`MCP_CONNECT`), not the
+		// admin-level `INTEGRATION_DISCONNECT` for shared integrations. The
+		// handler checks it again against the resolved organization.
+		.use(requirePermission(Permissions.MCP_CONNECT))
 		.route({
 			method: "POST",
 			path: "/integrations/gitlab/disconnect",
@@ -881,162 +900,23 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
-
-			// Revoke the token with GitLab. Never the GITLAB_OAUTH_APP row: it
-			// holds the OAuth client credentials, not a token.
-			const integrations = await db.workflowIntegration.findMany({
-				where: {
-					userId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-			});
-
-			const { clientId, clientSecret } = await getGitLabConfigWithDb(
-				userId,
-				organizationId,
+			const tenant = await authorizeGitLabTenant(
+				Permissions.MCP_CONNECT,
+				input.organizationId,
+				context,
 			);
 
-			let revocationWarning: string | null = null;
-
-			if (clientId && clientSecret) {
-				for (const integration of integrations) {
-					if (integration.credentials) {
-						try {
-							const { decryptApiKey } = await import(
-								"@repo/utils"
-							);
-							const credJson = decryptApiKey(
-								integration.credentials,
-							);
-							const creds = JSON.parse(credJson) as {
-								access_token?: string;
-							};
-							if (creds.access_token) {
-								// GitLab token revocation endpoint
-								const revokeBody = new URLSearchParams({
-									token: creds.access_token,
-									client_id: clientId,
-									client_secret: clientSecret,
-								});
-								const revokeResponse = await fetch(
-									"https://gitlab.com/oauth/revoke",
-									{
-										method: "POST",
-										headers: {
-											"Content-Type":
-												"application/x-www-form-urlencoded",
-										},
-										body: revokeBody.toString(),
-									},
-								);
-								if (!revokeResponse.ok) {
-									throw new Error(
-										`Revocation returned ${revokeResponse.status}`,
-									);
-								}
-							}
-						} catch (err) {
-							// Token revocation failure is non-fatal — local row is
-							// still marked inactive. Surface a warning to the UI so
-							// the user can manually revoke at gitlab.com.
-							revocationWarning =
-								"Local connection removed; GitLab-side revocation failed — visit gitlab.com/-/profile/applications to revoke manually.";
-							console.error(
-								"[GitLab disconnect] revocation failed:",
-								err,
-							);
-						}
-					}
-				}
-			}
-
-			// Deactivate the connection rows only. The GITLAB_OAUTH_APP row
-			// holds the OAuth client credentials saved by saveAppCredentials;
-			// deactivating it switches OAuth off for the whole organization.
-			// The generic oauth.disconnect excludes it the same way.
-			await db.workflowIntegration.updateMany({
-				where: {
-					userId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-				data: {
-					isActive: false,
-				},
+			// The one personal GitLab disconnect every surface shares: the
+			// connection service's core disconnect (generation bump, credential
+			// emptied, MCP token copies cleared with rows and client
+			// registrations kept, best-effort revocation), the person's GitLab
+			// Data Connections marked expired, the registry cache dropped and
+			// one audit row. Project repository links are untouched.
+			const { revocationWarning } = await disconnectPersonalGitLab({
+				tenant,
+				surface: "integrations.gitlab.disconnect",
+				audit: context,
 			});
-
-			// Also disconnect the corresponding DataConnection. Clear the
-			// token so a revoked credential doesn't linger at rest.
-			await db.dataConnection.updateMany({
-				where: {
-					userId,
-					provider: "GITLAB",
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-				data: {
-					status: "EXPIRED",
-					accessToken: null,
-				},
-			});
-
-			// Dual-disconnect: null out tokens on BOTH GitLab MCPConfig rows, the
-			// `gitlab` shim and the `gitlab-official` server (however it was
-			// connected, including directly from the MCP Servers page), so
-			// nothing keeps using the user's GitLab after Disconnect: the GitLab
-			// MCP shim's `resolveUserFromBearer` stops matching the revoked
-			// token, and the official-MCP, PM-sync and tool-loading readers
-			// find no token. Rows are kept (displayName, enabled flag, scopes and
-			// the dynamic client registration stay), so a reconnect updates them
-			// in place and reuses the registration. `needsReauth: true` marks
-			// them as awaiting a fresh grant, which only a reconnect clears.
-			await db.mCPConfig.updateMany({
-				where: {
-					userId,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-					mcpServer: { key: { in: ["gitlab", "gitlab-official"] } },
-				},
-				data: {
-					encryptedAccessToken: null,
-					accessTokenHash: null,
-					encryptedRefreshToken: null,
-					tokenExpiresAt: null,
-					needsReauth: true,
-				},
-			});
-
-			// Invalidate cached registry list so the tile flips back to
-			// "Connect" immediately on next refresh.
-			try {
-				const { invalidateSystemServersCache } = await import(
-					"../../../lib/mcp-registry-cache"
-				);
-				await invalidateSystemServersCache();
-			} catch (err) {
-				// Cache invalidation failure is non-fatal — entry will expire
-				// from the cache's TTL within minutes.
-				console.warn(
-					"[GitLab disconnect] cache invalidation failed",
-					err,
-				);
-			}
 
 			return { success: true, revocationWarning };
 		}),
@@ -1078,50 +958,16 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const userId = context.user.id;
-			// Use explicit organizationId from input for proper tenant isolation
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
+			const { userId, organizationId } = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_READ,
+				input.organizationId,
+				context,
+			);
 
-			const integration = await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-			});
-
-			if (!integration) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"GitLab not connected. Please connect your GitLab account first.",
-				});
-			}
-
-			const { clientId, clientSecret } = await getGitLabConfigWithDb(
+			const accessToken = await requirePersonalGitLabToken(
 				userId,
 				organizationId,
 			);
-			if (!clientId || !clientSecret) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "GitLab OAuth not configured on server",
-				});
-			}
-
-			const accessToken = await getValidGitLabAccessToken({
-				// See recordToolIngestError call site for cast rationale.
-				db: db as never,
-				integrationId: integration.id,
-				clientId,
-				clientSecret,
-				refresh: refreshGitLabToken,
-			});
 
 			const projects = await listGitLabProjects(
 				accessToken,
@@ -1173,48 +1019,16 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const userId = context.user.id;
-			const organizationId =
-				input.organizationId !== undefined
-					? input.organizationId
-					: context.session.activeOrganizationId;
+			const { userId, organizationId } = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_READ,
+				input.organizationId,
+				context,
+			);
 
-			const integration = await db.workflowIntegration.findFirst({
-				where: {
-					userId,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { organizationId: null }),
-				},
-			});
-
-			if (!integration) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"GitLab not connected. Please connect your GitLab account first.",
-				});
-			}
-
-			const {
-				clientId: branchClientId,
-				clientSecret: branchClientSecret,
-			} = await getGitLabConfigWithDb(userId, organizationId);
-			if (!branchClientId || !branchClientSecret) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "GitLab OAuth not configured on server",
-				});
-			}
-
-			const branchAccessToken = await getValidGitLabAccessToken({
-				db: db as never,
-				integrationId: integration.id,
-				clientId: branchClientId,
-				clientSecret: branchClientSecret,
-				refresh: refreshGitLabToken,
-			});
+			const branchAccessToken = await requirePersonalGitLabToken(
+				userId,
+				organizationId,
+			);
 
 			const branches = await listGitLabBranches(
 				branchAccessToken,
@@ -1246,9 +1060,12 @@ export const gitlabOAuthProcedures = {
 		.input(z.object({ organizationId: z.string().nullable().optional() }))
 		.output(z.object({ triggered: z.number() }))
 		.handler(async ({ input, context }) => {
-			const orgIdForQuery = resolveOrgIdForQuery({
-				organizationId: input.organizationId ?? null,
-			});
+			const { organizationId: orgIdForQuery } =
+				await authorizeGitLabTenant(
+					Permissions.INTEGRATION_USE,
+					input.organizationId,
+					context,
+				);
 			const configs = await db.mCPConfig.findMany({
 				where: {
 					userId: context.user.id,
@@ -1269,53 +1086,40 @@ export const gitlabOAuthProcedures = {
 					organizationId: orgIdForQuery ?? undefined,
 				});
 			}
-			// Clear the lastToolIngestError marker on the user's WorkflowIntegration.
-			const integration = await db.workflowIntegration.findFirst({
-				where: {
-					userId: context.user.id,
-					provider: "GITLAB",
-					NOT: { name: "GITLAB_OAUTH_APP" },
-					...(orgIdForQuery
-						? { organizationId: orgIdForQuery }
-						: { organizationId: null }),
-				},
+			// Clear the lastToolIngestError marker on the person's connection —
+			// a merge fenced on its generation, never a whole-settings rewrite.
+			const connection = await getGitLabConnectionStatus({
+				userId: context.user.id,
+				organizationId: orgIdForQuery,
 			});
-			if (integration) {
-				const settings = {
-					...((integration.settings as Record<string, unknown>) ??
-						{}),
-				};
-				delete settings.lastToolIngestError;
-				await db.workflowIntegration.update({
-					where: { id: integration.id },
-					data: { settings: settings as Prisma.InputJsonValue },
-				});
+			if (connection.integrationId && connection.connected) {
+				await patchGitLabConnectionSettings(
+					{ userId: context.user.id, organizationId: orgIdForQuery },
+					{
+						expectedGeneration: connection.generation,
+						patch: {},
+						remove: ["lastToolIngestError"],
+					},
+				);
 			}
 			return { triggered: configs.length };
 		}),
 
 	/**
-	 * Reconcile GitLab — populate the missing side WITHOUT a fresh OAuth
-	 * dance. Used by users who have a token in one store (WorkflowIntegration
-	 * OR MCPConfig) but not the other. Validates the existing token at
-	 * GitLab (`GET /user`) and dual-writes via `persistGitLabToken`.
+	 * Reconcile GitLab without a fresh OAuth dance: for a person whose GitLab
+	 * connection is usable, make sure the `gitlab` registry entry the MCP page
+	 * lists exists. No token is copied anywhere.
 	 *
 	 * Returns:
-	 *   - { status: "RECONCILED" } — wrote the missing row
-	 *   - { status: "ALREADY_BOTH" } — both rows already present
-	 *   - { status: "NEEDS_REAUTH" } — GitLab turned the `/user` probe away
-	 *     (401/403), or either stored credential (the primary `gitlab` row or
-	 *     the `gitlab-official` one) was already condemned; either way the UI
-	 *     should surface the full Connect flow. This status is
-	 *     ADVISORY: it asks the user to reconnect, it does not report that the
-	 *     stored grant has been condemned. Reconcile never writes the
-	 *     `needsReauth` breaker itself — a probe rejection is not proof the
-	 *     grant is dead, and only a fresh OAuth grant can clear that flag.
+	 *   - { status: "RECONCILED" } — added the registry entry
+	 *   - { status: "ALREADY_BOTH" } — nothing was missing
+	 *   - { status: "NEEDS_REAUTH" } — the connection is marked
+	 *     reconnect-required, its issuing client is gone, or GitLab turned
+	 *     the `/user` probe away (401/403). ADVISORY: reconcile never marks
+	 *     the connection itself.
 	 *
 	 * Anything else — GitLab unreachable or erroring, a failed write —
-	 * throws rather than returning a status. Those failures say nothing
-	 * about the credential, and sending a user to reconnect a working
-	 * integration is a dead end.
+	 * throws rather than returning a status.
 	 */
 	reconcile: tenantProtectedProcedure
 		.use(requirePermission(Permissions.INTEGRATION_USE))
@@ -1324,7 +1128,7 @@ export const gitlabOAuthProcedures = {
 			path: "/integrations/gitlab/reconcile",
 			tags: ["Integrations", "GitLab"],
 			summary:
-				"Backfill the missing GitLab token store (WI or MCPConfig) without re-OAuth",
+				"Add the GitLab registry entry for an existing connection without re-OAuth",
 		})
 		.input(
 			z.object({
@@ -1337,138 +1141,71 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const orgIdForQuery = resolveOrgIdForQuery({
-				organizationId: input.organizationId ?? null,
-			});
-			const { loadGitLabToken, persistGitLabToken } = await import(
-				"../lib/gitlab-token"
+			const tenant = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_USE,
+				input.organizationId,
+				context,
 			);
+			const orgIdForQuery = tenant.organizationId;
 
-			// `loadGitLabToken` reads the primary `gitlab` row (falling back to
-			// WorkflowIntegration) and never looks at `gitlab-official` — but
-			// that is the row the PM adapter and the Temporal resolver condemn,
-			// it stores its own refresh token, and reconcile runs precisely
-			// when the two have diverged. Read it alongside so a condemned
-			// official row can't slip past the guard below.
-			const [token, officialConfig] = await Promise.all([
-				loadGitLabToken(db as never, {
-					userId: context.user.id,
-					organizationId: orgIdForQuery,
-				}),
-				db.mCPConfig.findFirst({
-					where: {
-						userId: context.user.id,
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
-						mcpServer: { key: "gitlab-official" },
-					},
-					select: { needsReauth: true },
-				}),
-			]);
-			if (!token) {
-				throw new ORPCError("NOT_FOUND", {
-					message: "No GitLab token to reconcile",
-				});
-			}
-
-			// A condemned credential can only be cleared by a fresh OAuth
-			// grant, and reconcile is a fast path that reuses the EXISTING
-			// token. It therefore persists with `freshGrant: false` below, but
-			// still declines up front: the answer the user needs is the full
-			// Connect flow, not a backfilled row that stays blocked. Either
-			// side being condemned is enough — they are written independently.
-			if (token.needsReauth || officialConfig?.needsReauth) {
+			const token = await getGitLabConnectionToken(tenant, {
+				mode: "strict",
+				// The `/user` check below goes to the credential's own
+				// instance.
+				anyOrigin: true,
+			});
+			if (!token.ok) {
+				if (token.reason === "not-connected") {
+					throw new ORPCError("NOT_FOUND", {
+						message: "No GitLab token to reconcile",
+					});
+				}
+				if (token.reason === "transient") {
+					throw new ORPCError("INTERNAL_SERVER_ERROR", {
+						message: token.message,
+					});
+				}
 				return { status: "NEEDS_REAUTH" as const };
 			}
 
-			// Quick check: do both rows already exist? If so, no-op.
-			const [existingWi, existingMcp] = await Promise.all([
-				db.workflowIntegration.findFirst({
-					where: {
-						userId: context.user.id,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
-					},
-					select: { id: true },
-				}),
-				db.mCPConfig.findFirst({
-					where: {
-						userId: context.user.id,
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
-						mcpServer: { key: "gitlab" },
-					},
-					select: { id: true },
-				}),
-			]);
-			if (existingWi && existingMcp) {
+			const registry = await db.mCPConfig.findFirst({
+				where: {
+					userId: context.user.id,
+					...(orgIdForQuery
+						? { organizationId: orgIdForQuery }
+						: { organizationId: null }),
+					mcpServer: { key: "gitlab" },
+				},
+				select: { id: true },
+			});
+			if (registry) {
 				return { status: "ALREADY_BOTH" as const };
 			}
 
-			// Validate the stored token against GitLab. This goes through
-			// `gitlabFetch` rather than `getGitLabUser` because it throws a
-			// `GitLabApiError` carrying the HTTP status — the only thing that
-			// separates "GitLab turned this token away" from "GitLab is having
-			// a bad minute". `getGitLabUser` throws an untyped Error, so a
-			// probe through it cannot make that call.
-			let glUser: GitLabUser;
+			// Validate the token against GitLab before reporting success. This
+			// goes through `gitlabFetch` because it throws a `GitLabApiError`
+			// carrying the HTTP status — the only thing that separates "GitLab
+			// turned this token away" from "GitLab is having a bad minute".
 			try {
-				glUser = (await gitlabFetch(
-					token.accessToken,
+				await gitlabFetch(
+					{
+						token: token.accessToken,
+						apiBase: gitlabApiBaseForOrigin(token.origin),
+					},
 					"/user",
-				)) as GitLabUser;
+				);
 			} catch (err) {
 				if (isGitLabProbeRejection(err)) {
-					// Advisory only — deliberately no `markNeedsReauth` write.
-					// A `/user` 401 shows the ACCESS token is unusable right
-					// now, most often because it simply expired; the refresh
-					// token behind it may be fine. Writing the enforced
-					// breaker on that evidence would hard-block an integration
-					// a refresh would have healed, and only the user can undo
-					// it. The prompt below is always recoverable: if the grant
-					// really is alive, reconnecting or a later refresh both
-					// still work.
+					// Advisory only: a `/user` 401 shows the ACCESS token is
+					// unusable right now; it is no verdict on the grant.
 					return { status: "NEEDS_REAUTH" as const };
 				}
-				// Transient: GitLab was unreachable or erroring, which tells
-				// us nothing about the credential — not even enough to ask
-				// the user to reconnect. Surface the failure instead. Both
-				// callers already catch, log and fall through to the full
-				// OAuth flow, so the user still has a way forward — and a
-				// retry once GitLab recovers reconciles.
 				throw err;
 			}
 
-			// Past this point the token has proven itself; any failure is
-			// ours (encryption, DB write). Leave it outside the catch so a
-			// storage outage can't condemn a credential GitLab just accepted.
-			await persistGitLabToken(db as never, {
-				userId: context.user.id,
-				organizationId: orgIdForQuery,
-				token: {
-					accessToken: token.accessToken,
-					refreshToken: token.refreshToken,
-					expiresAt: token.expiresAt,
-					scopes: ["api", "read_user"],
-				},
-				gitlabUser: {
-					id: glUser.id,
-					username: glUser.username,
-					name: glUser.name,
-					avatarUrl: glUser.avatar_url ?? null,
-				},
-				// Reconcile backfills the missing store from the token it just
-				// read out of the other one — no new grant, so no authority to
-				// clear the breaker on either row. A `/user` 200 proves the
-				// ACCESS token works; it says nothing about the refresh tokens
-				// the breaker is about.
-				freshGrant: false,
-			});
+			if (!registry) {
+				await ensureGitLabRegistryRow(db as never, tenant);
+			}
 			return { status: "RECONCILED" as const };
 		}),
 
@@ -1498,41 +1235,28 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			const orgIdForQuery = resolveOrgIdForQuery({
-				organizationId: input.organizationId ?? null,
-			});
-			const [wi, mcp] = await Promise.all([
-				db.workflowIntegration.findFirst({
-					where: {
-						userId: context.user.id,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
-					},
-					select: { id: true, settings: true },
-				}),
+			const tenant = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_READ,
+				input.organizationId,
+				context,
+			);
+			const [{ summary }, mcp] = await Promise.all([
+				readGitLabPersonalConnection(tenant),
 				db.mCPConfig.findFirst({
 					where: {
-						userId: context.user.id,
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
+						userId: tenant.userId,
+						organizationId: tenant.organizationId,
 						mcpServer: { key: "gitlab" },
 					},
-					select: { id: true, needsReauth: true },
+					select: { id: true },
 				}),
 			]);
-			const wiSettings = (wi?.settings ?? {}) as {
-				needsReauth?: boolean;
-			};
 			return {
-				hasWorkflowIntegration: !!wi,
+				hasWorkflowIntegration: summary.state !== "not-connected",
 				hasMcpConfig: !!mcp,
-				needsReauth: Boolean(
-					mcp?.needsReauth || wiSettings.needsReauth,
-				),
+				// The connection's own state. The MCPConfig breaker columns no
+				// longer describe the credential.
+				needsReauth: summary.state === "needs-reconnect",
 			};
 		}),
 
@@ -1575,24 +1299,24 @@ export const gitlabOAuthProcedures = {
 			}),
 		)
 		.handler(async ({ input, context }) => {
-			// Use explicit organizationId from input (parity with sibling
-			// procedures in this file) so personal-context recheck doesn't
-			// pick up whatever org is currently active in the session.
+			// Resolved and authorized before the recheck, which reads (and can
+			// classify or refresh) the connection and writes its settings: the
+			// caller must be a member with INTEGRATION_USE in the organization
+			// the request resolves to, not merely in the session's. No
+			// organization is refused (ADR-018) rather than read as a
+			// no-organization tenant.
+			const tenant = await authorizeGitLabTenant(
+				Permissions.INTEGRATION_USE,
+				input.organizationId,
+				context,
+			);
 			try {
-				return await recheckGitlabCapabilities({
-					db: db as unknown as Parameters<
-						typeof recheckGitlabCapabilities
-					>[0]["db"],
-					input: {
-						userId: context.user.id,
-						organizationId: input.organizationId ?? null,
-					},
-				});
+				return await recheckGitlabCapabilities({ input: tenant });
 			} catch (err) {
 				// Surface dead-refresh-token as a clean UNAUTHORIZED so the
 				// integration page can show "Reconnect GitLab" instead of a
-				// generic 500. The helper already marked needsReauth via the
-				// markNeedsReauth path; we just need to tell the caller why.
+				// generic 500. The connection service already recorded the
+				// reconnect-required state; we just need to tell the caller why.
 				if (err instanceof GitLabReauthRequiredError) {
 					throw new ORPCError("UNAUTHORIZED", {
 						message:
@@ -1661,6 +1385,11 @@ export async function handleProjectTargetCallback(args: {
 	};
 }): Promise<{
 	connectedStatus: "ACTIVE" | "TOKEN_EXPIRED" | "REPO_UNAVAILABLE";
+	/**
+	 * True when the repository connected but GitLab PM could not be set up
+	 * because the caller has no usable personal GitLab connection.
+	 */
+	personalConnectionRequiredForPm: boolean;
 }> {
 	const { state, tokenResponse, gitlabUser } = args;
 
@@ -1881,37 +1610,20 @@ export async function handleProjectTargetCallback(args: {
 		},
 	});
 
-	// Unify codebase + PM: the same token can drive GitLab issues, so make
-	// this connection usable as the project's PM tool. Best-effort — a failure
-	// here must never fail the repository connection the user actually asked
-	// for.
+	// Offer the connected repository as the project's GitLab PM source — but
+	// only through the CALLER's own GitLab connection. The repository grant
+	// above is a separate team credential: it is never written into the
+	// caller's personal connection nor used for PM. Best-effort — a failure
+	// here must never fail the repository connection the user asked for.
+	let pm: EnableGitLabPMResult | null = null;
 	try {
-		await enableGitLabPMForProject({
+		pm = await enableGitLabPMForProject({
 			userId: state.userId,
 			organizationId: state.organizationId ?? null,
 			projectId: state.projectId,
 			repositoryOwner,
 			repositoryName,
-			token: {
-				accessToken: tokenResponse.access_token,
-				refreshToken: tokenResponse.refresh_token ?? null,
-				expiresAt: tokenResponse.expires_in
-					? new Date(Date.now() + tokenResponse.expires_in * 1000)
-					: null,
-				scopes: tokenResponse.scope
-					? tokenResponse.scope.split(" ")
-					: ["api", "read_user"],
-			},
-			gitlabUser: {
-				id: gitlabUser.id,
-				username: gitlabUser.username,
-				name: gitlabUser.name ?? gitlabUser.username,
-				avatarUrl: gitlabUser.avatar_url ?? null,
-			},
-			// `tokenResponse` is this callback's authorization-code exchange,
-			// so connecting a repository doubles as a reconnect that clears a
-			// condemned credential.
-			freshGrant: true,
+			repositoryUrl,
 		});
 	} catch (err) {
 		console.error(
@@ -1920,5 +1632,10 @@ export async function handleProjectTargetCallback(args: {
 		);
 	}
 
-	return { connectedStatus: verdict.status };
+	return {
+		connectedStatus: verdict.status,
+		personalConnectionRequiredForPm:
+			pm?.pmWired === false &&
+			pm.reason === "personal-connection-required",
+	};
 }

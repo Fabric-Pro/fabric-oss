@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { writeBlockMessage } from "./lib/block-message.mjs";
 import {
 	currentBranch,
@@ -45,6 +47,12 @@ function isTagPush(command) {
 }
 
 /**
+ * Every `git push` / `git -C <dir> push` in a command. Group 1 is the `-C`
+ * directory when there is one.
+ */
+const PUSH_RE = /\bgit\s+(?:-C\s+("[^"]+"|'[^']+'|\S+)\s+)?push\b/;
+
+/**
  * Restrict to `git push` invocations — defense-in-depth in case the
  * `if` pre-filter in settings.json is misconfigured or a test invokes
  * the hook directly.
@@ -57,7 +65,8 @@ function isGitPush(command) {
 		return true;
 	}
 	// chained / wrapped: `bash -c "git push"`, `cd x && git push`
-	return /\bgit\s+push\b/.test(command);
+	// also `git -C <dir> push`
+	return PUSH_RE.test(command);
 }
 
 function main() {
@@ -81,20 +90,37 @@ function main() {
 		process.exit(0);
 	}
 
-	const branch = currentBranch(resolveEffectiveCwd(command, toolCall.cwd));
-	// detached HEAD / non-git context → fail open
-	if (branch === null) {
+	// Judge every push by the repo it runs in. The session's directory, moved
+	// by a leading literal `cd <dir> &&`, is the default; `git -C <dir> push`
+	// is judged by <dir> instead. A -C directory that is not a plain literal
+	// path (variable, substitution, `..`) or a leading `cd` target that does
+	// not exist says nothing about where the push runs, so those are judged by
+	// the session directory exactly as before.
+	let base = resolveEffectiveCwd(command, toolCall.cwd);
+	if (base && !existsSync(base)) {
+		base = toolCall.cwd || undefined;
+	}
+	let offending = null;
+	for (const push of command.matchAll(new RegExp(PUSH_RE.source, "g"))) {
+		const raw = push[1]?.replace(/^(["'])(.*)\1$/, "$2");
+		const literal = raw && !/[$`()~\\]|(^|\/)\.\.(\/|$)/.test(raw);
+		const dir = literal ? path.resolve(base ?? process.cwd(), raw) : base;
+		const branch = currentBranch(dir && existsSync(dir) ? dir : base);
+		// detached HEAD / non-git context (null) fails open; protected branches
+		// are allowed (force-push is handled by block-destructive-bash.mjs)
+		if (
+			branch !== null &&
+			!isProtectedBranch(branch) &&
+			!BRANCH_PATTERN.test(branch)
+		) {
+			offending = branch;
+			break;
+		}
+	}
+	if (offending === null) {
 		process.exit(0);
 	}
-	// protected branches are explicitly allowed (force-push is handled
-	// by block-destructive-bash.mjs)
-	if (isProtectedBranch(branch)) {
-		process.exit(0);
-	}
-
-	if (BRANCH_PATTERN.test(branch)) {
-		process.exit(0);
-	}
+	const branch = offending;
 
 	writeBlockMessage({
 		command,

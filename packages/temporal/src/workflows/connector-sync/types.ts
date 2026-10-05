@@ -177,6 +177,49 @@ export const DEFAULT_SYNC_CONFIG: ConnectorSyncConfig = {
 };
 
 // =============================================================================
+// GitLab sync failures
+// =============================================================================
+
+/**
+ * `ApplicationFailure.type` of a GitLab sync that cannot go on until the
+ * person who started it connects (or reconnects) their own GitLab account,
+ * or that has no such person (a scheduled run).
+ */
+export const GITLAB_SYNC_CONNECTION_REQUIRED = "GitLabSyncConnectionRequired";
+
+/**
+ * `ApplicationFailure.type` of a GitLab sync whose configured GitLab address
+ * is not the instance the acting person's GitLab connection belongs to — or
+ * is not an allowed address at all. Raised before any request is sent.
+ */
+export const GITLAB_SYNC_ORIGIN_MISMATCH = "GitLabSyncOriginMismatch";
+
+/**
+ * `ApplicationFailure.type` of a GitLab sync whose account GitLab refuses on
+ * an account-level call (403 on the `/user` check or project discovery).
+ */
+export const GITLAB_SYNC_ACCESS_DENIED = "GitLabSyncAccessDenied";
+
+/**
+ * `ApplicationFailure.type` of a 403 on one project's issues or merge
+ * requests. Not a stop failure: only that resource fails, and the sync goes
+ * on with the others.
+ */
+export const GITLAB_SYNC_RESOURCE_FORBIDDEN = "GitLabSyncResourceForbidden";
+
+/**
+ * Failures that stop a GitLab sync outright: retrying another resource or a
+ * later attempt cannot change them, so the per-resource `continueOnError`
+ * loop rethrows them instead of recording a partial success. A 401 anywhere
+ * in the sync is `GITLAB_SYNC_CONNECTION_REQUIRED`.
+ */
+export const GITLAB_SYNC_STOP_FAILURE_TYPES: readonly string[] = [
+	GITLAB_SYNC_CONNECTION_REQUIRED,
+	GITLAB_SYNC_ORIGIN_MISMATCH,
+	GITLAB_SYNC_ACCESS_DENIED,
+];
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

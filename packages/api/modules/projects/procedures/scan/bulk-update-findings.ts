@@ -10,6 +10,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 /**
  * Bulk triage (G8) — the manual counterpart of the AI false-positive review.
@@ -46,12 +47,19 @@ export const bulkUpdateFindingsProcedure = tenantProtectedProcedure
 			}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId, findingIds, status, severity } =
-			input;
+		const { projectId, findingIds, status, severity } = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			context.user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -86,7 +94,7 @@ export const bulkUpdateFindingsProcedure = tenantProtectedProcedure
 				projectId,
 				type: "FINDINGS_REVIEWED",
 				userId: context.user.id,
-				organizationId: organizationId ?? null,
+				organizationId,
 				summary: `Updated ${updated} finding${
 					updated === 1 ? "" : "s"
 				} — ${parts.join(", ")}`,

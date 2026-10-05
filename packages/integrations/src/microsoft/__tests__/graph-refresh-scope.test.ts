@@ -22,7 +22,27 @@ const { findFirst, update } = vi.hoisted(() => ({
 	update: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	canUseWorkflowIntegrations: vi.fn().mockResolvedValue(true),
+	workflowIntegrationAccessWhere: (
+		await import(
+			"@repo/database/prisma/queries/workflows/integration-access"
+		)
+	).workflowIntegrationAccessWhere,
+	resolveWorkflowIntegrationForProvider: async (
+		...args: Parameters<
+			typeof import("@repo/database/prisma/queries/workflows/integration-access").resolveWorkflowIntegrationForProvider
+		>
+	) => {
+		const mocked = await import("@repo/database");
+		return mocked.db.workflowIntegration.findFirst({
+			where: {
+				...mocked.workflowIntegrationAccessWhere(args[1], args[2]),
+				provider: args[0],
+				isActive: true,
+			},
+		});
+	},
 	db: { workflowIntegration: { findFirst, update } },
 }));
 vi.mock("@repo/utils", () => ({

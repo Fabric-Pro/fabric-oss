@@ -22,11 +22,15 @@ import { ORPCError } from "@orpc/client";
  * is the half that is easy to drop silently, and twenty call sites should not
  * each carry their own copy of the reasoning.
  *
- * The middleware never inspects the organization, and `resolveOrganizationId`
- * returns the caller's string verbatim with no membership lookup — so a caller
- * could otherwise pair a project they legitimately reach with an organization
- * id they made up. Pinned repo-wide by `input-org-unverified-ratchet.test.ts`
- * and `project-scoped-lookup-ownership-ratchet.test.ts`.
+ * Before Fizzy #2904 the middleware never inspected the organization and
+ * `resolveOrganizationId` returned the caller's string verbatim — so a caller
+ * could pair a project they legitimately reach with an organization id they
+ * made up. The middleware now records the authorized project and the resolvers
+ * refuse a different input organization (`authorized-project-binding.ts`); this
+ * guard is the same rule for a handler that compares against a row it loaded
+ * itself. Pinned repo-wide by `input-org-unverified-ratchet.test.ts`,
+ * `input-org-raw-consumer-ratchet.test.ts` and
+ * `project-scoped-lookup-ownership-ratchet.test.ts`.
  */
 
 /**

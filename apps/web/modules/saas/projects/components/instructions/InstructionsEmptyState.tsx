@@ -16,7 +16,7 @@ import {
 	UploadIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import {
 	type LocalSetupRoute,
 	offersSyncFromRepository,
@@ -33,17 +33,18 @@ export function InstructionsEmptyState({
 	projectName,
 	onUploadClick,
 	canUpload = true,
-	repositoryName,
 	localSetup = null,
 	repositorySync,
+	notice = null,
 }: {
 	projectId: string;
-	/** Named in the "Connect your agent" starter instruction. */
+	/** Named in the "Connect your agent" dialog. */
 	projectName: string;
 	onUploadClick: () => void;
 	/** Folder uploads create a direct snapshot and are unavailable to readers or repository-backed projects. */
 	canUpload?: boolean;
-	repositoryName?: string | null;
+	/** A notice the tab puts above everything else, such as a failed settings read. */
+	notice?: ReactNode;
 	/**
 	 * Which local-checkout route the Connect dialog offers, computed by
 	 * `localSetupRouteFor` (`../../lib/instructions-repository-sync`) from
@@ -83,8 +84,15 @@ export function InstructionsEmptyState({
 	// leaves runs this screen's status line rightly leaves out. History is
 	// where they are kept, so it is reachable here too once any run exists.
 	const showHistory = Boolean(syncState?.latestRun);
+	// A project whose instructions come from a repository is filled by committing
+	// to its branch, not by uploading, and says so (Fizzy #2878 §10).
+	const repositoryBranch =
+		syncState?.sourceOfTruth === "REPOSITORY"
+			? (syncState.configured?.ref ?? null)
+			: null;
 	return (
 		<div className="flex flex-col gap-6">
+			{notice}
 			<div className="flex flex-col gap-1">
 				<h1 className="font-semibold text-xl">{t("title")}</h1>
 				<p className="max-w-2xl text-muted-foreground">
@@ -101,10 +109,16 @@ export function InstructionsEmptyState({
 				<div className="flex max-w-lg flex-col gap-1.5">
 					<h2 className="font-semibold text-lg">{t("heading")}</h2>
 					<p className="text-muted-foreground">
-						{t.rich("body", {
-							claudeDir: (chunks) => <code>{chunks}</code>,
-							claudeMd: (chunks) => <code>{chunks}</code>,
-						})}
+						{t.rich(
+							repositoryBranch === null
+								? "body"
+								: "bodyRepository",
+							{
+								claudeDir: (chunks) => <code>{chunks}</code>,
+								claudeMd: (chunks) => <code>{chunks}</code>,
+								ref: repositoryBranch ?? "",
+							},
+						)}
 					</p>
 				</div>
 				<div className="flex gap-2.5">
@@ -186,13 +200,6 @@ export function InstructionsEmptyState({
 						onChanged={repositorySync.onChanged}
 					/>
 				) : null}
-				{repositoryName ? (
-					<p className="text-muted-foreground text-xs">
-						{t.rich("connectedRepository", {
-							repo: () => <code>{repositoryName}</code>,
-						})}
-					</p>
-				) : null}
 			</Card>
 			<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
 				<Card className="flex flex-col gap-1.5 p-5">
@@ -225,7 +232,11 @@ export function InstructionsEmptyState({
 						{t("developersTitle")}
 					</div>
 					<p className="text-muted-foreground">
-						{t("developersDescription")}
+						{repositoryBranch === null
+							? t("developersDescription")
+							: t("developersDescriptionRepository", {
+									ref: repositoryBranch,
+								})}
 					</p>
 					{canConnectAgent ? (
 						<Button

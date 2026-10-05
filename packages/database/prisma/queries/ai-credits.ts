@@ -16,11 +16,12 @@ export interface AiUsageCostEstimate {
 	providerModelId: string;
 	modelCanonicalName?: string;
 	taskType?: AiTaskType;
+	/** Total input tokens, INCLUDING any cache reads and writes below. */
 	inputTokens: number;
 	outputTokens: number;
-	/** Prompt tokens served from cache (a read). Priced below the input rate. */
+	/** The part of inputTokens served from cache (a read). Priced below the input rate. */
 	cachedInputTokens?: number;
-	/** Prompt tokens written into the cache. Priced above the input rate (Anthropic). */
+	/** The part of inputTokens written into the cache. Priced above the input rate (Anthropic). */
 	cacheCreationInputTokens?: number;
 }
 
@@ -178,39 +179,37 @@ async function getAiUsagePricing(data: AiUsageCostEstimate) {
 }
 
 /**
- * Prompt-cache accounting differs by model family, so pricing must too:
- *  - Anthropic (Claude), called direct or via Bedrock/Vertex: `inputTokens`
- *    EXCLUDES cache reads/writes — they are reported separately. Cache reads
- *    bill at ~0.1x the input rate, cache writes at ~1.25x. So both are ADDED
- *    on top of the plain input cost.
- *  - Anthropic (Claude) served through Databricks' Foundation Model API: same
- *    0.1x/1.25x Anthropic cache multipliers, but Databricks fronts it with an
- *    OpenAI-compatible surface and reports `prompt_tokens` INCLUSIVE of BOTH
- *    the cache-read AND the cache-write portion (live evidence: a
- *    cache-write call reported `prompt_tokens: 4573` = 4570
- *    `cache_creation_input_tokens` + 3 uncached — see
- *    `normalizeDatabricksUsageFields` in `databricks-compat.ts`), unlike
- *    Anthropic's own API, which reports both separately from `inputTokens`.
- *    Charging this like the direct-Anthropic branch (`inputTokens` assumed
- *    fully exclusive, both reads AND writes added on top) would double-count
- *    both: a cache HIT would cost MORE than an uncached call, and a
- *    cache-WRITE call would bill its write tokens at input-rate PLUS 1.25x
- *    (2.25x total) instead of 1.25x. Must be tested before the
- *    direct-Anthropic branch below, which would otherwise match on "claude"
- *    first.
- *  - OpenAI / Gemini: `inputTokens` INCLUDES cache reads; there is no separate
- *    write charge. So the cached portion is DISCOUNTED within the input cost
- *    (OpenAI ~0.5x, Gemini ~0.25x), never added.
- *  - Unknown family: fall back to charging every input token at 1x (the prior
- *    behavior) — never guess an inclusivity convention we can't verify.
- * When a call reports no cache tokens (the overwhelming majority, and every
- * pre-caching call) every branch collapses to `input*rate + output*rate`, so
- * this is backward-compatible and only changes cached calls.
+ * Usage-row contract, shared by every writer (the AI SDK middleware in
+ * `packages/ai/lib/usage-logging-middleware.ts` and the LangChain agent path
+ * in `packages/agent-core/src/services/usage-logging.ts`): `inputTokens` is
+ * the provider's TOTAL input, INCLUDING prompt-cache reads and writes, and
+ * `cachedInputTokens` / `cacheCreationInputTokens` are breakdowns of it. AI
+ * SDK 7 providers report `inputTokens.total = noCache + cacheRead +
+ * cacheWrite`; `@langchain/anthropic` 1.5.x reports `usage_metadata.
+ * input_tokens` the same way; Databricks-served Claude reports an inclusive
+ * `prompt_tokens` (live evidence: 4573 = 4570 cache writes + 3 uncached).
+ * LangChain native-Anthropic rows written between 2026-09-09 and this change
+ * stored an exclusive `inputTokens`; they are not migrated. Their stored cost
+ * was computed at write time and is unaffected.
+ *
+ * Every recognised family therefore subtracts its cache buckets out of
+ * `inputTokens` before pricing the remainder at the full input rate, and
+ * prices the buckets at the family's multipliers:
+ *  - Anthropic (Claude), on any provider — direct, gateway, Bedrock/Vertex or
+ *    Databricks: reads ~0.1x, writes ~1.25x.
+ *  - OpenAI: reads ~0.5x; no write charge.
+ *  - Gemini: reads ~0.25x; no write charge.
+ *  - Unknown family: charge every input token at 1x — never guess a cache
+ *    rate we can't verify.
+ * When a call reports no cache tokens every branch collapses to
+ * `input*rate + output*rate`.
  */
 type CacheAccounting = {
-	/** true = inputTokens already includes cache reads (OpenAI/Gemini, Databricks). */
-	readsIncludedInInput: boolean;
-	/** true = inputTokens already includes cache writes (Databricks only). */
+	/**
+	 * true = inputTokens already includes cache writes (Anthropic). Families
+	 * without a write charge leave this false: a reported write count is then
+	 * neither subtracted nor charged, so it stays at the full input rate.
+	 */
 	writesIncludedInInput: boolean;
 	/** Multiplier applied to cache-read tokens, relative to the input rate. */
 	readMultiplier: number;
@@ -223,31 +222,11 @@ function cacheAccountingForModel(
 ): CacheAccounting | null {
 	const id =
 		`${data.providerModelId} ${data.modelCanonicalName ?? ""}`.toLowerCase();
-	// `data.provider` is the typed AIProvider enum value, populated identically
-	// on both usage-logging paths (packages/ai's `metadata.provider` and the
-	// same value threaded through the LangChain agent path's `ai_provider`) —
-	// a reliable discriminator, unlike sniffing "databricks" out of the id
-	// string (serving-endpoint names are user-defined aliases, same caveat as
-	// documented on `isReasoningModelName`).
-	if (
-		data.provider === "DATABRICKS" &&
-		(id.includes("claude") || id.includes("anthropic"))
-	) {
-		// Databricks-served Claude: Anthropic's cache multipliers, but BOTH
-		// reads and writes are already inside inputTokens. See the docstring
-		// above.
-		return {
-			readsIncludedInInput: true,
-			writesIncludedInInput: true,
-			readMultiplier: 0.1,
-			writeMultiplier: 1.25,
-		};
-	}
 	if (id.includes("claude") || id.includes("anthropic")) {
-		// Anthropic: reads/writes reported separately, added at 0.1x/1.25x.
+		// Anthropic on every provider (Databricks-served Claude included): both
+		// cache buckets are inside inputTokens; reads 0.1x, writes 1.25x.
 		return {
-			readsIncludedInInput: false,
-			writesIncludedInInput: false,
+			writesIncludedInInput: true,
 			readMultiplier: 0.1,
 			writeMultiplier: 1.25,
 		};
@@ -259,7 +238,6 @@ function cacheAccountingForModel(
 	) {
 		// OpenAI: reads are part of inputTokens, discounted to 0.5x; no write charge.
 		return {
-			readsIncludedInInput: true,
 			writesIncludedInInput: false,
 			readMultiplier: 0.5,
 			writeMultiplier: 0,
@@ -268,7 +246,6 @@ function cacheAccountingForModel(
 	if (id.includes("gemini") || id.includes("google")) {
 		// Gemini: reads part of inputTokens, discounted to 0.25x; no write charge.
 		return {
-			readsIncludedInInput: true,
 			writesIncludedInInput: false,
 			readMultiplier: 0.25,
 			writeMultiplier: 0,
@@ -303,16 +280,11 @@ export async function estimateAiUsageCostUsd(
 		return Number((inputCostUsd + outputCostUsd).toFixed(6));
 	}
 
-	// Full-rate input = the portion neither read from nor written to cache. For
-	// OpenAI/Gemini/Databricks the cached reads are part of inputTokens, so
-	// subtract them out before applying the discount; for direct Anthropic they
-	// are already excluded. Databricks additionally includes cache WRITES in
-	// inputTokens (unlike every other branch, where writes are either reported
-	// separately or don't exist) — subtract those out too, or a cache-write
-	// call bills its write tokens at input-rate PLUS the write multiplier.
-	let fullRateInput = accounting.readsIncludedInInput
-		? Math.max(0, data.inputTokens - cachedReads)
-		: data.inputTokens;
+	// Full-rate input = the portion neither read from nor written to cache.
+	// inputTokens is inclusive (see the contract above), so the cache buckets
+	// are subtracted out before their multipliers apply — otherwise a cached
+	// token bills at the input rate PLUS its multiplier.
+	let fullRateInput = Math.max(0, data.inputTokens - cachedReads);
 	if (accounting.writesIncludedInInput) {
 		fullRateInput = Math.max(0, fullRateInput - cacheWrites);
 	}

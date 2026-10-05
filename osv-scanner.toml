@@ -1,8 +1,16 @@
-# Dependency advisories we have decided not to patch.
+# Dependency advisory exceptions, including verified local security patches.
 #
 # This file is the machine-readable half of the dismissal table in
 # SECURITY.md § Documented dismissals, which stays the authority for the
 # reasoning behind each entry. Add a row there when you add an entry here.
+
+# OSV sees the registry version, not pnpm's installed patch. This exception is
+# backed by the mandatory installed-package and patch-integrity check in the
+# code-quality workflow; removal or modification of the patch fails that check.
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2026-12-31
+reason = "braces@3.0.3 is patched locally with bounded parse/compile/expand/stringify depth. CI verifies reviewed patch bytes, lockfile consumer hashes, effective installed behavior and Docker patch propagation. OSV cannot recognize pnpm patches. Retire when a fixed upstream release exists. See SECURITY.md § Documented dismissals."
 #
 # `ignoreUntil` is enforced by osv-scanner: once the date passes the advisory
 # fails CI again, so a dismissal cannot outlive its quarterly re-evaluation.

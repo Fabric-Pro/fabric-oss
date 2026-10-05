@@ -1,4 +1,10 @@
 import { ORPCError } from "@orpc/client";
+import type { ConnectionTestResult as TestConnectionResult } from "@repo/integrations";
+import {
+	credentialGitLabOrigin,
+	GITLAB_DEFAULT_ORIGIN,
+	gitlabOutboundFetch,
+} from "@repo/integrations/gitlab";
 import { z } from "zod";
 import {
 	Permissions,
@@ -52,12 +58,6 @@ const IntegrationTypeEnum = z.enum([
 ]);
 
 type IntegrationType = z.infer<typeof IntegrationTypeEnum>;
-
-interface TestConnectionResult {
-	success: boolean;
-	message?: string;
-	error?: string;
-}
 
 /**
  * Test Linear connection using GraphQL API
@@ -260,22 +260,27 @@ async function testGitLabConnection(
 		credentials.access_token ||
 		credentials.apiToken ||
 		"";
-	const rawUrl =
-		credentials.GITLAB_URL ||
-		credentials.domain ||
-		credentials.url ||
-		"https://gitlab.com";
-
 	if (!apiToken) {
 		return { success: false, error: "GitLab access token is required" };
 	}
 
-	const baseUrl = rawUrl.startsWith("http")
-		? rawUrl.replace(/\/$/, "")
-		: `https://${rawUrl.replace(/\/$/, "")}`;
+	// The address the person entered (any of the form's historical fields),
+	// gitlab.com when none. A refused address (not https, a loopback /
+	// private / metadata host) is reported, never fetched.
+	const named = credentialGitLabOrigin(credentials);
+	const origin = named.present
+		? named
+		: { ok: true as const, origin: GITLAB_DEFAULT_ORIGIN };
+	if (!origin.ok) {
+		return {
+			success: false,
+			error: `Invalid GitLab URL: ${origin.reason}`,
+		};
+	}
+	const baseUrl = origin.origin;
 
 	try {
-		const response = await fetch(`${baseUrl}/api/v4/user`, {
+		const response = await gitlabOutboundFetch(`${baseUrl}/api/v4/user`, {
 			headers: {
 				Authorization: `Bearer ${apiToken}`,
 				Accept: "application/json",
@@ -858,40 +863,13 @@ async function testWebhookConnection(
 async function testGithubConnection(
 	credentials: Record<string, string>,
 ): Promise<TestConnectionResult> {
-	const token = credentials.GITHUB_TOKEN || credentials.apiKey;
-
-	if (!token) {
-		return { success: false, error: "GitHub token is required" };
-	}
-
-	try {
-		const response = await fetch("https://api.github.com/user", {
-			headers: {
-				Authorization: `Bearer ${token}`,
-				Accept: "application/vnd.github+json",
-			},
-		});
-
-		if (response.ok) {
-			const user = await response.json();
-			return {
-				success: true,
-				message: `Connected as ${user.login}`,
-			};
-		}
-		return {
-			success: false,
-			error: `GitHub API returned status ${response.status}`,
-		};
-	} catch (error) {
-		return {
-			success: false,
-			error:
-				error instanceof Error
-					? error.message
-					: "Failed to connect to GitHub",
-		};
-	}
+	const { testGitHubAccessToken } = await import("@repo/integrations/github");
+	return testGitHubAccessToken(
+		credentials.access_token ||
+			credentials.GITHUB_TOKEN ||
+			credentials.apiKey ||
+			"",
+	);
 }
 
 /**

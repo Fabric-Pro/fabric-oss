@@ -27,6 +27,7 @@ import {
 } from "vitest";
 import {
 	canCreateProjectInstructions,
+	clearInstructionSyncPause,
 	completeInstructionRepositorySyncRun,
 	db,
 	insertInstructionRepositorySyncRun,
@@ -603,5 +604,72 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				automaticPausedReason: null,
 			});
 		}, 30_000);
+
+		describe("clearInstructionSyncPause (a push proved the pause is over)", () => {
+			const clear = async (
+				over: Partial<
+					Parameters<typeof clearInstructionSyncPause>[0]
+				> = {},
+			) => {
+				const row = await syncRow();
+				return clearInstructionSyncPause({
+					syncId: row.id,
+					organizationId: ORGANIZATION_ID,
+					generation: row.generation,
+					reason: "REF_MISSING",
+					...over,
+				});
+			};
+
+			it("lifts the pause it names, dues the row now, and leaves the cursors and the toggle alone", async () => {
+				const before = await dbClock();
+
+				const lifted = await clear();
+
+				const after = await dbClock();
+				expect(lifted).toBe(true);
+				const row = await syncRow();
+				expect(row).toMatchObject({
+					generation: 1,
+					automatic: true,
+					automaticPausedReason: null,
+					automaticPausedAt: null,
+					failureCount: 0,
+					suppressedCommitSha: SHA("a"),
+					lastEvaluatedCommitSha: SHA("b"),
+					pendingCommitSha: SHA("e"),
+				});
+				expect(row.nextCheckAt?.getTime()).toBeGreaterThanOrEqual(
+					before.getTime() - 5_000,
+				);
+				expect(row.nextCheckAt?.getTime()).toBeLessThanOrEqual(
+					after.getTime() + 5_000,
+				);
+			});
+
+			it("is a compare-and-set: a second call finds nothing paused", async () => {
+				expect(await clear()).toBe(true);
+
+				expect(await clear()).toBe(false);
+			});
+
+			it.each([
+				["another reason", { reason: "PERMISSION_REVOKED" as const }],
+				["another generation", { generation: 2 }],
+				[
+					"another tenant",
+					{ organizationId: `${ORGANIZATION_ID}-other` },
+				],
+				["another sync row", { syncId: "sync_not_this_one" }],
+			])("leaves the pause alone for %s", async (_label, over) => {
+				expect(await clear(over)).toBe(false);
+
+				expect(await syncRow()).toMatchObject({
+					automaticPausedReason: "REF_MISSING",
+					failureCount: 4,
+					nextCheckAt: null,
+				});
+			});
+		});
 	},
 );

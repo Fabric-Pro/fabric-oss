@@ -234,8 +234,12 @@ describe("Company context tables are registered on the tenant path", () => {
  * `account`: its adapter writes them on the base client, outside any tenant
  * context, so they are classified the same way — off the tenant path and off
  * the RLS allowlist. Tenant access is settled at the app layer: every token
- * verification re-reads membership of the organization in `referenceId`, and
- * listing or revoking is scoped to the signed-in user. None of them carries an
+ * verification re-reads membership of the organization in `referenceId`, or the
+ * person's access to the project it names, and listing or revoking is scoped
+ * to the signed-in user. The authorization-resource table, which carries a
+ * `projectId` and nothing else tenant-shaped, is keyed by a client and a PKCE
+ * challenge and is read only through the consent flow, which checks the
+ * signed-in person's access to that project first. None of them carries an
  * `organizationId` column; adding one would put the table under the RLS
  * coverage guard (`rls-coverage.test.ts`), which then demands a decision.
  */
@@ -253,6 +257,7 @@ describe("Better Auth's OAuth tables stay off the tenant path, like session and 
 		["OauthRefreshToken", "oauth_refresh_token"],
 		["OauthAccessToken", "oauth_access_token"],
 		["OauthConsent", "oauth_consent"],
+		["OauthAuthorizationResource", "oauth_authorization_resource"],
 		["Session", "session"],
 		["Account", "account"],
 	])("%s is neither tenant-registered nor RLS-listed", (model, table) => {
@@ -266,6 +271,7 @@ describe("Better Auth's OAuth tables stay off the tenant path, like session and 
 		"OauthRefreshToken",
 		"OauthAccessToken",
 		"OauthConsent",
+		"OauthAuthorizationResource",
 	])(
 		"%s has no organizationId column (the organization is in referenceId)",
 		(model) => {

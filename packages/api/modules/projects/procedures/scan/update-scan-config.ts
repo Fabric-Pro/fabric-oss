@@ -12,6 +12,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../lib/project-organization";
 
 const CustomRuleSchema = z.object({
 	id: z.string().optional(),
@@ -92,18 +93,25 @@ export const updateScanConfigProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const {
 			projectId,
-			organizationId,
 			customRules,
 			severityRubric,
 			securityKnowledgePacks,
 			...rest
 		} = input;
+		// The project's own organization — the tenant the permission check
+		// authorized — resolved before anything is written. A different
+		// `input.organizationId` is refused here (BAD_REQUEST), never stamped on
+		// a row or handed to a scanner, provider or workflow.
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			projectId,
+		);
 		const user = context.user;
 
 		const hasAccess = await hasProjectAccess(
 			projectId,
 			user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
@@ -143,7 +151,7 @@ export const updateScanConfigProcedure = tenantProtectedProcedure
 			severityRubric,
 			securityKnowledgePacks: normalizedPacks,
 			userId: user.id,
-			organizationId: organizationId ?? undefined,
+			organizationId,
 		});
 
 		// Record the config change in the page history (best-effort) — the
@@ -161,7 +169,7 @@ export const updateScanConfigProcedure = tenantProtectedProcedure
 			projectId,
 			type: "CONFIG_UPDATED",
 			userId: user.id,
-			organizationId: organizationId ?? null,
+			organizationId,
 			summary,
 		}).catch(() => {});
 

@@ -30,6 +30,8 @@ vi.mock("@repo/observability", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	resolvePMConfigForUser: vi.fn(),
 	db: {
 		project: {
@@ -1113,7 +1115,10 @@ describe("listPMTicketsProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			mockListGitLabIssuesForPM.mockResolvedValue({
 				items: [
@@ -1152,6 +1157,8 @@ describe("listPMTicketsProcedure", () => {
 				userId: "user-1",
 				organizationId: null,
 				projectId: "proj-1",
+				// The project's PM context: the container's recorded instance.
+				pmAdditionalContext: null,
 			});
 			expect(mockListGitLabIssuesForPM).toHaveBeenCalled();
 			// Generic MCP discovery must not run for GitLab.
@@ -1181,7 +1188,10 @@ describe("listPMTicketsProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			// First ID resolves; second ID rejects with a real 404 GitLabApiError.
 			mockGetGitLabIssueForPM.mockImplementation(
@@ -1228,7 +1238,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				mockGetGitLabIssueForPM.mockRejectedValueOnce(reason);
 			}
@@ -1370,7 +1383,10 @@ describe("listPMTicketsProcedure", () => {
 			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 			mockResolveGitLabPMSource.mockResolvedValue({
 				kind: "rest-adapter",
-				token: "glpat-test",
+				credential: {
+					token: "glpat-test",
+					apiBase: "https://gitlab.com/api/v4",
+				},
 			} as never);
 			vi.mocked(db.userStory.findMany).mockResolvedValue([
 				{ externalId: "1" },
@@ -1413,7 +1429,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				mockListGitLabIssuesForPM.mockRejectedValueOnce(
 					new GitLabReauthRequiredError(),
@@ -1438,7 +1457,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				mockListGitLabIssuesForPM.mockRejectedValueOnce(
 					new GitLabApiError(401, "invalid_token"),
@@ -1461,7 +1483,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				mockListGitLabIssuesForPM.mockRejectedValueOnce(
 					new GitLabApiError(429, "rate limit"),
@@ -1515,7 +1540,10 @@ describe("listPMTicketsProcedure", () => {
 					);
 					mockResolveGitLabPMSource.mockResolvedValue({
 						kind: "rest-adapter",
-						token: "glpat-test",
+						credential: {
+							token: "glpat-test",
+							apiBase: "https://gitlab.com/api/v4",
+						},
 					} as never);
 					mockListGitLabIssuesForPM.mockRejectedValueOnce(reason);
 
@@ -1551,7 +1579,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				const original = new TypeError("ECONNRESET");
 				mockListGitLabIssuesForPM.mockRejectedValueOnce(original);
@@ -1572,7 +1603,10 @@ describe("listPMTicketsProcedure", () => {
 				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
 				mockResolveGitLabPMSource.mockResolvedValue({
 					kind: "rest-adapter",
-					token: "glpat-test",
+					credential: {
+						token: "glpat-test",
+						apiBase: "https://gitlab.com/api/v4",
+					},
 				} as never);
 				mockListGitLabIssuesForPM.mockRejectedValueOnce(
 					new GitLabMcpError("invalid params", -32602),

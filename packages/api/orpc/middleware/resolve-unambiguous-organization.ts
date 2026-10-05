@@ -143,6 +143,13 @@ export const resolveUnambiguousOrganization = os
 		// `resolveOrganizationId` reads `session.activeOrganizationId` directly
 		// rather than the tenant context, so leaving the session naming nothing
 		// would hand the handler a context and that helper a null.
+		//
+		// Re-entering replaces the TENANT store only. The authorized-project
+		// binding (`lib/authorized-project-binding.ts`) lives in its own
+		// AsyncLocalStorage opened at the root of the procedure chain, so
+		// nothing here can drop or replace a binding. (Both procedures that
+		// mount this — prompts `delete` and `deletion-impact` — are
+		// organization-level and record no binding at all.)
 		return await runWithTenantContext(tenantContext, async () =>
 			next({
 				context: {

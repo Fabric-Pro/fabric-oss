@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { db, isProjectReadOnly, PmSyncStatus } from "@repo/database";
 import {
-	db,
-	isProjectReadOnly,
-	PmSyncStatus,
-	resolvePMConfigForUser,
-} from "@repo/database";
+	GitLabPmOriginMismatchError,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import type { Client as TemporalClient } from "@temporalio/client";
 
@@ -144,12 +143,29 @@ export async function enqueuePmSyncFromActivity(
 		// same rationale as `@repo/api/enqueuePmSync`: the pinned config belongs
 		// to whoever last configured the integration; using it for a different
 		// user breaks tenant filtering inside `getMcpConfigById`.
-		const userMcpConfig = await resolvePMConfigForUser({
-			configId: project.projectManagementMcpConfigId,
-			mcpServerId: project.projectManagementMcpServerId,
-			userId,
-			organizationId: project.organizationId ?? undefined,
-		});
+		// A personal GitLab config on another instance than the container is
+		// no config for this project: nothing is enqueued for it.
+		let userMcpConfig: Awaited<
+			ReturnType<typeof resolveProjectPMConfigForUser>
+		>;
+		try {
+			userMcpConfig = await resolveProjectPMConfigForUser({
+				configId: project.projectManagementMcpConfigId,
+				mcpServerId: project.projectManagementMcpServerId,
+				userId,
+				organizationId: project.organizationId ?? undefined,
+				pmAdditionalContext: project.projectManagementAdditionalContext,
+			});
+		} catch (error) {
+			if (!(error instanceof GitLabPmOriginMismatchError)) {
+				throw error;
+			}
+			logger.info(
+				"enqueuePmSyncFromActivity: the user's GitLab is on another instance than the project's PM container",
+				{ itemId, itemType, userId },
+			);
+			return { enqueued: false, reason: "no-pm-config" };
+		}
 		if (!userMcpConfig || !userMcpConfig.enabled) {
 			logger.info(
 				"enqueuePmSyncFromActivity: no resolvable MCP config for user",

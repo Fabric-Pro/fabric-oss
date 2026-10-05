@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { buildGitEnv } from "../../src/activities/lib/instruction-sync-git";
 
 export const TEST_MAIL = ["dev", "example.com"].join("@");
@@ -144,7 +145,10 @@ export function createOrigin(files: Record<string, FileChange>): Origin {
 	return {
 		root,
 		dir,
-		url: `file://${dir}`,
+		// A real file URL: on Windows `file://${dir}` keeps its backslashes and
+		// does not round-trip through `URL`, which the clone's credential guard
+		// reads as a credential-bearing URL.
+		url: pathToFileURL(dir).href,
 		env: {
 			...buildGitEnv({ home: root }),
 			GIT_CONFIG_COUNT: "1",

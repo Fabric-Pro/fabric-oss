@@ -60,12 +60,8 @@ export const listFindingsProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		// `branch` scopes the default latest-scan lookup only (it is NOT a
 		// ScanFinding column); pull it out so it never reaches listScanFindings.
-		const { projectId, organizationId, branch, ...filters } = input;
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			context.user.id,
-			organizationId ?? undefined,
-		);
+		const { projectId, branch, ...filters } = input;
+		const hasAccess = await hasProjectAccess(projectId, context.user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",

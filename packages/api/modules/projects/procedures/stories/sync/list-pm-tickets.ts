@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
 import {
 	GitLabApiError,
 	GitLabMcpError,
@@ -17,6 +17,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import {
+	resolveProjectPmConfig,
+	rethrowGitLabPmOriginMismatch,
+} from "../../../lib/gitlab-pm-source";
 import {
 	getGitLabIssueForPM,
 	getProjectPMServerKey,
@@ -308,6 +312,8 @@ async function handleGitLabList(args: {
 	gitlabProjectId: string;
 	organizationId: string | null;
 	userId: string;
+	/** The project's PM context: records the container's GitLab instance. */
+	pmAdditionalContext: unknown;
 	input: ListPMTicketsInput;
 }): Promise<ListPMTicketsOutput> {
 	const startTime = Date.now();
@@ -321,7 +327,8 @@ async function handleGitLabList(args: {
 		userId,
 		organizationId,
 		projectId,
-	});
+		pmAdditionalContext: args.pmAdditionalContext,
+	}).catch(rethrowGitLabPmOriginMismatch);
 	if (!source) {
 		throw new ORPCError("BAD_REQUEST", {
 			message:
@@ -551,6 +558,8 @@ export const listPMTicketsProcedure = tenantProtectedProcedure
 					gitlabProjectId: project.projectManagementContainerId,
 					organizationId: project.organizationId,
 					userId: user.id,
+					pmAdditionalContext:
+						project.projectManagementAdditionalContext,
 					input,
 				});
 			} catch (err) {
@@ -622,8 +631,9 @@ export const listPMTicketsProcedure = tenantProtectedProcedure
 		}
 
 		// Resolve the calling user's MCP config
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,

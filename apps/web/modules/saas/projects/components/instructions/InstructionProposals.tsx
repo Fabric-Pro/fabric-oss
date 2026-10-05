@@ -1,6 +1,7 @@
 "use client";
 
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
+import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import {
@@ -43,6 +44,10 @@ import {
 	refreshRetryAfterSeconds,
 	withdrawConfirmVariant,
 } from "../../lib/instructions-proposal-pull-request";
+import {
+	awaitsDecision,
+	PROPOSALS_PAGE_SIZE,
+} from "../../lib/instructions-proposal-review";
 import { repositoryProviderSupportsReconnect } from "../../lib/repo-reconnect-capability";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import {
@@ -116,7 +121,7 @@ type ProposalFilePage = {
 };
 
 const VALIDATING = new Set<ValidationStatus>(["RECEIVING", "VALIDATING"]);
-const PAGE_SIZE = 25;
+const PAGE_SIZE = PROPOSALS_PAGE_SIZE;
 
 /**
  * The refusals the pull-request procedures name in `data.reason` (phase C),
@@ -473,6 +478,7 @@ export function InstructionProposals({
 	repositoryProvider?: string | null;
 }) {
 	const actionError = useInstructionActionError();
+	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("projects.codingInstructions.proposalReview");
 	const tPr = useTranslations(
 		"projects.codingInstructions.proposalReview.pullRequest",
@@ -976,41 +982,47 @@ export function InstructionProposals({
 													// non-branch (v1 or FABRIC)
 													// row keeps its single
 													// confirm.
-													const confirmText =
-														!repository
-															? t("cancelConfirm")
-															: !pr
-																? t(
-																		"withdrawConfirm",
+													const variant = pr
+														? withdrawConfirmVariant(
+																pr,
+															)
+														: null;
+													confirm({
+														title: t(
+															repository
+																? "withdrawConfirmTitle"
+																: "cancelConfirmTitle",
+														),
+														message: !repository
+															? t(
+																	"cancelConfirmBody",
+																)
+															: variant ===
+																	"appended"
+																? tBranch(
+																		"withdrawConfirmAppended",
 																	)
-																: withdrawConfirmVariant(
-																			pr,
-																		) ===
-																		"appended"
+																: variant ===
+																		"pending"
 																	? tBranch(
-																			"withdrawConfirmAppended",
+																			"withdrawConfirmPending",
 																		)
-																	: withdrawConfirmVariant(
-																				pr,
-																			) ===
-																			"pending"
-																		? tBranch(
-																				"withdrawConfirmPending",
-																			)
-																		: t(
-																				"withdrawConfirm",
-																			);
-													if (
-														window.confirm(
-															confirmText,
-														)
-													) {
-														cancel.mutate({
-															projectId,
-															snapshotId:
-																proposal.id,
-														});
-													}
+																	: t(
+																			"withdrawConfirmBody",
+																		),
+														confirmLabel: t(
+															repository
+																? "withdraw"
+																: "cancel",
+														),
+														destructive: true,
+														onConfirm: () =>
+															cancel.mutate({
+																projectId,
+																snapshotId:
+																	proposal.id,
+															}),
+													});
 												}}
 											>
 												{t(
@@ -1464,10 +1476,7 @@ export function InstructionProposals({
 						) : null}
 						{/* Approve and Reject stay FABRIC-only (spec §12): a
 						    suggestion is decided on its pull request. */}
-						{canDecide &&
-						selected.destination !== "REPOSITORY" &&
-						selected.proposalStatus === "PENDING" &&
-						!VALIDATING.has(selected.status) ? (
+						{canDecide && awaitsDecision(selected) ? (
 							<div className="flex gap-2">
 								{selected.status === "READY" &&
 								!selected.isStale ? (
@@ -1486,16 +1495,19 @@ export function InstructionProposals({
 								<Button
 									variant="outline"
 									disabled={deciding}
-									onClick={() => {
-										if (
-											window.confirm(t("rejectConfirm"))
-										) {
-											reject.mutate({
-												projectId,
-												snapshotId: selected.id,
-											});
-										}
-									}}
+									onClick={() =>
+										confirm({
+											title: t("rejectConfirmTitle"),
+											message: t("rejectConfirmBody"),
+											confirmLabel: t("reject"),
+											destructive: true,
+											onConfirm: () =>
+												reject.mutate({
+													projectId,
+													snapshotId: selected.id,
+												}),
+										})
+									}
 								>
 									{t("reject")}
 								</Button>

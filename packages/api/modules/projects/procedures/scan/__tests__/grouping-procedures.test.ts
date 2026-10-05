@@ -54,7 +54,13 @@ vi.mock("@repo/database", async () => {
 		);
 	return {
 		...actual,
-		db: {},
+		// The handlers take their organization from the project row when no
+		// permission middleware has recorded one (Fizzy #2904), as here.
+		db: {
+			project: {
+				findUnique: async () => ({ organizationId: "org-1" }),
+			},
+		},
 		hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 		hasActiveScanFindingGrouping: (...a: unknown[]) =>
 			mockHasActiveScanFindingGrouping(...a),
@@ -211,7 +217,8 @@ describe("startGroupingProcedure", () => {
 			groupingId: "grouping-1",
 			projectId: "proj-1",
 			userId: "user-1",
-			organizationId: null,
+			// The project's organization (Fizzy #2904), not the input's null.
+			organizationId: "org-1",
 		});
 		expect(mockUpdateScanFindingGrouping).toHaveBeenCalledWith(
 			"grouping-1",

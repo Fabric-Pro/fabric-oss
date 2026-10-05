@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The GitLab instance check reads the config; these tests are not about it.
+vi.mock("../../pm-source", () => ({
+	assertPmMcpTargetOrigin: async () => undefined,
+}));
 vi.mock("../../orchestrator/execution/execute-mcp-tool", () => ({
 	executeMcpTool: vi.fn(),
 }));

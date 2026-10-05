@@ -327,6 +327,7 @@ describe("project.updated vs project.archived", () => {
 		});
 		dbMock.project.findUnique.mockResolvedValue({
 			repositoryUrl: null,
+			organizationId: "org-1",
 		});
 
 		await handlers.updateProject({
@@ -358,6 +359,7 @@ describe("project.updated vs project.archived", () => {
 		});
 		dbMock.project.findUnique.mockResolvedValue({
 			repositoryUrl: null,
+			organizationId: "org-1",
 		});
 
 		await handlers.updateProject({

@@ -8,8 +8,16 @@ The Fabric MCP Gateway exposes a single endpoint that implements the **MCP 2025-
 ## Endpoint
 
 ```
-POST https://your-fabric.com/api/mcp-gateway
+POST https://your-fabric.com/api/mcp-gateway/projects/<project-id>
 ```
+
+A project has its own gateway URL, and a connection made at it reaches that
+project and nothing else: the tools are the project's own (the instruction,
+feature, document, context and knowledge tools, with `projectId` optional and
+defaulting to the project), and no organization-wide tool or connected server is
+offered or callable. The organization-wide endpoint, `POST
+https://your-fabric.com/api/mcp-gateway`, serves the connections made before
+projects had their own URL.
 
 ## Authentication
 
@@ -19,11 +27,27 @@ Include one of the following:
 |---|---|---|
 | Signed-in agent (recommended) | `Authorization` | `Bearer fat_…`, an OAuth 2.1 access token the client obtains by signing in |
 | API Key | `Authorization` | `Bearer fab_xxxx_xxxxxxxxxx` or `Bearer org_…` |
-| Organization context | `X-Organization-Id` | Organization ID string (not honoured for a signed-in agent, which is bound to the organization chosen when it was approved) |
+| Organization context | `X-Organization-Id` | Organization ID string (organization-wide endpoint only; not honoured for a signed-in agent, which is bound to what was approved, and ignored at a project's URL, where the project names the organization) |
+
+A signed-in agent's token is issued for one resource and works only there. A
+token issued for a project works at that project's URL and nowhere else; an
+organization-wide token works at the organization-wide URL; a token issued for
+the REST API works at neither gateway URL. A client asks for the resource by
+sending it as the `resource` parameter of its authorization and token requests,
+and a project URL refuses a sign-in that does not name the project.
+
+API keys and browser sessions are accepted at a project's URL after a live
+check that the key's owner can read the project, and the session is then bound
+to the project: an organization key must belong to the organization hosting it.
 
 Without valid credentials the gateway answers `401` with
-`WWW-Authenticate: Bearer resource_metadata="https://your-fabric.com/.well-known/oauth-protected-resource/api/mcp-gateway", scope="mcp:read instructions:read instructions:write offline_access"`,
-which is how an MCP client discovers that it can sign in. See
+`WWW-Authenticate: Bearer resource_metadata="https://your-fabric.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/<project-id>", scope="mcp:read instructions:read instructions:write offline_access"`
+(the organization-wide URL names `.../oauth-protected-resource/api/mcp-gateway`),
+which is how an MCP client discovers that it can sign in. A token that is
+genuine but was not issued for the URL it was presented at is answered `401` the
+same way, with `error="invalid_token"` added, which sends the client back
+through sign-in asking for the right resource. The project metadata's `resource`
+is exactly the project's URL. See
 [Fabric MCP Gateway](/docs/integrations/mcp-gateway) for the setup.
 
 ## MCP Protocol Methods
@@ -77,7 +101,8 @@ Returns all available tools.
 
 **Response includes:**
 
-- **Platform tools** (`fabric_*`) — always present, 21 tools
+- **Platform tools** (`fabric_*`) — always present, including the six coding-instruction
+  tools below
 - **Connected server tools** (`{prefix}__{tool}`) — from your MCP server connections
 
 Connected tools include `_meta` with authority status:
@@ -141,6 +166,75 @@ If not authorized, returns:
   }
 }
 ```
+
+## Coding Instruction Tools
+
+A project's published coding instructions are served through six platform tools. Each is
+gated by the credential's scope: a call from a key or sign-in without it is refused with an
+error naming the scope, and the `codingInstructions` field on `fabric_list_projects` and
+`fabric_get_project` is omitted for a credential that cannot read the instructions.
+
+| Tool | Scope | Kind | Purpose |
+|---|---|---|---|
+| `fabric_list_project_instructions` | `instructions:read` | read | Browse or search the published files, or ask what changed since a `sinceDigest` |
+| `fabric_get_project_instruction` | `instructions:read` | read | Read one published file by path, paged for large files |
+| `fabric_get_project_instruction_bundle` | `instructions:read` | read | Install the whole published tree as one zip |
+| `fabric_instruction_checks` | `instructions:read` | read | Report whether the session is set up the way the instructions expect |
+| `fabric_propose_project_instruction_change` | `instructions:write` | write | Suggest an edit; held for review |
+| `fabric_add_instruction_lesson` | `instructions:write` | write | Record a lesson as a new file under `Lessons/`; held for review |
+
+`instructions:write` reaches only the proposal path, which is what a project reader can
+already do in the Coding Instructions tab. There is no scope and no argument that publishes
+from the gateway: a proposal is approved by a person who can edit the instructions, and on a
+project that syncs from a repository it becomes a commit on the proposer's own branch and a
+pull request there.
+
+A sign-in grants `mcp:read instructions:read instructions:write` (the `scope` in the `401`
+challenge above). `instructions:publish` is a separate authority that only an organization
+API key created for it carries, and it is not reachable from the gateway.
+
+## CLI Discovery
+
+Each deployment serves its own build of the Fabric CLI, so a person can run it straight
+from a URL and the CLI they run is the one written for the server they talk to.
+
+```
+GET https://your-fabric.com/.well-known/fabric-cli.json
+```
+
+```json
+{
+  "version": "0.4.0",
+  "spec": 1,
+  "integrity": "sha512-…",
+  "minSupported": "0.4.0",
+  "nodeRange": ">=22",
+  "origin": null,
+  "tarball": "https://your-fabric.com/cli/fabric-0.4.0-0123456789.tgz"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `version` | The CLI version this deployment serves |
+| `spec` | The version of this document, currently `1` |
+| `integrity` | The tarball's `sha512` Subresource Integrity value |
+| `minSupported` | The oldest CLI version the deployment accepts |
+| `nodeRange` | The Node.js versions the tarball runs on |
+| `origin` | The address the tarball was built for, or `null` when the build did not know it. A CLI with an origin baked in signs in there unless it is given `--base-url`, which always wins |
+| `tarball` | Where to fetch it, on the host that answered; `npx -y <tarball> instructions init --tool <tool>` runs it with nothing installed (add `--base-url <origin>` when `origin` is not the address you are on). The file name ends in ten hex digits of the build's own hash, so a changed build is always at a new URL; an earlier name answers with a `307` to the current one |
+
+Baking an origin in is optional. The build takes it from `FABRIC_CLI_ORIGIN`, then
+`NEXT_PUBLIC_SITE_URL`, then `APP_URL`; it never reads what Vercel supplies, because a
+preview's address is a per-deployment host and the production domain would be baked into a
+staging build. With none set the CLI is still packed, `origin` is `null`, and the build says so
+in one line. `FABRIC_CLI_REQUIRE_ORIGIN=1` makes a missing origin fatal for an operator who
+wants the build to refuse. The Connect dialog writes `--base-url <the page's address>` into its
+line unless `origin` is that address.
+
+The document is public and answered with `Cache-Control: public, max-age=60` and an open
+CORS header. A deployment built without the pack step answers `404` with
+`{ "error": "cli_not_served" }`, and the Connect dialog then offers only the MCP entries.
 
 ## Authority Management API
 
@@ -214,6 +308,9 @@ POST /api/rpc/mcp.authority.revoke
 | `POST /api/mcp-gateway` | JSON-RPC requests |
 | `GET /api/mcp-gateway` | Server info (no auth) |
 | `DELETE /api/mcp-gateway` | Terminate session (include `Mcp-Session-Id` header) |
+| `POST /api/mcp-gateway/projects/<project-id>` | JSON-RPC requests, for one project |
+| `GET /api/mcp-gateway/projects/<project-id>` | Server info (no auth) |
+| `DELETE /api/mcp-gateway/projects/<project-id>` | Terminate a project session; a session ends only at the URL it was opened at |
 
 ## Error Codes
 

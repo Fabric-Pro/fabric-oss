@@ -2,13 +2,21 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { auth } from "@repo/auth";
-import { getMcpConfigByIdInternal, getValidAccessToken } from "@repo/database";
-import { type ApiKeyMethod, buildAuthHeaders } from "@repo/mcp";
+import { getMcpConfigByIdInternal } from "@repo/database";
+import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import {
+	type ApiKeyMethod,
+	buildAuthHeaders,
+	GitLabMcpCredentialError,
+	type GitLabMcpFetch,
+	getValidMcpTransportAuth,
+} from "@repo/mcp";
 import {
 	assertMcpServerUrlResolved,
 	fetchMcpServer,
 } from "@repo/mcp/lib/server-url-guard";
 import { decryptApiKey } from "@repo/utils";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -30,7 +38,14 @@ const TestConnectionSchema = z.object({
 	oauthAccessToken: z.string().optional(),
 });
 
-type TestConnectionInput = z.infer<typeof TestConnectionSchema>;
+type TestConnectionInput = z.infer<typeof TestConnectionSchema> & {
+	/**
+	 * The fetch the transport must use instead of `fetchMcpServer`: set for a
+	 * GitLab personal server, whose credential may only travel to its own
+	 * GitLab origin through the GitLab outbound guard.
+	 */
+	transportFetch?: GitLabMcpFetch;
+};
 
 interface TestResult {
 	success: boolean;
@@ -96,7 +111,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 		const input = TestConnectionSchema.parse(body);
 
 		// If configId is provided, retrieve credentials from the stored config
-		let effectiveInput = input;
+		let effectiveInput: TestConnectionInput = input;
 		if (input.configId) {
 			try {
 				// Use internal version - authorization is done below based on config ownership
@@ -131,17 +146,55 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					return unauthorizedMcpConfigResponse();
 				}
 
-				// Handle different auth types
-				if (input.authType === "OAUTH2") {
+				// The active-organization match above says nothing about
+				// whether the caller is still a member there with a role that
+				// allows using the config: the session can outlive both. The
+				// test calls one of the server's tools with the stored
+				// credential, so it needs MCP_CONNECT, as `mcp.executeTool`
+				// does (Fizzy #2903).
+				const authorization = await authorizeMcpConfigRequest({
+					userId: session.user.id,
+					organizationId: cfg.organizationId,
+					action: "connect",
+				});
+				if (!authorization.ok) {
+					return NextResponse.json(
+						await authorization.response.json(),
+						{ status: authorization.response.status },
+					);
+				}
+
+				// Handle different auth types. A GitLab personal server is
+				// tested with the person's GitLab connection whatever auth
+				// type the request names: an API key stored on such a row is
+				// never read.
+				const isGitLabPersonalConfig = isGitLabPersonalMcpServerKey(
+					cfg.mcpServer?.key,
+				);
+				if (input.authType === "OAUTH2" || isGitLabPersonalConfig) {
 					// Pass the config's own scope. `sessionOrganizationId` may
 					// be a sticky active org while the user is testing a
 					// personal config (cfg.organizationId === null), which
 					// would make getValidAccessToken reject on org mismatch.
-					const accessToken = await getValidAccessToken({
+					// GitLab personal servers resolve to the person's GitLab
+					// connection token, and only for the URL this request
+					// actually tests: one on another origin than the
+					// credential's (the request's `baseUrl` may differ from the
+					// saved one) gets no token, as does an unusable
+					// connection — both read as "no token" below. The token
+					// then travels only through the returned GitLab fetch.
+					const transportAuth = await getValidMcpTransportAuth({
 						configId: input.configId,
 						userId: session.user.id,
 						organizationId: cfg.organizationId,
+						endpoint: input.baseUrl,
+					}).catch((error: unknown) => {
+						if (error instanceof GitLabMcpCredentialError) {
+							return null;
+						}
+						throw error;
 					});
+					const accessToken = transportAuth?.accessToken ?? null;
 
 					if (!accessToken) {
 						return NextResponse.json(
@@ -163,7 +216,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					// Use the retrieved access token
 					effectiveInput = {
 						...input,
+						...(isGitLabPersonalConfig
+							? { authType: "OAUTH2" as const, apiKey: undefined }
+							: {}),
 						oauthAccessToken: accessToken,
+						transportFetch: transportAuth?.fetch,
 					};
 				} else if (input.authType === "API_KEY") {
 					// Decrypt and use the stored API key
@@ -364,18 +421,20 @@ async function testMcpConnection(
 
 		// Create transport based on type
 		// Every request the transport makes goes through the guarded fetch:
-		// re-checked at DNS-lookup time, redirects refused.
+		// re-checked at DNS-lookup time, redirects refused. A GitLab personal
+		// server's fetch also keeps the request on its credential's origin.
+		const transportFetch = input.transportFetch ?? fetchMcpServer;
 		const transport =
 			input.transport === "SSE"
 				? new SSEClientTransport(url, {
-						fetch: fetchMcpServer,
+						fetch: transportFetch,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }
 								: undefined,
 					})
 				: new StreamableHTTPClientTransport(url, {
-						fetch: fetchMcpServer,
+						fetch: transportFetch,
 						requestInit:
 							Object.keys(headers).length > 0
 								? { headers }

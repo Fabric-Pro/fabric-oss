@@ -26,6 +26,7 @@ import type {
 	ProjectInstructionPullRequestState,
 	ProjectInstructionSnapshotStatus,
 } from "../generated/client";
+import { destinationSourceOfTruth } from "./instruction-migration-pointer";
 import {
 	acceptsAppends,
 	currentAppend,
@@ -462,10 +463,7 @@ export async function listOpenInstructionProposals(i: {
 	const current = currentDestination(
 		{
 			projectId: i.projectId,
-			sourceOfTruth:
-				settings !== null && typeof settings === "object"
-					? (settings as { sourceOfTruth?: unknown }).sourceOfTruth
-					: null,
+			sourceOfTruth: destinationSourceOfTruth(settings, sync?.id ?? null),
 			sync: sync
 				? {
 						id: sync.id,

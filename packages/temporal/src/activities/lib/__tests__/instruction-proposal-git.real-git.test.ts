@@ -5,12 +5,13 @@ import {
 	mkdtemp,
 	readFile,
 	rm,
-	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { installFakeGit } from "../../../../__tests__/helpers/fake-git";
 import { isCredentialFailure } from "../instruction-proposal-credential";
 import {
 	buildGitEnv,
@@ -63,7 +64,7 @@ let source: string;
 let base: string;
 let tip: string;
 
-function git(cwd: string, args: string[]): string {
+function git(cwd: string, args: string[], input?: string | Buffer): string {
 	return execFileSync("git", args, {
 		cwd,
 		env: {
@@ -72,6 +73,7 @@ function git(cwd: string, args: string[]): string {
 			GIT_CONFIG_NOSYSTEM: "1",
 			GIT_CONFIG_GLOBAL: "/dev/null",
 		},
+		input,
 		encoding: "utf8",
 	}).trim();
 }
@@ -137,7 +139,7 @@ async function freshClone(
 	const env = proposalEnv(run, extra, credential);
 	await cloneTreeless({
 		cwd: run,
-		url: `file://${source}`,
+		url: pathToFileURL(source).href,
 		ref: "main",
 		dir,
 		env,
@@ -238,17 +240,37 @@ describe.skipIf(!hasGit)(
 				"deep\n",
 			);
 			await writeFile(path.join(source, "agents/run.sh"), "#!/bin/sh\n");
-			await chmod(path.join(source, "agents/run.sh"), 0o755);
-			await symlink("a.md", path.join(source, "agents/link.md"));
-			await writeFile(
-				Buffer.concat([Buffer.from(`${source}/`), NON_UTF8]),
-				"bad\n",
-			);
 			await writeFile(path.join(source, "other.md"), "keep\n");
 			git(source, ["init", "-q", "-b", "main"]);
 			git(source, ["config", "uploadpack.allowFilter", "true"]);
 			git(source, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
 			git(source, ["add", "-A"]);
+			// The executable bit, the symlink and the non-UTF-8 name go into
+			// the index directly: a Windows file system has no executable bit
+			// for `add` to read, makes a symlink only with a privilege and
+			// cannot hold a name that is not UTF-8. Index-info records carry
+			// the path as raw bytes.
+			git(source, ["update-index", "--chmod=+x", "agents/run.sh"]);
+			const linkBlob = git(
+				source,
+				["hash-object", "-w", "--stdin"],
+				"a.md",
+			);
+			const badBlob = git(
+				source,
+				["hash-object", "-w", "--stdin"],
+				"bad\n",
+			);
+			git(
+				source,
+				["update-index", "--add", "-z", "--index-info"],
+				Buffer.concat([
+					Buffer.from(`120000 ${linkBlob}\tagents/link.md\0`),
+					Buffer.from(`100644 ${badBlob}\t`),
+					NON_UTF8,
+					Buffer.from("\0"),
+				]),
+			);
 			const zero = commitAll("zero");
 			git(source, [
 				"update-index",
@@ -498,7 +520,7 @@ describe.skipIf(!hasGit)(
 				"remote",
 				"set-url",
 				"origin",
-				`file://${path.join(work, "no-such-repo")}`,
+				pathToFileURL(path.join(work, "no-such-repo")).href,
 			]);
 			await expect(
 				pushCreateOnly({
@@ -514,7 +536,7 @@ describe.skipIf(!hasGit)(
 			const b = branch("lookalike");
 			git(source, ["branch", `x/refs/heads/${b}`, base]);
 			const env = proposalEnv(work);
-			const url = `file://${source}`;
+			const url = pathToFileURL(source).href;
 			expect(
 				await lsRemoteRef({
 					cwd: work,
@@ -541,7 +563,7 @@ describe.skipIf(!hasGit)(
 
 		it("deletes only at the leased SHA: deleted, stale at a moved tip, absent, refused", async () => {
 			const env = proposalEnv(work);
-			const url = `file://${source}`;
+			const url = pathToFileURL(source).href;
 			const ours = branch("delete");
 			git(source, ["branch", ours, base]);
 			// "refuses a leased delete at a moved tip"
@@ -599,16 +621,7 @@ describe.skipIf(!hasGit)(
 
 		it("kills the process group when the signal aborts mid-push", async () => {
 			const built = await buildCommit("abort");
-			const sleepBin = execFileSync("sh", ["-c", "command -v sleep"], {
-				encoding: "utf8",
-			}).trim();
-			const fakeBin = path.join(work, "fake-bin");
-			await mkdir(fakeBin, { recursive: true });
-			await writeFile(
-				path.join(fakeBin, "git"),
-				`#!/bin/sh\nexec ${sleepBin} 30\n`,
-			);
-			await chmod(path.join(fakeBin, "git"), 0o755);
+			const fakeGit = await installFakeGit(work, "hang");
 			const controller = new AbortController();
 			setTimeout(() => controller.abort(), 100);
 			const started = Date.now();
@@ -617,7 +630,7 @@ describe.skipIf(!hasGit)(
 					dir: built.dir,
 					sha: built.commit,
 					branch: branch("abort"),
-					env: { ...built.env, PATH: fakeBin },
+					env: { ...built.env, ...fakeGit },
 					signal: controller.signal,
 				}),
 			).rejects.toMatchObject({ kind: "cancelled", label: "push" });
@@ -648,7 +661,7 @@ describe.skipIf(!hasGit)(
 					env,
 				}),
 			).toEqual({ kind: "exists" });
-			const url = `file://${source}`;
+			const url = pathToFileURL(source).href;
 			expect(
 				await lsRemoteRef({
 					cwd: built.run,
@@ -675,7 +688,7 @@ describe.skipIf(!hasGit)(
 			// all (not merely redacted), and neither tail carries it.
 			const failed = (await lsRemoteRef({
 				cwd: built.run,
-				url: `file://${path.join(work, "no-such-repo")}`,
+				url: pathToFileURL(path.join(work, "no-such-repo")).href,
 				branch: b,
 				env: { ...env, GIT_TRACE: "1" },
 			}).catch((e: unknown) => e)) as GitCommandError;
@@ -802,32 +815,20 @@ describe("proposal plumbing guards", () => {
 		const url = "https://git.example.com/example-org/example-repo.git/";
 		const http403 = `fatal: unable to access '${url}': The requested URL returned error: 403`;
 		let fake: string;
-		let fakeBin: string;
+		let fakeGit: NodeJS.ProcessEnv;
 
 		beforeAll(async () => {
 			fake = await mkdtemp(path.join(tmpdir(), "proposal-fake-git-"));
-			fakeBin = path.join(fake, "bin");
-			await mkdir(fakeBin, { recursive: true });
 			// `init --bare` (deleteBranch's scratch repository) succeeds; any
 			// other call prints the given stderr and fails as git does.
-			await writeFile(
-				path.join(fakeBin, "git"),
-				[
-					"#!/bin/sh",
-					'for a in "$@"; do [ "$a" = init ] && exit 0; done',
-					'printf "%s\\n" "$FAKE_GIT_STDERR" >&2',
-					"exit 128",
-					"",
-				].join("\n"),
-			);
-			await chmod(path.join(fakeBin, "git"), 0o755);
+			fakeGit = await installFakeGit(fake, "fail-unless-init");
 		});
 		afterAll(async () => {
 			await rm(fake, { recursive: true, force: true });
 		});
 
 		const fakeEnv = (stderr: string) => ({
-			PATH: fakeBin,
+			...fakeGit,
 			FAKE_GIT_STDERR: stderr,
 		});
 		const sha = "a".repeat(40);

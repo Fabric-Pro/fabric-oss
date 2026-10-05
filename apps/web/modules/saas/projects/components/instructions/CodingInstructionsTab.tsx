@@ -5,19 +5,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { InstructionMigrationRepositoryProvider } from "../../hooks/instruction-migration-repository";
+import { useRepositoryMigration } from "../../hooks/use-repository-migration";
+import { useSyncActionError } from "../../hooks/use-sync-action-error";
 import {
+	instructionsAwaitsCommitSync,
 	instructionsAwaitsPublish,
 	instructionsPollInterval,
 } from "../../lib/instructions-poll";
 import {
 	latestSyncRunChanged,
 	localSetupRouteFor,
+	offersMoveIntoRepository,
 	REPOSITORY_SYNC_POLL_MS,
 	type RepositorySyncControls,
 	type RepositorySyncState,
 	repositorySyncPollInterval,
 	type SyncNowResult,
-	syncActionErrorKey,
 	syncNowResultMessage,
 	syncRunEnded,
 } from "../../lib/instructions-repository-sync";
@@ -27,10 +31,12 @@ import {
 	InstructionsPublishedView,
 	type InstructionsSnapshot,
 } from "./InstructionsPublishedView";
+import { InstructionsSettingsNotice } from "./InstructionsSettingsNotice";
 import {
 	InstructionsLoadError,
 	InstructionsTabSkeleton,
 } from "./InstructionsTabState";
+import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
 import { UploadFolderDialog } from "./UploadFolderDialog";
 
 /**
@@ -51,6 +57,8 @@ type PollSnapshot = {
 	createdAt?: string | Date | null;
 	deferredScanStatus?: string | null;
 	readyAt?: string | Date | null;
+	/** The commit a synced version was taken from: what a commit made here is waited for by. */
+	sourceCommitSha?: string | null;
 };
 
 export function CodingInstructionsTab({
@@ -58,6 +66,7 @@ export function CodingInstructionsTab({
 	projectName,
 	canEdit = false,
 	canReview = false,
+	readOnlyMode = false,
 }: {
 	projectId: string;
 	/** Threaded down to the "Connect your agent" dialog's starter instruction. */
@@ -71,10 +80,17 @@ export function CodingInstructionsTab({
 	canEdit?: boolean;
 	/** Whether this viewer may approve or reject reader proposals. */
 	canReview?: boolean;
+	/**
+	 * The project is in Read-only mode, which refuses every write to its
+	 * connected sources, a commit to the synced branch included. A UI gate:
+	 * the server refuses either way.
+	 */
+	readOnlyMode?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const [uploadOpen, setUploadOpen] = useState(false);
 	const [configureOpen, setConfigureOpen] = useState(false);
+	const [moveOpen, setMoveOpen] = useState(false);
 	const tSync = useTranslations("projects.codingInstructions.repositorySync");
 	// When this tab was opened, so the poll can slow down rather than stay at
 	// 3s indefinitely. A ref, not state: changing it must never re-render.
@@ -93,6 +109,16 @@ export function CodingInstructionsTab({
 		snapshotId: string;
 		at: number;
 	} | null>(null);
+	// The commit this tab's own editor just made, until Fabric's copy has taken
+	// it (Fizzy #2878 §10). `committed` records the push; the published
+	// pointer follows from a sync run of the branch's real tree, so the tab
+	// keeps reading until the published row names that commit, for a bounded
+	// time, and says "Fabric's copy is syncing" meanwhile.
+	const [awaitedCommit, setAwaitedCommit] = useState<{
+		sha: string;
+		ref: string;
+		at: number;
+	} | null>(null);
 	// The last rendered list and published pointer, so that BOTH queries'
 	// intervals can be decided from both. Refs because each query's own
 	// `refetchInterval` can run outside a render (on that query's state
@@ -107,6 +133,8 @@ export function CodingInstructionsTab({
 	// run creates its snapshot from a worker, and until that row exists
 	// nothing in the list is in flight to keep the poll going.
 	const syncRunningRef = useRef(false);
+	const awaitedCommitRef = useRef(awaitedCommit);
+	awaitedCommitRef.current = awaitedCommit;
 	// The last `running` this tab saw, to notice a run closing.
 	const wasSyncRunningRef = useRef(false);
 	// The last latest-run id this tab saw, to notice a run that started and
@@ -127,6 +155,11 @@ export function CodingInstructionsTab({
 		const interval = instructionsPollInterval(snapshots, elapsedMs, {
 			now,
 			published: publishedRowRef.current,
+			awaitingCommitSync: instructionsAwaitsCommitSync({
+				awaited: awaitedCommitRef.current,
+				publishedSha: publishedRowRef.current?.sourceCommitSha,
+				now,
+			}),
 			awaitingPublish: instructionsAwaitsPublish({
 				snapshots,
 				publishedId: publishedIdRef.current,
@@ -200,6 +233,13 @@ export function CodingInstructionsTab({
 			),
 	});
 	const syncState = repositorySync.data as RepositorySyncState | undefined;
+	// While a move into a repository is open, the sync is the one the move
+	// created: its repository is what every paused action names.
+	const migrationRepository =
+		syncState?.migration && syncState.configured
+			? `${syncState.configured.repositoryOwner}/${syncState.configured.repositoryName}`
+			: null;
+	const syncActionError = useSyncActionError(migrationRepository);
 	const syncRunning = syncState?.running ?? false;
 	syncRunningRef.current = syncRunning;
 	const latestSyncRunId = syncState
@@ -212,10 +252,7 @@ export function CodingInstructionsTab({
 				toast[announced.tone](tSync(announced.key));
 				queryClient.invalidateQueries({ queryKey: syncQuery.queryKey });
 			},
-			onError: (error) =>
-				toast.error(
-					tSync(syncActionErrorKey(error, "syncNow"), { ref: "" }),
-				),
+			onError: (error) => toast.error(syncActionError(error, "syncNow")),
 		}),
 	);
 
@@ -230,14 +267,28 @@ export function CodingInstructionsTab({
 	// bounded wait ends even though the poll that would re-render it has
 	// stopped by then.
 	const awaitingPublish = awaitsPublishAt(Date.now());
+	const commitSyncing = instructionsAwaitsCommitSync({
+		awaited: awaitedCommit,
+		publishedSha: publishedRowRef.current?.sourceCommitSha,
+		configuredRef: syncState?.configured?.ref,
+		now: Date.now(),
+	});
 	const [, setClock] = useState(0);
 	useEffect(() => {
-		if (!awaitingPublish) {
+		if (!awaitingPublish && !commitSyncing) {
 			return;
 		}
 		const timer = setInterval(() => setClock((n) => n + 1), 1000);
 		return () => clearInterval(timer);
-	}, [awaitingPublish]);
+	}, [awaitingPublish, commitSyncing]);
+	// Done waiting, whether Fabric's copy took the commit, the wait ran out or
+	// the sync moved to another branch: the status block then says what is
+	// true (current, or behind), no error.
+	useEffect(() => {
+		if (awaitedCommit !== null && !commitSyncing) {
+			setAwaitedCommit(null);
+		}
+	}, [awaitedCommit, commitSyncing]);
 
 	// The two queries are polled separately, so when a deferred scan's verdict
 	// lands (Fizzy #2737) one of them can hold it a tick before the other. The
@@ -363,44 +414,65 @@ export function CodingInstructionsTab({
 			}),
 		]);
 
+	// Resolves only once every re-read has settled, so the settings section
+	// stays busy until the new state is on screen (Decision 53).
+	const rereadSync = async () => {
+		await Promise.all([
+			queryClient.invalidateQueries({
+				queryKey: syncQuery.queryKey,
+			}),
+			// The mode flips with a configuration change, and
+			// `repositoryBacked` is read from the settings.
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.getSettings.queryOptions({
+					input: { projectId },
+				}).queryKey,
+			}),
+			// History marks each run as from the current configuration or an
+			// earlier one, judged against the row a change just replaced or
+			// removed; re-read it with the state, not a minute later (Fizzy
+			// #2694).
+			queryClient.invalidateQueries({
+				queryKey:
+					orpc.projects.instructions.repositorySync.listRuns.queryOptions(
+						{
+							input: { projectId },
+						},
+					).queryKey,
+			}),
+			// A move into a repository starts, is canceled or finishes with a
+			// change here, and the move's own read follows it (Fizzy #2878 §9).
+			queryClient.invalidateQueries({
+				queryKey:
+					orpc.projects.instructions.repositorySync.getMigration.queryOptions(
+						{
+							input: { projectId },
+						},
+					).queryKey,
+			}),
+			invalidate(),
+		]);
+	};
+	// The move of uploaded instructions into a repository: read only while the
+	// sync state says one is open, and re-read everything once it is gone.
+	const migration = useRepositoryMigration({
+		projectId,
+		enabled: Boolean(syncState?.migration),
+		onGone: () => void rereadSync(),
+	});
+
 	const syncControls: RepositorySyncControls | undefined = syncState
 		? {
 				state: syncState,
 				onConfigure: () => setConfigureOpen(true),
+				onMove: () => setMoveOpen(true),
 				onSyncNow: () => syncNow.mutate({ projectId }),
 				syncNowPending: syncNow.isPending,
-				// Resolves only once every re-read has settled, so the
-				// settings section stays busy until the new state is on
-				// screen (Decision 53).
-				onChanged: async () => {
-					await Promise.all([
-						queryClient.invalidateQueries({
-							queryKey: syncQuery.queryKey,
-						}),
-						// The mode flips with a configuration change, and
-						// `repositoryBacked` is read from the settings.
-						queryClient.invalidateQueries({
-							queryKey:
-								orpc.projects.instructions.getSettings.queryOptions(
-									{
-										input: { projectId },
-									},
-								).queryKey,
-						}),
-						// History marks each run as from the current
-						// configuration or an earlier one, judged against the
-						// row a change just replaced or removed; re-read it
-						// with the state, not a minute later (Fizzy #2694).
-						queryClient.invalidateQueries({
-							queryKey:
-								orpc.projects.instructions.repositorySync.listRuns.queryOptions(
-									{
-										input: { projectId },
-									},
-								).queryKey,
-						}),
-						invalidate(),
-					]);
+				onChanged: rereadSync,
+				migration: {
+					read: migration.read,
+					endedNotice: migration.endedNotice,
+					onDismissEndedNotice: migration.dismissEndedNotice,
 				},
 			}
 		: undefined;
@@ -453,6 +525,7 @@ export function CodingInstructionsTab({
 			open={uploadOpen}
 			onOpenChange={setUploadOpen}
 			onUploaded={invalidate}
+			onDiscarded={invalidate}
 			projectGlobs={settings.data?.ignoreGlobs ?? null}
 			settingsReady={!settings.isLoading}
 			// Publishing before the scan (Fizzy #2737) needs the publish
@@ -472,14 +545,39 @@ export function CodingInstructionsTab({
 			/>
 		) : null;
 
+	const moveDialog =
+		moveOpen && syncState && offersMoveIntoRepository(syncState) ? (
+			<MoveInstructionsDialog
+				projectId={projectId}
+				open
+				onOpenChange={setMoveOpen}
+				integrations={syncState.availableIntegrations}
+				onStarted={() => void rereadSync()}
+			/>
+		) : null;
+
+	// A failed settings read holds Upload and the edit actions back (the source
+	// of truth is in the settings); say so, with a way to try again, rather than
+	// letting the buttons vanish.
+	const settingsNotice = settings.isError ? (
+		<InstructionsSettingsNotice
+			retrying={settings.isFetching}
+			onRetry={() => void settings.refetch()}
+		/>
+	) : null;
+
 	if (!published.data && snapshots.length === 0) {
 		return (
-			<>
+			<InstructionMigrationRepositoryProvider
+				repository={migrationRepository}
+			>
 				{dialog}
 				{configureDialog}
+				{moveDialog}
 				<InstructionsEmptyState
 					projectId={projectId}
 					projectName={projectName}
+					notice={settingsNotice}
 					onUploadClick={() => setUploadOpen(true)}
 					canUpload={
 						canEdit &&
@@ -491,7 +589,7 @@ export function CodingInstructionsTab({
 					localSetup={localSetup}
 					repositorySync={syncControls}
 				/>
-			</>
+			</InstructionMigrationRepositoryProvider>
 		);
 	}
 	// `getPublished`/`list` return the raw Prisma row shape, whose `rejection`
@@ -499,12 +597,16 @@ export function CodingInstructionsTab({
 	// the shape `InstructionsPublishedView` actually consumes (see that
 	// module's doc comment).
 	return (
-		<>
+		<InstructionMigrationRepositoryProvider
+			repository={migrationRepository}
+		>
 			{dialog}
 			{configureDialog}
+			{moveDialog}
 			<InstructionsPublishedView
 				projectId={projectId}
 				projectName={projectName}
+				notice={settingsNotice}
 				published={
 					(published.data as unknown as
 						| InstructionsSnapshot
@@ -528,6 +630,20 @@ export function CodingInstructionsTab({
 				// says so rather than labelling every version a publish.
 				publishedUnknown={published.isError}
 				awaitingPublish={awaitingPublish}
+				readOnlyMode={readOnlyMode}
+				// A commit made from this tab: read the published state until it
+				// has taken it, and say so in the status block meanwhile.
+				onCommitted={(commit) => {
+					setAwaitedCommit({ ...commit, at: Date.now() });
+					queryClient.invalidateQueries({
+						queryKey: syncQuery.queryKey,
+					});
+				}}
+				syncingCommit={
+					commitSyncing && awaitedCommit
+						? { sha: awaitedCommit.sha, ref: awaitedCommit.ref }
+						: null
+				}
 				// Spec §6.12: a repository-backed project's instructions are
 				// changed in git and refreshed by sync, so the tab does not
 				// offer to edit them. Treated as repository-backed until the
@@ -546,6 +662,6 @@ export function CodingInstructionsTab({
 				}
 				repositorySync={syncControls}
 			/>
-		</>
+		</InstructionMigrationRepositoryProvider>
 	);
 }

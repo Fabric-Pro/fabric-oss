@@ -82,6 +82,10 @@ import type {
 } from "./instruction-branch-types";
 import { wakeBranchWorkflow } from "./instruction-branch-wake";
 import {
+	abandonMigrationOfBranch,
+	settleMigrationForObservedBranch,
+} from "./instruction-migration-settlement";
+import {
 	asJson,
 	assertMayContinue,
 	cancellationOf,
@@ -391,6 +395,11 @@ export async function runClassify(
 	if (ops.some((op) => op.outcome === null)) {
 		return "stale_revision";
 	}
+	// Before the classification can ask for the merge-triggered sync: a pull
+	// request that moved a project's uploads into the repository switches the
+	// project over first, so that sync finds a repository-backed project; one
+	// that ended without its files landing ends the move (Fizzy #2878 §9).
+	await settleMigrationForObservedBranch(branch);
 	const commit = async (
 		status: "done" | "unverified",
 	): Promise<ClassifyBranchResult["outcome"]> => {
@@ -610,6 +619,12 @@ export async function runSettle(
 	} catch (error) {
 		const recorded = await recordStepFailure(branch, stepFailureOf(error));
 		return recorded ? "retry_later" : "moved";
+	}
+	if (outcome === "canceled" && branch.closeIntent !== "START_OVER") {
+		// Fabric closed the pull request (a withdrawal): a move it carried is
+		// canceled with it (Fizzy #2878 §9). A start over keeps the move, whose
+		// proposal is rehomed below.
+		await abandonMigrationOfBranch(branch, "canceled");
 	}
 	if (outcome !== "canceled" || branch.closeIntent !== "START_OVER") {
 		return outcome;

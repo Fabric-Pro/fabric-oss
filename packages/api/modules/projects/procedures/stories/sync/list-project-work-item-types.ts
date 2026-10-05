@@ -1,11 +1,12 @@
 import { ORPCError } from "@orpc/client";
-import { db, resolvePMConfigForUser } from "@repo/database";
+import { db } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { resolveProjectPmConfig } from "../../../lib/gitlab-pm-source";
 import { fetchAdoWorkItemTypes } from "./ado-work-item-types";
 
 /**
@@ -54,6 +55,7 @@ export const listProjectWorkItemTypesProcedure = tenantProtectedProcedure
 				organizationId: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
+				projectManagementAdditionalContext: true,
 				projectManagementContainerId: true,
 			},
 		});
@@ -71,8 +73,9 @@ export const listProjectWorkItemTypesProcedure = tenantProtectedProcedure
 			};
 		}
 
-		const userMcpConfig = await resolvePMConfigForUser({
+		const userMcpConfig = await resolveProjectPmConfig({
 			configId: project.projectManagementMcpConfigId,
+			pmAdditionalContext: project.projectManagementAdditionalContext,
 			mcpServerId: project.projectManagementMcpServerId,
 			userId: user.id,
 			organizationId: project.organizationId || undefined,

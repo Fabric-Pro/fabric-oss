@@ -34,6 +34,9 @@ const ROADMAP_VIEW_MODES = ["table", "board", "plain", "priority"] as const;
 
 export type RoadmapViewMode = (typeof ROADMAP_VIEW_MODES)[number];
 
+/** The layout a user gets until they save one, and what Reset returns to. */
+export const DEFAULT_ROADMAP_MODE: RoadmapViewMode = "plain";
+
 function isRoadmapViewMode(value: unknown): value is RoadmapViewMode {
 	return ROADMAP_VIEW_MODES.some((mode) => mode === value);
 }
@@ -50,12 +53,12 @@ export const PRIORITY_VIEW_ENABLED =
 
 function coerceMode(value: unknown): RoadmapViewMode {
 	if (!isRoadmapViewMode(value)) {
-		return "table";
+		return DEFAULT_ROADMAP_MODE;
 	}
 	// A flag-disabled layout falls back to the default rather than stranding
 	// whoever had it saved on a view that no longer renders.
 	if (value === "priority" && !PRIORITY_VIEW_ENABLED) {
-		return "table";
+		return DEFAULT_ROADMAP_MODE;
 	}
 	return value;
 }
@@ -101,10 +104,12 @@ export const DEFAULT_ROADMAP_COLUMN_ORDER: RoadmapFieldKey[] = [
 	"sync",
 ];
 
-const DEFAULT_COLUMNS: RoadmapColumns = {
+/** Card-field visibility until a user saves their own, and what Reset returns
+ * to: everything but Size. */
+export const DEFAULT_ROADMAP_COLUMNS: RoadmapColumns = {
 	stage: true,
 	sync: true,
-	size: true,
+	size: false,
 	source: true,
 	tags: true,
 	flags: true,
@@ -171,9 +176,9 @@ type View = {
 };
 
 const DEFAULT_VIEW: View = {
-	mode: "table",
+	mode: DEFAULT_ROADMAP_MODE,
 	groupBy: "priority",
-	columns: DEFAULT_COLUMNS,
+	columns: DEFAULT_ROADMAP_COLUMNS,
 	columnOrder: [...DEFAULT_ROADMAP_COLUMN_ORDER],
 	sort: DEFAULT_ROADMAP_SORT,
 	showClosed: false,
@@ -200,7 +205,7 @@ function coerceView(raw: unknown): View {
 		)
 			? (parsed.groupBy as RoadmapGroupBy)
 			: "priority",
-		columns: { ...DEFAULT_COLUMNS, ...(parsed.columns ?? {}) },
+		columns: { ...DEFAULT_ROADMAP_COLUMNS, ...(parsed.columns ?? {}) },
 		columnOrder: sanitizeOrder(parsed.columnOrder),
 		// Sort is persisted like showClosed (immediate, per user + project).
 		// Validate on read so a stale/deprecated key silently falls back to the

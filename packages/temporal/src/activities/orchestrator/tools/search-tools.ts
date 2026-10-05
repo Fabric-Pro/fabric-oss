@@ -18,6 +18,8 @@ import { db } from "@repo/database";
 import { GITHUB_ACCOUNT, MICROSOFT_TEAMS_ACCOUNT } from "@repo/mcp-registry";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { getCapabilitiesByTenant } from "@repo/rag/lib/vector-store/capability-store";
+// Pure, import-free module shared with the workflow side.
+import { canonicalJson } from "../../../workflows/orchestrator/tool-result-progression";
 import { ingestOAuthIntegrationToolsActivity } from "../../oauth-tool-ingestion";
 import {
 	type CapabilityWithKeywords,
@@ -471,10 +473,12 @@ export async function fetchToolsFromExplicitServers(
 		}
 
 		try {
+			// Only lists the server's tools.
 			const result = await getMcpClient(
 				config.id,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (!result) {
 				console.warn(
@@ -587,10 +591,12 @@ export async function fetchToolsFromServerIds(
 		const serverName =
 			config.displayName || config.mcpServer?.name || config.id;
 		try {
+			// Only lists the server's tools.
 			const result = await getMcpClient(
 				config.id,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (!result) {
 				console.warn(
@@ -851,6 +857,40 @@ async function syncOAuthToolsIfNeeded(
  *
  * VERSION SYNC: Checks OAuth integration tools for version updates and re-ingests if needed.
  */
+/**
+ * Whether any cached Fabric AI tool's description or input schema differs
+ * from the code's definition. Compared as stored: the cache keeps the
+ * description and `inputSchema` exactly as indexed (tool-index.ts
+ * `createToolEntry` / `persistToQdrant`; capability-store returns the payload
+ * as is), except that a JSON round trip may reorder keys and drop undefined
+ * values — canonical JSON absorbs both. A cached tool the code no longer has
+ * also counts as a change; missing tools are caught by the count check.
+ */
+function fabricToolDefinitionsChanged(
+	current: FabricAiTool[],
+	cached: Array<{
+		toolName: string;
+		description: string;
+		inputSchema?: Record<string, unknown>;
+	}>,
+): boolean {
+	const fingerprint = (
+		description: string | undefined,
+		inputSchema: unknown,
+	): string => canonicalJson([description ?? "", inputSchema ?? null]);
+	const byName = new Map(
+		current.map((tool) => [
+			tool.name,
+			fingerprint(tool.description, tool.inputSchema),
+		]),
+	);
+	return cached.some(
+		(entry) =>
+			byName.get(entry.toolName) !==
+			fingerprint(entry.description, entry.inputSchema),
+	);
+}
+
 export async function ensureToolIndexBuilt(
 	userId: string,
 	organizationId: string | undefined,
@@ -904,13 +944,22 @@ export async function ensureToolIndexBuilt(
 		const hasSchemas = existingFabricTools.some(
 			(t) => t.inputSchema && Object.keys(t.inputSchema).length > 0,
 		);
+		// A changed description or schema at the same count (a new optional
+		// argument, say) must reach a tenant's cache too, or search_tools
+		// keeps serving the old definition from the Qdrant payload.
+		const definitionsChanged = fabricToolDefinitionsChanged(
+			fabricAiTools,
+			existingFabricTools,
+		);
 		const needsReindex =
 			existingFabricTools.length === 0 ||
 			existingFabricTools.length !== fabricAiTools.length ||
-			!hasSchemas; // Force re-index if schemas are missing
+			!hasSchemas || // Force re-index if schemas are missing
+			definitionsChanged;
 
 		if (fabricAiTools.length > 0 && needsReindex) {
-			// Fabric AI tools not in Qdrant yet OR count changed OR schemas missing - invalidate and re-add
+			// Fabric AI tools not in Qdrant yet OR count changed OR schemas
+			// missing OR a definition changed - invalidate and re-add
 			const reason =
 				existingFabricTools.length === 0
 					? "no existing tools"
@@ -918,7 +967,9 @@ export async function ensureToolIndexBuilt(
 						? "count mismatch"
 						: !hasSchemas
 							? "schemas missing (critical for LLM)"
-							: "unknown";
+							: definitionsChanged
+								? "definition changed"
+								: "unknown";
 			console.log(
 				`[SearchTools] Re-indexing Fabric AI tools (reason: ${reason}, existing: ${existingFabricTools.length}, new: ${fabricAiTools.length}, hasSchemas: ${hasSchemas})`,
 			);
@@ -987,10 +1038,12 @@ export async function ensureToolIndexBuilt(
 		}
 
 		try {
+			// Only lists the server's tools.
 			const result = await getMcpClient(
 				config.id,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (!result) {
 				console.warn(
@@ -1107,10 +1160,12 @@ export async function rebuildToolIndex(
 		}
 
 		try {
+			// Only lists the server's tools.
 			const result = await getMcpClient(
 				config.id,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (!result) {
 				console.warn(
@@ -1952,10 +2007,12 @@ export async function loadToolDefinitions(
 
 		// Otherwise, fetch from MCP server
 		try {
+			// Only reads the tool's schema.
 			const result = await getMcpClient(
 				entry.configId,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (!result) {
 				continue;

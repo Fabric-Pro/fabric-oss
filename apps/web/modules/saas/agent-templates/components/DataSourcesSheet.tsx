@@ -6,6 +6,7 @@
  * Uses actual integration icons from plugins
  */
 
+import { providerConnectedInIntegrationList } from "@saas/data-connections/lib/provider-connection-state";
 import { DatabricksIndexPicker } from "@saas/workflows/components/integrations/DatabricksIndexPicker";
 import { IntegrationBrandIcon } from "@saas/workflows/components/integrations/IntegrationBrandIcon";
 import {
@@ -164,10 +165,10 @@ export function DataSourcesSheet({
 		if (oauthProviders.includes(type as (typeof oauthProviders)[number])) {
 			return oauthStatuses?.[type] ?? false;
 		}
-		// Check workflow integrations for API key based providers
-		return configuredIntegrations.some(
-			(i) => i.provider === type && i.hasCredentials,
-		);
+		// Check workflow integrations for API key based providers. GitLab is
+		// the person's own connection, never a workflow-scoped credential
+		// (`provider-connection-state`).
+		return providerConnectedInIntegrationList(configuredIntegrations, type);
 	};
 
 	// Databricks Vector Search: once connected, discover the available

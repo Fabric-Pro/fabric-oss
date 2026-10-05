@@ -828,6 +828,26 @@ describe("emailed links bypass the intl middleware", () => {
 		).toBe(true);
 	});
 
+	it("leaves the CLI the deployment serves to the static file handler", () => {
+		// The locale middleware would rewrite `/cli/fabric-<v>.tgz` to
+		// `/en/cli/...`, which is no file, so `npx <url>` would get a page.
+		for (const url of [
+			"/cli/fabric-0.4.0.tgz",
+			"/cli/manifest.json",
+			"/.well-known/fabric-cli.json",
+		]) {
+			expect(
+				unstable_doesMiddlewareMatch({ config: proxyConfig, url }),
+			).toBe(false);
+		}
+		expect(
+			unstable_doesMiddlewareMatch({
+				config: proxyConfig,
+				url: "/clients",
+			}),
+		).toBe(true);
+	});
+
 	it("covers every path the server mails out on its own base URL", () => {
 		const found = emailedPaths();
 

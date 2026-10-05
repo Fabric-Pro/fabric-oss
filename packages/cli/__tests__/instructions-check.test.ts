@@ -41,6 +41,8 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
+	getOAuth: () => undefined,
+	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -333,6 +335,38 @@ describe("fabric instructions check", () => {
 		});
 	});
 
+	// A session hook's stdout is the agent's context at every session start:
+	// "nothing moved" would be repeated into every session for nothing.
+	it("says nothing as a session hook when the digest matches", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: {
+				id: "snap-2",
+				version: 7,
+				digest: "d".repeat(64),
+				fileCount: 2,
+				publishedAt: null,
+			},
+			unchanged: true,
+			changes: { added: [], removed: [], changed: [] },
+		});
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("");
+	});
+
 	it("lists what changed and how to apply it", async () => {
 		const dest = await makeTree();
 		await seedLock(dest, "c".repeat(64), {});
@@ -427,7 +461,10 @@ describe("--hook never fails", () => {
 	it("swallows a network failure into one line and exits 0", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockRejectedValue(
-			new Error("fetch failed: ECONNREFUSED"),
+			Object.assign(new Error("fetch failed: ECONNREFUSED"), {
+				status: 0,
+				code: "NETWORK_ERROR",
+			}),
 		);
 
 		const result = await runCli([
@@ -439,11 +476,37 @@ describe("--hook never fails", () => {
 			"--hook",
 		]);
 
+		// A fixed sentence that names the deployment, never the network
+		// library's own words.
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: fetch failed: ECONNREFUSED\n",
+			"fabric: coding instructions check skipped: Could not reach https://fabric.pro. Check your network and try again.\n",
 		);
 		expect(result.stdout).toBe("");
+	});
+
+	it("says there is no project for the checkout when the deployment does not know it", async () => {
+		const dest = await makeTree();
+		mocks.getPublished.mockRejectedValue(
+			Object.assign(new Error("Project not found: secret-name"), {
+				status: 404,
+			}),
+		);
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result).toEqual({
+			code: 0,
+			stdout: "",
+			stderr: "fabric: coding instructions check skipped: no project for this checkout\n",
+		});
 	});
 
 	it("swallows a missing API key instead of exiting 3", async () => {
@@ -459,10 +522,13 @@ describe("--hook never fails", () => {
 			"--hook",
 		]);
 
+		// The one failure the agent must hear about: on stdout, with the line
+		// that fixes it, and still exit 0.
 		expect(result.code).toBe(0);
-		expect(result.stderr).toContain(
-			"fabric: coding instructions check skipped: Not authenticated",
+		expect(result.stdout).toBe(
+			"fabric: coding instructions: not signed in to https://fabric.pro — run: fabric auth login --base-url https://fabric.pro --project project-1\n",
 		);
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).not.toHaveBeenCalled();
 	});
 
@@ -571,7 +637,9 @@ describe("--hook never fails", () => {
 		const elapsed = Date.now() - started;
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toMatch(/gave up after \d+ms/);
+		expect(result.stderr).toBe(
+			"fabric: coding instructions check skipped: gave up after 10 s\n",
+		);
 		// Comfortably inside Claude Code's own 15s hook timeout.
 		expect(elapsed).toBeLessThan(13_000);
 	}, 20_000);

@@ -107,13 +107,13 @@ beforeEach(() => {
 	mockGetProject.mockResolvedValue({
 		id: "p1",
 		userId: "user-1",
-		organizationId: null,
+		organizationId: "org-1",
 	});
 	mockUpdateProject.mockResolvedValue({ id: "p1" });
 	mockResolveAccess.mockResolvedValue({
-		source: "owner",
-		permissions: [],
-		organizationId: null,
+		source: "project-member",
+		permissions: ["PROJECT_UPDATE", "PROJECT_SETTINGS_EDIT"],
+		organizationId: "org-1",
 	});
 });
 

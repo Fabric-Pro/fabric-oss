@@ -20,6 +20,23 @@ vi.mock("sonner", () => ({
 }));
 
 /**
+ * The app's confirmation dialog, which is mounted once in the (saas) layout
+ * and so is absent here. The mock records what each action asked, and by
+ * default confirms, the way a person pressing the dialog's button would.
+ */
+const confirmMock = vi.hoisted(() => vi.fn());
+type ConfirmOptions = {
+	title: string;
+	message?: string;
+	confirmLabel?: string;
+	destructive?: boolean;
+	onConfirm: () => Promise<void> | void;
+};
+vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
+	useConfirmationAlert: () => ({ confirm: confirmMock }),
+}));
+
+/**
  * `t()` keeps echoing the KEY, so the mutation-wiring assertions above stay
  * key-based; only `t.raw()` resolves the real `en.json` object. The shared
  * mock in `vitest.setup.ts` returns the key from `t.raw` too, which would
@@ -248,7 +265,9 @@ describe("InstructionsHistory", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		compareInputs.length = 0;
-		vi.spyOn(window, "confirm").mockReturnValue(true);
+		confirmMock.mockImplementation((options: ConfirmOptions) =>
+			options.onConfirm(),
+		);
 	});
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -727,12 +746,25 @@ describe("InstructionsHistory", () => {
 			);
 			// `t()` echoes `key:values`, so this is the confirm copy with its
 			// version interpolated — the rollback wording, not the publish one.
-			expect(window.confirm).toHaveBeenCalledWith("rollbackConfirm:7");
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: "rollbackConfirm:7",
+					message: "rollbackConfirmBody",
+					confirmLabel: "rollbackConfirmAction",
+					destructive: true,
+				}),
+			);
 
 			await userEvent.click(
 				screen.getByRole("button", { name: "publishAction" }),
 			);
-			expect(window.confirm).toHaveBeenLastCalledWith("publishConfirm:9");
+			expect(confirmMock).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					title: "publishConfirm:9",
+					confirmLabel: "publishConfirmAction",
+					destructive: true,
+				}),
+			);
 		});
 
 		// Nothing published yet: no version is "earlier" than anything, so
@@ -786,7 +818,9 @@ describe("InstructionsHistory", () => {
 			await userEvent.click(
 				screen.getByRole("button", { name: "rollbackAction" }),
 			);
-			expect(window.confirm).toHaveBeenCalledWith("rollbackConfirm:7");
+			expect(confirmMock).toHaveBeenCalledWith(
+				expect.objectContaining({ title: "rollbackConfirm:7" }),
+			);
 		});
 	});
 
@@ -824,10 +858,11 @@ describe("InstructionsHistory", () => {
 		expect(screen.getByTestId("sync-runs")).toBeInTheDocument();
 	});
 
-	// Spec §4: while the repository is the source of truth the server refuses
-	// to publish an uploaded version, so its row offers no Publish; a synced
-	// version (including an earlier one, as a rollback) keeps it.
-	it("offers Publish only for synced versions on a repository-backed project", () => {
+	// Fizzy #2878 §10: Fabric's copy of a repository project follows its
+	// branch, so there is no version to publish, roll back to or delete by hand,
+	// whatever the member may do. (Commits is what such a project shows once its
+	// repository is confirmed; this is the list while that is not yet known.)
+	it("offers no Publish, Roll back or Delete on a repository-backed project, even to someone who may publish and delete", () => {
 		render(
 			<InstructionsHistory
 				projectId="p"
@@ -853,7 +888,7 @@ describe("InstructionsHistory", () => {
 				]}
 				publishedId="published"
 				publishedVersion={7}
-				canMutate={false}
+				canMutate
 				canPublish
 				repositoryBacked
 				onChanged={() => undefined}
@@ -861,10 +896,13 @@ describe("InstructionsHistory", () => {
 			{ wrapper: TestQueryProvider },
 		);
 		expect(
-			screen.getAllByRole("button", { name: "publishAction" }),
-		).toHaveLength(1);
+			screen.queryByRole("button", { name: "publishAction" }),
+		).toBeNull();
 		expect(
 			screen.queryByRole("button", { name: "rollbackAction" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "deleteAction" }),
 		).toBeNull();
 		expect(screen.getByText("versionLabel:9")).toBeTruthy();
 		expect(screen.getByText("versionLabel:8")).toBeTruthy();
@@ -916,7 +954,9 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		vi.clearAllMocks();
 		publishInputs.length = 0;
 		pendingPublish.resolve = null;
-		vi.spyOn(window, "confirm").mockReturnValue(true);
+		confirmMock.mockImplementation((options: ConfirmOptions) =>
+			options.onConfirm(),
+		);
 	});
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -939,7 +979,7 @@ describe("InstructionsHistory — deferred secret scan", () => {
 			expect(screen.getByText("flaggedDialogTitle")).toBeTruthy();
 			// Same version/direction copy the plain confirm would have shown.
 			expect(screen.getByText("rollbackConfirm:6")).toBeTruthy();
-			expect(window.confirm).not.toHaveBeenCalled();
+			expect(confirmMock).not.toHaveBeenCalled();
 			expect(publishInputs).toHaveLength(0);
 		},
 	);
@@ -1107,10 +1147,10 @@ describe("InstructionsHistory — deferred secret scan", () => {
 		await user.click(
 			screen.getByRole("button", { name: "rollbackAction" }),
 		);
-		// No dialog for a passed scan — the same window.confirm as any other
+		// No dialog for a passed scan — the same confirmation as any other
 		// row, and no flag sent.
 		expect(screen.queryByText("flaggedDialogTitle")).toBeNull();
-		expect(window.confirm).toHaveBeenCalled();
+		expect(confirmMock).toHaveBeenCalled();
 		await waitFor(() => expect(publishInputs).toHaveLength(1));
 		expect(publishInputs[0]).not.toHaveProperty("publishBeforeScan");
 	});
@@ -1243,7 +1283,9 @@ describe("InstructionsHistory: publishing from the page the person saw", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		publishInputs.length = 0;
-		vi.spyOn(window, "confirm").mockReturnValue(true);
+		confirmMock.mockImplementation((options: ConfirmOptions) =>
+			options.onConfirm(),
+		);
 	});
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -1343,8 +1385,11 @@ describe("InstructionsHistory: publishing from the page the person saw", () => {
 			screen.getByRole("button", { name: "rollbackAction" }),
 		);
 
-		expect(window.confirm).toHaveBeenCalledWith(
-			"rollbackConfirm:7 rollbackPendingNote:2",
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "rollbackConfirm:7",
+				message: "rollbackConfirmBody rollbackPendingNote:2",
+			}),
 		);
 	});
 
@@ -1359,7 +1404,10 @@ describe("InstructionsHistory: publishing from the page the person saw", () => {
 		await userEvent.click(
 			screen.getByRole("button", { name: "publishAction" }),
 		);
-		expect(window.confirm).toHaveBeenLastCalledWith("publishConfirm:9");
+		expect(confirmMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({ title: "publishConfirm:9" }),
+		);
+		expect(confirmMock.mock.lastCall?.[0]).not.toHaveProperty("message");
 	});
 
 	it("counts a repository sync run that has not staged its snapshot yet", async () => {
@@ -1371,8 +1419,128 @@ describe("InstructionsHistory: publishing from the page the person saw", () => {
 			screen.getByRole("button", { name: "rollbackAction" }),
 		);
 
-		expect(window.confirm).toHaveBeenCalledWith(
-			"rollbackConfirm:7 rollbackPendingNote:1",
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "rollbackConfirm:7",
+				message: "rollbackConfirmBody rollbackPendingNote:1",
+			}),
+		);
+	});
+});
+
+describe("InstructionsHistory: deleting a version", () => {
+	function renderDeletable(onChanged = vi.fn()) {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					{
+						id: "ok",
+						version: 5,
+						status: "READY",
+						source: "UPLOAD",
+						fileCount: 3,
+						createdAt: new Date(),
+					},
+				]}
+				publishedId="published"
+				publishedVersion={7}
+				canMutate
+				onChanged={onChanged}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+		return onChanged;
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		confirmMock.mockImplementation((options: ConfirmOptions) =>
+			options.onConfirm(),
+		);
+	});
+
+	it("asks in the app's own dialog, destructively, and says it cannot be undone", async () => {
+		const onChanged = renderDeletable();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "deleteAction" }),
+		);
+
+		expect(confirmMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				title: "deleteConfirm:5",
+				message: "deleteConfirmBody",
+				confirmLabel: "deleteConfirmAction",
+				destructive: true,
+			}),
+		);
+		await waitFor(() => expect(onChanged).toHaveBeenCalled());
+	});
+
+	// jsdom does not lay anything out. A device sweep at 375px found this row's
+	// actions (Roll back, Download, Compare, Delete) in one unwrappable,
+	// non-shrinking line that ran off the dialog's right edge.
+	it("lets a version row's actions wrap and the row stack on a narrow screen", () => {
+		renderDeletable();
+
+		const actions = screen.getByRole("button", {
+			name: "deleteAction",
+		}).parentElement;
+		expect(actions?.className).toContain("flex-wrap");
+		expect(actions?.className).not.toContain("shrink-0");
+		expect(actions?.parentElement?.className).toContain("flex-col");
+		expect(actions?.parentElement?.className).toContain("sm:flex-row");
+	});
+
+	it("deletes nothing when the dialog is dismissed", async () => {
+		confirmMock.mockImplementation(() => undefined);
+		const onChanged = renderDeletable();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "deleteAction" }),
+		);
+
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(onChanged).not.toHaveBeenCalled();
+	});
+});
+
+describe("InstructionsHistory: what the dialog is called", () => {
+	function renderTitled(repositoryBacked: boolean) {
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[]}
+				publishedId={null}
+				publishedVersion={null}
+				repositoryBacked={repositoryBacked}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+	}
+
+	it("calls an upload project's list Versions, not 'Upload history'", () => {
+		renderTitled(false);
+
+		expect(screen.getByText("title")).toBeTruthy();
+		expect(screen.getByText("description")).toBeTruthy();
+		expect(en.projects.codingInstructions.history.title).toBe("Versions");
+	});
+
+	it("calls a repository project's list Synced versions, because none of them was uploaded", () => {
+		renderTitled(true);
+
+		expect(screen.getByText("titleRepository")).toBeTruthy();
+		expect(screen.getByText("descriptionRepository")).toBeTruthy();
+		expect(en.projects.codingInstructions.history.titleRepository).toBe(
+			"Synced versions",
 		);
 	});
 });

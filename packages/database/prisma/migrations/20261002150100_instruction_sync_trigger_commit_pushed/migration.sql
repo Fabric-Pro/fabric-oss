@@ -1,0 +1,16 @@
+-- AlterEnum
+-- The sync trigger a direct commit dispatches after it pushed to the synced
+-- branch (Fizzy #2878 §10), so the published copy confirms against the new
+-- tip. Not an automatic trigger: like PULL_REQUEST_MERGED it is not skipped
+-- when automatic sync is off, and a pause still stops it.
+--
+-- Alone in its own migration: a value added by ALTER TYPE cannot be used in
+-- the transaction that adds it, and nothing may use this one before it has
+-- committed. Additive, with one hazard: a client from before this migration
+-- that selects "trigger" throws on a run row carrying the new value (its
+-- generated enum does not know it), it does not skip the row. Only the run a
+-- direct commit or a revert starts writes the value, and only code that ships
+-- with this migration does, so the exposure is an older replica during a
+-- rolling deploy reading the sync history a newer replica wrote. The value
+-- cannot be removed while a run row holds it.
+ALTER TYPE "ProjectInstructionSyncTrigger" ADD VALUE 'COMMIT_PUSHED';

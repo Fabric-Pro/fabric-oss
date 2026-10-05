@@ -6,10 +6,21 @@
  * from project integrations and calls the code search APIs.
  */
 
-import type {
-	RepoCredentialRow,
-	ResolvedRepoToken,
+import type { RepositoryStructure } from "@repo/connectors";
+// Static, not `await import(...)`: the worker runs under tsx, where a dynamic
+// import of an ES-module package (@repo/integrations) fails to link any named
+// import it takes from a CommonJS package such as @repo/database. A static
+// import compiles to require() and loads. Guarded by
+// src/__tests__/worker-dynamic-imports.test.ts.
+import { getGitHubAccessToken } from "@repo/integrations/github";
+import {
+	type RepoCredentialRow,
+	type ResolvedRepoToken,
+	resolveFreshRepoTokenForRow,
 } from "@repo/integrations/repo-auth";
+// Plain constants module (no imports): ties the listing budget to the
+// chat loop's result cap.
+import { TOOL_RESULTS } from "../../../../workflows/orchestrator/orchestrator-config";
 import { codeIndexUnavailableResult } from "../../../direct-chat/code-search-repositories";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
@@ -18,6 +29,55 @@ import type {
 	StepHandler,
 	ToolCallRecord,
 } from "./types";
+
+/**
+ * Character budget for one `code_tree` result. The chat loop shows a tool
+ * result whole only up to `TOOL_RESULTS.maxChars` and summarizes anything
+ * longer, which loses the range line and next offset. The 2,000 characters
+ * of margin cover the adapter's `{ error }` / JSON envelope and the notes.
+ */
+const CODE_TREE_OUTPUT_BUDGET = TOOL_RESULTS.maxChars - 2_000;
+
+/**
+ * Character budget for the failed-repository list in a `code_search` result
+ * that also carries matches, which the handler does not otherwise bound.
+ */
+const CODE_SEARCH_FAILURE_NOTE_BUDGET = 1_500;
+
+/** Tools whose `repo` argument must name a repository connected here. */
+const REPO_FILTERED_TOOLS = new Set([
+	"code_search",
+	"code_file_get",
+	"code_tree",
+]);
+
+/**
+ * An error's class name for logs, and nothing else from it: messages and
+ * stacks can carry tokens. Anything not a plain identifier is "Error".
+ */
+function errorClassName(error: unknown): string {
+	const name = error instanceof Error ? error.name : typeof error;
+	return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : "Error";
+}
+
+/**
+ * A repository reference as lower-cased `owner/name`, or a bare `name`.
+ * A URL — GitHub, `dev.azure.com`, or legacy `<org>.visualstudio.com` —
+ * goes through the shared `parseRepoUrl` (@repo/database), which gives the
+ * owner the connected rows store (the organization for Azure DevOps).
+ */
+function normalizeRepoRef(
+	ref: string,
+	parseRepoUrl: (url: string) => { owner: string; name: string } | null,
+): string {
+	const value = ref.trim();
+	if (/^[a-z][a-z\d+.-]*:\/\//i.test(value) || /^git@/i.test(value)) {
+		const parsed = parseRepoUrl(value);
+		return parsed ? `${parsed.owner}/${parsed.name}`.toLowerCase() : "";
+	}
+	const lowered = value.toLowerCase();
+	return lowered.endsWith(".git") ? lowered.slice(0, -4) : lowered;
+}
 
 const CODE_SEARCH_TOOLS = new Set([
 	"code_search",
@@ -58,12 +118,14 @@ export class CodeSearchHandler implements StepHandler {
 				output,
 			};
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
-			console.error("[CodeSearchHandler] Failed:", error);
+			// Class name only: the message can carry a token or a URL with one.
+			console.error("[CodeSearchHandler] Failed", {
+				toolName,
+				errorClass: errorClassName(error),
+			});
 			return {
 				handled: false,
-				error: `Code search ${toolName} failed: ${errorMessage}`,
+				error: `Code search ${toolName} failed unexpectedly; try again shortly.`,
 				shouldFallback: false,
 			};
 		}
@@ -207,17 +269,12 @@ export class CodeSearchHandler implements StepHandler {
 			};
 		}
 
-		// Dynamic imports to avoid circular dependencies
+		// Dynamic imports to avoid circular dependencies. The
+		// @repo/integrations readers are imported statically above: see there.
 		const { db, getProjectReposForCodeSearch, parseRepoUrl } = await import(
 			"@repo/database"
 		);
 		const { decryptApiKey } = await import("@repo/utils");
-		const { resolveFreshRepoTokenForRow } = await import(
-			"@repo/integrations/repo-auth"
-		);
-		const { getGitHubAccessToken } = await import(
-			"@repo/integrations/github"
-		);
 		const {
 			searchRepositoryCode,
 			getRepositoryFile,
@@ -225,7 +282,11 @@ export class CodeSearchHandler implements StepHandler {
 		} = await import("@repo/connectors");
 
 		// Resolve credentials for all connected repositories
-		const allRepoParams = await resolveAllCredentials(
+		const {
+			readable: allRepoParams,
+			connected,
+			legacyLookupFailed,
+		} = await resolveAllCredentials(
 			projectId,
 			input.userId,
 			input.organizationId,
@@ -239,35 +300,132 @@ export class CodeSearchHandler implements StepHandler {
 			},
 		);
 
-		if (allRepoParams.length === 0) {
-			const result =
-				"No repository credentials found. Connect a repository in project settings or set up a GitHub integration.";
+		// A failed step whose message is the full sentence: the chat's catalog
+		// adapter reports a failed step by this result, so it is what the
+		// model is told.
+		const failStep = (message: string): ExecuteStepOutput => {
 			toolCalls.push({
 				id: `code-search-${Date.now()}`,
 				name: toolName,
 				args: stepInputs ?? {},
-				result: { message: "No credentials" },
+				result: { message },
 				status: "error",
 				durationMs: Date.now() - startTime,
 			});
 			return {
-				outputs: { response: result, toolResults: toolCalls },
+				outputs: { response: message, toolResults: toolCalls },
 				variables: {},
 				toolCalls,
-				response: result,
+				response: message,
 			};
+		};
+
+		// A failed lookup of the legacy repository proves nothing about what
+		// is connected, so no answer here may conclude a repository is absent.
+		const LOOKUP_FAILED =
+			"Could not check this project's repository connections; try again shortly.";
+
+		if (connected.length === 0) {
+			if (legacyLookupFailed) {
+				return failStep(LOOKUP_FAILED);
+			}
+			return failStep(
+				"No repository credentials found. Connect a repository in project settings or set up a GitHub integration.",
+			);
 		}
 
-		// Helper: find repos matching an optional owner/repo filter
+		// Repository references compared case-insensitively: `owner/name`, a
+		// bare name, or a URL through the shared parser.
+		const matchesRef = (
+			repoFilter: string,
+			ref: { owner: string; repo: string },
+		): boolean => {
+			const wanted = normalizeRepoRef(repoFilter, parseRepoUrl);
+			// An unparseable URL matches nothing (never "every repository").
+			if (!wanted) {
+				return false;
+			}
+			return wanted.includes("/")
+				? `${ref.owner}/${ref.repo}`.toLowerCase() === wanted
+				: ref.repo.toLowerCase() === wanted;
+		};
+		const unusableReason = (repo: ConnectedRepo): string =>
+			repo.status === "unsupported"
+				? "its provider is not supported for code reads."
+				: "its credentials could not be used. Reconnect it in the project's repository settings.";
+		const describeUnusable = (repo: ConnectedRepo): string =>
+			`Repository ${repo.owner}/${repo.repo} is connected to this project, but ${unusableReason(repo)}`;
+
+		// Membership is the project's own repository rows (`connected`), kept
+		// apart from the readable set: a repository whose credentials failed
+		// is still connected, and is reported as unreadable, not missing.
+		const requestedRepo =
+			typeof stepInputs?.repo === "string" ? stepInputs.repo.trim() : "";
+		if (REPO_FILTERED_TOOLS.has(toolName) && requestedRepo) {
+			const named = connected.filter((c) => matchesRef(requestedRepo, c));
+			if (named.length === 0) {
+				if (legacyLookupFailed) {
+					return failStep(LOOKUP_FAILED);
+				}
+				return failStep(
+					`Repository ${requestedRepo} is not connected to this project. Connected: ${connected
+						.map((c) => `${c.owner}/${c.repo}`)
+						.join(", ")}.`,
+				);
+			}
+			if (!named.some((c) => c.status === "readable")) {
+				return failStep(
+					named.length === 1
+						? describeUnusable(named[0])
+						: `Repository ${requestedRepo} is connected to this project, but none of its matches could be read. Reconnect it in the project's repository settings.`,
+				);
+			}
+		}
+
+		if (allRepoParams.length === 0 && legacyLookupFailed) {
+			return failStep(LOOKUP_FAILED);
+		}
+		if (allRepoParams.length === 0) {
+			// Each connected repository with its own reason (credentials or
+			// provider), bounded like every other list here.
+			return failStep(
+				connected.length === 1
+					? describeUnusable(connected[0])
+					: `None of this project's connected repositories could be read. ${boundedList(
+							connected.map(describeUnusable),
+							" ",
+							CODE_TREE_OUTPUT_BUDGET - 200,
+						)}`,
+			);
+		}
+
+		// Helper: find repos matching an optional repository filter —
+		// `owner/name`, a bare name or a URL, compared case-insensitively.
 		const filterRepos = (repoFilter?: string): ResolvedParams[] => {
-			if (!repoFilter) {
+			if (!repoFilter?.trim()) {
 				return allRepoParams;
 			}
-			const [filterOwner, filterRepo] = repoFilter.split("/");
-			return allRepoParams.filter(
-				(r) => r.owner === filterOwner && r.repo === filterRepo,
-			);
+			return allRepoParams.filter((r) => matchesRef(repoFilter, r));
 		};
+
+		// Connected repositories in scope that cannot be read at all (their
+		// credentials failed, or their provider is unsupported). They are
+		// never in `allRepoParams`, so `filterRepos` skips them: without this
+		// an unfiltered call would answer "no matches" / "not found" for
+		// repositories it never looked in. Same `owner/name: reason` shape as
+		// a read that failed, so the notes read alike. A readable repository
+		// is never listed here, so none is reported twice.
+		const unusableInScope = (repoFilter?: string): string[] =>
+			connected
+				.filter(
+					(c) =>
+						c.status !== "readable" &&
+						(!repoFilter?.trim() || matchesRef(repoFilter, c)),
+				)
+				.map(
+					(c) =>
+						`${c.owner}/${c.repo}: connected to this project, but ${unusableReason(c)}`,
+				);
 
 		// Helper: prefix path with owner/repo when multiple repos are in scope
 		const isMultiRepo = allRepoParams.length > 1;
@@ -297,18 +455,29 @@ export class CodeSearchHandler implements StepHandler {
 				const repoFilter = stepInputs?.repo as string | undefined;
 				const targetRepos = filterRepos(repoFilter);
 				const apiResults: string[] = [];
+				// A repository whose search failed, with the reason. Reporting
+				// it as "no matches" would tell the model the code does not
+				// exist when it was never searched.
+				const searchFailures: string[] = [];
 				let indexedResults: string[] = [];
+				const apiSearchRan =
+					mode !== "indexed" && targetRepos.length > 0;
+				// Repositories the API search actually completed on.
+				let reposSearchedOk = 0;
 
 				// API search across all repos in parallel
-				if (mode !== "indexed" && targetRepos.length > 0) {
+				if (apiSearchRan) {
 					const maxPerRepo = Math.max(
 						3,
 						Math.floor(10 / targetRepos.length),
 					);
 					const searchPromises = targetRepos.map(
-						async (repoParams) => {
+						async (
+							repoParams,
+						): Promise<{ lines: string[]; failure?: string }> => {
+							const repoName = `${repoParams.owner}/${repoParams.repo}`;
 							try {
-								const searchResults =
+								const { results: searchResults, error } =
 									await searchRepositoryCode({
 										...repoParams,
 										query,
@@ -320,22 +489,38 @@ export class CodeSearchHandler implements StepHandler {
 											| undefined,
 										maxResults: maxPerRepo,
 									});
-								return searchResults.map((r) => {
-									const snippets =
-										r.matchedSnippets.length > 0
-											? r.matchedSnippets.join("\n---\n")
-											: "(no preview)";
-									const tagPrefix = repoParams.roleTag
-										? `${repoParams.roleTag}: `
-										: "";
-									return `### ${tagPrefix}${prefixPath(repoParams, r.filePath)}\n${snippets}`;
-								});
+								if (error) {
+									return {
+										lines: [],
+										failure: `${repoName}: ${error.message}`,
+									};
+								}
+								return {
+									lines: searchResults.map((r) => {
+										const snippets =
+											r.matchedSnippets.length > 0
+												? r.matchedSnippets.join(
+														"\n---\n",
+													)
+												: "(no preview)";
+										const tagPrefix = repoParams.roleTag
+											? `${repoParams.roleTag}: `
+											: "";
+										return `### ${tagPrefix}${prefixPath(repoParams, r.filePath)}\n${snippets}`;
+									}),
+								};
 							} catch (error) {
 								console.warn(
-									`[CodeSearchHandler] Search failed for ${repoParams.owner}/${repoParams.repo}:`,
-									error,
+									"[CodeSearchHandler] Search threw",
+									{
+										repo: repoName,
+										errorClass: errorClassName(error),
+									},
 								);
-								return [];
+								return {
+									lines: [],
+									failure: `${repoName}: the search failed unexpectedly; try again shortly.`,
+								};
 							}
 						},
 					);
@@ -343,9 +528,17 @@ export class CodeSearchHandler implements StepHandler {
 						await Promise.allSettled(searchPromises);
 					for (const r of resultsPerRepo) {
 						if (r.status === "fulfilled") {
-							apiResults.push(...r.value);
+							apiResults.push(...r.value.lines);
+							if (r.value.failure) {
+								searchFailures.push(r.value.failure);
+							} else {
+								reposSearchedOk += 1;
+							}
 						}
 					}
+					// Connected but unusable repositories were not searched
+					// either.
+					searchFailures.push(...unusableInScope(repoFilter));
 				}
 
 				// Indexed search — skip when a specific repo filter is set
@@ -369,10 +562,40 @@ export class CodeSearchHandler implements StepHandler {
 
 				const allResults = [...apiResults, ...indexedResults];
 
-				if (allResults.length === 0) {
-					result = `No code matches found for "${query}".`;
+				// Failed only when nothing was found anywhere and no
+				// repository could be searched. Some repositories failing is a
+				// partial answer, said so below.
+				const failed =
+					apiSearchRan &&
+					allResults.length === 0 &&
+					searchFailures.length > 0 &&
+					reposSearchedOk === 0;
+
+				if (failed) {
+					result = `Could not search for "${query}". ${boundedList(
+						searchFailures,
+						" ",
+						CODE_TREE_OUTPUT_BUDGET - 200,
+					)} This is a search failure, not proof that the code does not exist.`;
+				} else if (allResults.length === 0) {
+					result =
+						searchFailures.length > 0
+							? `No code matches found for "${query}" in the repositories that could be searched. Could not search ${boundedList(
+									searchFailures,
+									" ",
+									CODE_SEARCH_FAILURE_NOTE_BUDGET,
+								)} That is a search failure for those repositories, not proof that the code does not exist there.`
+							: `No code matches found for "${query}".`;
 				} else {
-					result = `Found ${allResults.length} code matches across ${targetRepos.length} repo(s):\n\n${allResults.join("\n\n")}`;
+					const failureNote =
+						searchFailures.length > 0
+							? `\n\nCould not search ${boundedList(
+									searchFailures,
+									" ",
+									CODE_SEARCH_FAILURE_NOTE_BUDGET,
+								)}`
+							: "";
+					result = `Found ${allResults.length} code matches across ${targetRepos.length} repo(s):\n\n${allResults.join("\n\n")}${failureNote}`;
 				}
 
 				toolCalls.push({
@@ -384,13 +607,22 @@ export class CodeSearchHandler implements StepHandler {
 						mode,
 						repo: repoFilter,
 					},
-					result: {
-						totalCount: allResults.length,
-						apiCount: apiResults.length,
-						indexedCount: indexedResults.length,
-						reposSearched: targetRepos.length,
-					},
-					status: "success",
+					// A failed step is reported by this message, so it holds
+					// the full sentence.
+					result: failed
+						? { message: result }
+						: {
+								totalCount: allResults.length,
+								apiCount: apiResults.length,
+								indexedCount: indexedResults.length,
+								reposSearched: apiSearchRan
+									? reposSearchedOk
+									: targetRepos.length,
+								...(searchFailures.length > 0
+									? { failedRepos: searchFailures.length }
+									: {}),
+							},
+					status: failed ? "error" : "success",
 					durationMs: Date.now() - apiStartTime,
 				});
 				break;
@@ -428,7 +660,11 @@ export class CodeSearchHandler implements StepHandler {
 						result = `Found ${semanticResults.length} semantic code matches:\n\n${semanticResults.join("\n\n")}`;
 					}
 				} catch (error) {
-					result = `Semantic code search unavailable: ${error instanceof Error ? error.message : error}. Use code_search for API-based search.`;
+					console.warn("[CodeSearchHandler] Semantic search threw", {
+						errorClass: errorClassName(error),
+					});
+					result =
+						"Semantic code search is unavailable right now. Use code_search for API-based search.";
 				}
 
 				toolCalls.push({
@@ -451,14 +687,41 @@ export class CodeSearchHandler implements StepHandler {
 				const repoFilter = stepInputs?.repo as string | undefined;
 				const targetRepos = filterRepos(repoFilter);
 
-				// Try each repo until file is found
+				// Try each repo until file is found. A repo that refused or
+				// failed the read is remembered with its reason: reporting it as
+				// "not found" would send the model looking for a file that may
+				// well exist. A folder at the path is remembered too.
 				let found = false;
+				const readFailures: string[] = [];
+				let nonFile:
+					| {
+							repoParams: ResolvedParams;
+							objectType: "dir" | "symlink" | "submodule";
+					  }
+					| undefined;
 				for (const repoParams of targetRepos) {
+					const repoName = `${repoParams.owner}/${repoParams.repo}`;
 					try {
 						const file = await getRepositoryFile({
 							...repoParams,
 							path: filePath,
 						});
+
+						if (file.error) {
+							if (file.error.kind === "not_a_file") {
+								nonFile ??= {
+									repoParams,
+									// Older readers set no type: a folder was
+									// the only case they reported.
+									objectType: file.error.objectType ?? "dir",
+								};
+							} else if (file.error.kind !== "not_found") {
+								readFailures.push(
+									`${repoName}: ${file.error.message}`,
+								);
+							}
+							continue;
+						}
 
 						if (file.content || file.isBinary) {
 							if (file.isBinary) {
@@ -472,10 +735,7 @@ export class CodeSearchHandler implements StepHandler {
 							toolCalls.push({
 								id: `code-file-${Date.now()}`,
 								name: toolName,
-								args: {
-									path: filePath,
-									repo: `${repoParams.owner}/${repoParams.repo}`,
-								},
+								args: { path: filePath, repo: repoName },
 								result: {
 									path: file.path,
 									size: file.size,
@@ -487,17 +747,84 @@ export class CodeSearchHandler implements StepHandler {
 							found = true;
 							break;
 						}
-					} catch {
-						// File not in this repo, try next
+
+						// Read succeeded with no error and no bytes: the file
+						// exists and is empty.
+						result = `File ${prefixPath(repoParams, file.path)} exists and is empty (0 bytes).`;
+						toolCalls.push({
+							id: `code-file-${Date.now()}`,
+							name: toolName,
+							args: { path: filePath, repo: repoName },
+							result: {
+								path: file.path,
+								size: 0,
+								isBinary: false,
+							},
+							status: "success",
+							durationMs: Date.now() - apiStartTime,
+						});
+						found = true;
+						break;
+					} catch (error) {
+						console.warn("[CodeSearchHandler] File read threw", {
+							repo: repoName,
+							errorClass: errorClassName(error),
+						});
+						readFailures.push(
+							`${repoName}: the read failed unexpectedly; try again shortly.`,
+						);
 					}
 				}
-				if (!found) {
-					result = `File ${filePath} not found in any connected repository.`;
+				if (!found && nonFile) {
+					// Not a failure: the path exists, as something other than
+					// a regular file. Only a folder can be listed — code_tree's
+					// directory argument lists exactly its entries.
+					const where = prefixPath(nonFile.repoParams, filePath);
+					const isDirectory = nonFile.objectType === "dir";
+					result = isDirectory
+						? `${where} is a directory, not a file — list its entries with code_tree (directory="${filePath}"), paging with offset if the listing continues.`
+						: nonFile.objectType === "symlink"
+							? `${where} is a symbolic link, not a regular file, so it has no content to read here.`
+							: `${where} is a git submodule (a pointer to another repository), not a regular file, so it has no content to read here.`;
+					toolCalls.push({
+						id: `code-file-${Date.now()}`,
+						name: toolName,
+						args: {
+							path: filePath,
+							repo: `${nonFile.repoParams.owner}/${nonFile.repoParams.repo}`,
+						},
+						result: isDirectory
+							? { path: filePath, isDirectory: true }
+							: {
+									path: filePath,
+									objectType: nonFile.objectType,
+								},
+						status: "success",
+						durationMs: Date.now() - apiStartTime,
+					});
+				} else if (!found) {
+					// Repositories the read was attempted in and failed, counted
+					// before the unreadable ones are added: only the former can
+					// say the file was missing from the others.
+					const failedChecks = readFailures.length;
+					readFailures.push(...unusableInScope(repoFilter));
+					result =
+						readFailures.length > 0
+							? `Could not read ${filePath}. ${readFailures.join(" ")}${
+									failedChecks < targetRepos.length
+										? " The file was not found in the other connected repositories."
+										: ""
+								} This is a read failure, not proof that the file does not exist.`
+							: legacyLookupFailed
+								? `File ${filePath} not found in the repositories that could be checked.`
+								: `File ${filePath} not found in any connected repository.`;
 					toolCalls.push({
 						id: `code-file-${Date.now()}`,
 						name: toolName,
 						args: { path: filePath, repo: repoFilter },
-						result: { message: "Not found" },
+						// The full sentence: the catalog adapter reports a failed
+						// step by this result, so it is what the model is told.
+						result: { message: result },
 						status: "error",
 						durationMs: Date.now() - apiStartTime,
 					});
@@ -507,69 +834,255 @@ export class CodeSearchHandler implements StepHandler {
 
 			case "code_tree": {
 				const repoFilter = stepInputs?.repo as string | undefined;
+				const directory = stepInputs?.directory as string | undefined;
 				const targetRepos = filterRepos(repoFilter);
-				const treeResults: string[] = [];
+				const listFailures: string[] = [];
+				const listed: Array<{
+					repoParams: ResolvedParams;
+					structure: ListedTree;
+				}> = [];
 				let totalFiles = 0;
 				let totalDirs = 0;
+				let pastEnd = false;
 
+				// `offset` skips entries already shown, so a listing larger than
+				// a page can be read to the end instead of stopping at its first
+				// slice.
+				const offset = readListingOffset(stepInputs?.offset);
+				// `depth` keeps a large repository's top levels to a page or
+				// two; without it they are spread through the whole listing.
+				const depth = readListingDepth(stepInputs?.depth);
 				const maxEntriesPerRepo = Math.max(
 					100,
-					Math.floor(500 / targetRepos.length),
+					Math.floor(500 / Math.max(1, targetRepos.length)),
 				);
 
 				for (const repoParams of targetRepos) {
+					const repoName = `${repoParams.owner}/${repoParams.repo}`;
 					try {
-						const structure = await listRepositoryStructure({
+						const fetched = await listRepositoryStructure({
 							...repoParams,
-							directory: stepInputs?.directory as
-								| string
-								| undefined,
+							directory,
 						});
-
-						if (structure.entries.length > 0) {
-							const repoHeader = isMultiRepo
-								? `\n## ${repoParams.owner}/${repoParams.repo}\n`
-								: "";
-							const tree = structure.entries
-								.slice(0, maxEntriesPerRepo)
-								.map((e) => {
-									const icon =
-										e.type === "directory" ? "📁" : "📄";
-									return `${icon} ${e.path}`;
-								})
-								.join("\n");
-							const truncNote = structure.truncated
-								? "\n(Tree was truncated)"
-								: "";
-							treeResults.push(
-								`${repoHeader}${tree}${truncNote}`,
+						const structure =
+							depth === undefined || fetched.error
+								? fetched
+								: limitTreeDepth(fetched, directory, depth);
+						if (structure.error) {
+							listFailures.push(
+								`${repoName}: ${structure.error.message}`,
 							);
-							totalFiles += structure.totalFiles;
-							totalDirs += structure.totalDirectories;
+							continue;
 						}
+						totalFiles += structure.totalFiles;
+						totalDirs += structure.totalDirectories;
+						listed.push({ repoParams, structure });
 					} catch (error) {
-						console.warn(
-							`[CodeSearchHandler] Tree listing failed for ${repoParams.owner}/${repoParams.repo}:`,
-							error,
+						console.warn("[CodeSearchHandler] Tree listing threw", {
+							repo: repoName,
+							errorClass: errorClassName(error),
+						});
+						listFailures.push(
+							`${repoName}: the listing failed unexpectedly; try again shortly.`,
 						);
 					}
 				}
 
-				if (treeResults.length === 0) {
-					result = "No files found in connected repositories.";
+				// Connected but unusable repositories were not listed either.
+				listFailures.push(...unusableInScope(repoFilter));
+
+				const depthNote =
+					depth === undefined
+						? ""
+						: `, ${depth === 1 ? "1 level" : `${depth} levels`} deep`;
+				const preamble = `Repository structure — a directory listing of paths, not file contents (${totalFiles} files, ${totalDirs} dirs across ${targetRepos.length} repo(s)${depthNote}). Read a file with code_file_get.\n\n`;
+				const shown = listed.filter(
+					({ structure }) =>
+						structure.entries.length > 0 || structure.truncated,
+				);
+				// Room kept for the closing notes (repositories left out,
+				// listings that failed), so they never push the result over
+				// the budget either.
+				const tailReserve = Math.min(
+					3_000,
+					300 + 120 * (shown.length + listFailures.length),
+				);
+				// This listing's own arguments, which the advice for a
+				// repository left out repeats so its separate request shows
+				// the view its count describes. Stated once, outside the
+				// bounded list of repositories, and reserved on top of the
+				// notes; an overlong one is named rather than echoed.
+				const listingArgs = [
+					...(directory ? [`directory="${directory}"`] : []),
+					...(depth === undefined ? [] : [`depth=${depth}`]),
+					...(offset > 0 ? [`offset=${offset}`] : []),
+				].join(", ");
+				const sharedArgs = !listingArgs
+					? ""
+					: listingArgs.length <= 300
+						? ` (${listingArgs})`
+						: " with the same directory, depth and offset as this request";
+				const available =
+					CODE_TREE_OUTPUT_BUDGET -
+					preamble.length -
+					tailReserve -
+					sharedArgs.length;
+
+				/**
+				 * One repository's block within `share` characters, or null
+				 * when not even its range line and first entry fit.
+				 */
+				const renderBlock = (
+					repoParams: ResolvedParams,
+					structure: ListedTree,
+					share: number,
+				): string | null => {
+					const repoName = `${repoParams.owner}/${repoParams.repo}`;
+					const repoHeader = isMultiRepo ? `## ${repoName}\n` : "";
+					const total = structure.entries.length;
+					// GitHub returns the whole recursive tree and `directory`
+					// is filtered here, so narrowing cannot reach entries a
+					// truncated tree left out; Azure DevOps fetches the subtree
+					// itself (`scopePath`), so narrowing there does.
+					const fetchesSubtree =
+						repoParams.provider === "AZURE_DEVOPS";
+					const providerNote = structure.truncated
+						? fetchesSubtree
+							? "\nThe provider truncated this tree, so the listing and its counts are incomplete. Narrow it with directory to fetch a smaller subtree."
+							: "\nThe provider truncated this repository's tree, so the listing and its counts are incomplete; the entries it left out cannot be listed here."
+						: "";
+					const narrowHint =
+						(structure.truncated && !fetchesSubtree
+							? ""
+							: ", or narrow it with directory") +
+						(depth === undefined
+							? ". For an overview, depth=1 lists only the top level"
+							: "");
+					const fits = (block: string) =>
+						block.length <= share ? block : null;
+
+					if (total === 0) {
+						// Only a truncated tree gets here: an empty, complete
+						// listing is not "shown".
+						return fits(
+							`${repoHeader}No entries${directory ? ` under ${directory}` : ""} in the part of the tree the provider returned.${providerNote}`,
+						);
+					}
+					if (offset >= total) {
+						pastEnd = true;
+						return fits(
+							`${repoHeader}Offset ${offset} is past the end of this listing (${total} entries).${providerNote}`,
+						);
+					}
+					const continueWith = (end: number) =>
+						[
+							`offset=${end}`,
+							...(directory ? [`directory="${directory}"`] : []),
+							...(depth === undefined ? [] : [`depth=${depth}`]),
+							...(isMultiRepo ? [`repo="${repoName}"`] : []),
+						].join(", ");
+					const rangeLine = (end: number) =>
+						end < total
+							? `Showing entries ${offset + 1}–${end} of ${total}. The listing continues: call code_tree again with ${continueWith(end)} for the next entries${narrowHint}.`
+							: `Showing entries ${offset + 1}–${end} of ${total} (end of listing).`;
+					// Reserve the longest range line this page could need.
+					const entryBudget =
+						share -
+						repoHeader.length -
+						rangeLine(offset + 1).length -
+						String(total).length -
+						providerNote.length -
+						1;
+					const lines: string[] = [];
+					let used = 0;
+					for (const e of structure.entries.slice(
+						offset,
+						offset + maxEntriesPerRepo,
+					)) {
+						const below = structure.below?.get(treeKey(e.path));
+						const line = `${e.type === "directory" ? "📁" : "📄"} ${e.path}${below ? ` (${below} entries below)` : ""}`;
+						if (used + line.length + 1 > entryBudget) {
+							break;
+						}
+						lines.push(line);
+						used += line.length + 1;
+					}
+					if (lines.length === 0) {
+						return null;
+					}
+					return fits(
+						`${repoHeader}${rangeLine(offset + lines.length)}${providerNote}\n${lines.join("\n")}`,
+					);
+				};
+
+				// Every block, including a repository's first, is admitted only
+				// if it fits its share of what is left; a repository that does
+				// not is named below for a separate request.
+				const treeResults: string[] = [];
+				const skipped: string[] = [];
+				let spent = 0;
+				shown.forEach(({ repoParams, structure }, index) => {
+					const share = Math.floor(
+						(available - spent) / (shown.length - index),
+					);
+					// Each block after the first is preceded by a blank line.
+					const separator = treeResults.length > 0 ? 2 : 0;
+					const block = renderBlock(
+						repoParams,
+						structure,
+						share - separator,
+					);
+					if (block === null) {
+						skipped.push(
+							`repo="${repoParams.owner}/${repoParams.repo}" (${structure.entries.length} entries${structure.truncated ? ", tree truncated by the provider" : ""})`,
+						);
+						return;
+					}
+					treeResults.push(block);
+					spent += block.length + separator;
+				});
+
+				const skippedNote =
+					skipped.length > 0
+						? `\n\nNot listed, to keep this result within its size limit — request each separately with code_tree${sharedArgs} and its repo: ${boundedList(skipped, "; ", tailReserve / 2 - 120)}.`
+						: "";
+				const failureNote =
+					listFailures.length > 0
+						? `\n\nCould not list ${boundedList(listFailures, " ", tailReserve / 2 - 40)}`
+						: "";
+
+				const failed =
+					treeResults.length === 0 &&
+					skipped.length === 0 &&
+					listFailures.length > 0;
+				if (failed) {
+					result = `Could not list the repository structure. ${boundedList(listFailures, " ", CODE_TREE_OUTPUT_BUDGET - 200)} This is a read failure, not an empty repository.`;
+				} else if (treeResults.length === 0 && skipped.length === 0) {
+					result = directory
+						? `No files found under ${directory} in connected repositories.`
+						: "No files found in connected repositories.";
 				} else {
-					result = `Repository structure (${totalFiles} files, ${totalDirs} dirs across ${targetRepos.length} repo(s)):\n\n${treeResults.join("\n")}`;
+					result = `${preamble}${treeResults.join("\n\n")}${skippedNote}${failureNote}`;
 				}
 
 				toolCalls.push({
 					id: `code-tree-${Date.now()}`,
 					name: toolName,
 					args: {
-						directory: stepInputs?.directory,
+						directory,
 						repo: repoFilter,
+						offset,
+						...(depth === undefined ? {} : { depth }),
 					},
-					result: { totalFiles, totalDirectories: totalDirs },
-					status: "success",
+					result: failed
+						? { message: result }
+						: {
+								totalFiles,
+								totalDirectories: totalDirs,
+								offset,
+								...(pastEnd ? { pastEnd } : {}),
+							},
+					status: failed ? "error" : "success",
 					durationMs: Date.now() - apiStartTime,
 				});
 				break;
@@ -577,6 +1090,32 @@ export class CodeSearchHandler implements StepHandler {
 
 			default:
 				result = `Unknown code search tool: ${toolName}`;
+		}
+
+		// A default (unfiltered) read may have missed the legacy repository.
+		// A failed step is reported by its recorded message, so the note goes
+		// there as well as on the response.
+		if (
+			legacyLookupFailed &&
+			REPO_FILTERED_TOOLS.has(toolName) &&
+			!requestedRepo
+		) {
+			const incomplete = `\n\nThis result may be incomplete: ${LOOKUP_FAILED}`;
+			result += incomplete;
+			for (const call of toolCalls) {
+				const recorded = call.result as
+					| { message?: unknown }
+					| undefined;
+				if (
+					call.status === "error" &&
+					typeof recorded?.message === "string"
+				) {
+					call.result = {
+						...recorded,
+						message: recorded.message + incomplete,
+					};
+				}
+			}
 		}
 
 		const durationMs = Date.now() - startTime;
@@ -596,6 +1135,115 @@ export class CodeSearchHandler implements StepHandler {
 	}
 }
 
+/**
+ * `items` joined with `separator`, at most `maxChars` long: items that do not
+ * fit are counted in a closing "… and N more".
+ */
+function boundedList(
+	items: string[],
+	separator: string,
+	maxChars: number,
+): string {
+	const out: string[] = [];
+	let length = 0;
+	for (const [index, item] of items.entries()) {
+		const left = items.length - index - 1;
+		const suffix = left > 0 ? ` … and ${left} more` : "";
+		const next =
+			length + (out.length > 0 ? separator.length : 0) + item.length;
+		if (next + suffix.length > maxChars) {
+			const remaining = items.length - index;
+			return `${out.join(separator)}${out.length > 0 ? " " : ""}… and ${remaining} more`;
+		}
+		out.push(item);
+		length = next;
+	}
+	return out.join(separator);
+}
+
+/** A non-negative whole-number entry offset; anything else reads as 0. */
+function readListingOffset(value: unknown): number {
+	const parsed =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number(value)
+				: 0;
+	return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+}
+
+/**
+ * A listing depth of at least 1, truncated to a whole number (1.9 reads as
+ * 1); anything else — zero, negative, non-numeric — lists every level.
+ */
+function readListingDepth(value: unknown): number | undefined {
+	const parsed =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && value.trim()
+				? Number(value)
+				: Number.NaN;
+	return Number.isFinite(parsed) && parsed >= 1
+		? Math.trunc(parsed)
+		: undefined;
+}
+
+/** A tree listing, with each deepest-listed folder's count of entries below it. */
+type ListedTree = RepositoryStructure & {
+	below?: ReadonlyMap<string, number>;
+};
+
+/** A path without leading, trailing or doubled slashes: `below`'s key. */
+function treeKey(path: string): string {
+	return path.split("/").filter(Boolean).join("/");
+}
+
+/**
+ * The entries at most `depth` levels below `directory` (the root when
+ * omitted), with counts and totals for that limited listing. Both providers
+ * return paths from the repository root (GitHub `src/a.ts`, Azure DevOps
+ * `/src/a.ts`) and already confined to `directory`, so an entry's level is
+ * its segment count minus the directory's. The directory's own entry, which
+ * Azure DevOps includes, is level 0 and is dropped.
+ */
+function limitTreeDepth(
+	structure: RepositoryStructure,
+	directory: string | undefined,
+	depth: number,
+): ListedTree {
+	const segments = (path: string) => path.split("/").filter(Boolean);
+	const base = directory ? segments(directory).length : 0;
+	const entries: RepositoryStructure["entries"] = [];
+	const below = new Map<string, number>();
+	for (const entry of structure.entries) {
+		const parts = segments(entry.path);
+		const level = parts.length - base;
+		if (level < 1) {
+			continue;
+		}
+		if (level <= depth) {
+			entries.push(entry);
+			continue;
+		}
+		const folder = parts.slice(0, base + depth).join("/");
+		below.set(folder, (below.get(folder) ?? 0) + 1);
+	}
+	return {
+		...structure,
+		entries,
+		totalFiles: entries.filter((e) => e.type === "file").length,
+		totalDirectories: entries.filter((e) => e.type === "directory").length,
+		below,
+	};
+}
+
+/** A repository the project has, whether or not its credentials work. */
+interface ConnectedRepo {
+	owner: string;
+	repo: string;
+	status: "readable" | "unreadable" | "unsupported";
+}
+
 interface ResolvedParams {
 	provider: "GITHUB" | "AZURE_DEVOPS";
 	token: string;
@@ -610,11 +1258,16 @@ interface ResolvedParams {
 
 /**
  * Resolve credentials for ALL connected repositories.
- * Returns an array of ResolvedParams, one per repo with valid credentials.
+ * Returns `readable`, one ResolvedParams per repo with valid credentials, and
+ * `connected`: every repository the project has (its repository rows, or the
+ * legacy project URL), each marked readable, unreadable (credentials could
+ * not be used) or unsupported (provider). Membership comes from `connected`,
+ * never from which credentials happened to resolve.
  *
- * Fallback chain per repo:
- * 1. Project-level integration (shared team credentials)
- * 2. User's OAuth integration (WorkflowIntegration) — only for legacy single-repo
+ * Credential per repo:
+ * 1. Project-level integration rows: the row's own credentials
+ * 2. The legacy project repository (when no row names it, or its row's
+ *    credentials failed): the caller's own GitHub token or WorkflowIntegration
  */
 async function resolveAllCredentials(
 	projectId: string,
@@ -636,43 +1289,64 @@ async function resolveAllCredentials(
 			organizationId?: string,
 		) => Promise<string | null>;
 	},
-): Promise<ResolvedParams[]> {
+): Promise<{
+	readable: ResolvedParams[];
+	connected: ConnectedRepo[];
+	/** The legacy repository columns could not be read: `connected` may be missing one. */
+	legacyLookupFailed: boolean;
+}> {
 	const results: ResolvedParams[] = [];
+	const connected: ConnectedRepo[] = [];
 
 	// Strategy 1: All project-level integrations
 	const repos = await deps.getProjectReposForCodeSearch(projectId);
 	for (const repo of repos) {
-		// Skip providers not yet supported by code search connectors
-		if (repo.provider !== "GITHUB" && repo.provider !== "AZURE_DEVOPS") {
+		const provider: unknown = repo.provider;
+		// Providers code search cannot read stay connected, as unsupported.
+		if (!isCodeSearchProvider(provider)) {
 			console.warn(
-				`[CodeSearchHandler] Skipping repo ${repo.owner}/${repo.repo} — provider ${repo.provider} not supported for code search`,
+				`[CodeSearchHandler] Skipping repo ${repo.owner}/${repo.repo} — provider ${String(provider)} not supported for code search`,
 			);
+			connected.push({
+				owner: repo.owner,
+				repo: repo.repo,
+				status: "unsupported",
+			});
 			continue;
 		}
 		// Canonical resolver: refreshes a near-expiry GitHub/GitLab OAuth token
-		// rather than handing the agent an 8-hour-old dead one.
-		const { token } = await deps.resolveFreshRepoTokenForRow(repo, {
-			userId,
-			organizationId,
+		// rather than handing the agent an 8-hour-old dead one. A failure
+		// here makes this one repository unreadable, not the whole call.
+		let token: string | null | undefined;
+		try {
+			({ token } = await deps.resolveFreshRepoTokenForRow(repo, {
+				userId,
+				organizationId,
+			}));
+		} catch (error) {
+			console.warn("[CodeSearchHandler] Credential resolution threw", {
+				repo: `${repo.owner}/${repo.repo}`,
+				errorClass: errorClassName(error),
+			});
+			token = undefined;
+		}
+		connected.push({
+			owner: repo.owner,
+			repo: repo.repo,
+			status: token ? "readable" : "unreadable",
 		});
 		if (token) {
-			const adoProjectFromUrl =
-				repo.repositoryUrl?.match(
-					/dev\.azure\.com\/[^/]+\/([^/]+)\/_git\//i,
-				)?.[1] ??
-				repo.repositoryUrl?.match(
-					/\.visualstudio\.com\/([^/]+)\/_git\//i,
-				)?.[1];
-
 			results.push({
-				provider: repo.provider as "GITHUB" | "AZURE_DEVOPS",
+				provider,
 				token,
 				owner: repo.owner,
 				repo: repo.repo,
 				branch: repo.branch,
 				roleTag: repo.roleTag ?? undefined,
 				azureProject:
-					adoProjectFromUrl ?? repo.azureOrganization ?? undefined,
+					adoProjectFromUrl(repo.repositoryUrl) ??
+					repo.azureOrganization ??
+					undefined,
 			});
 		} else {
 			console.warn(
@@ -681,115 +1355,193 @@ async function resolveAllCredentials(
 		}
 	}
 
-	if (results.length > 0) {
-		return results;
+	// Strategy 2: the project's legacy repository columns. Collected whether
+	// or not an integration row resolved: connecting a new repository keeps
+	// an existing legacy one (`syncLegacyProjectRepoOnConnect`), so it can
+	// sit beside readable integrations and must not drop out of `connected`.
+	// A failure reading the legacy columns must not stop the integrations
+	// that already resolved from being read.
+	let project: {
+		repositoryUrl: string | null;
+		repositoryOwner: string | null;
+		repositoryName: string | null;
+		defaultBranch: string | null;
+	} | null;
+	try {
+		project = await deps.db.project.findUnique({
+			where: { id: projectId },
+			select: {
+				repositoryUrl: true,
+				repositoryOwner: true,
+				repositoryName: true,
+				defaultBranch: true,
+			},
+		});
+	} catch (error) {
+		console.warn("[CodeSearchHandler] Legacy repository lookup threw", {
+			errorClass: errorClassName(error),
+		});
+		return { readable: results, connected, legacyLookupFailed: true };
 	}
-
-	// Strategy 2: Fall back to user's OAuth integration + legacy project repo URL
-	// (only when no ProjectRepositoryIntegration rows exist)
-	const project = await deps.db.project.findUnique({
-		where: { id: projectId },
-		select: {
-			repositoryUrl: true,
-			repositoryOwner: true,
-			repositoryName: true,
-			defaultBranch: true,
-		},
-	});
-
 	if (
 		!project?.repositoryUrl ||
 		!project.repositoryOwner ||
 		!project.repositoryName
 	) {
-		return [];
+		return { readable: results, connected, legacyLookupFailed: false };
 	}
 
+	const legacyName =
+		`${project.repositoryOwner}/${project.repositoryName}`.toLowerCase();
+	let legacy = connected.find(
+		(c) => `${c.owner}/${c.repo}`.toLowerCase() === legacyName,
+	);
 	const parsed = deps.parseRepoUrl(project.repositoryUrl);
-	if (!parsed) {
-		return [];
+	if (!legacy) {
+		legacy = {
+			owner: project.repositoryOwner,
+			repo: project.repositoryName,
+			// Classified before any credential is looked up: a provider code
+			// search cannot read stays unsupported whatever credential exists.
+			// (A URL the shared parser cannot read names no provider code
+			// search supports either.)
+			status:
+				parsed && isCodeSearchProvider(parsed.provider)
+					? "unreadable"
+					: "unsupported",
+		};
+		connected.push(legacy);
+	}
+	// Only an unreadable entry is worth a credential lookup: a readable one
+	// already has its integration's credentials, and an unsupported one
+	// (integration row or legacy) never becomes readable.
+	if (legacy.status !== "unreadable" || !parsed) {
+		return { readable: results, connected, legacyLookupFailed: false };
+	}
+	const legacyProvider: unknown = parsed.provider;
+	if (!isCodeSearchProvider(legacyProvider)) {
+		return { readable: results, connected, legacyLookupFailed: false };
 	}
 
+	// As for an integration row: a credential failure leaves this one
+	// repository unreadable and keeps the ones already resolved.
+	let token: string | null | undefined;
+	try {
+		token = await resolveLegacyToken(
+			legacyProvider,
+			userId,
+			organizationId,
+			deps,
+		);
+	} catch (error) {
+		console.warn("[CodeSearchHandler] Legacy credential resolution threw", {
+			repo: legacyName,
+			errorClass: errorClassName(error),
+		});
+		token = undefined;
+	}
+	if (!token) {
+		return { readable: results, connected, legacyLookupFailed: false };
+	}
+	legacy.status = "readable";
+	results.push({
+		provider: legacyProvider,
+		token,
+		owner: project.repositoryOwner,
+		repo: project.repositoryName,
+		branch: project.defaultBranch ?? undefined,
+		azureProject:
+			legacyProvider === "AZURE_DEVOPS"
+				? adoProjectFromUrl(project.repositoryUrl)
+				: undefined,
+	});
+	return { readable: results, connected, legacyLookupFailed: false };
+}
+
+/** The providers the code-search connectors can read. */
+function isCodeSearchProvider(
+	provider: unknown,
+): provider is ResolvedParams["provider"] {
+	return provider === "GITHUB" || provider === "AZURE_DEVOPS";
+}
+
+/** The Azure DevOps project segment of a repository URL, if any. */
+function adoProjectFromUrl(url: string | null | undefined): string | undefined {
+	return (
+		url?.match(/dev\.azure\.com\/[^/]+\/([^/]+)\/_git\//i)?.[1] ??
+		url?.match(/\.visualstudio\.com\/([^/]+)\/_git\//i)?.[1]
+	);
+}
+
+/**
+ * The credential for the legacy repository, from the same authority as
+ * before: the caller's refresh-aware GitHub token, or for Azure DevOps the
+ * caller's newest active WorkflowIntegration in this tenant.
+ */
+async function resolveLegacyToken(
+	provider: ResolvedParams["provider"],
+	userId: string,
+	organizationId: string | undefined,
+	deps: {
+		db: any;
+		decryptApiKey: (key: string) => string;
+		getGitHubAccessToken: (
+			userId: string,
+			organizationId?: string,
+		) => Promise<string | null>;
+	},
+): Promise<string | undefined> {
+	// GitHub goes through the refresh-aware getter — the sibling Next.js route
+	// that serves the same agent tool already did this, but this Temporal-side
+	// copy raw-decrypted an 8h-lived token. Azure DevOps keeps the legacy
+	// decrypt (a PAT, which does not expire).
+	if (provider === "GITHUB") {
+		return (
+			(await deps.getGitHubAccessToken(userId, organizationId)) ??
+			undefined
+		);
+	}
 	const orgFilter = organizationId
 		? { organizationId }
 		: { organizationId: null };
-
-	// GitHub goes through the refresh-aware getter — the sibling Next.js route
-	// that serves the same agent tool already did this, but this Temporal-side
-	// copy raw-decrypted an 8h-lived token. Non-GitHub providers keep the
-	// legacy decrypt (ADO here is PAT-based and does not expire).
-	let token: string | undefined;
-	if (parsed.provider === "GITHUB") {
-		token =
-			(await deps.getGitHubAccessToken(userId, organizationId)) ??
-			undefined;
-	} else {
-		const integration = await deps.db.workflowIntegration.findFirst({
-			where: {
-				userId,
-				...orgFilter,
-				provider: parsed.provider,
-				NOT: { name: `${parsed.provider}_OAUTH_APP` },
-				isActive: true,
-			},
-			select: { credentials: true },
-			orderBy: { updatedAt: "desc" },
-		});
-
-		if (!integration?.credentials) {
-			return [];
-		}
-
-		let creds: Record<string, unknown>;
-		try {
-			const credString =
-				typeof integration.credentials === "string"
-					? integration.credentials
-					: JSON.stringify(integration.credentials);
-			const decrypted = deps.decryptApiKey(credString);
-			creds = JSON.parse(decrypted) as Record<string, unknown>;
-		} catch {
-			try {
-				creds = (
-					typeof integration.credentials === "object"
-						? integration.credentials
-						: JSON.parse(integration.credentials as string)
-				) as Record<string, unknown>;
-			} catch {
-				return [];
-			}
-		}
-
-		token =
-			(creds.access_token as string) ||
-			(creds.token as string) ||
-			(creds.GITHUB_TOKEN as string) ||
-			(creds.apiKey as string);
-	}
-
-	if (!token) {
-		return [];
-	}
-
-	const adoProject =
-		project.repositoryUrl?.match(
-			/dev\.azure\.com\/[^/]+\/([^/]+)\/_git\//i,
-		)?.[1] ??
-		project.repositoryUrl?.match(
-			/\.visualstudio\.com\/([^/]+)\/_git\//i,
-		)?.[1];
-
-	return [
-		{
-			provider: parsed.provider as "GITHUB" | "AZURE_DEVOPS",
-			token,
-			owner: project.repositoryOwner,
-			repo: project.repositoryName,
-			branch: project.defaultBranch ?? undefined,
-			azureProject:
-				parsed.provider === "AZURE_DEVOPS"
-					? (adoProject ?? undefined)
-					: undefined,
+	const integration = await deps.db.workflowIntegration.findFirst({
+		where: {
+			userId,
+			...orgFilter,
+			provider,
+			NOT: { name: `${provider}_OAUTH_APP` },
+			isActive: true,
 		},
-	];
+		select: { credentials: true },
+		orderBy: { updatedAt: "desc" },
+	});
+	if (!integration?.credentials) {
+		return undefined;
+	}
+	let creds: Record<string, unknown>;
+	try {
+		const credString =
+			typeof integration.credentials === "string"
+				? integration.credentials
+				: JSON.stringify(integration.credentials);
+		const decrypted = deps.decryptApiKey(credString);
+		creds = JSON.parse(decrypted) as Record<string, unknown>;
+	} catch {
+		try {
+			creds = (
+				typeof integration.credentials === "object"
+					? integration.credentials
+					: JSON.parse(integration.credentials as string)
+			) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+	}
+	return (
+		(creds.access_token as string) ||
+		(creds.token as string) ||
+		(creds.GITHUB_TOKEN as string) ||
+		(creds.apiKey as string) ||
+		undefined
+	);
 }

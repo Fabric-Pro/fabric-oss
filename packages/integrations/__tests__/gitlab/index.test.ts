@@ -1,81 +1,48 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+	readCredential,
+} from "./helpers/gitlab-fake-db";
 
 // ============================================================================
-// Mocks (hoisted to avoid reference errors)
+// Mocks: an in-memory database that applies `where` clauses (so a tenant
+// filter is actually exercised), a real per-key lock, and "encryption" that
+// a test can tell from plaintext.
 // ============================================================================
 
-const {
-	mockFindFirst,
-	mockFindUnique,
-	mockUpdate,
-	mockFetch,
-	mockWithRefreshLock,
-	mockAssertBudget,
-} = vi.hoisted(() => {
-	const mockFindFirst = vi.fn();
-	const mockUpdate = vi.fn();
-	const mockFetch = vi.fn();
-	const mockFindUnique = vi.fn();
-	// A no-op by default; individual tests override its implementation to
-	// prove whether the production code path calls it (see the "budget
-	// exhausted" style test below, which makes it throw to prove a
-	// short-circuit path never reaches it).
-	const mockAssertBudget = vi.fn();
-	// A spy, not a bare arrow function: this is still a pass-through (it just
-	// calls `fn` immediately, ignoring any real lock timing), but wrapping it
-	// in `vi.fn()`, and handing `fn` a real (mocked) `assertBudget` second
-	// argument, lets tests assert WHETHER and HOW production code calls it —
-	// otherwise a regression there (e.g. calling it too early, on a
-	// short-circuit path, or with the wrong constant) would be invisible
-	// here, since `withRefreshLock`'s real budget-guard logic lives in
-	// `refresh-lock.ts` and is exercised by ITS own tests, not this file's.
-	const mockWithRefreshLock = vi.fn(
-		(
-			_key: string,
-			fn: (
-				tx: unknown,
-				assertBudget: (requiredMs: number) => void,
-			) => unknown,
-		) =>
-			fn(
-				{
-					workflowIntegration: {
-						findUnique: mockFindUnique,
-						update: mockUpdate,
-					},
-				},
-				mockAssertBudget,
-			),
-	);
-	return {
-		mockFindFirst,
-		mockUpdate,
-		mockFetch,
-		mockFindUnique,
-		mockWithRefreshLock,
-		mockAssertBudget,
-	};
-});
-
-vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
-	withRefreshLock: mockWithRefreshLock,
+const state = vi.hoisted(() => ({
+	fake: null as unknown as ReturnType<
+		typeof import("./helpers/gitlab-fake-db").createGitLabFakeDb
+	>,
 }));
 
 vi.mock("@repo/database", () => ({
-	db: {
-		workflowIntegration: {
-			findFirst: mockFindFirst,
-			findUnique: mockFindUnique,
-			update: mockUpdate,
-		},
+	get db() {
+		return state.fake.db;
 	},
 }));
 
-vi.mock("@repo/utils", () => ({
-	decryptApiKey: vi.fn((val: string) => val),
-	encryptApiKey: vi.fn((val: string) => `encrypted-${val}`),
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		keys: string | readonly string[],
+		fn: (
+			tx: unknown,
+			assertBudget: (ms: number) => void,
+		) => Promise<unknown>,
+	) => state.fake.withLock(keys, fn as never),
 }));
 
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import("./helpers/gitlab-fake-db");
+	return {
+		...(await importOriginal<object>()),
+		decryptApiKey: vi.fn(helpers.fakeDecrypt),
+		encryptApiKey: vi.fn(helpers.fakeEncrypt),
+	};
+});
+
+const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
 // ============================================================================
@@ -91,6 +58,7 @@ import {
 	getGitLabAccessToken,
 	listUserProjects,
 	parseGitLabProjectUrl,
+	resetGitLabConnectionDepsForTests,
 	searchGitLabProjects,
 } from "../../src/gitlab/index";
 
@@ -98,25 +66,71 @@ import {
 // Helpers
 // ============================================================================
 
-const CREDS_JSON = JSON.stringify({
-	access_token: "test-token",
-	refresh_token: "test-refresh",
-	expires_in: 7200,
-	token_obtained_at: new Date(Date.now() + 3600000).toISOString(), // future = not expired
-});
+const HOUR = 3_600_000;
+const APP_ISSUER = {
+	kind: "app",
+	clientId: "test-client-id",
+	origin: "https://gitlab.com",
+};
 
-function mockIntegration(overrides?: Record<string, unknown>) {
+/** An OAuth credential obtained `msAgo` ago (2h lifetime), app-issued. */
+function oauthCredential(
+	msAgo: number,
+	extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		access_token: "stale-token",
+		refresh_token: "test-refresh",
+		expires_in: 7200,
+		token_obtained_at: new Date(Date.now() - msAgo).toISOString(),
+		issuer: APP_ISSUER,
+		connectionGeneration: 1,
+		...extra,
+	};
+}
+
+function connectionRow(
+	credentials: string,
+	extra: Record<string, unknown> = {},
+) {
 	return {
 		id: "int-1",
-		credentials: CREDS_JSON,
+		userId: "user-1",
+		organizationId: "org-1",
+		provider: "GITLAB",
+		name: "GitLab: dev",
+		workflowId: null,
+		credentials,
 		settings: {},
-		...overrides,
+		isActive: true,
+		createdAt: new Date("2026-01-01T00:00:00Z"),
+		updatedAt: new Date("2026-01-01T00:00:00Z"),
+		...extra,
 	};
+}
+
+/** Seed one connection for user-1 in org-1. */
+function seedConnection(
+	credential: Record<string, unknown> | string,
+	extra: Record<string, unknown> = {},
+) {
+	state.fake = createGitLabFakeDb({
+		workflowIntegration: [
+			connectionRow(
+				typeof credential === "string"
+					? credential
+					: encryptedCredential(credential),
+				extra,
+			),
+		],
+	});
+	return state.fake.tables.workflowIntegration[0];
 }
 
 function mockFetchOk(data: unknown) {
 	mockFetch.mockResolvedValueOnce({
 		ok: true,
+		status: 200,
 		json: async () => data,
 	});
 }
@@ -129,30 +143,51 @@ function mockFetch401() {
 	});
 }
 
+function mockTokenOk(access: string, refresh: string) {
+	mockFetchOk({
+		access_token: access,
+		refresh_token: refresh,
+		expires_in: 7200,
+		token_type: "bearer",
+		scope: "api",
+	});
+}
+
+const refreshRejected = (status: number, body: string) =>
+	mockFetch.mockResolvedValueOnce({
+		ok: false,
+		status,
+		text: async () => body,
+		json: async () => JSON.parse(body),
+	});
+
+const bearerOf = (callIndex: number) =>
+	(
+		(mockFetch.mock.calls[callIndex][1] as RequestInit).headers as Record<
+			string,
+			string
+		>
+	).Authorization;
+
+const tokenExchanges = () =>
+	mockFetch.mock.calls.filter(([url]) =>
+		String(url).endsWith("/oauth/token"),
+	);
+
 // ============================================================================
 // Tests
 // ============================================================================
 
 beforeEach(() => {
-	mockFindFirst.mockReset();
-	mockUpdate.mockReset();
 	mockFetch.mockReset();
-	// Not merely a clear: an earlier test can queue a `mockResolvedValueOnce`
-	// on this mock (the "re-read inside the lock" step) that its own flow
-	// never actually reaches — e.g. `isTokenExpired` short-circuiting before
-	// any refresh attempt — leaving it queued to be consumed by whichever
-	// LATER test is the next one to call `mockFindUnique`, silently
-	// substituting that test's own fixture. Reset, not clear, so a stale
-	// queued value can never leak across tests.
-	mockFindUnique.mockReset();
-	mockWithRefreshLock.mockClear();
-	mockAssertBudget.mockClear();
-	mockAssertBudget.mockImplementation(() => {
-		// No-op by default (comfortable budget). Tests that need to prove a
-		// short-circuit path never reaches this call override it to throw.
-	});
+	resetGitLabConnectionDepsForTests();
+	state.fake = createGitLabFakeDb();
 	vi.stubEnv("GITLAB_CLIENT_ID", "test-client-id");
 	vi.stubEnv("GITLAB_CLIENT_SECRET", "test-client-secret");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
 });
 
 describe("parseGitLabProjectUrl", () => {
@@ -209,6 +244,10 @@ describe("executeGitLabTool", () => {
 	});
 
 	it("uses projectAccessToken directly, skips DB", async () => {
+		const findMany = vi.spyOn(
+			state.fake.db.workflowIntegration,
+			"findMany",
+		);
 		mockFetchOk([]);
 
 		await executeGitLabTool(
@@ -219,57 +258,50 @@ describe("executeGitLabTool", () => {
 			"direct-token",
 		);
 
-		expect(mockFindFirst).not.toHaveBeenCalled();
+		expect(findMany).not.toHaveBeenCalled();
 		expect(mockFetch).toHaveBeenCalled();
 		const url = mockFetch.mock.calls[0][0] as string;
 		expect(url).toContain("/projects");
 	});
 
-	it("queries DB with org context", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
+	it("uses the caller's own connection for the tenant context, never another context's", async () => {
+		state.fake = createGitLabFakeDb({
+			workflowIntegration: [
+				connectionRow(
+					encryptedCredential({ GITLAB_ACCESS_TOKEN: "org-token" }),
+				),
+				connectionRow(
+					encryptedCredential({
+						GITLAB_ACCESS_TOKEN: "personal-token",
+					}),
+					{ id: "int-personal", organizationId: null },
+				),
+				connectionRow(
+					encryptedCredential({
+						GITLAB_ACCESS_TOKEN: "teammate-token",
+					}),
+					{ id: "int-teammate", userId: "user-2" },
+				),
+			],
+		});
+		mockFetchOk([]);
 		mockFetchOk([]);
 
 		await executeGitLabTool("list_projects", {}, "user-1", "org-1");
-
-		expect(mockFindFirst).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					userId: "user-1",
-					organizationId: "org-1",
-					provider: "GITLAB",
-					isActive: true,
-				}),
-			}),
-		);
-	});
-
-	it("queries DB with personal context (null org)", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
-		mockFetchOk([]);
-
 		await executeGitLabTool("list_projects", {}, "user-1");
 
-		expect(mockFindFirst).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					userId: "user-1",
-					organizationId: null,
-					provider: "GITLAB",
-				}),
-			}),
-		);
+		expect(bearerOf(0)).toBe("Bearer org-token");
+		expect(bearerOf(1)).toBe("Bearer personal-token");
 	});
 
 	it("throws when no integration found", async () => {
-		mockFindFirst.mockResolvedValueOnce(null);
-
 		await expect(
 			executeGitLabTool("list_projects", {}, "user-1"),
 		).rejects.toThrow("GitLab not connected");
 	});
 
 	it("executes tool successfully", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
+		seedConnection(oauthCredential(10 * 60_000));
 		mockFetchOk([
 			{
 				id: 1,
@@ -282,93 +314,75 @@ describe("executeGitLabTool", () => {
 			},
 		]);
 
-		const result = await executeGitLabTool("list_projects", {}, "user-1");
+		const result = await executeGitLabTool(
+			"list_projects",
+			{},
+			"user-1",
+			"org-1",
+		);
 		expect(Array.isArray(result)).toBe(true);
 	});
 
-	it("retries on 401 with token refresh", async () => {
-		// Spy on the real `AbortSignal.timeout`, not just the passed
-		// `signal`'s type: `expect(init.signal).toBeInstanceOf(AbortSignal)`
-		// alone is satisfied by ANY AbortSignal, including a plain
-		// `new AbortController().signal` that would never fire on its own —
-		// so that assertion by itself would leave this test green even if
-		// the exchange stopped calling the real timeout and became
-		// unbounded.
+	it("retries on 401 with a bounded token refresh, gated on the lock budget", async () => {
+		// Spy on the real `AbortSignal.timeout`, not just the passed signal's
+		// type: any AbortSignal would satisfy a type check, including one that
+		// never fires.
 		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
-		// The 401 retry MUST re-read the row: GitLab rotates refresh tokens
-		// single-use, so the pre-emptive refresh may already have spent the one
-		// in the snapshot. Reusing it is what produced the paired
-		// "pre-emptive failed"/"after 401 failed" storm on staging.
-		mockFindUnique.mockResolvedValueOnce(mockIntegration());
-
-		// First call: 401
-		mockFetch401();
-		// Refresh token call: success
-		mockFetch.mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({
-				access_token: "new-token",
-				refresh_token: "new-refresh",
-				expires_in: 7200,
-				token_type: "bearer",
-				scope: "api",
-			}),
+		const assertBudget = vi.fn();
+		state.fake = createGitLabFakeDb({
+			workflowIntegration: [
+				connectionRow(
+					encryptedCredential(oauthCredential(10 * 60_000)),
+				),
+			],
 		});
-		// Retry call: success
+		state.fake.hooks.assertBudget = assertBudget;
+
+		mockFetch401();
+		mockTokenOk("new-token", "new-refresh");
 		mockFetchOk([]);
 
-		const result = await executeGitLabTool("list_projects", {}, "user-1");
+		const result = await executeGitLabTool(
+			"list_projects",
+			{},
+			"user-1",
+			"org-1",
+		);
 		expect(Array.isArray(result)).toBe(true);
 		expect(mockFetch).toHaveBeenCalledTimes(3); // 401 + refresh + retry
-		expect(mockFindUnique).toHaveBeenCalledWith(
-			expect.objectContaining({ where: { id: "int-1" } }),
-		);
-		// This refresh call runs inside `withRefreshLock`'s advisory-lock
-		// transaction (see `refreshTokenWithLock`), which carries the same
-		// 20s budget as the other GitLab refresh paths — a bare `fetch` with
-		// no timeout could hang well past it. Call index 1 is the refresh
-		// exchange itself (0 = the original 401, 2 = the retry).
+		expect(bearerOf(2)).toBe("Bearer new-token");
+		// The rotated grant is persisted, so the next caller does not spend
+		// the single-use refresh token again.
+		const stored = readCredential(state.fake.tables.workflowIntegration[0]);
+		expect(stored.refresh_token).toBe("new-refresh");
+		// A REAL timeout signal at the documented bound, the same object
+		// `fetch` received for the exchange (call 1).
 		const refreshCallInit = mockFetch.mock.calls[1][1] as RequestInit;
-		// A REAL timeout signal, at the exact documented bound, and the SAME
-		// signal object `fetch` actually received.
 		expect(timeoutSpy).toHaveBeenCalledWith(
 			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 		);
 		expect(refreshCallInit.signal).toBe(timeoutSpy.mock.results[0]?.value);
-		// `refreshTokenWithLock`'s callback must gate on the budget actually
-		// left after acquiring the lock (see `assertRefreshLockBudget`)
-		// immediately before starting the exchange, instead of trusting fixed
-		// constants alone — called via `withRefreshLock`'s `assertBudget`
-		// second callback argument, with the exchange's own bound.
-		expect(mockWithRefreshLock).toHaveBeenCalledTimes(1);
-		expect(mockAssertBudget).toHaveBeenCalledWith(
+		// The exchange is gated on the budget left after acquiring the lock.
+		expect(assertBudget).toHaveBeenCalledWith(
 			GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 		);
 
 		timeoutSpy.mockRestore();
 	});
 
-	// Regression: the exchange's AbortSignal.timeout also covers the BODY
-	// read, not just the headers. Headers can arrive (producing a real
-	// `response` with `ok: false`) before the deadline while the body then
-	// stalls past it — the abort fires INSIDE `response.text()`. An earlier
-	// version of this code did `.catch(() => "")` around that read, which
-	// made a failed read indistinguishable from "GitLab explained nothing"
-	// and still classified a bare 400/401 as permanent, condemning a
-	// credential on evidence this process never actually received.
+	// The exchange's AbortSignal.timeout also covers the BODY read: headers
+	// can arrive as a 400 while the body then stalls past the deadline. That
+	// is no verdict on the grant, so it must never condemn the connection.
 	it("does not mark needsReauth when the exchange gets a 400 but reading its body aborts/times out", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
-		mockFindUnique.mockResolvedValueOnce(mockIntegration());
-
-		// First call: 401
+		const row = seedConnection(oauthCredential(10 * 60_000));
 		mockFetch401();
-		// Refresh token call: headers arrive as a 400, but the body read
-		// itself rejects — exactly what the same AbortSignal produces when
-		// it fires mid-body after headers already arrived.
 		mockFetch.mockResolvedValueOnce({
 			ok: false,
 			status: 400,
+			json: () =>
+				Promise.reject(
+					new DOMException("signal timed out", "TimeoutError"),
+				),
 			text: () =>
 				Promise.reject(
 					new DOMException("signal timed out", "TimeoutError"),
@@ -376,114 +390,51 @@ describe("executeGitLabTool", () => {
 		});
 
 		await expect(
-			executeGitLabTool("list_projects", {}, "user-1"),
+			executeGitLabTool("list_projects", {}, "user-1", "org-1"),
 		).rejects.toThrow(/reconnect your GitLab account/i);
 
-		// The 400 status never got classified as permanent because the body
-		// that would have proven (or disproven) `invalid_grant` was never
-		// actually read — so no needsReauth write ever happened.
-		expect(mockUpdate).not.toHaveBeenCalled();
+		expect((row.settings as Record<string, unknown>).needsReauth).not.toBe(
+			true,
+		);
+		expect(readCredential(row).refresh_token).toBe("test-refresh");
 	});
 
-	// Cross-process serialization: a caller that queued behind the advisory lock
-	// must reuse the winner's freshly rotated token. Exchanging again would spend
-	// a single-use grant that is already live for someone else and brick it.
-	it("reuses a concurrent winner's token instead of exchanging again", async () => {
-		const staleCreds = JSON.stringify({
-			access_token: "stale-token",
-			refresh_token: "stale-refresh",
-			expires_in: 7200,
-			token_obtained_at: new Date(Date.now() - 7200000).toISOString(),
-		});
-		const winnerCreds = JSON.stringify({
-			access_token: "winner-token",
-			refresh_token: "winner-refresh",
-			expires_in: 7200,
-			token_obtained_at: new Date().toISOString(),
-		});
-		// Our snapshot is stale, so a refresh looks necessary...
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: staleCreds }),
-		);
-		// ...but inside the lock the row already carries the winner's fresh token.
-		mockFindUnique.mockResolvedValueOnce(
-			mockIntegration({ credentials: winnerCreds }),
-		);
-		mockFetchOk([]);
-
-		await executeGitLabTool("list_projects", {}, "user-1");
-
-		// Exactly one fetch: the API call. No token exchange happened.
-		expect(mockFetch).toHaveBeenCalledTimes(1);
-		expect(mockFetch.mock.calls[0][0]).toContain("/projects");
-		// This is the regression this test's whole scenario is FOR: the
-		// short-circuit above found nothing left to do and must never touch
-		// the budget guard, however long this caller waited for the lock.
-		expect(mockAssertBudget).not.toHaveBeenCalled();
-	});
-
-	it("this callback's own re-read short-circuits BEFORE it would ever call assertBudget, proven by making assertBudget throw unconditionally", async () => {
-		// SCOPE, precisely: `withRefreshLock` is mocked to a pass-through in
-		// this file (see the hoisted mock above) — it calls `fn(tx,
-		// mockAssertBudget)` immediately, simulating no real lock-wait time
-		// at all. So this test can only prove ONE thing: that `index.ts`'s
-		// own callback calls its re-read-and-short-circuit BEFORE it ever
-		// calls `assertBudget`. Making the mock throw unconditionally and
-		// asserting the call still succeeds is how that ordering is proven
-		// without simulating real elapsed time.
-		//
-		// This test does NOT exercise the REAL `assertBudget` closure's
-		// arithmetic, its `performance.now()` measurement, or
-		// `withRefreshLock`'s real lock-wait timing — where WITHIN the real
-		// `withRefreshLock` implementation the guard is placed (e.g.
-		// unconditionally right after the lock statement, versus after the
-		// re-read short-circuit) would not affect this test's outcome,
-		// because that implementation isn't running here at all. That
-		// placement guarantee is covered end-to-end against the real
-		// implementation by `refresh-lock.test.ts` (`withRefreshLock`
-		// itself) and by `get-valid-access-token.test.ts` /
-		// `gitlab-token.test.ts`, whose locked branches open their own
-		// `$transaction` rather than going through the mocked helper.
-		//
-		// What THIS test pins: the budget guard must only gate BOUNDED
-		// PROVIDER WORK, never the lock acquisition itself. A waiter that
-		// queues behind a legitimate holder and, via the re-read, finds the
-		// winner's freshly persisted token has no bounded work left to do —
-		// gating unconditionally right after the advisory-lock statement,
-		// before that re-read ever runs, would reject such a waiter before
-		// it ever looked.
-		const staleCreds = JSON.stringify({
-			access_token: "stale-token",
-			refresh_token: "stale-refresh",
-			expires_in: 7200,
-			token_obtained_at: new Date(Date.now() - 7200000).toISOString(),
-		});
-		const winnerCreds = JSON.stringify({
-			access_token: "winner-token",
-			refresh_token: "winner-refresh",
-			expires_in: 7200,
-			token_obtained_at: new Date().toISOString(),
-		});
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: staleCreds }),
-		);
-		mockFindUnique.mockResolvedValueOnce(
-			mockIntegration({ credentials: winnerCreds }),
-		);
-		mockFetchOk([]);
-
+	// Cross-process serialization: a caller that queued behind the lock must
+	// reuse the winner's freshly rotated token. Exchanging again would spend a
+	// single-use grant that is already live for someone else. Finding nothing
+	// left to do, it must not touch the budget guard either, however long it
+	// waited for the lock.
+	it("reuses a concurrent winner's token instead of exchanging again, without consulting the budget", async () => {
+		const row = seedConnection(oauthCredential(10 * 60_000));
 		const { RefreshLockBudgetExhaustedError } = await import(
 			"@repo/database/prisma/queries/lib/refresh-lock-key"
 		);
-		mockAssertBudget.mockImplementation(() => {
+		state.fake.hooks.assertBudget = () => {
 			throw new RefreshLockBudgetExhaustedError();
-		});
+		};
+		// The winner lands while this caller waits for the lock.
+		state.fake.hooks.beforeAcquire = () => {
+			row.credentials = encryptedCredential(
+				oauthCredential(0, {
+					access_token: "winner-token",
+					refresh_token: "winner-refresh",
+				}),
+			);
+		};
+		mockFetch401();
+		mockFetchOk([]);
 
-		const result = await executeGitLabTool("list_projects", {}, "user-1");
+		const result = await executeGitLabTool(
+			"list_projects",
+			{},
+			"user-1",
+			"org-1",
+		);
 
 		expect(Array.isArray(result)).toBe(true);
-		expect(mockFetch).toHaveBeenCalledTimes(1);
-		expect(mockAssertBudget).not.toHaveBeenCalled();
+		expect(tokenExchanges()).toHaveLength(0);
+		expect(bearerOf(1)).toBe("Bearer winner-token");
+		expect(readCredential(row).refresh_token).toBe("winner-refresh");
 	});
 });
 
@@ -650,56 +601,31 @@ describe("repo-listing helpers propagate typed errors", () => {
 
 describe("getGitLabAccessToken", () => {
 	it("returns null when no integration found", async () => {
-		mockFindFirst.mockResolvedValueOnce(null);
-		const token = await getGitLabAccessToken("user-1");
-		expect(token).toBeNull();
+		expect(await getGitLabAccessToken("user-1")).toBeNull();
 	});
 
 	it("returns token when integration exists", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
-		const token = await getGitLabAccessToken("user-1");
-		expect(token).toBe("test-token");
+		seedConnection(
+			oauthCredential(10 * 60_000, { access_token: "test-token" }),
+		);
+		expect(await getGitLabAccessToken("user-1", "org-1")).toBe(
+			"test-token",
+		);
 	});
 
-	it("uses org context when organizationId provided", async () => {
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
-		await getGitLabAccessToken("user-1", "org-1");
-		expect(mockFindFirst).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({
-					organizationId: "org-1",
-				}),
-			}),
+	it("never answers with another tenant context's connection", async () => {
+		seedConnection(
+			oauthCredential(10 * 60_000, { access_token: "org-token" }),
 		);
+		expect(await getGitLabAccessToken("user-1", "org-2")).toBeNull();
+		expect(await getGitLabAccessToken("user-1")).toBeNull();
+		expect(await getGitLabAccessToken("user-2", "org-1")).toBeNull();
 	});
 });
 
-const HOUR = 3_600_000;
-const credsObtained = (msAgo: number, extra: Record<string, unknown> = {}) =>
-	JSON.stringify({
-		access_token: "stale-token",
-		refresh_token: "test-refresh",
-		expires_in: 7200,
-		token_obtained_at: new Date(Date.now() - msAgo).toISOString(),
-		...extra,
-	});
-const refreshRejected = (status: number, body: string) =>
-	mockFetch.mockResolvedValueOnce({
-		ok: false,
-		status,
-		text: async () => body,
-		json: async () => JSON.parse(body),
-	});
-
 describe("getFreshGitLabAccessToken", () => {
-	// Every refresh-rejected case here logs by design (server-log-only
-	// diagnostics): `console.error("[GitLab] Pre-emptive token refresh
-	// failed:", ...)` and/or `console.error("[GitLab] getFreshGitLabAccessToken
-	// failed", ...)`, plus `console.warn(...)` from
-	// `markWorkflowIntegrationNeedsReauth` on a permanent (400/401) failure and
-	// `console.log("[GitLab] Refreshing expired access token...")` on every
-	// attempt. Expected noise, not a test failure signal — silenced here and
-	// restored after, scoped to just this describe.
+	// Failure paths log by design (server-log-only diagnostics). Silenced here
+	// and inspected where it matters.
 	let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 	let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
 	let consoleLogSpy: ReturnType<typeof vi.spyOn>;
@@ -717,17 +643,11 @@ describe("getFreshGitLabAccessToken", () => {
 	});
 
 	it("returns null when there is no integration", async () => {
-		mockFindFirst.mockResolvedValueOnce(null);
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toBeNull();
 	});
 
 	it("fails with a fixed-vocabulary reason when the token is past its real expiry and the refresh is rejected", async () => {
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: credsObtained(2 * HOUR + 60_000) }),
-		);
-		mockFindUnique.mockResolvedValueOnce({
-			credentials: credsObtained(2 * HOUR + 60_000),
-		});
+		seedConnection(oauthCredential(2 * HOUR + 60_000));
 		refreshRejected(
 			401,
 			'{"error":"invalid_client","error_description":"Client authentication failed"}',
@@ -735,17 +655,40 @@ describe("getFreshGitLabAccessToken", () => {
 
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: false,
-			reason: "GitLab rejected the token refresh (HTTP 401 invalid_client)",
+			reason: "GitLab rejected the token refresh (HTTP 401)",
 		});
 	});
 
-	it("positive control: the lenient getter still hands back the dead token on the same failure", async () => {
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: credsObtained(2 * HOUR + 60_000) }),
+	it("an application-level rejection (invalid_client) never condemns the person's grant", async () => {
+		const row = seedConnection(oauthCredential(2 * HOUR + 60_000));
+		refreshRejected(401, '{"error":"invalid_client"}');
+
+		await getFreshGitLabAccessToken("user-1", "org-1");
+
+		expect((row.settings as Record<string, unknown>).needsReauth).not.toBe(
+			true,
 		);
-		mockFindUnique.mockResolvedValueOnce({
-			credentials: credsObtained(2 * HOUR + 60_000),
+	});
+
+	it("a dead grant (invalid_grant) marks the connection reconnect-required and fails", async () => {
+		const row = seedConnection(oauthCredential(2 * HOUR + 60_000));
+		refreshRejected(400, '{"error":"invalid_grant"}');
+
+		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
+			ok: false,
+			reason: "the GitLab connection needs to be reconnected",
 		});
+		expect((row.settings as Record<string, unknown>).needsReauth).toBe(
+			true,
+		);
+		// …and is not retried on the next read.
+		mockFetch.mockReset();
+		expect(await getGitLabAccessToken("user-1", "org-1")).toBeNull();
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("positive control: the lenient getter still hands back the expired token on the same transient failure", async () => {
+		seedConnection(oauthCredential(2 * HOUR + 60_000));
 		refreshRejected(401, '{"error":"invalid_client"}');
 
 		expect(await getGitLabAccessToken("user-1", "org-1")).toBe(
@@ -755,35 +698,24 @@ describe("getFreshGitLabAccessToken", () => {
 
 	it("inside the pre-expiry buffer a failed refresh keeps the still-valid token", async () => {
 		// 1h57m old: inside the 5-minute buffer, not yet expired.
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({
-				credentials: credsObtained(2 * HOUR - 3 * 60_000),
-			}),
-		);
-		mockFindUnique.mockResolvedValueOnce({
-			credentials: credsObtained(2 * HOUR - 3 * 60_000),
-		});
+		seedConnection(oauthCredential(2 * HOUR - 3 * 60_000));
 		refreshRejected(503, "Service Unavailable");
 
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
 			token: "stale-token",
 		});
-		// The refresh really was attempted (and failed) — this isn't a
-		// short-circuit "not expired yet" path.
+		// The refresh really was attempted (and failed).
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 
-	it("unknown expiry keeps today's lenient answer (no expires_in, no timestamp)", async () => {
-		const legacy = JSON.stringify({
+	it("unknown expiry with a refresh token refreshes once; a transient failure keeps the token (no expires_in, no timestamp)", async () => {
+		seedConnection({
 			access_token: "legacy-token",
 			refresh_token: "test-refresh",
+			issuer: APP_ISSUER,
 		});
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: legacy }),
-		);
-		mockFindUnique.mockResolvedValueOnce({ credentials: legacy });
-		refreshRejected(401, '{"error":"invalid_grant"}');
+		refreshRejected(503, "Service Unavailable");
 
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
@@ -792,17 +724,14 @@ describe("getFreshGitLabAccessToken", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 
-	it("unknown expiry keeps today's lenient answer (expires_in but no token_obtained_at)", async () => {
-		const noStamp = JSON.stringify({
+	it("unknown expiry keeps the token on a transient failure (expires_in but no token_obtained_at)", async () => {
+		seedConnection({
 			access_token: "legacy-token",
 			refresh_token: "test-refresh",
 			expires_in: 7200,
+			issuer: APP_ISSUER,
 		});
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: noStamp }),
-		);
-		mockFindUnique.mockResolvedValueOnce({ credentials: noStamp });
-		refreshRejected(401, '{"error":"invalid_grant"}');
+		refreshRejected(503, "Service Unavailable");
 
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
@@ -811,45 +740,30 @@ describe("getFreshGitLabAccessToken", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 
-	it("unknown expiry keeps today's lenient answer (unparsable token_obtained_at)", async () => {
-		const unparsable = JSON.stringify({
+	it("an unparsable token_obtained_at is unknown expiry, never 'expired'", async () => {
+		seedConnection({
 			access_token: "legacy-token",
 			refresh_token: "test-refresh",
 			expires_in: 7200,
 			token_obtained_at: "not-a-date",
+			issuer: APP_ISSUER,
 		});
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: unparsable }),
-		);
-		mockFindUnique.mockResolvedValueOnce({ credentials: unparsable });
-		// Queued but never consumed: `isTokenExpired`'s own `new Date(...).getTime()`
-		// is NaN for an unparsable timestamp, and every NaN comparison is false —
-		// its expiry check short-circuits to "not expired" BEFORE a refresh is
-		// ever attempted, the same gate a legacy row with no timestamp hits. A
-		// malformed `token_obtained_at` never reaches `isTokenPastExpiry` at all,
-		// so this proves the corrupt value flows through safely end to end,
-		// rather than exercising that guard directly.
-		refreshRejected(401, '{"error":"invalid_grant"}');
+		refreshRejected(503, "Service Unavailable");
 
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
 			token: "legacy-token",
 		});
-		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
 	it("returns null when the integration row stores empty credentials", async () => {
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: "" }),
-		);
+		seedConnection("");
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toBeNull();
 		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
 	it("returns an unexpired token without refreshing", async () => {
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: credsObtained(10 * 60_000) }),
-		);
+		seedConnection(oauthCredential(10 * 60_000));
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
 			token: "stale-token",
@@ -858,9 +772,7 @@ describe("getFreshGitLabAccessToken", () => {
 	});
 
 	it("returns a raw (non-JSON) token string as is", async () => {
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: "raw-pat-token" }),
-		);
+		seedConnection("enc:raw-pat-token");
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
 			token: "raw-pat-token",
@@ -869,14 +781,11 @@ describe("getFreshGitLabAccessToken", () => {
 	});
 
 	it("returns a JSON token without a refresh token as is, even past its expiry", async () => {
-		const pat = JSON.stringify({
+		seedConnection({
 			access_token: "pat-token",
 			expires_in: 7200,
 			token_obtained_at: new Date(Date.now() - 3 * HOUR).toISOString(),
 		});
-		mockFindFirst.mockResolvedValueOnce(
-			mockIntegration({ credentials: pat }),
-		);
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: true,
 			token: "pat-token",
@@ -885,31 +794,27 @@ describe("getFreshGitLabAccessToken", () => {
 	});
 
 	it("reports a credential read failure as ok:false, not null (null is only a missing row)", async () => {
-		const { decryptApiKey } = await import("@repo/utils");
-		vi.mocked(decryptApiKey).mockImplementationOnce(() => {
-			throw new Error("bad ciphertext");
-		});
-		mockFindFirst.mockResolvedValueOnce(mockIntegration());
+		// Not fake ciphertext: decryption throws.
+		seedConnection("corrupted-ciphertext");
 		expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 			ok: false,
 			reason: "the GitLab token could not be obtained",
 		});
-		// Positive control for the redaction tests below: a failure that is NOT
-		// provider text (our own code/library — here, credential decryption)
-		// still carries a `message` in the log. Only a GitLab response body is
-		// withheld.
+		// A failure that is NOT provider text (our own code) still carries a
+		// message in the log.
 		const call = consoleErrorSpy.mock.calls.find(
 			(c) => c[0] === "[GitLab] getFreshGitLabAccessToken failed",
 		);
-		expect(call?.[1]).toMatchObject({ message: "bad ciphertext" });
+		expect(call?.[1]).toMatchObject({
+			message: "GitLab credential could not be decrypted",
+		});
 	});
 
-	describe("no provider response text reaches server logs (Codex high)", () => {
+	describe("no provider response text reaches server logs", () => {
 		/**
 		 * `JSON.stringify` drops an `Error`'s own message/stack (they are
 		 * non-enumerable), so a secret hiding inside one would silently escape
-		 * a naive scan. This replacer expands every `Error` argument to a plain
-		 * `{name, message, stack}` first.
+		 * a naive scan. Expand every `Error` argument first.
 		 */
 		const errorReplacer = (_key: string, value: unknown) =>
 			value instanceof Error
@@ -919,104 +824,67 @@ describe("getFreshGitLabAccessToken", () => {
 						stack: value.stack,
 					}
 				: value;
-
-		/**
-		 * `markWorkflowIntegrationNeedsReauth`'s `console.warn` (index.ts
-		 * ~363-366) DOES log up to 200 chars of the raw provider body — that is
-		 * pre-existing and explicitly out of scope for this fix (final-fix-brief
-		 * §B). Restricting to calls whose first argument names one of the two
-		 * lines this fix touches keeps this test from tripping on that
-		 * unrelated, known line.
-		 */
-		const ownLogCalls = () =>
+		const allLogs = () =>
 			[
 				...consoleErrorSpy.mock.calls,
 				...consoleWarnSpy.mock.calls,
 				...consoleLogSpy.mock.calls,
-			].filter(
-				(call) =>
-					typeof call[0] === "string" &&
-					(call[0].startsWith("[GitLab] Pre-emptive") ||
-						call[0].startsWith(
-							"[GitLab] getFreshGitLabAccessToken",
-						)),
-			);
+			]
+				.map((call) => JSON.stringify(call, errorReplacer))
+				.join("\n");
 
-		// A GitLab response body that reflects a secret both as `key=value` and
-		// as quoted JSON — and, like the existing `describeGitLabRefreshFailure`
-		// "reflected secret" test, an `"error"` value that is NOT
-		// `^[a-z_]{1,40}$` (capitalized), so the fixed phrase carries no OAuth
-		// code and is exactly the bare "(HTTP 401)" form.
 		const secretBody =
 			'{"error":"Invalid_Client","access_token":"glpat-AAAA"} client_secret=s3cr3t-VALUE';
-		const FIXED_REASON = "GitLab rejected the token refresh (HTTP 401)";
+		// A 200 answer carrying an OAuth error with a reflected description is
+		// the one shape whose text reaches an Error message.
+		const secretErrorDescription = {
+			error: "server_error",
+			error_description: "echo client_secret=s3cr3t-VALUE glpat-AAAA",
+		};
 
-		it("getFreshGitLabAccessToken (strict): the provider body never reaches the log, only the fixed reason", async () => {
-			mockFindFirst.mockResolvedValueOnce(
-				mockIntegration({
-					credentials: credsObtained(2 * HOUR + 60_000),
-				}),
-			);
-			mockFindUnique.mockResolvedValueOnce({
-				credentials: credsObtained(2 * HOUR + 60_000),
-			});
+		it("getFreshGitLabAccessToken (strict): only fixed phrases are logged", async () => {
+			seedConnection(oauthCredential(2 * HOUR + 60_000));
 			refreshRejected(401, secretBody);
 
 			expect(await getFreshGitLabAccessToken("user-1", "org-1")).toEqual({
 				ok: false,
-				reason: FIXED_REASON,
+				reason: "GitLab rejected the token refresh (HTTP 401)",
 			});
-
-			const calls = ownLogCalls();
-			expect(calls.length).toBeGreaterThan(0);
-			const dumped = calls
-				.map((call) => JSON.stringify(call, errorReplacer))
-				.join("\n");
-			expect(dumped).not.toMatch(/s3cr3t|glpat|client_secret/);
-
-			const preemptive = consoleErrorSpy.mock.calls.find(
-				(c) => c[0] === "[GitLab] Pre-emptive token refresh failed:",
-			);
-			expect(preemptive?.[1]).toMatchObject({ reason: FIXED_REASON });
-			expect(preemptive?.[1]).not.toHaveProperty("message");
-
 			const strictLog = consoleErrorSpy.mock.calls.find(
 				(c) => c[0] === "[GitLab] getFreshGitLabAccessToken failed",
 			);
-			expect(strictLog?.[1]).toMatchObject({ reason: FIXED_REASON });
+			expect(strictLog?.[1]).toMatchObject({
+				reason: "GitLab rejected the token refresh (HTTP 401)",
+			});
 			expect(strictLog?.[1]).not.toHaveProperty("message");
+			expect(allLogs()).not.toMatch(/s3cr3t|glpat|client_secret/);
 		});
 
-		it("getGitLabAccessToken (lenient): the provider body never reaches the log, only the fixed reason", async () => {
-			mockFindFirst.mockResolvedValueOnce(
-				mockIntegration({
-					credentials: credsObtained(2 * HOUR + 60_000),
-				}),
-			);
-			mockFindUnique.mockResolvedValueOnce({
-				credentials: credsObtained(2 * HOUR + 60_000),
-			});
-			refreshRejected(401, secretBody);
+		it("strict: a reflected error_description never reaches the log", async () => {
+			seedConnection(oauthCredential(2 * HOUR + 60_000));
+			mockFetchOk(secretErrorDescription);
 
-			// Lenient callers still get the dead token back — this is the SAME
-			// shared `refreshTokenIfNeeded` catch the strict getter uses, just
-			// exercised via the lenient entry point.
+			const result = await getFreshGitLabAccessToken("user-1", "org-1");
+
+			expect(result).toEqual({
+				ok: false,
+				reason: "GitLab returned no usable token",
+			});
+			expect(allLogs()).not.toMatch(/s3cr3t|glpat|client_secret/);
+		});
+
+		it("getGitLabAccessToken (lenient): the fallback is logged with fixed fields only", async () => {
+			seedConnection(oauthCredential(2 * HOUR + 60_000));
+			mockFetchOk(secretErrorDescription);
+
 			expect(await getGitLabAccessToken("user-1", "org-1")).toBe(
 				"stale-token",
 			);
-
-			const calls = ownLogCalls();
-			expect(calls.length).toBeGreaterThan(0);
-			const dumped = calls
-				.map((call) => JSON.stringify(call, errorReplacer))
-				.join("\n");
-			expect(dumped).not.toMatch(/s3cr3t|glpat|client_secret/);
-
-			const preemptive = consoleErrorSpy.mock.calls.find(
-				(c) => c[0] === "[GitLab] Pre-emptive token refresh failed:",
+			const fallback = consoleWarnSpy.mock.calls.find((c) =>
+				String(c[0]).includes("refresh failed; using current token"),
 			);
-			expect(preemptive?.[1]).toMatchObject({ reason: FIXED_REASON });
-			expect(preemptive?.[1]).not.toHaveProperty("message");
+			expect(fallback?.[1]).toMatchObject({ reason: "transient" });
+			expect(allLogs()).not.toMatch(/s3cr3t|glpat|client_secret/);
 		});
 	});
 });
@@ -1100,5 +968,89 @@ describe("describeGitLabRefreshFailure", () => {
 		const reason = describeGitLabRefreshFailure(reflected);
 		expect(reason).toBe("GitLab rejected the token refresh (HTTP 401)");
 		expect(reason).not.toMatch(/s3cr3t|glpat|client_secret/);
+	});
+});
+
+describe("GitLab OAuth app tenant scope", () => {
+	// Ported from staging (#842) onto the in-memory database: the app client
+	// used to refresh a caller's token comes only from the environment, the
+	// caller's own organization, the caller's own personal row, or the
+	// system row, never from another tenant's GITLAB_OAUTH_APP.
+	function appRow(
+		id: string,
+		userId: string | null,
+		organizationId: string | null,
+		clientId: string,
+	) {
+		return {
+			id,
+			userId,
+			organizationId,
+			provider: "GITLAB",
+			name: "GITLAB_OAUTH_APP",
+			workflowId: null,
+			isActive: true,
+			settings: {},
+			credentials: encryptedCredential({
+				client_id: clientId,
+				client_secret: `${clientId}-secret`,
+			}),
+		};
+	}
+
+	function seedWithApps(apps: ReturnType<typeof appRow>[]) {
+		state.fake = createGitLabFakeDb({
+			workflowIntegration: [
+				...apps,
+				connectionRow(
+					encryptedCredential(
+						oauthCredential(2 * HOUR + 60_000, {
+							issuer: { ...APP_ISSUER, clientId: "own-client" },
+						}),
+					),
+				),
+			],
+		});
+	}
+
+	beforeEach(() => {
+		vi.stubEnv("GITLAB_CLIENT_ID", "");
+		vi.stubEnv("GITLAB_CLIENT_SECRET", "");
+	});
+
+	it("does not exchange a caller's refresh token using another tenant's app", async () => {
+		seedWithApps([
+			appRow("foreign-org-app", "user-2", "org-2", "own-client"),
+			appRow("foreign-personal-app", "user-2", null, "own-client"),
+		]);
+		const errorLog = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(await getGitLabAccessToken("user-1", "org-1")).toBe(
+				"stale-token",
+			);
+			expect(tokenExchanges()).toHaveLength(0);
+			expect(String(mockFetch.mock.calls)).not.toContain(
+				"own-client-secret",
+			);
+		} finally {
+			errorLog.mockRestore();
+			warnLog.mockRestore();
+		}
+	});
+
+	it("refreshes with the caller's own organization's app", async () => {
+		seedWithApps([appRow("own-org-app", "user-3", "org-1", "own-client")]);
+		mockTokenOk("fresh-token", "fresh-refresh");
+
+		expect(await getGitLabAccessToken("user-1", "org-1")).toBe(
+			"fresh-token",
+		);
+		expect(tokenExchanges()).toHaveLength(1);
+		expect(String(tokenExchanges()[0][1]?.body)).toContain(
+			"own-client-secret",
+		);
 	});
 });

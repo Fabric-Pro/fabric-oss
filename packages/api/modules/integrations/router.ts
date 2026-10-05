@@ -4,12 +4,16 @@ import { getSlackContextProcedure } from "./procedures/get-slack-context";
 import { getTeamsContextAccessProcedure } from "./procedures/get-teams-context-access";
 import { githubOAuthProcedures } from "./procedures/github-oauth";
 import { gitlabOAuthProcedures } from "./procedures/gitlab-oauth";
+import { listGitLabRepositoryLinksProcedure } from "./procedures/gitlab-repository-links";
 import { genericOAuthProcedures } from "./procedures/oauth";
 import { getTeamsEventsStatusProcedure } from "./procedures/teams-events";
 
 export const integrationsRouter = {
 	github: githubOAuthProcedures,
-	gitlab: gitlabOAuthProcedures,
+	gitlab: {
+		...gitlabOAuthProcedures,
+		listRepositoryLinks: listGitLabRepositoryLinksProcedure,
+	},
 	oauth: genericOAuthProcedures,
 	slack: {
 		getContext: getSlackContextProcedure,

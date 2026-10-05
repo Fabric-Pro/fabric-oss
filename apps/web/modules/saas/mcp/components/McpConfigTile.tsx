@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { SparklesIcon } from "../../shared/components/icons/SparklesIcon";
+import { effectiveMcpAuthType } from "../lib/config-auth-type";
 import { McpServerIcon } from "./McpServerIcon";
 
 const TRANSPORT_COLORS: Record<string, string> = {
@@ -57,6 +58,8 @@ interface McpConfigTileProps {
 	config: any;
 	oauthStatus?: {
 		authenticated: boolean;
+		/** A grant exists but is dead: the person must reconnect. */
+		needsReauth?: boolean;
 		tokenExpired: boolean;
 		refreshTokenExpired: boolean;
 		hasRefreshToken: boolean;
@@ -111,10 +114,14 @@ export function McpConfigTile({
 	const transport = config.mcpServer?.transport;
 	const category = config.mcpServer?.category;
 	const tags: string[] = config.mcpServer?.tags ?? [];
+	// A GitLab server is OAuth whatever its row names: its status, connect
+	// and reconnect follow the person's GitLab connection, never a stored
+	// key or a cached transport `status`.
+	const authType = effectiveMcpAuthType(config);
 
 	const isConnected =
 		config.enabled &&
-		(config.authType !== "OAUTH2"
+		(authType !== "OAUTH2"
 			? config.status === "HEALTHY"
 			: oauthStatus?.authenticated && !oauthStatus?.tokenExpired);
 
@@ -122,11 +129,11 @@ export function McpConfigTile({
 		if (!config.enabled) {
 			return "bg-muted-foreground/50";
 		}
-		if (config.authType === "OAUTH2") {
+		if (authType === "OAUTH2") {
 			if (oauthStatus?.authenticated && !oauthStatus?.tokenExpired) {
 				return "bg-success";
 			}
-			if (oauthStatus?.tokenExpired) {
+			if (oauthStatus?.tokenExpired || oauthStatus?.needsReauth) {
 				return "bg-highlight";
 			}
 			return "bg-destructive";
@@ -144,9 +151,12 @@ export function McpConfigTile({
 		if (!config.enabled) {
 			return "Disabled";
 		}
-		if (config.authType === "OAUTH2") {
+		if (authType === "OAUTH2") {
 			if (oauthStatus?.authenticated && !oauthStatus?.tokenExpired) {
 				return "Connected";
+			}
+			if (oauthStatus?.needsReauth) {
+				return "Reconnect needed";
 			}
 			if (oauthStatus?.tokenExpired) {
 				return "Token Expired";
@@ -166,17 +176,33 @@ export function McpConfigTile({
 		if (!config.enabled) {
 			return "bg-muted text-muted-foreground";
 		}
+		// An OAuth server's badge says its sign-in state (see
+		// `getStatusLabel`), so its colour follows that state, never the
+		// transport health: a stale `status: "HEALTHY"` must not paint
+		// "Reconnect needed" or "Not Connected" green.
+		if (authType === "OAUTH2") {
+			if (isConnected) {
+				return "bg-success/10 text-success";
+			}
+			if (oauthStatus?.tokenExpired || oauthStatus?.needsReauth) {
+				return "bg-highlight/10 text-highlight";
+			}
+			return "bg-muted text-muted-foreground";
+		}
 		if (config.status === "HEALTHY" || isConnected) {
 			return "bg-success/10 text-success";
 		}
-		if (config.status === "DEGRADED" || oauthStatus?.tokenExpired) {
+		if (
+			config.status === "DEGRADED" ||
+			oauthStatus?.tokenExpired ||
+			oauthStatus?.needsReauth
+		) {
 			return "bg-highlight/10 text-highlight";
 		}
 		return "bg-muted text-muted-foreground";
 	};
 
-	const authConfig =
-		AUTH_CONFIG[config.authType || "NONE"] ?? AUTH_CONFIG.NONE;
+	const authConfig = AUTH_CONFIG[authType] ?? AUTH_CONFIG.NONE;
 	const totalTools = toolCount ?? tools?.length ?? 0;
 	const isManagedDefault = !!config.isManagedDefault;
 
@@ -402,7 +428,7 @@ export function McpConfigTile({
 						)}
 
 						{/* OAuth Connect */}
-						{config.authType === "OAUTH2" &&
+						{authType === "OAUTH2" &&
 							onConnect &&
 							!oauthStatus?.authenticated && (
 								<Tooltip>
@@ -411,6 +437,7 @@ export function McpConfigTile({
 											size="icon"
 											variant="ghost"
 											className="h-6 w-6"
+											aria-label="Connect with OAuth"
 											onClick={() => onConnect(config)}
 											disabled={disabled}
 										>
@@ -424,7 +451,7 @@ export function McpConfigTile({
 							)}
 
 						{/* Refresh Token */}
-						{config.authType === "OAUTH2" &&
+						{authType === "OAUTH2" &&
 							oauthStatus?.tokenExpired &&
 							!oauthStatus?.refreshTokenExpired &&
 							oauthStatus?.hasRefreshToken &&
@@ -454,9 +481,12 @@ export function McpConfigTile({
 								</Tooltip>
 							)}
 
-						{/* Revoke Access */}
-						{config.authType === "OAUTH2" &&
-							oauthStatus?.authenticated &&
+						{/* Revoke Access — also while a reconnect is needed: the
+						    grant is dead but still stored, and removing it
+						    must not wait for a reconnect. */}
+						{authType === "OAUTH2" &&
+							(oauthStatus?.authenticated ||
+								oauthStatus?.needsReauth) &&
 							onRevoke && (
 								<Tooltip>
 									<TooltipTrigger asChild>
@@ -464,6 +494,7 @@ export function McpConfigTile({
 											size="icon"
 											variant="ghost"
 											className="h-6 w-6 text-destructive hover:text-destructive"
+											aria-label="Revoke access"
 											onClick={() => onRevoke(config)}
 											disabled={
 												disabled || loadingState?.revoke
@@ -543,6 +574,7 @@ export function McpConfigTile({
 										size="icon"
 										variant="ghost"
 										className="h-6 w-6"
+										aria-label="Edit"
 										onClick={() => onEdit(config)}
 										disabled={
 											disabled ||
@@ -569,6 +601,7 @@ export function McpConfigTile({
 										size="icon"
 										variant="ghost"
 										className="h-6 w-6 text-destructive hover:text-destructive"
+										aria-label="Delete"
 										onClick={() => onDelete(config)}
 										disabled={disabled}
 									>

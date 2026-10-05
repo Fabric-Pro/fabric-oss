@@ -886,7 +886,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey:
 			"settings.auditLog.actions.project.instructions.repository_sync_disabled",
 		description:
-			'The project\'s coding instructions stopped syncing from a repository and went back to upload mode. `metadata.reason` is "user" when a member switched it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.hadConfiguration` is false when the project was only flipped back from a repository mode with nothing configured.',
+			'The project\'s coding instructions stopped syncing from a repository and went back to upload mode. `metadata.reason` is "user" when a member switched it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.hadConfiguration` is false when the project was only flipped back from a repository mode with nothing configured. When a move of uploaded instructions into the repository was open, `metadata.endedMigration` names the state it was in (switching over or blocked are the only two that allow this), and a `repository_migration_canceled` row with reason `switched_to_uploads` records the move ending.',
 	},
 	{
 		key: "project.instructions.pull_request_opened",
@@ -959,6 +959,45 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.instructions.pull_request_branch_updated",
 		description:
 			"An established push on a member's proposal branch — a change added or withdrawn (`metadata.kind`), confirmed directly or by observing the pull request (`metadata.recovered: true`) — or the branch was retired or stopped being tracked (`metadata.change`). Never the pull request itself opening, merging or closing: those are separate actions. `metadata.branchId` names the branch.",
+	},
+	{
+		key: "project.instructions.committed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.committed",
+		description:
+			"A member committed to the synced branch of a repository-backed project from Fabric, as one commit authored as them. A revert of an earlier commit is recorded the same way, with `metadata.revertOf` naming the commit it undid. `metadata.sha` and `metadata.ref` name the commit and branch and `metadata.fileCount` how many files it touched; never a path, a message or file content. The resource is the snapshot the commit was made from, or, for a revert, the commit itself (`project_instruction_commit`).",
+	},
+	{
+		key: "project.instructions.commit_fell_back_to_pull_request",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.commit_fell_back_to_pull_request",
+		description:
+			"A member's commit to the synced branch was not pushed, because the branch refused it (`metadata.reason` is `protected`) or kept moving (`busy`), so the same change was opened as a pull request instead. `metadata.operationId` names the pull-request operation; the pull request itself opening is a separate action.",
+	},
+	{
+		key: "project.instructions.repository_migration_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_migration_started",
+		description:
+			"Started moving a project's uploaded coding instructions into a repository: one pull request carries the published files, and the project switches to syncing from that folder once it merges. The resource names the repository; `metadata.provider`, `metadata.ref` and `metadata.folder` say where, `metadata.fileCount` how many files, and `metadata.snapshotId` and `metadata.branchId` name the proposal and its branch. Never a file path or file content. The instructions stay uploaded, and every change to them is paused, until the move ends.",
+	},
+	{
+		key: "project.instructions.repository_migration_canceled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_migration_canceled",
+		description:
+			"A move of uploaded coding instructions into a repository ended without its files landing. `metadata.reason` is `canceled` (a member canceled it), `pull_request_closed` (its pull request was closed without merging, or merged into a branch the sync does not read), `switched_to_uploads` (a member switched the project back to upload mode, the way out of a move that was switching over or blocked) or `integration_disconnected` (the repository was disconnected); those last two also carry `metadata.state`, the stage the move was in. The actor is the member who acted, and the system when the pull request ended on its own or the repository was disconnected. The instructions stay uploaded and the sync the move created is removed. A move that failed before it had a pull request (`start_failed`) writes no row.",
+	},
+	{
+		key: "project.instructions.repository_migration_completed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.repository_migration_completed",
+		description:
+			"A move of uploaded coding instructions into a repository finished, recorded in two steps. `metadata.stage` `switched` is the merged pull request switching the project to syncing from that folder; `synced` is the first sync from the repository taking effect, which ends the move. The actor is the member who started the move; `metadata.startedAt` says when, and the `synced` row's `metadata.snapshotId` names the version that sync published.",
 	},
 	// ---- Feature / story ------------------------------------------------
 	{

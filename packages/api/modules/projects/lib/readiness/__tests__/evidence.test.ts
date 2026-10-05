@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mockDb, mockIsFeatureEnabled } = vi.hoisted(() => ({
 	mockIsFeatureEnabled: vi.fn(),
 	mockDb: {
-		project: { findUnique: vi.fn() },
+		project: { findUnique: vi.fn(), count: vi.fn() },
 		projectContext: { groupBy: vi.fn(), count: vi.fn(), findMany: vi.fn() },
 		projectDocument: { groupBy: vi.fn(), findMany: vi.fn() },
 		projectMember: { count: vi.fn() },
@@ -43,6 +43,9 @@ const { mockDb, mockIsFeatureEnabled } = vi.hoisted(() => ({
 		organizationCliReach: { findMany: vi.fn() },
 		userApiKey: { findFirst: vi.fn() },
 		organizationApiKey: { findFirst: vi.fn() },
+		// The signed-in agent's consent, asked for the organization's own grant
+		// and for the grants of projects it hosts.
+		oauthConsent: { findFirst: vi.fn(), findMany: vi.fn() },
 	},
 }));
 
@@ -111,6 +114,10 @@ const organizationReach = (credentialId: string) => ({
 	credentialKind: "ORGANIZATION_API_KEY",
 	credentialId,
 });
+const oauthReach = (credentialId: string) => ({
+	credentialKind: "OAUTH_CLIENT",
+	credentialId,
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -138,6 +145,9 @@ beforeEach(() => {
 	mockDb.organizationCliReach.findMany.mockResolvedValue([]);
 	mockDb.userApiKey.findFirst.mockResolvedValue(null);
 	mockDb.organizationApiKey.findFirst.mockResolvedValue(null);
+	mockDb.oauthConsent.findFirst.mockResolvedValue(null);
+	mockDb.oauthConsent.findMany.mockResolvedValue([]);
+	mockDb.project.count.mockResolvedValue(0);
 });
 
 describe("gatherReadinessEvidence — documents in flight", () => {
@@ -669,6 +679,81 @@ describe("gatherReadinessEvidence — the organization's CLI connection", () => 
 			expect(userKeyWhere().id).toEqual({ in: ["ours"] });
 			expect(userKeyWhere().user).toEqual({
 				members: { some: { organizationId: "org-here" } },
+			});
+		});
+
+		describe("a signed-in agent", () => {
+			it("connects the organization its consent was given for", async () => {
+				mockDb.project.findUnique.mockResolvedValue(
+					organizationRow([oauthReach("client-row-1")]),
+				);
+				mockDb.oauthConsent.findFirst.mockResolvedValue({ id: "c1" });
+
+				const result = await gatherReadinessEvidence("p1");
+
+				expect(result?.evidence.organizationCliConnected).toBe(true);
+				expect(
+					mockDb.oauthConsent.findFirst.mock.calls[0][0].where,
+				).toEqual({
+					referenceId: "org1",
+					client: {
+						id: { in: ["client-row-1"] },
+						disabled: { not: true },
+					},
+					user: { members: { some: { organizationId: "org1" } } },
+				});
+				expect(mockDb.oauthConsent.findMany).not.toHaveBeenCalled();
+			});
+
+			it("connects the organization hosting the project its consent was given for", async () => {
+				mockDb.project.findUnique.mockResolvedValue(
+					organizationRow([oauthReach("client-row-1")]),
+				);
+				mockDb.oauthConsent.findMany.mockResolvedValue([
+					{ referenceId: "project:mcp:project-here" },
+					{ referenceId: "project:api:project-here" },
+				]);
+				mockDb.project.count.mockResolvedValue(1);
+
+				const result = await gatherReadinessEvidence("p1");
+
+				expect(result?.evidence.organizationCliConnected).toBe(true);
+				expect(mockDb.project.count).toHaveBeenCalledWith({
+					where: {
+						id: { in: ["project-here"] },
+						organizationId: "org1",
+						deletedAt: null,
+					},
+				});
+			});
+
+			it("does not connect an organization through a project another organization hosts", async () => {
+				mockDb.project.findUnique.mockResolvedValue(
+					organizationRow([oauthReach("client-row-1")]),
+				);
+				mockDb.oauthConsent.findMany.mockResolvedValue([
+					{ referenceId: "project:mcp:project-elsewhere" },
+				]);
+				mockDb.project.count.mockResolvedValue(0);
+
+				const result = await gatherReadinessEvidence("p1");
+
+				expect(result?.evidence.organizationCliConnected).toBe(false);
+			});
+
+			it("ignores a project reference that is not well formed, and asks about no project then", async () => {
+				mockDb.project.findUnique.mockResolvedValue(
+					organizationRow([oauthReach("client-row-1")]),
+				);
+				mockDb.oauthConsent.findMany.mockResolvedValue([
+					{ referenceId: "project:" },
+					{ referenceId: "project:web:project-here" },
+				]);
+
+				const result = await gatherReadinessEvidence("p1");
+
+				expect(result?.evidence.organizationCliConnected).toBe(false);
+				expect(mockDb.project.count).not.toHaveBeenCalled();
 			});
 		});
 

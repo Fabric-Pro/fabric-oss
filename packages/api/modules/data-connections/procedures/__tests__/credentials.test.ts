@@ -193,4 +193,84 @@ describe("credentialsProcedures", () => {
 			}),
 		).rejects.toThrow(ORPCError);
 	});
+
+	describe("GitLab holds no credential", () => {
+		const context = {
+			user: { id: "user-1" },
+			session: { activeOrganizationId: null },
+		};
+
+		it("refuses to save a GitLab credential", async () => {
+			const error = await handlers
+				.create({
+					input: {
+						organizationId: null,
+						provider: "GITLAB",
+						name: "GitLab PAT",
+						payload: { apiKey: "glpat-example" },
+					},
+					context,
+				})
+				.catch((e: unknown) => e);
+
+			expect((error as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect(createDataConnectionCredential).not.toHaveBeenCalled();
+		});
+
+		it("refuses to assign any credential to a GitLab connection", async () => {
+			vi.mocked(getDataConnectionById).mockResolvedValueOnce({
+				id: "conn-gl",
+				provider: "GITLAB",
+			} as any);
+			vi.mocked(getDataConnectionCredentialById).mockResolvedValueOnce({
+				id: "cred-1",
+				provider: "GITLAB",
+			} as any);
+
+			const error = await handlers
+				.assignToConnection({
+					input: {
+						id: "conn-gl",
+						credentialId: "cred-1",
+						organizationId: null,
+					},
+					context,
+				})
+				.catch((e: unknown) => e);
+
+			expect((error as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect(updateDataConnection).not.toHaveBeenCalled();
+		});
+
+		it("refuses to hand a saved GitLab credential to another connection", async () => {
+			vi.mocked(getDataConnectionById).mockResolvedValueOnce({
+				id: "conn-1",
+				provider: "CLICKUP",
+			} as any);
+			vi.mocked(getDataConnectionCredentialById).mockResolvedValueOnce({
+				id: "cred-gl",
+				provider: "GITLAB",
+			} as any);
+
+			const error = await handlers
+				.assignToConnection({
+					input: {
+						id: "conn-1",
+						credentialId: "cred-gl",
+						organizationId: null,
+					},
+					context,
+				})
+				.catch((e: unknown) => e);
+
+			expect((error as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect(updateDataConnection).not.toHaveBeenCalled();
+		});
+	});
 });

@@ -19,12 +19,20 @@ const mockGetMcpConfigById = vi.fn();
 const mockGetValidAccessToken = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	getMcpConfigById: function getMcpConfigById(...args: unknown[]) {
 		return mockGetMcpConfigById(...args);
 	},
 	getValidAccessToken: function getValidAccessToken(...args: unknown[]) {
 		return mockGetValidAccessToken(...args);
 	},
+	// The config owner is a member whose role allows MCP read and connect
+	// (the organization gate in ../organization-access).
+	canConnectOrganizationMcpConfigs: async () => true,
+	canReadOrganizationMcpConfigs: async () => true,
+	isOrganizationMember: async () => true,
 }));
 
 const mockRefreshOAuthToken = vi.fn();

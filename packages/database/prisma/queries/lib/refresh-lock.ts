@@ -63,7 +63,12 @@ export * from "./refresh-lock-key";
  * checks.
  */
 export async function withRefreshLock<T>(
-	key: string,
+	/**
+	 * One key, or several taken in the order given. Every caller that takes
+	 * more than one key must list them in the same relative order, or two
+	 * callers can deadlock waiting on each other's second key.
+	 */
+	key: string | readonly string[],
 	fn: (
 		tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
 		assertBudget: (requiredMs: number) => void,
@@ -86,7 +91,9 @@ export async function withRefreshLock<T>(
 			// steps backwards; the different epoch doesn't matter since only
 			// the delta between two calls is ever used.
 			const lockStartedAt = performance.now();
-			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(key)}::int)`;
+			for (const each of typeof key === "string" ? [key] : key) {
+				await tx.$executeRaw`SELECT pg_advisory_xact_lock(${REFRESH_ADVISORY_CLASS}::int, ${advisoryObjectKey(each)}::int)`;
+			}
 			const assertBudget = (requiredMs: number): void => {
 				assertRefreshLockBudget({
 					elapsedMs: performance.now() - lockStartedAt,

@@ -241,6 +241,39 @@ beforeEach(() => {
 });
 
 describe("integrations.github.callback", () => {
+	it("reconnects the account credential without overwriting a workflow-specific override", async () => {
+		mockWorkflowIntegrationFindFirst.mockImplementation(
+			async ({ where }) => ({
+				id:
+					where.workflowId === null
+						? "account-example"
+						: "workflow-override-example",
+			}),
+		);
+		mockWorkflowIntegrationUpdate.mockResolvedValue({
+			id: "account-example",
+		});
+		await expect(
+			callback.handler({
+				input: { code: "code", state: mintState("org-1") },
+				context: contextFor("user-1"),
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(mockWorkflowIntegrationUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({ where: { id: "account-example" } }),
+		);
+		expect(mockWorkflowIntegrationFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					userId: "user-1",
+					organizationId: "org-1",
+					provider: "GITHUB",
+					workflowId: null,
+				}),
+				orderBy: { createdAt: "desc" },
+			}),
+		);
+	});
 	it("is declared on protectedProcedure", () => {
 		expect(callback.builder).toBe("protected");
 	});

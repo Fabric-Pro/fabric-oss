@@ -87,6 +87,13 @@ function configured(provider: string) {
 				credentialKeys: ["apiKey"],
 				lastUsedAt: null,
 				createdAt: new Date("2026-01-01"),
+				// The person's own GitLab row carries the connection's state
+				// (`gitlabConnectionRowStatus`); a GitLab row without one is
+				// not the person's connection and does not make GitLab
+				// connected on this page.
+				...(provider === "GITLAB"
+					? { connectionState: "connected" as const }
+					: {}),
 			},
 		],
 	};
@@ -326,34 +333,27 @@ describe("WorkflowIntegrationSettingsPageContent: GitLab Disconnect", () => {
 		expect(mocks.disconnectByType).not.toHaveBeenCalled();
 	});
 
-	it("offers one Disconnect for a token that exists only on the MCP config, without calling it connected", async () => {
+	it("treats a legacy MCP token copy as not connected: no partial notice and nothing to disconnect", async () => {
+		// Earlier releases reported a token on the MCP config with no
+		// connection behind it as `partialConnection` and offered a
+		// Disconnect for it. The copy is no longer read or kept, so the field
+		// is gone; a stale response that still carries it changes nothing.
 		mocks.listIntegrations.mockResolvedValue({ integrations: [] });
 		mocks.gitlabStatus.mockResolvedValue({
 			connected: false,
 			partialConnection: true,
 		});
-		const user = userEvent.setup();
 		renderPage("GITLAB");
 
-		const disconnect = await screen.findByRole("button", {
-			name: /disconnect gitlab/i,
-		});
 		expect(
-			screen.getAllByRole("button", { name: /disconnect/i }),
-		).toHaveLength(1);
-		expect(screen.getByText(/only partly connected/i)).toBeInTheDocument();
-		// Still not connected: the connect flow stays available to restore it.
-		expect(
-			screen.getByRole("button", { name: /connect gitlab account/i }),
-		).toBeInTheDocument();
-
-		await user.click(disconnect);
-		await confirmDisconnect(user, GITLAB_EVERYWHERE);
-		await waitFor(() =>
-			expect(mocks.gitlabDisconnect).toHaveBeenCalledWith({
-				organizationId: ORGANIZATION_ID,
+			await screen.findByRole("button", {
+				name: /connect gitlab account/i,
 			}),
-		);
+		).toBeInTheDocument();
+		expect(screen.queryByText(/only partly connected/i)).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /disconnect/i }),
+		).toBeNull();
 	});
 
 	it("does not treat a typed but unsaved Personal Access Token as a stored credential", async () => {

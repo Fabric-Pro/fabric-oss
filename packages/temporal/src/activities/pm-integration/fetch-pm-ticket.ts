@@ -1,6 +1,7 @@
 import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/common";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import { descriptionToText } from "./adf";
 import type { PMToolCapabilities } from "./tool-analyzer";
 
@@ -143,6 +144,15 @@ export async function fetchPmTicket(
 		additionalContext,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: additionalContext,
+	});
+
 	const taskGet = capabilities.taskGet;
 	if (!taskGet) {
 		return null;
@@ -174,6 +184,7 @@ export async function fetchPmTicket(
 	}
 
 	const result = await executeMcpTool({
+		pmTarget: { additionalContext },
 		toolName: taskGet.toolName,
 		args,
 		userId,

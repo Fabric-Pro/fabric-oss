@@ -64,8 +64,19 @@ import {
 	PROJECT_FEATURE_LIST_DESCRIPTION,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../project-feature-tool-schemas";
+import { PROJECT_REPOSITORY_TOOLS } from "../project-repository-tool-schemas";
 import { assessToolCallRisk } from "../risk-assessment";
 import { formatToolFailureAbort } from "../tool-failure-message";
+import {
+	canonicalToolCallKey,
+	extractContinuationFields,
+	fingerprintObservation,
+	fitPagedBodyReadArgs,
+	formatContinuationNote,
+	formatRepeatedObservationNote,
+	PAGED_BODY_READ_TOOLS,
+	truncateWithinLimit,
+} from "../tool-result-progression";
 import type {
 	ALTKConfig,
 	ApprovalSignalData,
@@ -95,6 +106,38 @@ import {
  * replay with the prompt bytes they recorded.
  */
 const PROMPT_AUDIT_PATCH = "orch-prompt-audit-v1";
+
+/**
+ * Gates paged-read fitting: a Fabric document/source read asks for a page
+ * that fits the result cap, and a result that still overflows keeps its
+ * pagination fields after summarization or truncation. Both change the
+ * activity inputs a history recorded (the read's args, the next iteration's
+ * conversation), so an older history replays without either.
+ */
+const PAGED_READ_FIT_PATCH = "orch-paged-read-fit-v1";
+
+/**
+ * Gates keeping `load_skill` / `read_skill_file` results out of history
+ * pruning. It changes the conversation sent on later iterations.
+ */
+const SKILL_BODY_RETENTION_PATCH = "orch-skill-body-retention-v1";
+
+/**
+ * Gates the host note on a repeated call whose result is identical to an
+ * earlier one in the same turn. It changes the conversation sent on later
+ * iterations; it adds no command and no stop rule.
+ */
+const REPEAT_OBSERVATION_LABEL_PATCH = "orch-repeat-observation-label-v1";
+
+/**
+ * Gates the stub-catalog prompt's corrected schema-lifetime sentence (a
+ * schema loaded through search_tools lasts for the turn, not the
+ * conversation), so an older history replays with the prompt bytes it sent.
+ */
+const STUB_CATALOG_TURN_SCOPE_PATCH = "orch-stub-catalog-turn-scope-v1";
+
+/** Skill reads whose bodies the model keeps following for the whole turn. */
+const SKILL_BODY_TOOLS = new Set(["load_skill", "read_skill_file"]);
 
 /**
  * Build a `TokenBudgetStatus` snapshot from the current `iterationCosts`.
@@ -547,6 +590,15 @@ function pruneConversationHistory(
 		const toolName = msg.toolCallId
 			? toolCallNames.get(msg.toolCallId) || "unknown"
 			: "unknown";
+		// A loaded skill is instructions the model follows for the rest of the
+		// turn, not an observation it has finished with. The marker is taken
+		// only when a skill result would otherwise be pruned.
+		if (
+			SKILL_BODY_TOOLS.has(toolName) &&
+			patched(SKILL_BODY_RETENTION_PATCH)
+		) {
+			continue;
+		}
 		const originalLength = msg.content.length;
 		const summary = msg.content
 			.substring(0, TOOL_RESULTS.prunedPlaceholderMax)
@@ -1302,6 +1354,8 @@ export async function executeIterativePhase(
 	let projectFeatureToolsRegistered = false;
 	// Same, for the document and Context-tab source reads.
 	let projectDocumentToolsRegistered = false;
+	// The repository reads registered below, in catalog order.
+	const projectRepositoryToolsRegistered: string[] = [];
 
 	// Pre-register project_rag_query when a project is attached so the LLM
 	// can use it immediately without wasting iterations on search_tools.
@@ -1463,12 +1517,36 @@ export async function executeIterativePhase(
 			ragQuery.description = `${ragQuery.description} ${PROJECT_RAG_QUERY_LISTING_HINT}`;
 			projectDocumentToolsRegistered = true;
 		}
+		// Live repository reads (Fizzy #2924): a chat with MCP servers assigned
+		// rarely found code_tree or code_file_get through search_tools, whose
+		// semantic step cuts to the top matches across every server the user
+		// has, so a project's repository could only be read through another
+		// integration's tools. Routed like the reads above. An explicit Fabric
+		// tool list still decides: a tool it leaves out is not registered.
+		// Patch-gated because it changes the tool set a recorded history saw.
+		if (patched("orch-project-repository-tools-v1")) {
+			for (const tool of PROJECT_REPOSITORY_TOOLS) {
+				if (
+					Array.isArray(input.enabledFabricToolIds) &&
+					!input.enabledFabricToolIds.includes(tool.name)
+				) {
+					continue;
+				}
+				discoveredTools[tool.name] = {
+					description: tool.description,
+					inputSchema: tool.inputSchema,
+				};
+				discoveredToolConfigIds[tool.name] = "fabric-ai-server";
+				projectRepositoryToolsRegistered.push(tool.name);
+			}
+		}
 		log.info(
 			"[IterativeExecution] Pre-registered project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, and search_teams_messages tools",
 			{
 				projectId: input.projectId,
 				projectFeatureTools: projectFeatureToolsRegistered,
 				projectDocumentTools: projectDocumentToolsRegistered,
+				projectRepositoryTools: projectRepositoryToolsRegistered,
 			},
 		);
 	}
@@ -1657,6 +1735,12 @@ export async function executeIterativePhase(
 			shouldContinue: true,
 		};
 	}
+
+	// Every distinct observation each call returned in this turn, keyed by
+	// name plus canonical args, mapped to the iteration that first returned
+	// it, so an identical repeat can be labelled. Rebuilt from the same
+	// recorded activity results on replay, so it is deterministic.
+	const observationsByCall = new Map<string, Map<string, number>>();
 
 	// Main iteration loop
 	while (!isCancelled()) {
@@ -1915,7 +1999,13 @@ Place each ![Generated Image](url) AFTER the text description, NOT before it. Co
 		const projectToolsListed =
 			!promptAuditApplied || Boolean(input.projectId);
 		if (preloadedToolCatalog) {
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; the loaded schema persists for the rest of this conversation. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			// Discovered schemas live in this phase's `discoveredTools`, which
+			// is rebuilt for every turn, so a schema loaded now is gone on the
+			// next user message. Gated: prompt bytes are recorded activity input.
+			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
+				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
+				: "the loaded schema persists for the rest of this conversation";
+			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			iteration === 1 &&
 			preloadedServerNames.length > 0 &&
@@ -2931,9 +3021,24 @@ Never guess or use example values — always use real data from API responses.`;
 					toolResult = skillResult;
 				} else {
 					// Regular MCP tool execution
+					//
+					// A paged Fabric body read asks for a page that fits the
+					// result cap, so the page arrives whole with its nextOffset
+					// instead of being summarized without it. Fabric-routed only:
+					// a same-named tool on another server is not ours to resize.
+					const dispatchArgs =
+						PAGED_BODY_READ_TOOLS.has(toolCall.name) &&
+						discoveredToolConfigIds[toolCall.name] ===
+							FABRIC_AI_SERVER_CONFIG_ID &&
+						patched(PAGED_READ_FIT_PATCH)
+							? fitPagedBodyReadArgs(
+									toolCall.args,
+									TOOL_RESULTS.pagedBodyMaxLength,
+								)
+							: toolCall.args;
 					const mcpToolInput = {
 						toolName: toolCall.name,
-						args: toolCall.args,
+						args: dispatchArgs,
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
@@ -3270,34 +3375,108 @@ Never guess or use example values — always use real data from API responses.`;
 			}
 
 			let resultContent = extractMcpResultText(toolResult);
+			// The full observation, before any summarizing or truncation.
+			const observedContent = resultContent;
 
-			if (resultContent.length > MAX_TOOL_RESULT_LENGTH) {
-				log.info("Tool result too large, summarizing with LLM", {
-					toolName: toolCall.name,
-					originalLength: resultContent.length,
-					targetLength: MAX_TOOL_RESULT_LENGTH,
-				});
-				try {
-					resultContent = await summarizeLargeToolResult({
-						toolName: toolCall.name,
-						toolResult: resultContent,
-						userQuery: state.enrichedMessage,
-						maxOutputLength: MAX_TOOL_RESULT_LENGTH - 500,
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
-				} catch (err) {
-					log.warn(
-						"LLM summarization failed, falling back to truncation",
-						{
-							error: String(err),
-						},
-					);
-					resultContent =
-						resultContent.substring(0, MAX_TOOL_RESULT_LENGTH) +
-						`\n... [TRUNCATED: ${resultContent.length - MAX_TOOL_RESULT_LENGTH} chars omitted]`;
-				}
+			// Label, never block: a call identical to an earlier one in this
+			// turn whose result is identical to ANY result that call returned
+			// before (A, B, A included) is told so, with the iteration that
+			// first returned it. Computed before the cap so it is reserved.
+			const callKey = canonicalToolCallKey(toolCall.name, toolCall.args);
+			const fingerprint = fingerprintObservation(observedContent);
+			let firstSeenAt = observationsByCall.get(callKey);
+			if (!firstSeenAt) {
+				firstSeenAt = new Map();
+				observationsByCall.set(callKey, firstSeenAt);
 			}
+			const firstIteration = firstSeenAt.get(fingerprint);
+			const repeatNote =
+				firstIteration !== undefined &&
+				patched(REPEAT_OBSERVATION_LABEL_PATCH)
+					? formatRepeatedObservationNote(firstIteration)
+					: "";
+			if (firstIteration === undefined) {
+				firstSeenAt.set(fingerprint, iteration);
+			}
+
+			// Over the cap on its own, or only once its repeat label is added
+			// (the label is set only under its own marker, so with it off this
+			// is the original `length > MAX` test).
+			const overCapAlone = resultContent.length > MAX_TOOL_RESULT_LENGTH;
+			if (
+				overCapAlone ||
+				resultContent.length + repeatNote.length >
+					MAX_TOOL_RESULT_LENGTH
+			) {
+				// Neither a summary nor a head cut reliably keeps the fields
+				// that say how to fetch more, and without them the model can
+				// only re-read the same page. They are copied from the full
+				// result into a bounded note, built first so the content
+				// leaves room for it and the repeat label inside the cap.
+				// With no note and no label this is the old path.
+				const continuation = extractContinuationFields(
+					observedContent,
+					toolResult,
+				);
+				const continuationNote =
+					continuation && patched(PAGED_READ_FIT_PATCH)
+						? formatContinuationNote(continuation)
+						: "";
+				const reserved = continuationNote.length + repeatNote.length;
+				const contentLimit = MAX_TOOL_RESULT_LENGTH - reserved;
+				if (!overCapAlone) {
+					// Fits alone, not with its label. A plain, deterministic
+					// cut rather than a summarizer call: the label says the
+					// model already saw this exact result whole earlier.
+					resultContent = truncateWithinLimit(
+						observedContent,
+						contentLimit,
+					);
+				} else {
+					log.info("Tool result too large, summarizing with LLM", {
+						toolName: toolCall.name,
+						originalLength: resultContent.length,
+						targetLength: MAX_TOOL_RESULT_LENGTH,
+					});
+					try {
+						resultContent = await summarizeLargeToolResult({
+							toolName: toolCall.name,
+							toolResult: resultContent,
+							userQuery: state.enrichedMessage,
+							maxOutputLength: contentLimit - 500,
+							userId: input.userId,
+							organizationId: input.organizationId,
+						});
+						if (reserved > 0) {
+							// A model's output length is not exact.
+							resultContent = truncateWithinLimit(
+								resultContent,
+								contentLimit,
+							);
+						}
+					} catch (err) {
+						log.warn(
+							"LLM summarization failed, falling back to truncation",
+							{
+								error: String(err),
+							},
+						);
+						resultContent =
+							reserved > 0
+								? truncateWithinLimit(
+										observedContent,
+										contentLimit,
+									)
+								: resultContent.substring(
+										0,
+										MAX_TOOL_RESULT_LENGTH,
+									) +
+									`\n... [TRUNCATED: ${resultContent.length - MAX_TOOL_RESULT_LENGTH} chars omitted]`;
+					}
+				}
+				resultContent += continuationNote;
+			}
+			resultContent = repeatNote + resultContent;
 
 			// Debug: Log the tool result content being added to conversation
 			log.info("Adding tool result to conversation", {

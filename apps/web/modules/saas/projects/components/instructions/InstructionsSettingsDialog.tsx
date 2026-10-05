@@ -24,20 +24,39 @@ import { toast } from "sonner";
  * slice — this dialog only ever writes `ignoreGlobs` via `updateSettings`.
  * The query is gated on `open` so it never fetches while the dialog is
  * closed, and the textarea reseeds every time the dialog opens.
+ *
+ * Someone who may not change the settings still sees them: the list reads as
+ * text they can select, there is no Save or Reset, and one sentence says why.
+ * (The save used to be offered to everyone and refused afterwards with a
+ * FORBIDDEN toast.)
  */
 export function InstructionsSettingsDialog({
 	projectId,
 	open,
 	onOpenChange,
+	canEdit: mayEdit,
+	pausedReason = null,
 	repositorySection,
 }: {
 	projectId: string;
 	open: boolean;
 	onOpenChange: (o: boolean) => void;
+	/**
+	 * Whether this viewer may change the settings. A UI gate only:
+	 * `updateSettings` re-checks the permission on every save.
+	 */
+	canEdit: boolean;
+	/**
+	 * Why no setting can be changed right now (a move of the uploaded
+	 * instructions into a repository is open, Fizzy #2878 §9): the server would
+	 * refuse the save, so the rules read as text and this sentence says why.
+	 */
+	pausedReason?: string | null;
 	/** The Repository section (§7.4), when the project syncs or is left in repository mode. */
 	repositorySection?: ReactNode;
 }) {
 	const actionError = useInstructionActionError();
+	const canEdit = mayEdit && pausedReason === null;
 	const t = useTranslations("projects.codingInstructions.settingsDialog");
 	const queryClient = useQueryClient();
 	const settings = useQuery({
@@ -103,6 +122,14 @@ export function InstructionsSettingsDialog({
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>{t("description")}</DialogDescription>
 				</DialogHeader>
+				{canEdit ? null : (
+					<p
+						className="text-muted-foreground text-sm"
+						data-testid="instructions-settings-read-only"
+					>
+						{pausedReason ?? t("readOnlyNotice")}
+					</p>
+				)}
 				{repositorySection}
 				<Textarea
 					aria-label={t("textareaLabel")}
@@ -110,30 +137,42 @@ export function InstructionsSettingsDialog({
 						"\n",
 					)}
 					value={text}
+					readOnly={!canEdit}
 					onChange={(e) => setText(e.target.value)}
 					className="min-h-[200px] font-mono text-xs"
 				/>
-				<DialogFooter className="sm:justify-between">
-					<Button
-						variant="outline"
-						onClick={resetToDefaults}
-						disabled={update.isPending}
-					>
-						{t("resetToDefaults")}
-					</Button>
-					<div className="flex gap-2">
+				{canEdit ? (
+					<DialogFooter className="sm:justify-between">
+						<Button
+							variant="outline"
+							onClick={resetToDefaults}
+							disabled={update.isPending}
+						>
+							{t("resetToDefaults")}
+						</Button>
+						<div className="flex gap-2">
+							<Button
+								variant="outline"
+								onClick={() => onOpenChange(false)}
+								disabled={update.isPending}
+							>
+								{t("cancel")}
+							</Button>
+							<Button onClick={save} disabled={update.isPending}>
+								{t("save")}
+							</Button>
+						</div>
+					</DialogFooter>
+				) : (
+					<DialogFooter>
 						<Button
 							variant="outline"
 							onClick={() => onOpenChange(false)}
-							disabled={update.isPending}
 						>
-							{t("cancel")}
+							{t("close")}
 						</Button>
-						<Button onClick={save} disabled={update.isPending}>
-							{t("save")}
-						</Button>
-					</div>
-				</DialogFooter>
+					</DialogFooter>
+				)}
 			</DialogContent>
 		</Dialog>
 	);

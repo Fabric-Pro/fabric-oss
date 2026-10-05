@@ -132,6 +132,8 @@ export const executeToolProcedure = tenantProtectedProcedure
 					configId,
 					userId,
 					organizationId,
+					// The same MCP_CONNECT this procedure requires.
+					access: "connect",
 				});
 				mcpClient = clientResult.client;
 			} catch (clientError) {

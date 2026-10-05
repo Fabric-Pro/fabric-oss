@@ -9,11 +9,13 @@ import {
 	getMcpConfigForTenantAndServer,
 	getMcpServerById,
 	getOrganizationById,
+	isGitLabPersonalMcpServerKey,
 	listMcpConfigsForTenant,
 	recordAudit,
 	updateMcpConfigEnabled,
 	upsertMcpConfig,
 } from "@repo/database";
+import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import {
 	triggerMcpServerIngestion,
 	triggerMcpToolDeletion,
@@ -22,11 +24,13 @@ import {
 import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { removeGitLabPersonalMcpConfig } from "../lib/gitlab-config-removal";
 
 // NOTE: AI provider config is now fetched directly inside Temporal activities
 // using getAIProviderConfig(). This ensures proper tenant isolation and
@@ -332,8 +336,56 @@ export const configProcedures = {
 				});
 			}
 
-			const effectiveAuthType =
+			const requestedAuthType =
 				input.authType ?? existingConfig?.authType ?? "NONE";
+
+			// GitLab personal servers never take a credential here: their
+			// credential is the person's GitLab connection, written only by
+			// the GitLab connection service, and every reader of these rows
+			// resolves through that connection whatever `authType` the row
+			// names. A token or API key stored on the config would be a
+			// second, unmanaged copy of a GitLab grant. Fails closed: a server
+			// whose key cannot be read (no such row) takes no credential
+			// either, rather than being assumed not GitLab. Looked up by id
+			// alone — `getMcpServerById` without a tenant finds only system
+			// servers, so it would miss every custom one.
+			const serverKey = await db.mCPServer.findUnique({
+				where: { id: mcpServerId },
+				select: { key: true },
+			});
+			const isGitLabPersonalServer = isGitLabPersonalMcpServerKey(
+				serverKey?.key,
+			);
+			const credentialColumnsWritable =
+				serverKey !== null && !isGitLabPersonalServer;
+			// A GitLab personal server's config is always stored as OAUTH2,
+			// the only auth type those servers offer: every screen and reader
+			// then sees one shape. Forced rather than refused, so a client
+			// still holding an older API_KEY or NONE row (or a form built from
+			// one) can save its other settings; any credential it sends is
+			// still refused below.
+			const effectiveAuthType = isGitLabPersonalServer
+				? "OAUTH2"
+				: requestedAuthType;
+			if (isGitLabPersonalServer) {
+				const suppliedSecret = (value: unknown) =>
+					typeof value === "string" && value.length > 0;
+				if (
+					[
+						apiKey,
+						encryptedApiKey,
+						accessToken,
+						encryptedAccessToken,
+						refreshToken,
+						encryptedRefreshToken,
+					].some(suppliedSecret)
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"GitLab MCP servers use your GitLab connection and take no API key or token. Connect GitLab from Integrations instead.",
+					});
+				}
+			}
 
 			if (effectiveAuthType === "API_KEY") {
 				const hasExistingApiKey = !!existingConfig?.encryptedApiKey;
@@ -434,13 +486,21 @@ export const configProcedures = {
 					encryptApiKey(oauthClientSecret);
 			}
 
-			// Prefer plaintext -> encrypt; else use provided encrypted values
-			if (typeof apiKey === "string" && apiKey.length > 0) {
+			// Prefer plaintext -> encrypt; else use provided encrypted values.
+			// Only where credential columns are writable (see above).
+			if (!credentialColumnsWritable) {
+				// Fall through with no credential fields set.
+			} else if (typeof apiKey === "string" && apiKey.length > 0) {
 				data.encryptedApiKey = encryptApiKey(apiKey);
 			} else if (encryptedApiKey !== undefined) {
 				data.encryptedApiKey = encryptedApiKey;
 			}
-			if (typeof accessToken === "string" && accessToken.length > 0) {
+			if (!credentialColumnsWritable) {
+				// Fall through with no token fields set.
+			} else if (
+				typeof accessToken === "string" &&
+				accessToken.length > 0
+			) {
 				data.encryptedAccessToken = encryptApiKey(accessToken);
 				data.accessTokenHash = hashApiKey(accessToken);
 			} else if (encryptedAccessToken !== undefined) {
@@ -461,7 +521,12 @@ export const configProcedures = {
 					}
 				}
 			}
-			if (typeof refreshToken === "string" && refreshToken.length > 0) {
+			if (!credentialColumnsWritable) {
+				// See above.
+			} else if (
+				typeof refreshToken === "string" &&
+				refreshToken.length > 0
+			) {
 				data.encryptedRefreshToken = encryptApiKey(refreshToken);
 			} else if (encryptedRefreshToken !== undefined) {
 				data.encryptedRefreshToken = encryptedRefreshToken;
@@ -574,10 +639,19 @@ export const configProcedures = {
 			// AI credentials are fetched inside the workflow activities for proper tenant isolation
 			// NOTE: For OAuth2 configs, only trigger if we have valid tokens (access token exists)
 			// OAuth callback will trigger ingestion after successful authentication
+			// GitLab personal servers hold no token of their own: ingestion
+			// runs with the person's GitLab connection, so that connection
+			// being usable is what decides, whatever the config's auth type.
 			const isOAuth2 = record.authType === "OAUTH2";
-			const hasOAuthTokens = !!record.encryptedAccessToken;
-			const shouldIngest =
-				record.enabled && (!isOAuth2 || hasOAuthTokens);
+			const credentialReady = !record.enabled
+				? false
+				: isGitLabPersonalServer
+					? (await findUsableGitLabConnection({
+							userId: tenantUserId,
+							organizationId: organizationId ?? null,
+						})) !== null
+					: !isOAuth2 || !!record.encryptedAccessToken;
+			const shouldIngest = record.enabled && credentialReady;
 
 			if (shouldIngest) {
 				try {
@@ -613,7 +687,11 @@ export const configProcedures = {
 						error,
 					);
 				}
-			} else if (isOAuth2 && !hasOAuthTokens) {
+			} else if (record.enabled && isGitLabPersonalServer) {
+				console.log(
+					"[MCP Config] Skipping tool ingestion for GitLab config - GitLab is not connected",
+				);
+			} else if (record.enabled && isOAuth2) {
 				console.log(
 					"[MCP Config] Skipping tool ingestion for OAuth2 config - tokens not yet available",
 				);
@@ -681,6 +759,46 @@ export const configProcedures = {
 				config.displayName || config.mcpServer?.name || config.id;
 			const configUserId = config.userId;
 			const configOrgId = config.organizationId;
+
+			// GitLab personal servers: Delete is the one personal GitLab
+			// disconnect plus `enabled: false`. The row and its client
+			// registration are kept so a reconnect reuses them; project
+			// repository links are untouched.
+			if (isGitLabPersonalMcpServerKey(config.mcpServer?.key)) {
+				// The disconnect writes in the config's organization: check the
+				// caller's membership and role there, and refuse a config with
+				// no organization rather than disconnect into one.
+				await authorizeInputOrganization(
+					Permissions.MCP_DELETE,
+					config.organizationId,
+					context,
+					{ requireOrganization: true },
+				);
+				await removeGitLabPersonalMcpConfig({
+					config,
+					surface: "mcp.configs.delete",
+					audit: context,
+				});
+				// No tool-deletion workflow here, deliberately. It deletes the
+				// indexed tools by server name, user and organization only, and
+				// it starts after the disconnect has committed and revocation
+				// has been awaited — so a reconnect landing in between would
+				// have its freshly ingested tools deleted. The row is kept and
+				// turned off instead, and turned-off configs are neither offered
+				// nor run:
+				//  - every read of the tool index drops tools whose config row
+				//    is off now (`findDisabledMcpConfigIds` in temporal
+				//    `tool-index.ts`: Qdrant search, Qdrant load, in-memory
+				//    search); live index builds query enabled configs only;
+				//  - a new MCP client refuses a turned-off config
+				//    (`createMcpClientForConfig`, CONFIG_DISABLED), and a cached
+				//    GitLab client is re-checked before each use and dropped
+				//    when its config is off or the connection is not the one it
+				//    was built with (`isCachedGitLabClientUsable`).
+				// Turning the server back on re-ingests its tools (the toggle
+				// below).
+				return { success: true };
+			}
 
 			await deleteMcpConfig(id);
 

@@ -47,15 +47,22 @@ vi.mock("@repo/integrations/gitlab", () => ({
 	GitLabApiError: class GitLabApiError extends Error {
 		status = 500;
 	},
-	getValidGitLabAccessToken: vi.fn(),
+	GITLAB_DEFAULT_ORIGIN: "https://gitlab.com",
 	gitlabFetch: vi.fn(),
+	// The connection service: the generation read before the exchange and the
+	// issuer the grant is recorded with. Not under test here.
+	getGitLabConnectionGeneration: vi.fn(async () => 0),
+	identifyGitLabIssuer: vi.fn(async () => ({
+		kind: "app",
+		clientId: "client-id",
+		origin: "https://gitlab.com",
+	})),
 }));
 
 vi.mock("../../lib/gitlab-token", () => ({
 	GitLabReauthRequiredError: class GitLabReauthRequiredError extends Error {},
-	loadGitLabToken: vi.fn(),
+	ensureGitLabRegistryRow: vi.fn(),
 	persistGitLabToken: mockPersistGitLabToken,
-	markNeedsReauth: vi.fn(),
 }));
 
 vi.mock("../../lib/gitlab-recheck", () => ({
@@ -263,8 +270,9 @@ beforeEach(() => {
 		avatar_url: null,
 	});
 	mockPersistGitLabToken.mockResolvedValue({
-		mcpConfigId: "mcp-1",
+		written: true,
 		workflowIntegrationId: "wi-1",
+		generation: 1,
 	});
 	mockDataConnectionUpdateMany.mockResolvedValue({ count: 0 });
 	mockMcpConfigFindMany.mockResolvedValue([]);
@@ -385,7 +393,7 @@ describe("integrations.gitlab.callback", () => {
 			"verifier",
 		);
 		expect(mockPersistGitLabToken).toHaveBeenCalledTimes(1);
-		expect(mockPersistGitLabToken.mock.calls[0]?.[1]).toMatchObject({
+		expect(mockPersistGitLabToken.mock.calls[0]?.[0]).toMatchObject({
 			userId: "user-1",
 			organizationId: "org-1",
 			freshGrant: true,

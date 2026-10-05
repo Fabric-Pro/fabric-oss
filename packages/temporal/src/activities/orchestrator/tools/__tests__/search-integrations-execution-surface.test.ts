@@ -16,7 +16,13 @@ const { findManyMock, generateEmbeddingMock, generateEmbeddingsMock } =
 		generateEmbeddingsMock: vi.fn(),
 	}));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	canUseWorkflowIntegrations: vi.fn().mockResolvedValue(true),
+	workflowIntegrationAccessWhere: (
+		await import(
+			"@repo/database/prisma/queries/workflows/integration-access"
+		)
+	).workflowIntegrationAccessWhere,
 	db: { workflowIntegration: { findMany: findManyMock } },
 }));
 
@@ -140,7 +146,7 @@ describe("executionSurface: LOOM_CHAT", () => {
 	});
 
 	// Test 7
-	it("keeps the org tenant predicate member-wide and the personal one owner-scoped", async () => {
+	it("keeps org access owner or shared and personal access owner-scoped", async () => {
 		await searchAvailableIntegrations({
 			query: "decode vin",
 			userId: "member-b",
@@ -149,6 +155,13 @@ describe("executionSurface: LOOM_CHAT", () => {
 		});
 		expect(findManyMock.mock.calls[0]?.[0]?.where).toEqual({
 			organizationId: "org-1",
+			OR: [
+				{ userId: "member-b" },
+				{
+					usageScope: "ORGANIZATION_SHARED",
+					NOT: { provider: { in: ["GITLAB"] } },
+				},
+			],
 			isActive: true,
 			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 			provider: { in: ["NHTSA_VPIC", "DATABRICKS_VECTOR_SEARCH"] },
@@ -242,6 +255,13 @@ describe("default (planner) surface", () => {
 
 		expect(findManyMock.mock.calls[0]?.[0]?.where).toEqual({
 			organizationId: "org-1",
+			OR: [
+				{ userId: "u1" },
+				{
+					usageScope: "ORGANIZATION_SHARED",
+					NOT: { provider: { in: ["GITLAB"] } },
+				},
+			],
 			isActive: true,
 			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 		});
@@ -323,6 +343,13 @@ describe("default (planner) surface", () => {
 		);
 		expect(omittedWhere.where).toEqual({
 			organizationId: "org-1",
+			OR: [
+				{ userId: "u1" },
+				{
+					usageScope: "ORGANIZATION_SHARED",
+					NOT: { provider: { in: ["GITLAB"] } },
+				},
+			],
 			isActive: true,
 			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
 		});

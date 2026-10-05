@@ -10,9 +10,9 @@
 
 import { ORPCError } from "@orpc/client";
 import {
-	db,
 	fetchCredentialsByIdInTenant,
 	getWorkflowIntegrationByIdInTenant,
+	resolveWorkflowIntegrationForProvider,
 } from "@repo/database";
 import { listDatabricksVectorIndexes } from "@repo/integrations/databricks-vector-search";
 import { z } from "zod";
@@ -98,16 +98,11 @@ export const listDatabricksIndexesProcedure = tenantProtectedProcedure
 			}
 			integration = { id: pinned.id };
 		} else {
-			integration = await db.workflowIntegration.findFirst({
-				where: {
-					provider: "DATABRICKS_VECTOR_SEARCH",
-					isActive: true,
-					...(organizationId
-						? { organizationId }
-						: { userId: user.id, organizationId: null }),
-				},
-				select: { id: true },
-			});
+			integration = await resolveWorkflowIntegrationForProvider(
+				"DATABRICKS_VECTOR_SEARCH",
+				user.id,
+				organizationId,
+			);
 		}
 		if (!integration) {
 			return {

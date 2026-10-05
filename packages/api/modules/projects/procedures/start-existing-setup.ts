@@ -33,6 +33,7 @@ import {
 	parseRepoUrl,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
+import { getGitLabConnectionToken } from "@repo/integrations/gitlab";
 import { getTemporalClient } from "@repo/temporal";
 import { encryptApiKey } from "@repo/utils";
 import { assertSafeOutboundUrlResolved } from "@repo/utils/url-security";
@@ -41,9 +42,9 @@ import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { requireProjectOrganization } from "../lib/project-organization";
 
 function outboundRepositoryUrl(repositoryUrl: string): string {
 	const trimmed = repositoryUrl.trim();
@@ -89,6 +90,8 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			projectId: z.string(),
+			// Accepted for client compatibility and ignored: the tenant is the
+			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 			repoUrls: z.array(z.string()).default([]),
 			selectedDocumentTypes: z.array(z.string()).default([]),
@@ -128,10 +131,6 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 			projectName,
 			documentPrompts,
 		} = input;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 		await assertSafeRepositoryUrls(repoUrls);
 
 		// Parse each input URL exactly once into a `{ raw, parsed }` pair.
@@ -181,6 +180,14 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 				message: "Project not found",
 			});
 		}
+
+		// Every tenant use below — the AI token (exchanged for the
+		// organization's provider key), the credentials copied into the
+		// project, the workflow and the activity rows — runs in the
+		// organization that owns the project `requireProjectPermission`
+		// authorized, never in `input.organizationId`, the caller's own string.
+		// A project with no organization is refused before any of them.
+		const organizationId = requireProjectOrganization(project);
 
 		// Check if setup is already in progress
 		if (project.codeAnalysisStatus === "SCANNING") {
@@ -447,40 +454,36 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 				}
 			}
 
-			// Auto-populate project-level repo integrations from user's GitLab credentials.
-			const userGitLabIntegration =
-				await db.workflowIntegration.findFirst({
-					where: {
-						userId: user.id,
-						provider: "GITLAB",
-						NOT: { name: "GITLAB_OAUTH_APP" },
-						isActive: true,
-						...(orgIdForQuery
-							? { organizationId: orgIdForQuery }
-							: { organizationId: null }),
-					},
-				});
+			// Auto-populate project-level repo integrations from the user's GitLab
+			// connection — a personal access token only. A personal OAuth grant
+			// is never copied into a repository link: GitLab rotates its refresh
+			// token on every use, so two stores holding the same grant break
+			// each other (and a grant shared with a repository link marks the
+			// personal connection reconnect-required). Repositories behind an
+			// OAuth connection are reported as skipped; the user connects them
+			// from the project's repository settings, which issues the
+			// repository link its own grant. The PAT is only ever validated
+			// against gitlab.com below, so the service's default (a
+			// gitlab.com credential only) is the right one here.
+			//
+			// The connection is read (and can be classified) in the PROJECT's
+			// organization, the tenant `requireProjectPermission` authorized
+			// this caller in — not the input's or the session's, which can
+			// name another organization. A project with no organization has
+			// no personal connection to read (ADR-018).
+			const gitlabConnection = project.organizationId
+				? await getGitLabConnectionToken(
+						{
+							userId: user.id,
+							organizationId: project.organizationId,
+						},
+						{ mode: "strict" },
+					)
+				: null;
 
-			if (userGitLabIntegration?.credentials) {
-				const { decryptApiKey } = await import("@repo/utils");
-				let credJson: DecryptedCredential = {};
-				try {
-					credJson = JSON.parse(
-						decryptApiKey(userGitLabIntegration.credentials),
-					);
-				} catch (err) {
-					console.warn(
-						"[ExistingSetup] Failed to decrypt or parse GitLab credentials:",
-						err,
-					);
-				}
-
-				const patToken = credJson.apiToken || credJson.pat;
-				const isPat =
-					!credJson.access_token &&
-					!credJson.refresh_token &&
-					Boolean(patToken);
-				const token = (isPat ? patToken : credJson.access_token) || "";
+			if (gitlabConnection?.ok) {
+				const isPat = gitlabConnection.issuer?.kind === "pat";
+				const token = isPat ? gitlabConnection.accessToken : "";
 
 				for (const { raw, parsed } of parsedRepoUrls) {
 					if (parsed.provider !== "GITLAB") {
@@ -509,88 +512,52 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 
 					let created = false;
 					try {
-						if (!token) {
+						if (!isPat || !token) {
 							console.warn(
-								`[ExistingSetup] No access token or PAT found in GitLab credentials for ${parsed.owner}/${parsed.name}`,
+								`[ExistingSetup] ${parsed.owner}/${parsed.name} needs its own GitLab repository authorization — a personal OAuth grant is not copied into a repository link`,
 							);
 							skippedRepos.push(repoLabel);
 							continue;
 						}
 
-						// The OAuth probe's payload carries default_branch; when it
-						// exists, resolveDefaultBranch below skips its second
-						// identical fetch (same short-circuit as the GitHub arm).
-						let probedGitLabBranch: string | undefined;
+						let hostname = "";
+						try {
+							hostname = new URL(
+								outboundRepositoryUrl(raw),
+							).hostname
+								.toLowerCase()
+								.replace(/\.$/, "");
+						} catch {
+							console.warn(
+								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to invalid URL`,
+							);
+							skippedRepos.push(repoLabel);
+							continue;
+						}
 
-						if (isPat) {
-							let hostname = "";
-							try {
-								hostname = new URL(
-									outboundRepositoryUrl(raw),
-								).hostname
-									.toLowerCase()
-									.replace(/\.$/, "");
-							} catch {
-								console.warn(
-									`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to invalid URL`,
-								);
-								skippedRepos.push(repoLabel);
-								continue;
-							}
+						if (hostname !== "gitlab.com") {
+							console.warn(
+								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name}: host ${hostname} unsupported`,
+							);
+							skippedRepos.push(repoLabel);
+							continue;
+						}
 
-							if (hostname !== "gitlab.com") {
-								console.warn(
-									`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name}: host ${hostname} unsupported`,
-								);
-								skippedRepos.push(repoLabel);
-								continue;
-							}
-
-							const validation = await validateGitLabPat({
-								pat: token,
-								host: "https://gitlab.com",
-								projectPath: `${parsed.owner}/${parsed.name}`,
-							});
-							if (!validation.ok) {
-								console.warn(
-									`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to validation status ${validation.status}`,
-								);
-								skippedRepos.push(repoLabel);
-								continue;
-							}
-						} else {
-							// OAuth arm probes the repository itself (Fizzy #2252
-							// AC1, same as the GitHub arm): a gitlab.com OAuth
-							// token that cannot read THIS repo must not produce an
-							// Active row.
-							const {
-								outcome: gitlabAccessOutcome,
-								defaultBranch,
-							} = await verifyRepositoryAccess({
-								provider: "GITLAB",
-								token,
-								gitlabAuth: "bearer",
-								repositoryUrl: parsed.url,
-								owner: parsed.owner,
-								repo: parsed.name,
-							});
-							if (
-								gitlabAccessOutcome === "unauthorized" ||
-								gitlabAccessOutcome === "forbidden" ||
-								gitlabAccessOutcome === "not-found"
-							) {
-								console.warn(
-									`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name}: repository probe answered ${gitlabAccessOutcome}`,
-								);
-								skippedRepos.push(repoLabel);
-								continue;
-							}
-							probedGitLabBranch = defaultBranch;
+						const validation = await validateGitLabPat({
+							pat: token,
+							host: "https://gitlab.com",
+							projectPath: `${parsed.owner}/${parsed.name}`,
+						});
+						if (!validation.ok) {
+							console.warn(
+								`[ExistingSetup] Skipping GitLab integration for ${parsed.owner}/${parsed.name} due to validation status ${validation.status}`,
+							);
+							skippedRepos.push(repoLabel);
+							continue;
 						}
 
 						const resolvedBranch = await resolveDefaultBranch({
-							providedBranch:
-								project.defaultBranch ?? probedGitLabBranch,
+							providedBranch: project.defaultBranch ?? undefined,
 							provider: "GITLAB",
 							token,
 							repositoryUrl: parsed.url,
@@ -601,36 +568,13 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 						await createProjectRepoIntegration({
 							projectId,
 							provider: "GITLAB",
-							authMethod: isPat ? "PAT" : "OAUTH",
+							authMethod: "PAT",
 							repositoryUrl: parsed.url,
 							repositoryOwner: parsed.owner,
 							repositoryName: parsed.name,
 							defaultBranch: resolvedBranch,
-							encryptedAccessToken: !isPat
-								? encryptApiKey(token)
-								: undefined,
-							encryptedPat: isPat
-								? encryptApiKey(token)
-								: undefined,
-							encryptedRefreshToken:
-								!isPat && credJson.refresh_token
-									? encryptApiKey(credJson.refresh_token)
-									: undefined,
-							tokenExpiresAt:
-								!isPat && credJson.expires_in
-									? new Date(
-											(credJson.token_obtained_at
-												? new Date(
-														credJson.token_obtained_at,
-													).getTime()
-												: Date.now()) +
-												credJson.expires_in * 1000,
-										)
-									: undefined,
-							tokenScopes:
-								!isPat && credJson.scope
-									? credJson.scope.split(" ")
-									: [],
+							encryptedPat: encryptApiKey(token),
+							tokenScopes: [],
 							configuredByUserId: user.id,
 							roleTag: input.repoTags?.[raw] ?? null,
 						});
@@ -654,7 +598,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 							repositoryName: `${parsed.owner}/${parsed.name}`,
 							metadata: {
 								provider: "GITLAB",
-								authMethod: isPat ? "PAT" : "OAUTH",
+								authMethod: "PAT",
 								source: "auto_from_existing_setup",
 							},
 						}).catch(() => {});

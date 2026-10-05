@@ -23,15 +23,11 @@ export const getRagSettingsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { projectId, organizationId } = input;
+		const { projectId } = input;
 		const user = context.user;
 
 		// Check project access
-		const hasAccess = await hasProjectAccess(
-			projectId,
-			user.id,
-			organizationId ?? undefined,
-		);
+		const hasAccess = await hasProjectAccess(projectId, user.id);
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",

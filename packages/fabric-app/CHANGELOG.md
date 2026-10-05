@@ -1,5 +1,66 @@
 # fabric-app
 
+## 1.16.17
+
+### Patch Changes
+
+- be55b30: Azure DevOps: setup finds the project from a legacy visualstudio.com remote, and the Commits view offers Revert and Compare.
+- be55b30: The chat Advisor in a project now has the repository readers `code_tree`, `code_file_get` and `code_search` from its first step, and tool search no longer hides Fabric AI tools from a chat with MCP servers assigned, so it reads the project's connected repositories instead of falling back to other integrations.
+- be55b30: The chat Advisor can now read long project documents and large repository trees page by page, reports a denied or failed repository read as such instead of "not found", keeps a loaded skill's instructions for the whole answer, and tells the model when a repeated lookup returned nothing new.
+- be55b30: Preserve an AI agent's configured Project Context and tool bindings when opening its chat or selecting it in the shared agent picker, including restored selections and inherited retrieval capabilities.
+- be55b30: Open dedicated agent chats with their selected version instead of an unrelated saved agent selection, and refresh agent lists after saving or creating an agent. Show the version used in chat and indicate when a newer version is available.
+- be55b30: AI features such as workflow generation, task generation, description refinement, project setup and document indexing now run only on the AI provider of an organization the caller belongs to, using the project's own organization for project actions, and the Fabric Code completion endpoint refuses an organization the key's user has no tie to.
+- be55b30: AI text, workflow and PRD generation requests now record one usage entry per call instead of two, so AI usage history, estimated cost and AI usage limits count each of these calls once.
+- be55b30: Estimated AI usage cost no longer double-counts Anthropic prompt-cache tokens, and new AI usage records include prompt-cache tokens in their input totals regardless of which runtime made the call.
+- be55b30: Agents running on a direct Anthropic connection no longer record one extra output token for every streamed reply in AI usage history.
+- be55b30: Authentication now runs on Better Auth 1.6.33, which validates the Origin header on cookieless magic-link sends and marks session responses `Cache-Control: no-store`.
+- be55b30: Limit deeply nested brace and parenthesis patterns in the shared braces dependency to prevent call-stack exhaustion during parsing, compilation and expansion. Harden multipart parsing against prototype-named header crashes and oversized-boundary CPU loops by updating the shared Busboy dependency.
+- be55b30: Verify inbound Slack and Telegram channel webhooks only with the deployment's own signing secret, so a secret saved on one organization's connection can no longer decide which messages are accepted for every organization. Slack events are verified only with the deployment's `SLACK_SIGNING_SECRET`, and Telegram webhooks are now rejected in production until `TELEGRAM_WEBHOOK_SECRET` is configured.
+- be55b30: `init` no longer runs Codex's add where it would wait for a browser, and tells a rerun that a registered server may not be signed in.
+- be55b30: Coding-instructions setup works from the one npx line alone: the session hook runs a kept copy of the CLI, and every printed command is runnable.
+- be55b30: The CLI copy a session hook runs now updates itself once a day from its own deployment, and printed remedies are the short npx line.
+- be55b30: `fabric auth logout` takes `--base-url`, so a person signed in to two deployments can sign out of one.
+- be55b30: The npm CLI signs in through the browser like the served one, and `instructions init --clone` makes the same clone as `git clone`.
+- be55b30: Doctor and sync print repair commands that paste into PowerShell, cmd.exe and Git Bash on Windows.
+- be55b30: Repository code search in the assistant and the document editors now reports a denied, rate-limited or failed search as a failure instead of as no matches, so a failed search no longer tells the model that the code does not exist.
+- be55b30: The chat Advisor can show a large repository's top-level folders without paging through every file, because the repository listing tool now accepts a depth and gives each folder that has entries below it a count of them.
+- be55b30: A document written by hand can now leave Draft: the editor's Save completes a draft that has content, and the Documents tab offers Mark as complete.
+- be55b30: The Connect your coding tool dialog is redesigned: pick a tool from logo tiles and follow numbered steps, with one copyable command per setup.
+- be55b30: Agent sign-in no longer ends on "refused to connect", upload-project hooks stay quiet when nothing changed, and Azure DevOps git sign-in advice works.
+- be55b30: Small files in the Add Context and Workspace document upload lists now show their size in bytes or kilobytes instead of "0.00 MB".
+- be55b30: Streamed Claude calls served through Databricks now record their prompt-cache reads and writes even when the stream's final usage report leaves them out, so a cached prompt is no longer charged at the full input rate in AI usage cost estimates.
+- be55b30: A document card now opens on a click or tap, shows its action buttons on tablets and phones, and the Overview's pipeline rows link to their documents.
+- be55b30: The feature and document editor assistants now report a repository read the provider denied, rate-limited or failed as a failure, instead of as a missing file or an empty directory, whenever the web app supplies the reason.
+- be55b30: Integration connections now stay private by default, with explicit organization sharing and approved API executions that retain the original requester and selected connection.
+- be55b30: GitHub connection tests now renew expired OAuth tokens automatically, distinguish authorization failures from temporary outages, and offer direct reconnection when authorization must be renewed. Saved connections show that access needs checking until a successful test confirms it, and GitHub reconnection automatically verifies the renewed authorization.
+- be55b30: Codex can sign in to the MCP gateway, a revoked sign-in is told to sign in again, and two projects of one name get different editor server names.
+- be55b30: GitHub token refresh no longer uses another organization's or user's stored OAuth app credentials when the caller has no configured app.
+- be55b30: Your GitLab connection is now kept in one place per organization, so a token refresh, reconnect, personal access token or disconnect applies to project management sync, the GitLab MCP servers, GitLab workflow steps, agent GitLab tools and the GitLab repository pickers. Requests made with a connection to a self-hosted GitLab instance go only to that instance, and a GitLab address that is not https or that points at a loopback, private, link-local or cloud-metadata host is refused instead of being contacted. Workflow GitLab steps always run on the acting person's own GitLab connection, never on another member's. A GitLab connection stays personal: it is shown as one that cannot be shared with the organization, and a request to share it is refused. Connecting a repository to a project no longer replaces your own GitLab connection. A project's GitLab project-management selection now remembers which GitLab instance it was chosen on, and someone whose GitLab connection is on a different instance is told so instead of reading or writing an unrelated project there, whether the call would go through GitLab MCP or the GitLab API.
+- be55b30: A GitLab data connection no longer keeps its own copy of a GitLab token: a sync now uses the GitLab account of the person who starts it, sends requests only to that account's GitLab instance, and stops with a clear message when that person needs to connect GitLab.
+- be55b30: Your GitLab sign-in is now kept only in your GitLab connection: the old copies of GitLab tokens and personal access tokens stored with GitLab MCP server settings are moved into your GitLab connection or removed, and a copy left from an earlier version no longer counts as a connection anywhere in Fabric.
+- be55b30: Your GitLab connection now shows the same status everywhere (connected, needs reconnecting, or not connected), and disconnecting it from any screen disconnects it everywhere, including from the project-management picker, agents and the MCP server tiles.
+- be55b30: Coding Instructions no longer sticks on "Checking your upload" when storage is unreachable, and a stuck upload can be discarded from the tab.
+- be55b30: One `fabric instructions init` sets a repository project's checkout up: it finds the project, signs in, and writes each coding tool's hook.
+- be55b30: On a project whose coding instructions come from a repository, the tab now commits to the branch, lists its commits, compares them and reverts one, as in git.
+- be55b30: Coding instructions synced from a repository can be committed to the synced branch, with its history, a commit diff and a revert, as in git.
+- be55b30: Uploaded coding instructions can be moved into a repository as one pull request, and the tab follows the move until the project switches over.
+- be55b30: An upload-backed project's coding instructions can be moved into a repository folder as one pull request, and the project syncs from that folder once it is merged.
+- be55b30: Coding instructions resolve a git checkout to its project, report each repository's clone URL and sync state, and sync automatically by default.
+- be55b30: Connect a coding tool with one line per tab, run from the deployment's own CLI, and a Coding Instructions tab that states its sync state.
+- be55b30: Coding Instructions: truthful sync copy, a clearer way to sync the repository root, and no stale commit notice or foreign-checkout sync fix.
+- be55b30: Redesign the Coding Instructions tab: labelled status facts, changes marked in the file tree, left-out files on request, and a tidier file header.
+- be55b30: Background workflows and agents stop using an MCP connection as soon as its owner leaves the organization or loses the role that allows the action, instead of continuing until the connection is deleted.
+- be55b30: MCP tool calls, MCP App resources, and the Fizzy board and column pickers now check that you are still a member of the organization, and that your role there allows the action, before they use one of your MCP connections.
+- be55b30: Connecting an agent from a project now signs it in for that one project only, with no organization or project to pick.
+- be55b30: The CLI signs in for one project and `init` registers that project's MCP server with Claude Code and Codex.
+- be55b30: Project features use the project's own organization for AI providers, embeddings, crawls, security scans and automation triggers, and reject a request that names a different organization; organization-level AI and provider settings now check the caller's role in the organization the request names.
+- be55b30: The Roadmap now opens in the Plain layout with the newest work items first and the Size field hidden, for anyone who has not saved a view for that project.
+- be55b30: In-app AI calls and agents now share one implementation of the Databricks Model Serving compatibility handling, so a fix to how Databricks requests or streamed responses are adjusted applies to both at once.
+- be55b30: Add project knowledge search to the MCP gateway, returning ranked excerpts from features, authored documents, and available context sources within a response byte budget.
+- be55b30: A manual instructions check in a repository checkout no longer says to take a copy, and Commits names a synced folder that is gone.
+- be55b30: Native Windows workers now report forward-slashed code-index secret-scan paths and kill a runaway git process together with its helpers.
+- be55b30: The chat Advisor can read a project's connected repositories with `code_tree` and `code_file_get` again, and knowledge search works again for people with a GitHub data connection, because the background worker now loads the integration code those steps need.
+
 ## 1.16.16
 
 ### Patch Changes

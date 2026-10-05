@@ -829,6 +829,116 @@ describe("createProviderModel — direct Anthropic prompt caching", () => {
 	});
 });
 
+describe("createProviderModel — direct Anthropic streamed usage", () => {
+	// Anthropic reports output_tokens on message_start (usually 1) and again,
+	// cumulatively, on message_delta. Only the delta's figure is the reply's
+	// output count.
+	function streamingAnthropicModel({
+		endBeforeDelta = false,
+	}: {
+		endBeforeDelta?: boolean;
+	} = {}): ChatAnthropic {
+		const model = createProviderModel(
+			{
+				provider: "ANTHROPIC_DIRECT",
+				model: "claude-3-5-haiku",
+				apiKey: "test-key",
+			},
+			{},
+		) as ChatAnthropic;
+		const events = [
+			{
+				type: "message_start",
+				message: {
+					id: "msg_example",
+					type: "message",
+					role: "assistant",
+					model: "claude-3-5-haiku",
+					content: [],
+					stop_reason: null,
+					stop_sequence: null,
+					usage: {
+						input_tokens: 20,
+						cache_creation_input_tokens: 0,
+						cache_read_input_tokens: 100,
+						output_tokens: 1,
+					},
+				},
+			},
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "text", text: "" },
+			},
+			{
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "text_delta", text: "Hello" },
+			},
+			{ type: "content_block_stop", index: 0 },
+			{
+				type: "message_delta",
+				delta: { stop_reason: "end_turn", stop_sequence: null },
+				usage: { output_tokens: 12 },
+			},
+			{ type: "message_stop" },
+		];
+		const streamed = endBeforeDelta ? events.slice(0, 4) : events;
+		(model as unknown as { streamingClient: unknown }).streamingClient = {
+			messages: {
+				create: async () => ({
+					controller: new AbortController(),
+					async *[Symbol.asyncIterator]() {
+						yield* streamed;
+					},
+				}),
+			},
+		};
+		return model;
+	}
+
+	it("records the final cumulative output count once through stream()", async () => {
+		const model = streamingAnthropicModel();
+		let merged: Awaited<ReturnType<ChatAnthropic["invoke"]>> | undefined;
+		for await (const chunk of await model.stream("Say hello")) {
+			merged = merged ? merged.concat(chunk) : chunk;
+		}
+		expect(merged?.text).toBe("Hello");
+		expect(merged?.usage_metadata).toMatchObject({
+			input_tokens: 120,
+			output_tokens: 12,
+			total_tokens: 132,
+			input_token_details: { cache_read: 100, cache_creation: 0 },
+		});
+	});
+
+	it("records the final cumulative output count once through streamEvents()", async () => {
+		const usage =
+			await streamingAnthropicModel().streamEvents("Say hello").usage;
+		expect(usage).toMatchObject({
+			input_tokens: 120,
+			output_tokens: 12,
+			total_tokens: 132,
+		});
+	});
+
+	it("keeps the message_start output count when the stream ends before message_delta", async () => {
+		const model = streamingAnthropicModel({ endBeforeDelta: true });
+		let merged: Awaited<ReturnType<ChatAnthropic["invoke"]>> | undefined;
+		for await (const chunk of await model.stream("Say hello")) {
+			merged = merged ? merged.concat(chunk) : chunk;
+		}
+		expect(merged?.usage_metadata).toMatchObject({
+			input_tokens: 120,
+			output_tokens: 1,
+		});
+		const usage = await streamingAnthropicModel({
+			endBeforeDelta: true,
+		}).streamEvents("Say hello").usage;
+		expect(usage).toMatchObject({ input_tokens: 120, output_tokens: 1 });
+	});
+});
+
 describe("createProviderModel — gateway wire body", () => {
 	it("emits top-level reasoning: { enabled, max_tokens } in invocationParams for Claude 4.x", () => {
 		const model = createProviderModel(
@@ -1800,7 +1910,7 @@ describe("reasoningOutputAllowance", () => {
 /**
  * Config-aware variant. `isReasoningModel`'s real semantics are "emits
  * DeepSeek-R1 `<think>` tags" (see `isReasoningModelName` in
- * `databricks-compat.ts`), NOT "is a reasoning model" in general — the
+ * `@repo/agent-types`' `databricks-compat.ts`), NOT "is a reasoning model" in general — the
  * producers (`ai-config` / `ai-config/task` routes) set it unconditionally
  * to `isReasoningModelName(canonicalName)`, so every non-R1 model, INCLUDING
  * Anthropic's thinking-capable Claude releases, resolves to `false`. `true`

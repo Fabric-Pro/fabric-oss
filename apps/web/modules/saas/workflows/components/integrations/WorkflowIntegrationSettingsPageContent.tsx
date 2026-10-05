@@ -2,6 +2,11 @@
 
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import { toFriendlyPermissionError } from "@saas/data-connections/lib/permission-error-copy";
+import {
+	gitlabStateFromIntegrationList,
+	providerConnectedInIntegrationList,
+	rowShowsProviderConnected,
+} from "@saas/data-connections/lib/provider-connection-state";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,15 +49,17 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	getAllIntegrations,
 	type IntegrationFormField,
 	type IntegrationPlugin,
 	type IntegrationType,
+	type TestConnectionResult,
 } from "../../lib/plugins";
 import { IntegrationBrandIcon } from "./IntegrationBrandIcon";
+import { IntegrationSharingControls } from "./IntegrationSharingControls";
 
 const ACCOUNT_SETTINGS_INTEGRATIONS: IntegrationType[] = [
 	"AI_GATEWAY",
@@ -188,13 +195,24 @@ export function WorkflowIntegrationSettingsPageContent({
 	const [isTesting, setIsTesting] = useState(false);
 	const [testResult, setTestResult] = useState<{
 		success: boolean;
+		status?: TestConnectionResult["status"];
 		message?: string;
 	} | null>(null);
+	const testGenerationRef = useRef(0);
+	const [pendingOAuthCheck, setPendingOAuthCheck] = useState<string | null>(
+		null,
+	);
 
 	const fallbackIntegration =
 		initialIntegration ?? allIntegrations[0]?.type ?? "GITHUB";
 	const [activeIntegration, setActiveIntegration] =
 		useState<IntegrationType>(fallbackIntegration);
+	useEffect(() => {
+		testGenerationRef.current++;
+		setTestResult(null);
+		setIsTesting(false);
+		setPendingOAuthCheck(null);
+	}, [activeIntegration, organizationId]);
 
 	useEffect(() => {
 		if (initialIntegration) {
@@ -202,41 +220,21 @@ export function WorkflowIntegrationSettingsPageContent({
 		}
 	}, [initialIntegration]);
 
-	// OAuth completes in a popup and posts a success message back to this
-	// page, so the component never remounts — without this listener, a
-	// pre-reauth "Connection Failed: GitLab returned status 401" banner
-	// stays on screen even though the user just reconnected successfully.
-	// Plugin-specific listeners (GitLabSettings, GitHubSettings, the generic
-	// OAuthSettings) handle their own query invalidation; this listener only
-	// owns the test-result UI state that lives in the parent.
-	useEffect(() => {
-		const handleMessage = (event: MessageEvent) => {
-			if (event.origin !== window.location.origin) {
-				return;
-			}
-			const type = event.data?.type;
-			if (typeof type === "string" && type.endsWith("oauth_success")) {
-				setTestResult(null);
-			}
-		};
-		window.addEventListener("message", handleMessage);
-		return () => window.removeEventListener("message", handleMessage);
-	}, []);
-
-	const { data: configuredData } = useQuery({
-		queryKey: ["workflow-integrations", organizationId],
-		queryFn: async () => {
-			const result = await orpcClient.workflows.integrations.list({
-				organizationId,
-			});
-			return result.integrations;
-		},
-		// Was staleTime:0 + refetchOnMount:"always" + refetchOnWindowFocus:true,
-		// which re-fetched the whole list on every mount/provider-switch and
-		// every window focus. The save/disconnect mutations already invalidate
-		// this key, so a short staleTime is enough.
-		staleTime: 30_000,
-	});
+	const { data: configuredData, isFetching: isFetchingIntegrations } =
+		useQuery({
+			queryKey: ["workflow-integrations", organizationId],
+			queryFn: async () => {
+				const result = await orpcClient.workflows.integrations.list({
+					organizationId,
+				});
+				return result.integrations;
+			},
+			// Was staleTime:0 + refetchOnMount:"always" + refetchOnWindowFocus:true,
+			// which re-fetched the whole list on every mount/provider-switch and
+			// every window focus. The save/disconnect mutations already invalidate
+			// this key, so a short staleTime is enough.
+			staleTime: 30_000,
+		});
 
 	const disconnectMutation = useMutation({
 		// Only reachable for plugins that do not own their disconnect (see
@@ -286,7 +284,19 @@ export function WorkflowIntegrationSettingsPageContent({
 	const configuredMap = useMemo(() => {
 		const map: Record<
 			string,
-			{ hasCredentials: boolean; lastUsedAt?: Date }
+			{
+				hasCredentials: boolean;
+				lastUsedAt?: Date;
+				/**
+				 * GitLab: the person's connection as every GitLab screen
+				 * reports it. A dead grant has `hasCredentials: false` and
+				 * `connectionState: "needs-reconnect"`.
+				 */
+				connectionState?:
+					| "connected"
+					| "needs-reconnect"
+					| "not-connected";
+			}
 		> = {};
 		if (configuredData && Array.isArray(configuredData)) {
 			// A provider can have several rows (newest first). Any row with
@@ -298,11 +308,23 @@ export function WorkflowIntegrationSettingsPageContent({
 				map[integration.provider] = {
 					hasCredentials:
 						(previous?.hasCredentials ?? false) ||
-						integration.hasCredentials,
+						rowShowsProviderConnected(integration),
 					lastUsedAt:
 						previous?.lastUsedAt ??
 						integration.lastUsedAt ??
 						undefined,
+				};
+			}
+			// GitLab is the person's own connection, the state every GitLab
+			// screen reports — never a workflow-scoped credential, the OAuth
+			// app row or another member's row, which the list also returns
+			// (`provider-connection-state`).
+			if (map.GITLAB) {
+				const state = gitlabStateFromIntegrationList(configuredData);
+				map.GITLAB = {
+					...map.GITLAB,
+					hasCredentials: state === "connected",
+					connectionState: state,
 				};
 			}
 		}
@@ -310,10 +332,22 @@ export function WorkflowIntegrationSettingsPageContent({
 	}, [configuredData]);
 
 	useEffect(() => {
+		// Saved credentials changed or were disconnected while a check was running.
+		testGenerationRef.current++;
+		setTestResult(null);
+		setIsTesting(false);
 		const nextCredentials =
 			configuredData?.reduce(
 				(acc, integration) => {
-					if (integration.hasCredentials) {
+					// Provider-level: for GitLab, the person's own connection
+					// (`providerConnectedInIntegrationList`), so a surviving
+					// workflow-scoped credential does not read as connected.
+					if (
+						providerConnectedInIntegrationList(
+							configuredData,
+							integration.provider,
+						)
+					) {
 						acc[integration.provider as IntegrationType] = {
 							apiKey: "••••••••",
 						};
@@ -418,50 +452,117 @@ export function WorkflowIntegrationSettingsPageContent({
 		setShowPassword((prev) => ({ ...prev, [fieldId]: !prev[fieldId] }));
 	}, []);
 
-	const handleTestConnection = useCallback(async () => {
-		if (!activePlugin) {
+	const handleTestConnection = useCallback(
+		async (savedOnly = false) => {
+			if (!activePlugin) {
+				return;
+			}
+			setIsTesting(true);
+			setTestResult(null);
+			const generation = ++testGenerationRef.current;
+			try {
+				const creds = credentials[activePlugin.type] || {};
+				let result: TestConnectionResult;
+				if (
+					savedOnly ||
+					hasOnlyMaskedCredentials(creds) ||
+					isUsingOAuthCredentials(activePlugin.type, creds)
+				) {
+					result =
+						await orpcClient.workflows.integrations.testSavedConnection(
+							{
+								type: activePlugin.type as WorkflowIntegrationProvider,
+								organizationId,
+							},
+						);
+				} else {
+					result =
+						await orpcClient.workflows.integrations.testConnection({
+							type: activePlugin.type as WorkflowIntegrationProvider,
+							credentials: creds as Record<string, string>,
+						});
+				}
+				if (generation !== testGenerationRef.current) {
+					return;
+				}
+				setTestResult({
+					success: result.success,
+					status: result.success
+						? "connected"
+						: (result.status ?? "unknown"),
+					message: result.success ? result.message : result.error,
+				});
+			} catch (error) {
+				if (generation !== testGenerationRef.current) {
+					return;
+				}
+				setTestResult({
+					success: false,
+					message:
+						error instanceof Error
+							? error.message
+							: "Connection test failed",
+				});
+			} finally {
+				if (generation === testGenerationRef.current) {
+					setIsTesting(false);
+				}
+			}
+		},
+		[activePlugin, credentials, organizationId],
+	);
+
+	// Recheck the saved GitHub credential after the popup callback, once its
+	// metadata invalidation has settled. Never submit an unsaved PAT draft.
+	useEffect(() => {
+		const handleMessage = (event: MessageEvent) => {
+			if (event.origin !== window.location.origin) {
+				return;
+			}
+			const type = event.data?.type;
+			if (typeof type !== "string" || !type.endsWith("oauth_success")) {
+				return;
+			}
+			if (
+				type === "github_oauth_success" &&
+				activeIntegration === "GITHUB" &&
+				organizationId
+			) {
+				testGenerationRef.current++;
+				setTestResult(null);
+				setIsTesting(true);
+				setPendingOAuthCheck(organizationId);
+				void queryClient.invalidateQueries({
+					queryKey: ["workflow-integrations", organizationId],
+				});
+			} else {
+				testGenerationRef.current++;
+				setTestResult(null);
+				setIsTesting(false);
+			}
+		};
+		window.addEventListener("message", handleMessage);
+		return () => window.removeEventListener("message", handleMessage);
+	}, [activeIntegration, organizationId, queryClient]);
+
+	useEffect(() => {
+		if (
+			!pendingOAuthCheck ||
+			pendingOAuthCheck !== organizationId ||
+			activeIntegration !== "GITHUB" ||
+			isFetchingIntegrations
+		) {
 			return;
 		}
-		setIsTesting(true);
-		setTestResult(null);
-		try {
-			const creds = credentials[activePlugin.type] || {};
-			let result: { success: boolean; message?: string; error?: string };
-			if (
-				hasOnlyMaskedCredentials(creds) ||
-				isUsingOAuthCredentials(activePlugin.type, creds)
-			) {
-				result =
-					await orpcClient.workflows.integrations.testSavedConnection(
-						{
-							type: activePlugin.type as WorkflowIntegrationProvider,
-							organizationId,
-						},
-					);
-			} else {
-				result = await orpcClient.workflows.integrations.testConnection(
-					{
-						type: activePlugin.type as WorkflowIntegrationProvider,
-						credentials: creds as Record<string, string>,
-					},
-				);
-			}
-			setTestResult({
-				success: result.success,
-				message: result.success ? result.message : result.error,
-			});
-		} catch (error) {
-			setTestResult({
-				success: false,
-				message:
-					error instanceof Error
-						? error.message
-						: "Connection test failed",
-			});
-		} finally {
-			setIsTesting(false);
-		}
-	}, [activePlugin, credentials, organizationId]);
+		setPendingOAuthCheck(null);
+		void handleTestConnection(true);
+	}, [
+		pendingOAuthCheck,
+		organizationId,
+		activeIntegration,
+		isFetchingIntegrations,
+		handleTestConnection,
+	]);
 
 	const handleSave = useCallback(async () => {
 		if (!activePlugin) {
@@ -631,6 +732,10 @@ export function WorkflowIntegrationSettingsPageContent({
 	}
 
 	const configuredViaSettings = isConfiguredViaSettings(activePlugin.type);
+	// A stored connection whose grant died (GitLab reports this) is neither
+	// connected nor absent: it needs a reconnect.
+	const activeNeedsReconnect =
+		configuredMap[activePlugin.type]?.connectionState === "needs-reconnect";
 	const configSource = getConfigSource(activePlugin.type);
 	const hasFormFields =
 		activePlugin.formFields && activePlugin.formFields.length > 0;
@@ -724,6 +829,10 @@ export function WorkflowIntegrationSettingsPageContent({
 
 			<div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
 				<div className="space-y-6">
+					<IntegrationSharingControls
+						organizationId={organizationId}
+						provider={activePlugin.type}
+					/>
 					<Card>
 						<CardHeader>
 							<CardTitle>
@@ -842,6 +951,10 @@ export function WorkflowIntegrationSettingsPageContent({
 													}))
 												}
 												organizationId={organizationId}
+												connectionStatus={
+													testResult?.status ??
+													"unknown"
+												}
 											/>
 										);
 									})()
@@ -898,11 +1011,17 @@ export function WorkflowIntegrationSettingsPageContent({
 									{skipClientTest ? null : (
 										<Button
 											variant="outline"
-											onClick={handleTestConnection}
-											loading={isTesting}
-											disabled={isTesting}
+											onClick={() =>
+												handleTestConnection()
+											}
+											loading={
+												isTesting || !!pendingOAuthCheck
+											}
+											disabled={
+												isTesting || !!pendingOAuthCheck
+											}
 										>
-											{isTesting
+											{isTesting || pendingOAuthCheck
 												? "Testing..."
 												: "Test Connection"}
 										</Button>
@@ -1044,19 +1163,24 @@ export function WorkflowIntegrationSettingsPageContent({
 								</div>
 								<div className="mt-2 flex items-center justify-between gap-3">
 									<div className="text-xl font-semibold">
-										{isConfiguredInWorkflow(
-											activePlugin.type,
-										) || configuredViaSettings
-											? "Connected"
-											: "Not connected"}
+										{activeNeedsReconnect
+											? "Reconnect needed"
+											: isConfiguredInWorkflow(
+														activePlugin.type,
+													) || configuredViaSettings
+												? "Connected"
+												: "Not connected"}
 									</div>
 									<Badge
 										variant={
-											isConfiguredInWorkflow(
-												activePlugin.type,
-											) || configuredViaSettings
-												? "default"
-												: "outline"
+											activeNeedsReconnect
+												? "error"
+												: isConfiguredInWorkflow(
+															activePlugin.type,
+														) ||
+														configuredViaSettings
+													? "default"
+													: "outline"
 										}
 									>
 										Runtime

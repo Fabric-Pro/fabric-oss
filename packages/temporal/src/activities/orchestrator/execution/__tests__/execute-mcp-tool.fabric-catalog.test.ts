@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: h.getCachedMcpClientForConfig,
 	invalidateMcpClientCache: vi.fn(),
+	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));

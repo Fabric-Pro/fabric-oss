@@ -16,7 +16,14 @@
  * - User has NO config for a system-provided server that could help
  */
 
-import { db } from "@repo/database";
+import {
+	db,
+	isGitLabPersonalMcpServerKey,
+	resolveWorkflowIntegrationForProvider,
+	type WorkflowIntegrationProvider,
+} from "@repo/database";
+import { preferredMcpServerAuthType } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
+import { getGitLabConnectionStatus } from "@repo/integrations/gitlab";
 import type { RequiredConnection } from "../../../workflows/orchestrator/types/routing.types";
 
 // =============================================================================
@@ -135,6 +142,36 @@ async function getMcpServersWithConnectionStatus(
 // Helper: Check if a config has valid credentials
 // =============================================================================
 
+/**
+ * Credential state of a server for this user. GitLab personal servers hold no
+ * credential of their own — their state is the person's GitLab connection —
+ * everything else is judged from its MCPConfig.
+ */
+async function credentialState(
+	server: { key: string; authMethods: string[] },
+	config: McpServerWithConfig["config"],
+	userId: string,
+	organizationId: string | undefined,
+): Promise<{ valid: boolean; needsReauth: boolean }> {
+	// Keyed on the server, not the config's `authType`: an API-key GitLab
+	// config holds no credential either. With no config row at all the
+	// server is still reported as needing one, as before.
+	if (config && isGitLabPersonalMcpServerKey(server.key)) {
+		const status = await getGitLabConnectionStatus({
+			userId,
+			organizationId: organizationId ?? null,
+		});
+		return {
+			valid: status.connected && !status.needsReauth,
+			needsReauth: status.connected && status.needsReauth,
+		};
+	}
+	return {
+		valid: hasValidCredentials(config, server.authMethods),
+		needsReauth: Boolean(config?.needsReauth),
+	};
+}
+
 function hasValidCredentials(
 	config: McpServerWithConfig["config"],
 	_authMethods: string[],
@@ -185,20 +222,20 @@ function hasValidCredentials(
 }
 
 // =============================================================================
-// Helper: Determine preferred auth type from server's authMethods
+// Helper: Determine preferred auth type from the server
 // =============================================================================
 
-function getPreferredAuthType(
-	authMethods: string[],
-): "OAUTH2" | "API_KEY" | "NONE" {
-	// Prefer OAuth2 if available (better UX)
-	if (authMethods.includes("OAUTH2")) {
-		return "OAUTH2";
-	}
-	if (authMethods.includes("API_KEY")) {
-		return "API_KEY";
-	}
-	return "NONE";
+/**
+ * OAuth when offered (better UX), then API key, then none — except a GitLab
+ * personal server, which is always OAuth through the person's GitLab
+ * connection whatever its registry entry advertises
+ * (`preferredMcpServerAuthType`).
+ */
+function getPreferredAuthType(server: {
+	key: string;
+	authMethods: string[];
+}): "OAUTH2" | "API_KEY" | "NONE" {
+	return preferredMcpServerAuthType(server);
 }
 
 // =============================================================================
@@ -244,18 +281,20 @@ export async function detectRequiredConnections(
 	const requiredConnections: RequiredConnection[] = [];
 
 	for (const server of serversWithConfig) {
-		const hasCredentials = hasValidCredentials(
+		const credentials = await credentialState(
+			server,
 			server.config,
-			server.authMethods,
+			input.userId,
+			input.organizationId,
 		);
 
-		if (!hasCredentials) {
-			const authType = getPreferredAuthType(server.authMethods);
+		if (!credentials.valid) {
+			const authType = getPreferredAuthType(server);
 
 			requiredConnections.push({
 				serverId: server.id,
 				serverName: server.name,
-				reason: server.config?.needsReauth
+				reason: credentials.needsReauth
 					? `Your ${server.name} connection needs to be re-authenticated`
 					: `Connect to ${server.name} to access its tools`,
 				authType,
@@ -434,18 +473,20 @@ export async function detectRequiredConnectionsWithRegistrySearch(
 			continue;
 		}
 
-		const hasCredentials = hasValidCredentials(
+		const credentials = await credentialState(
+			match.server,
 			match.server.config,
-			match.server.authMethods,
+			input.userId,
+			input.organizationId,
 		);
 
-		if (!hasCredentials) {
-			const authType = getPreferredAuthType(match.server.authMethods);
+		if (!credentials.valid) {
+			const authType = getPreferredAuthType(match.server);
 
 			basicResult.requiredConnections.push({
 				serverId: match.server.id,
 				serverName: match.server.name,
-				reason: match.server.config?.needsReauth
+				reason: credentials.needsReauth
 					? `Your ${match.server.name} connection needs to be re-authenticated`
 					: `${match.server.name} might help with this task - ${match.matchReason}`,
 				authType,
@@ -524,20 +565,25 @@ export async function checkServerConnection(
 		},
 	});
 
-	const hasCredentials = hasValidCredentials(config, server.authMethods);
+	const credentials = await credentialState(
+		server,
+		config,
+		userId,
+		organizationId,
+	);
 
-	if (hasCredentials) {
+	if (credentials.valid) {
 		return { isConnected: true };
 	}
 
-	const authType = getPreferredAuthType(server.authMethods);
+	const authType = getPreferredAuthType(server);
 
 	return {
 		isConnected: false,
 		requiredConnection: {
 			serverId: server.id,
 			serverName: server.name,
-			reason: config?.needsReauth
+			reason: credentials.needsReauth
 				? `Your ${server.name} connection needs to be re-authenticated`
 				: `Connect to ${server.name} to access its tools`,
 			authType,
@@ -685,20 +731,11 @@ async function checkIntegrationCredentials(
 	userId: string,
 	organizationId?: string,
 ): Promise<boolean> {
-	// Strict isolation: personal context requires organizationId to be null
-	const orgFilter = organizationId
-		? { organizationId }
-		: { organizationId: null };
-
-	const integration = await db.workflowIntegration.findFirst({
-		where: {
-			provider: provider as any,
-			NOT: { name: `${provider}_OAUTH_APP` },
-			userId,
-			...orgFilter,
-			isActive: true,
-		},
-	});
+	const integration = await resolveWorkflowIntegrationForProvider(
+		provider as WorkflowIntegrationProvider,
+		userId,
+		organizationId,
+	);
 
 	return !!integration;
 }

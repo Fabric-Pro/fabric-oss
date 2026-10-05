@@ -445,11 +445,13 @@ export const githubOAuthProcedures = {
 						where: {
 							userId: state.userId,
 							provider: "GITHUB",
+							workflowId: null,
 							NOT: { name: "GITHUB_OAUTH_APP" },
 							...(orgIdForQuery
 								? { organizationId: orgIdForQuery }
 								: { organizationId: null }),
 						},
+						orderBy: { createdAt: "desc" },
 					});
 
 				const settingsData = {
@@ -536,12 +538,9 @@ export const githubOAuthProcedures = {
 		}),
 
 	/**
-	 * Get current GitHub connection status
-	 *
-	 * IMPORTANT: organizationId must be explicitly passed for proper tenant isolation:
-	 * - Pass the org ID string when in organization context
-	 * - Pass null explicitly when in personal context
-	 * - DO NOT rely on session.activeOrganizationId (can have stale values)
+	 * Get saved GitHub account metadata. The legacy `connected` boolean means a
+	 * saved credential exists; only a connection test proves current access.
+	 * Callers pass their resolved organization ID explicitly.
 	 */
 	status: tenantProtectedProcedure
 		.use(requirePermission(Permissions.INTEGRATION_READ))
@@ -559,6 +558,7 @@ export const githubOAuthProcedures = {
 		.output(
 			z.object({
 				connected: z.boolean(),
+				connectionStatus: z.literal("unknown"),
 				login: z.string().optional(),
 				name: z.string().nullable().optional(),
 				avatarUrl: z.string().optional(),
@@ -579,16 +579,21 @@ export const githubOAuthProcedures = {
 				where: {
 					userId,
 					provider: "GITHUB",
+					workflowId: null,
 					NOT: { name: "GITHUB_OAUTH_APP" },
 					isActive: true,
 					...(organizationId
 						? { organizationId }
 						: { organizationId: null }),
 				},
+				orderBy: { createdAt: "desc" },
 			});
 
 			if (!integration) {
-				return { connected: false };
+				return {
+					connected: false,
+					connectionStatus: "unknown" as const,
+				};
 			}
 
 			const settings = integration.settings as Record<
@@ -598,6 +603,8 @@ export const githubOAuthProcedures = {
 
 			return {
 				connected: true,
+				// The legacy boolean means saved, not live authorization proof.
+				connectionStatus: "unknown" as const,
 				login: settings?.githubLogin as string | undefined,
 				name: settings?.githubName as string | null | undefined,
 				avatarUrl: settings?.githubAvatarUrl as string | undefined,

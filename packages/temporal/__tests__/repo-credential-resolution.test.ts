@@ -51,6 +51,13 @@ vi.mock("@repo/database", () => ({
 	getProviderMetadata: () => undefined,
 }));
 
+// The person has no usable GitLab connection (the connection service reads
+// it; the in-memory db above does not model it), so GitLab repos are skipped.
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: async () => null,
+}));
+
 import { findMcpConfigsForRepos } from "../src/activities/code-based-setup";
 
 describe("findMcpConfigsForRepos — credential resolution", () => {
@@ -219,7 +226,7 @@ describe("findMcpConfigsForRepos — credential resolution", () => {
 			projectId: "project-1",
 		});
 
-		// gitlab.com isn't recognized as GitHub or ADO by the URL detection
+		// No project credential and no usable personal GitLab connection.
 		expect(result.mappings).toHaveLength(0);
 	});
 });

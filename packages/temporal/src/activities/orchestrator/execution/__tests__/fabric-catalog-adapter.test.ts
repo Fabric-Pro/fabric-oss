@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 
 describe("runFabricCatalogTool — Direct builders", () => {
-	it("runs code_search with the chat's tenant and project", async () => {
+	it("runs code_search with the chat's tenant and project, telling it the live readers exist", async () => {
 		h.codeSearchExecute.mockResolvedValue({
 			success: true,
 			results: [{ filePath: "workflows/direct-chat.ts" }],
@@ -45,10 +45,12 @@ describe("runFabricCatalogTool — Direct builders", () => {
 			toolName: "code_search",
 		});
 
+		// The catalog also runs code_tree and code_file_get (Fizzy #2926).
 		expect(h.createCodeSearchTool).toHaveBeenCalledWith({
 			userId: "u1",
 			organizationId: "org-1",
 			projectId: "p1",
+			liveRepositoryReads: true,
 		});
 		expect(h.codeSearchExecute).toHaveBeenCalledWith(
 			call.args,

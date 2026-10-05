@@ -6,7 +6,7 @@ import { decryptApiKey, maskApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
@@ -18,7 +18,13 @@ import {
  * - Otherwise, returns user's personal RAG providers
  */
 export const getUserProviders = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_RAG_SETTINGS_READ))
+	// Against the organization named in the input, which is the one whose
+	// providers (masked key, endpoint, usage) are returned — not the session's.
+	// A null organization passes through deliberately: it reads only the
+	// caller's own personal rows (userId-scoped, nothing of an organization),
+	// and every organization role holds this read permission, so passing it
+	// through skips no role decision. Writes on this surface require one.
+	.use(requireInputOrgPermission(Permissions.ORG_RAG_SETTINGS_READ))
 	.route({
 		method: "GET",
 		path: "/rag-providers/user",

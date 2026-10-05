@@ -2,13 +2,19 @@ import { getAiProviderApiKey, getUserModelPreferences } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
 export const getUserModelPreferencesProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.ORG_AI_CONFIG_READ))
+	// Against the organization the handler resolves: otherwise this answered,
+	// for any organization id, whether that organization has a provider.
+	// A null organization passes through deliberately: it reads only the
+	// caller's own personal rows (userId-scoped, nothing of an organization),
+	// and every organization role holds this read permission, so passing it
+	// through skips no role decision. Writes on this surface require one.
+	.use(requireInputOrgPermission(Permissions.ORG_AI_CONFIG_READ))
 	.route({
 		method: "GET",
 		path: "/ai-config/preferences/user",

@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { dispatchLifecycleEvent } from "../../../../agent-deployments/lib/lifecycle-dispatcher";
+import { resolveProjectOrganizationId } from "../../../lib/project-organization";
 
 export const createTaskProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_CREATE))
@@ -30,6 +31,16 @@ export const createTaskProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
+		// The project's own organization, resolved before the task is written.
+		// The lifecycle dispatch below selects agent triggers BY this
+		// organization and starts their workflows, so a caller-named one would
+		// fire another organization's triggers; a different input organization
+		// is refused here instead (BAD_REQUEST).
+		const organizationId = await resolveProjectOrganizationId(
+			input.organizationId,
+			input.projectId,
+		);
+
 		// Verify story exists in project
 		const story = await getStoryById(input.storyId, input.projectId);
 		if (!story) {
@@ -54,7 +65,7 @@ export const createTaskProcedure = tenantProtectedProcedure
 		await logDataEvent("CREATE", "story_task", task.id, context.user.id, {
 			projectId: input.projectId,
 			storyId: input.storyId,
-			organizationId: input.organizationId ?? undefined,
+			organizationId,
 			source: "project_task_create",
 		}).catch((error) => {
 			console.warn("[AuditLog] Failed to log task creation:", error);
@@ -66,7 +77,7 @@ export const createTaskProcedure = tenantProtectedProcedure
 			projectId: input.projectId,
 			entityId: task.id,
 			userId: context.user.id,
-			organizationId: input.organizationId ?? null,
+			organizationId,
 			data: { storyId: input.storyId, title: input.title },
 		}).catch((error) => {
 			console.warn(

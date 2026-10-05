@@ -33,6 +33,37 @@ Two invariants underpin most scenarios below:
 2. **Triggers execute the current graph, not the published snapshot.**
    `WorkflowVersion` exists for history and rollback only.
 
+## Connection access
+
+Integration connections are private to their owner by default, including existing
+connections migrated without an explicit sharing decision. Credential format does
+not determine access: personal OAuth grants, bot tokens, API keys and service
+principals all require the same explicit choice.
+
+In **Connections**, open a provider card (including Gmail) and use **Connection
+access**. The controls work independently of workflow action plugins. An
+organization owner or admin may share a connection they own after confirming that
+all current organization members may use its account. The connection owner may
+stop sharing even after losing their admin role; organization owners and admins
+may revoke sharing of any shared connection. Publishing someone else's private
+connection is forbidden. OAuth reconnect preserves the connection's sharing choice.
+
+Execution selects the acting user's connection first, then an explicitly shared
+connection in the same organization. Manual and API starts retain the triggering
+user; schedules and webhooks retain the workflow owner. Runtime reads recheck
+current membership. Stored connection IDs never fall back to another account when
+access is removed. Databricks service principals and unattended channel bots should
+be explicitly shared when organization members or inbound channel processing need
+them; a bot-shaped token is not consent.
+
+Public integration API approvals persist both the original requester and the
+selected connection. Approval listing, approval and denial require current access
+to the selected connection for both the caller and original requester. A teammate
+may approve a shared connection; they cannot approve or inspect an owner-only grant. Replay
+rechecks the original identity and connection rather than borrowing the approver's
+account. Old approvals without that identity cannot execute and must be requested again. Revoking sharing, removing the requester
+from the organization, disabling or deleting the connection blocks later replay.
+
 ## Measured limits worth knowing
 
 **The execution concurrency cap is a soft bound, not a hard one.** The guard

@@ -3,7 +3,7 @@
  *
  * Focus: a project whose `projectManagementMcpServerId` resolves to the
  * `gitlab-official` server key, with NO MCPConfig (resolvePMConfigForUser
- * returns null) but an active GITLAB WorkflowIntegration for the tenant, must
+ * returns null) but a usable personal GitLab connection for the caller, must
  * NOT throw the "not connected" BAD_REQUEST and must reach syncStoryToPM with
  * `mcpConfigId: null` and `mcpServerId` set to the project's server id.
  */
@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Mocks -----------------------------------------------------------------
 
 vi.mock("@repo/database", () => ({
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
 	resolvePMConfigForUser: vi.fn(),
 	getStoryById: vi.fn(),
 	hasProjectAccess: vi.fn(),
@@ -25,10 +27,17 @@ vi.mock("@repo/database", () => ({
 		mCPServer: {
 			findUnique: vi.fn(),
 		},
-		workflowIntegration: {
-			findFirst: vi.fn(),
-		},
 	},
+}));
+
+// The GitLab REST gate asks the connection service for the caller's usable
+// personal connection; its own behaviour (classification, reconnect-required) is
+// covered against the real service in
+// modules/projects/__tests__/gitlab-personal-connection-gates.test.ts.
+const mockFindUsableGitLabConnection = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	findUsableGitLabConnection: mockFindUsableGitLabConnection,
 }));
 
 const mockSyncStoryToPM = vi.fn();
@@ -127,10 +136,11 @@ describe("syncStoryProcedure REST-GitLab fallback", () => {
 			key: "gitlab-official",
 		} as never);
 
-		// Active GITLAB WorkflowIntegration for the tenant.
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		// A usable personal GitLab connection for the caller.
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 
 		vi.mocked(getStoryById).mockResolvedValue({
 			id: "story-1",
@@ -170,6 +180,62 @@ describe("syncStoryProcedure REST-GitLab fallback", () => {
 		);
 	});
 
+	it("refuses a connection on another GitLab instance than the container, before any sync", async () => {
+		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
+		vi.mocked(db.project.findUnique).mockResolvedValue({
+			id: "proj-1",
+			organizationId: null,
+			projectManagementMcpServerId: "mcp-server-gitlab",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: "alice/widgets",
+			projectManagementAdditionalContext: null,
+		} as never);
+
+		// No MCPConfig — tier probe found instance is not MCP-capable.
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null as never);
+
+		// Server resolves to gitlab-official.
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
+		} as never);
+
+		// A usable personal GitLab connection for the caller.
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.example.com",
+		});
+
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: null,
+			tasks: [],
+		} as never);
+
+		mockSyncStoryToPM.mockResolvedValue({
+			success: true,
+			externalId: "1",
+			externalUrl: "https://gitlab.com/alice/widgets/-/issues/1",
+		});
+
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					direction: "push",
+				},
+				context: baseCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("different GitLab instance"),
+		});
+		expect(mockSyncStoryToPM).not.toHaveBeenCalled();
+	});
+
 	it("honors the key:gitlab-official sentinel without touching the catalog", async () => {
 		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
 		vi.mocked(db.project.findUnique).mockResolvedValue({
@@ -182,9 +248,10 @@ describe("syncStoryProcedure REST-GitLab fallback", () => {
 			projectManagementAdditionalContext: null,
 		} as never);
 		vi.mocked(resolvePMConfigForUser).mockResolvedValue(null as never);
-		vi.mocked(db.workflowIntegration.findFirst).mockResolvedValue({
-			id: "wi-1",
-		} as never);
+		mockFindUsableGitLabConnection.mockResolvedValue({
+			integrationId: "wi-1",
+			origin: "https://gitlab.com",
+		});
 		vi.mocked(getStoryById).mockResolvedValue({
 			id: "story-1",
 			title: "A story",

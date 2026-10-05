@@ -94,7 +94,20 @@ export type FakeState = {
 	userNames: Map<string, string>;
 	projectName: string;
 	sync: unknown;
-	settings: { sourceOfTruth: string };
+	settings: {
+		sourceOfTruth: string;
+		/** The pointer of a move from uploads into the repository (Fizzy #2878 §9), when one is open. */
+		migration?: {
+			v: 1;
+			state: "PROPOSING" | "SWITCHING";
+			branchId: string | null;
+			snapshotId: string | null;
+			syncId: string;
+			pullRequestUrl: string | null;
+			startedAt: string;
+			userId: string;
+		} | null;
+	};
 	canCreate: boolean;
 	canRead: boolean;
 	nextOpId: number;
@@ -2193,6 +2206,35 @@ export function createFakeDatabase(real: Real) {
 
 		getInstructionRepositorySyncForProposal: async () => clone(state.sync),
 		getProjectInstructionSettings: async () => clone(state.settings),
+		// The move from uploads into the repository (Fizzy #2878 §9): the
+		// pointer is the test's to lay down in `settings.migration`; the three
+		// writers record that they ran, in order with the branch writes.
+		destinationSourceOfTruth: real.destinationSourceOfTruth,
+		mergedElsewhere: real.mergedElsewhere,
+		getOpenMigrationOfBranch: async (i: { branchId: string }) =>
+			state.settings.migration?.branchId === i.branchId
+				? clone(state.settings.migration)
+				: null,
+		completeInstructionMigration: async (i: { branchId: string }) => {
+			state.trace.push(`migration:complete:${i.branchId}`);
+			return "completed" as const;
+		},
+		abandonInstructionMigration: async (i: {
+			syncId: string;
+			reason: string;
+		}) => {
+			state.trace.push(`migration:abandon:${i.syncId}:${i.reason}`);
+			// The writer's own rule: a move that is still proposing never
+			// flipped the project, so a repository-backed one was flipped by
+			// something else and its sync row is left alone.
+			return state.settings.sourceOfTruth === "REPOSITORY"
+				? ("source_flipped" as const)
+				: ("abandoned" as const);
+		},
+		settleInstructionMigrationAfterSync: async (i: { syncId: string }) => {
+			state.trace.push(`migration:settled:${i.syncId}`);
+			return true;
+		},
 		canCreateProjectInstructions: async () => state.canCreate,
 		canReadProjectInstructions: async () => state.canRead,
 		listInstructionFiles: async (snapshotId: string) =>

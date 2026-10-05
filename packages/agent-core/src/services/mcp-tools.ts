@@ -12,12 +12,17 @@
  * - Task-to-tool matching with intent analysis
  */
 
-import { db, listMcpConfigsForTenant } from "@repo/database";
+import {
+	db,
+	GITLAB_PERSONAL_MCP_SERVER_KEYS,
+	listMcpConfigsForTenant,
+} from "@repo/database";
 import {
 	closeMcpClient,
 	createMcpClientForConfig,
 	McpClientError,
 	type McpClientType,
+	type McpConfigAccess,
 } from "@repo/mcp";
 
 // ============================================================================
@@ -79,13 +84,24 @@ export interface GetMcpToolsOptions {
  * Create an MCP client for a specific configuration.
  * Uses createMcpClientForConfig from @repo/mcp - supports HTTP, SSE, and STDIO
  * (Azure DevOps via wrapper). Handles authentication (API key, OAuth) automatically.
+ *
+ * `options.access` is what the caller will do with the client, checked against
+ * the config owner's current organization role: `read` for a caller that only
+ * lists tools, `connect` (the default) for one that executes them. A refused
+ * owner yields `null`, as a missing config does.
  */
 export async function getMcpClient(
 	configId: string,
 	userId: string,
 	organizationId?: string,
+	options: { access?: McpConfigAccess } = {},
 ): Promise<McpClientResult | null> {
-	const result = await getMcpClientResult(configId, userId, organizationId);
+	const result = await getMcpClientResult(
+		configId,
+		userId,
+		organizationId,
+		options,
+	);
 	if (!result.ok) {
 		console.warn("[getMcpClient] Failed to create client:", result.error);
 		return null;
@@ -96,19 +112,31 @@ export async function getMcpClient(
 /**
  * Like {@link getMcpClient} but preserves the typed failure reason instead of
  * collapsing every error to `null`. On failure returns the `McpClientError`
- * code (CONFIG_NOT_FOUND, CONFIG_DISABLED, OAUTH_AUTH_REQUIRED, AUTH_FAILED,
- * RATE_LIMIT, …) so callers can map it to a user-facing state.
+ * code (CONFIG_NOT_FOUND, CONFIG_DISABLED, ORGANIZATION_MEMBERSHIP_REQUIRED,
+ * MCP_PERMISSION_DENIED, OAUTH_AUTH_REQUIRED, AUTH_FAILED, RATE_LIMIT, …) so
+ * callers can map it to a user-facing state.
  */
 export async function getMcpClientResult(
 	configId: string,
 	userId: string,
 	organizationId?: string,
+	/**
+	 * `expectedGitLabOrigin`: for a caller acting on a GitLab PM container,
+	 * the instance it lives on; a GitLab server elsewhere fails with
+	 * `GITLAB_PM_ORIGIN_MISMATCH` before it is contacted (see
+	 * `CreateMcpClientForConfigOptions`).
+	 *
+	 * `access`: see {@link getMcpClient}; defaults to `connect`.
+	 */
+	options: { expectedGitLabOrigin?: string; access?: McpConfigAccess } = {},
 ): Promise<McpClientResultOrError> {
 	try {
 		const result = await createMcpClientForConfig({
 			configId,
 			userId,
 			organizationId,
+			expectedGitLabOrigin: options.expectedGitLabOrigin,
+			access: options.access,
 		});
 		return {
 			ok: true,
@@ -232,7 +260,19 @@ export async function getDetailedMcpToolInfo(
 			// perfectly good credential. Prisma ANDs top-level keys, so this
 			// `OR` composes with `userId`, the XOR `organizationId`, `enabled`
 			// and the optional `id` filter rather than replacing any of them.
-			OR: [{ authType: { not: "OAUTH2" } }, { needsReauth: false }],
+			//
+			// GitLab personal servers are exempt: their `needsReauth` column
+			// describes a legacy token copy, not the person's GitLab
+			// connection, which is checked when the client is created.
+			OR: [
+				{ authType: { not: "OAUTH2" } },
+				{ needsReauth: false },
+				{
+					mcpServer: {
+						key: { in: [...GITLAB_PERSONAL_MCP_SERVER_KEYS] },
+					},
+				},
+			],
 			...(hasExplicitFilter ? { id: { in: enabledMcpConfigIds } } : {}),
 		},
 		include: { mcpServer: true },
@@ -269,10 +309,12 @@ export async function getDetailedMcpToolInfo(
 
 	for (const config of mcpConfigs) {
 		try {
+			// Only lists the server's tools.
 			const result = await getMcpClient(
 				config.id,
 				userId,
 				organizationId,
+				{ access: "read" },
 			);
 			if (result) {
 				const tools = await result.client.tools();

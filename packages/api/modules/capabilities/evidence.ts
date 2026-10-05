@@ -37,9 +37,12 @@ import {
 	countEligibleAiRecommendationBatches,
 	db,
 	type RepositoryIntegrationStatus,
-	resolvePMConfigForUser,
 	TERMINAL_DRAFTING_STAGES,
 } from "@repo/database";
+import {
+	GitLabPmOriginMismatchError,
+	resolveProjectPMConfigForUser,
+} from "@repo/integrations/gitlab";
 import {
 	isCodeIndexingDeploymentEnabled,
 	isCodeIndexingEnabled,
@@ -427,6 +430,7 @@ async function resolveAtlasStatus(
 async function resolvePmPaths(args: {
 	projectManagementMcpServerId: string | null;
 	projectManagementMcpConfigId: string | null;
+	projectManagementAdditionalContext: unknown;
 	userId: string;
 	organizationId: string | null;
 }): Promise<{ pmTarget: PMTarget | null; itemConfigResolvable: boolean }> {
@@ -434,6 +438,8 @@ async function resolvePmPaths(args: {
 		project: {
 			projectManagementMcpServerId: args.projectManagementMcpServerId,
 			projectManagementMcpConfigId: args.projectManagementMcpConfigId,
+			projectManagementAdditionalContext:
+				args.projectManagementAdditionalContext,
 			organizationId: args.organizationId,
 		},
 		userId: args.userId,
@@ -442,11 +448,19 @@ async function resolvePmPaths(args: {
 	if (args.projectManagementMcpConfigId) {
 		return { pmTarget, itemConfigResolvable: pmTarget?.kind === "mcp" };
 	}
-	const itemConfig = await resolvePMConfigForUser({
+	// A personal GitLab config on another instance than the container cannot
+	// serve it: not resolvable.
+	const itemConfig = await resolveProjectPMConfigForUser({
 		configId: null,
 		mcpServerId: args.projectManagementMcpServerId,
 		userId: args.userId,
 		organizationId: args.organizationId ?? undefined,
+		pmAdditionalContext: args.projectManagementAdditionalContext,
+	}).catch((error: unknown) => {
+		if (error instanceof GitLabPmOriginMismatchError) {
+			return null;
+		}
+		throw error;
 	});
 	return { pmTarget, itemConfigResolvable: itemConfig?.enabled === true };
 }
@@ -522,6 +536,8 @@ export async function gatherCapabilityEvidence({
 			projectManagementMcpServerId: true,
 			projectManagementMcpConfigId: true,
 			projectManagementContainerId: true,
+			// Records which GitLab instance a GitLab container lives on.
+			projectManagementAdditionalContext: true,
 			// Work Capture's conversations. Counted on the linked rows rather
 			// than read off a monitor flag: linking is what gives capture
 			// something to read, and the flag only decides how often it looks.
@@ -720,6 +736,8 @@ export async function gatherCapabilityEvidence({
 						project.projectManagementMcpServerId,
 					projectManagementMcpConfigId:
 						project.projectManagementMcpConfigId,
+					projectManagementAdditionalContext:
+						project.projectManagementAdditionalContext,
 					userId,
 					organizationId: tenantOrganizationId,
 				})

@@ -8,14 +8,33 @@ const mockDeleteMcpConfig = vi.fn();
 const mockListCustomMcpServersForTenant = vi.fn();
 const mockListSystemMcpServers = vi.fn();
 const mockLogDataEvent = vi.fn().mockResolvedValue(undefined);
+const mockGetGitLabConnectionToken = vi.fn();
+
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	getGitLabConnectionToken: (...args: unknown[]) =>
+		mockGetGitLabConnectionToken(...args),
+}));
 
 vi.mock("@repo/database", () => ({
+	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
+	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
+		key === "gitlab" || key === "gitlab-official",
+	// The owner check `getValidMcpAccessToken` runs first: these configs all
+	// belong to the caller, so it answers with the config as listed.
+	authorizeMcpConfigAccess: async ({ configId }: { configId: string }) =>
+		((await mockListMcpConfigsForTenant()) as Array<{ id: string }>).find(
+			(config) => config.id === configId,
+		),
 	resolveUserOrganization: vi.fn(async () => ({
 		kind: "resolved" as const,
 		organizationId: "org-test",
 	})),
 	deleteMcpConfig: (...args: unknown[]) => mockDeleteMcpConfig(...args),
 	getMcpConfigById: (...args: unknown[]) => mockGetMcpConfigById(...args),
+	// The GitLab credential checks the caller still belongs to the config's
+	// organization; the key's owner does.
+	isOrganizationMember: vi.fn(async () => true),
 	getValidAccessToken: (...args: unknown[]) =>
 		mockGetValidAccessToken(...args),
 	listCustomMcpServersForTenant: (...args: unknown[]) =>
@@ -201,6 +220,137 @@ describe("MCP export", () => {
 		]);
 
 		mockGetValidAccessToken.mockResolvedValue(null);
+
+		const result = await buildMcpConfigExportResponse({
+			userId: "user-1",
+			organizationId: null,
+		});
+
+		expect(result.servers).toEqual([]);
+	});
+
+	it("exports a GitLab server with the person's connection token and never the legacy copy's refresh token or expiry", async () => {
+		// A GitLab connection lives in an organization (ADR-018): the
+		// export reads it there, for a member.
+		const gitlabConfig = createConfig({
+			id: "cfg-gl",
+			organizationId: "org-test",
+			displayName: "GitLab",
+			baseUrl: null,
+			authType: "OAUTH2",
+			apiKeyMethod: null,
+			scopes: ["api"],
+			encryptedRefreshToken: "copy-refresh",
+			tokenExpiresAt: new Date("2026-03-29T12:00:00.000Z"),
+			mcpServer: {
+				key: "gitlab-official",
+				name: "GitLab",
+				description: "GitLab MCP",
+				defaultUrl: "https://gitlab.com/api/v4/mcp",
+				transport: "HTTP",
+			},
+		});
+		mockListMcpConfigsForTenant.mockResolvedValue([gitlabConfig]);
+		mockGetMcpConfigById.mockResolvedValue(gitlabConfig);
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: true,
+			accessToken: "connection-token",
+			issuer: {
+				kind: "app",
+				clientId: "app-client",
+				origin: "https://gitlab.com",
+			},
+			origin: "https://gitlab.com",
+			integrationId: "wi-1",
+			generation: 1,
+			settings: {},
+		});
+
+		const result = await buildMcpConfigExportResponse({
+			userId: "user-1",
+			organizationId: "org-test",
+		});
+
+		expect(result.servers).toHaveLength(1);
+		expect(result.servers[0].oauth).toEqual({
+			accessToken: "connection-token",
+			scope: "api",
+		});
+		expect(mockGetValidAccessToken).not.toHaveBeenCalled();
+	});
+
+	// The server decides, not the config's auth type: a GitLab config saved
+	// as API_KEY (an older release let the API store a personal access token
+	// there) or NONE exports the connection's token, never the stored key and
+	// never as a bare unauthenticated server.
+	it.each(["API_KEY", "NONE"])(
+		"exports a %s GitLab config with the connection token, never the key stored on it",
+		async (authType) => {
+			const gitlabConfig = createConfig({
+				id: "cfg-gl",
+				organizationId: "org-test",
+				displayName: "GitLab",
+				baseUrl: null,
+				authType,
+				apiKeyMethod: "BEARER",
+				encryptedApiKey: "enc:glpat-on-config",
+				scopes: ["api"],
+				mcpServer: {
+					key: "gitlab",
+					name: "GitLab",
+					description: "GitLab MCP",
+					defaultUrl: "https://gitlab.com/api/v4/mcp",
+					transport: "HTTP",
+				},
+			});
+			mockListMcpConfigsForTenant.mockResolvedValue([gitlabConfig]);
+			mockGetMcpConfigById.mockResolvedValue(gitlabConfig);
+			mockGetValidAccessToken.mockResolvedValue("glpat-on-config");
+			mockGetGitLabConnectionToken.mockResolvedValue({
+				ok: true,
+				accessToken: "connection-token",
+				issuer: { kind: "pat", origin: "https://gitlab.com" },
+				origin: "https://gitlab.com",
+				integrationId: "wi-1",
+				generation: 1,
+				settings: {},
+			});
+
+			const result = await buildMcpConfigExportResponse({
+				userId: "user-1",
+				organizationId: "org-test",
+			});
+
+			expect(result.servers).toHaveLength(1);
+			expect(result.servers[0].oauth).toEqual({
+				accessToken: "connection-token",
+				scope: "api",
+			});
+			expect(result.servers[0].headers).toBeUndefined();
+			expect(JSON.stringify(result)).not.toContain("glpat-on-config");
+			expect(mockGetValidAccessToken).not.toHaveBeenCalled();
+		},
+	);
+
+	it("skips a GitLab server whose person has no usable connection", async () => {
+		const gitlabConfig = createConfig({
+			id: "cfg-gl",
+			authType: "OAUTH2",
+			apiKeyMethod: null,
+			baseUrl: null,
+			mcpServer: {
+				key: "gitlab-official",
+				name: "GitLab",
+				defaultUrl: "https://gitlab.com/api/v4/mcp",
+				transport: "HTTP",
+			},
+		});
+		mockListMcpConfigsForTenant.mockResolvedValue([gitlabConfig]);
+		mockGetGitLabConnectionToken.mockResolvedValue({
+			ok: false,
+			reason: "needs-reauth",
+			message: "the GitLab connection needs to be reconnected",
+		});
 
 		const result = await buildMcpConfigExportResponse({
 			userId: "user-1",

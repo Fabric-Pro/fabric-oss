@@ -1,5 +1,6 @@
 import { closeMcpClient, createMcpClientForConfig } from "@repo/mcp";
 import { getSession } from "@saas/auth/lib/server";
+import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
 import { type NextRequest, NextResponse } from "next/server";
 
 /**
@@ -43,6 +44,19 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// This executes an MCP tool (`fizzy_get_columns`) on the config's stored token.
+		// Executing any tool needs MCP_CONNECT, read-only tools included,
+		// matching `mcp.executeTool`; the caller must also still be a member
+		// of the organization.
+		const authorization = await authorizeMcpConfigRequest({
+			userId: session.user.id,
+			organizationId,
+			action: "connect",
+		});
+		if (!authorization.ok) {
+			return authorization.response;
+		}
+
 		// Create MCP client using the stored config (handles auth)
 		// CRITICAL: Pass organizationId for proper tenant isolation
 		// Include redirectUri for OAuth2 token refresh support
@@ -55,6 +69,7 @@ export async function POST(request: NextRequest) {
 			userId: session.user.id,
 			organizationId: organizationId ?? undefined,
 			redirectUri,
+			access: "connect",
 		});
 		client = mcpClient;
 

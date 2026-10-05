@@ -18,7 +18,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { Check, Plus } from "lucide-react";
+import { AlertTriangle, Check, Plus } from "lucide-react";
 import Link from "next/link";
 import {
 	type DataConnectionProvider,
@@ -32,6 +32,8 @@ interface ProviderCardProps {
 	href: string;
 	hasSearchConnection: boolean;
 	hasActionConnection?: boolean;
+	/** The action connection exists but its grant died: reconnect needed. */
+	actionNeedsReconnect?: boolean;
 	actionLabel?: string;
 	health?: ProviderHealthStatusValue | null;
 }
@@ -53,6 +55,7 @@ export function IntegrationTile({
 	description,
 	connected,
 	partial = false,
+	needsReconnect = false,
 	pip,
 	testId,
 	scroll,
@@ -63,6 +66,8 @@ export function IntegrationTile({
 	description: string;
 	connected: boolean;
 	partial?: boolean;
+	/** A stored connection that must be reconnected; wins over `connected`. */
+	needsReconnect?: boolean;
 	pip?: { class: string; label: string } | null;
 	testId?: string;
 	scroll?: boolean;
@@ -102,7 +107,15 @@ export function IntegrationTile({
 						</TooltipProvider>
 					) : null}
 				</span>
-				{connected ? (
+				{needsReconnect ? (
+					<span className="inline-flex h-5 items-center gap-1 rounded-full bg-destructive/10 px-1.5 text-destructive">
+						<AlertTriangle className="size-3" aria-hidden="true" />
+						<span className="text-[10px] leading-none">
+							Reconnect
+						</span>
+						<span className="sr-only">needed</span>
+					</span>
+				) : connected ? (
 					<span className="inline-flex h-5 items-center gap-1 rounded-full bg-muted px-1.5 text-muted-foreground">
 						<Check className="size-3" aria-hidden="true" />
 						<span className="sr-only">
@@ -136,6 +149,7 @@ export function ProviderCard({
 	href,
 	hasSearchConnection,
 	hasActionConnection = false,
+	actionNeedsReconnect = false,
 	health,
 }: ProviderCardProps) {
 	const metadata = getProviderMetadata(provider);
@@ -152,6 +166,7 @@ export function ProviderCard({
 			description={metadata.description}
 			connected={hasAnyConnection}
 			partial={hasAnyConnection && !isFullyConnected}
+			needsReconnect={actionNeedsReconnect}
 			pip={pip}
 		/>
 	);

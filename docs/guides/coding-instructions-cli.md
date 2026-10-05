@@ -1,6 +1,6 @@
 # Developer Guide: Coding Instructions on the Command Line
 
-How `fabric instructions check | sync | push | init` keeps a checkout current with a project's published coding instructions, how a local edit gets suggested back, how `fabric instructions doctor` checks a machine against what the instructions expect, and what each command is allowed to touch.
+How `fabric instructions check | sync | push | init` keeps a checkout current with a project's published coding instructions, how `init` sets a checkout up in one command (finding the project from the checkout itself and adopting the folder it runs in), how a local edit gets suggested back, how `fabric instructions doctor` checks a machine against what the instructions expect, what each command says when it ends, and what each command is allowed to touch.
 
 - **Audience**: engineers working on `@fabricorg/cli`, `@fabricorg/sdk` or the v1 REST surface; developers setting a project up on their own machine
 - **Owner**: Projects / Platform team
@@ -16,6 +16,20 @@ The intended trigger is a Claude Code or Codex `SessionStart` hook: every
 session asks whether the published version moved, and either says so or applies
 it.
 
+There are two shapes of project, and the commands treat them differently.
+
+- **Repository-sourced** (the instructions are committed to a git repository
+  and mirrored into Fabric): the working copy is a real clone of that
+  repository, with its own `.git`. Fabric is an interface on top of the
+  clone, not a second copy of it, so these commands never download or write
+  instruction files for such a project. `init` sets the folder up (cloning
+  into an empty one) and writes the session hook; at each session start the
+  hook brings the checkout up to the branch with a fast-forward when that is
+  safe, and otherwise says in one line why it did not.
+- **Uploaded** (the files were uploaded from the Coding Instructions tab):
+  there is no repository, so `sync` copies the published tree into the folder
+  and keeps a ledger, `.fabric/instructions.lock`, of what it wrote.
+
 Working on the project is also when the instructions are most obviously wrong,
 so the traffic goes both ways: `fabric instructions push` sends the checkout's
 edits back as a **proposal** an editor approves in the tab, or — with
@@ -27,14 +41,81 @@ same place and runs the same checks as a folder upload from the browser.
 
 ## Install and authenticate
 
-Install or update the CLI before running the coding-instructions commands:
+Nothing has to be installed first. The deployment serves the build it supports,
+and one `npx` line runs it straight from its URL (Node.js 22 or later is the
+only requirement; `npx` comes with it):
 
 ```bash
-npm install -g @fabricorg/cli
+npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --project <id> --tool claude-code
 ```
 
-Then sign in to the deployment that hosts the project. The Connect dialog
-supplies the exact deployment URL:
+The Connect dialog shows the exact line for the deployment, the project and
+the tool. It always names the project (`--project <id>`), because the sign-in
+is for that one project and a connection made from a project reaches that
+project alone, and it always writes the tool (`--tool claude-code` or
+`--tool codex`), because without it `init` writes a hook for every tool found
+on the machine. Run it where the project's instructions are: the top folder of
+the clone, or the project's folder inside it when the instructions live in a
+subfolder, never any other folder; an uploaded project's line is run in the
+folder the agent works in. For a machine with no clone yet, one command clones
+and sets up:
+
+```bash
+npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --project <id> --tool claude-code --clone <dir>
+```
+
+Each line is one command with no `&&` and no `cd`, so it runs in Windows
+PowerShell 5.1 too.
+
+The tarball a deployment serves is packed for that deployment. When it knows
+the deployment's origin it talks to that deployment (and signs in to it)
+without `--base-url`; the dialog adds `--base-url <origin>` to the line
+whenever the page you are on is not that origin, and always when the build knew
+none. `<build>` is ten hex digits of the bundle's own hash: the version changes
+only on a release, `npx -y <url>` keeps running whatever it first fetched from a
+URL, and a changed build has to be at a URL it has not seen. A tarball name an
+earlier deployment served is answered with a redirect to the current one.
+
+**The package on npm is not the way in.** It is the same CLI built for no
+deployment, and its latest release predates `--base-url`, so a line that names a
+deployment fails there. It is only for a machine that wants a global `fabric`
+for everyday use (`npm install -g @fabricorg/cli`), and its commands need
+`--base-url` for any deployment but `https://fabric.pro`.
+
+#### How a command refers to itself
+
+A person who ran the `npx` line has no `fabric` command, so the CLI never tells
+anyone to run one it knows is not there. Every command a message tells you to
+run starts the way this install is started: `fabric` for a globally installed
+CLI, and `npx -y <tarball URL>` for the served build, wherever it runs from: its
+tarball, or the copy a hook keeps (below). The line is short, and it keeps
+working after the deployment ships a newer build, because a tarball name it
+served earlier answers with a redirect to the current one. Only a served build
+that never learned its tarball's name (one packed by hand) says `node <file>`,
+naming the file it runs from. The examples in this guide say `fabric` for short.
+
+### Signing in
+
+**`init` does this for you.** With no sign-in for the project, meaning no key
+and no browser sign-in of that project's own (see [A sign-in for one
+project](#a-sign-in-for-one-project)), `init` opens the browser once, you
+approve it, and setup carries on. It does not need a terminal: an agent running
+the line for you (no terminal on either end) gets the URL on stderr to hand
+over, and `init` waits up to five minutes for you to finish, then gives up with
+`Could not sign in to <origin>`. Two cases refuse instead, naming the one line
+to run, and exit 3: a run under `CI` (the `CI` environment variable set to
+anything but empty, `0` or `false`), where nobody can finish a browser sign-in,
+and a session hook, which never signs anybody in — it has no one to ask, and it
+must never open a port or a browser:
+
+```text
+Not signed in to https://example.com. Run: fabric auth login --base-url https://example.com --project <id>
+```
+
+Every other command, run by hand, says the same, and the hook says it on stdout
+(see "What each command says").
+
+To sign in on its own, sign in to the deployment that hosts the project:
 
 ```bash
 fabric auth login --base-url https://example.com
@@ -68,29 +149,171 @@ spent one is presented again, so a renewal holds a lock file beside the profile
 re-reads the profile once it has the lock: two session-start hooks that start
 together renew once, not twice.
 
+Every write to the config file, whether a login, a logout, `fabric ctx` or a
+renewal's save, also takes a second lock for the milliseconds it lasts
+(`<config>.write.lock`, taken over after 10 seconds if its holder died, waited for
+up to 8) and reads the file again inside it, so a write that began before another
+process's write never puts the file back as it was. That matters most for a
+renewal's rotated refresh token: written back as the spent one, it would be
+replayed at the next renewal, and the server ends every sign-in of this CLI's
+client when it sees a spent refresh token again, for every project and for the
+organization-wide one. It is not the refresh lock, which a renewal holds across a
+network round-trip and writes under.
+
 `fabric auth logout` revokes the refresh token and the access token at the
 server, then clears the profile. A sign-in shows under **Account → Connected
 agents**, where revoking it ends every token issued under it at once.
 
 For CI and machines with no browser, sign in with an organization API key
-instead (the Connect dialog's "Use an API key instead" section mints one):
+instead (the Connect dialog's "CI or headless? Use an API key" section mints one):
 
 ```bash
 fabric auth login --key <api-key> --base-url https://example.com
 ```
 
-An explicit `--base-url` is stored with the active CLI profile, so later
-commands and generated hooks use the same deployment. `FABRIC_BASE_URL` remains
-an execution-time override when it is set, and `FABRIC_API_KEY` takes
-precedence over anything stored.
+**A credential belongs to one deployment.** The CLI keeps one profile per
+deployment, keyed by its origin (`https://example.com`), in the same
+owner-only config file; a sign-in also records the `issuer` that granted it. A
+browser sign-in is only ever sent to the origin of its issuer: a request for
+any other origin is refused before anything is refreshed or sent, so a hook
+written for one deployment can never hand its token to another. And a sign-in
+is kept at all only when the server that granted it is the deployment's own:
+the issuer's origin must be the origin the person asked to sign in to, or the
+tokens are neither stored nor used and the command says so in one fixed
+sentence. A deployment address that is not a URL (`--base-url`,
+`FABRIC_BASE_URL` or the saved profile) is a failure, `The deployment address
+is not a URL. Use --base-url https://example.com`, never a silent fall back to
+the default deployment and its credential. Signing in to a
+second deployment leaves the first one's profile alone and makes the new one
+the active profile, which is what a command with no `--base-url` uses.
+`fabric auth logout` clears the active profile's credential, and `fabric auth
+logout --base-url <origin>` clears another deployment's, so a person signed in to
+two of them can pick one without making it the active profile.
+
+A config file written by an older CLI (profiles with a name and a `baseUrl`)
+is read as if it were keyed by origin, and is saved in the new form the next
+time anything is saved.
+
+An explicit `--base-url` is stored with its profile, and every `fabric
+instructions` command accepts `--base-url <origin>` to say which deployment one
+run is for. Which deployment a command talks to is, in order: `--base-url`,
+`FABRIC_BASE_URL` (an execution-time override, never stored), the deployment
+the tarball was packed for, the active profile's, and the default. A login with
+no `--base-url` from a deployment's own tarball signs in to, and keeps its
+credential under, that deployment. `FABRIC_API_KEY` takes precedence over
+anything stored.
+
+### A sign-in for one project
+
+A browser sign-in does not have to reach every project. The setup line in a
+project's Connect dialog, and `init --project <id>`, sign in for that one
+project:
+
+```bash
+fabric auth login --project <id> --base-url https://example.com
+```
+
+- **What it is.** The same browser sign-in, asked for the project's own
+  resource, `<origin>/api/v1/projects/<id>`. The approval page names the project
+  and asks for no organization. What the sign-in can reach is fixed by the
+  server, not by this CLI: `GET /auth/whoami`, `POST /instructions/checkouts/resolve`
+  and the routes under `/projects/<id>/`, and nothing else. Every other project,
+  and every organization-wide route, answers 403. `--project` cannot be combined
+  with `--key`, because a key is not limited to one project; and the CLI refuses a
+  sign-in whose `whoami` does not report that project.
+- **Where it is kept.** Beside the deployment's own credential, in the same
+  profile, in an optional `projects` map keyed by project id. The config file
+  stays at version 2: the map is an added field, and a file with no project
+  sign-ins reads exactly as it did. Signing in for one project never replaces
+  the deployment's key or its organization-wide sign-in, and neither of those
+  replaces a project's.
+- **Which credential a command uses.** In order: `FABRIC_API_KEY`; the project's
+  own sign-in, for a command that names the project (`--project`, or a hook,
+  which always does); the deployment's key or organization-wide sign-in. A command
+  that names no project never uses a project's sign-in. `init` needs a key or
+  the project's own sign-in: an organization-wide sign-in reaches every project,
+  which is what a project's setup is there to stop relying on, so with only that
+  one stored `init` signs in again for the project, once the checkout has named it.
+- **Renewal and expiry.** It renews itself into its own entry, like the other
+  sign-ins. When it has expired the line names the project:
+  `Your sign-in to <origin> has expired. Run: fabric auth login --base-url <origin> --project <id>`.
+- **Signing out.** `fabric auth logout --project <id>` revokes that sign-in at
+  the server and removes it, and touches nothing else. `fabric auth logout`
+  signs out of the deployment's own credential only, and says which project
+  sign-ins are left and the line that ends one. Both take `--base-url <origin>`,
+  as `login` and `whoami` do: it picks the deployment whose profile is used, and
+  with `--project` that project's sign-in on it, whatever `FABRIC_BASE_URL` or the
+  active profile say. The line that ends a project's sign-in on a deployment other
+  than the default carries it.
+- **Who it is.** `fabric auth whoami --base-url <origin> --project <id>` asks
+  with that project's sign-in and adds a `Project` row; `--base-url` alone asks
+  another deployment you are signed in to. `doctor`'s `auth` check says
+  "signed-in session limited to this project", and, when the sign-in reaches every
+  project, that this project has none of its own.
 
 ## The commands
 
-### `fabric instructions check --project <id> [--dest <dir>] [--verify] [--hook]`
+### Finding the project from the checkout
+
+`check`, `sync`, `init`, `doctor` and `push` take `--project <id>` as an
+override. Without it they find the project from where they run:
+
+1. the folder's git work tree, and each remote's **effective** fetch URL (after
+   any `insteadOf` rewrite, so a remote rewritten to a local mirror is not
+   taken for the repository);
+2. each URL as the credential-free HTTPS spellings a deployment stores
+   (`https://github.com/<owner>/<repo>`, `https://gitlab.com/<group>/.../<repo>`,
+   and both `https://dev.azure.com/<org>/<project>/_git/<repo>` and
+   `https://<org>.visualstudio.com/<project>/_git/<repo>` for Azure DevOps),
+   sent to the deployment's checkout resolver — never a userinfo, port or
+   query; a host a deployment cannot have connected is not asked about;
+3. the answer is the projects **you can see** that sync their instructions
+   from that repository, narrowed by the folder the command runs in (several
+   projects can share a repository, each with its own `rootPath`).
+
+| Answer | What happens |
+|---|---|
+| one project | the command carries on with it |
+| several, and a terminal | it lists them and asks which |
+| several, no terminal | exit 2, listing a `--project <id>` for each |
+| none | exit 4: `This checkout's remote (github.com/owner/repo) is not connected to any project you can see. Connect the repository in Fabric first.` |
+
+A project id, from `--project` or from the resolver's answer, and an
+organization slug from `--org`, must be plain identifiers: letters, digits,
+`.`, `_` and `-`, starting with a letter or digit, at most 64 characters. They
+end up in the command line a session hook runs, so anything else is refused
+(`--project must be a project id: …`, exit 2) before it reaches a hook, a
+request or a line of output. A resolver answer with an id that is not one is
+treated as no answer: the `none` line above, with nothing from the answer
+printed. The organization and project names it lists have their control
+characters taken out. A `--remote` value must be a plain git remote name
+(letters, digits, `.`, `_`, `-` and `/`, not starting with `-` or `/`: the rule
+the CLI applies to the remotes it reads from git), or it is refused with
+`--remote must be the name of a git remote: …` (exit 2) before a hook can be
+written with it.
+
+`--remote <name>` looks at one remote only, which is how a checkout with two
+remotes for the same repository (a fork and its upstream) is told apart.
+Matching ignores letter case, on the CLI and on the deployment alike: GitHub,
+GitLab and Azure DevOps names are case-insensitive, and an Azure DevOps
+`<org>.visualstudio.com` remote spells the organization in lowercase whatever
+the connected repository says. Only repository-sourced projects are found
+this way; an uploaded project needs `--project`.
+
+**A session hook never resolves.** It runs unattended at every session start,
+and what it would answer could change between two sessions, so a hook names
+its project. `--hook` without `--project` skips with `this hook names no
+project. Run: fabric instructions init` on stderr and exits 0.
+
+### `fabric instructions check [--project <id>] [--dest <dir>] [--verify] [--hook]`
 
 Compares the digest in `<dest>/.fabric/instructions.lock` with the published
 one and reports the difference. One request, no download, nothing written.
-Exits 0 in every outcome — it is informational.
+Informational: it exits 0 for a report, whatever the report says, and with the
+documented codes only when the run itself failed — 3 not signed in, 4 project
+not found, 2 usage (an unresolved project, a bad `--base-url`), 5 forbidden, 6
+rate limited, 7 a refused or inconsistent source, 1 anything else. Under
+`--hook` it always exits 0.
 
 Without `--verify` it reads no local file at all, which is why "published
 coding instructions unchanged" is the wording: it means the published version
@@ -101,7 +324,7 @@ exits 0. A file whose edit an earlier `sync` kept is reported as `(kept)`, and
 the report names `fabric instructions sync --repair` as the way to replace it.
 `--format json` also lists those paths as `keptEdited`.
 
-### `fabric instructions sync --project <id> [--dest <dir>] [--dry-run] [--repair] [--hook]`
+### `fabric instructions sync [--project <id>] [--dest <dir>] [--dry-run] [--repair] [--hook]`
 
 Applies the published version. It plans against the working tree rather than
 the lock alone, so it can tell a file it wrote from a file the developer
@@ -173,16 +396,18 @@ line on stderr, which also names the local-notes files:
 For a repository-sourced project (source of truth `REPOSITORY`), what `sync`
 does depends on the directory it runs in; see
 [Repository-sourced projects](#repository-sourced-projects). In a checkout of
-the project's repository it only reports — by hand or as a hook, it downloads
-nothing and writes no lock, and `--dry-run` and `--repair` are ignored because
-there is no download for them to shape. Outside any git checkout it syncs the
+the project's repository it downloads nothing and writes no lock, and
+`--dry-run` and `--repair` are ignored because there is no download for them
+to shape: by hand it only reports, and as a session hook (`sync --hook`) it
+fast-forwards the checkout when that is safe (see below); `check --hook` only
+reports. Outside any git checkout it syncs the
 way it does for an uploaded project. In a checkout of some *other* repository
 a sync run by hand still downloads, because for someone without access to the
 project's repository a download is the only way to read the instructions at
 all; a hook there stops with one line. Everywhere this cannot tell whether
 the directory is a checkout of the project's repository — git could not
-answer, the server reports no repository, an unsupported provider, two
-matching remotes, or the right repository in the wrong directory — `sync`
+answer, the server reports no repository, a provider this build does not
+know, two matching remotes, or the right repository in the wrong directory — `sync`
 fails closed: a hook prints one line, and by hand it exits 7 with that line.
 Nothing is written in either case.
 
@@ -206,7 +431,7 @@ Commander resolves it: `fabric --format table instructions check` beats
 `FABRIC_FORMAT=json`, because the environment is the root option's default and
 an explicit flag replaces a default.
 
-### `fabric instructions push --project <id> [--dest <dir>] [--add <path>] [--publish] [--include-proposed] [--dry-run]`
+### `fabric instructions push [--project <id>] [--dest <dir>] [--add <path>] [--publish] [--include-proposed] [--dry-run]`
 
 Suggests this checkout's edits back to the project. By default it opens a
 **proposal**: nothing changes for anybody reading the instructions until
@@ -378,23 +603,245 @@ names the pull request (`already proposed in version <N>, pull request
 <url>`). That keeps a second session's pull request free of the first
 session's change.
 
-### `fabric instructions init --project <id> --tool <claude-code|codex> [--dest <dir>] [--apply] [--lessons]`
+### `fabric instructions init [--project <id>] [--tool <claude-code|codex>] [--clone [<folder>]] [--dest <dir>] [--remote <name>] [--apply] [--report-only] [--lessons] [--no-mcp]`
 
-For a published snapshot, takes the first copy before writing a `SessionStart`
-hook. Claude Code writes `<dest>/.claude/settings.local.json` — never
-`settings.json`; Codex writes `<dest>/.codex/hooks.json`. A failed first sync
-leaves no new or updated hook behind. If nothing is published yet, it installs
-the hook so it can report the first version when it arrives. The hook runs
-`fabric instructions check` by default, so rules are not swapped under a
-developer mid-task; `--apply` makes it run `sync` instead. Running `init`
-again replaces its own entry rather than adding a second one.
+Sets a checkout up for a project's coding instructions: finds the project (see
+above), signs in when it has to, takes over the folder it runs in, and writes
+the `SessionStart` hook. For one project and one folder it is the only command
+a developer runs.
 
-After starting Codex in the checkout, use `/hooks` to review and trust its
-project hook. `init` does not change that trust decision, and the hook's stdout
-becomes developer context in Codex.
+**The hook, for every tool found.** `--tool` is optional. Without it, a coding
+tool counts as present when its folder is in the checkout (`.claude`,
+`.codex`) or in the home directory (`~/.claude`, `~/.codex`), or its command
+(`claude`, `codex`) is on `PATH` (found by `stat`, never run), and every
+present tool gets a hook in the one run. With none found, `init` writes
+Claude Code's and says so; `--tool` names one tool and ignores the rest.
+Claude Code writes `<dest>/.claude/settings.local.json` — never
+`settings.json`; Codex writes `<dest>/.codex/hooks.json`. For an uploaded
+project the hook runs `fabric instructions check` by default, so rules are not
+swapped under a developer mid-task, and `--apply` makes it run `sync`
+instead. For a repository project it runs `sync`, which fast-forwards the
+clone when that is safe (see [What the hook does](#repository-sourced-projects));
+`--report-only` writes `check` there instead. Running `init` again replaces
+its own entry rather than adding a second one.
 
-For a repository-sourced project `init` classifies the directory once; see
-[Repository-sourced projects](#repository-sourced-projects) below.
+The command carries the deployment and, when `--remote` was given, the remote:
+
+```text
+<launcher> instructions check --project <id> --base-url <origin> [--remote <name>] [--org <slug>] --hook
+```
+
+`--base-url` binds the hook to the deployment `init` set it up against, so it
+can only ever talk to that one. A hook written before hooks named a deployment
+(no `--base-url`) still runs and is still recognised, so `init` replaces it
+and `doctor` reports it as a warning.
+
+**What `<launcher>` is.** A hook runs at every session start, in whatever shell
+the coding tool uses, and a person who ran the `npx` line has no `fabric` on
+`PATH`: a hook that said `fabric instructions …` would fail with `command not
+found` every time. So the build a deployment serves, which is one file with
+every dependency inlined, keeps a copy of itself where the hook can find it, and
+the hook runs that:
+
+```text
+node <config folder>/cli/<deployment>/fabric.mjs instructions check --project <id> --base-url <origin> --hook
+```
+
+- The copy is one file per deployment, `cli/<deployment>/fabric.mjs` in the CLI's
+  config folder (`%APPDATA%\fabricai-nodejs\Config` on Windows,
+  `~/.config/fabricai-nodejs` on Linux, `~/Library/Preferences/fabricai-nodejs`
+  on macOS), written to a temporary file and renamed into place, and replaced on
+  every `init` and by its own daily update (next bullet), which is how a newer
+  build reaches a machine that already has the hook. It is an `.mjs` file so Node
+  loads it as an ES module wherever it sits. `update-check.json` sits beside it
+  and holds when the copy last asked, and which tarball it was told about.
+- **The copy updates itself**, once a day, so a deployment that ships a newer CLI
+  reaches every machine that has the hook, without anyone running `init` again.
+  At the end of a `check` or `sync` hook run, after the hook has printed what it
+  has to say, and only when the file running is exactly the copy `init` keeps for
+  the deployment the hook is bound to (`--base-url`; an `npx` run, the npm build
+  or another deployment's copy never updates anything):
+  1. It reads `<origin>/.well-known/fabric-cli.json` from that origin and
+     compares the `tarball` path with the one baked into the running build. The
+     same path ends the step (nothing is downloaded); `update-check.json` records
+     the check either way.
+  2. A different path is downloaded from the same origin (never a host the
+     document names), with a size cap (8 MiB, 24 MiB unpacked) and no redirects.
+     The SRI `sha512` in the document is checked against the bytes first, then
+     `package/fabric.js` is read out of the gzip and tar in memory (matched by
+     its exact name; nothing is extracted to disk and nothing is run) and must
+     begin with the build's `#!/usr/bin/env node` line.
+  3. It is written to a temporary file beside the copy and renamed over it, the
+     way `init` writes it. The running process keeps its code; the new copy runs
+     from the next session.
+
+  The step is bounded so it can never delay or cost the hook's own output: it
+  starts only when at least five seconds of the hook's ten-second deadline are
+  unspent (a slow run skips it), it has a budget of four seconds of its own
+  (`selfUpdateBudgetMs` in `hook-timing.ts`), and its output is at most one line
+  on stderr, never stdout: `fabric: this CLI copy was updated to <version>; it
+  runs from the next session`, or `fabric: this CLI copy was not updated (<why>);
+  the earlier copy was kept`. A failure of any kind (no network, a non-2xx
+  answer, an integrity mismatch, a package without the bundle, a copy another
+  process holds open on Windows) leaves the earlier copy exactly as it was. The
+  slot is claimed in `update-check.json` before anything is asked, so two
+  sessions starting together do not both download, and a deployment that is down
+  is asked once a day, not at every session start; a check dated in the future is
+  treated as never made. Over `https` only, except `http` to `localhost`,
+  `127.0.0.0/8` and `::1`. It is off when `FABRIC_CLI_NO_SELF_UPDATE` is set to
+  anything but `0`, `false` or empty, and whenever `CI` is. A hook refused
+  because this CLI is older than the deployment supports asks too: a newer copy is
+  the fix. `init` is unchanged; it still refreshes the copy from whichever build
+  it was run from.
+- The command starts with a bare `node`, never a quoted word: Codex runs hooks
+  through PowerShell, where a quoted first word is a parse error. The path uses
+  forward slashes on Windows, and is put in double quotes only when it holds
+  something a shell would split or interpret, such as a space in a user name. A
+  config folder whose path cannot be written safely into a command (it holds a
+  `$`, a backtick, a double quote or a `!`) is refused with the variable to set
+  (`XDG_CONFIG_HOME`, or `APPDATA` on Windows).
+- The build npm publishes is not a single file and cannot be copied. Its hook
+  runs `fabric`, which exists when that is how the CLI was installed; when
+  `fabric` is not on `PATH`, `init` says so in one line, and still writes the
+  hook, so it works as soon as `fabric` is installed.
+- `doctor` accepts a hook in either form, warns when the file a copy-form hook
+  runs does not exist, and warns when a `fabric` hook finds no `fabric` on
+  `PATH`. `init` recognises both forms, so running it again replaces an earlier
+  hook of either form with exactly one.
+- The lesson-capture hook (`--lessons`) starts the same way.
+
+**To verify it,** run `instructions doctor --project <id>` and read its
+`hook` check. **To undo it,** delete the project's `instructions check` or
+`instructions sync` entry (and its `lesson-prompt` entry, if there is one) from
+`.claude/settings.local.json` or `.codex/hooks.json`, and the deployment's folder
+under `cli/` in the config folder when no other checkout uses it;
+`auth logout` removes the saved sign-in.
+
+In Codex, trust the folder when Codex asks, then use `/hooks` once to review and
+trust the project hook. `init` does not change that trust decision, and the
+hook's stdout becomes developer context in Codex.
+
+**The project's MCP server, for every tool that got a hook.** After the hook is
+written, `init` registers the project's own gateway,
+`<origin>/api/mcp-gateway/projects/<id>`, with each tool, so the tool reaches
+that project's context through MCP and nothing else. When no tool was found
+and none was named, the fallback Claude Code hook gets no registration. It does
+so through the tool's own command line and never by editing its files:
+
+| Tool | Registers | Scope |
+|---|---|---|
+| Claude Code | `claude mcp add --scope local --transport http fabric <url>` | this checkout only (Claude Code's local scope) |
+| Codex | `codex mcp add fabric-<last six letters and digits of the id> --url <url>`, which also signs in | Codex's one global list, so each project's server has a name of its own |
+
+The Connect dialog's Codex commands use the same name for the same project, so a
+server added from either is the one the other finds; a test in the CLI runs one
+corpus of ids through both rules and fails if they differ.
+
+Before it writes anything it reads what the tool already holds, from the tool's
+own files as data (Claude Code's `~/.claude.json`, for the checkout's local scope
+and the user scope, and the checkout's `.mcp.json`; Codex's `config.toml`), and
+acts on what it finds. It never asks the tool: Claude Code's `mcp get` and `mcp
+list` start the servers they name to check them, and one of those can be a
+`fabric` server that the repository's own `.mcp.json` runs as a command, before
+anyone has been asked to trust it. A file that cannot be read, or that writes
+Codex's servers in a form the reader does not follow (an inline table, a dotted
+key, `[mcp_servers]` on its own), stops the registration with the line to run by
+hand, since `codex mcp add` would replace a server the reader had missed.
+
+- **The same URL is already registered**: nothing is registered or run. For
+  Codex that holds under any name, so a server the person named themselves
+  counts. Registered does not mean signed in, so `init` adds one line, `If <tool>
+  has not signed in to it yet, run: <tool> mcp login <name>`, and never runs that
+  login itself, so a rerun opens no browser the person did not ask for.
+- **The name holds another gateway of this deployment** (the project was
+  connected to another one before): it is replaced. For Claude Code only in the
+  checkout's own scope; the same name in another scope is left, with the line
+  that removes it.
+- **Anything else under that name** (a different vendor's server, another
+  deployment's gateway, a server with no URL): it is left alone, and `init`
+  says so with the line to run once the person has removed it.
+- **The tool is not on `PATH`**: one line, with the command to run once it is.
+  (Codex with no terminal is not asked, so there it is the line to run by hand.)
+- **The tool cannot register it**: one line with the command to run by hand.
+  `init` still succeeds, and the hook is written either way.
+
+A line to run by hand is printed only when every word of it is plain (`A-Z a-z
+0-9 . _ : / = @ + -`), the same rule the arguments `init` hands the tool follow. A
+deployment's address is `new URL(...).origin`, which keeps `$ ( ) ; & ' " ! ~ , { }`
+and a backtick in a host, and no quoting reads the same in bash, PowerShell and cmd. When
+the address is not plain, the line is replaced by one fixed sentence, "This
+deployment's address cannot be written into a command, so there is no line to
+run for it", which does not repeat the address, and the sign-in lines that name
+the deployment (`Run: fabric auth login ...`) print `<no command: the
+deployment address cannot be written into one>` in the same way. `init` also
+refuses such an address before it signs in or writes anything, because the
+session hook it would write carries the address into a command a shell runs at
+every session start; a plain host, a port and a bracketed IPv6 address
+(`http://[::1]:3001`) are accepted.
+
+A server that was just registered or replaced still has to sign in, which is a
+step in the person's browser, and the two tools do it differently. "At a
+terminal" below means standard input, output and error are all terminals, not
+under `CI`, not `--format json`.
+
+- **Claude Code**: `claude mcp add` only registers, so at a terminal `init` then
+  runs `claude mcp login fabric` with the terminal handed to it, for at most five
+  minutes. Anywhere else it prints that line.
+- **Codex**: `codex mcp add` signs in as part of adding. A project's gateway
+  answers an unauthenticated request with an OAuth challenge, so the command
+  registers the server, opens the browser and waits for the callback, and it has
+  no option that skips that. At a terminal `init` runs that one command with the
+  terminal handed to it, for at most five minutes, and runs no `codex mcp login`
+  after it. Anywhere else it does not run `codex mcp add` at all, because it would
+  block until it timed out, report a failure for a server it had written, and may
+  open a browser nobody asked for: it prints one line, "Codex signs in as part of
+  adding the Fabric MCP server, which opens your browser and waits for you, so
+  init did not run it. Run: codex mcp add ...", and under `--format json` the
+  outcome is `manual`, with that line as `registerLine`. If the add exits non-zero
+  or is cut off while it waits, `init` reads Codex's configuration again: a server
+  that is there is reported as registered and not signed in, with `The Codex
+  sign-in did not finish. Run: codex mcp login <name>`, and one that is not as
+  `Could not register ...` with the add line.
+
+A sign-in that does not finish prints the line and `init` still succeeds.
+`--no-mcp` leaves the tools alone altogether. Under `--format json` the result is
+the `mcp` array: each tool's `name`, `url`, `outcome`, `login`, `registerLine` and
+`loginLine`.
+
+How the tools are run: found on `PATH` by name, started without a shell, with
+every `FABRIC_*` variable taken out of their environment. Every argument is
+checked against `A-Z a-z 0-9 . _ : / = @ + -` before anything starts. On Windows
+Codex is a `codex.cmd` shim that only the command interpreter can start, so it
+goes through `cmd.exe /d /s /c` with a verbatim command line made only of those
+checked arguments and a shim path that holds no character the interpreter reads;
+a command that runs out of time (20 seconds to write, five minutes for a command
+that signs in) ends the whole process tree there, with `taskkill` started by its
+path under `SystemRoot` and not looked up on `PATH`, and stops waiting on the
+command's pipes, so a process the tool left behind that still holds them cannot
+keep this one from exiting. What a tool says is never printed, and what its files hold is read
+only as far as the server of the name: a server's headers, which can hold a
+credential, are never kept. A name read from Codex's file is shown only when it
+is plain (letters, digits, `_` and `-`, at most 64); any other is shown as "a
+name with unusual characters" and never put into a line to run. `doctor` reports
+the registrations by reading the same files, and runs nothing.
+
+**Keeping the per-machine files out of commits.** In a git work tree `init`
+appends the hook files it wrote (and, for an uploaded project, `.fabric`) to
+the checkout's `.git/info/exclude`, the local ignore file nobody else sees. It
+asks git where that file is (a linked worktree shares the main checkout's),
+adds only what git does not already ignore, adds each line once, refuses a
+file that is a symlink or not a regular file, and never touches `.gitignore`.
+It also refuses a line that would not name exactly that path: a folder name
+with a newline, a `#` first, or any of `* ? [ ] \ !` (a folder called `a*`
+would exclude every sibling that starts with `a`). When it cannot, it says so
+and names the lines to add yourself.
+
+For a repository-sourced project `init` adopts the folder; see
+[Repository-sourced projects](#repository-sourced-projects) below. For an
+uploaded project it takes the first copy before writing the hook, as before: a
+failed first sync leaves no new or updated hook behind, and if nothing is
+published yet it installs the hook so it can report the first version when it
+arrives.
 
 An explicit `--org <slug>` is carried into the generated hook command. These
 commands read no stored default context, so a slug supplied once on the
@@ -403,56 +850,178 @@ command line has nowhere else to live.
 #### Repository-sourced projects
 
 A project whose source of truth is `REPOSITORY` publishes each snapshot from
-one commit on the branch its repository sync follows. In a checkout of that
-repository the instruction files already arrive with `git pull`, so the
-session hook's job there is to say when the branch has newer published
-instructions than the checkout — never to download them, write a lock, or
-change the checkout. Updating the checkout stays the developer's `git pull`;
-automatic updates for repository checkouts are not available yet.
+one commit on the branch its repository sync follows. The working copy is the
+developer's own clone of that repository, with its `.git`; the instruction
+files arrive with git, so Fabric never writes them there. `init` sets the clone
+up, and the session hook's job is to say when the branch has newer published
+instructions than the checkout, and to bring it up to date: never to download
+instruction files, never to write a lock, and never to do anything to the
+checkout but fetch the branch and fast-forward it (see "What the hook does").
 
-Developer setup:
+Developer setup, in the top folder of the clone (or in the project's folder
+inside it, when the instructions live in a subfolder) and nowhere else:
 
 ```bash
-git clone https://git.example.com/example-org/rules.git
-cd rules
-fabric instructions init --project <id> --tool claude-code
+npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --tool claude-code
 ```
 
-The Coding Instructions tab's **Connect your agent** dialog prints this same
-block, filled in for the project, with the sign-in line naming the key it just
-created and this deployment's URL.
+That one line resolves the project from the clone's remote, signs in if it has
+to, writes the hook for the tool it names, and ends on one sentence:
+
+```text
+Set up for github.com/owner/repo (main). Claude Code fast-forwards main at session start when safe.
+```
+
+On a machine that has no clone yet, one command makes the folder, clones into
+it and finishes the setup there:
+
+```bash
+npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --project <id> --tool claude-code --clone <dir>
+```
+
+`<dir>` is relative to the current folder (or `--dest`). It is made when it is
+missing and refused, before any request is made, when it exists and holds
+anything: `That folder already exists and is not empty, so nothing was cloned
+into it.` (exit 7). `--project` is required with it, because there is no
+checkout yet to find the project from (exit 2 without), and the project has to
+be a repository project (exit 7 for an uploaded one, which has nothing to
+clone). When the project's instructions live in a subfolder of the repository,
+`init` carries on there with no second run, and says where it set up
+(`Cloned into <dir>/<root folder>. Open your coding tool in that folder.`).
+
+With a bare `--clone` (no folder), `fabric instructions init --project <id>
+--clone` in an **empty** folder clones the repository into it first (with a
+terminal and no `--clone`, it asks), and then does the same; when the
+instructions live in a subfolder it stops there and prints the one line that
+sets that folder up (`init --dest <folder>`). The clone is
+`git clone --quiet --branch <ref> --no-tags --no-recurse-submodules -- <url>
+.` with the developer's own git credentials. The URL is the credential-free
+HTTPS one the deployment reports, and only when it names the very repository
+shown in the prompt (the same provider, host and path) on the default port; a
+URL for another host, another repository or a port is treated as if the
+deployment had not said, and nobody is asked. Fabric never hands out a
+repository token. The clone keeps the developer's credential helpers and their
+`GIT_ASKPASS` and `SSH_ASKPASS` programs on purpose, so a helper such as `gh`
+or a credential manager can answer git, and may ask the person in its own
+window: the clone is interactive by design and bounded to 5 minutes. git's own
+terminal prompt is off (`GIT_TERMINAL_PROMPT=0`, `-c
+credential.interactive=never`, `GCM_INTERACTIVE=never`), and ssh runs with
+`-o BatchMode=yes` unless the developer already set `GIT_SSH_COMMAND` or
+`GIT_SSH`, so a missing credential is a one-line failure rather than a hang. It
+never clones into a folder that has anything in it.
 
 Run `init` from the directory the project's instructions live in — the
-repository root, or the sync's root folder when it has one. `init` then writes
-the `SessionStart` hook exactly as it does for an uploaded project (`check`, or
-`sync` with `--apply`; no matcher; timeout 15 seconds), copies nothing, and
-prints
-`installed; this checkout is <host>/<path>: the hook reports when <ref> has newer instructions and never changes the checkout`.
-With `--apply` it adds
-`— automatic updates are not available for repository checkouts yet; the hook reports and you (or your agent) run the pull`:
-the `sync` hook reports exactly as `check` does here. When nothing has been
-published from the repository yet, the hook is still written and `init` says
-so.
+repository root, or the sync's root folder when it has one. In a clone it
+writes the `SessionStart` hook (`sync`, or `check` with `--report-only`; no
+matcher; timeout 15 seconds), copies nothing, writes no lock, and leaves every existing
+file exactly as it was. A `.fabric/instructions.lock` that **this project**
+wrote earlier (from before the project moved to a repository) is removed with
+one line, `Removed .fabric/instructions.lock: this checkout follows <host>/<path>
+through git now.`; another project's lock, or one that does not read, is left
+alone. When nothing has been published from the repository yet, the hook is
+still written and `init` says so.
 
 **How the directory is classified.** From the first response of each run, the
 CLI asks git (read-only, see below) where the directory's work tree is and
 which URL each remote actually fetches from — after any `insteadOf` rewrite,
 so a remote rewritten to a local mirror is not taken for the repository. A URL
 matches when it is `https://host/path`, `ssh://[user@]host/path` or scp-like
-`[user@]host:path` (optional `.git`, no port), the host equals the project's,
-and the path equals the project's (case-insensitively on GitHub, exactly on
-GitLab; every GitLab subgroup segment counts).
+`[user@]host:path` (optional `.git`; no port, except the default `:22` on the
+two Azure DevOps SSH hosts), the host equals the project's, and the path equals
+the project's (case-insensitively on GitHub, exactly on GitLab; every GitLab
+subgroup segment counts).
+
+**Azure DevOps.** The project's `path` is the repository's URL path including
+`_git` (`<org>/<project>/_git/<repo>`), and one repository has several
+spellings — `https://dev.azure.com/<org>/<project>/_git/<repo>` (also with the
+organization as userinfo), `https://<org>.visualstudio.com/[DefaultCollection/]<project>/_git/<repo>`,
+`git@ssh.dev.azure.com:v3/<org>/<project>/<repo>`,
+`ssh://git@ssh.dev.azure.com[:22]/v3/<org>/<project>/<repo>` and
+`<org>@vs-ssh.visualstudio.com:v3/<org>/<project>/<repo>`. All of them are
+reduced to the organization, project and repository and compared
+case-insensitively; names are percent-decoded first, so a project called
+`Example Project` matches however the URL spells the space. A project whose
+path names no Azure DevOps project cannot be told from another project's
+repository of the same name, so it is reported as `unknown repository` rather
+than guessed at. Webhooks exist only for GitHub; an Azure DevOps project
+follows its branch on the deployment's poll.
 
 | Class | When | `check --hook` / `sync --hook` | `init` |
 |---|---|---|---|
-| matching | exactly one remote fetches from the repository, and the directory is the sync's root folder in that work tree | the report line below, or nothing when current | writes the hook, copies nothing |
-| not a git checkout | no work tree at or above the directory | unchanged: `check` reports, `sync` downloads and writes the lock | unchanged: first copy, then the hook |
-| foreign | no remote fetches from the repository | `fabric: coding instructions: no remote of this checkout fetches from <host>/<path> (foreign checkout); nothing was checked or changed` | refused, exit 7, with that line (a manual `sync` still downloads here) |
-| ambiguous | two or more remotes fetch from it | `fabric: coding instructions: remotes <a>, <b> all fetch from <host>/<path> (ambiguous checkout); nothing was checked or changed` | refused |
-| unmapped | the right repository, the wrong directory | `fabric: coding instructions: this checkout is <host>/<path>, but the project's instructions are at <root folder>, not this directory (unmapped checkout); nothing was checked or changed` | refused |
-| unknown | git could not answer: not installed (in a directory that does have a `.git` above it), timed out, an untrusted owner, a bare repository, a `.git` that points nowhere; or a branch name or root folder the CLI will not use | `fabric: coding instructions: this git checkout could not be read (<reason>; unknown checkout); nothing was checked or changed` | refused |
-| unknown repository | the server reports no repository configuration | `fabric: coding instructions: the project is repository-sourced but reports no repository to compare with (unknown repository); nothing was checked or changed` | refused |
-| unsupported provider | Azure DevOps, which is not compared yet | `fabric: coding instructions: AZURE_DEVOPS repositories are not compared yet (unsupported provider); nothing was checked or changed` | refused |
+| matching | exactly one remote fetches from the repository, and the directory is the sync's root folder in that work tree | the report line below, or nothing when current | writes the hook for every tool found, copies nothing, writes no lock |
+| not a git checkout, empty | no work tree at or above the directory, and nothing in it | `check` reports, `sync` downloads and writes the lock (an uploaded copy) | with `--clone`, or a yes at the prompt: clones, then as for matching. Otherwise `This folder is empty. Run: fabric instructions init --clone to clone <host>/<path> (<ref>) into it.`, exit 2 |
+| not a git checkout, not empty | no work tree, and something in the folder | as above | refused, exit 7, nothing written: `This folder is not a clone of <host>/<path>. Run: fabric instructions init --project <id> [--tool <tool>] --clone <dir>` |
+| foreign | no remote fetches from the repository | `fabric: coding instructions: no remote of this checkout fetches from <host>/<path>; nothing was checked.` | refused, exit 7, with the same clone line (a manual `sync` still downloads here) |
+| ambiguous | two or more remotes fetch from it | `fabric: coding instructions: remotes <a>, <b> all fetch from <host>/<path>; nothing was checked. Run: fabric instructions init --remote <a>` | refused, exit 7: `Remotes <a>, <b> all fetch from <host>/<path>. Run: fabric instructions init --remote <a>` |
+| unmapped | the right repository, the wrong directory | `fabric: coding instructions: this checkout is <host>/<path>, but the project's instructions are at <root folder>, not this directory; nothing was checked.` | refused, exit 7: `This checkout is <host>/<path>, but its instructions are in <relative folder>. Run: fabric instructions init --dest <relative folder>` |
+| unknown | git could not answer: not installed (in a directory that does have a `.git` above it), timed out, an untrusted owner, a bare repository, a `.git` that points nowhere; or a branch name or root folder the CLI will not use | `fabric: coding instructions: this git checkout could not be read (<reason>); nothing was checked.` | refused, exit 7, with that line |
+| unknown repository | the server reports no repository configuration, or an Azure DevOps path with no project | `fabric: coding instructions: the project is repository-sourced but reports no repository to compare with; nothing was checked.` | refused, exit 7, with that line |
+| unsupported provider | a provider this build does not know | `fabric: coding instructions: <PROVIDER> repositories are not compared yet; nothing was checked.` | refused, exit 7, with that line |
+
+A clone that fails says why in one line and writes no hook: `git has no
+credentials for <host>. Run: gh auth login` (`glab auth login` for GitLab;
+for Azure DevOps `git ls-remote <url>`, which Git Credential Manager signs in
+on its first run from a terminal; exit 3), `<host> did not answer` (1), `it
+has no branch <ref>` (7), or `Run: git clone -- <url> to see why` (1). With
+`--clone <dir>`, a project whose instructions live in a subfolder is set up in
+that subfolder; a bare `--clone` into the current folder ends with the
+`init --dest <folder>` line to run, since the hook belongs in that folder.
+
+**What the hook does.** `init` writes `fabric instructions sync --hook` for a
+repository project, and says so: `Claude Code fast-forwards main at session
+start when safe.` At each session start, in a matching checkout, it:
+
+1. looks at the checkout (read-only), and decides whether a fast-forward is
+   safe: the branch is the one the project follows, it tracks `<remote>/<ref>`,
+   the tree is clean (untracked files included), no merge, rebase, cherry-pick,
+   revert or bisect is in progress, it is not a shallow clone or a submodule of
+   another repository, no `index.lock` or `HEAD.lock` exists, and no other work
+   tree of the repository has the branch checked out (a sparse checkout is
+   fine);
+2. if it is, takes `<git common dir>/fabric/ff.lock` without waiting (a second
+   hook that finds it held says another process is updating the checkout and
+   changes nothing), looks again, and fetches the branch with `git fetch
+   --no-tags --no-recurse-submodules -- <remote>
+   refs/heads/<ref>:refs/remotes/<remote>/<ref>`, a refspec that is not forced:
+   a branch whose upstream was rewritten is refused as diverged, never reset;
+3. moves to the fetched tip with `git merge --ff-only` when HEAD is an ancestor
+   of it. **The target is the branch tip, not the published commit**: git is
+   the authority on where the branch is, and Fabric's published copy only
+   mirrors it;
+4. says what happened, once (below), and appends one line to a trace.
+
+It runs with the developer's own credentials but nothing that can ask a person
+(no askpass programs, no terminal prompt, ssh in batch mode), and inside the
+hook's budget: the fetch gets the 10 seconds minus a 1.5 second reserve, and the
+merge runs only if that reserve is still there, so a slow remote can never leave
+the hook mid-merge. It never pulls, rebases, stashes, resets, checks out,
+commits or pushes; a checkout it cannot fast-forward is left exactly as it was.
+`check --hook` never writes at all, and a person's own `sync` only reports.
+
+*Opting out.* `init --report-only` writes `check --hook` instead, and a
+`sync --hook` run with `--no-fast-forward` only reports (the trace says
+`opted-out`). An uploaded project's hook is untouched.
+
+| Result | What a session reads |
+|---|---|
+| fast-forwarded | `fabric: coding instructions: fast-forwarded main from <old7> to <new7> (v<n>).` (`(v<n>)` only when the new HEAD is the commit that version was published from) |
+| already there | nothing |
+| Fabric's copy lags the branch | `fabric: coding instructions: main is at <sha7>; Fabric's copy is behind (<why>).` Why: a commit was refused by the secret scan, a sync is in progress, the last sync failed, automatic sync is paused or off, or the next sync has not run yet. Said once per published version and reason |
+| dirty, another branch, detached, an operation in progress | the matching `behind` line in the table below, once per published version and reason; nothing when the checkout is not behind the published commit |
+| shallow clone, submodule, tracks nothing or another branch, git busy, branch held by another work tree | one line each, saying what to run, once per published version and reason, and only when the checkout is behind |
+| diverged (a rewritten upstream, or local commits) | `…: main and origin/main have diverged, so nothing was updated. Run: git pull --rebase origin main, or merge origin/main yourself.` Once per version |
+| git has no credentials | `…: could not fetch <host>/<path>: git has no credentials for <host>. Run: gh auth login` (`glab auth login`; for Azure DevOps the checkout's `git fetch <remote> <ref>`, which Git Credential Manager signs in), every time |
+| another fabric process holds the checkout | `…: another fabric process is updating this checkout; nothing was changed.` |
+| network, slow remote, no such branch, other fetch or merge failure, budget spent | stderr only, behind `fabric: coding instructions sync skipped:`; stdout says where the checkout stands |
+
+"Once" is kept in `<git common dir>/fabric/ff-notice.json` (one record: project,
+published version, reason; readable by its owner only), so an agent is not
+told the same thing at every session start. A fast-forward and missing
+credentials always print, and a fast-forward forgets what was said before it.
+The trace, `<config dir>/traces/instructions-hook.jsonl` (owner only, the last
+50 runs), holds `{ at, projectId, outcome, reason, ms }` and nothing else: no
+path, URL, commit or word git said. A trace or notice that cannot be written
+never fails a session start.
 
 **The report in a matching checkout.** The published commit is the snapshot's
 `source.commitSha`; the question is whether it is in `HEAD`'s history
@@ -463,16 +1032,16 @@ GitLab; every GitLab subgroup segment counts).
 | it is | nothing at all |
 | nothing published from the repository yet | `fabric: coding instructions: the project is repository-sourced but nothing has been published from <host>/<path> yet` |
 | the published snapshot came from an earlier branch or repository | `fabric: coding instructions v<n> was published from <source.ref>; the project now syncs <ref> of <host>/<path> — pull <ref> to pick up the next publication` |
-| behind, on `<ref>`, clean | `fabric: coding instructions v<n> (<sha7>) is published on <ref> of <host>/<path>; this checkout is behind — run: git pull --ff-only <remote> <ref>` |
-| behind, working tree has changes (untracked files included; the hook's own `.claude/settings.local.json` or `.codex/hooks.json` is excepted only while untracked — a committed copy that was modified counts) | `…; this checkout is behind; your working tree has changes — pull when it is clean` |
-| behind, a merge, rebase, cherry-pick, revert or bisect in progress | `…; this checkout is behind; a <operation> is in progress` |
-| behind, detached `HEAD` | `…; this checkout is behind; HEAD is detached — check out <ref> and pull` |
-| behind, on another branch | `…; this checkout is behind; you are on <branch> — pull <ref> when you switch to it` |
+| behind, on `<ref>`, clean | `fabric: coding instructions v<n> (<sha7>) is on <ref>; this checkout is behind — run: git pull --ff-only <remote> <ref>` |
+| behind, working tree has changes (untracked files included; the hook's own `.claude/settings.local.json` or `.codex/hooks.json` is excepted only while untracked — a committed copy that was modified counts) | `…; this checkout is behind and has uncommitted changes — commit or stash, then pull.` |
+| behind, a merge, rebase, cherry-pick, revert or bisect in progress | `…; this checkout is behind; a <operation> is in progress; nothing was changed.` |
+| behind, detached `HEAD` | `…; this checkout is behind; HEAD is detached — check out <ref> and pull.` |
+| behind, on another branch | `…; this checkout is behind; you are on <branch> — pull <ref> when you switch to it.` |
 
 When the published commit is not in the clone at all, "this checkout is
 behind" reads "this checkout has not fetched it yet". A shallow clone, a
 sparse checkout and a submodule add `(shallow clone)`, `(sparse checkout)` and
-`(inside a superproject)` to the line; they change nothing else.
+`(inside a superproject)` right after that phrase; they change nothing else.
 
 **The output contract.** Every one of these lines goes to stdout — Claude Code
 discards a successful hook's stderr and gives its stdout to the session as
@@ -481,8 +1050,9 @@ remote, path, commit prefix) has control characters removed and a length
 limit applied, and the suggested `git pull` is shell-quoted. A remote URL,
 and any credential in one, is never printed. A manual `check` prints the same
 line after its usual report; a manual `sync` in a matching checkout prints it
-(or `… is already in this checkout's history; nothing to sync`) and writes
-nothing.
+(or `fabric: coding instructions v<n> (<sha7>) from <ref> of <host>/<path> is already in this checkout's history; nothing to sync`)
+and writes nothing. All of the lines a command can end a run with are listed
+under [What each command says](#what-each-command-says).
 
 `check --format json` adds a `checkout` block — `null` for a project that is
 not repository-sourced:
@@ -497,7 +1067,7 @@ not repository-sourced:
   "operation": null,
   "contains": false,
   "traits": ["shallow"],
-  "line": "fabric: coding instructions v7 (abc1234) is published on main of git.example.com/example-org/rules; this checkout is behind — run: git pull --ff-only origin main (shallow clone)"
+  "line": "fabric: coding instructions v7 (abc1234) is on main; this checkout is behind (shallow clone) — run: git pull --ff-only origin main"
 }
 ```
 
@@ -506,11 +1076,16 @@ absent when there was no current repository-built snapshot to look for. The
 other classes carry only `class`, `traits: []` and `line`.
 
 **How git is run.** Only through a fixed set of read-only questions
-(`packages/cli/src/lib/instructions/git.ts`): `rev-parse`, `remote`,
-`ls-remote --get-url` (which contacts no server), `symbolic-ref`,
-`merge-base --is-ancestor`, `status --porcelain`, `config --get
-core.sparseCheckout` and `check-ref-format`. Nothing fetches, pulls, merges,
-checks out, stashes or writes. git is spawned without a shell, with stdin
+(`packages/cli/src/lib/instructions/git.ts`): `rev-parse` (including `--git-path
+info/exclude`), `remote`, `ls-remote --get-url` (which contacts no server),
+`symbolic-ref`, `merge-base --is-ancestor`, `status --porcelain`, `config --get
+core.sparseCheckout`, `check-ref-format`, `check-ignore -q`, `for-each-ref` of
+a branch's upstream, `rev-parse --git-path` for the lock files, `worktree list
+--porcelain` and `rev-parse --git-common-dir`, plus three bounded writes,
+callable only from `init` and the session hook: `clone` into an empty folder
+(see `init`), `fetch` of one branch, and `merge --ff-only` to a commit.
+Nothing pulls, rebases, stashes or checks out. git is spawned without a shell,
+with stdin
 closed, `-c core.fsmonitor=false`, prompts disabled (`GIT_TERMINAL_PROMPT=0`,
 no `GIT_ASKPASS`/`SSH_ASKPASS`), optional locks and lazy fetches off, and an
 environment without every `FABRIC_*` variable; without `GIT_DIR`,
@@ -528,6 +1103,21 @@ commands get 10 seconds together. Output is capped, and git's stderr is never
 printed. The branch name must pass both a conservative
 literal check and `git check-ref-format --branch`, so `@{-1}` and friends are
 never expanded.
+
+The one write keeps the developer's own credential helpers and askpass
+programs on purpose — that is how their git credentials answer, and it makes
+the clone interactive by design (see `init` above). Everything that redirects
+git or carries a Fabric credential is stripped from it as well. The clone URL
+is re-parsed first: only `https://host/path`, with no userinfo, port, query or
+fragment, is passed, so a credential, a port or an `ext::` transport cannot
+ride in. A git that outlives its deadline gets SIGTERM, and SIGKILL a second
+later unless it has exited. (On Windows, stopping `git` leaves the
+`git-remote-https` helper it started running until it ends by itself: a known,
+documented limit.) The hook's fetch and merge run with a narrower environment
+than the clone: both askpass programs are stripped, so nothing can open a
+prompt nobody is there to answer, and `-c credential.interactive=never` is
+passed. The fetch is not `--quiet`, because a refused non-fast-forward update
+says nothing at all under it; stderr is classified by shape and never printed.
 
 #### `--lessons`: a Stop hook that asks for a lesson
 
@@ -561,11 +1151,11 @@ Running `init` again without `--lessons` removes the Stop entry and leaves the
 have. `--lessons` is refused with `--tool codex` for now: a Codex hook for
 lesson capture is not wired.
 
-### `fabric instructions doctor --project <id> [--dest <dir>] [--org <slug>] [--probe-network] [--format text|json]`
+### `fabric instructions doctor [--project <id>] [--base-url <origin>] [--dest <dir>] [--org <slug>] [--probe-network] [--format text|json]`
 
 Answers "is this machine set up the way this project's coding instructions
 expect?" — the question `check` cannot, because `check` only compares digests.
-Nine checks run in a fixed order. Each one reports a status, the evidence it
+Ten checks run in a fixed order. Each one reports a status, the evidence it
 rests on, a one-line detail, and at most one proposed fix. Nothing is written,
 nothing named by published content or by `.mcp.json` is executed, and no
 declared environment variable's value is read, printed or transmitted: the
@@ -577,15 +1167,16 @@ whether or not a declaration also names them.
 
 | Check | What it verifies | Evidence | Proposed fix |
 |---|---|---|---|
-| API key (`auth`) | A key or a browser sign-in is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type and prefix, or "signed-in session", and the scope that satisfied the check. | server | `fabric auth login` (browser), or `--key <api-key>` for CI. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. |
+| API key (`auth`) | A key or a browser sign-in is configured, `GET /auth/whoami` accepts it, and its scopes include `instructions:read` (or a legacy `*`). The detail names the key type and prefix, or "signed-in session", and the scope that satisfied the check. | server | `fabric auth login` (browser), or `--key <api-key>` for CI. A personal key without the scope is pointed at an organization key, because personal keys cannot carry `instructions:*` scopes. A sign-in limited to this project reads "signed-in session limited to this project"; one that reaches every project adds "; this project has no sign-in of its own" when the project has none. |
 | Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
 | Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count, and — for a repository-mirrored snapshot — the commit and branch it was published from (`source.commitSha`/`source.ref`, the snapshot's OWN provenance). Nothing published is a warning. The check also carries the project's CURRENT repository host, path, branch and root path (`repository`, `null` for an upload-sourced or disconnected project — no commit here, since that is per-snapshot, not the project's present configuration), and, for the snapshot's own provenance, whether it still matches that current configuration (`source.current`). | server | Publish a version from the project's Coding Instructions tab. |
 | Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
+| Checkout (`checkout`) | In a clone of a repository-sourced project: whether the checkout holds the published commit, through the same decision the MCP tool makes from facts its caller reports. Here the facts are observed: `HEAD`, the branch, whether the tree is clean, and whether `HEAD`'s history contains the published commit (the answer `check` also gives). `pass` when `HEAD` is the published commit, or is ahead of it on the branch (its history contains it), with a clean tree; `warn` when the tree has uncommitted changes, when the history does not contain the published commit (behind or diverged), or when Fabric's own copy lags the branch tip (and why: the secret scan refused a commit, a sync is running or failed, or automatic sync is off or paused); `skip` on another branch or a detached `HEAD`, for an uploaded project, outside a git checkout, in a checkout of another repository, when the published version was uploaded rather than synced from the repository, and when nothing has been published yet. | machine | Commit or stash, or pull `<ref>` yourself; a lagging Fabric copy is fixed in the project's Coding Instructions tab, not in the checkout. A fix is a proposal, never authority to pull or reset. |
 | Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. Edits alone are a warning, because `sync` keeps them; an edit a sync already kept reads `edited (kept by sync)`. A missing file, a changed mode or a path that is not a regular file fails. | machine | `sync --repair` to replace edits with the published bytes, `sync` to restore anything else, or `fabric instructions push` to propose the edits instead. |
-| Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, with the same `--org`). A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH. | machine | `fabric instructions init --project <id> --tool claude-code`, which also takes a first sync (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when `fabric` is not on PATH. |
+| Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, bound to the deployment doctor ran against with `--base-url`, and carrying the same `--remote` and `--org`), started either as `fabric` or as `node` and the copy of the served build `init` keeps; a copy-form hook whose file is gone is a warning (`not found; run init again to put it back`, with no path in the report). A hook written before hooks named a deployment (the same command with no `--base-url`) is a warning, `unbound to a deployment`, because it follows whichever deployment the machine is signed in to. A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH, which only a hook that runs `fabric` depends on. | machine | `init --project <id> --tool claude-code`, started the way this install starts (the `npx` line, or `node` and the copy), which also takes a first sync for an uploaded project (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when a hook runs `fabric` and it is not on PATH. |
 | Environment variables (`environment`) | Every variable [`fabric.environment.json`](#the-environment-declaration-fabricenvironmentjson) declares is present in this shell, checked by name. A missing required variable fails and a missing optional one warns. | machine | Set the named variables. The fix is a description only, never an `export NAME=` line. |
 | Tools (`tools`) | Every tool the declaration names resolves on PATH, checked for presence only. A declared version is shown as "declared, not verified". | machine | Install the named tools. The fix is a description only. |
-| MCP servers (`mcp-servers`) | For each server in `<dest>/.mcp.json`, a `command` must resolve on PATH (or at its absolute path, or at a relative path under the checkout). A `url` server is probed only under `--probe-network`. | machine | Fix or remove the failing server. |
+| MCP servers (`mcp-servers`) | For each server in `<dest>/.mcp.json`, a `command` must resolve on PATH (or at its absolute path, or at a relative path under the checkout). A `url` server is probed only under `--probe-network`. A `url` server on the deployment doctor ran against that carries an `Authorization` header is a warning: the deployment's sign-in supplies that credential itself, and a stale header committed beside it wins and fails. Only whether the header is there is read — never its value — and another service's header is not this check's business. For each coding tool the project's hook is set up for, one more item says whether the project's own Fabric server is registered with it, read from the tool's files and never by running the tool: registered at this project's gateway passes, a server of the name at another URL is a warning, and no registration or an unreadable file is a skip (`init` registers it, unless it was run with `--no-mcp` or, for Codex, with no terminal to sign in at). | machine | Fix or remove the failing server, or remove the stale `Authorization` header. For a server of the name at another URL, remove it from the tool, then run the `init` registration line the fix gives. |
 
 A hook check that passes proves one thing: the command recorded in the file is
 one this CLI writes today. The hook records no binary path and no CLI version.
@@ -597,8 +1188,10 @@ says so.
 evidence the check names. It is not a guarantee beyond that evidence. `fail`
 means a problem was found, and every failing check proposes a fix, including a
 check that could not run. `warn` does not block but deserves attention: an
-optional variable is missing, a hook differs from the canonical command, or a
-declaration exists locally but is not published. `skip` means the check was
+optional variable is missing, a hook differs from the canonical command (or is
+unbound to a deployment), the checkout does not hold the published commit, an
+`.mcp.json` entry carries a stale `Authorization` header, or a declaration
+exists locally but is not published. `skip` means the check was
 not evaluated here, because a prerequisite failed, nothing is declared, or the
 check does not apply. A skip never fails the run. The command exits `0` when
 no check fails, warnings and skips included, and `1` when any check fails,
@@ -623,8 +1216,10 @@ with the same read-only git questions the hook asks:
   `fabric.environment.json` is never read as this project's declaration —
   only a published one, verified as below. `lock` is checked as for an
   uploaded project in a checkout of some other repository, where a manual
-  `sync` still copies; everywhere else `sync` refuses, so `lock` is skipped
-  with the class line.
+  `sync` still copies, except that a folder with no lock is skipped ("not
+  used here: this folder is not a checkout of the project's repository")
+  rather than failed with a `sync` fix; everywhere else `sync` refuses, so
+  `lock` is skipped with the class line.
 - `hook` is checked in every class. It proposes `init` only in a matching
   checkout or outside any checkout; elsewhere `init` would refuse, and the fix
   says so instead.
@@ -667,6 +1262,14 @@ are present, is marked `evidence: "caller-reported"`. The server compares that
 input with the published version but cannot check it independently, so a
 `pass` on caller-reported evidence is only as accurate as the input it was
 given.
+
+**The commands doctor proposes act on the deployment it checked.** Every
+`fix.command` carries `--base-url <origin>` right after `--project` when that
+deployment is not the default one (`https://fabric.pro`), the same deployment
+the hook command is bound to, and the login fix is `fabric auth login
+--base-url <origin>`. They carry `--org` and `--dest` as before, and the `init`
+fix carries `--remote` when doctor was given one. `sync`'s own repair command
+(`sync --repair`, printed when it keeps local edits) follows the same rule.
 
 #### `--probe-network`, and why it is opt-in
 
@@ -736,7 +1339,7 @@ Text output puts one line per check, then its items and its fix:
     fix: fabric instructions sync --project project-id
          brings this checkout to the published version; a local edit to an instruction file is kept and listed, and `sync --repair` replaces it
 ! Hook configuration      a hook for this project is not in the canonical form; execution, trust and the coding tool's PATH are not verified
-- MCP servers             no .mcp.json in /path/to/checkout
+- MCP servers             no .mcp.json in this folder
 
 6 passed, 1 failed, 1 warning, 1 skipped
 Fixes are proposals: doctor installed nothing, changed no credentials and wrote no files.
@@ -750,8 +1353,8 @@ interface InstructionChecksReport {
   projectId: string;
   surface: "cli" | "mcp";
   checks: Array<{
-    id: "auth" | "access" | "published" | "lock" | "drift" | "hook"
-      | "environment" | "tools" | "mcp-servers";   // always in this order
+    id: "auth" | "access" | "published" | "lock" | "checkout" | "drift"
+      | "hook" | "environment" | "tools" | "mcp-servers";   // always in this order
     title: string;
     status: "pass" | "fail" | "warn" | "skip";
     evidence: "server" | "machine" | "caller-reported";
@@ -764,6 +1367,59 @@ interface InstructionChecksReport {
 }
 ```
 
+## What each command says
+
+A run ends in one of a closed set of states, and each has one fixed line and,
+where there is one, the single thing to do next (`outcome.ts`). The rules:
+
+- **One line** for the person or the agent. A failure is a fixed sentence
+  picked by its status and code, never the words of a server, the SDK or the
+  network library, and it names only the deployment's origin. Set
+  `FABRIC_DEBUG=1` to see the original on its own `debug:` line.
+- **No absolute path** unless `--dest` was typed, **no sha256**, and no class
+  name in parentheses. What the CLI writes itself has the folder the person did
+  not type, the home folder and any digest taken out before it is printed.
+  `--format json` is for programs and keeps its fields.
+- Under `--hook`, **stdout** carries what the agent has to act on: the
+  checkout's state, a sign-in that cannot be used, a deployment's upgrade
+  line. **stderr** carries everything that only stopped the check, behind
+  `fabric: coding instructions <verb> skipped:`. The exit code is always 0.
+
+Exit codes are the CLI's documented ones (`src/bin/fabric.ts`): `0` success,
+`1` general failure, `2` invalid usage, `3` auth failure, `4` not found, `5`
+forbidden, `6` rate limited, `7` refused or inconsistent.
+
+| State | By hand | Under `--hook` |
+|---|---|---|
+| set up | `Set up for <host>/<path> (<ref>). <tool> checks for updates at every session start.` (0); `… In Codex, run /hooks once to trust the project hook.` when Codex is set up. The npm build adds a line of its own, first, when `fabric` is not on `PATH` for the hook to run; `--clone <folder>` adds `Cloned into <folder>. Open your coding tool in that folder.` | — |
+| behind, current, or any other checkout state | the lines in [Repository-sourced projects](#repository-sourced-projects) | the same line, on stdout; nothing when current |
+| deployment address not a URL | `The deployment address is not a URL. Use --base-url https://example.com` (2) | stderr, skipped |
+| deployment address a shell would read (`init` only) | `The deployment address has characters a shell reads, so init will not write a session hook that carries it. Use an address of letters, digits, '.', '-' and a port.` (2) | — |
+| a project id or organization slug that is not an identifier | `--project must be a project id: …` or `--org must be an organization slug: …` (2) | stderr, skipped |
+| not signed in | `Not signed in to <origin>. Run: fabric auth login --base-url <origin> --project <id>` (3), with `--project <id>` whenever the command names a project; `init` signs in on the spot through the browser, with no terminal needed (not under `CI`) | stdout: `fabric: coding instructions: not signed in to <origin> — run: fabric auth login --base-url <origin> --project <id>` |
+| sign-in expired or refused (401) | `Your sign-in to <origin> has expired. Run: fabric auth login --base-url <origin>` (3), with `--project <id>` whenever the command names a project | the same stdout line as not signed in |
+| an agent's MCP server | one line per tool: `Registered the Fabric MCP server for <tool> as "<name>".`, `The Fabric MCP server is already registered for <tool>.`, `Replaced the Fabric MCP server …`, a left-alone line, `Skipped the <tool> MCP server: <command> is not on PATH. Once it is, run: <line>`, `Codex signs in as part of adding the Fabric MCP server, which opens your browser and waits for you, so init did not run it. Run: <line>` (no terminal), or `Could not register the Fabric MCP server for <tool>. Run: <line>`; then `To finish, sign <tool> in to it: <line>`, `If <tool> has not signed in to it yet, run: <line>` (for a server registered before) or `The <tool> sign-in did not finish. Run: <line>` (0, always) | — (a hook never registers anything) |
+| missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`, or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
+| project not found (404) | `Project not found, or you cannot see it.` (4) | stderr: `… skipped: no project for this checkout` |
+| project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | stderr: `… skipped: this hook names no project. Run: fabric instructions init` |
+| rate limited (429) | `Too many requests. Wait a minute and try again.` (6) | stderr, skipped |
+| deployment unreachable | `Could not reach <origin>. Check your network and try again.` (1) | stderr, skipped |
+| deployment error (5xx) | `<origin> had a problem answering. Try again in a moment.` (1) | stderr, skipped |
+| CLI too old (426) | the deployment's own line, or `This CLI is older than the deployment expects. Run: npm install -g @fabricorg/cli` (2); the served build says `… Run the project's setup line from its Connect dialog again to get the current one.` instead | stdout, that one line |
+| deadline | — | stderr: `… skipped: gave up after 10 s` |
+| folder not a clone, wrong folder, several remotes | the single action line in the class table (7) | the class line on stdout |
+| a lock from another project | `This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.` (7) | stderr, skipped |
+
+A deployment that asks for an upgrade also sends the line with ordinary
+responses (the `X-Fabric-Cli-Upgrade` header). It is shown **once**: on stdout
+under a hook, where an agent reads it, and on stderr by hand, so a command's
+stdout stays what was asked for. Its text is the deployment's, so control
+characters (including the C1 range and the line separators) and the characters
+that reorder text are shown as spaces, and it is cut at 300 characters. The CLI
+never updates itself, and the SDK
+sends a `User-Agent` of the form `fabric-cli/<version> (node/<version>;
+<platform>)` so a deployment can tell which build is calling.
+
 ## What these commands will not do
 
 These are guarantees, and the tests under `packages/cli/__tests__/` exist to
@@ -771,16 +1427,40 @@ keep them:
 
 - **`--hook` never fails, and never runs long.** Network, auth, timeout, HTTP
   error, a damaged lock, a retired context default — every failure becomes one
-  line on stderr and exit 0. Hook mode also has one absolute deadline (10
-  seconds) covering the manifest call and the bundle download together, with
-  SDK retries disabled, so it cannot outlive the hook timeout Claude Code
-  applies to it. A session that will not start is worse than instructions one
-  version stale.
-- **The hook command never carries the key.** It names a project. The CLI
-  reads its credential from `FABRIC_API_KEY` or its own per-user config file,
-  and `init` refuses to write the hook at all if that config file resolves
-  inside the destination.
-- **Nothing is written outside `<dest>`.** Absolute paths, `..` segments,
+  line and exit 0: on stderr when it only stopped the check, on stdout when the
+  agent has to act on it (a sign-in that cannot be used, an upgrade). Hook mode
+  also has one absolute deadline (10 seconds) covering the manifest call and the
+  bundle download together, with SDK retries disabled, so it cannot outlive the
+  hook timeout Claude Code applies to it. That bounds the sign-in too: the
+  request's own timeout covers the wait for the refresh lock another process
+  holds, so a hook gives up with the rest instead of waiting the lock out. A
+  session that will not start is worse than instructions one version stale. The
+  kept copy's daily update (see "What `<launcher>` is") runs after the hook has
+  printed, only when five seconds of that deadline remain, and ends inside it.
+- **A hook never signs anybody in.** The loopback listener and the browser are
+  started only by `auth login` and by `init` at a terminal, never under
+  `--hook`.
+- **Only `init` runs a coding tool, and only for the project's MCP server.** It
+  starts `claude` or `codex` for `mcp add`, `mcp remove` (Claude Code's own scope
+  only) and `mcp login` (Claude Code's only), each with arguments it built itself
+  from a short list of safe characters, without a shell, without any `FABRIC_*`
+  variable, and within a time limit. `codex mcp add` is started only at a
+  terminal, since it signs in as part of adding and waits for a browser. It never
+  starts a tool to ask what it holds (`mcp get` and `mcp list` health-check the
+  servers they name, and in a checkout one of them can be the repository's own),
+  and it never starts one at all under `--no-mcp`. A hook and every other command
+  run none, and `doctor` reads the tools' files. It never prints what a tool said.
+- **The hook command never carries the key.** It names a project and a
+  deployment. The CLI reads its credential from `FABRIC_API_KEY` or its own
+  per-user config file, and `init` refuses to write the hook at all if that
+  config file resolves inside the destination.
+- **A credential goes only to the deployment that issued it.** See "Signing
+  in": a browser sign-in is refused, before anything is sent, for any other
+  origin than its issuer's.
+- **Nothing is written outside `<dest>`, except two things `init` does on
+  purpose:** a clone into an empty folder (the repository's own files, in the
+  folder it was told to use) and a line appended to `.git/info/exclude`.
+  Otherwise nothing is written outside it. Absolute paths, `..` segments,
   backslashes, control characters, Windows device names (`NUL`, `COM1`, …),
   names containing `< > : " | ? *`,
   segments ending in a dot or space, and colons are refused; two paths that a
@@ -789,6 +1469,14 @@ keep them:
   resolved path must sit inside it, and no segment on the way down may be a
   symlink. That holds for the instruction files, the lock and the settings
   file alike — they share one writer.
+- **The kept copy's self-update trusts what the `npx` line trusts, and no
+  more.** It talks only to the deployment the hook is bound to, over `https`
+  (plain `http` only to a loopback host), without following a redirect; it
+  verifies the manifest's `sha512` before unpacking a byte, reads one file out of
+  the archive in memory and never executes anything it downloaded; and it writes
+  only the copy and `update-check.json`, inside the CLI's own config folder
+  (never `<dest>`), the copy through a temporary file and a rename. A failure
+  leaves the earlier copy. `FABRIC_CLI_NO_SELF_UPDATE=1` and `CI` turn it off.
 - **Nothing is written on a checksum mismatch.** Every file's sha256 is
   verified against the manifest before the first byte is written, so a
   corrupt bundle leaves the tree and the lock exactly as they were.
@@ -997,8 +1685,9 @@ Treat `.fabric/instructions.lock` with the same care as any other file in the
 tree.
 
 `.fabric/`, `.claude/settings.local.json`, and `.codex/hooks.json` are local
-to one machine. Add the paths you use to your own ignore rules if the
-repository does not already; `init` does not edit `.gitignore`.
+to one machine. In a git work tree `init` appends them to `.git/info/exclude`
+(see `init`); it never edits `.gitignore`. Outside a git work tree there is
+nothing to ignore.
 
 ## The environment declaration: `fabric.environment.json`
 
@@ -1067,10 +1756,18 @@ the checks.
 | Push plan (local diff against the lock, and what open proposals already carry) | `packages/cli/src/lib/instructions/push.ts` |
 | Push's open-proposal lookup (deadline, warn-and-send) | `packages/cli/src/lib/instructions/open-proposals.ts` |
 | `doctor` checks, PATH lookup, `.mcp.json` reader | `packages/cli/src/lib/instructions/doctor.ts`, `path-lookup.ts`, `mcp-config.ts` |
-| Repository-sourced checkouts: read-only git questions, remote URL matching, classification and report lines | `packages/cli/src/lib/instructions/git.ts`, `repository-identity.ts`, `checkout.ts` |
+| Repository-sourced checkouts: read-only git questions and the three bounded writes (clone, fetch, fast-forward), remote URL matching and the stored-URL spellings, classification and report lines | `packages/cli/src/lib/instructions/git.ts` (the vocabulary), `git-run.ts` (the runner and its environments), `git-write.ts`, `git-literals.ts`, `repository-identity.ts`, `checkout.ts` |
+| The session hook's fast-forward: the gate, what each result prints, the run (lock, fetch, move), what is said once, the trace | `packages/cli/src/lib/instructions/fast-forward.ts` (pure), `fast-forward-run.ts`, `fast-forward-memory.ts`, `hook-trace.ts`, `packages/cli/src/lib/exclusive-lock.ts` (also the refresh lock's) |
+| Finding the project from the checkout (resolver call, narrowing, the prompt) and what an id may look like | `packages/cli/src/lib/instructions/resolve-project.ts`, `prompt.ts`, `identifiers.ts` |
+| What `init` does with a folder: adoption, tool detection, hooks, `.git/info/exclude`, retiring a lock | `packages/cli/src/lib/instructions/adoption.ts`, `tools.ts`, `init-hooks.ts`, `git-exclude.ts`, `drop-lock.ts` |
+| The kept copy: what the hook runs, how it is written, and its daily self-update (the check, the bounded download and its integrity check, the in-memory tar read, the hook's clock) | `packages/cli/src/lib/instructions/hook-launcher.ts`, `self-update.ts`, `npm-tarball.ts`, `hook-timing.ts`; `packages/cli/src/lib/launcher.ts` (how every printed command starts); `packages/cli/__tests__/self-update.test.ts` pins each branch |
+| Every outcome line and exit code; failures as fixed sentences | `packages/cli/src/lib/instructions/outcome.ts`, `failure.ts`; `packages/cli/__tests__/outcome.test.ts` pins every line |
+| Credentials per deployment: profiles keyed by origin, issuer-bound sign-in, the browser sign-in, the `User-Agent` and upgrade line | `packages/cli/src/lib/config.ts`, `client.ts`, `origin.ts` (the packed origin: `__FABRIC_BAKED_ORIGIN__`, defined only by the bundle build), `oauth/session.ts`, `oauth/sign-in.ts`, `user-agent.ts` |
+| A sign-in for one project: the resource it asks for (mirrored from `@repo/utils/oauth-project-resource`, which this published package cannot import) and the per-project entries | `packages/cli/src/lib/oauth/project-resource.ts` (`project-resource.test.ts` pins it), `config.ts`, `commands/auth/login.ts`, `logout.ts`, `whoami.ts` |
+| `init`'s MCP step: running the tools, registering the server, reading the tools' files for `doctor` | `packages/cli/src/lib/instructions/agent-run.ts`, `agent-mcp.ts`, `agent-mcp-config.ts`; the one rule for what may be written into a command, `packages/cli/src/lib/shell-words.ts`; `packages/cli/__tests__/helpers/no-real-agent-tools.ts` keeps every other test off the machine's real tools; the Connect dialog's twin of the Codex name is `codexServerName` in `apps/web/modules/saas/projects/components/cli-connection/lib/agent-sign-in.ts`, held to it by `packages/cli/__tests__/server-name-agrees-with-web.test.ts` |
 | Shared report vocabulary and declaration parser | `packages/cli/src/lib/instructions/checks.ts`, byte-identical after its header to `apps/web/modules/saas/mcp/lib/gateway/instruction-checks.ts`; `packages/cli/__tests__/checks-agree-with-gateway.test.ts` fails on any divergence |
 | SDK resource | `packages/sdk/src/resources/instructions.ts` |
-| REST routes | `packages/api/modules/v1/instructions.ts` |
+| REST routes | `packages/api/modules/v1/instructions.ts`, `packages/api/modules/v1/instruction-checkouts.ts`; the per-project read gate they share is `packages/api/modules/v1/instruction-project-gate.ts` |
 | The shared server entry point behind a change | `packages/api/modules/projects/procedures/instructions/submit-change.ts` |
 | MCP proposal tool | `apps/web/modules/saas/mcp/lib/gateway/platform-tools.ts` |
 | MCP lesson tool (file name and frontmatter) | `apps/web/modules/saas/mcp/lib/gateway/instruction-lessons.ts` |
@@ -1080,7 +1777,7 @@ Three scopes, one per authority:
 
 | Scope | Reaches | Live permission re-checked per call |
 |---|---|---|
-| `instructions:read` | `GET .../instructions/published`, `POST .../published/download`, `POST .../published/files` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open` — the open-proposal check `push` makes before sending | `INSTRUCTION_READ` |
+| `instructions:read` | `GET .../instructions/published`, `POST .../published/download`, `POST .../published/files` — `check`, `sync`, `init`, `doctor`, and the MCP tool `fabric_instruction_checks`; `GET .../instructions/proposals/open` — the open-proposal check `push` makes before sending; `POST /instructions/checkouts/resolve` — which projects a checkout's repository belongs to | `INSTRUCTION_READ` |
 | `instructions:write` | `POST .../instructions/changes` — `push`, and the MCP tools `fabric_propose_project_instruction_change` and `fabric_add_instruction_lesson` | `INSTRUCTION_READ` |
 | `instructions:publish` | `POST .../instructions/versions` — `push --publish` | `INSTRUCTION_CREATE` |
 
@@ -1129,6 +1826,48 @@ The `GET .../instructions/published` route mirrors the MCP
 `fabric_get_project_instruction_bundle` tool's delta semantics: an equal
 `sinceDigest` is answered before any file row is read, and an unknown base
 answers `changes: null`, meaning "take a full copy".
+
+On a repository-sourced project the response's `repository` block names the
+repository and says how it is syncing:
+
+| Field | Meaning |
+|---|---|
+| `host`, `path` | The repository's identity. GitHub and GitLab: the host and `<owner>/<name>` (a GitLab owner may be a subgroup path). Azure DevOps: always host `dev.azure.com` and the URL path with `_git`, `<org>/<project>/_git/<repo>` (`<org>/_git/<repo>` when the URL names no project), whichever of its remote spellings the project was connected with. |
+| `cloneUrl` | The canonical HTTPS URL to clone from, with no credentials; `null` only for a legacy stored value that is not one. Fabric never hands out a repository token with it: the developer's own git authenticates. |
+| `sync.automatic`, `sync.pausedReason` | Whether the published copy follows the branch on its own, and why it stopped doing so. Automatic sync is on by default for a newly configured repository sync; a project that turned it off keeps it off. |
+| `sync.lastRun` | The newest run of the current configuration: `trigger`, `status`, `error` (a closed code, `TREE_REFUSED` being the secret scan refusing a commit), `commitSha` (the tip the run evaluated) and `finishedAt`. `status` and `finishedAt` are `null` while it runs; the whole field is `null` before the first run. |
+
+`sync` moves on every sync, so a client that compares two responses to see
+whether the configuration changed must leave it out.
+
+`POST /instructions/checkouts/resolve` takes `{ "candidates": [...] }`, one to
+ten canonical repository URLs of at most 512 characters, and answers
+`{ "matches": [...] }` with the repository-sourced projects those URLs are
+connected to that the caller may read: `projectId`, `projectName`,
+`organizationSlug`, `provider`, `host`, `path`, `ref`, `rootPath` and
+`cloneUrl`. A candidate with user information, a port, a query or a fragment,
+or on an unsupported provider, is a 400 that names the position and never the
+value. An empty list is the one answer for nothing connected, another
+organization's project, no read permission, and a project that keeps uploads,
+so the route cannot be used to discover which repositories other
+organizations connected. Every project goes through the same per-project gate
+as the routes above. The lookup compares the canonical URL ignoring letter case
+(exactly otherwise: no pattern matching), and only finds repositories whose
+connection is active; a repository whose connection has lapsed is answered
+with an empty list.
+
+The MCP tool `fabric_instruction_checks` takes an optional `checkout` — the
+checkout's `remoteUrl`, `headSha`, `branch` (omitted when HEAD is detached)
+and whether the tree is `clean` — and answers a `checkout` check labelled
+`caller-reported`: `current`, `dirty`, `behind-or-diverged`, `other-branch`,
+`foreign`, or `fabric-lags` when the checkout is at a branch tip Fabric's last
+sync did not take (a refused commit, a failed or paused sync). It compares what
+it is told and cannot tell behind from diverged without the history, so that
+verdict says the session hook settles which at each session start, and that
+re-running the setup line from the project's Connect dialog checks now. It names
+no command that someone who only ran the `npx` line could not run. Every remedy
+in the report is a proposal for the developer, never leave for the agent to run
+git.
 
 `POST .../instructions/changes` carries the changed files' bytes inline rather
 than through signed uploads — a change set is a handful of small text files, so

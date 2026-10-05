@@ -29,6 +29,7 @@
 
 import { createHash } from "node:crypto";
 import { decryptApiKey } from "@repo/utils";
+import { gitlabOutboundFetch } from "../gitlab/outbound";
 
 /** S3 keyspace shared with pasted story-media images. */
 const STORY_MEDIA_PREFIX = "story-media/";
@@ -124,6 +125,12 @@ export interface IngestPulledImagesParams {
 	resolveFetchUrl?: (url: string) => string;
 	/** Provider name shown in the failure placeholder. */
 	providerLabel?: string;
+	/**
+	 * The download transport; `fetch` when absent. A provider whose download
+	 * host comes from a user-supplied instance address (self-hosted GitLab)
+	 * passes its outbound guard here.
+	 */
+	fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
 export interface IngestPulledImagesResult {
@@ -385,6 +392,7 @@ export async function ingestPulledImages(
 		deriveKeyId,
 		resolveFetchUrl,
 		providerLabel,
+		fetchImpl,
 	} = params;
 
 	let ingested = 0;
@@ -478,7 +486,7 @@ export async function ingestPulledImages(
 		try {
 			const headers = fetchAuth?.(src) || undefined;
 			const fetchUrl = resolveFetchUrl?.(src) || src;
-			const res = await fetch(
+			const res = await (fetchImpl ?? fetch)(
 				fetchUrl,
 				headers ? { headers } : undefined,
 			);
@@ -1017,6 +1025,7 @@ export function buildGitLabIngestOptions(
 	| "deriveKeyId"
 	| "resolveFetchUrl"
 	| "providerLabel"
+	| "fetchImpl"
 > {
 	const root = baseUrl.replace(/\/+$/, "");
 	const apiBase = root.endsWith("/api/v4") ? root : `${root}/api/v4`;
@@ -1047,5 +1056,8 @@ export function buildGitLabIngestOptions(
 		},
 		deriveKeyId: (url) => gitlabUploadId(url),
 		providerLabel: "GitLab",
+		// The download goes to the connection's instance with its token:
+		// guarded unless it is gitlab.com.
+		fetchImpl: gitlabOutboundFetch,
 	};
 }

@@ -1,86 +1,61 @@
 /**
- * Regression for issue #2795 on the project-picker path.
+ * Regression for issue #2795 on the project-picker path. The picker is polled
+ * by the UI, so a revoked grant that was never recorded produced one
+ * `/oauth/token` call per render, none of them surfacing a reconnect prompt.
  *
- * `listGitLabProjectsProcedure` passes a `refresh` closure to
- * `resolveGitLabSource` but used to pass no `markRefreshFailure`. Because the
- * picker is polled by the UI, a revoked grant produced one `/oauth/token`
- * call per render, none of them recorded and none of them surfacing the
- * reconnect banner.
- *
- * These tests drive the REAL resolver and the REAL failure writer (only the
- * refresh and the REST helpers are faked) so the assertion is that the row is
- * actually written, not merely that a callback was handed over. The
+ * The person's GitLab connection now carries that state itself. These tests
+ * drive the REAL resolver and the REAL connection service (only GitLab's
+ * token endpoint, the REST helpers and the database are doubles). The
  * procedure's own MCP/REST branching is covered in `list-projects.test.ts`.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createGitLabFakeDb,
+	encryptedCredential,
+} from "../../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db";
 
-const {
-	mockDb,
-	mcpConfigFindFirst,
-	mcpConfigUpdate,
-	mcpConfigUpdateMany,
-	workflowIntegrationFindFirst,
-	refreshMcpConfigTokenMock,
-	getGitLabAccessTokenMock,
-	getAuthenticatedUserMock,
-	listUserProjectsMock,
-} = vi.hoisted(() => {
-	const mcpConfigFindFirst = vi.fn();
-	const mcpConfigUpdate = vi.fn().mockResolvedValue(undefined);
-	// Every write the failure writer makes is conditional — the condemning one
-	// on the row still holding the rejected refresh token, all of them on the
-	// row still being uncondemned — so they land on `updateMany`. `update`
-	// stays stubbed so a regression back to an unconditional write shows up as
-	// a called mock rather than a TypeError.
-	const mcpConfigUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
-	const workflowIntegrationFindFirst = vi.fn();
-	return {
-		mcpConfigFindFirst,
-		mcpConfigUpdate,
-		mcpConfigUpdateMany,
-		workflowIntegrationFindFirst,
-		mockDb: {
-			mCPConfig: {
-				findFirst: mcpConfigFindFirst,
-				update: mcpConfigUpdate,
-				updateMany: mcpConfigUpdateMany,
-			},
-			workflowIntegration: { findFirst: workflowIntegrationFindFirst },
-		},
-		refreshMcpConfigTokenMock: vi.fn(),
-		getGitLabAccessTokenMock: vi.fn(async () => "rest-token"),
-		getAuthenticatedUserMock: vi.fn(async () => ({
-			login: "example-user",
-		})),
-		listUserProjectsMock: vi.fn(async () => []),
-	};
-});
+const state = vi.hoisted(() => ({
+	fake: null as unknown as ReturnType<
+		typeof import("../../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db").createGitLabFakeDb
+	>,
+}));
 
 vi.mock("@repo/database", () => ({
-	db: mockDb,
+	get db() {
+		return state.fake.db;
+	},
+	hasProjectAccess: async () => true,
 }));
 
-vi.mock("@repo/utils", () => ({
-	decryptApiKey: (s: string) => s,
-	encryptApiKey: (s: string) => s,
-	hashApiKey: (s: string) => `hash:${s}`,
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		keys: string | readonly string[],
+		fn: (
+			tx: unknown,
+			assertBudget: (ms: number) => void,
+		) => Promise<unknown>,
+	) => state.fake.withLock(keys, fn as never),
 }));
 
-// Keep the real resolver, the real failure writer and the real error classes
-// — only the outbound calls (token refresh, REST reads) are faked, so the
-// classification and the write are the code under test.
-vi.mock("@repo/integrations/gitlab", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("@repo/integrations/gitlab")>();
+vi.mock("@repo/utils", async (importOriginal) => {
+	const helpers = await import(
+		"../../../../../../integrations/__tests__/gitlab/helpers/gitlab-fake-db"
+	);
 	return {
-		...actual,
-		refreshMcpConfigToken: refreshMcpConfigTokenMock,
-		getGitLabAccessToken: getGitLabAccessTokenMock,
-		getAuthenticatedUser: getAuthenticatedUserMock,
-		listUserProjects: listUserProjectsMock,
+		...(await importOriginal<object>()),
+		encryptApiKey: helpers.fakeEncrypt,
+		decryptApiKey: helpers.fakeDecrypt,
 	};
 });
+
+const getAuthenticatedUserMock = vi.hoisted(() => vi.fn());
+const listUserProjectsMock = vi.hoisted(() => vi.fn());
+vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	getAuthenticatedUser: getAuthenticatedUserMock,
+	listUserProjects: listUserProjectsMock,
+}));
 
 vi.mock("../../../../../orpc/procedures", () => {
 	const builder: Record<string, unknown> = {};
@@ -94,11 +69,33 @@ vi.mock("../../../../../orpc/procedures", () => {
 			orgId ?? null,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		// The real resolver's rule for the organization a request names (the
+		// input's, else the session's; an explicit null suppresses the session
+		// fallback; none refused when required). Membership and role are
+		// exercised for real in gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		requireProjectPermission: () => (c: unknown) => c,
 	};
 });
 
-import { GitLabReauthRequiredError } from "@repo/integrations/gitlab";
+import { resetGitLabConnectionDepsForTests } from "@repo/integrations/gitlab";
 
 type Handler = (args: {
 	input: { organizationId?: string | null };
@@ -111,85 +108,173 @@ async function loadHandler(): Promise<Handler> {
 		.handler;
 }
 
-const input = { organizationId: null };
+// The organization the request acts in: a person's GitLab connection lives
+// in one (ADR-018), and a request with none is refused before any read.
+const input = { organizationId: "org-1" };
 const context = { user: { id: "user-1" }, session: { id: "session-1" } };
+
+/** A connection whose access token lapsed an hour ago, issued by the app. */
+function seedExpiredConnection() {
+	state.fake = createGitLabFakeDb({
+		workflowIntegration: [
+			{
+				id: "wi-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				provider: "GITLAB",
+				name: "GitLab: dev",
+				workflowId: null,
+				isActive: true,
+				credentials: encryptedCredential({
+					access_token: "stale-access",
+					refresh_token: "live-refresh",
+					expires_in: 7200,
+					token_obtained_at: new Date(
+						Date.now() - 3 * 3_600_000,
+					).toISOString(),
+					issuer: {
+						kind: "app",
+						clientId: "app-client",
+						origin: "https://gitlab.com",
+					},
+					connectionGeneration: 1,
+				}),
+				settings: {},
+				createdAt: new Date("2026-01-01T00:00:00Z"),
+				updatedAt: new Date("2026-01-01T00:00:00Z"),
+			},
+		],
+	});
+	return state.fake.tables.workflowIntegration[0];
+}
+
+const fetchMock = vi.fn();
+const tokenCalls = () =>
+	fetchMock.mock.calls.filter(([url]) =>
+		String(url).endsWith("/oauth/token"),
+	);
+const answerTokenEndpoint = (status: number, body: unknown) =>
+	fetchMock.mockImplementation(async (url: string) =>
+		String(url).endsWith("/oauth/token")
+			? new Response(JSON.stringify(body), { status })
+			: new Response("unexpected", { status: 599 }),
+	);
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mcpConfigUpdate.mockResolvedValue(undefined);
-	mcpConfigUpdateMany.mockResolvedValue({ count: 1 });
-	getGitLabAccessTokenMock.mockResolvedValue("rest-token");
+	fetchMock.mockReset();
+	vi.stubGlobal("fetch", fetchMock);
+	vi.stubEnv("GITLAB_CLIENT_ID", "app-client");
+	vi.stubEnv("GITLAB_CLIENT_SECRET", "app-secret");
+	resetGitLabConnectionDepsForTests();
 	getAuthenticatedUserMock.mockResolvedValue({ login: "example-user" });
 	listUserProjectsMock.mockResolvedValue([]);
-	// A config whose access token has lapsed, so the resolver must refresh.
-	workflowIntegrationFindFirst.mockResolvedValue({
-		settings: { useOfficialMcp: true },
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+describe("listGitLabProjectsProcedure — a refresh failure is recorded on the connection", () => {
+	it("marks the connection reconnect-required when GitLab rejects the grant, and never posts it again", async () => {
+		const row = seedExpiredConnection();
+		answerTokenEndpoint(400, { error: "invalid_grant" });
+		const handler = await loadHandler();
+
+		const first = await handler({ input, context });
+		expect(first.configured).toBe(false);
+		expect(tokenCalls()).toHaveLength(1);
+		expect(row.settings).toMatchObject({ needsReauth: true });
+
+		const second = await handler({ input, context });
+		expect(second.configured).toBe(false);
+		expect(tokenCalls()).toHaveLength(1);
 	});
-	mcpConfigFindFirst.mockResolvedValue({
-		id: "cfg-1",
-		baseUrl: "https://gitlab.example.com/api/v4/mcp",
-		encryptedAccessToken: "enc-access",
-		encryptedRefreshToken: "enc-refresh",
-		tokenExpiresAt: new Date(Date.now() - 60_000),
-		mcpServer: { defaultUrl: "https://gitlab.example.com/api/v4/mcp" },
+
+	it("still renders from the current token, without condemning it, on a transient failure", async () => {
+		const row = seedExpiredConnection();
+		answerTokenEndpoint(503, { message: "unavailable" });
+		const handler = await loadHandler();
+
+		const result = await handler({ input, context });
+
+		expect(result.configured).toBe(true);
+		expect(result.error).toBeNull();
+		expect(getAuthenticatedUserMock).toHaveBeenCalledWith({
+			token: "stale-access",
+			apiBase: "https://gitlab.com/api/v4",
+		});
+		expect((row.settings as Record<string, unknown>).needsReauth).not.toBe(
+			true,
+		);
 	});
 });
 
-describe("listGitLabProjectsProcedure — refresh failure is persisted", () => {
-	it("trips the breaker when GitLab positively rejected the grant", async () => {
-		refreshMcpConfigTokenMock.mockRejectedValue(
-			new GitLabReauthRequiredError(),
+describe("listGitLabProjectsProcedure — official MCP capability loss", () => {
+	it("answers over REST when the official MCP endpoint answers 404, and records the loss", async () => {
+		state.fake = createGitLabFakeDb({
+			mCPServer: [
+				{
+					id: "srv-official",
+					key: "gitlab-official",
+					defaultUrl: "https://gitlab.com/api/v4/mcp",
+				},
+			],
+			mCPConfig: [
+				{
+					id: "cfg-official",
+					userId: "user-1",
+					organizationId: "org-1",
+					mcpServerId: "srv-official",
+					baseUrl: null,
+					oauthClientId: "dcr-client",
+					enabled: true,
+				},
+			],
+			workflowIntegration: [
+				{
+					id: "wi-1",
+					userId: "user-1",
+					organizationId: "org-1",
+					provider: "GITLAB",
+					name: "GitLab: dev",
+					workflowId: null,
+					isActive: true,
+					credentials: encryptedCredential({
+						access_token: "live-access",
+						refresh_token: "live-refresh",
+						expires_in: 7200,
+						token_obtained_at: new Date().toISOString(),
+						issuer: {
+							kind: "app",
+							clientId: "app-client",
+							origin: "https://gitlab.com",
+						},
+						connectionGeneration: 1,
+					}),
+					settings: { useOfficialMcp: true },
+					createdAt: new Date("2026-01-01T00:00:00Z"),
+					updatedAt: new Date("2026-01-01T00:00:00Z"),
+				},
+			],
+		});
+		fetchMock.mockResolvedValueOnce(
+			new Response("404 Not Found", { status: 404 }),
 		);
-
 		const handler = await loadHandler();
+
 		const result = await handler({ input, context });
 
-		// The picker still renders from REST — the breaker must not cost the
-		// user their working fallback.
-		expect(result.configured).toBe(true);
-		expect(result.error).toBeNull();
-
-		expect(mcpConfigUpdate).not.toHaveBeenCalled();
-		expect(mcpConfigUpdateMany).toHaveBeenCalledOnce();
-		const arg = mcpConfigUpdateMany.mock.calls[0]![0];
-		// Gated on the ciphertext the rejected refresh was posted with, so a
-		// parallel rotation that lands first leaves the live credential alone.
-		expect(arg.where).toEqual({
-			id: "cfg-1",
-			encryptedRefreshToken: "enc-refresh",
-			// ...and on the breaker, so a row condemned by a concurrent
-			// failure keeps the diagnostics of the failure that tripped it.
-			needsReauth: false,
-		});
-		expect(arg.data).toMatchObject({
-			needsReauth: true,
-			lastRefreshError: "NEEDS_REAUTH",
-			refreshFailureCount: { increment: 1 },
-		});
-		expect(arg.data.lastRefreshFailedAt).toBeInstanceOf(Date);
-	});
-
-	it("records diagnostics without condemning the credential on a transient failure", async () => {
-		refreshMcpConfigTokenMock.mockRejectedValue(
-			new Error("GitLab token refresh failed: 503"),
+		expect(String(fetchMock.mock.calls[0][0])).toBe(
+			"https://gitlab.com/api/v4/mcp",
 		);
-
-		const handler = await loadHandler();
-		await handler({ input, context });
-
-		expect(mcpConfigUpdate).not.toHaveBeenCalled();
-		expect(mcpConfigUpdateMany).toHaveBeenCalledOnce();
-		const arg = mcpConfigUpdateMany.mock.calls[0]![0];
-		// Conditional too, on the breaker rather than the token: a 5xx is no
-		// evidence about a row version, but it must still decline against a
-		// row condemned since the config was read.
-		expect(arg.where).toEqual({ id: "cfg-1", needsReauth: false });
-		// Absent, not `false` — writing false would clear a flag an earlier
-		// real revocation had set.
-		expect(arg.data).not.toHaveProperty("needsReauth");
-		expect(arg.data).toMatchObject({
-			lastRefreshError: "GitLab token refresh failed: 503",
-			refreshFailureCount: { increment: 1 },
+		expect(result).toMatchObject({ configured: true, error: null });
+		expect(getAuthenticatedUserMock).toHaveBeenCalledWith({
+			token: "live-access",
+			apiBase: "https://gitlab.com/api/v4",
 		});
+		expect(state.fake.tables.workflowIntegration[0].settings).toMatchObject(
+			{ useOfficialMcp: false, mcpProbe: { status: "not-found" } },
+		);
+		// The registration is kept.
+		expect(state.fake.tables.mCPConfig).toHaveLength(1);
 	});
 });

@@ -19,7 +19,7 @@ import { z } from "zod";
 import { INPUT_BOUNDS, idArray } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -29,7 +29,17 @@ import {
  * MCP config IDs are tenant-filtered inside loadMcpToolsForAgent.
  */
 export const previewDraftAgent = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	// Evaluated against the organization the handler resolves, not the
+	// session's: the preview runs on that organization's AI provider and key,
+	// so a member of one organization naming another must be refused.
+	// `requireOrganization`: a null organization would run the model and the
+	// named MCP servers in personal context, which is not a product surface
+	// (ADR-018) — refused rather than passed through unchecked.
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/preview-draft",

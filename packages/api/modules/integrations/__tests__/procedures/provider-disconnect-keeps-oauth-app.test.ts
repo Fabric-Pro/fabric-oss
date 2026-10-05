@@ -31,12 +31,19 @@ const { store, mockRevokeAccessToken } = await vi.hoisted(async () => {
 	};
 });
 
+const db = vi.hoisted(() => ({}) as Record<string, unknown>);
 vi.mock("@repo/database", () => ({
-	db: {
+	db: Object.assign(db, {
 		workflowIntegration: store.delegate,
 		dataConnection: { updateMany: vi.fn() },
-		mCPConfig: { updateMany: vi.fn() },
-	},
+		// The GitLab connection service also reads these; this suite has no
+		// MCP configs or repository links.
+		mCPConfig: {
+			findFirst: async () => null,
+			updateMany: vi.fn(async () => ({ count: 0 })),
+		},
+		projectRepositoryIntegration: { findMany: async () => [] },
+	}),
 	createDataConnection: vi.fn(),
 	getDataConnectionByProvider: vi.fn(),
 	updateDataConnection: vi.fn(),
@@ -57,10 +64,13 @@ vi.mock("@repo/integrations", () => ({
 	getGitHubToken: vi.fn(),
 }));
 
-vi.mock("@repo/integrations/gitlab", () => ({
-	GitLabApiError: class extends Error {},
-	getValidGitLabAccessToken: vi.fn(),
-	gitlabFetch: vi.fn(),
+// The real GitLab connection service runs the GitLab disconnects, against the
+// same store. Its lifecycle lock only serialises; run the body.
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: (
+		_keys: unknown,
+		fn: (tx: unknown, b: () => void) => unknown,
+	) => fn(db, () => {}),
 }));
 
 vi.mock("@repo/permissions", () => ({
@@ -80,7 +90,8 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("@repo/utils", () => ({
+vi.mock("@repo/utils", async (importOriginal) => ({
+	...(await importOriginal<object>()),
 	encryptApiKey: (v: string) => `enc_${v}`,
 	decryptApiKey: (v: string) => {
 		if (!v.startsWith("enc_")) {
@@ -127,13 +138,6 @@ vi.mock("../../lib/gitlab-recheck", () => ({
 	GitLabIntegrationNotConnectedError: class extends Error {},
 }));
 
-vi.mock("../../lib/gitlab-token", () => ({
-	GitLabReauthRequiredError: class extends Error {},
-	loadGitLabToken: vi.fn(),
-	persistGitLabToken: vi.fn(),
-	markNeedsReauth: vi.fn(),
-}));
-
 vi.mock("../../lib/github-oauth", () => ({
 	exchangeCodeForToken: vi.fn(),
 	getGitHubOAuthUrl: vi.fn(),
@@ -170,6 +174,30 @@ vi.mock("../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chain,
 		protectedProcedure: chain,
 		publicProcedure: chain,
+		// The resolution `authorizeInputOrganization` performs (input, else
+		// session; an explicit null suppresses the session fallback; none
+		// refused when required). It models no guest write organization
+		// (`effectiveWriteOrgId`), which the real resolver lets win even over
+		// an explicit null. Membership and role are exercised for real in
+		// gitlab-request-authorization.test.ts.
+		authorizeInputOrganization: async (
+			_permission: string,
+			orgId: string | null | undefined,
+			ctx: { session?: { activeOrganizationId?: string | null } },
+			opts?: { requireOrganization?: boolean },
+		) => {
+			const resolved =
+				orgId ||
+				(orgId === null
+					? undefined
+					: ctx.session?.activeOrganizationId || undefined);
+			if (!resolved && opts?.requireOrganization) {
+				throw new Error(
+					"This operation requires an organization context",
+				);
+			}
+			return resolved;
+		},
 		requirePermission: () => ({}),
 		requireInputOrgPermission: () => ({}),
 		requireOrganizationMembership: vi.fn(),
@@ -207,8 +235,21 @@ const appCredentials = () =>
 		client_secret: "client-secret",
 	})}`;
 
+/**
+ * An OAuth connection credential as the connect flows write it: the GitLab
+ * connection service revokes a token only with the client that issued it, so
+ * the issuer (the stored OAuth app) is recorded alongside.
+ */
 const tokenCredentials = (accessToken: string) =>
-	`enc_${JSON.stringify({ access_token: accessToken })}`;
+	`enc_${JSON.stringify({
+		access_token: accessToken,
+		refresh_token: `${accessToken}-refresh`,
+		issuer: {
+			kind: "app",
+			clientId: "client-id",
+			origin: "https://gitlab.com",
+		},
+	})}`;
 
 function seed(
 	provider: string,
@@ -221,6 +262,7 @@ function seed(
 			organizationId,
 			provider,
 			name: `${provider}_OAUTH_APP`,
+			workflowId: null,
 			isActive: true,
 			credentials: appCredentials(),
 		},
@@ -230,6 +272,7 @@ function seed(
 			organizationId,
 			provider,
 			name: `${provider} (example-user)`,
+			workflowId: null,
 			isActive: true,
 			credentials: tokenCredentials("connection-token"),
 		},
@@ -294,9 +337,33 @@ describe.each([
 				},
 			});
 
+		// A GitLab disconnect with no organization is refused before it
+		// writes anything (ADR-018), so both rows stay as they were. The
+		// GitHub row here is `integrations.github.disconnect`, a separate
+		// procedure this change does not touch, so it keeps its
+		// no-organization case below. The generic
+		// `integrations.oauth.disconnect` refuses a no-organization request
+		// for every provider; that is pinned through the real permission
+		// code in gitlab-request-authorization.test.ts.
+		it.runIf(provider === "GITLAB")(
+			"refuses with no organization and leaves both rows active",
+			async () => {
+				const { appRowId, connectionRowId } = seed(provider, null);
+
+				await expect(run(null)).rejects.toThrow(
+					/requires an organization context/,
+				);
+
+				expect(store.row(connectionRowId).isActive).toBe(true);
+				expect(store.row(appRowId).isActive).toBe(true);
+			},
+		);
+
 		it.each([
 			{ scope: "organization", organizationId: "example-org" },
-			{ scope: "personal", organizationId: null },
+			...(provider === "GITLAB"
+				? []
+				: [{ scope: "personal", organizationId: null }]),
 		])(
 			"deactivates the connection but not the app row ($scope)",
 			async ({ organizationId }) => {
@@ -334,6 +401,7 @@ describe("integrations.oauth.disconnect with several connection rows", () => {
 			organizationId: "example-org",
 			provider: "GITLAB",
 			name: "GITLAB (second-account)",
+			workflowId: null,
 			isActive: true,
 			credentials: tokenCredentials("second-token"),
 		});
@@ -361,5 +429,33 @@ describe("integrations.oauth.disconnect with several connection rows", () => {
 			isActive: true,
 			credentials: appCredentials(),
 		});
+	});
+});
+
+describe("integrations.gitlab.disconnect and a token of unknown origin", () => {
+	it("still deactivates it, but never sends it to a client that may not have issued it", async () => {
+		const { connectionRowId, appRowId } = seed("GITLAB", "example-org");
+		// A bare token with no refresh token and no recorded issuer — the
+		// oldest personal-access-token shape.
+		store.row(connectionRowId).credentials = `enc_${JSON.stringify({
+			access_token: "bare-token",
+		})}`;
+
+		await (
+			gitlabOAuthProcedures.disconnect as unknown as DisconnectHandler
+		).handler({
+			input: { organizationId: "example-org" },
+			context: {
+				user: { id: ADMIN },
+				session: {
+					id: "session-1",
+					activeOrganizationId: "example-org",
+				},
+			},
+		});
+
+		expect(store.row(connectionRowId).isActive).toBe(false);
+		expect(store.row(appRowId).isActive).toBe(true);
+		expect(revokedTokens()).toEqual([]);
 	});
 });

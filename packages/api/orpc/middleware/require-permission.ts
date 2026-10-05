@@ -28,6 +28,13 @@ import {
 	resolveProjectPermissions,
 } from "@repo/permissions";
 import { runWithProjectContext } from "@repo/utils/project-context";
+import {
+	type AuthorizedProject,
+	assertProjectBindable,
+	recordAuthorizedProject,
+	resolveBoundOrganization,
+} from "../../lib/authorized-project-binding";
+import { DELETED_ORGANIZATION_ERROR_CODE } from "../../lib/deleted-organization";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import { MISSING_ORGANIZATION_CONTEXT_ERROR_CODE } from "../../lib/missing-organization-context";
 import { PROJECT_NOT_FOUND_MESSAGE } from "./project-visibility";
@@ -204,13 +211,38 @@ export function requirePermission(permission: Permission) {
  * ProjectMember row decides alone, and the organization role is the fallback.
  * Throws rather than returning a boolean — every caller's answer to "no" is to
  * stop, and a boolean invites one of them to carry on.
+ *
+ * On success it RETURNS the authorized project and its organization, and records
+ * the same value in the request's authorized-project binding
+ * (`../../lib/authorized-project-binding.ts`), on every path — owner, active
+ * ProjectMember and organization role alike. The organization resolvers then
+ * refuse a different input organization and default to this one, which is what
+ * stops a caller pairing a project they can reach with an organization they
+ * cannot. A handler that authorizes a project and then needs its organization
+ * should use the return value rather than re-reading the store. Outside an oRPC
+ * call there is no binding holder and only the return value carries it.
+ *
+ * Refusals, in order — existence-hiding stays first:
+ *  1. NOT_FOUND for a missing project and for a caller no path ties to it.
+ *  2. FORBIDDEN with `DELETED_ORGANIZATION_ERROR_CODE` when the project's
+ *     organization is soft-deleted — the same answer the tenant middleware
+ *     gives for a deleted workspace, which it could not give here because it
+ *     only checks the SESSION's organization.
+ *  3. BAD_REQUEST when this request already authorized a project in a
+ *     different organization — checked before any side effect of this
+ *     authorization, so the guest carve-out is never half-applied.
+ *  4. FORBIDDEN (or the dry-run warning) when the role lacks `permission`.
+ *
+ * A project with no organization (the owner path) is recorded with
+ * `organizationId: null` and NOT refused here: a procedure that never consumes
+ * an organization keeps working. The resolvers refuse it when one is consumed.
  */
 export async function assertProjectPermission(
 	projectId: string,
 	userId: string,
 	permission: Permission,
 	context?: { allowedProjectIds?: string[] },
-): Promise<void> {
+): Promise<AuthorizedProject> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
 	if (!access) {
 		throw new ORPCError("NOT_FOUND", {
@@ -235,11 +267,34 @@ export async function assertProjectPermission(
 		});
 	}
 
+	// The project's organization is in its deletion retention window. The
+	// caller is tied to the project (the check above passed), so saying so
+	// discloses nothing; serving it would let a project-scoped call keep
+	// running AI and writing rows inside an organization nobody can open.
+	// Never downgraded by RBAC_DRY_RUN — this is not a permission decision.
+	if (access.organizationDeleted) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This organization has been deleted",
+			data: { errorCode: DELETED_ORGANIZATION_ERROR_CODE },
+		});
+	}
+
+	const authorized: AuthorizedProject = Object.freeze({
+		projectId,
+		organizationId: access.organizationId,
+	});
+
+	// Before any side effect: a request that already authorized a project in a
+	// different organization is refused here, with a typed error, rather than by
+	// the plain `Error` `grantProjectAccess` would throw after mutating.
+	assertProjectBindable(authorized);
+
 	// A personal-project owner passes unconditionally, matching the middleware
 	// exactly — an owner is authorized for any project permission, including
 	// ones outside the OWNER permission set.
 	if (access.source === "owner") {
-		return;
+		recordAuthorizedProject(authorized);
+		return authorized;
 	}
 
 	if (hasPermission(access.permissions, permission)) {
@@ -255,7 +310,8 @@ export async function assertProjectPermission(
 				];
 			}
 		}
-		return;
+		recordAuthorizedProject(authorized);
+		return authorized;
 	}
 
 	denyPermission(
@@ -263,6 +319,32 @@ export async function assertProjectPermission(
 		`Missing required permission: ${permission}`,
 		userId,
 	);
+	// Reached only under RBAC_DRY_RUN, where the denial above was downgraded to
+	// a warning and the request carries on as if granted. It carries on in the
+	// project's organization, not one the caller named.
+	recordAuthorizedProject(authorized);
+	return authorized;
+}
+
+/**
+ * BAD_REQUEST when the input names a non-null organization other than the
+ * authorized project's — the same refusal, in the same words, as the
+ * resolvers (`resolveBoundOrganization`) and `assertInputOrgMatchesProject`.
+ * A non-string value is left to the input schema.
+ */
+function assertInputOrgMatchesAuthorizedProject(
+	inputOrganizationId: unknown,
+	authorized: AuthorizedProject,
+): void {
+	if (
+		typeof inputOrganizationId === "string" &&
+		inputOrganizationId.length > 0 &&
+		inputOrganizationId !== authorized.organizationId
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "organizationId does not match the project",
+		});
+	}
 }
 
 export function requireProjectPermission(
@@ -299,11 +381,24 @@ export function requireProjectPermission(
 				// One implementation, shared with the handler-side check the
 				// plan-scoped procedures use — two copies of this precedence
 				// would eventually answer differently.
-				await assertProjectPermission(
+				const authorized = await assertProjectPermission(
 					projectId,
 					userId,
 					permission,
 					context,
+				);
+				// Refuse a caller-named organization that is not the authorized
+				// project's HERE, before the handler body runs. The resolvers
+				// refuse it too, but a handler that writes, deletes or
+				// dispatches before it resolves would otherwise leave that
+				// work committed behind a failed response. Not a permission
+				// decision, so never downgraded by RBAC_DRY_RUN. `null` and
+				// `undefined` pass: the resolvers default them to the
+				// project's organization.
+				assertInputOrgMatchesAuthorizedProject(
+					(input as Record<string, unknown> | undefined)
+						?.organizationId,
+					authorized,
 				);
 				return next();
 			});
@@ -410,12 +505,19 @@ export function requirePermissionAllowGuest(permission: Permission) {
  * `procedures` import cycle — `procedures.ts` imports the permission
  * middleware from THIS file. It uses `getTenantContext()` so the guest-write
  * path (`effectiveWriteOrgId`) resolves identically to what the handler will
- * compute. **Keep this in sync with `resolveOrganizationId`.**
+ * compute. **Keep this in sync with `resolveOrganizationId`.** The
+ * authorized-project rule is shared rather than copied
+ * (`resolveBoundOrganization`), so the two cannot disagree on it: once a
+ * project is authorized, the organization checked here is that project's.
  */
 function resolveTargetOrganizationId(
 	inputOrganizationId: string | null | undefined,
 	session: { activeOrganizationId?: string | null },
 ): string | undefined {
+	const bound = resolveBoundOrganization(inputOrganizationId);
+	if (bound.bound) {
+		return bound.organizationId;
+	}
 	if (inputOrganizationId) {
 		return inputOrganizationId;
 	}
@@ -430,6 +532,109 @@ function resolveTargetOrganizationId(
 		return session.activeOrganizationId;
 	}
 	return undefined;
+}
+
+/**
+ * The check `requireInputOrgPermission` runs, callable from a handler that
+ * reaches an organization-scoped read or write on only some of its paths (a
+ * provider-specific branch of a shared procedure, say). Same resolution, same
+ * refusals and the same machine-readable missing-organization cause as the
+ * middleware — the middleware calls this — so a handler gets the one rule
+ * instead of a copy of it.
+ *
+ * Returns the resolved organization id, or undefined when nothing resolved
+ * and `requireOrganization` is not set (personal context, passed through).
+ */
+export async function authorizeInputOrganization(
+	permission: Permission,
+	inputOrgId: string | null | undefined,
+	context: Pick<PermissionContext, "tenantContext"> & {
+		user?: { id: string };
+		session: { activeOrganizationId?: string | null };
+	},
+	options?: { requireOrganization?: boolean },
+): Promise<string | undefined> {
+	const organizationId = resolveTargetOrganizationId(
+		inputOrgId,
+		context.session,
+	);
+
+	// Nothing resolved. Historically that meant personal context, where
+	// no org role applies because tenant-db scopes by userId — so the
+	// check passed through.
+	//
+	// That pass-through is a BYPASS for a procedure that has no personal
+	// variant: `organizationId: null` in the input resolves to nothing
+	// (explicit null deliberately does not fall back to the session), so
+	// a caller who sends it skips the role check entirely. The handler
+	// still refuses a non-member — object-level access is checked
+	// against the row's real organization — but the ROLE never runs,
+	// which is exactly what this middleware exists to make it do.
+	//
+	// `requireOrganization` closes that on procedures where personal
+	// context no longer exists. It is opt-in rather than the default
+	// because the pass-through is still correct for the account-global
+	// procedures that share this middleware.
+	if (!organizationId) {
+		if (options?.requireOrganization) {
+			// The middleware's own emission of this refusal. It carries
+			// the same machine-readable cause as the prompt module's
+			// gate (`modules/prompts/lib/assert-organization-context.ts`,
+			// which the deletion and its impact read share) so a client
+			// recognises every one of them the same way. Safe to act on
+			// because this runs before the handler: nothing has
+			// happened yet.
+			throw new ORPCError("FORBIDDEN", {
+				message: "This operation requires an organization context",
+				data: {
+					errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
+				},
+			});
+		}
+		return undefined;
+	}
+
+	const userId = context.tenantContext?.userId ?? context.user?.id ?? null;
+	if (!userId) {
+		throw new ORPCError("UNAUTHORIZED");
+	}
+
+	// Membership in the TARGET org is a hard tenant boundary — a
+	// non-member acting on this org is always a cross-tenant violation,
+	// so this is never downgraded by RBAC_DRY_RUN.
+	const membership = await getOrganizationMembership(organizationId, userId);
+	if (!membership) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "You are not a member of this organization",
+		});
+	}
+
+	// A soft-deleted TARGET organization is refused, as the tenant middleware
+	// refuses a deleted session organization — which it is not, here: a member
+	// of a live organization can name a deleted one they still belong to and
+	// would otherwise reach its providers and tools during the retention
+	// window. After the membership check, so a non-member learns nothing about
+	// the organization; read from the membership row's organization, so no
+	// second query. Not a permission decision: never downgraded by
+	// RBAC_DRY_RUN.
+	if (membership.organization?.deletedAt) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This organization has been deleted",
+			data: { errorCode: DELETED_ORGANIZATION_ERROR_CODE },
+		});
+	}
+
+	// Role-level permission check mirrors requirePermission, but against
+	// the resolved org's role (not the session org's).
+	const granted = resolveOrgPermissions(membership.role);
+	if (!hasPermission(granted, permission)) {
+		denyPermission(
+			permission,
+			`Missing required permission: ${permission}`,
+			userId,
+		);
+	}
+	return organizationId;
 }
 
 /**
@@ -479,77 +684,12 @@ export function requireInputOrgPermission(
 			const inputOrgId = (input as Record<string, unknown> | undefined)?.[
 				key
 			] as string | null | undefined;
-
-			const organizationId = resolveTargetOrganizationId(
+			await authorizeInputOrganization(
+				permission,
 				inputOrgId,
-				context.session,
+				context,
+				options,
 			);
-
-			// Nothing resolved. Historically that meant personal context, where
-			// no org role applies because tenant-db scopes by userId — so the
-			// check passed through.
-			//
-			// That pass-through is a BYPASS for a procedure that has no personal
-			// variant: `organizationId: null` in the input resolves to nothing
-			// (explicit null deliberately does not fall back to the session), so
-			// a caller who sends it skips the role check entirely. The handler
-			// still refuses a non-member — object-level access is checked
-			// against the row's real organization — but the ROLE never runs,
-			// which is exactly what this middleware exists to make it do.
-			//
-			// `requireOrganization` closes that on procedures where personal
-			// context no longer exists. It is opt-in rather than the default
-			// because the pass-through is still correct for the account-global
-			// procedures that share this middleware.
-			if (!organizationId) {
-				if (options?.requireOrganization) {
-					// The middleware's own emission of this refusal. It carries
-					// the same machine-readable cause as the prompt module's
-					// gate (`modules/prompts/lib/assert-organization-context.ts`,
-					// which the deletion and its impact read share) so a client
-					// recognises every one of them the same way. Safe to act on
-					// because this runs before the handler: nothing has
-					// happened yet.
-					throw new ORPCError("FORBIDDEN", {
-						message:
-							"This operation requires an organization context",
-						data: {
-							errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE,
-						},
-					});
-				}
-				return next();
-			}
-
-			const userId =
-				context.tenantContext?.userId ?? context.user?.id ?? null;
-			if (!userId) {
-				throw new ORPCError("UNAUTHORIZED");
-			}
-
-			// Membership in the TARGET org is a hard tenant boundary — a
-			// non-member acting on this org is always a cross-tenant violation,
-			// so this is never downgraded by RBAC_DRY_RUN.
-			const membership = await getOrganizationMembership(
-				organizationId,
-				userId,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-
-			// Role-level permission check mirrors requirePermission, but against
-			// the resolved org's role (not the session org's).
-			const granted = resolveOrgPermissions(membership.role);
-			if (!hasPermission(granted, permission)) {
-				denyPermission(
-					permission,
-					`Missing required permission: ${permission}`,
-					userId,
-				);
-			}
 			return next();
 		}) as TaggedMiddleware;
 	mw[PERMISSION_MIDDLEWARE_TAG] = permission;

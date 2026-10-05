@@ -15,6 +15,7 @@
  * below that do not need to run inside a mock factory live here.
  */
 import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -54,8 +55,39 @@ export interface InstructionsMocks {
 	getClient: ReturnType<typeof vi.fn>;
 }
 
+let fabricShimDirectory: string | undefined;
+
+/**
+ * Put a `fabric` on PATH, the way a machine that installed the CLI has one.
+ * `init` warns, in a line of its own, when the npm build's hook would have no
+ * `fabric` to run; the tests that assert `init`'s whole output are about
+ * something else, so they run where the warning has no reason to appear. A
+ * test about that warning replaces PATH itself.
+ */
+function putFabricOnPath(): void {
+	if (fabricShimDirectory === undefined) {
+		fabricShimDirectory = mkdtempSync(path.join(tmpdir(), "fabric-shim-"));
+		writeFileSync(
+			path.join(fabricShimDirectory, "fabric"),
+			"#!/bin/sh\nexit 0\n",
+			{ mode: 0o755 },
+		);
+		writeFileSync(
+			path.join(fabricShimDirectory, "fabric.cmd"),
+			"@echo off\r\nexit /b 0\r\n",
+		);
+	}
+	const entries = (process.env.PATH ?? "").split(path.delimiter);
+	if (!entries.includes(fabricShimDirectory)) {
+		process.env.PATH = [fabricShimDirectory, ...entries].join(
+			path.delimiter,
+		);
+	}
+}
+
 /** Call from each file's `beforeEach`. */
 export function resetInstructionsMocks(mocks: InstructionsMocks): void {
+	putFabricOnPath();
 	mocks.getPublished.mockReset();
 	mocks.createDownloadUrl.mockReset();
 	mocks.createFileDownloadUrls?.mockReset();
@@ -123,7 +155,15 @@ function programWithInstructions(): Command {
 export async function runCli(
 	argv: string[],
 	globals: string[] = [],
+	{ mcp = false }: { mcp?: boolean } = {},
 ): Promise<RunResult> {
+	// `init` registers an MCP server with each coding tool, which these tests
+	// are not about and which must never reach the machine's real tools. A test
+	// that is about it says `mcp: true` and mocks the runner.
+	const args =
+		argv[0] === "init" && !mcp && !argv.includes("--no-mcp")
+			? [...argv, "--no-mcp"]
+			: argv;
 	let stdout = "";
 	let stderr = "";
 	const outSpy = vi
@@ -147,7 +187,7 @@ export async function runCli(
 	let code = 0;
 	try {
 		await programWithInstructions().parseAsync(
-			[...globals, "instructions", ...argv],
+			[...globals, "instructions", ...args],
 			{ from: "user" },
 		);
 	} catch (error) {

@@ -11,6 +11,7 @@
 import { logger } from "@repo/logs";
 import { ApplicationFailure } from "@temporalio/activity";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
+import { assertPmMcpTargetOrigin } from "../pm-source";
 import {
 	discoverPMToolCapabilities,
 	isPmNotFoundError,
@@ -34,6 +35,12 @@ const DEFAULT_CANDIDATE_FIELD_IDS = [
 ];
 
 export interface PreviewPmFieldValuesInput {
+	/**
+	 * The project's `projectManagementAdditionalContext`: it records the
+	 * GitLab instance `containerId` lives on. Required, so a personal GitLab
+	 * config on another instance is always refused.
+	 */
+	pmAdditionalContext: unknown;
 	mcpConfigId: string;
 	containerId: string;
 	containerName?: string;
@@ -101,6 +108,15 @@ export async function previewPmFieldValues(
 		organizationId,
 	} = input;
 
+	// The container id names a project on one GitLab instance; a personal
+	// GitLab config on another is refused before anything is read.
+	await assertPmMcpTargetOrigin({
+		mcpConfigId,
+		userId,
+		organizationId,
+		additionalContext: input.pmAdditionalContext,
+	});
+
 	const capabilities = await discoverPMToolCapabilities({
 		mcpConfigId,
 		userId,
@@ -149,6 +165,7 @@ export async function previewPmFieldValues(
 	let result: { success: boolean; output?: unknown };
 	try {
 		result = await executeMcpTool({
+			pmTarget: { additionalContext: input.pmAdditionalContext },
 			toolName: getTool.toolName,
 			args: getArgs,
 			userId,

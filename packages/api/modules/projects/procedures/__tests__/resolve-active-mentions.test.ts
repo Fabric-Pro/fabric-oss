@@ -8,13 +8,20 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { handlers, mockMemberFindMany, mockProjectMemberFindMany } = vi.hoisted(
-	() => ({
-		handlers: {} as Record<string, (...args: unknown[]) => unknown>,
-		mockMemberFindMany: vi.fn(),
-		mockProjectMemberFindMany: vi.fn(),
-	}),
-);
+const {
+	handlers,
+	mockMemberFindMany,
+	mockProjectMemberFindMany,
+	mockProjectFindUnique,
+} = vi.hoisted(() => ({
+	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
+	mockMemberFindMany: vi.fn(),
+	mockProjectMemberFindMany: vi.fn(),
+	// The organization whose members are matched is the PROJECT's own
+	// (Fizzy #2904); the handler reads it from the project row when no
+	// permission middleware has recorded it, as here.
+	mockProjectFindUnique: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
 	db: {
@@ -24,6 +31,9 @@ vi.mock("@repo/database", () => ({
 		projectMember: {
 			findMany: (...args: unknown[]) =>
 				mockProjectMemberFindMany(...args),
+		},
+		project: {
+			findUnique: (...args: unknown[]) => mockProjectFindUnique(...args),
 		},
 	},
 }));
@@ -68,6 +78,7 @@ import "../resolve-active-mentions";
 describe("resolveActiveMentionsProcedure", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockProjectFindUnique.mockResolvedValue({ organizationId: "org_1" });
 	});
 
 	it("returns only active org members from the input set", async () => {
@@ -109,7 +120,8 @@ describe("resolveActiveMentionsProcedure", () => {
 	});
 
 	it("includes project-only members (no org) in active set", async () => {
-		// No org context — only check projectMember table
+		// No organization named: the project's own is used for the member
+		// lookup, and accepted project members are included alongside.
 		const projectOnlyUserId = "user_proj_only";
 		const otherUserId = "user_other";
 
@@ -127,5 +139,37 @@ describe("resolveActiveMentionsProcedure", () => {
 		})) as { activeIds: string[] };
 
 		expect(result.activeIds).toEqual([projectOnlyUserId]);
+	});
+
+	// The membership oracle this closes: naming another organization used to
+	// return which of the given users belong to it.
+	it("refuses another organization before any membership lookup", async () => {
+		await expect(
+			handlers.resolveActiveMentions({
+				input: {
+					userIds: ["user_a"],
+					organizationId: "org_other",
+					projectId: "proj_1",
+				},
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockMemberFindMany).not.toHaveBeenCalled();
+	});
+
+	it("matches organization members in the project's organization", async () => {
+		mockMemberFindMany.mockResolvedValue([]);
+		mockProjectMemberFindMany.mockResolvedValue([]);
+		await handlers.resolveActiveMentions({
+			input: {
+				userIds: ["user_a"],
+				organizationId: null,
+				projectId: "proj_1",
+			},
+		});
+		expect(mockMemberFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ organizationId: "org_1" }),
+			}),
+		);
 	});
 });

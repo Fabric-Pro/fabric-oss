@@ -156,7 +156,12 @@ beforeEach(() => {
 		delete process.env[key];
 	}
 	mockHasProjectAccess.mockResolvedValue(true);
-	mockAssertProjectPermission.mockResolvedValue(undefined);
+	// Returns the project it authorized and that project's organization
+	// (Fizzy #2904); the handler runs in it.
+	mockAssertProjectPermission.mockResolvedValue({
+		projectId: "proj-1",
+		organizationId: "org-1",
+	});
 	mockPlanFindFirst.mockResolvedValue(approvedPlan);
 	mockPlanUpdate.mockResolvedValue({});
 	mockProjectFindUnique.mockResolvedValue({
