@@ -1,6 +1,6 @@
 {
 	"dependencies": {
-		"@better-auth/oauth-provider": "1.6.33",
+		"@better-auth/oauth-provider": "1.7.0",
 		"@better-auth/passkey": "1.6.33",
 		"@repo/agent-core": "workspace:*",
 		"@repo/config": "workspace:*",
