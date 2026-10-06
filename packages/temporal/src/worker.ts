@@ -39,6 +39,9 @@ import {
 	COMPANY_CONTEXT_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
+	PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 } from "./task-queues";
 import {
 	getTelemetryInterceptors,
@@ -107,6 +110,15 @@ export const ACTIVITY_SLOTS = {
 	aiChat: 10,
 	documentProcessing: 5,
 	projectDocument: 5,
+	// Keep the legacy five slots for commands already recorded in histories.
+	// New foreground commands get five independent slots, and indexing drains
+	// through three slots. Eight added slots add four pool connections.
+	projectDocumentGeneration: 5,
+	projectEmbedding: 3,
+	// Original project-operation capacity, independent of indexing and generation.
+	// The all-queue pool grows from 49 to 51 connections; the usual
+	// general process (excluding CPU queues) grows from 46 to 49.
+	projectOperations: 5,
 	documentRefresh: 3,
 	// Glossy edition builds (Fizzy #2589, KTD3). One build fans out at most
 	// four concurrent model calls (`GLOSSY_BUILD_POOL_SIZE`), so four slots run
@@ -185,8 +197,24 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		maxConcurrentWorkflowTaskExecutions: 5,
 	},
 	{
-		taskQueue: "project-documents", // Task queue for project document generation
+		taskQueue: "project-documents", // Workflow starts and legacy scheduled activities
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.projectDocument, // AI-intensive tasks
+		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	{
+		taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions:
+			ACTIVITY_SLOTS.projectDocumentGeneration,
+		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	{
+		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.projectEmbedding,
+		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	{
+		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.projectOperations,
 		maxConcurrentWorkflowTaskExecutions: 5,
 	},
 	// Living Documents auto-refresh gets its OWN queue and its own slots.
@@ -264,6 +292,14 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		taskQueue: ORCHESTRATOR_TASK_QUEUE, // Task queue for the CUGA-inspired orchestrator
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.fabricOrchestrator, // orchestrator handles many tool calls
 		maxConcurrentWorkflowTaskExecutions: 5, // each can be long-running
+		// Same setting as fabric-worker, for a different reason: Temporal
+		// delivers an activity cancel only in the response to a heartbeat
+		// the worker actually sends, and the SDK otherwise throttles those to
+		// ~80% of the heartbeat timeout (48 s for the 1-minute model
+		// activities). With 1 s, a Stop reaches an in-flight model call within
+		// one activity heartbeat tick (5 s while waiting on a provider) plus
+		// about a second. Bounded by maxConcurrentActivityTaskExecutions.
+		maxHeartbeatThrottleInterval: "1s",
 	},
 	{
 		taskQueue: "agents", // Task queue for task agent workflows (Kanban agent assignment)

@@ -24,6 +24,7 @@ import {
 import { cn } from "@ui/lib";
 import { InfoIcon } from "lucide-react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback } from "react";
 import { ConnectionsPageContent } from "./ConnectionsPageContent";
@@ -59,14 +60,20 @@ const CONNECTIONS_INTRO =
 const CONNECTION_TYPE_HINT =
 	"Use an Integration when Fabric already supports the service directly; use an MCP server when you need a custom or protocol-based connection.";
 
+const MCP_ACCESS_HINT =
+	"Looking to connect external tools to Fabric? Use the Fabric MCP with an";
+const MCP_ACCESS_LINK_LABEL = "API key";
+
 export function ConnectionsTabs({
 	addHref,
 	settingsBasePath,
+	apiKeysHref,
 	organizationId,
 }: {
 	addHref: string;
 	/** Where provider and action detail pages live (they stay under Settings). */
 	settingsBasePath: string;
+	apiKeysHref: string;
 	organizationId?: string | null;
 }) {
 	const router = useRouter();
@@ -179,9 +186,20 @@ export function ConnectionsTabs({
 			<p className="max-w-2xl text-sm leading-6 text-muted-foreground">
 				{CONNECTIONS_INTRO}
 			</p>
+			<div className="max-w-2xl rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+				{MCP_ACCESS_HINT}{" "}
+				<Link
+					href={apiKeysHref}
+					className="font-medium text-primary underline underline-offset-4 hover:text-primary/90"
+				>
+					{MCP_ACCESS_LINK_LABEL}
+				</Link>
+				.
+			</div>
 			<ConnectionsPageContent
 				addHref={addHref}
 				settingsBasePath={settingsBasePath}
+				apiKeysHref={apiKeysHref}
 				basePath={pathname}
 				toolbarStart={typeTabs}
 				view={tab}

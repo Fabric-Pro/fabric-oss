@@ -127,9 +127,11 @@ export async function cloneWithAuthRecovery(input: {
 				projectId: input.projectId,
 				userId: input.userId,
 				organizationId: input.organizationId,
+				signal: input.signal,
 			})
 		).token;
 	const attempt = async (token: string) => {
+		input.signal.throwIfAborted();
 		const env = buildGitEnv({
 			home: input.runDir,
 			username: gitUsernameFor(input.provider),
@@ -137,6 +139,7 @@ export async function cloneWithAuthRecovery(input: {
 			host: new URL(input.url).host,
 		});
 		await rm(input.dir, { recursive: true, force: true });
+		input.signal.throwIfAborted();
 		await cloneTreeless({
 			cwd: input.runDir,
 			url: input.url,
@@ -147,13 +150,16 @@ export async function cloneWithAuthRecovery(input: {
 		});
 		return { env, token };
 	};
+	input.signal.throwIfAborted();
 	const token = await resolveToken();
+	input.signal.throwIfAborted();
 	if (!token) {
 		throw input.fail("INTEGRATION_UNAVAILABLE", true);
 	}
 	try {
 		return await attempt(token);
 	} catch (error) {
+		input.signal.throwIfAborted();
 		logGitFailure(error, [token], input.log);
 		if (!isAuthFailure(error)) {
 			throw input.fail(cloneFailureCode(error));
@@ -163,12 +169,16 @@ export async function cloneWithAuthRecovery(input: {
 		integrationId: input.integrationId,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		signal: input.signal,
 	});
+	input.signal.throwIfAborted();
 	const fresh = refreshed ? await resolveToken() : null;
+	input.signal.throwIfAborted();
 	if (fresh) {
 		try {
 			return await attempt(fresh);
 		} catch (error) {
+			input.signal.throwIfAborted();
 			logGitFailure(error, [fresh], input.log);
 			if (!isAuthFailure(error)) {
 				throw input.fail(cloneFailureCode(error));
@@ -178,7 +188,9 @@ export async function cloneWithAuthRecovery(input: {
 	await markRepoReauthRequired({
 		integrationId: input.integrationId,
 		reason: input.reauthReason,
+		signal: input.signal,
 	});
+	input.signal.throwIfAborted();
 	// Retrying cannot help once a forced re-exchange failed.
 	throw input.fail("INTEGRATION_UNAVAILABLE", true);
 }

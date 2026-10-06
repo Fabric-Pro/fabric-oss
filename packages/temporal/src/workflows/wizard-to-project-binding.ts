@@ -8,10 +8,12 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 const { bindWizardEmbeddingsToProjectActivity } = proxyActivities<
 	typeof activities
 >({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "5m",
 	heartbeatTimeout: "30 seconds",
 	retry: {

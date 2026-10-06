@@ -65,6 +65,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"DocumentChunk", // Extracted chunks of a ChatDocument — same
 	"BrowserTask", // A user's browser-automation jobs
 	"AgentConversation", // A user's conversation with an agent
+	"ConversationTurn", // One Advisor chat turn of a user's conversation
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings
@@ -264,6 +265,9 @@ const ORG_ONLY_TABLES = new Set([
 	// and the push journal carry neither userId nor projectId.
 	"ProjectInstructionProposalRefReservation",
 	"ProjectInstructionProposalBranchOperation",
+	// Storage-cleanup receipts intentionally outlive their project and snapshot
+	// rows, so organization ownership is their remaining tenant boundary.
+	"ProjectInstructionPendingStorageCleanup",
 	// Glossy editions (Fizzy #2589). These tables carry organizationId and
 	// projectId and NO userId, so they cannot be USER_OWNED_TABLES: that set's
 	// personal-context filter names a userId column Prisma would reject. Project

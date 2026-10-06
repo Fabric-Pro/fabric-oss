@@ -2,7 +2,8 @@
  * How this CLI introduces itself to a deployment, and the one thing a
  * deployment can say back about it.
  *
- * The `User-Agent` names the build (`fabric-cli/0.5.0 (node/22.11.0; linux)`),
+ * The `User-Agent` names the build and its instruction-download capability
+ * (`fabric-cli/0.5.0 (node/22.11.0; linux; instructions-stream-v1)`),
  * so a server that no longer supports an old CLI can say so. It answers with
  * an `X-Fabric-Cli-Upgrade` header carrying the exact line to show, which the
  * SDK hands over. This module keeps the first one a run sees; the command
@@ -12,12 +13,14 @@
 import packageJson from "../../package.json";
 import { sanitizeDisplayText } from "./instructions/checks.js";
 
+const INSTRUCTIONS_STREAMING_CAPABILITY = "instructions-stream-v1";
+
 export function cliUserAgent(
 	version: string = packageJson.version,
 	nodeVersion: string = process.versions.node,
 	platform: string = process.platform,
 ): string {
-	return `fabric-cli/${version} (node/${nodeVersion}; ${platform})`;
+	return `fabric-cli/${version} (node/${nodeVersion}; ${platform}; ${INSTRUCTIONS_STREAMING_CAPABILITY})`;
 }
 
 const MAX_NOTICE_CHARS = 300;

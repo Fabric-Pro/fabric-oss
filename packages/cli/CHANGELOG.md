@@ -1,5 +1,11 @@
 # @fabricorg/cli
 
+## 0.5.1
+
+### Patch Changes
+
+- 044fa84: Preserve existing Git checkouts during agent setup, report incomplete cloning and MCP registration, support coding-instruction snapshots above 50 MiB with streaming exports and bounded downloads, show one current progress display per repository sync, and organize commit history into a searchable list with selected-commit details and on-demand comparison. Repository syncs now verify and promote source bytes without a content-secret scan while uploads, edits, and proposals retain it; filename, path, size, hash, and `.fabricignore` validation still apply. Large repository finalization has its own longer activity budget and stops durable work when Temporal cancels an attempt. Normal missing-object metadata probes no longer open the storage circuit breaker.
+
 ## 0.5.0
 
 ### Minor Changes

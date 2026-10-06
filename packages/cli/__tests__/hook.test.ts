@@ -11,12 +11,15 @@
  * request written differently, and a file that has accumulated duplicates
  * must come out with exactly one entry.
  */
+import { createHash } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
 	readdir,
 	readFile,
+	rm,
 	symlink,
+	utimes,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -683,6 +686,55 @@ describe("mergeSessionStartHook", () => {
 });
 
 describe("mergeCommandHook across events", () => {
+	it("names an abandoned shared lock so it can be recovered explicitly", async () => {
+		const root = await makeTree();
+		const identity = createHash("sha256")
+			.update(path.resolve(root))
+			.update("\0")
+			.update(".claude/settings.local.json")
+			.digest("hex");
+		const directory = path.join(tmpdir(), "fabric-instructions-hook-locks");
+		await mkdir(directory, { recursive: true });
+		const lockPath = path.join(directory, `${identity}.lock`);
+		await writeFile(lockPath, "0");
+		const old = new Date(Date.now() - 60_000);
+		await utimes(lockPath, old, old);
+
+		try {
+			await expect(
+				mergeSessionStartHook({
+					root,
+					projectId: "project-1",
+					command: buildHookCommand("project-1", false),
+				}),
+			).rejects.toThrow(JSON.stringify(lockPath));
+		} finally {
+			await rm(lockPath, { force: true });
+		}
+	});
+
+	it("keeps both projects' hooks when concurrent merges read the same file", async () => {
+		const root = await makeTree();
+
+		await Promise.all([
+			mergeSessionStartHook({
+				root,
+				projectId: "project-1",
+				command: buildHookCommand("project-1", false),
+			}),
+			mergeSessionStartHook({
+				root,
+				projectId: "project-2",
+				command: buildHookCommand("project-2", false),
+			}),
+		]);
+
+		expect(commandsIn(await readSettings(root)).sort()).toEqual([
+			"fabric instructions check --project project-1 --hook",
+			"fabric instructions check --project project-2 --hook",
+		]);
+	});
+
 	/**
 	 * A `lesson-prompt` entry must never be touched by the `SessionStart`
 	 * merge, and a `check`/`sync` entry must never be touched by the `Stop`

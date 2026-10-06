@@ -115,6 +115,39 @@ describe("GitLab steps", () => {
 		});
 	});
 
+	it("get_file_contents without a ref reads the project's default branch, not main", async () => {
+		h.getGitLabApiCredential.mockResolvedValue({
+			token: "token-of-a",
+			apiBase: "https://gitlab.example.com/api/v4",
+		});
+		h.gitlabOutboundFetch.mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({
+				file_name: "README.md",
+				file_path: "README.md",
+				content: Buffer.from("x").toString("base64"),
+				encoding: "base64",
+				size: 1,
+			}),
+		});
+		const input = buildInput("GITLAB", {
+			inputs: {
+				operation: "get_file_contents",
+				project_id: "group/app",
+				path: "README.md",
+			},
+			integrationId: A_INTEGRATION_ID,
+		});
+
+		await new IntegrationHandler().execute(
+			buildContext({ ...input, userId: "user-a" }),
+		);
+
+		const [url] = h.gitlabOutboundFetch.mock.calls[0] as [string];
+		expect(new URL(url).searchParams.get("ref")).toBe("HEAD");
+	});
+
 	it("user A's own run works and goes to A's own instance", async () => {
 		h.getGitLabApiCredential.mockResolvedValue({
 			token: "token-of-a",

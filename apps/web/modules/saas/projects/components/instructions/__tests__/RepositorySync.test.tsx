@@ -1599,7 +1599,7 @@ describe("RepositorySyncStatus (§7.3)", () => {
 			/>,
 		);
 		expect(screen.getByRole("status")).toHaveTextContent(
-			"Checking version 12 stopped before it finished. This was not a folder-limit problem",
+			"Syncing version 12 stopped before it finished. Try Sync now again.",
 		);
 		rerender(
 			<RepositorySyncStatus

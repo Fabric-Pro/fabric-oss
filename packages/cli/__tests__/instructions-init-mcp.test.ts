@@ -231,13 +231,17 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			tool: "codex",
 		});
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(calls).toEqual([]);
 		expect(agent.runner).not.toHaveBeenCalled();
 		expect(result.stdout).toContain(
 			`Codex signs in as part of adding the Fabric MCP server, which opens your browser and waits for you, so init did not run it. Run: codex mcp add fabric-oject1 --url ${URL}`,
 		);
-		expect(result.stdout).toContain("Set up.");
+		expect(result.stdout).not.toContain("Set up.");
+		expect(result.stdout).toContain(
+			"The session hook was set up, but the Fabric MCP server was not registered for every selected tool.",
+		);
+		expect(result.stderr).toContain("Coding tool setup is incomplete");
 	});
 
 	it("registers the project's gateway with Codex at a terminal, under the project's own name, with the terminal handed over", async () => {
@@ -326,7 +330,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			"claude mcp remove",
 			"claude mcp add",
 		]);
-		expect(left.result.code).toBe(0);
+		expect(left.result.code).toBe(7);
 		expect(left.calls).toEqual([]);
 		expect(left.result.stdout).toContain(
 			`Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone. Remove it, then run: ${ADD_CLAUDE}`,
@@ -348,7 +352,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 	it("says the tool is not installed, with the line to run once it is, and still sets the hook up", async () => {
 		const { dest, result } = await init({ claude: "missing" });
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(result.stdout).toContain(
 			`Skipped the Claude Code MCP server: claude is not on PATH. Once it is, run: ${ADD_CLAUDE}`,
 		);
@@ -362,10 +366,10 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		).toHaveLength(1);
 	});
 
-	it("still succeeds, with the line to run, when the tool cannot register the server", async () => {
+	it("reports incomplete setup, with the line to run, when the tool cannot register the server", async () => {
 		const { dest, result } = await init({ claudeAdd: "fails" });
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(result.stdout).toContain(
 			`Could not register the Fabric MCP server for Claude Code. Run: ${ADD_CLAUDE}`,
 		);
@@ -432,7 +436,11 @@ describe("fabric instructions init and the tool's MCP server", () => {
 
 		expect(result.code).toBe(0);
 		expect(login(calls)).toBeUndefined();
-		expect(JSON.parse(result.stdout).mcp).toEqual([
+		const output = JSON.parse(result.stdout);
+		expect(output.mcpRequested).toBe(true);
+		expect(output.mcpComplete).toBe(true);
+		expect(output.mcpAuthenticationPending).toBe(true);
+		expect(output.mcp).toEqual([
 			{
 				tool: "claude-code",
 				name: "fabric",
@@ -453,7 +461,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			globals: ["--format", "json"],
 		});
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(calls).toEqual([]);
 		expect(JSON.parse(result.stdout).mcp).toEqual([
 			{
@@ -482,7 +490,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			state: { claude: [{ scope: "project", url: null }] },
 		});
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(calls).toEqual([]);
 		expect(result.stdout).toContain(
 			'Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone.',
@@ -494,13 +502,14 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			origin: "http://[::1]:3001",
 		});
 
-		expect(result.code).toBe(0);
+		expect(result.code).toBe(7);
 		expect(verbs(calls)).toEqual(["claude mcp add"]);
 		expect(result.stdout).toContain(
 			`Could not register the Fabric MCP server for Claude Code. ${NO_LINE_FOR_ADDRESS}`,
 		);
 		expect(result.stdout).not.toContain("claude mcp add");
-		expect(result.stdout).toContain("Set up.");
+		expect(result.stdout).not.toContain("Set up.");
+		expect(result.stderr).toContain("Coding tool setup is incomplete");
 	});
 });
 

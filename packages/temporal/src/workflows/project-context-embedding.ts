@@ -1,11 +1,26 @@
 import { ApplicationFailure, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+} from "../task-queues";
 
-const {
-	generateContextEmbeddings,
-	storeContextsInQdrant,
-	updateContextEmbeddingStatus,
-} = proxyActivities<typeof activities>({
+const { generateContextEmbeddings, storeContextsInQdrant } = proxyActivities<
+	typeof activities
+>({
+	taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+	startToCloseTimeout: "5 minutes",
+	heartbeatTimeout: "30 seconds",
+	retry: {
+		initialInterval: "1s",
+		maximumInterval: "30s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+	},
+});
+
+const { updateContextEmbeddingStatus } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {

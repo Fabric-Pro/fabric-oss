@@ -121,6 +121,18 @@ export interface RetryAffordance {
  */
 type RetryPermission = "projectSettingsEdit" | "projectUpdate";
 
+/**
+ * One specific thing a gate is about, named — a stuck source, say.
+ *
+ * Carried so a banner can say WHICH source stopped rather than that one did,
+ * and so the surface can take the viewer straight to it. `id` is the surface's
+ * own row id; `label` is what that row is called on the page.
+ */
+export interface GateSubject {
+	id: string;
+	label: string;
+}
+
 /** A resolved gate for one capability. */
 export interface CapabilityGate {
 	capabilityKey: string;
@@ -141,6 +153,18 @@ export interface CapabilityGate {
 	blockingDependency: string | null;
 	remedy: RemedyKind | null;
 	retry: RetryAffordance;
+	/**
+	 * What this gate is about, named — at most a handful, oldest first. Empty
+	 * for every gate that is about the project as a whole, which is most of
+	 * them, and for a stall whose source could not be identified.
+	 */
+	subjects: GateSubject[];
+	/**
+	 * How many there are in all, which can exceed `subjects.length`: the list
+	 * is capped so a project with hundreds of stuck rows does not ship them
+	 * all, and the copy says "and N more" from the difference.
+	 */
+	subjectTotal: number;
 	/** True when suppression is currently hiding this warning from this viewer. */
 	suppressed: boolean;
 	/**
@@ -316,6 +340,15 @@ export interface CapabilityEvidence {
 		 */
 		technicalInFlight: number;
 		productInFlight: number;
+		/**
+		 * The in-flight sources that have stopped moving — no write to the
+		 * row, or no heartbeat from its job, within the stall window. Read
+		 * only while something is in flight, and capped; see `stalledTotal`
+		 * for the full count. Empty does not mean nothing stalled, only that
+		 * nothing stalled could be named.
+		 */
+		stalledSources: GateSubject[];
+		stalledTotal: number;
 	};
 	/** Document types that exist AND hold content, so they can ground a generation. */
 	documents: {
@@ -422,6 +455,10 @@ export interface RuleVerdict {
 		/** Which permission the re-run's own door checks. */
 		requires: RetryPermission;
 	};
+	/** See `CapabilityGate.subjects`. Absent is none. */
+	subjects?: GateSubject[];
+	/** See `CapabilityGate.subjectTotal`. Absent is `subjects.length`. */
+	subjectTotal?: number;
 }
 
 export type CapabilitySurface =

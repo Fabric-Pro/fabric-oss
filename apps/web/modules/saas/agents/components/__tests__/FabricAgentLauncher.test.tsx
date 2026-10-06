@@ -344,6 +344,16 @@ function AmbientContextHarness() {
 	return <div>ambient context ready</div>;
 }
 
+/** Empties the drawer's context the way the provider's API allows. */
+function ClearContextButton() {
+	const { clearContext } = useFabricAgentLauncher();
+	return (
+		<button type="button" onClick={clearContext}>
+			clear launcher context
+		</button>
+	);
+}
+
 describe("FabricAgentLauncher", () => {
 	it("loads the drawer on first open and keeps its chat mounted after closing", async () => {
 		render(
@@ -875,6 +885,121 @@ describe("FabricAgentLauncher — engine selection (#2040)", () => {
 		expect(screen.getByTestId("system-prompt").textContent).toContain(
 			"Feature: US-1",
 		);
+	});
+
+	describe("reset keeps the project (#2928)", () => {
+		function openWithContext() {
+			render(
+				<FabricAgentLauncherProvider>
+					<LauncherHarness />
+				</FabricAgentLauncherProvider>,
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: /Open with context/i }),
+			);
+		}
+
+		it("starts a fresh chat on the same project, dropping the rest", () => {
+			openWithContext();
+			const chatBefore = screen.getByTestId("drawer-chat");
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Reset conversation" }),
+			);
+
+			const chatAfter = screen.getByTestId("drawer-chat");
+			expect(chatAfter).not.toBe(chatBefore);
+			expect(document.body).toHaveTextContent(
+				"attached project: project_1",
+			);
+			const systemPrompt =
+				screen.getByTestId("system-prompt").textContent;
+			expect(systemPrompt).toContain("Project: Phoenix");
+			expect(systemPrompt).not.toContain("Feature: US-1");
+			expect(document.body).not.toHaveTextContent(
+				"Review the launcher context.",
+			);
+		});
+
+		it("still drops the project from the context chip's clear button", () => {
+			openWithContext();
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Clear context" }),
+			);
+
+			expect(document.body).not.toHaveTextContent(
+				"attached project: project_1",
+			);
+		});
+
+		it("does not bring back a project the user removed", () => {
+			// The page has a project too, so neither may come back.
+			render(
+				<FabricAgentLauncherProvider>
+					<AmbientContextHarness />
+					<LauncherHarness />
+				</FabricAgentLauncherProvider>,
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: /Open with context/i }),
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: "remove project" }),
+			);
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Reset conversation" }),
+			);
+
+			const expectNoProject = () => {
+				expect(document.body).not.toHaveTextContent(
+					"attached project: project_1",
+				);
+				expect(document.body).not.toHaveTextContent(
+					"attached project: ambient_project",
+				);
+			};
+			expectNoProject();
+
+			// A bare reopen fills only a `null` context from the page.
+			fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+			expectLauncherClosed();
+			fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+			expectLauncherOpen();
+			expectNoProject();
+
+			fireEvent.click(screen.getByRole("button", { name: "Close" }));
+			fireEvent.click(
+				screen.getByRole("button", { name: /Open Fabric Agent/i }),
+			);
+			expectLauncherOpen();
+			expectNoProject();
+		});
+
+		it("takes the page's project when the drawer holds no context", () => {
+			render(
+				<FabricAgentLauncherProvider>
+					<AmbientContextHarness />
+					<ClearContextButton />
+				</FabricAgentLauncherProvider>,
+			);
+			fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+			fireEvent.click(
+				screen.getByRole("button", { name: "clear launcher context" }),
+			);
+			expect(document.body).not.toHaveTextContent(
+				"attached project: ambient_project",
+			);
+
+			fireEvent.click(
+				screen.getByRole("button", { name: "Reset conversation" }),
+			);
+
+			expect(document.body).toHaveTextContent(
+				"attached project: ambient_project",
+			);
+		});
 	});
 
 	it("lists models only in simple mode and the full catalog in advanced", () => {

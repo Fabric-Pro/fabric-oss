@@ -58,7 +58,7 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("simple-git", () => ({
-	default: vi.fn(() => ({
+	simpleGit: vi.fn(() => ({
 		clone: (...a: unknown[]) => mockClone(...a),
 		revparse: (...a: unknown[]) => mockRevparse(...a),
 		show: (...a: unknown[]) => mockShow(...a),

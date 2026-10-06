@@ -85,6 +85,40 @@ describe("resolveDefaultBranch", () => {
 		expect(init.headers.Authorization).toMatch(/^Basic /);
 	});
 
+	it("treats ADO's 203 sign-in page like a 401: 'main', without parsing the body", async () => {
+		mockFetch.mockResolvedValue(
+			new Response("<html>sign in</html>", {
+				status: 203,
+				headers: { "content-type": "text/html" },
+			}),
+		);
+
+		const result = await resolveDefaultBranch({
+			...baseInput,
+			provider: "AZURE_DEVOPS",
+			repositoryUrl: "https://dev.azure.com/my-org/Proj/_git/widgets",
+			azureOrganization: "my-org",
+		});
+
+		expect(result).toBe("main");
+		// A parse attempt would throw and surface here as a warning.
+		expect(mockWarn).not.toHaveBeenCalled();
+	});
+
+	it("falls back to 'main' quietly on an Azure DevOps 401", async () => {
+		mockFetch.mockResolvedValue(jsonResponse(401));
+
+		const result = await resolveDefaultBranch({
+			...baseInput,
+			provider: "AZURE_DEVOPS",
+			repositoryUrl: "https://dev.azure.com/my-org/Proj/_git/widgets",
+			azureOrganization: "my-org",
+		});
+
+		expect(result).toBe("main");
+		expect(mockWarn).not.toHaveBeenCalled();
+	});
+
 	it("warns and falls back to 'main' when fetch throws an error", async () => {
 		mockFetch.mockRejectedValue(new Error("Network Error"));
 

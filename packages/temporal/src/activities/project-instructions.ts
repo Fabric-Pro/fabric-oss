@@ -5,15 +5,19 @@ import {
 	failInstructionSnapshot,
 	getInstructionSnapshotById,
 	getPublishedInstructionSnapshot,
+	INSTRUCTION_FILE_BATCH_MAX_ROWS,
 	type InstructionDeferredScanOutcome,
 	type InstructionRejection,
 	listInstructionFiles,
 	markInstructionSnapshotReady,
 	markInstructionSnapshotRejected,
+	moveInheritedInstructionFileKeys,
+	persistVerifiedInstructionFileMetadataBatch,
 	publishInstructionSnapshot,
 	recordInstructionDeferredScanOutcome,
 	recordInstructionSnapshotScanRulesVersion,
 	updateInstructionFileMetadata,
+	type VerifiedInstructionFileMetadata,
 } from "@repo/database";
 import {
 	buildIgnoreMatcher,
@@ -48,7 +52,9 @@ import {
 	resolveInheritedFile,
 } from "../lib/instruction-inherited-sources";
 import { createSnapshotProgress } from "../lib/instruction-progress";
+import { isRepositorySyncSnapshot } from "../lib/instruction-repository-provenance";
 import { forEachPrefetched } from "../lib/ordered-prefetch";
+import { currentActivityAttemptDeadline } from "./lib/activity-liveness";
 import {
 	assertAllDeleted,
 	INSTRUCTIONS_BUCKET as BUCKET,
@@ -72,6 +78,7 @@ const MAX_REJECTIONS = 100;
  * each. The same width the repository sync already uploads with.
  */
 const FILE_PREFETCH = 8;
+const MAX_METADATA_BATCH_BYTES = 2 * 1024 * 1024;
 
 function capRejections(
 	rejections: InstructionRejection[],
@@ -419,20 +426,36 @@ async function claimSnapshotForValidation(
 }
 
 /**
- * A verdict write that matched nothing is either a retry finding its own
- * verdict already written (fine) or an attempt whose token the row no longer
- * carries (not fine). The re-read tells them apart: it throws the
- * non-retryable superseded failure for the second and returns for the first.
+ * A verdict write that matched nothing can only be treated as idempotent when
+ * the owned row already holds the terminal status this activity writes. A
+ * deadline fence that declines READY leaves the row VALIDATING; treating that
+ * as success would let the workflow publish a snapshot that never reached
+ * READY.
  *
  * Deliberately NOT exported, for the same reason as `loadVerifiedSnapshot`.
  */
 async function assertAttemptNotSuperseded(
 	ref: SnapshotRef,
 	write: { changed: boolean },
+	expectedStatus: "READY" | "REJECTED",
 ): Promise<void> {
-	if (!write.changed) {
-		await loadTenantVerifiedSnapshot(ref);
+	if (write.changed) {
+		return;
 	}
+	const snapshot = await loadTenantVerifiedSnapshot(ref);
+	if (snapshot.status === expectedStatus) {
+		return;
+	}
+	if (snapshot.status === "REJECTED") {
+		throw ApplicationFailure.nonRetryable(
+			`Instruction snapshot ${ref.snapshotId} was rejected before it could reach READY`,
+			"INSTRUCTION_SNAPSHOT_ALREADY_REJECTED",
+		);
+	}
+	throw ApplicationFailure.retryable(
+		`Instruction snapshot ${ref.snapshotId} did not reach ${expectedStatus} before this attempt ended`,
+		"INSTRUCTION_SNAPSHOT_READY_FENCE_REFUSED",
+	);
 }
 
 /**
@@ -489,11 +512,13 @@ async function cleanupStagingObjects(
 	storage: StorageProviderInterface,
 	ref: SnapshotRef,
 	fileIds: string[],
+	beforeDelete?: () => void,
 ): Promise<void> {
 	const deterministicKeys = fileIds.map((id) =>
 		stagingKey(ref.projectId, ref.snapshotId, id),
 	);
 	if (deterministicKeys.length > 0) {
+		beforeDelete?.();
 		heartbeat({ phase: "delete-staging", count: deterministicKeys.length });
 		assertAllDeleted(
 			await storage.deleteObjects(deterministicKeys, { bucket: BUCKET }),
@@ -511,6 +536,7 @@ async function cleanupStagingObjects(
 	const leftover = (await listAllStagingObjects(storage, ref))
 		.map((object) => object.key)
 		.filter((key) => key.startsWith(ownStagingPrefix) && !known.has(key));
+	beforeDelete?.();
 	if (leftover.length > 0) {
 		heartbeat({ phase: "delete-staging-leftover", count: leftover.length });
 		assertAllDeleted(
@@ -518,6 +544,31 @@ async function cleanupStagingObjects(
 			"staging sweep",
 		);
 	}
+}
+
+/**
+ * Temporal only delivers cancellation through an activity that heartbeats.
+ * Finalization already heartbeats throughout its bounded loops; fence every
+ * durable step so a timed-out attempt cannot keep promoting or make a stale
+ * snapshot terminal while its retry is running.
+ */
+function throwIfInstructionFinalizationCancelled(): void {
+	const signal = Context.current().cancellationSignal;
+	if (signal.aborted) {
+		throw signal.reason;
+	}
+	const deadline = currentActivityAttemptDeadline();
+	if (deadline !== undefined && deadline.getTime() <= Date.now()) {
+		throw ApplicationFailure.retryable(
+			"Instruction snapshot finalization reached its Temporal attempt deadline",
+			"INSTRUCTION_SNAPSHOT_ACTIVITY_DEADLINE",
+		);
+	}
+}
+
+function readyDeadlineFence(): { notAfter?: Date } {
+	const deadline = currentActivityAttemptDeadline();
+	return deadline === undefined ? {} : { notAfter: deadline };
 }
 
 /**
@@ -709,7 +760,9 @@ async function rejectionFromStoredSize(
 /**
  * Records a file's classification and, for the kinds that carry one, the
  * `name`/`description` from its frontmatter — parsed from the buffer the
- * caller has ALREADY verified (length and sha256) and scanned.
+ * caller has already verified (length and sha256). Uploads and proposals call
+ * it after their content scan; repository sync calls it while promoting its
+ * verified source bytes without that scan.
  *
  * This used to be `classifyInstructionFiles`, a standalone activity that ran
  * between the gate and promotion and did its own `downloadFile` of the same
@@ -720,10 +773,10 @@ async function rejectionFromStoredSize(
  * onto the file row — then restore the benign bytes so promotion passed and
  * the snapshot published. MCP and the API listings serve those two columns.
  *
- * So the parse happens here, inside the gate's own loop, over the buffer whose
- * hash the gate has just confirmed. A file that is rejected for ANY reason
- * never reaches this function, so a rejected row carries no metadata derived
- * from unverified bytes.
+ * So the parse happens here over the buffer whose hash the caller has just
+ * confirmed. A file that is rejected for ANY reason never reaches this
+ * function, so a rejected row carries no metadata derived from unverified
+ * bytes.
  *
  * `f.isText` is deliberately not consulted, for the reason spelled out on the
  * gate below: it is an extension-allowlist rendering hint, not a fact about
@@ -746,6 +799,31 @@ async function persistVerifiedFileMetadata(
 	 */
 	storageKey?: string,
 ): Promise<void> {
+	const metadata = deriveVerifiedFileMetadata(f, text);
+	// A browser folder upload cannot read Unix modes (the File API has none),
+	// so every row arrives with `mode: null` and the ZIP export and MCP bundle
+	// would install every script non-executable — a hook that invokes
+	// `scripts/run.sh` bare then fails with "permission denied" on the first
+	// session. The one signal the bytes themselves carry is a shebang, so a
+	// text file that starts with `#!` is recorded as 0755.
+	// Everything else keeps null. A row that already carries a mode got it
+	// from a source that knows (repository sync writes git's mode at ingest,
+	// design 2026-09-23 §4.2) and is left alone: inferring over it would turn
+	// a 0644 file that happens to start with `#!` into 0755, and every
+	// re-sync of an unchanged tree would then look like a mode change.
+	await updateInstructionFileMetadata(f.id, ref.organizationId, {
+		...metadata,
+		...(storageKey === undefined ? {} : { storageKey }),
+	});
+}
+
+function deriveVerifiedFileMetadata(
+	f: { id: string; path: string; size: number; mode: number | null },
+	text: string | null,
+): Omit<
+	VerifiedInstructionFileMetadata,
+	"fileId" | "expectedStorageKey" | "storageKey"
+> {
 	const kind = classifyPath(f.path);
 	let name: string | null = null;
 	let description: string | null = null;
@@ -758,26 +836,40 @@ async function persistVerifiedFileMetadata(
 		name = fm.name;
 		description = fm.description;
 	}
-	// A browser folder upload cannot read Unix modes (the File API has none),
-	// so every row arrives with `mode: null` and the ZIP export and MCP bundle
-	// would install every script non-executable — a hook that invokes
-	// `scripts/run.sh` bare then fails with "permission denied" on the first
-	// session. The one signal the bytes themselves carry is a shebang, so a
-	// text file that starts with `#!` is recorded as 0755.
-	// Everything else keeps null. A row that already carries a mode got it
-	// from a source that knows (repository sync writes git's mode at ingest,
-	// design 2026-09-23 §4.2) and is left alone: inferring over it would turn
-	// a 0644 file that happens to start with `#!` into 0755, and every
-	// re-sync of an unchanged tree would then look like a mode change.
 	const mode =
 		(f.mode ?? null) === null && text?.startsWith("#!") ? 0o755 : undefined;
-	await updateInstructionFileMetadata(f.id, ref.organizationId, {
+	return {
 		kind,
 		name,
 		description,
 		...(mode === undefined ? {} : { mode }),
-		...(storageKey === undefined ? {} : { storageKey }),
-	});
+	};
+}
+
+function metadataForVerifiedFile(
+	f: { id: string; path: string; size: number; mode: number | null },
+	text: string | null,
+	storageKey: string,
+	expectedStorageKey: string,
+): VerifiedInstructionFileMetadata {
+	return {
+		fileId: f.id,
+		expectedStorageKey,
+		storageKey,
+		...deriveVerifiedFileMetadata(f, text),
+	};
+}
+
+function metadataBytes(metadata: VerifiedInstructionFileMetadata): number {
+	return (
+		Buffer.byteLength(metadata.fileId) +
+		Buffer.byteLength(metadata.expectedStorageKey) +
+		Buffer.byteLength(metadata.storageKey) +
+		Buffer.byteLength(metadata.kind) +
+		Buffer.byteLength(metadata.name ?? "") +
+		Buffer.byteLength(metadata.description ?? "") +
+		128
+	);
 }
 
 /**
@@ -1119,6 +1211,13 @@ export async function verifyAndScanInstructionFiles(
 	// The claim, BEFORE any storage work: it is what makes this run and the
 	// reaper's conditional write mutually exclusive.
 	await claimSnapshotForValidation(ref, snapshot);
+	// A repository sync has already measured and registered its tree from the
+	// server-side checkout. Its persisted source plus unique acquisition receipt
+	// is the only supported provenance for skipping the upload content scanner;
+	// the finalizer still verifies and stores each buffer before it is served.
+	if (isRepositorySyncSnapshot(snapshot)) {
+		return { ok: true, rejections: [] };
+	}
 	const frozen = readFrozenIgnoreSettings(snapshot.settingsFrozen);
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
@@ -1288,15 +1387,80 @@ async function promoteVerifiedFile(
 		return { rejection: { path: f.path, reason: "hash_mismatch" } };
 	}
 	if (f.storageKey !== dest) {
+		throwIfInstructionFinalizationCancelled();
 		await storage.uploadFile(dest, data, {
 			bucket: BUCKET,
 			contentType: f.mimeType,
 		});
+		throwIfInstructionFinalizationCancelled();
 		await updateInstructionFileMetadata(f.id, ref.organizationId, {
 			kind: f.kind,
 			name: f.name,
 			description: f.description,
 			storageKey: dest,
+		});
+	}
+	return { rejection: null };
+}
+
+/**
+ * Promotion for a repository-sync snapshot. Repository content is not scanned
+ * for secret-like text, but this still performs every integrity, filename,
+ * `.fabricignore` provenance and metadata decision over the exact buffer it
+ * stores at the immutable snapshot key.
+ */
+type PromotionResult = {
+	rejection: InstructionRejection | null;
+	metadata?: VerifiedInstructionFileMetadata;
+};
+
+class InstructionSnapshotAlreadyReady extends Error {}
+
+async function promoteVerifiedRepositoryFile(
+	storage: StorageProviderInterface,
+	ref: SnapshotRef,
+	f: Awaited<ReturnType<typeof listInstructionFiles>>[number],
+	staged: Map<string, number>,
+	sources: InheritedSources,
+	frozen: FrozenIgnoreSettings | null,
+): Promise<PromotionResult> {
+	const read = await readVerifiedFile(storage, ref, f, staged, sources);
+	if ("rejection" in read) {
+		return { rejection: read.rejection };
+	}
+	const encoding = fabricIgnoreEncodingRejection(f.path, read.data);
+	if (encoding) {
+		return { rejection: encoding };
+	}
+	const text = decodeUtf8Text(read.data);
+	const mismatch = fabricIgnoreProvenanceRejection(ref, f.path, frozen, text);
+	if (mismatch) {
+		return { rejection: mismatch };
+	}
+	const destination = snapshotKey(ref.projectId, ref.snapshotId, f.id);
+	if (read.key !== destination) {
+		throwIfInstructionFinalizationCancelled();
+		await storage.uploadFile(destination, read.data, {
+			bucket: BUCKET,
+			contentType: f.mimeType,
+		});
+	}
+	// A source row's metadata was copied with the inherited row at creation.
+	// Preserve it on a retry that re-verifies the immutable copy instead of
+	// deriving a second answer from content the sync did not change.
+	if (f.inheritedFromFileId === null) {
+		return {
+			rejection: null,
+			metadata: metadataForVerifiedFile(f, text, destination, read.key),
+		};
+	}
+	if (read.key !== destination) {
+		throwIfInstructionFinalizationCancelled();
+		await moveInheritedInstructionFileKeys({
+			snapshotId: ref.snapshotId,
+			projectId: ref.projectId,
+			organizationId: ref.organizationId,
+			moves: [{ fileId: f.id, from: read.key, to: destination }],
 		});
 	}
 	return { rejection: null };
@@ -1346,13 +1510,29 @@ async function promoteVerifiedFile(
 export async function finalizeInstructionSnapshot(
 	ref: SnapshotRef,
 ): Promise<GateResult> {
+	throwIfInstructionFinalizationCancelled();
 	const snapshot = await loadVerifiedSnapshot(ref);
 	assertNotAlreadyRejected(snapshot, ref.snapshotId);
+	if (snapshot.status === "READY") {
+		// A previous owned attempt may have committed READY after Temporal timed
+		// out, then lost its acknowledgement. There is no promotion left to do.
+		return { ok: true, rejections: [] };
+	}
+	const repositorySync = isRepositorySyncSnapshot(snapshot);
+	const frozen = repositorySync
+		? readFrozenIgnoreSettings(snapshot.settingsFrozen)
+		: null;
 	const storage = getStorageProvider();
 	const files = await listInstructionFiles(
 		ref.snapshotId,
 		ref.organizationId,
 	);
+	const staged = new Map<string, number>();
+	if (repositorySync) {
+		for (const object of await listAllStagingObjects(storage, ref)) {
+			staged.set(object.key, object.size);
+		}
+	}
 	const rejections: InstructionRejection[] = [];
 	let storedBytes = 0;
 	// An inherited row still waiting on its source is COPIED; every other row
@@ -1364,16 +1544,37 @@ export async function finalizeInstructionSnapshot(
 	const toWrite: typeof files = [];
 	let copySize = 0;
 	for (const f of files) {
+		if (repositorySync) {
+			const secretName = isSecretFileName(f.path);
+			if (secretName) {
+				rejections.push({
+					path: f.path,
+					reason: "secret",
+					detail: `filename:${secretName}`,
+				});
+				continue;
+			}
+		}
 		const inherited = resolveInheritedFile(ref, f, sources);
 		if (inherited === null) {
 			toWrite.push(f);
 		} else if ("rejection" in inherited) {
 			rejections.push(inherited.rejection);
+		} else if (repositorySync && f.path === FABRIC_IGNORE_FILE) {
+			// Provenance depends on this file's text, so its immutable source is
+			// verified and copied from the same buffer rather than copied blind.
+			toWrite.push(f);
 		} else {
 			toCopy.push({ id: f.id, path: f.path, sourceKey: inherited.key });
 			copySize += f.size;
 		}
 	}
+	const missingIgnore =
+		repositorySync &&
+		frozen !== null &&
+		!files.some((f) => f.path === FABRIC_IGNORE_FILE)
+			? missingIgnoreFileRejection(frozen)
+			: null;
 	// Each file's promotion depends on no other file's (a refused file does
 	// not stop the others from being written, below), so the whole of it runs
 	// ahead of the loop; only the verdicts are gathered in manifest order. The
@@ -1385,6 +1586,7 @@ export async function finalizeInstructionSnapshot(
 		bucket: BUCKET,
 		scope: ref,
 		files: toCopy,
+		beforeWrite: throwIfInstructionFinalizationCancelled,
 		onChunk: async (decided) => {
 			heartbeat({
 				phase: "promote-copy",
@@ -1397,24 +1599,106 @@ export async function finalizeInstructionSnapshot(
 	rejections.push(...copied.rejections);
 	storedBytes += copySize;
 	const decidedBeforeWrites = rejections.length + copied.copied;
-	await forEachPrefetched(
-		toWrite,
-		FILE_PREFETCH,
-		(f) => promoteVerifiedFile(storage, ref, f),
-		(promoted, f, index) => {
-			heartbeat({
-				phase: "promote",
-				file: decidedBeforeWrites + index + 1,
-				of: files.length,
-			});
-			if (promoted.rejection) {
-				rejections.push(promoted.rejection);
-				return;
+	const pendingMetadata: VerifiedInstructionFileMetadata[] = [];
+	let pendingMetadataBytes = 0;
+	const flushMetadata = async () => {
+		if (pendingMetadata.length === 0) {
+			return;
+		}
+		throwIfInstructionFinalizationCancelled();
+		const updates = pendingMetadata.splice(0);
+		pendingMetadataBytes = 0;
+		const { updated } = await persistVerifiedInstructionFileMetadataBatch({
+			snapshotId: ref.snapshotId,
+			projectId: ref.projectId,
+			organizationId: ref.organizationId,
+			validationAttemptId: ref.validationAttemptId ?? null,
+			notAfter: currentActivityAttemptDeadline() ?? null,
+			updates,
+		});
+		throwIfInstructionFinalizationCancelled();
+		if (updated !== updates.length) {
+			const current = await loadVerifiedSnapshot(ref);
+			assertNotAlreadyRejected(current, ref.snapshotId);
+			throwIfInstructionFinalizationCancelled();
+			if (current.status === "READY") {
+				throw new InstructionSnapshotAlreadyReady();
 			}
-			storedBytes += f.size;
-		},
-		(consumed) => progress.advance(decidedBeforeWrites + consumed),
-	);
+			throw ApplicationFailure.retryable(
+				`Instruction snapshot ${ref.snapshotId} could not persist every verified file metadata row`,
+				"INSTRUCTION_SNAPSHOT_METADATA_INCOMPLETE",
+			);
+		}
+		throwIfInstructionFinalizationCancelled();
+	};
+	try {
+		await forEachPrefetched(
+			toWrite,
+			FILE_PREFETCH,
+			async (f): Promise<PromotionResult> =>
+				repositorySync
+					? promoteVerifiedRepositoryFile(
+							storage,
+							ref,
+							f,
+							staged,
+							sources,
+							frozen,
+						)
+					: promoteVerifiedFile(storage, ref, f),
+			async (promoted, f, index) => {
+				heartbeat({
+					phase: "promote",
+					file: decidedBeforeWrites + index + 1,
+					of: files.length,
+				});
+				if (promoted.rejection) {
+					rejections.push(promoted.rejection);
+					return;
+				}
+				if (
+					repositorySync &&
+					"metadata" in promoted &&
+					promoted.metadata
+				) {
+					const bytes = metadataBytes(promoted.metadata);
+					if (
+						pendingMetadata.length > 0 &&
+						(pendingMetadata.length ===
+							INSTRUCTION_FILE_BATCH_MAX_ROWS ||
+							pendingMetadataBytes + bytes >
+								MAX_METADATA_BATCH_BYTES)
+					) {
+						await flushMetadata();
+					}
+					pendingMetadata.push(promoted.metadata);
+					pendingMetadataBytes += bytes;
+					if (
+						pendingMetadata.length ===
+							INSTRUCTION_FILE_BATCH_MAX_ROWS ||
+						pendingMetadataBytes >= MAX_METADATA_BATCH_BYTES
+					) {
+						await flushMetadata();
+					}
+				}
+				storedBytes += f.size;
+			},
+			async (consumed) => {
+				if (consumed === toWrite.length) {
+					await flushMetadata();
+				}
+				await progress.advance(decidedBeforeWrites + consumed);
+			},
+		);
+	} catch (error) {
+		if (error instanceof InstructionSnapshotAlreadyReady) {
+			return { ok: true, rejections: [] };
+		}
+		throw error;
+	}
+	if (missingIgnore) {
+		rejections.push(missingIgnore);
+	}
 	if (rejections.length > 0) {
 		// The caller rejects the snapshot, which deletes its staging objects.
 		// Objects already written under the snapshot prefix for the files
@@ -1424,17 +1708,21 @@ export async function finalizeInstructionSnapshot(
 		// nothing serves bytes from a snapshot that is not READY.
 		return { ok: false, rejections: capRejections(rejections) };
 	}
+	const promoted = repositorySync
+		? await listInstructionFiles(ref.snapshotId, ref.organizationId)
+		: files;
 	// `f.mode` is read straight off the `ProjectInstructionFile` row
 	// (`listInstructionFiles` selects it), and every source that writes a
-	// mode does so before this activity runs: repository sync writes git's
-	// mode at ingest, and the gate's `persistVerifiedFileMetadata` infers
-	// 0755 from a shebang before this snapshot reaches finalize. That is
+	// mode does so before the digest: repository sync writes git's mode at
+	// ingest, the ordinary gate's `persistVerifiedFileMetadata` infers 0755
+	// from a shebang before finalization, and repository finalization derives
+	// it from its verified buffer before re-reading these rows. That is
 	// the SAME column the served manifest reads it from (the REST
 	// `GET .../instructions/published` route and the MCP bundle tool both
 	// map `f.mode` off the same `listInstructionFiles` rows), so the digest
 	// is computed from the value that ends up on the wire.
 	const digest = await computeSnapshotDigest(
-		files.map((f) => ({ path: f.path, sha256: f.sha256, mode: f.mode })),
+		promoted.map((f) => ({ path: f.path, sha256: f.sha256, mode: f.mode })),
 	);
 	// Cleanup BEFORE the terminal status, not after (I2). `cleanupStagingObjects`
 	// throws on any per-key delete failure, and READY is terminal:
@@ -1451,10 +1739,12 @@ export async function finalizeInstructionSnapshot(
 	// prefix deletes nothing and succeeds, which is what makes moving it ahead
 	// of the status write safe: the bytes a re-run needs to re-hash are the
 	// promoted ones at the snapshot key, and the rows point there already.
+	throwIfInstructionFinalizationCancelled();
 	await cleanupStagingObjects(
 		storage,
 		ref,
-		files.map((f) => f.id),
+		promoted.map((f) => f.id),
+		throwIfInstructionFinalizationCancelled,
 	);
 	// Conditional, and `changed` is deliberately ignored (I1 round 3). Temporal
 	// delivers an activity AT LEAST ONCE: an attempt that commits this write and
@@ -1467,18 +1757,20 @@ export async function finalizeInstructionSnapshot(
 	// nothing and returns the same success the first attempt returned — which is
 	// what the workflow needs, since the publish and prune steps that follow are
 	// themselves idempotent.
+	throwIfInstructionFinalizationCancelled();
 	const ready = await markInstructionSnapshotReady({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
 		organizationId: ref.organizationId,
-		fileCount: files.length,
+		fileCount: promoted.length,
 		storedBytes,
 		digest,
 		// Read once per attempt, here: the only clock read on this path.
 		readyAt: new Date(),
 		validationAttemptId: ref.validationAttemptId,
+		...readyDeadlineFence(),
 	});
-	await assertAttemptNotSuperseded(ref, ready);
+	await assertAttemptNotSuperseded(ref, ready, "READY");
 	return { ok: true, rejections: [] };
 }
 
@@ -1530,6 +1822,7 @@ export async function finalizeInstructionSnapshot(
 export async function promoteUnscannedInstructionSnapshot(
 	ref: SnapshotRef,
 ): Promise<GateResult> {
+	throwIfInstructionFinalizationCancelled();
 	const snapshot = await loadVerifiedSnapshot(ref);
 	assertNotAlreadyRejected(snapshot, ref.snapshotId);
 	if (snapshot.publishBeforeScan !== true || !snapshot.publishOnReady) {
@@ -1623,11 +1916,13 @@ export async function promoteUnscannedInstructionSnapshot(
 			}
 			const dest = snapshotKey(ref.projectId, ref.snapshotId, f.id);
 			if (read.key !== dest) {
+				throwIfInstructionFinalizationCancelled();
 				await storage.uploadFile(dest, read.data, {
 					bucket: BUCKET,
 					contentType: f.mimeType,
 				});
 			}
+			throwIfInstructionFinalizationCancelled();
 			await persistVerifiedFileMetadata(ref, f, text, dest);
 		},
 		progress.advance,
@@ -1649,6 +1944,7 @@ export async function promoteUnscannedInstructionSnapshot(
 					snapshotKey(ref.projectId, ref.snapshotId, f.id),
 			)
 			.map((f) => ({ id: f.id, path: f.path, sourceKey: f.storageKey })),
+		beforeWrite: throwIfInstructionFinalizationCancelled,
 		onChunk: (decided) =>
 			heartbeat({
 				phase: "promote-unscanned-copy",
@@ -1686,7 +1982,9 @@ export async function promoteUnscannedInstructionSnapshot(
 		storage,
 		ref,
 		promoted.map((f) => f.id),
+		throwIfInstructionFinalizationCancelled,
 	);
+	throwIfInstructionFinalizationCancelled();
 	const ready = await markInstructionSnapshotReady({
 		snapshotId: ref.snapshotId,
 		projectId: ref.projectId,
@@ -1697,8 +1995,9 @@ export async function promoteUnscannedInstructionSnapshot(
 		readyAt: new Date(),
 		deferredScan: true,
 		validationAttemptId: ref.validationAttemptId,
+		...readyDeadlineFence(),
 	});
-	await assertAttemptNotSuperseded(ref, ready);
+	await assertAttemptNotSuperseded(ref, ready, "READY");
 	return { ok: true, rejections: [] };
 }
 
@@ -1820,7 +2119,7 @@ export async function rejectInstructionSnapshot(
 			metadata: summarizeRejections(input.rejections),
 		},
 	});
-	await assertAttemptNotSuperseded(input, rejected);
+	await assertAttemptNotSuperseded(input, rejected, "REJECTED");
 }
 
 /**

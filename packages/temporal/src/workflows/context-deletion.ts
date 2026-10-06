@@ -30,18 +30,12 @@
 
 import { ApplicationFailure, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
-import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
-
-const { deleteSingleContextActivity } = proxyActivities<typeof activities>({
-	startToCloseTimeout: "2 minutes",
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "1s",
-		maximumInterval: "30s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
+import {
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import { PROJECT_EMBEDDING_TASK_QUEUE } from "../task-queues";
 
 export interface ContextDeletionWorkflowInput {
 	contextId: string;
@@ -88,6 +82,21 @@ export async function contextDeletionWorkflow(
 	// A malformed owner fails the run non-retryably before the activity is
 	// scheduled.
 	resolveContextOwner(input);
+
+	const { deleteSingleContextActivity } = proxyActivities<typeof activities>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		startToCloseTimeout: "2 minutes",
+		heartbeatTimeout: "30 seconds",
+		retry: {
+			initialInterval: "1s",
+			maximumInterval: "30s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
 
 	console.log(
 		`[ContextDeletion] Starting deletion for context ${contextId}`,

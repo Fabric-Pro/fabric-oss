@@ -154,6 +154,13 @@ export function runGit(
 			child = spawn(
 				"git",
 				[
+					// Windows Git can report modified long-path files from its file
+					// system cache even when Git's diff is empty. This command-local
+					// setting keeps inspection truthful without changing the user's
+					// checkout configuration.
+					...(process.platform === "win32"
+						? ["-c", "core.fscache=false"]
+						: []),
 					"-c",
 					"core.fsmonitor=false",
 					...(options.write

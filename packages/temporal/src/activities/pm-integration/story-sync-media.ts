@@ -1282,12 +1282,16 @@ async function uploadOneImageToAdo(
 			},
 			body: binary,
 		});
-		if (!up.ok) {
+		// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+		// true for 203): same failed-upload path as a 401, body not read.
+		if (up.status === 203 || !up.ok) {
 			let bodyPreview = "";
-			try {
-				bodyPreview = (await up.text()).slice(0, 300);
-			} catch {
-				/* ignore */
+			if (up.status !== 203) {
+				try {
+					bodyPreview = (await up.text()).slice(0, 300);
+				} catch {
+					/* ignore */
+				}
 			}
 			logger.warn("[ADO Attachments] Upload failed", {
 				src,

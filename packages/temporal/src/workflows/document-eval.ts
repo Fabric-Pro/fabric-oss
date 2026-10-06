@@ -38,6 +38,7 @@ import type { runNLPMetrics as RunNLPMetricsFn } from "../activities/document-ev
 const { checkEvalCache, getGoldenReference, saveEvalResult } = proxyActivities<
 	typeof evalActivities
 >({
+	taskQueue: "fabric-worker",
 	startToCloseTimeout: "30s",
 	retry: {
 		initialInterval: "1s",
@@ -51,6 +52,7 @@ const { checkEvalCache, getGoldenReference, saveEvalResult } = proxyActivities<
 const { runNLPMetrics } = proxyActivities<{
 	runNLPMetrics: typeof RunNLPMetricsFn;
 }>({
+	taskQueue: "fabric-worker",
 	startToCloseTimeout: "30s",
 	retry: {
 		initialInterval: "1s",
@@ -65,6 +67,7 @@ const { runNLPMetrics } = proxyActivities<{
 const { runLLMMetricsActivity } = proxyActivities<{
 	runLLMMetricsActivity: typeof RunLLMMetricsActivityFn;
 }>({
+	taskQueue: "fabric-worker",
 	startToCloseTimeout: "5m",
 	heartbeatTimeout: "30s",
 	retry: {

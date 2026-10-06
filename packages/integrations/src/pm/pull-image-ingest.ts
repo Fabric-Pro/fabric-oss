@@ -131,6 +131,14 @@ export interface IngestPulledImagesParams {
 	 * passes its outbound guard here.
 	 */
 	fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+	/**
+	 * HTTP statuses that mean "the credential was rejected" even though
+	 * `Response.ok` is true. Azure DevOps answers a bad/expired PAT with 203 and
+	 * an HTML sign-in page; such a status takes the same placeholder path as a
+	 * 401 and is decided before the body is read. Opt-in per provider, because
+	 * for other providers a 203 is an ordinary (proxy-annotated) success.
+	 */
+	authRejectedStatuses?: readonly number[];
 }
 
 export interface IngestPulledImagesResult {
@@ -393,6 +401,7 @@ export async function ingestPulledImages(
 		resolveFetchUrl,
 		providerLabel,
 		fetchImpl,
+		authRejectedStatuses,
 	} = params;
 
 	let ingested = 0;
@@ -490,7 +499,9 @@ export async function ingestPulledImages(
 				fetchUrl,
 				headers ? { headers } : undefined,
 			);
-			if (!res.ok) {
+			// Checked by status before `.ok` and before any body read (ADO's 203
+			// sign-in page would otherwise get as far as the content-type check).
+			if (authRejectedStatuses?.includes(res.status) || !res.ok) {
 				return placeholder(`http ${res.status} ${res.statusText}`);
 			}
 			const headerType = (res.headers.get("content-type") || "")
@@ -670,10 +681,16 @@ export function buildAdoIngestOptions(
 	pat: string,
 ): Pick<
 	IngestPulledImagesParams,
-	"fetchAuth" | "urlFilter" | "deriveKeyId" | "providerLabel"
+	| "fetchAuth"
+	| "urlFilter"
+	| "deriveKeyId"
+	| "providerLabel"
+	| "authRejectedStatuses"
 > {
 	const auth = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
 	return {
+		// ADO answers a bad/expired PAT with 203 + an HTML sign-in page.
+		authRejectedStatuses: [203],
 		urlFilter: (url) => isAdoAttachmentUrl(url),
 		fetchAuth: (url) =>
 			isAdoAttachmentUrl(url)
@@ -731,7 +748,9 @@ export async function fetchAdoAttachmentRelations(
 				"User-Agent": "Fabric-Sync/1.0 (pm-sync pull)",
 			},
 		});
-		if (!res.ok) {
+		// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+		// true for 203): same outcome as a 401, never parse the body.
+		if (res.status === 203 || !res.ok) {
 			return [];
 		}
 		const data = (await res.json()) as {

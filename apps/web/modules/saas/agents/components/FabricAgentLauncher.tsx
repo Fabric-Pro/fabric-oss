@@ -525,6 +525,7 @@ function FabricAgentLauncherSheet({
 	launchContext,
 	onOpenChange,
 	onClearContext,
+	onResetConversation,
 	onRemoveProject,
 	onPrefillInput,
 	launcherKey,
@@ -536,6 +537,7 @@ function FabricAgentLauncherSheet({
 	launchContext: FabricAgentLaunchContext | null;
 	onOpenChange: (open: boolean) => void;
 	onClearContext: () => void;
+	onResetConversation: () => void;
 	onRemoveProject: () => void;
 	onPrefillInput: (value: string) => void;
 	launcherKey: number;
@@ -1029,7 +1031,7 @@ function FabricAgentLauncherSheet({
 								>
 									<button
 										type="button"
-										onClick={onClearContext}
+										onClick={onResetConversation}
 										className="rounded p-1.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
 										aria-label="Reset conversation"
 									>
@@ -1276,6 +1278,27 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 		setLauncherKey((current) => current + 1);
 	}, []);
 
+	// Starts a fresh chat but keeps its project (#2928): the project decides
+	// which tools the next message gets, so dropping it with the conversation
+	// left a reset drawer without the project's documents and readers. With no
+	// context at all, take the page's project, as a bare reopen would. A
+	// context the user already took the project off stays an object without
+	// one, for the reason `removeLaunchProject` gives.
+	const resetConversation = useCallback(() => {
+		setLaunchContext((previous) => {
+			const source = previous ?? ambientContext;
+			if (source?.projectId) {
+				return {
+					projectId: source.projectId,
+					projectName: source.projectName ?? null,
+				};
+			}
+			return previous ? { projectId: null, projectName: null } : null;
+		});
+		setDraftInput(undefined);
+		setLauncherKey((current) => current + 1);
+	}, [ambientContext]);
+
 	// Drops only the project, keeping the conversation (#2040). The context
 	// stays an object rather than `null`: a bare reopen fills a `null`
 	// context from the page's ambient one, which would bring the project
@@ -1426,6 +1449,7 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 					launchContext={launchContext}
 					onOpenChange={setIsOpen}
 					onClearContext={clearContext}
+					onResetConversation={resetConversation}
 					onRemoveProject={removeLaunchProject}
 					onPrefillInput={(value) => {
 						setDraftInput(value);

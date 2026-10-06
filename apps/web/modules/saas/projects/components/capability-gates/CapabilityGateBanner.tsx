@@ -163,6 +163,68 @@ function CapabilityGateRetryButton({
 	);
 }
 
+/**
+ * How many subjects the banner names before "and N more". Enough to recognise
+ * the usual one or two; a long list belongs on the surface, where each one is
+ * marked in place.
+ */
+const VISIBLE_SUBJECTS = 3;
+
+/**
+ * The specific things a gate is about — the sources that stopped, say.
+ *
+ * Buttons when the surface can take the viewer to one, plain text otherwise: a
+ * name that looks pressable and does nothing is worse than a name.
+ */
+function CapabilityGateSubjects({
+	view,
+	onSubjectSelect,
+}: {
+	view: CapabilityGateView;
+	onSubjectSelect?: (id: string) => void;
+}) {
+	const t = useTranslations("projects.capabilityGates");
+	if (view.subjects.length === 0) {
+		return null;
+	}
+	const shown = view.subjects.slice(0, VISIBLE_SUBJECTS);
+	const more = view.subjectTotal - shown.length;
+
+	return (
+		<ul
+			aria-label={t("subjects.label")}
+			className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm"
+		>
+			{shown.map((subject) => (
+				<li key={subject.id} className="min-w-0 max-w-full">
+					{onSubjectSelect ? (
+						<button
+							type="button"
+							onClick={() => onSubjectSelect(subject.id)}
+							title={subject.label}
+							className="block max-w-[32ch] truncate rounded-sm font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							{subject.label}
+						</button>
+					) : (
+						<span
+							title={subject.label}
+							className="block max-w-[32ch] truncate font-medium text-foreground"
+						>
+							{subject.label}
+						</span>
+					)}
+				</li>
+			))}
+			{more > 0 && (
+				<li className="text-muted-foreground">
+					{t("subjects.more", { count: more })}
+				</li>
+			)}
+		</ul>
+	);
+}
+
 const DURATION_LABEL: Record<SnoozeDuration, string> = {
 	session: "dismiss.session",
 	"1d": "dismiss.oneDay",
@@ -175,6 +237,7 @@ export function CapabilityGateBanner({
 	capabilityKey,
 	onRetry,
 	isRetrying,
+	onSubjectSelect,
 	className,
 }: {
 	capabilityKey: string;
@@ -185,6 +248,12 @@ export function CapabilityGateBanner({
 	 */
 	onRetry?: () => void;
 	isRetrying?: boolean;
+	/**
+	 * Take the viewer to one of the gate's subjects — the Context tab reveals
+	 * and marks the stuck source. Without it the subjects render as plain
+	 * names.
+	 */
+	onSubjectSelect?: (id: string) => void;
 	className?: string;
 }) {
 	const t = useTranslations("projects.capabilityGates");
@@ -249,11 +318,15 @@ export function CapabilityGateBanner({
 				<div className="flex flex-col items-start gap-3 @md:flex-row @md:items-center">
 					<div className="min-w-0 flex-1">
 						<p className="font-semibold text-foreground text-sm">
-							{t(view.title)}
+							{t(view.title, view.params)}
 						</p>
 						<p className="mt-0.5 max-w-[70ch] text-muted-foreground text-sm leading-relaxed">
 							{t(view.body, view.params)}
 						</p>
+						<CapabilityGateSubjects
+							view={view}
+							onSubjectSelect={onSubjectSelect}
+						/>
 					</div>
 
 					<div className="flex shrink-0 items-center gap-2 empty:hidden">

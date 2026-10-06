@@ -11,10 +11,13 @@
  */
 
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
+import {
+	isOrchestratorOrganizationMember,
+	refuseUnlessRunOwner,
+} from "../run-access";
 
 // Rate limit: 10 approval signals per minute per user
 const APPROVAL_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
@@ -120,27 +123,26 @@ export async function POST(request: NextRequest) {
 			const memo = description.memo as
 				| Record<string, unknown>
 				| undefined;
-			const workflowUserId = memo?.userId;
 			const workflowOrgId = memo?.organizationId;
-			if (workflowUserId && workflowUserId !== userId) {
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message:
-							"You are not authorized to approve this workflow",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+			const refusal = await refuseUnlessRunOwner({
+				executionId,
+				userId,
+				memo,
+				notOwnerMessage:
+					"You are not authorized to approve this workflow",
+			});
+			if (refusal) {
+				return refusal;
 			}
 			// Tenant check: verify current org membership
 			if (workflowOrgId) {
-				const member = await db.member.findFirst({
-					where: { userId, organizationId: workflowOrgId as string },
-				});
-				if (!member) {
+				// Membership: one helper for every paired route (../run-access.ts).
+				if (
+					!(await isOrchestratorOrganizationMember(
+						userId,
+						workflowOrgId as string,
+					))
+				) {
 					return new Response(
 						JSON.stringify({
 							error: "Forbidden",

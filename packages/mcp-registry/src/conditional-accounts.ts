@@ -211,7 +211,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 							base: {
 								type: "string",
 								description:
-									"Branch to merge into (usually main)",
+									"Branch to merge into (usually the repository's default branch)",
 							},
 							body: {
 								type: "string",
@@ -282,7 +282,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 							ref: {
 								type: "string",
 								description:
-									"Branch/tag/commit (default: main)",
+									"Branch, tag or commit; omit to use the repository's default branch",
 							},
 						},
 						required: ["owner", "repo", "path"],

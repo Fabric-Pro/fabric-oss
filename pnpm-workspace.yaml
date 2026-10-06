@@ -234,6 +234,8 @@ overrides:
   "js-yaml@^3.0.0": "^3.15.2"
   "js-yaml@^4.0.0": "^4.3.2"
   "postcss@^8.0.0": "^8.5.26"
+  "proxy-addr@^2.0.0": "^2.0.8"
+  "source-map-js@^1.0.0": "^1.2.2"
   "yaml@^2.0.0": "^2.8.3"
   "dompurify@^3.0.0": "^3.4.13"
   "qs@^6.0.0": "^6.16.0"
@@ -289,4 +291,5 @@ allowBuilds:
   "workerd": false
 
 patchedDependencies:
+  '@graphql-tools/utils@10.10.1': patches/@graphql-tools__utils@10.10.1.patch
   braces@3.0.3: patches/braces@3.0.3.patch

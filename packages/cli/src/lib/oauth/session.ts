@@ -30,14 +30,13 @@ import {
 /** A token that expires this soon is refreshed before it is used. */
 export const REFRESH_WINDOW_MS = 60_000;
 
-/** A lock older than this is taken to belong to a process that died. */
+/** An old lock is inspected for a dead owner, then reported for manual recovery. */
 export const LOCK_STALE_MS = 30_000;
 
 const LOCK_POLL_MS = 100;
 /**
- * The longest a waiter waits. Past the stale age a dead holder's lock has been
- * removed, so reaching this means the lock keeps being renewed by someone, and
- * refreshing without it is exactly what must not happen.
+ * The longest a waiter waits. An abandoned lock is refused for manual recovery;
+ * refreshing without a lock is exactly what must not happen.
  */
 const LOCK_WAIT_MS = LOCK_STALE_MS + 5_000;
 
@@ -77,9 +76,11 @@ export class OAuthIssuerMismatchError extends Error {
 }
 
 export class OAuthRefreshBusyError extends Error {
-	constructor() {
+	constructor(lockPath?: string) {
 		super(
-			"Another fabric process is renewing the sign-in and did not finish. Try again.",
+			lockPath
+				? `A previous Fabric process left its sign-in lock at ${JSON.stringify(lockPath)}. Confirm it is no longer running, remove that lock, then try again.`
+				: "Another fabric process is renewing the sign-in and did not finish. Try again.",
 		);
 		this.name = "OAuthRefreshBusyError";
 	}
@@ -89,8 +90,8 @@ export class OAuthRefreshBusyError extends Error {
  * Run `work` while holding the profile's refresh lock.
  *
  * The lock is `exclusive-lock.ts`'s: `O_EXCL` creation, with a holder that
- * crashed removed once its file is older than `LOCK_STALE_MS`. `work` never
- * runs without the lock: a waiter that cannot take it within `LOCK_WAIT_MS`,
+ * crashed reported for manual recovery once its file is older than
+ * `LOCK_STALE_MS`. `work` never runs without the lock: a waiter that cannot take it within `LOCK_WAIT_MS`,
  * or whose `signal` aborts, gives up instead, because two refreshes of one
  * rotating token end the whole sign-in.
  */
@@ -98,9 +99,10 @@ export async function withRefreshLock<T>(
 	work: () => Promise<T>,
 	options: { lockPath?: string; signal?: AbortSignal; waitMs?: number } = {},
 ): Promise<T> {
+	const lockPath = options.lockPath ?? `${getConfigPath()}.refresh.lock`;
 	try {
 		return await withExclusiveLock(work, {
-			lockPath: options.lockPath ?? `${getConfigPath()}.refresh.lock`,
+			lockPath,
 			staleMs: LOCK_STALE_MS,
 			waitMs: options.waitMs ?? LOCK_WAIT_MS,
 			pollMs: LOCK_POLL_MS,
@@ -108,7 +110,7 @@ export async function withRefreshLock<T>(
 		});
 	} catch (error) {
 		throw error instanceof ExclusiveLockBusyError
-			? new OAuthRefreshBusyError()
+			? new OAuthRefreshBusyError(error.abandoned ? lockPath : undefined)
 			: error;
 	}
 }

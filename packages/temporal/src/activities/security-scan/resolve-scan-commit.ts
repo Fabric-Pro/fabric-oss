@@ -121,7 +121,7 @@ export async function resolveScanCommitActivity(
 				organizationId: input.organizationId,
 			});
 			if (authUrl) {
-				const simpleGit = (await import("simple-git")).default;
+				const { simpleGit } = await import("simple-git");
 				const output = await simpleGit().listRemote([
 					authUrl,
 					`refs/heads/${trimmedBranch}`,

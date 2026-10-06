@@ -19,6 +19,9 @@ export type LimitKind =
 	| "context_length"
 	| "provider_overloaded";
 
+/** Which per-run limit stopped an `internal_budget` run. */
+export type BudgetLimit = "tokens" | "iterations";
+
 export interface TokenBudgetStatus {
 	used: number;
 	total: number;
@@ -37,4 +40,9 @@ export interface LimitSignal {
 	retryAfterMs?: number;
 	/** Populated only when kind === "internal_budget". */
 	budget?: TokenBudgetStatus;
+	/**
+	 * The limit that tripped, when kind === "internal_budget". Signals
+	 * recorded before this field existed omit it; read them as "tokens".
+	 */
+	budgetLimit?: BudgetLimit;
 }

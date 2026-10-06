@@ -129,7 +129,9 @@ describe("direct-chat stream organization binding", () => {
 
 describe("orchestrator stream workspace binding", () => {
 	const source = read(ORCHESTRATOR_STREAM_ROUTE);
-	const membershipAt = source.indexOf("db.member.findFirst(");
+	// The organization is resolved and its tie verified by the shared turn
+	// starter helper (orchestrator-temporal/turn-admission.ts).
+	const membershipAt = source.indexOf("await resolveTurnOrganization(");
 	const workflowInputAt = source.indexOf(
 		"const workflowInput: OrchestratorWorkflowInput = {",
 	);
@@ -150,7 +152,8 @@ describe("orchestrator stream workspace binding", () => {
 		const { call } = workspaceFilterCall(source);
 		expect(call).toMatch(/\bworkspaceIds\b/);
 		expect(call).toMatch(/\buserId\b/);
-		expect(call).toContain("organizationId: organizationId ?? null");
+		// The resolved, required organization (never the optional body value).
+		expect(call).toMatch(/\n\s*organizationId,\n/);
 	});
 
 	it("hands the workflow only the filtered list", () => {

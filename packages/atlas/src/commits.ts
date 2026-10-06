@@ -224,7 +224,9 @@ async function adoCount(input: CountCommitsInput): Promise<CountCommitsResult> {
 	const res = await fetch(`${apiBase}/commits?${params.toString()}`, {
 		headers: { Authorization: auth, Accept: "application/json" },
 	});
-	if (!res.ok) {
+	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+	// true for 203): same outcome as a 401, and never parse the body.
+	if (res.status === 203 || !res.ok) {
 		return INCOMPARABLE;
 	}
 	const data = (await res.json()) as {

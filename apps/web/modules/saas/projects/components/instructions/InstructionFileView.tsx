@@ -27,7 +27,7 @@ import {
 } from "@ui/components/tooltip";
 import { PencilIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CommitMessageField } from "./CommitMessageField";
 import {
@@ -135,6 +135,7 @@ function editRefusal(
 export function InstructionFileView({
 	projectId,
 	snapshotId,
+	currentSnapshotId = snapshotId,
 	path,
 	canEdit = false,
 	canCommit = false,
@@ -146,8 +147,11 @@ export function InstructionFileView({
 	publishedVersion = 0,
 	onChanged,
 	onCommitted,
+	onDraftStateChange,
 }: {
 	projectId: string;
+	/** The published snapshot now current, when this pane temporarily holds its predecessor. */
+	currentSnapshotId?: string;
 	snapshotId: string;
 	path: string;
 	/**
@@ -190,6 +194,10 @@ export function InstructionFileView({
 	onChanged?: () => void;
 	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
 	onCommitted?: (commit: { sha: string; ref: string }) => void;
+	/** Lets the parent retain this exact draft while its next file list loads. */
+	onDraftStateChange?: (
+		draft: { snapshotId: string; path: string } | null,
+	) => void;
 }) {
 	const actionError = useInstructionActionError();
 	const { confirm } = useConfirmationAlert();
@@ -324,6 +332,14 @@ export function InstructionFileView({
 		/** The commit message once the person has typed one; the default until then. */
 		message?: string;
 	} | null>(null);
+	useEffect(() => {
+		onDraftStateChange?.(
+			draft === null
+				? null
+				: { snapshotId: draft.snapshotId, path: draft.path },
+		);
+	}, [draft, onDraftStateChange]);
+	useEffect(() => () => onDraftStateChange?.(null), [onDraftStateChange]);
 	const [renameOpen, setRenameOpen] = useState(false);
 	/** Whether a commit to the branch is what the editor's primary action does. */
 	const committing = canCommit && repositoryTarget !== null;
@@ -383,12 +399,17 @@ export function InstructionFileView({
 	// Saveable only while the version it was taken from is still the one this
 	// view is showing.
 	const editingText =
-		draftForPath?.snapshotId === snapshotId ? draftForPath.text : null;
+		draftForPath?.snapshotId === currentSnapshotId &&
+		snapshotId === currentSnapshotId
+			? draftForPath.text
+			: null;
 	// Same text, no longer saveable: the published version moved. Shown
 	// read-only with an explanation, so nothing typed is lost and nothing
 	// typed can be written against a base it was not read from.
 	const staleText =
-		draftForPath && draftForPath.snapshotId !== snapshotId
+		draftForPath &&
+		(draftForPath.snapshotId !== currentSnapshotId ||
+			snapshotId !== currentSnapshotId)
 			? draftForPath.text
 			: null;
 	const editorText = editingText ?? staleText;

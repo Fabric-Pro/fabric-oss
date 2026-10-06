@@ -25,6 +25,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as slackHuddleIngestActivities from "../activities/slack-channel-monitor/ingest-huddle-notes";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 // =============================================================================
 // Types
@@ -67,6 +68,7 @@ export const slackHuddleIngestProgressQuery =
 // =============================================================================
 
 const activities = proxyActivities<typeof slackHuddleIngestActivities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "10 minutes",
 	heartbeatTimeout: "2 minutes",
 	retry: {

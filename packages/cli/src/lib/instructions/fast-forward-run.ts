@@ -11,7 +11,8 @@
  *     the merge runs only if that reserve is still there, so a slow remote can
  *     never leave the hook mid-merge when its deadline passes;
  *   - the lock is `<common dir>/fabric/ff.lock`, taken without waiting: the
- *     loser re-reads where HEAD is and says another process holds the checkout;
+ *     loser re-reads where HEAD is and reports either the active holder or an
+ *     abandoned lock that needs explicit recovery;
  *   - the gate is asked again under the lock, because the checkout may have
  *     changed since it was first read.
  *
@@ -59,7 +60,7 @@ import { appendTrace } from "./hook-trace.js";
 /** What the fetch leaves for the merge and the notice, out of the git budget. */
 export const MERGE_RESERVE_MS = 1_500;
 
-/** A fast-forward lock older than this belongs to a process that died. */
+/** Age after which a fast-forward lock with no live owner is reported abandoned. */
 const FF_LOCK_STALE_MS = 30_000;
 
 type MatchingClassification = Extract<
@@ -241,6 +242,10 @@ async function underLock(
 			return fetched satisfies never;
 	}
 	const tip = fetched.tip;
+	const afterFetch = await factsStillMatch(run, facts, deadline);
+	if (afterFetch !== null) {
+		return afterFetch;
+	}
 	if (tip === head) {
 		return { outcome: { kind: "already-current" }, head };
 	}
@@ -258,6 +263,13 @@ async function underLock(
 				};
 	}
 
+	if (deadline - Date.now() < MERGE_RESERVE_MS) {
+		return { outcome: { kind: "deadline" }, head };
+	}
+	const beforeMerge = await factsStillMatch(run, facts, deadline);
+	if (beforeMerge !== null) {
+		return beforeMerge;
+	}
 	if (deadline - Date.now() < MERGE_RESERVE_MS) {
 		return { outcome: { kind: "deadline" }, head };
 	}
@@ -295,6 +307,39 @@ async function underLock(
 	}
 }
 
+/**
+ * Fetch updates a remote-tracking ref but does not own the checkout. Read all
+ * gate facts again before relying on the branch and HEAD captured under our
+ * lock: a person using Git outside Fabric does not hold that lock.
+ */
+async function factsStillMatch(
+	run: FastForwardRun,
+	expected: FastForwardFacts,
+	deadline: number,
+): Promise<Decision | null> {
+	const facts = await readFacts(run, deadline);
+	if (facts === null) {
+		return unanswered(deadline, expected.state.head);
+	}
+	const gate = fastForwardEligibility(facts);
+	if (!gate.eligible) {
+		return {
+			outcome: { kind: "not-safe", reason: gate.reason },
+			head: facts.state.head,
+		};
+	}
+	if (
+		facts.state.branch !== expected.state.branch ||
+		facts.state.head !== expected.state.head
+	) {
+		return {
+			outcome: { kind: "not-safe", reason: "git-busy" },
+			head: facts.state.head,
+		};
+	}
+	return null;
+}
+
 async function decide(run: FastForwardRun): Promise<Decision> {
 	const { classification, deadline, report } = run;
 	const root = classification.toplevel;
@@ -330,7 +375,12 @@ async function decide(run: FastForwardRun): Promise<Decision> {
 		if (error instanceof ExclusiveLockBusyError) {
 			const now = await git.headSha(root, deadline);
 			return {
-				outcome: { kind: "locked" },
+				outcome: error.abandoned
+					? {
+							kind: "abandoned-lock",
+							lockPath: path.join(directory, "ff.lock"),
+						}
+					: { kind: "locked" },
 				head: now.kind === "ok" ? now.value : head,
 			};
 		}

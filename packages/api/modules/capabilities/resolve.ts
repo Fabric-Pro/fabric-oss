@@ -203,6 +203,8 @@ export function resolveGate(
 		blockingDependency: verdict.blockingDependency,
 		remedy: verdict.remedy,
 		retry,
+		subjects: verdict.subjects ?? [],
+		subjectTotal: verdict.subjectTotal ?? verdict.subjects?.length ?? 0,
 		suppressed: false,
 		fingerprint,
 	};

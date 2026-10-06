@@ -180,6 +180,25 @@ describe("worker bootstrap", () => {
 		);
 	});
 
+	it("keeps legacy commands draining while reserving separate generation and embedding slots", () => {
+		for (const [taskQueue, slots] of [
+			["project-documents", 5],
+			["project-document-generation", 5],
+			["project-embeddings", 3],
+			["project-operations", 5],
+		] as const) {
+			const options = mocks.create.mock.calls.find(
+				([options]) => options.taskQueue === taskQueue,
+			)?.[0];
+			expect(options).toMatchObject({
+				maxConcurrentActivityTaskExecutions: slots,
+			});
+			expect(options?.activities).toBe(
+				mocks.create.mock.calls[0][0].activities,
+			);
+		}
+	});
+
 	it("runs every created worker, the Glossy one included", async () => {
 		const created = await Promise.all(
 			mocks.create.mock.results.map((result) => result.value),
@@ -212,11 +231,11 @@ describe("activity slots and the database pool", () => {
 	});
 
 	it("sizes the pool at half the slot total, rounded up", () => {
-		expect(total()).toBe(89);
+		expect(total()).toBe(102);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
 			String(Math.ceil(total() / 2)),
 		);
-		expect(process.env.DATABASE_POOL_MAX).toBe("45");
+		expect(process.env.DATABASE_POOL_MAX).toBe("51");
 	});
 
 	it("gives every slot entry to exactly one created worker", () => {
@@ -234,7 +253,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(16);
+		expect(createdQueues()).toHaveLength(19);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());

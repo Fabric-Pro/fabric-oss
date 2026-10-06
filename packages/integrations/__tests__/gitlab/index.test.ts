@@ -531,6 +531,72 @@ describe("tool response mapping", () => {
 		expect(result.content).toBe("hello world");
 	});
 
+	it("get_file_contents reads the default branch (HEAD) when no ref is given", async () => {
+		mockFetchOk({
+			content: Buffer.from("x").toString("base64"),
+			encoding: "base64",
+			file_path: "README.md",
+			blob_id: "abc123",
+			size: 1,
+		});
+
+		await executeGitLabTool(
+			"get_file_contents",
+			{ project_id: "1", path: "README.md" },
+			"u",
+			undefined,
+			"tok",
+		);
+
+		const url = new URL(mockFetch.mock.calls[0][0] as string);
+		expect(url.searchParams.get("ref")).toBe("HEAD");
+	});
+
+	it("get_file_contents lists a directory on the default branch when no ref is given", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			json: async () => ({ message: "404 File Not Found" }),
+		});
+		mockFetchOk([
+			{ name: "a.ts", path: "src/a.ts", type: "blob", mode: "x" },
+		]);
+
+		await executeGitLabTool(
+			"get_file_contents",
+			{ project_id: "1", path: "src" },
+			"u",
+			undefined,
+			"tok",
+		);
+
+		// The tree endpoint's ref is optional and defaults to the default branch.
+		const url = new URL(mockFetch.mock.calls[1][0] as string);
+		expect(url.pathname).toMatch(/\/repository\/tree$/);
+		expect(url.searchParams.has("ref")).toBe(false);
+	});
+
+	it("get_file_contents passes an explicit ref through", async () => {
+		mockFetchOk({
+			content: Buffer.from("x").toString("base64"),
+			encoding: "base64",
+			file_path: "README.md",
+			blob_id: "abc123",
+			size: 1,
+		});
+
+		await executeGitLabTool(
+			"get_file_contents",
+			{ project_id: "1", path: "README.md", ref: "develop" },
+			"u",
+			undefined,
+			"tok",
+		);
+
+		const url = new URL(mockFetch.mock.calls[0][0] as string);
+		expect(url.searchParams.get("ref")).toBe("develop");
+	});
+
 	it("get_authenticated_user maps username to login", async () => {
 		mockFetchOk({
 			username: "testuser",

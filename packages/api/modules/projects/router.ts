@@ -107,6 +107,7 @@ import { resolveContextSummaryReferenceProcedure } from "./procedures/contexts/r
 import { restoreContextSummaryVersionProcedure } from "./procedures/contexts/restore-summary-version";
 import { resyncUrlPageProcedure } from "./procedures/contexts/resync-url-page";
 import { resyncUrlSourceProcedure } from "./procedures/contexts/resync-url-source";
+import { retryStalledContextProcedure } from "./procedures/contexts/retry-stalled-context";
 import { summarizeContextProcedure } from "./procedures/contexts/summarize-context";
 import { contextSummaryStatusProcedure } from "./procedures/contexts/summary-status";
 import { updateContextMetadataProcedure } from "./procedures/contexts/update-context-metadata";
@@ -938,6 +939,9 @@ export const projectsRouter = {
 		createBatchDownloadUrl: createContextsBatchDownloadUrlProcedure,
 		processFile: processContextFileProcedure,
 		processLink: processContextLinkProcedure,
+		// A source whose processing stopped partway through (Fizzy #2886) —
+		// the per-row Retry the Context tab's stall banner points at
+		retryStalled: retryStalledContextProcedure,
 		// Context Source Type Labeling (Fizzy #1888) — type label + AI
 		// instructions on any source, independent of the LINK crawl settings
 		updateMetadata: updateContextMetadataProcedure,

@@ -84,7 +84,7 @@ describe("prompt guidance", () => {
 			"src/workflows/orchestrator/phases/iterative-execution.ts",
 		);
 		expect(source).toMatch(
-			/if \(patched\("orch-diagram-inline-mermaid-v1"\)\) \{\s*iterationSystemPrompt \+= `\\n\\n\$\{DIAGRAM_RENDERING_GUIDANCE\}`;\s*\}/,
+			/if \(patched\("orch-diagram-inline-mermaid-v1"\)\) \{\s*systemPrompt \+= `\\n\\n\$\{DIAGRAM_RENDERING_GUIDANCE\}`;\s*\}/,
 		);
 	});
 

@@ -20,6 +20,11 @@ import {
 import { issueAIToken } from "@repo/ai-token";
 import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { Context } from "@temporalio/activity";
+import {
+	activityAbortSignal,
+	assertTurnDispatchable,
+	rethrowIfTurnStopped,
+} from "../turn-dispatch";
 import type {
 	DelegateToAgentInput,
 	DelegateToAgentOutput,
@@ -208,6 +213,10 @@ export async function delegateToAgent(
 
 		return result;
 	} catch (error) {
+		// In a chat turn a stop is not a failed delegation.
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		console.error(
 			`[Orchestrator] A2A delegation to ${agent.name} failed:`,
 			error,
@@ -386,14 +395,35 @@ async function delegateViaA2A(
 	);
 
 	// Send message via secure A2A with tenant context and AI config (for system agents)
-	// Heartbeat while waiting so Temporal doesn't time out long-running agent calls
-	const sendHeartbeat = setInterval(() => {
-		Context.current().heartbeat({
-			status: "delegating_to_agent",
-			agentName: agent.name,
-			elapsedMs: Date.now() - startTime,
-		});
-	}, 15000);
+	// Heartbeat while waiting so Temporal doesn't time out long-running agent
+	// calls. In a chat turn the heartbeat is also how a Stop reaches this
+	// activity, so it ticks at the model rounds' cadence.
+	const sendHeartbeat = setInterval(
+		() => {
+			Context.current().heartbeat({
+				status: "delegating_to_agent",
+				agentName: agent.name,
+				elapsedMs: Date.now() - startTime,
+			});
+		},
+		input.turnScope ? 5_000 : 15_000,
+	);
+	// In a chat turn: the turn record is checked immediately before the
+	// send (after every preflight await above — the endpoint lookup, the
+	// health check, model configuration, token issuance) and before each of
+	// the client's own retries of it; the activity's cancellation aborts the
+	// send and the polling.
+	//
+	// Aborting stops OUR request only. The remote agent is not told to stop:
+	// a synchronous agent runs its work inside the send and returns no task id
+	// until it finishes, and an asynchronous agent's task is simply no longer
+	// polled. Either may keep working (and spending) after the Stop.
+	const turnControl = input.turnScope
+		? {
+				signal: activityAbortSignal(),
+				beforeAttempt: () => assertTurnDispatchable(input.turnScope),
+			}
+		: {};
 
 	let task: Awaited<ReturnType<typeof secureA2aClient.sendMessageSecure>>;
 	try {
@@ -414,6 +444,7 @@ async function delegateViaA2A(
 				},
 				// Pass AI config only to system agents
 				aiConfig: isSystemAgent ? aiConfig : undefined,
+				...turnControl,
 			},
 		);
 	} finally {
@@ -423,13 +454,16 @@ async function delegateViaA2A(
 	// If task is not immediately complete, wait for it
 	if (task.status !== "completed" && task.status !== "failed") {
 		const waitStartTime = Date.now();
-		const heartbeatInterval = setInterval(() => {
-			Context.current().heartbeat({
-				status: "waiting_for_agent",
-				agentName: agent.name,
-				elapsedMs: Date.now() - waitStartTime,
-			});
-		}, 10000);
+		const heartbeatInterval = setInterval(
+			() => {
+				Context.current().heartbeat({
+					status: "waiting_for_agent",
+					agentName: agent.name,
+					elapsedMs: Date.now() - waitStartTime,
+				});
+			},
+			input.turnScope ? 5_000 : 10_000,
+		);
 
 		let completedTask: Awaited<
 			ReturnType<typeof a2aClient.waitForCompletion>
@@ -438,7 +472,12 @@ async function delegateViaA2A(
 			completedTask = await a2aClient.waitForCompletion(
 				agent.deploymentUrl,
 				task.id,
-				{ timeout: input.timeout || 120000 },
+				{
+					timeout: input.timeout || 120000,
+					...(turnControl.signal
+						? { signal: turnControl.signal }
+						: {}),
+				},
 			);
 		} finally {
 			clearInterval(heartbeatInterval);

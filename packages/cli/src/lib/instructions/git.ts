@@ -396,6 +396,110 @@ export async function isClean(
 	);
 }
 
+/**
+ * The subset of `relativePaths` that Git tracks. Callers use this before
+ * changing Fabric-owned local setup, because an untracked file is personal
+ * configuration but a tracked one belongs to the repository.
+ */
+export async function trackedPaths(
+	root: string,
+	relativePaths: readonly string[],
+	deadline: GitDeadline,
+): Promise<GitResult<string[]>> {
+	if (relativePaths.length === 0) {
+		return { kind: "ok", value: [] };
+	}
+	if (
+		relativePaths.some(
+			(relativePath) =>
+				relativePath === "" ||
+				relativePath.startsWith("-") ||
+				path.isAbsolute(relativePath) ||
+				path.win32.isAbsolute(relativePath) ||
+				relativePath.split(/[\\/]/).some((part) => part === ".."),
+		)
+	) {
+		return {
+			kind: "unavailable",
+			reason: "not paths git can be asked about",
+		};
+	}
+	const result = await simple(
+		root,
+		["ls-files", "-z", "--", ...relativePaths],
+		deadline,
+	);
+	if (result.kind !== "ok") {
+		return result;
+	}
+	if (result.value.code !== 0) {
+		return {
+			kind: "unavailable",
+			reason: `git exited with status ${result.value.code}`,
+		};
+	}
+	return {
+		kind: "ok",
+		value: result.value.stdout.split("\0").filter((entry) => entry !== ""),
+	};
+}
+
+/**
+ * A conservative signature of Git having created an empty index but failed to
+ * populate the work tree. It deliberately does not treat ordinary local edits
+ * as interrupted work: a normal dirty checkout still has its tracked index.
+ */
+export async function checkoutAppearsIncomplete(
+	root: string,
+	deadline: GitDeadline,
+): Promise<GitResult<boolean>> {
+	const index = await simple(root, ["ls-files", "--stage", "-z"], deadline);
+	if (index.kind !== "ok") {
+		return index;
+	}
+	if (index.value.code !== 0) {
+		return {
+			kind: "unavailable",
+			reason: `git exited with status ${index.value.code}`,
+		};
+	}
+	if (index.value.stdout !== "") {
+		return { kind: "ok", value: false };
+	}
+	const [headTree, staged, untracked] = await Promise.all([
+		simple(root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"], deadline),
+		simple(root, ["diff", "--cached", "--quiet", "--exit-code"], deadline),
+		simple(
+			root,
+			["ls-files", "--others", "--exclude-standard", "-z"],
+			deadline,
+		),
+	]);
+	if (headTree.kind !== "ok") {
+		return headTree;
+	}
+	if (staged.kind !== "ok") {
+		return staged;
+	}
+	if (untracked.kind !== "ok") {
+		return untracked;
+	}
+	if (
+		headTree.value.code !== 0 ||
+		(staged.value.code !== 0 && staged.value.code !== 1) ||
+		untracked.value.code !== 0
+	) {
+		return { kind: "unavailable", reason: "git answered unexpectedly" };
+	}
+	return {
+		kind: "ok",
+		value:
+			headTree.value.stdout !== "" &&
+			staged.value.code === 1 &&
+			untracked.value.stdout !== "",
+	};
+}
+
 async function porcelainIsEmpty(
 	root: string,
 	args: readonly string[],
@@ -706,6 +810,8 @@ export type CloneFailure =
 	| "network"
 	| "missing-ref"
 	| "not-empty"
+	/** Git downloaded the repository but could not populate the working tree. */
+	| "checkout"
 	| "other";
 
 export type CloneResult =
@@ -720,6 +826,13 @@ export function cloneFailureOf(stderr: string): CloneFailure {
 	}
 	if (/Remote branch .* not found/i.test(stderr)) {
 		return "missing-ref";
+	}
+	if (
+		/Filename too long|unable to create file|unable to checkout working tree/i.test(
+			stderr,
+		)
+	) {
+		return "checkout";
 	}
 	if (
 		/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Permission denied|HTTP (401|403)|error: (401|403)|returned error: (401|403)|Repository not found|access denied/i.test(
@@ -742,11 +855,15 @@ export function cloneFailureOf(stderr: string): CloneFailure {
  * The one write: clone `url` at `ref` into `dir`, which must be an existing,
  * EMPTY directory (git refuses otherwise, and so does the caller, first).
  *
- * Exactly `git clone --branch <ref> -- <url> .`: the clone and its config are
- * what the developer gets cloning by hand, tags included, so later fetches and
- * pulls behave as git's own do. It uses the developer's own credentials and
- * never a prompt (`gitEnvironment`'s `write`). `url` must be a `cloneableUrl`.
- * git's own words are never returned.
+ * Exactly `git clone --branch <ref> -- <url> .`, except that a Windows clone
+ * explicitly enables Git's long-path support and disables its file-system
+ * cache for this NEW repository. Both command settings apply while Git checks
+ * the work tree out, and the local settings make later Git operations in this
+ * clone follow the same rule. No global Git configuration is changed.
+ * The clone otherwise keeps Git's normal config, branches and tags, so later
+ * fetches and pulls behave as Git's own do. It uses the developer's own
+ * credentials and never a prompt (`gitEnvironment`'s `write`). `url` must be
+ * a `cloneableUrl`. git's own words are never returned.
  */
 export async function cloneInto(
 	dir: string,
@@ -762,7 +879,26 @@ export async function cloneInto(
 	}
 	const result = await runGit(
 		dir,
-		["clone", "--quiet", "--branch", ref, "--", url, "."],
+		[
+			...(process.platform === "win32"
+				? ["-c", "core.longpaths=true", "-c", "core.fscache=false"]
+				: []),
+			"clone",
+			"--quiet",
+			...(process.platform === "win32"
+				? [
+						"--config",
+						"core.longpaths=true",
+						"--config",
+						"core.fscache=false",
+					]
+				: []),
+			"--branch",
+			ref,
+			"--",
+			url,
+			".",
+		],
 		deadline,
 		{ write: true },
 	);

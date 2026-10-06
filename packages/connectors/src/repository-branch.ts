@@ -499,6 +499,11 @@ async function resolveAzureDevOpsDefaultBranch(
 		},
 		signal: AbortSignal.timeout(5000),
 	});
+	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is true
+	// for 203): treat it like a 401 and never parse the body.
+	if (response.status === 203) {
+		return null;
+	}
 	if (response.ok) {
 		const data = (await response.json()) as { defaultBranch?: string };
 		return shortBranchName(data.defaultBranch) || null;

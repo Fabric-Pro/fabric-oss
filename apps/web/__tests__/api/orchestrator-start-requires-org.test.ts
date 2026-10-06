@@ -20,6 +20,17 @@ const hasOrganizationTieMock = vi.fn();
 const startWorkflowMock = vi.fn();
 const describeWorkflowMock = vi.fn();
 const memberFindFirstMock = vi.fn(async () => null);
+/** The caller owns "conversation-mine" in "org-active" and nothing else. */
+const conversationFindFirstMock = vi.fn(
+	async (query: {
+		where: { id: string; userId: string; organizationId: string };
+	}) =>
+		query.where.id === "conversation-mine" &&
+		query.where.userId === "user-requires-org-1" &&
+		query.where.organizationId === "org-active"
+			? { id: "conversation-mine" }
+			: null,
+);
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -52,10 +63,18 @@ vi.mock("@repo/temporal", () => ({
 	})),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// Turn admission (see ./_helpers/conversation-turn-db-mocks.ts).
+	...(
+		await import("./_helpers/conversation-turn-db-mocks")
+	).conversationTurnDbMocks(),
 	db: {
 		// No membership row: a project guest has a tie, not a membership.
 		member: { findFirst: memberFindFirstMock },
+		agentConversation: {
+			findFirst: (...args: unknown[]) =>
+				conversationFindFirstMock(...(args as [never])),
+		},
 	},
 	hasOrganizationTie: (...args: unknown[]) => hasOrganizationTieMock(...args),
 }));
@@ -84,6 +103,9 @@ describe("POST orchestrator-temporal — organization is required and verified",
 		delete process.env.REDIS_URL;
 		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
 		hasOrganizationTieMock.mockResolvedValue(true);
+		// Chat starts require a membership row (the paired interactive
+		// routes do too; a project guest's tie alone is not enough).
+		memberFindFirstMock.mockResolvedValue({ id: "member-1" } as never);
 		startWorkflowMock.mockResolvedValue({ workflowId: "wf-1" });
 	});
 
@@ -113,7 +135,7 @@ describe("POST orchestrator-temporal — organization is required and verified",
 			error: "Forbidden",
 			message: "No organization is active for this session",
 		});
-		expect(hasOrganizationTieMock).not.toHaveBeenCalled();
+		expect(memberFindFirstMock).not.toHaveBeenCalled();
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
@@ -132,12 +154,12 @@ describe("POST orchestrator-temporal — organization is required and verified",
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
-	it("refuses a named organization the caller has no tie to", async () => {
+	it("refuses a named organization the caller is not a member of", async () => {
 		getSessionMock.mockResolvedValue({
 			user: { id: USER_ID },
 			session: { activeOrganizationId: "org-mine" },
 		});
-		hasOrganizationTieMock.mockResolvedValue(false);
+		memberFindFirstMock.mockResolvedValue(null);
 
 		const { status, body } = await post({
 			message: "hello",
@@ -146,26 +168,28 @@ describe("POST orchestrator-temporal — organization is required and verified",
 
 		expect(status).toBe(403);
 		expect(body.message).toBe("You are not a member of this organization");
-		expect(hasOrganizationTieMock).toHaveBeenCalledWith(
-			USER_ID,
-			"org-not-mine",
+		expect(memberFindFirstMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { userId: USER_ID, organizationId: "org-not-mine" },
+			}),
 		);
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
-	it("refuses a stale active organization the caller no longer has a tie to", async () => {
+	it("refuses a stale active organization the caller is no longer a member of", async () => {
 		getSessionMock.mockResolvedValue({
 			user: { id: USER_ID },
 			session: { activeOrganizationId: "org-left" },
 		});
-		hasOrganizationTieMock.mockResolvedValue(false);
+		memberFindFirstMock.mockResolvedValue(null);
 
 		const { status } = await post({ message: "hello" });
 
 		expect(status).toBe(403);
-		expect(hasOrganizationTieMock).toHaveBeenCalledWith(
-			USER_ID,
-			"org-left",
+		expect(memberFindFirstMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { userId: USER_ID, organizationId: "org-left" },
+			}),
 		);
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
@@ -179,9 +203,10 @@ describe("POST orchestrator-temporal — organization is required and verified",
 		const { status } = await post({ message: "hello" });
 
 		expect(status).toBe(200);
-		expect(hasOrganizationTieMock).toHaveBeenCalledWith(
-			USER_ID,
-			"org-active",
+		expect(memberFindFirstMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { userId: USER_ID, organizationId: "org-active" },
+			}),
 		);
 		expect(getAIModelWithMetadataMock).toHaveBeenCalledWith(
 			expect.anything(),
@@ -199,6 +224,94 @@ describe("POST orchestrator-temporal — organization is required and verified",
 			userId: USER_ID,
 			organizationId: "org-active",
 		});
+	});
+});
+
+describe("POST orchestrator-temporal — a project guest is refused at start", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.CACHE_HOST;
+		delete process.env.REDIS_URL;
+		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
+		startWorkflowMock.mockResolvedValue({ workflowId: "wf-1" });
+		getSessionMock.mockResolvedValue({
+			user: { id: USER_ID },
+			session: { activeOrganizationId: "org-guest" },
+		});
+	});
+
+	it("F-7: refuses a caller with an organization tie but no membership, as clarify does", async () => {
+		hasOrganizationTieMock.mockResolvedValue(true);
+		memberFindFirstMock.mockResolvedValue(null);
+		const { status, body } = await post({ message: "hello" });
+		expect(status).toBe(403);
+		expect(body.message).toBe("You are not a member of this organization");
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("POST orchestrator-temporal — planner modes keep the legacy path", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		delete process.env.CACHE_HOST;
+		delete process.env.REDIS_URL;
+		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
+		hasOrganizationTieMock.mockResolvedValue(true);
+		memberFindFirstMock.mockResolvedValue({ id: "member-1" } as never);
+		// Chat starts require a membership row (the paired interactive
+		// routes do too; a project guest's tie alone is not enough).
+		memberFindFirstMock.mockResolvedValue({ id: "member-1" } as never);
+		startWorkflowMock.mockResolvedValue({ workflowId: "wf-1" });
+		getSessionMock.mockResolvedValue({
+			user: { id: USER_ID },
+			session: { activeOrganizationId: "org-active" },
+		});
+	});
+
+	it("R1-4: a save_reuse start creates no turn and passes no turnId", async () => {
+		const { admitConversationTurn } = await import("@repo/database");
+		const { status } = await post({
+			message: "hello",
+			executionMode: "save_reuse",
+		});
+		expect(status).toBe(200);
+		expect(vi.mocked(admitConversationTurn)).not.toHaveBeenCalled();
+		const [, options] = startWorkflowMock.mock.calls[0] as [
+			string,
+			{ args: [Record<string, unknown>] },
+		];
+		expect(options.args[0]).not.toHaveProperty("turnId");
+	});
+
+	it("R2-2: refuses a save_reuse start naming another user's conversation", async () => {
+		const { status } = await post({
+			message: "hello",
+			executionMode: "save_reuse",
+			conversationId: "conversation-theirs",
+		});
+		expect(status).toBe(403);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("R2-2: refuses a save_reuse start naming the caller's conversation from another organization", async () => {
+		const { status } = await post({
+			message: "hello",
+			executionMode: "weave",
+			organizationId: "org-other",
+			conversationId: "conversation-mine",
+		});
+		expect(status).toBe(403);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("R2-2: still starts a save_reuse run in the caller's own conversation", async () => {
+		const { status } = await post({
+			message: "hello",
+			executionMode: "save_reuse",
+			conversationId: "conversation-mine",
+		});
+		expect(status).toBe(200);
+		expect(startWorkflowMock).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -250,5 +363,42 @@ describe("GET orchestrator-temporal — tenant check uses organization-tie seman
 
 		expect(status).toBe(403);
 		expect(body.message).toBe("You are not a member of this organization");
+	});
+});
+
+describe("POST orchestrator-temporal — an ambiguous start is retryable", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
+		memberFindFirstMock.mockResolvedValue({ id: "member-1" } as never);
+		getSessionMock.mockResolvedValue({
+			user: { id: USER_ID },
+			session: { activeOrganizationId: "org-active" },
+		});
+	});
+
+	it("R2-F2: answers 409 TURN_PENDING with the executionId, not a 500", async () => {
+		const grpc = Object.assign(
+			new Error("14 UNAVAILABLE: connection reset"),
+			{
+				code: 14,
+				details: "UNAVAILABLE: connection reset",
+				metadata: {},
+			},
+		);
+		startWorkflowMock.mockRejectedValue(
+			Object.assign(new Error("Failed to start Workflow"), {
+				name: "ServiceError",
+				cause: grpc,
+			}),
+		);
+
+		const { status, body } = await post({ message: "hello" });
+
+		expect(status).toBe(409);
+		expect(body).toMatchObject({
+			code: "TURN_PENDING",
+			executionId: expect.stringMatching(/^orch-/),
+		});
 	});
 });

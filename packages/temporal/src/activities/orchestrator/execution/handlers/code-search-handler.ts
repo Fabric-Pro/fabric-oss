@@ -44,6 +44,18 @@ const CODE_TREE_OUTPUT_BUDGET = TOOL_RESULTS.maxChars - 2_000;
  */
 const CODE_SEARCH_FAILURE_NOTE_BUDGET = 1_500;
 
+/** Longest `repo` argument echoed back whole in an error. */
+const ECHO_MAX_REPO_REF = 200;
+
+/** Character budget for the connected-repository list in an error. */
+const CONNECTED_LIST_BUDGET = 1_500;
+
+/**
+ * Longest `directory` argument a `code_tree` result echoes; a longer one is
+ * referred to as "the requested directory" / "the same directory".
+ */
+const ECHO_MAX_DIRECTORY = 300;
+
 /** Tools whose `repo` argument must name a repository connected here. */
 const REPO_FILTERED_TOOLS = new Set([
 	"code_search",
@@ -361,6 +373,12 @@ export class CodeSearchHandler implements StepHandler {
 		// is still connected, and is reported as unreadable, not missing.
 		const requestedRepo =
 			typeof stepInputs?.repo === "string" ? stepInputs.repo.trim() : "";
+		// The model's own reference, echoed back bounded: the advice must
+		// not outgrow the result it is part of.
+		const requestedRepoText =
+			requestedRepo.length <= ECHO_MAX_REPO_REF
+				? requestedRepo
+				: `${requestedRepo.slice(0, ECHO_MAX_REPO_REF)}… (${requestedRepo.length} characters)`;
 		if (REPO_FILTERED_TOOLS.has(toolName) && requestedRepo) {
 			const named = connected.filter((c) => matchesRef(requestedRepo, c));
 			if (named.length === 0) {
@@ -368,16 +386,18 @@ export class CodeSearchHandler implements StepHandler {
 					return failStep(LOOKUP_FAILED);
 				}
 				return failStep(
-					`Repository ${requestedRepo} is not connected to this project. Connected: ${connected
-						.map((c) => `${c.owner}/${c.repo}`)
-						.join(", ")}.`,
+					`Repository ${requestedRepoText} is not connected to this project. Connected: ${boundedList(
+						connected.map((c) => `${c.owner}/${c.repo}`),
+						", ",
+						CONNECTED_LIST_BUDGET,
+					)}.`,
 				);
 			}
 			if (!named.some((c) => c.status === "readable")) {
 				return failStep(
 					named.length === 1
 						? describeUnusable(named[0])
-						: `Repository ${requestedRepo} is connected to this project, but none of its matches could be read. Reconnect it in the project's repository settings.`,
+						: `Repository ${requestedRepoText} is connected to this project, but none of its matches could be read. Reconnect it in the project's repository settings.`,
 				);
 			}
 		}
@@ -891,6 +911,13 @@ export class CodeSearchHandler implements StepHandler {
 				// Connected but unusable repositories were not listed either.
 				listFailures.push(...unusableInScope(repoFilter));
 
+				// The directory as the result names it: echoed when short,
+				// referred to when not, so it never outgrows the budget.
+				const echoDirectory =
+					!!directory && directory.length <= ECHO_MAX_DIRECTORY;
+				const underDirectory = echoDirectory
+					? `under ${directory}`
+					: "under the requested directory";
 				const depthNote =
 					depth === undefined
 						? ""
@@ -912,25 +939,71 @@ export class CodeSearchHandler implements StepHandler {
 				// the view its count describes. Stated once, outside the
 				// bounded list of repositories, and reserved on top of the
 				// notes; an overlong one is named rather than echoed.
-				const listingArgs = [
-					...(directory ? [`directory="${directory}"`] : []),
-					...(depth === undefined ? [] : [`depth=${depth}`]),
-					...(offset > 0 ? [`offset=${offset}`] : []),
-				].join(", ");
+				const listingArgsFor = (offsetText: string | null) =>
+					[
+						...(directory ? [`directory="${directory}"`] : []),
+						...(depth === undefined ? [] : [`depth=${depth}`]),
+						...(offsetText === null
+							? []
+							: [`offset=${offsetText}`]),
+					].join(", ");
+				const listingArgs = listingArgsFor(
+					offset > 0 ? String(offset) : null,
+				);
 				const sharedArgs = !listingArgs
 					? ""
 					: listingArgs.length <= 300
 						? ` (${listingArgs})`
 						: " with the same directory, depth and offset as this request";
+				// Page sizes must not depend on the offset (see `pageSize`
+				// below), so the room for these arguments is reserved as if
+				// the offset had as many digits as the longest listing: the
+				// echoed text is never longer than that, whichever form it
+				// takes. Only an offset past the end of every listing, whose
+				// blocks hold no entries, can widen the reservation.
+				const worstOffset = "9".repeat(
+					Math.max(
+						String(offset).length,
+						...shown.map(
+							({ structure }) =>
+								String(structure.entries.length).length,
+						),
+					),
+				);
+				const reservedArgs = Math.max(
+					sharedArgs.length,
+					Math.min(303, listingArgsFor(worstOffset).length + 3),
+				);
 				const available =
 					CODE_TREE_OUTPUT_BUDGET -
 					preamble.length -
 					tailReserve -
-					sharedArgs.length;
+					reservedArgs;
+				// Each block after the first is preceded by a blank line.
+				const SEPARATOR = 2;
+				// The share a repository's page size is computed against: an
+				// even split of the offset-independent `available`, less a
+				// separator. Admission below may use a larger leftover share,
+				// but a page sized for this one always fits it.
+				const sizingShare =
+					Math.floor(available / Math.max(1, shown.length)) -
+					SEPARATOR;
+				// Only a listing shown alone promises a stride: in a
+				// multi-repository result the repo-filtered follow-up gets a
+				// larger page, so a stride read there would not hold.
+				const promiseStride = shown.length === 1;
 
 				/**
-				 * One repository's block within `share` characters, or null
-				 * when not even its range line and first entry fit.
+				 * One repository's block, sized against `sizingShare` and
+				 * admitted only within `share` characters; null when not
+				 * even its range line and first entry fit.
+				 *
+				 * Every page of a listing holds the same number of entries
+				 * (the last may hold fewer), so offset k·N always starts a
+				 * page and a model can request several pages at once. Pages
+				 * used to be filled greedily to the character budget, so
+				 * their entry counts varied with path length and a stride
+				 * extrapolated from page 1 skipped entries (Fizzy #2941).
 				 */
 				const renderBlock = (
 					repoParams: ResolvedParams,
@@ -965,7 +1038,7 @@ export class CodeSearchHandler implements StepHandler {
 						// Only a truncated tree gets here: an empty, complete
 						// listing is not "shown".
 						return fits(
-							`${repoHeader}No entries${directory ? ` under ${directory}` : ""} in the part of the tree the provider returned.${providerNote}`,
+							`${repoHeader}No entries${directory ? ` ${underDirectory}` : ""} in the part of the tree the provider returned.${providerNote}`,
 						);
 					}
 					if (offset >= total) {
@@ -974,44 +1047,88 @@ export class CodeSearchHandler implements StepHandler {
 							`${repoHeader}Offset ${offset} is past the end of this listing (${total} entries).${providerNote}`,
 						);
 					}
-					const continueWith = (end: number) =>
+					const continueWith = (next: string) =>
 						[
-							`offset=${end}`,
-							...(directory ? [`directory="${directory}"`] : []),
+							`offset=${next}`,
+							...(echoDirectory
+								? [`directory="${directory}"`]
+								: []),
 							...(depth === undefined ? [] : [`depth=${depth}`]),
 							...(isMultiRepo ? [`repo="${repoName}"`] : []),
-						].join(", ");
-					const rangeLine = (end: number) =>
-						end < total
-							? `Showing entries ${offset + 1}–${end} of ${total}. The listing continues: call code_tree again with ${continueWith(end)} for the next entries${narrowHint}.`
-							: `Showing entries ${offset + 1}–${end} of ${total} (end of listing).`;
-					// Reserve the longest range line this page could need.
+						].join(", ") +
+						(directory && !echoDirectory
+							? " and the same directory as this request"
+							: "");
+					const continuingLine = (
+						from: string,
+						end: string,
+						size: string,
+						strides: string,
+					) =>
+						`Showing entries ${from}–${end} of ${total}.${promiseStride ? ` Every page of this listing but the last holds ${size} entries, so pages start at offsets 0, ${strides}, … (they can be requested together).` : ""} The listing continues: call code_tree again with ${continueWith(end)} for the next entries${narrowHint}.`;
+					// The range line reserved for every page is the longest
+					// one any page could need — every number as wide as three
+					// times the total, which bounds each of them — so the
+					// budget, and the page size, do not depend on the offset.
+					// The end-of-listing line is shorter.
+					const wide = "9".repeat(String(3 * total).length);
 					const entryBudget =
-						share -
+						sizingShare -
 						repoHeader.length -
-						rangeLine(offset + 1).length -
-						String(total).length -
+						continuingLine(wide, wide, wide, `${wide}, ${wide}`)
+							.length -
 						providerNote.length -
 						1;
-					const lines: string[] = [];
-					let used = 0;
-					for (const e of structure.entries.slice(
-						offset,
-						offset + maxEntriesPerRepo,
-					)) {
+					// Every line is capped at TREE_LINE_CAP, so an oversized
+					// path cannot shrink the whole listing's page size or
+					// leave its own page empty (Fizzy #2942). A page holds at
+					// least floor(entryBudget / (TREE_LINE_CAP + 1)) entries
+					// — about 18 for a single repository. Below that budget
+					// (more than about ten repositories listed together) a
+					// capped line can still exceed it: the page size may then
+					// be 1 and the block may be named for a separate request,
+					// whose repo-filtered budget holds it.
+					const lines = structure.entries.map((e) => {
 						const below = structure.below?.get(treeKey(e.path));
-						const line = `${e.type === "directory" ? "📁" : "📄"} ${e.path}${below ? ` (${below} entries below)` : ""}`;
+						return renderTreeLine(
+							e.type === "directory" ? "📁" : "📄",
+							e.path,
+							below ? ` (${below} entries below)` : "",
+							TREE_LINE_CAP,
+						);
+					});
+					const pageSize = fixedPageSize(
+						lines,
+						Math.min(maxEntriesPerRepo, total),
+						entryBudget,
+					);
+					const page: string[] = [];
+					let used = 0;
+					for (const line of lines.slice(offset, offset + pageSize)) {
+						// A safety net only: `pageSize` already fits every
+						// run of that many lines; this only drops a capped
+						// line longer than a budget below TREE_LINE_CAP.
 						if (used + line.length + 1 > entryBudget) {
 							break;
 						}
-						lines.push(line);
+						page.push(line);
 						used += line.length + 1;
 					}
-					if (lines.length === 0) {
+					if (page.length === 0) {
 						return null;
 					}
+					const end = offset + page.length;
+					const rangeLine =
+						end < total
+							? continuingLine(
+									String(offset + 1),
+									String(end),
+									String(pageSize),
+									`${pageSize}, ${2 * pageSize}`,
+								)
+							: `Showing entries ${offset + 1}–${end} of ${total} (end of listing).`;
 					return fits(
-						`${repoHeader}${rangeLine(offset + lines.length)}${providerNote}\n${lines.join("\n")}`,
+						`${repoHeader}${rangeLine}${providerNote}\n${page.join("\n")}`,
 					);
 				};
 
@@ -1025,8 +1142,7 @@ export class CodeSearchHandler implements StepHandler {
 					const share = Math.floor(
 						(available - spent) / (shown.length - index),
 					);
-					// Each block after the first is preceded by a blank line.
-					const separator = treeResults.length > 0 ? 2 : 0;
+					const separator = treeResults.length > 0 ? SEPARATOR : 0;
 					const block = renderBlock(
 						repoParams,
 						structure,
@@ -1059,7 +1175,7 @@ export class CodeSearchHandler implements StepHandler {
 					result = `Could not list the repository structure. ${boundedList(listFailures, " ", CODE_TREE_OUTPUT_BUDGET - 200)} This is a read failure, not an empty repository.`;
 				} else if (treeResults.length === 0 && skipped.length === 0) {
 					result = directory
-						? `No files found under ${directory} in connected repositories.`
+						? `No files found ${underDirectory} in connected repositories.`
 						: "No files found in connected repositories.";
 				} else {
 					result = `${preamble}${treeResults.join("\n\n")}${skippedNote}${failureNote}`;
@@ -1159,6 +1275,107 @@ function boundedList(
 		length = next;
 	}
 	return out.join(separator);
+}
+
+/** The fewest path characters a shortened line keeps, start and end. */
+const MIN_SHORTENED_PATH = 24;
+
+/**
+ * Longest rendered `code_tree` entry line, newline excluded. A constant,
+ * not a share of the budget: every view — one repository, several, any
+ * offset — renders a given entry as the same string, so a larger budget
+ * (a repo-filtered request) can only give an equal or larger page size,
+ * since every run of N lines that fits the smaller budget fits the
+ * larger one. A cap that grew with the budget lengthened the shortened
+ * lines in the larger view and could make its page smaller.
+ */
+const TREE_LINE_CAP = 500;
+
+/**
+ * One `code_tree` entry line — `icon path annotation` — at most `cap`
+ * characters. A longer one keeps the start of its path (the directory) and
+ * its end (the file name), joined by "…", and says how long the path was;
+ * the icon and the `(N entries below)` annotation stay whole. When `cap`
+ * cannot hold even a minimally shortened path, the line is returned whole
+ * and the caller's budget check leaves it out — a defence only: with
+ * TREE_LINE_CAP that takes an annotation hundreds of characters long, and
+ * the annotation is a short entry count.
+ */
+function renderTreeLine(
+	icon: string,
+	path: string,
+	annotation: string,
+	cap: number,
+): string {
+	const line = `${icon} ${path}${annotation}`;
+	if (line.length <= cap) {
+		return line;
+	}
+	const marker = ` [path shortened from ${path.length} characters]`;
+	const room =
+		cap - icon.length - 1 - "…".length - annotation.length - marker.length;
+	if (room < MIN_SHORTENED_PATH) {
+		return line;
+	}
+	const slash = path.lastIndexOf("/");
+	const fileName = slash >= 0 ? path.length - slash : path.length;
+	// The file name whole when it fits in three quarters of the room; the
+	// start of the path keeps the rest.
+	const tailLength = Math.min(
+		Math.floor((room * 3) / 4),
+		Math.max(Math.ceil(room / 2), fileName),
+	);
+	let head = path.slice(0, room - tailLength);
+	let tail = path.slice(path.length - tailLength);
+	// Never split a surrogate pair at either cut.
+	if (/[\uD800-\uDBFF]$/.test(head)) {
+		head = head.slice(0, -1);
+	}
+	if (/^[\uDC00-\uDFFF]/.test(tail)) {
+		tail = tail.slice(1);
+	}
+	return `${icon} ${head}…${tail}${annotation}${marker}`;
+}
+
+/**
+ * The largest page size, from 1 to `max`, at which every run of that many
+ * consecutive lines — at any starting entry, not only multiples of the
+ * size — fits `budget` characters, counting a newline after each line. A
+ * run's length only grows with its size, so the largest size is found by
+ * binary search, each candidate checked with one sliding window over the
+ * listing. 1 when no size fits: the caller's per-line check then drops a
+ * line that is longer than the whole budget.
+ */
+function fixedPageSize(
+	lines: readonly string[],
+	max: number,
+	budget: number,
+): number {
+	const cost = lines.map((line) => line.length + 1);
+	const fits = (size: number) => {
+		let sum = 0;
+		for (let i = 0; i < cost.length; i++) {
+			sum += cost[i];
+			if (i >= size) {
+				sum -= cost[i - size];
+			}
+			if (sum > budget) {
+				return false;
+			}
+		}
+		return true;
+	};
+	let lo = 1;
+	let hi = Math.max(1, max);
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (fits(mid)) {
+			lo = mid;
+		} else {
+			hi = mid - 1;
+		}
+	}
+	return lo;
 }
 
 /** A non-negative whole-number entry offset; anything else reads as 0. */

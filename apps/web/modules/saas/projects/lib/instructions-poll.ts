@@ -37,6 +37,29 @@ type PollRow = {
 	readyAt?: string | Date | null;
 };
 
+type PublishConvergenceRun = {
+	snapshotId: string | null;
+	status: string | null;
+};
+
+const PUBLISH_CONVERGENCE_TERMINAL_RUN_STATUSES = new Set([
+	"FAILED",
+	"REJECTED",
+	"NOT_PUBLISHED",
+]);
+
+/** A closed sync that cannot move this snapshot's published pointer. */
+export function publishConvergenceEndedByRun(
+	snapshotId: string,
+	run: PublishConvergenceRun | null | undefined,
+): boolean {
+	return (
+		run?.snapshotId === snapshotId &&
+		run.status !== null &&
+		PUBLISH_CONVERGENCE_TERMINAL_RUN_STATUSES.has(run.status)
+	);
+}
+
 /** One pass of the hourly reaper schedule, as the tab's slack allowance. */
 const ONE_REAPER_CYCLE_MS = 60 * 60 * 1000;
 
@@ -231,6 +254,8 @@ export function instructionsAwaitsPublish(input: {
 	publishedId: string | null | undefined;
 	/** When this tab first saw the newest snapshot READY; null if it has not. */
 	readySince: number | null;
+	/** Latest repository sync receipt, when this snapshot came from a sync. */
+	latestSyncRun?: PublishConvergenceRun | null;
 	now: number;
 	elapsedMs: number;
 }): boolean {
@@ -242,6 +267,9 @@ export function instructionsAwaitsPublish(input: {
 	// there is nothing to converge on: the History dialog's Publish button
 	// invalidates both queries itself when someone uses it.
 	if (newest.publishOnReady === false) {
+		return false;
+	}
+	if (publishConvergenceEndedByRun(newest.id, input.latestSyncRun)) {
 		return false;
 	}
 	if (input.publishedId === newest.id) {

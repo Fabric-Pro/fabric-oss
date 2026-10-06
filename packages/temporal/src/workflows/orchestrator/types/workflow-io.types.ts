@@ -19,9 +19,38 @@ import type { OrchestratorWorkspace } from "./workspace.types";
 // Workflow Input
 // =============================================================================
 
+/**
+ * The chat turn a run belongs to, as activities receive it: the durable
+ * turn row's id plus the execution, user and organization the run carries.
+ * The dispatch check compares all four with the row before every provider
+ * request (activities/orchestrator/turn-dispatch.ts).
+ */
+export interface OrchestratorTurnScope {
+	turnId: string;
+	executionId: string;
+	userId: string;
+	organizationId: string;
+}
+
+/** The turn contract a chat starter speaks; see `turnContractVersion`. */
+export const ORCHESTRATOR_TURN_CONTRACT_VERSION = 1;
+
 export interface OrchestratorWorkflowInput {
 	/** Unique execution ID */
 	executionId: string;
+	/**
+	 * The durable `ConversationTurn` row this run serves, set by every chat
+	 * starter (the Advisor stream route and its non-stream sibling). When
+	 * present — and the run recorded the `orch-turn-cancellation-v1` marker —
+	 * every provider request is preceded by the turn's dispatch check, and
+	 * the run writes the turn's terminal state before it ends. Absent on a
+	 * legacy run (started before turns existed) and on non-chat starters
+	 * (story automations, Weave, project setup), which keep the old
+	 * behaviour.
+	 */
+	turnId?: string;
+	/** `ORCHESTRATOR_TURN_CONTRACT_VERSION` of the starter that set `turnId`. */
+	turnContractVersion?: number;
 	/** User's message/task */
 	message: string;
 	/** Conversation history */

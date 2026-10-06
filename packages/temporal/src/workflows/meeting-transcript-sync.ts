@@ -18,6 +18,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as meetingTranscriptSyncActivities from "../activities/meeting-transcript-sync";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 // =============================================================================
 // Types
@@ -65,6 +66,7 @@ export const meetingTranscriptSyncProgressQuery =
 // =============================================================================
 
 const activities = proxyActivities<typeof meetingTranscriptSyncActivities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "10 minutes",
 	heartbeatTimeout: "2 minutes",
 	retry: {

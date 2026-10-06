@@ -22,6 +22,7 @@ const getTemporalClientMock = vi.fn();
 const getHandleMock = vi.fn();
 const startWorkflowMock = vi.fn();
 const memberFindFirstMock = vi.fn();
+const hasOrganizationTieMock = vi.fn();
 const getConversationWorkspacesMock = vi.fn();
 const filterAccessibleWorkspaceIdsMock = vi.fn();
 const conversationFindFirstMock = vi.fn();
@@ -52,7 +53,12 @@ vi.mock("@repo/temporal", () => ({
 	getTemporalClient: () => getTemporalClientMock(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// Turn admission (see ./_helpers/conversation-turn-db-mocks.ts).
+	...(
+		await import("./_helpers/conversation-turn-db-mocks")
+	).conversationTurnDbMocks(),
+	hasOrganizationTie: (...args: unknown[]) => hasOrganizationTieMock(...args),
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
 	db: {
 		agentConversation: {
@@ -117,13 +123,17 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 			trackUsage: trackUsageMock,
 		});
 		memberFindFirstMock.mockResolvedValue({ id: "member-1" });
+		hasOrganizationTieMock.mockResolvedValue(true);
 		getConversationWorkspacesMock.mockResolvedValue([]);
 		getConversationProjectMock.mockResolvedValue(null);
 		// The caller owns "conversation-1" in ORGANIZATION_ID; nothing else.
 		conversationFindFirstMock.mockImplementation(
-			async (query: { where: { id: string; userId: string } }) =>
+			async (query: {
+				where: { id: string; userId: string; organizationId?: string };
+			}) =>
 				query.where.id === "conversation-1" &&
-				query.where.userId === SESSION_USER_ID
+				query.where.userId === SESSION_USER_ID &&
+				query.where.organizationId === ORGANIZATION_ID
 					? {
 							id: "conversation-1",
 							organizationId: ORGANIZATION_ID,
@@ -206,7 +216,7 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 		expect(startedWorkspaceIds()).toEqual(["ws-ok-attached"]);
 	});
 
-	it("ignores a conversation the caller does not own: nothing adopted, nothing forwarded", async () => {
+	it("refuses a conversation the caller does not own: nothing adopted, nothing started", async () => {
 		getConversationWorkspacesMock.mockResolvedValue([
 			{ workspace: { id: "ws-ok-theirs" } },
 		]);
@@ -214,43 +224,43 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 			project: { id: "project-theirs" },
 		});
 
-		await post({
+		const response = await post({
 			message: "hello",
 			organizationId: ORGANIZATION_ID,
 			conversationId: "conversation-of-someone-else",
 		});
 
+		// An explicitly named conversation the caller cannot access is
+		// refused, not silently dropped (the turn would otherwise run
+		// detached from the conversation the user was looking at).
+		expect(response.status).toBe(403);
 		expect(conversationFindFirstMock).toHaveBeenCalledWith({
 			where: {
 				id: "conversation-of-someone-else",
 				userId: SESSION_USER_ID,
+				organizationId: ORGANIZATION_ID,
 			},
-			select: { id: true, organizationId: true },
+			select: { id: true },
 		});
 		expect(getConversationWorkspacesMock).not.toHaveBeenCalled();
 		expect(getConversationProjectMock).not.toHaveBeenCalled();
-		expect(startedInput()?.conversationId).toBeUndefined();
-		expect(startedInput()?.projectId).toBeUndefined();
-		expect(startedWorkspaceIds()).toEqual([]);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
-	it("ignores the caller's own conversation from another organization", async () => {
-		conversationFindFirstMock.mockResolvedValue({
-			id: "conversation-1",
-			organizationId: "another-org",
-		});
+	it("refuses the caller's own conversation from another organization", async () => {
 		getConversationWorkspacesMock.mockResolvedValue([
 			{ workspace: { id: "ws-ok-other-org" } },
 		]);
 
-		await post({
+		const response = await post({
 			message: "hello",
-			organizationId: ORGANIZATION_ID,
+			organizationId: "another-org",
 			conversationId: "conversation-1",
 		});
 
+		expect(response.status).toBe(403);
 		expect(getConversationWorkspacesMock).not.toHaveBeenCalled();
-		expect(startedInput()?.conversationId).toBeUndefined();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
 	it("forwards an owned conversation to the workflow", async () => {

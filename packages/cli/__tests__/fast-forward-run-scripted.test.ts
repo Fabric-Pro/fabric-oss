@@ -33,6 +33,8 @@ const { scripted } = vi.hoisted(() => ({
 		fetch: vi.fn(),
 		merge: vi.fn(),
 		ancestor: vi.fn(),
+		factReads: 0,
+		advanceAtFactRead: null as number | null,
 		commonDir: "",
 	},
 }));
@@ -43,7 +45,13 @@ vi.mock("../src/lib/instructions/git.js", () => {
 			? { kind: "unavailable" as const, reason: "git timed out" }
 			: { kind: "ok" as const, value };
 	return {
-		currentBranch: async () => ok(scripted.branch),
+		currentBranch: async () => {
+			scripted.factReads += 1;
+			if (scripted.advanceAtFactRead === scripted.factReads) {
+				vi.setSystemTime(deadline - MERGE_RESERVE_MS + 1);
+			}
+			return ok(scripted.branch);
+		},
 		headSha: async () => ok(scripted.head),
 		isClean: async () => ok(scripted.clean),
 		operationInProgress: async () => ok(null),
@@ -139,6 +147,8 @@ beforeEach(async () => {
 	scripted.merge.mockResolvedValue({ kind: "merged", head: TIP });
 	scripted.ancestor.mockReset();
 	scripted.ancestor.mockResolvedValue({ kind: "ok", value: true });
+	scripted.factReads = 0;
+	scripted.advanceAtFactRead = null;
 });
 
 afterEach(() => {
@@ -171,6 +181,37 @@ describe("a fast-forward that works", () => {
 
 	it("reserves a second and a half for the merge", () => {
 		expect(MERGE_RESERVE_MS).toBe(1_500);
+	});
+
+	it("does not merge when another Git process changes branches during the fetch", async () => {
+		scripted.fetch.mockImplementation(async () => {
+			scripted.branch = "feature/other";
+			scripted.upstream = "origin/feature/other";
+			return { kind: "fetched", tip: TIP };
+		});
+
+		const result = await run();
+
+		expect(result.outcome).toEqual({
+			kind: "not-safe",
+			reason: "wrong-branch",
+		});
+		expect(scripted.merge).not.toHaveBeenCalled();
+	});
+
+	it("does not merge when HEAD changes after ancestry was checked", async () => {
+		scripted.ancestor.mockImplementation(async () => {
+			scripted.head = "c".repeat(40);
+			return { kind: "ok", value: true };
+		});
+
+		const result = await run();
+
+		expect(result.outcome).toEqual({
+			kind: "not-safe",
+			reason: "git-busy",
+		});
+		expect(scripted.merge).not.toHaveBeenCalled();
 	});
 });
 
@@ -284,6 +325,15 @@ describe("the budget", () => {
 		const result = await run();
 
 		expect(result.outcome.kind).toBe("fast-forwarded");
+	});
+
+	it("does not start a merge when the final facts read consumes its reserve", async () => {
+		scripted.advanceAtFactRead = 4;
+
+		const result = await run();
+
+		expect(result.outcome).toEqual({ kind: "deadline" });
+		expect(scripted.merge).not.toHaveBeenCalled();
 	});
 
 	it("is a deadline when git cannot answer and the budget is gone", async () => {

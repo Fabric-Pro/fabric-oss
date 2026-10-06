@@ -49,20 +49,27 @@ const tx = {
 	$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
 };
 
-vi.mock("../prisma/client", () => ({
-	db: {
-		projectInstructionSnapshot: m.snapshot,
-		projectInstructionFile: m.file,
-		project: m.project,
-		$transaction: m.$transaction,
-		$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
-	},
-	Prisma: {
-		PrismaClientKnownRequestError: FakePrismaKnownRequestError,
-		JsonNull: "JsonNull",
-		DbNull: "DbNull",
-	},
-}));
+vi.mock("../prisma/client", async () => {
+	const { empty, sqltag } = await vi.importActual<
+		typeof import("@prisma/client/runtime/client")
+	>("@prisma/client/runtime/client");
+	return {
+		db: {
+			projectInstructionSnapshot: m.snapshot,
+			projectInstructionFile: m.file,
+			project: m.project,
+			$transaction: m.$transaction,
+			$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
+		},
+		Prisma: {
+			PrismaClientKnownRequestError: FakePrismaKnownRequestError,
+			JsonNull: "JsonNull",
+			DbNull: "DbNull",
+			empty,
+			sql: sqltag,
+		},
+	};
+});
 vi.mock("../prisma/queries/audit-log", () => ({
 	recordAuditTx: m.recordAuditTx,
 }));
@@ -320,8 +327,7 @@ describe("markInstructionSnapshotReady: deferredScan", () => {
 	};
 
 	it("writes READY and the PENDING scan in ONE conditional statement", async () => {
-		m.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
-		m.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		m.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 
 		expect(
 			await markInstructionSnapshotReady({
@@ -329,33 +335,21 @@ describe("markInstructionSnapshotReady: deferredScan", () => {
 				deferredScan: true,
 			}),
 		).toEqual({ changed: true });
-		expect(m.snapshot.updateMany).toHaveBeenCalledTimes(1);
-		expect(m.snapshot.updateMany).toHaveBeenCalledWith({
-			where: {
-				id: "snap_9",
-				projectId: "proj_1",
-				organizationId: "org_1",
-				status: { notIn: ["READY", "REJECTED"] },
-			},
-			data: expect.objectContaining({
-				status: "READY",
-				deferredScanStatus: "PENDING",
-			}),
-		});
+		const [statement] = m.$queryRaw.mock.calls[0] as [
+			{ sql: string; values: unknown[] },
+		];
+		expect(statement.sql).toContain("FOR UPDATE");
+		expect(statement.sql).toContain("\"status\" = 'READY'");
+		expect(statement.sql).toContain("\"deferredScanStatus\" = 'PENDING'");
 	});
 
 	it("leaves the scan column alone on the ordinary path", async () => {
-		m.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
-		m.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		m.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 
 		await markInstructionSnapshotReady(input);
 
-		const data = (
-			m.snapshot.updateMany.mock.calls[0]?.[0] as {
-				data: Record<string, unknown>;
-			}
-		).data;
-		expect(data).not.toHaveProperty("deferredScanStatus");
+		const [statement] = m.$queryRaw.mock.calls[0] as [{ sql: string }];
+		expect(statement.sql).not.toContain("deferredScanStatus");
 	});
 });
 

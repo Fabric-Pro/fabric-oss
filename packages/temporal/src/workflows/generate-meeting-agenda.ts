@@ -23,9 +23,11 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { generateAgendaActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	// Four parallel collector reads plus one COMPLEX-tier LLM call.
 	startToCloseTimeout: "300s",
 	heartbeatTimeout: "2 minutes",
@@ -46,6 +48,7 @@ const { generateAgendaActivity } = proxyActivities<typeof activities>({
 // inherit the generous generation timeout, or a failing run stays GENERATING
 // for another five minutes.
 const { markAgendaFailedActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30s",
 	retry: { maximumAttempts: 3 },
 });

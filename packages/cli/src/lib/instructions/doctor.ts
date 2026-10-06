@@ -33,7 +33,7 @@
  *     and overwriting files are a person's decisions.
  *   - It touches the network for three reasons only: the key check, the
  *     published manifest, and — when the published declaration is not
- *     already on disk and current — the bundle that carries it. `.mcp.json`
+ *     already on disk and current — its verified download. `.mcp.json`
  *     `url` servers are probed only under `--probe-network`, with no headers
  *     from the config, no redirects followed, and the body never read.
  */
@@ -41,6 +41,7 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type {
+	FabricClient,
 	InstructionDownload,
 	InstructionManifestEntry,
 	PublishedInstructionRepository,
@@ -56,6 +57,7 @@ import {
 } from "../launcher.js";
 import { DEFAULT_ORIGIN } from "../origin.js";
 import { NO_LINE_FOR_ADDRESS } from "../shell-words.js";
+import type { AgentMcpFact } from "./agent-mcp-config.js";
 import { extractBundle } from "./bundle.js";
 import {
 	type CheckoutReport,
@@ -82,7 +84,7 @@ import {
 	sanitizeDisplayText,
 	TOOL_NAME,
 } from "./checks.js";
-import type { AgentMcpFact } from "./agent-mcp-config.js";
+import { fetchFilesByUrl, PublishedChangedError } from "./file-downloads.js";
 import {
 	buildHookArguments,
 	findSessionStartHooks,
@@ -110,15 +112,17 @@ import {
 } from "./path-lookup.js";
 import { findLedgerDrift, type LedgerDriftReason } from "./plan.js";
 import { readFileSafely } from "./safe-write.js";
+import { IN_MEMORY_SNAPSHOT_BYTES } from "./staged-files.js";
 
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
 
-/** The two server calls doctor makes on the manifest client. */
+/** The scoped server reads doctor needs. */
 interface DoctorClient {
 	auth: { whoami(): Promise<WhoamiResult> };
 	instructions: {
+		createFileDownloadUrls?: FabricClient["instructions"]["createFileDownloadUrls"];
 		getPublished(
 			projectId: string,
 			options: { org?: string },
@@ -2064,29 +2068,62 @@ async function downloadDeclaration(
 	let entry = initialEntry;
 
 	for (let attempt = 0; attempt < 2; attempt++) {
-		let download: InstructionDownload;
 		try {
-			download = await input.createDownloadUrl(input.projectId, {
+			if (
+				manifest.reduce((total, file) => total + file.size, 0) >
+				IN_MEMORY_SNAPSHOT_BYTES
+			) {
+				const instructions = client().instructions;
+				const sign =
+					instructions.createFileDownloadUrls?.bind(instructions);
+				if (!sign) {
+					return {
+						kind: "unreadable",
+						status: "fail",
+						detail: "this CLI cannot read a declaration from a large snapshot",
+						fix: fixOf(
+							"run the latest CLI from the project's Connect dialog",
+						),
+					};
+				}
+				const files = await fetchFilesByUrl({
+					client: { instructions: { createFileDownloadUrls: sign } },
+					projectId: input.projectId,
+					org: input.org,
+					digest: snapshot.digest,
+					files: [entry],
+					timeoutMs: 30_000,
+					fetchImpl: input.fetchImpl,
+				});
+				const bytes = files.get(entry.path);
+				if (!bytes) {
+					throw new Error("Published declaration missing");
+				}
+				return parseDeclarationBytes(bytes, "published");
+			}
+			const download = await input.createDownloadUrl(input.projectId, {
 				org: input.org,
 			});
+			if (
+				download.snapshotId === snapshot.id &&
+				download.digest === snapshot.digest
+			) {
+				return fetchVerifiedDeclaration(
+					input,
+					download.url,
+					manifest,
+					entry,
+				);
+			}
 		} catch (error) {
-			return {
-				kind: "unreadable",
-				status: "fail",
-				detail: `could not download the published declaration (${requestFailureClass(error)})`,
-				fix: fixOf(NETWORK_FIX),
-			};
-		}
-		if (
-			download.snapshotId === snapshot.id &&
-			download.digest === snapshot.digest
-		) {
-			return fetchVerifiedDeclaration(
-				input,
-				download.url,
-				manifest,
-				entry,
-			);
+			if (!(error instanceof PublishedChangedError)) {
+				return {
+					kind: "unreadable",
+					status: "fail",
+					detail: `could not download the published declaration (${requestFailureClass(error)})`,
+					fix: fixOf(NETWORK_FIX),
+				};
+			}
 		}
 		if (attempt > 0) {
 			break;

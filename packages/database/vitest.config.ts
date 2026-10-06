@@ -25,6 +25,10 @@ const INTEGRATION_TESTS = [
 	// Workflow execution in-flight cap under concurrent reservations (a
 	// tenant-keyed advisory lock; a mocked client cannot show it honoured).
 	"__tests__/workflow-execution-reservation.integration.test.ts",
+	// Conversation turn admission, cancel tombstones and terminal ordering
+	// (advisory locks and conditional UPDATEs; a mocked client cannot show
+	// either honoured).
+	"__tests__/conversation-turn-admission.integration.test.ts",
 	// Excalidraw default-MCP backfill migration replay.
 	// Requires DATABASE_URL to run the migration's data-write steps
 	// against a real Postgres. The test's

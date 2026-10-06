@@ -32,6 +32,7 @@ import type {
 	postDiscoveryQuestions as PostDiscoveryQuestionsFn,
 	setDiscoveryRunStatus as SetDiscoveryRunStatusFn,
 } from "../activities/discovery";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 // =============================================================================
 // Types
@@ -94,6 +95,7 @@ export const discoveryProgressQuery =
 const { gatherDiscoveryEvidence } = proxyActivities<{
 	gatherDiscoveryEvidence: typeof GatherDiscoveryEvidenceFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "60 seconds",
 	retry: {
@@ -106,6 +108,7 @@ const { gatherDiscoveryEvidence } = proxyActivities<{
 const { draftIntegrationContract } = proxyActivities<{
 	draftIntegrationContract: typeof DraftIntegrationContractFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "90 seconds",
 	retry: {
@@ -119,6 +122,7 @@ const { persistIntegrationContract, postDiscoveryQuestions } = proxyActivities<{
 	persistIntegrationContract: typeof PersistIntegrationContractFn;
 	postDiscoveryQuestions: typeof PostDiscoveryQuestionsFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1 minute",
 	retry: {
 		initialInterval: "2s",
@@ -130,6 +134,7 @@ const { persistIntegrationContract, postDiscoveryQuestions } = proxyActivities<{
 const { setDiscoveryRunStatus } = proxyActivities<{
 	setDiscoveryRunStatus: typeof SetDiscoveryRunStatusFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30 seconds",
 	retry: {
 		initialInterval: "1s",

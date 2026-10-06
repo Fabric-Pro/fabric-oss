@@ -127,6 +127,12 @@ export async function validateAzureDevOpsPat({
 		},
 	);
 
+	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page; `ok` is true
+	// for 203, so treat it as the 401 callers already map to "Invalid PAT".
+	if (response.status === 203) {
+		return { ok: false, status: 401 };
+	}
+
 	if (response.ok) {
 		return { ok: true };
 	}
@@ -195,8 +201,10 @@ export async function listAzureDevOpsProjectsAndRepos({
 		{ headers },
 	);
 
-	if (!projectsResponse.ok) {
-		const { status } = projectsResponse;
+	if (projectsResponse.status === 203 || !projectsResponse.ok) {
+		// 203 = ADO sign-in page for a bad PAT; same as 401.
+		const status =
+			projectsResponse.status === 203 ? 401 : projectsResponse.status;
 		return {
 			configured: true,
 			organization,
@@ -222,9 +230,10 @@ export async function listAzureDevOpsProjectsAndRepos({
 			{ headers },
 		);
 
-		if (!reposResponse.ok) {
-			// One project failing (e.g. a project the PAT can list but not read
-			// repos in) must not abort discovery — skip it and continue.
+		if (reposResponse.status === 203 || !reposResponse.ok) {
+			// 203 = ADO sign-in page for a bad PAT; same path as 401. One project
+			// failing (e.g. a project the PAT can list but not read repos in)
+			// must not abort discovery — skip it and continue.
 			continue;
 		}
 

@@ -421,7 +421,18 @@ describe("code_tree depth limits the listing before it is paged", () => {
 	])(
 		"asks for a repository that did not fit with the same arguments (%s)",
 		async (directory, offset, advice) => {
-			h.repos = [REPO, { ...REPO, repo: "api" }];
+			// Twenty repositories leave each too small a share to hold even
+			// a shortened path, so a repository whose paths are too long
+			// for its share is left out. (With a share large enough, an
+			// overlong path is shortened and listed instead:
+			// code-search-handler-fixed-page-size.test.ts.)
+			h.repos = [
+				REPO,
+				...Array.from({ length: 19 }, (_, i) => ({
+					...REPO,
+					repo: `api-${i}`,
+				})),
+			];
 			// Folder names too long for a repository's share of the result.
 			const long = (n: number) =>
 				`${directory}/${String(n).repeat(6_000)}`;
@@ -457,7 +468,7 @@ describe("code_tree depth limits the listing before it is paged", () => {
 			expect(text).toContain(
 				`${advice}: repo="example-org/app" (2 entries)`,
 			);
-			expect(text).not.toContain("and 1 more");
+			expect(text).not.toMatch(/and \d+ more/);
 		},
 	);
 
@@ -554,7 +565,12 @@ describe("code_tree depth limits the listing before it is paged", () => {
 		const text = String(
 			((await call("code_tree", {})) as { output: unknown }).output,
 		);
-		expect(text).toContain("of 15062. The listing continues");
+		// The page-size sentence sits between the count and the
+		// continuation (code-search-handler-fixed-page-size.test.ts).
+		expect(text).toContain(
+			"of 15062. Every page of this listing but the last holds",
+		);
+		expect(text).toContain("The listing continues");
 		expect(text).toContain(
 			"For an overview, depth=1 lists only the top level.",
 		);

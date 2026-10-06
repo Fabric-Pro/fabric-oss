@@ -34,6 +34,7 @@ const WORKFLOW_NAME = "codeIndexingWorkflow";
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
 let legacyBundle: WorkflowBundleWithSourceMap;
+let preSummariesBundle: WorkflowBundleWithSourceMap;
 let taskQueueSeq = 0;
 
 beforeAll(async () => {
@@ -41,26 +42,38 @@ beforeAll(async () => {
 	workflowBundle = await bundleWorkflowCode({
 		workflowsPath: WORKFLOWS_PATH,
 	});
-	// Record genuine activity histories with the new patch disabled. These retain
-	// the old preparation, slice commands and short finalization timeout.
-	const dir = mkdtempSync(join(WORKFLOWS_PATH, ".code-index-replay-"));
-	try {
-		const source = readFileSync(
-			join(WORKFLOWS_PATH, "code-indexing.ts"),
-			"utf8",
-		)
-			.replace('patched("code-index-worker-local-consumers-v1")', "false")
-			.replace(
-				'"./code-indexing-incremental"',
-				'"../code-indexing-incremental"',
+	// Record genuine activity histories with one patch disabled: the
+	// worker-local patch (old preparation, slice commands and short
+	// finalization timeout) or the summaries patch (one try/catch around the
+	// whole summaries loop).
+	const bundleWithout = async (patchId: string) => {
+		const dir = mkdtempSync(join(WORKFLOWS_PATH, ".code-index-replay-"));
+		try {
+			const original = readFileSync(
+				join(WORKFLOWS_PATH, "code-indexing.ts"),
+				"utf8",
 			);
-		writeFileSync(join(dir, "workflow.ts"), source);
-		legacyBundle = await bundleWorkflowCode({
-			workflowsPath: join(dir, "workflow.ts"),
-		});
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
+			const source = original
+				.replace(`patched("${patchId}")`, "false")
+				.replace(
+					'"./code-indexing-incremental"',
+					'"../code-indexing-incremental"',
+				);
+			if (source.includes(`patched("${patchId}")`)) {
+				throw new Error(`${patchId} is evaluated more than once`);
+			}
+			writeFileSync(join(dir, "workflow.ts"), source);
+			return await bundleWorkflowCode({
+				workflowsPath: join(dir, "workflow.ts"),
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
+	legacyBundle = await bundleWithout("code-index-worker-local-consumers-v1");
+	preSummariesBundle = await bundleWithout(
+		"code-index-summaries-resilient-v1",
+	);
 }, 180_000);
 
 afterAll(async () => {
@@ -721,4 +734,237 @@ describe("codeIndexingWorkflow — compatibility", () => {
 			named(calls, "chunkAndEmbedBatchActivity")[0].args[0],
 		).not.toHaveProperty("repository");
 	});
+});
+
+/**
+ * File summaries fail per batch, get one re-pass, and whatever is still
+ * missing reaches finalize as a count. Before this, the first failing batch
+ * abandoned every batch after it and only `errorCount` said so.
+ */
+describe("codeIndexingWorkflow — summaries survive a failing batch", () => {
+	// 150 files: three summaries batches, at offsets 0, 50 and 100.
+	const THREE_BATCHES: Overrides = {
+		prepareRepositoryMetadataActivity: async () => ({
+			clone: {
+				clonePath: CLONE_PATH,
+				commitSha: "abc123",
+				branch: "main",
+			},
+			scan: { secretsFound: 0, redactionManifest: [] },
+			tree: {
+				manifestPath: MANIFEST_PATH,
+				totalFiles: 150,
+				skippedFiles: 0,
+			},
+		}),
+	};
+
+	const startIndex = (args: unknown[]) =>
+		(args[0] as { repositoryBatch: { startIndex: number } }).repositoryBatch
+			.startIndex;
+
+	/** Summaries by batch offset; `script` answers each call in turn. */
+	function summaries(
+		script: Record<
+			number,
+			Array<"throw" | { summariesCreated: number; failedFiles: number }>
+		>,
+	) {
+		const seen = new Map<number, number>();
+		return async (...args: unknown[]) => {
+			const offset = startIndex(args);
+			const attempt = seen.get(offset) ?? 0;
+			seen.set(offset, attempt + 1);
+			const answer = script[offset]?.[attempt] ?? {
+				summariesCreated: 50,
+				failedFiles: 0,
+			};
+			if (answer === "throw") {
+				fail(`summaries batch ${offset} failed`);
+			}
+			return {
+				...answer,
+				errors: Array(answer.failedFiles).fill("Failed to read a file"),
+			};
+		};
+	}
+
+	const summaryOffsets = (calls: Call[]) =>
+		named(calls, "generateMaterializedFileSummariesActivity").map((c) =>
+			startIndex(c.args),
+		);
+
+	const finalizeInput = (calls: Call[]) =>
+		named(calls, "updateMaterializedCodeIndexActivity")[0]?.args[0] as
+			| Record<string, unknown>
+			| undefined;
+
+	it("re-runs a batch that threw once, and later batches still run", async () => {
+		const { calls, result } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: summaries({
+				50: ["throw"],
+			}),
+		});
+
+		expect(summaryOffsets(calls)).toEqual([0, 50, 100, 50]);
+		expect(finalizeInput(calls)).toMatchObject({
+			summariesCreated: 150,
+			summariesFailed: 0,
+			summariesTotal: 150,
+		});
+		expect(result?.success).toBe(true);
+		expect(named(calls, "failCodeIndexActivity")).toHaveLength(0);
+	});
+
+	it("reports a batch that threw twice as wholly unsummarized, and still finalizes", async () => {
+		const { calls, result } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: summaries({
+				50: ["throw", "throw"],
+			}),
+		});
+
+		expect(summaryOffsets(calls)).toEqual([0, 50, 100, 50]);
+		expect(finalizeInput(calls)).toMatchObject({
+			summariesCreated: 100,
+			summariesFailed: 50,
+			summariesTotal: 150,
+		});
+		// The run reports the error, but the row goes READY: finalize ran and
+		// nothing failed the index.
+		expect(result?.success).toBe(false);
+		expect(named(calls, "failCodeIndexActivity")).toHaveLength(0);
+	});
+
+	it("re-runs a batch that returned per-file errors, replacing its first result", async () => {
+		const { calls, result } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: summaries({
+				0: [
+					{ summariesCreated: 47, failedFiles: 3 },
+					{ summariesCreated: 50, failedFiles: 0 },
+				],
+			}),
+		});
+
+		expect(summaryOffsets(calls)).toEqual([0, 50, 100, 0]);
+		// 150, not 197: the re-run's count replaces the partial first one.
+		expect(finalizeInput(calls)).toMatchObject({
+			summariesCreated: 150,
+			summariesFailed: 0,
+		});
+		expect(result?.success).toBe(true);
+	});
+
+	it("keeps a partial batch's first result when its re-run throws", async () => {
+		const { calls } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: summaries({
+				100: [{ summariesCreated: 45, failedFiles: 5 }, "throw"],
+			}),
+		});
+
+		expect(finalizeInput(calls)).toMatchObject({
+			summariesCreated: 145,
+			summariesFailed: 5,
+		});
+	});
+
+	it("counts the files, not the error strings, of a batch whose embed call failed", async () => {
+		const { calls } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: async (...args) => {
+				if (startIndex(args) === 100) {
+					return {
+						summariesCreated: 0,
+						errors: ["Batch embedding failed: rate limited"],
+						failedFiles: 50,
+					};
+				}
+				return { summariesCreated: 50, errors: [], failedFiles: 0 };
+			},
+		});
+
+		expect(finalizeInput(calls)).toMatchObject({
+			summariesCreated: 100,
+			summariesFailed: 50,
+		});
+	});
+
+	it("falls back to the error count for a result without failedFiles", async () => {
+		const { calls } = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: async (...args) =>
+				startIndex(args) === 0
+					? { summariesCreated: 48, errors: ["a", "b"] }
+					: { summariesCreated: 50, errors: [] },
+		});
+
+		expect(finalizeInput(calls)).toMatchObject({ summariesFailed: 2 });
+	});
+
+	it("the unpatched loop still abandons the batches after a failure, with no count", async () => {
+		const { calls, result } = await runWorkflow(
+			{
+				...THREE_BATCHES,
+				generateMaterializedFileSummariesActivity: summaries({
+					50: ["throw"],
+				}),
+			},
+			{},
+			preSummariesBundle,
+		);
+
+		expect(summaryOffsets(calls)).toEqual([0, 50]);
+		expect(result?.success).toBe(false);
+		const finalize = finalizeInput(calls);
+		expect(finalize).toMatchObject({ summariesCreated: 50 });
+		expect(finalize).not.toHaveProperty("summariesFailed");
+		expect(finalize).not.toHaveProperty("summariesTotal");
+	});
+
+	it("replays a history recorded before the summaries patch", async () => {
+		const recorded = await runWorkflow(
+			{
+				...THREE_BATCHES,
+				generateMaterializedFileSummariesActivity: summaries({
+					50: ["throw"],
+				}),
+			},
+			{},
+			preSummariesBundle,
+		);
+		if (!recorded.history) {
+			throw new Error("Recorded history missing");
+		}
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle },
+				recorded.history,
+				recorded.workflowId,
+			),
+		).resolves.toBeUndefined();
+	}, 60_000);
+
+	it("replays a history recorded with the summaries patch", async () => {
+		const recorded = await runWorkflow({
+			...THREE_BATCHES,
+			generateMaterializedFileSummariesActivity: summaries({
+				50: ["throw", "throw"],
+			}),
+		});
+		if (!recorded.history) {
+			throw new Error("Recorded history missing");
+		}
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle },
+				recorded.history,
+				recorded.workflowId,
+			),
+		).resolves.toBeUndefined();
+	}, 60_000);
 });

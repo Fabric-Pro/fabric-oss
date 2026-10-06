@@ -4,8 +4,9 @@
  * Each outcome is one fixed sentence and, where there is one, the single
  * thing to do next. The parameters are validated names (a project label, a
  * remote, a branch), never text a server or git wrote, so a line can reach a
- * coding agent's context without a scrubbing step: no absolute path, no
- * digest, no class name in parentheses. Exit codes are the CLI's documented
+ * coding agent's context without a scrubbing step: no digest, no class name
+ * in parentheses, and no absolute path except an abandoned local lock that
+ * needs explicit recovery. Exit codes are the CLI's documented
  * ones (`src/bin/fabric.ts`): 1 general, 2 usage, 3 auth, 4 not found,
  * 5 forbidden, 6 rate limited, 7 refused.
  *
@@ -60,7 +61,12 @@ function shown(value: string): string {
 	return sanitizeDisplayText(value, 255);
 }
 
-type CloneFailureClass = "auth" | "network" | "missing-ref" | "other";
+type CloneFailureClass =
+	| "auth"
+	| "network"
+	| "missing-ref"
+	| "checkout"
+	| "other";
 
 /** Why the hook did not fast-forward a checkout it left alone, for the reasons `behind` has no words for. */
 export type FastForwardNotSafe =
@@ -163,6 +169,7 @@ export interface OutcomeParams {
 	"clone-needs-project": Record<string, never>;
 	"clone-needs-repository": Record<string, never>;
 	"clone-folder-in-use": Record<string, never>;
+	"clone-checkout-needs-repair": Record<string, never>;
 	"clone-failed": {
 		repo: Repo;
 		ref: string;
@@ -228,6 +235,7 @@ export interface OutcomeParams {
 		commands: FastForwardCommands;
 	};
 	"ff-locked": Record<string, never>;
+	"ff-abandoned-lock": { lockPath: string };
 	"ff-fabric-lags": { reason: FabricLag; ref: string; sha7: string };
 	"class-foreign": { repo: Repo };
 	"class-ambiguous": { repo: Repo; remotes: string[] };
@@ -369,16 +377,20 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 		"--clone needs a project whose instructions come from a git repository; this project's are uploaded, so there is nothing to clone.",
 	"clone-folder-in-use": () =>
 		"That folder already exists and is not empty, so nothing was cloned into it. Pick a folder that does not exist yet, or run init inside it when it already is the clone.",
+	"clone-checkout-needs-repair": () =>
+		"This folder appears to be an incomplete Git checkout. Fabric left it untouched. Inspect its staged and untracked files with git status, then repair or remove the checkout yourself before running init again.",
 	"clone-failed": ({ repo, ref, host, url, reason, login }) => {
 		switch (reason) {
 			case "auth":
-				return `Could not clone ${repo}: git has no credentials for ${shown(host)}. Run: ${login}`;
+				return `Could not clone ${repo}: git has no credentials for ${shown(host)}. The Fabric MCP server was not registered. Run: ${login}`;
 			case "network":
-				return `Could not clone ${repo}: ${shown(host)} did not answer. Check your network and try again.`;
+				return `Could not clone ${repo}: ${shown(host)} did not answer. The Fabric MCP server was not registered. Check your network and try again.`;
 			case "missing-ref":
-				return `Could not clone ${repo}: it has no branch ${shown(ref)}.`;
+				return `Could not clone ${repo}: it has no branch ${shown(ref)}. The Fabric MCP server was not registered.`;
+			case "checkout":
+				return `Could not finish checking out ${repo}. Fabric did not change the partial checkout or register its MCP server. Inspect it with git status, then repair or remove it yourself before trying again.`;
 			case "other":
-				return `Could not clone ${repo}. Run: git clone -- ${url} to see why.`;
+				return `Could not clone ${repo}. The Fabric MCP server was not registered. Run: git clone -- ${url} to see why.`;
 			default:
 				return reason satisfies never;
 		}
@@ -462,6 +474,8 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 	},
 	"ff-locked": () =>
 		`${HOOK_PREFIX}: another fabric process is updating this checkout; nothing was changed.`,
+	"ff-abandoned-lock": ({ lockPath }) =>
+		`${HOOK_PREFIX}: a previous Fabric process left its lock at ${JSON.stringify(lockPath)}; nothing was changed. Confirm it is no longer running, remove that lock, then run the hook again.`,
 	"ff-fabric-lags": ({ reason, ref, sha7 }) =>
 		`${HOOK_PREFIX}: ${ref} is at ${sha7}; Fabric's copy is behind (${LAG_TEXT[reason]}).`,
 	"class-foreign": ({ repo }) =>
@@ -540,6 +554,7 @@ const EXIT_CODES: {
 	"clone-needs-project": 2,
 	"clone-needs-repository": 7,
 	"clone-folder-in-use": 7,
+	"clone-checkout-needs-repair": 7,
 	"clone-failed": ({ reason }) =>
 		reason === "auth" ? 3 : reason === "missing-ref" ? 7 : 1,
 	"no-clone-url": 7,
@@ -554,6 +569,7 @@ const EXIT_CODES: {
 	"ff-fetch-failed": 0,
 	"ff-merge-failed": 0,
 	"ff-locked": 0,
+	"ff-abandoned-lock": 0,
 	"ff-fabric-lags": 0,
 	"class-foreign": 7,
 	"class-ambiguous": 7,

@@ -300,15 +300,15 @@ describe("RepositorySyncStatus — Fabric's copy", () => {
 });
 
 describe("RepositorySyncStatus — automatic sync and the checkout", () => {
-	it("says a GitHub repository syncs after each push and every 15 minutes", () => {
+	it("says a GitHub repository syncs after each push and normally every 15 minutes", () => {
 		render(<RepositorySyncStatus state={state()} />);
 
 		expect(screen.getByRole("status")).toHaveTextContent(
-			"Automatic sync: on · after each push and every 15 minutes",
+			"Automatic sync: on · after each push and normally every 15 minutes",
 		);
 	});
 
-	it("says another provider syncs only on the 15-minute check, because only GitHub pushes a webhook", () => {
+	it("says another provider normally syncs on the 15-minute check, because only GitHub pushes a webhook", () => {
 		const base = state();
 		render(
 			<RepositorySyncStatus
@@ -322,7 +322,7 @@ describe("RepositorySyncStatus — automatic sync and the checkout", () => {
 		);
 
 		expect(screen.getByRole("status")).toHaveTextContent(
-			"Automatic sync: on · every 15 minutes",
+			"Automatic sync: on · normally every 15 minutes",
 		);
 		expect(screen.getByRole("status")).not.toHaveTextContent(
 			"after each push",

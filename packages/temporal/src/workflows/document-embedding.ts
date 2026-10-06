@@ -16,8 +16,10 @@
 
 import { ApplicationFailure, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_EMBEDDING_TASK_QUEUE } from "../task-queues";
 
 const { embedProjectDocumentActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
 	// Large documents can produce 100+ chunks. With 25-per-batch embedding and
 	// parallel Qdrant upserts the attempt should complete in ~30–90 s, but we
 	// keep a generous ceiling so genuinely huge docs don't flap between retries.

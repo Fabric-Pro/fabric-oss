@@ -37,6 +37,17 @@ export {
 	updateApprovalTaskStatus,
 	updateExecutionProgress,
 } from "./approval";
+// Advisor chat turns — durable dispatch check and terminal-state write
+export {
+	type FinalizeConversationTurnActivityInput,
+	type FinalizeConversationTurnActivityResult,
+	finalizeConversationTurnActivity,
+} from "./turn-finalize";
+export {
+	TURN_NOT_DISPATCHABLE,
+	type TurnNotDispatchableReason,
+	type TurnScope,
+} from "./turn-dispatch";
 // Intent-clarity — HITL clarifying question before committing to a plan
 export {
 	type AnalyzeIntentClarityInput,

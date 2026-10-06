@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
 	claimInstructionSnapshotValidation: vi.fn(),
 	recordInstructionSnapshotProgress: vi.fn(),
 	updateInstructionFileMetadata: vi.fn(),
+	persistVerifiedInstructionFileMetadataBatch: vi.fn(),
 	getInstructionSnapshotById: vi.fn(),
 	canReadProjectInstructions: vi.fn(),
 	publishInstructionSnapshot: vi.fn(),
@@ -55,7 +56,11 @@ vi.mock("@repo/database", async () => {
 	const { isAcceptableInheritedSource } = await import(
 		"../../database/prisma/queries/instruction-inherited-source"
 	);
-	return { ...m, isAcceptableInheritedSource };
+	return {
+		...m,
+		INSTRUCTION_FILE_BATCH_MAX_ROWS: 500,
+		isAcceptableInheritedSource,
+	};
 });
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({
@@ -99,7 +104,15 @@ vi.mock("@repo/instructions/export", () => warmMocks);
 // `attempt` is what `Context.current().info.attempt` reports: the deferred
 // scan (Fizzy #2737) behaves differently on its final attempt, and every
 // other case runs as a first attempt.
-const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn(), attempt: 1 }));
+const activityMocks = vi.hoisted(() => ({
+	heartbeat: vi.fn(),
+	attempt: 1,
+	cancellation: new AbortController(),
+	startToCloseTimeoutMs: 0,
+	currentAttemptScheduledTimestampMs: 0,
+	scheduleToCloseTimeoutMs: 0,
+	scheduledTimestampMs: 0,
+}));
 // R16 relies on `ApplicationFailure.nonRetryable` to signal a tenant
 // mismatch as a non-retryable Temporal failure; the real class lives in
 // `@temporalio/common` and is re-exported here, so the mock must carry a
@@ -110,7 +123,18 @@ const activityMocks = vi.hoisted(() => ({ heartbeat: vi.fn(), attempt: 1 }));
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: activityMocks.heartbeat,
 	Context: {
-		current: () => ({ info: { attempt: activityMocks.attempt } }),
+		current: () => ({
+			info: {
+				attempt: activityMocks.attempt,
+				startToCloseTimeoutMs: activityMocks.startToCloseTimeoutMs,
+				currentAttemptScheduledTimestampMs:
+					activityMocks.currentAttemptScheduledTimestampMs,
+				scheduleToCloseTimeoutMs:
+					activityMocks.scheduleToCloseTimeoutMs,
+				scheduledTimestampMs: activityMocks.scheduledTimestampMs,
+			},
+			cancellationSignal: activityMocks.cancellation.signal,
+		}),
 	},
 	ApplicationFailure: {
 		nonRetryable: (message?: string | null, type?: string | null) => {
@@ -236,6 +260,8 @@ type StageSpec = {
 		sha256?: string;
 		size?: number;
 		storageKey?: string;
+		name?: string | null;
+		description?: string | null;
 	} | null;
 };
 
@@ -262,6 +288,8 @@ async function stage(specs: StageSpec[]) {
 				size: spec.source?.size ?? size,
 				snapshotStatus: spec.source?.status ?? "READY",
 				scanRulesVersion: spec.source?.scanRulesVersion ?? null,
+				name: spec.source?.name ?? null,
+				description: spec.source?.description ?? null,
 			});
 		}
 		heads.set(
@@ -329,6 +357,11 @@ beforeEach(() => {
 	}
 	activityMocks.heartbeat.mockReset();
 	activityMocks.attempt = 1;
+	activityMocks.cancellation = new AbortController();
+	activityMocks.startToCloseTimeoutMs = 0;
+	activityMocks.currentAttemptScheduledTimestampMs = 0;
+	activityMocks.scheduleToCloseTimeoutMs = 0;
+	activityMocks.scheduledTimestampMs = 0;
 	vi.mocked(scanTextForSecrets).mockClear();
 	warmMocks.warmInstructionSnapshotExport.mockReset();
 	warmMocks.warmInstructionSnapshotExport.mockResolvedValue(undefined);
@@ -356,6 +389,11 @@ beforeEach(() => {
 	// stand in for a row something else already moved.
 	m.claimInstructionSnapshotValidation.mockResolvedValue({ changed: true });
 	m.recordInstructionSnapshotProgress.mockResolvedValue({ changed: true });
+	m.persistVerifiedInstructionFileMetadataBatch.mockImplementation(
+		async ({ updates }: { updates: readonly unknown[] }) => ({
+			updated: updates.length,
+		}),
+	);
 	m.canReadProjectInstructions.mockResolvedValue(true);
 	// Default: the snapshot exists and belongs to `snap`'s project/org, so
 	// every activity's R16 tenant check passes and the existing behavioral
@@ -391,6 +429,27 @@ function freezeIgnoreSettings(settingsFrozen: unknown) {
 	});
 }
 
+function repositorySyncSnapshot(overrides: Record<string, unknown> = {}) {
+	const snapshot = {
+		id: "s",
+		projectId: "p",
+		organizationId: "o",
+		publishOnReady: true,
+		version: 7,
+		fileCount: 3,
+		source: "REPOSITORY",
+		syncRunKey: "sync_1:run_a",
+		settingsFrozen: {
+			layer: "default",
+			ignoreGlobs: ["**/node_modules/**"],
+			limits: {},
+		},
+		...overrides,
+	};
+	m.getInstructionSnapshotById.mockResolvedValue(snapshot);
+	return snapshot;
+}
+
 // ---------------------------------------------------------------------------
 // C1 — integrity and secrets are ONE pass over ONE download per object.
 //
@@ -401,6 +460,58 @@ function freezeIgnoreSettings(settingsFrozen: unknown) {
 // into the immutable snapshot under a digest built from the declared hashes.
 // ---------------------------------------------------------------------------
 describe("verifyAndScanInstructionFiles", () => {
+	it("skips content checks only for a persisted repository-sync snapshot", async () => {
+		await stage([
+			{
+				id: "f1",
+				path: "rules/example.md",
+				data: Buffer.from(`key = ${AWS_EXAMPLE_ACCESS_KEY}\n`),
+			},
+		]);
+		repositorySyncSnapshot();
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.claimInstructionSnapshotValidation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "o",
+			}),
+		);
+		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+		expect(m.listObjects).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.recordInstructionSnapshotProgress).not.toHaveBeenCalled();
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		expect(
+			m.recordInstructionSnapshotScanRulesVersion,
+		).not.toHaveBeenCalled();
+		expect(scanTextForSecrets).not.toHaveBeenCalled();
+	});
+
+	it("does not let a repository source without a sync receipt bypass content checks", async () => {
+		await stage([
+			{
+				id: "f1",
+				path: "rules/example.md",
+				data: Buffer.from(`key = ${AWS_EXAMPLE_ACCESS_KEY}\n`),
+			},
+		]);
+		repositorySyncSnapshot({ syncRunKey: null });
+
+		await expect(
+			verifyAndScanInstructionFiles(snap),
+		).resolves.toMatchObject({
+			ok: false,
+			rejections: [expect.objectContaining({ reason: "secret" })],
+		});
+		expect(m.downloadFile).toHaveBeenCalled();
+		expect(scanTextForSecrets).toHaveBeenCalled();
+	});
+
 	it("passes when every object matches its registered size and hash", async () => {
 		await stage([
 			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
@@ -1263,6 +1374,216 @@ describe("classification inside the gate (C1)", () => {
 });
 
 describe("finalizeInstructionSnapshot", () => {
+	it("promotes repository content without a secret scan and derives metadata from the verified buffer", async () => {
+		const body = [
+			"---",
+			"name: Example rule",
+			"description: Repository-provided rule",
+			"---",
+			`key = ${AWS_EXAMPLE_ACCESS_KEY}`,
+		].join("\n");
+		await stage([
+			{
+				id: "f1",
+				path: ".agents/skills/example/SKILL.md",
+				data: Buffer.from(body),
+			},
+		]);
+		repositorySyncSnapshot();
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(scanTextForSecrets).not.toHaveBeenCalled();
+
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(
+			m.persistVerifiedInstructionFileMetadataBatch,
+		).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+			validationAttemptId: null,
+			notAfter: null,
+			updates: [
+				{
+					fileId: "f1",
+					expectedStorageKey: stagingKey("p", "s", "f1"),
+					storageKey: snapshotKey("p", "s", "f1"),
+					kind: "SKILL",
+					name: "Example rule",
+					description: "Repository-provided rule",
+				},
+			],
+		});
+		expect(
+			m.recordInstructionSnapshotScanRulesVersion,
+		).not.toHaveBeenCalled();
+	});
+
+	it("keeps the filename and .fabricignore provenance protections for repository syncs", async () => {
+		await stage([
+			{ id: "secret-name", path: ".env", data: Buffer.from("A=1") },
+			{
+				id: "ignore",
+				path: ".fabricignore",
+				data: Buffer.from("docs/**\n"),
+			},
+		]);
+		repositorySyncSnapshot({
+			settingsFrozen: {
+				layer: "default",
+				ignoreGlobs: ["**/node_modules/**"],
+				limits: {},
+			},
+		});
+
+		await verifyAndScanInstructionFiles(snap);
+		const result = await finalizeInstructionSnapshot(snap);
+
+		expect(result).toEqual({
+			ok: false,
+			rejections: [
+				{
+					path: ".env",
+					reason: "secret",
+					detail: expect.stringMatching(/^filename:/),
+				},
+				{
+					path: ".fabricignore",
+					reason: "ignore_mismatch",
+					detail: "0 rules frozen, 1 in file",
+				},
+			],
+		});
+		expect(m.downloadFile).not.toHaveBeenCalledWith(
+			stagingKey("p", "s", "secret-name"),
+			expect.anything(),
+		);
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("rejects swapped repository bytes before storing or classifying them", async () => {
+		await stage([
+			{
+				id: "f1",
+				path: "AGENTS.md",
+				data: Buffer.from("changed after acquisition"),
+				sha256: await sha("bytes measured from the repository"),
+			},
+		]);
+		repositorySyncSnapshot();
+
+		await verifyAndScanInstructionFiles(snap);
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: false,
+			rejections: [{ path: "AGENTS.md", reason: "hash_mismatch" }],
+		});
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("copies canonical inherited repository files without reclassifying their metadata", async () => {
+		const sourceKey = snapshotKey("p", "base", "source-file");
+		await stage([
+			{
+				id: "inherited-file",
+				path: "rules/unchanged.md",
+				data: Buffer.from("# unchanged\n"),
+				storageKey: sourceKey,
+				inheritedFromFileId: "source-file",
+				source: {
+					name: "Stored source name",
+					description: "Stored source description",
+				},
+			},
+		]);
+		repositorySyncSnapshot();
+
+		await verifyAndScanInstructionFiles(snap);
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.copyFile).toHaveBeenCalledWith(
+			sourceKey,
+			snapshotKey("p", "s", "inherited-file"),
+			{ bucket: "skills" },
+		);
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("moves an inherited repository .fabricignore onto this snapshot's key without rewriting inherited metadata", async () => {
+		const sourceKey = snapshotKey("p", "base", "source-file");
+		await stage([
+			{
+				id: "inherited-ignore",
+				path: ".fabricignore",
+				data: Buffer.from("docs/**\n"),
+				storageKey: sourceKey,
+				inheritedFromFileId: "source-file",
+				source: {
+					name: "Stored source name",
+					description: "Stored source description",
+				},
+			},
+		]);
+		repositorySyncSnapshot({ settingsFrozen: null });
+
+		await verifyAndScanInstructionFiles(snap);
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.uploadFile).toHaveBeenCalledWith(
+			snapshotKey("p", "s", "inherited-ignore"),
+			Buffer.from("docs/**\n"),
+			{ bucket: "skills", contentType: "text/markdown" },
+		);
+		expect(m.moveInheritedInstructionFileKeys).toHaveBeenCalledWith({
+			snapshotId: "s",
+			projectId: "p",
+			organizationId: "o",
+			moves: [
+				{
+					fileId: "inherited-ignore",
+					from: sourceKey,
+					to: snapshotKey("p", "s", "inherited-ignore"),
+				},
+			],
+		});
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+	});
+
+	it("refuses an inherited repository filename before copying its source", async () => {
+		const sourceKey = snapshotKey("p", "base", "source-file");
+		await stage([
+			{
+				id: "inherited-file",
+				path: ".env",
+				data: Buffer.from("A=1"),
+				storageKey: sourceKey,
+				inheritedFromFileId: "source-file",
+			},
+		]);
+		repositorySyncSnapshot();
+
+		await verifyAndScanInstructionFiles(snap);
+		expect(await finalizeInstructionSnapshot(snap)).toMatchObject({
+			ok: false,
+			rejections: [
+				expect.objectContaining({ path: ".env", reason: "secret" }),
+			],
+		});
+		expect(m.copyFile).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
+	});
+
 	it("re-hashes each staged object and PUTS those bytes at the snapshot key, never a server-side copy (C1)", async () => {
 		await stage([
 			{
@@ -1315,6 +1636,106 @@ describe("finalizeInstructionSnapshot", () => {
 			["projects/p/instructions/staging/s/f1"],
 			{ bucket: "skills" },
 		);
+	});
+
+	it("stops promotion before metadata or terminal writes when cancellation arrives after an object write", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.uploadFile.mockImplementation(async () => {
+			activityMocks.cancellation.abort(
+				new Error("finalization cancelled after promotion"),
+			);
+		});
+
+		await expect(finalizeInstructionSnapshot(snap)).rejects.toThrow(
+			"finalization cancelled after promotion",
+		);
+
+		expect(m.uploadFile).toHaveBeenCalledTimes(1);
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		expect(m.deleteObjects).not.toHaveBeenCalled();
+		expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+	});
+
+	it("does not clean staging or mark READY after cancellation follows metadata persistence", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.updateInstructionFileMetadata.mockImplementation(async () => {
+			activityMocks.cancellation.abort(
+				new Error("finalization cancelled after metadata"),
+			);
+		});
+
+		await expect(finalizeInstructionSnapshot(snap)).rejects.toThrow(
+			"finalization cancelled after metadata",
+		);
+
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledTimes(1);
+		expect(m.deleteObjects).not.toHaveBeenCalled();
+		expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+	});
+
+	it("stops repository promotion when metadata finds this attempt already READY", async () => {
+		const specs: StageSpec[] = Array.from(
+			{ length: 1_001 },
+			(_, index) => ({
+				id: `ready-${index}`,
+				path: `rules/r${index}.md`,
+				data: Buffer.from("x"),
+			}),
+		);
+		await stage(specs);
+		const validating = repositorySyncSnapshot({ status: "VALIDATING" });
+		m.getInstructionSnapshotById
+			.mockResolvedValueOnce(validating)
+			.mockResolvedValue({ ...validating, status: "READY" });
+		m.persistVerifiedInstructionFileMetadataBatch.mockResolvedValue({
+			updated: 0,
+		});
+
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(
+			m.persistVerifiedInstructionFileMetadataBatch,
+		).toHaveBeenCalledTimes(1);
+		// The batch error stops dispatch and drains only the prefetches already
+		// started, rather than reading the remaining 501 rows.
+		expect(m.downloadFile).toHaveBeenCalledTimes(507);
+		expect(m.deleteObjects).not.toHaveBeenCalled();
+		expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+	});
+
+	it("does not make another staging delete or mark READY after cancellation arrives during the cleanup listing", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		const orphan = "projects/p/instructions/staging/s/orphan";
+		m.listObjects.mockImplementation(async () => {
+			activityMocks.cancellation.abort(
+				new Error("finalization cancelled during cleanup listing"),
+			);
+			return {
+				objects: [{ key: orphan, size: 1, lastModified: new Date() }],
+			};
+		});
+
+		await expect(finalizeInstructionSnapshot(snap)).rejects.toThrow(
+			"finalization cancelled during cleanup listing",
+		);
+
+		expect(m.deleteObjects).toHaveBeenCalledTimes(1);
+		expect(m.deleteObjects).toHaveBeenCalledWith(
+			[stagingKey("p", "s", "f1")],
+			{ bucket: "skills" },
+		);
+		expect(m.deleteObjects).not.toHaveBeenCalledWith([orphan], {
+			bucket: "skills",
+		});
+		expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
 	});
 
 	// C1: the staged bytes are mutable for as long as the client's signed PUT
@@ -2445,6 +2866,12 @@ describe("storage delete failures are not success (I1)", () => {
 			m.markInstructionSnapshotRejected.mockResolvedValue({
 				changed: false,
 			});
+			m.getInstructionSnapshotById.mockResolvedValue({
+				id: "s",
+				projectId: "p",
+				organizationId: "o",
+				status: "REJECTED",
+			});
 
 			await expect(
 				rejectInstructionSnapshot({ ...snap, rejections }),
@@ -2472,6 +2899,18 @@ describe("storage delete failures are not success (I1)", () => {
 			m.markInstructionSnapshotReady.mockResolvedValue({
 				changed: false,
 			});
+			m.getInstructionSnapshotById.mockResolvedValue({
+				id: "s",
+				projectId: "p",
+				organizationId: "o",
+				status: "READY",
+				publishOnReady: true,
+				settingsFrozen: {
+					layer: "default",
+					ignoreGlobs: ["**/node_modules/**"],
+					limits: {},
+				},
+			});
 
 			// Same result as the attempt that actually made the transition —
 			// the workflow's publish and prune steps are idempotent and run as
@@ -2480,9 +2919,14 @@ describe("storage delete failures are not success (I1)", () => {
 				ok: true,
 				rejections: [],
 			});
-			// `readyAt` and the digest are untouched: the only write this
-			// activity makes is the conditional one, and it matched no row.
-			expect(m.markInstructionSnapshotReady).toHaveBeenCalledTimes(1);
+			// The earlier owned attempt already wrote READY, so this retry does
+			// not touch storage or repeat its terminal transition.
+			expect(m.markInstructionSnapshotReady).not.toHaveBeenCalled();
+			expect(m.listInstructionFiles).not.toHaveBeenCalled();
+			expect(m.listObjects).not.toHaveBeenCalled();
+			expect(
+				m.persistVerifiedInstructionFileMetadataBatch,
+			).not.toHaveBeenCalled();
 			expect(m.failInstructionSnapshot).not.toHaveBeenCalled();
 			expect(m.recordAudit).not.toHaveBeenCalled();
 		});
@@ -4500,6 +4944,101 @@ describe("storage round trips overlap, verdicts keep manifest order", () => {
 		);
 	});
 
+	it("removes the repository sync scanner pass across a 3,814-file fixture", async () => {
+		const fileCount = 3_814;
+		const bytesPerFile = 18_640;
+		const data = Buffer.alloc(bytesPerFile, 0x61);
+		const specs: StageSpec[] = Array.from(
+			{ length: fileCount },
+			(_, i) => ({
+				id: `bulk-${i}`,
+				path: `rules/r${String(i).padStart(4, "0")}.md`,
+				data,
+			}),
+		);
+		expect(fileCount * bytesPerFile).toBe(71_092_960);
+		const addOneMillisecondStorageLatency = () => {
+			let inFlightDownloads = 0;
+			let peakDownloads = 0;
+			const download = m.downloadFile.getMockImplementation();
+			m.downloadFile.mockImplementation(async (key: string) => {
+				inFlightDownloads++;
+				peakDownloads = Math.max(peakDownloads, inFlightDownloads);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				try {
+					return await download?.(key);
+				} finally {
+					inFlightDownloads--;
+				}
+			});
+			let inFlightUploads = 0;
+			let peakUploads = 0;
+			m.uploadFile.mockImplementation(async () => {
+				inFlightUploads++;
+				peakUploads = Math.max(peakUploads, inFlightUploads);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				inFlightUploads--;
+			});
+			return {
+				peakDownloads: () => peakDownloads,
+				peakUploads: () => peakUploads,
+			};
+		};
+
+		await stage(specs);
+		const ordinaryConcurrency = addOneMillisecondStorageLatency();
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.getFileMetadata).toHaveBeenCalledTimes(fileCount * 2);
+		expect(m.downloadFile).toHaveBeenCalledTimes(fileCount * 2);
+		expect(m.updateInstructionFileMetadata).toHaveBeenCalledTimes(
+			fileCount * 2,
+		);
+		expect(m.uploadFile).toHaveBeenCalledTimes(fileCount);
+		expect(scanTextForSecrets).toHaveBeenCalledTimes(fileCount);
+		expect(ordinaryConcurrency.peakDownloads()).toBeLessThanOrEqual(8);
+		expect(ordinaryConcurrency.peakUploads()).toBeLessThanOrEqual(8);
+
+		await stage(specs);
+		m.getFileMetadata.mockClear();
+		m.downloadFile.mockClear();
+		m.updateInstructionFileMetadata.mockClear();
+		m.persistVerifiedInstructionFileMetadataBatch.mockClear();
+		m.uploadFile.mockClear();
+		vi.mocked(scanTextForSecrets).mockClear();
+		repositorySyncSnapshot();
+		const repositoryConcurrency = addOneMillisecondStorageLatency();
+
+		expect(await verifyAndScanInstructionFiles(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(await finalizeInstructionSnapshot(snap)).toEqual({
+			ok: true,
+			rejections: [],
+		});
+		expect(m.getFileMetadata).toHaveBeenCalledTimes(fileCount);
+		expect(m.downloadFile).toHaveBeenCalledTimes(fileCount);
+		expect(m.updateInstructionFileMetadata).not.toHaveBeenCalled();
+		expect(
+			m.persistVerifiedInstructionFileMetadataBatch.mock.calls.map(
+				([input]) => input.updates.length,
+			),
+		).toEqual([500, 500, 500, 500, 500, 500, 500, 314]);
+		expect(m.uploadFile).toHaveBeenCalledTimes(fileCount);
+		expect(scanTextForSecrets).not.toHaveBeenCalled();
+		expect(repositoryConcurrency.peakDownloads()).toBeGreaterThan(1);
+		expect(repositoryConcurrency.peakDownloads()).toBeLessThanOrEqual(8);
+		expect(repositoryConcurrency.peakUploads()).toBeGreaterThan(1);
+		expect(repositoryConcurrency.peakUploads()).toBeLessThanOrEqual(8);
+	});
+
 	it("the deferred scan's last attempt names an unreadable file in manifest order, ahead of a later finding", async () => {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
@@ -4646,6 +5185,20 @@ describe("the validation attempt ownership token", () => {
 		await expect(finalizeInstructionSnapshot(owned)).resolves.toEqual({
 			ok: true,
 			rejections: [],
+		});
+	});
+
+	it("retries when a deadline-fenced READY write leaves this run's row validating", async () => {
+		await stage([
+			{ id: "f1", path: "CLAUDE.md", data: Buffer.from("hello") },
+		]);
+		m.getInstructionSnapshotById.mockResolvedValue(
+			rowOwnedBy("attempt-new", "VALIDATING"),
+		);
+		m.markInstructionSnapshotReady.mockResolvedValue({ changed: false });
+
+		await expect(finalizeInstructionSnapshot(owned)).rejects.toMatchObject({
+			type: "INSTRUCTION_SNAPSHOT_READY_FENCE_REFUSED",
 		});
 	});
 

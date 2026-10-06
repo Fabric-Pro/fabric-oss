@@ -327,6 +327,29 @@ describe("computeSyncPlan", () => {
 			computeSyncPlan({ destination: dest, manifest: [], lock }),
 		).rejects.toThrow(/name the same file/);
 	});
+
+	it("hashes large local files for planning and ledger drift without changing their result", async () => {
+		const contents = "x".repeat(8 * 1024 * 1024);
+		const dest = await makeTree({ "rules/large.md": contents });
+		const manifest = [entry("rules/large.md", contents)];
+
+		expect(
+			actionOf(
+				await computeSyncPlan({
+					destination: dest,
+					manifest,
+					lock: null,
+				}),
+				"rules/large.md",
+			),
+		).toBe("verified");
+		expect(
+			await findLedgerDrift({
+				root: dest,
+				lock: lockOf({ "rules/large.md": { contents } }),
+			}),
+		).toEqual([]);
+	});
 });
 
 /**

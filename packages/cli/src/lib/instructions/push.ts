@@ -61,26 +61,30 @@ import {
 	findCollision,
 	isReservedPath,
 } from "./paths.js";
-import { readFileSafely } from "./safe-write.js";
+import { fingerprintFileSafely, readFileSafely } from "./safe-write.js";
 
 /** The server's own cap on one change set (`MAX_CHANGES`), mirrored so the refusal happens before the request. */
 export const MAX_PUSH_CHANGES = 50;
+/** Mirrors the server's bounded inline-change payload, before encoding. */
+export const MAX_INLINE_PUSH_BYTES = 2 * 1024 * 1024;
 
 type PushChangeAction = "put" | "delete";
 
-interface PushPlanEntry {
-	path: string;
-	action: PushChangeAction;
-	/** Present on a `put`: the size of the bytes to send. */
-	size?: number;
-	/** Present on a `put`: the sha256 of the bytes to send, hex. */
-	sha256?: string;
-}
+export type PushPlanEntry =
+	| {
+			path: string;
+			action: "delete";
+	  }
+	| {
+			path: string;
+			action: "put";
+			/** The bytes hashed during planning, read again only after selection. */
+			size: number;
+			sha256: string;
+	  };
 
 export interface PushPlan {
 	entries: PushPlanEntry[];
-	/** The change set exactly as the request carries it. */
-	changes: InstructionChange[];
 	/** Locked paths whose bytes still match the ledger. Reported, never sent. */
 	unchanged: string[];
 }
@@ -284,49 +288,97 @@ export async function computePushPlan(input: {
 	}
 
 	const entries: PushPlanEntry[] = [];
-	const changes: InstructionChange[] = [];
 	const unchanged: string[] = [];
 
 	for (const lockedPath of lockedPaths.sort()) {
-		const read = await readFileSafely(root, lockedPath);
-		if (read === null) {
+		const fingerprint = await fingerprintFileSafely(root, lockedPath);
+		if (fingerprint === null) {
 			entries.push({ path: lockedPath, action: "delete" });
-			changes.push({ op: "delete", path: lockedPath });
 			continue;
 		}
-		const actual = sha256Of(read.bytes);
-		if (actual === lock.files[lockedPath]?.sha256) {
+		if (fingerprint.sha256 === lock.files[lockedPath]?.sha256) {
 			unchanged.push(lockedPath);
 			continue;
 		}
-		const encoded = encodeContent(read.bytes);
 		entries.push({
 			path: lockedPath,
 			action: "put",
-			size: read.bytes.length,
-			sha256: actual,
+			size: fingerprint.size,
+			sha256: fingerprint.sha256,
 		});
-		changes.push({ op: "put", path: lockedPath, ...encoded });
 	}
 
 	for (const newPath of added.sort()) {
-		const read = await readFileSafely(root, newPath);
-		if (read === null) {
+		const fingerprint = await fingerprintFileSafely(root, newPath);
+		if (fingerprint === null) {
 			throw new Error(
 				`Refusing to push: there is no file at ${newPath}.`,
 			);
 		}
-		const encoded = encodeContent(read.bytes);
 		entries.push({
 			path: newPath,
 			action: "put",
-			size: read.bytes.length,
-			sha256: sha256Of(read.bytes),
+			size: fingerprint.size,
+			sha256: fingerprint.sha256,
 		});
-		changes.push({ op: "put", path: newPath, ...encoded });
 	}
 
-	return { entries, changes, unchanged };
+	return { entries, unchanged };
+}
+
+/** Total unencoded bytes the selected inline puts would carry. */
+export function pushContentBytes(entries: readonly PushPlanEntry[]): number {
+	return entries.reduce(
+		(total, entry) => total + (entry.action === "put" ? entry.size : 0),
+		0,
+	);
+}
+
+/**
+ * Re-read the selected puts only after count and aggregate-byte preflight.
+ *
+ * The second guarded read binds the submitted payload to the fingerprint that
+ * selection saw. A local edit between planning and submission must become a
+ * new plan, rather than being sent under an open proposal's old hash.
+ */
+export async function materializePushChanges(input: {
+	root: string;
+	entries: readonly PushPlanEntry[];
+}): Promise<InstructionChange[]> {
+	if (input.entries.length > MAX_PUSH_CHANGES) {
+		throw new Error(`Too many changes to push (${input.entries.length}).`);
+	}
+	if (pushContentBytes(input.entries) > MAX_INLINE_PUSH_BYTES) {
+		throw new Error("The selected changes are too large to send inline.");
+	}
+
+	const changes: InstructionChange[] = [];
+	for (const entry of input.entries) {
+		if (entry.action === "delete") {
+			changes.push({ op: "delete", path: entry.path });
+			continue;
+		}
+		const read = await readFileSafely(input.root, entry.path, {
+			maxBytes: MAX_INLINE_PUSH_BYTES,
+		});
+		if (read === null) {
+			throw new Error(
+				`Refusing to push: ${entry.path} disappeared after planning. Run \`${fabricCommand("instructions push")}\` again.`,
+			);
+		}
+		const sha256 = sha256Of(read.bytes);
+		if (read.bytes.length !== entry.size || sha256 !== entry.sha256) {
+			throw new Error(
+				`Refusing to push: ${entry.path} changed after planning. Run \`${fabricCommand("instructions push")}\` again.`,
+			);
+		}
+		changes.push({
+			op: "put",
+			path: entry.path,
+			...encodeContent(read.bytes),
+		});
+	}
+	return changes;
 }
 
 /** A change left out of the plan because an open proposal already carries it. */
@@ -442,9 +494,6 @@ export function setAsideProposed(
 	return {
 		plan: {
 			entries: plan.entries.filter((entry) => !setAside.has(entry.path)),
-			changes: plan.changes.filter(
-				(change) => !setAside.has(change.path),
-			),
 			unchanged: plan.unchanged,
 		},
 		alreadyProposed,

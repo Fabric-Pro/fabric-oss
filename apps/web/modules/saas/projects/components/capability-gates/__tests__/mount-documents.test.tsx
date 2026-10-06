@@ -147,7 +147,10 @@ const BLOCKED: CapabilityGateSelection = {
 		body: "reason.documents.no-technical-source.body",
 		params: {
 			dependency: "a PRD, architecture document or indexed codebase",
+			count: 1,
 		},
+		subjects: [],
+		subjectTotal: 0,
 		ctaLabel: "remedy.addContext",
 		ctaKind: "navigate",
 		ctaTarget: "context",

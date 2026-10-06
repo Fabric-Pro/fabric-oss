@@ -1320,10 +1320,16 @@ export async function claimDueInstructionSyncRows(
 export function repositorySyncLeaseFenceSql(
 	fence: RepositorySyncFence,
 ): Prisma.Sql {
+	return Prisma.sql`${repositorySyncLeaseOwnershipFenceSql(fence)}
+		AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
+}
+
+function repositorySyncLeaseOwnershipFenceSql(
+	fence: RepositorySyncFence,
+): Prisma.Sql {
 	return Prisma.sql`"id" = ${fence.id}
 		AND "generation" = ${fence.generation}
 		AND "nextCheckAt" = ${fence.leaseUntil}
-		AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC')
 		AND "automatic" = true
 		AND "automaticPausedReason" IS NULL`;
 }
@@ -1423,7 +1429,9 @@ export async function instructionSyncLeaseHeld(
 /**
  * The poll's fenced write (spec §6.1; Decisions 2, 31, 46 and 48): one
  * conditional UPDATE that applies `patch` only while the check still holds
- * its lease. A check that outlived its lease (by the database's clock,
+ * its lease. The ownership fence locks the row first; a materialized second
+ * CTE then reads the database clock after that lock wait. A check that
+ * outlived its lease (by the database's clock,
  * whether or not anything else touched the row), lost a race with a
  * finishing run, or finished after a re-configure, a pause or turning
  * automatic sync off writes nothing. A finishing run that holds the row
@@ -1440,9 +1448,22 @@ export async function writeBackInstructionSync(
 	patch: RepositorySyncSchedulingPatch,
 ): Promise<{ applied: boolean }> {
 	const count = await tx.$executeRaw(
-		Prisma.sql`UPDATE "project_instruction_repository_sync"
+		Prisma.sql`WITH locked AS MATERIALIZED (
+			SELECT "id"
+			FROM "project_instruction_repository_sync"
+			WHERE ${repositorySyncLeaseOwnershipFenceSql(fence)}
+			FOR UPDATE
+		), live AS MATERIALIZED (
+			SELECT locked."id"
+			FROM locked
+			JOIN "project_instruction_repository_sync" AS sync
+				ON sync."id" = locked."id"
+			WHERE sync."nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC')
+		)
+		UPDATE "project_instruction_repository_sync" AS sync
 			SET ${Prisma.join(repositorySyncPatchAssignments(patch, "ProjectInstructionSyncPause"), ", ")}
-			WHERE ${repositorySyncLeaseFenceSql(fence)}`,
+			FROM live
+			WHERE sync."id" = live."id"`,
 	);
 	return { applied: count > 0 };
 }

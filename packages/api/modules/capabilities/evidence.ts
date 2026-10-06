@@ -47,11 +47,13 @@ import {
 	isCodeIndexingDeploymentEnabled,
 	isCodeIndexingEnabled,
 } from "../projects/lib/code-indexing-enabled";
+import { withExtractionLifecycleOrSettled } from "../projects/lib/extraction-lifecycle";
 import {
 	type PMTarget,
 	resolvePmTarget,
 } from "../projects/lib/resolve-pm-target";
-import type { CapabilityEvidence, JobSnapshot } from "./types";
+import { STALL_MINUTES_BY_SOURCE } from "./thresholds";
+import type { CapabilityEvidence, GateSubject, JobSnapshot } from "./types";
 
 /**
  * Document statuses that mean the row is finished.
@@ -325,6 +327,139 @@ function snapshotFrom(
 			failedAt !== null &&
 			(completedAt === null || failedAt > completedAt),
 	};
+}
+
+/**
+ * How many stuck sources the gate names.
+ *
+ * The banner shows only the first three, but the list is not just for the
+ * banner: the Context tab outlines every row named here, gives it a Retry and
+ * counts it on its group's header. A row left off is a stuck source the viewer
+ * cannot see is stuck — so the cap has to cover every stuck row a real project
+ * has, not merely the ones the banner names. 200 does: a source sits here only
+ * after 40 silent minutes, and each one costs a handful of short columns (no
+ * content). It is still a cap, so a pathological project cannot ship thousands;
+ * `subjectTotal` carries the true count either way.
+ */
+const STALLED_SUBJECT_LIMIT = 200;
+
+/**
+ * The context sources that have stopped moving, named (Fizzy #2886).
+ *
+ * Two clocks, because the stall verdict reads two: a source in flight whose row
+ * has not been written within the window, and a source whose processing job has
+ * stopped heartbeating. A job's row may be fresh while its run is dead — the
+ * verdict prefers the job's clock — so a source named only by its job is
+ * re-read here as a row, and kept only when it is still in flight and still
+ * has an extraction lifecycle. A job for a source since deleted or finished
+ * names nothing the viewer could find on the page, or retry.
+ *
+ * Called only while something is in flight, so a settled project pays nothing.
+ */
+async function readStalledContextSources(
+	projectId: string,
+	now: Date,
+): Promise<{ sources: GateSubject[]; total: number }> {
+	const cutoff = new Date(
+		now.getTime() - STALL_MINUTES_BY_SOURCE.backgroundJob * 60 * 1000,
+	);
+	const staleJobs = await db.backgroundJob.findMany({
+		where: {
+			projectId,
+			kind: "CONTEXT_PROCESSING",
+			status: "RUNNING",
+			heartbeatAt: { lt: cutoff },
+			sourceType: "projectContext",
+			sourceId: { not: null },
+		},
+		select: { sourceId: true, title: true },
+		orderBy: { heartbeatAt: "asc" },
+		take: STALLED_SUBJECT_LIMIT,
+	});
+	const jobTitleBySource = new Map(
+		staleJobs.flatMap((job) =>
+			job.sourceId ? [[job.sourceId, job.title] as const] : [],
+		),
+	);
+
+	// The same rows the in-flight count reads, narrowed to the stuck ones.
+	const where = {
+		projectId,
+		type: { in: [...HUMAN_SUPPLIED_CONTEXT_TYPES] },
+		importedDocuments: { none: {} },
+		extractionStatus: { in: [...CONTEXT_IN_FLIGHT_STATUSES] },
+		AND: [
+			withExtractionLifecycleOrSettled(),
+			{
+				OR: [
+					{ updatedAt: { lt: cutoff } },
+					{ id: { in: [...jobTitleBySource.keys()] } },
+				],
+			},
+		],
+	};
+	const [rows, total] = await Promise.all([
+		db.projectContext.findMany({
+			where,
+			select: {
+				id: true,
+				type: true,
+				sourceTitle: true,
+				originalFilename: true,
+				sourceUrl: true,
+				sourcePath: true,
+				metadata: true,
+			},
+			orderBy: { updatedAt: "asc" },
+			take: STALLED_SUBJECT_LIMIT,
+		}),
+		db.projectContext.count({ where }),
+	]);
+
+	return {
+		sources: rows.map((row) => ({
+			id: row.id,
+			label: stalledSourceLabel(row, jobTitleBySource.get(row.id)),
+		})),
+		total,
+	};
+}
+
+/**
+ * What a stuck source is called in the banner — exactly what the Context tab
+ * titles its card, so the name the viewer clicks is the name they then find:
+ * the synced file's name, the chat topic, the metadata title, the source
+ * title, in the card's own order. Then what identifies an upload or a link,
+ * and the job's title. Never empty: the kind is the floor, as on the card.
+ */
+function stalledSourceLabel(
+	row: {
+		type: string;
+		sourceTitle: string | null;
+		originalFilename: string | null;
+		sourceUrl: string | null;
+		sourcePath: string | null;
+		metadata: unknown;
+	},
+	jobTitle: string | undefined,
+): string {
+	const metadata = (row.metadata ?? {}) as Record<string, unknown>;
+	const text = (key: string) =>
+		typeof metadata[key] === "string" ? (metadata[key] as string) : "";
+	const candidates = [
+		row.sourcePath?.slice(row.sourcePath.lastIndexOf("/") + 1),
+		text("chatTopic"),
+		text("title"),
+		text("sourceTitle"),
+		row.sourceTitle,
+		row.originalFilename,
+		row.sourceUrl,
+		jobTitle,
+	];
+	return (
+		candidates.map((candidate) => candidate?.trim()).find(Boolean) ||
+		row.type
+	);
 }
 
 /** An empty snapshot: nothing of this kind has ever run. */
@@ -660,6 +795,12 @@ export async function gatherCapabilityEvidence({
 				// that could never finish — "Processing your sources" on a project
 				// with none, and a stall once the clock ran out.
 				importedDocuments: { none: {} },
+				// Nor a live integration still "in flight". Slack, Teams, Notion
+				// and backlog rows are links whose ingest is owned elsewhere:
+				// their status is written PENDING and never moves, so counted
+				// here they read as Processing for good and then as a stalled
+				// source nobody could unstick. Settled ones still count.
+				...withExtractionLifecycleOrSettled(),
 			},
 			_count: { _all: true },
 			// The fallback clock for a source in flight with no job row —
@@ -959,6 +1100,11 @@ export async function gatherCapabilityEvidence({
 	const contextJob = jobSnapshot("CONTEXT_PROCESSING");
 	const documentJob = jobSnapshot("DOCUMENT_GENERATION");
 
+	const stalledContext =
+		contextExtracting > 0 || contextJob.running
+			? await readStalledContextSources(projectId, new Date())
+			: { sources: [], total: 0 };
+
 	return {
 		projectId,
 
@@ -1014,6 +1160,8 @@ export async function gatherCapabilityEvidence({
 			hasFailedSource,
 			technicalInFlight: contextTechnicalInFlight,
 			productInFlight: contextProductInFlight,
+			stalledSources: stalledContext.sources,
+			stalledTotal: stalledContext.total,
 		},
 
 		documents: {

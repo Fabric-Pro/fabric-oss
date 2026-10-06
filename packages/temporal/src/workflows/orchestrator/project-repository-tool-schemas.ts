@@ -61,7 +61,7 @@ export const CODE_FILE_GET_INPUT_SCHEMA = {
 
 export const CODE_TREE_DESCRIPTION =
 	"List the directory tree of the project's connected repositories — paths only, not file contents. Useful for understanding the project structure. " +
-	"Large trees come in pages: the result says which entries it shows and how to fetch the next ones. " +
+	"Large trees come in pages of a fixed number of entries: the result says which entries it shows and how to fetch the next ones. " +
 	"For an overview, pass depth: 1 to list only the top-level files and folders (or a directory's own), with a count of the entries below each folder that has any. " +
 	"If multiple repos are connected, lists structure from all repos unless a specific one is specified.";
 
@@ -86,7 +86,7 @@ export const CODE_TREE_INPUT_SCHEMA = {
 		offset: {
 			type: "number",
 			description:
-				"Number of entries to skip (default 0). A listing larger than one page says which entries it shows and gives the offset for the next page; pass it here to continue.",
+				"Number of entries to skip (default 0), counted in entries, not pages. A listing larger than one page says which entries it shows and gives the offset for the next page; pass it here to continue. Every page of one listing (the same repo, directory and depth) but the last holds the same number of entries, so a page that states its size N means offsets N, 2N, 3N, … start the later pages.",
 		},
 	},
 	required: [],

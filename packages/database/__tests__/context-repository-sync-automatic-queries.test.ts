@@ -108,7 +108,7 @@ const FENCE = { id: "sync_1", generation: 3, leaseUntil: ROW.leaseUntil };
 
 /** The shared fence, with its first placeholder at `$first` (Decisions 31 and 48). */
 function fenceSql(first: number): string {
-	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') AND "automatic" = true AND "automaticPausedReason" IS NULL`;
+	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "automatic" = true AND "automaticPausedReason" IS NULL AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
 }
 const FENCE_VALUES = ["sync_1", 3, ROW.leaseUntil];
 

@@ -185,21 +185,23 @@ describe("writes to the configuration, from several processes at once", () => {
 		).toEqual({ type: "org", slug: "org-1" });
 	}, 60_000);
 
-	it("take over a lock whose holder died", async () => {
+	it("reports a lock whose holder died for manual recovery", async () => {
 		const config = await import("../src/lib/config.js");
 		config.saveOAuth(session("organization"), { baseUrl: ORIGIN });
 		const lock = `${config.getConfigPath()}.write.lock`;
-		await writeFile(lock, "12345", { flag: "wx" });
+		await writeFile(lock, "0", { flag: "wx" });
 		const old = new Date(Date.now() - 60_000);
 		await utimes(lock, old, old);
 
-		config.saveDefaultContext({ type: "personal" }, ORIGIN);
+		expect(() =>
+			config.saveDefaultContext({ type: "personal" }, ORIGIN),
+		).toThrow(JSON.stringify(lock));
 
 		expect(
 			(await onDisk(config.getConfigPath())).profiles[ORIGIN]
 				?.defaultContext,
-		).toEqual({ type: "personal" });
-		expect(await exists(lock)).toBe(false);
+		).toBeUndefined();
+		expect(await exists(lock)).toBe(true);
 	});
 });
 

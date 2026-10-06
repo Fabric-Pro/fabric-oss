@@ -10,6 +10,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	type CodeIndexFailOutcome,
+	failCodeIndexUnlessOwnReady,
 	updateCodeIndexProgress,
 	updateCodeIndexStats,
 	updateCodeIndexStatus,
@@ -354,6 +356,12 @@ export interface ChunkAndEmbedBatchOutput {
 export interface GenerateFileSummariesOutput {
 	summariesCreated: number;
 	errors: string[];
+	/**
+	 * Files in the batch left without a summary. Not `errors.length`: one
+	 * failed embed call is one error for every file in the batch. Absent from
+	 * results recorded before it existed.
+	 */
+	failedFiles?: number;
 }
 
 /** @deprecated Use CodeIndexBatchInput */
@@ -391,6 +399,13 @@ export interface UpdateCodeIndexInput {
 	incremental?: boolean;
 	/** Chain that owns this run's writes; see CodeIndexRunOwner. */
 	owner?: CodeIndexRunOwner;
+	/**
+	 * Files still without a summary after the workflow's re-pass, out of
+	 * `summariesTotal`. Absent from runs recorded before the workflow counted
+	 * them.
+	 */
+	summariesFailed?: number;
+	summariesTotal?: number;
 }
 
 export interface CleanupCloneDirInput {
@@ -683,7 +698,7 @@ async function cloneRepository(
 	reportProgress = true,
 ): Promise<CloneRepositoryOutput> {
 	const { repositoryUrl, branch, provider } = input;
-	const simpleGit = (await import("simple-git")).default;
+	const { simpleGit } = await import("simple-git");
 
 	// Job Hub step tracking. Every code-indexing activity targets "the open row
 	// of this workflow" without naming a source: the workflow id already encodes
@@ -1952,8 +1967,10 @@ export async function generateFileSummariesActivity(
 		}
 	}
 
+	// Every error so far is one unreadable file.
+	let failedFiles = errors.length;
 	if (summaryTexts.length === 0) {
-		return { summariesCreated: 0, errors };
+		return { summariesCreated: 0, errors, failedFiles };
 	}
 
 	// Batch embed all summaries at once
@@ -2004,6 +2021,7 @@ export async function generateFileSummariesActivity(
 			);
 		}
 		errors.push(`Batch embedding failed: ${errMsg}`);
+		failedFiles += summaryTexts.length;
 	}
 
 	logger.info(`[CodeIndexing] Generated ${summariesCreated} file summaries`);
@@ -2012,7 +2030,7 @@ export async function generateFileSummariesActivity(
 		repositoryIntegrationId ?? null,
 		fence,
 	);
-	return { summariesCreated, errors };
+	return { summariesCreated, errors, failedFiles };
 }
 
 /**
@@ -2209,7 +2227,19 @@ export async function updateCodeIndexActivity(
 	}
 
 	await jobStep("embed", "completed", { sourceId, ...fence });
-	await jobStep("summaries", "completed", { sourceId, ...fence });
+	// Missing summaries do not fail the run — code search works without them —
+	// but a green step over them is the silent loss this panel exists to end.
+	// The job still completes; the card shows this one step in red.
+	const summariesFailed = input.summariesFailed ?? 0;
+	if (summariesFailed > 0) {
+		await jobStep("summaries", "failed", {
+			sourceId,
+			error: `${summariesFailed} of ${input.summariesTotal ?? summariesFailed} file summaries could not be generated. Code search still works; re-index to retry them.`,
+			...fence,
+		});
+	} else {
+		await jobStep("summaries", "completed", { sourceId, ...fence });
+	}
 	await jobStep("finalize", "completed", { sourceId, ...fence });
 	await jobComplete({ sourceId, counts, ...fence });
 }
@@ -2314,20 +2344,45 @@ export async function failCodeIndexActivity(input: {
 	// nothing, since its start path keeps the terminated predecessor's claimed
 	// label; the close takes over a row claimed by a chain that started no
 	// later, and fails it with this run's real error.
-	await jobFail(input.error, {
-		sourceId: input.repositoryIntegrationId ?? null,
-		...jobFence(input.owner),
-		...(input.owner ? { runStartedAt: input.owner.startedAt } : {}),
-	});
+	const failJob = () =>
+		jobFail(input.error, {
+			sourceId: input.repositoryIntegrationId ?? null,
+			...jobFence(input.owner),
+			...(input.owner ? { runStartedAt: input.owner.startedAt } : {}),
+		});
+	const key = {
+		projectId: input.projectId,
+		repositoryIntegrationId: input.repositoryIntegrationId ?? null,
+		branch: input.branch,
+	};
 
+	// A task scheduled before ownership existed: the original order and the
+	// unconditional write.
+	if (!input.owner) {
+		await failJob();
+		try {
+			await updateCodeIndexStatus(key, "FAILED", input.error);
+		} catch {
+			logger.warn(
+				`[CodeIndexing] Could not mark index as failed for ${input.projectId}`,
+			);
+		}
+		return;
+	}
+
+	// The row goes first, because it decides the job write: `kept-ready`
+	// means this chain's finalize already landed READY and its attempt died
+	// before reporting, so the workflow is failing a run that succeeded. The
+	// job is completed instead — failing it would put a red card over a
+	// searchable index, and leaving it would let the stale watchdog do the
+	// same later. No counts: the finalize either set them or they are
+	// unknown. Completing an already-COMPLETED row, or one failed for any
+	// reason but the watchdog's `TimedOut`, is a no-op (`completableStatus`).
+	// A row write that throws decides nothing — the job is still failed.
+	let outcome: CodeIndexFailOutcome | null = null;
 	try {
-		await updateCodeIndexStatus(
-			{
-				projectId: input.projectId,
-				repositoryIntegrationId: input.repositoryIntegrationId ?? null,
-				branch: input.branch,
-			},
-			"FAILED",
+		outcome = await failCodeIndexUnlessOwnReady(
+			key,
 			input.error,
 			input.owner,
 		);
@@ -2336,6 +2391,17 @@ export async function failCodeIndexActivity(input: {
 			`[CodeIndexing] Could not mark index as failed for ${input.projectId}`,
 		);
 	}
+	if (outcome === "kept-ready") {
+		logger.info(
+			`[CodeIndexing] Kept READY index of ${input.projectId}: run ${input.owner.runId} already finalized it`,
+		);
+		await jobComplete({
+			sourceId: input.repositoryIntegrationId ?? null,
+			...jobFence(input.owner),
+		});
+		return;
+	}
+	await failJob();
 }
 
 /**

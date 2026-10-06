@@ -31,22 +31,31 @@ const m = vi.hoisted(() => ({
 	file: { createMany: vi.fn(), findMany: vi.fn() },
 	$transaction: vi.fn(),
 	$executeRaw: vi.fn(),
+	$queryRaw: vi.fn(),
 	recordAuditTx: vi.fn(),
 }));
 
-vi.mock("../prisma/client", () => ({
-	db: {
-		projectInstructionSnapshot: m.snapshot,
-		projectInstructionFile: m.file,
-		$transaction: m.$transaction,
-		$executeRaw: m.$executeRaw,
-	},
-	Prisma: {
-		PrismaClientKnownRequestError: FakePrismaKnownRequestError,
-		JsonNull: "JsonNull",
-		DbNull: "DbNull",
-	},
-}));
+vi.mock("../prisma/client", async () => {
+	const { empty, sqltag } = await vi.importActual<
+		typeof import("@prisma/client/runtime/client")
+	>("@prisma/client/runtime/client");
+	return {
+		db: {
+			projectInstructionSnapshot: m.snapshot,
+			projectInstructionFile: m.file,
+			$transaction: m.$transaction,
+			$executeRaw: m.$executeRaw,
+			$queryRaw: (...a: unknown[]) => m.$queryRaw(...a),
+		},
+		Prisma: {
+			PrismaClientKnownRequestError: FakePrismaKnownRequestError,
+			JsonNull: "JsonNull",
+			DbNull: "DbNull",
+			empty,
+			sql: sqltag,
+		},
+	};
+});
 vi.mock("../prisma/queries/audit-log", () => ({
 	recordAuditTx: m.recordAuditTx,
 }));
@@ -136,6 +145,7 @@ beforeEach(() => {
 	}
 	m.$transaction.mockReset();
 	m.$executeRaw.mockReset();
+	m.$queryRaw.mockReset();
 	m.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
 		cb({
 			projectInstructionSnapshot: m.snapshot,
@@ -144,6 +154,7 @@ beforeEach(() => {
 	);
 	m.snapshot.findFirst.mockResolvedValue({ version: 7 });
 	m.snapshot.create.mockResolvedValue({ id: "snap_new", version: 8 });
+	m.snapshot.updateMany.mockResolvedValue({ count: 1 });
 	m.file.findMany.mockResolvedValue([]);
 });
 
@@ -376,8 +387,7 @@ describe("the scan rule-set version", () => {
 	};
 
 	beforeEach(() => {
-		m.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
-		m.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		m.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 	});
 
 	it("is written by its own statement, bound to the statuses and the run's token", async () => {
@@ -435,8 +445,10 @@ describe("the scan rule-set version", () => {
 		await markInstructionSnapshotReady(ready);
 		await markInstructionSnapshotReady({ ...ready, deferredScan: true });
 
-		for (const call of m.snapshot.updateMany.mock.calls) {
-			expect(call[0].data).not.toHaveProperty("scanRulesVersion");
+		for (const [statement] of m.$queryRaw.mock.calls) {
+			expect((statement as { sql: string }).sql).not.toContain(
+				"scanRulesVersion",
+			);
 		}
 	});
 

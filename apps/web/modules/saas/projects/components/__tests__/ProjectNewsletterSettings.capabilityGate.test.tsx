@@ -207,7 +207,12 @@ describe("ProjectNewsletterSettings — the release-notes gate", () => {
 				tone: "destructive",
 				title: "reason.codebase.credentials-expired.title",
 				body: "reason.codebase.credentials-expired.body",
-				params: { dependency: "valid repository credentials" },
+				params: {
+					dependency: "valid repository credentials",
+					count: 1,
+				},
+				subjects: [],
+				subjectTotal: 0,
 				ctaLabel: "remedy.reconnectCredential",
 				ctaKind: "navigate",
 				ctaTarget: "repository",

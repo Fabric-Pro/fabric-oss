@@ -32,6 +32,11 @@ import { useState } from "react";
 import { SparklesIcon } from "../../shared/components/icons/SparklesIcon";
 import { effectiveMcpAuthType } from "../lib/config-auth-type";
 import { McpServerIcon } from "./McpServerIcon";
+import {
+	isReadOnlyMcpServer,
+	READ_ONLY_MCP_TAG,
+	ReadOnlyBadge,
+} from "./ReadOnlyBadge";
 
 const TRANSPORT_COLORS: Record<string, string> = {
 	SSE: "bg-secondary/10 text-secondary",
@@ -205,6 +210,8 @@ export function McpConfigTile({
 	const authConfig = AUTH_CONFIG[authType] ?? AUTH_CONFIG.NONE;
 	const totalTools = toolCount ?? tools?.length ?? 0;
 	const isManagedDefault = !!config.isManagedDefault;
+	const isReadOnly = isReadOnlyMcpServer(config);
+	const displayTags = tags.filter((t) => t !== READ_ONLY_MCP_TAG);
 
 	return (
 		<div
@@ -292,7 +299,8 @@ export function McpConfigTile({
 						{category}
 					</Badge>
 				)}
-				{tags.slice(0, 2).map((tag) => (
+				{isReadOnly && <ReadOnlyBadge />}
+				{displayTags.slice(0, 2).map((tag) => (
 					<Badge
 						key={tag}
 						variant="secondary"
@@ -301,9 +309,9 @@ export function McpConfigTile({
 						{tag}
 					</Badge>
 				))}
-				{tags.length > 2 && (
+				{displayTags.length > 2 && (
 					<span className="text-[10px] text-muted-foreground self-center">
-						+{tags.length - 2}
+						+{displayTags.length - 2}
 					</span>
 				)}
 			</div>

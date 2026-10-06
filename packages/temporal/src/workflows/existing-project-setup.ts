@@ -27,6 +27,10 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	PROJECT_EMBEDDING_TASK_QUEUE,
+} from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
 import { orchestratorExecutionWorkflow } from "./orchestrator";
@@ -38,11 +42,23 @@ const {
 	createAnalysisContextRecord,
 	appendAnalysisContentChunk,
 	updateProjectRagSettings,
-	embedCodeAnalysisContext,
-	ingestBacklogForRAG,
 	createExistingProjectDocumentRecords,
 	logRepoContextAccessedActivity,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	startToCloseTimeout: "5m",
+	retry: {
+		initialInterval: "2s",
+		maximumInterval: "30s",
+		backoffCoefficient: 2,
+		maximumAttempts: 5,
+	},
+});
+
+const { embedCodeAnalysisContext, ingestBacklogForRAG } = proxyActivities<
+	typeof activities
+>({
+	taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
 	startToCloseTimeout: "5m",
 	retry: {
 		initialInterval: "2s",
@@ -54,6 +70,7 @@ const {
 
 // Short activities for status updates (max 5 attempts)
 const { updateProjectDocumentStatus } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30s",
 	retry: {
 		initialInterval: "1s",

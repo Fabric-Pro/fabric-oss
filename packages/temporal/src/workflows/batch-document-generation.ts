@@ -30,6 +30,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
 
@@ -40,6 +41,7 @@ const {
 	updateAgentTaskStatus,
 	updateProjectDocumentStatus,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1m",
 	retry: {
 		initialInterval: "1s",

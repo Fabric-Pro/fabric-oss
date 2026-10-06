@@ -18,10 +18,12 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_EMBEDDING_TASK_QUEUE } from "../task-queues";
 
 const { sweepStaleDocumentEmbeddingsActivity } = proxyActivities<
 	typeof activities
 >({
+	taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
 	startToCloseTimeout: "10 minutes",
 	// The activity's first step is a Postgres query (listEmbeddedDocumentsForSweep)
 	// that runs BEFORE its per-document heartbeat loop begins. A transient DB

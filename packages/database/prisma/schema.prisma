@@ -115,6 +115,7 @@ model User {
   openAPIServicesCreated     OpenAPIService[]              @relation("OpenAPIServiceCreatedBy")
   openAPIServiceConfigs      OpenAPIServiceConfig[]
   agentConversations         AgentConversation[]
+  conversationTurns          ConversationTurn[]
   registeredAgents           RegisteredAgent[]
   modelPreferences           UserModelPreference[]
   orchestratorPreferences    UserOrchestratorPreferences[]
@@ -784,6 +785,7 @@ model Organization {
   openAPIServices                 OpenAPIService[]
   openAPIServiceConfigs           OpenAPIServiceConfig[]
   agentConversations              AgentConversation[]
+  conversationTurns               ConversationTurn[]
   registeredAgents                RegisteredAgent[]
   modelPreferences                OrganizationModelPreference[]
   apiKeys                         OrganizationApiKey[]
@@ -1849,6 +1851,9 @@ model AgentConversation {
   // (standalone Fabric AI, workspace doc chat, etc.).
   documentAttachment DocumentAssistantConversation?
 
+  // Advisor turns started in this conversation (see ConversationTurn).
+  turns ConversationTurn[]
+
   @@index([userId, agentId])
   @@index([organizationId, agentId])
   @@index([status])
@@ -1861,6 +1866,100 @@ model AgentConversation {
 enum AgentConversationStatus {
   ACTIVE
   ARCHIVED
+}
+
+/// One user message's run in an Advisor chat (the orchestrator workflow a chat
+/// starter launches for it), owned by the server rather than the browser.
+///
+/// It exists so a turn can be found, refused, cancelled and reported on
+/// without the browser holding the Temporal execution id: the client sends a
+/// per-message `clientRequestKey`, and the row keyed by it is the idempotency
+/// record, the one-live-turn-per-conversation guard, the durable record that
+/// a cancel was requested (read by the dispatch check before every model
+/// request the turn makes) and the place the turn's outcome lands.
+///
+/// Status machine (transitions are conditional UPDATEs in
+/// queries/conversation-turns.ts, never blind overwrites):
+///   START_PENDING -> ACTIVE -> COMPLETED | FAILED | LIMITED
+///   START_PENDING | ACTIVE -> CANCEL_REQUESTED -> CANCELLED
+///   START_PENDING -> FAILED (the start definitely failed)
+/// Terminal states are final. A cancel recorded before the terminal write
+/// ends the turn CANCELLED; otherwise the first terminal write wins.
+///
+/// A cancel by key that arrives before the turn exists writes a tombstone:
+/// status CANCELLED, cancelSource CANCELLED_BEFORE_START, no executionId.
+model ConversationTurn {
+  id                  String  @id @default(cuid())
+  organizationId      String
+  userId              String
+  /// The conversation the turn runs in; null for a surface with no
+  /// conversation (Nexus) and after the conversation is deleted.
+  conversationId      String?
+  /// Immutable copy of the conversation id the turn was created for. Unlike
+  /// `conversationId` it survives the conversation's deletion, so the turn
+  /// stays attributable.
+  scopeConversationId String?
+  /// The browser's per-message idempotency key (a uuid it reuses on retries
+  /// of the same message).
+  clientRequestKey    String
+  /// The Temporal workflow id. Null only on a cancel-before-start tombstone.
+  executionId         String? @unique
+  /// Monotonic per conversation (max + 1 under the conversation's lock).
+  /// Null on a tombstone.
+  generation          Int?
+  executionMode       String?
+  status              ConversationTurnStatus @default(START_PENDING)
+  /// Random token held only by the request that created the turn: only its
+  /// holder may perform the startup-abandonment transitions (FAILED on an
+  /// abandoned start, CANCELLED on a disconnect before start). A retry of
+  /// the same key never sees it, so it cannot end a turn another request is
+  /// starting or has started.
+  startToken          String?
+
+  cancelRequestedAt       DateTime?
+  cancelRequestedByUserId String?
+  cancelSource            ConversationTurnCancelSource?
+
+  terminalAt         DateTime?
+  terminalReason     String?
+  /// The final answer, or the partial text a cancelled turn had produced.
+  responseText       String?
+  /// Limit signals the turn ended with (kind/provider/message), if any.
+  limitSignalSummary Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, organizationId, clientRequestKey])
+  @@unique([conversationId, generation])
+  @@index([conversationId, status])
+  @@index([organizationId, userId])
+  @@map("conversation_turn")
+}
+
+enum ConversationTurnStatus {
+  START_PENDING
+  ACTIVE
+  CANCEL_REQUESTED
+  COMPLETED
+  FAILED
+  LIMITED
+  CANCELLED
+}
+
+enum ConversationTurnCancelSource {
+  /// The user pressed Stop and the cancel route recorded it.
+  USER_STOP
+  /// Stop arrived by client key before the turn row existed (tombstone).
+  CANCELLED_BEFORE_START
+  /// The browser disconnected before the turn became ACTIVE.
+  DISCONNECT_BEFORE_START
+  /// The workflow observed a native Temporal cancel nothing recorded first.
+  WORKFLOW_CANCELLED
 }
 
 model SDLCArtifact {
@@ -18379,6 +18478,34 @@ model ProjectInstructionSnapshot {
   /// the withdraw pair, the pending-command pair and kind, and the two
   /// null-safe implications between them (spec §4.1).
   @@map("project_instruction_snapshot")
+}
+
+/// A durable storage-cleanup receipt for one deleted Coding Instructions
+/// snapshot. It deliberately has no foreign keys: deleting the snapshot (or
+/// later the project) is the moment the receipt becomes necessary, and a
+/// cascade would lose the only durable way to find its owned storage prefixes.
+///
+/// `notBefore` delays the first sweep until issued staging-upload capabilities
+/// have expired. It does not prove that an already-started storage request has
+/// finished. The cleanup worker removes the receipt only after all three owned
+/// prefixes are fully empty; a truncated or failed sweep leaves it for a later
+/// run.
+model ProjectInstructionPendingStorageCleanup {
+  id             String   @id @default(cuid())
+  snapshotId     String   @unique
+  projectId      String
+  organizationId String
+  notBefore      DateTime
+  nextAttemptAt  DateTime
+  attempts       Int      @default(0)
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([nextAttemptAt, createdAt], map: "project_instruction_pending_storage_cleanup_due_idx")
+  @@map("project_instruction_pending_storage_cleanup")
 }
 
 /// One member's proposal branch in one project (Fizzy #2738 spec §4.1): the

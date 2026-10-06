@@ -44,6 +44,8 @@ import { useTranslations } from "next-intl";
 // so the four AI surfaces stay symmetric.
 const STOP_BUTTON_LABEL = "Stop generating";
 const STOP_BUTTON_TOOLTIP = "Stop this response · Esc";
+// Keep in step with the textarea's `max-h-[200px]` class.
+const TEXTAREA_MAX_HEIGHT = 200;
 
 import { useClipboardImagePaste } from "@saas/projects/lib/use-clipboard-image-paste";
 import {
@@ -271,16 +273,21 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 		const containerRef = useRef<HTMLDivElement>(null);
 		const hero = variant === "hero";
 
-		// The hero pill is one line tall until the text needs more. A textarea
-		// without an explicit height renders two rows, which is what made the
-		// pill 80px with the placeholder sitting at its top edge.
+		// The textarea grows with its text up to TEXTAREA_MAX_HEIGHT and only
+		// scrolls past that. Without this it keeps its default two-row height
+		// and a long prompt scrolls inside a sliver. The hero pill passes
+		// rows={1}, so it starts one line tall rather than two. `hero` stays in
+		// the dependencies because switching variants changes the rows and
+		// typography being measured even when the text does not change.
 		useEffect(() => {
 			const el = textareaRef.current;
-			if (!el || !hero) {
+			if (!el) {
 				return;
 			}
 			el.style.height = "auto";
-			el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+			const overflows = el.scrollHeight > TEXTAREA_MAX_HEIGHT;
+			el.style.height = `${overflows ? TEXTAREA_MAX_HEIGHT : el.scrollHeight}px`;
+			el.style.overflowY = overflows ? "auto" : "hidden";
 		}, [hero, value, textareaRef]);
 
 		// Track cursor position for @ detection
@@ -1004,7 +1011,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 							className={cn(
 								"flex-1 max-h-[200px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0",
 								hero
-									? "h-10 min-h-[40px] overflow-hidden px-2 py-2 text-[16px] leading-6 placeholder:text-muted-foreground"
+									? "h-10 min-h-[40px] px-2 py-2 text-[16px] leading-6 placeholder:text-muted-foreground"
 									: "min-h-[44px] px-2 py-2 text-[15px] placeholder:text-muted-foreground/50",
 							)}
 							disabled={isLoading || disabled}

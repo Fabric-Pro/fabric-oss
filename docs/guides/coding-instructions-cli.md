@@ -737,6 +737,13 @@ The Connect dialog's Codex commands use the same name for the same project, so a
 server added from either is the one the other finds; a test in the CLI runs one
 corpus of ids through both rules and fails if they differ.
 
+If registration was requested but any selected tool did not register the
+server, `init` exits 7 and reports incomplete setup; the installed hook remains
+available for a retry. Successful registration with OAuth sign-in still pending
+is reported separately. Registration is not evidence of a successful MCP tool
+call. JSON output carries `mcpRequested`, `mcpComplete` and
+`mcpAuthenticationPending` alongside each tool's result.
+
 Before it writes anything it reads what the tool already holds, from the tool's
 own files as data (Claude Code's `~/.claude.json`, for the checkout's local scope
 and the user scope, and the checkout's `.mcp.json`; Codex's `config.toml`), and
@@ -879,10 +886,12 @@ it and finishes the setup there:
 npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --project <id> --tool claude-code --clone <dir>
 ```
 
-`<dir>` is relative to the current folder (or `--dest`). It is made when it is
-missing and refused, before any request is made, when it exists and holds
-anything: `That folder already exists and is not empty, so nothing was cloned
-into it.` (exit 7). `--project` is required with it, because there is no
+`<dir>` is relative to the current folder (or `--dest`). It is made when missing.
+An existing matching Git checkout is reused, including when it was cloned
+directly from Azure DevOps. Repeating the Connect command does not reset the
+index, rewrite tracked files, change attributes or normalize line endings;
+staged, unstaged and untracked work stays in place. A nonempty directory that
+is not a matching checkout is refused (exit 7). `--project` is required with it, because there is no
 checkout yet to find the project from (exit 2 without), and the project has to
 be a repository project (exit 7 for an uploaded one, which has nothing to
 clone). When the project's instructions live in a subfolder of the repository,
@@ -894,7 +903,7 @@ With a bare `--clone` (no folder), `fabric instructions init --project <id>
 terminal and no `--clone`, it asks), and then does the same; when the
 instructions live in a subfolder it stops there and prints the one line that
 sets that folder up (`init --dest <folder>`). The clone is
-`git clone --quiet --branch <ref> --no-tags --no-recurse-submodules -- <url>
+`git clone --quiet --branch <ref> -- <url>
 .` with the developer's own git credentials. The URL is the credential-free
 HTTPS one the deployment reports, and only when it names the very repository
 shown in the prompt (the same provider, host and path) on the default port; a
@@ -908,7 +917,12 @@ terminal prompt is off (`GIT_TERMINAL_PROMPT=0`, `-c
 credential.interactive=never`, `GCM_INTERACTIVE=never`), and ssh runs with
 `-o BatchMode=yes` unless the developer already set `GIT_SSH_COMMAND` or
 `GIT_SSH`, so a missing credential is a one-line failure rather than a hang. It
-never clones into a folder that has anything in it.
+never clones into a folder that has anything in it; a matching checkout is
+reused instead. On Windows, a new clone stores `core.longpaths=true` and
+`core.fscache=false` locally so long paths can be checked out without a false
+modified-file report. Existing checkout configuration and global Git settings
+are preserved. An incomplete checkout is refused with a checkout-specific
+message; its files are retained and MCP registration has not been attempted.
 
 Run `init` from the directory the project's instructions live in — the
 repository root, or the sync's root folder when it has one. In a clone it
@@ -1006,7 +1020,7 @@ commits or pushes; a checkout it cannot fast-forward is left exactly as it was.
 |---|---|
 | fast-forwarded | `fabric: coding instructions: fast-forwarded main from <old7> to <new7> (v<n>).` (`(v<n>)` only when the new HEAD is the commit that version was published from) |
 | already there | nothing |
-| Fabric's copy lags the branch | `fabric: coding instructions: main is at <sha7>; Fabric's copy is behind (<why>).` Why: a commit was refused by the secret scan, a sync is in progress, the last sync failed, automatic sync is paused or off, or the next sync has not run yet. Said once per published version and reason |
+| Fabric's copy lags the branch | `fabric: coding instructions: main is at <sha7>; Fabric's copy is behind (<why>).` Why: a sync is in progress, validation or acquisition failed, automatic sync is paused or off, or the next sync has not run yet. Said once per published version and reason |
 | dirty, another branch, detached, an operation in progress | the matching `behind` line in the table below, once per published version and reason; nothing when the checkout is not behind the published commit |
 | shallow clone, submodule, tracks nothing or another branch, git busy, branch held by another work tree | one line each, saying what to run, once per published version and reason, and only when the checkout is behind |
 | diverged (a rewritten upstream, or local commits) | `…: main and origin/main have diverged, so nothing was updated. Run: git pull --rebase origin main, or merge origin/main yourself.` Once per version |
@@ -1171,7 +1185,7 @@ whether or not a declaration also names them.
 | Project access (`access`) | `GET .../instructions/published` succeeds for this project. A missing scope (403 `MISSING_SCOPE`), a missing project permission (other 403) and an unknown project (404) are reported as three different failures. | server | Ask a project maintainer for access, or check the project id and `--org`. |
 | Published instructions (`published`) | A version is published. The detail gives its version, a digest prefix and its file count, and — for a repository-mirrored snapshot — the commit and branch it was published from (`source.commitSha`/`source.ref`, the snapshot's OWN provenance). Nothing published is a warning. The check also carries the project's CURRENT repository host, path, branch and root path (`repository`, `null` for an upload-sourced or disconnected project — no commit here, since that is per-snapshot, not the project's present configuration), and, for the snapshot's own provenance, whether it still matches that current configuration (`source.current`). | server | Publish a version from the project's Coding Instructions tab. |
 | Lock (`lock`) | `.fabric/instructions.lock` exists, belongs to this project, names the published digest, and its ledger matches the published manifest path for path, hash for hash and mode for mode. | machine | `fabric instructions sync --project <id>`. A lock written for another project gets no command, because `sync` refuses such a lock. The fix says to rerun doctor with the `--dest` that was synced for this project. |
-| Checkout (`checkout`) | In a clone of a repository-sourced project: whether the checkout holds the published commit, through the same decision the MCP tool makes from facts its caller reports. Here the facts are observed: `HEAD`, the branch, whether the tree is clean, and whether `HEAD`'s history contains the published commit (the answer `check` also gives). `pass` when `HEAD` is the published commit, or is ahead of it on the branch (its history contains it), with a clean tree; `warn` when the tree has uncommitted changes, when the history does not contain the published commit (behind or diverged), or when Fabric's own copy lags the branch tip (and why: the secret scan refused a commit, a sync is running or failed, or automatic sync is off or paused); `skip` on another branch or a detached `HEAD`, for an uploaded project, outside a git checkout, in a checkout of another repository, when the published version was uploaded rather than synced from the repository, and when nothing has been published yet. | machine | Commit or stash, or pull `<ref>` yourself; a lagging Fabric copy is fixed in the project's Coding Instructions tab, not in the checkout. A fix is a proposal, never authority to pull or reset. |
+| Checkout (`checkout`) | In a clone of a repository-sourced project: whether the checkout holds the published commit, through the same decision the MCP tool makes from facts its caller reports. Here the facts are observed: `HEAD`, the branch, whether the tree is clean, and whether `HEAD`'s history contains the published commit (the answer `check` also gives). `pass` when `HEAD` is the published commit, or is ahead of it on the branch (its history contains it), with a clean tree; `warn` when the tree has uncommitted changes, when the history does not contain the published commit (behind or diverged), or when Fabric's own copy lags the branch tip (and why: validation or acquisition failed, a sync is running, or automatic sync is off or paused); `skip` on another branch or a detached `HEAD`, for an uploaded project, outside a git checkout, in a checkout of another repository, when the published version was uploaded rather than synced from the repository, and when nothing has been published yet. | machine | Commit or stash, or pull `<ref>` yourself; a lagging Fabric copy is fixed in the project's Coding Instructions tab, not in the checkout. A fix is a proposal, never authority to pull or reset. |
 | Local files (`drift`) | Every file the lock names still hashes to what the lock recorded, and still has the recorded mode. Each drifted file is listed. Edits alone are a warning, because `sync` keeps them; an edit a sync already kept reads `edited (kept by sync)`. A missing file, a changed mode or a path that is not a regular file fails. | machine | `sync --repair` to replace edits with the published bytes, `sync` to restore anything else, or `fabric instructions push` to propose the edits instead. |
 | Hook configuration (`hook`) | `.claude/settings.local.json` and `.codex/hooks.json` are checked separately. A hook passes when a `SessionStart` entry for this project runs exactly one of the two commands `init` writes today (`check` or `sync`, bound to the deployment doctor ran against with `--base-url`, and carrying the same `--remote` and `--org`), started either as `fabric` or as `node` and the copy of the served build `init` keeps; a copy-form hook whose file is gone is a warning (`not found; run init again to put it back`, with no path in the report). A hook written before hooks named a deployment (the same command with no `--base-url`) is a warning, `unbound to a deployment`, because it follows whichever deployment the machine is signed in to. A Fabric entry for the project under another event, or running another subcommand, is ignored. Also looks `fabric` up on PATH, which only a hook that runs `fabric` depends on. | machine | `init --project <id> --tool claude-code`, started the way this install starts (the `npx` line, or `node` and the copy), which also takes a first sync for an uploaded project (`--tool codex` for Codex); `npm install -g @fabricorg/cli` when a hook runs `fabric` and it is not on PATH. |
 | Environment variables (`environment`) | Every variable [`fabric.environment.json`](#the-environment-declaration-fabricenvironmentjson) declares is present in this shell, checked by name. A missing required variable fails and a missing optional one warns. | machine | Set the named variables. The fix is a description only, never an `export NAME=` line. |
@@ -1398,7 +1412,7 @@ forbidden, `6` rate limited, `7` refused or inconsistent.
 | a project id or organization slug that is not an identifier | `--project must be a project id: …` or `--org must be an organization slug: …` (2) | stderr, skipped |
 | not signed in | `Not signed in to <origin>. Run: fabric auth login --base-url <origin> --project <id>` (3), with `--project <id>` whenever the command names a project; `init` signs in on the spot through the browser, with no terminal needed (not under `CI`) | stdout: `fabric: coding instructions: not signed in to <origin> — run: fabric auth login --base-url <origin> --project <id>` |
 | sign-in expired or refused (401) | `Your sign-in to <origin> has expired. Run: fabric auth login --base-url <origin>` (3), with `--project <id>` whenever the command names a project | the same stdout line as not signed in |
-| an agent's MCP server | one line per tool: `Registered the Fabric MCP server for <tool> as "<name>".`, `The Fabric MCP server is already registered for <tool>.`, `Replaced the Fabric MCP server …`, a left-alone line, `Skipped the <tool> MCP server: <command> is not on PATH. Once it is, run: <line>`, `Codex signs in as part of adding the Fabric MCP server, which opens your browser and waits for you, so init did not run it. Run: <line>` (no terminal), or `Could not register the Fabric MCP server for <tool>. Run: <line>`; then `To finish, sign <tool> in to it: <line>`, `If <tool> has not signed in to it yet, run: <line>` (for a server registered before) or `The <tool> sign-in did not finish. Run: <line>` (0, always) | — (a hook never registers anything) |
+| an agent's MCP server | One registration result and any required sign-in action per selected tool. Exit 7 when requested registration is incomplete; exit 0 when registration succeeds, including an explicitly reported pending sign-in. `--no-mcp` intentionally omits registration. | — (a hook never registers anything) |
 | missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`, or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
 | project not found (404) | `Project not found, or you cannot see it.` (4) | stderr: `… skipped: no project for this checkout` |
 | project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | stderr: `… skipped: this hook names no project. Run: fabric instructions init` |
@@ -1507,7 +1521,8 @@ keep them:
   count must match the snapshot's, and the digest is recomputed locally from
   the entries and compared. A response that says "published" and carries no
   manifest is an error, never an empty one. The manifest is also held to the
-  published snapshot limits — at most 5000 files, 5 MiB each, 50 MiB in total
+  published snapshot limits — at most 5000 files, 5 MiB each, and
+  2,147,483,647 bytes in total (the snapshot's signed 32-bit storage field)
   — so a malformed response cannot describe an unbounded download.
 - **The download is bounded by the manifest, not by the response.** The
   archive size is capped at what the (already validated) manifest describes
@@ -1516,6 +1531,22 @@ keep them:
   scales with the entry count and path lengths, the way zip framing does, so a
   legitimate snapshot of thousands of small files is not refused for being
   mostly structure.
+- **Large snapshots use temporary verified files.** Above a 50 MiB internal
+  memory budget, the CLI downloads only the planned writes, eight at a time,
+  into its own temporary directory. Signed URLs are requested in batches of
+  200 after the preceding batch finishes. All planned bytes are verified
+  before the destination is touched, then read and checked one file at a time;
+  temporary files are removed on success or failure. A publication change
+  re-reads the manifest and retries once. `doctor` downloads only the small
+  environment declaration for a large snapshot. Server ZIP exports stream
+  through storage rather than buffering the whole tree and archive.
+  The repository clone still has its independent operational disk budget;
+  raising the retained-file limit does not allow arbitrary repository clones.
+- **Old CLI builds need upgrading for large snapshots.** CLI 0.5.0 still
+  refuses snapshots above its original 50 MiB ceiling. The server sends an
+  upgrade notice without truncating the manifest. App and CLI patch releases
+  must be delivered together, and testers must use the new command from
+  Connect your agent, whose tarball URL identifies the deployed build.
 - **A lock belongs to one project.** Running `sync --project B` in a tree
   synced from project A is refused rather than allowed to use A's ledger to
   decide what to delete — and `push --project B` there is refused for the same
@@ -1834,11 +1865,17 @@ repository and says how it is syncing:
 |---|---|
 | `host`, `path` | The repository's identity. GitHub and GitLab: the host and `<owner>/<name>` (a GitLab owner may be a subgroup path). Azure DevOps: always host `dev.azure.com` and the URL path with `_git`, `<org>/<project>/_git/<repo>` (`<org>/_git/<repo>` when the URL names no project), whichever of its remote spellings the project was connected with. |
 | `cloneUrl` | The canonical HTTPS URL to clone from, with no credentials; `null` only for a legacy stored value that is not one. Fabric never hands out a repository token with it: the developer's own git authenticates. |
-| `sync.automatic`, `sync.pausedReason` | Whether the published copy follows the branch on its own, and why it stopped doing so. Automatic sync is on by default for a newly configured repository sync; a project that turned it off keeps it off. |
-| `sync.lastRun` | The newest run of the current configuration: `trigger`, `status`, `error` (a closed code, `TREE_REFUSED` being the secret scan refusing a commit), `commitSha` (the tip the run evaluated) and `finishedAt`. `status` and `finishedAt` are `null` while it runs; the whole field is `null` before the first run. |
+| `sync.automatic`, `sync.pausedReason` | Whether the published copy follows the branch on its own, and why it stopped doing so. Automatic sync is on by default for a newly configured repository sync; a project that turned it off keeps it off. Successful scheduled checks normally run every 15 minutes. After failures, the server backs off for 10, 20, 40 minutes and so on, capped at 6 hours; the UI does not guess the next delay. |
+| `sync.lastRun` | The newest run of the current configuration: `trigger`, `status`, `error` (a closed validation or acquisition code; historical `TREE_REFUSED` values remain readable), `commitSha` (the tip the run evaluated) and `finishedAt`. `status` and `finishedAt` are `null` while it runs; the whole field is `null` before the first run. |
 
 `sync` moves on every sync, so a client that compares two responses to see
 whether the configuration changed must leave it out.
+
+Repository-sync snapshots are copied from the server-side checkout and do not
+run a content secret scan. They still require the repository sync's persisted
+receipt, validate filenames, paths, sizes and hashes, verify `.fabricignore`
+provenance, and derive served metadata from the verified bytes promoted into
+the snapshot. Uploads, edits and proposals retain their content-secret scan.
 
 `POST /instructions/checkouts/resolve` takes `{ "candidates": [...] }`, one to
 ten canonical repository URLs of at most 512 characters, and answers

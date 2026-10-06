@@ -34,7 +34,6 @@
  * file in the checkout (see `lock.ts`) and those are the paths a tampered one
  * would most want to name.
  */
-import { createHash } from "node:crypto";
 import type {
 	InstructionManifestEntry,
 	PublishedInstructionSource,
@@ -47,7 +46,7 @@ import {
 	findCollision,
 	isReservedPath,
 } from "./paths.js";
-import { readFileSafely } from "./safe-write.js";
+import { fingerprintFileSafely } from "./safe-write.js";
 
 type PlanAction =
 	| "verified"
@@ -100,7 +99,7 @@ export interface SyncPlan {
 /**
  * Hex sha256 of a local file, or `null` when nothing is there.
  *
- * Every read goes through `readFileSafely`, the same guarded walk the writes
+ * Every read goes through `fingerprintFileSafely`, the same guarded walk the writes
  * use: no symlinked component anywhere on the way down, nothing resolving
  * outside the destination, a regular file or nothing at all. A link pointing
  * at a file that happens to hold the published bytes used to hash EQUAL and
@@ -111,10 +110,7 @@ export async function hashLocalFile(
 	root: string,
 	relativePath: string,
 ): Promise<string | null> {
-	const read = await readFileSafely(root, relativePath);
-	return read === null
-		? null
-		: createHash("sha256").update(read.bytes).digest("hex");
+	return (await fingerprintFileSafely(root, relativePath))?.sha256 ?? null;
 }
 
 function lockPaths(lock: InstructionsLock | null): string[] {
@@ -228,9 +224,9 @@ export async function findLedgerDrift(input: {
 		// A refusal from the guarded reader — a symlinked ancestor, a
 		// directory where a file belongs — is drift, not a crash: the caller
 		// re-plans, and planning refuses it there with the same message.
-		let read: Awaited<ReturnType<typeof readFileSafely>>;
+		let fingerprint: Awaited<ReturnType<typeof fingerprintFileSafely>>;
 		try {
-			read = await readFileSafely(input.root, lockedPath);
+			fingerprint = await fingerprintFileSafely(input.root, lockedPath);
 		} catch (error) {
 			drifted.push({
 				path: lockedPath,
@@ -245,7 +241,7 @@ export async function findLedgerDrift(input: {
 			});
 			continue;
 		}
-		if (read === null) {
+		if (fingerprint === null) {
 			drifted.push({
 				path: lockedPath,
 				reason: "missing",
@@ -254,7 +250,7 @@ export async function findLedgerDrift(input: {
 			});
 			continue;
 		}
-		const actual = createHash("sha256").update(read.bytes).digest("hex");
+		const actual = fingerprint.sha256;
 		if (actual !== locked.sha256) {
 			drifted.push({
 				path: lockedPath,
@@ -270,12 +266,12 @@ export async function findLedgerDrift(input: {
 		if (
 			process.platform !== "win32" &&
 			locked.mode !== null &&
-			(read.mode & 0o7777) !== (locked.mode & 0o7777)
+			(fingerprint.mode & 0o7777) !== (locked.mode & 0o7777)
 		) {
 			drifted.push({
 				path: lockedPath,
 				reason: "mode",
-				detail: `mode ${(read.mode & 0o7777).toString(8)}, published as ${(locked.mode & 0o7777).toString(8)}`,
+				detail: `mode ${(fingerprint.mode & 0o7777).toString(8)}, published as ${(locked.mode & 0o7777).toString(8)}`,
 				kept: locked.kept === true,
 			});
 		}

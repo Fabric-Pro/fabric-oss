@@ -69,7 +69,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("simple-git", () => ({ default: vi.fn() }));
+vi.mock("simple-git", () => ({ simpleGit: vi.fn() }));
 
 import { AtlasService } from "../service";
 import type { RepoOption } from "../types";

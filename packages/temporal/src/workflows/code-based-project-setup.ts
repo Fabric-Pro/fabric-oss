@@ -26,6 +26,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
 import { orchestratorExecutionWorkflow } from "./orchestrator";
@@ -38,6 +39,7 @@ const {
 	saveCodeAnalysisContext,
 	createCodeBasedDocumentRecords,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "2m",
 	retry: {
 		initialInterval: "2s",

@@ -36,7 +36,7 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 	rm: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("simple-git", () => ({
-	default: () => ({ clone: mocks.clone, listRemote: mocks.listRemote }),
+	simpleGit: () => ({ clone: mocks.clone, listRemote: mocks.listRemote }),
 }));
 
 import { resolveRepoTokenActivity } from "../../code-indexing";

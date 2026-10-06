@@ -42,6 +42,7 @@ export default async function ConnectionsPage({ params }: Props) {
 				organizationId={organization.id}
 				addHref={`/app/${organizationSlug}/settings/integrations/add`}
 				settingsBasePath={`/app/${organizationSlug}/settings/integrations`}
+				apiKeysHref={`/app/${organizationSlug}/settings/api-keys`}
 			/>
 		</div>
 	);

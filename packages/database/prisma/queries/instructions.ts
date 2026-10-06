@@ -33,6 +33,7 @@ import {
 	type InstructionMigrationPointer,
 	migrationOfSettings,
 } from "./instruction-migration-pointer";
+import { createInstructionStorageCleanupReceipt } from "./instruction-pending-storage-cleanup";
 import {
 	currentAppend,
 	type EvidenceOp,
@@ -68,7 +69,10 @@ import {
 	writeProjectInstructionSettings,
 } from "./instruction-repository-sync";
 import { parseRepoUrl } from "./project-repository-integrations";
-import { canUpdateProjectInstructions } from "./projects/projects";
+import {
+	canCreateProjectInstructions,
+	canUpdateProjectInstructions,
+} from "./projects/projects";
 
 export type InstructionSnapshotStatus = ProjectInstructionSnapshotStatus;
 export type InstructionSnapshotProgressPhase =
@@ -1927,7 +1931,13 @@ export function getInstructionSnapshotById(id: string) {
 		where: { id },
 		// The token is the activities' business and never leaves the server:
 		// `summarySelect` is what the tab's reads return.
-		select: { ...summarySelect, validationAttemptId: true },
+		select: {
+			...summarySelect,
+			validationAttemptId: true,
+			// Repository-sync provenance is an activity-only gate. Keep the
+			// receipt out of the tab summary, which has no reason to expose it.
+			syncRunKey: true,
+		},
 	});
 }
 
@@ -3151,6 +3161,13 @@ export async function markInstructionSnapshotReady(input: {
 	readyAt: Date;
 	validationAttemptId?: string;
 	/**
+	 * A Temporal activity attempt's absolute deadline. When present, the READY
+	 * transition is guarded by Postgres's clock in the same statement as the
+	 * write, so a query delayed behind another writer cannot commit after the
+	 * attempt expired. Omitted for legacy callers.
+	 */
+	notAfter?: Date;
+	/**
 	 * The publish-first promotion (Fizzy #2737): READY without the content
 	 * secret scan, which runs after publication. Writes `deferredScanStatus:
 	 * PENDING` in the SAME conditional statement as READY, so there is no
@@ -3159,46 +3176,52 @@ export async function markInstructionSnapshotReady(input: {
 	 */
 	deferredScan?: boolean;
 }): Promise<{ changed: boolean }> {
-	const snapshot = await db.projectInstructionSnapshot.findFirst({
-		where: {
-			id: input.snapshotId,
-			projectId: input.projectId,
-			organizationId: input.organizationId,
-			status: { notIn: VERDICT_STATUSES },
-			...ownedByAttempt(input.validationAttemptId),
-		},
-		select: { proposalStatus: true },
-	});
-	if (!snapshot) {
-		return { changed: false };
-	}
-	const { count } = await db.projectInstructionSnapshot.updateMany({
-		where: {
-			id: input.snapshotId,
-			projectId: input.projectId,
-			organizationId: input.organizationId,
-			status: { notIn: VERDICT_STATUSES },
-			...ownedByAttempt(input.validationAttemptId),
-		},
-		data: {
-			...NO_PROGRESS,
-			status: "READY",
-			fileCount: input.fileCount,
-			storedBytes: input.storedBytes,
-			digest: input.digest,
-			readyAt: input.readyAt,
-			rejection:
-				snapshot.proposalStatus === null
-					? Prisma.JsonNull
-					: ([
-							proposalStagingPendingRejection,
-						] as unknown as Prisma.InputJsonValue),
-			...(input.deferredScan === true
-				? { deferredScanStatus: "PENDING" as const }
-				: {}),
-		},
-	});
-	return { changed: count > 0 };
+	const attempt =
+		input.validationAttemptId === undefined
+			? Prisma.empty
+			: Prisma.sql`AND "validationAttemptId" = ${input.validationAttemptId}`;
+	const deferred =
+		input.deferredScan === true
+			? Prisma.sql`, "deferredScanStatus" = 'PENDING'`
+			: Prisma.empty;
+	const notAfter = input.notAfter ?? null;
+	const rows = await db.$queryRaw<Array<{ updated: number }>>(
+		Prisma.sql`WITH target AS MATERIALIZED (
+				SELECT "id"
+				FROM "project_instruction_snapshot"
+				WHERE "id" = ${input.snapshotId}
+					AND "projectId" = ${input.projectId}
+					AND "organizationId" = ${input.organizationId}
+					AND "status" NOT IN ('READY', 'REJECTED')
+					${attempt}
+				FOR UPDATE
+			), live AS MATERIALIZED (
+				SELECT "id"
+				FROM target
+				WHERE ${notAfter}::timestamp IS NULL
+					OR (clock_timestamp() AT TIME ZONE 'UTC') < ${notAfter}::timestamp
+			)
+			UPDATE "project_instruction_snapshot" AS s
+			SET "progressPhase" = NULL,
+				"progressDone" = NULL,
+				"progressTotal" = NULL,
+				"progressUpdatedAt" = NULL,
+				"status" = 'READY',
+				"fileCount" = ${input.fileCount},
+				"storedBytes" = ${input.storedBytes},
+				"digest" = ${input.digest},
+				"readyAt" = ${input.readyAt},
+				"rejection" = CASE
+					WHEN "proposalStatus" IS NULL THEN 'null'::jsonb
+					ELSE ${JSON.stringify([proposalStagingPendingRejection])}::jsonb
+				END,
+				"updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC')
+				${deferred}
+			FROM live
+			WHERE s."id" = live."id"
+			RETURNING 1 AS "updated"`,
+	);
+	return { changed: rows.length > 0 };
 }
 
 /**
@@ -5681,6 +5704,28 @@ export async function publishInstructionSnapshot(input: {
 		if (input.allowRollback !== true && snapshot.publishedAt !== null) {
 			return { published: true as const, changed: false as const };
 		}
+		// An automatic publication still acts for the snapshot's submitting
+		// member long after the request that created it returned. Re-check the
+		// same instruction:create permission under the project lock before the
+		// first pointer move, so revoking it during validation cannot publish an
+		// upload or an edit. Keep this after the published-at arm: a retry must
+		// remain idempotent after a publication that already happened, and
+		// manual History publication is authorized by its request boundary.
+		if (
+			input.allowRollback !== true &&
+			snapshot.source !== "REPOSITORY" &&
+			!(await canCreateProjectInstructions(
+				input.projectId,
+				snapshot.userId,
+				tx,
+			))
+		) {
+			return {
+				published: false as const,
+				changed: false as const,
+				reason: "permission_revoked" as const,
+			};
+		}
 		// The move fence (Fizzy #2878 §9), on every path, read from the same
 		// locked settings as the fences below: while a move of the project's
 		// uploads into its repository is open, what is published is the version
@@ -7057,6 +7102,14 @@ export async function deleteInstructionSnapshot(
 					deriving > 0 ? "base_in_flight" : "active",
 				);
 			}
+			// Once the row is gone, only this receipt can rediscover its owned
+			// storage prefixes. It is still inside this transaction, so a failed
+			// insert rolls the row delete back rather than stranding the objects.
+			await createInstructionStorageCleanupReceipt(tx, {
+				snapshotId: id,
+				projectId,
+				organizationId,
+			});
 			return { deleted: true };
 		});
 	} catch (error) {

@@ -206,7 +206,11 @@ describe("useOrchestratorStream.stop()", () => {
 			"/api/agents/fabric-ai/orchestrator-temporal/cancel",
 			expect.objectContaining({
 				method: "POST",
-				body: JSON.stringify({ executionId: "orch-aaaa" }),
+				// The executionId, plus the message's idempotency key (the
+				// server-owned turn can also be cancelled by it).
+				body: expect.stringMatching(
+					/"executionId":"orch-aaaa".*"clientRequestKey":"[^"]+"/,
+				),
 			}),
 		);
 

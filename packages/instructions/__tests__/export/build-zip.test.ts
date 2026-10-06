@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -11,7 +12,6 @@ const m = vi.hoisted(() => ({
 	exportKey: vi.fn(),
 	warn: vi.fn(),
 	appendCalls: [] as Array<{ path: string; mode: number | undefined }>,
-	sink: undefined as { end: () => void } | undefined,
 }));
 
 vi.mock("@repo/config", () => ({
@@ -23,6 +23,19 @@ vi.mock("../../src/storage-keys", () => ({
 }));
 
 vi.mock("@repo/storage", () => ({
+	getObjectStream: async (...args: unknown[]) => {
+		const file = await m.downloadFile(...args);
+		return Readable.from([file.data]);
+	},
+	putObjectStream: async (
+		key: string,
+		body: Readable,
+		options: { bucket: string; contentType: string },
+	) => {
+		const chunks: Buffer[] = [];
+		for await (const chunk of body) chunks.push(chunk);
+		await m.uploadFile(key, Buffer.concat(chunks), options);
+	},
 	getStorageProvider: () => ({
 		downloadFile: m.downloadFile,
 		uploadFile: m.uploadFile,
@@ -39,25 +52,25 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/logs", () => ({ logger: { warn: m.warn } }));
 
-// A stand-in for the real zip stream: `build-zip.ts` only ever calls
-// `append`, `pipe`, `on`, and `finalize`. Recording `append`'s arguments is
-// enough to assert entry path, mode, and order without parsing real zip
-// bytes; `finalize` ends the real `PassThrough` sink so the module's own
-// `done` promise (which waits for the sink's "end" event) resolves.
-vi.mock("archiver", () => ({
-	default: () => ({
-		append: (_data: Buffer, options: { name: string; mode?: number }) => {
-			m.appendCalls.push({ path: options.name, mode: options.mode });
+vi.mock("archiver", async (importOriginal) => {
+	const { default: createArchive } = await importOriginal<{
+		default: typeof import("archiver");
+	}>();
+	return {
+		default: (...args: Parameters<typeof createArchive>) => {
+			const archive = createArchive(...args);
+			const append = archive.append.bind(archive);
+			archive.append = (data, options) => {
+				m.appendCalls.push({
+					path: options?.name ?? "",
+					mode: options?.mode,
+				});
+				return append(data, options);
+			};
+			return archive;
 		},
-		pipe: (dest: { end: () => void }) => {
-			m.sink = dest;
-		},
-		on: () => {},
-		finalize: async () => {
-			m.sink?.end();
-		},
-	}),
-}));
+	};
+});
 
 import {
 	buildInstructionSnapshotZip,
@@ -93,7 +106,6 @@ beforeEach(() => {
 	m.getInstructionSnapshot.mockResolvedValue({ id: "s" });
 	m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
 	m.appendCalls = [];
-	m.sink = undefined;
 	m.downloadFile.mockResolvedValue({
 		data: Buffer.from("x"),
 		contentType: "text/plain",
@@ -107,7 +119,7 @@ describe("buildInstructionSnapshotZip", () => {
 		// (a.md slowest, c.md instant): the downloads now run CONCURRENTLY,
 		// so completion order here is c, b, a — and the archive entries must
 		// still land in the order the files were given. That is what the
-		// slot-indexed results array buys: appending as each download
+		// ordered stream window buys: appending as each download
 		// resolved would reverse this tree, and a zip's entry order is part
 		// of what the manifest and the CLI's ledger read back.
 		const delays: Record<string, number> = {

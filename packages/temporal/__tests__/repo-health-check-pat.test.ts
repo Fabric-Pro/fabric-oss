@@ -287,3 +287,67 @@ describe("checkRepoIntegrationHealth — PAT-connected repositories", () => {
 		);
 	});
 });
+
+describe("checkRepoIntegrationHealth — Azure DevOps PAT sign-in page", () => {
+	it("treats ADO's 203 sign-in page as an expired token, with no second probe", async () => {
+		mockProjectRepositoryIntegrationFindUnique.mockResolvedValue({
+			status: "ACTIVE",
+			azureOrganization: "example-org",
+		});
+		// `ok` is true for 203, so without a status check this took the
+		// "alive" branch.
+		mockFetch.mockResolvedValueOnce(
+			new Response("<html>sign in</html>", {
+				status: 203,
+				headers: { "content-type": "text/html" },
+			}),
+		);
+
+		const result = await checkRepoIntegrationHealth(
+			buildInput({
+				provider: "AZURE_DEVOPS",
+				repositoryUrl:
+					"https://dev.azure.com/example-org/Proj/_git/repo",
+			}),
+		);
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockSetIntegrationStatus).toHaveBeenCalledWith(
+			"int-pat-1",
+			"TOKEN_EXPIRED",
+			"Azure DevOps API returned 401",
+		);
+		expect(result).toMatchObject({
+			healthy: false,
+			newStatus: "TOKEN_EXPIRED",
+		});
+	});
+
+	it("a real 401 yields the same outcome", async () => {
+		mockProjectRepositoryIntegrationFindUnique.mockResolvedValue({
+			status: "ACTIVE",
+			azureOrganization: "example-org",
+		});
+		mockFetch.mockResolvedValueOnce(
+			new Response("unauthorized", { status: 401 }),
+		);
+
+		const result = await checkRepoIntegrationHealth(
+			buildInput({
+				provider: "AZURE_DEVOPS",
+				repositoryUrl:
+					"https://dev.azure.com/example-org/Proj/_git/repo",
+			}),
+		);
+
+		expect(mockSetIntegrationStatus).toHaveBeenCalledWith(
+			"int-pat-1",
+			"TOKEN_EXPIRED",
+			"Azure DevOps API returned 401",
+		);
+		expect(result).toMatchObject({
+			healthy: false,
+			newStatus: "TOKEN_EXPIRED",
+		});
+	});
+});

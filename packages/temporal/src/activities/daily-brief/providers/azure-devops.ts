@@ -71,6 +71,11 @@ async function adoFetch<T>(args: {
 		},
 		signal: AbortSignal.timeout(args.timeoutMs),
 	});
+	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+	// true for 203): fail like a 401, before the `ok` test and any body read.
+	if (response.status === 203) {
+		throw new Error("Azure DevOps API error: HTTP 401");
+	}
 	if (!response.ok) {
 		throw new Error(`Azure DevOps API error: HTTP ${response.status}`);
 	}

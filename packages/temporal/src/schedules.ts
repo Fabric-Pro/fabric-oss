@@ -147,8 +147,8 @@ const DOC_EMBED_SWEEP_WORKFLOW_NAME = "projectDocumentEmbeddingSweepWorkflow";
 // tighter value than the original 15 min, at the cost of running the
 // sweep 3× more often. The activity is cheap (one paginated DB query +
 // one filter-based Qdrant delete per document) so the extra load is
-// negligible. Runs in "project-documents" task queue alongside the
-// embed workflow.
+// negligible. The workflow start stays on project-documents for existing
+// schedules; its vector-cleanup activity explicitly uses project-embeddings.
 const DOC_EMBED_SWEEP_CRON_SCHEDULE = "*/5 * * * *";
 const DOC_EMBED_SWEEP_TASK_QUEUE = "project-documents";
 

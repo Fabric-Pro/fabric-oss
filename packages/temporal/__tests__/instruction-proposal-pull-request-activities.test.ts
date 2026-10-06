@@ -673,15 +673,16 @@ describe("the cooperative deadline", () => {
 		return run;
 	}
 
-	it("measures start-to-close from the attempt's scheduled time, not from entry: a late start gets no extra time", async () => {
-		// Scheduled 20 s before the function ran: Temporal's start-to-close
-		// fires 65 s after entry, so the attempt stops 10 s before, at 55 s.
+	it("measures start-to-close from worker entry after a queued attempt", async () => {
+		// The SDK's current-attempt schedule timestamp includes task-queue wait,
+		// so it cannot anchor the local cooperative budget. The attempt gets its
+		// 85 s budget from entry and keeps the 10 s completion margin.
 		inActivity({
 			startToCloseTimeoutMs: 85_000,
 			currentAttemptScheduledTimestampMs: NOW.getTime() - 20_000,
 		});
 		const stopped = await stopOf();
-		expect(stopped.at).toBe(55_000);
+		expect(stopped.at).toBe(75_000);
 		expect(stopped.reason).toBeInstanceOf(ProposalDeadlineExceeded);
 	});
 

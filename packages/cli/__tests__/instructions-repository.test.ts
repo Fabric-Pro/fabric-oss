@@ -691,22 +691,22 @@ describe("a directory that is not a git checkout", () => {
 		[
 			"auth",
 			3,
-			`✗ Could not clone ${NAME}: git has no credentials for git.example.com. Run: gh auth login\n`,
+			`✗ Could not clone ${NAME}: git has no credentials for git.example.com. The Fabric MCP server was not registered. Run: gh auth login\n`,
 		],
 		[
 			"network",
 			1,
-			`✗ Could not clone ${NAME}: git.example.com did not answer. Check your network and try again.\n`,
+			`✗ Could not clone ${NAME}: git.example.com did not answer. The Fabric MCP server was not registered. Check your network and try again.\n`,
 		],
 		[
 			"missing-ref",
 			7,
-			`✗ Could not clone ${NAME}: it has no branch main.\n`,
+			`✗ Could not clone ${NAME}: it has no branch main. The Fabric MCP server was not registered.\n`,
 		],
 		[
 			"other",
 			1,
-			`✗ Could not clone ${NAME}. Run: git clone -- https://git.example.com/example-org/rules to see why.\n`,
+			`✗ Could not clone ${NAME}. The Fabric MCP server was not registered. Run: git clone -- https://git.example.com/example-org/rules to see why.\n`,
 		],
 	] as const)(
 		"init --clone that fails with %s says so in one line and writes no hook",

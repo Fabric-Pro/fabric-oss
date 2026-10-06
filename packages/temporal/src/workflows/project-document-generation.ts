@@ -30,6 +30,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import type {
 	ProjectDocumentGenerationInput,
 	ProjectDocumentGenerationOutput,
@@ -44,6 +45,7 @@ const {
 	updateAgentTaskStatus,
 	updateProjectWorkflowStatus,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1m",
 	retry: {
 		initialInterval: "1s",
@@ -72,6 +74,7 @@ const {
 	recordGenerationQueueReason,
 	startGenerationRun,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1m",
 	retry: {
 		initialInterval: "1s",
@@ -95,6 +98,7 @@ const {
 const { reportGenerationJobOpened, reportGenerationJobStep } = proxyActivities<
 	typeof activities
 >({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30s",
 	retry: {
 		initialInterval: "1s",
@@ -115,6 +119,7 @@ const { reportGenerationJobOpened, reportGenerationJobStep } = proxyActivities<
  * swallow whatever comes out of it.
  */
 const { notifyGenerationOutcome } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30s",
 	retry: {
 		initialInterval: "1s",

@@ -1,0 +1,34 @@
+diff --git a/cjs/mergeDeep.js b/cjs/mergeDeep.js
+index 4b07a0707f71818fd3d56152d7ad8bd386e4fbfd..2a883c491031d62797f9963cf0d15130f281b880 100644
+--- a/cjs/mergeDeep.js
++++ b/cjs/mergeDeep.js
+@@ -64,7 +64,11 @@ function mergeDeep(sources, respectPrototype = false, respectArrays = false, res
+                 if (output == null) {
+                     output = {};
+                 }
+-                if (key in output) {
++                // never let a source key reach the prototype chain
++                if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
++                    continue;
++                }
++                if (Object.prototype.hasOwnProperty.call(output, key)) {
+                     output[key] = mergeDeep([output[key], source[key]], respectPrototype, respectArrays, respectArrayLength);
+                 }
+                 else {
+diff --git a/esm/mergeDeep.js b/esm/mergeDeep.js
+index 0263c8f23ad78b950bc29ecea5740d8f87cc029a..6bfad39f97aedd1a9d701249c7b8d98c5cf203ca 100644
+--- a/esm/mergeDeep.js
++++ b/esm/mergeDeep.js
+@@ -61,7 +61,11 @@ export function mergeDeep(sources, respectPrototype = false, respectArrays = fal
+                 if (output == null) {
+                     output = {};
+                 }
+-                if (key in output) {
++                // never let a source key reach the prototype chain
++                if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
++                    continue;
++                }
++                if (Object.prototype.hasOwnProperty.call(output, key)) {
+                     output[key] = mergeDeep([output[key], source[key]], respectPrototype, respectArrays, respectArrayLength);
+                 }
+                 else {

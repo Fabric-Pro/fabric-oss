@@ -60,7 +60,7 @@ const gitControl = vi.hoisted(() => ({
 
 // simple-git stand-in: a "clone" materialises REPO_FILES at the target path.
 vi.mock("simple-git", () => ({
-	default: (dir?: string) => ({
+	simpleGit: (dir?: string) => ({
 		clone: async (_url: string, clonePath: string) => {
 			writeRepo(clonePath);
 			await gitControl.afterClone?.(clonePath);

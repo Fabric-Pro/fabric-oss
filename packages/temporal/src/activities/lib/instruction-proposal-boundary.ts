@@ -23,7 +23,10 @@ import {
 import { logger } from "@repo/logs";
 import { CancelledFailure, Context } from "@temporalio/activity";
 import type { ProposalActivityDeadline } from "../../lib/instruction-proposal-pull-request-types";
-import { withHeartbeatTicker } from "./activity-liveness";
+import {
+	currentActivityAttemptDeadline,
+	withHeartbeatTicker,
+} from "./activity-liveness";
 
 const MINUTE_MS = 60 * 1000;
 
@@ -115,23 +118,9 @@ function proposalDeadlineMs(
 	nowMs: number = Date.now(),
 ): number {
 	const bounds: number[] = [];
-	try {
-		const info = Context.current().info;
-		if (info.startToCloseTimeoutMs > 0) {
-			const attemptScheduled = Number.isFinite(
-				info.currentAttemptScheduledTimestampMs,
-			)
-				? info.currentAttemptScheduledTimestampMs
-				: nowMs;
-			bounds.push(attemptScheduled + info.startToCloseTimeoutMs);
-		}
-		if (info.scheduleToCloseTimeoutMs > 0) {
-			bounds.push(
-				info.scheduledTimestampMs + info.scheduleToCloseTimeoutMs,
-			);
-		}
-	} catch {
-		// Not inside an activity, or no timing info (unit tests).
+	const temporalDeadline = currentActivityAttemptDeadline(nowMs);
+	if (temporalDeadline !== undefined) {
+		bounds.push(temporalDeadline.getTime());
 	}
 	if (input.deadlineAt !== undefined) {
 		const at = Date.parse(input.deadlineAt);

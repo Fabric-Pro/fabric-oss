@@ -25,6 +25,7 @@ import {
 import { FABRIC_IGNORE_FILE, snapshotKey } from "@repo/instructions";
 import { INSTRUCTION_SCAN_RULES_VERSION } from "@repo/instructions/scan-rules-version";
 import type { StorageProviderInterface } from "@repo/storage";
+import { runDrainingPool } from "./draining-pool";
 
 /** Copies run with their own width: they hold no buffers, unlike a download. */
 export const COPY_CONCURRENCY = 32;
@@ -153,39 +154,6 @@ export function clearedInheritedIds(
 }
 
 /**
- * Runs `fn` over `items` with at most `width` in flight. On the first error no
- * further item starts, every started one is awaited, and the first error is
- * thrown, so a retry never overlaps a straggler.
- */
-async function runPool<T>(
-	items: readonly T[],
-	width: number,
-	fn: (item: T) => Promise<void>,
-): Promise<void> {
-	const queue = items.values();
-	const errors: unknown[] = [];
-	const worker = async (): Promise<void> => {
-		while (errors.length === 0) {
-			const next = queue.next();
-			if (next.done) {
-				return;
-			}
-			try {
-				await fn(next.value);
-			} catch (error) {
-				errors.push(error);
-			}
-		}
-	};
-	await Promise.all(
-		Array.from({ length: Math.min(width, items.length) }, () => worker()),
-	);
-	if (errors.length > 0) {
-		throw errors[0];
-	}
-}
-
-/**
  * Copies each inherited file's source object onto this snapshot's own
  * promoted key, server-side, then moves the rows there in bulk.
  *
@@ -203,6 +171,8 @@ export async function copyInheritedFiles(input: {
 	bucket: string;
 	scope: SnapshotScope;
 	files: ReadonlyArray<{ id: string; path: string; sourceKey: string }>;
+	/** Called immediately before each storage or metadata write. */
+	beforeWrite?: () => void;
 	onChunk?: (decided: number) => Promise<void> | void;
 }): Promise<{ rejections: InstructionRejection[]; copied: number }> {
 	const { storage, bucket, scope } = input;
@@ -211,7 +181,8 @@ export async function copyInheritedFiles(input: {
 	for (let i = 0; i < input.files.length; i += KEY_UPDATE_CHUNK) {
 		const chunk = input.files.slice(i, i + KEY_UPDATE_CHUNK);
 		const moves: Array<{ fileId: string; from: string; to: string }> = [];
-		await runPool(chunk, COPY_CONCURRENCY, async (file) => {
+		await runDrainingPool(chunk, COPY_CONCURRENCY, async (file) => {
+			input.beforeWrite?.();
 			const to = snapshotKey(scope.projectId, scope.snapshotId, file.id);
 			try {
 				await storage.copyFile(file.sourceKey, to, { bucket });
@@ -227,6 +198,7 @@ export async function copyInheritedFiles(input: {
 			}
 			moves.push({ fileId: file.id, from: file.sourceKey, to });
 		});
+		input.beforeWrite?.();
 		await moveInheritedInstructionFileKeys({
 			snapshotId: scope.snapshotId,
 			projectId: scope.projectId,

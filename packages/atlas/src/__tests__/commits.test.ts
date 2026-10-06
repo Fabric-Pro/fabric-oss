@@ -5,11 +5,14 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
-function mockFetch(handler: (url: string) => { ok: boolean; body?: unknown }) {
+function mockFetch(
+	handler: (url: string) => { ok: boolean; status?: number; body?: unknown },
+) {
 	const fetchMock = vi.fn(async (url: string) => {
-		const { ok, body } = handler(String(url));
+		const { ok, status, body } = handler(String(url));
 		return {
 			ok,
+			status: status ?? (ok ? 200 : 500),
 			text: async () => JSON.stringify(body ?? {}),
 			json: async () => body ?? {},
 		} as unknown as Response;
@@ -188,6 +191,27 @@ describe("countCommitsSince", () => {
 			behindBy: null,
 			comparable: true,
 		});
+	});
+
+	it("returns incomparable for ADO's 203 sign-in page instead of reading it", async () => {
+		// `ok` is true for 203; the body below must never be trusted.
+		mockFetch(() => ({
+			ok: true,
+			status: 203,
+			body: { count: 5, value: [{ commitId: "H" }] },
+		}));
+		const r = await countCommitsSince({
+			provider: "AZURE_DEVOPS",
+			token: "t",
+			repositoryUrl: "https://dev.azure.com/org/proj/_git/repo",
+			owner: "org",
+			repo: "repo",
+			branch: "main",
+			baseSha: "BASE",
+		});
+		expect(r.comparable).toBe(false);
+		expect(r.aheadBy).toBeNull();
+		expect(r.headSha).toBeNull();
 	});
 
 	it("returns incomparable when the provider API errors", async () => {

@@ -1,9 +1,14 @@
 "use client";
 
 import { useAnalytics } from "@analytics";
+import { hasExtractionLifecycle } from "@repo/api/modules/projects/lib/extraction-lifecycle";
 import { pmDetectedTypeDisplayName } from "@repo/utils";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
+import {
+	useCapabilityGate,
+	useCapabilityGates,
+} from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
 import { TruncatedText } from "@shared/components/TruncatedText";
@@ -64,9 +69,11 @@ import {
 	MicIcon,
 	MoreVerticalIcon,
 	PlusIcon,
+	RotateCwIcon,
 	SparklesIcon,
 	TextIcon,
 	TrashIcon,
+	TriangleAlertIcon,
 	XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -141,6 +148,21 @@ export const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
 export function shouldStopPolling(createdAtMs: number, nowMs: number): boolean {
 	const elapsed = nowMs - createdAtMs;
 	return elapsed >= MAX_POLL_DURATION_MS;
+}
+
+/**
+ * The clock the Context tab's polling cap is measured from: the row's latest
+ * write, falling back to its creation. Not creation alone — a source retried
+ * long after it was added (Fizzy #2886) is in flight again, and measured from
+ * `createdAt` it would never re-enter polling and would read "Processing"
+ * until the page was reloaded. Exported for tests.
+ */
+export function pollClockMs(
+	row: { createdAt?: Date | string | null; updatedAt?: Date | string | null },
+	nowMs: number,
+): number {
+	const clock = row.updatedAt ?? row.createdAt;
+	return clock ? new Date(clock).getTime() : nowMs;
 }
 
 type RowContext = {
@@ -740,6 +762,16 @@ function LinkStatusRow({
 	);
 }
 
+/**
+ * The outline on a source that stopped processing (Fizzy #2886) — the row the
+ * stall banner names. Inset, so a row inside a scrolling group is not clipped
+ * by the group's own overflow; a token, never a hex.
+ */
+const STALLED_ROW_OUTLINE = "ring-2 ring-inset ring-destructive";
+
+/** A group header holding a stuck source: its border says so while collapsed. */
+const STALLED_GROUP_BORDER = "border-destructive";
+
 // Exported so `ContextPendingItemsList` (wizard pending-items list) can
 // reuse the LINK-card rendering verbatim. Spec §7.5 + planning note
 // `group-8-card-extraction.md` (LINK rows are 1:1 with the post-creation
@@ -753,6 +785,7 @@ export function UrlContextCard({
 	deleteCopy,
 	onDownload,
 	duplicateBadge,
+	stalledMarker,
 }: {
 	context: UrlContextRowFields;
 	projectId: string;
@@ -762,6 +795,11 @@ export function UrlContextCard({
 	onDownload?: (id: string) => void;
 	/** "Duplicate of …" marker (Fizzy #2619); the Context tab passes it. */
 	duplicateBadge?: React.ReactNode;
+	/**
+	 * Present only while this source is stuck (Fizzy #2886): the Context tab's
+	 * "stopped processing" note and Retry. Its presence also outlines the card.
+	 */
+	stalledMarker?: React.ReactNode;
 }) {
 	const metadata =
 		(context.metadata as { sourceTitle?: string } | null) ?? {};
@@ -784,9 +822,14 @@ export function UrlContextCard({
 
 	return (
 		<div
-			className="group relative overflow-hidden rounded-xl border border-border bg-card motion-safe:transition-colors hover:border-primary/30"
+			className={cn(
+				"group relative overflow-hidden rounded-xl border border-border bg-card motion-safe:transition-colors hover:border-primary/30",
+				stalledMarker && STALLED_ROW_OUTLINE,
+			)}
 			data-context-type="LINK"
+			data-context-id={context.id}
 			data-testid={`link-card-${context.id}`}
+			tabIndex={-1}
 		>
 			<div className="flex items-start gap-3 p-4">
 				<div
@@ -823,6 +866,8 @@ export function UrlContextCard({
 						lastSyncedAt={lastSynced}
 						createdAt={createdAt}
 					/>
+
+					{stalledMarker}
 
 					{duplicateBadge && (
 						<div className="mt-1 flex text-xs">
@@ -1184,7 +1229,7 @@ export function ProjectContextsList({ projectId }: Props) {
 			// refresh. Stop polling once everything settled.
 			//
 			// `MAX_POLL_DURATION_MS` caps the polling at 5 minutes from the
-			// row's `createdAt`. Without this, a context stuck in PENDING /
+			// row's latest write (`pollClockMs`). Without this, a context stuck in PENDING /
 			// EXTRACTING (worker crash, lost workflow, etc.) keeps the list
 			// polling every 2s indefinitely — at ~765 KB per response that
 			// burned several MB per session for nothing. After the cap
@@ -1200,10 +1245,7 @@ export function ProjectContextsList({ projectId }: Props) {
 					) {
 						return false;
 					}
-					const createdAtMs = ctx.createdAt
-						? new Date(ctx.createdAt).getTime()
-						: nowMs;
-					return !shouldStopPolling(createdAtMs, nowMs);
+					return !shouldStopPolling(pollClockMs(ctx, nowMs), nowMs);
 				});
 				return hasFreshInProgress ? 2000 : false;
 			},
@@ -1239,6 +1281,48 @@ export function ProjectContextsList({ projectId }: Props) {
 			});
 		},
 	});
+
+	// The sources the stall banner names (Fizzy #2886). The gate is the one
+	// source of truth for "stuck": the server applies the same window and the
+	// same lifecycle rule it uses to raise the banner, so the outline, the
+	// Retry and the banner can never disagree about which rows are meant.
+	const { gate: linkedSourceGate } = useCapabilityGate(
+		"context.use-linked-source",
+	);
+	const { refetch: refetchCapabilityGates } = useCapabilityGates();
+	const stalledIds = useMemo(
+		() => new Set((linkedSourceGate?.subjects ?? []).map((s) => s.id)),
+		[linkedSourceGate],
+	);
+	const tRetry = useTranslations("projects.contexts.contextRetry");
+	const retryStalled = useMutation({
+		mutationFn: (contextId: string) =>
+			orpc.projects.contexts.retryStalled.call({ contextId, projectId }),
+		onSuccess: () => {
+			toast.success(tRetry("started"));
+		},
+		onError: (error) => {
+			const code = getOrpcCode(error);
+			toast.error(
+				code === "FORBIDDEN"
+					? tRetry("noPermission")
+					: code === "CONFLICT"
+						? tRetry("stillRunning")
+						: tRetry("failed"),
+			);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.contexts.list.queryOptions({
+					input: { projectId, organizationId },
+				}).queryKey,
+			});
+			// The banner reads the gate, not the list: re-read it so a
+			// restarted source stops being named straight away.
+			refetchCapabilityGates();
+		},
+	});
+	const retryingId = retryStalled.isPending ? retryStalled.variables : null;
 
 	const contexts = data?.contexts ?? [];
 	type ListedContext = (typeof contexts)[number];
@@ -1441,6 +1525,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		notionGroup,
 		teamsGroup,
 		livingMemoryFolders,
+		contextLocations,
 	} = useMemo(() => {
 		const other: typeof contexts = [];
 		const synced: typeof contexts = [];
@@ -1522,12 +1607,44 @@ export function ProjectContextsList({ projectId }: Props) {
 				new Date(a.createdAt).getTime(),
 		);
 
+		const folders = groupSyncedContextsByFolder(synced);
+
+		// Where each grouped row sits, worked out from the same partition
+		// that renders it, so revealing a row can never open the wrong
+		// group: the expandable groups that must be open, and the Living
+		// Memory folder that must not be collapsed. A row in the flat grid
+		// is always visible and has no entry.
+		const locations = new Map<
+			string,
+			{ groups: string[]; folder?: string }
+		>();
+		for (const group of transcriptsByMeeting.values()) {
+			for (const ctx of group.transcripts) {
+				locations.set(ctx.id, { groups: ["meetings-top", group.key] });
+			}
+		}
+		for (const ctx of teamsContexts) {
+			locations.set(ctx.id, { groups: ["teams-chats"] });
+		}
+		for (const ctx of notionContexts) {
+			locations.set(ctx.id, { groups: ["notion-documents"] });
+		}
+		for (const folder of folders) {
+			for (const file of folder.files) {
+				locations.set(file.context.id, {
+					groups: [],
+					folder: folder.path,
+				});
+			}
+		}
+
 		return {
 			otherContexts: other,
 			transcriptGroups: Array.from(transcriptsByMeeting.values()),
 			notionGroup: notionContexts.length > 0 ? notionContexts : null,
 			teamsGroup: teamsContexts.length > 0 ? teamsContexts : null,
-			livingMemoryFolders: groupSyncedContextsByFolder(synced),
+			livingMemoryFolders: folders,
+			contextLocations: locations,
 		};
 	}, [contexts]);
 
@@ -1687,6 +1804,120 @@ export function ProjectContextsList({ projectId }: Props) {
 		});
 	};
 
+	// Take the viewer to a source the stall banner named (Fizzy #2886): open
+	// whatever hides it, then scroll it into view and focus it once the
+	// opened group has rendered. Scrolling first would aim at a row that is
+	// not on the page yet.
+	const listRootRef = useRef<HTMLDivElement>(null);
+	const [pendingReveal, setPendingReveal] = useState<string | null>(null);
+	const revealContext = useCallback(
+		(contextId: string) => {
+			const location = contextLocations.get(contextId);
+			if (location && location.groups.length > 0) {
+				setExpandedGroups(
+					(prev) => new Set([...prev, ...location.groups]),
+				);
+			}
+			const folder = location?.folder;
+			if (folder !== undefined) {
+				setCollapsedFolders((prev) => {
+					const next = new Set(prev);
+					next.delete(folder);
+					return next;
+				});
+			}
+			setPendingReveal(contextId);
+		},
+		[contextLocations],
+	);
+	useEffect(() => {
+		if (pendingReveal === null) {
+			return;
+		}
+		const frame = requestAnimationFrame(() => {
+			const row = Array.from(
+				listRootRef.current?.querySelectorAll<HTMLElement>(
+					"[data-context-id]",
+				) ?? [],
+			).find((element) => element.dataset.contextId === pendingReveal);
+			if (row) {
+				// Smooth only for a viewer who has not asked for less motion.
+				const smooth =
+					typeof window.matchMedia === "function" &&
+					window.matchMedia("(prefers-reduced-motion: no-preference)")
+						.matches;
+				row.scrollIntoView({
+					block: "center",
+					behavior: smooth ? "smooth" : "auto",
+				});
+				row.focus({ preventScroll: true });
+			}
+			setPendingReveal(null);
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [pendingReveal]);
+
+	// How many named stuck sources a group holds, for its header.
+	const stalledCountIn = (rows: readonly { id: string }[]) =>
+		rows.reduce(
+			(count, row) => count + (stalledIds.has(row.id) ? 1 : 0),
+			0,
+		);
+
+	// The "stopped processing" note and Retry on a stuck row. Always
+	// visible, unlike the hover-only row menu: it is what the banner told
+	// the viewer to look for.
+	const renderStalledMarker = (contextId: string, title: string) => {
+		if (!stalledIds.has(contextId)) {
+			return null;
+		}
+		const retrying = retryingId === contextId;
+		return (
+			<div
+				className="mt-2 flex flex-wrap items-center gap-2"
+				data-testid={`context-stalled-${contextId}`}
+			>
+				<span className="flex items-center gap-1 text-destructive text-xs">
+					<TriangleAlertIcon className="size-3" aria-hidden="true" />
+					{tRetry("stuck")}
+				</span>
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					className="h-7 gap-1 px-2 text-xs"
+					aria-label={tRetry("actionForRow", { title })}
+					disabled={retryStalled.isPending}
+					onClick={(e) => {
+						e.stopPropagation();
+						retryStalled.mutate(contextId);
+					}}
+				>
+					{retrying ? (
+						<LoaderIcon
+							className="size-3 motion-safe:animate-spin"
+							aria-hidden="true"
+						/>
+					) : (
+						<RotateCwIcon className="size-3" aria-hidden="true" />
+					)}
+					{retrying ? tRetry("retrying") : tRetry("action")}
+				</Button>
+			</div>
+		);
+	};
+
+	// The "N stuck" badge a group header carries while it holds one.
+	const renderGroupStuckBadge = (count: number) =>
+		count > 0 ? (
+			<Badge
+				variant="outline"
+				className="shrink-0 border-destructive/40 text-destructive text-xs"
+			>
+				{tRetry("groupStuck", { count })}
+			</Badge>
+		) : null;
+
 	// One card in the flat "other contexts" grid, and the same card inside a
 	// Living Memory folder (Fizzy #2620). `synced` is set only for a synced
 	// knowledge file: its label is then the file name, and the full path
@@ -1719,6 +1950,12 @@ export function ProjectContextsList({ projectId }: Props) {
 						)
 					}
 					duplicateBadge={renderDuplicateBadge(context)}
+					stalledMarker={renderStalledMarker(
+						context.id,
+						context.sourceTitle ||
+							context.sourceUrl ||
+							"URL source",
+					)}
 				/>
 			);
 		}
@@ -1765,8 +2002,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		// for every integration: it hid a failed Google Doc
 		// behind a word implying all was well, and collided
 		// with the URL sources' genuine "Live" refresh mode.
-		const hasExtractionLifecycle =
-			!isIntegration || metadata.source === "google-docs";
+		const rowHasExtractionLifecycle = hasExtractionLifecycle(context);
 
 		// Use provider-specific config for integrations, fall back to base
 		const providerOverride =
@@ -1822,10 +2058,13 @@ export function ProjectContextsList({ projectId }: Props) {
 		return (
 			<div
 				key={context.id}
+				data-context-id={context.id}
+				tabIndex={-1}
 				className={cn(
 					"group relative overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm transition-all",
 					"hover:border-primary/30 hover:shadow-lg",
 					`animate-stagger-${Math.min(index + 1, 5)}`,
+					stalledIds.has(context.id) && STALLED_ROW_OUTLINE,
 				)}
 			>
 				{/* Gradient background on hover */}
@@ -1902,7 +2141,7 @@ export function ProjectContextsList({ projectId }: Props) {
 									{/* Live connections report "Connected"; anything
 									    with a real extraction pipeline reports its
 									    actual status. */}
-									{!hasExtractionLifecycle ? (
+									{!rowHasExtractionLifecycle ? (
 										<span className="flex items-center gap-1 text-success">
 											<CheckCircleIcon className="size-3" />
 											Connected
@@ -1966,6 +2205,8 @@ export function ProjectContextsList({ projectId }: Props) {
 
 									{renderDuplicateBadge(context)}
 								</div>
+
+								{renderStalledMarker(context.id, title)}
 
 								{/* Source URL */}
 								{sourceUrl && (
@@ -2133,11 +2374,16 @@ export function ProjectContextsList({ projectId }: Props) {
 			(context as ReadinessRow).extractionStatus === "COMPLETED" &&
 			!isStoredButNotSearchable(context as ReadinessRow),
 	).length;
-	const activeCount = contexts.filter((context) =>
-		["PENDING", "EXTRACTING"].includes(
-			(context as { extractionStatus?: string }).extractionStatus ||
-				"PENDING",
-		),
+	// Only rows with real background work. A live integration's status is
+	// written PENDING and never moves (see `hasExtractionLifecycle`), so
+	// counting it read as work permanently under way.
+	const activeCount = contexts.filter(
+		(context) =>
+			hasExtractionLifecycle(context) &&
+			["PENDING", "EXTRACTING"].includes(
+				(context as { extractionStatus?: string }).extractionStatus ||
+					"PENDING",
+			),
 	).length;
 	const failedCount =
 		contexts.filter(
@@ -2155,7 +2401,7 @@ export function ProjectContextsList({ projectId }: Props) {
 	}, 0);
 
 	return (
-		<div className="space-y-6">
+		<div ref={listRootRef} className="space-y-6">
 			<ProjectSectionHero
 				eyebrow="Project Context"
 				title="Reference material, research, and supporting signal"
@@ -2194,7 +2440,10 @@ export function ProjectContextsList({ projectId }: Props) {
 									</p>
 								</div>
 								<div className="rounded-2xl border border-border/60 bg-background/50 p-3 text-center">
-									<p className="text-2xl font-semibold tabular-nums text-primary">
+									<p
+										className="text-2xl font-semibold tabular-nums text-primary"
+										data-testid="context-readiness-active"
+									>
 										{activeCount}
 									</p>
 									<p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -2270,7 +2519,10 @@ export function ProjectContextsList({ projectId }: Props) {
 			 * is still loading or has failed outright keeps its own state rather
 			 * than showing two explanations at once.
 			 */}
-			<CapabilityGateBanner capabilityKey="context.use-linked-source" />
+			<CapabilityGateBanner
+				capabilityKey="context.use-linked-source"
+				onSubjectSelect={revealContext}
+			/>
 
 			<ContextSummaryPanel projectId={projectId} />
 			{/* Scope intake progress */}
@@ -2473,8 +2725,19 @@ export function ProjectContextsList({ projectId }: Props) {
 											: `Synced from Microsoft Teams · ${importedTranscripts} added from a personal calendar`;
 								const isMeetingsExpanded =
 									expandedGroups.has("meetings-top");
+								const meetingsStuck = stalledCountIn(
+									transcriptGroups.flatMap(
+										(g) => g.transcripts,
+									),
+								);
 								return (
-									<div className="overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm">
+									<div
+										className={cn(
+											"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+											meetingsStuck > 0 &&
+												STALLED_GROUP_BORDER,
+										)}
+									>
 										<button
 											type="button"
 											onClick={() =>
@@ -2515,6 +2778,9 @@ export function ProjectContextsList({ projectId }: Props) {
 															? "s"
 															: ""}
 													</Badge>
+													{renderGroupStuckBadge(
+														meetingsStuck,
+													)}
 												</div>
 												<p className="mt-1 text-foreground/50 text-xs">
 													{provenanceLabel}
@@ -2543,6 +2809,10 @@ export function ProjectContextsList({ projectId }: Props) {
 																meetingDate?: string;
 															}
 														)?.meetingDate;
+														const meetingStuck =
+															stalledCountIn(
+																group.transcripts,
+															);
 
 														return (
 															<div
@@ -2559,11 +2829,16 @@ export function ProjectContextsList({ projectId }: Props) {
 																	className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
 																>
 																	<div className="min-w-0 flex-1">
-																		<p className="text-sm font-medium truncate">
-																			{
-																				group.subject
-																			}
-																		</p>
+																		<div className="flex items-center gap-2">
+																			<p className="text-sm font-medium truncate">
+																				{
+																					group.subject
+																				}
+																			</p>
+																			{renderGroupStuckBadge(
+																				meetingStuck,
+																			)}
+																		</div>
 																		<div className="mt-0.5 flex items-center gap-2 text-foreground/40 text-xs">
 																			<span>
 																				{
@@ -2653,7 +2928,19 @@ export function ProjectContextsList({ projectId }: Props) {
 																						key={
 																							context.id
 																						}
-																						className="group/item flex items-center gap-3 border-t first:border-t-0 px-6 py-2.5 transition-colors hover:bg-muted/30"
+																						data-context-id={
+																							context.id
+																						}
+																						tabIndex={
+																							-1
+																						}
+																						className={cn(
+																							"group/item flex items-center gap-3 border-t first:border-t-0 px-6 py-2.5 transition-colors hover:bg-muted/30",
+																							stalledIds.has(
+																								context.id,
+																							) &&
+																								STALLED_ROW_OUTLINE,
+																						)}
 																					>
 																						<div className="min-w-0 flex-1">
 																							<p className="text-xs font-medium">
@@ -2728,6 +3015,10 @@ export function ProjectContextsList({ projectId }: Props) {
 																									context,
 																								)}
 																							</div>
+																							{renderStalledMarker(
+																								context.id,
+																								meetingDate,
+																							)}
 																						</div>
 																						<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
 																							<DropdownMenu>
@@ -2872,7 +3163,13 @@ export function ProjectContextsList({ projectId }: Props) {
 
 						{/* Teams chats group */}
 						{teamsGroup && (
-							<div className="overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm">
+							<div
+								className={cn(
+									"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+									stalledCountIn(teamsGroup) > 0 &&
+										STALLED_GROUP_BORDER,
+								)}
+							>
 								<button
 									type="button"
 									onClick={() => toggleGroup("teams-chats")}
@@ -2895,6 +3192,9 @@ export function ProjectContextsList({ projectId }: Props) {
 													? "s"
 													: ""}
 											</Badge>
+											{renderGroupStuckBadge(
+												stalledCountIn(teamsGroup),
+											)}
 										</div>
 										<p className="mt-1 text-foreground/50 text-xs">
 											Synced from Microsoft Teams
@@ -2944,7 +3244,15 @@ export function ProjectContextsList({ projectId }: Props) {
 											return (
 												<div
 													key={context.id}
-													className="group/item flex items-center gap-3 border-t first:border-t-0 px-4 py-3 transition-colors hover:bg-muted/30"
+													data-context-id={context.id}
+													tabIndex={-1}
+													className={cn(
+														"group/item flex items-center gap-3 border-t first:border-t-0 px-4 py-3 transition-colors hover:bg-muted/30",
+														stalledIds.has(
+															context.id,
+														) &&
+															STALLED_ROW_OUTLINE,
+													)}
 												>
 													<div className="min-w-0 flex-1">
 														<p className="text-sm font-medium truncate">
@@ -3020,6 +3328,10 @@ export function ProjectContextsList({ projectId }: Props) {
 																context,
 															)}
 														</div>
+														{renderStalledMarker(
+															context.id,
+															chatTitle,
+														)}
 													</div>
 													<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
 														<DropdownMenu>
@@ -3100,7 +3412,13 @@ export function ProjectContextsList({ projectId }: Props) {
 
 						{/* Notion documents group */}
 						{notionGroup && (
-							<div className="overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm">
+							<div
+								className={cn(
+									"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+									stalledCountIn(notionGroup) > 0 &&
+										STALLED_GROUP_BORDER,
+								)}
+							>
 								<button
 									type="button"
 									onClick={() =>
@@ -3125,6 +3443,9 @@ export function ProjectContextsList({ projectId }: Props) {
 													? "s"
 													: ""}
 											</Badge>
+											{renderGroupStuckBadge(
+												stalledCountIn(notionGroup),
+											)}
 										</div>
 										<p className="mt-1 text-foreground/50 text-xs">
 											Imported from Notion workspace
@@ -3156,7 +3477,15 @@ export function ProjectContextsList({ projectId }: Props) {
 											return (
 												<div
 													key={context.id}
-													className="group/item flex items-center gap-3 border-t first:border-t-0 px-4 py-3 transition-colors hover:bg-muted/30"
+													data-context-id={context.id}
+													tabIndex={-1}
+													className={cn(
+														"group/item flex items-center gap-3 border-t first:border-t-0 px-4 py-3 transition-colors hover:bg-muted/30",
+														stalledIds.has(
+															context.id,
+														) &&
+															STALLED_ROW_OUTLINE,
+													)}
 												>
 													<div className="min-w-0 flex-1">
 														<p className="text-sm font-medium truncate">
@@ -3210,6 +3539,10 @@ export function ProjectContextsList({ projectId }: Props) {
 																context,
 															)}
 														</div>
+														{renderStalledMarker(
+															context.id,
+															contextTitle,
+														)}
 													</div>
 													<div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/item:opacity-100">
 														<DropdownMenu>
@@ -3311,10 +3644,17 @@ export function ProjectContextsList({ projectId }: Props) {
 										? tLivingMemory("rootFolder")
 										: folder.path;
 								const panelId = `${livingMemoryId}-folder-${folderIndex}`;
+								const folderStuck = stalledCountIn(
+									folder.files.map((file) => file.context),
+								);
 								return (
 									<div
 										key={folder.path}
-										className="overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm"
+										className={cn(
+											"overflow-hidden rounded-xl border bg-card/50 backdrop-blur-sm",
+											folderStuck > 0 &&
+												STALLED_GROUP_BORDER,
+										)}
 										data-testid={`context-folder-${slug}`}
 										data-folder-path={folder.path}
 									>
@@ -3358,6 +3698,9 @@ export function ProjectContextsList({ projectId }: Props) {
 														},
 													)}
 												</Badge>
+												{renderGroupStuckBadge(
+													folderStuck,
+												)}
 												<ChevronDownIcon
 													className={cn(
 														"size-4 shrink-0 text-muted-foreground transition-transform",

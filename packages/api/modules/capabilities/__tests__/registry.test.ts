@@ -1065,6 +1065,58 @@ describe("retry permission follows the door the re-run goes through", () => {
 		expect(gate.retry.supported).toBe(false);
 		expect(gate.remedy).toBeNull();
 	});
+
+	it("a stalled context source names the stuck sources", () => {
+		const stuck = [
+			{ id: "context_a", label: "Example brief.pdf" },
+			{ id: "context_b", label: "https://example.com/docs" },
+		];
+		const gate = gateOf(
+			"context.use-linked-source",
+			evidenceWith({
+				context: {
+					processing: runningJob(
+						new Date(NOW.getTime() - 60 * 60 * 1000),
+					),
+					stalledSources: stuck,
+					stalledTotal: 12,
+				},
+			}),
+		);
+		expect(gate.subjects).toEqual(stuck);
+		expect(gate.subjectTotal).toBe(12);
+	});
+
+	it("a stall with nothing to name still blocks, with no subjects", () => {
+		const gate = gateOf(
+			"context.use-linked-source",
+			evidenceWith({
+				context: {
+					processing: runningJob(
+						new Date(NOW.getTime() - 60 * 60 * 1000),
+					),
+				},
+			}),
+		);
+		expect(gate.state).toBe("HARD_BLOCK");
+		expect(gate.subjects).toEqual([]);
+		expect(gate.subjectTotal).toBe(0);
+	});
+
+	it("names nothing while ingestion is merely running", () => {
+		const gate = gateOf(
+			"context.use-linked-source",
+			evidenceWith({
+				context: {
+					processing: runningJob(new Date(NOW.getTime() - 30_000)),
+					stalledSources: [{ id: "context_a", label: "Example" }],
+					stalledTotal: 1,
+				},
+			}),
+		);
+		expect(gate.state).toBe("PROCESSING");
+		expect(gate.subjects).toEqual([]);
+	});
 });
 
 describe("a source that is on its way is not a missing source", () => {

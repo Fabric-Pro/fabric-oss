@@ -61,7 +61,18 @@ function getBannerCopy(
 
 	switch (signal.kind) {
 		case "internal_budget": {
-			const pct = signal.budget?.usagePercentage;
+			if (signal.budgetLimit === "iterations") {
+				return {
+					title: "Response was cut short — step limit reached",
+					description:
+						"This task used all the steps it has for a single run. We summarized what we had so far, but the answer may be incomplete. You can ask it to continue, or try a narrower question.",
+				};
+			}
+			// usagePercentage is a fraction in [0, 1].
+			const pct =
+				signal.budget?.usagePercentage != null
+					? Math.round(signal.budget.usagePercentage * 100)
+					: undefined;
 			const used = signal.budget?.used;
 			const total = signal.budget?.total;
 			const usage =
@@ -123,7 +134,9 @@ export function LimitBanner({
 		: "/app/settings/billing";
 	const showBillingLink =
 		canManageBilling &&
-		(signal.kind === "internal_budget" || signal.kind === "provider_quota");
+		((signal.kind === "internal_budget" &&
+			signal.budgetLimit !== "iterations") ||
+			signal.kind === "provider_quota");
 
 	return (
 		<div

@@ -49,13 +49,17 @@ export interface ApplyInput {
 	root: string;
 	plan: SyncPlan;
 	/** Extracted archive entries, keyed by the manifest path. */
-	contents: Map<string, Uint8Array>;
+	contents: FileContents;
 	/**
 	 * Re-hash each write's target just before writing it, and leave it alone
 	 * when it no longer holds what the plan saw (`PlanEntry.localSha256`).
 	 * The CLI sets it unless `sync --repair` was given (spec §6.4).
 	 */
 	keepLocalEdits?: boolean;
+}
+
+export interface FileContents {
+	get(path: string): Uint8Array | undefined | Promise<Uint8Array | undefined>;
 }
 
 export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
@@ -92,7 +96,7 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 				`Refusing to sync: ${entry.path} asks for file mode ${(entry.mode ?? 0).toString(8)}, and only 644 and 755 are accepted. Nothing was written.`,
 			);
 		}
-		const bytes = contents.get(entry.path);
+		const bytes = await contents.get(entry.path);
 		if (!bytes) {
 			throw new Error(
 				`The downloaded bundle is missing ${entry.path}. Nothing was written.`,
@@ -135,8 +139,10 @@ export async function applyPlan(input: ApplyInput): Promise<ApplyResult> {
 				continue;
 			}
 		}
-		// Non-null: phase 1 refused the whole plan if any byte was missing.
-		const bytes = contents.get(entry.path) as Uint8Array;
+		const bytes = await contents.get(entry.path);
+		if (!bytes) {
+			throw new Error(`The downloaded bundle is missing ${entry.path}.`);
+		}
 		await writeFileSafely({
 			root,
 			relativePath: entry.path,

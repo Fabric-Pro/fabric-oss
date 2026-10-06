@@ -256,6 +256,12 @@ export const AgentConversationScalarFieldEnumSchema = z.enum(['id', 'userId', 'o
 
 export type AgentConversationScalarFieldEnum = z.infer<typeof AgentConversationScalarFieldEnumSchema>;
 
+// File: ConversationTurnScalarFieldEnum.schema.ts
+
+export const ConversationTurnScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'conversationId', 'scopeConversationId', 'clientRequestKey', 'executionId', 'generation', 'executionMode', 'status', 'startToken', 'cancelRequestedAt', 'cancelRequestedByUserId', 'cancelSource', 'terminalAt', 'terminalReason', 'responseText', 'limitSignalSummary', 'createdAt', 'updatedAt'])
+
+export type ConversationTurnScalarFieldEnum = z.infer<typeof ConversationTurnScalarFieldEnumSchema>;
+
 // File: SDLCArtifactScalarFieldEnum.schema.ts
 
 export const SDLCArtifactScalarFieldEnumSchema = z.enum(['id', 'taskId', 'organizationId', 'stage', 'artifactType', 'name', 'content', 'format', 'metadata', 'version', 'qdrantId', 'createdAt', 'updatedAt'])
@@ -2002,6 +2008,12 @@ export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'pr
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
 
+// File: ProjectInstructionPendingStorageCleanupScalarFieldEnum.schema.ts
+
+export const ProjectInstructionPendingStorageCleanupScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'notBefore', 'nextAttemptAt', 'attempts', 'lastError', 'createdAt', 'updatedAt'])
+
+export type ProjectInstructionPendingStorageCleanupScalarFieldEnum = z.infer<typeof ProjectInstructionPendingStorageCleanupScalarFieldEnumSchema>;
+
 // File: ProjectInstructionProposalBranchScalarFieldEnum.schema.ts
 
 export const ProjectInstructionProposalBranchScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'userId', 'repositoryKey', 'number', 'ref', 'state', 'attempt', 'destination', 'presentation', 'startSha', 'headSha', 'foreignTipAt', 'nextSequence', 'nextExecutionSeq', 'headExecutionSeq', 'factsRevision', 'closeIntent', 'createIssuedAt', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'membership', 'failure', 'lastCheckedAt', 'nextAttemptAt', 'refreshAdmittedAt', 'settledAt', 'confirmations', 'confirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'retiredAt', 'retiredReason', 'retryRequestedAt', 'untracked', 'settlementPhase', 'deletedAt', 'createdAt', 'updatedAt'])
@@ -2253,6 +2265,18 @@ export type RegisteredAgentSuggestionState = z.infer<typeof RegisteredAgentSugge
 export const AgentConversationStatusSchema = z.enum(['ACTIVE', 'ARCHIVED'])
 
 export type AgentConversationStatus = z.infer<typeof AgentConversationStatusSchema>;
+
+// File: ConversationTurnStatus.schema.ts
+
+export const ConversationTurnStatusSchema = z.enum(['START_PENDING', 'ACTIVE', 'CANCEL_REQUESTED', 'COMPLETED', 'FAILED', 'LIMITED', 'CANCELLED'])
+
+export type ConversationTurnStatus = z.infer<typeof ConversationTurnStatusSchema>;
+
+// File: ConversationTurnCancelSource.schema.ts
+
+export const ConversationTurnCancelSourceSchema = z.enum(['USER_STOP', 'CANCELLED_BEFORE_START', 'DISCONNECT_BEFORE_START', 'WORKFLOW_CANCELLED'])
+
+export type ConversationTurnCancelSource = z.infer<typeof ConversationTurnCancelSourceSchema>;
 
 // File: ProjectStatus.schema.ts
 
@@ -4566,6 +4590,34 @@ export const AgentConversationSchema = z.object({
 });
 
 export type AgentConversationType = z.infer<typeof AgentConversationSchema>;
+
+
+// File: ConversationTurn.schema.ts
+
+export const ConversationTurnSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  conversationId: z.string().nullish(),
+  scopeConversationId: z.string().nullish(),
+  clientRequestKey: z.string(),
+  executionId: z.string().nullish(),
+  generation: z.number().int().nullish(),
+  executionMode: z.string().nullish(),
+  status: ConversationTurnStatusSchema.default("START_PENDING"),
+  startToken: z.string().nullish(),
+  cancelRequestedAt: z.date().nullish(),
+  cancelRequestedByUserId: z.string().nullish(),
+  cancelSource: ConversationTurnCancelSourceSchema.nullish(),
+  terminalAt: z.date().nullish(),
+  terminalReason: z.string().nullish(),
+  responseText: z.string().nullish(),
+  limitSignalSummary: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ConversationTurnType = z.infer<typeof ConversationTurnSchema>;
 
 
 // File: SDLCArtifact.schema.ts
@@ -11525,6 +11577,24 @@ export const ProjectInstructionSnapshotSchema = z.object({
 });
 
 export type ProjectInstructionSnapshotType = z.infer<typeof ProjectInstructionSnapshotSchema>;
+
+
+// File: ProjectInstructionPendingStorageCleanup.schema.ts
+
+export const ProjectInstructionPendingStorageCleanupSchema = z.object({
+  id: z.string(),
+  snapshotId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  notBefore: z.date(),
+  nextAttemptAt: z.date(),
+  attempts: z.number().int(),
+  lastError: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectInstructionPendingStorageCleanupType = z.infer<typeof ProjectInstructionPendingStorageCleanupSchema>;
 
 
 // File: ProjectInstructionProposalBranch.schema.ts

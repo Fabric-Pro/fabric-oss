@@ -18,6 +18,8 @@
 
 import { Context, heartbeat } from "@temporalio/activity";
 
+const attemptEntryTimes = new WeakMap<object, number>();
+
 /**
  * Heartbeat, or do nothing when there is no activity context (unit tests).
  *
@@ -45,6 +47,45 @@ export function requestAbortSignal(timeoutMs: number): AbortSignal {
 	} catch {
 		// No activity context (unit tests) — the timeout alone is the bound.
 		return timeout;
+	}
+}
+
+/**
+ * The absolute deadline for this Temporal activity attempt. Start-to-close is
+ * measured from the first local entry to this helper, because the SDK's
+ * current-attempt schedule timestamp includes time waiting in the task queue.
+ * Schedule-to-close remains measured from Temporal's original schedule time.
+ * The result is suitable for passing to a durable database fence: the database
+ * compares its own clock while it begins the terminal transition, so a query
+ * blocked behind another writer cannot start that transition after the local
+ * cooperative budget has elapsed.
+ *
+ * `undefined` means no Temporal activity timing is available, as in direct
+ * unit tests. Callers then retain their existing behavior.
+ */
+export function currentActivityAttemptDeadline(
+	nowMs = Date.now(),
+): Date | undefined {
+	try {
+		const context = Context.current();
+		const info = context.info;
+		const entryMs = attemptEntryTimes.get(context) ?? nowMs;
+		attemptEntryTimes.set(context, entryMs);
+		const bounds: number[] = [];
+		if (info.startToCloseTimeoutMs > 0) {
+			bounds.push(entryMs + info.startToCloseTimeoutMs);
+		}
+		if (
+			info.scheduleToCloseTimeoutMs > 0 &&
+			Number.isFinite(info.scheduledTimestampMs)
+		) {
+			bounds.push(
+				info.scheduledTimestampMs + info.scheduleToCloseTimeoutMs,
+			);
+		}
+		return bounds.length === 0 ? undefined : new Date(Math.min(...bounds));
+	} catch {
+		return undefined;
 	}
 }
 

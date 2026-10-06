@@ -848,6 +848,8 @@ export {
 	type FindDefaultMcpConfigArgs,
 	type FindDefaultMcpConfigResult,
 	fetchToolsFromServerIds,
+	// Advisor chat turn terminal-state write (runs from the workflow's finally)
+	finalizeConversationTurnActivity,
 	findDefaultMcpConfigActivity,
 	findExcalidrawConfigActivity,
 	findSimilarTrajectory,
@@ -1150,6 +1152,7 @@ export {
 // module exports nothing else, so `export *` registers exactly these four.
 export * from "./project-instruction-repository-sync";
 export { reapInstructionSnapshots } from "./project-instructions-reaper";
+export { reapInstructionStorageCleanupReceipts } from "./project-instruction-storage-cleanup-reaper";
 export { reapStrandedContextSyncReceipts } from "./project-context-sync-receipt-reaper";
 export { reapStrandedInstructionSyncReceipts } from "./project-instruction-sync-receipt-reaper";
 // Project metadata activities (orchestrator project context injection)

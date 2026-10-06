@@ -79,6 +79,15 @@ export function generateSessionId(): string {
 }
 
 /**
+ * Quote a value as a single POSIX shell word. Git ref names may contain
+ * shell metacharacters such as `;`, `$` and `|`, so a branch name has to be
+ * quoted before it goes into a command string.
+ */
+export function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
  * Common git add exclusions for build artifacts
  */
 export const GIT_ADD_EXCLUSIONS = [

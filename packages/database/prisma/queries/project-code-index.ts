@@ -154,6 +154,129 @@ async function writeRepoRow(
 }
 
 /**
+ * What an owned failure write did: a `CodeIndexWriteOutcome`, or `kept-ready`
+ * — the row is READY and owned by this same chain, so it was left untouched.
+ */
+export type CodeIndexFailOutcome = CodeIndexWriteOutcome | "kept-ready";
+
+/**
+ * Mark one repo's row FAILED under the ownership rule (see CodeIndexOwner),
+ * unless this chain already landed READY on it.
+ *
+ * The case: the finalize's stats write lands READY, then its attempt dies
+ * before reporting back (timeout, worker restart). The retry cannot rebuild
+ * the checkout and exhausts its attempts, so the workflow routes to the fail
+ * path — for a run whose index is complete and searchable. Only the row knows
+ * it succeeded.
+ *
+ * Only the chain's OWN READY is kept. A READY or PENDING row claimed by an
+ * older chain, or by no chain at all, is still failed: a successor that fails
+ * before its init (no token, feature disabled) must not leave the
+ * predecessor's state on screen as if this run never happened.
+ *
+ * Spelled out as three arms rather than `NOT { status: READY, ownerRunId }`:
+ * in SQL that negation is NULL — so false — for an unclaimed row, which would
+ * silently skip exactly the pre-ownership rows that must still fail.
+ */
+export async function failCodeIndexUnlessOwnReady(
+	key: CodeIndexRepoKey,
+	error: string,
+	owner: CodeIndexOwner,
+): Promise<CodeIndexFailOutcome> {
+	const { count } = await db.projectCodeIndex.updateMany({
+		where: {
+			...repoWhere(key),
+			AND: [
+				ownedByWhere(owner),
+				{
+					OR: [
+						{ status: { not: "READY" } },
+						{ ownerRunId: null },
+						{ ownerRunId: { not: owner.runId } },
+					],
+				},
+			],
+		},
+		data: { status: "FAILED", error, ...ownerClaim(owner) },
+	});
+	if (count > 0) {
+		return "written";
+	}
+	const row = await db.projectCodeIndex.findFirst({
+		where: repoWhere(key),
+		select: { status: true, ownerRunId: true },
+	});
+	if (!row) {
+		return "absent";
+	}
+	return row.status === "READY" && row.ownerRunId === owner.runId
+		? "kept-ready"
+		: "superseded";
+}
+
+/** A row the orphan sweep may judge: INDEXING, and quiet since `updatedAt`. */
+export interface QuietIndexingCodeIndex {
+	id: string;
+	projectId: string;
+	repositoryIntegrationId: string | null;
+	branch: string;
+	workflowId: string | null;
+	updatedAt: Date;
+}
+
+/**
+ * INDEXING rows nothing has written for at least `quietMinutes`, oldest first.
+ *
+ * Candidates only. Quiet is not dead — a long embed batch writes nothing for
+ * minutes at a time — so the caller asks Temporal whether the row's workflow
+ * is still running before it fails anything.
+ */
+export async function findQuietIndexingCodeIndexes(args: {
+	quietMinutes: number;
+	limit: number;
+}): Promise<QuietIndexingCodeIndex[]> {
+	const cutoff = new Date(Date.now() - args.quietMinutes * 60 * 1000);
+	return db.projectCodeIndex.findMany({
+		where: { status: "INDEXING", updatedAt: { lt: cutoff } },
+		orderBy: { updatedAt: "asc" },
+		take: args.limit,
+		select: {
+			id: true,
+			projectId: true,
+			repositoryIntegrationId: true,
+			branch: true,
+			workflowId: true,
+			updatedAt: true,
+		},
+	});
+}
+
+/**
+ * Fail one orphaned INDEXING row, as it was when the sweep read it.
+ *
+ * Compare-and-set on `updatedAt`: any write since the read — a progress tick,
+ * a re-index's init, a finalize — moves the column and makes this miss, so a
+ * row that came back to life between the read and the write is left alone.
+ * The owner columns are untouched; a still-running chain's later READY lands
+ * over this FAILED anyway. Returns how many rows were written (0 or 1).
+ */
+export async function failOrphanedCodeIndex(args: {
+	id: string;
+	observedUpdatedAt: Date;
+	error: string;
+}): Promise<number> {
+	const { count } = await db.projectCodeIndex.updateMany({
+		where: {
+			id: args.id,
+			status: "INDEXING",
+			updatedAt: args.observedUpdatedAt,
+		},
+		data: { status: "FAILED", error: args.error },
+	});
+	return count;
+}
+
+/**
  * Get one repo's code index row. Defaults to the legacy/default-repo row when no
  * integration id is given.
  */

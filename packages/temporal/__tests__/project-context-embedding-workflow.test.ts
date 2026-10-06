@@ -14,6 +14,10 @@ import {
 	type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+} from "../src/task-queues";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
 
@@ -42,20 +46,37 @@ async function run(
 		connection: env.nativeConnection,
 		taskQueue,
 		workflowBundle,
+	});
+	const embeddingWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
 		activities: {
 			generateContextEmbeddings: async () => contexts.map(() => [0.1]),
 			storeContextsInQdrant: async () => contexts.map((c) => `q-${c.id}`),
-			updateContextEmbeddingStatus: stamp,
 		},
 	});
-	return worker.runUntil(
-		env.client.workflow.execute("projectContextEmbeddingWorkflow", {
-			args: [
-				{ projectId: "p", userId: "u", organizationId: "o", contexts },
-			],
-			taskQueue,
-			workflowId: `${taskQueue}-wf`,
-		}),
+	const operationsWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+		activities: { updateContextEmbeddingStatus: stamp },
+	});
+	return worker.runUntil(() =>
+		embeddingWorker.runUntil(() =>
+			operationsWorker.runUntil(
+				env.client.workflow.execute("projectContextEmbeddingWorkflow", {
+					args: [
+						{
+							projectId: "p",
+							userId: "u",
+							organizationId: "o",
+							contexts,
+						},
+					],
+					taskQueue,
+					workflowId: `${taskQueue}-wf`,
+				}),
+			),
+		),
 	);
 }
 

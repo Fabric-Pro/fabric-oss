@@ -230,7 +230,7 @@ export async function runGitHistorySecretScanActivity(
 			}
 
 			await fs.rm(clonePath, { recursive: true, force: true });
-			const simpleGit = (await import("simple-git")).default;
+			const { simpleGit } = await import("simple-git");
 			// Resolve the branch to clone: the workflow-provided branch (kept in
 			// sync with the resolve step's SHA), else the project's configured
 			// scanBranch, else the repo's default, else "main".

@@ -365,7 +365,7 @@ describe("round 2 fix 1: many repositories stay within the listing budget", () =
 		}
 	});
 
-	it("lists the repositories that fit and names the ones that do not, with their counts", async () => {
+	it("lists a repository whose paths are longer than its share, shortened", async () => {
 		h.repos = [
 			{
 				provider: "GITHUB",
@@ -397,9 +397,21 @@ describe("round 2 fix 1: many repositories stay within the listing budget", () =
 
 		expect(text.length).toBeLessThanOrEqual(BUDGET);
 		expect(text).toContain("src/a.ts");
-		expect(text).toContain('repo="example-org/huge"');
-		expect(text).toMatch(/example-org\/huge[^\n]*3 entries/);
-		expect(text).not.toContain("deep/deep/");
+		// Each 10,510-character path is shortened in the middle, keeping
+		// its start and its file name, rather than leaving the repository
+		// out (it used to be named for a separate request that could not
+		// list it either).
+		expect(text).toContain("## example-org/huge\n");
+		expect(text).not.toContain("Not listed");
+		const pathLength = `${"deep/".repeat(2_100)}file-0.ts`.length;
+		for (let i = 0; i < 3; i++) {
+			expect(text).toMatch(
+				new RegExp(
+					`📄 deep/[^\\n]*…[^\\n]*file-${i}\\.ts \\[path shortened from ${pathLength} characters\\]`,
+				),
+			);
+		}
+		expect(text).not.toContain("deep/".repeat(2_100));
 	});
 });
 

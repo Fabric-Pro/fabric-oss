@@ -2275,13 +2275,16 @@ const FENCE = { id: "sync_1", generation: 3, leaseUntil: ROW.leaseUntil };
  * clock included, is pinned against the stateful row store in
  * instruction-repository-sync-lease.test.ts (Decision 54).
  *
- * This is also the pin for the fence invariant (Fizzy #2689): every lease
- * read and fenced write below must send this whole text, so a refactor that
- * drops a clause, or a writer that fences on a subset, fails here. The
- * reason for each clause is on `leaseFenceSql`.
+ * This is also the pin for the fence invariant (Fizzy #2689): lease reads
+ * send this whole text. `writeBackInstructionSync` locks the same ownership
+ * clauses before reading the clock in its materialized `live` CTE, so an
+ * expired lease cannot pass while waiting for the lock.
  */
 function fenceSql(first: number): string {
-	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') AND "automatic" = true AND "automaticPausedReason" IS NULL`;
+	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "automatic" = true AND "automaticPausedReason" IS NULL AND "nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
+}
+function ownershipFenceSql(first: number): string {
+	return `"id" = $${first} AND "generation" = $${first + 1} AND "nextCheckAt" = $${first + 2} AND "automatic" = true AND "automaticPausedReason" IS NULL`;
 }
 const FENCE_VALUES = ["sync_1", 3, ROW.leaseUntil];
 
@@ -2328,14 +2331,14 @@ describe("instructionSyncLeaseHeld (Decisions 31 and 48)", () => {
 describe("writeBackInstructionSync (spec §6.1, Decisions 31, 46 and 48)", () => {
 	const PATCH = { nextCheckAt: new Date(NOW.getTime() + 15 * MIN) };
 
-	it("protocol: one raw UPDATE of the patch's columns and updatedAt on the fence, with no transaction", async () => {
+	it("protocol: locks the ownership fence, then checks the lease clock before updating", async () => {
 		m.$executeRaw.mockResolvedValueOnce(1);
 		expect(await writeBackInstructionSync(tx, FENCE, PATCH)).toEqual({
 			applied: true,
 		});
 		expect(sent(m.$executeRaw)).toEqual({
-			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(2)}`,
-			values: [PATCH.nextCheckAt, ...FENCE_VALUES],
+			text: `WITH locked AS MATERIALIZED ( SELECT "id" FROM "project_instruction_repository_sync" WHERE ${ownershipFenceSql(1)} FOR UPDATE ), live AS MATERIALIZED ( SELECT locked."id" FROM locked JOIN "project_instruction_repository_sync" AS sync ON sync."id" = locked."id" WHERE sync."nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') ) UPDATE "project_instruction_repository_sync" AS sync SET "nextCheckAt" = $4, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') FROM live WHERE sync."id" = live."id"`,
+			values: [...FENCE_VALUES, PATCH.nextCheckAt],
 		});
 		expect(m.$transaction).not.toHaveBeenCalled();
 		expect(m.sync.updateMany).not.toHaveBeenCalled();
@@ -2354,8 +2357,9 @@ describe("writeBackInstructionSync (spec §6.1, Decisions 31, 46 and 48)", () =>
 			lastEvaluatedGeneration: 3,
 		});
 		expect(sent(m.$executeRaw)).toEqual({
-			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "failureCount" = $2, "automaticPausedReason" = $3::"ProjectInstructionSyncPause", "automaticPausedAt" = $4, "suppressedCommitSha" = $5, "suppressedGeneration" = $6, "lastEvaluatedCommitSha" = $7, "lastEvaluatedGeneration" = $8, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(9)}`,
+			text: `WITH locked AS MATERIALIZED ( SELECT "id" FROM "project_instruction_repository_sync" WHERE ${ownershipFenceSql(1)} FOR UPDATE ), live AS MATERIALIZED ( SELECT locked."id" FROM locked JOIN "project_instruction_repository_sync" AS sync ON sync."id" = locked."id" WHERE sync."nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') ) UPDATE "project_instruction_repository_sync" AS sync SET "nextCheckAt" = $4, "failureCount" = $5, "automaticPausedReason" = $6::"ProjectInstructionSyncPause", "automaticPausedAt" = $7, "suppressedCommitSha" = $8, "suppressedGeneration" = $9, "lastEvaluatedCommitSha" = $10, "lastEvaluatedGeneration" = $11, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') FROM live WHERE sync."id" = live."id"`,
 			values: [
+				...FENCE_VALUES,
 				PATCH.nextCheckAt,
 				0,
 				"REF_MISSING",
@@ -2364,7 +2368,6 @@ describe("writeBackInstructionSync (spec §6.1, Decisions 31, 46 and 48)", () =>
 				3,
 				HEAD,
 				3,
-				...FENCE_VALUES,
 			],
 		});
 	});
@@ -2399,8 +2402,8 @@ describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
 		expect(sent(m.$executeRaw)).toEqual({
 			// The pause clears the schedule: the claim's lease must not be
 			// left behind as an overdue `nextCheckAt` on a row nothing claims.
-			text: `UPDATE "project_instruction_repository_sync" SET "nextCheckAt" = $1, "automaticPausedReason" = $2::"ProjectInstructionSyncPause", "automaticPausedAt" = $3, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') WHERE ${fenceSql(4)}`,
-			values: [null, "REF_MISSING", NOW, ...FENCE_VALUES],
+			text: `WITH locked AS MATERIALIZED ( SELECT "id" FROM "project_instruction_repository_sync" WHERE ${ownershipFenceSql(1)} FOR UPDATE ), live AS MATERIALIZED ( SELECT locked."id" FROM locked JOIN "project_instruction_repository_sync" AS sync ON sync."id" = locked."id" WHERE sync."nextCheckAt" > (clock_timestamp() AT TIME ZONE 'UTC') ) UPDATE "project_instruction_repository_sync" AS sync SET "nextCheckAt" = $4, "automaticPausedReason" = $5::"ProjectInstructionSyncPause", "automaticPausedAt" = $6, "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC') FROM live WHERE sync."id" = live."id"`,
+			values: [...FENCE_VALUES, null, "REF_MISSING", NOW],
 		});
 		expect(m.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
 			m.run.createMany.mock.invocationCallOrder[0] ?? 0,
@@ -2461,7 +2464,7 @@ describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
 			pause: "PERMISSION_REVOKED",
 		});
 
-		expect(sent(m.$executeRaw).values.slice(0, 3)).toEqual([
+		expect(sent(m.$executeRaw).values.slice(3, 6)).toEqual([
 			null,
 			"PERMISSION_REVOKED",
 			NOW,

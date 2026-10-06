@@ -1540,7 +1540,8 @@ export class IntegrationHandler implements StepHandler {
 
 			case "get_file_contents": {
 				const filePath = inputs.path as string;
-				const ref = (inputs.ref as string) || "main";
+				// `HEAD` resolves to the project's default branch.
+				const ref = (inputs.ref as string) || "HEAD";
 
 				if (!projectId || !filePath) {
 					return {

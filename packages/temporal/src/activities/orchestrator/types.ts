@@ -15,6 +15,7 @@ import type {
 	TaskStep,
 	TrajectoryStep,
 } from "../../workflows/orchestrator/types";
+import type { TurnScope } from "./turn-dispatch";
 
 // =============================================================================
 // Activity Input/Output Types
@@ -222,6 +223,13 @@ export interface ExecuteMcpToolInput {
 	/** Attached image URLs (fallback for image tools when not in args) */
 	attachedImageUrls?: string[];
 	/**
+	 * The Advisor chat turn the call belongs to. Carried into the image tool
+	 * (`fabric_generate_image`), whose provider requests are checked against
+	 * the turn record and whose stop is rethrown, not reported as a tool
+	 * error. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
+	/**
 	 * Opt-in hard cap for a single tool execution (ms). When set, the call is
 	 * raced against a timer and returns a `success:false` timeout result if it
 	 * has not settled — bounding a hung MCP call so it cannot block the caller
@@ -291,6 +299,11 @@ export interface ExecuteAgentAsToolInput {
 	projectId?: string;
 	parentExecutionId?: string;
 	inheritedVariables?: Record<string, AgentVariable>;
+	/**
+	 * The chat turn this delegation belongs to. When set, the turn record is
+	 * consulted before the delegated agent is launched (see turn-dispatch.ts).
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface TriggerWorkflowInput {
@@ -554,6 +567,14 @@ export interface AgentCardCapabilities {
 export interface DelegateToAgentInput {
 	agentId: string;
 	message: string;
+	/**
+	 * The Advisor chat turn the delegation belongs to. When set, the turn
+	 * record is checked immediately before the outbound A2A send (and each of
+	 * the client's own retries of it), the send and the polling carry the
+	 * activity's cancellation signal, and a stop is rethrown rather than
+	 * reported as a failed delegation.
+	 */
+	turnScope?: TurnScope;
 	context?: Record<string, unknown>;
 	userId: string;
 	organizationId?: string;

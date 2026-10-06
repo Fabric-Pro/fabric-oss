@@ -17,6 +17,7 @@ import type * as projectMetadataActivities from "../../../activities/project-met
 import type * as weaveActivities from "../../../activities/weave";
 import { orchestratorBasePrompt } from "../../../lib/assistant-identity";
 import { formatRepositoryRoleMap } from "../../../lib/repository-role-formatter";
+import { type IterativeTurnOptions, rethrowTurnStop } from "../turn-contract";
 import type {
 	OrchestratorWorkflowInput,
 	PhaseResult,
@@ -98,6 +99,12 @@ export async function executeInitializationPhase(
 	state: WorkflowState,
 	input: OrchestratorWorkflowInput,
 	updateProgress: (phase: string, message: string) => void,
+	/**
+	 * The Advisor turn contract (../turn-contract.ts): when set, every catch
+	 * below rethrows a stop instead of degrading or failing the phase, so a
+	 * Stop during initialization ends the turn cancelled.
+	 */
+	turn?: IterativeTurnOptions,
 ): Promise<
 	PhaseResult<{
 		workspaceContext: string;
@@ -218,6 +225,7 @@ export async function executeInitializationPhase(
 				});
 			}
 		} catch (error) {
+			rethrowTurnStop(error, turn);
 			log.warn(
 				"[Initialization] Failed to load orchestrator memory, continuing without",
 				{
@@ -305,6 +313,7 @@ export async function executeInitializationPhase(
 				updateProgress,
 			);
 		} catch (error) {
+			rethrowTurnStop(error, turn);
 			log.warn(
 				"Memory initialization failed, continuing without memory",
 				{
@@ -520,6 +529,7 @@ export async function executeInitializationPhase(
 					);
 				}
 			} catch (error) {
+				rethrowTurnStop(error, turn);
 				log.warn(
 					"[Initialization] Failed to load project metadata, continuing without",
 					{
@@ -567,6 +577,7 @@ export async function executeInitializationPhase(
 					});
 				}
 			} catch (error) {
+				rethrowTurnStop(error, turn);
 				log.warn(
 					"[Initialization] Failed to load instance memory, continuing without",
 					{
@@ -646,6 +657,7 @@ export async function executeInitializationPhase(
 				);
 			}
 		} catch (error) {
+			rethrowTurnStop(error, turn);
 			log.warn(
 				"Fabric AI pattern enrichment failed, continuing without",
 				{
@@ -771,6 +783,7 @@ export async function executeInitializationPhase(
 					}
 				}
 			} catch (error) {
+				rethrowTurnStop(error, turn);
 				const message =
 					error instanceof Error ? error.message : String(error);
 				// A weave BACKGROUND_AGENTS run without a sandbox is doomed —
@@ -830,6 +843,7 @@ export async function executeInitializationPhase(
 			shouldContinue: true,
 		};
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		log.error("Initialization phase failed", { error: errorMessage });

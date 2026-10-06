@@ -133,6 +133,10 @@ export function CodingInstructionsTab({
 	// run creates its snapshot from a worker, and until that row exists
 	// nothing in the list is in flight to keep the poll going.
 	const syncRunningRef = useRef(false);
+	const latestSyncRunRef = useRef<{
+		snapshotId: string | null;
+		status: string | null;
+	} | null>(null);
 	const awaitedCommitRef = useRef(awaitedCommit);
 	awaitedCommitRef.current = awaitedCommit;
 	// The last `running` this tab saw, to notice a run closing.
@@ -163,6 +167,7 @@ export function CodingInstructionsTab({
 			awaitingPublish: instructionsAwaitsPublish({
 				snapshots,
 				publishedId: publishedIdRef.current,
+				latestSyncRun: latestSyncRunRef.current,
 				readySince:
 					readySeen && readySeen.snapshotId === snapshots?.[0]?.id
 						? readySeen.at
@@ -184,6 +189,7 @@ export function CodingInstructionsTab({
 		instructionsAwaitsPublish({
 			snapshots: snapshotsRef.current,
 			publishedId: publishedIdRef.current,
+			latestSyncRun: latestSyncRunRef.current,
 			readySince:
 				readySeen &&
 				readySeen.snapshotId === snapshotsRef.current?.[0]?.id
@@ -242,6 +248,7 @@ export function CodingInstructionsTab({
 	const syncActionError = useSyncActionError(migrationRepository);
 	const syncRunning = syncState?.running ?? false;
 	syncRunningRef.current = syncRunning;
+	latestSyncRunRef.current = syncState?.latestRun ?? null;
 	const latestSyncRunId = syncState
 		? (syncState.latestRun?.id ?? null)
 		: undefined;

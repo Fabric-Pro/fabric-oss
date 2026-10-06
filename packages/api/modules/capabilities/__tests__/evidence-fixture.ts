@@ -45,6 +45,8 @@ export function healthyEvidence(): CapabilityEvidence {
 			hasFailedSource: false,
 			technicalInFlight: 0,
 			productInFlight: 0,
+			stalledSources: [],
+			stalledTotal: 0,
 		},
 		documents: {
 			usableTypes: new Set(["PRD", "ARCHITECTURE", "TECHNICAL_SPEC"]),

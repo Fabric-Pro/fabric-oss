@@ -23,6 +23,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+	checkoutAppearsIncomplete,
 	cloneableUrl,
 	cloneFailureOf,
 	cloneInto,
@@ -34,6 +35,7 @@ import { excludeLocalFiles } from "../src/lib/instructions/git-exclude.js";
 const hasGit =
 	spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
 const itWithGit = it.skipIf(!hasGit);
+const itWithWindowsGit = it.skipIf(!hasGit || process.platform !== "win32");
 
 const URL_OF_REMOTE = "https://github.com/example-org/rules";
 
@@ -112,13 +114,19 @@ async function tempDir(prefix: string): Promise<string> {
  * A bare "remote" with `main` (one file) and `release` (one more commit),
  * and a rewrite rule that sends `URL_OF_REMOTE` to it.
  */
-async function remote(): Promise<string> {
+async function remote(longRelativePath?: string): Promise<string> {
 	const base = await tempDir("fabric-clone-remote-");
 	const seed = path.join(base, "seed");
 	const bare = path.join(base, "remote.git");
 	git(base, "init", "-q", "-b", "main", seed);
 	await writeFile(path.join(seed, "AGENTS.md"), "one\n");
-	git(seed, "add", "--", "AGENTS.md");
+	if (longRelativePath !== undefined) {
+		await mkdir(path.dirname(path.join(seed, longRelativePath)), {
+			recursive: true,
+		});
+		await writeFile(path.join(seed, longRelativePath), "long\n");
+	}
+	git(seed, "add", "--all");
 	git(seed, "commit", "-q", "-m", "one");
 	git(seed, "tag", "v1");
 	git(seed, "checkout", "-q", "-b", "release");
@@ -343,6 +351,43 @@ describe("cloneInto, with real git", () => {
 		);
 	});
 
+	itWithWindowsGit(
+		"checks out a path longer than 260 characters and leaves Git clean",
+		async () => {
+			const longRelativePath = path.join(
+				"nested",
+				`${"l".repeat(180)}.md`,
+			);
+			await remote(longRelativePath);
+			const dir = path.join(
+				await tempDir("fabric-clone-windows-"),
+				"destination-".repeat(10),
+			);
+			await mkdir(dir);
+
+			const result = await cloneInto(
+				dir,
+				URL_OF_REMOTE,
+				"main",
+				Date.now() + 60_000,
+			);
+
+			expect(result).toEqual({ kind: "cloned" });
+			expect(
+				await readFile(path.join(dir, longRelativePath), "utf8"),
+			).toBe("long\r\n");
+			expect(
+				git(dir, "-c", "core.autocrlf=true", "status", "--porcelain"),
+			).toBe("");
+			expect(
+				git(dir, "config", "--local", "--get", "core.longpaths"),
+			).toBe("true");
+			expect(git(dir, "config", "--local", "--get", "core.fscache")).toBe(
+				"false",
+			);
+		},
+	);
+
 	itWithGit(
 		"leaves the same config, branches and tags as cloning by hand",
 		async () => {
@@ -366,8 +411,27 @@ describe("cloneInto, with real git", () => {
 				".",
 			);
 
+			const oursConfig = git(ours, "config", "--local", "--list")
+				.split("\n")
+				.filter(
+					(line) =>
+						line !== "core.longpaths=true" &&
+						line !== "core.fscache=false",
+				);
+			const handConfig = git(byHand, "config", "--local", "--list").split(
+				"\n",
+			);
+			expect(oursConfig).toEqual(handConfig);
+			if (process.platform === "win32") {
+				expect(
+					git(ours, "config", "--local", "--get", "core.longpaths"),
+				).toBe("true");
+				expect(
+					git(ours, "config", "--local", "--get", "core.fscache"),
+				).toBe("false");
+			}
+
 			for (const question of [
-				["config", "--local", "--list"],
 				["branch", "--all", "--format=%(refname) %(upstream)"],
 				["tag", "--list"],
 			]) {
@@ -501,6 +565,25 @@ describe("cloneInto, with real git", () => {
 			reason: "git timed out",
 		});
 	});
+
+	itWithGit(
+		"recognizes an empty index beside the clone's untracked work tree without treating ordinary edits as interrupted",
+		async () => {
+			await remote();
+			const dir = await tempDir("fabric-clone-interrupted-");
+			await cloneInto(dir, URL_OF_REMOTE, "main", Date.now() + 60_000);
+
+			await writeFile(path.join(dir, "AGENTS.md"), "edited\n");
+			expect(
+				await checkoutAppearsIncomplete(dir, Date.now() + 60_000),
+			).toEqual({ kind: "ok", value: false });
+
+			git(dir, "rm", "-q", "-r", "--cached", "--", ".");
+			expect(
+				await checkoutAppearsIncomplete(dir, Date.now() + 60_000),
+			).toEqual({ kind: "ok", value: true });
+		},
+	);
 });
 
 describe("excludeLocalFiles, with real git", () => {

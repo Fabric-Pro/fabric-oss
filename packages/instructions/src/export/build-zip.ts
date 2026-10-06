@@ -1,26 +1,12 @@
-import { PassThrough } from "node:stream";
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import { getInstructionSnapshot, listInstructionFiles } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
-import archiver from "archiver";
 import { exportKey } from "../storage-keys";
+import { type FileForZip, streamInstructionZip } from "./stream-zip";
 
 const BUCKET = config.storage.bucketNames.skills;
-
-/**
- * How many file downloads may be in flight at once while an archive is being
- * built.
- *
- * A snapshot is a whole tree of small files — 448 of them on one real
- * project — and one round trip each, serialized, is what made the first
- * download of a new version take a minute and a half. The pool is fixed
- * rather than unbounded because the object store is shared with every other
- * request the process is serving, and `SNAPSHOT_LIMITS.maxTotalBytes` bounds
- * the total bytes, not the number of simultaneous connections.
- */
-const DOWNLOAD_CONCURRENCY = 16;
 
 type SnapshotForZip = {
 	id: string;
@@ -29,12 +15,6 @@ type SnapshotForZip = {
 	digest: string | null;
 	readyAt: Date | null;
 	createdAt: Date;
-};
-
-type FileForZip = {
-	path: string;
-	storageKey: string;
-	mode: number | null;
 };
 
 /**
@@ -76,8 +56,7 @@ function resolveExportKey(
  *
  * The key is derived from the snapshot's DIGEST, and an object that is
  * already there is reused rather than rebuilt. A snapshot is immutable, so
- * its archive is too: rebuilding it downloads every file again, with up to
- * `DOWNLOAD_CONCURRENCY` of those downloads in flight at a time, and
+ * its archive is too: rebuilding it streams files through a bounded window and
  * publishing a snapshot pre-builds the archive
  * (`warmInstructionSnapshotExport`) so that cost normally falls on nobody
  * waiting. The stamp used to be `Date.now()`, which made every Download and
@@ -86,11 +65,9 @@ function resolveExportKey(
  * poll it and compare digests, so a team of agents accumulated one copy per
  * session each, indefinitely.
  *
- * Buffers the whole archive in memory rather than streaming it, because
- * `SNAPSHOT_LIMITS.maxTotalBytes` already bounds a coding-instructions
- * upload to a size safe to hold in memory once. The concurrent downloads are
- * bounded by the same number: every file's bytes were already going to be
- * held at once by the archive buffer.
+ * Archive output is streamed to multipart storage. Source streams are opened
+ * through a bounded window and consumed in input order, without retaining the
+ * entire tree or ZIP in memory.
  *
  * `organizationId` is the PROJECT's hosting organization, resolved by the
  * caller, and it is used for one thing: re-reading the snapshot after the
@@ -119,88 +96,11 @@ export async function buildInstructionSnapshotZip(input: {
 		return { url: await sign(), key };
 	}
 
-	// Downloads run concurrently; the ARCHIVE is still written in input
-	// order. A zip's entry order is part of what it is — the manifest, the
-	// CLI's ledger and the tests all read the tree in the order the file rows
-	// came in — so the pool fills a slot-indexed array and nothing is
-	// appended until every slot holds its bytes. `Promise.all` over
-	// `files.map(...)` would have opened one connection per file, which is
-	// the failure mode the cap exists to avoid on a 448-file tree.
-	//
-	// A worker never lets its promise reject: one that catches a download
-	// error records it as `firstError` (only the first one — later workers
-	// leave it alone) and flips `stopped`, then returns instead of claiming
-	// another index. Every other worker checks `stopped` before claiming its
-	// next index, so the pool stops growing the instant one download fails,
-	// but `Promise.all` still waits for every download already in flight to
-	// settle rather than racing ahead of them — those bytes are written into
-	// `bytes` (unused, since the caller below throws) but never left as
-	// dangling, untracked fetches the way an unguarded `Promise.all` over a
-	// rejecting worker would. Once every worker has returned, the same error
-	// object is thrown — never wrapped — so the caller's error classes
-	// (ORPCError, a storage provider's own class) are unchanged.
-	const bytes: Buffer[] = new Array(input.files.length);
-	let cursor = 0;
-	let stopped = false;
-	// `failed` is its own flag rather than `firstError !== undefined`: a
-	// promise can reject with `undefined`, and that rejection is still a
-	// failed download whose slot must never reach the archive.
-	let failed = false;
-	let firstError: unknown;
-	const worker = async () => {
-		while (!stopped) {
-			const index = cursor++;
-			const file = input.files[index];
-			if (!file) {
-				return;
-			}
-			try {
-				const { data } = await storage.downloadFile(file.storageKey, {
-					bucket: BUCKET,
-				});
-				bytes[index] = data;
-			} catch (error) {
-				if (!failed) {
-					failed = true;
-					firstError = error;
-				}
-				stopped = true;
-				return;
-			}
-		}
-	};
-	await Promise.all(
-		Array.from(
-			{ length: Math.min(DOWNLOAD_CONCURRENCY, input.files.length) },
-			worker,
-		),
-	);
-	if (failed) {
-		throw firstError;
-	}
-
-	const archive = archiver("zip", { zlib: { level: 6 } });
-	const sink = new PassThrough();
-	const chunks: Buffer[] = [];
-	sink.on("data", (c: Buffer) => chunks.push(c));
-	const done = new Promise<void>((resolve, reject) => {
-		sink.on("end", () => resolve());
-		archive.on("error", reject);
-	});
-	archive.pipe(sink);
-	for (const [index, f] of input.files.entries()) {
-		archive.append(bytes[index], {
-			name: f.path,
-			mode: f.mode ?? undefined,
-			date: input.snapshot.readyAt ?? input.snapshot.createdAt,
-		});
-	}
-	await archive.finalize();
-	await done;
-
-	await storage.uploadFile(key, Buffer.concat(chunks), {
+	await streamInstructionZip({
+		key,
 		bucket: BUCKET,
-		contentType: "application/zip",
+		date: input.snapshot.readyAt ?? input.snapshot.createdAt,
+		files: input.files,
 	});
 
 	// The snapshot can have been deleted while this archive was being built,

@@ -28,7 +28,7 @@ const m = vi.hoisted(() => ({
 	getPublishedInstructionTree: vi.fn(),
 	getProjectInstructionSettings: vi.fn(),
 	createInstructionSnapshot: vi.fn(),
-	claimInstructionFileStagingKey: vi.fn(),
+	claimInstructionFileStagingKeys: vi.fn(),
 	recordInstructionSyncRunProgress: vi.fn(),
 	recordAudit: vi.fn(),
 	getInstructionSnapshotWithPublishedPointer: vi.fn(),
@@ -48,6 +48,7 @@ const m = vi.hoisted(() => ({
 	describe: vi.fn(),
 	result: vi.fn(),
 	heartbeat: vi.fn(),
+	activityContext: vi.fn(),
 	cloneTreeless: vi.fn(),
 	fetchPinnedCommit: vi.fn(),
 	revParseHead: vi.fn(),
@@ -73,7 +74,7 @@ vi.mock("@repo/database", () => ({
 	getPublishedInstructionTree: m.getPublishedInstructionTree,
 	getProjectInstructionSettings: m.getProjectInstructionSettings,
 	createInstructionSnapshot: m.createInstructionSnapshot,
-	claimInstructionFileStagingKey: m.claimInstructionFileStagingKey,
+	claimInstructionFileStagingKeys: m.claimInstructionFileStagingKeys,
 	recordInstructionSyncRunProgress: m.recordInstructionSyncRunProgress,
 	recordAudit: m.recordAudit,
 	getInstructionSnapshotWithPublishedPointer:
@@ -121,9 +122,7 @@ vi.mock("../src/client", () => ({
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: m.heartbeat,
 	Context: {
-		current: () => {
-			throw new Error("not in an activity");
-		},
+		current: () => m.activityContext(),
 	},
 	ApplicationFailure: {
 		create: (o: {
@@ -302,7 +301,11 @@ beforeEach(() => {
 		}),
 	);
 	m.recordInstructionSyncRunProgress.mockResolvedValue({ changed: true });
-	m.claimInstructionFileStagingKey.mockResolvedValue({ moved: true });
+	m.claimInstructionFileStagingKeys.mockImplementation(
+		async ({ claims }: { claims: readonly unknown[] }) => ({
+			moved: claims.length,
+		}),
+	);
 	m.uploadFile.mockResolvedValue(undefined);
 	m.listObjects.mockResolvedValue({ objects: [] });
 	m.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
@@ -320,6 +323,9 @@ beforeEach(() => {
 			name: "WorkflowNotFoundError",
 		}),
 	);
+	m.activityContext.mockImplementation(() => {
+		throw new Error("not in an activity");
+	});
 });
 
 describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
@@ -920,13 +926,22 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 				}),
 			],
 		});
-		expect(m.claimInstructionFileStagingKey).toHaveBeenCalledWith({
-			fileId: "file_0",
+		expect(m.claimInstructionFileStagingKeys).toHaveBeenCalledWith({
 			snapshotId: "snap_1",
 			projectId: "proj_1",
 			organizationId: "org_1",
-			from: stagingKey("proj_1", "pending", "0"),
-			to: stagingKey("proj_1", "snap_1", "file_0"),
+			claims: [
+				{
+					fileId: "file_0",
+					from: stagingKey("proj_1", "pending", "0"),
+					to: stagingKey("proj_1", "snap_1", "file_0"),
+				},
+				{
+					fileId: "file_1",
+					from: stagingKey("proj_1", "pending", "1"),
+					to: stagingKey("proj_1", "snap_1", "file_1"),
+				},
+			],
 		});
 		expect(m.uploadFile).toHaveBeenCalledWith(
 			stagingKey("proj_1", "snap_1", "file_0"),
@@ -1808,7 +1823,18 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 			expect.objectContaining({ repoPaths: ["agents/docs\\guide.md"] }),
 		);
 		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
-		expect(m.claimInstructionFileStagingKey).not.toHaveBeenCalled();
+		expect(m.claimInstructionFileStagingKeys).toHaveBeenCalledWith({
+			snapshotId: "snap_9",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			claims: [
+				{
+					fileId: "file_a",
+					from: stagingKey("proj_1", "snap_9", "file_a"),
+					to: stagingKey("proj_1", "snap_9", "file_a"),
+				},
+			],
+		});
 		expect(m.uploadFile).toHaveBeenCalledWith(
 			stagingKey("proj_1", "snap_9", "file_a"),
 			Buffer.from("guide body"),
@@ -1933,6 +1959,35 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		expect(m.markRepoReauthRequired).not.toHaveBeenCalled();
 	});
 
+	it("stops credential recovery after cancellation instead of flagging reauthentication", async () => {
+		const controller = new AbortController();
+		const cancelled = new Error("activity cancelled");
+		m.activityContext.mockReturnValue({
+			cancellationSignal: controller.signal,
+		});
+		m.cloneTreeless.mockRejectedValueOnce(
+			new GitCommandError(
+				"exit",
+				128,
+				"fatal: Authentication failed for 'https://github.com/'",
+				"clone",
+			),
+		);
+		m.forceReExchangeRepoCredentials.mockImplementation(
+			async ({ signal }: { signal: AbortSignal }) => {
+				controller.abort(cancelled);
+				expect(signal.aborted).toBe(true);
+				return { refreshed: false };
+			},
+		);
+
+		await expect(
+			acquireInstructionTreeFromRepository(CONTEXT),
+		).rejects.toBe(cancelled);
+		expect(m.markRepoReauthRequired).not.toHaveBeenCalled();
+		expect(m.resolveFreshRepoToken).toHaveBeenCalledTimes(1);
+	});
+
 	it("gives up with a non-retryable INTEGRATION_UNAVAILABLE and flags reconnect when the re-exchange cannot help", async () => {
 		m.cloneTreeless.mockRejectedValue(
 			new GitCommandError(
@@ -2016,6 +2071,63 @@ describe("acquireInstructionTreeFromRepository (spec §5.3.2)", () => {
 		// success: the clone populated it before the upload threw, so this is
 		// the case a `finally`-skipping refactor would actually miss.
 		expect(existsSync(m.cloneTreeless.mock.calls[0]?.[0].cwd)).toBe(false);
+	});
+
+	it("drains an upload already in flight before a storage failure returns for retry", async () => {
+		serveRepo([
+			{ path: "CLAUDE.md", body: "first" },
+			{ path: "AGENTS.md", body: "second" },
+		]);
+		let releaseSecondUpload: (() => void) | undefined;
+		let secondUploadStarted = false;
+		m.uploadFile.mockImplementation(async () => {
+			if (m.uploadFile.mock.calls.length === 1) {
+				throw new Error("storage unavailable");
+			}
+			secondUploadStarted = true;
+			await new Promise<void>((resolve) => {
+				releaseSecondUpload = resolve;
+			});
+		});
+
+		let settled = false;
+		const acquisition = acquireInstructionTreeFromRepository(CONTEXT)
+			.catch((error) => error)
+			.finally(() => {
+				settled = true;
+			});
+		await vi.waitFor(() => expect(secondUploadStarted).toBe(true));
+		expect(settled).toBe(false);
+
+		releaseSecondUpload?.();
+		const error = failureOf(await acquisition);
+		expect(error.type).toBe("STORAGE_FAILED");
+		expect(m.uploadFile).toHaveBeenCalledTimes(2);
+	});
+
+	it("stops before reading or uploading when cancellation arrives while a staging claim is pending", async () => {
+		serveRepo([{ path: "CLAUDE.md", body: "first" }]);
+		const controller = new AbortController();
+		m.activityContext.mockReturnValue({
+			cancellationSignal: controller.signal,
+		});
+		let releaseClaim: (() => void) | undefined;
+		m.claimInstructionFileStagingKeys.mockImplementation(
+			async () =>
+				await new Promise<{ moved: number }>((resolve) => {
+					releaseClaim = () => resolve({ moved: 1 });
+				}),
+		);
+
+		const acquisition = acquireInstructionTreeFromRepository(CONTEXT);
+		await vi.waitFor(() =>
+			expect(m.claimInstructionFileStagingKeys).toHaveBeenCalledTimes(1),
+		);
+		controller.abort(new Error("cancelled while claiming"));
+		releaseClaim?.();
+
+		await expect(acquisition).rejects.toThrow("cancelled while claiming");
+		expect(m.uploadFile).not.toHaveBeenCalled();
 	});
 
 	it("maps the disk watchdog to LIMITS_EXCEEDED", async () => {

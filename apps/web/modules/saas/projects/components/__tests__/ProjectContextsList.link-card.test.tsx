@@ -530,6 +530,7 @@ describe("ProjectContextsList — LINK card (PM-simplified)", () => {
 // ──────────────────────────────────────────────────────────────────────
 import {
 	MAX_POLL_DURATION_MS,
+	pollClockMs,
 	shouldStopPolling,
 } from "../ProjectContextsList";
 
@@ -565,5 +566,35 @@ describe("ProjectContextsList — polling cap (sub-bug 3)", () => {
 		const now = 1_700_000_000_000;
 		const createdAt = now + 60_000; // 1 minute in the future
 		expect(shouldStopPolling(createdAt, now)).toBe(false);
+	});
+});
+
+describe("ProjectContextsList — the polling clock (Fizzy #2886)", () => {
+	const now = 1_700_000_000_000;
+
+	it("measures from the latest write, so a retried old row polls again", () => {
+		const row = {
+			createdAt: new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString(),
+			updatedAt: new Date(now - 10_000).toISOString(),
+		};
+		expect(pollClockMs(row, now)).toBe(now - 10_000);
+		expect(shouldStopPolling(pollClockMs(row, now), now)).toBe(false);
+	});
+
+	it("still stops for a row whose latest write is past the cap", () => {
+		const row = {
+			createdAt: new Date(now - 60 * 60 * 1000),
+			updatedAt: new Date(now - MAX_POLL_DURATION_MS - 1_000),
+		};
+		expect(shouldStopPolling(pollClockMs(row, now), now)).toBe(true);
+	});
+
+	it("falls back to createdAt when a row carries no updatedAt", () => {
+		const row = { createdAt: new Date(now - 60_000).toISOString() };
+		expect(pollClockMs(row, now)).toBe(now - 60_000);
+	});
+
+	it("treats a row with no clock at all as fresh", () => {
+		expect(pollClockMs({}, now)).toBe(now);
 	});
 });

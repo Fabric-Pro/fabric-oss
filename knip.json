@@ -156,7 +156,15 @@
 			"ignoreDependencies": ["cloudflare"]
 		},
 		"tooling/scripts": {
-			"ignoreDependencies": ["@whatwg-node/node-fetch"]
+			"ignoreDependencies": [
+				"@whatwg-node/node-fetch",
+				"@graphql-tools/utils",
+				"@graphql-tools/executor",
+				"graphql",
+				"proxy-addr",
+				"source-map-js",
+				"simple-git"
+			]
 		},
 		"tooling/tailwind": {
 			"ignoreDependencies": ["tailwindcss"]
