@@ -54,6 +54,7 @@
 import type {
 	CapabilityGate,
 	CapabilityState,
+	GateSubject,
 	RemedyKind,
 	RetryAffordance,
 } from "@repo/api/modules/capabilities/types";
@@ -101,19 +102,27 @@ export interface CapabilityGateView {
 	state: VisibleGateState;
 	reasonKey: string;
 	tone: GateTone;
-	/** Key for the headline. */
+	/** Key for the headline. Interpolate with `params`. */
 	title: string;
 	/** Key for the explanation. Interpolate with `params`. */
 	body: string;
 	/**
-	 * ICU values for `body`.
+	 * ICU values for `title` and `body`.
 	 *
 	 * `dependency` is the server's own naming of what is missing. The
 	 * requirements are explicit that a composite message must name the missing
 	 * prerequisite rather than announce a verdict, so it is carried through
 	 * rather than summarised away.
+	 *
+	 * `count` is how many things the gate is about, never below one: a gate
+	 * with nothing named is still about something, and "0 sources stopped"
+	 * would be false.
 	 */
-	params: { dependency: string };
+	params: { dependency: string; count: number };
+	/** What the gate is about, named — see `CapabilityGate.subjects`. */
+	subjects: GateSubject[];
+	/** How many in all; at least `subjects.length`. */
+	subjectTotal: number;
 	ctaLabel: string | null;
 	ctaKind: GateCtaKind;
 	ctaTarget: GateDestination | null;
@@ -232,6 +241,19 @@ const QUEUED_BY_DEPENDENCY: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Reasons that are only worth showing when the gate names what they are about.
+ *
+ * A stall whose source could not be identified gives the viewer a warning
+ * they can do nothing with — "a source stopped" and no way to find which.
+ * The requirement is explicit that such a generic warning must not show, so
+ * the banner stays away and the server logs the stall for investigation
+ * instead. Decided here, so every surface that renders the gate agrees.
+ */
+const REASONS_THAT_NEED_SUBJECTS: ReadonlySet<string> = new Set([
+	"context.ingestion-stalled",
+]);
+
+/**
  * Every reason the rule registry can currently produce.
  *
  * Listed rather than derived because the registry lives in `@repo/api` behind
@@ -302,6 +324,8 @@ const KNOWN_REASON_KEYS: ReadonlySet<string> = new Set([
  *  - `suppressed` — this viewer silenced this warning. The server still sends
  *    the gate (it flags rather than filters, so a restore control can know
  *    there is something to restore), which means the hiding has to happen here.
+ *  - a reason that needs subjects arriving with none — see
+ *    `REASONS_THAT_NEED_SUBJECTS`.
  */
 export function buildCapabilityGateView(
 	gate: CapabilityGate,
@@ -325,6 +349,17 @@ export function buildCapabilityGateView(
 		return null;
 	}
 
+	// Defaulted rather than trusted: a client newer than the server it talks
+	// to — the window of a deploy — receives gates without these fields.
+	const subjects = gate.subjects ?? [];
+	const subjectTotal = Math.max(gate.subjectTotal ?? 0, subjects.length);
+	if (
+		subjects.length === 0 &&
+		REASONS_THAT_NEED_SUBJECTS.has(gate.reasonKey ?? "")
+	) {
+		return null;
+	}
+
 	const state = gate.state as VisibleGateState;
 	const remedy = gate.remedy ? REMEDY[gate.remedy] : null;
 
@@ -344,7 +379,12 @@ export function buildCapabilityGateView(
 		tone: TONE_BY_STATE[state],
 		title: `${copyBase}.title`,
 		body: `${copyBase}.body`,
-		params: { dependency: gate.blockingDependency ?? "" },
+		params: {
+			dependency: gate.blockingDependency ?? "",
+			count: Math.max(subjectTotal, 1),
+		},
+		subjects,
+		subjectTotal,
 		ctaLabel:
 			(gate.reasonKey && RETRY_LABEL_BY_REASON[gate.reasonKey]) ??
 			remedy?.label ??

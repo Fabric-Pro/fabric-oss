@@ -50,6 +50,7 @@ export type {
 	McpDefaultToolSurface,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
+	OrchestratorTurnScope,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
 	OrchestratorWorkspace,
@@ -69,6 +70,7 @@ export {
 	AGENT_REGISTRY,
 	DEFAULT_ALTK_CONFIG,
 	EXECUTION_MODE_CONFIGS,
+	ORCHESTRATOR_TURN_CONTRACT_VERSION,
 } from "./types/index";
 
 // Type aliases for internal use

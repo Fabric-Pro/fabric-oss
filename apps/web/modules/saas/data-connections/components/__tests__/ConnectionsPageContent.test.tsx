@@ -132,6 +132,7 @@ function renderPageWithToolbar() {
 		<ConnectionsPageContent
 			addHref="/app/settings/integrations/add"
 			settingsBasePath="/app/settings/integrations"
+			apiKeysHref="/app/example-org/settings/api-keys"
 			toolbarStart={<div data-testid="toolbar-slot" />}
 		/>,
 	);
@@ -168,6 +169,7 @@ function renderPage(
 		<ConnectionsPageContent
 			addHref="/app/settings/integrations/add"
 			settingsBasePath="/app/settings/integrations"
+			apiKeysHref="/app/example-org/settings/api-keys"
 		/>,
 		flags,
 	);
@@ -771,5 +773,25 @@ describe("ConnectionsPageContent — Linear visibility", () => {
 			name: /Linear/i,
 		});
 		await screen.findByText("Linear Remote");
+	});
+});
+
+describe("ConnectionsPageContent — Add connection menu", () => {
+	it("offers Create API key linking to the API keys settings page", async () => {
+		const user = userEvent.setup();
+		renderPageWithToolbar();
+
+		const addButton = screen.getByRole("button", {
+			name: /add connection/i,
+		});
+		await user.click(addButton);
+
+		const createApiKeyItem = screen.getByRole("menuitem", {
+			name: /create api key/i,
+		});
+		expect(createApiKeyItem).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/api-keys",
+		);
 	});
 });

@@ -21,7 +21,7 @@
 		"@repo/integrations": "workspace:*",
 		"@repo/logs": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"simple-git": "^3.36.0",
+		"simple-git": "4.0.2",
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {

@@ -1372,10 +1372,12 @@ function DocumentEditorInner({
 	const repoName = (project as Record<string, unknown>)?.repositoryName as
 		| string
 		| undefined;
+	// Undefined when the project has not recorded its default branch; the
+	// file tools then read the repository's own default branch.
 	const repoBranch =
 		((project as Record<string, unknown>)?.defaultBranch as
 			| string
-			| undefined) || "main";
+			| undefined) || undefined;
 	const repoProvider = project?.repositoryUrl?.includes("gitlab.com")
 		? "gitlab"
 		: "github";
@@ -4264,7 +4266,7 @@ function DocumentEditorInner({
 						`REPOSITORY: ${repo.full_name || `${repoOwner}/${repoName}`}`,
 						`Description: ${repo.description || "N/A"}`,
 						`Language: ${repo.language || "N/A"}`,
-						`Default branch: ${repo.default_branch || repoBranch}`,
+						`Default branch: ${repo.default_branch || repoBranch || "unknown"}`,
 						`Topics: ${(repo.topics as string[])?.join(", ") || "none"}`,
 						`Last updated: ${repo.updated_at || "N/A"}`,
 					].join("\n");
@@ -4463,7 +4465,10 @@ function DocumentEditorInner({
 							args: {
 								project_id: gitlabProjectId,
 								path: args.path,
-								ref: (args.ref as string) || repoBranch,
+								ref:
+									(args.ref as string) ||
+									repoBranch ||
+									"HEAD",
 							},
 						});
 					const data = result.result as Record<string, unknown>;
@@ -4525,7 +4530,7 @@ function DocumentEditorInner({
 					return [
 						`PROJECT: ${proj.name_with_namespace || `${repoOwner}/${repoName}`}`,
 						`Description: ${proj.description || "N/A"}`,
-						`Default branch: ${proj.default_branch || repoBranch}`,
+						`Default branch: ${proj.default_branch || repoBranch || "unknown"}`,
 						`Topics: ${(proj.topics as string[])?.join(", ") || "none"}`,
 						`Last activity: ${proj.last_activity_at || "N/A"}`,
 					].join("\n");

@@ -20,9 +20,11 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { extractMeetingInsightsActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	// One transcript, one LLM call — generous headroom over observed latency.
 	startToCloseTimeout: "180s",
 	heartbeatTimeout: "2 minutes",

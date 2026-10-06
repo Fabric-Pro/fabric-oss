@@ -28,34 +28,15 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
-import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
-
-// Configure activity retry policies
-const { updateProjectContextStatus, getProjectContextStatus } = proxyActivities<
-	typeof activities
->({
-	startToCloseTimeout: "30s",
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "2s",
-		maximumInterval: "60s",
-		backoffCoefficient: 2,
-		maximumAttempts: 5,
-	},
-});
-
-const { processProjectContext, retryProjectContext } = proxyActivities<
-	typeof activities
->({
-	startToCloseTimeout: "10m", // Long timeout for entire pipeline
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "2s",
-		maximumInterval: "60s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
+import {
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import {
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+} from "../task-queues";
 
 // Activities for document import (called after extraction when context is tagged)
 const {
@@ -64,9 +45,20 @@ const {
 	failTargetDocument,
 	fillTargetDocument,
 	issueGenerationToken,
-	embedProjectDocumentActivity,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "3m", // Cleanup uses AI, may take longer
+	retry: {
+		initialInterval: "2s",
+		maximumInterval: "30s",
+		backoffCoefficient: 2,
+		maximumAttempts: 3,
+	},
+});
+
+const { embedProjectDocumentActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+	startToCloseTimeout: "3m",
 	retry: {
 		initialInterval: "2s",
 		maximumInterval: "30s",
@@ -104,7 +96,7 @@ export interface ProjectContextProcessingOutput {
 }
 
 type ProjectContextProcessingResult = Awaited<
-	ReturnType<typeof processProjectContext>
+	ReturnType<typeof activities.processProjectContext>
 >;
 
 // ============================================================================
@@ -139,6 +131,40 @@ export async function projectContextProcessingWorkflow(
 	// non-retryably with nothing written. A project owner is exactly what the
 	// input always was.
 	const owner = resolveContextOwner(input);
+
+	// Configure activity retry policies
+	const { updateProjectContextStatus, getProjectContextStatus } =
+		proxyActivities<typeof activities>({
+			taskQueue: contextOwnerTaskQueue(
+				input.owner,
+				PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+			),
+			startToCloseTimeout: "30s",
+			heartbeatTimeout: "30 seconds",
+			retry: {
+				initialInterval: "2s",
+				maximumInterval: "60s",
+				backoffCoefficient: 2,
+				maximumAttempts: 5,
+			},
+		});
+
+	const { processProjectContext, retryProjectContext } = proxyActivities<
+		typeof activities
+	>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		startToCloseTimeout: "10m", // Long timeout for entire pipeline
+		heartbeatTimeout: "30 seconds",
+		retry: {
+			initialInterval: "2s",
+			maximumInterval: "60s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
 
 	log.info("Starting project context processing workflow", {
 		contextId,

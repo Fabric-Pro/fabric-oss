@@ -72,12 +72,12 @@ export function assertAllDeleted(
  * anywhere bounds how many of those exist. Paginating such a prefix to
  * exhaustion is how a single row could spend an entire activity attempt.
  *
- * So the sweep stops after this many pages and says so. Whatever is left
- * under the prefix is NOT retried here — the rows that named those objects
- * are already gone, so the next run cannot rediscover them — it is left to
- * the bucket-lifecycle rule tracked as the follow-up to this work, which is
- * the same place the other unreferenced-object residue goes. The caller
- * reports the truncation so it is visible rather than silent.
+ * So the sweep stops after this many pages and says so. Snapshot deletion
+ * now creates a durable cleanup receipt in the same transaction, so the
+ * storage-cleanup reaper can rediscover a deleted snapshot's owned prefixes
+ * after its row is gone. Other callers still report truncation for their own
+ * retry policy. The receipt makes the prefix discoverable; it does not prove
+ * that a storage request which began before its grace period has finished.
  */
 export const MAX_PREFIX_PAGES = 20;
 
@@ -109,9 +109,9 @@ export type StorageBudget = { remaining: number };
  * genuinely could not be deleted throws.
  *
  * `truncated` does not say WHICH bound stopped it. The caller knows: a
- * truncation with budget left is the page budget, whose residue is the
- * bucket-lifecycle follow-up's work, and one with the budget at zero is the
- * run budget, which the next run resumes.
+ * truncation with budget left is the page budget, and one with the budget at
+ * zero is the run budget. Snapshot deletion receipts defer either case to a
+ * later bounded cleanup pass; other callers retain their existing handling.
  */
 export async function deleteObjectsUnderPrefix(
 	storage: StorageProviderInterface,
@@ -139,16 +139,21 @@ export async function deleteObjectsUnderPrefix(
 			overBudget = true;
 		}
 		if (keys.length > 0) {
-			assertAllDeleted(
-				await storage.deleteObjects(keys, {
-					bucket: INSTRUCTIONS_BUCKET,
-				}),
-				"prefix sweep",
-			);
-			deleted += keys.length;
+			// Spend the allowance before the provider result is inspected. A
+			// best-effort delete can remove some keys and report errors for the
+			// rest; charging only after `assertAllDeleted` let that throw preserve
+			// the full budget and a retry run exceed its advertised cap.
 			if (budget !== undefined) {
 				budget.remaining -= keys.length;
 			}
+			const removal = await storage.deleteObjects(keys, {
+				bucket: INSTRUCTIONS_BUCKET,
+			});
+			// `deleted` is the provider-confirmed count, not the number charged
+			// against the cap. On an error the throw below prevents callers from
+			// reporting this partial value as a completed prefix sweep.
+			deleted += removal.deleted;
+			assertAllDeleted(removal, "prefix sweep");
 		}
 		if (overBudget) {
 			return { deleted, truncated: true };
@@ -207,9 +212,9 @@ export async function pruneProjectInstructionSnapshots(
 	let deleted = 0;
 	// True when any export prefix hit `MAX_PREFIX_PAGES`, or when the run's
 	// object budget stopped the pass. `deleted` stays a count of ROWS, which
-	// is what every caller reports as snapshots pruned; the objects left
-	// behind are the bucket-lifecycle follow-up's work, or — for the budget
-	// case — the next run's.
+	// is what every caller reports as snapshots pruned; the durable cleanup
+	// receipt makes the deleted snapshot's owned prefixes discoverable by a
+	// later bounded pass.
 	let storageTruncated = false;
 	for (const s of prunable) {
 		// Checked BETWEEN snapshots, never mid-row: the row is deleted first

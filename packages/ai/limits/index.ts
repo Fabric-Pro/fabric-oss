@@ -13,6 +13,7 @@ export {
 	sanitizeProviderMessage,
 } from "@repo/utils/classify-limit-error";
 export type {
+	BudgetLimit,
 	LimitKind,
 	LimitSignal,
 	TokenBudgetStatus,

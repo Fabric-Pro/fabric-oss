@@ -14,6 +14,14 @@
 
 import { fetchCredentialsByProvider, logAiUsageAsync } from "@repo/database";
 import { downloadFile, getSignedUrl, uploadFile } from "@repo/storage";
+import {
+	activityAbortSignal,
+	assertTurnDispatchable,
+	guardTurnImageModel,
+	guardTurnModel,
+	rethrowIfTurnStopped,
+	type TurnScope,
+} from "./orchestrator/turn-dispatch";
 
 export interface ImageGenerationParams {
 	prompt: string;
@@ -27,6 +35,15 @@ export interface ImageGenerationParams {
 	inputImagePath?: string;
 	/** Gateway model ID (e.g., "google/gemini-3.1-flash-image-preview") */
 	gatewayModel?: string;
+	/**
+	 * The Advisor chat turn this image belongs to. When set, every provider
+	 * attempt is checked against the turn record first (a Stop recorded while
+	 * credentials resolve or the input image downloads refuses the request),
+	 * each request carries the activity's cancellation signal, and a stop is
+	 * rethrown rather than reported as a failed image. Absent for direct
+	 * chat and the agent executor, which behave as before.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface ImageGenerationResult {
@@ -100,6 +117,7 @@ export async function generateImageActivity(
 		organizationId,
 		inputImagePath,
 		gatewayModel,
+		turnScope,
 	} = params;
 
 	if (!prompt || prompt.trim().length === 0) {
@@ -124,6 +142,7 @@ export async function generateImageActivity(
 					userId,
 					organizationId,
 					startTime,
+					turnScope,
 				});
 				break;
 
@@ -136,6 +155,7 @@ export async function generateImageActivity(
 					userId,
 					organizationId,
 					startTime,
+					turnScope,
 				});
 				break;
 
@@ -148,9 +168,15 @@ export async function generateImageActivity(
 					userId,
 					organizationId,
 					startTime,
+					turnScope,
 				});
 		}
 	} catch (error) {
+		// In a chat turn a stop (a refused dispatch, a cancelled activity)
+		// is not a failed image: rethrown so the turn ends cancelled.
+		if (turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		console.error(
@@ -231,7 +257,12 @@ async function generateWithGateway(params: {
 	userId: string;
 	organizationId?: string;
 	startTime: number;
+	turnScope?: TurnScope;
 }): Promise<ImageGenerationResult> {
+	const { turnScope } = params;
+	// The activity's cancellation, for a turn's requests only (other callers
+	// keep their behaviour).
+	const abortSignal = turnScope ? activityAbortSignal() : undefined;
 	const {
 		prompt,
 		inputImagePath,
@@ -350,8 +381,14 @@ async function generateWithGateway(params: {
 			`[ImageGeneration] Gateway (multimodal) request: model=${model}, hasInputImage=${!!inputImagePath}`,
 		);
 
+		// Every physical request — the SDK's retries included — is checked
+		// against the turn record (guardTurnModel), after the credential
+		// lookup and the input download above.
 		const result = await generateText({
-			model: gateway(model),
+			model: turnScope
+				? guardTurnModel(gateway(model), turnScope).model
+				: gateway(model),
+			...(abortSignal ? { abortSignal } : {}),
 			messages: [{ role: "user", content: contentParts }],
 			providerOptions: {
 				google: { responseModalities: ["TEXT", "IMAGE"] },
@@ -405,7 +442,10 @@ async function generateWithGateway(params: {
 	);
 
 	const imageResult = await generateImage({
-		model: gateway.imageModel(model),
+		model: turnScope
+			? guardTurnImageModel(gateway.imageModel(model), turnScope)
+			: gateway.imageModel(model),
+		...(abortSignal ? { abortSignal } : {}),
 		prompt,
 		...(validatedAspectRatio ? { aspectRatio: validatedAspectRatio } : {}),
 	});
@@ -491,7 +531,9 @@ async function generateWithFal(params: {
 	userId: string;
 	organizationId?: string;
 	startTime: number;
+	turnScope?: TurnScope;
 }): Promise<ImageGenerationResult> {
+	const { turnScope } = params;
 	const {
 		prompt,
 		aspectRatio,
@@ -525,7 +567,13 @@ async function generateWithFal(params: {
 		`[ImageGeneration] FAL request: model=${falModel}, size=${imageSize}, steps=${numInferenceSteps}`,
 	);
 
+	// Immediately before the request, after the credential lookup above.
+	if (turnScope) {
+		await assertTurnDispatchable(turnScope);
+	}
+	const falSignal = turnScope ? activityAbortSignal() : undefined;
 	const response = await fetch(`https://fal.run/${falModel}`, {
+		...(falSignal ? { signal: falSignal } : {}),
 		method: "POST",
 		headers: {
 			Authorization: `Key ${credentials.FAL_API_KEY}`,
@@ -589,7 +637,9 @@ async function generateWithGemini(params: {
 	userId: string;
 	organizationId?: string;
 	startTime: number;
+	turnScope?: TurnScope;
 }): Promise<ImageGenerationResult> {
+	const { turnScope } = params;
 	const { prompt, aspectRatio, model, userId, organizationId, startTime } =
 		params;
 	const geminiModel = model || DEFAULT_GEMINI_MODEL;
@@ -615,11 +665,16 @@ async function generateWithGemini(params: {
 		: "";
 	const fullPrompt = `${prompt}${aspectPrompt}`;
 
+	if (turnScope) {
+		await assertTurnDispatchable(turnScope);
+	}
+	const geminiSignal = turnScope ? activityAbortSignal() : undefined;
 	const response = await ai.models.generateContent({
 		model: geminiModel,
 		contents: fullPrompt,
 		config: {
 			responseModalities: ["IMAGE", "TEXT"],
+			...(geminiSignal ? { abortSignal: geminiSignal } : {}),
 		},
 	});
 

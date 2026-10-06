@@ -28,6 +28,7 @@ import {
 import { SparklesIcon } from "../../shared/components/icons/SparklesIcon";
 import { effectiveMcpAuthType } from "../lib/config-auth-type";
 import { McpServerIcon } from "./McpServerIcon";
+import { isReadOnlyMcpServer, ReadOnlyBadge } from "./ReadOnlyBadge";
 
 interface McpServersListViewProps {
 	configs: any[];
@@ -212,6 +213,7 @@ function McpServerListItem({
 	};
 
 	const isManagedDefault = !!config.isManagedDefault;
+	const isReadOnly = isReadOnlyMcpServer(config);
 
 	return (
 		<Card
@@ -294,6 +296,7 @@ function McpServerListItem({
 					</div>
 
 					<div className="flex items-center gap-3 shrink-0">
+						{isReadOnly && <ReadOnlyBadge />}
 						{isManagedDefault ? (
 							<AlwaysOnPill />
 						) : (

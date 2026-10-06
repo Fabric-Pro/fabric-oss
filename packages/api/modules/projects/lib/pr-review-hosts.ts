@@ -39,6 +39,18 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 /**
+ * Azure DevOps answers a bad or expired PAT with HTTP 203 and an HTML sign-in
+ * page, and `Response.ok` is true for 203. The Azure provider reads this
+ * before any `.ok` test or body read and treats it as the 401 it stands for.
+ */
+const ADO_SIGN_IN_PAGE_STATUS = 203;
+
+/** The status Azure's provider acts on: a sign-in page counts as a 401. */
+function azureEffectiveStatus(response: Response): number {
+	return response.status === ADO_SIGN_IN_PAGE_STATUS ? 401 : response.status;
+}
+
+/**
  * GitHub. Hands back a unified diff for the whole pull request in one request,
  * under a different Accept header on the same endpoint.
  */
@@ -360,9 +372,10 @@ export const azureProvider: PrReviewProvider = {
 			`${base}/pullrequests/${input.prNumber}?api-version=${ADO_API_VERSION}`,
 			{ headers: auth },
 		);
-		if (!meta.ok) {
+		// 203 is ADO's sign-in page for a bad PAT; handled as a 401.
+		if (meta.status === ADO_SIGN_IN_PAGE_STATUS || !meta.ok) {
 			throw hostRefused(
-				meta.status,
+				azureEffectiveStatus(meta),
 				`read pull request !${input.prNumber}`,
 			);
 		}
@@ -390,7 +403,8 @@ export const azureProvider: PrReviewProvider = {
 				`${base}/diffs/commits?baseVersion=${baseSha}&targetVersion=${headSha}&$top=${MAX_AZURE_FILES}&api-version=${ADO_API_VERSION}`,
 				{ headers: auth },
 			);
-			if (changes.ok) {
+			// 203 is ADO's sign-in page for a bad PAT; handled as a 401.
+			if (changes.status !== ADO_SIGN_IN_PAGE_STATUS && changes.ok) {
 				const payload = await readJson<{
 					changes?: Array<{
 						item?: { path?: string; isFolder?: boolean };
@@ -485,7 +499,7 @@ export const azureProvider: PrReviewProvider = {
 					diff = null;
 				}
 			} else {
-				failureText = `Azure DevOps returned no diff for this pull request (HTTP ${changes.status}).`;
+				failureText = `Azure DevOps returned no diff for this pull request (HTTP ${azureEffectiveStatus(changes)}).`;
 			}
 		} else {
 			failureText =
@@ -547,8 +561,9 @@ export const azureProvider: PrReviewProvider = {
 				}),
 			},
 		);
-		if (!response.ok) {
-			throw hostRefused(response.status, "comment");
+		// 203 is ADO's sign-in page for a bad PAT; handled as a 401.
+		if (response.status === ADO_SIGN_IN_PAGE_STATUS || !response.ok) {
+			throw hostRefused(azureEffectiveStatus(response), "comment");
 		}
 		const thread = await readJson<{
 			id?: number;
@@ -580,8 +595,9 @@ export const azureProvider: PrReviewProvider = {
 		if (response.status === 404) {
 			return null;
 		}
-		if (!response.ok) {
-			throw hostRefused(response.status, "comment");
+		// 203 is ADO's sign-in page for a bad PAT; handled as a 401.
+		if (response.status === ADO_SIGN_IN_PAGE_STATUS || !response.ok) {
+			throw hostRefused(azureEffectiveStatus(response), "comment");
 		}
 		return { id: input.commentId, webUrl: null };
 	},
@@ -701,7 +717,9 @@ async function azureFileText(input: {
 			`${input.base}/items?path=${encodeURIComponent(`/${input.path}`)}&versionDescriptor.version=${input.version}&versionDescriptor.versionType=commit&includeContent=true&api-version=${ADO_API_VERSION}`,
 			{ headers: { ...input.auth, Accept: "application/json" } },
 		);
-		if (!response.ok) {
+		// 203 is ADO's sign-in page for a bad PAT; handled as a 401 (not a 404,
+		// so the file counts as unreadable rather than missing).
+		if (response.status === ADO_SIGN_IN_PAGE_STATUS || !response.ok) {
 			// 404 is ordinary and meaningful: the file did not exist at this
 			// commit, which is what an addition or a deletion looks like. Anything
 			// else is a failure to read a file that does exist, and the two must

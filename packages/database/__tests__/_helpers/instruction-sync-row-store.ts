@@ -365,6 +365,29 @@ function createRepositorySyncRowStore(options: RowStoreOptions) {
 	}
 
 	function execute({ text, values }: Statement): number {
+		const materializedLeaseWrite = new RegExp(
+			`^WITH locked AS MATERIALIZED \\( SELECT "id" FROM ${TABLE} WHERE (.+) FOR UPDATE \\), live AS MATERIALIZED \\( SELECT locked\\."id" FROM locked JOIN ${TABLE} AS sync ON sync\\."id" = locked\\."id" WHERE sync\\."nextCheckAt" > \\(clock_timestamp\\(\\) AT TIME ZONE 'UTC'\\) \\) UPDATE ${TABLE} AS sync SET (.+) FROM live WHERE sync\\."id" = live\\."id"$`,
+		).exec(text);
+		if (materializedLeaseWrite) {
+			const where = materializedLeaseWrite[1] ?? "";
+			const assignments = (materializedLeaseWrite[2] ?? "").split(
+				/, (?=")/,
+			);
+			let count = 0;
+			for (const row of rows.values()) {
+				if (
+					matches(row, where, values) &&
+					row.nextCheckAt instanceof Date &&
+					row.nextCheckAt.getTime() > clock
+				) {
+					for (const assignment of assignments) {
+						assign(row, assignment, values);
+					}
+					count++;
+				}
+			}
+			return count;
+		}
 		const update = new RegExp(`^UPDATE ${TABLE} SET (.+) WHERE (.+)$`).exec(
 			text,
 		);

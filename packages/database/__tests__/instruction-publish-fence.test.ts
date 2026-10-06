@@ -164,6 +164,34 @@ describe("publishInstructionSnapshot: repository-sync fence (spec §5.6)", () =>
 		expect(m.project.updateMany).not.toHaveBeenCalled();
 	});
 
+	it("refuses an automatic upload or derived version when its submitting member lost instruction:create", async () => {
+		locked("UPLOAD");
+		repositorySnapshot({
+			source: "UPLOAD",
+			baseSnapshotId: "snap_8",
+			baseVersion: 8,
+		});
+		m.canCreateProjectInstructions.mockResolvedValue(false);
+
+		expect(
+			await publishInstructionSnapshot({
+				...REF,
+				requireBaseUnmoved: true,
+			}),
+		).toEqual({
+			published: false,
+			changed: false,
+			reason: "permission_revoked",
+		});
+		expect(m.canCreateProjectInstructions).toHaveBeenCalledWith(
+			"proj_1",
+			"delegate_1",
+			tx,
+		);
+		expect(m.project.updateMany).not.toHaveBeenCalled();
+		expect(m.snapshot.update).not.toHaveBeenCalled();
+	});
+
 	it("does not fence History's manual publish: a person chose this version", async () => {
 		locked("UPLOAD");
 		repositorySnapshot();
@@ -272,5 +300,6 @@ describe("publishInstructionSnapshot: repository-sync fence (spec §5.6)", () =>
 			changed: false,
 		});
 		expect(m.sync.findFirst).not.toHaveBeenCalled();
+		expect(m.canCreateProjectInstructions).not.toHaveBeenCalled();
 	});
 });

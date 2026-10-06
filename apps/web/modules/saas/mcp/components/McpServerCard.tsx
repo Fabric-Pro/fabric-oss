@@ -20,6 +20,11 @@ import {
 	TerminalIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import {
+	isReadOnlyMcpServer,
+	READ_ONLY_MCP_TAG,
+	ReadOnlyBadge,
+} from "./ReadOnlyBadge";
 
 interface McpServerCardProps {
 	server: {
@@ -143,6 +148,8 @@ export function McpServerCard({
 	const tags = server.tags ?? [];
 
 	const isManagedDefault = !!server.defaultEnabled;
+	const isReadOnly = isReadOnlyMcpServer(server);
+	const displayTags = tags.filter((t) => t !== READ_ONLY_MCP_TAG);
 
 	return (
 		<div
@@ -244,12 +251,13 @@ export function McpServerCard({
 						{server.category}
 					</Badge>
 				)}
+				{isReadOnly && <ReadOnlyBadge />}
 			</div>
 
 			{/* Tags */}
-			{tags.length > 0 && (
+			{displayTags.length > 0 && (
 				<div className="px-4 pb-3 flex flex-wrap gap-1">
-					{tags.slice(0, 3).map((tag) => (
+					{displayTags.slice(0, 3).map((tag) => (
 						<span
 							key={tag}
 							className={cn(
@@ -260,9 +268,9 @@ export function McpServerCard({
 							{tag}
 						</span>
 					))}
-					{tags.length > 3 && (
+					{displayTags.length > 3 && (
 						<span className="text-[10px] text-muted-foreground">
-							+{tags.length - 3}
+							+{displayTags.length - 3}
 						</span>
 					)}
 				</div>

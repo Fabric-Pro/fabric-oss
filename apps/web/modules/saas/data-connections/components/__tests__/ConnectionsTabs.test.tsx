@@ -84,6 +84,7 @@ const renderTabs = () =>
 		<ConnectionsTabs
 			addHref="/app/example-org/settings/integrations/add"
 			settingsBasePath="/app/example-org/settings/integrations"
+			apiKeysHref="/app/example-org/settings/api-keys"
 			organizationId="org_example"
 		/>,
 	);
@@ -301,6 +302,20 @@ describe("ConnectionsTabs", () => {
 		expect(mockReplace).toHaveBeenCalledWith(
 			"/app/example-org/connections?tab=mcp",
 			{ scroll: false },
+		);
+	});
+
+	it("renders guidance for connecting external tools via Fabric MCP with an API key link", () => {
+		renderTabs();
+
+		expect(
+			screen.getByText(/Looking to connect external tools to Fabric\?/i),
+		).toBeInTheDocument();
+
+		const apiKeyLink = screen.getByRole("link", { name: "API key" });
+		expect(apiKeyLink).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/api-keys",
 		);
 	});
 });

@@ -97,6 +97,7 @@ export const enterpriseServers = [
 		repositoryUrl: "https://www.npmjs.com/package/figma-developer-mcp",
 		category: "Design",
 		tags: [
+			"read-only",
 			"figma",
 			"design",
 			"ui",

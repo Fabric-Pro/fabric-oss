@@ -2,7 +2,9 @@
 
 Everything a self-hosting customer needs to run Fabric's workflow engine on their **own** Temporal cluster, instead of Temporal Cloud — the Fabric-specific contract that Temporal's own documentation cannot describe.
 
-> **Audience.** A platform engineer standing up Fabric in their own cloud (e.g. on AWS) who must operate a self-hosted Temporal cluster. Assumes familiarity with Temporal concepts (namespaces, task queues, workers) but **not** with Fabric's internals.
+- **Audience**: A platform engineer standing up Fabric in their own cloud (e.g. on AWS) who must operate a self-hosted Temporal cluster. Assumes familiarity with Temporal concepts (namespaces, task queues, workers) but **not** with Fabric's internals.
+- **Owner**: Fabric platform
+
 >
 > **Status.** Every load-bearing claim is cited to a source `file:line` on `master` so it can be re-verified rather than trusted. Where something is **not yet validated on a real self-hosted server**, this document says so explicitly rather than guessing — see [§9 Payload limits](#9-payload-and-message-size-limits-read-this-before-quoting-a-number) and [§14 Open items](#14-open-items--not-yet-validated).
 >
@@ -35,7 +37,7 @@ Everything a self-hosting customer needs to run Fabric's workflow engine on thei
 
 ## 1. The short version
 
-- Fabric talks to Temporal through **one client factory** (`packages/temporal/src/client.ts`) and runs **one worker process hosting 12 workers** (`packages/temporal/src/worker.ts`). Reproduce the namespace, the 12 task-queue names, and the connection contract and Fabric will run against a self-hosted cluster.
+- Fabric talks to Temporal through **one client factory** (`packages/temporal/src/client.ts`) and runs **worker processes polling 19 queues by default** (`packages/temporal/src/worker.ts`). Reproduce the namespace, the task-queue names, and the connection contract and Fabric will run against a self-hosted cluster.
 - Fabric has only ever **actually run** a self-hosted Temporal server as the local `temporalio/auto-setup:1.28.0` image; **production and staging are on Temporal Cloud** (`aspire/Fabric.AppHost/Program.cs:1110-1128`). So a self-hosted *production* cluster is a **new, unproven configuration** — treat [§15](#15-bring-up-validation-checklist) as mandatory, not optional.
 - **The payload story is the one that can burn a customer.** The repo ships a `blobSize` override of 16 MB, but (a) it is only applied under local Aspire, never on the docker-compose server, and never on Cloud; and (b) there is **no gRPC message-size override anywhere**, so the real transport ceiling is Temporal's default **4 MB** — which Fabric's own code is written to stay under. Do **not** tell a customer "set blobSize to 16 MB and large payloads work" until [§15](#15-bring-up-validation-checklist)'s `>4 MB` test proves it. See [§9](#9-payload-and-message-size-limits-read-this-before-quoting-a-number).
 - **No custom search attributes** and **no GitLab-specific Temporal config** exist, so neither needs reproducing.
@@ -74,13 +76,13 @@ Version compatibility: Fabric's SDK is pinned at `~1.16.3`. Run a server version
 
 ## 5. Task queues (the contract)
 
-Fabric's worker creates **14 workers in a single process**, each polling a **hard-coded** task-queue name (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows on these exact strings, so a self-hoster cannot rename them, and the worker process must poll all 14 or the corresponding features silently stop running.
+Fabric's worker declares **19 task queues** (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows and workflows schedule activities on these exact strings. Every queue must be polled by at least one process. By default one process polls all queues; `WORKER_TASK_QUEUES` and `WORKER_EXCLUDED_TASK_QUEUES` select a subset for separate processes.
 
 | # | Task queue | Purpose | Concurrency (activity / workflow) | Source |
 |---|---|---|---|---|
 | 1 | `ai-chat` | Chat title generation | 10 / 10 | `worker.ts:218` |
 | 2 | `document-processing` | Document processing (RAG) | 5 / 5 | `worker.ts:232` |
-| 3 | `project-documents` | AI project-document generation | 5 / 5 | `worker.ts:246` |
+| 3 | `project-documents` | Workflow starts and legacy scheduled activities | 5 / 5 | `worker.ts:246` |
 | 4 | `document-refresh` | Living-doc auto-refresh | 3 / 5 | `worker.ts:269` |
 | 5 | `project-instructions` | Coding-instructions snapshot validation (verify → scan → finalize → publish) | 2 / 5 | `worker.ts` |
 | 6 | `workflow-builder` | Workflow-builder executions | 10 / 10 | `worker.ts:283` |
@@ -92,10 +94,23 @@ Fabric's worker creates **14 workers in a single process**, each polling a **har
 | 12 | `trigger-system` | Webhooks, schedules, Slack mentions | 10 / 10 | `worker.ts:377` |
 | 13 | `publishing-reconcile` | Publishing reconciliation sweep — name imported from `PUBLISHING_RECONCILE_TASK_QUEUE`, never copied | 2 / 2 | `worker.ts` |
 | 14 | `monitoring` | **Back-compat alias of `fabric-worker`** — net-new monitoring workflows run on `fabric-worker`; this queue exists only as a deprecation bridge | 5 / 5 | `worker.ts:388-404` |
+| 15 | `glossy-edition` | Glossy edition builds | 4 / 5 | `worker.ts` |
+| 16 | `company-context` | Company context ingestion and embedding | 3 / 5 | `worker.ts` |
+| 17 | `project-document-generation` | Foreground generation activities, tracking and dependency probes | 5 / 5 | `worker.ts` |
+| 18 | `project-embeddings` | Project embeddings, file ingestion, URL crawling, deletion, reprocessing and vector cleanup | 3 / 5 | `worker.ts` |
+| 19 | `project-operations` | Discovery, scope intake, meeting operations and ingestion control | 5 / 5 | `worker.ts` |
 
-All 14 are launched together via `Promise.all([...run()])` — **82 concurrent activity slots and 77 workflow slots** in one process (sum of the table above; the activity total is also what sizes the database pool, `applyDatabasePoolBudget` in `worker.ts`). If you split the worker across processes/pods for scale, ensure **every** queue is still polled by at least one worker.
+With all queues selected there are **102 activity slots and 102 workflow slots**. The shared database pool is sized at half the selected activity slots, rounded up: **51 connections** for all queues. The operations queue adds five activity slots and two pool connections to the generation/embedding split. In the usual process split, the general worker excludes `atlas,code-indexing` and automatically includes these queues; its 97 activity slots require 49 connections, while the heavy worker's five slots require three.
 
-> **Not a 15th queue — a known orphan.** `apps/web/app/api/frames/[id]/export/pdf/route.ts:44` enqueues to a **`frame-exports`** queue that **no worker serves**, so PDF frame-export would hang. This is a latent bug / parked feature in Fabric, **not** a queue you need to provision — flagged so you don't chase a "missing" worker.
+Document-generation workflow starts and children keep their existing workflow queue. Their foreground activity commands explicitly use `project-document-generation`, including the document embedding they await before completing. Sequential setup keeps that embedding in the foreground so the next document can retrieve its vectors without waiting behind background indexing or exhausting the generation child's 20-minute timeout. Independent document embedding workflows use `project-embeddings`. Context embedding starts from the API, repository sync, meeting/Slack ingestion and deletion recovery all use the same workflow definition, which routes project embedding activities to `project-embeddings`; company owners keep `company-context`. Existing vector-cleanup schedules keep their action queue and route their activities separately, so no schedule migration is required.
+
+Discovery, scope extraction/proposal persistence, meeting transcript sync, digest extraction, agendas, action-item linking/owner matching, Slack huddle ingestion and meeting-note finalization, and project file status/import control, batch embedding status and reprocessing validation/progress use `project-operations`. Wizard-to-project vector binding stays with these operations because project creation can await its result. URL network calls and per-page row creation/indexing use `project-embeddings`; URL terminal status/error writes use `project-operations`. Company-owned file status, deletion and every crawl step remain on `company-context`. Slack channel monitoring/backfill and automatic transcript analysis retain their existing `ai-chat` capacity. Independent document evaluations use the existing `fabric-worker` capacity; they are never awaited by generation. Retired synced-file deletion histories and the draft-cleanup/URL-schedule reconciliation jobs retain their legacy activity queue.
+
+Isolation protects the next scheduled control command; it does not bypass data dependencies. Scope intake still waits for text extraction. Its long `awaitContextExtracted` activity deliberately retains the inherited `project-documents` capacity: five extraction waits cannot fill operations slots or occupy the embedding slots needed to extract their sources. An intake can still wait behind legacy work before this readiness activity starts. File import still awaits extracted content, and an imported document's indexing still completes on `project-embeddings`. URL crawl status advances after its preceding network/indexing work finishes or fails. Combined extraction/indexing and transcript-ingestion activities keep their internal writes together.
+
+Finish the worker rollout before relying on this isolation: updated workers must poll the generation, embedding and operations queues, and older workers must stop scheduling commands with the previous routing. If `WORKER_TASK_QUEUES` is an explicit allowlist, include all three queues; the normal general process excludes only the CPU queues and includes them automatically. Keep `project-documents` polled: changing an activity queue option is [replay-compatible](https://docs.temporal.io/workflow-definition#code-changes-can-cause-non-deterministic-behavior), but it does **not** move an activity already scheduled in an existing history. Those activities and their retries drain on their recorded queue. An operation already waiting behind that backlog needs to drain or be restarted through the authorized retry/reset procedure. Removing the legacy poller would strand it. Metrics group by task queue dynamically, and generation watchdog/status checks use workflow IDs, so they need no queue-name migration.
+
+> **Known orphan.** `apps/web/app/api/frames/[id]/export/pdf/route.ts:44` enqueues to a **`frame-exports`** queue that **no worker serves**, so PDF frame-export would hang. This is a latent bug / parked feature in Fabric, **not** a queue you need to provision.
 
 ---
 
@@ -138,7 +153,7 @@ Likewise, **no GitLab-specific task queues or search attributes exist** — GitL
 
 ## 8. Worker topology and sizing
 
-- **One process, 12 workers, shared connection** (`worker.ts:426-438`), all with `reuseV8Context: true` to share a single workflow VM across workers. Per-worker concurrency caps are in the §5 table.
+- **Selected queues share one connection per process** (`worker.ts:426-438`), all with `reuseV8Context: true` to share a single workflow VM across workers. Per-worker concurrency caps are in the §5 table.
 - **Resource sizing reference.** On Fabric's own (Azure) infrastructure the worker container is sized at **1.75 vCPU / 3.5 GiB** (`deployment/azure/main.bicep:636-639`) after it was found to OOM-restart hourly at a 2 GiB ceiling — the 12 in-process workers (`worker.ts`) have a resident floor of ≈1.8 GiB and peak ≈2.1 GiB (sizing rationale at `main.bicep:628-635`, whose comment says "~11" — the true count is 12; PRs #1736/#1737). **For self-hosting, budget ≥ 2 GiB (ideally ~4 GiB) per worker replica.**
 - **⚠️ The Helm chart default will OOM.** `deploy/helm/fabric/values.yaml:74` sets the worker memory **limit to `1Gi`** — **below** the documented ~1.8–2.1 GiB floor (dev already hit "CrashLoopBackOff'd (83 restarts)" at 512 Mi and was bumped to 1.5 Gi). Production values (`values-prod.yaml:44-47`) raise it to `2Gi` / `replicas: 2`. **A self-hoster who keeps the chart defaults will hit the same OOM** — override the worker limit to ≥ 2 GiB.
 - **The worker image carries a browser, and it is not free.** Several activities drive Chromium in-process — frame PDF export (`activities/frame-export/generate-pdf.ts`), Weave/agent browser steps (`activities/browser-automation/session-manager.ts`) and the QA test runner. The image therefore installs Chromium plus its shared libraries (`packages/temporal/Dockerfile`, following the same pattern as `packages/mcp-stdio-wrapper/Dockerfile`), at a cost of roughly **+400 MB of image size** — *estimated from layer contents, not measured on a built image*. Two consequences for sizing:
@@ -171,7 +186,7 @@ Likewise, **no GitLab-specific task queues or search attributes exist** — GitL
 
 ## 10. Payload codec / encryption
 
-**Fabric implements no payload codec (`DataConverter`) today.** The client (`client.ts:125-131`), the schedule client (`client.ts:168-171`), and all 12 workers (`worker.ts`) are constructed **without** a `dataConverter`, so payloads are stored in Temporal's database in Fabric's default (JSON + binary) encoding — readable to anyone with database or Temporal-UI access.
+**Fabric implements no payload codec (`DataConverter`) today.** The client (`client.ts:125-131`), the schedule client (`client.ts:168-171`), and all workers (`worker.ts`) are constructed **without** a `dataConverter`, so payloads are stored in Temporal's database in Fabric's default (JSON + binary) encoding — readable to anyone with database or Temporal-UI access.
 
 For a **self-hosted** customer this is usually acceptable, because the Temporal cluster and its database live entirely inside the customer's own infrastructure — payloads never leave their trust boundary. If a customer's compliance posture requires payloads encrypted **at rest inside Temporal** (e.g. a strict data-residency or key-custody mandate), a `PayloadCodec` must be added and wired into **all three** construction sites — the `Client`, every `Worker`, and the `ScheduleClient` — using a customer-held key. This is **not built**; it is [Open item Q2](#14-open-items--not-yet-validated). Wiring it in only some places silently leaves a plaintext path.
 

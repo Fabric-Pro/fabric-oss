@@ -12,8 +12,9 @@
  * else leaves the checkout exactly as it was and says so once.
  *
  * `FfOutcome` is the closed set of results. Each has one fixed line and one
- * next action in `outcome.ts`; none carries a path, a URL or any of git's own
- * words.
+ * next action in `outcome.ts`; none carries a URL or any of git's own words.
+ * An abandoned lock carries its local path so its owner can recover it
+ * explicitly.
  */
 import type { PublishedInstructionRepositorySync } from "@fabricorg/sdk";
 import type { CheckoutState } from "./checkout.js";
@@ -38,6 +39,7 @@ export type FfOutcome =
 	| { kind: "fetch-failed"; reason: FastForwardFetchFailure }
 	| { kind: "merge-failed"; reason: FastForwardMergeFailure }
 	| { kind: "locked" }
+	| { kind: "abandoned-lock"; lockPath: string }
 	| { kind: "opted-out" }
 	| { kind: "deadline" };
 
@@ -299,6 +301,14 @@ export function fastForwardLines(
 		}
 		case "locked":
 			stdout.push(outcomeLine("ff-locked", {}));
+			otherLine();
+			break;
+		case "abandoned-lock":
+			stdout.push(
+				outcomeLine("ff-abandoned-lock", {
+					lockPath: outcome.lockPath,
+				}),
+			);
 			otherLine();
 			break;
 		case "deadline":

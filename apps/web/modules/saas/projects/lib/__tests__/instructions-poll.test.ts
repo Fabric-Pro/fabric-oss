@@ -322,6 +322,31 @@ describe("instructionsAwaitsPublish", () => {
 		).toBe(false);
 	});
 
+	it.each(["FAILED", "REJECTED", "NOT_PUBLISHED"])(
+		"stops when the matching repository sync has closed %s",
+		(status) => {
+			expect(
+				instructionsAwaitsPublish({
+					...base,
+					latestSyncRun: { snapshotId: "snap_2", status },
+				}),
+			).toBe(false);
+		},
+	);
+
+	it.each([
+		{ snapshotId: "snap_2", status: "SUCCEEDED" },
+		{ snapshotId: "other-snapshot", status: "FAILED" },
+		{ snapshotId: "snap_2", status: null },
+	])(
+		"keeps waiting unless the run definitively ended publication: %o",
+		(run) => {
+			expect(
+				instructionsAwaitsPublish({ ...base, latestSyncRun: run }),
+			).toBe(true);
+		},
+	);
+
 	it.each(["RECEIVING", "VALIDATING", "REJECTED", "FAILED"])(
 		"never waits on a %s snapshot",
 		(status) => {

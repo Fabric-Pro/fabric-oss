@@ -47,7 +47,9 @@ export function createAdoPatClient(
 				// auth error rather than parsing the login HTML as JSON.
 				redirect: "manual",
 			});
-			if (res.status < 200 || res.status >= 300) {
+			// 203 is decided by status ahead of the 2xx range test: it IS in that
+			// range (`res.ok` is true), so it must be named here to be rejected.
+			if (res.status === 203 || res.status < 200 || res.status >= 300) {
 				const body = await res.text().catch(() => "");
 				// 302 and 203 are Azure DevOps' own way of saying "bad PAT": it
 				// answers a rejected PAT with a redirect to, or the body of, the

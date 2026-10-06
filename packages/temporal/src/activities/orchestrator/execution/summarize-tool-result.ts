@@ -25,6 +25,14 @@ import { classifyLimitError } from "@repo/ai/limits";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { generateText } from "ai";
+import {
+	activityAbortSignal,
+	activityCancellationSignal,
+	guardTurnModel,
+	rethrowIfTurnStopped,
+	type TurnScope,
+	throwIfActivityCancelled,
+} from "../turn-dispatch";
 
 export interface SummarizeToolResultInput {
 	toolName: string;
@@ -33,6 +41,13 @@ export interface SummarizeToolResultInput {
 	maxOutputLength: number;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat turn this summary belongs to (path 2 only). When set, the turn
+	 * record is consulted before EVERY model call — each chunk, the combining
+	 * pass and each rate-limit retry — so a recorded Stop ends the summary at
+	 * the next call instead of after up to seven.
+	 */
+	turnScope?: TurnScope;
 }
 
 /**
@@ -74,8 +89,13 @@ const RETRY_DEADLINE_MS = 210_000;
 const MAX_RETRY_AFTER_MS = 60_000;
 const BACKOFF_BASE_MS = 10_000;
 const MAX_BACKOFF_BASE_MS = 45_000;
-/** Must stay well under path 2's 1-minute heartbeatTimeout. */
-const HEARTBEAT_INTERVAL_MS = 15_000;
+/**
+ * Must stay well under path 2's 1-minute heartbeatTimeout. Also how a Stop
+ * reaches this activity (Temporal delivers an activity cancel only in a
+ * heartbeat response), so it matches the round's 5 s cadence
+ * (run-agent-iteration.ts).
+ */
+const HEARTBEAT_INTERVAL_MS = 5_000;
 
 /** Wait budget + deadline shared by EVERY LLM call in one invocation (all chunks). */
 interface RetryState {
@@ -128,10 +148,15 @@ export async function summarizeLargeToolResult(
 	};
 
 	try {
-		const { model } = await getAIModelWithMetadata(
+		const { model: resolvedModel } = await getAIModelWithMetadata(
 			{ taskType: "SIMPLE" },
 			{ userId, organizationId },
 		);
+		// Every physical request — each chunk, the combining pass, each
+		// rate-limit retry here and each retry the SDK makes itself — is
+		// checked against the turn record (see guardTurnModel).
+		const guarded = guardTurnModel(resolvedModel, input.turnScope);
+		const model = guarded.model;
 
 		let source = toolResult;
 		if (source.length > MAX_INPUT_CHARS) {
@@ -151,8 +176,8 @@ export async function summarizeLargeToolResult(
 			const chunkSummaries: string[] = [];
 			for (const chunk of chunks) {
 				const result = await callWithRateLimitRetry(
-					() =>
-						generateText({
+					async () => {
+						return generateText({
 							model,
 							instructions: SYSTEM_PROMPT,
 							prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this chunk of tool output (part of a larger result). Preserve all key information relevant to the query.\n\n${chunk}`,
@@ -163,9 +188,13 @@ export async function summarizeLargeToolResult(
 							maxRetries: 1,
 							// Caps a call started just before the deadline. An
 							// abort is a non-limit error → immediate rethrow →
-							// the caller's truncation fallback.
-							abortSignal: deadlineSignal(state, deps),
-						}),
+							// the caller's truncation fallback. Merged with the
+							// activity's cancellation, which aborts it too.
+							abortSignal: activityAbortSignal(
+								deadlineSignal(state, deps),
+							),
+						});
+					},
 					state,
 					deps,
 				);
@@ -180,16 +209,19 @@ export async function summarizeLargeToolResult(
 
 			// Otherwise, do a final summarization pass on the combined summaries
 			const finalResult = await callWithRateLimitRetry(
-				() =>
-					generateText({
+				async () => {
+					return generateText({
 						model,
 						instructions: SYSTEM_PROMPT,
 						prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense these partial summaries into a single coherent summary:\n\n${combined}`,
 						maxOutputTokens: Math.floor(maxOutputLength / 4),
 						temperature: 0.2,
 						maxRetries: 1,
-						abortSignal: deadlineSignal(state, deps),
-					}),
+						abortSignal: activityAbortSignal(
+							deadlineSignal(state, deps),
+						),
+					});
+				},
 				state,
 				deps,
 			);
@@ -199,21 +231,30 @@ export async function summarizeLargeToolResult(
 
 		// Single-pass summarization for results that fit in context
 		const result = await callWithRateLimitRetry(
-			() =>
-				generateText({
+			async () => {
+				return generateText({
 					model,
 					instructions: SYSTEM_PROMPT,
 					prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this tool output while preserving all information relevant to the query:\n\n${source}`,
 					maxOutputTokens: Math.floor(maxOutputLength / 4),
 					temperature: 0.2,
 					maxRetries: 1,
-					abortSignal: deadlineSignal(state, deps),
-				}),
+					abortSignal: activityAbortSignal(
+						deadlineSignal(state, deps),
+					),
+				});
+			},
 			state,
 			deps,
 		);
 
 		return result.text;
+	} catch (error) {
+		// An aborted request surfaces as the SDK's abort error; when the
+		// activity was cancelled, report it cancelled — the workflow must
+		// not mistake a Stop for a summarizer failure and fall back.
+		throwIfActivityCancelled();
+		throw error;
 	} finally {
 		clearInterval(hb);
 	}
@@ -246,6 +287,8 @@ async function callWithRateLimitRetry<T>(
 		try {
 			return await fn();
 		} catch (error) {
+			// A stop is not a provider limit to wait out.
+			rethrowIfTurnStopped(error);
 			const signal = classifyLimitError(error);
 			// Only a transient limit is worth waiting out. `provider_quota` is
 			// terminal — billing exhaustion will not clear by waiting — and
@@ -292,9 +335,42 @@ async function callWithRateLimitRetry<T>(
 				`[SummarizeToolResult] provider limit (kind=${signal.kind}, provider=${provider}), attempt ${attempt}/${MAX_ATTEMPTS}, waiting ${waitMs}ms (budget left ${state.budgetMs}ms)`,
 			);
 			state.budgetMs -= waitMs;
-			await deps.sleep(waitMs);
+			await sleepUnlessCancelled(deps.sleep(waitMs));
 		}
 	}
+}
+
+/**
+ * Waits out a rate-limit backoff, but not past a cancel: a backoff can be a
+ * minute long, and a stopped turn must not hold the activity open that long.
+ */
+async function sleepUnlessCancelled(sleeping: Promise<void>): Promise<void> {
+	const signal = activityCancellationSignal();
+	if (!signal) {
+		await sleeping;
+		return;
+	}
+	throwIfActivityCancelled();
+	await new Promise<void>((resolve, reject) => {
+		const onAbort = () => {
+			try {
+				throwIfActivityCancelled();
+			} catch (cancelled) {
+				reject(cancelled);
+			}
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		sleeping.then(
+			() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /**

@@ -513,6 +513,29 @@ export function FabricTemporalOrchestratorChat({
 		);
 	}, []);
 
+	// Whether the send in flight carried images or documents from the
+	// composer. Set just before `sendMessage` and cleared when it returns —
+	// by the send that set it only: preparations can overlap (uploads run
+	// before the hook reports loading), and one send's cleanup must not
+	// clear another's flag.
+	const sendCarriedAttachmentsRef = useRef<{
+		send: object;
+		carried: boolean;
+	} | null>(null);
+
+	// The server refused the message because another one is already being
+	// answered in this conversation (another tab). The hook has removed it
+	// from the thread and set the notice; put the text back so the user can
+	// send it when that answer finishes — unless they have started a new
+	// draft since. Its attachments are not put back: the returned sentence
+	// is added to the notice so the user knows to attach them again.
+	const handleTurnRefused = useCallback((content: string) => {
+		setInput((current) => (current.trim() ? current : content));
+		return sendCarriedAttachmentsRef.current?.carried
+			? "Its attachments were not sent either: attach them again before you send it."
+			: undefined;
+	}, []);
+
 	// Model selection for the orchestrator's own reasoning (#2040).
 	//
 	// Shares the store `FabricDirectChat` writes to, so a choice made on either
@@ -650,6 +673,7 @@ export function FabricTemporalOrchestratorChat({
 		surface: "loom-orchestrator",
 		telemetrySurface,
 		onStopFailed: handleStopFailed,
+		onTurnRefused: handleTurnRefused,
 	});
 
 	// F2 — chat scope for the Excalidraw auto-insert
@@ -2547,10 +2571,24 @@ export function FabricTemporalOrchestratorChat({
 		// host sees the turn as in flight: the conversation it is told about
 		// below has no stream yet.
 		setIsPreparingSend(true);
+		const thisSend = {};
 		try {
 			const turnConversationId =
 				(isNewChat ? null : conversationId) ??
 				(await ensureConversation(content, documentChatId));
+
+			// Only what this send took out of the composer: uploaded images
+			// and documents (an image also becomes a vision document). Project
+			// or workspace documents attached to the chat stay attached. Set
+			// after the last await before `sendMessage`, so an overlapping
+			// send still preparing cannot replace it before this one is sent.
+			sendCarriedAttachmentsRef.current = {
+				send: thisSend,
+				carried:
+					(newlyAttachedImageUrls?.length ?? 0) > 0 ||
+					sessionDocumentIds.length > 0 ||
+					inlineAttachmentContexts.length > 0,
+			};
 
 			// Pass forceNewChat flag and template instructions to ensure hook starts fresh for new chats
 			// Template instructions are per-message scope (cleared after sending by ChatInput)
@@ -2575,6 +2613,9 @@ export function FabricTemporalOrchestratorChat({
 			);
 		} finally {
 			setIsPreparingSend(false);
+			if (sendCarriedAttachmentsRef.current?.send === thisSend) {
+				sendCarriedAttachmentsRef.current = null;
+			}
 		}
 	};
 
@@ -2767,8 +2808,13 @@ export function FabricTemporalOrchestratorChat({
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
-				{/* Messages Area */}
-				{messages.length === 0 && completedExecutions.length === 0 ? (
+				{/* Messages Area. A failed turn with nothing else in the
+				    thread (a message refused before it ran, in a chat with
+				    no earlier turns) still needs the thread, where its
+				    notice renders, rather than the landing. */}
+				{messages.length === 0 &&
+				completedExecutions.length === 0 &&
+				!(state.status === "failed" && state.result?.error) ? (
 					compactMode ? (
 						/* The drawer's empty state: one heading and the
 						   starters as flat rows, sized for a side panel. */
@@ -4368,17 +4414,23 @@ export function FabricTemporalOrchestratorChat({
 							and produced an exhaustion synthesis. Clicking creates a
 							sibling conversation pre-seeded with the summary as
 							carried-over context, then navigates the user there. */}
-						{state.handoffRecommended && conversationId && (
-							<ConversationHandoffCard
-								parentConversationId={conversationId}
-								reason={state.handoffRecommended.reason}
-								summary={state.handoffRecommended.summary}
-								organizationId={organizationId}
-								onContinue={(newConversationId) => {
-									onConversationCreated?.(newConversationId);
-								}}
-							/>
-						)}
+						{/* Never for a stopped turn: it ended because the user
+							stopped it, not because the thread ran out of budget. */}
+						{state.handoffRecommended &&
+							state.status !== "cancelled" &&
+							conversationId && (
+								<ConversationHandoffCard
+									parentConversationId={conversationId}
+									reason={state.handoffRecommended.reason}
+									summary={state.handoffRecommended.summary}
+									organizationId={organizationId}
+									onContinue={(newConversationId) => {
+										onConversationCreated?.(
+											newConversationId,
+										);
+									}}
+								/>
+							)}
 						<ChatInput
 							ref={inputRef}
 							value={input}

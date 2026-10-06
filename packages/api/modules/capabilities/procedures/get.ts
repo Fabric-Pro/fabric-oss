@@ -17,6 +17,7 @@
  */
 
 import { db } from "@repo/database";
+import { logger } from "@repo/logs";
 import { z } from "zod";
 import {
 	Permissions,
@@ -76,6 +77,8 @@ const gateSchema = z.object({
 		available: z.boolean(),
 		targetId: z.string().nullable(),
 	}),
+	subjects: z.array(z.object({ id: z.string(), label: z.string() })),
+	subjectTotal: z.number().int().nonnegative(),
 	suppressed: z.boolean(),
 	fingerprint: z.string(),
 });
@@ -175,6 +178,27 @@ export const getCapabilityGatesProcedure = tenantProtectedProcedure
 		const gates: CapabilityGate[] = rules.map((rule) =>
 			resolveGate(rule, evidence, now, suppressions),
 		);
+
+		// A stall nobody can name is the case the banner cannot help with,
+		// so it shows nothing — a warning with no source to point at is one
+		// nobody can act on. The stall is still real, and the reason its
+		// source could not be identified — a job row with no source, a
+		// source that no longer exists — wants looking into. Logged here rather than in
+		// the rule, because rules are pure and run again at every gated door.
+		const unnamedStall = gates.find(
+			(gate) =>
+				gate.reasonKey === "context.ingestion-stalled" &&
+				gate.subjects.length === 0,
+		);
+		if (unnamedStall) {
+			logger.warn(
+				"[CapabilityGate] Context ingestion stalled with no identifiable source",
+				{
+					projectId: input.projectId,
+					capabilityKey: unnamedStall.capabilityKey,
+				},
+			);
+		}
 
 		return { enabled: true, gates };
 	});

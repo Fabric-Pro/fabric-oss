@@ -164,14 +164,18 @@ describe("refreshing a browser sign-in", () => {
 		).rejects.toBeInstanceOf(OAuthSessionExpiredError);
 	});
 
-	it("removes a lock left behind by a process that died", async () => {
+	it("reports a lock left behind by a process that died for manual recovery", async () => {
 		await writeFile(lockPath, "99999");
 		const old = new Date(Date.now() - LOCK_STALE_MS - 5_000);
 		await utimes(lockPath, old, old);
 
 		await expect(
 			withRefreshLock(async () => "ran", { lockPath }),
-		).resolves.toBe("ran");
+		).rejects.toMatchObject({ name: "OAuthRefreshBusyError" });
+		await expect(
+			withRefreshLock(async () => "ran", { lockPath }),
+		).rejects.toThrow(JSON.stringify(lockPath));
+		await expect(access(lockPath)).resolves.toBeUndefined();
 	});
 
 	it("releases the lock when the work throws", async () => {

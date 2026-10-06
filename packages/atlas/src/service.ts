@@ -25,7 +25,7 @@ import {
 	markRepoReauthRequired,
 } from "@repo/integrations";
 import { logger } from "@repo/logs";
-import simpleGit, { type SimpleGitOptions } from "simple-git";
+import { type SimpleGitOptions, simpleGit } from "simple-git";
 import { deriveBusinessGraph } from "./business";
 import {
 	buildSystemChatPrompt,

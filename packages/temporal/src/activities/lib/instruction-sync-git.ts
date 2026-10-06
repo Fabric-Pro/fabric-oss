@@ -16,7 +16,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { SNAPSHOT_LIMITS, type TreeEntry } from "@repo/instructions";
+import type { TreeEntry } from "@repo/instructions";
 import { MEMBER_BRANCH_PATTERN } from "@repo/instructions/proposal-branch-ref";
 import { isGitAuthError } from "@repo/integrations";
 import {
@@ -31,9 +31,8 @@ export type { RawTreeEntry } from "./instruction-sync-tree";
 
 /** Inventory cap, checked while `ls-tree` streams (spec §5.3.2 step 5). */
 export const MAX_INVENTORY_ENTRIES = 200_000;
-/** Disk cap for one clone directory (spec §8.4): two snapshots' worth plus 64 MiB of metadata. */
-export const MAX_CLONE_BYTES =
-	2 * SNAPSHOT_LIMITS.maxTotalBytes + 64 * 1024 * 1024;
+/** Operational disk budget for a clone, independent of snapshot admission. */
+export const MAX_CLONE_BYTES = 164 * 1024 * 1024;
 /** How often the watchdog measures the clone directory (spec §8.4). */
 const WATCHDOG_SAMPLE_MS = 250;
 /** Stderr kept for classification and debug logs; never returned. */

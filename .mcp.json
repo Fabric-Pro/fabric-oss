@@ -2,7 +2,7 @@
 	"mcpServers": {
 		"aspire": {
 			"command": "aspire",
-			"args": ["mcp", "start"]
+			"args": ["agent", "mcp"]
 		},
 		"playwright": {
 			"command": "npx",

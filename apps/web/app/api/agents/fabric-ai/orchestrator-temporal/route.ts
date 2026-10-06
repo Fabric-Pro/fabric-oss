@@ -15,7 +15,12 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { hasOrganizationTie } from "@repo/database";
+import {
+	abandonConversationTurnStart,
+	type ConversationTurn,
+	db,
+	hasOrganizationTie,
+} from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
 	AgentVariable,
@@ -23,7 +28,7 @@ import type {
 	OrchestratorWorkflowInput,
 	TaskPlan,
 } from "@repo/temporal";
-import { getTemporalClient, ORCHESTRATOR_TASK_QUEUE } from "@repo/temporal";
+import { getTemporalClient } from "@repo/temporal";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -31,6 +36,22 @@ import {
 	EXECUTION_MODE_NAMES,
 	parseExecutionMode,
 } from "../orchestrator-execution-mode";
+import {
+	isOrchestratorOrganizationMember,
+	refuseUnlessRunOwner,
+} from "./run-access";
+import {
+	admitChatTurn,
+	cancelledBeforeStartResponse,
+	executionModeUsesTurns,
+	isCancelledBeforeStart,
+	resolveClientRequestKey,
+	startLegacyChatWorkflow,
+	startTurnWorkflow,
+	TurnStartAmbiguousError,
+	TurnStoppedBeforeStartError,
+	turnPendingResponse,
+} from "./turn-admission";
 
 // Rate limit configurations
 const RATE_LIMITS = {
@@ -42,6 +63,11 @@ const RATE_LIMITS = {
  * POST - Start a new orchestrator execution
  */
 export async function POST(request: NextRequest) {
+	// The turn this request admitted; ended FAILED in `finally` when the
+	// request returns or throws before starting it (an abandoned
+	// START_PENDING turn would hold its conversation until a reconcile).
+	let turnToStart: ConversationTurn | null = null;
+	let turnSettled = false;
 	try {
 		const session = await getSession();
 		if (!session) {
@@ -101,13 +127,20 @@ export async function POST(request: NextRequest) {
 			replayTrajectoryId,
 			// Optional AgentConversation ID for persistent
 			// operation-result system messages. Unlike the SSE sibling at
-			// `stream/route.ts:117` (which serves the live UI), this
-			// non-stream variant is used by fire-and-forget callers that
-			// today rarely pass an `AgentConversation`. Accept it as
-			// optional so present-day callers stay unaffected and future
-			// callers can opt in by simply adding it to the body.
-			conversationId,
+			// `stream/route.ts` (which serves the live UI), this non-stream
+			// variant is used by fire-and-forget callers that today rarely
+			// pass an `AgentConversation`. Optional; when given it must be
+			// the caller's own conversation in this organization (403
+			// otherwise — admission checks it).
+			conversationId: requestedConversationId,
+			// Per-message idempotency key (see ./turn-admission.ts).
+			clientRequestKey: rawClientRequestKey,
 		} = body;
+		const conversationId: string | null =
+			typeof requestedConversationId === "string" &&
+			requestedConversationId
+				? requestedConversationId
+				: null;
 
 		if (!message) {
 			return new Response(
@@ -175,7 +208,14 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		if (!(await hasOrganizationTie(userId, candidateOrganizationId))) {
+		// Membership — the rule every paired orchestrator route applies
+		// (./run-access.ts).
+		if (
+			!(await isOrchestratorOrganizationMember(
+				userId,
+				candidateOrganizationId,
+			))
+		) {
 			console.warn("[Orchestrator] User not a member of organization", {
 				userId,
 				organizationId: candidateOrganizationId,
@@ -192,6 +232,79 @@ export async function POST(request: NextRequest) {
 			);
 		}
 		const organizationId: string = candidateOrganizationId;
+
+		const clientRequestKey = resolveClientRequestKey(rawClientRequestKey);
+		if (!clientRequestKey.ok) {
+			return clientRequestKey.response;
+		}
+
+		// ✅ Security: a named conversation must be the caller's own in this
+		// organization — checked here, before either starter is chosen, so a
+		// run with no turn (a planner mode skips admission, which re-checks
+		// it) cannot carry another user's or organization's conversation into
+		// completion and memory.
+		if (conversationId) {
+			const owned = await db.agentConversation.findFirst({
+				where: { id: conversationId, userId, organizationId },
+				select: { id: true },
+			});
+			if (!owned) {
+				return new Response(
+					JSON.stringify({
+						error: "Forbidden",
+						message: "This conversation is not accessible",
+					}),
+					{
+						status: 403,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+		}
+
+		// Get Temporal client
+		const temporalClient = await getTemporalClient();
+
+		// Admit the turn through the durable record before anything billed:
+		// the same creation path as the stream route (./turn-admission.ts).
+		// A planner mode (`save_reuse`, `weave`) gets no turn and the legacy
+		// start (see `executionModeUsesTurns`).
+		const usesTurn = executionModeUsesTurns(executionMode);
+		const admission = usesTurn
+			? await admitChatTurn({
+					userId,
+					organizationId,
+					conversationId,
+					clientRequestKey: clientRequestKey.key,
+					executionMode,
+					temporalClient,
+				})
+			: null;
+		if (admission?.kind === "refused") {
+			return admission.response;
+		}
+		if (admission && isCancelledBeforeStart(admission.turn)) {
+			return cancelledBeforeStartResponse();
+		}
+		if (admission?.kind === "existing") {
+			// An idempotent retry of the key: never a second workflow, and
+			// never this request's to start or clean up — only the request
+			// that created the turn (it holds the start token) starts it.
+			return new Response(
+				JSON.stringify({
+					executionId: admission.turn.executionId,
+					workflowId: admission.turn.executionId,
+					turnId: admission.turn.id,
+					status: "existing",
+				}),
+				{
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+		const turn = admission?.turn ?? null;
+		turnToStart = turn;
 
 		// Get AI model and provider config using centralized entry point
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
@@ -246,14 +359,16 @@ export async function POST(request: NextRequest) {
 
 		const { trackUsage } = aiModelResult;
 
-		// Track usage (fire-and-forget)
-		trackUsage();
+		// Track usage (fire-and-forget) — once per turn, not per retry.
+		if (!admission || admission.kind === "created") {
+			trackUsage();
+		}
 
-		// Generate unique execution ID
-		const executionId = `orch-${uuidv4()}`;
-
-		// Get Temporal client
-		const temporalClient = await getTemporalClient();
+		// The turn's execution id (also the Temporal workflow id); a fresh
+		// one for a run with no turn.
+		const executionId = turn
+			? (turn.executionId as string)
+			: `orch-${uuidv4()}`;
 
 		// Union default-enabled MCP config ids into the caller-restricted set
 		// so managed-default servers (e.g. Excalidraw, when `defaultEnabled`)
@@ -265,7 +380,7 @@ export async function POST(request: NextRequest) {
 		try {
 			const defaultIds = await getDefaultEnabledMcpConfigIds(
 				userId,
-				organizationId ?? null,
+				organizationId,
 			);
 			if (defaultIds.length > 0) {
 				const existing = Array.isArray(enabledMcpConfigIds)
@@ -322,29 +437,66 @@ export async function POST(request: NextRequest) {
 			// See body destructure note above. Forwarding
 			// is unconditional; the completion-phase activity guards on
 			// `conversationId === undefined` to no-op.
-			conversationId,
+			conversationId: conversationId ?? undefined,
 		};
 
-		// Start the workflow
-		const handle = await temporalClient.workflow.start(
-			"orchestratorExecutionWorkflow",
-			{
-				taskQueue: ORCHESTRATOR_TASK_QUEUE,
-				// Absolute ceiling, matching the streaming starter. Without it a
-				// wedged run stays RUNNING with nothing to reclaim it.
-				workflowExecutionTimeout: "1 hour",
-				workflowId: executionId,
-				args: [workflowInput],
-				memo: { userId, organizationId: organizationId ?? null },
-			},
-		);
+		if (!turn) {
+			await startLegacyChatWorkflow({
+				temporalClient,
+				executionId,
+				workflowInput,
+				memo: { userId, organizationId },
+			});
+			console.log(
+				`[Orchestrator] Started workflow (no turn): ${executionId}`,
+			);
+			return new Response(
+				JSON.stringify({
+					executionId,
+					workflowId: executionId,
+					status: "started",
+				}),
+				{
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
 
-		console.log(`[Orchestrator] Started workflow: ${executionId}`);
+		// Start the workflow (attaches when a lost start already created it)
+		let started: Awaited<ReturnType<typeof startTurnWorkflow>>;
+		try {
+			started = await startTurnWorkflow({
+				temporalClient,
+				turn,
+				workflowInput,
+				memo: { userId, organizationId },
+			});
+		} catch (startError) {
+			// startTurnWorkflow already settled the turn (or deliberately
+			// left an ambiguous start for the retry to resolve).
+			turnSettled = true;
+			if (startError instanceof TurnStoppedBeforeStartError) {
+				return cancelledBeforeStartResponse();
+			}
+			// The start may have applied: the same answer as a turn whose
+			// start is still in progress — retry the same key shortly.
+			if (startError instanceof TurnStartAmbiguousError) {
+				return turnPendingResponse(startError.executionId);
+			}
+			throw startError;
+		}
+		turnSettled = true;
+
+		console.log(
+			`[Orchestrator] ${started.attached ? "Attached to" : "Started"} workflow: ${executionId}`,
+		);
 
 		return new Response(
 			JSON.stringify({
 				executionId,
-				workflowId: handle.workflowId,
+				workflowId: executionId,
+				turnId: turn.id,
 				status: "started",
 			}),
 			{
@@ -366,6 +518,23 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			},
 		);
+	} finally {
+		// Owner-only (the start token), START_PENDING-only.
+		const abandoned = turnToStart as ConversationTurn | null;
+		if (abandoned?.executionId && abandoned.startToken && !turnSettled) {
+			await abandonConversationTurnStart({
+				turnId: abandoned.id,
+				executionId: abandoned.executionId,
+				startToken: abandoned.startToken,
+				cancelled: false,
+				reason: "refused before start",
+			}).catch((markError: unknown) => {
+				console.error(
+					"[Orchestrator] Failed to end an abandoned turn",
+					markError,
+				);
+			});
+		}
 	}
 }
 
@@ -447,20 +616,16 @@ export async function GET(request: NextRequest) {
 			const memo = description.memo as
 				| Record<string, unknown>
 				| undefined;
-			const workflowUserId = memo?.userId;
 			const workflowOrgId = memo?.organizationId;
-			if (workflowUserId && workflowUserId !== userId) {
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message:
-							"You are not authorized to access this workflow",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+			const refusal = await refuseUnlessRunOwner({
+				executionId,
+				userId,
+				memo,
+				notOwnerMessage:
+					"You are not authorized to access this workflow",
+			});
+			if (refusal) {
+				return refusal;
 			}
 			// Tenant check: if the workflow belongs to an organization, the
 			// caller must still have a tie to it — the same rule POST applied

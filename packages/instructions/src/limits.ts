@@ -1,6 +1,7 @@
 export const SNAPSHOT_LIMITS = {
 	maxFiles: 5000,
-	maxTotalBytes: 52_428_800,
+	// ProjectInstructionSnapshot.storedBytes is a signed PostgreSQL integer.
+	maxTotalBytes: 2_147_483_647,
 	maxFileBytes: 5_242_880,
 	maxPathBytes: 512,
 	maxDepth: 32,

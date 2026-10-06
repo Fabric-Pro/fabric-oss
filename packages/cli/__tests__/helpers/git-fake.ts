@@ -44,6 +44,7 @@ export interface FakeCheckoutState {
 	branch: string | null;
 	head: string | null;
 	clean: boolean;
+	incompleteCheckout: boolean;
 	operation: GitOperation | null;
 	traits: CheckoutTraits;
 	/** Ancestor sha → the answer; a sha not listed is `unavailable`. */
@@ -57,6 +58,8 @@ export interface FakeCheckoutState {
 	ignored: string[];
 	/** The default: every path is already ignored, so `init` writes no exclude. */
 	ignoreEverything: boolean;
+	/** Paths relative to the work tree which Git tracks. */
+	tracked: string[];
 	/** Where `git rev-parse --git-path info/exclude` points; `null`: git cannot say. */
 	excludeFile: string | null;
 	/** What `cloneInto` answers. A success makes the folder a checkout of the URL. */
@@ -90,12 +93,14 @@ export function defaultFakeState(): FakeCheckoutState {
 		branch: "main",
 		head: HEAD_SHA,
 		clean: true,
+		incompleteCheckout: false,
 		operation: null,
 		traits: { shallow: false, sparse: false, superproject: false },
 		ancestors: {},
 		refValid: true,
 		ignored: [],
 		ignoreEverything: true,
+		tracked: [],
 		excludeFile: null,
 		cloneResult: { kind: "cloned" },
 		cloneCreates: [],
@@ -206,6 +211,13 @@ export const gitFake = {
 	async isClean(_root: string, deadline: number) {
 		return gate("isClean", deadline, () => fakeGit.state.clean);
 	},
+	async checkoutAppearsIncomplete(_root: string, deadline: number) {
+		return gate(
+			"checkoutAppearsIncomplete",
+			deadline,
+			() => fakeGit.state.incompleteCheckout,
+		);
+	},
 	async operationInProgress(_root: string, deadline: number) {
 		return gate(
 			"operationInProgress",
@@ -226,6 +238,17 @@ export const gitFake = {
 			() =>
 				fakeGit.state.ignoreEverything ||
 				fakeGit.state.ignored.includes(relativePath),
+		);
+	},
+	async trackedPaths(
+		_root: string,
+		relativePaths: readonly string[],
+		deadline: number,
+	) {
+		return gate("trackedPaths", deadline, () =>
+			relativePaths.filter((relativePath) =>
+				fakeGit.state.tracked.includes(relativePath),
+			),
 		);
 	},
 	async excludeFilePath(_root: string, deadline: number) {

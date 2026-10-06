@@ -214,6 +214,9 @@ async function applyRLS() {
 			// Per-user-in-org: an org member must not read other members' rows.
 			// Matches PER_USER_ORG_TABLES in tenant-db.ts.
 			{ name: "agent_conversation", policy: "per_user_within_org" },
+			// One Advisor chat turn of a member's conversation — the same
+			// per-member scope as the conversation it belongs to.
+			{ name: "conversation_turn", policy: "per_user_within_org" },
 			// Document Assistant chat history (spec 2026-05-19 §3.5 FR-20).
 			// Tenant-floor only — visibility (SHARED vs PRIVATE) is enforced
 			// at the procedure layer so project teammates can still read each
@@ -243,6 +246,12 @@ async function applyRLS() {
 			{ name: "diagram", policy: "user_owned" }, // Excalidraw diagrams
 			{ name: "project_instruction_snapshot", policy: "user_owned" }, // Coding Instructions snapshots
 			{ name: "project_instruction_file", policy: "user_owned" }, // Coding Instructions files
+			// No project or snapshot FK: this receipt survives either deletion so
+			// the storage reaper can finish the owned-prefix sweep.
+			{
+				name: "project_instruction_pending_storage_cleanup",
+				policy: "org_only",
+			},
 			// Coding Instructions repository sync configuration (one row per project)
 			{
 				name: "project_instruction_repository_sync",

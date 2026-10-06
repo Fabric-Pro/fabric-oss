@@ -305,6 +305,73 @@ describe("preconditions", () => {
 		expect(mocks.submitChange).not.toHaveBeenCalled();
 	});
 
+	it("applies the cap after omitting a matching open proposal", async () => {
+		const ledger: Record<string, string> = {};
+		const actual: Record<string, string> = {};
+		for (let index = 0; index < 51; index++) {
+			ledger[`rules/${index}.md`] = "before\n";
+			actual[`rules/${index}.md`] = "after\n";
+		}
+		mocks.getOpenProposals.mockResolvedValue([
+			{
+				snapshotId: "snap-8",
+				version: 8,
+				baseSnapshotId: "snap-7",
+				status: "READY",
+				pullRequest: null,
+				changes: [
+					{
+						path: "rules/0.md",
+						op: "put",
+						sha256: sha256("after\n"),
+					},
+				],
+			},
+		]);
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await syncedTree(ledger, actual);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(1);
+		const selected = mocks.submitChange.mock.calls[0]?.[2] ?? [];
+		expect(selected).toHaveLength(50);
+		expect(selected).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "rules/0.md" }),
+			]),
+		);
+	});
+
+	it("refuses an oversized selected file before sending an inline body", async () => {
+		const large = "x".repeat(3 * 1024 * 1024);
+		const dest = await syncedTree(
+			{ "AGENTS.md": "before\n" },
+			{
+				"AGENTS.md": large,
+			},
+		);
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("too large to send inline");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
 	it("refuses a lock belonging to another project", async () => {
 		const dest = await syncedTree({ "AGENTS.md": "one\n" });
 

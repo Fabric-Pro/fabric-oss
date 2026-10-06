@@ -23,6 +23,8 @@ import { describe, expect, it } from "vitest";
 import type { InstructionsLock } from "../src/lib/instructions/lock.js";
 import {
 	computePushPlan,
+	materializePushChanges,
+	type PushPlan,
 	setAsideProposed,
 } from "../src/lib/instructions/push.js";
 import { resolveExistingRoot } from "../src/lib/instructions/safe-write.js";
@@ -94,7 +96,7 @@ describe("the push plan against the lock's ledger", () => {
 			...lockAndManifest({ "AGENTS.md": "one\n" }),
 		});
 
-		expect(plan.changes).toEqual([]);
+		expect(plan.entries).toEqual([]);
 		expect(plan.unchanged).toEqual(["AGENTS.md"]);
 	});
 
@@ -106,7 +108,9 @@ describe("the push plan against the lock's ledger", () => {
 			...lockAndManifest({ "AGENTS.md": "one\n" }),
 		});
 
-		expect(plan.changes).toEqual([
+		expect(
+			await materializePushChanges({ root, entries: plan.entries }),
+		).toEqual([
 			{
 				op: "put",
 				path: "AGENTS.md",
@@ -124,6 +128,50 @@ describe("the push plan against the lock's ledger", () => {
 		]);
 	});
 
+	it("keeps only scalar fingerprints until a selected put is materialized", async () => {
+		const root = await makeTree({ "AGENTS.md": "edited\n" });
+
+		const plan = await computePushPlan({
+			root,
+			...lockAndManifest({ "AGENTS.md": "one\n" }),
+		});
+
+		expect(plan).toEqual({
+			entries: [
+				{
+					path: "AGENTS.md",
+					action: "put",
+					size: 7,
+					sha256: sha256("edited\n"),
+				},
+			],
+			unchanged: [],
+		});
+		expect(
+			await materializePushChanges({ root, entries: plan.entries }),
+		).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "edited\n",
+				encoding: "utf8",
+			},
+		]);
+	});
+
+	it("refuses a selected put changed after planning", async () => {
+		const root = await makeTree({ "AGENTS.md": "edited\n" });
+		const plan = await computePushPlan({
+			root,
+			...lockAndManifest({ "AGENTS.md": "one\n" }),
+		});
+		await writeFile(path.join(root, "AGENTS.md"), "changed again\n");
+
+		await expect(
+			materializePushChanges({ root, entries: plan.entries }),
+		).rejects.toThrow("AGENTS.md changed after planning");
+	});
+
 	it("sends a deleted file as a delete", async () => {
 		const root = await makeTree({ "AGENTS.md": "one\n" });
 
@@ -135,9 +183,9 @@ describe("the push plan against the lock's ledger", () => {
 			}),
 		});
 
-		expect(plan.changes).toEqual([
-			{ op: "delete", path: ".claude/skills/a.md" },
-		]);
+		expect(
+			await materializePushChanges({ root, entries: plan.entries }),
+		).toEqual([{ op: "delete", path: ".claude/skills/a.md" }]);
 	});
 
 	// A push reads local files and sends them, so "text" cannot be assumed.
@@ -154,7 +202,12 @@ describe("the push plan against the lock's ledger", () => {
 			...lockAndManifest({ "logo.png": "placeholder" }),
 		});
 
-		expect(plan.changes).toEqual([
+		expect(
+			await materializePushChanges({
+				root: canonical,
+				entries: plan.entries,
+			}),
+		).toEqual([
 			{
 				op: "put",
 				path: "logo.png",
@@ -200,7 +253,9 @@ describe("--add", () => {
 			added: [".claude/skills/new.md"],
 		});
 
-		expect(plan.changes).toEqual([
+		expect(
+			await materializePushChanges({ root, entries: plan.entries }),
+		).toEqual([
 			{
 				op: "put",
 				path: ".claude/skills/new.md",
@@ -222,7 +277,7 @@ describe("--add", () => {
 			added: ["AGENTS.md"],
 		});
 
-		expect(plan.changes).toHaveLength(1);
+		expect(plan.entries).toHaveLength(1);
 	});
 
 	it("refuses a path with nothing at it", async () => {
@@ -432,7 +487,9 @@ describe("a lock that does not match the published manifest", () => {
 			added: ["docs/new.md"],
 		});
 
-		expect(plan.changes).toEqual([
+		expect(
+			await materializePushChanges({ root, entries: plan.entries }),
+		).toEqual([
 			{
 				op: "put",
 				path: "docs/new.md",
@@ -485,8 +542,8 @@ describe("changes an open proposal already carries", () => {
 		});
 	}
 
-	function sentPaths(plan: { changes: { path: string }[] }): string[] {
-		return plan.changes.map((change) => change.path);
+	function sentPaths(plan: PushPlan): string[] {
+		return plan.entries.map((entry) => entry.path);
 	}
 
 	// The defect itself: the diff alone sends the first session's edit again.

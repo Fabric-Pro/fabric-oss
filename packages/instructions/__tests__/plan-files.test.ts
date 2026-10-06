@@ -9,6 +9,15 @@ const DEFAULTS = resolveIgnoreGlobs({
 const SMALL = { maxFiles: 2, maxFileBytes: 10, maxTotalBytes: 15 };
 
 describe("planSnapshotFiles", () => {
+	it("accepts a retained 70 MiB tree within the unchanged per-file and count limits", () => {
+		const files = Array.from({ length: 14 }, (_, index) => ({
+			path: `file-${index}.md`,
+			size: 5 * 1024 * 1024,
+		}));
+		const plan = planSnapshotFiles({ files, ignore: DEFAULTS });
+		expect(plan.ok).toBe(true);
+		expect(plan.ok && plan.totalBytes).toBe(70 * 1024 * 1024);
+	});
 	it("keeps valid files in input order with kind and typing, and reports exclusions", () => {
 		const plan = planSnapshotFiles({
 			files: [

@@ -48,7 +48,7 @@ vi.mock("@repo/logs", () => ({
 }));
 vi.mock("../credentials", () => ({ ensureFreshRepoCredentials: vi.fn() }));
 vi.mock("../commits", () => ({ countCommitsSince: vi.fn() }));
-vi.mock("simple-git", () => ({ default: vi.fn() }));
+vi.mock("simple-git", () => ({ simpleGit: vi.fn() }));
 
 import { recordAudit } from "@repo/database";
 import { AtlasService } from "../service";

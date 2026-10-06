@@ -50,7 +50,11 @@ vi.mock("@repo/temporal", () => ({
 	})),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// Turn admission (see ./_helpers/conversation-turn-db-mocks.ts).
+	...(
+		await import("./_helpers/conversation-turn-db-mocks")
+	).conversationTurnDbMocks(),
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
 	db: {
 		agentConversation: { findFirst: vi.fn(async () => null) },

@@ -77,7 +77,10 @@ export class A2AClient {
 	async sendMessage(
 		baseUrl: string,
 		message: A2AMessage,
-		options?: { contextId?: string; metadata?: Record<string, unknown> },
+		options?: {
+			contextId?: string;
+			metadata?: Record<string, unknown>;
+		} & A2ARequestControl,
 	): Promise<A2ATask> {
 		const url = new URL("/a2a/send", baseUrl);
 
@@ -87,13 +90,17 @@ export class A2AClient {
 			metadata: options?.metadata,
 		};
 
-		const response = await this.fetch(url.toString(), {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
+		const response = await this.fetch(
+			url.toString(),
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(request),
 			},
-			body: JSON.stringify(request),
-		});
+			options,
+		);
 
 		if (!response.ok) {
 			const errorBody = await response.text();
@@ -192,12 +199,20 @@ export class A2AClient {
 	 * Get task status and artifacts
 	 * GET /a2a/tasks/{taskId}
 	 */
-	async getTask(baseUrl: string, taskId: string): Promise<A2ATask> {
+	async getTask(
+		baseUrl: string,
+		taskId: string,
+		control?: A2ARequestControl,
+	): Promise<A2ATask> {
 		const url = new URL(`/a2a/tasks/${taskId}`, baseUrl);
 
-		const response = await this.fetch(url.toString(), {
-			method: "GET",
-		});
+		const response = await this.fetch(
+			url.toString(),
+			{
+				method: "GET",
+			},
+			control,
+		);
 
 		if (!response.ok) {
 			if (response.status === 404) {
@@ -240,14 +255,21 @@ export class A2AClient {
 	async waitForCompletion(
 		baseUrl: string,
 		taskId: string,
-		options?: { pollInterval?: number; timeout?: number },
+		options?: {
+			pollInterval?: number;
+			timeout?: number;
+			/** Aborts the current poll and stops polling. */
+			signal?: AbortSignal;
+		},
 	): Promise<A2ATask> {
 		const pollInterval = options?.pollInterval || 1000;
 		const timeout = options?.timeout || this.options.timeout;
 		const startTime = Date.now();
 
 		while (true) {
-			const task = await this.getTask(baseUrl, taskId);
+			const task = await this.getTask(baseUrl, taskId, {
+				signal: options?.signal,
+			});
 
 			if (
 				task.status === "completed" ||
@@ -264,7 +286,7 @@ export class A2AClient {
 				);
 			}
 
-			await this.sleep(pollInterval);
+			await this.sleep(pollInterval, options?.signal);
 		}
 	}
 
@@ -286,12 +308,24 @@ export class A2AClient {
 	 * Retries on network errors (ECONNREFUSED, DNS failures, timeouts)
 	 * Does NOT retry on HTTP errors (4xx, 5xx) - those are returned as-is
 	 */
-	private async fetch(url: string, init: RequestInit): Promise<Response> {
+	private async fetch(
+		url: string,
+		init: RequestInit,
+		control?: A2ARequestControl,
+	): Promise<Response> {
 		let lastError: Error | null = null;
 		const maxAttempts = this.options.retryAttempts;
 		const baseDelay = this.options.retryDelay;
+		const external = control?.signal;
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			// The caller's stop ends the request — never retried.
+			if (external?.aborted) {
+				throw external.reason;
+			}
+			// Runs immediately before every attempt, the network retries
+			// below included (e.g. a durable dispatch check).
+			await control?.beforeAttempt?.();
 			const controller = new AbortController();
 			const timeoutId = setTimeout(
 				() => controller.abort(),
@@ -301,7 +335,9 @@ export class A2AClient {
 			try {
 				const response = await fetch(url, {
 					...init,
-					signal: controller.signal,
+					signal: external
+						? AbortSignal.any([controller.signal, external])
+						: controller.signal,
 					headers: {
 						...this.options.headers,
 						...init.headers,
@@ -312,6 +348,9 @@ export class A2AClient {
 				return response;
 			} catch (error) {
 				clearTimeout(timeoutId);
+				if (external?.aborted) {
+					throw external.reason;
+				}
 				lastError =
 					error instanceof Error ? error : new Error(String(error));
 
@@ -337,7 +376,7 @@ export class A2AClient {
 				console.log(
 					`[A2A Client] Request to ${url} failed (attempt ${attempt}/${maxAttempts}): ${lastError.message}. Retrying in ${delay}ms...`,
 				);
-				await this.sleep(delay);
+				await this.sleep(delay, external);
 			}
 		}
 
@@ -423,9 +462,33 @@ export class A2AClient {
 		}
 	}
 
-	private sleep(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
+	private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+		return new Promise((resolve, reject) => {
+			if (signal?.aborted) {
+				reject(signal.reason);
+				return;
+			}
+			const timer = setTimeout(() => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve();
+			}, ms);
+			const onAbort = () => {
+				clearTimeout(timer);
+				reject(signal?.reason);
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
 	}
+}
+
+/**
+ * Caller control over one A2A request: a signal that aborts it (and stops
+ * the client's own network retries), and a hook run immediately before
+ * every attempt, retries included.
+ */
+export interface A2ARequestControl {
+	signal?: AbortSignal;
+	beforeAttempt?: () => Promise<void>;
 }
 
 export class A2AClientError extends Error {

@@ -50,7 +50,15 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
-import { type ContextOwner, resolveContextOwner } from "../lib/context-owner";
+import {
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	resolveContextOwner,
+} from "../lib/context-owner";
+import {
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+} from "../task-queues";
 
 /**
  * Telemetry contract for `project_context_url_crawl_failed` (
@@ -210,78 +218,6 @@ export function extractMeaningfulErrorMessage(error: unknown): string {
 function workflowNow(): number {
 	return Date.now();
 }
-
-// ---------------------------------------------------------------------------
-// Activity proxies (one config per latency profile)
-// ---------------------------------------------------------------------------
-
-const {
-	firecrawlScrapeActivity,
-	upsertUrlPageActivity,
-	updateParentStatusActivity,
-	pruneOrphanUrlPagesActivity,
-	bulkInitUrlPagesActivity,
-	companyUrlCrawlGateActivity,
-} = proxyActivities<typeof activities>({
-	startToCloseTimeout: "1 minute",
-	retry: {
-		initialInterval: "1s",
-		maximumInterval: "30s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
-
-// Per-URL scrape used by the SPLIT path-prefix branch. Same provider, same
-// retry policy as the SINGLE_PAGE scrape — but with a separate proxy so the
-// timeout reflects path-prefix's per-page reality (a JS-rendered help-center
-// article can take 30-90s end-to-end including settle + selector wait +
-// extraction). Heartbeat doesn't matter here — each scrape is short enough
-// that a single heartbeat-timeout window is fine.
-const {
-	firecrawlScrapeActivity: firecrawlScrapeForCrawlActivity,
-	firecrawlMapActivity,
-} = proxyActivities<typeof activities>({
-	startToCloseTimeout: "5 minutes",
-	retry: {
-		initialInterval: "2s",
-		maximumInterval: "30s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
-
-const { firecrawlCrawlActivity } = proxyActivities<typeof activities>({
-	// 120 min budget. The map+scrape pipeline runs N URLs through /v1/scrape
-	// at concurrency 1 (Firecrawl-side rate-limit-friendly) with a 5-min
-	// Firecrawl-side timeout per page, plus the 500-page upper bound from
-	// the API. Worst-case 500 pages × ~10s = ~85 min + map overhead;
-	// 120 min gives headroom. Matches the activity's own elapsed-time
-	// budget in `crawlSite` (DEFAULT_CRAWL_OVERALL_TIMEOUT_MS = 119 min)
-	// so the activity returns a partial-success result rather than being
-	// killed by Temporal mid-run.
-	startToCloseTimeout: "120 minutes",
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "2s",
-		maximumInterval: "60s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
-
-const { embedUrlPageActivity, embedSingleContextActivity } = proxyActivities<
-	typeof activities
->({
-	startToCloseTimeout: "5 minutes",
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "1s",
-		maximumInterval: "30s",
-		backoffCoefficient: 2,
-		maximumAttempts: 3,
-	},
-});
 
 // ---------------------------------------------------------------------------
 // Public input/output contract
@@ -610,6 +546,102 @@ export async function urlSourceCrawlWorkflow(
 	// run schedules them with exactly the inputs it always did.
 	const owner = resolveContextOwner(input);
 	const companyOwner = owner.kind === "company" ? owner : undefined;
+
+	const {
+		firecrawlScrapeActivity,
+		upsertUrlPageActivity,
+		pruneOrphanUrlPagesActivity,
+		bulkInitUrlPagesActivity,
+	} = proxyActivities<typeof activities>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		startToCloseTimeout: "1 minute",
+		retry: {
+			initialInterval: "1s",
+			maximumInterval: "30s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
+
+	// Per-URL scrape used by the SPLIT path-prefix branch. Same provider, same
+	// retry policy as the SINGLE_PAGE scrape — but with a separate proxy so the
+	// timeout reflects path-prefix's per-page reality (a JS-rendered help-center
+	// article can take 30-90s end-to-end including settle + selector wait +
+	// extraction). Heartbeat doesn't matter here — each scrape is short enough
+	// that a single heartbeat-timeout window is fine.
+	const {
+		firecrawlScrapeActivity: firecrawlScrapeForCrawlActivity,
+		firecrawlMapActivity,
+	} = proxyActivities<typeof activities>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		startToCloseTimeout: "5 minutes",
+		retry: {
+			initialInterval: "2s",
+			maximumInterval: "30s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
+
+	const { firecrawlCrawlActivity } = proxyActivities<typeof activities>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		// 120 min budget. The map+scrape pipeline runs N URLs through /v1/scrape
+		// at concurrency 1 (Firecrawl-side rate-limit-friendly) with a 5-min
+		// Firecrawl-side timeout per page, plus the 500-page upper bound from
+		// the API. Worst-case 500 pages × ~10s = ~85 min + map overhead;
+		// 120 min gives headroom. Matches the activity's own elapsed-time
+		// budget in `crawlSite` (DEFAULT_CRAWL_OVERALL_TIMEOUT_MS = 119 min)
+		// so the activity returns a partial-success result rather than being
+		// killed by Temporal mid-run.
+		startToCloseTimeout: "120 minutes",
+		heartbeatTimeout: "30 seconds",
+		retry: {
+			initialInterval: "2s",
+			maximumInterval: "60s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
+
+	const { updateParentStatusActivity, companyUrlCrawlGateActivity } =
+		proxyActivities<typeof activities>({
+			taskQueue: contextOwnerTaskQueue(
+				input.owner,
+				PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+			),
+			startToCloseTimeout: "1 minute",
+			retry: {
+				initialInterval: "1s",
+				maximumInterval: "30s",
+				backoffCoefficient: 2,
+				maximumAttempts: 3,
+			},
+		});
+
+	const { embedUrlPageActivity, embedSingleContextActivity } =
+		proxyActivities<typeof activities>({
+			taskQueue: contextOwnerTaskQueue(
+				input.owner,
+				PROJECT_EMBEDDING_TASK_QUEUE,
+			),
+			startToCloseTimeout: "5 minutes",
+			heartbeatTimeout: "30 seconds",
+			retry: {
+				initialInterval: "1s",
+				maximumInterval: "30s",
+				backoffCoefficient: 2,
+				maximumAttempts: 3,
+			},
+		});
 
 	log.info("[UrlSourceCrawl] start", {
 		contextId,

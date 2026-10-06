@@ -20,7 +20,14 @@
 
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
-import { CARRIED_OVER_MARKER_PREFIX, db } from "@repo/database";
+import {
+	abandonConversationTurnStart,
+	CARRIED_OVER_MARKER_PREFIX,
+	type ConversationTurn,
+	db,
+	getConversationTurnForExecution,
+	getConversationTurnOwnerForExecution,
+} from "@repo/database";
 import { metricsTracker } from "@repo/observability";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
@@ -43,6 +50,29 @@ import {
 } from "../../orchestrator-execution-mode";
 import { windowUntypedHistory } from "../../stream/history-window";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
+import {
+	isOrchestratorOrganizationMember,
+	refuseUnlessRunOwner,
+} from "../run-access";
+import {
+	admitChatTurn,
+	cancelledBeforeStartResponse,
+	cancelTurnBeforeStart,
+	executionModeUsesTurns,
+	isCancelledBeforeStart,
+	isTerminalTurnStatus,
+	resolveClientRequestKey,
+	resolveTurnOrganization,
+	resultStatusForTurn,
+	settleAbandonedTurn,
+	startLegacyChatWorkflow,
+	startTurnWorkflow,
+	TurnStartAmbiguousError,
+	TurnStoppedBeforeStartError,
+	turnPendingResponse,
+	turnStateUnavailableResponse,
+	waitForTurnWorkflow,
+} from "../turn-admission";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
 // Bounds the WHOLE request from entry (see `requestStartedAt` in POST),
@@ -114,6 +144,12 @@ interface StreamEvent {
 }
 
 export async function POST(request: NextRequest) {
+	// The turn this request admitted and must start. Until it is handed to
+	// the SSE stream (which starts it), any early return or throw abandons
+	// it — and an abandoned START_PENDING turn would hold the conversation
+	// until a reconcile, so the `finally` below ends it FAILED.
+	let turnToStart: ConversationTurn | null = null;
+	let turnSettled = false;
 	try {
 		// Anchors MAX_STREAM_DURATION at request entry, before the RAG
 		// pre-work below, so the poll loop's deadline reflects true wall
@@ -135,7 +171,8 @@ export async function POST(request: NextRequest) {
 			message,
 			history: rawHistory,
 			executionId: requestedExecutionId,
-			organizationId,
+			organizationId: requestedOrganizationId,
+			clientRequestKey: rawClientRequestKey,
 			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
 			enabledMcpConfigIds = null,
 			enabledAgentIds = null,
@@ -209,34 +246,60 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// ✅ Security: the organization is the only tenant context
+		// (ADR-018). It is required and resolved server-side — the body's,
+		// else the session's active organization — and the caller must have
+		// a tie to it. It used to be checked only when the body named one,
+		// leaving the organization-less arm live for any caller that omitted
+		// it.
+		const resolvedOrganization = await resolveTurnOrganization({
+			userId,
+			requestedOrganizationId,
+			session: session.session,
+		});
+		if (!resolvedOrganization.ok) {
+			return resolvedOrganization.response;
+		}
+		const organizationId: string = resolvedOrganization.organizationId;
+
 		// A conversation id is only a lookup key for the caller's own
-		// conversations. Its attached workspaces and project, its carried-over
-		// summary, and the runtime-authority grants bound to it must not be
-		// reachable by sending another user's id, so an id the caller does not
-		// own is ignored — not adopted, not forwarded to the workflow. Same
-		// check as the direct-chat stream.
-		let conversationId: string | undefined =
+		// conversations in this organization. Its attached workspaces and
+		// project, its carried-over summary, and the runtime-authority grants
+		// bound to it must not be reachable by sending another user's id. An
+		// id the caller explicitly named but cannot access is refused (403)
+		// rather than silently dropped: dropping it ran the turn detached
+		// from the conversation the user was looking at.
+		const conversationId: string | undefined =
 			typeof requestedConversationId === "string" &&
 			requestedConversationId
 				? requestedConversationId
 				: undefined;
 		if (conversationId) {
 			const owned = await db.agentConversation.findFirst({
-				where: { id: conversationId, userId },
-				select: { id: true, organizationId: true },
+				where: { id: conversationId, userId, organizationId },
+				select: { id: true },
 			});
-			// Exact tenant equality, null included: a conversation from one
-			// organization must not feed another organization's turn.
-			const crossTenant =
-				owned !== null &&
-				(owned.organizationId ?? null) !== (organizationId ?? null);
-			if (!owned || crossTenant) {
+			if (!owned) {
 				console.warn(
-					"[Orchestrator Stream] Conversation is not accessible to the caller; ignoring it",
+					"[Orchestrator Stream] Conversation is not accessible to the caller; refusing",
 					{ userId, conversationId },
 				);
-				conversationId = undefined;
+				return new Response(
+					JSON.stringify({
+						error: "Forbidden",
+						message: "This conversation is not accessible",
+					}),
+					{
+						status: 403,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			}
+		}
+
+		const clientRequestKey = resolveClientRequestKey(rawClientRequestKey);
+		if (!clientRequestKey.ok) {
+			return clientRequestKey.response;
 		}
 
 		// Debug: Log workspace IDs received
@@ -302,9 +365,11 @@ export async function POST(request: NextRequest) {
 		let effectiveHistory = history;
 		if (conversationId) {
 			try {
-				const tenantFilter = organizationId
-					? { id: conversationId, userId, organizationId }
-					: { id: conversationId, userId, organizationId: null };
+				const tenantFilter = {
+					id: conversationId,
+					userId,
+					organizationId,
+				};
 				const convo = await db.agentConversation.findFirst({
 					where: tenantFilter,
 					select: {
@@ -351,7 +416,7 @@ export async function POST(request: NextRequest) {
 				const canAccess = await hasProjectAccess(
 					projectId,
 					userId,
-					organizationId ?? undefined,
+					organizationId,
 				);
 				if (!canAccess) {
 					console.warn(
@@ -378,29 +443,95 @@ export async function POST(request: NextRequest) {
 				},
 			);
 		}
+		if (
+			requestedExecutionId &&
+			(typeof requestedExecutionId !== "string" ||
+				!/^orch-[a-f0-9-]{36}$/.test(requestedExecutionId))
+		) {
+			return new Response(
+				JSON.stringify({ error: "Invalid executionId format" }),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
 
-		// ✅ Security: Verify organization membership before proceeding
-		if (organizationId) {
-			const member = await db.member.findFirst({
-				where: { userId, organizationId },
+		// Get Temporal client
+		const temporalClient = await getTemporalClient();
+
+		// =====================================================================
+		// Turn admission (Advisor chat turns). A new message is admitted
+		// through the durable turn record BEFORE any billed or slow pre-work:
+		// a retry of the same message (same clientRequestKey) attaches to the
+		// turn it already created, a second live turn in the conversation is
+		// refused with its executionId, and a key Stop already cancelled is
+		// refused. See ../turn-admission.ts.
+		// =====================================================================
+		let newTurn = false;
+		// A planner-mode message (`save_reuse`, `weave`) gets no turn and the
+		// legacy start: see `executionModeUsesTurns`.
+		let legacyExecutionId: string | undefined;
+		let resumeExecutionId: string | undefined =
+			typeof requestedExecutionId === "string" && requestedExecutionId
+				? requestedExecutionId
+				: undefined;
+		if (!resumeExecutionId && !executionModeUsesTurns(executionMode)) {
+			legacyExecutionId = `orch-${uuidv4()}`;
+		} else if (!resumeExecutionId) {
+			const admission = await admitChatTurn({
+				userId,
+				organizationId,
+				conversationId: conversationId ?? null,
+				clientRequestKey: clientRequestKey.key,
+				executionMode,
+				temporalClient,
 			});
-			if (!member) {
-				console.warn(
-					"[Orchestrator Stream] User not a member of organization",
-					{ userId, organizationId },
-				);
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message: "You are not a member of this organization",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+			if (admission.kind === "refused") {
+				return admission.response;
+			}
+			if (isCancelledBeforeStart(admission.turn)) {
+				return cancelledBeforeStartResponse();
+			}
+			if (admission.kind === "created") {
+				// A new turn: this request owns its startup (it alone holds
+				// the start token) — run the pre-work and start it.
+				turnToStart = admission.turn;
+				newTurn = true;
+			} else {
+				// A retry of the key. Whether the turn is still being started
+				// by the request that created it, already running, or ended,
+				// this request neither starts it nor cleans it up: it
+				// reattaches, waiting within a bound for a pending start (see
+				// the reattach section below).
+				resumeExecutionId = admission.turn.executionId ?? undefined;
 			}
 		}
+
+		// A client that disconnects before its turn is started gets the turn
+		// cancelled (DISCONNECT_BEFORE_START) and no workflow. Once the SSE
+		// stream exists, a disconnect detaches instead (the turn keeps
+		// running and the client reattaches with its key or executionId).
+		const disconnectedBeforeStart = async (): Promise<boolean> => {
+			if (!turnToStart || !request.signal?.aborted) {
+				return false;
+			}
+			console.warn(
+				"[Orchestrator Stream] Client disconnected before the turn started; cancelling it",
+				{ turnId: turnToStart.id },
+			);
+			await cancelTurnBeforeStart({
+				turn: turnToStart,
+				reason: "client disconnected before start",
+			});
+			turnSettled = true;
+			return true;
+		};
+		const disconnectedResponse = () =>
+			new Response(null, {
+				status: 499,
+				statusText: "Client Closed Request",
+			});
 
 		// Workspace ids come from the client or from a conversation's
 		// attachments, and every workspace retrieval path in the workflow
@@ -416,7 +547,7 @@ export async function POST(request: NextRequest) {
 				await filterAccessibleWorkspaceIds({
 					workspaceIds,
 					userId,
-					organizationId: organizationId ?? null,
+					organizationId,
 				});
 			if (denied.length > 0) {
 				console.warn(
@@ -428,14 +559,15 @@ export async function POST(request: NextRequest) {
 		}
 
 		// Get AI model and provider config using centralized entry point.
-		// Skipped entirely when the body only carries an `executionId`: that
-		// request is a reconnect to a workflow that already passed this
-		// chokepoint and was already counted when it started (issue #2269).
-		// Re-entering it would double-bill the same run, and worse, could
-		// 429 the reconnect on a limit the run itself pushed over — leaving
-		// a live Temporal workflow no client can attach to. The workflow
-		// resolves its own model on the Temporal worker regardless.
-		if (!requestedExecutionId) {
+		// Entered only for a NEW turn. Skipped for a reconnect (an
+		// `executionId` body, or a retried key whose turn already exists):
+		// that run already passed this chokepoint and was counted when it
+		// started (issue #2269). Re-entering it would double-bill the same
+		// run, and worse, could 429 the reconnect on a limit the run itself
+		// pushed over — leaving a live Temporal workflow no client can
+		// attach to. The workflow resolves its own model on the Temporal
+		// worker regardless.
+		if (newTurn || legacyExecutionId) {
 			let aiModelResult: Awaited<
 				ReturnType<typeof getAIModelWithMetadata>
 			>;
@@ -496,24 +628,106 @@ export async function POST(request: NextRequest) {
 			// Track usage (fire-and-forget)
 			trackUsage();
 		}
+		if (await disconnectedBeforeStart()) {
+			return disconnectedResponse();
+		}
 
-		const executionId = requestedExecutionId || `orch-${uuidv4()}`;
-		const executionIdPattern = /^orch-[a-f0-9-]{36}$/;
-		if (
-			typeof executionId !== "string" ||
-			!executionIdPattern.test(executionId)
-		) {
+		const executionId =
+			resumeExecutionId ?? turnToStart?.executionId ?? legacyExecutionId;
+		if (!executionId) {
 			return new Response(
-				JSON.stringify({ error: "Invalid executionId format" }),
+				JSON.stringify({ error: "No execution to attach to" }),
 				{
-					status: 400,
+					status: 409,
 					headers: { "Content-Type": "application/json" },
 				},
 			);
 		}
 
-		// Get Temporal client
-		const temporalClient = await getTemporalClient();
+		// =====================================================================
+		// Reattach: the turn record answers first. A turn that already ended
+		// returns its stored result without asking Temporal; another user's
+		// (or organization's) turn is refused.
+		// =====================================================================
+		let storedTerminalTurn: ConversationTurn | null = null;
+		if (resumeExecutionId) {
+			const ownTurn = await getConversationTurnForExecution({
+				executionId: resumeExecutionId,
+				userId,
+				organizationId,
+			});
+			if (!ownTurn) {
+				const owner =
+					await getConversationTurnOwnerForExecution(
+						resumeExecutionId,
+					);
+				if (owner) {
+					return new Response(
+						JSON.stringify({
+							error: "Forbidden",
+							message:
+								"You are not authorized to access this workflow",
+						}),
+						{
+							status: 403,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				}
+			} else if (
+				conversationId &&
+				(ownTurn.scopeConversationId ?? null) !== conversationId
+			) {
+				// The caller's own turn, but from another conversation:
+				// attaching would show its result in the wrong chat.
+				return new Response(
+					JSON.stringify({
+						error: "Forbidden",
+						message:
+							"This turn belongs to a different conversation",
+					}),
+					{
+						status: 403,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			} else if (isTerminalTurnStatus(ownTurn.status)) {
+				storedTerminalTurn = ownTurn;
+			} else if (ownTurn.status === "START_PENDING") {
+				// Its starter may still be doing pre-work (a reconnect after a
+				// 409, or a retry racing the first request): wait, within a
+				// bound, for the workflow to exist rather than attach to
+				// nothing and report an error.
+				const appeared = await waitForTurnWorkflow({
+					temporalClient,
+					executionId: resumeExecutionId,
+				});
+				if (appeared === "unavailable") {
+					return turnStateUnavailableResponse();
+				}
+				if (appeared === "absent") {
+					// Still no workflow. Re-read the turn — it may have been
+					// cancelled or finalized meanwhile — then settle it the
+					// way admission settles a conflicting turn: within the
+					// orphan grace period it is still pending; past it, with
+					// the workflow proven missing, it is terminalized and its
+					// stored result is the answer.
+					const settled = await settleAbandonedTurn({
+						temporalClient,
+						executionId: resumeExecutionId,
+						userId,
+						organizationId,
+					});
+					if (settled.kind === "unavailable") {
+						return turnStateUnavailableResponse();
+					}
+					if (settled.kind === "pending") {
+						return turnPendingResponse(resumeExecutionId);
+					}
+					storedTerminalTurn = settled.turn;
+				}
+			}
+		}
 
 		let messageWithDocumentContext = message ?? "";
 
@@ -600,6 +814,9 @@ export async function POST(request: NextRequest) {
 				);
 			}
 		}
+		if (await disconnectedBeforeStart()) {
+			return disconnectedResponse();
+		}
 
 		// Union default-enabled MCP config ids into the caller-restricted set
 		// so managed-default servers (e.g. Excalidraw, when `defaultEnabled`)
@@ -616,7 +833,7 @@ export async function POST(request: NextRequest) {
 		try {
 			const defaultIds = await getDefaultEnabledMcpConfigIds(
 				userId,
-				organizationId ?? null,
+				organizationId,
 			);
 			effectiveEnabledMcpConfigIds = unionDefaultMcpConfigIds(
 				enabledMcpConfigIds,
@@ -699,7 +916,7 @@ export async function POST(request: NextRequest) {
 		// A new run's input must fit Temporal's start frame. Refused here with
 		// a message the user can act on, not by a gRPC error mid-stream
 		// (review F38). A reattach starts nothing, so it is not measured.
-		if (!requestedExecutionId) {
+		if (turnToStart || legacyExecutionId) {
 			try {
 				assertChatWorkflowPayload(
 					workflowInput,
@@ -721,8 +938,56 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
+		if (await disconnectedBeforeStart()) {
+			return disconnectedResponse();
+		}
+
 		// Set up streaming response
 		const encoder = new TextEncoder();
+
+		// A turn that already ended: replay its stored result and close.
+		if (storedTerminalTurn) {
+			const turn = storedTerminalTurn;
+			const status = resultStatusForTurn(turn.status);
+			const events: StreamEvent[] = [
+				{
+					type: "started",
+					executionId,
+					workflowId: executionId,
+					resumed: true,
+				},
+				status === "failed"
+					? {
+							type: "error",
+							message:
+								turn.terminalReason ??
+								"Workflow execution failed",
+						}
+					: {
+							type: "completed",
+							status,
+							response: turn.responseText ?? undefined,
+							toolCalls: [],
+							stepResults: [],
+							limitSignals: turn.limitSignalSummary ?? undefined,
+							fromTurnRecord: true,
+						},
+			];
+			return new Response(
+				encoder.encode(
+					events
+						.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+						.join(""),
+				),
+				{
+					headers: {
+						"Content-Type": "text/event-stream",
+						"Cache-Control": "no-cache",
+						Connection: "keep-alive",
+					},
+				},
+			);
+		}
 
 		// Hoisted above `start()` so `cancel()` — a sibling method on the same
 		// ReadableStream underlying source, not a nested closure — can share
@@ -870,17 +1135,24 @@ export async function POST(request: NextRequest) {
 					// =====================================================================
 					// For resume: verify ownership BEFORE subscribing to Redis
 					// =====================================================================
-					if (requestedExecutionId) {
+					if (resumeExecutionId) {
 						handle = temporalClient.workflow.getHandle(executionId);
 						const description = await handle.describe();
 
-						// ✅ Security: Verify the caller owns this workflow
+						// ✅ Security: Verify the caller owns this workflow.
+						// Fails closed: a memo with no owner is refused.
 						const memo = description.memo as
 							| Record<string, unknown>
 							| undefined;
-						const workflowUserId = memo?.userId;
 						const workflowOrgId = memo?.organizationId;
-						if (workflowUserId && workflowUserId !== userId) {
+						const refusal = await refuseUnlessRunOwner({
+							executionId,
+							userId,
+							memo,
+							notOwnerMessage:
+								"You are not authorized to access this workflow",
+						});
+						if (refusal) {
 							sendEvent({
 								type: "error",
 								error: "You are not authorized to access this workflow",
@@ -890,13 +1162,14 @@ export async function POST(request: NextRequest) {
 							return;
 						}
 						if (workflowOrgId) {
-							const member = await db.member.findFirst({
-								where: {
+							// Membership, as the start applied (one helper
+							// for every paired route, ../run-access.ts).
+							const isMember =
+								await isOrchestratorOrganizationMember(
 									userId,
-									organizationId: workflowOrgId as string,
-								},
-							});
-							if (!member) {
+									workflowOrgId as string,
+								);
+							if (!isMember) {
 								sendEvent({
 									type: "error",
 									error: "You are not a member of this organization",
@@ -1108,46 +1381,76 @@ export async function POST(request: NextRequest) {
 						}
 					}
 
-					if (requestedExecutionId) {
+					let resumed = Boolean(resumeExecutionId);
+					if (legacyExecutionId) {
+						// A planner-mode run: no turn, the legacy start.
+						handle = await startLegacyChatWorkflow({
+							temporalClient,
+							executionId,
+							workflowInput,
+							memo: { userId, organizationId },
+						});
+						console.log(
+							`[Orchestrator Stream] Started workflow (no turn): ${executionId}`,
+						);
+					} else if (resumeExecutionId || !turnToStart) {
 						// handle was already set and ownership verified above
 						console.log(
 							`[Orchestrator Stream] Attached to workflow: ${executionId}`,
 						);
 					} else {
-						handle = await temporalClient.workflow.start(
-							"orchestratorExecutionWorkflow",
-							{
-								taskQueue: "fabric-orchestrator",
-								workflowId: executionId,
-								args: [workflowInput],
-								// Absolute wall-clock ceiling. Every activity in
-								// this workflow already bounds itself
-								// (`startToCloseTimeout` + `heartbeatTimeout`) and
-								// every human-in-the-loop `condition()` wait is
-								// bounded too, so no single step can hang — but
-								// without this the RUN as a whole had no ceiling,
-								// and a wedged one stayed RUNNING with nothing to
-								// reclaim it. The weave caller of this very
-								// workflow already passes one
-								// (`start-execution.ts`), and the document-refresh
-								// workflow uses an hour for the same reason.
-								//
-								// An hour is far above a normal run (the stream
-								// itself caps at 11 minutes and reattaches on
-								// resume) and far below "forever". A run that
-								// exceeds it surfaces as TIMED_OUT, which the poll
-								// loop below already renders as an error rather
-								// than spinning to the stream deadline.
-								workflowExecutionTimeout: "1 hour",
-								memo: {
-									userId,
-									organizationId: organizationId ?? null,
-								},
-							},
-						);
+						let started: Awaited<
+							ReturnType<typeof startTurnWorkflow>
+						>;
+						try {
+							started = await startTurnWorkflow({
+								temporalClient,
+								turn: turnToStart,
+								workflowInput,
+								memo: { userId, organizationId },
+							});
+						} catch (startError) {
+							if (
+								startError instanceof
+								TurnStoppedBeforeStartError
+							) {
+								// Stop landed between admission and start: the
+								// turn ended cancelled and nothing runs.
+								sendEvent({
+									type: "completed",
+									status: "cancelled",
+									response: "",
+									toolCalls: [],
+									stepResults: [],
+								});
+								cleanupRedis();
+								closeController();
+								return;
+							}
+							if (startError instanceof TurnStartAmbiguousError) {
+								// The start may have applied; the turn stays
+								// START_PENDING. Not an error: the client
+								// retries the same message key, and that
+								// request's reattach finds the workflow or
+								// reconciles the turn.
+								sendEvent({
+									type: "start_pending",
+									retryable: true,
+									executionId,
+								});
+								cleanupRedis();
+								closeController();
+								return;
+							}
+							throw startError;
+						}
+						handle = started.handle;
+						// A retry whose first start's response was lost
+						// attaches to the workflow that start created.
+						resumed = started.attached;
 
 						console.log(
-							`[Orchestrator Stream] Started workflow: ${executionId}`,
+							`[Orchestrator Stream] ${started.attached ? "Attached to" : "Started"} workflow: ${executionId}`,
 						);
 					}
 
@@ -1155,8 +1458,8 @@ export async function POST(request: NextRequest) {
 					sendEvent({
 						type: "started",
 						executionId,
-						workflowId: handle.workflowId,
-						resumed: Boolean(requestedExecutionId),
+						workflowId: handle.workflowId ?? executionId,
+						resumed,
 					});
 
 					// Track state for change detection
@@ -1310,7 +1613,14 @@ export async function POST(request: NextRequest) {
 											"Workflow execution failed",
 									});
 								} else {
-									// Send completed event with final response
+									// Send completed event with final response.
+									// `status` is the run's DOMAIN status — a
+									// stopped turn completes in Temporal with
+									// status "cancelled" — and the client must
+									// render it as such, not as a completed
+									// answer.
+									const cancelled =
+										result.status === "cancelled";
 									sendEvent({
 										type: "completed",
 										status: result.status,
@@ -1321,8 +1631,13 @@ export async function POST(request: NextRequest) {
 										toolCalls: result.toolCalls || [],
 										planningAudit: result.planningAudit,
 										artifacts: result.artifacts,
-										handoffRecommended:
-											result.handoffRecommended,
+										// A stopped turn offers no "continue in
+										// new chat".
+										handoffRecommended: cancelled
+											? undefined
+											: result.handoffRecommended,
+										limitSignals: result.limitSignals,
+										tokenBudget: result.tokenBudget,
 										// The answer stopped at the output
 										// ceiling (review F25).
 										truncated: result.truncated,
@@ -1352,9 +1667,14 @@ export async function POST(request: NextRequest) {
 							} else if (
 								description.status.name === "CANCELLED"
 							) {
+								// A run cancelled in Temporal itself (a legacy
+								// run, or one cancelled outside this app) is a
+								// cancelled turn, not a failed one.
 								sendEvent({
-									type: "error",
-									message: "Workflow was cancelled",
+									type: "completed",
+									status: "cancelled",
+									toolCalls: [],
+									stepResults: [],
 								});
 								isComplete = true;
 							} else if (
@@ -1726,6 +2046,9 @@ export async function POST(request: NextRequest) {
 			},
 		});
 
+		// The stream owns the turn from here: it starts the workflow (or
+		// marks the turn failed if the start definitely fails).
+		turnSettled = true;
 		return new Response(stream, {
 			headers: {
 				"Content-Type": "text/event-stream",
@@ -1744,6 +2067,24 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			},
 		);
+	} finally {
+		// Owner-only (the start token), START_PENDING-only: never ends a turn
+		// another request started.
+		const abandoned = turnToStart as ConversationTurn | null;
+		if (abandoned?.executionId && abandoned.startToken && !turnSettled) {
+			await abandonConversationTurnStart({
+				turnId: abandoned.id,
+				executionId: abandoned.executionId,
+				startToken: abandoned.startToken,
+				cancelled: false,
+				reason: "refused before start",
+			}).catch((markError: unknown) => {
+				console.error(
+					"[Orchestrator Stream] Failed to end an abandoned turn",
+					markError,
+				);
+			});
+		}
 	}
 }
 

@@ -2,9 +2,9 @@
  * An exclusive lock made of one file: whoever creates it holds the lock.
  *
  * `O_EXCL` creation is the lock, and it works across processes without any
- * help from the platform. A holder that crashed leaves the file behind, so one
- * older than `staleMs` (by the file's own clock) is removed and the creation
- * retried. `work` never runs without the lock: a caller that cannot take it
+ * help from the platform. A holder that crashed leaves the file behind; an
+ * old lock with no live owner is reported for explicit recovery rather than
+ * reclaimed automatically. `work` never runs without the lock: a caller that cannot take it
  * within `waitMs`, or whose `signal` aborts, gives up instead.
  *
  * Three users: the profile's refresh lock (two refreshes of one rotating token
@@ -13,19 +13,31 @@
  * fast-forward lock beside a checkout's git data (two hooks must not both move
  * one branch).
  */
-import { closeSync, openSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+	closeSync,
+	openSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 
 /** The lock is held by someone else and was not released within the wait. */
 export class ExclusiveLockBusyError extends Error {
-	constructor() {
-		super("another process holds this lock");
+	constructor(readonly abandoned = false) {
+		super(
+			abandoned
+				? "an abandoned lock must be removed manually"
+				: "another process holds this lock",
+		);
 		this.name = "ExclusiveLockBusyError";
 	}
 }
 
 export interface ExclusiveLockOptions {
 	lockPath: string;
-	/** A lock older than this is taken to belong to a process that died. */
+	/** Age after which a lock with no live owner is reported as abandoned. */
 	staleMs: number;
 	/** The longest to wait for a held lock; `0` gives up at once. */
 	waitMs: number;
@@ -35,6 +47,11 @@ export interface ExclusiveLockOptions {
 }
 
 const DEFAULT_POLL_MS = 100;
+
+interface HeldLock {
+	descriptor: number;
+	owner: string;
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,20 +66,29 @@ function isExistsError(error: unknown): boolean {
 	);
 }
 
+function isNotFoundError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === "ENOENT"
+	);
+}
+
 /**
- * One try at the lock. The open file when it was taken; `"retry"` when it was
- * held by a process that is gone (its file was older than `staleMs`, so it was
- * removed) or was released while it was being looked at; `"busy"` when it is
- * held.
+ * One try at the lock. The open file when it was taken; `"retry"` when the
+ * file was released while it was being looked at; `"abandoned"` when an old
+ * file has no live owner; `"busy"` when it is held.
  */
 function takeOnce(
 	lockPath: string,
 	staleMs: number,
-): number | "busy" | "retry" {
+): HeldLock | "busy" | "retry" | "abandoned" {
 	try {
 		const descriptor = openSync(lockPath, "wx", 0o600);
-		writeSync(descriptor, String(process.pid));
-		return descriptor;
+		const owner = `${process.pid}:${randomUUID()}`;
+		writeSync(descriptor, owner);
+		return { descriptor, owner };
 	} catch (error) {
 		if (!isExistsError(error)) {
 			throw error;
@@ -70,22 +96,47 @@ function takeOnce(
 	}
 	try {
 		if (Date.now() - statSync(lockPath).mtimeMs > staleMs) {
-			unlinkSync(lockPath);
+			if (ownerIsAlive(readFileSync(lockPath, "utf8"))) {
+				return "busy";
+			}
+			return "abandoned";
+		}
+	} catch (error) {
+		// Released between the failed create and the stat/read: retry now.
+		if (isNotFoundError(error)) {
 			return "retry";
 		}
-	} catch {
-		// Released between the failed create and the stat: retry now.
-		return "retry";
+		throw error;
 	}
 	return "busy";
 }
 
-function release(descriptor: number, lockPath: string): void {
-	closeSync(descriptor);
+function ownerIsAlive(owner: string): boolean {
+	const match = /^(\d+)(?::[0-9a-f-]+)?$/.exec(owner);
+	if (!match) {
+		return false;
+	}
+	const pid = Number(match[1]);
+	if (!Number.isSafeInteger(pid) || pid <= 0) {
+		return false;
+	}
 	try {
-		unlinkSync(lockPath);
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "EPERM" || (code !== "ESRCH" && code !== "ENOENT");
+	}
+}
+
+function release(held: HeldLock, lockPath: string): void {
+	closeSync(held.descriptor);
+	try {
+		if (readFileSync(lockPath, "utf8") === held.owner) {
+			unlinkSync(lockPath);
+		}
 	} catch {
-		// Already removed as stale by another process.
+		// The lock was removed or replaced before its former holder finished.
 	}
 }
 
@@ -99,17 +150,23 @@ export async function withExclusiveLock<T>(
 ): Promise<T> {
 	const { lockPath, staleMs } = options;
 	const deadline = Date.now() + options.waitMs;
-	let descriptor: number | undefined;
+	let held: HeldLock | undefined;
 
-	while (descriptor === undefined) {
+	while (held === undefined) {
 		options.signal?.throwIfAborted();
 		const taken = takeOnce(lockPath, staleMs);
-		if (typeof taken === "number") {
-			descriptor = taken;
+		if (typeof taken === "object") {
+			held = taken;
+		} else if (taken === "abandoned") {
+			throw new ExclusiveLockBusyError(true);
 		} else if (taken === "busy") {
 			if (Date.now() >= deadline) {
 				throw new ExclusiveLockBusyError();
 			}
+			await sleep(options.pollMs ?? DEFAULT_POLL_MS);
+		} else if (Date.now() >= deadline) {
+			throw new ExclusiveLockBusyError();
+		} else {
 			await sleep(options.pollMs ?? DEFAULT_POLL_MS);
 		}
 	}
@@ -117,7 +174,7 @@ export async function withExclusiveLock<T>(
 	try {
 		return await work();
 	} finally {
-		release(descriptor, lockPath);
+		release(held, lockPath);
 	}
 }
 
@@ -138,16 +195,22 @@ export function withExclusiveLockSync<T>(
 ): T {
 	const { lockPath, staleMs } = options;
 	const deadline = Date.now() + options.waitMs;
-	let descriptor: number | undefined;
+	let held: HeldLock | undefined;
 
-	while (descriptor === undefined) {
+	while (held === undefined) {
 		const taken = takeOnce(lockPath, staleMs);
-		if (typeof taken === "number") {
-			descriptor = taken;
+		if (typeof taken === "object") {
+			held = taken;
+		} else if (taken === "abandoned") {
+			throw new ExclusiveLockBusyError(true);
 		} else if (taken === "busy") {
 			if (Date.now() >= deadline) {
 				throw new ExclusiveLockBusyError();
 			}
+			sleepSync(options.pollMs ?? DEFAULT_POLL_MS);
+		} else if (Date.now() >= deadline) {
+			throw new ExclusiveLockBusyError();
+		} else {
 			sleepSync(options.pollMs ?? DEFAULT_POLL_MS);
 		}
 	}
@@ -155,6 +218,6 @@ export function withExclusiveLockSync<T>(
 	try {
 		return work();
 	} finally {
-		release(descriptor, lockPath);
+		release(held, lockPath);
 	}
 }

@@ -25,6 +25,7 @@ import type {
 	extractScopeItems as ExtractScopeItemsFn,
 	persistScopeProposal as PersistScopeProposalFn,
 } from "../activities/scope-intake";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 // =============================================================================
 // Types
@@ -81,7 +82,10 @@ export const intakeProgressQuery =
 const { awaitContextExtracted } = proxyActivities<{
 	awaitContextExtracted: typeof AwaitContextExtractedFn;
 }>({
-	// The activity itself polls for up to 10 minutes and heartbeats each tick.
+	// Keep the inherited workflow queue (project-documents for scope intake).
+	// This ten-minute extraction wait must hold neither operations capacity
+	// nor the embedding capacity that extracts the source it is waiting for.
+	// The activity heartbeats each tick; its existing readiness dependency stays.
 	startToCloseTimeout: "12 minutes",
 	heartbeatTimeout: "1 minute",
 	retry: {
@@ -94,6 +98,7 @@ const { awaitContextExtracted } = proxyActivities<{
 const { extractScopeItems } = proxyActivities<{
 	extractScopeItems: typeof ExtractScopeItemsFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "15 minutes",
 	heartbeatTimeout: "3 minutes",
 	retry: {
@@ -106,6 +111,7 @@ const { extractScopeItems } = proxyActivities<{
 const { persistScopeProposal } = proxyActivities<{
 	persistScopeProposal: typeof PersistScopeProposalFn;
 }>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1 minute",
 	retry: {
 		initialInterval: "2s",

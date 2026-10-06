@@ -32,6 +32,14 @@ function ok(body: unknown, text?: string) {
 	};
 }
 
+/** ADO's answer to an invalid/expired PAT: 203 and an HTML sign-in page. */
+function signInPage() {
+	return new Response("<html>sign in</html>", {
+		status: 203,
+		headers: { "content-type": "text/html" },
+	});
+}
+
 /** Every call's URL, in order, so a sequence can be asserted as a whole. */
 function urls(): string[] {
 	return fetchMock.mock.calls.map((c) => String(c[0]));
@@ -405,5 +413,96 @@ describe("azureProvider — assembling a diff", () => {
 			.mockResolvedValueOnce(ok({ content: "new" }));
 
 		await expect(azureProvider.read(target)).resolves.toBeDefined();
+	});
+});
+
+describe("azureProvider — ADO's 203 sign-in page", () => {
+	// `Response.ok` is true for 203, so each of these has to be told apart by
+	// status, the way a 401 is.
+	const target = {
+		token: "tok",
+		repositoryUrl: "https://dev.azure.com/my-org/MyProject/_git/store",
+		repositoryOwner: "my-org",
+		repositoryName: "store",
+		azureOrganization: "my-org",
+		prNumber: 12,
+		maxDiffBytes: 400_000,
+	};
+
+	const pr = {
+		title: "t",
+		lastMergeSourceCommit: { commitId: "head" },
+		lastMergeTargetCommit: { commitId: "base" },
+	};
+
+	it("refuses to read the pull request, as for a 401", async () => {
+		fetchMock.mockResolvedValueOnce(signInPage());
+
+		await expect(azureProvider.read(target)).rejects.toThrow(
+			/not allowed to read pull request !12/,
+		);
+	});
+
+	it("treats a 401 on the pull request the same way", async () => {
+		fetchMock.mockResolvedValueOnce({ ok: false, status: 401 });
+
+		await expect(azureProvider.read(target)).rejects.toThrow(
+			/not allowed to read pull request !12/,
+		);
+	});
+
+	it("reports the changed-files list as refused instead of parsing the page", async () => {
+		fetchMock
+			.mockResolvedValueOnce(ok(pr))
+			.mockResolvedValueOnce(signInPage());
+
+		const result = await azureProvider.read(target);
+
+		expect(result.diff).toBeNull();
+		expect(result.failureText).toMatch(/no diff.*HTTP 401/i);
+	});
+
+	it("does not post a comment on a 203, as for a 401", async () => {
+		fetchMock.mockResolvedValueOnce(signInPage());
+
+		await expect(
+			azureProvider.createComment({ ...target, body: "b" }),
+		).rejects.toThrow(/not allowed to comment/);
+	});
+
+	it("does not report an edit as done on a 203", async () => {
+		// editComment reads no body, so before the status check a 203 came back as
+		// `updated: true` with nothing changed.
+		fetchMock.mockResolvedValueOnce(signInPage());
+
+		await expect(
+			azureProvider.editComment({ ...target, commentId: 1, body: "b" }),
+		).rejects.toThrow(/not allowed to comment/);
+	});
+
+	it("skips a file whose read answered 203 rather than trusting the body", async () => {
+		// The 203 body below is a well-formed file record; only the status can
+		// reject it, and trusting it would fabricate a whole-file diff.
+		fetchMock
+			.mockResolvedValueOnce(ok(pr))
+			.mockResolvedValueOnce(
+				ok({
+					changes: [
+						{ item: { path: "/src/a.ts" }, changeType: "edit" },
+					],
+				}),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "old" }), {
+					status: 203,
+					headers: { "content-type": "text/html" },
+				}),
+			)
+			.mockResolvedValueOnce(ok({ content: "new content" }));
+
+		const result = await azureProvider.read(target);
+
+		expect(result.diff).toBeNull();
+		expect(result.failureText).toMatch(/no file changes/i);
 	});
 });

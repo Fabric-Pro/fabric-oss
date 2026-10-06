@@ -66,9 +66,15 @@ export function InstructionsSettingsDialog({
 		enabled: open,
 	});
 	const [text, setText] = useState("");
+	const [seededFor, setSeededFor] = useState<string | null>(null);
+	const seedKey = `${projectId}:${open}`;
 
 	useEffect(() => {
-		if (open && settings.data) {
+		if (!open) {
+			setSeededFor(null);
+			return;
+		}
+		if (settings.data && seededFor !== seedKey) {
 			// Seed from the project's OWN override only, never from the
 			// defaults. Seeding from the defaults meant opening the dialog to
 			// read the rules and pressing Save silently pinned a copy of
@@ -77,8 +83,10 @@ export function InstructionsSettingsDialog({
 			// it. The defaults are shown as placeholder text instead: visible
 			// to read, never submitted.
 			setText((settings.data.ignoreGlobs ?? []).join("\n"));
+			setSeededFor(seedKey);
 		}
-	}, [open, settings.data]);
+	}, [open, seedKey, seededFor, settings.data]);
+	const settingsReady = settings.isSuccess && seededFor === seedKey;
 
 	const update = useMutation(
 		orpc.projects.instructions.updateSettings.mutationOptions({
@@ -137,7 +145,7 @@ export function InstructionsSettingsDialog({
 						"\n",
 					)}
 					value={text}
-					readOnly={!canEdit}
+					readOnly={!canEdit || !settingsReady}
 					onChange={(e) => setText(e.target.value)}
 					className="min-h-[200px] font-mono text-xs"
 				/>
@@ -146,7 +154,7 @@ export function InstructionsSettingsDialog({
 						<Button
 							variant="outline"
 							onClick={resetToDefaults}
-							disabled={update.isPending}
+							disabled={update.isPending || !settingsReady}
 						>
 							{t("resetToDefaults")}
 						</Button>
@@ -158,7 +166,10 @@ export function InstructionsSettingsDialog({
 							>
 								{t("cancel")}
 							</Button>
-							<Button onClick={save} disabled={update.isPending}>
+							<Button
+								onClick={save}
+								disabled={update.isPending || !settingsReady}
+							>
 								{t("save")}
 							</Button>
 						</div>

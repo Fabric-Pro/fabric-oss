@@ -4,12 +4,23 @@ const mocks = vi.hoisted(() => ({
 	purgeExpiredBackgroundJobs: vi.fn(),
 	failStaleBackgroundJobs: vi.fn(),
 	failStaleProjectScans: vi.fn(),
+	findQuietIndexingCodeIndexes: vi.fn(),
+	failOrphanedCodeIndex: vi.fn(),
+	getTemporalClient: vi.fn(),
+	describe: vi.fn(),
+	getHandle: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	purgeExpiredBackgroundJobs: mocks.purgeExpiredBackgroundJobs,
 	failStaleBackgroundJobs: mocks.failStaleBackgroundJobs,
 	failStaleProjectScans: mocks.failStaleProjectScans,
+	findQuietIndexingCodeIndexes: mocks.findQuietIndexingCodeIndexes,
+	failOrphanedCodeIndex: mocks.failOrphanedCodeIndex,
+}));
+
+vi.mock("../../client", () => ({
+	getTemporalClient: mocks.getTemporalClient,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -31,6 +42,12 @@ beforeEach(() => {
 	});
 	mocks.failStaleBackgroundJobs.mockResolvedValue(0);
 	mocks.failStaleProjectScans.mockResolvedValue(0);
+	mocks.findQuietIndexingCodeIndexes.mockResolvedValue([]);
+	mocks.failOrphanedCodeIndex.mockResolvedValue(1);
+	mocks.getHandle.mockImplementation(() => ({ describe: mocks.describe }));
+	mocks.getTemporalClient.mockResolvedValue({
+		workflow: { getHandle: mocks.getHandle },
+	});
 });
 
 afterEach(() => {
@@ -164,5 +181,199 @@ describe("failStaleBackgroundJobsActivity — project scans", () => {
 
 		expect(result.failedCount).toBe(2);
 		expect(result.failedScanCount).toBe(3);
+	});
+});
+
+describe("failStaleBackgroundJobsActivity — orphaned code indexes", () => {
+	const OBSERVED = new Date("2026-01-01T10:00:00.000Z");
+
+	function quietRow(overrides: Record<string, unknown> = {}) {
+		return {
+			id: "idx-1",
+			projectId: "proj-1",
+			repositoryIntegrationId: "integration-1",
+			branch: "main",
+			workflowId: "code-index-proj-1-integration-1",
+			updatedAt: OBSERVED,
+			...overrides,
+		};
+	}
+
+	const status = (name: string) => async () => ({ status: { name } });
+
+	function notFound() {
+		return Object.assign(new Error("workflow not found"), {
+			name: "WorkflowNotFoundError",
+		});
+	}
+
+	it("asks for quiet INDEXING rows within the sweep's bounds", async () => {
+		await failStaleBackgroundJobsActivity();
+
+		expect(mocks.findQuietIndexingCodeIndexes).toHaveBeenCalledWith({
+			quietMinutes: 10,
+			limit: 25,
+		});
+	});
+
+	it("does not reach Temporal when no row is quiet", async () => {
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.getTemporalClient).not.toHaveBeenCalled();
+		expect(result.failedCodeIndexCount).toBe(0);
+	});
+
+	it("leaves a row alone while its workflow is RUNNING", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+		mocks.describe.mockImplementation(status("RUNNING"));
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failOrphanedCodeIndex).not.toHaveBeenCalled();
+		expect(result.failedCodeIndexCount).toBe(0);
+	});
+
+	it.each(["COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT", "CANCELLED"])(
+		"fails a row whose workflow is %s, as it was read",
+		async (name) => {
+			mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+			mocks.describe.mockImplementation(status(name));
+
+			const result = await failStaleBackgroundJobsActivity();
+
+			expect(mocks.getHandle).toHaveBeenCalledWith(
+				"code-index-proj-1-integration-1",
+			);
+			expect(mocks.failOrphanedCodeIndex).toHaveBeenCalledWith({
+				id: "idx-1",
+				observedUpdatedAt: OBSERVED,
+				error: expect.stringContaining("no longer active"),
+			});
+			expect(result.failedCodeIndexCount).toBe(1);
+		},
+	);
+
+	it("fails a row whose workflow Temporal has never heard of", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+		mocks.describe.mockRejectedValue(notFound());
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(result.failedCodeIndexCount).toBe(1);
+	});
+
+	it("counts only the writes that landed (the compare-and-set can miss)", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([
+			quietRow({ id: "idx-1" }),
+			quietRow({ id: "idx-2" }),
+		]);
+		mocks.describe.mockImplementation(status("TERMINATED"));
+		mocks.failOrphanedCodeIndex
+			.mockResolvedValueOnce(1)
+			.mockResolvedValueOnce(0);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failOrphanedCodeIndex).toHaveBeenCalledTimes(2);
+		expect(result.failedCodeIndexCount).toBe(1);
+	});
+
+	it("treats any other describe error as live", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+		mocks.describe.mockRejectedValue(new Error("UNAVAILABLE"));
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failOrphanedCodeIndex).not.toHaveBeenCalled();
+		expect(result.failedCodeIndexCount).toBe(0);
+	});
+
+	it("treats a describe that does not answer in time as live", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+			mocks.describe.mockImplementation(() => new Promise(() => {}));
+
+			const pending = failStaleBackgroundJobsActivity();
+			await vi.advanceTimersByTimeAsync(5_000);
+			const result = await pending;
+
+			expect(mocks.failOrphanedCodeIndex).not.toHaveBeenCalled();
+			expect(result.failedCodeIndexCount).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("skips the sweep when the Temporal client will not construct", async () => {
+		mocks.failStaleBackgroundJobs.mockResolvedValue(2);
+		mocks.failStaleProjectScans.mockResolvedValue(3);
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([quietRow()]);
+		mocks.getTemporalClient.mockRejectedValue(new Error("no connection"));
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failOrphanedCodeIndex).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			failedCount: 2,
+			failedScanCount: 3,
+			failedCodeIndexCount: 0,
+		});
+	});
+
+	it("a failing sweep costs only its own count", async () => {
+		mocks.failStaleBackgroundJobs.mockResolvedValue(2);
+		mocks.failStaleProjectScans.mockResolvedValue(3);
+		mocks.findQuietIndexingCodeIndexes.mockRejectedValue(
+			new Error("database unavailable"),
+		);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(result).toMatchObject({
+			failedCount: 2,
+			failedScanCount: 3,
+			failedCodeIndexCount: 0,
+		});
+	});
+
+	it("derives the workflow id for a row that never recorded one", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue([
+			quietRow({ id: "idx-1", workflowId: null }),
+			quietRow({
+				id: "idx-2",
+				workflowId: null,
+				repositoryIntegrationId: null,
+			}),
+		]);
+		mocks.describe.mockImplementation(status("RUNNING"));
+
+		await failStaleBackgroundJobsActivity();
+
+		// codeIndexWorkflowId in packages/api/modules/projects/lib/code-indexing-trigger.ts.
+		expect(mocks.getHandle.mock.calls.map(([id]) => id)).toEqual([
+			"code-index-proj-1-integration-1",
+			"code-index-proj-1-legacy",
+		]);
+	});
+
+	it("keeps at most five describes in flight", async () => {
+		mocks.findQuietIndexingCodeIndexes.mockResolvedValue(
+			Array.from({ length: 12 }, (_, i) => quietRow({ id: `idx-${i}` })),
+		);
+		let inFlight = 0;
+		let peak = 0;
+		mocks.describe.mockImplementation(async () => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			inFlight -= 1;
+			return { status: { name: "COMPLETED" } };
+		});
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(peak).toBe(5);
+		expect(result.failedCodeIndexCount).toBe(12);
 	});
 });

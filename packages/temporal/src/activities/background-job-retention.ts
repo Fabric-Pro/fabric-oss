@@ -7,11 +7,16 @@
  */
 
 import {
+	failOrphanedCodeIndex,
 	failStaleBackgroundJobs,
 	failStaleProjectScans,
+	findQuietIndexingCodeIndexes,
 	purgeExpiredBackgroundJobs,
+	type QuietIndexingCodeIndex,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import type { Client } from "@temporalio/client";
+import { getTemporalClient } from "../client";
 
 /**
  * How long a finished job stays visible in the Job Hub.
@@ -59,6 +64,149 @@ const DEFAULT_STALE_MINUTES = 45;
  * whole mechanism exists to remove.
  */
 const PROJECT_SCAN_STALE_MINUTES = 90;
+
+/**
+ * How long a code-index row must sit INDEXING without a write before the sweep
+ * asks Temporal about it.
+ *
+ * A pre-filter, not the verdict. The API never writes INDEXING —
+ * `initCodeIndexActivity` does, on a worker — so every INDEXING row had a
+ * started workflow, and `describe()` is what decides whether it still has one.
+ * The window only keeps the sweep from describing every healthy run on every
+ * tick; it can be short because a wrong answer here costs a describe call, not
+ * a failed run.
+ */
+const CODE_INDEX_QUIET_MINUTES = 10;
+
+/**
+ * Bounds on one code-index sweep. The watchdog gives the whole activity two
+ * minutes with no heartbeat, shared with the two sweeps before it: 25 rows at
+ * 5 in flight, each describe capped at 5 seconds, is at most ~25 seconds. Rows
+ * past the limit wait for the next tick, oldest first.
+ */
+const CODE_INDEX_SWEEP_LIMIT = 25;
+const CODE_INDEX_SWEEP_CONCURRENCY = 5;
+const CODE_INDEX_DESCRIBE_TIMEOUT_MS = 5_000;
+
+const ORPHANED_CODE_INDEX_ERROR =
+	"Indexing stopped unexpectedly: the indexing run is no longer active. Re-index to try again.";
+
+/**
+ * The indexing workflow id for a repo, for rows written before `workflowId`
+ * was recorded.
+ *
+ * Duplicated rather than imported: the same format is `codeIndexWorkflowId` in
+ * `packages/api/modules/projects/lib/code-indexing-trigger.ts`, and
+ * `@repo/temporal` may not depend on `@repo/api`. Change one, change the other —
+ * a wrong id reads as "not found", and not found is failed.
+ */
+function codeIndexWorkflowId(
+	projectId: string,
+	repositoryIntegrationId: string | null,
+): string {
+	return `code-index-${projectId}-${repositoryIntegrationId ?? "legacy"}`;
+}
+
+/**
+ * Whether a code-index row's workflow is still running.
+ *
+ * Only a definite answer counts as dead: the latest run under the id is closed
+ * (completed, failed, terminated, timed out, cancelled), or Temporal has never
+ * heard of the workflow. A describe that errors any other way,
+ * or does not answer in time, counts as live, as in
+ * `isGenerationWorkflowLiveActivity` — a stale row costs a confusing status for
+ * one more tick, a wrongly-failed row costs a run the user is waiting on.
+ */
+async function isCodeIndexWorkflowLive(
+	client: Client,
+	workflowId: string,
+): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<"timeout">((resolve) => {
+		timer = setTimeout(
+			() => resolve("timeout"),
+			CODE_INDEX_DESCRIBE_TIMEOUT_MS,
+		);
+	});
+	try {
+		const description = await Promise.race([
+			client.workflow.getHandle(workflowId).describe(),
+			deadline,
+		]);
+		if (description === "timeout") {
+			return true;
+		}
+		return description.status.name === "RUNNING";
+	} catch (error) {
+		const name = error instanceof Error ? error.name : "";
+		return name !== "WorkflowNotFoundError";
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * Fail code-index rows left INDEXING by a workflow that is no longer running.
+ *
+ * The workflow's own guard closes the row on every failure it sees, but some
+ * endings never reach workflow code: a terminate, a run timeout, a cancel from
+ * the Temporal UI, a fail write that itself was lost, a history recorded
+ * before the guard existed. Each leaves the row "Indexing…" for good, and the
+ * settings page polls it forever.
+ *
+ * Each row is failed with a compare-and-set on the `updatedAt` it was read
+ * with, so a row written to since — a re-index's init, a progress tick — is
+ * left for the next tick to judge afresh. Returns the number of rows failed.
+ */
+async function failOrphanedCodeIndexes(): Promise<number> {
+	const rows = await findQuietIndexingCodeIndexes({
+		quietMinutes: CODE_INDEX_QUIET_MINUTES,
+		limit: CODE_INDEX_SWEEP_LIMIT,
+	});
+	if (rows.length === 0) {
+		return 0;
+	}
+
+	let client: Client;
+	try {
+		client = await getTemporalClient();
+	} catch {
+		// No answer for any row is "live" for every row.
+		return 0;
+	}
+
+	let failed = 0;
+	const sweepRow = async (row: QuietIndexingCodeIndex) => {
+		const workflowId =
+			row.workflowId ??
+			codeIndexWorkflowId(row.projectId, row.repositoryIntegrationId);
+		if (await isCodeIndexWorkflowLive(client, workflowId)) {
+			return;
+		}
+		// Awaited before the `+=`: `failed += await …` reads `failed` before
+		// the await and drops the counts of the other rows in flight.
+		const written = await failOrphanedCodeIndex({
+			id: row.id,
+			observedUpdatedAt: row.updatedAt,
+			error: ORPHANED_CODE_INDEX_ERROR,
+		});
+		failed += written;
+	};
+
+	let cursor = 0;
+	const worker = async () => {
+		while (cursor < rows.length) {
+			await sweepRow(rows[cursor++]);
+		}
+	};
+	await Promise.all(
+		Array.from(
+			{ length: Math.min(CODE_INDEX_SWEEP_CONCURRENCY, rows.length) },
+			worker,
+		),
+	);
+	return failed;
+}
 
 function resolveRetentionDays(): number {
 	const raw = process.env.FABRIC_JOB_RETENTION_DAYS;
@@ -110,10 +258,12 @@ export interface FailStaleBackgroundJobsOutput {
 	staleMinutes: number;
 	failedScanCount: number;
 	scanStaleMinutes: number;
+	failedCodeIndexCount: number;
 }
 
 /**
- * Fail work whose worker died mid-run — background jobs and project scans.
+ * Fail work whose worker died mid-run — background jobs, project scans and
+ * code-index rows.
  *
  * Nothing else will ever close those rows: the closing write lives in the
  * activity that never got to run. Without this they sit in the panel as
@@ -126,6 +276,11 @@ export interface FailStaleBackgroundJobsOutput {
  * for no gain. The two sweeps are independent `updateMany`s and each is
  * idempotent in effect, so a retry after a partial pass simply finds nothing
  * left past its threshold.
+ *
+ * Code-index rows are a third table with the same disease, but judged by
+ * asking Temporal rather than by age (see `failOrphanedCodeIndexes`). That
+ * sweep runs last and on its own error budget: a Temporal or database hiccup
+ * there costs only its own tick, never the two sweeps above.
  */
 export async function failStaleBackgroundJobsActivity(): Promise<FailStaleBackgroundJobsOutput> {
 	const staleMinutes = resolveStaleMinutes();
@@ -151,10 +306,25 @@ export async function failStaleBackgroundJobsActivity(): Promise<FailStaleBackgr
 		});
 	}
 
+	let failedCodeIndexCount = 0;
+	try {
+		failedCodeIndexCount = await failOrphanedCodeIndexes();
+	} catch (error) {
+		logger.warn("[BackgroundJobWatchdog] Code index sweep failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+	if (failedCodeIndexCount > 0) {
+		logger.warn("[BackgroundJobWatchdog] Failed orphaned code indexes", {
+			failedCodeIndexCount,
+		});
+	}
+
 	return {
 		failedCount,
 		staleMinutes,
 		failedScanCount,
 		scanStaleMinutes: PROJECT_SCAN_STALE_MINUTES,
+		failedCodeIndexCount,
 	};
 }

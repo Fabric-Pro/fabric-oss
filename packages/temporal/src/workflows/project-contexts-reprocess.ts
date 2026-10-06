@@ -15,14 +15,29 @@
 
 import { ApplicationFailure, log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+} from "../task-queues";
+
+const { deleteProjectContextsFromQdrant, reembedProjectContext } =
+	proxyActivities<typeof activities>({
+		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+		startToCloseTimeout: "10 minutes", // Allow longer for large projects
+		retry: {
+			initialInterval: "2s",
+			maximumInterval: "60s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
 
 const {
 	validateRAGProviderConfig,
 	fetchProjectContextsForReprocess,
-	deleteProjectContextsFromQdrant,
-	reembedProjectContext,
 	updateReprocessProgress,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "10 minutes", // Allow longer for large projects
 	retry: {
 		initialInterval: "2s",

@@ -10,11 +10,11 @@ For ANY task requiring code changes, you MUST use Sandbox. Here's the exact flow
 
 1. **Clone the repository**:
    \`\`\`
-   Sandbox__createSession({ repoUrl: "https://github.com/owner/repo.git", branch: "main" })
+   Sandbox__createSession({ repoUrl: "https://github.com/owner/repo.git" })
    \`\`\`
-   This returns a sessionId you'll use for all subsequent calls.
+   This checks out the repository's default branch (pass branch to pick another) and returns a sessionId you'll use for all subsequent calls, plus the checked-out branch: keep it as defaultBranch, the base for the pull request.
 
-2. **Create a feature branch** (REQUIRED - never commit directly to main):
+2. **Create a feature branch** (REQUIRED - never commit directly to the default branch):
    \`\`\`
    Sandbox__exec({ sessionId: "...", command: "git checkout -b feature/descriptive-branch-name" })
    \`\`\`
@@ -41,7 +41,7 @@ For ANY task requiring code changes, you MUST use Sandbox. Here's the exact flow
      tool: "GitHub__create_pull_request",
      action: "Create Pull Request",
      data: {
-       owner, repo, baseBranch: "main", headBranch: "feature/your-branch-name",
+       owner, repo, baseBranch: defaultBranch, headBranch: "feature/your-branch-name",
        title, body
        // diff and stats are AUTO-INJECTED from the getDiff result
        // You do NOT need to include them - the workflow handles this automatically
@@ -58,7 +58,7 @@ For ANY task requiring code changes, you MUST use Sandbox. Here's the exact flow
    // If valid=false, recreate session, checkout same branch, and reapply changes
    Sandbox__commit({ sessionId, message: "..." })
    Sandbox__push({ sessionId, branch: "feature/your-branch-name" })
-   GitHub__create_pr({ owner, repo, title, head: "feature/your-branch-name", base: "main", body })
+   GitHub__create_pr({ owner, repo, title, head: "feature/your-branch-name", base: defaultBranch, body })
    \`\`\`
    **CRITICAL: You MUST call GitHub__create_pr after pushing. The task is NOT complete until the PR is created.**
    **NOTE: Sandbox sessions may expire after ~15 minutes of inactivity. Always check with getSession after approval.**

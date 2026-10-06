@@ -431,6 +431,7 @@ beforeEach(async () => {
 	mocks.whoami.mockResolvedValue(ORG_KEY);
 	mocks.getPublished.mockReset();
 	mocks.createDownloadUrl.mockReset();
+	mocks.createFileDownloadUrls.mockReset();
 	mocks.getApiKey.mockReset();
 	mocks.getApiKey.mockReturnValue("org_test");
 	mocks.getDefaultContext.mockReset();
@@ -1854,6 +1855,50 @@ describe("a repository-backed project", () => {
 // environment
 // ---------------------------------------------------------------------------
 describe("environment", () => {
+	it("downloads only the declaration from a snapshot above 50 MiB", async () => {
+		const dest = await makeTree();
+		process.env.DOCTOR_TEST_PRESENT = SENTINEL;
+		const declaration = JSON.stringify({
+			version: 1,
+			variables: [{ name: "DOCTOR_TEST_PRESENT" }],
+			tools: [],
+		});
+		const manifest = [
+			manifestEntry("fabric.environment.json", declaration),
+			...Array.from({ length: 14 }, (_, index) => ({
+				...manifestEntry(`file-${index}.md`, "x"),
+				size: 5 * 1024 * 1024,
+			})),
+		];
+		const published = publishedFor(manifest);
+		mocks.getPublished.mockResolvedValue(published);
+		mocks.createFileDownloadUrls.mockResolvedValue({
+			digest: published.snapshot.digest,
+			expiresInSeconds: 600,
+			files: [
+				{
+					path: "fabric.environment.json",
+					url: "https://example.com/declaration",
+				},
+			],
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(declaration)),
+		);
+		const { report } = await doctorJson(dest);
+		expect(checkOf(report, "environment").status).toBe("pass");
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(mocks.createFileDownloadUrls).toHaveBeenCalledWith(
+			"project-1",
+			{
+				digest: published.snapshot.digest,
+				paths: ["fabric.environment.json"],
+			},
+			{ org: undefined },
+		);
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
 	const DECLARATION = JSON.stringify({
 		version: 1,
 		variables: [

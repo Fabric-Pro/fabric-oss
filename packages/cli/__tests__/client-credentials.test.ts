@@ -129,14 +129,14 @@ afterEach(() => {
 describe("cliUserAgent", () => {
 	it("names the build, Node and the platform", () => {
 		expect(cliUserAgent("0.5.0", "22.11.0", "linux")).toBe(
-			"fabric-cli/0.5.0 (node/22.11.0; linux)",
+			"fabric-cli/0.5.0 (node/22.11.0; linux; instructions-stream-v1)",
 		);
 	});
 
 	it("defaults to this package's version and this machine", () => {
 		expect(cliUserAgent()).toMatch(
 			new RegExp(
-				`^fabric-cli/\\d+\\.\\d+\\.\\d+\\S* \\(node/${process.versions.node.replace(/\./g, "\\.")}; ${process.platform}\\)$`,
+				`^fabric-cli/\\d+\\.\\d+\\.\\d+\\S* \\(node/${process.versions.node.replace(/\./g, "\\.")}; ${process.platform}; instructions-stream-v1\\)$`,
 			),
 		);
 	});

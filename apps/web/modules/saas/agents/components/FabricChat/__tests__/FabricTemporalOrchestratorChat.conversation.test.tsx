@@ -85,8 +85,21 @@ function idleStream(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+// The options the chat passed to the hook, so a test can drive the
+// callbacks the real hook would call.
+const streamOptions = vi.hoisted(() => ({
+	current: null as null | {
+		onTurnRefused?: (content: string) => string | undefined;
+	},
+}));
+
 vi.mock("../../../hooks/useOrchestratorStream", () => ({
-	useOrchestratorStream: () => streamState.current,
+	useOrchestratorStream: (options: {
+		onTurnRefused?: (content: string) => string | undefined;
+	}) => {
+		streamOptions.current = options;
+		return streamState.current;
+	},
 }));
 
 vi.mock(
@@ -174,6 +187,18 @@ vi.mock(
 		};
 	},
 );
+
+// Image shaping draws on a canvas, which jsdom lacks; the file passes as is.
+vi.mock("@saas/projects/lib/image-upload-utils", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@saas/projects/lib/image-upload-utils")
+		>();
+	return {
+		...actual,
+		prepareImageForAi: async (file: File) => ({ ok: true, file }),
+	};
+});
 
 // The composer's own behaviour is covered elsewhere; here it only has to
 // carry text in and a send out.
@@ -391,6 +416,334 @@ describe("FabricTemporalOrchestratorChat — conversation before the first strea
 			["user", "First question"],
 			["assistant", "The answer"],
 		]);
+	});
+});
+
+// A different message is already being answered in this conversation
+// (another tab): the server refuses this one with TURN_IN_PROGRESS. The hook
+// removes the question and its placeholder, leaves no executionId, and sets
+// the notice in `state.result.error` (its own tests cover that); this checks
+// what the chat does with that state.
+describe("FabricTemporalOrchestratorChat — a message refused because another is being answered", () => {
+	const NOTICE =
+		"Your message was not sent: another message in this conversation is already being answered, possibly in another tab. Send yours when that answer finishes.";
+
+	// What the hook's state is after a refusal: the chat's `onTurnRefused`
+	// may return a sentence, which the hook appends to its notice.
+	function refusedStream(addition?: string) {
+		return idleStream({
+			messages: [],
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "failed",
+				executionId: null,
+				result: { error: addition ? `${NOTICE} ${addition}` : NOTICE },
+			},
+		});
+	}
+
+	/** Refuses the first send the way the hook does; later sends succeed. */
+	function refusingFirstSend() {
+		let sends = 0;
+		const sendMessage = vi.fn(async (content: string) => {
+			sends++;
+			if (sends === 1) {
+				const addition =
+					streamOptions.current?.onTurnRefused?.(content);
+				streamState.current = {
+					...refusedStream(addition),
+					sendMessage,
+				};
+			}
+			return null;
+		});
+		return sendMessage;
+	}
+
+	it("shows the notice, never shows or saves the message, and puts its text back in the composer", async () => {
+		streamState.current = idleStream({
+			sendMessage: vi.fn(async (content: string) => {
+				streamState.current = refusedStream();
+				streamOptions.current?.onTurnRefused?.(content);
+				return null;
+			}),
+		});
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+
+		await send("Review the last commits");
+
+		expect(screen.getByTestId("failed-turn").textContent).toContain(
+			"already being answered",
+		);
+		// Back in the composer, and nowhere else on the page.
+		const composer = screen.getByLabelText(
+			"Message",
+		) as HTMLTextAreaElement;
+		expect(composer.value).toBe("Review the last commits");
+		expect(
+			screen
+				.queryAllByText("Review the last commits")
+				.filter((el) => el !== composer),
+		).toEqual([]);
+		// Nothing reaches the conversation record.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(conversationHook.saveExecution).not.toHaveBeenCalled();
+		expect(conversationHook.createConversation).not.toHaveBeenCalled();
+	});
+
+	describe("a refused message that carried attachments", () => {
+		const ATTACH_AGAIN = /attachments were not sent.*attach them again/i;
+		const readyDocument = {
+			id: "file_1",
+			file: new File(["notes"], "notes.txt", { type: "text/plain" }),
+			name: "notes.txt",
+			type: "text/plain",
+			size: 5,
+			documentId: "doc_example_1",
+			status: "ready" as const,
+			contextEntry: "<attachment notes.txt>",
+		};
+		const originalFetch = global.fetch;
+		const originalCreate = URL.createObjectURL;
+		const originalRevoke = URL.revokeObjectURL;
+		beforeEach(() => {
+			global.fetch = vi.fn(async () => ({
+				ok: true,
+				status: 200,
+				json: async () => ({
+					url: "https://example.com/signed/photo.png",
+					storagePath: "uploads/example-org/photo.png",
+				}),
+			})) as unknown as typeof fetch;
+			URL.createObjectURL = vi.fn(() => "blob:example-preview");
+			URL.revokeObjectURL = vi.fn();
+		});
+		afterEach(() => {
+			global.fetch = originalFetch;
+			URL.createObjectURL = originalCreate;
+			URL.revokeObjectURL = originalRevoke;
+		});
+
+		it("says an image was not sent and has to be attached again", async () => {
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			const { container } = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+				/>,
+			);
+			await act(async () => {
+				fireEvent.change(
+					container.querySelector(
+						'input[type="file"]',
+					) as HTMLInputElement,
+					{
+						target: {
+							files: [
+								new File(["png"], "photo.png", {
+									type: "image/png",
+								}),
+							],
+						},
+					},
+				);
+			});
+
+			await send("What is in this picture?");
+
+			expect((sendMessage.mock.calls[0] as unknown[])[7]).toEqual([
+				"uploads/example-org/photo.png",
+			]);
+			expect(screen.getByTestId("failed-turn").textContent).toMatch(
+				ATTACH_AGAIN,
+			);
+			expect(
+				(screen.getByLabelText("Message") as HTMLTextAreaElement).value,
+			).toBe("What is in this picture?");
+		});
+
+		it("says a document was not sent and has to be attached again", async () => {
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+					initialAttachedDocuments={[readyDocument]}
+				/>,
+			);
+
+			await send("Summarize this file");
+
+			expect((sendMessage.mock.calls[0] as unknown[])[9]).toEqual([
+				"doc_example_1",
+			]);
+			expect(screen.getByTestId("failed-turn").textContent).toMatch(
+				ATTACH_AGAIN,
+			);
+		});
+
+		it("says nothing about attachments for a text-only message", async () => {
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+				/>,
+			);
+
+			await send("Review the last commits");
+
+			const notice = screen.getByTestId("failed-turn").textContent;
+			expect(notice).toContain("already being answered");
+			expect(notice).not.toMatch(/attach/i);
+		});
+
+		it("does not carry the attachment note over to a later text-only refusal", async () => {
+			let sends = 0;
+			const sendMessage = vi.fn(async (content: string) => {
+				sends++;
+				const addition =
+					streamOptions.current?.onTurnRefused?.(content);
+				streamState.current = {
+					...refusedStream(addition),
+					sendMessage,
+				};
+				return null;
+			});
+			streamState.current = idleStream({ sendMessage });
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+					initialAttachedDocuments={[readyDocument]}
+				/>,
+			);
+
+			await send("Summarize this file");
+			expect(screen.getByTestId("failed-turn").textContent).toMatch(
+				ATTACH_AGAIN,
+			);
+			// The text came back; the document did not. Sent again as is.
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "Send" }));
+			});
+			expect(sends).toBe(2);
+			expect((sendMessage.mock.calls[1] as unknown[])[9]).toBeUndefined();
+			expect(screen.getByTestId("failed-turn").textContent).not.toMatch(
+				/attach/i,
+			);
+		});
+	});
+
+	it("a successful send after a refusal clears the notice, and its turn is saved", async () => {
+		let sends = 0;
+		const sendMessage = vi.fn(async (content: string) => {
+			sends++;
+			if (sends === 1) {
+				streamState.current = { ...refusedStream(), sendMessage };
+				streamOptions.current?.onTurnRefused?.(content);
+			} else {
+				streamState.current = idleStream({
+					sendMessage,
+					isLoading: true,
+					isRunning: true,
+					state: {
+						...(idleStream().state as Record<string, unknown>),
+						status: "running",
+					},
+				});
+			}
+			return null;
+		});
+		streamState.current = idleStream({ sendMessage });
+		orpc.get.mockResolvedValue({ messages: [] });
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+
+		await send("Review the last commits");
+		expect(screen.getByTestId("failed-turn")).toBeTruthy();
+
+		// Sent again once the other answer finished.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		});
+		expect(sendMessage).toHaveBeenCalledTimes(2);
+		expect(screen.queryByTestId("failed-turn")).toBeNull();
+
+		streamState.current = idleStream({
+			sendMessage,
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "completed",
+				executionId: "exec_2",
+				result: { response: "The review" },
+			},
+		});
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+
+		expect(screen.queryByTestId("failed-turn")).toBeNull();
+		await waitFor(() =>
+			expect(conversationHook.saveExecution).toHaveBeenCalledTimes(1),
+		);
+		const saved = conversationHook.saveExecution.mock.calls[0][0];
+		expect(saved.conversationId).toBe("conv_existing");
+		expect(saved.execution.id).toBe("exec_2");
+		expect(
+			saved.messages.map((m: { role: string; content: string }) => [
+				m.role,
+				m.content,
+			]),
+		).toEqual([
+			["user", "Review the last commits"],
+			["assistant", "The review"],
+		]);
+	});
+
+	it("does not overwrite a draft typed while the refused message was in flight", async () => {
+		streamState.current = idleStream({
+			sendMessage: vi.fn(async (content: string) => {
+				fireEvent.change(screen.getByLabelText("Message"), {
+					target: { value: "a new draft" },
+				});
+				streamState.current = refusedStream();
+				streamOptions.current?.onTurnRefused?.(content);
+				return null;
+			}),
+		});
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+
+		await send("Review the last commits");
+
+		expect(
+			(screen.getByLabelText("Message") as HTMLTextAreaElement).value,
+		).toBe("a new draft");
+		expect(screen.getByTestId("failed-turn")).toBeTruthy();
 	});
 });
 

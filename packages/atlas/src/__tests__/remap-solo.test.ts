@@ -36,7 +36,7 @@ vi.mock("@repo/logs", () => ({
 }));
 vi.mock("../credentials", () => ({ ensureFreshRepoCredentials: vi.fn() }));
 vi.mock("../commits", () => ({ countCommitsSince: vi.fn() }));
-vi.mock("simple-git", () => ({ default: vi.fn() }));
+vi.mock("simple-git", () => ({ simpleGit: vi.fn() }));
 
 const mockDetect = vi.fn();
 vi.mock("../intra-repo", () => ({

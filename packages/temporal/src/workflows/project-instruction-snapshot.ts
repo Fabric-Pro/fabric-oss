@@ -4,12 +4,10 @@ import { DEFERRED_SCAN_MAX_ATTEMPTS } from "../lib/instruction-deferred-scan-ret
 
 const {
 	verifyAndScanInstructionFiles,
-	finalizeInstructionSnapshot,
 	rejectInstructionSnapshot,
 	markInstructionSnapshotFailed,
 	publishInstructionSnapshotActivity,
 	pruneInstructionSnapshots,
-	promoteUnscannedInstructionSnapshot,
 	recordDeferredScanOutcome,
 } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "10 minutes",
@@ -21,6 +19,22 @@ const {
 		maximumAttempts: 3,
 	},
 });
+
+// Ordinary finalization and publish-before-scan promotion both verify and
+// store each accepted file before making the snapshot READY. Large repository
+// syncs can legitimately exceed the ordinary activity budget, so keep this
+// longer budget scoped to those two activities only.
+const { finalizeInstructionSnapshot, promoteUnscannedInstructionSnapshot } =
+	proxyActivities<typeof activities>({
+		startToCloseTimeout: "30 minutes",
+		heartbeatTimeout: "60 seconds",
+		retry: {
+			initialInterval: "1s",
+			maximumInterval: "30s",
+			backoffCoefficient: 2,
+			maximumAttempts: 3,
+		},
+	});
 
 /**
  * The publish-first path's deferred scan (Fizzy #2737), on a longer retry

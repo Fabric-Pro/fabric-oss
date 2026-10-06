@@ -275,7 +275,7 @@ describe("a clone URL in a suggested command", () => {
 
 		expect(result.code).toBe(1);
 		expect(result.stderr).toBe(
-			"✗ Could not clone x.example/group/$(id). Run: git clone -- 'https://x.example/group/$(id)' to see why.\n",
+			"✗ Could not clone x.example/group/$(id). The Fabric MCP server was not registered. Run: git clone -- 'https://x.example/group/$(id)' to see why.\n",
 		);
 	});
 });
@@ -327,7 +327,7 @@ describe("a branch name the deployment supplied", () => {
 
 		expect(result.code).toBe(7);
 		expect(result.stderr).toBe(
-			`✗ Could not clone ${NAME}: it has no branch main 31m.\n`,
+			`✗ Could not clone ${NAME}: it has no branch main 31m. The Fabric MCP server was not registered.\n`,
 		);
 		expect(`${result.stdout}${result.stderr}`).not.toContain("\u009b");
 	});

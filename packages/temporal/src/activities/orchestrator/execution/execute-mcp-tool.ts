@@ -53,6 +53,7 @@ import {
 import { executeMicrosoftTeamsTool } from "../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../shared/read-only-gate";
 import { HEARTBEAT_INTERVALS } from "../config";
+import { assertTurnDispatchable, rethrowIfTurnStopped } from "../turn-dispatch";
 import type { ExecuteMcpToolInput, ExecuteMcpToolOutput } from "../types";
 import type { AuthorityGateResult } from "./authority-gate";
 import { describeError } from "./describe-error";
@@ -664,7 +665,12 @@ export async function executeMcpTool(
 				toolName: input.toolName,
 				elapsedMs: Date.now() - startTime,
 			}),
-		HEARTBEAT_INTERVALS.DEFAULT,
+		// In a chat turn the heartbeat is also how a Stop reaches this
+		// activity (and aborts an image request in flight), so it ticks at
+		// the model rounds' cadence.
+		input.turnScope
+			? HEARTBEAT_INTERVALS.FREQUENT
+			: HEARTBEAT_INTERVALS.DEFAULT,
 	);
 
 	// When a timeout is set, also cancel the underlying MCP call on expiry so a
@@ -674,6 +680,15 @@ export async function executeMcpTool(
 	const abortController = input.timeoutMs ? new AbortController() : undefined;
 
 	try {
+		// In a chat turn, an MCP or Fabric tool call is not launched once a
+		// Stop is recorded (the Stop's Temporal cancel may not have reached
+		// this run yet). This is a launch check only: the provider requests a
+		// tool makes after it are checked individually only where the tool
+		// supports it (image generation today), not for the other Fabric AI
+		// tools (web search, scraping, patterns).
+		if (input.turnScope) {
+			await assertTurnDispatchable(input.turnScope);
+		}
 		const work = executeMcpToolImpl(
 			input,
 			startTime,
@@ -1731,6 +1746,9 @@ async function executeMcpToolImpl(
 						gatewayModel: args.gatewayModel as string | undefined,
 						userId: input.userId,
 						organizationId: input.organizationId,
+						...(input.turnScope
+							? { turnScope: input.turnScope }
+							: {}),
 					});
 
 					if (!imageResult.success) {
@@ -1876,6 +1894,11 @@ async function executeMcpToolImpl(
 				};
 			}
 		} catch (error) {
+			// In a chat turn a stop (a refused dispatch, a cancelled
+			// activity) is not a tool failure for the model to work around.
+			if (input.turnScope) {
+				rethrowIfTurnStopped(error);
+			}
 			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Fabric AI tool "${input.toolName}" failed:`,

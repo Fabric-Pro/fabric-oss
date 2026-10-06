@@ -10,12 +10,7 @@ import { interpolateTemplate } from "./utils";
 export async function executeGithubGetFileStep(
 	params: StepParams,
 ): Promise<NodeExecutionResult> {
-	const {
-		owner,
-		repo,
-		filePath,
-		ref = "main",
-	} = params.nodeConfig as {
+	const { owner, repo, filePath, ref } = params.nodeConfig as {
 		owner?: string;
 		repo?: string;
 		filePath?: string;
@@ -45,11 +40,17 @@ export async function executeGithubGetFileStep(
 	const interpolatedOwner = interpolateTemplate(owner, params.inputs);
 	const interpolatedRepo = interpolateTemplate(repo, params.inputs);
 	const interpolatedPath = interpolateTemplate(filePath, params.inputs);
-	const interpolatedRef = interpolateTemplate(ref, params.inputs);
+	// Without a ref GitHub reads the repository's default branch.
+	const interpolatedRef = ref
+		? interpolateTemplate(ref, params.inputs).trim()
+		: "";
+	const refQuery = interpolatedRef
+		? `?ref=${encodeURIComponent(interpolatedRef)}`
+		: "";
 
 	try {
 		const response = await fetch(
-			`https://api.github.com/repos/${interpolatedOwner}/${interpolatedRepo}/contents/${interpolatedPath}?ref=${interpolatedRef}`,
+			`https://api.github.com/repos/${interpolatedOwner}/${interpolatedRepo}/contents/${interpolatedPath}${refQuery}`,
 			{
 				method: "GET",
 				headers: {

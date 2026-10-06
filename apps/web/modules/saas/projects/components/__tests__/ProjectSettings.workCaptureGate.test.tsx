@@ -170,7 +170,12 @@ const NO_CHANNEL: CapabilityGateSelection = {
 		tone: "warning",
 		title: "reason.settings.no-linked-channel.title",
 		body: "reason.settings.no-linked-channel.body",
-		params: { dependency: "a linked Slack or Teams conversation" },
+		params: {
+			dependency: "a linked Slack or Teams conversation",
+			count: 1,
+		},
+		subjects: [],
+		subjectTotal: 0,
 		ctaLabel: null,
 		ctaKind: "none",
 		ctaTarget: null,

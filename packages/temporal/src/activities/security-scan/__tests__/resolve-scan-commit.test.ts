@@ -11,7 +11,7 @@ const { mockListRemote, mockGetRepos, mockGetCheckpoint, mockBuildUrl } =
 
 // `simpleGit()` → an object with the one method the activity calls.
 vi.mock("simple-git", () => ({
-	default: () => ({ listRemote: mockListRemote }),
+	simpleGit: () => ({ listRemote: mockListRemote }),
 }));
 vi.mock("@repo/database", () => ({
 	getProjectReposForCodeSearch: mockGetRepos,

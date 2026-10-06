@@ -3,6 +3,13 @@ import { heartbeat } from "@temporalio/activity";
 import { generateText } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
+import {
+	activityAbortSignal,
+	guardTurnModel,
+	rethrowIfTurnStopped,
+	startHeartbeatTicker,
+	type TurnScope,
+} from "../turn-dispatch";
 
 export interface CompactConversationInput {
 	/** Turns to fold into the summary. Should already exclude the original user message. */
@@ -24,7 +31,19 @@ export interface CompactConversationInput {
 	iteration?: number;
 	/** Pre-compaction history length (for the SSE event payload) */
 	historyLengthBefore?: number;
+	/**
+	 * The chat turn this compaction belongs to; when set, the turn record is
+	 * consulted before the model request (see turn-dispatch.ts).
+	 */
+	turnScope?: TurnScope;
 }
+
+/**
+ * Heartbeat cadence while the summary is generated: keeps the activity
+ * alive under its 1-minute heartbeat timeout and lets a Stop reach it while
+ * the provider is still working.
+ */
+const COMPACTION_HEARTBEAT_INTERVAL_MS = 5_000;
 
 export interface CompactConversationResult {
 	summaryText: string;
@@ -115,13 +134,36 @@ export async function compactConversationHistoryActivity(
 
 	heartbeat({ phase: "compacting" });
 
-	const result = await generateText({
-		model,
-		instructions: SYSTEM_PROMPT,
-		prompt: `User's original task:\n${currentTask}\n\n=== EARLIER CONVERSATION TO COMPACT ===\n${transcript}\n=== END ===\n\nProduce the PROGRESS SO FAR summary now.`,
-		maxOutputTokens: maxSummaryTokens,
-		temperature: 0.2,
-	});
+	// Every physical request — the SDK's own retries included — is checked
+	// against the turn record (see guardTurnModel).
+	const guarded = guardTurnModel(model, input.turnScope);
+	// Heartbeat for the whole call, not once before it: a single heartbeat
+	// left a long summary call with nothing to keep it alive or to deliver
+	// a cancel to it.
+	const stopHeartbeat = startHeartbeatTicker(
+		COMPACTION_HEARTBEAT_INTERVAL_MS,
+		{ phase: "compacting" },
+	);
+	let result: Awaited<ReturnType<typeof generateText>>;
+	try {
+		result = await generateText({
+			model: guarded.model,
+			instructions: SYSTEM_PROMPT,
+			prompt: `User's original task:\n${currentTask}\n\n=== EARLIER CONVERSATION TO COMPACT ===\n${transcript}\n=== END ===\n\nProduce the PROGRESS SO FAR summary now.`,
+			maxOutputTokens: maxSummaryTokens,
+			temperature: 0.2,
+			// A cancelled activity aborts the request in flight.
+			abortSignal: activityAbortSignal(),
+		});
+	} catch (error) {
+		// An aborted request surfaces as the SDK's abort error; report the
+		// activity cancelled, which is what it is. A refusal the SDK wrapped
+		// in its retry error is rethrown as itself.
+		rethrowIfTurnStopped(error);
+		throw error;
+	} finally {
+		stopHeartbeat();
+	}
 
 	if (input.executionId && result.text.trim().length > 0) {
 		publishExecutionEvent(input.executionId, {

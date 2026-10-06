@@ -328,6 +328,93 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Authorization
 // ---------------------------------------------------------------------------
+describe("large snapshot CLI compatibility", () => {
+	it("keeps the complete manifest and tells the old CLI how to upgrade", async () => {
+		const files = Array.from({ length: 14 }, (_, index) => ({
+			...manifestRows()[0],
+			path: `file-${index}.md`,
+			size: 5 * 1024 * 1024,
+		}));
+		mocks.listInstructionFiles.mockResolvedValue(files);
+		mocks.getPublishedInstructionSnapshot.mockResolvedValue(
+			readySnapshot({ fileCount: files.length }),
+		);
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: { "user-agent": "fabric-cli/0.5.0 (node/22; win32)" },
+		});
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toContain("0.5.1");
+		expect((await response.json()).data.manifest).toHaveLength(14);
+	});
+
+	it.each([
+		"fabric-cli/0.5.1 (node/22; win32)",
+		"fabric-cli/1.0.0",
+		"example-client",
+	])(
+		"does not warn compatible or unidentified clients: %s",
+		async (userAgent) => {
+			mocks.listInstructionFiles.mockResolvedValue(
+				Array.from({ length: 14 }, (_, index) => ({
+					...manifestRows()[0],
+					path: `file-${index}.md`,
+					size: 5 * 1024 * 1024,
+				})),
+			);
+			const response = await buildApp().request(PUBLISHED_PATH, {
+				headers: { "user-agent": userAgent },
+			});
+			expect(response.headers.get("X-Fabric-Cli-Upgrade")).toBeNull();
+		},
+	);
+
+	it("does not warn a staged unversioned build that declares streaming support", async () => {
+		mocks.listInstructionFiles.mockResolvedValue(
+			Array.from({ length: 14 }, (_, index) => ({
+				...manifestRows()[0],
+				path: `file-${index}.md`,
+				size: 5 * 1024 * 1024,
+			})),
+		);
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: {
+				"user-agent":
+					"fabric-cli/0.4.0 (node/22; win32; instructions-stream-v1)",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toBeNull();
+	});
+
+	it("still warns an old CLI with an unknown capability marker", async () => {
+		mocks.listInstructionFiles.mockResolvedValue(
+			Array.from({ length: 14 }, (_, index) => ({
+				...manifestRows()[0],
+				path: `file-${index}.md`,
+				size: 5 * 1024 * 1024,
+			})),
+		);
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: {
+				"user-agent":
+					"fabric-cli/0.4.0 (node/22; win32; instructions-stream-v2)",
+			},
+		});
+
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toContain("0.5.1");
+	});
+
+	it("does not disclose snapshot compatibility to a refused caller", async () => {
+		mocks.scopes = [];
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: { "user-agent": "fabric-cli/0.5.0" },
+		});
+		expect(response.status).toBe(403);
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toBeNull();
+		expect(mocks.listInstructionFiles).not.toHaveBeenCalled();
+	});
+});
 /**
  * Review round 2, finding 6. Neither route read `org` or `personal`, so a
  * personal key with legitimate access to a project in organization A

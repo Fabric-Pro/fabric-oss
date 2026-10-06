@@ -14,7 +14,7 @@
 	"mcp": {
 		"aspire": {
 			"type": "local",
-			"command": ["aspire", "mcp", "start"],
+			"command": ["aspire", "agent", "mcp"],
 			"enabled": true
 		},
 		"playwright": {

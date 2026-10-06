@@ -62,10 +62,16 @@ import {
 import {
 	agentMcpLines,
 	agentRegistrationFacts,
+	mcpAuthenticationPending,
+	mcpRegistrationComplete,
 	registerAgentMcp,
 } from "../../lib/instructions/agent-mcp.js";
 import { createAgentRunner } from "../../lib/instructions/agent-run.js";
-import { applyPlan } from "../../lib/instructions/apply.js";
+import {
+	type ApplyResult,
+	applyPlan,
+	type FileContents,
+} from "../../lib/instructions/apply.js";
 import { extractBundle, fetchBundle } from "../../lib/instructions/bundle.js";
 import {
 	type CheckoutClassification,
@@ -123,6 +129,7 @@ import {
 import {
 	type InstructionsLock,
 	LOCK_DIRECTORY,
+	LOCK_FILENAME,
 	lockPath,
 	readLock,
 	readLockSafely,
@@ -162,7 +169,10 @@ import {
 import {
 	type AlreadyProposed,
 	computePushPlan,
+	MAX_INLINE_PUSH_BYTES,
 	MAX_PUSH_CHANGES,
+	materializePushChanges,
+	pushContentBytes,
 	setAsideProposed,
 } from "../../lib/instructions/push.js";
 import { resolveProjectFromCheckout } from "../../lib/instructions/resolve-project.js";
@@ -174,6 +184,11 @@ import {
 	refreshKeptCopy,
 	selfUpdateLine,
 } from "../../lib/instructions/self-update.js";
+import {
+	IN_MEMORY_SNAPSHOT_BYTES,
+	type StagedFileContents,
+	stageFilesByUrl,
+} from "../../lib/instructions/staged-files.js";
 import {
 	type DetectedTools,
 	detectTools,
@@ -1079,11 +1094,7 @@ class SourceGuard {
 	constructor(
 		private readonly destination: string,
 		private readonly remote?: string,
-		/**
-		 * The destination is a folder `init --clone <folder>` is about to make
-		 * or fill, so what encloses it is not a checkout of anything: it is
-		 * classified as no checkout rather than asked of git.
-		 */
+		/** A missing or empty --clone target must not inherit its parent checkout. */
 		private readonly fresh = false,
 	) {}
 
@@ -1893,48 +1904,81 @@ async function syncOnce(
 		return { kind: "synced", outcome };
 	}
 
-	let contents = new Map<string, Uint8Array>();
-	if (plan.writes.length > 0) {
-		// A few files are fetched by name, so one changed file costs one
-		// download rather than the whole archive.
-		let perFile = plan.writes.length <= PER_FILE_MAX_WRITES;
-		if (perFile) {
-			const byPath = new Map(
-				manifest.map((entry) => [entry.path, entry]),
-			);
+	let contents: FileContents = new Map<string, Uint8Array>();
+	let staged: StagedFileContents | null = null;
+	let applied: ApplyResult;
+	try {
+		for (
+			let attempt = 0;
+			plan.writes.length > 0 && attempt < 2;
+			attempt++
+		) {
 			try {
-				contents = await fetchFilesByUrl({
-					client,
-					projectId: opts.project,
-					org: orgSlugFor(opts),
-					digest: published.snapshot.digest,
-					files: plan.writes.map((entry) => ({
-						path: entry.path,
-						size: byPath.get(entry.path)?.size ?? -1,
-						sha256: byPath.get(entry.path)?.sha256 ?? "",
-					})),
-					timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
-					signal: activeDeadline,
-				});
-			} catch (error) {
-				if (!(error instanceof PublishedChangedError)) {
-					throw fixedFailure(error);
+				const byPath = new Map(
+					manifest.map((entry) => [entry.path, entry]),
+				);
+				const large =
+					manifest.reduce((total, entry) => total + entry.size, 0) >
+					IN_MEMORY_SNAPSHOT_BYTES;
+				if (
+					large ||
+					(attempt === 0 && plan.writes.length <= PER_FILE_MAX_WRITES)
+				) {
+					const options = {
+						client,
+						projectId: opts.project,
+						org: orgSlugFor(opts),
+						digest: published.snapshot.digest,
+						files: plan.writes.map((entry) => ({
+							path: entry.path,
+							size: byPath.get(entry.path)?.size ?? -1,
+							sha256: entry.sha256 ?? "",
+						})),
+						timeoutMs: opts.hook
+							? hookDeadlineMs()
+							: BUNDLE_TIMEOUT_MS,
+						signal: activeDeadline,
+					};
+					if (large) {
+						staged = await stageFilesByUrl(options);
+						contents = staged;
+					} else contents = await fetchFilesByUrl(options);
+				} else {
+					const download = await downloadUrlClient(
+						opts,
+					).instructions.createDownloadUrl(opts.project, {
+						org: orgSlugFor(opts),
+					});
+					const archive = await fetchBundle(download.url, {
+						timeoutMs: opts.hook
+							? hookDeadlineMs()
+							: BUNDLE_TIMEOUT_MS,
+						maxBytes: maxArchiveBytes(manifest),
+						signal: activeDeadline,
+					});
+					contents = extractBundle(
+						archive,
+						plan.writes.map((entry) => ({
+							path: entry.path,
+							size: byPath.get(entry.path)?.size ?? -1,
+						})),
+					);
 				}
-				// The published version moved after this plan was made. One
-				// fresh manifest and a new plan, then the archive of what is
-				// published now; no further retry.
+				break;
+			} catch (error) {
+				if (!(error instanceof PublishedChangedError) || attempt > 0)
+					throw fixedFailure(error);
 				published = await fetchPublished(
 					client,
 					opts,
 					undefined,
 					guard,
 				);
-				if (!published.published || !published.snapshot) {
+				if (!published.published || !published.snapshot)
 					throw new CliFailure(
 						"This project has no published coding instructions yet.",
 						4,
 					);
-				}
 				outcome.version = published.snapshot.version;
 				outcome.digest = published.snapshot.digest;
 				manifest = assertValidManifest({
@@ -1946,44 +1990,12 @@ async function syncOnce(
 					{ keepLocalEdits },
 				);
 				fillPlanPaths(outcome, plan);
-				perFile = false;
 			}
 		}
-		if (!perFile && plan.writes.length > 0) {
-			const org = orgSlugFor(opts);
-			let download: { url: string };
-			try {
-				download = await downloadUrlClient(
-					opts,
-				).instructions.createDownloadUrl(opts.project, { org });
-			} catch (error) {
-				throw fixedFailure(error);
-			}
-			const sizes = new Map(
-				manifest.map((entry) => [entry.path, entry.size] as const),
-			);
-			const archive = await fetchBundle(download.url, {
-				timeoutMs: opts.hook ? hookDeadlineMs() : BUNDLE_TIMEOUT_MS,
-				// Bounded by what this manifest says it holds, not by what the
-				// response claims. The manifest has already been checked against
-				// the published snapshot limits, so this is a number the client
-				// decided.
-				maxBytes: maxArchiveBytes(manifest),
-				// In hook mode the same clock that bounds the command bounds the
-				// download, rather than a second independent budget after it.
-				signal: activeDeadline,
-			});
-			contents = extractBundle(
-				archive,
-				plan.writes.map((entry) => ({
-					path: entry.path,
-					size: sizes.get(entry.path) ?? -1,
-				})),
-			);
-		}
+		applied = await applyPlan({ root, plan, contents, keepLocalEdits });
+	} finally {
+		await staged?.dispose();
 	}
-
-	const applied = await applyPlan({ root, plan, contents, keepLocalEdits });
 	// What actually happened, not what was planned: a delete whose file was
 	// edited between planning and the unlink is reported as kept, because that
 	// is what it is. So is a write whose file was saved after planning
@@ -2323,7 +2335,7 @@ async function runPush(
 		added: opts.add,
 	});
 
-	if (computed.changes.length === 0) {
+	if (computed.entries.length === 0) {
 		throw new CliFailure(
 			`Nothing to push: every file the last sync wrote still matches version ${lock.snapshotVersion}. Add a new file with --add <path> if you meant to suggest one.`,
 			7,
@@ -2358,9 +2370,15 @@ async function runPush(
 		}
 	}
 
-	if (plan.changes.length > MAX_PUSH_CHANGES) {
+	if (plan.entries.length > MAX_PUSH_CHANGES) {
 		throw new CliFailure(
-			`Too many changes to push (${plan.changes.length} > ${MAX_PUSH_CHANGES}). A change set this large is a replacement rather than an edit — upload the folder from the project's Coding Instructions tab, which is also the only path that re-reads the project's exclusion rules.`,
+			`Too many changes to push (${plan.entries.length} > ${MAX_PUSH_CHANGES}). A change set this large is a replacement rather than an edit — upload the folder from the project's Coding Instructions tab, which is also the only path that re-reads the project's exclusion rules.`,
+			7,
+		);
+	}
+	if (pushContentBytes(plan.entries) > MAX_INLINE_PUSH_BYTES) {
+		throw new CliFailure(
+			`The selected changes are too large to send inline (over ${MAX_INLINE_PUSH_BYTES} bytes of file content). Upload the folder from the project's Coding Instructions tab instead.`,
 			7,
 		);
 	}
@@ -2402,7 +2420,7 @@ async function runPush(
 	// was asked, as "Nothing to push" has not, and exits 7 — after printing
 	// the outcome under --format json, so a script still gets
 	// `alreadyProposed` and `openProposalCheck` saying why.
-	if (plan.changes.length === 0 && opts.publish) {
+	if (plan.entries.length === 0 && opts.publish) {
 		if (format === "json") {
 			printOutput(outcome, { format: "json" });
 		}
@@ -2423,7 +2441,16 @@ async function runPush(
 		}
 	};
 
-	if (!opts.dryRun && plan.changes.length > 0) {
+	if (!opts.dryRun && plan.entries.length > 0) {
+		let changes: Awaited<ReturnType<typeof materializePushChanges>>;
+		try {
+			changes = await materializePushChanges({
+				root,
+				entries: plan.entries,
+			});
+		} catch (error) {
+			throw new CliFailure(describeError(error), 7);
+		}
 		try {
 			// Two methods, not one method with a flag: they are two routes
 			// behind two scopes, and choosing between them here is what makes
@@ -2433,13 +2460,13 @@ async function runPush(
 				? await client.instructions.publishChange(
 						opts.project,
 						lock.snapshotId,
-						plan.changes,
+						changes,
 						{ org: orgSlugFor(opts) },
 					)
 				: await client.instructions.submitChange(
 						opts.project,
 						lock.snapshotId,
-						plan.changes,
+						changes,
 						{ org: orgSlugFor(opts), ...(note ? { note } : {}) },
 					);
 			outcome.snapshotId = submitted.snapshotId;
@@ -3093,6 +3120,9 @@ async function runInit(
 	}
 	// Not created yet: a refusal below must leave nothing behind.
 	let existing = await resolveExistingRoot(destination);
+	let cloned = false;
+	const freshCloneDestination =
+		cloneFolder !== undefined && (await isEmptyFolder(destination));
 
 	// A local precondition answered before any network call: a credential
 	// file that would end up inside the checkout.
@@ -3102,7 +3132,7 @@ async function runInit(
 	const guard = new SourceGuard(
 		destination,
 		opts.remote,
-		cloneFolder !== undefined,
+		freshCloneDestination,
 	);
 	const published = await fetchPublished(client, opts, undefined, guard);
 
@@ -3138,6 +3168,7 @@ async function runInit(
 				destination,
 				repository,
 			);
+			cloned = true;
 			// The instructions may live in a folder of the repository. With a
 			// folder of its own the run carries on there; without one it stops
 			// and says where, below.
@@ -3188,6 +3219,16 @@ async function runInit(
 		}
 	}
 	const matching = checkout?.class === "matching" ? checkout : null;
+	const interrupted =
+		matching === null
+			? null
+			: await git.checkoutAppearsIncomplete(
+					matching.toplevel,
+					gitDeadline(),
+				);
+	if (interrupted?.kind === "ok" && interrupted.value) {
+		throw outcomeFailure("clone-checkout-needs-repair", {});
+	}
 	// A lock that belongs to another project, checked only where a lock is
 	// used: a checkout of the repository never has one, and whatever is left
 	// there must not stop the hook being installed (Fizzy #2708 review).
@@ -3217,6 +3258,34 @@ async function runInit(
 			: { tools: [explicitTool], detected: true };
 	if (opts.lessons && !tools.tools.includes("claude-code")) {
 		throw outcomeFailure("lessons-need-claude", {});
+	}
+	if (matching !== null) {
+		const prefix = path.relative(matching.toplevel, root);
+		const relativeSetupPaths = [
+			...tools.tools.map((tool) =>
+				path.join(prefix, hookPathFor(tool)).replaceAll(path.sep, "/"),
+			),
+			path
+				.join(prefix, LOCK_DIRECTORY, LOCK_FILENAME)
+				.replaceAll(path.sep, "/"),
+		];
+		const tracked = await git.trackedPaths(
+			matching.toplevel,
+			relativeSetupPaths,
+			gitDeadline(),
+		);
+		if (tracked.kind !== "ok") {
+			throw new CliFailure(
+				"Fabric could not verify whether its local setup files are tracked by Git, so it did not modify them. Check git status and run init again.",
+				7,
+			);
+		}
+		if (tracked.value.length > 0) {
+			throw new CliFailure(
+				`Fabric left this checkout unchanged because Git tracks setup file${tracked.value.length === 1 ? "" : "s"}: ${tracked.value.join(", ")}. Keep ${tracked.value.length === 1 ? "it" : "them"} under the repository's normal setup process, or configure Fabric's hook and agent integration manually outside tracked paths.`,
+				7,
+			);
+		}
 	}
 
 	let outcome: SyncOutcome | null = null;
@@ -3300,29 +3369,32 @@ async function runInit(
 	// The project's own MCP server, for each tool found: after the hook, so
 	// nothing here can leave the hook unwritten. A tool that was only the
 	// fallback, because none was found, is not asked.
-	const mcp =
-		opts.mcp === false || (!tools.detected && explicitTool === undefined)
-			? []
-			: await registerAgentMcp({
-					tools: tools.tools,
-					projectId: opts.project,
-					origin: deploymentOrigin(opts),
-					cwd: toplevel ?? root,
-					home: machine.home(),
-					env: machine.env(),
-					platform: machine.platform(),
-					run: createAgentRunner({
-						lookup: {
-							env: machine.env(),
-							platform: machine.platform(),
-						},
-					}),
-					interactive:
-						format !== "json" &&
-						canPrompt() &&
-						process.stdout.isTTY === true &&
-						!runningInCi(),
-				});
+	const mcpRequested =
+		opts.mcp !== false && (tools.detected || explicitTool !== undefined);
+	const mcp = !mcpRequested
+		? []
+		: await registerAgentMcp({
+				tools: tools.tools,
+				projectId: opts.project,
+				origin: deploymentOrigin(opts),
+				cwd: toplevel ?? root,
+				home: machine.home(),
+				env: machine.env(),
+				platform: machine.platform(),
+				run: createAgentRunner({
+					lookup: {
+						env: machine.env(),
+						platform: machine.platform(),
+					},
+				}),
+				interactive:
+					format !== "json" &&
+					canPrompt() &&
+					process.stdout.isTTY === true &&
+					!runningInCi(),
+			});
+	const mcpComplete = !mcpRequested || mcpRegistrationComplete(mcp);
+	const mcpAuthPending = mcpAuthenticationPending(mcp);
 
 	const first = hooks[0];
 	if (format === "json") {
@@ -3342,6 +3414,9 @@ async function runInit(
 					replacedHooks: hook.replacedCount,
 				})),
 				lessonsHook: Boolean(opts.lessons),
+				mcpRequested,
+				mcpComplete,
+				mcpAuthenticationPending: mcpAuthPending,
 				mcp: mcp.map((result) => ({
 					tool: result.tool,
 					name: result.name,
@@ -3363,6 +3438,12 @@ async function runInit(
 			},
 			{ format: "json" },
 		);
+		if (!mcpComplete) {
+			throw new CliFailure(
+				"Coding tool setup is incomplete: the Fabric MCP server was not registered for every selected tool. Complete the action shown above, then run init again.",
+				7,
+			);
+		}
 		return;
 	}
 
@@ -3399,7 +3480,12 @@ async function runInit(
 	for (const mcpLine of agentMcpLines(mcp)) {
 		line(mcpLine);
 	}
-	if (cloneFolder !== undefined) {
+	if (mcpAuthPending) {
+		line(
+			"The Fabric MCP server is registered, but its coding-tool sign-in is still pending.",
+		);
+	}
+	if (cloneFolder !== undefined && cloned) {
 		line(
 			outcomeLine("cloned-into", {
 				where: folderForCommand(
@@ -3410,6 +3496,15 @@ async function runInit(
 					),
 				),
 			}),
+		);
+	}
+	if (!mcpComplete) {
+		line(
+			"The session hook was set up, but the Fabric MCP server was not registered for every selected tool.",
+		);
+		throw new CliFailure(
+			"Coding tool setup is incomplete: the Fabric MCP server was not registered for every selected tool. Complete the action shown above, then run init again.",
+			7,
 		);
 	}
 	line(

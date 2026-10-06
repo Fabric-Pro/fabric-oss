@@ -43,7 +43,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  * Reimplemented rather than imported for the same reason the digest recipe is:
  * that package is private and this one is published to npm.
  *
- * The point is memory, not policy. Before this, `fileCount` and the per-entry
+ * These are representation and resource bounds. Before this, `fileCount` and the per-entry
  * sizes were checked against each other but never against an absolute, so a
  * manifest claiming a million files of 4 GB each was internally consistent and
  * sized the download bound off its own claim.
@@ -55,7 +55,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  */
 const MANIFEST_LIMITS = {
 	maxFiles: 5000,
-	maxTotalBytes: 52_428_800,
+	maxTotalBytes: 2_147_483_647,
 	maxFileBytes: 5_242_880,
 	maxPathBytes: 1024,
 	maxDepth: 64,

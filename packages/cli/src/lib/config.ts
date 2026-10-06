@@ -183,8 +183,8 @@ function persist(config: CliConfig): void {
 
 /**
  * A write holds the file's own lock for the milliseconds it takes to read and
- * rewrite one small file, and a holder older than `STALE_MS` is a process that
- * died. This is not the refresh lock (`oauth/session.ts`), which a renewal holds
+ * rewrite one small file, and an old lock with no live owner is reported for
+ * manual recovery. This is not the refresh lock (`oauth/session.ts`), which a renewal holds
  * across a network round-trip and writes under: sharing it would make that write
  * wait for itself.
  */
@@ -223,7 +223,9 @@ function update(change: (config: CliConfig) => CliConfig | undefined): void {
 	} catch (error) {
 		throw error instanceof ExclusiveLockBusyError
 			? new Error(
-					"Another fabric process is updating the configuration and did not finish. Try again.",
+					error.abandoned
+						? `A previous Fabric process left its configuration lock at ${JSON.stringify(lockPath)}. Confirm it is no longer running, remove that lock, then try again.`
+						: "Another fabric process is updating the configuration and did not finish. Try again.",
 				)
 			: error;
 	}

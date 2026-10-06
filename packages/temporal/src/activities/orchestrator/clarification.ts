@@ -12,6 +12,20 @@
  */
 
 import { logger } from "@repo/logs";
+import {
+	activityAbortSignal,
+	guardTurnModel,
+	rethrowIfTurnStopped,
+	startHeartbeatTicker,
+	type TurnScope,
+} from "./turn-dispatch";
+
+/**
+ * Heartbeat cadence while the clarity call runs. The proxy's heartbeat
+ * timeout is 30 s (workflows/orchestrator/index.ts); the ticker is what lets
+ * a Stop reach this activity while it waits on the provider.
+ */
+const CLARITY_HEARTBEAT_INTERVAL_MS = 5_000;
 
 export interface AnalyzeIntentClarityInput {
 	message: string;
@@ -20,6 +34,12 @@ export interface AnalyzeIntentClarityInput {
 	/** Required for model resolution (mirrors loom-routing). */
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat turn this check belongs to. When set, the turn record is
+	 * consulted before the model request, and a refusal (the user stopped
+	 * the turn) is thrown rather than converted into "no clarification".
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface AnalyzeIntentClarityResult {
@@ -53,7 +73,9 @@ Respond with JSON only:
 
 /**
  * Decide whether to ask the user a single clarifying question before planning.
- * Never throws — returns { needsClarification: false } on any failure.
+ * Fail-safe — returns { needsClarification: false } on any failure, EXCEPT a
+ * stop: a cancelled activity or a refused turn dispatch is rethrown, because
+ * "proceed without clarification" would carry a stopped turn on.
  */
 export async function analyzeIntentClarityActivity(
 	input: AnalyzeIntentClarityInput,
@@ -63,6 +85,7 @@ export async function analyzeIntentClarityActivity(
 		return { needsClarification: false, reasoning: "Empty message." };
 	}
 
+	const stopHeartbeat = startHeartbeatTicker(CLARITY_HEARTBEAT_INTERVAL_MS);
 	try {
 		const { generateText } = await import("ai");
 		const { getAIModel } = await import("@repo/ai");
@@ -72,8 +95,13 @@ export async function analyzeIntentClarityActivity(
 			{ userId: input.userId, organizationId: input.organizationId },
 		);
 
+		// Every physical request — the SDK's own retries included — is
+		// checked against the turn record (see guardTurnModel).
+		const guarded = guardTurnModel(model, input.turnScope);
 		const result = await generateText({
-			model,
+			model: guarded.model,
+			// A cancelled activity aborts the request in flight.
+			abortSignal: activityAbortSignal(),
 			instructions: INTENT_CLARITY_PROMPT,
 			messages: [
 				{
@@ -136,6 +164,7 @@ export async function analyzeIntentClarityActivity(
 			reasoning: parsed.reasoning,
 		};
 	} catch (error) {
+		rethrowIfTurnStopped(error);
 		// Never block the orchestration on a clarity-check failure — proceed.
 		logger.warn(
 			"[analyzeIntentClarity] failed; proceeding without clarification",
@@ -145,5 +174,7 @@ export async function analyzeIntentClarityActivity(
 			needsClarification: false,
 			reasoning: "Clarity check failed.",
 		};
+	} finally {
+		stopHeartbeat();
 	}
 }

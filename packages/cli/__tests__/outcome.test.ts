@@ -77,6 +77,7 @@ const SAMPLES: { [K in OutcomeId]: OutcomeParams[K] } = {
 	"clone-needs-project": {},
 	"clone-needs-repository": {},
 	"clone-folder-in-use": {},
+	"clone-checkout-needs-repair": {},
 	"clone-failed": {
 		repo: "github.com/example-org/rules",
 		ref: "main",
@@ -140,6 +141,7 @@ const SAMPLES: { [K in OutcomeId]: OutcomeParams[K] } = {
 		commands: COMMANDS,
 	},
 	"ff-locked": {},
+	"ff-abandoned-lock": { lockPath: "/work/.git/fabric/ff.lock" },
 	"ff-fabric-lags": { reason: "refused", ref: "main", sha7: "a1b2c3d" },
 	"class-foreign": { repo: "github.com/example-org/rules" },
 	"class-ambiguous": {
@@ -198,7 +200,8 @@ describe("the outcome lines", () => {
 			  "class-unknown-identity": "fabric: coding instructions: the project is repository-sourced but reports no repository to compare with; nothing was checked.",
 			  "class-unmapped": "fabric: coding instructions: this checkout is github.com/example-org/rules, but the project's instructions are at docs/ai, not this directory; nothing was checked.",
 			  "class-unsupported-provider": "fabric: coding instructions: BITBUCKET repositories are not compared yet; nothing was checked.",
-			  "clone-failed": "Could not clone github.com/example-org/rules: git has no credentials for github.com. Run: gh auth login",
+			  "clone-checkout-needs-repair": "This folder appears to be an incomplete Git checkout. Fabric left it untouched. Inspect its staged and untracked files with git status, then repair or remove the checkout yourself before running init again.",
+			  "clone-failed": "Could not clone github.com/example-org/rules: git has no credentials for github.com. The Fabric MCP server was not registered. Run: gh auth login",
 			  "clone-folder-in-use": "That folder already exists and is not empty, so nothing was cloned into it. Pick a folder that does not exist yet, or run init inside it when it already is the clone.",
 			  "clone-needs-project": "--clone <folder> needs --project <id>: there is no checkout yet to find the project from.",
 			  "clone-needs-repository": "--clone needs a project whose instructions come from a git repository; this project's are uploaded, so there is nothing to clone.",
@@ -207,6 +210,7 @@ describe("the outcome lines", () => {
 			  "earlier-source": "fabric: coding instructions v12 was published from release; the project now syncs main of github.com/example-org/rules — pull main to pick up the next publication",
 			  "empty-folder": "This folder is empty. Run: fabric instructions init --clone to clone github.com/example-org/rules (main) into it.",
 			  "exclude-failed": "Could not update .git/info/exclude. Add these to your own ignore rules: /.claude/settings.local.json /.codex/hooks.json",
+			  "ff-abandoned-lock": "fabric: coding instructions: a previous Fabric process left its lock at "/work/.git/fabric/ff.lock"; nothing was changed. Confirm it is no longer running, remove that lock, then run the hook again.",
 			  "ff-fabric-lags": "fabric: coding instructions: main is at a1b2c3d; Fabric's copy is behind (a commit was refused by the secret scan — see the project's Coding Instructions tab).",
 			  "ff-fast-forwarded": "fabric: coding instructions: fast-forwarded main from 9f8e7d6 to a1b2c3d (v12).",
 			  "ff-fetch-failed": "fabric: coding instructions: could not fetch github.com/example-org/rules: git has no credentials for github.com. Run: gh auth login",
@@ -256,7 +260,7 @@ describe("the outcome lines", () => {
 		`);
 	});
 
-	it.each(IDS)(
+	it.each(IDS.filter((id) => id !== "ff-abandoned-lock"))(
 		"%s: no absolute path, digest, or class name in parentheses",
 		(id) => {
 			const text = render(id);
@@ -335,6 +339,7 @@ describe("the outcome lines", () => {
 			"ff-fetch-failed",
 			"ff-merge-failed",
 			"ff-locked",
+			"ff-abandoned-lock",
 			"ff-fabric-lags",
 			"class-foreign",
 			"class-ambiguous",

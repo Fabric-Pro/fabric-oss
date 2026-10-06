@@ -728,16 +728,23 @@ export const CAPABILITY_RULES: readonly CapabilityRule[] = [
 		label: "Use a linked knowledge-base source",
 		surface: "context",
 		evaluate: (e, now) => {
-			// No retry. Ingestion is per source and the Context tab has no
-			// re-run for one — the way out is removing the stuck source and
-			// adding it again, which is what the copy says. Offering a retry
-			// no surface could perform would render nothing and promise it.
+			// No retry on the gate. Ingestion is per source, so the re-run
+			// lives on each stuck row of the Context tab, not on the banner —
+			// a gate-level retry would have to pick one source or restart
+			// them all. What the gate carries instead is WHICH sources are
+			// stuck, so the banner can name them and take the viewer to
+			// each one's own Retry.
 			if (isStalled(e.context.processing, "backgroundJob", now)) {
 				return {
 					state: "HARD_BLOCK",
 					reasonKey: "context.ingestion-stalled",
 					blockingDependency: "source ingestion",
 					remedy: null,
+					subjects: e.context.stalledSources,
+					subjectTotal: Math.max(
+						e.context.stalledTotal,
+						e.context.stalledSources.length,
+					),
 				};
 			}
 			if (e.context.processing.running) {

@@ -72,6 +72,8 @@ function gate(overrides: Partial<CapabilityGate> = {}): CapabilityGate {
 			available: false,
 			targetId: null,
 		},
+		subjects: [],
+		subjectTotal: 0,
 		suppressed: false,
 		fingerprint: "fingerprint_example",
 		...overrides,
@@ -765,5 +767,102 @@ describe("a session dismissal is honoured from the very first paint", () => {
 
 		// Asserted synchronously: no effect has run yet.
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+});
+
+describe("a gate that names its subjects", () => {
+	const STALL_KEY = "context.use-linked-source";
+	const stalled = (
+		subjects: CapabilityGate["subjects"],
+		subjectTotal: number,
+	) =>
+		gate({
+			capabilityKey: STALL_KEY,
+			state: "HARD_BLOCK",
+			reasonKey: "context.ingestion-stalled",
+			blockingDependency: "source ingestion",
+			subjects,
+			subjectTotal,
+		});
+	const four = [
+		{ id: "context_a", label: "example-brief.pdf" },
+		{ id: "context_b", label: "https://example.com/docs" },
+		{ id: "context_c", label: "Example notes" },
+		{ id: "context_d", label: "Example spec" },
+	];
+
+	it("renders the first three as buttons that hand the surface the id", async () => {
+		const onSubjectSelect = vi.fn();
+		serve([stalled(four, 4)]);
+		renderGated(
+			<CapabilityGateBanner
+				capabilityKey={STALL_KEY}
+				onSubjectSelect={onSubjectSelect}
+			/>,
+		);
+
+		const first = await screen.findByRole("button", {
+			name: "example-brief.pdf",
+		});
+		expect(
+			screen.getByRole("button", { name: "Example notes" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Example spec" }),
+		).not.toBeInTheDocument();
+		// The fourth is folded into "and N more".
+		expect(screen.getByText("subjects.more")).toBeInTheDocument();
+
+		await userEvent.click(first);
+		expect(onSubjectSelect).toHaveBeenCalledWith("context_a");
+	});
+
+	it("counts the ones the server did not send in 'and N more'", async () => {
+		serve([stalled(four.slice(0, 1), 12)]);
+		renderGated(
+			<CapabilityGateBanner
+				capabilityKey={STALL_KEY}
+				onSubjectSelect={vi.fn()}
+			/>,
+		);
+
+		expect(await screen.findByText("subjects.more")).toBeInTheDocument();
+	});
+
+	it("renders plain names, not buttons, when the surface cannot reveal one", async () => {
+		serve([stalled(four.slice(0, 2), 2)]);
+		renderGated(<CapabilityGateBanner capabilityKey={STALL_KEY} />);
+
+		expect(
+			await screen.findByText("example-brief.pdf"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "example-brief.pdf" }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("subjects.more")).not.toBeInTheDocument();
+	});
+
+	it("shows no banner at all for a stall it cannot name", async () => {
+		serve([stalled([], 0)]);
+		renderGated(
+			<>
+				<CapabilityGateBanner
+					capabilityKey={STALL_KEY}
+					onSubjectSelect={vi.fn()}
+				/>
+				<GateProbe capabilityKey={STALL_KEY} />
+			</>,
+		);
+
+		// Wait for the answer, not the request, before asserting an absence.
+		await waitFor(() =>
+			expect(screen.getByTestId("probe")).toHaveTextContent(
+				"resolved-on",
+			),
+		);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("reason.context.ingestion-stalled.title"),
+		).not.toBeInTheDocument();
 	});
 });

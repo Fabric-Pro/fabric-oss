@@ -162,6 +162,45 @@ describe("fabric instructions init", () => {
 		);
 	});
 
+	it("refuses before changing a Git-tracked hook file or upload-era ledger", async () => {
+		const dest = await makeTree();
+		fakeGit.state.toplevel = dest;
+		fakeGit.state.remotes = {
+			origin: "https://git.example.com/example-org/rules.git",
+		};
+		fakeGit.state.tracked = [
+			".codex/hooks.json",
+			".fabric/instructions.lock",
+		];
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "REPOSITORY",
+			snapshot: snapshotFor([]),
+			manifest: [],
+			repository: REPOSITORY,
+		});
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"codex",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(
+			"Fabric left this checkout unchanged because Git tracks setup files",
+		);
+		expect(result.stderr).toContain(".codex/hooks.json");
+		expect(result.stderr).toContain(".fabric/instructions.lock");
+		await expect(
+			stat(path.join(dest, ".codex", "hooks.json")),
+		).rejects.toThrow();
+	});
+
 	it("refuses a repository-sourced project in some other repository's checkout and writes nothing", async () => {
 		const dest = await makeTree();
 		fakeGit.state.toplevel = dest;

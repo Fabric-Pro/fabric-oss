@@ -28,9 +28,13 @@ import {
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
-// Configure activity retry policies for document generation
+// Generation awaits its own embedding before returning. Keep that activity
+// on the foreground queue too: the next setup document retrieves its vectors,
+// and a background backlog must not hold a saved document past the child timeout.
+// Independent documentEmbeddingWorkflow runs use the background queue.
 const {
 	retrieveProjectContexts,
 	retrieveAndFormatEpisodicMemory,
@@ -39,6 +43,7 @@ const {
 	createDocumentVersion,
 	embedProjectDocumentActivity,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "15m",
 	heartbeatTimeout: "2 minutes",
 	retry: {
@@ -62,6 +67,7 @@ const {
 	fetchRecentSlackMessages,
 	updateProjectDocumentStatus,
 } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "30s",
 	retry: {
 		maximumAttempts: 3,
@@ -75,6 +81,7 @@ const {
 const { runDocumentDecisionPrecheckActivity } = proxyActivities<
 	typeof activities
 >({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "2m",
 	retry: {
 		maximumAttempts: 1,

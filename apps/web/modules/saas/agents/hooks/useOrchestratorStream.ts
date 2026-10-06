@@ -27,6 +27,7 @@ import {
 } from "../lib/chat-turn-truncation";
 import { formatClarificationTurn } from "../lib/clarification-turns";
 import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
+import { executionModeUsesTurns } from "../lib/orchestrator-turn-modes";
 import type { StreamStatus } from "./useDirectStream";
 import { useOrchestratorPartyKit } from "./useOrchestratorPartyKit";
 
@@ -92,7 +93,24 @@ export interface UseOrchestratorStreamOptions {
 	 * decision 11).
 	 */
 	onStopFailed?: () => void;
+	/**
+	 * Invoked with the message's text when the server refused it because a
+	 * different message is already being answered in this conversation
+	 * (`TURN_IN_PROGRESS`, possibly from another tab). The hook has already
+	 * removed the message from `messages` and set the notice in
+	 * `state.result.error`; the consumer can put the text back in its
+	 * composer so the user can send it once the other answer finishes.
+	 * A sentence it returns is appended to that notice (the chat says so
+	 * when the message's attachments were not sent).
+	 */
+	onTurnRefused?: (content: string) => string | undefined;
 }
+
+/**
+ * Shown in place of a message the server refused with `TURN_IN_PROGRESS`.
+ */
+const TURN_IN_PROGRESS_NOTICE =
+	"Your message was not sent: another message in this conversation is already being answered, possibly in another tab. Send yours when that answer finishes.";
 
 interface SendMessageOverrides {
 	/**
@@ -173,6 +191,7 @@ interface LimitSignalSummary {
 		warning?: string;
 		estimatedCost?: number;
 	};
+	budgetLimit?: "tokens" | "iterations";
 }
 
 export interface OrchestratorStreamState {
@@ -409,8 +428,14 @@ const MAX_TOTAL_RESUMES = 12;
  * nothing about the connection's health and must not refill the
  * unclean-close budget. `started` is a per-window handshake, not progress,
  * and `stream_timeout` is the server closing the window on purpose.
+ * `start_pending` says the run has not been seen to start, so it proves
+ * nothing either (and must not let a retry loop refill its own budget).
  */
-const REPLAY_HANDSHAKE_EVENT_TYPES = new Set(["started", "stream_timeout"]);
+const REPLAY_HANDSHAKE_EVENT_TYPES = new Set([
+	"started",
+	"stream_timeout",
+	"start_pending",
+]);
 
 /**
  * Sleep that gives up as soon as the turn is aborted. Resolves `true` when
@@ -438,6 +463,18 @@ function waitBeforeResume(
 	});
 }
 
+/**
+ * A per-message idempotency key for the server-owned turn: the stream route
+ * returns the turn this key already created instead of starting another, and
+ * Stop can cancel by it before the browser has the executionId.
+ */
+function newClientRequestKey(): string {
+	if (typeof globalThis.crypto?.randomUUID === "function") {
+		return globalThis.crypto.randomUUID();
+	}
+	return `key-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function useOrchestratorStream(
 	options: UseOrchestratorStreamOptions = {},
 ) {
@@ -462,6 +499,7 @@ export function useOrchestratorStream(
 		surface = "loom-orchestrator",
 		telemetrySurface,
 		onStopFailed,
+		onTurnRefused,
 	} = options;
 
 	// Latest-value refs so `stop` does not need to memoize on these.
@@ -471,6 +509,8 @@ export function useOrchestratorStream(
 	telemetrySurfaceRef.current = telemetrySurface ?? surface;
 	const onStopFailedRef = useRef(onStopFailed);
 	onStopFailedRef.current = onStopFailed;
+	const onTurnRefusedRef = useRef(onTurnRefused);
+	onTurnRefusedRef.current = onTurnRefused;
 
 	// Shared destructive toast for the AI_USAGE_LIMIT_EXCEEDED error
 	// code. Captured in a ref so the
@@ -552,6 +592,15 @@ export function useOrchestratorStream(
 	 * reads it here (issue #2269).
 	 */
 	const executionIdRef = useRef<string | null>(null);
+	/**
+	 * The in-flight message's idempotency key and the conversation it was
+	 * sent in. Sent on the initial POST and on every retry of that message,
+	 * and used by `stop` when no executionId has arrived yet.
+	 */
+	const clientRequestKeyRef = useRef<string | null>(null);
+	const turnConversationIdRef = useRef<string | null>(null);
+	const organizationIdRef = useRef(organizationId);
+	organizationIdRef.current = organizationId;
 	/**
 	 * Step ids already counted into `completedSteps`. A resumed stream
 	 * replays every `step_complete` from the beginning of the run, so the
@@ -706,7 +755,8 @@ export function useOrchestratorStream(
 
 			// Cancel any existing request
 			abortControllerRef.current?.abort();
-			abortControllerRef.current = new AbortController();
+			const sendController = new AbortController();
+			abortControllerRef.current = sendController;
 
 			// Check if we should start fresh (either explicit flag or from previous reset)
 			const shouldStartFresh = forceNewChat || startFreshRef.current;
@@ -764,10 +814,19 @@ export function useOrchestratorStream(
 			// by this turn's resume loop, and its counted steps start over.
 			executionIdRef.current = null;
 			completedStepIdsRef.current = new Set();
+			// One key per user message; retries of this message reuse it.
+			const clientRequestKey = newClientRequestKey();
+			clientRequestKeyRef.current = clientRequestKey;
+			turnConversationIdRef.current = effectiveConversationId ?? null;
 
 			setState((prev) => ({
 				...prev,
 				status: "running",
+				// The previous message's execution must not be reachable from
+				// this one: Stop, follow-ups and approvals act on the current
+				// turn only (until `started` delivers its id, Stop uses the
+				// message's key).
+				executionId: null,
 				plan: null,
 				result: null,
 				pendingApproval: null,
@@ -809,6 +868,51 @@ export function useOrchestratorStream(
 					result: { ...prev.result, error: reason },
 				}));
 				setCurrentPhase("error");
+				setIsLoading(false);
+			};
+
+			// The server refused this message: a different message is already
+			// being answered in this conversation (another tab, or a turn this
+			// tab lost track of). It never ran, so it must not look sent or
+			// answered, and must not reach the conversation's saved history.
+			// Attaching to the other turn instead would show that turn's answer
+			// under this question, and the chat's save would then persist the
+			// pair. So: drop the question and its placeholder, leave
+			// `state.executionId` null (the chat saves a turn only once it has
+			// one), and put the notice where the chat renders a failed turn.
+			const refuseBecauseAnotherTurnIsLive = () => {
+				// By identity, not id: ids come from `Date.now()`, so a
+				// message sent in the same millisecond as the previous one
+				// shares its ids, and an id filter would drop that one too.
+				// Nothing has replaced these two objects yet: the refusal
+				// arrives before any stream event for them.
+				setMessages((prev) =>
+					prev.filter(
+						(m) => m !== userMessage && m !== assistantMessage,
+					),
+				);
+				if (activeAssistantIdRef.current === assistantMessage.id) {
+					activeAssistantIdRef.current = null;
+				}
+				// No turn holds this key, so there is nothing for Stop to
+				// cancel by it.
+				if (clientRequestKeyRef.current === clientRequestKey) {
+					clientRequestKeyRef.current = null;
+				}
+				executionIdRef.current = null;
+				const addition = onTurnRefusedRef.current?.(content.trim());
+				setState((prev) => ({
+					...prev,
+					status: "failed",
+					executionId: null,
+					result: {
+						error: addition
+							? `${TURN_IN_PROGRESS_NOTICE} ${addition}`
+							: TURN_IN_PROGRESS_NOTICE,
+					},
+				}));
+				setCurrentPhase("idle");
+				setProgressMessage("");
 				setIsLoading(false);
 			};
 
@@ -904,6 +1008,9 @@ export function useOrchestratorStream(
 					// ("loom-orchestrator"). Without it the workflow sees
 					// surface: undefined and never asks.
 					surface: surfaceRef.current,
+					// The message's idempotency key: a retry of this POST
+					// attaches to the turn it already created.
+					clientRequestKey,
 				});
 
 				// A reconnect is the executionId and nothing else: the
@@ -911,14 +1018,21 @@ export function useOrchestratorStream(
 				// and context from the window that started it. `organizationId`
 				// still has to travel for the route's membership check, and
 				// `surface` keeps parity with the initial POST.
+				// Before `started` there is no executionId to reconnect with;
+				// the initial body is re-sent instead, and its key makes the
+				// server attach to the turn it already created rather than
+				// start a second one.
 				const buildResumeRequestBody = () =>
-					JSON.stringify({
-						executionId: executionIdRef.current,
-						organizationId,
-						conversationId: effectiveConversationId,
-						instanceId,
-						surface: surfaceRef.current,
-					});
+					executionIdRef.current
+						? JSON.stringify({
+								executionId: executionIdRef.current,
+								organizationId,
+								conversationId: effectiveConversationId,
+								instanceId,
+								surface: surfaceRef.current,
+								clientRequestKey,
+							})
+						: initialRequestBody;
 
 				let timeoutResumes = 0;
 				let consecutiveUncleanResumes = 0;
@@ -932,11 +1046,26 @@ export function useOrchestratorStream(
 				// untouched across the gap: the PartyKit socket is gated on
 				// `isLoading && status === "running"`, so any intermediate
 				// value would tear it down and back up for nothing.
+				// A message the server runs as a turn is idempotent by its key,
+				// so a request whose outcome is unknown can be sent again;
+				// a planner-mode message has no turn and cannot (see the
+				// shared orchestrator-turn-modes module).
+				const keyIdempotent = executionModeUsesTurns(executionMode);
 				while (true) {
 					let sawTerminal = false;
 					let sawStreamTimeout = false;
+					// The server could not confirm the turn's workflow
+					// started (its start response was lost); the turn is
+					// still pending. Retried with the same key below.
+					let sawStartPending = false;
 					let streamStarted = false;
 					let streamError: unknown = null;
+					// The request's outcome is unknown: the fetch itself failed
+					// (no response arrived), a proxy answered 502/503/504, or
+					// the response had no readable body. The server may have
+					// admitted and started the turn regardless.
+					let ambiguousOutcome = false;
+					let responseReceived = false;
 
 					try {
 						const response = await fetch(
@@ -956,8 +1085,106 @@ export function useOrchestratorStream(
 							},
 						);
 
+						responseReceived = true;
+						if (
+							!response.ok &&
+							keyIdempotent &&
+							(response.status === 502 ||
+								response.status === 503 ||
+								response.status === 504)
+						) {
+							ambiguousOutcome = true;
+							throw new Error(
+								`The stream request ended with HTTP ${response.status}`,
+							);
+						}
 						if (!response.ok) {
 							const error = await response.json();
+							// A different message is already being answered
+							// in this conversation. Refused, never attached to
+							// that turn — see `refuseBecauseAnotherTurnIsLive`.
+							// The server checks a message's own key first and
+							// attaches a retry of it, so this code means the
+							// key has no turn: on a first request, and equally
+							// on a retry whose earlier attempt never reached
+							// the server. A reconnect by executionId skips
+							// admission and cannot get it.
+							if (
+								response.status === 409 &&
+								error?.code === "TURN_IN_PROGRESS"
+							) {
+								// Stop, reset and a newer send each abort this
+								// send's controller. A refusal read after that
+								// belongs to nothing on screen any more, and
+								// its writes would land on whatever replaced it.
+								if (!sendController.signal.aborted) {
+									refuseBecauseAnotherTurnIsLive();
+								}
+								return null;
+							}
+							// The live turn exists but its workflow has not
+							// started yet (its starter is still doing
+							// pre-work): retry the same request after the
+							// server's delay. Not a failure.
+							if (
+								response.status === 409 &&
+								error?.code === "TURN_PENDING" &&
+								totalResumes < MAX_TOTAL_RESUMES
+							) {
+								if (typeof error.executionId === "string") {
+									executionIdRef.current = error.executionId;
+								}
+								totalResumes++;
+								isResume = true;
+								setProgressMessage(
+									"Waiting for the run to start…",
+								);
+								const retryAfterSeconds = Number(
+									response.headers?.get?.("Retry-After") ??
+										"2",
+								);
+								const abortedDuringWait =
+									await waitBeforeResume(
+										Number.isFinite(retryAfterSeconds)
+											? Math.min(
+													Math.max(
+														retryAfterSeconds,
+														0,
+													),
+													10,
+												) * 1000
+											: 2000,
+										abortControllerRef.current?.signal,
+									);
+								if (abortedDuringWait) {
+									return null;
+								}
+								continue;
+							}
+							// This message was stopped before it started.
+							if (
+								response.status === 409 &&
+								error?.code === "TURN_CANCELLED"
+							) {
+								setMessages((prev) =>
+									prev.map((m) =>
+										m.id === assistantMessage.id
+											? {
+													...m,
+													isStreaming: false,
+													streamStatus:
+														"cancelled" as const,
+												}
+											: m,
+									),
+								);
+								setState((prev) => ({
+									...prev,
+									status: "cancelled",
+								}));
+								setIsLoading(false);
+								return null;
+							}
 							// AI usage-limit short-circuit. The orchestrator stream route emits
 							// a 429 with `code: "AI_USAGE_LIMIT_EXCEEDED"` and a
 							// structured `data` payload when the chokepoint
@@ -992,6 +1219,7 @@ export function useOrchestratorStream(
 						// Process SSE stream
 						const reader = response.body?.getReader();
 						if (!reader) {
+							ambiguousOutcome = true;
 							throw new Error("No response body");
 						}
 						// From here on a failure is mid-stream, which is what a
@@ -1019,6 +1247,25 @@ export function useOrchestratorStream(
 										const data = JSON.parse(line.slice(6));
 										if (data.type === "stream_timeout") {
 											sawStreamTimeout = true;
+										} else if (
+											data.type === "start_pending"
+										) {
+											if (keyIdempotent) {
+												sawStartPending = true;
+											} else {
+												// Only a turn is retried by
+												// its key; anything else
+												// cannot be, so it fails.
+												sawTerminal = true;
+												handleStreamEvent(
+													{
+														type: "error",
+														message:
+															"The run's start could not be confirmed",
+													},
+													assistantMessage.id,
+												);
+											}
 										} else if (
 											data.type === "completed" ||
 											data.type === "error"
@@ -1068,7 +1315,22 @@ export function useOrchestratorStream(
 						// real failure, arriving right after a 660s function
 						// kill) can't discard everything the earlier windows
 						// streamed.
-						if (!streamStarted && !isResume) {
+						//
+						// Exception: for a turn-mode message, a FIRST request
+						// whose outcome is unknown (no response, a gateway
+						// 5xx, no body) is retried with the same body and key —
+						// the server attaches to the turn it may already have
+						// started rather than start another. Authorization,
+						// validation and usage-limit refusals are definite
+						// answers and are never retried.
+						const fetchNeverAnswered =
+							!responseReceived &&
+							(error as Error)?.name !== "AbortError";
+						const retryableInitial =
+							keyIdempotent &&
+							!streamStarted &&
+							(ambiguousOutcome || fetchNeverAnswered);
+						if (!streamStarted && !isResume && !retryableInitial) {
 							throw error;
 						}
 						// A mid-read throw is the usual shape of a platform
@@ -1097,8 +1359,17 @@ export function useOrchestratorStream(
 					}
 
 					// `state.executionId` is the stale closure value here —
-					// always read the ref.
-					const resumableExecutionId = executionIdRef.current;
+					// always read the ref. Without one, the message's key
+					// still lets the initial body reconnect (see
+					// `buildResumeRequestBody`) — but only in a mode the
+					// server runs as a turn: a planner mode has no turn, the
+					// server ignores the key, and a re-send would start a
+					// second run.
+					const resumableExecutionId =
+						executionIdRef.current ??
+						(executionModeUsesTurns(executionMode)
+							? clientRequestKey
+							: null);
 
 					// Backstop for both budgets below. Nothing resets this, so a
 					// loop that keeps refilling the unclean allowance with
@@ -1119,6 +1390,29 @@ export function useOrchestratorStream(
 						setProgressMessage(
 							"Reconnecting to the running workflow…",
 						);
+						continue;
+					}
+
+					// The start could not be confirmed: send the same
+					// message key again (still loading). The server's
+					// reattach waits for the workflow or settles the turn.
+					// Same bounded budget as an unclean close.
+					if (
+						sawStartPending &&
+						consecutiveUncleanResumes < MAX_UNCLEAN_RESUMES &&
+						totalBudgetLeft
+					) {
+						consecutiveUncleanResumes++;
+						totalResumes++;
+						isResume = true;
+						setProgressMessage("Waiting for the run to start…");
+						const abortedDuringWait = await waitBeforeResume(
+							UNCLEAN_RESUME_DELAY_MS,
+							abortControllerRef.current?.signal,
+						);
+						if (abortedDuringWait) {
+							break;
+						}
 						continue;
 					}
 
@@ -1200,9 +1494,13 @@ export function useOrchestratorStream(
 					),
 				);
 
+				// The chat renders a failed turn from `state.result.error`;
+				// without it a refusal before the stream opened showed
+				// nothing at all.
 				setState((prev) => ({
 					...prev,
 					status: "failed",
+					result: { ...prev.result, error: errorMessage },
 				}));
 
 				setIsLoading(false);
@@ -1699,11 +1997,21 @@ export function useOrchestratorStream(
 					}));
 					break;
 
-				case "completed":
+				case "completed": {
+					// `data.status` is the run's DOMAIN status: a stopped turn
+					// completes in Temporal with status "cancelled" and must be
+					// shown as cancelled, not as a finished answer.
+					const domainStatus: "completed" | "cancelled" | "failed" =
+						data.status === "cancelled"
+							? "cancelled"
+							: data.status === "failed"
+								? "failed"
+								: "completed";
+					const turnCancelled = domainStatus === "cancelled";
 					setCurrentPhase("complete");
 					setState((prev) => ({
 						...prev,
-						status: "completed",
+						status: domainStatus,
 						result: {
 							...prev.result,
 							response: data.response,
@@ -1725,10 +2033,12 @@ export function useOrchestratorStream(
 							(data.tokenBudget as typeof prev.tokenBudget) ??
 							prev.tokenBudget,
 						// "Continue in new chat" handoff signal — frontend renders
-						// a CTA above the input box when set.
-						handoffRecommended:
-							(data.handoffRecommended as typeof prev.handoffRecommended) ??
-							prev.handoffRecommended,
+						// a CTA above the input box when set. A cancelled turn
+						// offers none.
+						handoffRecommended: turnCancelled
+							? undefined
+							: ((data.handoffRecommended as typeof prev.handoffRecommended) ??
+								prev.handoffRecommended),
 					}));
 
 					// Mark assistant message as done streaming and set content
@@ -1741,6 +2051,15 @@ export function useOrchestratorStream(
 										content:
 											data.response || m.content || "",
 										isStreaming: false,
+										...(turnCancelled
+											? {
+													streamStatus:
+														"cancelled" as const,
+													cancelledAt:
+														m.cancelledAt ??
+														new Date().toISOString(),
+												}
+											: {}),
 									}
 								: m,
 						),
@@ -1836,6 +2155,7 @@ export function useOrchestratorStream(
 					setCurrentStep(null);
 					setIsLoading(false);
 					break;
+				}
 
 				case "error": {
 					// AI usage-limit short-circuit. When the chokepoint blocks mid-stream
@@ -2121,91 +2441,103 @@ export function useOrchestratorStream(
 	 * click or the Esc keybinding. Threaded into telemetry so we can
 	 * distinguish input sources in the funnel.
 	 */
-	const stop = useCallback(
-		(triggeredBy: "button" | "esc" = "button") => {
-			const targetId = activeAssistantIdRef.current;
-			if (targetId) {
-				if (cancelledMessageIdsRef.current.has(targetId)) {
-					// Idempotent — clicking twice does nothing the second
-					// time.
-					return;
-				}
-				cancelledMessageIdsRef.current.add(targetId);
+	const stop = useCallback((triggeredBy: "button" | "esc" = "button") => {
+		const targetId = activeAssistantIdRef.current;
+		if (targetId) {
+			if (cancelledMessageIdsRef.current.has(targetId)) {
+				// Idempotent — clicking twice does nothing the second
+				// time.
+				return;
 			}
+			cancelledMessageIdsRef.current.add(targetId);
+		}
 
-			// 1. Synchronous flip — abort, mark cancelled, persist.
-			abortControllerRef.current?.abort();
+		// 1. Synchronous flip — abort, mark cancelled, persist.
+		abortControllerRef.current?.abort();
 
-			const cancelledAt = new Date().toISOString();
-			if (targetId) {
-				setMessages((prev) =>
-					prev.map((m) =>
-						m.id === targetId
-							? {
-									...m,
-									isStreaming: false,
-									streamStatus: "cancelled",
-									cancelledAt,
-								}
-							: m,
-					),
-				);
-			}
-			setIsLoading(false);
-			setState((prev) => ({
-				...prev,
-				status: "cancelled",
-				pendingApproval: null,
-			}));
+		const cancelledAt = new Date().toISOString();
+		if (targetId) {
+			setMessages((prev) =>
+				prev.map((m) =>
+					m.id === targetId
+						? {
+								...m,
+								isStreaming: false,
+								streamStatus: "cancelled",
+								cancelledAt,
+							}
+						: m,
+				),
+			);
+		}
+		setIsLoading(false);
+		setState((prev) => ({
+			...prev,
+			status: "cancelled",
+			pendingApproval: null,
+		}));
 
-			// 2. Telemetry — capture latency and partial body length at
-			// click-time. Uses the `messagesRef` mirror so we read the
-			// most recent content even though `setMessages` above is
-			// asynchronous.
-			const startedAt = streamStartedAtRef.current;
-			const latencyMs =
-				startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
-			const partialBody = targetId
-				? (messagesRef.current.find((m) => m.id === targetId)
-						?.content ?? "")
-				: "";
-			const partialTokenCount = Math.ceil(partialBody.length / 4);
+		// 2. Telemetry — capture latency and partial body length at
+		// click-time. Uses the `messagesRef` mirror so we read the
+		// most recent content even though `setMessages` above is
+		// asynchronous.
+		const startedAt = streamStartedAtRef.current;
+		const latencyMs =
+			startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
+		const partialBody = targetId
+			? (messagesRef.current.find((m) => m.id === targetId)?.content ??
+				"")
+			: "";
+		const partialTokenCount = Math.ceil(partialBody.length / 4);
 
-			emitCancelEvent({
-				surface: telemetrySurfaceRef.current,
-				agentId: null,
-				executionId: state.executionId ?? null,
-				partial_token_count: partialTokenCount,
-				latency_to_cancel_ms: latencyMs,
-				triggered_by: triggeredBy,
-			});
+		emitCancelEvent({
+			surface: telemetrySurfaceRef.current,
+			agentId: null,
+			executionId: executionIdRef.current,
+			partial_token_count: partialTokenCount,
+			latency_to_cancel_ms: latencyMs,
+			triggered_by: triggeredBy,
+		});
 
-			// 3. Fire-and-forget cancel POST against the existing
-			// orchestrator-temporal cancel route. We only await the
-			// response to detect failure for the toast — the UI does
-			// NOT depend on it (decision 11 /).
-			const executionId = state.executionId;
-			if (executionId) {
-				void fetch(
-					"/api/agents/fabric-ai/orchestrator-temporal/cancel",
-					{
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ executionId }),
-					},
-				)
-					.then((response) => {
-						if (!response.ok) {
-							onStopFailedRef.current?.();
-						}
-					})
-					.catch(() => {
+		// 3. Fire-and-forget cancel POST against the existing
+		// orchestrator-temporal cancel route. We only await the
+		// response to detect failure for the toast — the UI does
+		// NOT depend on it (decision 11 /). Before `started` there is
+		// no executionId yet: the message's key identifies the turn
+		// (or, if the server has not created it, leaves a tombstone so
+		// it never starts).
+		// Only the CURRENT turn's identity: `state.executionId` can still
+		// hold the previous message's run until this one's `started`
+		// arrives, and cancelling that would leave this one running.
+		const executionId = executionIdRef.current;
+		const clientRequestKey = clientRequestKeyRef.current;
+		if (executionId || clientRequestKey) {
+			void fetch("/api/agents/fabric-ai/orchestrator-temporal/cancel", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					...(executionId ? { executionId } : {}),
+					...(clientRequestKey ? { clientRequestKey } : {}),
+					...(turnConversationIdRef.current
+						? {
+								conversationId: turnConversationIdRef.current,
+							}
+						: {}),
+					...(organizationIdRef.current
+						? { organizationId: organizationIdRef.current }
+						: {}),
+				}),
+			})
+				.then((response) => {
+					if (!response.ok) {
 						onStopFailedRef.current?.();
-					});
-			}
-		},
-		[state.executionId],
-	);
+					}
+				})
+				.catch(() => {
+					onStopFailedRef.current?.();
+				});
+		}
+	}, []);
 
 	/**
 	 * Backward-compat alias — `cancel` now routes through `stop`.
@@ -2263,6 +2595,8 @@ export function useOrchestratorStream(
 		// to and the step counter starts clean.
 		executionIdRef.current = null;
 		completedStepIdsRef.current = new Set();
+		clientRequestKeyRef.current = null;
+		turnConversationIdRef.current = null;
 		// Mark that next sendMessage should start fresh
 		// This handles race conditions where reset is called but
 		// sendMessage is invoked before React re-renders with empty messages

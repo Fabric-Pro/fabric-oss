@@ -306,16 +306,18 @@ function SnapshotComparison({
  * its parent. Names only, as a snapshot comparison does; a body is read per
  * expanded row, through `readCommitFile`.
  */
-function CommitComparisonView({
+function CommitComparisonContent({
 	projectId,
 	fromSha,
 	toSha,
 	open,
+	includeHeader,
 }: {
 	projectId: string;
 	fromSha: string;
 	toSha: string;
 	open: boolean;
+	includeHeader: boolean;
 }) {
 	const t = useTranslations("projects.codingInstructions.compare");
 	const comparison = useQuery({
@@ -330,17 +332,19 @@ function CommitComparisonView({
 	const data = comparison.data as CommitComparison | undefined;
 	return (
 		<>
-			<DialogHeader>
-				<DialogTitle>{t("titleCommits")}</DialogTitle>
-				<DialogDescription>
-					{data
-						? t("subtitleCommits", {
-								from: shortCommit(data.from.sha) ?? "",
-								to: shortCommit(data.to.sha) ?? "",
-							})
-						: t("subtitlePending")}
-				</DialogDescription>
-			</DialogHeader>
+			{includeHeader ? (
+				<DialogHeader>
+					<DialogTitle>{t("titleCommits")}</DialogTitle>
+					<DialogDescription>
+						{data
+							? t("subtitleCommits", {
+									from: shortCommit(data.from.sha) ?? "",
+									to: shortCommit(data.to.sha) ?? "",
+								})
+							: t("subtitlePending")}
+					</DialogDescription>
+				</DialogHeader>
+			) : null}
 			<ComparisonBody
 				loading={comparison.isLoading}
 				failed={comparison.isError}
@@ -388,6 +392,33 @@ function CommitComparisonView({
 	);
 }
 
+/**
+ * The selected commit's comparison body, embedded where the history already
+ * names that commit. File bodies stay lazy: only an expanded changed file reads
+ * its two commit sides through the existing guarded reader.
+ */
+export function InstructionCommitComparison({
+	projectId,
+	fromSha,
+	toSha,
+	open,
+}: {
+	projectId: string;
+	fromSha: string;
+	toSha: string;
+	open: boolean;
+}) {
+	return (
+		<CommitComparisonContent
+			projectId={projectId}
+			fromSha={fromSha}
+			toSha={toSha}
+			open={open}
+			includeHeader={false}
+		/>
+	);
+}
+
 type CompareDialogProps = {
 	projectId: string;
 	open: boolean;
@@ -430,11 +461,12 @@ export function InstructionsCompareDialog(props: CompareDialogProps) {
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
 				{props.commits ? (
-					<CommitComparisonView
+					<CommitComparisonContent
 						projectId={projectId}
 						fromSha={props.commits.from}
 						toSha={props.commits.to}
 						open={open}
+						includeHeader
 					/>
 				) : (
 					<SnapshotComparison

@@ -588,7 +588,7 @@ export async function runSemgrepScanActivity(
 			// Fresh dir each run.
 			await fs.rm(clonePath, { recursive: true, force: true });
 
-			const simpleGit = (await import("simple-git")).default;
+			const { simpleGit } = await import("simple-git");
 			// Resolve the branch to clone: the workflow-provided branch (kept in
 			// sync with the SHA the resolve step read for the diff), else the
 			// project's configured scanBranch, else the repo's default, else "main".

@@ -27,6 +27,14 @@ function jsonResponse(body: unknown, init?: { ok?: boolean; status?: number }) {
 	} as Response;
 }
 
+/** ADO's answer to an invalid/expired PAT: 203 and an HTML sign-in page. */
+function signInPage() {
+	return new Response("<html>sign in</html>", {
+		status: 203,
+		headers: { "content-type": "text/html" },
+	});
+}
+
 beforeEach(() => {
 	vi.restoreAllMocks();
 });
@@ -83,6 +91,17 @@ describe("validateAzureDevOpsPat", () => {
 		});
 
 		expect(result).toEqual({ ok: false, status: 403 });
+	});
+
+	it("treats ADO's 203 sign-in page as a 401 (not ok)", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(signInPage());
+
+		const result = await validateAzureDevOpsPat({
+			organization: "my-org",
+			pat: "expired-pat",
+		});
+
+		expect(result).toEqual({ ok: false, status: 401 });
 	});
 
 	it("returns { ok: false, status } for other non-OK statuses", async () => {
@@ -217,6 +236,54 @@ describe("listAzureDevOpsProjectsAndRepos", () => {
 		expect(result.configured).toBe(true);
 		expect(result.groups).toEqual([]);
 		expect(result.error).toBe("Invalid PAT or insufficient permissions");
+	});
+
+	it("returns the invalid-PAT message (not a SyntaxError) when the projects list answers 203", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(signInPage());
+
+		const result = await listAzureDevOpsProjectsAndRepos({
+			organization: "my-org",
+			pat: "expired-pat",
+		});
+
+		expect(result.configured).toBe(true);
+		expect(result.groups).toEqual([]);
+		expect(result.error).toBe("Invalid PAT or insufficient permissions");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("skips a project whose repos endpoint answers 203, as it does for a 401", async () => {
+		vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(
+				jsonResponse({
+					value: [
+						{ id: "p1", name: "Good" },
+						{ id: "p2", name: "SignedOut" },
+					],
+				}),
+			)
+			.mockResolvedValueOnce(
+				jsonResponse({
+					value: [
+						{
+							id: "r1",
+							name: "ok-repo",
+							project: { name: "Good" },
+						},
+					],
+				}),
+			)
+			.mockResolvedValueOnce(signInPage());
+
+		const result = await listAzureDevOpsProjectsAndRepos({
+			organization: "my-org",
+			pat: "pat",
+		});
+
+		expect(result.groups.map((g) => g.owner)).toEqual(["Good"]);
+		expect(result.error).toBeNull();
 	});
 
 	it("returns a sanitized status message (not a throw) for other non-OK on projects list", async () => {

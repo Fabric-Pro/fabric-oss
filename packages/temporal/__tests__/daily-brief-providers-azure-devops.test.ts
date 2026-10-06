@@ -26,6 +26,14 @@ function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
 	});
 }
 
+/** ADO's answer to an invalid/expired PAT: 203 and an HTML sign-in page. */
+function signInPage() {
+	return new Response("<html>sign in</html>", {
+		status: 203,
+		headers: { "content-type": "text/html" },
+	});
+}
+
 function ref(name: string, objectId: string, peeledObjectId?: string) {
 	return { name, objectId, ...(peeledObjectId ? { peeledObjectId } : {}) };
 }
@@ -67,6 +75,49 @@ function prsResponse(prs: unknown[]) {
 // ---------------------------------------------------------------------------
 // fetchAdoAnnotatedTagReleases
 // ---------------------------------------------------------------------------
+describe("ADO 203 sign-in page", () => {
+	it("fetchAdoPullRequests fails like a 401, not with a JSON parse error", async () => {
+		fetchMock.mockResolvedValue(signInPage());
+
+		await expect(
+			fetchAdoPullRequests({
+				auth,
+				repo: "r",
+				repositoryUrl,
+				windowStart,
+				windowEnd,
+				remainingMs: () => 60_000,
+			}),
+		).rejects.toThrow("Azure DevOps API error: HTTP 401");
+	});
+
+	it("fetchAdoAnnotatedTagReleases fails like a 401, not with a JSON parse error", async () => {
+		fetchMock.mockResolvedValue(signInPage());
+
+		await expect(
+			fetchAdoAnnotatedTagReleases({
+				auth,
+				repo: "r",
+				repositoryUrl,
+				remainingMs: () => 60_000,
+			}),
+		).rejects.toThrow("Azure DevOps API error: HTTP 401");
+	});
+
+	it("a real 401 produces the same error", async () => {
+		fetchMock.mockResolvedValue(new Response("nope", { status: 401 }));
+
+		await expect(
+			fetchAdoAnnotatedTagReleases({
+				auth,
+				repo: "r",
+				repositoryUrl,
+				remainingMs: () => 60_000,
+			}),
+		).rejects.toThrow("Azure DevOps API error: HTTP 401");
+	});
+});
+
 describe("fetchAdoAnnotatedTagReleases", () => {
 	it("annotated tags become releases sorted by taggedDate desc; lightweight tags ignored", async () => {
 		fetchMock

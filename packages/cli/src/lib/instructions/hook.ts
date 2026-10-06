@@ -17,7 +17,14 @@
  * clear and compact alike: a session resumed after a pull is exactly when the
  * published version is most likely to have moved.
  */
+import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+	ExclusiveLockBusyError,
+	withExclusiveLock,
+} from "../exclusive-lock.js";
 import { BUNDLE_COPY_FILE } from "../launcher.js";
 import { isRemoteName } from "./git.js";
 import { isIdentifier } from "./identifiers.js";
@@ -45,6 +52,8 @@ const HOOK_TIMEOUT_SECONDS = 15;
 
 /** Local hook configuration is small; a bound prevents an untrusted file from consuming memory. */
 const MAX_HOOK_CONFIG_BYTES = 1024 * 1024;
+const HOOK_LOCK_STALE_MS = 30_000;
+const HOOK_LOCK_WAIT_MS = 5_000;
 
 /**
  * Every subcommand a hook this tool wrote may name, across every event.
@@ -104,6 +113,35 @@ export interface RemoveHookResult {
 	 * nothing to remove.
 	 */
 	changed: boolean;
+}
+
+async function withHookConfigLock<T>(
+	root: string,
+	posixPath: string,
+	work: () => Promise<T>,
+): Promise<T> {
+	const directory = path.join(tmpdir(), "fabric-instructions-hook-locks");
+	await mkdir(directory, { recursive: true });
+	const identity = createHash("sha256")
+		.update(path.resolve(root))
+		.update("\0")
+		.update(posixPath)
+		.digest("hex");
+	const lockPath = path.join(directory, `${identity}.lock`);
+	try {
+		return await withExclusiveLock(work, {
+			lockPath,
+			staleMs: HOOK_LOCK_STALE_MS,
+			waitMs: HOOK_LOCK_WAIT_MS,
+		});
+	} catch (error) {
+		if (error instanceof ExclusiveLockBusyError && error.abandoned) {
+			throw new Error(
+				`A previous Fabric process left the hook configuration lock at ${JSON.stringify(lockPath)}. Confirm it is no longer running, remove that lock, then run init again.`,
+			);
+		}
+		throw error;
+	}
 }
 
 /**
@@ -360,52 +398,54 @@ export async function mergeCommandHook(input: {
 	event: HookEvent;
 }): Promise<MergeHookResult> {
 	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
-	const settingsPath = path.join(input.root, hookTarget.relativePath);
-	const { settings, existingRaw } = await readHookConfig(
-		input.root,
-		hookTarget,
-	);
-	const { hooks, groups } = readEventGroups(
-		settingsPath,
-		settings,
-		input.event,
-	);
+	return withHookConfigLock(input.root, hookTarget.posixPath, async () => {
+		const settingsPath = path.join(input.root, hookTarget.relativePath);
+		const { settings, existingRaw } = await readHookConfig(
+			input.root,
+			hookTarget,
+		);
+		const { hooks, groups } = readEventGroups(
+			settingsPath,
+			settings,
+			input.event,
+		);
 
-	const replacement: CommandHook = {
-		type: "command",
-		command: input.command,
-		timeout: HOOK_TIMEOUT_SECONDS,
-	};
+		const replacement: CommandHook = {
+			type: "command",
+			command: input.command,
+			timeout: HOOK_TIMEOUT_SECONDS,
+		};
 
-	// Remove EVERY entry for this project first, then add one back. Replacing
-	// in place and stopping at the first match left duplicates behind, and a
-	// file that has accumulated two of our hooks should come out with one.
-	const { pruned, removedCount } = pruneMatching(
-		groups,
-		input.projectId,
-		subcommandsForEvent(input.event),
-	);
-	pruned.push({ hooks: [replacement] });
+		// Remove EVERY entry for this project first, then add one back. Replacing
+		// in place and stopping at the first match left duplicates behind, and a
+		// file that has accumulated two of our hooks should come out with one.
+		const { pruned, removedCount } = pruneMatching(
+			groups,
+			input.projectId,
+			subcommandsForEvent(input.event),
+		);
+		pruned.push({ hooks: [replacement] });
 
-	const next = {
-		...settings,
-		hooks: { ...hooks, [input.event]: pruned },
-	};
+		const next = {
+			...settings,
+			hooks: { ...hooks, [input.event]: pruned },
+		};
 
-	await writeFileSafely({
-		root: input.root,
-		relativePath: hookTarget.posixPath,
-		bytes: new TextEncoder().encode(
-			`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
-		),
+		await writeFileSafely({
+			root: input.root,
+			relativePath: hookTarget.posixPath,
+			bytes: new TextEncoder().encode(
+				`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
+			),
+		});
+
+		return {
+			settingsPath,
+			command: input.command,
+			createdFile: existingRaw === null,
+			replacedCount: removedCount,
+		};
 	});
-
-	return {
-		settingsPath,
-		command: input.command,
-		createdFile: existingRaw === null,
-		replacedCount: removedCount,
-	};
 }
 
 /**
@@ -443,47 +483,49 @@ export async function removeCommandHook(input: {
 	event: HookEvent;
 }): Promise<RemoveHookResult> {
 	const hookTarget = hookTargetFor(input.tool ?? "claude-code");
-	const settingsPath = path.join(input.root, hookTarget.relativePath);
-	const { settings, existingRaw } = await readHookConfig(
-		input.root,
-		hookTarget,
-	);
+	return withHookConfigLock(input.root, hookTarget.posixPath, async () => {
+		const settingsPath = path.join(input.root, hookTarget.relativePath);
+		const { settings, existingRaw } = await readHookConfig(
+			input.root,
+			hookTarget,
+		);
 
-	if (existingRaw === null) {
-		return { settingsPath, changed: false };
-	}
+		if (existingRaw === null) {
+			return { settingsPath, changed: false };
+		}
 
-	const { hooks, groups } = readEventGroups(
-		settingsPath,
-		settings,
-		input.event,
-	);
-	const { pruned, removedCount } = pruneMatching(
-		groups,
-		input.projectId,
-		new Set([input.subcommand]),
-	);
+		const { hooks, groups } = readEventGroups(
+			settingsPath,
+			settings,
+			input.event,
+		);
+		const { pruned, removedCount } = pruneMatching(
+			groups,
+			input.projectId,
+			new Set([input.subcommand]),
+		);
 
-	if (removedCount === 0) {
-		// Nothing matched: leave the file exactly as it was read, not even a
-		// round-tripped re-serialisation of it.
-		return { settingsPath, changed: false };
-	}
+		if (removedCount === 0) {
+			// Nothing matched: leave the file exactly as it was read, not even a
+			// round-tripped re-serialisation of it.
+			return { settingsPath, changed: false };
+		}
 
-	const next = {
-		...settings,
-		hooks: { ...hooks, [input.event]: pruned },
-	};
+		const next = {
+			...settings,
+			hooks: { ...hooks, [input.event]: pruned },
+		};
 
-	await writeFileSafely({
-		root: input.root,
-		relativePath: hookTarget.posixPath,
-		bytes: new TextEncoder().encode(
-			`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
-		),
+		await writeFileSafely({
+			root: input.root,
+			relativePath: hookTarget.posixPath,
+			bytes: new TextEncoder().encode(
+				`${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`,
+			),
+		});
+
+		return { settingsPath, changed: true };
 	});
-
-	return { settingsPath, changed: true };
 }
 
 /**

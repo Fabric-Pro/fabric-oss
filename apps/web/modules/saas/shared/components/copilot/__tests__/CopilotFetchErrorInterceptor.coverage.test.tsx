@@ -133,6 +133,47 @@ describe("deliberate exclusions stay silent", () => {
 		expect(toast.error).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["TURN_IN_PROGRESS", 409],
+		["TURN_PENDING", 409],
+		["TURN_CANCELLED", 409],
+		["TURN_STATE_UNAVAILABLE", 503],
+	])(
+		"says nothing for an Advisor %s refusal, which the chat handles itself",
+		async (code, status) => {
+			await fireAt(
+				"/api/agents/fabric-ai/orchestrator-temporal/stream",
+				() =>
+					new Response(JSON.stringify({ error: "refused", code }), {
+						status,
+						headers: { "Content-Type": "application/json" },
+					}),
+			);
+
+			await new Promise((r) => setTimeout(r, 20));
+			expect(toast.error).not.toHaveBeenCalled();
+		},
+	);
+
+	it("still surfaces a turn code from any other AI endpoint", async () => {
+		await fireAt(
+			"/api/agents/fabric-ai/stream",
+			() =>
+				new Response(
+					JSON.stringify({
+						error: "refused",
+						code: "TURN_IN_PROGRESS",
+					}),
+					{
+						status: 409,
+						headers: { "Content-Type": "application/json" },
+					},
+				),
+		);
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+	});
+
 	it("does not touch non-AI requests", async () => {
 		await fireAt(
 			"/api/rpc/projects/list",

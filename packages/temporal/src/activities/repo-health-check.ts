@@ -254,6 +254,15 @@ export async function validateAzureDevOpsPat(
 			},
 		);
 
+		// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+		// true for 203): same outcome as a 401, decided before the `ok` test.
+		if (response.status === 203) {
+			return {
+				valid: false,
+				error: "Invalid PAT or insufficient permissions",
+			};
+		}
+
 		if (response.ok) {
 			return { valid: true };
 		}
@@ -1156,7 +1165,12 @@ async function checkAzureDevOpsPatHealth(
 		},
 	);
 
-	if (response.ok) {
+	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+	// true for 203): treat it as the 401 it stands for, before the `ok` test.
+	const rejectedBySignIn = response.status === 203;
+	const probeStatus = rejectedBySignIn ? 401 : response.status;
+
+	if (!rejectedBySignIn && response.ok) {
 		// The account-level connectionData call proves the PAT is alive; only
 		// the repository itself answers whether THIS credential can read THIS
 		// repo (Fizzy #2252 AC4) — a scope-limited PAT passes connectionData
@@ -1181,9 +1195,9 @@ async function checkAzureDevOpsPatHealth(
 
 	// PAT expired or invalid — but only on definitive answers. A 5xx says
 	// nothing about the credential (AC2): stamp the sweep and retry next cycle.
-	if (response.status >= 500) {
+	if (probeStatus >= 500) {
 		console.warn(
-			`[RepoHealthCheck] Azure DevOps returned ${response.status} for ${integrationId}; leaving status unchanged`,
+			`[RepoHealthCheck] Azure DevOps returned ${probeStatus} for ${integrationId}; leaving status unchanged`,
 		);
 		await db.projectRepositoryIntegration.update({
 			where: { id: integrationId },
@@ -1194,7 +1208,7 @@ async function checkAzureDevOpsPatHealth(
 	const statusResult = await setIntegrationStatus(
 		integrationId,
 		"TOKEN_EXPIRED",
-		`Azure DevOps API returned ${response.status}`,
+		`Azure DevOps API returned ${probeStatus}`,
 	);
 	if (wasActive && statusResult.statusChanged) {
 		await logHealthActivity(input, "repo_integration_token_expired");

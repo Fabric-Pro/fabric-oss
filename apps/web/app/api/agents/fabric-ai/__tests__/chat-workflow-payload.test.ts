@@ -47,7 +47,10 @@ describe("chat route wiring", () => {
 
 	it("measures the orchestrator input and bounds its history", () => {
 		const guard = orchestrator.indexOf("assertChatWorkflowPayload(");
-		const start = orchestrator.indexOf('"orchestratorExecutionWorkflow",');
+		// The start itself lives in the shared turn starter
+		// (orchestrator-temporal/turn-admission.ts); the guard must run
+		// before the route hands the input to it.
+		const start = orchestrator.indexOf("await startTurnWorkflow({");
 		expect(guard).toBeGreaterThan(-1);
 		expect(start).toBeGreaterThan(guard);
 		expect(orchestrator).toMatch(/status: 413/);

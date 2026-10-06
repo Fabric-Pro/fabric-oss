@@ -7,6 +7,7 @@
 
 import { vi } from "vitest";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
+import type { IterativeTurnOptions } from "../../turn-contract";
 import { createInitialState, type IterativeMessage } from "../../types";
 import { executeIterativePhase } from "../iterative-execution";
 
@@ -195,6 +196,8 @@ export type Step =
 export interface Seen {
 	history: IterativeMessage[];
 	systemPrompt: string;
+	/** The per-call host note sent beside the system prompt, if any. */
+	turnNotice?: string;
 	tools: string[];
 }
 
@@ -209,6 +212,14 @@ export interface TurnOptions {
 	modeConfig?: Record<string, unknown>;
 	/** The loop's cancellation check; defaults to never cancelled. */
 	isCancelled?: () => boolean;
+	/** The attached project; defaults to "project-1", null for none. */
+	projectId?: string | null;
+	/** Images the user attached to the message. */
+	attachedImageUrls?: string[];
+	/** `state.preloadedResources`, as initialization would have set it. */
+	preloadedResources?: Record<string, unknown>;
+	/** The turn contract options the workflow passes (absent = legacy run). */
+	turn?: IterativeTurnOptions;
 }
 
 export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
@@ -222,6 +233,7 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		seen.push({
 			history,
 			systemPrompt: req.systemPrompt,
+			turnNotice: req.turnNotice,
 			tools: Object.keys(req.availableTools),
 		});
 		let step = queue.shift();
@@ -256,7 +268,11 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		message: options.message,
 		userId: "user-1",
 		organizationId: "org-1",
-		projectId: "project-1",
+		projectId:
+			options.projectId === undefined
+				? "project-1"
+				: (options.projectId ?? undefined),
+		attachedImageUrls: options.attachedImageUrls,
 		enabledMcpConfigIds: options.enabledMcpConfigIds,
 		enabledFabricToolIds: options.enabledFabricToolIds,
 		history: options.history ?? [],
@@ -264,6 +280,9 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 	const state = createInitialState(input as never);
 	state.enrichedMessage = options.message;
 	state.enrichedSystemPrompt = "You are the project Advisor.";
+	if (options.preloadedResources) {
+		state.preloadedResources = options.preloadedResources as never;
+	}
 
 	const result = await executeIterativePhase(
 		state,
@@ -273,6 +292,7 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		vi.fn(),
 		vi.fn(),
 		options.isCancelled ?? (() => false),
+		options.turn,
 	);
 	return { result, state, seen };
 }

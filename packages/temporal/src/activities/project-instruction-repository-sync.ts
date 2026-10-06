@@ -13,7 +13,7 @@ import {
 } from "@repo/connectors";
 import {
 	canCreateProjectInstructions,
-	claimInstructionFileStagingKey,
+	claimInstructionFileStagingKeys,
 	clearInstructionSyncPause,
 	completeInstructionRepositorySyncRun,
 	createInstructionSnapshot,
@@ -54,6 +54,7 @@ import {
 import { getStorageProvider } from "@repo/storage";
 import { ApplicationFailure } from "@temporalio/activity";
 import { getTemporalClient } from "../client";
+import { runDrainingPool } from "../lib/draining-pool";
 import {
 	createSyncRunProgress,
 	type SyncRunProgress,
@@ -120,6 +121,7 @@ import {
 /** Git's share of the 10-minute activity timeout, so a hung transfer dies first. */
 const ACQUIRE_GIT_BUDGET_MS = 9 * 60 * 1000;
 const UPLOAD_CONCURRENCY = 8;
+const STAGING_CLAIM_BATCH_ROWS = 500;
 const HEARTBEAT_EVERY_UPLOADS = 50;
 const SETTLE_WAIT_MS = 10 * 60 * 1000;
 const SETTLE_POLL_MS = 5_000;
@@ -759,6 +761,7 @@ async function acquireOnce(input: {
 		context,
 		snapshotId,
 		rows,
+		signal,
 		details: { ...details, snapshotId },
 		progress,
 		syncProgress,
@@ -1295,6 +1298,7 @@ async function stageBytes(input: {
 	context: SyncRunContext;
 	snapshotId: string;
 	rows: Array<{ fileId: string; storageKey: string; file: MeasuredFile }>;
+	signal: AbortSignal;
 	details: SyncFailureDetails;
 	progress: Progress;
 	syncProgress: SyncRunProgress;
@@ -1303,48 +1307,52 @@ async function stageBytes(input: {
 	const storage = getStorageProvider();
 	const copying = input.syncProgress.copying(input.rows.length);
 	await copying.begin();
-	let next = 0;
-	const worker = async (): Promise<void> => {
-		while (next < input.rows.length) {
-			const row = input.rows[next++] as (typeof input.rows)[number];
+	for (
+		let start = 0;
+		start < input.rows.length;
+		start += STAGING_CLAIM_BATCH_ROWS
+	) {
+		const rows = input.rows.slice(start, start + STAGING_CLAIM_BATCH_ROWS);
+		input.signal.throwIfAborted();
+		const claims = rows.map((row) => {
 			const key = stagingKey(context.projectId, snapshotId, row.fileId);
-			if (row.storageKey !== key) {
-				if (!isStagingKey(row.storageKey)) {
-					throw syncFailure("STORAGE_FAILED", details);
-				}
-				const { moved } = await claimInstructionFileStagingKey({
-					fileId: row.fileId,
-					snapshotId,
-					projectId: context.projectId,
-					organizationId: context.organizationId,
-					from: row.storageKey,
-					to: key,
-				});
-				if (!moved) {
-					throw syncFailure("STORAGE_FAILED", details);
-				}
+			if (row.storageKey !== key && !isStagingKey(row.storageKey)) {
+				throw syncFailure("STORAGE_FAILED", details);
 			}
+			return { fileId: row.fileId, from: row.storageKey, to: key };
+		});
+		const { moved } = await claimInstructionFileStagingKeys({
+			snapshotId,
+			projectId: context.projectId,
+			organizationId: context.organizationId,
+			claims,
+		});
+		if (moved !== claims.length) {
+			throw syncFailure("STORAGE_FAILED", details);
+		}
+		input.signal.throwIfAborted();
+		await runDrainingPool(rows, UPLOAD_CONCURRENCY, async (row) => {
+			input.signal.throwIfAborted();
+			const key = stagingKey(context.projectId, snapshotId, row.fileId);
+			input.signal.throwIfAborted();
+			const bytes = await readFile(row.file.full);
+			input.signal.throwIfAborted();
 			try {
-				await storage.uploadFile(key, await readFile(row.file.full), {
+				await storage.uploadFile(key, bytes, {
 					bucket: INSTRUCTIONS_BUCKET,
 					contentType: row.file.mimeType,
 				});
 			} catch {
 				throw syncFailure("STORAGE_FAILED", details);
 			}
+			input.signal.throwIfAborted();
 			progress.uploaded++;
 			if (progress.uploaded % HEARTBEAT_EVERY_UPLOADS === 0) {
 				safeHeartbeat(progress);
 			}
 			await copying.advance(progress.uploaded);
-		}
-	};
-	await Promise.all(
-		Array.from(
-			{ length: Math.min(UPLOAD_CONCURRENCY, input.rows.length) },
-			() => worker(),
-		),
-	);
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -18,11 +18,7 @@ import { interpolateTemplate } from "./utils";
 export async function executeGitLabGetFileStep(
 	params: StepParams,
 ): Promise<NodeExecutionResult> {
-	const {
-		projectId,
-		filePath,
-		ref = "main",
-	} = params.nodeConfig as {
+	const { projectId, filePath, ref } = params.nodeConfig as {
 		projectId?: string;
 		filePath?: string;
 		ref?: string;
@@ -49,7 +45,9 @@ export async function executeGitLabGetFileStep(
 
 	const interpolatedProjectId = interpolateTemplate(projectId, params.inputs);
 	const interpolatedPath = interpolateTemplate(filePath, params.inputs);
-	const interpolatedRef = interpolateTemplate(ref, params.inputs);
+	// GitLab requires a ref; `HEAD` resolves to the project's default branch.
+	const interpolatedRef =
+		(ref ? interpolateTemplate(ref, params.inputs).trim() : "") || "HEAD";
 
 	try {
 		const result = (await callMcpWithRestFallback({

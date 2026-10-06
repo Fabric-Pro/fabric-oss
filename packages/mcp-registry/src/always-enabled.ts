@@ -59,7 +59,7 @@ export const SANDBOX_ACCOUNT: AccountDefinition = {
 							branch: {
 								type: "string",
 								description:
-									"Branch to checkout (default: main)",
+									"Branch to check out (default: the repository's default branch)",
 							},
 							workDir: {
 								type: "string",

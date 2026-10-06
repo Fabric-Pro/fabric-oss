@@ -61,6 +61,7 @@ import { McpConfigTile } from "./McpConfigTile";
 import { McpServerCard } from "./McpServerCard";
 import { McpServerIcon } from "./McpServerIcon";
 import { McpServersListView } from "./McpServersListView";
+import { isReadOnlyMcpServer, ReadOnlyBadge } from "./ReadOnlyBadge";
 
 type ViewMode = "grid" | "list";
 
@@ -1383,15 +1384,40 @@ export function McpServersView({
 					}
 				}}
 			>
-				<DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+				<DialogContent
+					className="max-w-2xl max-h-[85vh] flex flex-col"
+					onOpenAutoFocus={(event) => {
+						if (
+							!isReadOnlyMcpServer(
+								selectedServer || editingConfig,
+							) ||
+							!(event.currentTarget instanceof HTMLElement)
+						) {
+							return;
+						}
+						const firstField =
+							event.currentTarget.querySelector<HTMLElement>(
+								"input:not([type=hidden]):not([disabled]), textarea:not([disabled])",
+							);
+						if (firstField) {
+							event.preventDefault();
+							firstField.focus();
+						}
+					}}
+				>
 					<DialogHeader className="flex-shrink-0">
-						<DialogTitle>
-							{editingConfig
-								? `Configure ${editingConfig.mcpServer?.name || editingConfig.displayName || "MCP Server"}`
-								: selectedServer
-									? `Add ${selectedServer.name}`
-									: "Add MCP Server"}
-						</DialogTitle>
+						<div className="flex items-center justify-center sm:justify-start gap-2">
+							<DialogTitle>
+								{editingConfig
+									? `Configure ${editingConfig.mcpServer?.name || editingConfig.displayName || "MCP Server"}`
+									: selectedServer
+										? `Add ${selectedServer.name}`
+										: "Add MCP Server"}
+							</DialogTitle>
+							{isReadOnlyMcpServer(
+								selectedServer || editingConfig,
+							) && <ReadOnlyBadge className="h-5 text-xs px-2" />}
+						</div>
 					</DialogHeader>
 					<div className="space-y-4 overflow-y-auto flex-1 pr-2">
 						{(selectedServer?.key === "github-remote" ||

@@ -135,6 +135,12 @@ vi.mock("@repo/database", async (importOriginal) => {
 			}
 			return indexOutcome.status;
 		},
+		failCodeIndexUnlessOwnReady: async () => {
+			if (indexOutcome.status instanceof Error) {
+				throw indexOutcome.status;
+			}
+			return indexOutcome.status;
+		},
 		updateCodeIndexStats: async () => indexOutcome.stats,
 		updateCodeIndexProgress: async () => ({ count: 0 }),
 		createCodeSymbols: async () => ({ count: 1 }),
@@ -166,7 +172,7 @@ vi.mock("@repo/rag/lib/utils", () => ({ generatePointId: vi.fn() }));
 
 // simple-git stand-in: a "clone" writes one source file at the target path.
 vi.mock("simple-git", () => ({
-	default: () => ({
+	simpleGit: () => ({
 		clone: async (_url: string, clonePath: string) => {
 			fs.mkdirSync(path.join(clonePath, "src"), { recursive: true });
 			fs.writeFileSync(
@@ -454,6 +460,20 @@ describe("the chain's own writes land", () => {
 			status: "FAILED",
 			error: "own failure",
 		});
+	});
+
+	it("a fail that found its own READY index completes its job", async () => {
+		seedJob(NEW.runId);
+		indexOutcome.status = "kept-ready";
+
+		await run(failCodeIndexActivity, {
+			...KEY,
+			branch: "main",
+			error: "Could not record index results: clone failed",
+			owner: NEW,
+		});
+
+		expect(hub.job).toMatchObject({ status: "COMPLETED", error: null });
 	});
 
 	it("on an unlabeled row", async () => {

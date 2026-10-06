@@ -160,3 +160,55 @@ describe("updateCodeIndexActivity", () => {
 		expect(jobMocks.jobComplete).toHaveBeenCalled();
 	});
 });
+
+/**
+ * Summaries the workflow could not generate, even after its re-pass. They do
+ * not fail the run — code search works without them — but they must not sit
+ * under a green step either.
+ */
+describe("updateCodeIndexActivity — missing summaries", () => {
+	const RUN = { ...BASE, filesIndexed: 29, chunksCreated: 400 };
+
+	const stepCalls = () =>
+		jobMocks.jobStep.mock.calls.map(([step, status, opts]) => ({
+			step,
+			status,
+			error: (opts as { error?: string }).error,
+		}));
+
+	it("marks the summaries step failed with the count, and still completes", async () => {
+		await updateCodeIndexActivity({
+			...RUN,
+			summariesFailed: 3,
+			summariesTotal: 29,
+		} as never);
+
+		expect(stepCalls()).toEqual([
+			{ step: "embed", status: "completed", error: undefined },
+			{
+				step: "summaries",
+				status: "failed",
+				error: "3 of 29 file summaries could not be generated. Code search still works; re-index to retry them.",
+			},
+			{ step: "finalize", status: "completed", error: undefined },
+		]);
+		// The index row still goes READY, and the job still completes.
+		expect(dbMocks.updateCodeIndexStats).toHaveBeenCalledTimes(1);
+		expect(jobMocks.jobComplete).toHaveBeenCalled();
+		expect(jobMocks.jobFail).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["absent (a run recorded before the count)", {}],
+		["zero", { summariesFailed: 0, summariesTotal: 29 }],
+	])("completes every step when the count is %s", async (_label, extra) => {
+		await updateCodeIndexActivity({ ...RUN, ...extra } as never);
+
+		expect(stepCalls().map(({ step, status }) => [step, status])).toEqual([
+			["embed", "completed"],
+			["summaries", "completed"],
+			["finalize", "completed"],
+		]);
+		expect(jobMocks.jobComplete).toHaveBeenCalled();
+	});
+});

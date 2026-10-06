@@ -17,7 +17,7 @@ describe("formatByteSizeOver", () => {
 		const actual = SNAPSHOT_LIMITS.maxTotalBytes + 1;
 
 		expect(formatByteSizeOver(actual, SNAPSHOT_LIMITS.maxTotalBytes)).toBe(
-			"52,428,801 bytes",
+			"2,147,483,648 bytes",
 		);
 	});
 

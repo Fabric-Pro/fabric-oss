@@ -445,7 +445,9 @@ async function getFileContents(
 		throw new Error("project_id and path are required");
 	}
 
-	const branch = ref || "main";
+	// The files endpoint requires a ref; `HEAD` resolves to the project's
+	// default branch, which is not always `main`.
+	const branch = ref || "HEAD";
 	const { apiBase } = toGitLabApiCredential(token);
 
 	// Try file endpoint first
@@ -489,7 +491,7 @@ async function getFileContents(
 			const tree = (await gitlabFetch(
 				token,
 				`/projects/${encodeURIComponent(project_id)}/repository/tree`,
-				{ path, ref: branch },
+				ref ? { path, ref } : { path },
 			)) as Array<{
 				name: string;
 				path: string;

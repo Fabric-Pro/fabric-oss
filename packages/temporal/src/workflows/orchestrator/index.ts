@@ -14,6 +14,7 @@
  * workflow into phases for better maintainability and code organization.
  */
 
+import { ActivityCancellationType } from "@temporalio/common";
 import {
 	CancellationScope,
 	condition,
@@ -37,6 +38,14 @@ import {
 	executeIterativePhase,
 	executePlanningPhase,
 } from "./phases";
+import {
+	type IterativeTurnOptions,
+	isCancellationFailure,
+	TURN_CANCELLATION_PATCH,
+	type TurnStopReason,
+	turnNotDispatchableReason,
+	turnScopeField,
+} from "./turn-contract";
 import {
 	type AgentVariable,
 	type ApprovalSignalData,
@@ -127,11 +136,16 @@ const longRunningActivities = proxyActivities<typeof orchestratorActivities>({
 
 // Quick LLM intent-clarity check (HITL clarifying question before planning).
 // Short timeout + few retries — it is fail-safe (returns "no clarification" on
-// error), so it must never stall the orchestration.
+// error), so it must never stall the orchestration. The activity heartbeats
+// every few seconds while it waits on the provider; the heartbeat timeout is
+// what lets a Stop reach it (an activity with none is never told it was
+// cancelled), and the cancellation type waits for it to abort its request.
 const { analyzeIntentClarityActivity } = proxyActivities<
 	typeof orchestratorActivities
 >({
 	startToCloseTimeout: "2 minutes",
+	heartbeatTimeout: "30 seconds",
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "1s",
 		backoffCoefficient: 2,
@@ -139,6 +153,44 @@ const { analyzeIntentClarityActivity } = proxyActivities<
 		maximumAttempts: 2,
 	},
 });
+
+// Writes the chat turn's terminal state. Runs from the workflow's finally
+// block inside `CancellationScope.nonCancellable`, so it runs on every exit
+// path of a run that has a turn — cancelled ones included. The write is a
+// conditional transition, so retries are idempotent.
+const { finalizeConversationTurnActivity } = proxyActivities<
+	typeof orchestratorActivities
+>({
+	startToCloseTimeout: "1 minute",
+	retry: {
+		initialInterval: "1s",
+		backoffCoefficient: 2,
+		maximumInterval: "10s",
+		maximumAttempts: 5,
+	},
+});
+
+/**
+ * The turn's terminal status for a run's domain result. A turn ends LIMITED
+ * when its answer is the budget-exhaustion summary or a provider limit cut
+ * it short; a run that ended waiting on approval or OAuth has no answer, so
+ * its turn is FAILED.
+ */
+function turnOutcomeFor(
+	output: OrchestratorWorkflowOutput | undefined,
+): "COMPLETED" | "FAILED" | "LIMITED" | "CANCELLED" {
+	switch (output?.status) {
+		case "cancelled":
+			return "CANCELLED";
+		case "completed":
+			return output.handoffRecommended ||
+				(output.limitSignals?.length ?? 0) > 0
+				? "LIMITED"
+				: "COMPLETED";
+		default:
+			return "FAILED";
+	}
+}
 
 // Session lifecycle cleanup. Runs from the workflow's finally block
 // inside `CancellationScope.nonCancellable` so it fires on every exit
@@ -174,6 +226,179 @@ const { cleanupWeaveResourcesActivity } = proxyActivities<typeof allActivities>(
 export async function orchestratorExecutionWorkflow(
 	input: OrchestratorWorkflowInput,
 ): Promise<OrchestratorWorkflowOutput> {
+	// Recorded first on every new run, whatever path it takes, so a history
+	// from before the turn contract (no marker) replays all of the legacy
+	// behaviour below. See ./turn-contract.ts.
+	const turnContract = patched(TURN_CANCELLATION_PATCH);
+	// A chat turn's scope. Only a run with a turn changes behaviour: the
+	// non-chat starters (story automations, Weave, project setup) send no
+	// turnId and keep their legacy cancellation handling. The turn contract
+	// covers the iterative path only; the chat starters create no turn for
+	// the planner modes (`save_reuse`, `weave`), and a turnId that arrives
+	// with one anyway is ignored, so those runs stay legacy end to end.
+	const turnScope =
+		turnContract && input.turnId && usesIterativeExecution(input)
+			? {
+					turnId: input.turnId,
+					// The workflow's own id, not a value from its input: the
+					// dispatch check compares it with the turn's executionId.
+					executionId: workflowInfo().workflowId,
+					userId: input.userId,
+					// A turn always has an organization; an empty one can match
+					// no turn row, so every dispatch check fails closed.
+					organizationId: input.organizationId ?? "",
+				}
+			: undefined;
+	const turn: TurnRuntime = {
+		scope: turnScope,
+		// The root scope: a Temporal cancel of this run cancels it.
+		rootScope: CancellationScope.current(),
+		stop: null,
+	};
+
+	let output: OrchestratorWorkflowOutput | undefined;
+	let continuedAsNew = false;
+	let persistedStatus: string | null = null;
+	try {
+		output = await runOrchestratorExecution(input, turn);
+	} catch (error) {
+		// The run is not over when it continues as new (the next run writes
+		// the terminal state). The body does not continue as new today; this
+		// keeps a future one from ending the turn early.
+		continuedAsNew =
+			error instanceof Error && error.name === "ContinueAsNew";
+		throw error;
+	} finally {
+		if (turnScope && !continuedAsNew) {
+			persistedStatus = await writeTurnTerminalState(
+				turnScope,
+				output,
+				turn.stop,
+			);
+		}
+	}
+	// The turn record is authoritative: a Stop recorded after the body
+	// finished but before the terminal write ends the turn CANCELLED
+	// (the ordering rule), and the run must report what was persisted, or
+	// the live stream and a later reattach would disagree.
+	return normalizeToPersistedStatus(output, persistedStatus);
+}
+
+/** The iterative path: every execution mode but the two planner modes. */
+function usesIterativeExecution(input: OrchestratorWorkflowInput): boolean {
+	return (
+		input.executionMode !== "save_reuse" && input.executionMode !== "weave"
+	);
+}
+
+/**
+ * Align the domain result with the terminal status the turn record holds.
+ * Keeps the response as the turn's partial text; a cancelled or failed turn
+ * offers no "continue in new chat".
+ */
+function normalizeToPersistedStatus(
+	output: OrchestratorWorkflowOutput,
+	persistedStatus: string | null,
+): OrchestratorWorkflowOutput {
+	if (persistedStatus === "CANCELLED" && output.status !== "cancelled") {
+		return {
+			...output,
+			status: "cancelled",
+			error: "Execution cancelled",
+			handoffRecommended: undefined,
+		};
+	}
+	if (persistedStatus === "FAILED" && output.status === "completed") {
+		return {
+			...output,
+			status: "failed",
+			error: output.error ?? "The turn had already ended",
+			handoffRecommended: undefined,
+		};
+	}
+	return output;
+}
+
+/**
+ * What the run body needs to honour the turn contract. `stop` records a
+ * dispatch refusal the body observed.
+ */
+interface TurnRuntime {
+	scope: IterativeTurnOptions["turnScope"];
+	rootScope: CancellationScope;
+	stop: TurnStopReason | null;
+}
+
+/**
+ * The run's last step when it serves a chat turn: write the turn's terminal
+ * state. Non-cancellable so it runs after a Temporal cancel too; a failure is
+ * logged rather than thrown, because the run's own result must still be
+ * returned — the starter reconciles a turn left non-terminal from Temporal
+ * the next time anyone touches it.
+ */
+async function writeTurnTerminalState(
+	turnScope: NonNullable<IterativeTurnOptions["turnScope"]>,
+	output: OrchestratorWorkflowOutput | undefined,
+	stop: TurnStopReason | null,
+): Promise<string | null> {
+	const outcome = turnOutcomeFor(output);
+	const terminalReason =
+		outcome === "CANCELLED"
+			? "cancelled"
+			: outcome === "FAILED"
+				? (output?.error ??
+					(stop ? `turn not dispatchable (${stop})` : undefined) ??
+					output?.status ??
+					"failed")
+				: outcome === "LIMITED"
+					? (output?.handoffRecommended?.reason ?? "limit reached")
+					: "completed";
+	try {
+		const written = await CancellationScope.nonCancellable(() =>
+			finalizeConversationTurnActivity({
+				turnScope,
+				outcome,
+				terminalReason,
+				...(output?.response ? { responseText: output.response } : {}),
+				...(output?.limitSignals?.length
+					? {
+							limitSignalSummary: output.limitSignals.map(
+								(signal) => ({
+									kind: signal.kind,
+									...(signal.provider
+										? { provider: signal.provider }
+										: {}),
+									message: signal.message,
+								}),
+							),
+						}
+					: {}),
+			}),
+		);
+		return written.status;
+	} catch (error) {
+		log.error("Failed to write the chat turn's terminal state", {
+			turnId: turnScope.turnId,
+			outcome,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
+/**
+ * The run itself. Split from `orchestratorExecutionWorkflow` only so the
+ * wrapper can write the turn's terminal state from the result on every
+ * exit path; the body is unchanged apart from the turn contract.
+ */
+async function runOrchestratorExecution(
+	input: OrchestratorWorkflowInput,
+	turn: TurnRuntime,
+): Promise<OrchestratorWorkflowOutput> {
+	const turnOptions: IterativeTurnOptions | undefined = turn.scope
+		? { cancellationAware: true, turnScope: turn.scope }
+		: undefined;
+
 	// Initialize workflow state — restore from continueAsNew carry-forward if present
 	const state = createInitialState(input);
 	const isResuming = !!input.resumeState;
@@ -414,8 +639,19 @@ export async function orchestratorExecutionWorkflow(
 		return decision;
 	}
 
+	/**
+	 * The legacy `cancel` signal; and, for a chat turn, a Temporal cancel of
+	 * the run (the root scope is then considered cancelled) or a dispatch
+	 * refusal for a recorded cancel.
+	 */
 	function isCancelled(): boolean {
-		return state.cancelled;
+		if (state.cancelled) {
+			return true;
+		}
+		return (
+			turnOptions !== undefined &&
+			(turn.rootScope.consideredCancelled || turn.stop === "cancelled")
+		);
 	}
 
 	// ==========================================================================
@@ -471,7 +707,7 @@ export async function orchestratorExecutionWorkflow(
 		}
 
 		// Check for cancellation
-		if (state.cancelled) {
+		if (isCancelled()) {
 			state.status = "cancelled";
 			exitReason = "cancelled";
 			return buildWorkflowOutput(
@@ -494,8 +730,20 @@ export async function orchestratorExecutionWorkflow(
 				state,
 				input,
 				updateProgress,
+				turnOptions,
 			);
 
+			// A Stop during initialization is a cancelled turn, not a failed
+			// one: checked before the phase's failure is reported.
+			if (turnOptions && isCancelled()) {
+				state.status = "cancelled";
+				exitReason = "cancelled";
+				return buildWorkflowOutput(
+					state,
+					"cancelled",
+					"Execution cancelled",
+				);
+			}
 			if (!initResult.success || !initResult.shouldContinue) {
 				state.status = "failed";
 				exitReason = "failure";
@@ -566,11 +814,12 @@ export async function orchestratorExecutionWorkflow(
 					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
+				...turnScopeField(turnOptions),
 			});
 			if (
 				clarity.needsClarification &&
 				clarity.question &&
-				!state.cancelled
+				!isCancelled()
 			) {
 				log.info("Up-front clarifying question raised", {
 					executionId,
@@ -627,16 +876,22 @@ export async function orchestratorExecutionWorkflow(
 				updateProgress,
 				waitForApproval,
 				isCancelled,
+				turnOptions,
 			);
 
 			if (!iterativeResult.success) {
-				if (state.cancelled) {
+				if (isCancelled()) {
 					state.status = "cancelled";
 					exitReason = "cancelled";
+					// A chat turn keeps whatever answer the phase had when the
+					// cancel landed, as the turn's partial result.
 					return buildWorkflowOutput(
 						state,
 						"cancelled",
 						"Execution cancelled",
+						turnOptions
+							? iterativeResult.data?.finalResponse
+							: undefined,
 					);
 				}
 				state.status = "failed";
@@ -651,6 +906,21 @@ export async function orchestratorExecutionWorkflow(
 
 			const finalResponse = iterativeResult.data?.finalResponse || "";
 
+			// A stopped turn starts no further work — the completion phase
+			// records memory and trajectories in a child workflow — and is
+			// reported cancelled, not completed. Checked again after the
+			// phase, which swallows its own failures (a cancel included).
+			if (turnOptions && isCancelled()) {
+				state.status = "cancelled";
+				exitReason = "cancelled";
+				return buildWorkflowOutput(
+					state,
+					"cancelled",
+					"Execution cancelled",
+					finalResponse,
+				);
+			}
+
 			// Run completion phase for iterative mode (fire-and-forget child workflow)
 			await executeCompletionPhase(
 				state,
@@ -660,6 +930,17 @@ export async function orchestratorExecutionWorkflow(
 				finalResponse,
 				updateProgress,
 			);
+
+			if (turnOptions && isCancelled()) {
+				state.status = "cancelled";
+				exitReason = "cancelled";
+				return buildWorkflowOutput(
+					state,
+					"cancelled",
+					"Execution cancelled",
+					finalResponse,
+				);
+			}
 
 			state.status = "completed";
 			updateProgress("complete", "Execution completed successfully");
@@ -927,6 +1208,42 @@ export async function orchestratorExecutionWorkflow(
 			finalResponse,
 		);
 	} catch (error) {
+		// A chat turn that was stopped ends with a domain result of status
+		// "cancelled", and the Temporal execution COMPLETES: the workflow
+		// returns normally after a cancel rather than rethrowing it, so the
+		// stream route and the turn record both read the outcome from the
+		// result. This is the contract the starters rely on.
+		if (turnOptions) {
+			const refusal = turnNotDispatchableReason(error);
+			if (refusal) {
+				turn.stop = refusal;
+			}
+			if (isCancellationFailure(error) || isCancelled()) {
+				state.status = "cancelled";
+				exitReason = "cancelled";
+				log.info("Orchestrator turn stopped", {
+					executionId,
+					refusal,
+				});
+				return buildWorkflowOutput(
+					state,
+					"cancelled",
+					"Execution cancelled",
+				);
+			}
+			if (refusal) {
+				// scope_mismatch / terminal: the turn record says this run
+				// may not continue. A failure, not a user stop.
+				state.status = "failed";
+				exitReason = "failure";
+				exitErrorMessage = `The turn could not continue (${refusal})`;
+				log.error("Orchestrator turn refused dispatch", {
+					executionId,
+					refusal,
+				});
+				return buildWorkflowOutput(state, "failed", exitErrorMessage);
+			}
+		}
 		state.status = "failed";
 		// `exitReason` stays `"exception"` (its default) for unhandled
 		// throws — gives operators a visible signal in the audit log

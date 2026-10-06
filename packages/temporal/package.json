@@ -16,6 +16,7 @@
 		"./duplicate-scan-core": "./src/lib/duplicate-scan-core.ts",
 		"./meeting-todo-matcher": "./src/lib/meeting-todo-matcher.ts",
 		"./payload-size-guard": "./src/lib/payload-size-guard.ts",
+		"./temporal-client-errors": "./src/lib/temporal-client-errors.ts",
 		"./prompt-kind-guard": "./src/lib/prompt-kind-guard.ts",
 		"./test-case-context": "./src/lib/test-case-context-content.ts",
 		"./frame-service": "./src/activities/shared/frame-service.ts",
@@ -97,7 +98,7 @@
 		"jszip": "^3.10.1",
 		"playwright": "^1.57.0",
 		"resend": "^6.4.0",
-		"simple-git": "^3.36.0",
+		"simple-git": "4.0.2",
 		"yauzl": "^2.10.0",
 		"zod": "4.3.6"
 	},

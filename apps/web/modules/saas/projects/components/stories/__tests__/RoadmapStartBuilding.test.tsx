@@ -186,7 +186,9 @@ describe("RoadmapStartBuilding", () => {
 		const view = {
 			title: "reason.roadmap.pm-not-connected.title",
 			body: "reason.roadmap.pm-not-connected.body",
-			params: { dependency: "" },
+			params: { dependency: "", count: 1 },
+			subjects: [],
+			subjectTotal: 0,
 			ctaKind: "navigate",
 			ctaTarget: "integrations",
 			ctaLabel: "remedy.configureIntegration",
@@ -237,7 +239,9 @@ describe("RoadmapStartBuilding", () => {
 			state: "WARNING",
 			title: "reason.context.thin.title",
 			body: "reason.context.thin.body",
-			params: { dependency: "" },
+			params: { dependency: "", count: 1 },
+			subjects: [],
+			subjectTotal: 0,
 			dismissible: true,
 		} as unknown as CapabilityGateView;
 		renderIt({

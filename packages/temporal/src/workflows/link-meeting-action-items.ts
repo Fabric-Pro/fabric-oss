@@ -24,9 +24,11 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 const { linkMeetingActionItemsActivity } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	// One embedding batch plus up to one LLM call per action item. The card's
 	// NFR targets 30s for 50 items; this is generous headroom over that so a
 	// slow provider does not turn into a retry storm.

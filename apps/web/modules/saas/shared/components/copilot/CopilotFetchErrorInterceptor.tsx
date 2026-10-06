@@ -82,6 +82,32 @@ function isSilentAiCall(url: string): boolean {
 }
 
 /**
+ * Advisor turn-admission refusals that are outcomes, not failures. The
+ * orchestrator routes answer with these when a message meets the conversation's
+ * turn record (`turn-admission.ts`), and both stream callers own them:
+ * `useOrchestratorStream` refuses the new message with an inline notice in
+ * the chat (`TURN_IN_PROGRESS`), waits for its turn to start (`TURN_PENDING`),
+ * retries (`TURN_STATE_UNAVAILABLE`) or shows the message as stopped
+ * (`TURN_CANCELLED`); `useMultiAgentStream` shows any of them on the agent's
+ * own card. A generic "AI request rejected" toast on top would duplicate the
+ * chat's own account of what happened.
+ */
+const CALLER_HANDLED_TURN_CODES: ReadonlySet<string> = new Set([
+	"TURN_IN_PROGRESS",
+	"TURN_PENDING",
+	"TURN_CANCELLED",
+	"TURN_STATE_UNAVAILABLE",
+]);
+
+function isCallerHandledTurnRefusal(url: string, code: unknown): boolean {
+	return (
+		url.includes("/api/agents/fabric-ai/orchestrator-temporal") &&
+		typeof code === "string" &&
+		CALLER_HANDLED_TURN_CODES.has(code)
+	);
+}
+
+/**
  * Surface a run that failed after its response had already succeeded.
  *
  * Consumes a clone in the background, so nothing here delays the response the
@@ -343,6 +369,9 @@ export function CopilotFetchErrorInterceptor() {
 								data?: unknown;
 						  }
 						| undefined;
+					if (isCallerHandledTurnRefusal(url, body?.code)) {
+						return response;
+					}
 					if (body?.code === "AI_USAGE_LIMIT_EXCEEDED") {
 						const payloadCandidate = isAiUsageLimitExceededPayload(
 							body.data,

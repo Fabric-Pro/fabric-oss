@@ -43,20 +43,28 @@ function makeStore(
 function imageResponse(
 	opts: {
 		ok?: boolean;
+		/** Overrides the derived status (e.g. 203, where `ok` is still true). */
+		status?: number;
 		contentType?: string;
 		size?: number;
 		/** Leading "magic" bytes; remainder zero-padded to `size`. */
 		bytes?: number[];
 	} = {},
 ): Response {
-	const { ok = true, contentType = "image/png", size = 128, bytes } = opts;
+	const {
+		ok = true,
+		status,
+		contentType = "image/png",
+		size = 128,
+		bytes,
+	} = opts;
 	const buf = new Uint8Array(Math.max(size, bytes?.length ?? 0));
 	if (bytes) {
 		buf.set(bytes);
 	}
 	return {
 		ok,
-		status: ok ? 200 : 404,
+		status: status ?? (ok ? 200 : 404),
 		headers: {
 			get: (h: string) =>
 				h.toLowerCase() === "content-type" ? contentType : null,
@@ -107,6 +115,49 @@ describe("ingestPulledImages — ADO", () => {
 		expect((init.headers as Record<string, string>).Authorization).toMatch(
 			/^Basic /,
 		);
+	});
+
+	it("emits a placeholder for ADO's 203 sign-in page, decided by status not content-type", async () => {
+		// Valid PNG bytes AND an allowed content-type: only the 203 can reject it.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => imageResponse({ status: 203 })),
+		);
+		const store = makeStore();
+
+		const result = await ingestPulledImages({
+			description: `<img src="${ADO_URL}" alt="signed-out">`,
+			projectId: "p1",
+			storyId: "s1",
+			store,
+			...adoOpts(),
+		});
+
+		expect(result.failed).toBe(1);
+		expect(result.ingested).toBe(0);
+		expect(store.put).not.toHaveBeenCalled();
+		expect(result.description).toContain(
+			"[Image could not be imported from Azure DevOps: signed-out]",
+		);
+	});
+
+	it("leaves a 203 alone for a provider that did not opt in", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => imageResponse({ status: 203 })),
+		);
+		const store = makeStore();
+
+		const result = await ingestPulledImages({
+			description: `<img src="${ADO_URL}" alt="x">`,
+			projectId: "p1",
+			storyId: "s1",
+			store,
+			urlFilter: (url) => url.startsWith("https://dev.azure.com/"),
+		});
+
+		expect(result.ingested).toBe(1);
+		expect(result.failed).toBe(0);
 	});
 
 	it("reuses an already-stored object on re-pull (no re-download)", async () => {
@@ -360,6 +411,7 @@ describe("buildAdoIngestOptions", () => {
 		expect(opts.fetchAuth?.("https://example.com/x.png")).toBeNull();
 		expect(opts.deriveKeyId?.(ADO_URL)).toBe(ADO_GUID);
 		expect(opts.providerLabel).toBe("Azure DevOps");
+		expect(opts.authRejectedStatuses).toEqual([203]);
 	});
 
 	it("also matches relations attachment URLs with a project-GUID segment", () => {
@@ -462,6 +514,30 @@ describe("fetchAdoAttachmentRelations", () => {
 		expect(
 			await fetchAdoAttachmentRelations(1, { pat: "P", org: "o" }),
 		).toEqual([]);
+	});
+});
+
+describe("fetchAdoAttachmentRelations — 203 sign-in page", () => {
+	it("returns [] for a 203, never reading the body", async () => {
+		const json = vi.fn(async () => ({
+			relations: [
+				{
+					rel: "AttachedFile",
+					url: "https://dev.azure.com/org/proj/_apis/wit/attachments/g1",
+					attributes: { name: "Test.xlsx" },
+				},
+			],
+		}));
+		// `ok` is true for 203; a body read would return the relation above.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 203, json })),
+		);
+
+		expect(
+			await fetchAdoAttachmentRelations(1, { pat: "P", org: "o" }),
+		).toEqual([]);
+		expect(json).not.toHaveBeenCalled();
 	});
 });
 

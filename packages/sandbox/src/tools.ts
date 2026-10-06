@@ -22,8 +22,8 @@ export const SANDBOX_TOOLS: SandboxToolDefinition[] = [
 				},
 				branch: {
 					type: "string",
-					description: "Branch to checkout (default: main)",
-					default: "main",
+					description:
+						"Branch to check out (default: the repository's default branch)",
 				},
 				workDir: {
 					type: "string",
@@ -233,11 +233,11 @@ For ANY task requiring code changes, follow this exact flow:
 
 1. **Clone the repository**:
    \`\`\`
-   Sandbox__createSession({ repoUrl: "https://github.com/owner/repo.git", branch: "main" })
+   Sandbox__createSession({ repoUrl: "https://github.com/owner/repo.git" })
    \`\`\`
-   This returns a sessionId to use with all subsequent calls.
+   This checks out the repository's default branch (pass branch to pick another) and returns a sessionId to use with all subsequent calls, plus the checked-out branch: keep it as defaultBranch, the base for the pull request.
 
-2. **Create a feature branch** (REQUIRED - never commit directly to main):
+2. **Create a feature branch** (REQUIRED - never commit directly to the default branch):
    \`\`\`
    Sandbox__exec({ sessionId, command: "git checkout -b feature/descriptive-branch-name" })
    \`\`\`
@@ -260,7 +260,7 @@ For ANY task requiring code changes, follow this exact flow:
      tool: "GitHub__create_pr",
      action: "Create Pull Request",
      data: {
-       owner, repo, baseBranch: "main", headBranch: "feature/your-branch",
+       owner, repo, baseBranch: defaultBranch, headBranch: "feature/your-branch",
        title: "PR title", body: "Description",
        diff: <diff from getDiff>,
        stats: <stats from getDiff>
@@ -272,7 +272,7 @@ For ANY task requiring code changes, follow this exact flow:
    \`\`\`
    Sandbox__commit({ sessionId, message: "Commit message" })
    Sandbox__push({ sessionId, branch: "feature/your-branch" })
-   GitHub__create_pr({ owner, repo, title, head: "feature/your-branch", base: "main", body })
+   GitHub__create_pr({ owner, repo, title, head: "feature/your-branch", base: defaultBranch, body })
    \`\`\`
 
 7. **ALWAYS destroy the session** when done:

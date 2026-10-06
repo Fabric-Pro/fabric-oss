@@ -56,6 +56,8 @@ import {
 	type SyncedContextDeletionWorkflowInput,
 } from "../src/lib/synced-context-deletion-contract";
 
+import { PROJECT_EMBEDDING_TASK_QUEUE } from "../src/task-queues";
+
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
 const WORKFLOW_NAME = "syncedContextDeletionWorkflow";
 
@@ -145,8 +147,8 @@ function happyMocks(overrides: Partial<Mocks> = {}): Mocks {
 
 /**
  * Run the workflow to completion. With `awaitChildOf`, also run a worker on
- * the queue the rebuild is started on, and wait for that embedding workflow
- * before the workers stop.
+ * the queue the rebuild is started on and an activity worker on its separate
+ * embedding queue, then wait for that child before the workers stop.
  */
 async function runWorkflow(
 	mocks: Mocks,
@@ -159,14 +161,6 @@ async function runWorkflow(
 		workflowBundle,
 		activities: mocks,
 	});
-	const childWorker = options.awaitChildOf
-		? await Worker.create({
-				connection: env.nativeConnection,
-				taskQueue: SYNCED_CONTEXT_DELETION_TASK_QUEUE,
-				workflowBundle,
-				activities: mocks,
-			})
-		: null;
 	const workflowId = `${taskQueue}-wf`;
 
 	const run = (async () => {
@@ -186,11 +180,24 @@ async function runWorkflow(
 		return { result, workflowId, runId: handle.firstExecutionRunId };
 	})();
 
-	const [outcome] = await Promise.all([
-		worker.runUntil(run),
-		childWorker?.runUntil(run.catch(() => undefined)),
-	]);
-	return outcome;
+	if (!options.awaitChildOf) {
+		return worker.runUntil(run);
+	}
+	const childWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: SYNCED_CONTEXT_DELETION_TASK_QUEUE,
+		workflowBundle,
+	});
+	const embeddingWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+		activities: {
+			embedSingleContextActivity: mocks.embedSingleContextActivity,
+		},
+	});
+	return worker.runUntil(() =>
+		childWorker.runUntil(() => embeddingWorker.runUntil(run)),
+	);
 }
 
 async function failureOf(mocks: Mocks): Promise<{ type?: string }> {

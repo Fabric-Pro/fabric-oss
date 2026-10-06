@@ -14,7 +14,7 @@ import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-intl", async () =>
@@ -94,6 +94,10 @@ vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 const filesBySnapshot = vi.hoisted(
 	() => new Map<string, Array<Record<string, unknown>>>(),
 );
+const fileListGate = vi.hoisted(() => ({
+	pending: new Set<string>(),
+	releases: new Map<string, () => void>(),
+}));
 
 /**
  * The `compare` answer for the published row's base pair, and whether it
@@ -147,6 +151,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				listFiles: {
 					queryOptions: queryOptionsStub(async (input) => {
 						const { snapshotId } = input as { snapshotId: string };
+						if (fileListGate.pending.has(snapshotId)) {
+							await new Promise<void>((resolve) => {
+								fileListGate.releases.set(snapshotId, resolve);
+							});
+						}
 						return filesBySnapshot.get(snapshotId) ?? [];
 					}),
 				},
@@ -266,9 +275,44 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 // given (the change badge's inputs among them).
 const fileViewProps: Array<Record<string, unknown>> = [];
 vi.mock("../InstructionFileView", () => ({
-	InstructionFileView: (props: Record<string, unknown>) => {
+	InstructionFileView: (props: {
+		currentSnapshotId?: string;
+		onDraftStateChange?: (
+			draft: {
+				snapshotId: string;
+				path: string;
+			} | null,
+		) => void;
+		path: string;
+		projectId: string;
+		snapshotId: string;
+	}) => {
+		const [draftPath, setDraftPath] = useState<string | null>(null);
 		fileViewProps.push(props);
-		return <div data-testid="file-view">{props.path as string}</div>;
+		return (
+			<>
+				<div
+					data-draft-path={draftPath ?? ""}
+					data-current-snapshot-id={props.currentSnapshotId}
+					data-snapshot-id={props.snapshotId}
+					data-testid="file-view"
+				>
+					{props.path}
+				</div>
+				<button
+					onClick={() => {
+						setDraftPath(props.path);
+						props.onDraftStateChange?.({
+							snapshotId: props.snapshotId,
+							path: props.path,
+						});
+					}}
+					type="button"
+				>
+					Keep draft
+				</button>
+			</>
+		);
 	},
 }));
 /** The props the proposals dialog was last mounted with. */
@@ -316,6 +360,8 @@ beforeEach(() => {
 	orgContextState.isGuest = false;
 	connectCliDialogProps.length = 0;
 	filesBySnapshot.clear();
+	fileListGate.pending.clear();
+	fileListGate.releases.clear();
 	compareState.result = null;
 	compareState.error = null;
 	compareState.inputs = [];
@@ -363,10 +409,10 @@ describe("InstructionsPublishedView — selection across versions", () => {
 		} as never;
 	}
 
-	function renderVersion(id: string, version: number) {
+	function renderVersion(id: string, version: number, projectId = "p") {
 		return (
 			<InstructionsPublishedView
-				projectId="p"
+				projectId={projectId}
 				projectName="Checkout Rewrite"
 				published={publishedSnapshot(id, version)}
 				snapshots={[] as never}
@@ -530,6 +576,138 @@ describe("InstructionsPublishedView — selection across versions", () => {
 				en.projects.codingInstructions.publishedView.selectFilePrompt,
 			),
 		).not.toBeInTheDocument();
+	});
+
+	it("keeps the mounted editor's prior file while the next published list loads", async () => {
+		filesBySnapshot.set("s8", [treeFile("f1", "notes.md")]);
+		filesBySnapshot.set("s9", [treeFile("f1", "notes.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+
+		fileListGate.pending.add("s9");
+		view.rerender(renderVersion("s9", 9));
+		await waitFor(() =>
+			expect(fileListGate.releases.get("s9")).toBeTypeOf("function"),
+		);
+
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
+		expect(screen.getByTestId("file-view")).toHaveAttribute(
+			"data-snapshot-id",
+			"s8",
+		);
+		expect(screen.getByTestId("file-view")).toHaveAttribute(
+			"data-current-snapshot-id",
+			"s9",
+		);
+
+		fileListGate.pending.delete("s9");
+		fileListGate.releases.get("s9")?.();
+		await waitFor(() =>
+			expect(screen.getByTestId("file-view")).toHaveAttribute(
+				"data-snapshot-id",
+				"s9",
+			),
+		);
+	});
+
+	it("keeps a drafted file mounted after the next version removes it", async () => {
+		filesBySnapshot.set("s8", [treeFile("f1", "notes.md")]);
+		filesBySnapshot.set("s9", []);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Keep draft" }));
+
+		view.rerender(renderVersion("s9", 9));
+		await waitFor(() =>
+			expect(screen.getByTestId("file-view")).toHaveAttribute(
+				"data-snapshot-id",
+				"s8",
+			),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
+	});
+
+	it("keeps a drafted removed entry file ahead of the successor's default file", async () => {
+		filesBySnapshot.set("s8", [treeFile("f1", "AGENTS.md")]);
+		filesBySnapshot.set("s9", [treeFile("f2", "CLAUDE.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "AGENTS.md" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Keep draft" }));
+
+		view.rerender(renderVersion("s9", 9));
+		await waitFor(() =>
+			expect(screen.getByTestId("file-view")).toHaveAttribute(
+				"data-snapshot-id",
+				"s8",
+			),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("AGENTS.md");
+	});
+
+	it("does not hold a prior project's drafted file while another project loads", async () => {
+		filesBySnapshot.set("s8", [treeFile("f1", "notes.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8, "project-a"), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Keep draft" }));
+
+		fileListGate.pending.add("s9");
+		view.rerender(renderVersion("s9", 9, "project-b"));
+		await waitFor(() =>
+			expect(fileListGate.releases.get("s9")).toBeTypeOf("function"),
+		);
+
+		expect(screen.queryByTestId("file-view")).toBeNull();
+		fileListGate.pending.delete("s9");
+		fileListGate.releases.get("s9")?.();
+	});
+
+	it("resets the file editor when another project's files are already cached", async () => {
+		filesBySnapshot.set("s8", [treeFile("f1", "notes.md")]);
+		filesBySnapshot.set("s9", [treeFile("f2", "CLAUDE.md")]);
+		const user = userEvent.setup();
+		const view = render(renderVersion("s8", 8, "project-a"), {
+			wrapper: TestQueryProvider,
+		});
+		await user.click(
+			await screen.findByRole("button", { name: "notes.md" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Keep draft" }));
+		expect(screen.getByTestId("file-view")).toHaveAttribute(
+			"data-draft-path",
+			"notes.md",
+		);
+
+		view.rerender(renderVersion("s9", 9, "project-b"));
+		await waitFor(() =>
+			expect(screen.getByTestId("file-view")).toHaveAttribute(
+				"data-snapshot-id",
+				"s9",
+			),
+		);
+		expect(screen.getByTestId("file-view")).toHaveAttribute(
+			"data-draft-path",
+			"",
+		);
 	});
 });
 
@@ -1662,6 +1840,98 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		);
 	}
 
+	it("ends Publishing when the matching repository sync failed, while showing that failure", () => {
+		render(
+			view(
+				controls({
+					latestRun: {
+						id: "sync_1:run_b",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: new Date(),
+						status: "FAILED",
+						error: "CHILD_ABORTED",
+						note: null,
+						commitSha: null,
+						snapshotId: "s8",
+						snapshotVersion: 8,
+						userName: null,
+						fromCurrentConfiguration: true,
+					},
+				}),
+				{
+					awaitingPublish: true,
+					snapshots: [
+						{
+							id: "s8",
+							version: 8,
+							status: "READY",
+							source: "REPOSITORY",
+							publishOnReady: true,
+						} as never,
+					],
+				},
+			),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.queryByText(
+				en.projects.codingInstructions.publishedView.publishing,
+			),
+		).toBeNull();
+		expect(screen.getByTestId("repository-sync-copy")).toHaveTextContent(
+			"Syncing version 8 stopped before it finished. Try Sync now again.",
+		);
+	});
+
+	it("shows only the current sync progress when the snapshot list is stale", () => {
+		const pending = {
+			id: "s8",
+			version: 8,
+			status: "VALIDATING",
+			source: "REPOSITORY",
+			proposalDestination: null,
+			progressPhase: "CHECKING",
+			progressDone: 10,
+			progressTotal: 40,
+			createdAt: new Date(),
+			sourceCommitSha: "a".repeat(40),
+		};
+		render(
+			view(
+				controls({
+					running: true,
+					latestRun: {
+						id: "run-1",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: null,
+						status: null,
+						error: null,
+						note: null,
+						commitSha: "a".repeat(40),
+						snapshotId: "s8",
+						snapshotVersion: 8,
+						userName: null,
+						fromCurrentConfiguration: true,
+						progress: { phase: "COPYING", done: 40, total: 40 },
+					},
+					inFlightSnapshot: {
+						status: "VALIDATING",
+						version: 8,
+						scanPending: false,
+						progress: { phase: "CHECKING", done: 20, total: 40 },
+					},
+				}),
+				{ snapshots: [pending], repositoryConfirmed: true },
+			),
+			{ wrapper: TestQueryProvider },
+		);
+		expect(screen.getByText("Checking 20 of 40 files")).toBeInTheDocument();
+		expect(screen.queryByText("Checking 10 of 40 files")).toBeNull();
+	});
+
 	// Fizzy #2563 spec §12: on a repository-backed project a proposal opens a
 	// pull request, so proposing comes back — for a member holding
 	// INSTRUCTION_CREATE, or a reader once the project allows it — while
@@ -2115,7 +2385,7 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 			screen.queryByRole("button", { name: "Publish this version" }),
 		).toBeNull();
 		expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
-		expect(await screen.findByText("Sync runs")).toBeInTheDocument();
+		expect(await screen.findAllByText("Sync runs")).not.toHaveLength(0);
 	});
 
 	it("sends a rejected sync back to the repository and offers Sync again", async () => {

@@ -148,6 +148,20 @@ describe("init --clone <folder>", () => {
 		expect(fakeGit.clones).toHaveLength(1);
 	});
 
+	it("clones into a missing target inside another checkout without adopting the parent", async () => {
+		const parent = await makeTree();
+		mocks.getPublished.mockResolvedValue(repositoryProject());
+		fakeGit.state.toplevel = parent;
+		fakeGit.state.remotes = {
+			origin: "https://git.example.com/example-org/other",
+		};
+
+		const result = await init(parent, "--clone", "rules");
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.clones).toHaveLength(1);
+	});
+
 	it("finishes in the folder of the repository the project's instructions live in", async () => {
 		const parent = await makeTree();
 		mocks.getPublished.mockResolvedValue(repositoryProject("docs/ai"));
@@ -179,22 +193,66 @@ describe("init --clone <folder>", () => {
 		expect(result.stdout).not.toContain("Run:");
 	});
 
-	it("refuses a folder that already holds something, before asking the deployment anything", async () => {
+	it("leaves a non-Git folder alone after identifying the repository", async () => {
 		const parent = await makeTree();
 		await mkdir(path.join(parent, "rules"));
 		await writeFile(path.join(parent, "rules", "notes.txt"), "mine\n");
+		mocks.getPublished.mockResolvedValue(repositoryProject());
 
 		const result = await init(parent, "--clone", "rules");
 
 		expect(result.code).toBe(7);
 		expect(result.stderr).toBe(
-			"✗ That folder already exists and is not empty, so nothing was cloned into it. Pick a folder that does not exist yet, or run init inside it when it already is the clone.\n",
+			`✗ This folder is not a clone of ${NAME}. Run: fabric instructions init --project project-1 --tool claude-code --clone rules\n`,
 		);
-		expect(mocks.getPublished).not.toHaveBeenCalled();
+		expect(mocks.getPublished).toHaveBeenCalledOnce();
 		expect(fakeGit.clones).toEqual([]);
 		expect(await readdir(path.join(parent, "rules"))).toEqual([
 			"notes.txt",
 		]);
+	});
+
+	it("reuses an exact existing clone without replacing its files", async () => {
+		const parent = await makeTree();
+		const folder = path.join(parent, "rules");
+		await mkdir(folder);
+		await writeFile(path.join(folder, "notes.txt"), "mine\n");
+		mocks.getPublished.mockResolvedValue(repositoryProject());
+		fakeGit.state.toplevel = folder;
+		fakeGit.state.remotes = {
+			origin: "https://git.example.com/example-org/rules",
+		};
+
+		const result = await init(parent, "--clone", "rules");
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.clones).toEqual([]);
+		expect(await exists(path.join(folder, "notes.txt"))).toBe(true);
+		expect(result.stdout).not.toContain("Cloned into");
+	});
+
+	it("does not touch an existing clone with the interrupted-checkout signature", async () => {
+		const parent = await makeTree();
+		const folder = path.join(parent, "rules");
+		await mkdir(folder);
+		await writeFile(path.join(folder, "AGENTS.md"), "partial\n");
+		mocks.getPublished.mockResolvedValue(repositoryProject());
+		fakeGit.state.toplevel = folder;
+		fakeGit.state.remotes = {
+			origin: "https://git.example.com/example-org/rules",
+		};
+		fakeGit.state.incompleteCheckout = true;
+
+		const result = await init(parent, "--clone", "rules");
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toBe(
+			"✗ This folder appears to be an incomplete Git checkout. Fabric left it untouched. Inspect its staged and untracked files with git status, then repair or remove the checkout yourself before running init again.\n",
+		);
+		expect(fakeGit.clones).toEqual([]);
+		expect(
+			await exists(path.join(folder, ".claude", "settings.local.json")),
+		).toBe(false);
 	});
 
 	it("refuses a name that is a file", async () => {
@@ -254,7 +312,7 @@ describe("init --clone <folder>", () => {
 
 		expect(result.code).toBe(3);
 		expect(result.stderr).toBe(
-			`✗ Could not clone ${NAME}: git has no credentials for git.example.com. Run: gh auth login\n`,
+			`✗ Could not clone ${NAME}: git has no credentials for git.example.com. The Fabric MCP server was not registered. Run: gh auth login\n`,
 		);
 		expect(
 			await exists(

@@ -9,7 +9,11 @@
  * This is the recommended client for orchestrator-to-agent communication.
  */
 
-import { A2AClient, type A2AClientOptions } from "./client";
+import {
+	A2AClient,
+	type A2AClientOptions,
+	type A2ARequestControl,
+} from "./client";
 import type { A2AMessage, A2ATask, TaskEvent } from "./types";
 
 /**
@@ -101,7 +105,7 @@ export class SecureA2AClient extends A2AClient {
 			requestId?: string;
 			/** AI config to pass to system agents (not external agents) */
 			aiConfig?: AIConfig;
-		},
+		} & A2ARequestControl,
 	): Promise<A2ATask> {
 		const securityHeaders = this.createSecurityHeaders(
 			tenant,

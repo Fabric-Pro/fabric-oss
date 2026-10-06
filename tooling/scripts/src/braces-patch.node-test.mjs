@@ -17,7 +17,7 @@ const patchHash =
 
 function verifyMetadata(workspace, lockfile, patch) {
 	assert.ok(
-		/^patchedDependencies:\n {2}['"]?braces@3\.0\.3['"]?: patches\/braces@3\.0\.3\.patch$/m.test(
+		/^patchedDependencies:\n(?: {2}[^\n]*\n)* {2}['"]?braces@3\.0\.3['"]?: patches\/braces@3\.0\.3\.patch$/m.test(
 			workspace,
 		),
 		"Register the reviewed exact-version braces patch in pnpm-workspace.yaml",
@@ -25,7 +25,7 @@ function verifyMetadata(workspace, lockfile, patch) {
 	assert.equal(createHash("sha256").update(patch).digest("hex"), patchHash);
 	assert.ok(
 		new RegExp(
-			`^patchedDependencies:\\n  braces@3\\.0\\.3: ${patchHash}$`,
+			`^patchedDependencies:\\n(?: {2}[^\\n]*\\n)*  braces@3\\.0\\.3: ${patchHash}$`,
 			"m",
 		).test(lockfile),
 		"The lockfile must record the reviewed patch hash",
@@ -82,6 +82,26 @@ test("reviewed braces patch is registered and locked for both consumers", () => 
 	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
 	const patch = readFileSync(join(root, patchPath));
 	verifyMetadata(workspace, lockfile, patch);
+	assert.throws(() =>
+		verifyMetadata(
+			workspace.replace(
+				"  braces@3.0.3: patches/braces@3.0.3.patch",
+				"removed:\n  braces@3.0.3: patches/braces@3.0.3.patch",
+			),
+			lockfile,
+			patch,
+		),
+	);
+	assert.throws(() =>
+		verifyMetadata(
+			workspace,
+			lockfile.replace(
+				`  braces@3.0.3: ${patchHash}`,
+				`removed:\n  braces@3.0.3: ${patchHash}`,
+			),
+			patch,
+		),
+	);
 	assert.throws(() =>
 		verifyMetadata(
 			workspace,

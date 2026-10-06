@@ -50,10 +50,12 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 const { matchMeetingActionItemOwnersActivity } = proxyActivities<
 	typeof activities
 >({
+	taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	// No model call anywhere in this path — a handful of indexed reads and one
 	// upsert per action item. Generous headroom over that, not over an LLM.
 	startToCloseTimeout: "120s",

@@ -5,6 +5,7 @@
  */
 
 import { delegateToAgent, resolveAgentEndpoint } from "../delegation";
+import { assertTurnDispatchable } from "../turn-dispatch";
 import type { ExecuteAgentAsToolInput } from "../types";
 
 /**
@@ -32,6 +33,10 @@ export async function executeAgentAsTool(
 		);
 	}
 
+	// A delegated agent runs its own model calls; a stopped turn must not
+	// launch one.
+	await assertTurnDispatchable(input.turnScope);
+
 	// Delegate to the agent via A2A protocol
 	const result = await delegateToAgent({
 		agentId: input.agentId,
@@ -46,6 +51,7 @@ export async function executeAgentAsTool(
 		userId: input.userId,
 		organizationId: input.organizationId,
 		projectId: input.projectId,
+		...(input.turnScope ? { turnScope: input.turnScope } : {}),
 	});
 
 	return {

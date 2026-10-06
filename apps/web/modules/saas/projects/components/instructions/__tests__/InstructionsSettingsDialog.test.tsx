@@ -27,6 +27,11 @@ const settingsResponse = vi.hoisted(() => ({
 	},
 }));
 
+const settingsGate = vi.hoisted(() => ({
+	hold: false,
+	release: null as (() => void) | null,
+}));
+
 const updateCalls: Array<Record<string, unknown>> = [];
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
@@ -36,7 +41,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				getSettings: {
 					queryOptions: (o: { input: unknown }) => ({
 						queryKey: ["getSettings", o.input],
-						queryFn: async () => settingsResponse.current,
+						queryFn: async () => {
+							if (settingsGate.hold) {
+								await new Promise<void>((resolve) => {
+									settingsGate.release = resolve;
+								});
+							}
+							return settingsResponse.current;
+						},
 					}),
 				},
 				updateSettings: {
@@ -90,6 +102,8 @@ describe("InstructionsSettingsDialog", () => {
 			defaultIgnoreGlobs: ["**/node_modules/**", "retro.md"],
 			sourceOfTruth: null,
 		};
+		settingsGate.hold = false;
+		settingsGate.release = null;
 	});
 
 	it("shows the defaults as placeholder text and saves no override when untouched", async () => {
@@ -129,6 +143,61 @@ describe("InstructionsSettingsDialog", () => {
 			projectId: "p",
 			ignoreGlobs: ["dist/**", "build/**"],
 		});
+	});
+
+	it("does not enable Save or Reset until the settings read has seeded the form", async () => {
+		settingsGate.hold = true;
+		renderDialog();
+
+		const textarea = screen.getByLabelText("textareaLabel");
+		expect(textarea).toHaveAttribute("readonly");
+		expect(screen.getByRole("button", { name: "save" })).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: "resetToDefaults" }),
+		).toBeDisabled();
+
+		await waitFor(() => expect(settingsGate.release).not.toBeNull());
+		settingsGate.hold = false;
+		settingsGate.release?.();
+
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "save" })).toBeEnabled(),
+		);
+	});
+
+	it("keeps an in-progress draft when the settings query refetches", async () => {
+		settingsResponse.current = {
+			ignoreGlobs: ["dist/**"],
+			defaultIgnoreGlobs: ["**/node_modules/**", "retro.md"],
+			sourceOfTruth: null,
+		};
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<InstructionsSettingsDialog
+					projectId="p"
+					open
+					canEdit
+					onOpenChange={() => undefined}
+				/>
+			</QueryClientProvider>,
+		);
+		const textarea = (await screen.findByLabelText(
+			"textareaLabel",
+		)) as HTMLTextAreaElement;
+		await waitFor(() => expect(textarea.value).toBe("dist/**"));
+		await userEvent.type(textarea, "\nlocal/**");
+
+		settingsResponse.current = {
+			ignoreGlobs: ["generated/**"],
+			defaultIgnoreGlobs: ["**/node_modules/**", "retro.md"],
+			sourceOfTruth: null,
+		};
+		await client.invalidateQueries({ queryKey: ["getSettings"] });
+
+		await waitFor(() => expect(textarea.value).toBe("dist/**\nlocal/**"));
 	});
 
 	it("reset writes null explicitly", async () => {

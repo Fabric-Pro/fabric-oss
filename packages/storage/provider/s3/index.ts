@@ -556,14 +556,26 @@ export const getFileMetadata: GetFileMetadataHandler = async (url, options) => {
 		const response = await withProviderBreaker(
 			"aws_s3",
 			"head_object",
-			() =>
-				client.send(
-					new HeadObjectCommand({
-						Bucket: bucket,
-						Key: key,
-					}),
-				),
+			async () => {
+				try {
+					return await client.send(
+						new HeadObjectCommand({
+							Bucket: bucket,
+							Key: key,
+						}),
+					);
+				} catch (error) {
+					// A missing object is a successful existence check, not a provider outage.
+					if (error instanceof Error && error.name === "NotFound") {
+						return null;
+					}
+					throw error;
+				}
+			},
 		);
+		if (response === null) {
+			return null;
+		}
 
 		return {
 			size: response.ContentLength || 0,
@@ -573,10 +585,6 @@ export const getFileMetadata: GetFileMetadataHandler = async (url, options) => {
 			url: `${s3Endpoint}/${bucket}/${key}`,
 		};
 	} catch (e) {
-		// Return null if file not found
-		if ((e as Error).name === "NotFound") {
-			return null;
-		}
 		logger.error(e);
 		throw new Error("Could not get file metadata from S3");
 	}

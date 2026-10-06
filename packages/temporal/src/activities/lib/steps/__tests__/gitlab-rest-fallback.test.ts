@@ -1,4 +1,7 @@
-import { GitLabMcpMethodNotFoundError } from "@repo/integrations/gitlab";
+import {
+	GitLabMcpMethodNotFoundError,
+	gitlabFetch,
+} from "@repo/integrations/gitlab";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../gitlab-resolver", () => ({
@@ -80,6 +83,38 @@ describe("GitLab Temporal steps — REST fallback after official MCP -32601", ()
 
 		expect(result.error).not.toBe("REST fallback requires a REST source");
 		expect(result.success).toBe(true);
+	});
+
+	it("gitlab-get-file without a ref reads the default branch (HEAD), not main", async () => {
+		const source = officialMcpThatThrowsMethodNotFound("get_file_contents");
+		mockedResolver.mockResolvedValueOnce(source);
+		vi.mocked(gitlabFetch).mockClear();
+		vi.mocked(gitlabFetch).mockResolvedValueOnce({
+			content: Buffer.from("hello").toString("base64"),
+			encoding: "base64",
+			file_path: "README.md",
+			blob_id: "abc",
+			size: 5,
+		});
+
+		const result = await executeGitLabGetFileStep({
+			nodeConfig: { projectId: "g/p", filePath: "README.md" },
+			inputs: {},
+			userId: "u1",
+			organizationId: undefined,
+		});
+
+		expect(source.callTool).toHaveBeenCalledWith(
+			"get_file_contents",
+			expect.objectContaining({ ref: "HEAD" }),
+		);
+		expect(vi.mocked(gitlabFetch)).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.stringContaining("/repository/files/"),
+			{ ref: "HEAD" },
+		);
+		expect(result.success).toBe(true);
+		expect(result.output).toMatchObject({ content: "hello" });
 	});
 
 	it("gitlab-create-issue falls back to REST instead of throwing 'REST fallback requires a REST source'", async () => {

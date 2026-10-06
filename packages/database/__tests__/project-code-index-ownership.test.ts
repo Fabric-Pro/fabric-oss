@@ -10,8 +10,9 @@
  * index, a late init reset it to INDEXING for good.
  *
  * The db is an in-memory fake that evaluates the where-clauses the queries
- * build (equality, `lt`/`lte`, `OR`), so these assert which rows a write lands on,
- * not the shape of the query.
+ * build (equality, `lt`/`lte`, `not`, `OR`, `AND`), so these assert which rows a
+ * write lands on, not the shape of the query. `not` follows SQL: a NULL column
+ * matches neither `x` nor `not x`.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +32,10 @@ function valueMatches(actual: unknown, expected: unknown): boolean {
 		typeof expected === "object" &&
 		!(expected instanceof Date)
 	) {
+		if ("not" in expected) {
+			const { not } = expected as { not: unknown };
+			return actual !== null && actual !== undefined && actual !== not;
+		}
 		const { lt, lte } = expected as { lt?: Date; lte?: Date };
 		if (!(actual instanceof Date)) {
 			return false;
@@ -54,13 +59,19 @@ function valueMatches(actual: unknown, expected: unknown): boolean {
 }
 
 function matches(row: Row, where: Record<string, unknown>): boolean {
-	return Object.entries(where).every(([key, expected]) =>
-		key === "OR"
-			? (expected as Record<string, unknown>[]).some((sub) =>
-					matches(row, sub),
-				)
-			: valueMatches(row[key], expected),
-	);
+	return Object.entries(where).every(([key, expected]) => {
+		if (key === "OR") {
+			return (expected as Record<string, unknown>[]).some((sub) =>
+				matches(row, sub),
+			);
+		}
+		if (key === "AND") {
+			return (expected as Record<string, unknown>[]).every((sub) =>
+				matches(row, sub),
+			);
+		}
+		return valueMatches(row[key], expected);
+	});
 }
 
 vi.mock("../prisma/client", () => ({
@@ -76,6 +87,26 @@ vi.mock("../prisma/client", () => ({
 				store.afterFindFirst = null;
 				hook?.();
 				return row ? { ...row } : null;
+			},
+			findMany: async ({
+				where,
+				orderBy,
+				take,
+			}: {
+				where: Record<string, unknown>;
+				orderBy: { updatedAt: "asc" };
+				take: number;
+			}) => {
+				expect(orderBy).toEqual({ updatedAt: "asc" });
+				return store.rows
+					.filter((r) => matches(r, where))
+					.sort(
+						(a, b) =>
+							(a.updatedAt as Date).getTime() -
+							(b.updatedAt as Date).getTime(),
+					)
+					.slice(0, take)
+					.map((r) => ({ ...r }));
 			},
 			updateMany: async ({
 				where,
@@ -133,6 +164,9 @@ vi.mock("../prisma/client", () => ({
 
 import {
 	type CodeIndexOwner,
+	failCodeIndexUnlessOwnReady,
+	failOrphanedCodeIndex,
+	findQuietIndexingCodeIndexes,
 	updateCodeIndexProgress,
 	updateCodeIndexStats,
 	updateCodeIndexStatus,
@@ -437,5 +471,205 @@ describe("absent and unowned writes", () => {
 			commitSha: "sha-older",
 			ownerRunId: NEWER.runId,
 		});
+	});
+});
+
+/**
+ * A run's fail path must not undo its own success. The finalize's stats write
+ * can land READY and its attempt still die before reporting back; the workflow
+ * then routes the same chain to the fail path. Every other row a failure used
+ * to reach — an older chain's, an unclaimed one — still fails.
+ */
+describe("failCodeIndexUnlessOwnReady", () => {
+	it("keeps the chain's own READY row", async () => {
+		const row = seedRow();
+
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "finalize retry failed", NEWER),
+		).resolves.toBe("kept-ready");
+
+		expect(row).toMatchObject({ status: "READY", error: null });
+	});
+
+	it("fails the chain's own INDEXING row", async () => {
+		const row = seedRow({ status: "INDEXING" });
+
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "own failure", NEWER),
+		).resolves.toBe("written");
+
+		expect(row).toMatchObject({
+			status: "FAILED",
+			error: "own failure",
+			ownerRunId: NEWER.runId,
+		});
+	});
+
+	it("still fails an older chain's READY row (a successor that failed before its init)", async () => {
+		const row = seedRow({
+			ownerRunId: OLDER.runId,
+			ownerRunStartedAt: new Date(OLDER.startedAt),
+		});
+
+		await expect(
+			failCodeIndexUnlessOwnReady(
+				KEY,
+				"No repository token available",
+				NEWER,
+			),
+		).resolves.toBe("written");
+
+		expect(row).toMatchObject({
+			status: "FAILED",
+			error: "No repository token available",
+			ownerRunId: NEWER.runId,
+			ownerRunStartedAt: new Date(NEWER.startedAt),
+		});
+	});
+
+	it("still fails an unclaimed READY row (from before ownership)", async () => {
+		// The case a `NOT { status, ownerRunId }` predicate would miss: with a
+		// NULL owner the negation is NULL in SQL, so the row would be skipped.
+		const row = seedRow({ ownerRunId: null, ownerRunStartedAt: null });
+
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "own failure", OLDER),
+		).resolves.toBe("written");
+
+		expect(row).toMatchObject({
+			status: "FAILED",
+			ownerRunId: OLDER.runId,
+		});
+	});
+
+	it("still fails an older chain's PENDING row", async () => {
+		const row = seedRow({
+			status: "PENDING",
+			ownerRunId: OLDER.runId,
+			ownerRunStartedAt: new Date(OLDER.startedAt),
+		});
+
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "x", NEWER),
+		).resolves.toBe("written");
+
+		expect(row.status).toBe("FAILED");
+	});
+
+	it("leaves a newer chain's row alone and says so", async () => {
+		const row = seedRow({ status: "INDEXING" });
+
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "late failure", OLDER),
+		).resolves.toBe("superseded");
+
+		expect(row).toMatchObject({
+			status: "INDEXING",
+			ownerRunId: NEWER.runId,
+		});
+	});
+
+	it("reports absent when no row exists for the key", async () => {
+		await expect(
+			failCodeIndexUnlessOwnReady(KEY, "x", NEWER),
+		).resolves.toBe("absent");
+	});
+});
+
+/**
+ * The orphan sweep reads candidates, asks Temporal about each, then fails the
+ * dead ones with a compare-and-set on the `updatedAt` it read. Prisma's
+ * `@updatedAt` moves the column on every write; the fake does not, so the
+ * tests move it by hand where a write would.
+ */
+describe("orphaned INDEXING rows", () => {
+	const minutesAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
+
+	it("finds INDEXING rows quiet past the window, oldest first, up to the limit", async () => {
+		seedRow({
+			id: "quiet-newer",
+			status: "INDEXING",
+			updatedAt: minutesAgo(20),
+		});
+		store.rows.push({
+			...store.rows[0],
+			id: "quiet-oldest",
+			updatedAt: minutesAgo(90),
+		});
+		store.rows.push({
+			...store.rows[0],
+			id: "quiet-middle",
+			updatedAt: minutesAgo(30),
+		});
+		store.rows.push({
+			...store.rows[0],
+			id: "fresh",
+			updatedAt: minutesAgo(2),
+		});
+		for (const status of ["READY", "FAILED", "PENDING", "STALE"]) {
+			store.rows.push({
+				...store.rows[0],
+				id: `old-${status}`,
+				status,
+				updatedAt: minutesAgo(120),
+			});
+		}
+
+		const rows = await findQuietIndexingCodeIndexes({
+			quietMinutes: 10,
+			limit: 2,
+		});
+
+		expect(rows.map((r) => r.id)).toEqual(["quiet-oldest", "quiet-middle"]);
+	});
+
+	it("fails a row still as the sweep read it", async () => {
+		const observed = minutesAgo(30);
+		const row = seedRow({ status: "INDEXING", updatedAt: observed });
+
+		await expect(
+			failOrphanedCodeIndex({
+				id: row.id,
+				observedUpdatedAt: observed,
+				error: "stopped",
+			}),
+		).resolves.toBe(1);
+
+		expect(row).toMatchObject({
+			status: "FAILED",
+			error: "stopped",
+			// The sweep is not a chain: it claims nothing.
+			ownerRunId: NEWER.runId,
+		});
+	});
+
+	it("misses when the row was written after the read", async () => {
+		const observed = minutesAgo(30);
+		const row = seedRow({ status: "INDEXING", updatedAt: minutesAgo(1) });
+
+		await expect(
+			failOrphanedCodeIndex({
+				id: row.id,
+				observedUpdatedAt: observed,
+				error: "stopped",
+			}),
+		).resolves.toBe(0);
+
+		expect(row.status).toBe("INDEXING");
+	});
+
+	it("misses when the row is no longer INDEXING", async () => {
+		const observed = minutesAgo(30);
+		const row = seedRow({ status: "READY", updatedAt: observed });
+
+		await expect(
+			failOrphanedCodeIndex({
+				id: row.id,
+				observedUpdatedAt: observed,
+				error: "stopped",
+			}),
+		).resolves.toBe(0);
+
+		expect(row.status).toBe("READY");
 	});
 });

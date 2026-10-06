@@ -43,6 +43,7 @@ import type {
 	InstructionChangeMode,
 } from "../projects/procedures/instructions/submit-change";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
+import { instructionCliUpgradeNotice } from "./instruction-cli-compatibility";
 import { resolveInstructionProject } from "./instruction-project-gate";
 
 /** The longest `sinceDigest` accepted, mirroring the MCP tools' input schemas. */
@@ -448,6 +449,13 @@ export function registerInstructionRoutes(
 				snapshot.id,
 				resolved.organizationId,
 			);
+			const upgradeNotice = instructionCliUpgradeNotice(
+				c.req.header("user-agent"),
+				files,
+			);
+			if (upgradeNotice) {
+				c.header("X-Fabric-Cli-Upgrade", upgradeNotice);
+			}
 
 			return c.json(
 				ok({

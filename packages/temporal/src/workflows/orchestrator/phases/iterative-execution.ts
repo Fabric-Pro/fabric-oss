@@ -24,10 +24,17 @@
 // agent-core` entry (which would transitively load HTTP clients, langchain
 // SDKs, etc.).
 import { sanitizeMcpErrorMessage } from "@repo/agent-core/utils/sanitize-error";
-import type { LimitSignal, TokenBudgetStatus } from "@repo/ai/limits";
+import type {
+	BudgetLimit,
+	LimitSignal,
+	TokenBudgetStatus,
+} from "@repo/ai/limits";
 // Pure string formatting shared with the execution activity that decodes it —
 // no IO, clock or env access, so it is safe inside the workflow sandbox.
 import { encodeIntegrationToolRef } from "@repo/utils/integration-tool-ref";
+// From `common`, not `workflow`: the same constant, and the phase tests mock
+// `@temporalio/workflow` without it.
+import { ActivityCancellationType } from "@temporalio/common";
 import { log, patched, proxyActivities } from "@temporalio/workflow";
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type { ToolCategory } from "../../../activities/orchestrator";
@@ -80,6 +87,11 @@ import {
 	PAGED_BODY_READ_TOOLS,
 	truncateWithinLimit,
 } from "../tool-result-progression";
+import {
+	type IterativeTurnOptions,
+	rethrowTurnStop,
+	turnScopeField,
+} from "../turn-contract";
 import type {
 	ALTKConfig,
 	ApprovalSignalData,
@@ -139,6 +151,18 @@ const REPEAT_OBSERVATION_LABEL_PATCH = "orch-repeat-observation-label-v1";
  */
 const STUB_CATALOG_TURN_SCOPE_PATCH = "orch-stub-catalog-turn-scope-v1";
 
+/**
+ * Gates one system prompt per turn, so every model call of the turn sends
+ * the same bytes and the provider's prompt cache is reused. The notes sent on
+ * the first call only (attached images, the pre-loaded tool list, the MCP
+ * integrations hint) go on every call, and the "Tool usage" block is decided
+ * at turn start. The notes that change within the turn (the budget warning,
+ * the generated-image rule) move to `turnNotice`, a host note the activity
+ * appends to that one call's messages. Both change the recorded
+ * `runAgentIteration` input, so an older history replays without them.
+ */
+const TURN_STABLE_SYSTEM_PROMPT_PATCH = "orch-turn-stable-system-prompt-v1";
+
 /** Skill reads whose bodies the model keeps following for the whole turn. */
 const SKILL_BODY_TOOLS = new Set(["load_skill", "read_skill_file"]);
 
@@ -195,6 +219,12 @@ const {
 } = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "1 minute",
+	// Explicit (it is also the SDK default): on a Stop the workflow waits for
+	// the model activity to acknowledge the cancel — abort its request and
+	// report CANCELLED — before going on, so nothing it started outlives the
+	// turn unseen. The activities heartbeat every few seconds while they wait
+	// on a provider, which is what delivers the cancel to them.
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "1s",
 		backoffCoefficient: 2,
@@ -232,6 +262,9 @@ const {
 } = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
+	// Explicit, as above: `executeAgentAsTool` launches a delegated agent's
+	// model work.
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "1s",
 		backoffCoefficient: 2,
@@ -726,6 +759,8 @@ async function synthesizeFinalAnswer(params: {
 	retrySystemPrompt: string;
 	/** The deterministic answer used when synthesis stays degenerate. */
 	fallback: (includeFindings: boolean) => string;
+	/** The turn contract; a stop is rethrown, never replaced by the fallback. */
+	turn?: IterativeTurnOptions;
 }): Promise<{ content: string; truncated: "output_limit" | undefined }> {
 	const { state, input, conversationHistory, systemPrompt } = params;
 
@@ -762,6 +797,7 @@ async function synthesizeFinalAnswer(params: {
 			// skill tools that would otherwise make the model emit
 			// tool_calls and break the type === "response" branch.
 			enableSkillTools: false,
+			...turnScopeField(params.turn),
 		});
 
 		// Track synthesis cost
@@ -810,6 +846,7 @@ async function synthesizeFinalAnswer(params: {
 				maxStepsPerIteration: 1,
 				modelOverride: input.modelOverride,
 				enableSkillTools: false,
+				...turnScopeField(params.turn),
 			});
 			state.iterationCosts.push({
 				iteration: state.currentIteration + 2,
@@ -833,6 +870,9 @@ async function synthesizeFinalAnswer(params: {
 			});
 		}
 	} catch (synthesisError) {
+		// A stopped turn is not a failed synthesis: the fallback would
+		// hand a cancelled turn a "final answer".
+		rethrowTurnStop(synthesisError, params.turn);
 		log.warn("LLM synthesis failed, falling back to static summary", {
 			error: String(synthesisError),
 		});
@@ -854,16 +894,15 @@ async function synthesizeFinalAnswer(params: {
 }
 
 /**
- * Check if we're within token budget.
- *
- * Reserves tokens and iterations for the final synthesis call so that
- * when the budget is exceeded, we still have room for one LLM call to
- * produce a proper summary instead of a static tool-name list.
+ * Usage of the two per-turn limits, measured the way the stop and the
+ * wrap-up warning measure them: against the budget left after the synthesis
+ * reserve. `usageRatio` is the larger of the two ratios, so it is the one
+ * that decides when the warning switches on.
  */
-function checkIterationBudget(
+function getBudgetUsage(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
-): { withinBudget: boolean; reason?: string } {
+) {
 	const maxTokens = modeConfig.maxTotalTokens || BUDGET.defaultMaxTotalTokens;
 	const maxIterations =
 		modeConfig.maxIterations || BUDGET.defaultMaxIterations;
@@ -875,18 +914,57 @@ function checkIterationBudget(
 		(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
 		0,
 	);
+	const iterations = iterationCosts.length;
 
-	if (totalTokens > effectiveBudget) {
+	const tokenRatio = effectiveBudget > 0 ? totalTokens / effectiveBudget : 0;
+	const iterationRatio =
+		effectiveMaxIterations > 0 ? iterations / effectiveMaxIterations : 0;
+
+	return {
+		maxTokens,
+		maxIterations,
+		effectiveBudget,
+		effectiveMaxIterations,
+		totalTokens,
+		iterations,
+		tokenRatio,
+		iterationRatio,
+		usageRatio: Math.max(tokenRatio, iterationRatio),
+	};
+}
+
+/**
+ * Check if we're within token budget.
+ *
+ * Reserves tokens and iterations for the final synthesis call so that
+ * when the budget is exceeded, we still have room for one LLM call to
+ * produce a proper summary instead of a static tool-name list. `limit`
+ * names the one that tripped, so the stop can be logged and shown as what
+ * it was.
+ */
+function checkIterationBudget(
+	iterationCosts: IterationCost[],
+	modeConfig: ExecutionModeConfig,
+): {
+	withinBudget: boolean;
+	limit?: BudgetLimit;
+	reason?: string;
+} {
+	const usage = getBudgetUsage(iterationCosts, modeConfig);
+
+	if (usage.totalTokens > usage.effectiveBudget) {
 		return {
 			withinBudget: false,
-			reason: `Token budget exceeded: ${totalTokens}/${maxTokens}`,
+			limit: "tokens",
+			reason: `Token budget exceeded: ${usage.totalTokens}/${usage.maxTokens}`,
 		};
 	}
 
-	if (iterationCosts.length >= effectiveMaxIterations) {
+	if (usage.iterations >= usage.effectiveMaxIterations) {
 		return {
 			withinBudget: false,
-			reason: `Iteration limit reached: ${iterationCosts.length}/${maxIterations}`,
+			limit: "iterations",
+			reason: `Iteration limit reached: ${usage.iterations}/${usage.maxIterations}`,
 		};
 	}
 
@@ -901,24 +979,7 @@ function getBudgetWarning(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
 ): string | null {
-	const maxTokens = modeConfig.maxTotalTokens || BUDGET.defaultMaxTotalTokens;
-	const maxIterations =
-		modeConfig.maxIterations || BUDGET.defaultMaxIterations;
-	const effectiveBudget = maxTokens - BUDGET.synthesisReserveTokens;
-	const effectiveMaxIterations =
-		maxIterations - BUDGET.synthesisIterationReserve;
-
-	const totalTokens = iterationCosts.reduce(
-		(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
-		0,
-	);
-
-	const tokenRatio = effectiveBudget > 0 ? totalTokens / effectiveBudget : 0;
-	const iterationRatio =
-		effectiveMaxIterations > 0
-			? iterationCosts.length / effectiveMaxIterations
-			: 0;
-	const usageRatio = Math.max(tokenRatio, iterationRatio);
+	const { usageRatio } = getBudgetUsage(iterationCosts, modeConfig);
 
 	if (usageRatio < BUDGET.warningThreshold) {
 		return null;
@@ -930,6 +991,30 @@ function getBudgetWarning(
 - If you have enough information, provide your final response NOW.
 - If you need one more critical tool call, make it, but avoid exploratory calls.
 - Do NOT start new lines of investigation.`;
+}
+
+/** Tells the model to place each generated image after its description. */
+function formatImageDisplayRule(imageCount: number): string {
+	return `CRITICAL IMAGE DISPLAY RULE: You have generated ${imageCount} image(s) using fabric_generate_image. For EACH design/variation in your response, use this exact order:
+1. Section heading (e.g., "## Design 1: Name")
+2. Full text description of the design
+3. The image markdown: ![Generated Image](url)
+
+Place each ![Generated Image](url) AFTER the text description, NOT before it. Copy the exact URL from each tool result. Do NOT omit any image URLs.`;
+}
+
+/**
+ * The per-call host note: instructions that change within a turn, sent after
+ * the conversation instead of in the system prompt, so the system prompt
+ * stays byte-identical across the turn. Labelled so the model does not read
+ * it as the user's words. Undefined when there is nothing to say.
+ */
+function formatTurnNotice(parts: string[]): string | undefined {
+	const notes = parts.map((part) => part.trim()).filter(Boolean);
+	if (notes.length === 0) {
+		return undefined;
+	}
+	return `[Host note: this note is from the host for this step of the turn only; it is not part of the user's message.]\n\n${notes.join("\n\n")}`;
 }
 
 const ARGS_BLOCKS_TOOLS = new Set([
@@ -1451,6 +1536,12 @@ export async function executeIterativePhase(
 		options?: WaitForApprovalOptions,
 	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
+	/**
+	 * The Advisor turn contract (see ../turn-contract.ts). Absent for a run
+	 * that recorded no `orch-turn-cancellation-v1` marker: every catch below
+	 * then keeps its legacy fallback.
+	 */
+	turn?: IterativeTurnOptions,
 ): Promise<
 	PhaseResult<{
 		finalResponse: string;
@@ -1559,6 +1650,7 @@ export async function executeIterativePhase(
 				);
 			}
 		} catch (preloadError) {
+			rethrowTurnStop(preloadError, turn);
 			log.warn(
 				"[IterativeExecution] Failed to pre-load MCP tools — will fall back to search_tools",
 				{ error: String(preloadError) },
@@ -1960,6 +2052,109 @@ export async function executeIterativePhase(
 	// recorded activity results on replay, so it is deterministic.
 	const observationsByCall = new Map<string, Map<string, number>>();
 
+	// Read once for the whole turn, so a history that crosses the deploy
+	// mid-turn keeps one prompt shape until the turn ends.
+	const turnStableSystemPrompt = patched(TURN_STABLE_SYSTEM_PROMPT_PATCH);
+	// The turn's system prompt under that marker, built on the first call.
+	let stableSystemPrompt: string | undefined;
+
+	/**
+	 * Builds the system prompt for one call. Unpatched, the caller passes the
+	 * budget warning in `base`, `firstCall` only on iteration 1, and the image
+	 * rule, which reproduces the pre-marker bytes. Patched, it is called once
+	 * per turn with `firstCall: true`, no image rule, and `toolUsageAtTurnStart`.
+	 */
+	const composeSystemPrompt = (options: {
+		base: string;
+		firstCall: boolean;
+		imageDisplayRule: string | null;
+		toolUsageAtTurnStart: boolean;
+	}): string => {
+		let systemPrompt = options.base;
+
+		// When images are attached, tell the model how to treat them
+		if (input.attachedImageUrls?.length && options.firstCall) {
+			systemPrompt += attachedImagesSystemNote(imageVisionPrompt);
+		}
+
+		// When image generation results exist, instruct LLM to inline them
+		if (options.imageDisplayRule) {
+			systemPrompt += `\n\n${options.imageDisplayRule}`;
+		}
+
+		// Chat renders ```mermaid inline, so a plain diagram request is answered
+		// in the message rather than as a frame or an Excalidraw canvas (#2040
+		// review F34). `patched()` keeps pre-patch histories' prompt bytes; the
+		// unpatched branch appends nothing.
+		if (patched("orch-diagram-inline-mermaid-v1")) {
+			systemPrompt += `\n\n${DIAGRAM_RENDERING_GUIDANCE}`;
+		}
+
+		// Focused-agent mode: when tools were pre-loaded from assigned MCP servers,
+		// tell the model to use them directly instead of calling search_tools first.
+		//
+		// Stub-catalog mode re-emits the catalog every iteration (not just iter 1):
+		// `runAgentIteration` is stateless, the system prompt isn't replayed via
+		// `conversationHistory`, and post-compaction the model would otherwise lose
+		// visibility of catalog tools whose schemas it hasn't yet pulled via
+		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
+		// eager-schema path would have spent.
+		//
+		// The project tools are registered only when a project is attached
+		// (see the `input.projectId` block that seeds `discoveredTools`), so
+		// the patched prompt names them only then.
+		const promptAuditApplied = patched(PROMPT_AUDIT_PATCH);
+		const projectToolsListed =
+			!promptAuditApplied || Boolean(input.projectId);
+		if (preloadedToolCatalog) {
+			// Discovered schemas live in this phase's `discoveredTools`, which
+			// is rebuilt for every turn, so a schema loaded now is gone on the
+			// next user message. Gated: prompt bytes are recorded activity input.
+			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
+				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
+				: "the loaded schema persists for the rest of this conversation";
+			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+		} else if (
+			options.firstCall &&
+			preloadedServerNames.length > 0 &&
+			Object.keys(discoveredTools).length > 0
+		) {
+			const preloadedToolList = Object.keys(discoveredTools).join(", ");
+			systemPrompt += `\n\nFOCUSED AGENT — Pre-loaded tools from ${preloadedServerNames.join(", ")}: ${preloadedToolList}. These tools are ALREADY available — call them directly. Do NOT call search_tools first; that wastes a round-trip and may return incorrect tools.`;
+		} else if (
+			// Fallback: for general agents, hint which servers are available so search_tools
+			// can formulate targeted queries.
+			options.firstCall &&
+			(state.preloadedResources?.mcpTools?.length ?? 0) > 0
+		) {
+			const serverNames = [
+				...new Set(
+					(state.preloadedResources?.mcpTools ?? []).map(
+						(t) => t.serverName,
+					),
+				),
+			];
+			systemPrompt += `\n\nAvailable MCP integrations: ${serverNames.join(", ")}. Use search_tools with a query that includes the server name and action (e.g., "${serverNames[0]} create …") to reliably discover the right tools.`;
+		}
+
+		// Generic schema-adherence reminder when discovered tools are available.
+		// Catches cases where a tool parameter is typed as "string" but requires
+		// a JSON-encoded value (the model must JSON.stringify before passing).
+		if (
+			Object.keys(discoveredTools).length > 0 ||
+			options.toolUsageAtTurnStart
+		) {
+			systemPrompt += `\n\nTool usage: call every tool exactly as its inputSchema specifies. If a parameter is typed as "string" but its description says it expects JSON or an array, JSON.stringify() the value before passing it. Never call a tool with empty args {}${promptAuditApplied ? " when its inputSchema lists required parameters" : ""}.
+
+CRITICAL: NEVER fill tool parameters with placeholder or example values (e.g. "your-repo-owner", "example-org", "my-repo", "YOUR_VALUE", "<owner>"). When required information like a repository owner, repo name, channel ID, or similar identifier is not explicitly stated by the user:
+1. FIRST try to discover it using available tools (e.g. use "search_commits" with the commit SHA to find owner/repo, use "get_authenticated_user" to find the current user's GitHub login, use "list_repositories" to list available repos).
+2. Only ask the user if the information cannot be discovered through tool calls.
+Never guess or use example values — always use real data from API responses.`;
+		}
+
+		return systemPrompt;
+	};
+
 	// Main iteration loop
 	while (!isCancelled()) {
 		state.currentIteration++;
@@ -1994,15 +2189,25 @@ export async function executeIterativePhase(
 				kind: "internal_budget",
 				message: budgetCheck.reason ?? "Internal token budget exceeded",
 				budget: budgetStatus,
+				budgetLimit: budgetCheck.limit,
 			};
 			state.limitSignals.push(internalLimitSignal);
-			log.error("Orchestrator token budget exhausted", {
-				reason: budgetCheck.reason,
-				executionId: state.executionId,
-				userId: input.userId,
-				organizationId: input.organizationId,
-				budget: budgetStatus,
-			});
+			const stopUsage = getBudgetUsage(state.iterationCosts, modeConfig);
+			log.error(
+				budgetCheck.limit === "iterations"
+					? "Orchestrator iteration limit reached"
+					: "Orchestrator token budget exhausted",
+				{
+					reason: budgetCheck.reason,
+					limit: budgetCheck.limit,
+					iterationsUsed: stopUsage.iterations,
+					maxIterations: stopUsage.maxIterations,
+					executionId: state.executionId,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					budget: budgetStatus,
+				},
+			);
 			updateProgress("synthesizing", "Summarizing findings...");
 
 			const synthesis = await synthesizeFinalAnswer({
@@ -2013,8 +2218,21 @@ export async function executeIterativePhase(
 				retrySystemPrompt: SYNTHESIS_RETRY_SYSTEM_PROMPT,
 				fallback: (includeFindings) =>
 					summarizeAccomplishments(state, { includeFindings }),
+				turn,
 			});
 			const synthesisContent = synthesis.content;
+
+			// Cancelled while the synthesis ran (its activity completed
+			// anyway): the summary is the turn's partial text, not a
+			// successful answer, and no handoff is offered for it.
+			if (turn?.cancellationAware && isCancelled()) {
+				return {
+					success: false,
+					error: "Execution cancelled",
+					shouldContinue: false,
+					data: { finalResponse: synthesisContent },
+				};
+			}
 
 			// Stash the summary on state so buildWorkflowOutput can surface
 			// it as `handoffRecommended` for the frontend's "Continue in new
@@ -2036,102 +2254,53 @@ export async function executeIterativePhase(
 			};
 		}
 
-		// Inject budget warning into system prompt when approaching limits
+		// Budget warning when approaching limits. Pre-marker it is appended to
+		// the system prompt; under the marker it goes in the per-call host note.
 		const budgetWarning = getBudgetWarning(
 			state.iterationCosts,
 			modeConfig,
 		);
-		let iterationSystemPrompt = budgetWarning
-			? `${state.enrichedSystemPrompt}${budgetWarning}`
-			: state.enrichedSystemPrompt;
 
-		// When images are attached, tell the model how to treat them
-		if (input.attachedImageUrls?.length && iteration === 1) {
-			iterationSystemPrompt +=
-				attachedImagesSystemNote(imageVisionPrompt);
-		}
-
-		// When image generation results exist, instruct LLM to inline them
 		const imageToolResults = state.toolCalls.filter(
 			(tc) =>
 				tc.name === "fabric_generate_image" &&
 				tc.status === "success" &&
 				typeof tc.result === "string",
 		);
-		if (imageToolResults.length > 0) {
-			iterationSystemPrompt += `\n\nCRITICAL IMAGE DISPLAY RULE: You have generated ${imageToolResults.length} image(s) using fabric_generate_image. For EACH design/variation in your response, use this exact order:
-1. Section heading (e.g., "## Design 1: Name")
-2. Full text description of the design
-3. The image markdown: ![Generated Image](url)
+		const imageDisplayRule =
+			imageToolResults.length > 0
+				? formatImageDisplayRule(imageToolResults.length)
+				: null;
 
-Place each ![Generated Image](url) AFTER the text description, NOT before it. Copy the exact URL from each tool result. Do NOT omit any image URLs.`;
-		}
-
-		// Chat renders ```mermaid inline, so a plain diagram request is answered
-		// in the message rather than as a frame or an Excalidraw canvas (#2040
-		// review F34). `patched()` keeps pre-patch histories' prompt bytes; the
-		// unpatched branch appends nothing.
-		if (patched("orch-diagram-inline-mermaid-v1")) {
-			iterationSystemPrompt += `\n\n${DIAGRAM_RENDERING_GUIDANCE}`;
-		}
-
-		// Focused-agent mode: when tools were pre-loaded from assigned MCP servers,
-		// tell the model to use them directly instead of calling search_tools first.
-		//
-		// Stub-catalog mode re-emits the catalog every iteration (not just iter 1):
-		// `runAgentIteration` is stateless, the system prompt isn't replayed via
-		// `conversationHistory`, and post-compaction the model would otherwise lose
-		// visibility of catalog tools whose schemas it hasn't yet pulled via
-		// `search_tools`. Re-emitting costs ~1.5K tokens vs. the 48K/iter the
-		// eager-schema path would have spent.
-		//
-		// The project tools are registered only when a project is attached
-		// (see the `input.projectId` block that seeds `discoveredTools`), so
-		// the patched prompt names them only then.
-		const promptAuditApplied = patched(PROMPT_AUDIT_PATCH);
-		const projectToolsListed =
-			!promptAuditApplied || Boolean(input.projectId);
-		if (preloadedToolCatalog) {
-			// Discovered schemas live in this phase's `discoveredTools`, which
-			// is rebuilt for every turn, so a schema loaded now is gone on the
-			// next user message. Gated: prompt bytes are recorded activity input.
-			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
-				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
-				: "the loaded schema persists for the rest of this conversation";
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
-		} else if (
-			iteration === 1 &&
-			preloadedServerNames.length > 0 &&
-			Object.keys(discoveredTools).length > 0
-		) {
-			const preloadedToolList = Object.keys(discoveredTools).join(", ");
-			iterationSystemPrompt += `\n\nFOCUSED AGENT — Pre-loaded tools from ${preloadedServerNames.join(", ")}: ${preloadedToolList}. These tools are ALREADY available — call them directly. Do NOT call search_tools first; that wastes a round-trip and may return incorrect tools.`;
-		} else if (
-			// Fallback: for general agents, hint which servers are available so search_tools
-			// can formulate targeted queries.
-			iteration === 1 &&
-			(state.preloadedResources?.mcpTools?.length ?? 0) > 0
-		) {
-			const serverNames = [
-				...new Set(
-					(state.preloadedResources?.mcpTools ?? []).map(
-						(t) => t.serverName,
-					),
+		let iterationSystemPrompt: string;
+		let turnNotice: string | undefined;
+		if (turnStableSystemPrompt) {
+			// Built from the turn-start state only: the tool list and the
+			// Tool usage block must not follow tools discovered later in the
+			// turn. search_tools is always attached (`getMetaTools`) and is
+			// the only way the loop adds a discovered tool, so the block is
+			// decided here rather than when the first discovery lands.
+			stableSystemPrompt ??= composeSystemPrompt({
+				base: state.enrichedSystemPrompt,
+				firstCall: true,
+				imageDisplayRule: null,
+				toolUsageAtTurnStart: "search_tools" in availableTools,
+			});
+			iterationSystemPrompt = stableSystemPrompt;
+			turnNotice = formatTurnNotice(
+				[budgetWarning, imageDisplayRule].filter(
+					(note): note is string => note !== null,
 				),
-			];
-			iterationSystemPrompt += `\n\nAvailable MCP integrations: ${serverNames.join(", ")}. Use search_tools with a query that includes the server name and action (e.g., "${serverNames[0]} create …") to reliably discover the right tools.`;
-		}
-
-		// Generic schema-adherence reminder when discovered tools are available.
-		// Catches cases where a tool parameter is typed as "string" but requires
-		// a JSON-encoded value (the model must JSON.stringify before passing).
-		if (Object.keys(discoveredTools).length > 0) {
-			iterationSystemPrompt += `\n\nTool usage: call every tool exactly as its inputSchema specifies. If a parameter is typed as "string" but its description says it expects JSON or an array, JSON.stringify() the value before passing it. Never call a tool with empty args {}${promptAuditApplied ? " when its inputSchema lists required parameters" : ""}.
-
-CRITICAL: NEVER fill tool parameters with placeholder or example values (e.g. "your-repo-owner", "example-org", "my-repo", "YOUR_VALUE", "<owner>"). When required information like a repository owner, repo name, channel ID, or similar identifier is not explicitly stated by the user:
-1. FIRST try to discover it using available tools (e.g. use "search_commits" with the commit SHA to find owner/repo, use "get_authenticated_user" to find the current user's GitHub login, use "list_repositories" to list available repos).
-2. Only ask the user if the information cannot be discovered through tool calls.
-Never guess or use example values — always use real data from API responses.`;
+			);
+		} else {
+			iterationSystemPrompt = composeSystemPrompt({
+				base: budgetWarning
+					? `${state.enrichedSystemPrompt}${budgetWarning}`
+					: state.enrichedSystemPrompt,
+				firstCall: iteration === 1,
+				imageDisplayRule,
+				toolUsageAtTurnStart: false,
+			});
 		}
 
 		// Run agent iteration
@@ -2158,6 +2327,9 @@ Never guess or use example values — always use real data from API responses.`;
 			conversationHistory,
 			availableTools,
 			systemPrompt: iterationSystemPrompt,
+			// Absent when there is no note (always, without the marker), so
+			// the unpatched path sends the input it sent before the marker.
+			...(turnNotice ? { turnNotice } : {}),
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
@@ -2180,6 +2352,7 @@ Never guess or use example values — always use real data from API responses.`;
 			...(suppressedFrameTools.size > 0
 				? { suppressedToolNames: [...suppressedFrameTools] }
 				: {}),
+			...turnScopeField(turn),
 		});
 
 		// If the iteration classifier tagged a provider limit/quota
@@ -2211,25 +2384,23 @@ Never guess or use example values — always use real data from API responses.`;
 			timestamp: new Date().toISOString(),
 		});
 
-		const cumulativeTokens = state.iterationCosts.reduce(
-			(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
-			0,
-		);
-		const maxTokens =
-			modeConfig.maxTotalTokens || BUDGET.defaultMaxTotalTokens;
-		const budgetPct =
-			maxTokens > 0
-				? Math.round((cumulativeTokens / maxTokens) * 100)
-				: 0;
+		// budgetUsedPct is the ratio the wrap-up warning and the stop act on:
+		// the larger of the token and iteration ratios. Both are logged so a
+		// stop can be read as the limit that actually tripped.
+		const usage = getBudgetUsage(state.iterationCosts, modeConfig);
 
 		log.info("[IterativeExecution] Iteration token usage", {
 			iteration,
 			inputTokens: iterInputTokens,
 			outputTokens: iterOutputTokens,
 			iterationTotal: iterInputTokens + iterOutputTokens,
-			cumulativeTokens,
-			maxTotalTokens: maxTokens,
-			budgetUsedPct: budgetPct,
+			cumulativeTokens: usage.totalTokens,
+			maxTotalTokens: usage.maxTokens,
+			iterationsUsed: usage.iterations,
+			maxIterations: usage.maxIterations,
+			budgetUsedPct: Math.round(usage.usageRatio * 100),
+			tokenBudgetUsedPct: Math.round(usage.tokenRatio * 100),
+			iterationBudgetUsedPct: Math.round(usage.iterationRatio * 100),
 			resultType: iterationResult.type,
 		});
 
@@ -2314,6 +2485,18 @@ Never guess or use example values — always use real data from API responses.`;
 			// trailing managed-default tool result, so we drain once more
 			// to keep the analytics surface consistent.
 			await flushMcpDefaultToolSignals(state);
+
+			// A cancel that arrived while the round's activity was finishing
+			// must not be reported as a completed turn: the answer becomes
+			// the turn's partial text.
+			if (turn?.cancellationAware && isCancelled()) {
+				return {
+					success: false,
+					error: "Execution cancelled",
+					shouldContinue: false,
+					data: { finalResponse },
+				};
+			}
 
 			return {
 				success: true,
@@ -2603,6 +2786,7 @@ Never guess or use example values — always use real data from API responses.`;
 							);
 						}
 					} catch (agentSearchError) {
+						rethrowTurnStop(agentSearchError, turn);
 						log.warn(
 							"[MetaTool] Agent search failed, continuing with tools only",
 							{ error: String(agentSearchError) },
@@ -2748,6 +2932,7 @@ Never guess or use example values — always use real data from API responses.`;
 							);
 						}
 					} catch (integrationSearchError) {
+						rethrowTurnStop(integrationSearchError, turn);
 						log.warn("[MetaTool] Integration search failed", {
 							error: String(integrationSearchError),
 						});
@@ -2862,6 +3047,7 @@ Never guess or use example values — always use real data from API responses.`;
 						organizationId: input.organizationId,
 						projectId: input.projectId,
 						parentExecutionId: state.executionId,
+						...turnScopeField(turn),
 					});
 
 					toolResult = agentResult.output;
@@ -3152,6 +3338,10 @@ Never guess or use example values — always use real data from API responses.`;
 						projectId: input.projectId,
 						mcpConfigId: discoveredToolConfigIds[toolCall.name],
 						attachedImageUrls: input.attachedImageUrls,
+						// The chat turn, so the image tool checks the turn
+						// record before each provider request and rethrows a
+						// stop (absent on a run with no turn).
+						...turnScopeField(turn),
 						// Binds the integration authority check to this run.
 						// Same patch marker as the registry-backed discovery
 						// above — it widens the recorded activity input.
@@ -3285,6 +3475,8 @@ Never guess or use example values — always use real data from API responses.`;
 					}
 				}
 			} catch (error) {
+				// A stop is not a tool error for the model to work around.
+				rethrowTurnStop(error, turn);
 				toolError =
 					error instanceof Error ? error.message : String(error);
 				toolResult = { error: toolError };
@@ -3567,6 +3759,7 @@ Never guess or use example values — always use real data from API responses.`;
 							maxOutputLength: contentLimit - 500,
 							userId: input.userId,
 							organizationId: input.organizationId,
+							...turnScopeField(turn),
 						});
 						if (reserved > 0) {
 							// A model's output length is not exact.
@@ -3576,6 +3769,9 @@ Never guess or use example values — always use real data from API responses.`;
 							);
 						}
 					} catch (err) {
+						// A stopped turn must not continue on a truncated
+						// result.
+						rethrowTurnStop(err, turn);
 						log.warn(
 							"LLM summarization failed, falling back to truncation",
 							{
@@ -3665,6 +3861,7 @@ Never guess or use example values — always use real data from API responses.`;
 					systemPrompt,
 					retrySystemPrompt:
 						toolFailureSynthesisRetryPrompt(systemPrompt),
+					turn,
 					fallback: (includeFindings) =>
 						`${formatToolFailureNote(tripped.toolName, tripped.lastError)}\n\n${summarizeAccomplishments(
 							state,
@@ -3674,12 +3871,16 @@ Never guess or use example values — always use real data from API responses.`;
 							},
 						)}`,
 				});
-				// Cancelled while the synthesis ran.
+				// Cancelled while the synthesis ran. Under the turn contract
+				// the synthesized text is kept as the turn's partial result.
 				if (isCancelled()) {
 					return {
 						success: false,
 						error: "Execution cancelled",
 						shouldContinue: false,
+						...(turn?.cancellationAware
+							? { data: { finalResponse: synthesis.content } }
+							: {}),
 					};
 				}
 				recordTruncation(state, synthesis.truncated);
@@ -3700,10 +3901,11 @@ Never guess or use example values — always use real data from API responses.`;
 			state,
 			conversationHistory,
 			iteration,
-			cumulativeTokens,
-			maxTokens,
+			usage.totalTokens,
+			usage.maxTokens,
 			input.userId,
 			input.organizationId,
+			turn,
 		);
 
 		// Update progress for next iteration
@@ -3781,6 +3983,8 @@ export async function maybeCompactConversationHistory(
 	maxTotalTokens: number,
 	userId: string,
 	organizationId?: string,
+	/** The turn contract; a stop is rethrown instead of skipping compaction. */
+	turn?: IterativeTurnOptions,
 ): Promise<void> {
 	const budgetPct =
 		maxTotalTokens > 0 ? (cumulativeTokens / maxTotalTokens) * 100 : 0;
@@ -3844,8 +4048,10 @@ export async function maybeCompactConversationHistory(
 			executionId: state.executionId,
 			iteration,
 			historyLengthBefore: conversationHistory.length,
+			...turnScopeField(turn),
 		});
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		log.warn("Compaction activity failed — continuing without compaction", {
 			iteration,
 			error: error instanceof Error ? error.message : String(error),

@@ -101,10 +101,12 @@ export type {
 	ApprovalSignalData,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
+	OrchestratorTurnScope,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
 	PlanningAuditSummary,
 } from "./workflow-io.types";
+export { ORCHESTRATOR_TURN_CONTRACT_VERSION } from "./workflow-io.types";
 // =============================================================================
 // Workspace Types
 // =============================================================================

@@ -34,7 +34,7 @@ import type {
 	SessionState,
 	WriteFileResponse,
 } from "./types";
-import { GIT_ADD_EXCLUSIONS } from "./utils";
+import { GIT_ADD_EXCLUSIONS, shellQuote } from "./utils";
 
 const MAX_EXEC_OUTPUT_BYTES = 1024 * 1024;
 
@@ -262,7 +262,7 @@ export class SessionDO extends DurableObject<Env> {
 		this.initSchema();
 
 		const workDir = `/workspace/${request.workDir || "repo"}`;
-		const branch = request.branch || "main";
+		let branch = request.branch;
 		const now = new Date().toISOString();
 
 		// Store session state
@@ -272,7 +272,7 @@ export class SessionDO extends DurableObject<Env> {
 			sessionId,
 			workDir,
 			request.repoUrl || null,
-			branch,
+			branch ?? null,
 			userId,
 			organizationId || null,
 			now,
@@ -284,9 +284,11 @@ export class SessionDO extends DurableObject<Env> {
 		await sandbox.mkdir("/workspace", { recursive: true });
 
 		if (request.repoUrl) {
-			// Clone repository
+			// Clone repository. Without a requested branch, let the clone check
+			// out the remote's default branch rather than assuming one.
+			const branchFlag = branch ? ` --branch ${shellQuote(branch)}` : "";
 			const cloneStream = await sandbox.execStream(
-				`git clone --depth 1 --branch ${branch} ${request.repoUrl} ${workDir}`,
+				`git clone --depth 1${branchFlag} ${request.repoUrl} ${workDir}`,
 			);
 
 			for await (const event of parseSSEStream<ExecEvent>(cloneStream)) {
@@ -311,6 +313,17 @@ export class SessionDO extends DurableObject<Env> {
 				if (event.type === "complete") {
 					break;
 				}
+			}
+
+			// Record the branch the clone actually checked out, so a push
+			// without an explicit branch targets it.
+			if (!branch) {
+				branch = await this.getCurrentBranch(sandbox, workDir);
+				this.sql.exec(
+					"UPDATE sessions SET branch = ? WHERE id = ?",
+					branch,
+					sessionId,
+				);
 			}
 		} else {
 			// Just create the directory
@@ -685,6 +698,45 @@ echo "---CLAUDE_EXIT_CODE:$?---" >> /tmp/claude-output.txt
 	}
 
 	/**
+	 * Name of the branch checked out in `workDir`. Throws on a detached HEAD,
+	 * which has no branch to record or push to.
+	 */
+	private async getCurrentBranch(
+		sandbox: ReturnType<typeof getSandbox>,
+		workDir: string,
+	): Promise<string> {
+		const branchStream = await sandbox.execStream(
+			`cd ${workDir} && git symbolic-ref --short HEAD`,
+		);
+		let output = "";
+		let errorOutput = "";
+		let exitCode = 0;
+		for await (const event of parseSSEStream<ExecEvent>(branchStream)) {
+			if (event.type === "stdout") {
+				output += event.data || "";
+			}
+			if (event.type === "stderr") {
+				errorOutput += event.data || "";
+			}
+			if (event.type === "complete") {
+				exitCode = event.exitCode || 0;
+				break;
+			}
+			if (event.type === "error") {
+				throw new Error(`Branch lookup error: ${event.error}`);
+			}
+		}
+
+		const name = output.trim();
+		if (exitCode !== 0 || !name) {
+			throw new Error(
+				`Could not determine the checked-out branch: ${errorOutput.trim() || `exit code ${exitCode}`}`,
+			);
+		}
+		return name;
+	}
+
+	/**
 	 * Push changes to remote
 	 */
 	async push(
@@ -704,11 +756,14 @@ echo "---CLAUDE_EXIT_CODE:$?---" >> /tmp/claude-output.txt
 		const sandbox = this.getSandbox(sessionId);
 
 		const remote = request.remote || "origin";
-		const branch = request.branch || session.branch || "main";
+		const branch =
+			request.branch ||
+			session.branch ||
+			(await this.getCurrentBranch(sandbox, session.workDir));
 		const forceFlag = request.force ? " --force" : "";
 
 		const pushStream = await sandbox.execStream(
-			`cd ${session.workDir} && git push${forceFlag} ${remote} HEAD:${branch}`,
+			`cd ${session.workDir} && git push${forceFlag} ${remote} ${shellQuote(`HEAD:${branch}`)}`,
 		);
 
 		let pushOutput = "";

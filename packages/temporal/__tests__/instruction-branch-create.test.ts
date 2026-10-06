@@ -548,6 +548,25 @@ describe.skipIf(!hasGit())("member branch pull request (spec §6.5)", () => {
 			});
 		});
 
+		it("rechecks permission after the lookup before reissuing the pull request", async () => {
+			await refused();
+			branch(s).retryRequestedAt = new Date(s.fake.state.now);
+			h.adapter.findOperation.mockImplementation(async () => {
+				s.fake.state.canCreate = false;
+				return { kind: "ABSENT" };
+			});
+
+			expect(await retry()).toEqual({ outcome: "blocked" });
+			expect(h.adapter.open).not.toHaveBeenCalled();
+			expect(branch(s)).toMatchObject({
+				state: "BLOCKED",
+				retryRequestedAt: null,
+				failure: expect.objectContaining({
+					code: "PERMISSION_REVOKED",
+				}),
+			});
+		});
+
 		it("a second refusal is BLOCKED again with the request answered", async () => {
 			await refused();
 			branch(s).retryRequestedAt = new Date(s.fake.state.now);

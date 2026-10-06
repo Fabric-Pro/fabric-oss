@@ -198,11 +198,10 @@ export async function assertWritableTarget(
  * into memory, a file this tool has no business opening. A refusal is the
  * answer in both cases, not a hash.
  */
-export async function readFileSafely(
+async function openFileSafely(
 	root: string,
 	relativePath: string,
-	options: { maxBytes?: number } = {},
-): Promise<{ bytes: Uint8Array; mode: number } | null> {
+): Promise<{ handle: FileHandle; stats: Stats } | null> {
 	const check = await assertWritableTarget(root, relativePath);
 	if (!check.ok) {
 		throw new Error(`Refusing to sync: ${describeRejection(check)}.`);
@@ -252,15 +251,36 @@ export async function readFileSafely(
 			);
 		}
 
+		return { handle, stats: opened };
+	} catch (error) {
+		await handle.close().catch(() => {});
+		throw error;
+	}
+}
+
+export async function readFileSafely(
+	root: string,
+	relativePath: string,
+	options: { maxBytes?: number } = {},
+): Promise<{ bytes: Uint8Array; mode: number } | null> {
+	const opened = await openFileSafely(root, relativePath);
+	if (opened === null) {
+		return null;
+	}
+
+	try {
 		if (options.maxBytes === undefined) {
-			return { bytes: await handle.readFile(), mode: opened.mode };
+			return {
+				bytes: await opened.handle.readFile(),
+				mode: opened.stats.mode,
+			};
 		}
 		if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
 			throw new Error(
 				"A safe file-read limit must be a non-negative integer.",
 			);
 		}
-		if (opened.size > options.maxBytes) {
+		if (opened.stats.size > options.maxBytes) {
 			throw new Error(
 				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
 			);
@@ -271,7 +291,7 @@ export async function readFileSafely(
 		const buffer = Buffer.allocUnsafe(options.maxBytes + 1);
 		let total = 0;
 		while (total <= options.maxBytes) {
-			const { bytesRead } = await handle.read(
+			const { bytesRead } = await opened.handle.read(
 				buffer,
 				total,
 				options.maxBytes + 1 - total,
@@ -287,9 +307,64 @@ export async function readFileSafely(
 				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
 			);
 		}
-		return { bytes: buffer.subarray(0, total), mode: opened.mode };
+		return { bytes: buffer.subarray(0, total), mode: opened.stats.mode };
 	} finally {
-		await handle.close();
+		await opened.handle.close();
+	}
+}
+
+/** The fixed read buffer keeps planning memory bounded by one file chunk. */
+const FINGERPRINT_BUFFER_BYTES = 64 * 1024;
+
+/**
+ * Hash a file through the guarded descriptor without retaining its contents.
+ *
+ * Planning a push needs every changed file's identity before it can exclude
+ * changes an open proposal already carries. Keeping those file bodies until
+ * that selection is known turned a rejected 51-file plan into an unbounded
+ * in-memory payload. The caller reads and encodes only its selected puts.
+ */
+export async function fingerprintFileSafely(
+	root: string,
+	relativePath: string,
+): Promise<{ sha256: string; size: number; mode: number } | null> {
+	const opened = await openFileSafely(root, relativePath);
+	if (opened === null) {
+		return null;
+	}
+
+	try {
+		const hash = createHash("sha256");
+		const buffer = Buffer.allocUnsafe(FINGERPRINT_BUFFER_BYTES);
+		let size = 0;
+		while (size <= opened.stats.size) {
+			const remaining = opened.stats.size + 1 - size;
+			const { bytesRead } = await opened.handle.read(
+				buffer,
+				0,
+				Math.min(buffer.length, remaining),
+				null,
+			);
+			if (bytesRead === 0) {
+				break;
+			}
+			hash.update(buffer.subarray(0, bytesRead));
+			size += bytesRead;
+		}
+		const afterRead = await opened.handle.stat();
+		if (
+			size !== opened.stats.size ||
+			afterRead.size !== opened.stats.size ||
+			afterRead.dev !== opened.stats.dev ||
+			afterRead.ino !== opened.stats.ino
+		) {
+			throw new Error(
+				`Refusing to sync: ${relativePath} changed while it was being read.`,
+			);
+		}
+		return { sha256: hash.digest("hex"), size, mode: opened.stats.mode };
+	} finally {
+		await opened.handle.close();
 	}
 }
 

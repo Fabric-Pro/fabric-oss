@@ -96,6 +96,28 @@ export interface AgentMcpResult {
 	loginLine: string | null;
 }
 
+/** Whether every selected tool has this project's server registered. */
+export function mcpRegistrationComplete(
+	results: readonly AgentMcpResult[],
+): boolean {
+	return results.every(
+		(result) =>
+			result.outcome.kind === "registered" ||
+			result.outcome.kind === "replaced" ||
+			result.outcome.kind === "already",
+	);
+}
+
+/** Whether registration completed but the coding tool still needs its own OAuth sign-in. */
+export function mcpAuthenticationPending(
+	results: readonly AgentMcpResult[],
+): boolean {
+	return results.some(
+		(result) =>
+			result.login === "printed" || result.login === "not-finished",
+	);
+}
+
 /** How much of a project's id ends its server name, to tell it from another project's. */
 const SERVER_ID_SUFFIX_LENGTH = 6;
 

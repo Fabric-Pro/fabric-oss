@@ -1,5 +1,29 @@
 # fabric-app
 
+## 1.16.18
+
+### Patch Changes
+
+- 044fa84: Azure DevOps connections with an expired or invalid personal access token are now reported as rejected credentials everywhere they are used, instead of being accepted as valid or failing with a parse error.
+- 044fa84: When the Advisor stops because it ran out of steps rather than tokens, the notice now says it reached its step limit instead of its token budget, and no longer points to Billing settings. The token budget notice now shows its usage as a whole percentage.
+- 044fa84: Stopping an Advisor chat now stops its work: once the stop is recorded, no request to the Advisor's chat model, its image generator or a delegated agent starts unless its check passed just before the stop was recorded (at most one such request for each call in progress), and every request in progress, that one included, is cancelled when the stop reaches the worker; Stop also works before the response has started, and the message is shown as stopped rather than failed or completed.
+- 044fa84: The Advisor keeps its system prompt the same across the tool-calling steps of one answer, so AI providers can reuse their prompt cache, helping lower the cost and latency of multi-step answers.
+- 044fa84: Resetting the Fabric Agent drawer's conversation now keeps the project attached, so the next message still gets the project's documents, roadmap and repository tools.
+- 044fa84: The Fabric Agent chat box now grows with what you type, up to a fixed height, instead of staying two lines tall and scrolling inside a narrow box.
+- 044fa84: Code indexing no longer stays on "Indexing…" after its run has stopped, and failed file summaries are retried and reported.
+- 044fa84: The repository browsing tool now lists large repositories in pages of a fixed number of entries, so an assistant that requests several pages at once no longer skips files between them. Very long file paths are shortened in the listing instead of hiding the rest of their repository.
+- 044fa84: The Context tab's stalled-source banner now names the stuck sources, jumps to them and offers Retry, and no longer fires for live integrations.
+- 044fa84: The Connections page now explains that external tools can reach Fabric through the Fabric MCP with an API key, and the Add connection menu links to API key creation.
+- 044fa84: Preserve existing Git checkouts during agent setup, report incomplete cloning and MCP registration, support coding-instruction snapshots above 50 MiB with streaming exports and bounded downloads, show one current progress display per repository sync, and organize commit history into a searchable list with selected-commit details and on-demand comparison. Repository syncs now verify and promote source bytes without a content-secret scan while uploads, edits, and proposals retain it; filename, path, size, hash, and `.fabricignore` validation still apply. Large repository finalization has its own longer activity budget and stops durable work when Temporal cancels an attempt. Normal missing-object metadata probes no longer open the storage circuit breaker.
+- 044fa84: Reading a file from GitHub or GitLab without naming a branch now reads the repository's default branch instead of assuming `main`, so repositories whose default branch has another name no longer fail.
+- 044fa84: Keep project discovery, scope intake, meeting operations, and ingestion progress updates responsive while bulk context indexing is busy.
+- 044fa84: Fix dependency vulnerabilities in Git command handling, GraphQL merging, proxy trust, and indexed source maps.
+- 044fa84: Keep document generation responsive during background indexing by reserving separate activity queues for generation, including its awaited document embedding, and background project embeddings while retaining workers for previously scheduled work.
+- 044fa84: MCP servers that can only read data, such as Figma, now show a Read-only badge with a tooltip explaining that agents can't make changes through them.
+- 044fa84: A sandbox session that clones a repository without naming a branch now checks out the repository's default branch instead of assuming `main`, so repositories whose default branch has another name no longer fail to clone.
+- 044fa84: A story task agent no longer stops the whole task when several tool calls it made together in one step all fail; it now stops only after five steps in a row in which every tool call failed.
+- 044fa84: A story task agent that recovers from every failed tool call, by using the same tool successfully in a later turn of the agent's work, is now reported as completed instead of failed, even when the task produced no pull request, issue or document.
+
 ## 1.16.17
 
 ### Patch Changes

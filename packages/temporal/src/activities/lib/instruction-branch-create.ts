@@ -569,6 +569,11 @@ export async function runRetry(i: {
 					await clearRequest();
 					return "blocked";
 				}
+				await assertBranchCreationAllowed({
+					branch,
+					destination,
+					phase: "create",
+				});
 				assertMayContinue(credential.signal);
 				const marked = await transitionBranch({
 					branchId: branch.id,

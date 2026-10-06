@@ -54,6 +54,12 @@ const mocks = vi.hoisted(() => ({
 	repositorySyncRun: {
 		findFirst: vi.fn(),
 	},
+	pendingStorageCleanup: {
+		create: vi.fn(),
+		findMany: vi.fn(),
+		deleteMany: vi.fn(),
+		updateMany: vi.fn(),
+	},
 	$transaction: vi.fn(),
 	// The reaper's candidate query is raw SQL: one UNIONed relation, so the
 	// page is a window of ONE order rather than two separately-skipped ones.
@@ -61,6 +67,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const auditMocks = vi.hoisted(() => ({ recordAuditTx: vi.fn() }));
+const permissionMocks = vi.hoisted(() => ({
+	canCreateProjectInstructions: vi.fn(),
+	canUpdateProjectInstructions: vi.fn(),
+}));
 
 vi.mock("../prisma/client", async () => {
 	// The real tagged-template builders, so a composed fragment (the
@@ -76,6 +86,8 @@ vi.mock("../prisma/client", async () => {
 			project: mocks.project,
 			projectInstructionRepositorySync: mocks.repositorySync,
 			projectInstructionRepositorySyncRun: mocks.repositorySyncRun,
+			projectInstructionPendingStorageCleanup:
+				mocks.pendingStorageCleanup,
 			$transaction: mocks.$transaction,
 			$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 		},
@@ -101,6 +113,7 @@ vi.mock("../prisma/client", async () => {
 vi.mock("../prisma/queries/audit-log", () => ({
 	recordAuditTx: auditMocks.recordAuditTx,
 }));
+vi.mock("../prisma/queries/projects/projects", () => permissionMocks);
 
 import {
 	approveInstructionProposal,
@@ -114,6 +127,7 @@ import {
 	failStaleValidatingInstructionSnapshot,
 	getInstructionFileByPath,
 	getInstructionSnapshot,
+	getInstructionSnapshotById,
 	getPublishedInstructionSnapshot,
 	InstructionVersionContentionError,
 	listAbandonedReceivingInstructionSnapshots,
@@ -144,12 +158,17 @@ beforeEach(() => {
 		mocks.project,
 		mocks.repositorySync,
 		mocks.repositorySyncRun,
+		mocks.pendingStorageCleanup,
 	]) {
 		for (const fn of Object.values(group)) fn.mockReset();
 	}
 	mocks.$transaction.mockReset();
 	mocks.$queryRaw.mockReset();
 	auditMocks.recordAuditTx.mockReset();
+	permissionMocks.canCreateProjectInstructions.mockReset();
+	permissionMocks.canCreateProjectInstructions.mockResolvedValue(true);
+	permissionMocks.canUpdateProjectInstructions.mockReset();
+	permissionMocks.canUpdateProjectInstructions.mockResolvedValue(true);
 	// Run the transaction callback against the same mocks.
 	mocks.$transaction.mockImplementation(
 		async (cb: (tx: unknown) => unknown) =>
@@ -157,11 +176,30 @@ beforeEach(() => {
 				projectInstructionSnapshot: mocks.snapshot,
 				projectInstructionFile: mocks.file,
 				project: mocks.project,
+				projectInstructionPendingStorageCleanup:
+					mocks.pendingStorageCleanup,
 				// `publishInstructionSnapshot` takes the project row's write
 				// lock through raw SQL before it reads anything.
 				$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 			}),
 	);
+});
+
+describe("getInstructionSnapshotById", () => {
+	it("loads persisted repository-sync provenance for activities", async () => {
+		mocks.snapshot.findUnique.mockResolvedValue(null);
+
+		await getInstructionSnapshotById("snapshot_1");
+
+		expect(mocks.snapshot.findUnique).toHaveBeenCalledWith({
+			where: { id: "snapshot_1" },
+			select: expect.objectContaining({
+				source: true,
+				syncRunKey: true,
+				validationAttemptId: true,
+			}),
+		});
+	});
 });
 
 describe("where the names of the left-out files are read", () => {
@@ -1822,6 +1860,30 @@ describe("deleteInstructionSnapshot", () => {
 		expect(JSON.stringify(deleteWhere.AND)).toContain("(proposal staging)");
 	});
 
+	it("writes a durable owned-prefix receipt after the row delete in the same transaction", async () => {
+		mocks.file.deleteMany.mockResolvedValue({ count: 3 });
+		mocks.snapshot.deleteMany.mockResolvedValue({ count: 1 });
+
+		await deleteInstructionSnapshot("s", "p", "org_1");
+
+		expect(
+			mocks.snapshot.deleteMany.mock.invocationCallOrder[0]!,
+		).toBeLessThan(
+			mocks.pendingStorageCleanup.create.mock.invocationCallOrder[0]!,
+		);
+		expect(mocks.pendingStorageCleanup.create).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				snapshotId: "s",
+				projectId: "p",
+				organizationId: "org_1",
+				notBefore: expect.any(Date),
+				nextAttemptAt: expect.any(Date),
+			}),
+		});
+		const data = mocks.pendingStorageCleanup.create.mock.calls[0]![0].data;
+		expect(data.nextAttemptAt).toEqual(data.notBefore);
+	});
+
 	it("refuses a snapshot whose workflow is still running, and undoes the file delete", async () => {
 		mocks.file.deleteMany.mockResolvedValue({ count: 3 });
 		// The status predicate matched nothing, but the row is still there.
@@ -1972,6 +2034,8 @@ describe("deleteInstructionSnapshot", () => {
 						projectInstructionSnapshot: mocks.snapshot,
 						projectInstructionFile: mocks.file,
 						project: mocks.project,
+						projectInstructionPendingStorageCleanup:
+							mocks.pendingStorageCleanup,
 						$queryRaw: (...a: unknown[]) => mocks.$queryRaw(...a),
 					});
 				} catch (error) {
@@ -2017,6 +2081,7 @@ describe("deleteInstructionSnapshot", () => {
 		expect(await deleteInstructionSnapshot("s", "p", "other_org")).toEqual({
 			deleted: false,
 		});
+		expect(mocks.pendingStorageCleanup.create).not.toHaveBeenCalled();
 	});
 });
 
@@ -2177,90 +2242,121 @@ describe("markInstructionSnapshotReady", () => {
 	};
 
 	it("writes READY only from a row that has not already reached a verdict", async () => {
-		mocks.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		mocks.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 
 		expect(await markInstructionSnapshotReady(input)).toEqual({
 			changed: true,
 		});
-		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith({
-			where: {
-				id: "s",
-				projectId: "p",
-				organizationId: "org_1",
-				// An already-READY or already-REJECTED row does not match, so
-				// the retry cannot restamp `readyAt`. FAILED is absent on
-				// purpose: "Try again" re-runs the workflow from it, and that
-				// run has to be able to write its verdict.
-				status: { notIn: ["READY", "REJECTED"] },
-			},
-			data: {
-				progressPhase: null,
-				progressDone: null,
-				progressTotal: null,
-				progressUpdatedAt: null,
-				status: "READY",
-				fileCount: 3,
-				storedBytes: 42,
-				digest: "d".repeat(64),
-				readyAt: input.readyAt,
-				rejection: "JsonNull",
-			},
-		});
+		const [statement] = mocks.$queryRaw.mock.calls[0] as [
+			{ sql: string; values: unknown[] },
+		];
+		const sql = statement.sql.replace(/\s+/g, " ");
+		expect(sql).toContain("WITH target AS MATERIALIZED");
+		expect(sql).toContain("FOR UPDATE");
+		expect(sql).toContain("\"status\" NOT IN ('READY', 'REJECTED')");
+		expect(sql).toContain("live AS MATERIALIZED");
+		expect(sql).toContain("?::timestamp IS NULL");
+		expect(sql).not.toContain("validationAttemptId");
+		expect(statement.values.filter((value) => value === null)).toHaveLength(
+			2,
+		);
+		expect(statement.values).toEqual(
+			expect.arrayContaining([
+				"s",
+				"p",
+				"org_1",
+				input.fileCount,
+				input.storedBytes,
+				input.digest,
+				input.readyAt,
+				null,
+			]),
+		);
 	});
 
 	it("names the run's token in both its read and its write, so a stale attempt matches nothing", async () => {
-		mocks.snapshot.findFirst.mockResolvedValue({ proposalStatus: null });
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		mocks.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 
 		await markInstructionSnapshotReady({
 			...input,
 			validationAttemptId: "attempt_1",
 		});
 
-		for (const call of [
-			mocks.snapshot.findFirst.mock.calls[0]![0],
-			mocks.snapshot.updateMany.mock.calls[0]![0],
-		]) {
-			expect(call.where).toMatchObject({
-				validationAttemptId: "attempt_1",
-			});
-		}
+		const [statement] = mocks.$queryRaw.mock.calls[0] as [
+			{ sql: string; values: unknown[] },
+		];
+		expect(statement.sql).toContain('AND "validationAttemptId" = ?');
+		expect(statement.values).toContain("attempt_1");
 	});
 
 	it("reports changed: false — and writes nothing more — when the row is already READY", async () => {
-		mocks.snapshot.findFirst.mockResolvedValue(null);
+		mocks.$queryRaw.mockResolvedValue([]);
 
 		expect(await markInstructionSnapshotReady(input)).toEqual({
 			changed: false,
 		});
-		// No second pass, no read-then-write repair: the conditional write is
-		// the whole transition, and `readyAt` keeps the first attempt's value.
+		// The conditional, locked statement does not touch `readyAt` when an
+		// earlier attempt already reached a verdict.
+		expect(mocks.$queryRaw).toHaveBeenCalledOnce();
 		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
-		expect(mocks.snapshot.update).not.toHaveBeenCalled();
+	});
+
+	it("locks the row and checks Postgres's clock in the same READY write when an activity deadline is supplied", async () => {
+		const notAfter = new Date("2026-10-05T18:30:00.000Z");
+		mocks.$queryRaw.mockResolvedValue([{ updated: 1 }]);
+
+		expect(
+			await markInstructionSnapshotReady({
+				...input,
+				validationAttemptId: "attempt_1",
+				notAfter,
+			}),
+		).toEqual({ changed: true });
+		expect(mocks.snapshot.findFirst).not.toHaveBeenCalled();
+		expect(mocks.snapshot.updateMany).not.toHaveBeenCalled();
+
+		const [statement] = mocks.$queryRaw.mock.calls[0] as [
+			{ sql: string; values: unknown[] },
+		];
+		const sql = statement.sql.replace(/\s+/g, " ");
+		expect(sql).toContain("WITH target AS MATERIALIZED");
+		expect(sql).toContain("FOR UPDATE");
+		expect(sql).toContain("live AS MATERIALIZED");
+		expect(sql).toContain("?::timestamp IS NULL");
+		expect(sql).toContain(
+			"OR (clock_timestamp() AT TIME ZONE 'UTC') < ?::timestamp",
+		);
+		expect(
+			statement.values.filter((value) => value === notAfter),
+		).toHaveLength(2);
+		expect(statement.values).toContain("attempt_1");
+		expect(sql).not.toContain("attempt_1");
+		expect(sql).not.toContain(input.digest);
+		expect(sql).not.toContain(notAfter.toISOString());
+
+		mocks.$queryRaw.mockResolvedValue([]);
+		expect(
+			await markInstructionSnapshotReady({ ...input, notAfter }),
+		).toEqual({ changed: false });
 	});
 
 	it("reserves proposal staging cleanup when validation succeeds", async () => {
-		mocks.snapshot.findFirst.mockResolvedValue({
-			proposalStatus: "PENDING",
-		});
-		mocks.snapshot.updateMany.mockResolvedValue({ count: 1 });
+		mocks.$queryRaw.mockResolvedValue([{ updated: 1 }]);
 
 		await markInstructionSnapshotReady(input);
 
-		expect(mocks.snapshot.updateMany).toHaveBeenCalledWith(
-			expect.objectContaining({
-				data: expect.objectContaining({
-					status: "READY",
-					rejection: [
-						{
-							path: "(proposal staging)",
-							reason: "abandoned",
-							detail: "staging pending",
-						},
-					],
-				}),
-			}),
+		const [statement] = mocks.$queryRaw.mock.calls[0] as [
+			{ sql: string; values: unknown[] },
+		];
+		expect(statement.sql).toContain('WHEN "proposalStatus" IS NULL');
+		expect(statement.values).toContain(
+			JSON.stringify([
+				{
+					path: "(proposal staging)",
+					reason: "abandoned",
+					detail: "staging pending",
+				},
+			]),
 		);
 	});
 });

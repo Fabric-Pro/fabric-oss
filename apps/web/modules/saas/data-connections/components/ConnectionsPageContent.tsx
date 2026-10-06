@@ -174,6 +174,7 @@ interface ConnectionsPageContentProps {
 	 * to `settingsBasePath` for callers that still render it there.
 	 */
 	basePath?: string;
+	apiKeysHref: string;
 	/**
 	 * Rendered at the start of the toolbar row, opposite the Add connection
 	 * menu — the page's type tabs, so the two controls that decide what is on
@@ -185,6 +186,7 @@ interface ConnectionsPageContentProps {
 export function ConnectionsPageContent({
 	settingsBasePath,
 	basePath = settingsBasePath,
+	apiKeysHref,
 	toolbarStart,
 	view = "all",
 }: ConnectionsPageContentProps) {
@@ -511,6 +513,9 @@ export function ConnectionsPageContent({
 							<Link href={`${basePath}?tab=mcp`}>
 								Add MCP server
 							</Link>
+						</DropdownMenuItem>
+						<DropdownMenuItem asChild>
+							<Link href={apiKeysHref}>Create API key</Link>
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>

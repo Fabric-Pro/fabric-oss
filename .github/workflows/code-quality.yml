@@ -83,6 +83,12 @@ jobs:
       - name: Verify braces security patch
         run: node --test tooling/scripts/src/braces-patch.node-test.mjs
 
+      - name: Verify dependency security fixes
+        run: node --test tooling/scripts/src/dependency-security.node-test.mjs
+
+      - name: Verify Git security and repository compatibility
+        run: node --test tooling/scripts/src/simple-git-security.node-test.mjs
+
       - name: Verify multipart parser security fixes
         run: node --test tooling/scripts/src/busboy-security.node-test.mjs
 

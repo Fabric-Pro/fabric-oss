@@ -620,7 +620,7 @@ describe("two runs at once", () => {
 		},
 	);
 
-	itWithGit("takes over a lock a dead process left behind", async () => {
+	itWithGit("leaves a dead process lock for explicit recovery", async () => {
 		const fx = await fixture();
 		const tip = await advance(fx);
 		const lock = path.join(fx.checkout, ".git", "fabric", "ff.lock");
@@ -631,9 +631,12 @@ describe("two runs at once", () => {
 
 		const result = await run(fx, { published: tip });
 
-		expect(result.outcome.kind).toBe("fast-forwarded");
-		expect(head(fx)).toBe(tip);
-		await nothingLeftBehind(fx);
+		expect(result.outcome).toMatchObject({
+			kind: "abandoned-lock",
+			lockPath: lock,
+		});
+		expect(head(fx)).toBe(fx.first);
+		expect(await exists(lock)).toBe(true);
 	});
 
 	itWithGit(

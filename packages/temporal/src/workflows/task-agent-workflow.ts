@@ -20,6 +20,7 @@ import {
 	defineQuery,
 	defineSignal,
 	log,
+	patched,
 	proxyActivities,
 	setHandler,
 	sleep,
@@ -171,6 +172,16 @@ export interface CheckpointData {
 
 const MAX_TURNS = 50;
 const MAX_CONSECUTIVE_FAILURES = 5; // Stop after N consecutive tool failures
+/**
+ * Under this marker a turn earns at most one failure strike: a turn whose tool
+ * calls all failed adds one, a turn with any successful call clears the count,
+ * and the verdict is taken after the turn's calls have all run. Without it,
+ * every failed call counted, so one turn of five parallel calls with the same
+ * bad argument stopped the plan mid-turn. The marker is taken once per turn,
+ * before that turn's calls run, so a history recorded without it replays the
+ * per-call count and its mid-turn stop unchanged.
+ */
+const FAILURE_STRIKE_PER_TURN_PATCH = "task-agent-failure-strike-per-turn-v1";
 const LONG_RUNNING_TOOLS = [
 	"Sandbox__runCommand",
 	"Sandbox__runClaude",
@@ -201,6 +212,54 @@ export async function taskAgentWorkflow(
 	const artifacts: WorkflowArtifact[] = [];
 	let turnIndex = 0;
 	let consecutiveFailures = 0; // Track consecutive tool failures to detect stuck loops
+	// Turns in a row whose tool calls all failed. Kept apart from the per-call
+	// count above: an execution in flight at deploy replays its early turns
+	// under the per-call rule, and that count must not carry into this one.
+	let failedTurnStrikes = 0;
+	// Every failed tool call, and the last turn in which each tool succeeded.
+	// A failure is recovered when the same tool succeeded in a later turn; only
+	// unrecovered failures fail a run that produced no artifact.
+	const failedToolCalls: Array<{ turn: number; toolName: string }> = [];
+	const lastToolSuccessTurn = new Map<string, number>();
+
+	const stopForRepeatedToolFailures = async (
+		error: string,
+		logMessage: string,
+	): Promise<never> => {
+		log.warn("Too many consecutive tool failures, stopping workflow", {
+			planId,
+			consecutiveFailures,
+			failedTurnStrikes,
+		});
+
+		await addWorkflowLog({
+			planId,
+			level: "error",
+			message: logMessage,
+		});
+
+		await updateWorkflowPlan({
+			planId,
+			status: "failed",
+			steps: [...steps],
+			result: {
+				success: false,
+				error,
+			},
+		});
+
+		await broadcastProgress({
+			planId,
+			projectId,
+			type: "agent_failed",
+			data: {
+				error,
+				turnIndex,
+			},
+		});
+
+		throw ApplicationFailure.nonRetryable(error, "TASK_AGENT_FAILED");
+	};
 
 	// Store diff results to avoid LLM output truncation
 	// When getDiff is called, store the result here. When request_approval is called
@@ -397,6 +456,10 @@ export async function taskAgentWorkflow(
 					content: string;
 					tool_call_id: string;
 				}> = [];
+
+				const strikePerTurn = patched(FAILURE_STRIKE_PER_TURN_PATCH);
+				let turnHadToolSuccess = false;
+				let turnHadToolFailure = false;
 
 				for (const toolCall of turnResult.toolCalls) {
 					const toolStepId = `tool-${turnIndex}-${toolCall.id}`;
@@ -714,8 +777,14 @@ export async function taskAgentWorkflow(
 								});
 							}
 
+							lastToolSuccessTurn.set(toolCall.name, turnIndex);
+
 							// Reset consecutive failures on success
-							consecutiveFailures = 0;
+							if (strikePerTurn) {
+								turnHadToolSuccess = true;
+							} else {
+								consecutiveFailures = 0;
+							}
 
 							// Cache diff results to avoid LLM output truncation
 							// When the agent calls request_approval for a PR, we'll inject
@@ -787,8 +856,17 @@ export async function taskAgentWorkflow(
 								) ||
 								errorMsg.includes("GitHub not connected");
 
+							failedToolCalls.push({
+								turn: turnIndex,
+								toolName: toolCall.name,
+							});
+
 							// Track consecutive failures
-							consecutiveFailures++;
+							if (strikePerTurn) {
+								turnHadToolFailure = true;
+							} else {
+								consecutiveFailures++;
+							}
 
 							await addWorkflowLog({
 								planId,
@@ -859,53 +937,34 @@ export async function taskAgentWorkflow(
 								);
 							}
 
-							// Check if we've hit too many consecutive failures
+							// Unpatched histories stop on the Nth failed call, mid-turn.
 							if (
+								!strikePerTurn &&
 								consecutiveFailures >= MAX_CONSECUTIVE_FAILURES
 							) {
-								const consecutiveError = `Agent stopped after ${consecutiveFailures} consecutive tool failures`;
-								log.warn(
-									"Too many consecutive tool failures, stopping workflow",
-									{
-										planId,
-										consecutiveFailures,
-									},
-								);
-
-								await addWorkflowLog({
-									planId,
-									level: "error",
-									message: `Workflow stopped: ${consecutiveFailures} consecutive tool failures. The agent appears to be stuck.`,
-								});
-
-								await updateWorkflowPlan({
-									planId,
-									status: "failed",
-									steps: [...steps],
-									result: {
-										success: false,
-										error: consecutiveError,
-									},
-								});
-
-								await broadcastProgress({
-									planId,
-									projectId,
-									type: "agent_failed",
-									data: {
-										error: consecutiveError,
-										turnIndex,
-									},
-								});
-
-								throw ApplicationFailure.nonRetryable(
-									consecutiveError,
-									"TASK_AGENT_FAILED",
+								await stopForRepeatedToolFailures(
+									`Agent stopped after ${consecutiveFailures} consecutive tool failures`,
+									`Workflow stopped: ${consecutiveFailures} consecutive tool failures. The agent appears to be stuck.`,
 								);
 							}
 						}
 
 						await updateWorkflowPlan({ planId, steps: [...steps] });
+					}
+				}
+
+				// One strike per turn, judged once every call in it has run.
+				if (strikePerTurn && !cancelled) {
+					if (turnHadToolSuccess) {
+						failedTurnStrikes = 0;
+					} else if (turnHadToolFailure) {
+						failedTurnStrikes++;
+						if (failedTurnStrikes >= MAX_CONSECUTIVE_FAILURES) {
+							await stopForRepeatedToolFailures(
+								`Agent stopped after ${failedTurnStrikes} consecutive turns in which every tool call failed`,
+								`Workflow stopped: ${failedTurnStrikes} consecutive turns in which every tool call failed. The agent appears to be stuck.`,
+							);
+						}
 					}
 				}
 
@@ -927,7 +986,13 @@ export async function taskAgentWorkflow(
 		// Determine final status
 		const failedSteps = steps.filter((s) => s.status === "failed");
 		const hasArtifacts = artifacts.length > 0;
-		const isSuccess = hasArtifacts || failedSteps.length === 0;
+		// Every failure stays in the plan's warnings; a failure the agent
+		// retried past with the same tool in a later turn does not fail the run.
+		const unrecoveredFailures = failedToolCalls.filter(
+			(call) =>
+				(lastToolSuccessTurn.get(call.toolName) ?? -1) <= call.turn,
+		);
+		const isSuccess = hasArtifacts || unrecoveredFailures.length === 0;
 
 		const finalStatus = cancelled
 			? "cancelled"
@@ -957,7 +1022,7 @@ export async function taskAgentWorkflow(
 			level: isSuccess ? "info" : "error",
 			message: isSuccess
 				? `Agent completed successfully in ${turnIndex} turns`
-				: `Agent failed with ${failedSteps.length} errors`,
+				: `Agent failed with ${unrecoveredFailures.length} errors`,
 		});
 
 		// Broadcast completion status
@@ -987,7 +1052,7 @@ export async function taskAgentWorkflow(
 				projectId,
 				type: "agent_failed",
 				data: {
-					error: `${failedSteps.length} tool(s) failed`,
+					error: `${unrecoveredFailures.length} tool(s) failed`,
 					turnIndex,
 				},
 			});
@@ -998,8 +1063,8 @@ export async function taskAgentWorkflow(
 			status: finalStatus,
 			totalTurns: turnIndex,
 			artifacts: hasArtifacts ? artifacts : undefined,
-			...(failedSteps.length > 0 && {
-				error: `${failedSteps.length} tool(s) failed`,
+			...(unrecoveredFailures.length > 0 && {
+				error: `${unrecoveredFailures.length} tool(s) failed`,
 			}),
 		};
 	} catch (error) {

@@ -129,6 +129,15 @@ export async function fetchAdoWorkItemTypes(params: {
 			},
 		});
 
+		// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is
+		// true for 203): report it as the 401 it stands for, without reading it.
+		if (res.status === 203) {
+			return {
+				types: [],
+				error: "Azure DevOps API error (401): the personal access token is invalid or expired",
+			};
+		}
+
 		if (!res.ok) {
 			const body = await res.text();
 			return {

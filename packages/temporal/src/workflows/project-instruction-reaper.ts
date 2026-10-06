@@ -13,9 +13,9 @@
  * the Living Memory repository sync's receipts, which has no schedule of its
  * own: it runs on this hourly tick, after the Coding Instructions passes.
  *
- * The second and third steps are each behind `patched()`: a history recorded
- * before one existed completed right after the step before it, and must
- * replay that way.
+ * The receipt passes and the cleanup isolation are behind `patched()`: a
+ * history recorded before one existed completed right after the preceding
+ * step, and must replay that way.
  *
  * The body is deterministic — no `Date.now()`, no env reads, no IO — so
  * replay stays clean. The clock reads, the queries, the Temporal describes
@@ -24,6 +24,7 @@
 
 import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as contextReceiptActivities from "../activities/project-context-sync-receipt-reaper";
+import type * as storageCleanupActivities from "../activities/project-instruction-storage-cleanup-reaper";
 import type * as syncReceiptActivities from "../activities/project-instruction-sync-receipt-reaper";
 import type * as activities from "../activities/project-instructions-reaper";
 
@@ -77,12 +78,62 @@ const { reapStrandedContextSyncReceipts } = proxyActivities<
 	},
 });
 
+const { reapInstructionStorageCleanupReceipts } = proxyActivities<
+	typeof storageCleanupActivities
+>({
+	startToCloseTimeout: "5 minutes",
+	heartbeatTimeout: "1 minute",
+	retry: {
+		initialInterval: "30 seconds",
+		maximumInterval: "2 minutes",
+		backoffCoefficient: 2,
+		maximumAttempts: 2,
+	},
+});
+
 type SnapshotReapResult = Awaited<ReturnType<typeof reapInstructionSnapshots>>;
 type SyncReceiptReapResult = Awaited<
 	ReturnType<typeof reapStrandedInstructionSyncReceipts>
 >;
+type StorageCleanupReapResult = Awaited<
+	ReturnType<typeof reapInstructionStorageCleanupReceipts>
+>;
 
 export async function projectInstructionReaperWorkflow(): Promise<
+	SnapshotReapResult & {
+		syncReceipts?: SyncReceiptReapResult;
+		contextSyncReceipts?: SyncReceiptReapResult;
+		storageCleanupReceipts?: StorageCleanupReapResult;
+	}
+> {
+	if (!patched("instruction-reaper-storage-cleanup-isolated")) {
+		return await reapExistingInstructionMaintenance();
+	}
+
+	let existing: Awaited<
+		ReturnType<typeof reapExistingInstructionMaintenance>
+	>;
+	try {
+		existing = await reapExistingInstructionMaintenance();
+	} catch (error) {
+		// A failure in one predecessor must keep its original workflow result,
+		// but must not starve durable cleanup receipts until another healthy
+		// hourly maintenance pass happens. If cleanup also exhausts retries,
+		// preserve the earlier failure as the outcome this history always had.
+		try {
+			await reapInstructionStorageCleanupReceipts();
+		} catch {
+			// The receipt remains due for the next tick.
+		}
+		throw error;
+	}
+
+	const storageCleanupReceipts =
+		await reapInstructionStorageCleanupReceipts();
+	return { ...existing, storageCleanupReceipts };
+}
+
+async function reapExistingInstructionMaintenance(): Promise<
 	SnapshotReapResult & {
 		syncReceipts?: SyncReceiptReapResult;
 		contextSyncReceipts?: SyncReceiptReapResult;

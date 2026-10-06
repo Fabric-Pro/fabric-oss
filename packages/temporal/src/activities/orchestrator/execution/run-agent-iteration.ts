@@ -22,6 +22,14 @@ import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
 import { decideForcedToolChoice } from "../../direct-chat/decide-forced-tool-choice";
+import {
+	activityAbortSignal,
+	findTurnNotDispatchable,
+	guardTurnModel,
+	rethrowIfTurnStopped,
+	type TurnScope,
+	throwIfActivityCancelled,
+} from "../turn-dispatch";
 import type { OrchestratorHeartbeatDetails } from "../types";
 import { getAiModelWithSelection } from "../utils";
 import {
@@ -213,6 +221,24 @@ export interface RunAgentIterationInput {
 	 * the RAG-extracted image description.
 	 */
 	attachedDocumentIds?: string[];
+	/**
+	 * A host note for this call only: instructions that change within a turn
+	 * (the budget warning, the generated-image rule), kept out of
+	 * `systemPrompt` so the system prompt is byte-identical across the turn
+	 * and the provider's prompt cache is reused. Sent as one final user
+	 * message after the conversation. It is never written to the
+	 * conversation history and is not read as the user's message by the
+	 * frame-forcing check.
+	 */
+	turnNotice?: string;
+	/**
+	 * The chat turn this round belongs to. When set, every stream attempt
+	 * (the in-activity retry included) first asks the turn record whether
+	 * the turn may still dispatch, and a refusal ends the activity with a
+	 * non-retryable `TurnNotDispatchable` failure before any request is
+	 * made. Absent for runs that have no turn (legacy, non-chat starters).
+	 */
+	turnScope?: TurnScope;
 }
 
 /**
@@ -592,10 +618,15 @@ export async function runAgentIteration(
 
 	// Background heartbeat ticker — defends against pre-stream idle time (LLM
 	// first-token latency, gateway cold starts) when chunk-based heartbeats
-	// inside the streamText loop haven't fired yet. Fires every 15 s.
+	// inside the streamText loop haven't fired yet. It is also how a Stop
+	// reaches this activity: Temporal delivers an activity cancel only in the
+	// response to a heartbeat, so this interval bounds how long a cancelled
+	// round keeps its provider request open while no tokens are flowing
+	// (plus the worker's heartbeat throttle — 1 s on the orchestrator queue,
+	// see worker.ts). Fires every 5 s.
 	// Declared here, started inside the try block so a setup-phase throw
 	// (e.g. model resolution failing) never leaks an interval into the worker.
-	const BACKGROUND_HEARTBEAT_INTERVAL_MS = 15_000;
+	const BACKGROUND_HEARTBEAT_INTERVAL_MS = 5_000;
 	let backgroundHeartbeatId: ReturnType<typeof setInterval> | undefined;
 
 	// Convert raw tool definitions to AI SDK format up-front so the
@@ -674,6 +705,10 @@ export async function runAgentIteration(
 			hasTools,
 			modelOverride,
 		);
+	// The model every provider request of this round goes through: checked
+	// against the turn record before each physical request when the round
+	// belongs to a chat turn (see guardTurnModel).
+	const guardedModel = guardTurnModel(model, input.turnScope);
 
 	// Convert conversation history to AI SDK format
 	const messages = convertToAiSdkMessages(conversationHistory);
@@ -724,6 +759,17 @@ export async function runAgentIteration(
 				`[AgentIteration] Model ${modelId} is not vision-capable — using RAG image description`,
 			);
 		}
+	}
+
+	// The per-call host note goes last, after the vision splice so no image
+	// lands on it. Only this call's `messages` carries it: the workflow's
+	// conversation history never does, and the frame-forcing check below
+	// reads that history, so the note is never taken for the user's request.
+	// A user message after tool results is valid for every provider path:
+	// Anthropic merges it into the tool-result user turn after the results,
+	// OpenAI accepts a user message after tool messages.
+	if (input.turnNotice) {
+		messages.push({ role: "user", content: input.turnNotice });
 	}
 
 	// Debug: Log the last few messages to verify tool results are included
@@ -897,6 +943,13 @@ export async function runAgentIteration(
 			resolvedUsage = undefined;
 			finishReason = undefined;
 
+			// Every physical provider request — this loop's retry, each
+			// retry the AI SDK makes internally and each further step —
+			// first confirms the turn may still dispatch: `guardTurnModel`
+			// runs the check as model middleware. A recorded Stop refuses
+			// there, before anything is sent.
+			throwIfActivityCancelled();
+
 			const attemptStartTime = Date.now();
 
 			// Signal iteration start so the frontend can clear previous text.
@@ -913,13 +966,15 @@ export async function runAgentIteration(
 			}
 
 			const stream = streamText({
-				model,
+				model: guardedModel.model,
 				instructions: effectiveSystemPrompt,
 				messages: messages as any,
 				tools: aiSdkToolCount > 0 ? (aiSdkTools as any) : undefined,
 				toolChoice,
 				stopWhen: isStepCount(maxStepsPerIteration),
 				maxOutputTokens: 16384,
+				// A cancelled activity aborts the request in flight.
+				abortSignal: activityAbortSignal(),
 			});
 
 			// Process the full stream for text deltas, tool calls, and errors
@@ -985,6 +1040,19 @@ export async function runAgentIteration(
 						`[AgentIteration] Tool error from provider: ${(part as any).toolName}: ${String((part as any).error)}`,
 					);
 				} else if (part.type === "error") {
+					// The turn record refused this request (possibly on an SDK
+					// retry, wrapped in its retry error): a stop, not a
+					// stream error to retry.
+					const refusal = findTurnNotDispatchable(part.error);
+					if (refusal) {
+						// The result promises reject too; settle them so the
+						// rejection is handled.
+						void Promise.allSettled([
+							stream.usage,
+							stream.finishReason,
+						]);
+						throw refusal;
+					}
 					const errorMsg =
 						part.error instanceof Error
 							? part.error.message
@@ -1004,6 +1072,10 @@ export async function runAgentIteration(
 			}
 
 			elapsed = Date.now() - attemptStartTime;
+
+			// A cancel aborted the request: report the activity cancelled
+			// instead of classifying the abort as a stream error to retry.
+			throwIfActivityCancelled();
 
 			// Resolve usage and finish reason from the stream. When the
 			// provider returns an empty response (no text, no tool calls),
@@ -1217,6 +1289,11 @@ export async function runAgentIteration(
 				: {}),
 		};
 	} catch (error) {
+		// A stop is not an LLM failure: a cancelled activity must end
+		// CANCELLED and a refused dispatch must stay a non-retryable
+		// failure. Converting either into a `stream_error` result would
+		// hand the workflow an ordinary turn failure instead.
+		rethrowIfTurnStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		console.error(`[AgentIteration] LLM call failed: ${errorMessage}`);

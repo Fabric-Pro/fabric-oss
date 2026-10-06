@@ -62,6 +62,7 @@ import {
 	it,
 	vi,
 } from "vitest";
+import { PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE } from "../../../task-queues";
 
 const ORG = "org-1";
 const OTHER_ORG = "org-2";
@@ -785,7 +786,10 @@ import {
 	contextOwnerTaskQueue,
 } from "../../../lib/context-owner";
 import { createUrlSourceSchedule } from "../../../schedules/url-source-schedule";
-import { COMPANY_CONTEXT_TASK_QUEUE } from "../../../task-queues";
+import {
+	COMPANY_CONTEXT_TASK_QUEUE,
+	PROJECT_EMBEDDING_TASK_QUEUE,
+} from "../../../task-queues";
 import { embedSingleContextActivity } from "../../context-embedding";
 import { bulkInitUrlPagesActivity } from "../bulk-init-url-pages-activity";
 import {
@@ -1055,13 +1059,14 @@ async function crawl(
 			"project-documents",
 		);
 	const workflowId = options.workflowId ?? `url-crawl-test-${runSeq++}`;
+	const activities = options.activities ?? ACTIVITIES;
 	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue,
 		workflowBundle,
-		activities: options.activities ?? ACTIVITIES,
+		activities,
 	});
-	return worker.runUntil(async () => {
+	const run = async () => {
 		const handle = await env.client.workflow.start(
 			"urlSourceCrawlWorkflow",
 			{
@@ -1075,7 +1080,23 @@ async function crawl(
 		} catch (error) {
 			return { error, workflowId };
 		}
+	};
+	if ((input.owner as ContextOwner | undefined)?.kind === "company") {
+		return worker.runUntil(run);
+	}
+	const embeddingWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: PROJECT_EMBEDDING_TASK_QUEUE,
+		activities,
 	});
+	const operationsWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+		activities,
+	});
+	return worker.runUntil(() =>
+		embeddingWorker.runUntil(() => operationsWorker.runUntil(run)),
+	);
 }
 
 /** Every activity the run scheduled, with its decoded input and queue. */
@@ -2338,8 +2359,29 @@ describe("company crawl schedules", () => {
 		]);
 		for (const activity of activities) {
 			expect(activity.input, activity.name).not.toHaveProperty("owner");
-			expect(activity.taskQueue).toBe("project-documents");
+			expect(activity.taskQueue).toBe(
+				activity.name === "updateParentStatusActivity"
+					? PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE
+					: PROJECT_EMBEDDING_TASK_QUEUE,
+			);
 		}
+
+		// Changing every recorded project queue to its historical value must
+		// replay the same completed crawl without changing the command order.
+		const history = await env.client.workflow
+			.getHandle(run.workflowId)
+			.fetchHistory();
+		for (const event of history.events ?? []) {
+			const activity = event.activityTaskScheduledEventAttributes;
+			if (activity?.taskQueue) {
+				activity.taskQueue.name = "project-documents";
+			}
+		}
+		await Worker.runReplayHistory(
+			{ workflowBundle },
+			history,
+			run.workflowId,
+		);
 		expect(
 			activities.find((a) => a.name === "upsertUrlPageActivity")?.input,
 		).toMatchObject({ projectId: "proj-1", mode: "scheduled" });

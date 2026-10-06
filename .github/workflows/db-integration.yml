@@ -798,6 +798,38 @@ jobs:
           if (passed !== 6) { console.error(`::error::expected exactly 6 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
+      - name: Run the conversation turn admission suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # Advisor chat turns: admission is idempotent by client key and admits
+        # one live turn per conversation under advisory locks (eight real
+        # connections race here), a cancel by key before the turn exists
+        # leaves a tombstone, and terminal writes are conditional UPDATEs (a
+        # recorded cancel wins, terminal states never change). A mocked
+        # client cannot show a lock or a conditional UPDATE being honoured.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/conversation-turn-admission.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=conversation-turn-admission-results.json
+
+      - name: 'Guard: assert the conversation turn admission suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/conversation-turn-admission-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`conversation-turn-admission-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-admission.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 22) { console.error(`::error::expected exactly 22 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the runtime authority suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

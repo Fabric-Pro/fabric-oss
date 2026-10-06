@@ -777,13 +777,23 @@ async function runCodeIndexing(
 		}
 
 		// Step 7: file summaries.
+		//
+		// Patched: each batch fails on its own, every batch that threw or left
+		// files unsummarized gets one more pass, and the files still missing
+		// are reported to finalize, which marks the Job Hub step failed. The
+		// index stays READY — summaries are a search aid, not the index.
+		// Unpatched (histories recorded before it): the first failing batch
+		// abandoned every batch after it, and nothing but `errorCount` said so.
 		let summariesCreated = 0;
-		try {
-			for (let i = 0; i < embedTotal; i += BATCH_SIZE) {
+		let summariesOutcome: { failed: number; total: number } | undefined;
+		if (patched("code-index-summaries-resilient-v1")) {
+			const summarizeBatch = async (i: number) => {
 				const batch = await loadBatch(embedManifestPath, i);
-				const summaryResult = await (repository
-					? materializingEmbeddings.generateMaterializedFileSummariesActivity
-					: embeddingActivities.generateFileSummariesActivity)({
+				return (
+					repository
+						? materializingEmbeddings.generateMaterializedFileSummariesActivity
+						: embeddingActivities.generateFileSummariesActivity
+				)({
 					...batchMaterialization(i, true),
 					files: batch,
 					projectId: input.projectId,
@@ -794,10 +804,79 @@ async function runCodeIndexing(
 					codeEmbeddingModel,
 					owner,
 				});
-				summariesCreated += summaryResult.summariesCreated;
+			};
+			// Per batch offset, so a re-run replaces its batch's first result
+			// instead of adding to it: the upsert is idempotent by point id, and
+			// a partial batch's re-run counts the files it already summarized.
+			const outcomes = new Map<
+				number,
+				{ created: number; failed: number }
+			>();
+			const retry: number[] = [];
+			for (let i = 0; i < embedTotal; i += BATCH_SIZE) {
+				try {
+					const result = await summarizeBatch(i);
+					const failed = result.failedFiles ?? result.errors.length;
+					outcomes.set(i, {
+						created: result.summariesCreated,
+						failed,
+					});
+					if (failed > 0) {
+						retry.push(i);
+					}
+				} catch (_error) {
+					retry.push(i);
+				}
 			}
-		} catch (_error) {
-			errorCount++;
+			for (const i of retry) {
+				try {
+					const result = await summarizeBatch(i);
+					outcomes.set(i, {
+						created: result.summariesCreated,
+						failed: result.failedFiles ?? result.errors.length,
+					});
+				} catch (_error) {
+					// A batch that also returned the first time keeps that result;
+					// one that threw both times summarized nothing.
+					if (!outcomes.has(i)) {
+						outcomes.set(i, {
+							created: 0,
+							failed: Math.min(BATCH_SIZE, embedTotal - i),
+						});
+					}
+				}
+			}
+			let summariesFailed = 0;
+			for (const outcome of outcomes.values()) {
+				summariesCreated += outcome.created;
+				summariesFailed += outcome.failed;
+			}
+			if (summariesFailed > 0) {
+				errorCount++;
+			}
+			summariesOutcome = { failed: summariesFailed, total: embedTotal };
+		} else {
+			try {
+				for (let i = 0; i < embedTotal; i += BATCH_SIZE) {
+					const batch = await loadBatch(embedManifestPath, i);
+					const summaryResult = await (repository
+						? materializingEmbeddings.generateMaterializedFileSummariesActivity
+						: embeddingActivities.generateFileSummariesActivity)({
+						...batchMaterialization(i, true),
+						files: batch,
+						projectId: input.projectId,
+						repositoryIntegrationId,
+						userId: input.userId,
+						organizationId: input.organizationId,
+						repoName: input.repoName,
+						codeEmbeddingModel,
+						owner,
+					});
+					summariesCreated += summaryResult.summariesCreated;
+				}
+			} catch (_error) {
+				errorCount++;
+			}
 		}
 
 		// Step 8: persist stats — the activity reads the manifest off disk to
@@ -822,6 +901,14 @@ async function runCodeIndexing(
 				redactionManifest,
 				incremental,
 				owner,
+				// Only under the summaries patch, so a pre-patch history's
+				// finalize input replays unchanged.
+				...(summariesOutcome
+					? {
+							summariesFailed: summariesOutcome.failed,
+							summariesTotal: summariesOutcome.total,
+						}
+					: {}),
 			});
 		} catch (error) {
 			errorCount++;

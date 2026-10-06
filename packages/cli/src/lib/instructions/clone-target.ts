@@ -2,11 +2,12 @@
  * `init --clone <folder>`: the folder the repository is cloned into.
  *
  * It is `folder` under the current directory (or `--dest`), made if it is not
- * there. A folder that already holds anything is refused before a request is
- * made: `git clone` would refuse it too, but only after the person has waited
- * for the deployment to say where to clone from.
+ * there. An existing directory remains eligible for normal checkout
+ * classification after the deployment identifies its repository: a matching
+ * clone is reused, while a non-Git or foreign folder is refused without Git
+ * being asked to overwrite it.
  */
-import { lstat, readdir } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { outcomeFailure } from "./outcome.js";
 
@@ -24,7 +25,7 @@ export async function resolveCloneFolder(
 	if (stats === null) {
 		return target;
 	}
-	if (!stats.isDirectory() || (await readdir(target)).length > 0) {
+	if (!stats.isDirectory()) {
 		throw outcomeFailure("clone-folder-in-use", {});
 	}
 	return target;

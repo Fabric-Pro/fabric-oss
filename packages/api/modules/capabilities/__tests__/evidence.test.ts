@@ -38,8 +38,12 @@ const {
 		userStory: { count: vi.fn() },
 		projectCodeIndex: { findMany: vi.fn() },
 		projectRepositoryIntegration: { findMany: vi.fn() },
-		backgroundJob: { groupBy: vi.fn() },
-		projectContext: { groupBy: vi.fn() },
+		backgroundJob: { groupBy: vi.fn(), findMany: vi.fn() },
+		projectContext: {
+			groupBy: vi.fn(),
+			findMany: vi.fn(),
+			count: vi.fn(),
+		},
 		projectDocument: { groupBy: vi.fn(), findMany: vi.fn() },
 		projectScan: { groupBy: vi.fn() },
 	},
@@ -147,6 +151,17 @@ interface Rows {
 	pmItemConfig: { enabled: boolean } | null;
 	roadmapItemCount: number;
 	eligibleBatchCount: number;
+	staleJobs: Array<{ sourceId: string | null; title: string }>;
+	stalledRows: Array<{
+		id: string;
+		type: string;
+		sourceTitle: string | null;
+		originalFilename: string | null;
+		sourceUrl: string | null;
+		sourcePath?: string | null;
+		metadata?: unknown;
+	}>;
+	stalledCount: number;
 }
 
 /**
@@ -202,6 +217,9 @@ function healthyRows(): Rows {
 		pmItemConfig: { enabled: true },
 		roadmapItemCount: 0,
 		eligibleBatchCount: 0,
+		staleJobs: [],
+		stalledRows: [],
+		stalledCount: 0,
 	};
 }
 
@@ -214,6 +232,15 @@ function gather(overrides: Partial<Rows> = {}, includeAtlasStatus?: boolean) {
 	);
 	dbMock.backgroundJob.groupBy.mockResolvedValue(rows.jobGroups);
 	dbMock.projectContext.groupBy.mockResolvedValue(rows.contextGroups);
+	dbMock.backgroundJob.findMany.mockResolvedValue(rows.staleJobs);
+	dbMock.projectContext.findMany.mockResolvedValue(
+		rows.stalledRows.map((row) => ({
+			sourcePath: null,
+			metadata: null,
+			...row,
+		})),
+	);
+	dbMock.projectContext.count.mockResolvedValue(rows.stalledCount);
 	dbMock.projectDocument.groupBy.mockResolvedValue(rows.documentGroups);
 	dbMock.projectDocument.findMany.mockResolvedValue(rows.documentsInFlight);
 	dbMock.projectScan.groupBy.mockResolvedValue(rows.scanGroups);
@@ -505,6 +532,194 @@ describe("the context predicate", () => {
 		// That row is never embedded and stays PENDING for good, so counting it
 		// read as a source in flight on a project with no sources at all.
 		expect(where.importedDocuments).toEqual({ none: {} });
+	});
+
+	it("leaves out a live integration still marked in flight, and keeps settled ones", async () => {
+		await gather();
+
+		const where = dbMock.projectContext.groupBy.mock.calls[0]?.[0]?.where;
+
+		// A positive OR, never a NOT over the JSON path: a NOT would drop
+		// every row whose metadata lacks the key, completed ones included.
+		expect(where.OR).toEqual([
+			{ type: { not: "INTEGRATION" } },
+			{ extractionStatus: { notIn: ["PENDING", "EXTRACTING"] } },
+			{ metadata: { path: ["source"], equals: "google-docs" } },
+		]);
+		expect(where.NOT).toBeUndefined();
+	});
+
+	it("does not read for stuck sources when nothing is in flight", async () => {
+		const evidence = await gather();
+
+		expect(dbMock.projectContext.findMany).not.toHaveBeenCalled();
+		expect(dbMock.backgroundJob.findMany).not.toHaveBeenCalled();
+		expect(evidence.context.stalledSources).toEqual([]);
+		expect(evidence.context.stalledTotal).toBe(0);
+	});
+});
+
+describe("the stuck sources a stall names", () => {
+	const inFlight = {
+		type: "FILE",
+		extractionStatus: "EXTRACTING",
+		knowledgeBaseSourceCategory: null,
+		_count: { _all: 3 },
+		_max: { updatedAt: new Date("2026-09-18T08:00:00.000Z") },
+	};
+
+	it("names stuck rows by their own title, file name or URL, oldest first", async () => {
+		const evidence = await gather({
+			contextGroups: [inFlight],
+			stalledRows: [
+				{
+					id: "context_a",
+					type: "FILE",
+					sourceTitle: null,
+					originalFilename: "example-brief.pdf",
+					sourceUrl: null,
+				},
+				{
+					id: "context_b",
+					type: "LINK",
+					sourceTitle: null,
+					originalFilename: null,
+					sourceUrl: "https://example.com/docs",
+				},
+			],
+			stalledCount: 14,
+		});
+
+		expect(evidence.context.stalledSources).toEqual([
+			{ id: "context_a", label: "example-brief.pdf" },
+			{ id: "context_b", label: "https://example.com/docs" },
+		]);
+		expect(evidence.context.stalledTotal).toBe(14);
+
+		const args = dbMock.projectContext.findMany.mock.calls[0]?.[0];
+		expect(args.orderBy).toEqual({ updatedAt: "asc" });
+		// Enough to outline every stuck row a real project has, not just the
+		// three the banner names; still capped.
+		expect(args.take).toBe(200);
+		expect(dbMock.backgroundJob.findMany.mock.calls[0]?.[0]?.take).toBe(
+			200,
+		);
+		// Only rows with a lifecycle can be stuck, and only in-flight ones.
+		expect(args.where.extractionStatus).toEqual({
+			in: ["PENDING", "EXTRACTING"],
+		});
+		expect(args.where.AND[0].OR).toContainEqual({
+			type: { not: "INTEGRATION" },
+		});
+		// The count is the same question, uncapped.
+		expect(dbMock.projectContext.count.mock.calls[0]?.[0]).toEqual({
+			where: args.where,
+		});
+	});
+
+	it("names a source by its stale job, re-read as a row that is still in flight", async () => {
+		const evidence = await gather({
+			jobGroups: [
+				jobGroup(
+					"CONTEXT_PROCESSING",
+					"RUNNING",
+					"2026-09-18T07:00:00.000Z",
+				),
+			],
+			staleJobs: [
+				{ sourceId: "context_job", title: "Quarterly notes.docx" },
+			],
+			stalledRows: [
+				{
+					id: "context_job",
+					type: "TEXT",
+					sourceTitle: null,
+					originalFilename: null,
+					sourceUrl: null,
+				},
+			],
+			stalledCount: 1,
+		});
+
+		const jobArgs = dbMock.backgroundJob.findMany.mock.calls[0]?.[0];
+		expect(jobArgs.where).toMatchObject({
+			projectId: PROJECT_ID,
+			kind: "CONTEXT_PROCESSING",
+			status: "RUNNING",
+			sourceType: "projectContext",
+		});
+		expect(jobArgs.where.heartbeatAt.lt).toBeInstanceOf(Date);
+
+		const rowArgs = dbMock.projectContext.findMany.mock.calls[0]?.[0];
+		expect(rowArgs.where.AND[1].OR).toContainEqual({
+			id: { in: ["context_job"] },
+		});
+		// The row has no name of its own, so the job's title names it.
+		expect(evidence.context.stalledSources).toEqual([
+			{ id: "context_job", label: "Quarterly notes.docx" },
+		]);
+	});
+
+	it("prefers the title the Context tab shows, from the row's metadata", async () => {
+		const evidence = await gather({
+			contextGroups: [inFlight],
+			stalledRows: [
+				{
+					id: "context_meta",
+					type: "TEXT",
+					// The card reads the metadata title before this one.
+					sourceTitle: "Example row title",
+					originalFilename: "example-notes.txt",
+					sourceUrl: null,
+					metadata: { title: "Example meeting notes" },
+				},
+			],
+			stalledCount: 1,
+		});
+
+		expect(evidence.context.stalledSources[0]?.label).toBe(
+			"Example meeting notes",
+		);
+	});
+
+	it("names a synced file by its file name first, as its card does", async () => {
+		const evidence = await gather({
+			contextGroups: [inFlight],
+			stalledRows: [
+				{
+					id: "context_synced",
+					type: "TEXT",
+					sourceTitle: "Example title",
+					originalFilename: null,
+					sourceUrl: null,
+					sourcePath: "docs/decisions/example-adr.md",
+					metadata: { title: "Example metadata title" },
+				},
+			],
+			stalledCount: 1,
+		});
+
+		expect(evidence.context.stalledSources[0]?.label).toBe(
+			"example-adr.md",
+		);
+	});
+
+	it("falls back to the kind, as the card does, never an empty string", async () => {
+		const evidence = await gather({
+			contextGroups: [inFlight],
+			stalledRows: [
+				{
+					id: "context_empty",
+					type: "TEXT",
+					sourceTitle: "  ",
+					originalFilename: null,
+					sourceUrl: null,
+				},
+			],
+			stalledCount: 1,
+		});
+
+		expect(evidence.context.stalledSources[0]?.label).toBe("TEXT");
 	});
 });
 

@@ -35,6 +35,13 @@ function getToastCopy(
 
 	switch (signal.kind) {
 		case "internal_budget":
+			if (signal.budgetLimit === "iterations") {
+				return {
+					title: "Response was cut short — step limit reached",
+					description:
+						"This task used all the steps it has for a single run. You can ask it to continue, or try a narrower question.",
+				};
+			}
 			return {
 				title: "Response was cut short — token budget reached",
 				description: `This task hit the single-run token budget. ${tail}`,
@@ -82,7 +89,8 @@ export function useLimitToast() {
 			const copy = getToastCopy(signal, canManageBilling);
 			const showBillingAction =
 				canManageBilling &&
-				(signal.kind === "internal_budget" ||
+				((signal.kind === "internal_budget" &&
+					signal.budgetLimit !== "iterations") ||
 					signal.kind === "provider_quota");
 			const billingHref = slug
 				? `/app/${slug}/settings/billing`

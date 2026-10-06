@@ -50,6 +50,15 @@ function snapshotFor(entries: ReturnType<typeof entry>[]) {
 }
 
 describe("computeSnapshotDigest", () => {
+	it("accepts a 70 MiB snapshot without weakening the per-file limit", () => {
+		const manifest = Array.from({ length: 14 }, (_, index) => ({
+			...entry(`file-${index}.md`, "x"),
+			size: 5 * 1024 * 1024,
+		}));
+		expect(() =>
+			assertValidManifest({ manifest, snapshot: snapshotFor(manifest) }),
+		).not.toThrow();
+	});
 	/**
 	 * Pinned against the server's recipe in
 	 * `packages/instructions/src/manifest.ts`: sha256 over `path\0sha256\n`
@@ -357,10 +366,10 @@ describe("assertValidManifest", () => {
 			).toThrow(/at most 5242880/);
 		});
 
-		it("refuses a total larger than the snapshot limit", () => {
+		it("refuses a total larger than the database size field can represent", () => {
 			const entries = [
 				{ ...entry("a.md", "x"), size: 5_242_880 },
-				...Array.from({ length: 10 }, (_, index) => ({
+				...Array.from({ length: 409 }, (_, index) => ({
 					...entry(`f${index}.md`, `${index}`),
 					size: 5_242_880,
 				})),
@@ -374,7 +383,7 @@ describe("assertValidManifest", () => {
 						version: 7,
 					},
 				}),
-			).toThrow(/at most 52428800/);
+			).toThrow(/at most 2147483647/);
 		});
 
 		it("refuses an absurdly long path", () => {

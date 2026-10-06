@@ -29,6 +29,8 @@ function gate(overrides: Partial<CapabilityGate> = {}): CapabilityGate {
 			available: false,
 			targetId: null,
 		},
+		subjects: [],
+		subjectTotal: 0,
 		fingerprint: "fingerprint_example",
 		suppressed: false,
 		...overrides,
@@ -428,5 +430,71 @@ describe("buildCapabilityGateView — Roadmap reasons", () => {
 		expect(view?.ctaKind).toBe("navigate");
 		expect(view?.ctaTarget).toBe("pm-settings");
 		expect(copyAt("remedy.configurePmBoard")).toEqual(expect.any(String));
+	});
+
+	it("names the stuck sources, with their count", () => {
+		const subjects = [
+			{ id: "context_a", label: "example-brief.pdf" },
+			{ id: "context_b", label: "https://example.com/docs" },
+		];
+		const view = buildCapabilityGateView(
+			gate({
+				capabilityKey: "context.use-linked-source",
+				state: "HARD_BLOCK",
+				reasonKey: "context.ingestion-stalled",
+				blockingDependency: "source ingestion",
+				subjects,
+				subjectTotal: 5,
+			}),
+		);
+
+		expect(view?.subjects).toEqual(subjects);
+		expect(view?.subjectTotal).toBe(5);
+		expect(view?.params.count).toBe(5);
+		expect(view?.body).toBe("reason.context.ingestion-stalled.body");
+		expect(copyAt("subjects.more")).toEqual(expect.any(String));
+	});
+
+	it("builds no view for a stall it cannot name — never a generic warning", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				capabilityKey: "context.use-linked-source",
+				state: "HARD_BLOCK",
+				reasonKey: "context.ingestion-stalled",
+				blockingDependency: "source ingestion",
+				subjectTotal: 3,
+			}),
+		);
+
+		expect(view).toBeNull();
+	});
+
+	it("still builds views for reasons that never name subjects", () => {
+		const view = buildCapabilityGateView(
+			gate({
+				capabilityKey: "context.use-linked-source",
+				state: "PROCESSING",
+				reasonKey: "context.ingesting",
+				remedy: "WAIT",
+			}),
+		);
+
+		expect(view?.body).toBe("reason.context.ingesting.body");
+		expect(view?.params.count).toBe(1);
+	});
+
+	it("reads a gate from a server that predates subjects as naming none", () => {
+		const legacy = gate({
+			state: "HARD_BLOCK",
+			reasonKey: "codebase.not-connected",
+			remedy: "CONNECT_REPOSITORY",
+		}) as Partial<CapabilityGate>;
+		delete legacy.subjects;
+		delete legacy.subjectTotal;
+
+		const view = buildCapabilityGateView(legacy as CapabilityGate);
+
+		expect(view?.subjects).toEqual([]);
+		expect(view?.subjectTotal).toBe(0);
 	});
 });

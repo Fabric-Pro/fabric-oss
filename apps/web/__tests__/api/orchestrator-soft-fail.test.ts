@@ -50,7 +50,11 @@ vi.mock("@repo/temporal", () => ({
 	getTemporalClient: () => getTemporalClientMock(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// Turn admission (see ./_helpers/conversation-turn-db-mocks.ts).
+	...(
+		await import("./_helpers/conversation-turn-db-mocks")
+	).conversationTurnDbMocks(),
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
 	db: {
 		agentConversation: { findFirst: vi.fn(async () => null) },
@@ -91,7 +95,11 @@ describe("POST orchestrator-temporal/stream — soft-failed workflow result", ()
 		delete process.env.CACHE_HOST;
 		delete process.env.REDIS_URL;
 
-		getSessionMock.mockResolvedValue({ user: { id: SESSION_USER_ID } });
+		// The organization is required (ADR-018); the session supplies it.
+		getSessionMock.mockResolvedValue({
+			user: { id: SESSION_USER_ID },
+			session: { activeOrganizationId: "org-example-1" },
+		});
 		getAIModelWithMetadataMock.mockResolvedValue({
 			trackUsage: trackUsageMock,
 		});

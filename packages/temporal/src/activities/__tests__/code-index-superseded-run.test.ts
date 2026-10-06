@@ -33,6 +33,7 @@ const order = vi.hoisted(() => [] as string[]);
 const dbMocks = vi.hoisted(() => ({
 	updateCodeIndexStats: vi.fn(),
 	updateCodeIndexStatus: vi.fn(),
+	failCodeIndexUnlessOwnReady: vi.fn(),
 	updateCodeIndexProgress: vi.fn(),
 	upsertProjectCodeIndex: vi.fn(),
 }));
@@ -141,6 +142,10 @@ beforeEach(() => {
 		order.push("status");
 		return "written";
 	});
+	dbMocks.failCodeIndexUnlessOwnReady.mockImplementation(async () => {
+		order.push("status");
+		return "written";
+	});
 	dbMocks.updateCodeIndexStats.mockResolvedValue("written");
 	dbMocks.updateCodeIndexProgress.mockResolvedValue({ count: 1 });
 });
@@ -181,11 +186,12 @@ describe("failCodeIndexActivity", () => {
 	// The Job Hub write is fenced on the chain id rather than gated on the
 	// index-row outcome: the index row is per branch, the job row per repo, so
 	// an outcome gate misses a superseded run that still owns its own branch's
-	// row. The fence is what keeps it off the successor's row.
+	// row. The fence is what keeps it off the successor's row. The one outcome
+	// that does gate it is `kept-ready` (below).
 	it.each(["written", "absent", "superseded"])(
 		"always fails the job fenced to the chain (index row %s)",
 		async (outcome) => {
-			dbMocks.updateCodeIndexStatus.mockImplementation(async () => {
+			dbMocks.failCodeIndexUnlessOwnReady.mockImplementation(async () => {
 				order.push("status");
 				return outcome;
 			});
@@ -196,13 +202,14 @@ describe("failCodeIndexActivity", () => {
 				owner: OWNER,
 			});
 
-			expect(dbMocks.updateCodeIndexStatus).toHaveBeenCalledWith(
+			expect(dbMocks.failCodeIndexUnlessOwnReady).toHaveBeenCalledWith(
 				KEY,
-				"FAILED",
 				"boom",
 				OWNER,
 			);
-			expect(order).toEqual(["jobFail", "status"]);
+			expect(dbMocks.updateCodeIndexStatus).not.toHaveBeenCalled();
+			// The row first: its outcome can veto the job write.
+			expect(order).toEqual(["status", "jobFail"]);
 			// Fenced and ordered: see failBackgroundJob's `runStartedAt`.
 			expect(jobMocks.jobFail).toHaveBeenCalledWith("boom", {
 				sourceId: "repo-1",
@@ -212,8 +219,25 @@ describe("failCodeIndexActivity", () => {
 		},
 	);
 
+	it("keeps the chain's own READY row and completes its job instead of failing it", async () => {
+		// The finalize landed READY and its attempt died before reporting, so
+		// the workflow routed a successful run to the fail path. Left RUNNING,
+		// the stale watchdog would fail the job over a searchable index.
+		dbMocks.failCodeIndexUnlessOwnReady.mockResolvedValue("kept-ready");
+
+		await expect(
+			failCodeIndexActivity({ ...KEY, error: "boom", owner: OWNER }),
+		).resolves.toBeUndefined();
+
+		expect(jobMocks.jobFail).not.toHaveBeenCalled();
+		expect(jobMocks.jobComplete).toHaveBeenCalledWith({
+			sourceId: "repo-1",
+			runId: OWNER.runId,
+		});
+	});
+
 	it("still fails the job, fenced, when the status write throws — and does not throw", async () => {
-		dbMocks.updateCodeIndexStatus.mockRejectedValue(
+		dbMocks.failCodeIndexUnlessOwnReady.mockRejectedValue(
 			new Error("connection lost"),
 		);
 

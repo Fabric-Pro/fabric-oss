@@ -208,6 +208,14 @@ function rows() {
 	return screen.getAllByTestId("commit-row");
 }
 
+function detail() {
+	return screen.getByTestId("commit-detail");
+}
+
+function detailAction(name: string) {
+	return within(detail()).getByRole("button", { name });
+}
+
 beforeEach(() => {
 	mocks.pages.clear();
 	mocks.listCalls.length = 0;
@@ -271,19 +279,22 @@ describe("InstructionsCommits — the list", () => {
 		).toBeInTheDocument();
 	});
 
-	it("shows each commit as its short sha linked to the provider, its subject, author and age", async () => {
+	it("shows each compact row's short sha, subject, author and age, with the provider link in the selected detail", async () => {
 		renderCommits();
 
 		await screen.findAllByTestId("commit-row");
 		const first = rows()[0] as HTMLElement;
 		expect(within(first).getByText("Change a1b")).toBeInTheDocument();
-		const sha = within(first).getByRole("link", { name: "a1b2c3d" });
-		expect(sha).toHaveAttribute(
+		const sha = within(first).getByText("a1b2c3d");
+		expect(sha.tagName).toBe("CODE");
+		const providerLink = within(detail()).getByRole("link", {
+			name: "Open in GitHub",
+		});
+		expect(providerLink).toHaveAttribute(
 			"href",
 			`https://github.com/example-org/instructions/commit/${SHA_A}`,
 		);
-		expect(sha).toHaveAttribute("rel", "noopener noreferrer");
-		expect(sha.className).toContain("font-mono");
+		expect(providerLink).toHaveAttribute("rel", "noopener noreferrer");
 		expect(within(first).getByText("Example Member")).toBeInTheDocument();
 		expect(within(first).getByText(/ago/)).toBeInTheDocument();
 		// The body is not the subject.
@@ -321,7 +332,7 @@ describe("InstructionsCommits — the list", () => {
 		}
 	});
 
-	it("says the message was withheld, muted, and still links the sha", async () => {
+	it("says the message was withheld, muted, and keeps its provider link in detail", async () => {
 		mocks.pages.set(1, {
 			commits: [row(SHA_A, { message: null, messageWithheld: true })],
 			nextCursor: null,
@@ -333,7 +344,7 @@ describe("InstructionsCommits — the list", () => {
 		const withheld = within(only).getByText("Message withheld");
 		expect(withheld.className).toContain("text-muted-foreground");
 		expect(
-			within(only).getByRole("link", { name: "a1b2c3d" }),
+			within(detail()).getByRole("link", { name: "Open in GitHub" }),
 		).toBeInTheDocument();
 	});
 
@@ -349,10 +360,64 @@ describe("InstructionsCommits — the list", () => {
 		});
 		renderCommits();
 
+		await screen.findAllByTestId("commit-row");
 		expect(
-			await screen.findByText("Tighten lint rules"),
+			await within(rows()[0] as HTMLElement).findByText(
+				"Tighten lint rules",
+			),
 		).toBeInTheDocument();
 		expect(screen.queryByText(/renames a few things/)).toBeNull();
+	});
+});
+
+describe("InstructionsCommits — selection and comparison", () => {
+	it("selects a compact row, then clears the detail when the loaded-history filter excludes it", async () => {
+		const user = userEvent.setup();
+		renderCommits();
+
+		await screen.findAllByTestId("commit-row");
+		expect(rows()[0]).toHaveAttribute("aria-pressed", "true");
+		await user.click(rows()[1] as HTMLElement);
+		expect(rows()[1]).toHaveAttribute("aria-pressed", "true");
+		expect(within(detail()).getByText("Change b2c")).toBeInTheDocument();
+
+		await user.type(
+			screen.getByRole("textbox", { name: "Filter loaded commits" }),
+			"Change a1b",
+		);
+
+		expect(
+			within(detail()).getByText(
+				"Select a loaded commit to see its details.",
+			),
+		).toBeInTheDocument();
+		expect(mocks.compareCalls).toEqual([]);
+	});
+
+	it("defers a comparison until requested and resets it when another commit is selected", async () => {
+		const user = userEvent.setup();
+		renderCommits();
+
+		await screen.findAllByTestId("commit-row");
+		expect(mocks.compareCalls).toEqual([]);
+		await user.click(detailAction("Compare with parent"));
+		await waitFor(() =>
+			expect(mocks.compareCalls).toEqual([
+				{ projectId: "p", from: "9".repeat(40), to: SHA_A },
+			]),
+		);
+		expect(screen.getByTestId("commit-comparison")).toBeInTheDocument();
+
+		await user.click(rows()[1] as HTMLElement);
+		expect(screen.queryByTestId("commit-comparison")).toBeNull();
+		await user.click(detailAction("Compare with parent"));
+		await waitFor(() =>
+			expect(mocks.compareCalls).toContainEqual({
+				projectId: "p",
+				from: "9".repeat(40),
+				to: SHA_B,
+			}),
+		);
 	});
 });
 
@@ -381,8 +446,7 @@ describe("InstructionsCommits — paging", () => {
 		expect(
 			rows().map(
 				(element) =>
-					within(element).getByRole("link", { name: /^[0-9a-f]{7}$/ })
-						.textContent,
+					within(element).getByText(/^[0-9a-f]{7}$/).textContent,
 			),
 		).toEqual(["a1b2c3d", "b2c3d4e", "c3d4e5f", "d4e5f60"]);
 		// The last page: nothing older to load.
@@ -459,9 +523,7 @@ describe("InstructionsCommits — Open in the provider", () => {
 
 		await screen.findAllByTestId("commit-row");
 		expect(
-			within(rows()[0] as HTMLElement).getByRole("link", {
-				name: `Open in ${name}`,
-			}),
+			within(detail()).getByRole("link", { name: `Open in ${name}` }),
 		).toHaveAttribute(
 			"href",
 			`https://github.com/example-org/instructions/commit/${SHA_A}`,
@@ -476,8 +538,8 @@ describe("InstructionsCommits — Open in the provider", () => {
 		renderCommits();
 
 		await screen.findAllByTestId("commit-row");
-		expect(screen.queryByRole("link")).toBeNull();
-		expect(screen.getByText("a1b2c3d")).toBeInTheDocument();
+		expect(within(detail()).queryByRole("link")).toBeNull();
+		expect(within(detail()).getByText("a1b2c3d")).toBeInTheDocument();
 	});
 });
 
@@ -486,7 +548,9 @@ describe("InstructionsCommits — Revert", () => {
 		renderCommits({ canRevert: false });
 
 		await screen.findAllByTestId("commit-row");
-		expect(screen.queryByRole("button", { name: "Revert" })).toBeNull();
+		expect(
+			within(detail()).queryByRole("button", { name: "Revert" }),
+		).toBeNull();
 		expect(rows()).toHaveLength(4);
 	});
 
@@ -497,14 +561,12 @@ describe("InstructionsCommits — Revert", () => {
 		});
 		renderCommits();
 
+		const user = userEvent.setup();
 		await screen.findAllByTestId("commit-row");
-		expect(screen.getAllByRole("button", { name: "Revert" })).toHaveLength(
-			1,
-		);
+		expect(detailAction("Revert")).toBeInTheDocument();
+		await user.click(rows()[1] as HTMLElement);
 		expect(
-			within(rows()[1] as HTMLElement).queryByRole("button", {
-				name: "Revert",
-			}),
+			within(detail()).queryByRole("button", { name: "Revert" }),
 		).toBeNull();
 	});
 
@@ -514,11 +576,7 @@ describe("InstructionsCommits — Revert", () => {
 		renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
 		expect(mocks.confirm).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -536,11 +594,7 @@ describe("InstructionsCommits — Revert", () => {
 		await screen.findAllByTestId("commit-row");
 		const listed = mocks.listCalls.length;
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
 		await waitFor(() =>
 			expect(mocks.revert).toHaveBeenCalledWith({
@@ -566,11 +620,7 @@ describe("InstructionsCommits — Revert", () => {
 		const { onCommitted } = renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
 		await waitFor(() =>
 			expect(mocks.toastInfo).toHaveBeenCalledWith(
@@ -589,11 +639,7 @@ describe("InstructionsCommits — Revert", () => {
 		renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
 		await waitFor(() =>
 			expect(mocks.toastInfo).toHaveBeenCalledWith(
@@ -647,11 +693,7 @@ describe("InstructionsCommits — Revert", () => {
 			renderCommits();
 			await screen.findAllByTestId("commit-row");
 
-			await user.click(
-				within(rows()[0] as HTMLElement).getByRole("button", {
-					name: "Revert",
-				}),
-			);
+			await user.click(detailAction("Revert"));
 
 			await waitFor(() =>
 				expect(mocks.toastError).toHaveBeenCalledWith(sentence),
@@ -671,11 +713,7 @@ describe("InstructionsCommits — Revert", () => {
 		renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
 		await waitFor(() =>
 			expect(mocks.toastError).toHaveBeenCalledWith(
@@ -695,24 +733,9 @@ describe("InstructionsCommits — Revert", () => {
 		renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Revert",
-			}),
-		);
+		await user.click(detailAction("Revert"));
 
-		await waitFor(() =>
-			expect(
-				within(rows()[0] as HTMLElement).getByRole("button", {
-					name: "Reverting…",
-				}),
-			).toBeDisabled(),
-		);
-		for (const button of screen.getAllByRole("button", {
-			name: "Revert",
-		})) {
-			expect(button).toBeDisabled();
-		}
+		await waitFor(() => expect(detailAction("Reverting…")).toBeDisabled());
 		finish({ outcome: "unchanged", sha: NEW_SHA });
 	});
 });
@@ -723,13 +746,8 @@ describe("InstructionsCommits — Compare with parent", () => {
 		renderCommits();
 		await screen.findAllByTestId("commit-row");
 
-		await user.click(
-			within(rows()[0] as HTMLElement).getByRole("button", {
-				name: "Compare with parent",
-			}),
-		);
-
-		expect(await screen.findByText("Compare commits")).toBeInTheDocument();
+		expect(mocks.compareCalls).toEqual([]);
+		await user.click(detailAction("Compare with parent"));
 		await waitFor(() =>
 			expect(mocks.compareCalls).toEqual([
 				{ projectId: "p", from: "9".repeat(40), to: SHA_A },
@@ -747,13 +765,38 @@ describe("InstructionsCommits — Compare with parent", () => {
 		expect(rows()).toHaveLength(4);
 	});
 
+	it("removes an open comparison when comparison permission is withdrawn", async () => {
+		const user = userEvent.setup();
+		const { rerender } = renderCommits();
+		await screen.findAllByTestId("commit-row");
+		await user.click(detailAction("Compare with parent"));
+		await screen.findByTestId("commit-comparison");
+
+		rerender(
+			<TestQueryProvider>
+				<InstructionsCommits
+					projectId="p"
+					open
+					onOpenChange={() => undefined}
+					provider="GITHUB"
+					branch="main"
+					rootPath=""
+					published={{ sha: SHA_B, version: 7 }}
+					canRevert
+					canCompare={false}
+					onChanged={() => undefined}
+				/>
+			</TestQueryProvider>,
+		);
+
+		expect(screen.queryByTestId("commit-comparison")).toBeNull();
+	});
+
 	it("still offers a comparison in Read-only mode, which refuses writes and not reads", async () => {
 		renderCommits({ canRevert: false, canCompare: true });
 
 		await screen.findAllByTestId("commit-row");
-		expect(
-			screen.getAllByRole("button", { name: "Compare with parent" }),
-		).toHaveLength(4);
+		expect(detailAction("Compare with parent")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Revert" })).toBeNull();
 	});
 
@@ -772,11 +815,29 @@ describe("InstructionsCommits — Compare with parent", () => {
 });
 
 describe("InstructionsCommits — around the list", () => {
-	it("keeps the sync runs under the commits", async () => {
-		renderCommits({ syncRuns: <div data-testid="sync-runs" /> });
+	it("keeps many sync runs behind a bounded native disclosure", async () => {
+		const user = userEvent.setup();
+		renderCommits({
+			syncRuns: (
+				<div data-testid="sync-runs">
+					{Array.from({ length: 30 }, (_, index) => (
+						<p key={index}>Run {index + 1}</p>
+					))}
+				</div>
+			),
+		});
 
 		await screen.findAllByTestId("commit-row");
-		expect(screen.getByTestId("sync-runs")).toBeInTheDocument();
+		const syncRuns = screen.getByTestId("sync-runs");
+		const disclosure = syncRuns.closest("details");
+		expect(disclosure).not.toBeNull();
+		expect(syncRuns.parentElement).toHaveClass(
+			"max-h-24",
+			"md:max-h-40",
+			"overflow-auto",
+		);
+		await user.click(screen.getByText("Sync runs"));
+		expect(disclosure).toHaveAttribute("open");
 	});
 
 	it("offers no publish, roll back or delete, since Fabric's copy follows the branch", async () => {

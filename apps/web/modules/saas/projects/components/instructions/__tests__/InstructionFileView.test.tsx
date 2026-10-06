@@ -889,6 +889,40 @@ describe("InstructionFileView", () => {
 			expect(call.baseSnapshotId).toBe("s2");
 			expect(await call.edits[0]!.body.text()).toBe("# Theirs plus mine");
 		});
+
+		it("keeps a draft read-only while the tab holds its prior file during a publication refresh", async () => {
+			const user = userEvent.setup();
+			const { rerender } = render(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit" }),
+			);
+			await user.clear(screen.getByRole("textbox"));
+			await user.type(screen.getByRole("textbox"), "# Mine");
+
+			rerender(
+				<InstructionFileView
+					projectId="p"
+					snapshotId="s"
+					currentSnapshotId="s2"
+					path=".claude/skills/example-qa-test/SKILL.md"
+					canEdit={false}
+				/>,
+			);
+
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"Someone published a new version while you were editing",
+			);
+			expect(screen.getByRole("textbox")).toHaveValue("# Mine");
+			expect(screen.getByRole("textbox")).toHaveAttribute("readonly");
+		});
 	});
 
 	// Design 2026-09-23 §5.8: a Guild file's frontmatter carries keys the

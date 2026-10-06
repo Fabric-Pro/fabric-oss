@@ -21,6 +21,7 @@
 
 import { resolve } from "node:path";
 import { ActivityFailure, WorkflowFailedError } from "@temporalio/client";
+import { tsToMs } from "@temporalio/common/lib/time";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -35,6 +36,11 @@ import type {
 import { DEFERRED_SCAN_MAX_ATTEMPTS } from "../src/lib/instruction-deferred-scan-retry";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
+const LEGACY_WORKFLOWS_PATH = resolve(
+	__dirname,
+	"helpers",
+	"legacy-project-instruction-snapshot",
+);
 const WORKFLOW_NAME = "projectInstructionSnapshotWorkflow";
 
 const INPUT: SnapshotRef = {
@@ -46,11 +52,15 @@ const INPUT: SnapshotRef = {
 
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
+let legacyWorkflowBundle: WorkflowBundleWithSourceMap;
 
 beforeAll(async () => {
 	env = await TestWorkflowEnvironment.createTimeSkipping();
 	workflowBundle = await bundleWorkflowCode({
 		workflowsPath: WORKFLOWS_PATH,
+	});
+	legacyWorkflowBundle = await bundleWorkflowCode({
+		workflowsPath: LEGACY_WORKFLOWS_PATH,
 	});
 }, 120_000);
 
@@ -122,6 +132,28 @@ async function runWorkflow(
 		publishReason?: string;
 		deferredScan?: string;
 	};
+}
+
+async function recordWorkflowHistory(
+	workflowBundleForHistory: WorkflowBundleWithSourceMap,
+	input: SnapshotRef & { publishBeforeScan?: boolean },
+	mocks: Mocks,
+) {
+	const taskQueue = `project-instruction-snapshot-history-${taskQueueSeq++}`;
+	const workflowId = `${taskQueue}-wf`;
+	const worker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue,
+		workflowBundle: workflowBundleForHistory,
+		activities: mocks,
+	});
+	const handle = await env.client.workflow.start(WORKFLOW_NAME, {
+		args: [input],
+		taskQueue,
+		workflowId,
+	});
+	await worker.runUntil(handle.result());
+	return { history: await handle.fetchHistory(), workflowId };
 }
 
 /** Every error in a `cause` chain, outermost first. */
@@ -789,4 +821,99 @@ describe("projectInstructionSnapshotWorkflow: publish first, scan afterwards (Fi
 			expect(record).not.toHaveBeenCalled();
 		},
 	);
+
+	it("replays the recorded 10-minute finalization history and schedules new finalization with a 30-minute budget", async () => {
+		const legacy = await recordWorkflowHistory(
+			legacyWorkflowBundle,
+			INPUT,
+			happyMocks(),
+		);
+		const scheduled = (
+			history: typeof legacy.history,
+			activityType: string,
+		) => {
+			const attributes = (history.events ?? []).find(
+				(event) =>
+					event.activityTaskScheduledEventAttributes?.activityType
+						?.name === activityType,
+			)?.activityTaskScheduledEventAttributes;
+			expect(attributes).toBeDefined();
+			return attributes!;
+		};
+
+		const legacyFinalize = scheduled(
+			legacy.history,
+			"finalizeInstructionSnapshot",
+		);
+		expect(tsToMs(legacyFinalize.startToCloseTimeout) / 1_000).toBe(600);
+		expect(tsToMs(legacyFinalize.heartbeatTimeout) / 1_000).toBe(60);
+		expect(legacyFinalize.retryPolicy?.maximumAttempts).toBe(3);
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle },
+				legacy.history,
+				legacy.workflowId,
+			),
+		).resolves.toBeUndefined();
+
+		const current = await recordWorkflowHistory(
+			workflowBundle,
+			INPUT,
+			happyMocks(),
+		);
+		const currentFinalize = scheduled(
+			current.history,
+			"finalizeInstructionSnapshot",
+		);
+		expect(tsToMs(currentFinalize.startToCloseTimeout) / 1_000).toBe(1800);
+		expect(tsToMs(currentFinalize.heartbeatTimeout) / 1_000).toBe(60);
+		expect(currentFinalize.retryPolicy?.maximumAttempts).toBe(3);
+
+		const publishFirstInput = { ...INPUT, publishBeforeScan: true };
+		const publishFirstMocks = happyMocks({
+			promoteUnscannedInstructionSnapshot: async () => ({
+				ok: true,
+				rejections: [],
+			}),
+			scanPublishedInstructionSnapshot: async () => ({
+				outcome: "PASSED",
+				findings: [],
+			}),
+			recordDeferredScanOutcome: async () => ({ changed: true }),
+		});
+		const legacyPublishFirst = await recordWorkflowHistory(
+			legacyWorkflowBundle,
+			publishFirstInput,
+			publishFirstMocks,
+		);
+		const legacyPromotion = scheduled(
+			legacyPublishFirst.history,
+			"promoteUnscannedInstructionSnapshot",
+		);
+		expect(tsToMs(legacyPromotion.startToCloseTimeout) / 1_000).toBe(600);
+		expect(tsToMs(legacyPromotion.heartbeatTimeout) / 1_000).toBe(60);
+		expect(legacyPromotion.retryPolicy?.maximumAttempts).toBe(3);
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle },
+				legacyPublishFirst.history,
+				legacyPublishFirst.workflowId,
+			),
+		).resolves.toBeUndefined();
+
+		const currentPublishFirst = await recordWorkflowHistory(
+			workflowBundle,
+			publishFirstInput,
+			publishFirstMocks,
+		);
+		const currentPromotion = scheduled(
+			currentPublishFirst.history,
+			"promoteUnscannedInstructionSnapshot",
+		);
+		expect(tsToMs(currentPromotion.startToCloseTimeout) / 1_000).toBe(1800);
+		expect(tsToMs(currentPromotion.heartbeatTimeout) / 1_000).toBe(60);
+		expect(currentPromotion.retryPolicy?.maximumAttempts).toBe(3);
+	}, 120_000);
 });

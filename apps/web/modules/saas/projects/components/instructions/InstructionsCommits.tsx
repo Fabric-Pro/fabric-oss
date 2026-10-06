@@ -27,17 +27,19 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
+import { Input } from "@ui/components/input";
 import { Skeleton } from "@ui/components/skeleton";
 import {
 	ExternalLinkIcon,
 	GitCompareArrowsIcon,
 	Loader2Icon,
+	SearchIcon,
 	Undo2Icon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
-import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
+import { InstructionCommitComparison } from "./InstructionsCompareDialog";
 
 const BADGE_VARIANT: Record<
 	CommitBadge,
@@ -48,21 +50,12 @@ const BADGE_VARIANT: Record<
 	notSynced: "outline",
 };
 
+type CommitEntry = { row: CommitRow; badge: CommitBadge | null };
+
 /**
- * The synced branch's history: what History is for a project whose
- * instructions come from a repository (Fizzy #2878 §10). The commits are the
- * branch's own, newest first and within the synced folder, a page of 30 at a
- * time; each says which of them Fabric's copy is of, which the secret scan
- * refused, and which Fabric has not taken yet.
- *
- * There are no versions to publish, roll back to or delete here: Fabric's copy
- * follows the branch. Rolling back is a revert COMMIT, which needs the same
- * right as a commit (INSTRUCTION_CREATE) and is the one write on this list.
- * The sync runs sit under it, as they did under History.
- *
- * Each page is its own query, so a page already read stays on screen while
- * the next one loads, and closing the dialog costs nothing; none is read until
- * the dialog opens.
+ * The synced branch's own history. The list remains paged and lazy, while its
+ * selected commit gets a desktop detail pane for actions and an on-demand
+ * comparison. On mobile the same two panes stack in reading order.
  */
 export function InstructionsCommits({
 	projectId,
@@ -82,32 +75,15 @@ export function InstructionsCommits({
 	projectId: string;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	/** The connected repository's provider, for "Open in <provider>". */
 	provider: string;
-	/** The synced branch. */
 	branch: string;
-	/** The synced folder; "" for the repository root. */
 	rootPath: string;
-	/** What Fabric's copy is of now: the commit and the version. */
 	published: { sha: string | null; version: number | null };
-	/** Whether this member may revert a commit (INSTRUCTION_CREATE, not Read-only mode). */
 	canRevert: boolean;
-	/**
-	 * Why no revert can be made right now (uploaded instructions are being
-	 * moved into this repository, Fizzy #2878 §9): Revert stays on its row,
-	 * disabled, and pressing it says this instead of asking to confirm.
-	 */
 	pausedReason?: string | null;
-	/**
-	 * Whether this member may compare commits (INSTRUCTION_CREATE: the
-	 * comparison reads file bodies from the repository, which is the right to
-	 * change them). Not withheld in Read-only mode, which only refuses writes.
-	 */
 	canCompare: boolean;
-	/** The repository's "Sync runs" list. */
 	syncRuns?: ReactNode;
 	onChanged: () => void;
-	/** A revert landed on the branch: the tab waits for Fabric's copy to take it. */
 	onCommitted?: (commit: { sha: string; ref: string }) => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.commits");
@@ -116,12 +92,9 @@ export function InstructionsCommits({
 	const queryClient = useQueryClient();
 	const [cursors, setCursors] = useState<number[]>([1]);
 	const [revertingSha, setRevertingSha] = useState<string | null>(null);
-	// The commit and its parent whose comparison is open, if any. Held here so
-	// only ONE compare dialog is ever mounted.
-	const [compare, setCompare] = useState<{
-		from: string;
-		to: string;
-	} | null>(null);
+	const [selectedSha, setSelectedSha] = useState<string | null>(null);
+	const [filter, setFilter] = useState("");
+	const [showComparison, setShowComparison] = useState(false);
 
 	const pages = useQueries({
 		queries: cursors.map((cursor) => ({
@@ -136,12 +109,30 @@ export function InstructionsCommits({
 	const loaded = pages.flatMap((page) =>
 		page.data ? (page.data.commits as CommitRow[]) : [],
 	);
+	const badges = commitBadges(loaded, published);
+	const entries: CommitEntry[] = loaded.map((row, index) => ({
+		row,
+		badge: badges[index] ?? null,
+	}));
+	const normalizedFilter = filter.trim().toLocaleLowerCase();
+	const visibleEntries = entries.filter(({ row }) => {
+		if (normalizedFilter === "") {
+			return true;
+		}
+		return [rowSubject(row) ?? "", row.author.name, row.sha]
+			.join(" ")
+			.toLocaleLowerCase()
+			.includes(normalizedFilter);
+	});
+	const selectedEntry =
+		visibleEntries.find(({ row }) => row.sha === selectedSha) ??
+		(normalizedFilter === "" ? (visibleEntries[0] ?? null) : null);
 	const last = pages[pages.length - 1];
 	const nextCursor = last?.data?.nextCursor ?? null;
 	const firstFailed = pages[0]?.isError ?? false;
 	const folderMissing = firstFailed && isFolderNotFoundError(pages[0]?.error);
 	const firstLoading = pages[0]?.isLoading ?? true;
-	const badges = commitBadges(loaded, published);
+	const provided = providerName(provider);
 
 	const revert = useMutation(
 		orpc.projects.instructions.revertCommit.mutationOptions({
@@ -193,10 +184,19 @@ export function InstructionsCommits({
 		});
 	}
 
-	const provided = providerName(provider);
+	function selectCommit(sha: string) {
+		setSelectedSha(sha);
+		setShowComparison(false);
+	}
+
+	function showCommitComparison(row: CommitRow) {
+		setSelectedSha(row.sha);
+		setShowComparison(true);
+	}
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-2xl">
+			<DialogContent className="flex h-[85vh] max-h-[85vh] max-w-5xl flex-col overflow-hidden">
 				<DialogHeader>
 					<DialogTitle>{t("title", { ref: branch })}</DialogTitle>
 					<DialogDescription>
@@ -205,208 +205,296 @@ export function InstructionsCommits({
 							: t("description", { ref: branch, rootPath })}
 					</DialogDescription>
 				</DialogHeader>
-				<div
-					className="flex max-h-[60vh] flex-col gap-2 overflow-auto"
-					aria-busy={firstLoading}
-				>
-					{firstLoading ? (
-						<>
-							<Skeleton className="h-16 w-full" />
-							<Skeleton className="h-16 w-full" />
-							<Skeleton className="h-16 w-full" />
-						</>
-					) : firstFailed ? (
-						<div
-							role="alert"
-							className="flex flex-col items-start gap-2 rounded-lg border border-border p-3 text-sm"
-						>
-							<p className="text-destructive">
-								{folderMissing
-									? t("folderMissing", {
-											folder: rootPath,
-											ref: branch,
-										})
-									: t("loadError")}
+				<div className="flex flex-wrap items-center justify-between gap-2 border-y border-border py-3">
+					<div className="relative w-full sm:max-w-xs">
+						<SearchIcon
+							className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+							aria-hidden="true"
+						/>
+						<Input
+							value={filter}
+							onChange={(event) => setFilter(event.target.value)}
+							placeholder={t("filterPlaceholder")}
+							aria-label={t("filterLabel")}
+							className="pl-9"
+						/>
+					</div>
+					<p className="text-muted-foreground text-xs">
+						{t("loadedCount", { count: visibleEntries.length })}
+					</p>
+				</div>
+				<div className="grid min-h-40 flex-1 grid-cols-1 overflow-hidden md:min-h-0 md:grid-cols-[minmax(17rem,0.9fr)_minmax(0,1.1fr)]">
+					<div
+						className="flex min-h-0 flex-col border-b border-border md:border-r md:border-b-0"
+						aria-busy={firstLoading}
+					>
+						<div className="min-h-0 flex-1 overflow-auto py-1">
+							{firstLoading ? (
+								<div className="flex flex-col gap-2 p-3">
+									<Skeleton className="h-16 w-full" />
+									<Skeleton className="h-16 w-full" />
+									<Skeleton className="h-16 w-full" />
+								</div>
+							) : firstFailed ? (
+								<div
+									role="alert"
+									className="m-3 flex flex-col items-start gap-2 rounded-lg border border-border p-3 text-sm"
+								>
+									<p className="text-destructive">
+										{folderMissing
+											? t("folderMissing", {
+													folder: rootPath,
+													ref: branch,
+												})
+											: t("loadError")}
+									</p>
+									{folderMissing ? null : (
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={() =>
+												void pages[0]?.refetch()
+											}
+										>
+											{t("retry")}
+										</Button>
+									)}
+								</div>
+							) : visibleEntries.length === 0 ? (
+								<p className="p-3 text-muted-foreground text-sm">
+									{loaded.length === 0
+										? t("empty", { ref: branch })
+										: t("filterEmpty")}
+								</p>
+							) : (
+								<div
+									aria-label={t("loadedListLabel")}
+									className="flex flex-col"
+								>
+									{visibleEntries.map(({ row, badge }) => (
+										<CommitListRow
+											key={row.sha}
+											row={row}
+											badge={badge}
+											selected={
+												selectedEntry?.row.sha ===
+												row.sha
+											}
+											onSelect={() =>
+												selectCommit(row.sha)
+											}
+										/>
+									))}
+								</div>
+							)}
+						</div>
+						{last?.isError && !firstFailed ? (
+							<p
+								role="alert"
+								className="border-t border-border p-3 text-destructive text-sm"
+							>
+								{t("loadError")}
 							</p>
-							{folderMissing ? null : (
+						) : null}
+						{nextCursor !== null ||
+						(last?.isFetching && !firstLoading) ? (
+							<div className="border-t border-border p-3">
 								<Button
 									size="sm"
 									variant="outline"
-									onClick={() => void pages[0]?.refetch()}
+									disabled={last?.isFetching}
+									onClick={() =>
+										nextCursor !== null &&
+										setCursors((current) => [
+											...current,
+											nextCursor,
+										])
+									}
 								>
-									{t("retry")}
+									{last?.isFetching ? (
+										<Loader2Icon
+											className="size-3.5 motion-safe:animate-spin"
+											aria-hidden="true"
+										/>
+									) : null}
+									{t("loadMore")}
 								</Button>
-							)}
-						</div>
-					) : loaded.length === 0 ? (
-						<p className="text-muted-foreground text-sm">
-							{t("empty", { ref: branch })}
-						</p>
-					) : (
-						loaded.map((row, index) => (
-							<CommitListRow
-								key={row.sha}
-								row={row}
-								badge={badges[index] ?? null}
-								providerLabel={provided}
-								canRevert={canRevert && row.parent !== null}
-								pausedReason={pausedReason}
-								reverting={revertingSha === row.sha}
-								busy={revert.isPending}
-								onRevert={() => askToRevert(row)}
-								onCompare={
-									canCompare && row.parent !== null
-										? () =>
-												setCompare({
-													from: row.parent as string,
-													to: row.sha,
-												})
-										: undefined
-								}
-							/>
-						))
-					)}
-					{last?.isError && !firstFailed ? (
-						<p role="alert" className="text-destructive text-sm">
-							{t("loadError")}
-						</p>
-					) : null}
-					{nextCursor !== null ||
-					(last?.isFetching && !firstLoading) ? (
-						<div>
-							<Button
-								size="sm"
-								variant="outline"
-								disabled={last?.isFetching}
-								onClick={() =>
-									nextCursor !== null &&
-									setCursors((current) => [
-										...current,
-										nextCursor,
-									])
-								}
-							>
-								{last?.isFetching ? (
-									<Loader2Icon
-										className="size-3.5 motion-safe:animate-spin"
-										aria-hidden="true"
-									/>
-								) : null}
-								{t("loadMore")}
-							</Button>
-						</div>
-					) : null}
+							</div>
+						) : null}
+					</div>
+					<CommitDetail
+						entry={selectedEntry}
+						providerLabel={provided}
+						canRevert={canRevert}
+						pausedReason={pausedReason}
+						reverting={revertingSha}
+						busy={revert.isPending}
+						canCompare={canCompare}
+						showComparison={showComparison}
+						onShowComparison={showCommitComparison}
+						onRevert={askToRevert}
+						projectId={projectId}
+					/>
 				</div>
-				{syncRuns}
+				{syncRuns ? (
+					<details className="shrink-0 border-t border-border">
+						<summary className="cursor-pointer px-1 py-3 text-muted-foreground text-sm">
+							{t("syncRuns")}
+						</summary>
+						<div className="max-h-24 overflow-auto pb-1 md:max-h-40">
+							{syncRuns}
+						</div>
+					</details>
+				) : null}
 			</DialogContent>
-			{compare !== null ? (
-				<InstructionsCompareDialog
-					projectId={projectId}
-					commits={compare}
-					open
-					onOpenChange={(next) => {
-						if (!next) {
-							setCompare(null);
-						}
-					}}
-				/>
-			) : null}
 		</Dialog>
 	);
 }
 
-/**
- * One commit: its short sha (linked to the provider), who and when, its
- * subject, what Fabric makes of it, and what can be done with it. A message the
- * secret scan withheld is said to be withheld, in the subject's place.
- */
 function CommitListRow({
 	row,
 	badge,
+	selected,
+	onSelect,
+}: {
+	row: CommitRow;
+	badge: CommitBadge | null;
+	selected: boolean;
+	onSelect: () => void;
+}) {
+	const t = useTranslations("projects.codingInstructions.commits");
+	const subject = rowSubject(row);
+	return (
+		<button
+			type="button"
+			data-testid="commit-row"
+			aria-pressed={selected}
+			onClick={onSelect}
+			className="flex w-full flex-col gap-1 border-b border-border px-3 py-3 text-left text-sm last:border-b-0 hover:bg-accent aria-pressed:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+		>
+			<div className="flex min-w-0 items-start justify-between gap-2">
+				{subject === null ? (
+					<p className="text-muted-foreground italic">
+						{t("messageWithheld")}
+					</p>
+				) : (
+					<p className="line-clamp-2 font-medium [overflow-wrap:anywhere]">
+						{subject}
+					</p>
+				)}
+				{badge ? (
+					<Badge className="shrink-0" variant={BADGE_VARIANT[badge]}>
+						{t(`${badge}Badge`)}
+					</Badge>
+				) : null}
+			</div>
+			<p className="flex flex-wrap items-center gap-x-1.5 text-muted-foreground text-xs">
+				<code>{shortCommit(row.sha) ?? ""}</code>
+				<span aria-hidden="true">·</span>
+				<span>{row.author.name || t("anonymousAuthor")}</span>
+				<span aria-hidden="true">·</span>
+				<span>{formatRelativeTime(row.date)}</span>
+			</p>
+		</button>
+	);
+}
+
+function CommitDetail({
+	entry,
 	providerLabel,
 	canRevert,
 	pausedReason,
 	reverting,
 	busy,
+	canCompare,
+	showComparison,
+	onShowComparison,
 	onRevert,
-	onCompare,
+	projectId,
 }: {
-	row: CommitRow;
-	badge: CommitBadge | null;
+	entry: CommitEntry | null;
 	providerLabel: string | null;
 	canRevert: boolean;
 	pausedReason: string | null;
-	reverting: boolean;
+	reverting: string | null;
 	busy: boolean;
-	onRevert: () => void;
-	/** Absent when this member may not compare, or the commit has no parent. */
-	onCompare?: () => void;
+	canCompare: boolean;
+	showComparison: boolean;
+	onShowComparison: (row: CommitRow) => void;
+	onRevert: (row: CommitRow) => void;
+	projectId: string;
 }) {
 	const t = useTranslations("projects.codingInstructions.commits");
+	if (entry === null) {
+		return (
+			<div
+				data-testid="commit-detail"
+				className="flex min-h-48 items-center p-4 text-muted-foreground text-sm"
+			>
+				{t("selectCommit")}
+			</div>
+		);
+	}
+	const { row, badge } = entry;
 	const sha7 = shortCommit(row.sha) ?? "";
 	const url = safeHttpsUrl(row.url);
 	const subject = rowSubject(row);
+	const canCompareRow = canCompare && row.parent !== null;
+	const canRevertRow = canRevert && row.parent !== null;
 	return (
-		<div
-			data-testid="commit-row"
-			className="flex flex-col gap-2 rounded-lg border border-border p-3"
-		>
-			{/* The actions sit under the commit at every width: three of them
-			    beside it squeezed the subject and wrapped the author and age. */}
-			<div className="flex flex-col gap-3">
-				<div className="flex min-w-0 flex-col gap-1">
+		<div data-testid="commit-detail" className="min-h-0 overflow-auto p-4">
+			<div className="flex flex-col gap-2 border-b border-border pb-4">
+				<div className="flex flex-wrap items-start justify-between gap-2">
 					{subject === null ? (
 						<p className="text-muted-foreground text-sm italic">
 							{t("messageWithheld")}
 						</p>
 					) : (
-						<p className="line-clamp-2 font-medium text-sm [overflow-wrap:anywhere]">
+						<h3 className="font-medium text-base [overflow-wrap:anywhere]">
 							{subject}
-						</p>
+						</h3>
 					)}
-					<p className="flex flex-wrap items-center gap-x-1.5 text-muted-foreground text-xs">
-						{url ? (
-							<a
-								href={url}
-								target="_blank"
-								rel="noopener noreferrer"
-								className="font-mono underline"
-							>
-								{sha7}
-							</a>
-						) : (
-							<code>{sha7}</code>
-						)}
-						<span aria-hidden="true">·</span>
-						<span>{row.author.name || t("anonymousAuthor")}</span>
-						<span aria-hidden="true">·</span>
-						<span>{formatRelativeTime(row.date)}</span>
-					</p>
 					{badge ? (
-						<div className="flex flex-wrap items-center gap-1.5">
-							<Badge variant={BADGE_VARIANT[badge]}>
-								{t(`${badge}Badge`)}
-							</Badge>
-						</div>
+						<Badge variant={BADGE_VARIANT[badge]}>
+							{t(`${badge}Badge`)}
+						</Badge>
 					) : null}
 				</div>
+				<p className="flex flex-wrap items-center gap-x-1.5 text-muted-foreground text-xs">
+					<code>{sha7}</code>
+					<span aria-hidden="true">·</span>
+					<span>{row.author.name || t("anonymousAuthor")}</span>
+					<span aria-hidden="true">·</span>
+					<span>{formatRelativeTime(row.date)}</span>
+				</p>
 				<div className="flex flex-wrap gap-2">
-					{canRevert ? (
+					{canCompareRow ? (
 						<Button
 							size="sm"
 							variant="outline"
-							// `aria-disabled`, not `disabled`: pressing a paused
-							// Revert says why instead of doing nothing.
+							onClick={() => onShowComparison(row)}
+						>
+							<GitCompareArrowsIcon
+								className="size-3.5"
+								aria-hidden="true"
+							/>
+							{t("compareAction")}
+						</Button>
+					) : null}
+					{canRevertRow ? (
+						<Button
+							size="sm"
+							variant="outline"
 							aria-disabled={pausedReason ? true : undefined}
 							className={pausedReason ? "opacity-50" : undefined}
 							disabled={busy}
 							onClick={
 								pausedReason
 									? () => toast.info(pausedReason)
-									: onRevert
+									: () => onRevert(row)
 							}
 						>
-							{reverting ? (
+							{reverting === row.sha ? (
 								<Loader2Icon
 									className="size-3.5 motion-safe:animate-spin"
 									aria-hidden="true"
@@ -417,16 +505,11 @@ function CommitListRow({
 									aria-hidden="true"
 								/>
 							)}
-							{t(reverting ? "reverting" : "revertAction")}
-						</Button>
-					) : null}
-					{onCompare ? (
-						<Button size="sm" variant="outline" onClick={onCompare}>
-							<GitCompareArrowsIcon
-								className="size-3.5"
-								aria-hidden="true"
-							/>
-							{t("compareAction")}
+							{t(
+								reverting === row.sha
+									? "reverting"
+									: "revertAction",
+							)}
 						</Button>
 					) : null}
 					{url && providerLabel ? (
@@ -446,6 +529,20 @@ function CommitListRow({
 					) : null}
 				</div>
 			</div>
+			{showComparison && canCompareRow && row.parent !== null ? (
+				<div
+					data-testid="commit-comparison"
+					className="mt-4 flex min-h-0 flex-col gap-4"
+				>
+					<InstructionCommitComparison
+						key={`${row.parent}\0${row.sha}`}
+						projectId={projectId}
+						fromSha={row.parent}
+						toSha={row.sha}
+						open
+					/>
+				</div>
+			) : null}
 		</div>
 	);
 }

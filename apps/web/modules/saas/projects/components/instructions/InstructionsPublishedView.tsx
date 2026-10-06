@@ -20,6 +20,7 @@ import {
 } from "../../lib/instructions-base-changes";
 import { defaultSelectedPath } from "../../lib/instructions-default-file";
 import { leftOutListing } from "../../lib/instructions-left-out";
+import { publishConvergenceEndedByRun } from "../../lib/instructions-poll";
 import {
 	countAwaitingDecision,
 	PROPOSALS_PAGE_SIZE,
@@ -58,6 +59,7 @@ import { RepositoryPublishedSummary } from "./RepositoryPublishedSummary";
 import { RepositorySyncRuns } from "./RepositorySyncRuns";
 import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
 import { RepositorySyncStatus } from "./RepositorySyncStatus";
+import { useInstructionsFileView } from "./useInstructionsFileView";
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
@@ -301,6 +303,13 @@ export function InstructionsPublishedView({
 		newest && RECEIVING_STATUSES.has(newest.status) && newerThanPublished
 			? newest
 			: null;
+	// The snapshot list backs off while the sync response continues polling.
+	// Let the sync status own its snapshot's progress instead of showing both.
+	const checkingInSync = Boolean(
+		checking &&
+			repositorySync?.state.running &&
+			repositorySync.state.latestRun?.snapshotId === checking.id,
+	);
 	// The checks passed and the tab is waiting for the pointer to move onto
 	// this version. Not for a proposal, which publishes only through review.
 	const publishing =
@@ -308,7 +317,11 @@ export function InstructionsPublishedView({
 		awaitingPublish &&
 		newest !== null &&
 		newest.status === "READY" &&
-		newerThanPublished;
+		newerThanPublished &&
+		!publishConvergenceEndedByRun(
+			newest.id,
+			repositorySync?.state.latestRun,
+		);
 	const superseded = supersededEdit({
 		newest,
 		published,
@@ -373,6 +386,12 @@ export function InstructionsPublishedView({
 		: selected !== null && treeFiles.some((file) => file.path === selected)
 			? selected
 			: defaultSelectedPath(treeFiles);
+	const { fileView, onDraftStateChange } = useInstructionsFileView({
+		projectId,
+		published,
+		selectedFile,
+		fileListLoaded,
+	});
 	// The folder a new file lands in by default — the selected file's own
 	// folder, which is where someone reading `.claude/skills/review/SKILL.md`
 	// and pressing "Add file" means to put it. From the EFFECTIVE selection:
@@ -609,7 +628,7 @@ export function InstructionsPublishedView({
 					/>
 				) : null}
 				<InstructionsCheckingStatus
-					checking={checking}
+					checking={checkingInSync ? null : checking}
 					publishing={publishing}
 					// An upload that never finished (its browser could not
 					// reach storage, or its tab was closed) stays here with
@@ -758,21 +777,28 @@ export function InstructionsPublishedView({
 						data-onboarding-target="coding-instructions-file-view"
 						className="min-h-0 min-w-0"
 					>
-						{selectedFile ? (
+						{fileView ? (
 							<InstructionFileView
+								key={projectId}
 								projectId={projectId}
-								snapshotId={published.id}
-								path={selectedFile}
-								change={marks.get(selectedFile) ?? null}
-								publishedVersion={published.version}
-								canEdit={editable}
-								canCommit={canCommit}
-								canPropose={canPropose}
+								snapshotId={fileView.snapshot.id}
+								currentSnapshotId={published.id}
+								path={fileView.path}
+								change={
+									fileView.current
+										? (marks.get(fileView.path) ?? null)
+										: null
+								}
+								publishedVersion={fileView.snapshot.version}
+								canEdit={fileView.current && editable}
+								canCommit={fileView.current && canCommit}
+								canPropose={fileView.current && canPropose}
 								repositoryTarget={repositoryTarget}
 								existingPaths={treePaths}
 								pausedReason={pausedReason}
 								onChanged={onChanged}
 								onCommitted={onCommitted}
+								onDraftStateChange={onDraftStateChange}
 							/>
 						) : fileListLoaded ? (
 							<div className="flex h-full items-center justify-center rounded-lg border border-border text-muted-foreground">
@@ -868,8 +894,7 @@ export function InstructionsPublishedView({
 					// An open sync run with no snapshot yet has no row in the list
 					// to stand for the publish it will make.
 					syncRunPendingPublish={
-						repositorySync !== undefined &&
-						repositorySync.state.running &&
+						repositorySync?.state.running &&
 						(repositorySync.state.inFlightSnapshot ?? null) === null
 					}
 					syncRuns={syncRunsList}

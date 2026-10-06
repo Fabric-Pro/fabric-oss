@@ -169,9 +169,13 @@ describe("default config", () => {
 		expect(
 			getNodeDefinition("github-search-issues")?.defaultData.config,
 		).toMatchObject({ limit: "10" });
-		expect(
-			getNodeDefinition("github-get-file")?.defaultData.config,
-		).toMatchObject({ ref: "main" });
+		// A get-file node leaves its ref empty so the step reads the
+		// repository's default branch, which is not always `main`.
+		for (const nodeType of ["github-get-file", "gitlab-get-file"]) {
+			expect(
+				getNodeDefinition(nodeType)?.defaultData.config,
+			).not.toHaveProperty("ref");
+		}
 	});
 
 	it("gives multi-select pickers an array to render against", () => {

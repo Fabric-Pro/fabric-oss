@@ -193,7 +193,7 @@ describe("budget-exhausted synthesis wiring", () => {
 
 	it("the budget-exhaustion path synthesizes with its own prompts before setting the handoff", () => {
 		const block = source.slice(
-			source.indexOf('log.error("Orchestrator token budget exhausted"'),
+			source.indexOf('kind: "internal_budget"'),
 			source.indexOf("state.pendingHandoff = {"),
 		);
 		expect(block).toMatch(

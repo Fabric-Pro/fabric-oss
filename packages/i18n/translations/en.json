@@ -2729,6 +2729,17 @@
 		},
 		"updatedAgo": "Updated {time}",
 		"contexts": {
+			"contextRetry": {
+				"action": "Retry",
+				"actionForRow": "Retry {title}",
+				"retrying": "Retrying…",
+				"started": "Processing restarted",
+				"failed": "Could not restart processing",
+				"stillRunning": "This source is still processing. Retry becomes available if it stops.",
+				"noPermission": "You don't have permission to retry this source.",
+				"stuck": "Stopped processing",
+				"groupStuck": "{count} stuck"
+			},
 			"download": {
 				"action": "Download",
 				"actionForRow": "Download {title}",
@@ -6274,8 +6285,8 @@
 					"copyRefusedNoCommit": "Fabric's copy is behind {ref}: the last sync was refused by the secret scan ({time}).",
 					"copyBehindError": "Fabric's copy is behind {ref}. {error}",
 					"seeFindings": "See findings",
-					"automaticOnPush": "Automatic sync: on · after each push and every 15 minutes",
-					"automaticOnPoll": "Automatic sync: on · every 15 minutes",
+					"automaticOnPush": "Automatic sync: on · after each push and normally every 15 minutes",
+					"automaticOnPoll": "Automatic sync: on · normally every 15 minutes",
 					"automaticOff": "Automatic sync: off",
 					"checkoutNote": "Your own checkout is not tracked here; the session hook in your coding tool tells you when it is behind."
 				},
@@ -6329,8 +6340,8 @@
 					"CLONE_FAILED": "Could not fetch the repository. Try Sync now again.",
 					"CLONE_FAILED_RETRYING": "Could not fetch the repository; retrying automatically.",
 					"STORAGE_FAILED": "The files could not be stored. Try Sync now again.",
-					"CHILD_ABORTED": "Checking the synced files stopped before it finished. Try Sync now again.",
-					"CHILD_ABORTED_VERSION": "Checking version {version} stopped before it finished. This was not a folder-limit problem, and nothing was published.",
+					"CHILD_ABORTED": "Syncing from the repository stopped before it finished. Try Sync now again.",
+					"CHILD_ABORTED_VERSION": "Syncing version {version} stopped before it finished. Try Sync now again.",
 					"limit": {
 						"fileCount": "The folder has {actual} files after the ignore rules; the limit is {max}.",
 						"fileSize": "A file in the folder is {actual}; each file can be at most {max}.",
@@ -6673,6 +6684,13 @@
 				"messageWithheld": "Message withheld",
 				"anonymousAuthor": "unknown author",
 				"openIn": "Open in {provider}",
+				"filterLabel": "Filter loaded commits",
+				"filterPlaceholder": "Filter loaded commits",
+				"loadedCount": "Showing {count} loaded commits",
+				"loadedListLabel": "Loaded commits",
+				"filterEmpty": "No loaded commits match that filter.",
+				"selectCommit": "Select a loaded commit to see its details.",
+				"syncRuns": "Sync runs",
 				"compareAction": "Compare with parent",
 				"revertAction": "Revert",
 				"reverting": "Reverting…",
@@ -7023,8 +7041,8 @@
 						"body": "This project has almost no context yet, so the result will be thin. Add documents, notes or transcripts for a better one."
 					},
 					"ingestion-stalled": {
-						"title": "A source stopped processing",
-						"body": "One of your sources stopped partway through. Remove it and add it again."
+						"title": "{count, plural, one {A source stopped processing} other {# sources stopped processing}}",
+						"body": "Fabric stopped partway through reading {count, plural, one {it} other {them}}. Choose a source to jump to it, then press Retry on its row."
 					},
 					"ingesting": {
 						"title": "Processing your sources",
@@ -7166,6 +7184,10 @@
 				"action": "Try again",
 				"notPermitted": "Ask a project admin to run this again.",
 				"notAvailable": "Already running — this becomes available when it finishes."
+			},
+			"subjects": {
+				"label": "Affected",
+				"more": "and {count} more"
 			},
 			"dismiss": {
 				"action": "Dismiss",
@@ -8291,7 +8313,7 @@
 			"healthError": "The last health check on this agent failed: {error}",
 			"resetConversation": {
 				"label": "Clear this conversation and start the Fabric Agent fresh.",
-				"warning": "Warning: the messages on screen and the context attached to them are discarded, and reopening the launcher will not bring them back."
+				"warning": "Warning: the messages on screen are discarded with any feature, task, document or code attached to them, and reopening the launcher will not bring them back. The project stays attached."
 			},
 			"modeAsk": "Ask a question about this workspace and get an answer with the records it drew on.",
 			"modePlan": "Scope a piece of work and break it into steps you can review before anything runs.",

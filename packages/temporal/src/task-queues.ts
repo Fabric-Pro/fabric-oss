@@ -53,3 +53,29 @@ export const GLOSSY_EDITION_TASK_QUEUE = "glossy-edition" as const;
  * failing.
  */
 export const COMPANY_CONTEXT_TASK_QUEUE = "company-context" as const;
+
+/**
+ * Background project context/document embeddings, file ingestion and vector cleanup. Three
+ * activity slots bound indexing independently of interactive generation.
+ * Workflow starts may stay on their original queue; their embedding activities
+ * explicitly use this queue, including workflows already waiting to schedule.
+ * Activity queue options are replay-compatible; already-scheduled commands
+ * retain their historical queue and must finish on its existing poller.
+ */
+export const PROJECT_EMBEDDING_TASK_QUEUE = "project-embeddings" as const;
+
+/**
+ * Interactive document generation, including tracking and dependency probes.
+ * Separate from both indexing and the legacy project-documents activity queue,
+ * which must keep draining commands already recorded in workflow histories.
+ */
+export const PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE =
+	"project-document-generation" as const;
+
+/**
+ * Project discovery, scope intake, meeting operations and ingestion control.
+ * Five independent activity slots keep visible progress off both bulk indexing
+ * and legacy scheduled commands. Workflow starts keep their existing queues.
+ */
+export const PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE =
+	"project-operations" as const;

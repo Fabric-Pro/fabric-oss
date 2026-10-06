@@ -127,7 +127,7 @@ const approval = await request_approval({
   data: {
     owner: "...",
     repo: "...",
-    baseBranch: "main",
+    baseBranch: "<branch returned by Sandbox__createSession>",
     headBranch: "feature/...",
     title: "PR Title",
     body: "Description...",
