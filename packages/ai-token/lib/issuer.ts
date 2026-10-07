@@ -62,7 +62,14 @@ function getExpirySeconds(customExpiry?: number): number {
 export async function issueAIToken(
 	options: IssueTokenOptions,
 ): Promise<string> {
-	const { userId, organizationId, source, expirySeconds } = options;
+	const {
+		userId,
+		organizationId,
+		source,
+		expirySeconds,
+		planEligible,
+		impersonated,
+	} = options;
 
 	if (!userId) {
 		throw new Error("userId is required for token issuance");
@@ -78,6 +85,9 @@ export async function issueAIToken(
 	const jwt = new SignJWT({
 		org: organizationId || undefined,
 		src: source,
+		...(impersonated
+			? { imp: true }
+			: planEligible === true && { pe: true }),
 	} as Partial<AITokenClaims>)
 		.setProtectedHeader({ alg: "HS256" })
 		.setIssuer("fabric-portal")

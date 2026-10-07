@@ -11,7 +11,7 @@ import { agentById } from "./lib/agent-tools";
 import { StepList } from "./SetupSteps";
 
 const REPOSITORY_AFTERWARD =
-	"After that, your agent compares your checkout with the published commit at each session start. Pulling stays with you.";
+	"After that, your agent can read the attached repository through Fabric.";
 
 const UPLOAD_AFTERWARD =
 	"After that, your agent reads the published instructions over MCP.";

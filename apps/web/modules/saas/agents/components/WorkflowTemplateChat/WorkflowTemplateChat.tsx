@@ -11,12 +11,13 @@
  */
 
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
+import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Button } from "@ui/components/button";
 import { Card, CardContent } from "@ui/components/card";
 import { Textarea } from "@ui/components/textarea";
 import { ArrowLeft, Send, Sparkles, Square } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useWorkflowTemplateStream } from "../../hooks/useWorkflowTemplateStream";
 import { WorkflowProgressPanel } from "./WorkflowProgressPanel";
 import { WorkflowResultViewer } from "./WorkflowResultViewer";
@@ -53,6 +54,9 @@ export function WorkflowTemplateChat({
 	starterMessages,
 }: WorkflowTemplateChatProps) {
 	const [inputValue, setInputValue] = useState("");
+	const inputRef = useRef<HTMLTextAreaElement>(null);
+	// Keep in step with the textarea's `max-h-[200px]` class.
+	useAutoResizeTextarea(inputRef, inputValue, 200);
 	const [hasInteracted, setHasInteracted] = useState(false);
 
 	const {
@@ -256,6 +260,7 @@ export function WorkflowTemplateChat({
 				<div className="container max-w-4xl mx-auto">
 					<div className="flex gap-2">
 						<Textarea
+							ref={inputRef}
 							value={inputValue}
 							onChange={(e) => setInputValue(e.target.value)}
 							onKeyDown={handleKeyDown}

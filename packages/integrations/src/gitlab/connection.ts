@@ -65,15 +65,23 @@ import {
 	isGitLabPersonalMcpServerKey,
 } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
 import {
+	credentialFingerprintMatches,
+	isMcpOAuthBearerOnly,
+	parseMcpOAuthBinding,
+	sameAuthorizationServer,
+} from "@repo/database/prisma/queries/lib/mcp-oauth-binding";
+import {
 	gitlabConnectionLockKey,
 	workflowIntegrationLockKey,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
+import { wipeMcpOAuthTokensWhere } from "@repo/database/prisma/queries/mcp-oauth-credentials";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
 import {
 	GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 	GitLabReauthRequiredError,
 	type GitLabRefreshResponse,
 	refreshGitLabToken,
+	resolveTokenUrl,
 } from "./oauth-refresh";
 import {
 	assertGitLabOrigin,
@@ -614,8 +622,9 @@ export async function resolveGitLabAppClient(
 
 /**
  * A GitLab MCP config as this module reads it: its dynamic client
- * registration and its address. Never its token columns, which are null on
- * these rows (see the module header).
+ * registration and its address. Its refresh-token column (null on these rows,
+ * see the module header) is read only as part of the binding's fingerprint,
+ * never used as a credential.
  */
 type McpClientRow = {
 	id: string;
@@ -625,6 +634,9 @@ type McpClientRow = {
 	oauthClientId: string | null;
 	encryptedOauthClientSecret: string | null;
 	dcrClientMetadata: unknown;
+	/** Read only to check the client against its binding's fingerprint. */
+	encryptedRefreshToken: string | null;
+	oauthBinding: unknown;
 	mcpServer?: { key?: string | null; defaultUrl?: string | null } | null;
 };
 
@@ -636,6 +648,8 @@ const MCP_ROW_SELECT = {
 	oauthClientId: true,
 	encryptedOauthClientSecret: true,
 	dcrClientMetadata: true,
+	encryptedRefreshToken: true,
+	oauthBinding: true,
 	mcpServer: { select: { key: true, defaultUrl: true } },
 };
 
@@ -712,6 +726,15 @@ export function mcpRowOrigin(row: {
 	return checked.ok ? checked.origin : null;
 }
 
+/** Whether two token endpoint URLs are the same endpoint. */
+function sameTokenEndpoint(a: string, b: string): boolean {
+	try {
+		return new URL(a).href === new URL(b).href;
+	} catch {
+		return false;
+	}
+}
+
 type ClientResolution =
 	| { ok: true; client: GitLabOAuthClient }
 	| { ok: false; message: string };
@@ -769,6 +792,71 @@ async function resolveIssuerClient(
 			message:
 				"the MCP client registration was replaced after this token was issued",
 		};
+	}
+	// A bound row (the MCP connect flow bound its client) is used only when
+	// its authorization server IS the connection's instance and its
+	// `credentialFingerprint` still matches the stored id and secret —
+	// whether or not there is a secret. A bearer-only marker is never used.
+	//
+	// An unbound row (written before bindings) is used only when it holds no
+	// client secret: a public client's id alone is nothing secret to send to
+	// the wrong place, and every such row predates bindings (refusing them
+	// would only break those people's refresh). An unbound row WITH a secret
+	// is refused: nothing says which instance that secret belongs to. A
+	// writer outside the credential module that later adds a secret to an
+	// unbound public row turns it into exactly that case, so the secret is
+	// still never sent. Connecting the MCP server again binds the row.
+	// Nothing is condemned either way.
+	if (isMcpOAuthBearerOnly(row.oauthBinding)) {
+		return {
+			ok: false,
+			message:
+				"the MCP client registration holds an imported token only; connect the GitLab MCP server again",
+		};
+	}
+	const binding = parseMcpOAuthBinding(row.oauthBinding);
+	if (!binding) {
+		if (row.encryptedOauthClientSecret !== null) {
+			return {
+				ok: false,
+				message:
+					"the MCP client registration is not bound to a GitLab instance; connect the GitLab MCP server again",
+			};
+		}
+	} else {
+		if (
+			!sameAuthorizationServer(
+				binding.authorizationServerUrl,
+				issuer.origin,
+			)
+		) {
+			return {
+				ok: false,
+				message:
+					"the MCP client registration belongs to another GitLab instance than the one that issued this token",
+			};
+		}
+		// …and the exact endpoint the refresh will call: the binding's token
+		// endpoint is where its client may be sent, not just its AS.
+		if (
+			!sameTokenEndpoint(
+				binding.tokenEndpoint,
+				resolveTokenUrl(issuer.origin),
+			)
+		) {
+			return {
+				ok: false,
+				message:
+					"the MCP client registration is bound to another token endpoint than the one this refresh calls",
+			};
+		}
+		if (!credentialFingerprintMatches(binding, row)) {
+			return {
+				ok: false,
+				message:
+					"the MCP client registration changed outside Fabric's connect flow",
+			};
+		}
 	}
 	if (isPublicClient(row.dcrClientMetadata)) {
 		return {
@@ -1623,6 +1711,24 @@ export async function getGitLabConnectionGeneration(
 	return view?.generation ?? 0;
 }
 
+/**
+ * The issuer recorded on the person's GitLab connection — the client and
+ * instance that issued their credential — from one read, with no
+ * classification or other write. Null when there is no usable record: no
+ * connection, a disconnected or unreadable one, or a refused instance.
+ */
+export async function readGitLabConnectionIssuer(
+	tenant: GitLabTenant,
+	overrides?: Partial<GitLabConnectionDeps>,
+): Promise<GitLabIssuer | null> {
+	const deps = await resolveDeps(overrides);
+	const view = await readGitLabConnection(deps.db, tenant);
+	if (!view || view.disconnected || view.unreadable || view.originError) {
+		return null;
+	}
+	return view.issuer;
+}
+
 export type GitLabConnectionStatus = {
 	connected: boolean;
 	needsReauth: boolean;
@@ -1927,25 +2033,26 @@ export async function disconnectGitLabConnection(
 						userId: tenant.userId,
 					}
 				: { organizationId: null, userId: tenant.userId };
-			await tx.mCPConfig.updateMany({
+			// Through the credential module, in this transaction: it clears
+			// the token columns and moves each config's OAuth grant generation
+			// (so nothing in flight writes them back), keeping each binding
+			// consistent with what it leaves.
+			await wipeMcpOAuthTokensWhere({
 				where: {
 					...tenantFilter,
 					mcpServer: {
 						key: { in: [...GITLAB_PERSONAL_MCP_SERVER_KEYS] },
 					},
 				},
-				data: {
-					encryptedAccessToken: null,
-					accessTokenHash: null,
-					encryptedRefreshToken: null,
-					tokenExpiresAt: null,
+				extraData: {
 					// An API key stored on a GitLab config (a personal access
 					// token saved there by an older release) is a GitLab
 					// credential too, and goes with the connection.
 					encryptedApiKey: null,
 					needsReauth: true,
 				},
-			} as never);
+				client: tx as never,
+			});
 			if (options?.withinDisconnect) {
 				await options.withinDisconnect(tx as GitLabDisconnectTx, {
 					generation,
@@ -2028,6 +2135,9 @@ export async function disconnectGitLabConnection(
 						"Content-Type": "application/x-www-form-urlencoded",
 					},
 					body: body.toString(),
+					// It carries the token and client credentials: never
+					// re-sent by a redirect.
+					redirect: "error",
 					signal: AbortSignal.timeout(
 						GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS,
 					),

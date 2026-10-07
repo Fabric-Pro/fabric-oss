@@ -217,6 +217,13 @@ export interface FabricTemporalOrchestratorChatProps {
 	documentChatId?: string | null;
 	/** Fires when the first upload creates that AiChat (page Files tab). */
 	onDocumentChatCreated?: (chatId: string) => void;
+	/**
+	 * Marks the chat as the Advisor's: only the Fabric AI page and the Fabric
+	 * Agent drawer pass it. The MCP chat dialog and a registered agent's try
+	 * workspace mount this component too and must not, since only an Advisor
+	 * chat may draw on the organization's company context (Fizzy #2719).
+	 */
+	advisorOrigin?: boolean;
 }
 
 // Completed execution for collapsible display

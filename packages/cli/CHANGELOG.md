@@ -1,5 +1,25 @@
 # @fabricorg/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- 436db8c: Members can connect their own ChatGPT plan with `fabric connect chatgpt` and run their own AI work on it, behind an organization flag.
+- 436db8c: Organizations can share ChatGPT plan accounts for background jobs and members without a plan, behind the CHATGPT_PLAN_POOLING flag.
+
+### Patch Changes
+
+- 436db8c: Upgrade authentication with compatible agent registration, resource-bound OAuth grants, and explicit authenticator enrollment.
+- 436db8c: Read repository coding instructions directly from Git with native commit history and pull request links, preserving existing checkouts and local changes during agent setup.
+- 436db8c: Coding Instructions: the session hook fast-forwards like git pull --ff-only, closed Azure DevOps suggestions settle at once, and editors get a current/behind verdict.
+- 436db8c: Coding Instructions: expired sign-ins offer Reconnect, Azure DevOps commits offer Compare and Revert, and the session hook updates on its first run.
+- 436db8c: Explain the separate repository-read capability required for native Git setup in CI. Preserve the MCP key's instruction scopes and guide headless users to the existing API key settings without widening viewer permissions.
+- 436db8c: Restore coding-tool setup and file actions for Git-backed instructions served through Fabric, preserve existing checkout changes, and improve download performance and cancellation.
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+  - @fabricorg/sdk-mcp@0.1.10
+
 ## 0.5.1
 
 ### Patch Changes

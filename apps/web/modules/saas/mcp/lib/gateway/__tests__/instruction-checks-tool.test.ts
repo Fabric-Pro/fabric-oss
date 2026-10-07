@@ -21,6 +21,12 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 const m = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
@@ -226,7 +232,7 @@ describe("fabric_instruction_checks definition", () => {
 			"projectId",
 		]);
 		// The description tells an agent the report is not authority.
-		expect(def?.description).toMatch(/proposal, not authority/);
+		expect(def?.description).toMatch(/grant no authority/);
 		expect(def?.description).toMatch(/never values/);
 	});
 

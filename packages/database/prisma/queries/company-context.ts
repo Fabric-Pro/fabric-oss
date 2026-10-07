@@ -41,6 +41,10 @@ import {
 	type IndexingFailureOptions,
 	normalizeContextMetadataValue,
 } from "./projects/contexts";
+import {
+	urlPageFetchFailureRestorableWhere,
+	urlPageFetchFailureWritableWhere,
+} from "./url-page-fetch-failure";
 
 export type CompanyContextSourceRecord = CompanyContextSource;
 /** A source row without its `content`, which can be a long text. */
@@ -192,6 +196,66 @@ export async function listCompanyContextUrlPages(
 		select: URL_PAGE_LIST_SELECT,
 		orderBy: { pageUrl: "asc" },
 	});
+}
+
+/** Where a crawling LINK source's pages stand, read in one query. */
+export interface CompanyContextCrawlPageSummary {
+	/** The pages found so far. */
+	totalPages: number;
+	/** Those done: indexed, or failed to index. */
+	processedPages: number;
+	/** When the crawl last fetched one of them; null before any fetch. */
+	lastFetchedAt: Date | null;
+}
+
+/** The page statuses a crawl has finished with. */
+const PROCESSED_PAGE_STATUSES: ExtractionStatus[] = ["COMPLETED", "FAILED"];
+
+/**
+ * Each LINK source's page summary, by source id; a source with no pages is
+ * absent. A crawl creates every page it found as PENDING before it starts,
+ * and stamps `lastFetchedAt` on every page it fetches, changed or not. A
+ * CANCELLED page is still to do: only a crawl's end cancels its unfinished
+ * pages, after it has let go of the source, so one seen while a crawl holds
+ * the source is left from an earlier crawl, and this one fetches it again.
+ * All three figures come from one grouped read, so they agree with each
+ * other. No query when no source is given.
+ */
+export async function summarizeCompanyContextCrawlPages(input: {
+	organizationId: string;
+	parentSourceIds: string[];
+}): Promise<Map<string, CompanyContextCrawlPageSummary>> {
+	const { organizationId, parentSourceIds } = input;
+	const summaries = new Map<string, CompanyContextCrawlPageSummary>();
+	if (parentSourceIds.length === 0) {
+		return summaries;
+	}
+	const groups = await db.companyContextUrlPage.groupBy({
+		by: ["parentSourceId", "extractionStatus"],
+		where: { organizationId, parentSourceId: { in: parentSourceIds } },
+		_count: { _all: true },
+		_max: { lastFetchedAt: true },
+	});
+	for (const group of groups) {
+		const summary = summaries.get(group.parentSourceId) ?? {
+			totalPages: 0,
+			processedPages: 0,
+			lastFetchedAt: null,
+		};
+		summary.totalPages += group._count._all;
+		if (PROCESSED_PAGE_STATUSES.includes(group.extractionStatus)) {
+			summary.processedPages += group._count._all;
+		}
+		const fetchedAt = group._max.lastFetchedAt;
+		if (
+			fetchedAt &&
+			(!summary.lastFetchedAt || fetchedAt > summary.lastFetchedAt)
+		) {
+			summary.lastFetchedAt = fetchedAt;
+		}
+		summaries.set(group.parentSourceId, summary);
+	}
+	return summaries;
 }
 
 /** One crawled page, content included, or null when it is not this organization's. */
@@ -863,7 +927,9 @@ export interface UpsertCompanyContextUrlPageResult {
 	contentHash: string;
 	/**
 	 * True when the stored content already matched and this was not a forced
-	 * write, so the page needs no re-embed.
+	 * write, so the content needs no re-embed. Whether the page holds that
+	 * content's vectors is its status and index markers, which the caller
+	 * reads.
 	 */
 	unchanged: boolean;
 }
@@ -872,6 +938,11 @@ export interface UpsertCompanyContextUrlPageResult {
  * Store one fetched page under its source. An existing page whose content hash
  * matches keeps its content and embedding unless `force` is set (the manual
  * re-sync path); any content write resets the page to PENDING for embedding.
+ *
+ * A matching page that a failed fetch marked FAILED, and that still holds
+ * vectors, is COMPLETED again with its reason cleared
+ * (`urlPageFetchFailureRestorableWhere`): its indexed content is the content
+ * just fetched. Any other page keeps its status.
  */
 export async function upsertCompanyContextUrlPage(input: {
 	parentSourceId: string;
@@ -907,6 +978,16 @@ export async function upsertCompanyContextUrlPage(input: {
 			where: { id: existing.id, organizationId },
 			data: unchanged ? fetched : { ...fetched, ...contentWrite },
 		});
+		if (unchanged) {
+			await db.companyContextUrlPage.updateMany({
+				where: {
+					id: existing.id,
+					organizationId,
+					...urlPageFetchFailureRestorableWhere(),
+				},
+				data: { extractionStatus: "COMPLETED", extractionError: null },
+			});
+		}
 		return { pageId: existing.id, contentHash, unchanged };
 	};
 
@@ -941,6 +1022,166 @@ export async function upsertCompanyContextUrlPage(input: {
 			const raced = await findExisting();
 			if (raced) {
 				return updateExisting(raced);
+			}
+		}
+		throw error;
+	}
+}
+
+/** What recording a failed page fetch did, for the crawl that asked. */
+export interface CompanyContextUrlPageFetchFailureResult {
+	/** Whether the crawl keeps the URL from its prune. */
+	kept: boolean;
+	/**
+	 * The page at the URL and its index markers, so the caller can remove
+	 * vectors of another model; null when nothing was recorded.
+	 */
+	page: {
+		id: string;
+		embeddedAt: Date | null;
+		embeddingModel: string | null;
+	} | null;
+}
+
+/**
+ * Record that a crawl could not fetch the page at `pageUrl` under a LINK
+ * source, so the crawl keeps the page instead of pruning it. `message` is the
+ * whole reason, `URL_PAGE_FETCH_FAILURE_PREFIX` included.
+ *
+ * - A page that holds content is marked FAILED with the message when it is
+ *   COMPLETED or CANCELLED or holds no vectors
+ *   (`urlPageFetchFailureWritableWhere`); any other is left as it is. Its
+ *   content, hash, chunk count, fetch time and index markers never change,
+ *   so a page holding vectors stays searchable. Either way it is kept.
+ * - A URL with no row, or a row no fetch has written (its content hash is
+ *   empty: a placeholder, or an earlier failure), gets a FAILED row with no
+ *   content on a transient failure, and is kept. On a permanent failure
+ *   the URL is not kept and its empty row, if any, is removed, even in a
+ *   crawl that fetched no page (whose prune deletes nothing).
+ * - A source that is gone or being deleted gets nothing; the URL reads as
+ *   kept, the safe default, and the source's delete takes its pages with it.
+ *   A delete that lands between the read and the write does the same.
+ *
+ * A page another writer creates first is marked as an existing one, the way
+ * `upsertCompanyContextUrlPage` takes over a raced create. Recording the
+ * same failure again leaves the same state.
+ */
+export async function recordCompanyContextUrlPageFetchFailure(input: {
+	parentSourceId: string;
+	organizationId: string;
+	pageUrl: string;
+	message: string;
+	permanent: boolean;
+}): Promise<CompanyContextUrlPageFetchFailureResult> {
+	const { parentSourceId, organizationId, pageUrl, message, permanent } =
+		input;
+	const nothingRecorded: CompanyContextUrlPageFetchFailureResult = {
+		kept: true,
+		page: null,
+	};
+	const notKept: CompanyContextUrlPageFetchFailureResult = {
+		kept: false,
+		page: null,
+	};
+
+	const source = await db.companyContextSource.findFirst({
+		where: {
+			id: parentSourceId,
+			organizationId,
+			type: "LINK",
+			deletingAt: null,
+		},
+		select: { id: true },
+	});
+	if (!source) {
+		return nothingRecorded;
+	}
+
+	const findPage = () =>
+		db.companyContextUrlPage.findFirst({
+			where: { parentSourceId, organizationId, pageUrl },
+			select: {
+				id: true,
+				contentHash: true,
+				embeddedAt: true,
+				embeddingModel: true,
+			},
+		});
+
+	const markExisting = async (existing: {
+		id: string;
+		contentHash: string;
+		embeddedAt: Date | null;
+		embeddingModel: string | null;
+	}): Promise<CompanyContextUrlPageFetchFailureResult> => {
+		if (permanent && existing.contentHash === "") {
+			// Removed here rather than by the prune, which deletes nothing
+			// when the crawl fetched no page at all.
+			await db.companyContextUrlPage.deleteMany({
+				where: {
+					id: existing.id,
+					parentSourceId,
+					organizationId,
+					contentHash: "",
+					embeddedAt: null,
+				},
+			});
+			return notKept;
+		}
+		await db.companyContextUrlPage.updateMany({
+			where: {
+				id: existing.id,
+				organizationId,
+				...urlPageFetchFailureWritableWhere(),
+			},
+			data: { extractionStatus: "FAILED", extractionError: message },
+		});
+		return {
+			kept: true,
+			page: {
+				id: existing.id,
+				embeddedAt: existing.embeddedAt,
+				embeddingModel: existing.embeddingModel,
+			},
+		};
+	};
+
+	const existing = await findPage();
+	if (existing) {
+		return markExisting(existing);
+	}
+	if (permanent) {
+		return notKept;
+	}
+	try {
+		const created = await db.companyContextUrlPage.create({
+			data: {
+				parentSourceId,
+				organizationId,
+				pageUrl,
+				content: "",
+				contentHash: "",
+				extractionStatus: "FAILED",
+				extractionError: message,
+			},
+			select: { id: true },
+		});
+		return {
+			kept: true,
+			page: { id: created.id, embeddedAt: null, embeddingModel: null },
+		};
+	} catch (error) {
+		if (error instanceof Prisma.PrismaClientKnownRequestError) {
+			// The source was deleted since it was read.
+			if (error.code === "P2003") {
+				return nothingRecorded;
+			}
+			// A concurrent writer created the same page first: mark theirs.
+			if (error.code === "P2002") {
+				const raced = await findPage();
+				if (raced) {
+					return markExisting(raced);
+				}
 			}
 		}
 		throw error;

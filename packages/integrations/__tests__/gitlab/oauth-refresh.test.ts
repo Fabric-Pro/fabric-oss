@@ -336,4 +336,21 @@ describe("refreshGitLabToken", () => {
 		expect(result.access_token).toBe("new-token");
 		expect(result.refresh_token).toBe("new-refresh");
 	});
+	it("never lets a redirect re-send the refresh token and client credentials", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({ access_token: "a", refresh_token: "r" }),
+				{
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		);
+
+		await refreshGitLabToken("refresh", "client-id", "client-secret");
+
+		expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({
+			redirect: "error",
+		});
+	});
 });

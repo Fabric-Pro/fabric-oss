@@ -468,3 +468,19 @@ describe("upsert persistence — credential columns", () => {
 		expect(data.encryptedClientSecret).toBeNull();
 	});
 });
+
+describe("upsert input validation — ChatGPT plan (Fizzy #2939)", () => {
+	// A member's own plan is connected with the CLI and resolved per user; a
+	// provider row carrying it would let the ordinary resolver pick it with
+	// no plan credential behind it.
+	it("refuses OPENAI_CHATGPT_PLAN as a configured provider", () => {
+		expect(
+			validationErrors({
+				provider: "OPENAI_CHATGPT_PLAN",
+				apiKey: "sk-x",
+			}),
+		).toEqual([
+			"A ChatGPT plan is connected with `fabric connect chatgpt`, not configured as a provider",
+		]);
+	});
+});

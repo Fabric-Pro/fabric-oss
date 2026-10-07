@@ -80,6 +80,21 @@ export interface PreloadedResources {
 	loadDurationMs: number;
 	/** Combined workflow guidance from all connected integrations/MCPs (injected into system prompt) */
 	workflowGuidance: string;
+	/**
+	 * The organization's company context, when an Advisor turn opted in and
+	 * the person may use it with at least one ready source (Fizzy #2719).
+	 * Absent otherwise, and in every history recorded before it existed.
+	 */
+	companyContext?: PreloadedCompanyContext;
+}
+
+/**
+ * What the workflow needs to offer company context, made ready here so the
+ * workflow never imports the resolver or the hint builder.
+ */
+interface PreloadedCompanyContext {
+	/** The prompt text naming the organization; its name is quoted as data. */
+	hint: string;
 }
 
 export interface PreloadResourcesInput {
@@ -96,6 +111,12 @@ export interface PreloadResourcesInput {
 	 * a `search_databricks_indexes` tool alongside any agent-level bindings.
 	 */
 	projectId?: string;
+	/**
+	 * The Advisor's company-context opt-in
+	 * (`OrchestratorWorkflowInput.companyContextAdvisor`). Only `true` makes
+	 * the preload ask whether the person may use company context.
+	 */
+	companyContextAdvisor?: boolean;
 }
 
 /**
@@ -117,6 +138,7 @@ export async function preloadResourcesActivity(
 		agents,
 		agentDatabricksBindings,
 		projectDatabricksBinding,
+		companyContext,
 	] = await Promise.all([
 		loadUserPreferences(input.userId, input.organizationId),
 		loadMcpTools(
@@ -145,6 +167,9 @@ export async function preloadResourcesActivity(
 					organizationId: input.organizationId,
 				})
 			: Promise.resolve(null),
+		input.companyContextAdvisor === true
+			? loadCompanyContext(input)
+			: Promise.resolve(undefined),
 	]);
 
 	// Merge agent-level and project-level bindings per integration BEFORE
@@ -204,6 +229,7 @@ export async function preloadResourcesActivity(
 		agents: agents.length,
 		hasPreferences: !!userPreferences,
 		workflowGuidanceLength: workflowGuidance.length,
+		companyContext: !!companyContext,
 	});
 
 	return {
@@ -214,7 +240,55 @@ export async function preloadResourcesActivity(
 		loadedAt: new Date().toISOString(),
 		loadDurationMs,
 		workflowGuidance,
+		// Left out rather than set to undefined, so a turn without company
+		// context returns exactly the shape it did before.
+		...(companyContext ? { companyContext } : {}),
 	};
+}
+
+/**
+ * Whether this Advisor turn may offer the organization's company context,
+ * and the hint that says so. The organization is the project's when the chat
+ * has one; membership, the feature gate and a ready source are all required
+ * (`resolveCompanyContextChatAccess`). Any failure is no hint and no tool: a
+ * preload that threw would fail the whole turn. The search re-checks access
+ * on every call, so this answer only decides what the turn offers.
+ */
+async function loadCompanyContext(
+	input: PreloadResourcesInput,
+): Promise<PreloadedCompanyContext | undefined> {
+	try {
+		// Loaded on demand: only an opted-in Advisor turn needs them.
+		const [
+			{ resolveCompanyContextChatAccess },
+			{ companyContextHintLine },
+		] = await Promise.all([
+			import("../../../lib/company-context-chat-access"),
+			import("../../../lib/company-context-hint"),
+		]);
+		const access = await resolveCompanyContextChatAccess({
+			userId: input.userId,
+			requestOrganizationId: input.organizationId,
+			projectId: input.projectId,
+		});
+		if (!access || access.readySourceCount === 0) {
+			return undefined;
+		}
+		return {
+			hint: `COMPANY CONTEXT:\n${companyContextHintLine(access.organizationName)}`,
+		};
+	} catch (error) {
+		console.warn(
+			"[Preload] Could not resolve company context; continuing without it",
+			{
+				userId: input.userId,
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+		return undefined;
+	}
 }
 
 /**

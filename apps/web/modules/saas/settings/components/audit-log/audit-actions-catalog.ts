@@ -358,6 +358,52 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"An AI provider configuration and its stored credential were deleted. The row records the endpoint and flags it had, and which provider became the default afterwards, if any.",
 	},
 	{
+		key: "org.chatgpt_plan.account_connected",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.account_connected",
+		description:
+			"An organization admin connected a ChatGPT plan account for the organization's shared work with the Fabric CLI. The sign-in is stored encrypted; the row records the account's label and email domain only.",
+	},
+	{
+		key: "org.chatgpt_plan.account_updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.chatgpt_plan.account_updated",
+		description:
+			"An admin changed a shared ChatGPT plan account's label, or whether it is enabled, serves members' interactive work, or serves background jobs. Values before and after are in the metadata.",
+	},
+	{
+		key: "org.chatgpt_plan.account_disconnected",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.account_disconnected",
+		description:
+			"An admin disconnected a shared ChatGPT plan account — the sign-in was revoked with OpenAI and deleted from Fabric, so nothing routes to it any more.",
+	},
+	{
+		key: "org.chatgpt_plan.policy_changed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.chatgpt_plan.policy_changed",
+		description:
+			"An admin changed how the organization pools its ChatGPT plan accounts: pooling on or off, what happens when every plan is spent, or the headroom kept for people. Values before and after are in the metadata.",
+	},
+	{
+		key: "org.chatgpt_plan.terms_acknowledged",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.terms_acknowledged",
+		description:
+			"An organization owner accepted the terms for sharing ChatGPT plan accounts across the organization. Pooling cannot be turned on before this.",
+	},
+	{
+		key: "org.chatgpt_plan.api_fallback_used",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.api_fallback_used",
+		description:
+			"Every shared ChatGPT plan was spent, and the policy lets background work run on the organization's own AI provider, so this job was billed there. The job type is in the metadata.",
+	},
+	{
 		key: "org.todo.created",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.todo.created",
@@ -454,6 +500,28 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.account.oauth.consent_revoked",
 		description:
 			"User revoked a connected coding agent — its consent and every token issued under it were deleted, so its next request is refused.",
+	},
+	{
+		key: "account.chatgpt_plan.connected",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.chatgpt_plan.connected",
+		description:
+			"User connected their own ChatGPT plan with the Fabric CLI. The sign-in is stored encrypted; the row records only the account's email domain.",
+	},
+	{
+		key: "account.chatgpt_plan.disconnected",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.chatgpt_plan.disconnected",
+		description:
+			"User disconnected their ChatGPT plan — the sign-in was revoked with OpenAI and deleted from Fabric, so their AI work is back on the organization's provider.",
+	},
+	{
+		key: "account.chatgpt_plan.organization_use_changed",
+		categoryId: "account",
+		labelKey:
+			"settings.auditLog.actions.account.chatgpt_plan.organization_use_changed",
+		description:
+			"User turned use of their ChatGPT plan on or off in this organization, or changed whether it also serves their background jobs and agents. Both settings are in the metadata.",
 	},
 	{
 		key: "account.ai_provider.configured",
@@ -919,6 +987,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.instructions.pull_request_retry_requested",
 		description:
 			'A member pressed "Retry opening" on a suggestion whose pull request could not be confirmed or was refused. Fabric first adopts any pull request it finds for the operation and only otherwise opens one on a new branch. `metadata.operationId` names the operation.',
+	},
+	{
+		key: "project.instructions.pull_request_merge_observed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.instructions.pull_request_merge_observed",
+		description:
+			"A merged legacy suggestion was acknowledged while the project reads instructions directly from Git. No snapshot import was started. `metadata.branchId` identifies the retained proposal branch; `metadata.readState` is DIRECT.",
 	},
 	{
 		key: "project.instructions.pull_request_merge_sync_requested",

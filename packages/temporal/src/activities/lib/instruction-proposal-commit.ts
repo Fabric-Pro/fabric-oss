@@ -40,7 +40,7 @@ export type EffectiveDelta = {
 	/** Proposal rows whose base row on the same key has another sha256. */
 	modified: FileRow[];
 	/** Base rows with no proposal row on their key. */
-	deleted: FileRow[];
+	deleted: Array<Pick<FileRow, "path" | "mode">>;
 };
 
 /**
@@ -57,7 +57,7 @@ function pathKey(relative: string): string | null {
 	return v.ok ? v.path.normalize("NFC") : null;
 }
 
-const rowKey = (row: FileRow): string =>
+const rowKey = (row: Pick<FileRow, "path">): string =>
 	pathKey(row.path) ?? row.path.normalize("NFC");
 
 /**

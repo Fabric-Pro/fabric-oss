@@ -17,6 +17,7 @@ describe("Coding Instructions tables are registered on the tenant path", () => {
 	it.each([
 		"ProjectInstructionSnapshot",
 		"ProjectInstructionFile",
+		"ProjectInstructionGitIntentEntry",
 		"ProjectInstructionRepositorySync",
 		"ProjectInstructionRepositorySyncRun",
 	])("%s is user-owned and project-scoped", (model) => {
@@ -26,6 +27,7 @@ describe("Coding Instructions tables are registered on the tenant path", () => {
 	it.each([
 		"project_instruction_snapshot",
 		"project_instruction_file",
+		"project_instruction_git_intent_entry",
 		"project_instruction_repository_sync",
 		"project_instruction_repository_sync_run",
 	])("%s has an RLS policy", (table) => {

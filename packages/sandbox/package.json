@@ -13,7 +13,7 @@
 		}
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"lint": "biome lint ./src",
 		"format": "biome format ./src --write"
 	},

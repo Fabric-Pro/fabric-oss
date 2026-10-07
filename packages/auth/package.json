@@ -1,7 +1,7 @@
 {
 	"dependencies": {
-		"@better-auth/oauth-provider": "1.6.33",
-		"@better-auth/passkey": "1.6.33",
+		"@better-auth/oauth-provider": "1.7.7",
+		"@better-auth/passkey": "1.7.7",
 		"@repo/agent-core": "workspace:*",
 		"@repo/config": "workspace:*",
 		"@repo/database": "workspace:*",
@@ -15,9 +15,9 @@
 		"@zxcvbn-ts/core": "^3.0.4",
 		"@zxcvbn-ts/language-common": "^3.0.4",
 		"@zxcvbn-ts/language-en": "^3.0.2",
-		"better-auth": "1.6.33",
+		"better-auth": "1.7.7",
 		"cookie": "^1.0.2",
-		"jose": "^6.2.2"
+		"jose": "^6.2.12"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
@@ -32,7 +32,7 @@
 		"seed:user": "dotenv -c -e ../../.env.local -- tsx ./scripts/create-user.ts",
 		"test": "vitest --run",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"types": "./index.ts",
 	"version": "0.0.5",

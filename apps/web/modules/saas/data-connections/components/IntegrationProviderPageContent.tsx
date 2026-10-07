@@ -45,6 +45,7 @@ import {
 	type GitLabTransport,
 	GitLabTransportBadge,
 } from "./GitLabTransportBadge";
+import { GoogleDriveVerificationNotice } from "./GoogleDriveVerificationNotice";
 import { IntegrationIncidentDrawer } from "./IntegrationIncidentDrawer";
 import { ProviderHealthBadge } from "./ProviderHealthBadge";
 import { ProviderIcon } from "./ProviderIcon";
@@ -325,6 +326,9 @@ export function IntegrationProviderPageContent({
 
 			<div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
 				<div className="space-y-6">
+					{provider === "GOOGLE_DRIVE" ? (
+						<GoogleDriveVerificationNotice />
+					) : null}
 					{actionProvider ? (
 						<IntegrationSharingControls
 							organizationId={organizationId}

@@ -244,3 +244,31 @@ export function assembleFinalBrief(input: AssembleFinalBriefInput): {
 	};
 	return { status, content };
 }
+
+/**
+ * Stored as the brief's error when the run failed because the organization
+ * has no AI provider for background work. A code, not a sentence, so the
+ * page can say it in the reader's language and offer the settings link; the
+ * same code Glossy builds use.
+ */
+export const DAILY_BRIEF_AI_PROVIDER_NOT_CONFIGURED =
+	"AI_PROVIDER_NOT_CONFIGURED";
+
+/**
+ * The error a FAILED brief records. An activity failure reads only "Activity
+ * task failed" at the top; the reason is in its `cause` chain, by the type
+ * Temporal recorded from the thrown error's class.
+ */
+export function dailyBriefFailureMessage(error: unknown): string {
+	let current: unknown = error;
+	for (let depth = 0; current && depth < 8; depth++) {
+		if (
+			(current as { type?: unknown }).type ===
+			"AIProviderNotConfiguredError"
+		) {
+			return DAILY_BRIEF_AI_PROVIDER_NOT_CONFIGURED;
+		}
+		current = (current as { cause?: unknown }).cause;
+	}
+	return error instanceof Error ? error.message : String(error);
+}

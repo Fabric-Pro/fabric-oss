@@ -332,6 +332,26 @@ function renderSuggestion(
 }
 
 describe("AddInstructionFileDialog — suggesting a change as a pull request", () => {
+	it("reports a native suggestion without snapshot checks", async () => {
+		const user = userEvent.setup();
+		const nativeBase = { generation: 1, commitSha: "a".repeat(40) };
+		renderSuggestion({ nativeBase });
+		await user.upload(screen.getByLabelText("File"), pick("CLAUDE.md"));
+		await user.click(
+			screen.getByRole("button", {
+				name: addCopy.submitPullRequestButton,
+			}),
+		);
+		await waitFor(() =>
+			expect(m.toastSuccess).toHaveBeenCalledWith(
+				"Suggestion submitted. Fabric is opening the pull request.",
+			),
+		);
+		expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ nativeBase, proposal: true }),
+		);
+	});
+
 	it("says where the pull request opens, how the branch is pushed and whom the commit names", () => {
 		renderSuggestion();
 		expect(

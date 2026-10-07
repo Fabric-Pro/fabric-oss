@@ -41,7 +41,10 @@ import "../get-snapshot";
 const input = { projectId: "p", snapshotId: "s1" };
 
 beforeEach(() => {
-	m.getInstructionSnapshot.mockReset().mockResolvedValue({ id: "s1" });
+	m.getInstructionSnapshot.mockReset().mockResolvedValue({
+		id: "s1",
+		contentKind: "FULL_SNAPSHOT",
+	});
 	m.canReviewInstructionProposals.mockReset().mockResolvedValue(false);
 	m.resolveEffectiveProjectPermissions.mockReset().mockResolvedValue({
 		organizationId: "org_1",

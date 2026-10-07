@@ -1,0 +1,14 @@
+diff --git a/dist/authorize-K1WHCNih.mjs b/dist/authorize-K1WHCNih.mjs
+index 892e39ff5f37078ee30b8c950be5f12adf96262e..641360838f1dee0c3e9c0653d61f42586ba0a84c 100644
+--- a/dist/authorize-K1WHCNih.mjs
++++ b/dist/authorize-K1WHCNih.mjs
+@@ -1682,7 +1682,9 @@ async function resolveClientRegistrationResources(ctx, opts, requestedResources)
+ 	}
+ 	return resources;
+ }
++const PRE_RFC8252_NATIVE_REDIRECT_URIS = new Set(["cursor://anysphere.cursor-mcp/oauth/callback"]); // keep in sync with packages/auth/lib/oauth-registration-policy.ts
+ function validateClientRedirectUri(redirectUri, applicationType) {
++	if (PRE_RFC8252_NATIVE_REDIRECT_URIS.has(redirectUri)) return;
+ 	let url;
+ 	try {
+ 		url = new URL(redirectUri);

@@ -735,30 +735,96 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		});
 	});
 
-	it("R1-4: a save_reuse chat start creates no turn and passes no turnId (legacy behaviour)", async () => {
+	it("R1-4: a Planner (save_reuse) chat start is admitted as a turn and the workflow gets its turnId", async () => {
 		const response = await post(
 			newTurnBody({ executionMode: "save_reuse" }),
 		);
 		await readEvents(response);
+		expect(m.admitConversationTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				clientRequestKey: KEY,
+				executionMode: "save_reuse",
+			}),
+		);
+		expect(m.start).toHaveBeenCalledTimes(1);
+		const [, options] = m.start.mock.calls[0] as [
+			string,
+			{
+				args: [Record<string, unknown>];
+				workflowId: string;
+				workflowIdReusePolicy: string;
+			},
+		];
+		const admitted = m.admitConversationTurn.mock.calls[0]?.[0] as {
+			executionId: string;
+		};
+		expect(options.workflowId).toBe(admitted.executionId);
+		expect(options.workflowIdReusePolicy).toBe("REJECT_DUPLICATE");
+		expect(options.args[0]).toMatchObject({
+			executionMode: "save_reuse",
+			turnId: "turn-1",
+			turnContractVersion: 1,
+		});
+		expect(m.markConversationTurnActive).toHaveBeenCalledWith({
+			turnId: "turn-1",
+			executionId: admitted.executionId,
+		});
+	});
+
+	it("R1-4: a Planner key Stop already cancelled before start is refused, and starts nothing", async () => {
+		m.admitConversationTurn.mockResolvedValue({
+			outcome: "existing",
+			turn: turnRow({
+				executionMode: "save_reuse",
+				status: "CANCELLED",
+				executionId: null,
+				generation: null,
+				cancelSource: "CANCELLED_BEFORE_START",
+			}),
+		});
+		const response = await post(
+			newTurnBody({ executionMode: "save_reuse" }),
+		);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ code: "TURN_CANCELLED" });
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
+	it("R1-4: a Planner Stop recorded between admission and start ends the turn cancelled and starts nothing", async () => {
+		m.getConversationTurnForExecution.mockImplementation(
+			async (args: { executionId: string }) =>
+				turnRow({
+					executionMode: "save_reuse",
+					executionId: args.executionId,
+					status: "CANCEL_REQUESTED",
+					startToken: START_TOKEN,
+				}),
+		);
+		const events = await readEvents(
+			await post(newTurnBody({ executionMode: "save_reuse" })),
+		);
+		expect(m.start).not.toHaveBeenCalled();
+		expect(events.find((e) => e.type === "completed")).toMatchObject({
+			status: "cancelled",
+		});
+	});
+
+	it("R1-4: a Weave chat start still creates no turn and passes no turnId", async () => {
+		await readEvents(await post(newTurnBody({ executionMode: "weave" })));
 		expect(m.admitConversationTurn).not.toHaveBeenCalled();
 		expect(m.start).toHaveBeenCalledTimes(1);
 		const [, options] = m.start.mock.calls[0] as [
 			string,
-			{ args: [Record<string, unknown>]; workflowId: string },
+			{
+				args: [Record<string, unknown>];
+				workflowId: string;
+				workflowIdReusePolicy?: string;
+			},
 		];
 		expect(options.args[0]).not.toHaveProperty("turnId");
-		expect(options.args[0].executionMode).toBe("save_reuse");
+		expect(options.args[0].executionMode).toBe("weave");
 		expect(options.workflowId).toMatch(/^orch-[a-f0-9-]{36}$/);
-	});
-
-	it("R1-4: a weave chat start creates no turn either", async () => {
-		await readEvents(await post(newTurnBody({ executionMode: "weave" })));
-		expect(m.admitConversationTurn).not.toHaveBeenCalled();
-		const [, options] = m.start.mock.calls[0] as [
-			string,
-			{ args: [Record<string, unknown>] },
-		];
-		expect(options.args[0]).not.toHaveProperty("turnId");
+		expect(options.workflowIdReusePolicy).toBeUndefined();
 	});
 
 	it("R1-9: a result-fetch outage after describe() says COMPLETED does not terminalize the conflicting turn", async () => {
@@ -982,11 +1048,11 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		});
 	});
 
-	it("R2-2: refuses a save_reuse start in another user's conversation (no turn path either)", async () => {
+	it("R2-2: refuses a Weave start in another user's conversation (the no-turn path)", async () => {
 		m.conversationFindFirst.mockResolvedValue(null);
 		const response = await post(
 			newTurnBody({
-				executionMode: "save_reuse",
+				executionMode: "weave",
 				conversationId: "conv-other-user",
 			}),
 		);

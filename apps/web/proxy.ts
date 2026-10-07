@@ -39,6 +39,10 @@ export const pathsWithoutLocale = [
 	"/newsletter/confirm",
 	"/share",
 	"/vscode-auth",
+	// Opened by `fabric connect chatgpt`. Lives at (saas)/connect/chatgpt
+	// (outside (marketing)/[locale]); without this bypass the intl middleware
+	// localizes the path and it 404s.
+	"/connect/chatgpt",
 	"/change-password",
 	// Emailed confirmation link for deleting an organization. Lives at
 	// (saas)/organizations/confirm-deletion (outside (marketing)/[locale]);

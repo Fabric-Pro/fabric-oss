@@ -17,6 +17,19 @@ export type ExecutionMode =
 	| "iterative"
 	| "weave";
 
+/**
+ * Whether a run in `executionMode` goes through the iterative agent loop.
+ * save_reuse and weave plan up front instead: save_reuse for trajectory
+ * replay, weave to load its plan's checkboxes and run them in waves. A tool
+ * the loop pre-registers exists only in a run this answers true for, so
+ * anything that tells the model about such a tool asks the same question.
+ */
+export function usesIterativeExecution(
+	executionMode: ExecutionMode | undefined,
+): boolean {
+	return executionMode !== "save_reuse" && executionMode !== "weave";
+}
+
 export interface ExecutionModeConfig {
 	mode: ExecutionMode;
 	/** Enable task decomposition into subtasks (not used in iterative mode) */

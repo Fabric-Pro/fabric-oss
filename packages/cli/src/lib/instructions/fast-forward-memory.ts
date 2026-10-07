@@ -18,6 +18,8 @@ import path from "node:path";
 export interface NoticeKey {
 	projectId: string;
 	publishedVersion: number;
+	/** Direct repositories have no snapshot version; their immutable commit is it. */
+	directCommitSha?: string;
 	reason: string;
 }
 
@@ -38,6 +40,8 @@ function isRecord(value: unknown): value is NoticeRecord {
 		record.v === 1 &&
 		typeof record.projectId === "string" &&
 		typeof record.publishedVersion === "number" &&
+		(record.directCommitSha === undefined ||
+			typeof record.directCommitSha === "string") &&
 		typeof record.reason === "string"
 	);
 }
@@ -53,6 +57,7 @@ export async function isNewNotice(
 			isRecord(parsed) &&
 			parsed.projectId === key.projectId &&
 			parsed.publishedVersion === key.publishedVersion &&
+			parsed.directCommitSha === key.directCommitSha &&
 			parsed.reason === key.reason
 		);
 	} catch {

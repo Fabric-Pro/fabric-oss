@@ -7,31 +7,33 @@ How `fabric instructions check | sync | push | init` keeps a checkout current wi
 
 ## What this is for
 
-A project publishes a tree of coding instructions in Fabric — `AGENTS.md`,
-`.claude/` or `.codex/` skills, rules, and settings. These commands put that tree into a working
-copy and keep it current, so a coding agent reads the same instructions
-everyone else does without anybody pasting anything.
+A project either connects instructions in Git or publishes uploaded files in
+Fabric. Repository connections read `AGENTS.md`, skills, rules and settings
+directly from the configured branch. Uploaded projects retain a Fabric snapshot.
 
-The intended trigger is a Claude Code or Codex `SessionStart` hook: every
-session asks whether the published version moved, and either says so or applies
-it.
+An optional Claude Code or Codex `SessionStart` hook checks whether the source
+moved. It reports a repository's new commit; for uploaded instructions it may
+apply the new published version.
 
 There are two shapes of project, and the commands treat them differently.
 
 - **Repository-sourced** (the instructions are committed to a git repository
-  and mirrored into Fabric): the working copy is a real clone of that
+  and read directly through Fabric): the working copy is a real clone of that
   repository, with its own `.git`. Fabric is an interface on top of the
   clone, not a second copy of it, so these commands never download or write
   instruction files for such a project. `init` sets the folder up (cloning
   into an empty one) and writes the session hook; at each session start the
-  hook brings the checkout up to the branch with a fast-forward when that is
-  safe, and otherwise says in one line why it did not.
+  hook reports when the checkout is behind and fast-forwards a clean matching
+  direct repository checkout when its normal Git safety gates allow it. Update
+  it with ordinary Git when it cannot do so.
 - **Uploaded** (the files were uploaded from the Coding Instructions tab):
   there is no repository, so `sync` copies the published tree into the folder
   and keeps a ledger, `.fabric/instructions.lock`, of what it wrote.
 
-Working on the project is also when the instructions are most obviously wrong,
-so the traffic goes both ways: `fabric instructions push` sends the checkout's
+For a direct repository, edit and commit files with Git and use native pull
+requests. Fabric displays native commit history and open pull requests; it does
+not create a second proposal or publication workflow. For an uploaded project,
+`fabric instructions push` sends the checkout's
 edits back as a **proposal** an editor approves in the tab, or — with
 `--publish`, and a key granted that separate authority — as a new version
 directly. An agent with no CLI can only propose: the MCP tools
@@ -49,8 +51,11 @@ only requirement; `npx` comes with it):
 npx -y https://example.com/cli/fabric-<version>-<build>.tgz instructions init --project <id> --tool claude-code
 ```
 
-The Connect dialog shows the exact line for the deployment, the project and
-the tool. It always names the project (`--project <id>`), because the sign-in
+For direct repositories, **Connect your agent** configures Fabric MCP using the
+tool's normal browser sign-in. It does not clone or overwrite a repository.
+The CLI commands below are optional native-checkout setup. The uploaded-project
+Connect dialog shows the exact CLI line for the deployment, project and tool.
+It names the project (`--project <id>`), because the sign-in
 is for that one project and a connection made from a project reaches that
 project alone, and it always writes the tool (`--tool claude-code` or
 `--tool codex`), because without it `init` writes a hook for every tool found
@@ -252,6 +257,28 @@ fabric auth login --project <id> --base-url https://example.com
   project, that this project has none of its own.
 
 ## The commands
+
+### Direct repository behavior
+
+Servers advertising `instructions-repository-direct-v1` return direct repository
+metadata through `/published` without a snapshot or file manifest. `check`,
+`sync` and `init` recognize that contract and use the native checkout. They never
+download instruction files, write a snapshot lock or alter tracked content,
+the Git index, staged changes, unstaged edits or untracked files. Repeating
+`init --clone <dir>` adopts a matching checkout already in that folder. A
+different repository is refused rather than overwritten. When a server
+advertises its Git gateway, setup asks once for the separate
+`repositories:read` capability and Git clone and hook fetches authenticate
+through Fabric without exposing the provider credential. Older servers use the
+developer's normal native Git credentials instead. Clone failures retain Git's
+diagnostic.
+
+Read APIs return a generation and full commit SHA. Supply both for subsequent
+file pages so a branch advance cannot combine content from different commits.
+Refresh explicitly to read the new branch tip. The snapshot digest applies to
+uploaded projects and older snapshot-based repository servers. A session hook
+can fast-forward a clean matching direct repository checkout through the same
+native Git safety gates; manual `sync` and `check` remain report-only.
 
 ### Finding the project from the checkout
 
@@ -987,7 +1014,7 @@ start when safe.` At each session start, in a matching checkout, it:
 
 1. looks at the checkout (read-only), and decides whether a fast-forward is
    safe: the branch is the one the project follows, it tracks `<remote>/<ref>`,
-   the tree is clean (untracked files included), no merge, rebase, cherry-pick,
+   no merge, rebase, cherry-pick,
    revert or bisect is in progress, it is not a shallow clone or a submodule of
    another repository, no `index.lock` or `HEAD.lock` exists, and no other work
    tree of the repository has the branch checked out (a sparse checkout is
@@ -1007,8 +1034,13 @@ start when safe.` At each session start, in a matching checkout, it:
 It runs with the developer's own credentials but nothing that can ask a person
 (no askpass programs, no terminal prompt, ssh in batch mode), and inside the
 hook's budget: the fetch gets the 10 seconds minus a 1.5 second reserve, and the
-merge runs only if that reserve is still there, so a slow remote can never leave
-the hook mid-merge. It never pulls, rebases, stashes, resets, checks out,
+local steps after it (looking at the checkout once more, then the merge) are
+not held to the network's budget: the merge starts as long as half a second is
+left, however much of the reserve the look spent, so a fetch that used its whole
+budget still ends in a fast-forward on the first run, and a slow remote can
+never leave the hook mid-merge. When the budget does run out, the trace records
+which stage (`read`, `fetch` or `merge`) as its `reason`, stderr says `gave up
+after 10 s`, and stdout still says where the checkout stands. It never pulls, rebases, stashes, resets, checks out,
 commits or pushes; a checkout it cannot fast-forward is left exactly as it was.
 `check --hook` never writes at all, and a person's own `sync` only reports.
 
@@ -1023,6 +1055,7 @@ commits or pushes; a checkout it cannot fast-forward is left exactly as it was.
 | Fabric's copy lags the branch | `fabric: coding instructions: main is at <sha7>; Fabric's copy is behind (<why>).` Why: a sync is in progress, validation or acquisition failed, automatic sync is paused or off, or the next sync has not run yet. Said once per published version and reason |
 | dirty, another branch, detached, an operation in progress | the matching `behind` line in the table below, once per published version and reason; nothing when the checkout is not behind the published commit |
 | shallow clone, submodule, tracks nothing or another branch, git busy, branch held by another work tree | one line each, saying what to run, once per published version and reason, and only when the checkout is behind |
+| a local change or untracked file that the incoming commits would overwrite | `…: main is behind origin/main, but local changes would be overwritten (<up to three files git named, and a count of the rest>), so nothing was updated. Commit or stash them, then run: git pull --ff-only origin main` Once per version. The tree is not required to be clean: git itself decides (`git merge --ff-only`, no autostash), so untracked files and changes to files the incoming commits do not touch never block, and neither do files whose only difference is their line endings |
 | diverged (a rewritten upstream, or local commits) | `…: main and origin/main have diverged, so nothing was updated. Run: git pull --rebase origin main, or merge origin/main yourself.` Once per version |
 | git has no credentials | `…: could not fetch <host>/<path>: git has no credentials for <host>. Run: gh auth login` (`glab auth login`; for Azure DevOps the checkout's `git fetch <remote> <ref>`, which Git Credential Manager signs in), every time |
 | another fabric process holds the checkout | `…: another fabric process is updating this checkout; nothing was changed.` |
@@ -1047,7 +1080,7 @@ never fails a session start.
 | nothing published from the repository yet | `fabric: coding instructions: the project is repository-sourced but nothing has been published from <host>/<path> yet` |
 | the published snapshot came from an earlier branch or repository | `fabric: coding instructions v<n> was published from <source.ref>; the project now syncs <ref> of <host>/<path> — pull <ref> to pick up the next publication` |
 | behind, on `<ref>`, clean | `fabric: coding instructions v<n> (<sha7>) is on <ref>; this checkout is behind — run: git pull --ff-only <remote> <ref>` |
-| behind, working tree has changes (untracked files included; the hook's own `.claude/settings.local.json` or `.codex/hooks.json` is excepted only while untracked — a committed copy that was modified counts) | `…; this checkout is behind and has uncommitted changes — commit or stash, then pull.` |
+| behind, a tracked file's content differs from the index or from `HEAD` (asked of `git diff --quiet` and `git diff --cached --quiet`, so a file that differs only in line endings, and untracked files, do not count) | `…; this checkout is behind and has uncommitted changes — commit or stash, then pull.` |
 | behind, a merge, rebase, cherry-pick, revert or bisect in progress | `…; this checkout is behind; a <operation> is in progress; nothing was changed.` |
 | behind, detached `HEAD` | `…; this checkout is behind; HEAD is detached — check out <ref> and pull.` |
 | behind, on another branch | `…; this checkout is behind; you are on <branch> — pull <ref> when you switch to it.` |

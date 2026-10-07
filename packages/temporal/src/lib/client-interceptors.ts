@@ -1,6 +1,7 @@
 import type { Tracer } from "@opentelemetry/api";
 import type { WorkflowClientInterceptor } from "@temporalio/client";
 import { OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry-v2";
+import { makeAiInteractiveClientInterceptor } from "./ai-interactive-interceptor";
 import { makeCorrelationClientInterceptor } from "./correlation-interceptor";
 
 export interface WorkflowClientTelemetryEnv {
@@ -21,13 +22,15 @@ export function buildWorkflowClientInterceptors(
 	tracer?: Tracer,
 ): WorkflowClientInterceptor[] {
 	const correlation = makeCorrelationClientInterceptor();
+	const aiInteractive = makeAiInteractiveClientInterceptor();
 	if (!isWorkflowClientTelemetryEnabled(env)) {
-		return [correlation];
+		return [correlation, aiInteractive];
 	}
 	return [
 		new OpenTelemetryWorkflowClientInterceptor(
 			tracer === undefined ? undefined : { tracer },
 		),
 		correlation,
+		aiInteractive,
 	];
 }

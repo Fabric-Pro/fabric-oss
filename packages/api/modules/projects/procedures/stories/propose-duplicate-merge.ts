@@ -7,6 +7,7 @@ import {
 import { db, getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireOrganizationMembership,
@@ -446,6 +447,7 @@ export const proposeDuplicateMergeProcedure = tenantProtectedProcedure
 					acceptanceResult.finishReason === "length",
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			if (error instanceof ORPCError) {
 				throw error;
 			}

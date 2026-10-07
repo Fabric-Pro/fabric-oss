@@ -36,6 +36,12 @@ const mocks = vi.hoisted(() => ({
 	upsertSyncedContext: vi.fn(),
 }));
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	db: {
 		storyTask: { findFirst: mocks.storyTaskFindFirst },

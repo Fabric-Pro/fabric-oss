@@ -3,6 +3,8 @@ import {
 	applyDeploymentsResult,
 	assembleFinalBrief, // ← add
 	briefHasDisplayableContent,
+	DAILY_BRIEF_AI_PROVIDER_NOT_CONFIGURED,
+	dailyBriefFailureMessage,
 	PROD_ANCHOR_SUMMARY, // ← add
 	resolveBriefCompletion,
 } from "../src/workflows/daily-brief-completion";
@@ -414,5 +416,37 @@ describe("assembleFinalBrief — v5 ON", () => {
 			latestProdRelease: anchor,
 		});
 		expect(content.executiveSummary).toBe("real summary");
+	});
+});
+
+// A brief that failed because the organization has no AI provider records a
+// code the page explains, not "Activity task failed".
+describe("dailyBriefFailureMessage", () => {
+	it("records the provider code for a missing provider anywhere in the cause chain", async () => {
+		const { ActivityFailure, ApplicationFailure, RetryState } =
+			await import("@temporalio/common");
+		const failure = new ActivityFailure(
+			"Activity task failed",
+			"summarizeDailyBriefActivity",
+			"1",
+			RetryState.NON_RETRYABLE_FAILURE,
+			undefined,
+			ApplicationFailure.nonRetryable(
+				"No AI provider configured",
+				"AIProviderNotConfiguredError",
+			),
+		);
+		expect(dailyBriefFailureMessage(failure)).toBe(
+			DAILY_BRIEF_AI_PROVIDER_NOT_CONFIGURED,
+		);
+		expect(DAILY_BRIEF_AI_PROVIDER_NOT_CONFIGURED).toBe(
+			"AI_PROVIDER_NOT_CONFIGURED",
+		);
+	});
+
+	it("keeps any other failure's message", () => {
+		expect(dailyBriefFailureMessage(new Error("Sources unavailable"))).toBe(
+			"Sources unavailable",
+		);
 	});
 });

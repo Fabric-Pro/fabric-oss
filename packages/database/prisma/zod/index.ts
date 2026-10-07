@@ -48,27 +48,45 @@ export type PasskeyScalarFieldEnum = z.infer<typeof PasskeyScalarFieldEnumSchema
 
 // File: OauthClientScalarFieldEnum.schema.ts
 
-export const OauthClientScalarFieldEnumSchema = z.enum(['id', 'clientId', 'clientSecret', 'disabled', 'skipConsent', 'enableEndSession', 'subjectType', 'scopes', 'userId', 'createdAt', 'updatedAt', 'name', 'uri', 'icon', 'contacts', 'tos', 'policy', 'softwareId', 'softwareVersion', 'softwareStatement', 'redirectUris', 'postLogoutRedirectUris', 'tokenEndpointAuthMethod', 'grantTypes', 'responseTypes', 'public', 'type', 'requirePKCE', 'referenceId', 'metadata'])
+export const OauthClientScalarFieldEnumSchema = z.enum(['id', 'clientId', 'clientSecret', 'clientDiscoveryId', 'clientCredentialsScopes', 'disabled', 'skipConsent', 'enableEndSession', 'subjectType', 'scopes', 'userId', 'createdAt', 'updatedAt', 'name', 'uri', 'icon', 'contacts', 'tos', 'policy', 'softwareId', 'softwareVersion', 'softwareStatement', 'redirectUris', 'postLogoutRedirectUris', 'backchannelLogoutUri', 'backchannelLogoutSessionRequired', 'tokenEndpointAuthMethod', 'grantTypes', 'responseTypes', 'applicationType', 'jwks', 'jwksUri', 'dpopBoundAccessTokens', 'public', 'type', 'requirePKCE', 'referenceId', 'metadata'])
 
 export type OauthClientScalarFieldEnum = z.infer<typeof OauthClientScalarFieldEnumSchema>;
 
 // File: OauthRefreshTokenScalarFieldEnum.schema.ts
 
-export const OauthRefreshTokenScalarFieldEnumSchema = z.enum(['id', 'token', 'clientId', 'sessionId', 'userId', 'referenceId', 'expiresAt', 'createdAt', 'revoked', 'authTime', 'scopes'])
+export const OauthRefreshTokenScalarFieldEnumSchema = z.enum(['id', 'token', 'clientId', 'sessionId', 'userId', 'authorizationCodeId', 'referenceId', 'resources', 'requestedUserInfoClaims', 'expiresAt', 'createdAt', 'revoked', 'rotatedAt', 'rotationReplayResponse', 'rotationReplayExpiresAt', 'authTime', 'confirmation', 'scopes'])
 
 export type OauthRefreshTokenScalarFieldEnum = z.infer<typeof OauthRefreshTokenScalarFieldEnumSchema>;
 
 // File: OauthAccessTokenScalarFieldEnum.schema.ts
 
-export const OauthAccessTokenScalarFieldEnumSchema = z.enum(['id', 'token', 'clientId', 'sessionId', 'userId', 'referenceId', 'refreshId', 'expiresAt', 'createdAt', 'scopes'])
+export const OauthAccessTokenScalarFieldEnumSchema = z.enum(['id', 'token', 'clientId', 'sessionId', 'userId', 'authorizationCodeId', 'referenceId', 'resources', 'requestedUserInfoClaims', 'refreshId', 'expiresAt', 'createdAt', 'revoked', 'confirmation', 'scopes'])
 
 export type OauthAccessTokenScalarFieldEnum = z.infer<typeof OauthAccessTokenScalarFieldEnumSchema>;
 
 // File: OauthConsentScalarFieldEnum.schema.ts
 
-export const OauthConsentScalarFieldEnumSchema = z.enum(['id', 'clientId', 'userId', 'referenceId', 'scopes', 'createdAt', 'updatedAt'])
+export const OauthConsentScalarFieldEnumSchema = z.enum(['id', 'clientId', 'userId', 'referenceId', 'resources', 'requestedUserInfoClaims', 'scopes', 'createdAt', 'updatedAt'])
 
 export type OauthConsentScalarFieldEnum = z.infer<typeof OauthConsentScalarFieldEnumSchema>;
+
+// File: OauthResourceScalarFieldEnum.schema.ts
+
+export const OauthResourceScalarFieldEnumSchema = z.enum(['id', 'identifier', 'name', 'accessTokenTtl', 'refreshTokenTtl', 'signingAlgorithm', 'signingKeyId', 'allowedScopes', 'customClaims', 'dpopBoundAccessTokensRequired', 'disabled', 'createdAt', 'updatedAt', 'policyVersion', 'metadata'])
+
+export type OauthResourceScalarFieldEnum = z.infer<typeof OauthResourceScalarFieldEnumSchema>;
+
+// File: OauthClientResourceScalarFieldEnum.schema.ts
+
+export const OauthClientResourceScalarFieldEnumSchema = z.enum(['id', 'clientId', 'resourceId', 'metadata', 'createdAt'])
+
+export type OauthClientResourceScalarFieldEnum = z.infer<typeof OauthClientResourceScalarFieldEnumSchema>;
+
+// File: OauthClientAssertionScalarFieldEnum.schema.ts
+
+export const OauthClientAssertionScalarFieldEnumSchema = z.enum(['id', 'expiresAt'])
+
+export type OauthClientAssertionScalarFieldEnum = z.infer<typeof OauthClientAssertionScalarFieldEnumSchema>;
 
 // File: OauthAuthorizationResourceScalarFieldEnum.schema.ts
 
@@ -1248,13 +1266,13 @@ export type McpRegistryVersionScalarFieldEnum = z.infer<typeof McpRegistryVersio
 
 // File: MCPConfigScalarFieldEnum.schema.ts
 
-export const MCPConfigScalarFieldEnumSchema = z.enum(['id', 'mcpServerId', 'userId', 'organizationId', 'displayName', 'heroEmojis', 'heroImageUrl', 'baseUrl', 'commandArgs', 'transport', 'authType', 'apiKeyMethod', 'oauthClientId', 'encryptedOauthClientSecret', 'encryptedApiKey', 'encryptedAccessToken', 'accessTokenHash', 'dcrRegistrationEndpoint', 'dcrClientMetadata', 'dcrRegisteredAt', 'encryptedRefreshToken', 'tokenExpiresAt', 'scopes', 'enabled', 'isManagedDefault', 'status', 'lastHealthCheckAt', 'consecutiveFailures', 'failoverUrl', 'oauthMetadataCache', 'oauthMetadataCachedAt', 'refreshFailureCount', 'lastRefreshFailedAt', 'lastRefreshError', 'needsReauth', 'encryptedAtlassianCloudAccessToken', 'encryptedAtlassianCloudRefreshToken', 'atlassianCloudTokenExpiresAt', 'atlassianCloudSiteUrl', 'atlassianCloudCloudId', 'atlassianCloudAccessibleResources', 'atlassianCloudScopes', 'atlassianCloudConnectedAt', 'atlassianCloudRefreshFailureCount', 'atlassianCloudLastRefreshFailedAt', 'atlassianCloudLastRefreshError', 'cachedTools', 'toolsCachedAt', 'toolCount', 'description', 'domainKeywords', 'exampleQueries', 'createdAt', 'updatedAt'])
+export const MCPConfigScalarFieldEnumSchema = z.enum(['id', 'mcpServerId', 'userId', 'organizationId', 'displayName', 'heroEmojis', 'heroImageUrl', 'baseUrl', 'commandArgs', 'transport', 'authType', 'apiKeyMethod', 'oauthClientId', 'encryptedOauthClientSecret', 'encryptedApiKey', 'encryptedAccessToken', 'accessTokenHash', 'dcrRegistrationEndpoint', 'dcrClientMetadata', 'dcrRegisteredAt', 'encryptedRefreshToken', 'tokenExpiresAt', 'scopes', 'enabled', 'isManagedDefault', 'status', 'lastHealthCheckAt', 'consecutiveFailures', 'failoverUrl', 'oauthMetadataCache', 'oauthMetadataCachedAt', 'oauthBinding', 'oauthGrantGeneration', 'refreshFailureCount', 'lastRefreshFailedAt', 'lastRefreshError', 'needsReauth', 'encryptedAtlassianCloudAccessToken', 'encryptedAtlassianCloudRefreshToken', 'atlassianCloudTokenExpiresAt', 'atlassianCloudSiteUrl', 'atlassianCloudCloudId', 'atlassianCloudAccessibleResources', 'atlassianCloudScopes', 'atlassianCloudConnectedAt', 'atlassianCloudRefreshFailureCount', 'atlassianCloudLastRefreshFailedAt', 'atlassianCloudLastRefreshError', 'cachedTools', 'toolsCachedAt', 'toolCount', 'description', 'domainKeywords', 'exampleQueries', 'createdAt', 'updatedAt'])
 
 export type MCPConfigScalarFieldEnum = z.infer<typeof MCPConfigScalarFieldEnumSchema>;
 
 // File: MCPOAuthStateScalarFieldEnum.schema.ts
 
-export const MCPOAuthStateScalarFieldEnumSchema = z.enum(['id', 'state', 'mcpServerId', 'configId', 'userId', 'organizationId', 'codeVerifier', 'redirectUri', 'createdAt', 'expiresAt'])
+export const MCPOAuthStateScalarFieldEnumSchema = z.enum(['id', 'state', 'mcpServerId', 'configId', 'userId', 'organizationId', 'codeVerifier', 'redirectUri', 'authorizationServerSnapshot', 'expectedGrantGeneration', 'createdAt', 'expiresAt'])
 
 export type MCPOAuthStateScalarFieldEnum = z.infer<typeof MCPOAuthStateScalarFieldEnumSchema>;
 
@@ -1395,6 +1413,36 @@ export type ModelRouterConfigScalarFieldEnum = z.infer<typeof ModelRouterConfigS
 export const UserCloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'userId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type UserCloudProviderConfigScalarFieldEnum = z.infer<typeof UserCloudProviderConfigScalarFieldEnumSchema>;
+
+// File: ChatGptPlanCredentialScalarFieldEnum.schema.ts
+
+export const ChatGptPlanCredentialScalarFieldEnumSchema = z.enum(['id', 'userId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'lastUsedAt', 'createdAt', 'updatedAt'])
+
+export type ChatGptPlanCredentialScalarFieldEnum = z.infer<typeof ChatGptPlanCredentialScalarFieldEnumSchema>;
+
+// File: ChatGptPlanOrgUseScalarFieldEnum.schema.ts
+
+export const ChatGptPlanOrgUseScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'enabled', 'includeBackgroundJobs', 'createdAt', 'updatedAt'])
+
+export type ChatGptPlanOrgUseScalarFieldEnum = z.infer<typeof ChatGptPlanOrgUseScalarFieldEnumSchema>;
+
+// File: ChatGptPlanOrgAccountScalarFieldEnum.schema.ts
+
+export const ChatGptPlanOrgAccountScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'label', 'connectedByUserId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'tier', 'enabled', 'serveInteractive', 'serveBackground', 'lastUsedAt', 'createdAt', 'updatedAt'])
+
+export type ChatGptPlanOrgAccountScalarFieldEnum = z.infer<typeof ChatGptPlanOrgAccountScalarFieldEnumSchema>;
+
+// File: ChatGptPlanOrgPolicyScalarFieldEnum.schema.ts
+
+export const ChatGptPlanOrgPolicyScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'poolingEnabled', 'apiFallbackInteractive', 'apiFallbackBackground', 'headroomPct', 'termsAcknowledgedById', 'termsAcknowledgedAt', 'createdAt', 'updatedAt'])
+
+export type ChatGptPlanOrgPolicyScalarFieldEnum = z.infer<typeof ChatGptPlanOrgPolicyScalarFieldEnumSchema>;
+
+// File: ChatGptPlanSourceStateScalarFieldEnum.schema.ts
+
+export const ChatGptPlanSourceStateScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'openUntil', 'resetAt', 'consecutiveUnknownResets', 'lastExhaustedAt', 'updatedAt'])
+
+export type ChatGptPlanSourceStateScalarFieldEnum = z.infer<typeof ChatGptPlanSourceStateScalarFieldEnumSchema>;
 
 // File: WorkflowScalarFieldEnum.schema.ts
 
@@ -2004,9 +2052,15 @@ export type DiagramScalarFieldEnum = z.infer<typeof DiagramScalarFieldEnumSchema
 
 // File: ProjectInstructionSnapshotScalarFieldEnum.schema.ts
 
-export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'excludedPaths', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'commitContext', 'commitOutcome', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
+export const ProjectInstructionSnapshotScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'version', 'source', 'status', 'contentKind', 'repositoryGeneration', 'repositoryBaseSha', 'proposalStatus', 'reviewerUserId', 'reviewedAt', 'rejection', 'settingsFrozen', 'publishOnReady', 'publishBeforeScan', 'deferredScanStatus', 'deferredScanFindings', 'deferredScanCompletedAt', 'scanRulesVersion', 'fileCount', 'storedBytes', 'excludedCount', 'excludedPaths', 'digest', 'changeSetDigest', 'repositoryIntegrationId', 'sourceRef', 'sourceCommitSha', 'syncRunKey', 'validationAttemptId', 'progressPhase', 'progressDone', 'progressTotal', 'progressUpdatedAt', 'baseSnapshotId', 'baseVersion', 'proposalDestination', 'proposalNote', 'pullRequestOperationId', 'pullRequestState', 'pullRequestAttempt', 'pullRequestContext', 'pullRequestHeadSha', 'pullRequestRef', 'pullRequestAttempts', 'pullRequestUrl', 'pullRequestExternalId', 'pullRequestObservation', 'pullRequestFailure', 'pullRequestLastCheckedAt', 'pullRequestNextAttemptAt', 'pullRequestRefreshAdmittedAt', 'pullRequestObligationOpen', 'pullRequestConfirmationDueAt', 'mergeSyncRequestedAt', 'mergeSyncDispatchedAt', 'mergeSyncRunId', 'mergeSyncExpected', 'commitContext', 'commitOutcome', 'proposalBranchId', 'proposalBranchSequence', 'withdrawRequestedAt', 'withdrawScope', 'pendingCommand', 'pendingCommandSeq', 'proposalAssignment', 'proposalIntentOrder', 'createdAt', 'updatedAt', 'readyAt', 'publishedAt'])
 
 export type ProjectInstructionSnapshotScalarFieldEnum = z.infer<typeof ProjectInstructionSnapshotScalarFieldEnumSchema>;
+
+// File: ProjectInstructionGitIntentEntryScalarFieldEnum.schema.ts
+
+export const ProjectInstructionGitIntentEntryScalarFieldEnumSchema = z.enum(['id', 'snapshotId', 'projectId', 'organizationId', 'userId', 'operation', 'path', 'baseObjectId', 'baseMode', 'storageKey', 'sha256', 'size', 'mimeType', 'isText', 'mode', 'kind', 'createdAt'])
+
+export type ProjectInstructionGitIntentEntryScalarFieldEnum = z.infer<typeof ProjectInstructionGitIntentEntryScalarFieldEnumSchema>;
 
 // File: ProjectInstructionPendingStorageCleanupScalarFieldEnum.schema.ts
 
@@ -2238,7 +2292,7 @@ export type AgentScope = z.infer<typeof AgentScopeSchema>;
 
 // File: AIProvider.schema.ts
 
-export const AIProviderSchema = z.enum(['VERCEL_GATEWAY', 'CLOUDFLARE_AI', 'OPENROUTER', 'AZURE_AI_FOUNDRY', 'AWS_BEDROCK', 'GOOGLE_VERTEX_AI', 'DATABRICKS', 'OPENAI_DIRECT', 'ANTHROPIC_DIRECT', 'GROQ', 'TOGETHER_AI', 'DEEPSEEK', 'COHERE', 'MISTRAL_AI', 'FIREWORKS', 'PERPLEXITY', 'XAI', 'CEREBRAS', 'REPLICATE', 'HUGGINGFACE', 'HYBRID', 'CUSTOM', 'AZURE_OPENAI', 'NETLIFY'])
+export const AIProviderSchema = z.enum(['VERCEL_GATEWAY', 'CLOUDFLARE_AI', 'OPENROUTER', 'AZURE_AI_FOUNDRY', 'AWS_BEDROCK', 'GOOGLE_VERTEX_AI', 'DATABRICKS', 'OPENAI_DIRECT', 'ANTHROPIC_DIRECT', 'GROQ', 'TOGETHER_AI', 'DEEPSEEK', 'COHERE', 'MISTRAL_AI', 'FIREWORKS', 'PERPLEXITY', 'XAI', 'CEREBRAS', 'REPLICATE', 'HUGGINGFACE', 'HYBRID', 'CUSTOM', 'AZURE_OPENAI', 'NETLIFY', 'OPENAI_CHATGPT_PLAN'])
 
 export type AIProvider = z.infer<typeof AIProviderSchema>;
 
@@ -3136,6 +3190,36 @@ export const HealthStatusSchema = z.enum(['HEALTHY', 'DEGRADED', 'UNHEALTHY', 'U
 
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
 
+// File: ChatGptPlanCredentialStatus.schema.ts
+
+export const ChatGptPlanCredentialStatusSchema = z.enum(['ACTIVE', 'NEEDS_RECONNECT'])
+
+export type ChatGptPlanCredentialStatus = z.infer<typeof ChatGptPlanCredentialStatusSchema>;
+
+// File: ChatGptPlanTier.schema.ts
+
+export const ChatGptPlanTierSchema = z.enum(['UNKNOWN', 'PLUS', 'PRO'])
+
+export type ChatGptPlanTier = z.infer<typeof ChatGptPlanTierSchema>;
+
+// File: ChatGptPlanApiFallbackInteractive.schema.ts
+
+export const ChatGptPlanApiFallbackInteractiveSchema = z.enum(['ASK', 'NEVER'])
+
+export type ChatGptPlanApiFallbackInteractive = z.infer<typeof ChatGptPlanApiFallbackInteractiveSchema>;
+
+// File: ChatGptPlanApiFallbackBackground.schema.ts
+
+export const ChatGptPlanApiFallbackBackgroundSchema = z.enum(['NEVER', 'AUTO'])
+
+export type ChatGptPlanApiFallbackBackground = z.infer<typeof ChatGptPlanApiFallbackBackgroundSchema>;
+
+// File: ChatGptPlanSourceKind.schema.ts
+
+export const ChatGptPlanSourceKindSchema = z.enum(['USER', 'ORG'])
+
+export type ChatGptPlanSourceKind = z.infer<typeof ChatGptPlanSourceKindSchema>;
+
 // File: WorkflowBuilderStatus.schema.ts
 
 export const WorkflowBuilderStatusSchema = z.enum(['DRAFT', 'PUBLISHED', 'ACTIVE', 'PAUSED', 'ARCHIVED'])
@@ -3568,6 +3652,12 @@ export const ProjectInstructionSnapshotStatusSchema = z.enum(['RECEIVING', 'VALI
 
 export type ProjectInstructionSnapshotStatus = z.infer<typeof ProjectInstructionSnapshotStatusSchema>;
 
+// File: ProjectInstructionContentKind.schema.ts
+
+export const ProjectInstructionContentKindSchema = z.enum(['FULL_SNAPSHOT', 'GIT_INTENT'])
+
+export type ProjectInstructionContentKind = z.infer<typeof ProjectInstructionContentKindSchema>;
+
 // File: ProjectInstructionProposalStatus.schema.ts
 
 export const ProjectInstructionProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'MERGED', 'CLOSED'])
@@ -3598,6 +3688,18 @@ export const ProjectInstructionPullRequestStateSchema = z.enum(['QUEUED', 'OPENI
 
 export type ProjectInstructionPullRequestState = z.infer<typeof ProjectInstructionPullRequestStateSchema>;
 
+// File: ProjectInstructionGitIntentOperation.schema.ts
+
+export const ProjectInstructionGitIntentOperationSchema = z.enum(['PUT', 'DELETE'])
+
+export type ProjectInstructionGitIntentOperation = z.infer<typeof ProjectInstructionGitIntentOperationSchema>;
+
+// File: ProjectInstructionFileKind.schema.ts
+
+export const ProjectInstructionFileKindSchema = z.enum(['SKILL', 'AGENT', 'RULE', 'INSTRUCTIONS', 'SETTINGS', 'SCRIPT', 'KNOWLEDGE', 'OTHER'])
+
+export type ProjectInstructionFileKind = z.infer<typeof ProjectInstructionFileKindSchema>;
+
 // File: ProjectInstructionProposalBranchState.schema.ts
 
 export const ProjectInstructionProposalBranchStateSchema = z.enum(['PENDING', 'OPENING', 'OPEN', 'CLOSE_REQUESTED', 'BLOCKED', 'MERGED', 'CLOSED', 'CANCELED'])
@@ -3609,12 +3711,6 @@ export type ProjectInstructionProposalBranchState = z.infer<typeof ProjectInstru
 export const ProjectInstructionProposalBranchOpKindSchema = z.enum(['APPEND', 'REVERT'])
 
 export type ProjectInstructionProposalBranchOpKind = z.infer<typeof ProjectInstructionProposalBranchOpKindSchema>;
-
-// File: ProjectInstructionFileKind.schema.ts
-
-export const ProjectInstructionFileKindSchema = z.enum(['SKILL', 'AGENT', 'RULE', 'INSTRUCTIONS', 'SETTINGS', 'SCRIPT', 'KNOWLEDGE', 'OTHER'])
-
-export type ProjectInstructionFileKind = z.infer<typeof ProjectInstructionFileKindSchema>;
 
 // File: ProjectInstructionSyncPause.schema.ts
 
@@ -3871,6 +3967,8 @@ export const OauthClientSchema = z.object({
   id: z.string(),
   clientId: z.string(),
   clientSecret: z.string().nullish(),
+  clientDiscoveryId: z.string().nullish(),
+  clientCredentialsScopes: z.array(z.string()),
   disabled: z.boolean().nullish(),
   skipConsent: z.boolean().nullish(),
   enableEndSession: z.boolean().nullish(),
@@ -3890,9 +3988,15 @@ export const OauthClientSchema = z.object({
   softwareStatement: z.string().nullish(),
   redirectUris: z.array(z.string()),
   postLogoutRedirectUris: z.array(z.string()),
+  backchannelLogoutUri: z.string().nullish(),
+  backchannelLogoutSessionRequired: z.boolean().nullish(),
   tokenEndpointAuthMethod: z.string().nullish(),
   grantTypes: z.array(z.string()),
   responseTypes: z.array(z.string()),
+  applicationType: z.string().nullish(),
+  jwks: z.string().nullish(),
+  jwksUri: z.string().nullish(),
+  dpopBoundAccessTokens: z.boolean().nullish(),
   public: z.boolean().nullish(),
   type: z.string().nullish(),
   requirePKCE: z.boolean().nullish(),
@@ -3911,11 +4015,18 @@ export const OauthRefreshTokenSchema = z.object({
   clientId: z.string(),
   sessionId: z.string().nullish(),
   userId: z.string(),
+  authorizationCodeId: z.string().nullish(),
   referenceId: z.string().nullish(),
+  resources: z.array(z.string()),
+  requestedUserInfoClaims: z.array(z.string()),
   expiresAt: z.date().nullish(),
   createdAt: z.date().nullish(),
   revoked: z.date().nullish(),
+  rotatedAt: z.date().nullish(),
+  rotationReplayResponse: z.string().nullish(),
+  rotationReplayExpiresAt: z.date().nullish(),
   authTime: z.date().nullish(),
+  confirmation: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   scopes: z.array(z.string()),
 });
 
@@ -3930,10 +4041,15 @@ export const OauthAccessTokenSchema = z.object({
   clientId: z.string(),
   sessionId: z.string().nullish(),
   userId: z.string().nullish(),
+  authorizationCodeId: z.string().nullish(),
   referenceId: z.string().nullish(),
+  resources: z.array(z.string()),
+  requestedUserInfoClaims: z.array(z.string()),
   refreshId: z.string().nullish(),
   expiresAt: z.date().nullish(),
   createdAt: z.date().nullish(),
+  revoked: z.date().nullish(),
+  confirmation: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   scopes: z.array(z.string()),
 });
 
@@ -3947,12 +4063,60 @@ export const OauthConsentSchema = z.object({
   clientId: z.string(),
   userId: z.string().nullish(),
   referenceId: z.string().nullish(),
+  resources: z.array(z.string()),
+  requestedUserInfoClaims: z.array(z.string()),
   scopes: z.array(z.string()),
   createdAt: z.date().nullish(),
   updatedAt: z.date().nullish(),
 });
 
 export type OauthConsentType = z.infer<typeof OauthConsentSchema>;
+
+
+// File: OauthResource.schema.ts
+
+export const OauthResourceSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  name: z.string(),
+  accessTokenTtl: z.number().int().nullish(),
+  refreshTokenTtl: z.number().int().nullish(),
+  signingAlgorithm: z.string().nullish(),
+  signingKeyId: z.string().nullish(),
+  allowedScopes: z.array(z.string()),
+  customClaims: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  dpopBoundAccessTokensRequired: z.boolean().nullish(),
+  disabled: z.boolean().nullish(),
+  createdAt: z.date().nullish(),
+  updatedAt: z.date().nullish(),
+  policyVersion: z.number().int().default(1).nullish(),
+  metadata: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+});
+
+export type OauthResourceType = z.infer<typeof OauthResourceSchema>;
+
+
+// File: OauthClientResource.schema.ts
+
+export const OauthClientResourceSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  resourceId: z.string(),
+  metadata: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  createdAt: z.date().nullish(),
+});
+
+export type OauthClientResourceType = z.infer<typeof OauthClientResourceSchema>;
+
+
+// File: OauthClientAssertion.schema.ts
+
+export const OauthClientAssertionSchema = z.object({
+  id: z.string(),
+  expiresAt: z.date(),
+});
+
+export type OauthClientAssertionType = z.infer<typeof OauthClientAssertionSchema>;
 
 
 // File: OauthAuthorizationResource.schema.ts
@@ -8695,6 +8859,8 @@ export const MCPConfigSchema = z.object({
   failoverUrl: z.string().nullish(),
   oauthMetadataCache: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   oauthMetadataCachedAt: z.date().nullish(),
+  oauthBinding: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  oauthGrantGeneration: z.number().int(),
   refreshFailureCount: z.number().int(),
   lastRefreshFailedAt: z.date().nullish(),
   lastRefreshError: z.string().nullish(),
@@ -8734,6 +8900,8 @@ export const MCPOAuthStateSchema = z.object({
   organizationId: z.string().nullish(),
   codeVerifier: z.string().nullish(),
   redirectUri: z.string().nullish(),
+  authorizationServerSnapshot: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  expectedGrantGeneration: z.number().int().nullish(),
   createdAt: z.date(),
   expiresAt: z.date(),
 });
@@ -9199,6 +9367,108 @@ export const UserCloudProviderConfigSchema = z.object({
 });
 
 export type UserCloudProviderConfigType = z.infer<typeof UserCloudProviderConfigSchema>;
+
+
+// File: ChatGptPlanCredential.schema.ts
+
+export const ChatGptPlanCredentialSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  email: z.string().nullish(),
+  subject: z.string(),
+  clientId: z.string(),
+  hostId: z.string(),
+  encryptedAccessToken: z.string(),
+  encryptedRefreshToken: z.string(),
+  encryptedIdToken: z.string().nullish(),
+  accessTokenExpiresAt: z.date(),
+  earliestRefreshAt: z.date().nullish(),
+  scopes: z.array(z.string()),
+  status: ChatGptPlanCredentialStatusSchema.default("ACTIVE"),
+  lastUsedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanCredentialType = z.infer<typeof ChatGptPlanCredentialSchema>;
+
+
+// File: ChatGptPlanOrgUse.schema.ts
+
+export const ChatGptPlanOrgUseSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  organizationId: z.string(),
+  enabled: z.boolean(),
+  includeBackgroundJobs: z.boolean(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanOrgUseType = z.infer<typeof ChatGptPlanOrgUseSchema>;
+
+
+// File: ChatGptPlanOrgAccount.schema.ts
+
+export const ChatGptPlanOrgAccountSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  label: z.string(),
+  connectedByUserId: z.string(),
+  email: z.string().nullish(),
+  subject: z.string(),
+  clientId: z.string(),
+  hostId: z.string(),
+  encryptedAccessToken: z.string(),
+  encryptedRefreshToken: z.string(),
+  encryptedIdToken: z.string().nullish(),
+  accessTokenExpiresAt: z.date(),
+  earliestRefreshAt: z.date().nullish(),
+  scopes: z.array(z.string()),
+  status: ChatGptPlanCredentialStatusSchema.default("ACTIVE"),
+  tier: ChatGptPlanTierSchema.default("UNKNOWN"),
+  enabled: z.boolean().default(true),
+  serveInteractive: z.boolean(),
+  serveBackground: z.boolean().default(true),
+  lastUsedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanOrgAccountType = z.infer<typeof ChatGptPlanOrgAccountSchema>;
+
+
+// File: ChatGptPlanOrgPolicy.schema.ts
+
+export const ChatGptPlanOrgPolicySchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  poolingEnabled: z.boolean(),
+  apiFallbackInteractive: ChatGptPlanApiFallbackInteractiveSchema.default("ASK"),
+  apiFallbackBackground: ChatGptPlanApiFallbackBackgroundSchema.default("NEVER"),
+  headroomPct: z.number().int().default(40),
+  termsAcknowledgedById: z.string().nullish(),
+  termsAcknowledgedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanOrgPolicyType = z.infer<typeof ChatGptPlanOrgPolicySchema>;
+
+
+// File: ChatGptPlanSourceState.schema.ts
+
+export const ChatGptPlanSourceStateSchema = z.object({
+  sourceKind: ChatGptPlanSourceKindSchema,
+  sourceId: z.string(),
+  openUntil: z.date().nullish(),
+  resetAt: z.date().nullish(),
+  consecutiveUnknownResets: z.number().int(),
+  lastExhaustedAt: z.date().nullish(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanSourceStateType = z.infer<typeof ChatGptPlanSourceStateSchema>;
 
 
 // File: Workflow.schema.ts
@@ -11510,6 +11780,9 @@ export const ProjectInstructionSnapshotSchema = z.object({
   version: z.number().int(),
   source: ProjectInstructionSourceSchema,
   status: ProjectInstructionSnapshotStatusSchema.default("RECEIVING"),
+  contentKind: ProjectInstructionContentKindSchema.default("FULL_SNAPSHOT"),
+  repositoryGeneration: z.number().int().nullish(),
+  repositoryBaseSha: z.string().nullish(),
   proposalStatus: ProjectInstructionProposalStatusSchema.nullish(),
   reviewerUserId: z.string().nullish(),
   reviewedAt: z.date().nullish(),
@@ -11577,6 +11850,31 @@ export const ProjectInstructionSnapshotSchema = z.object({
 });
 
 export type ProjectInstructionSnapshotType = z.infer<typeof ProjectInstructionSnapshotSchema>;
+
+
+// File: ProjectInstructionGitIntentEntry.schema.ts
+
+export const ProjectInstructionGitIntentEntrySchema = z.object({
+  id: z.string(),
+  snapshotId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  operation: ProjectInstructionGitIntentOperationSchema,
+  path: z.string(),
+  baseObjectId: z.string().nullish(),
+  baseMode: z.number().int().nullish(),
+  storageKey: z.string().nullish(),
+  sha256: z.string().nullish(),
+  size: z.number().int().nullish(),
+  mimeType: z.string().nullish(),
+  isText: z.boolean().nullish(),
+  mode: z.number().int().nullish(),
+  kind: ProjectInstructionFileKindSchema.nullish(),
+  createdAt: z.date(),
+});
+
+export type ProjectInstructionGitIntentEntryType = z.infer<typeof ProjectInstructionGitIntentEntrySchema>;
 
 
 // File: ProjectInstructionPendingStorageCleanup.schema.ts

@@ -13,6 +13,7 @@ const m = vi.hoisted(() => ({
 	describe: vi.fn(),
 	getInstructionRepositorySync: vi.fn(),
 	getContextRepositorySync: vi.fn(),
+	getProjectInstructionSettings: vi.fn(),
 	heartbeat: vi.fn(),
 }));
 
@@ -21,12 +22,20 @@ vi.mock("../src/client", () => ({
 		workflow: { start: m.start, getHandle: m.getHandle },
 	})),
 }));
-vi.mock("@repo/database", () => ({
-	getInstructionRepositorySync: (...a: unknown[]) =>
-		m.getInstructionRepositorySync(...a),
-	getContextRepositorySync: (...a: unknown[]) =>
-		m.getContextRepositorySync(...a),
-}));
+vi.mock("@repo/database", async () => {
+	const { instructionRepositoryImportAllowed } = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/instruction-migration-pointer")
+	>("@repo/database/prisma/queries/instruction-migration-pointer");
+	return {
+		getInstructionRepositorySync: (...a: unknown[]) =>
+			m.getInstructionRepositorySync(...a),
+		getContextRepositorySync: (...a: unknown[]) =>
+			m.getContextRepositorySync(...a),
+		getProjectInstructionSettings: (...a: unknown[]) =>
+			m.getProjectInstructionSettings(...a),
+		instructionRepositoryImportAllowed,
+	};
+});
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: (...a: unknown[]) => m.heartbeat(...a),
 }));
@@ -41,6 +50,20 @@ const input = {
 	organizationId: "org_1",
 	requesterUserId: "user_1",
 };
+
+const SWITCHING_SETTINGS = {
+	sourceOfTruth: "REPOSITORY",
+	migration: {
+		v: 1,
+		state: "SWITCHING",
+		branchId: "branch_1",
+		snapshotId: "snap_move",
+		syncId: "sync_1",
+		pullRequestUrl: null,
+		startedAt: "2026-10-03T10:00:00.000Z",
+		userId: "user_1",
+	},
+} as const;
 
 function alreadyStarted(workflowId: string, type: string) {
 	return new WorkflowExecutionAlreadyStartedError(
@@ -57,6 +80,7 @@ beforeEach(() => {
 	}
 	m.getHandle.mockReturnValue({ describe: m.describe });
 	m.start.mockResolvedValue({ firstExecutionRunId: "run_1" });
+	m.getProjectInstructionSettings.mockResolvedValue(SWITCHING_SETTINGS);
 });
 
 describe("awaitRepositorySyncClosed", () => {
@@ -180,6 +204,7 @@ describe("startQueuedRepositorySync", () => {
 
 	it("starts the Coding Instructions sync the same way", async () => {
 		m.getInstructionRepositorySync.mockResolvedValue({
+			id: "sync_1",
 			repositoryIntegration: { status: "ACTIVE" },
 		});
 
@@ -203,6 +228,22 @@ describe("startQueuedRepositorySync", () => {
 				],
 			},
 		);
+	});
+
+	it("does not start a retired import for an ordinary direct repository", async () => {
+		m.getInstructionRepositorySync.mockResolvedValue({
+			id: "sync_1",
+			repositoryIntegration: { status: "ACTIVE" },
+		});
+		m.getProjectInstructionSettings.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			migration: null,
+		});
+
+		await expect(
+			startQueuedRepositorySync({ subject: "instructions", ...input }),
+		).resolves.toEqual({ outcome: "direct_repository" });
+		expect(m.start).not.toHaveBeenCalled();
 	});
 
 	it("is satisfied by a run another start already opened, which reads the configuration fresh", async () => {

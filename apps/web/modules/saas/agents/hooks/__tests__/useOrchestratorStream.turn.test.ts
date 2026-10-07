@@ -632,9 +632,10 @@ describe("useOrchestratorStream — server-owned turns", () => {
 		expect(result.current.state.status).toBe("completed");
 	});
 
-	it("R2-1: a planner-mode message (no turn) is not re-sent when its stream drops before `started`", async () => {
+	it("R2-1: a Planner (save_reuse) message runs as a turn: it is re-sent with the same key when its stream drops before `started`", async () => {
 		const dropped = makeSseResponse();
-		const { calls } = installFetch([dropped.response]);
+		const resumed = makeSseResponse();
+		const { calls } = installFetch([dropped.response, resumed.response]);
 		const { result } = renderHook(() =>
 			useOrchestratorStream({
 				...HOOK_OPTIONS,
@@ -648,11 +649,52 @@ describe("useOrchestratorStream — server-owned turns", () => {
 		});
 		await act(async () => {
 			dropped.enqueueDone();
+		});
+		await waitFor(
+			() => {
+				expect(calls.filter((c) => c.url === STREAM_URL)).toHaveLength(
+					2,
+				);
+			},
+			{ timeout: 5_000 },
+		);
+		await act(async () => {
+			resumed.enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"ok"}',
+			);
+			resumed.enqueueDone();
 			await sending;
 		});
 
-		// Re-sending would start a second planner run: the server gives
-		// these modes no turn, so the key cannot make the resend idempotent.
+		const [firstPost, retry] = calls.filter((c) => c.url === STREAM_URL);
+		expect(retry?.body.clientRequestKey).toBe(
+			firstPost?.body.clientRequestKey,
+		);
+		expect(retry?.body.executionMode).toBe("save_reuse");
+		expect(result.current.state.status).toBe("completed");
+	});
+
+	it("R2-1: a Weave message (no turn) is not re-sent when its stream drops before `started`", async () => {
+		const dropped = makeSseResponse();
+		const { calls } = installFetch([dropped.response]);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({
+				...HOOK_OPTIONS,
+				executionMode: "weave",
+			}),
+		);
+
+		let sending: Promise<string | null> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("plan it");
+		});
+		await act(async () => {
+			dropped.enqueueDone();
+			await sending;
+		});
+
+		// Re-sending would start a second Weave run: the server gives it no
+		// turn, so the key cannot make the resend idempotent.
 		expect(calls.filter((c) => c.url === STREAM_URL)).toHaveLength(1);
 		expect(result.current.state.status).toBe("failed");
 	});
@@ -748,10 +790,38 @@ describe("useOrchestratorStream — server-owned turns", () => {
 			expect(result.current.state.status).toBe("failed");
 		});
 
-		it("does not retry a planner-mode message (no turn, no idempotency)", async () => {
+		it("retries a Planner (save_reuse) message with the same key after a rejected fetch (it runs as a turn)", async () => {
+			const live = makeSseResponse();
+			const { calls, result, done } = await send(
+				[new TypeError("Failed to fetch"), live.response],
+				"save_reuse",
+			);
+			await waitFor(
+				() => {
+					expect(
+						calls.filter((c) => c.url === STREAM_URL),
+					).toHaveLength(2);
+				},
+				{ timeout: 5_000 },
+			);
+			await act(async () => {
+				live.enqueueLine(
+					'data: {"type":"completed","status":"completed","response":"ok"}',
+				);
+				live.enqueueDone();
+				await done();
+			});
+			const [first, retry] = calls.filter((c) => c.url === STREAM_URL);
+			expect(retry?.body.clientRequestKey).toBe(
+				first?.body.clientRequestKey,
+			);
+			expect(result.current.state.status).toBe("completed");
+		});
+
+		it("does not retry a Weave message (no turn, no idempotency)", async () => {
 			const { calls, result, done } = await send(
 				[new TypeError("Failed to fetch")],
-				"save_reuse",
+				"weave",
 			);
 			await act(async () => {
 				await done();

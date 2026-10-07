@@ -1106,6 +1106,13 @@ export async function clearBranchMergeSyncRequest(
 				audit: RecordAuditInput;
 		  }
 		| {
+				kind: "direct_read";
+				branchId: string;
+				organizationId: string;
+				expected: MergeSyncTuple | null;
+				audit: RecordAuditInput;
+		  }
+		| {
 				kind: "gave_up";
 				branchId: string;
 				organizationId: string;
@@ -1123,6 +1130,14 @@ export async function clearBranchMergeSyncRequest(
 	) {
 		throw new Error(
 			"clearBranchMergeSyncRequest: an acknowledgment writes one pull_request_merge_sync_requested row",
+		);
+	}
+	if (
+		i.kind === "direct_read" &&
+		i.audit.action !== "project.instructions.pull_request_merge_observed"
+	) {
+		throw new Error(
+			"A direct repository merge acknowledgment records the observed merge",
 		);
 	}
 	return db.$transaction(async (tx) => {
@@ -1150,7 +1165,7 @@ export async function clearBranchMergeSyncRequest(
 		if (count !== 1) {
 			return false;
 		}
-		if (i.kind === "acknowledged") {
+		if (i.kind === "acknowledged" || i.kind === "direct_read") {
 			await recordAuditTx(tx, i.audit);
 		}
 		return true;

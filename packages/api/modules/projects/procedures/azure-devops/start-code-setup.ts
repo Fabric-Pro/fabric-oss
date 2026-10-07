@@ -29,6 +29,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { db, listProjectRepoIntegrations } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -130,6 +131,7 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 		const aiToken = await issueAIToken({
 			userId: user.id,
 			organizationId,
+			impersonated: isAiImpersonatedRequest(),
 			source: "code-based-project-setup",
 			expirySeconds: 3600,
 		});

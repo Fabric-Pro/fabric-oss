@@ -14,6 +14,7 @@
  * - WebHandler: Web browsing/scraping capabilities
  */
 
+import { startTurnHeartbeat } from "../turn-dispatch";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../types";
 import { publishStepStart } from "../utils/partykit-publisher";
 import { getDefaultHandlerRegistry, type HandlerRegistry } from "./handlers";
@@ -68,9 +69,18 @@ export async function executeStep(
 		).catch(() => {}); // Non-blocking
 	}
 
-	// Delegate to handler registry for modular execution
-	const registry = getHandlerRegistry();
-	return registry.executeStep(input);
+	// Delegate to handler registry for modular execution. In a chat turn (a
+	// Planner chat) the activity heartbeats every five seconds for its whole
+	// run, so a Stop reaches it whichever handler is waiting; a no-op without
+	// a scope. The ticker's heartbeats carry no details, which is safe here:
+	// executeStep never resumes from heartbeat details on a retry.
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		const registry = getHandlerRegistry();
+		return await registry.executeStep(input);
+	} finally {
+		stopHeartbeat();
+	}
 }
 
 // Re-export handler types for external use

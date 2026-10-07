@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	destinationSourceOfTruth,
+	instructionRepositoryImportAllowed,
 	migrationOfSettings,
 	parseInstructionMigrationPointer,
 } from "../prisma/queries/instruction-migration-pointer";
@@ -73,6 +74,30 @@ describe("migrationOfSettings", () => {
 		expect(migrationOfSettings({ sourceOfTruth: "UPLOAD" })).toBeNull();
 		expect(migrationOfSettings(null)).toBeNull();
 		expect(migrationOfSettings("migration")).toBeNull();
+	});
+});
+
+describe("instructionRepositoryImportAllowed", () => {
+	it("requires the configured repository source and this switching pointer", () => {
+		const switching = { ...POINTER, state: "SWITCHING" as const };
+		expect(
+			instructionRepositoryImportAllowed(
+				{ sourceOfTruth: "REPOSITORY", migration: switching },
+				"sync-1",
+			),
+		).toBe(true);
+		expect(
+			instructionRepositoryImportAllowed(
+				{ sourceOfTruth: "UPLOAD", migration: switching },
+				"sync-1",
+			),
+		).toBe(false);
+		expect(
+			instructionRepositoryImportAllowed(
+				{ sourceOfTruth: "REPOSITORY", migration: switching },
+				"another-sync",
+			),
+		).toBe(false);
 	});
 });
 

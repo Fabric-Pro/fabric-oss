@@ -14,7 +14,7 @@
  * stand and the personal ones have become a redirect.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, renderHook, screen } from "@testing-library/react";
@@ -290,16 +290,16 @@ describe("the stale ai-gateway redirect stub is gone (R12)", () => {
 		const offenders: string[] = [];
 
 		const walk = (dir: string) => {
-			for (const entry of readdirSync(dir)) {
-				if (entry === "node_modules" || entry === ".next") {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				if (entry.name === "node_modules" || entry.name === ".next") {
 					continue;
 				}
-				const full = path.join(dir, entry);
-				if (statSync(full).isDirectory()) {
+				const full = path.join(dir, entry.name);
+				if (entry.isDirectory()) {
 					walk(full);
 					continue;
 				}
-				if (!/\.(ts|tsx)$/.test(entry)) {
+				if (!entry.isFile() || !/\.(ts|tsx)$/.test(entry.name)) {
 					continue;
 				}
 				const source = readFileSync(full, "utf8");

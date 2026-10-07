@@ -66,6 +66,7 @@ export const mocks = {
 	resolveProjectTenant: vi.fn(),
 	grantProjectAccess: vi.fn(),
 	listCompanyContextSources: vi.fn(),
+	summarizeCompanyContextCrawlPages: vi.fn(),
 	getCompanyContextSource: vi.fn(),
 	getCompanyContextSourceMeta: vi.fn(),
 	listReadyCompanyContextSourceIds: vi.fn(),
@@ -130,6 +131,8 @@ export function databaseModule() {
 		resolveProjectTenant: mocks.resolveProjectTenant,
 		grantProjectAccess: mocks.grantProjectAccess,
 		listCompanyContextSources: mocks.listCompanyContextSources,
+		summarizeCompanyContextCrawlPages:
+			mocks.summarizeCompanyContextCrawlPages,
 		getCompanyContextSource: mocks.getCompanyContextSource,
 		getCompanyContextSourceMeta: mocks.getCompanyContextSourceMeta,
 		listReadyCompanyContextSourceIds:
@@ -490,7 +493,7 @@ export function sourceRow(overrides: Record<string, unknown> = {}) {
 /** A listed company source (no content, with its page count). */
 export function listRow(overrides: Record<string, unknown> = {}) {
 	const { content: _content, ...row } = sourceRow(overrides);
-	return { ...row, _count: { urlPages: 0 } };
+	return { _count: { urlPages: 0 }, ...row };
 }
 
 /**
@@ -534,6 +537,7 @@ export function resetDefaults(): void {
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.resolveCompanyEmbeddingModel.mockResolvedValue(CURRENT_MODEL);
 	mocks.listReadyCompanyContextSourceIds.mockResolvedValue([]);
+	mocks.summarizeCompanyContextCrawlPages.mockResolvedValue(new Map());
 	mocks.getCompanyContextReadiness.mockResolvedValue({ total: 0, ready: 0 });
 	mocks.sourceCount.mockResolvedValue(0);
 	mocks.sourceUpdateMany.mockResolvedValue({ count: 1 });

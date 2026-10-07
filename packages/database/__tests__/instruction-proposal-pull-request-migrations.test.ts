@@ -13,9 +13,9 @@
  * and record the migration as applied over an invalid index. The sixth adds
  * the Refresh cooldown's admission time, again one metadata-only column.
  *
- * The set itself is pinned too: every migration whose SQL touches this
- * feature's schema must be one of the six, so a seventh cannot land here
- * without this file saying what it may do.
+ * The inventory also includes member branches, direct commits and native
+ * Git intents. Any further migration touching these identifiers must be
+ * added explicitly to the inventory.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -69,6 +69,7 @@ const FEATURE_MIGRATIONS = [
 	REFRESH_ADMITTED_AT,
 	MEMBER_BRANCHES,
 	DESTINATION_REPOSITORY_COMMIT,
+	"20261006110000_instruction_git_intents",
 ];
 
 /**
@@ -112,7 +113,7 @@ function executable(name: string): string {
 }
 
 describe("proposal pull-request migrations (spec §4.5)", () => {
-	it("are exactly these seven: no other migration touches the feature's schema", () => {
+	it("match the explicit inventory: no other migration touches the feature's schema", () => {
 		const touching = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name)

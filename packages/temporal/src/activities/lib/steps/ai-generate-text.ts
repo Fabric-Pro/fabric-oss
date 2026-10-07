@@ -16,6 +16,10 @@
  */
 
 import {
+	PlanSourceRotatedError,
+	SubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import {
 	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
@@ -150,6 +154,15 @@ export async function executeAiGenerateTextStep(
 			},
 		};
 	} catch (error) {
+		// A spent ChatGPT plan, or one that ran out mid-reply with another left,
+		// is the workflow's to handle — it waits for a reset or retries on the
+		// next plan (Fizzy #2770) — so it is thrown, not turned into a result.
+		if (
+			error instanceof SubscriptionPlanExhaustedError ||
+			error instanceof PlanSourceRotatedError
+		) {
+			throw error;
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		const errorStack = error instanceof Error ? error.stack : undefined;

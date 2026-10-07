@@ -11,6 +11,7 @@
  * settings take effect — never hardcode a provider/model here.
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateObject, zodSchema } from "ai";
 import { z } from "zod";
 import { getAIModelWithMetadata } from "./dynamic-model-selector";
@@ -269,6 +270,9 @@ export async function extractRelevantExcerpts(
 		metadata = resolved.metadata;
 		trackUsage = resolved.trackUsage;
 	} catch (error) {
+		// Inside a stopped caller's dispatch guard there is nothing to fall
+		// back to: the work is over.
+		rethrowIfDispatchStopped(error);
 		console.warn(
 			`[MessageExtractor:${toolName}] Model resolution failed; using deterministic fallback`,
 			{ error: error instanceof Error ? error.message : String(error) },
@@ -355,6 +359,10 @@ export async function extractRelevantExcerpts(
 			extractorLatencyMs,
 		};
 	} catch (error) {
+		// A stop from the caller's dispatch guard (a stopped chat turn: the
+		// request was refused or aborted) is not an extractor failure; only
+		// this call's own timeout falls back below.
+		rethrowIfDispatchStopped(error);
 		const aborted =
 			error instanceof Error &&
 			(error.name === "AbortError" ||

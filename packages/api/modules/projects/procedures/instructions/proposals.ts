@@ -29,6 +29,10 @@ import {
 	migrationOpenFromRefusal,
 } from "./migration-freeze";
 import { canReviewInstructionProposals } from "./proposal-authorization";
+import {
+	buildNativeProposalChanges,
+	readNativeProposalFile,
+} from "./native-proposal-content";
 import { wakeBranchAfterCommand } from "./proposal-branch";
 import {
 	getProposalPullRequestStatus,
@@ -84,6 +88,7 @@ async function proposalRow(
 	const isProposer = proposal.user.id === viewerUserId;
 	return {
 		id: proposal.id,
+		contentKind: proposal.contentKind,
 		version: proposal.version,
 		baseVersion: proposal.baseVersion,
 		status: proposal.status,
@@ -193,7 +198,14 @@ async function buildProposalChanges(input: {
 	proposal: NonNullable<Awaited<ReturnType<typeof getInstructionProposal>>>;
 	projectId: string;
 	organizationId: string;
+	userId: string;
 }) {
+	if (input.proposal.contentKind === "GIT_INTENT") {
+		return buildNativeProposalChanges({
+			...input,
+			snapshotId: input.proposal.id,
+		});
+	}
 	const baseSnapshotId = input.proposal.baseSnapshotId;
 	if (!baseSnapshotId) {
 		throw new ORPCError("NOT_FOUND", {
@@ -352,6 +364,7 @@ export const getInstructionProposalProcedure = tenantProtectedProcedure
 							proposal,
 							projectId: input.projectId,
 							organizationId,
+							userId: context.user.id,
 						})
 					: null,
 		};
@@ -389,11 +402,19 @@ export const getInstructionProposalFileProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
-		if (
-			!proposal ||
-			proposal.status !== "READY" ||
-			proposal.baseSnapshotId === null
-		) {
+		if (!proposal || proposal.status !== "READY") {
+			throw new ORPCError("NOT_FOUND", {
+				message: "Proposal file not found",
+			});
+		}
+		if (proposal.contentKind === "GIT_INTENT") {
+			return readNativeProposalFile({
+				...input,
+				organizationId,
+				userId: context.user.id,
+			});
+		}
+		if (proposal.baseSnapshotId === null) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Proposal file not found",
 			});

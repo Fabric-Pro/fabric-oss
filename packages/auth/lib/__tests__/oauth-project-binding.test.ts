@@ -135,6 +135,36 @@ describe("an endpoint it has no business with", () => {
 });
 
 describe("authorizing", () => {
+	it("hands the provider the static resource while retaining the canonical project binding", async () => {
+		const { ctx } = context({
+			path: "/oauth2/authorize",
+			query: PROJECT_QUERY,
+		});
+		const override = await enforceOAuthResourceBinding(ctx, signedOut);
+		expect(override).toMatchObject({
+			context: { query: { resource: `${APP_URL}/api/mcp-gateway` } },
+		});
+		expect(database.saveOAuthAuthorizationResource).toHaveBeenCalledWith(
+			expect.objectContaining({ resource: PROJECT }),
+		);
+	});
+
+	it("extends a resumed project authorization carrying its static resource", async () => {
+		database.findLiveOAuthAuthorizationResource.mockResolvedValue({
+			resource: PROJECT,
+			projectId: "project-example-one",
+			audience: "mcp",
+		});
+		const { ctx } = context({
+			path: "/oauth2/authorize",
+			query: { ...PROJECT_QUERY, resource: `${APP_URL}/api/mcp-gateway` },
+		});
+		await enforceOAuthResourceBinding(ctx, signedOut);
+		expect(database.extendOAuthAuthorizationResource).toHaveBeenCalledWith(
+			"client-1",
+			CHALLENGE,
+		);
+	});
 	it("records the binding of a caller who is not signed in without asking whether the project exists", async () => {
 		const { ctx } = context({
 			path: "/oauth2/authorize",
@@ -189,7 +219,9 @@ describe("authorizing", () => {
 
 		await expect(
 			enforceOAuthResourceBinding(ctx, signedOut),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({
+			context: { query: { resource: `${APP_URL}/api/mcp-gateway` } },
+		});
 	});
 
 	describe("writes nothing for", () => {
@@ -329,13 +361,20 @@ describe("authorizing", () => {
 		expect(database.saveOAuthAuthorizationResource).not.toHaveBeenCalled();
 	});
 
-	it("keeps an authorization that names no resource alive and touches nothing else", async () => {
+	it("keeps an older project authorization narrow when its resumed query names no resource", async () => {
+		database.findLiveOAuthAuthorizationResource.mockResolvedValue({
+			resource: PROJECT,
+			projectId: "project-example-one",
+			audience: "mcp",
+		});
 		const { ctx } = context({
 			path: "/oauth2/authorize",
 			query: { client_id: "client-1", code_challenge: CHALLENGE },
 		});
 
-		await enforceOAuthResourceBinding(ctx, signedIn);
+		expect(await enforceOAuthResourceBinding(ctx, signedIn)).toMatchObject({
+			context: { query: { resource: `${APP_URL}/api/mcp-gateway` } },
+		});
 
 		expect(database.extendOAuthAuthorizationResource).toHaveBeenCalledWith(
 			"client-1",
@@ -343,6 +382,56 @@ describe("authorizing", () => {
 		);
 		expect(database.saveOAuthAuthorizationResource).not.toHaveBeenCalled();
 	});
+
+	it("names all compatibility resources for a fresh authorization that omits resource", async () => {
+		const { ctx } = context({
+			path: "/oauth2/authorize",
+			query: { client_id: "client-1", code_challenge: CHALLENGE },
+		});
+		expect(await enforceOAuthResourceBinding(ctx, signedIn)).toMatchObject({
+			context: {
+				query: {
+					resource: [
+						`${APP_URL}/api/mcp-gateway`,
+						`${APP_URL}/api/mcp-gateway/`,
+						`${APP_URL}/api/v1`,
+					],
+				},
+			},
+		});
+		expect(
+			database.extendOAuthAuthorizationResource,
+		).not.toHaveBeenCalled();
+		expect(database.saveOAuthAuthorizationResource).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ resource: null },
+		{ resource: [] },
+		{ resource: "" },
+		{ resource: ["not-a-uri"] },
+	])(
+		"does not expand explicitly malformed resource %j into compatibility audiences",
+		async ({ resource }) => {
+			const { ctx } = context({
+				path: "/oauth2/authorize",
+				query: {
+					client_id: "client-1",
+					code_challenge: CHALLENGE,
+					resource,
+				},
+			});
+			expect(
+				await enforceOAuthResourceBinding(ctx, signedIn),
+			).toBeUndefined();
+			expect(
+				database.extendOAuthAuthorizationResource,
+			).not.toHaveBeenCalled();
+			expect(
+				database.saveOAuthAuthorizationResource,
+			).not.toHaveBeenCalled();
+		},
+	);
 
 	it("leaves an organization-wide request to the plugin and writes or extends nothing", async () => {
 		const { ctx } = context({

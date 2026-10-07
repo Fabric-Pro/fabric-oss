@@ -21,6 +21,11 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
 import {
+	chatGptPlanExhaustedChatResponse,
+	chatGptPlanReconnectRefusal,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
 	abandonConversationTurnStart,
 	CARRIED_OVER_MARKER_PREFIX,
 	type ConversationTurn,
@@ -73,6 +78,7 @@ import {
 	turnStateUnavailableResponse,
 	waitForTurnWorkflow,
 } from "../turn-admission";
+import { resolveRequestTenant } from "./resolve-request-tenant";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
 // Bounds the WHOLE request from entry (see `requestStartedAt` in POST),
@@ -163,6 +169,12 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 		const body = await request.json();
@@ -185,7 +197,7 @@ export async function POST(request: NextRequest) {
 			policyContext,
 			replayTrajectoryId,
 			workspaceIds: rawWorkspaceIds,
-			projectId: providedProjectId,
+			projectId: rawProjectId,
 			conversationId: requestedConversationId,
 			systemPrompt,
 			instanceId,
@@ -196,7 +208,38 @@ export async function POST(request: NextRequest) {
 			modelOverride,
 			surface,
 			organizationSlug,
+			advisorOrigin,
 		} = body;
+
+		// The body is parsed by hand, so these ids are whatever JSON the
+		// client sent. Both reach the membership check and the tenant filters
+		// below, where an object would read as a Prisma filter
+		// (`{ not: "" }` matches any membership the caller has). Absent
+		// (null or undefined) stays absent; any other value that is not a
+		// string is refused before anything is read, as the direct-chat
+		// stream's `z.string().nullish()` does.
+		for (const [field, value] of [
+			["organizationId", requestedOrganizationId],
+			["projectId", rawProjectId],
+		] as const) {
+			if (
+				value !== null &&
+				value !== undefined &&
+				typeof value !== "string"
+			) {
+				return new Response(
+					JSON.stringify({
+						error: "Invalid request body",
+						message: `${field} must be a string`,
+					}),
+					{
+						status: 400,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+		}
+		const providedProjectId: string | undefined = rawProjectId ?? undefined;
 
 		// Bounded before it reaches the workflow input: the history went in
 		// whole, with no size limit (review F38).
@@ -359,6 +402,18 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
+		// The project access check below admits an invited guest and ignores
+		// the organization, so it cannot tell that a project belongs to a
+		// different organization than the one this chat runs in. A project
+		// outside the turn's organization is dropped here, whether it came
+		// from the body or the conversation; every later read of `projectId`
+		// sees the resolved value.
+		({ projectId } = await resolveRequestTenant({
+			userId,
+			organizationId,
+			projectId,
+		}));
+
 		// Seed history with the parent conversation's exhaustion-synthesis
 		// summary on every launch of a continued chat. Idempotent — the marker
 		// prefix lets us skip seeding when the client already round-tripped it.
@@ -469,8 +524,9 @@ export async function POST(request: NextRequest) {
 		// refused. See ../turn-admission.ts.
 		// =====================================================================
 		let newTurn = false;
-		// A planner-mode message (`save_reuse`, `weave`) gets no turn and the
-		// legacy start: see `executionModeUsesTurns`.
+		// A Weave message gets no turn and the legacy start (the Planner,
+		// `save_reuse`, runs as a turn like every other mode): see
+		// `executionModeUsesTurns`.
 		let legacyExecutionId: string | undefined;
 		let resumeExecutionId: string | undefined =
 			typeof requestedExecutionId === "string" && requestedExecutionId
@@ -577,13 +633,26 @@ export async function POST(request: NextRequest) {
 				// would tag a call that never happens.
 				aiModelResult = await getAIModelWithMetadata(
 					{ taskType: "TOOL_CALLING" },
-					{ userId, organizationId },
+					{ userId, organizationId, planEligible: true },
 				);
 			} catch (error) {
 				// AI usage-limit chokepoint hit a HARD limit.
 				// Surface the structured payload so the
 				// orchestrator client renders the shared destructive toast
 				// instead of the generic "AI gateway missing" error card.
+				// The member's plan is on here but needs reconnecting: refuse rather
+				// than bill the organization (Fizzy #2939).
+				const reconnect = chatGptPlanReconnectRefusal(error);
+				if (reconnect) {
+					return new Response(JSON.stringify(reconnect.body), {
+						status: reconnect.status,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				const exhausted = chatGptPlanExhaustedChatResponse(error);
+				if (exhausted) {
+					return exhausted;
+				}
 				if (error instanceof AiUsageLimitExceededError) {
 					return new Response(
 						JSON.stringify({
@@ -873,6 +942,9 @@ export async function POST(request: NextRequest) {
 			message: messageWithDocumentContext,
 			history: effectiveHistory,
 			userId,
+			// A person typed this turn, so its AI steps may run on their own
+			// ChatGPT plan where they turned it on (Fizzy #2939).
+			planEligible: true,
 			organizationId,
 			executionMode,
 			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
@@ -911,6 +983,15 @@ export async function POST(request: NextRequest) {
 			modelOverride,
 			surface,
 			organizationSlug,
+			// Only the Advisor (the Fabric AI page and the Fabric Agent drawer,
+			// with or without a custom agent chosen there) sends
+			// `advisorOrigin`; the MCP chat dialog, a registered agent's try
+			// workspace and Nexus share this route and do not. It lets the turn
+			// tell the model which organization it works for and search that
+			// organization's company context; the workflow checks membership
+			// and the feature gate itself (Fizzy #2719). The body is parsed by
+			// hand, so only a literal `true` counts.
+			...(advisorOrigin === true ? { companyContextAdvisor: true } : {}),
 		};
 
 		// A new run's input must fit Temporal's start frame. Refused here with
@@ -1383,7 +1464,7 @@ export async function POST(request: NextRequest) {
 
 					let resumed = Boolean(resumeExecutionId);
 					if (legacyExecutionId) {
-						// A planner-mode run: no turn, the legacy start.
+						// A Weave run: no turn, the legacy start.
 						handle = await startLegacyChatWorkflow({
 							temporalClient,
 							executionId,

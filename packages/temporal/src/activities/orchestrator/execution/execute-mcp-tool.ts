@@ -666,8 +666,8 @@ export async function executeMcpTool(
 				elapsedMs: Date.now() - startTime,
 			}),
 		// In a chat turn the heartbeat is also how a Stop reaches this
-		// activity (and aborts an image request in flight), so it ticks at
-		// the model rounds' cadence.
+		// activity (and aborts an image or Fabric AI request in flight), so
+		// it ticks at the model rounds' cadence.
 		input.turnScope
 			? HEARTBEAT_INTERVALS.FREQUENT
 			: HEARTBEAT_INTERVALS.DEFAULT,
@@ -682,10 +682,12 @@ export async function executeMcpTool(
 	try {
 		// In a chat turn, an MCP or Fabric tool call is not launched once a
 		// Stop is recorded (the Stop's Temporal cancel may not have reached
-		// this run yet). This is a launch check only: the provider requests a
-		// tool makes after it are checked individually only where the tool
-		// supports it (image generation today), not for the other Fabric AI
-		// tools (web search, scraping, patterns).
+		// this run yet). An MCP tool is checked at launch only. The Fabric AI
+		// tools run in this activity, under its turn dispatch guard, and check
+		// it again before each request they send: web search, scraping and
+		// patterns through `@repo/fabric-ai`, image generation through its own
+		// guarded models. A stop they meet leaves as an error, which the
+		// Fabric AI catch below rethrows rather than returning to the model.
 		if (input.turnScope) {
 			await assertTurnDispatchable(input.turnScope);
 		}
@@ -1202,6 +1204,7 @@ async function executeFabricCatalogTool(
 		organizationId: input.organizationId,
 		projectId: input.projectId,
 		attachedImageUrls: input.attachedImageUrls,
+		companyContextAdvisor: input.companyContextAdvisor,
 	});
 	if (!result.success) {
 		console.warn(

@@ -13,17 +13,19 @@ import { describe, expect, it, vi } from "vitest";
 // The helper itself touches none of them — these mocks just stop the module
 // graph from blowing up when we import the file.
 vi.mock("@repo/database", () => ({
+	// The config's server is one its tenant may use (see the tenant tests).
+	getMcpServerForTenant: async () => ({ isSystemProvided: true }),
 	clearRefreshFailures: vi.fn(),
 	createOauthState: vi.fn(),
 	db: {},
 	deleteOauthState: vi.fn(),
-	getCachedOAuthMetadata: vi.fn(),
 	getGoogleAccountEmail: vi.fn(),
 	getMcpConfigByIdInternal: vi.fn(),
 	getOauthState: vi.fn(),
 	getOrganizationById: vi.fn(),
-	updateMcpConfigTokens: vi.fn(),
-	updateOAuthMetadataCache: vi.fn(),
+	refreshMcpOAuthAccessToken: vi.fn(),
+	replaceMcpOAuthRegistration: vi.fn(),
+	saveMcpOAuthGrant: vi.fn(),
 }));
 
 vi.mock("@repo/temporal", () => ({

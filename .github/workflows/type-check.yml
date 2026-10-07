@@ -8,9 +8,9 @@ name: Type Check
 # Private heavy shards use the configured larger runner; public shards keep
 # standard runners. Require the stable type-check aggregate on both branches.
 #
-# WHY SHARD. A standard runner cannot host two of the heavy packages at once
-# — apps/web caps its own tsc at 10 GiB and several packages need ~8 GB — so
-# the public run has always been one Turbo task at a time, i.e. a serial
+# WHY SHARD. Under tsc 5.9 a standard runner could not host two of the heavy
+# packages at once — apps/web needed a 10 GiB heap and several packages ~8 GB —
+# so the public run has always been one Turbo task at a time, i.e. a serial
 # sweep. That made it the longest step of the relay: 9m24s for a real
 # 21-file change to a core package, with nothing else in the pipeline close.
 # Turbo concurrency cannot fix it (the box holds one heavy package's worth of
@@ -72,13 +72,16 @@ name: Type Check
 # @repo/database's ~47MB Prisma client) are re-checked by every consumer.
 # The local pr-quality-gate hook runs the same scoped check.
 #
-# MEMORY. The shared type-check wrapper defaults to a 12 GB NODE_OPTIONS heap
-# only when the caller has not already set a max-old-space-size flag. This
-# workflow keeps its explicit 12 GB setting so the CI resource contract stays
-# visible here. The ceiling is per tsc process and has to be read together
-# with the Turbo concurrency beside it: every shard runs one heavy tsc at a
-# time (`TURBO_CONCURRENCY: 1`) under a 12 GB ceiling that leaves room for the
-# OS and pnpm on the 16 GB standard runner. The staging repo's
+# MEMORY. The `type-check` scripts run TypeScript 7's native compiler
+# (`tsgo`, from tooling/tsgo), which is not a Node process, so NODE_OPTIONS
+# does not cap it. apps/web passes `--checkers 2` to hold its peak near 10 GB.
+# The 12 GB NODE_OPTIONS heap below still covers the Node tasks that run as
+# type-check dependencies (`generate`, `^build`). The shared type-check
+# wrapper defaults to the same heap only when the caller has not already set a
+# max-old-space-size flag; this workflow keeps its explicit setting so the CI
+# resource contract stays visible here. Every shard still runs one heavy
+# package at a time (`TURBO_CONCURRENCY: 1`), which leaves room for the OS and
+# pnpm on the 16 GB standard runner. The staging repo's
 # `workflow_dispatch` path reuses that same ceiling on the bigger
 # `ubuntu-8core-arm` label purely for headroom, not for extra concurrency.
 # The heavy-package memory blow-up is tracked for a compiled-packages
@@ -330,8 +333,8 @@ jobs:
       # mismatch would make the master-seeded entries unreachable from here.
       DATABASE_URL: 'postgresql://test:test@localhost:5432/test'
       DIRECT_URL: 'postgresql://test:test@localhost:5432/test'
-      # One heavy tsc at a time under a ceiling that leaves the 16 GB box
-      # room for the OS and pnpm (see MEMORY in the header).
+      # One heavy package at a time, and a heap ceiling for the Node tasks
+      # that run before tsgo (see MEMORY in the header).
       NODE_OPTIONS: '--max-old-space-size=12288'
       TURBO_CONCURRENCY: '1'
     steps:
@@ -383,7 +386,10 @@ jobs:
       # globbed as `**/*.tsbuildinfo` so the cache action never walks
       # node_modules. A .tsbuildinfo restored from a different commit is safe:
       # tsc version-checks every file it recorded and re-checks what moved.
-      # Shard-scoped for the same reason as the Turbo cache above.
+      # Shard-scoped for the same reason as the Turbo cache above. The
+      # `tsbuildinfo7` family holds TypeScript 7 build info only: tsgo
+      # discards a 5.x file and re-checks cold, so restoring the old
+      # `tsbuildinfo` family would buy nothing.
       - name: Restore TypeScript incremental state
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -397,9 +403,9 @@ jobs:
             config/tsconfig.tsbuildinfo
             party/tsconfig.tsbuildinfo
             party-cf/tsconfig.tsbuildinfo
-          key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo-${{ github.sha }}
+          key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo7-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo-
+            ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo7-
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

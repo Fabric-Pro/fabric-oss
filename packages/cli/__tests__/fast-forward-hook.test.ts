@@ -8,6 +8,7 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hookTiming } from "../src/lib/instructions/hook-timing.js";
 import { fakeGit, TIP_SHA } from "./helpers/git-fake.js";
 import {
 	makeTree,
@@ -201,33 +202,54 @@ describe("sync --hook in a checkout of a repository project", () => {
 		expect(fakeGit.merges).toEqual([]);
 	});
 
-	it("leaves a dirty checkout alone, says why once per version, and never calls either write", async () => {
+	it("lets git refuse a blocking local change, says so once per version, and changes nothing", async () => {
 		const dest = await makeTree();
 		inCheckout(dest);
 		fakeGit.state.clean = false;
+		fakeGit.state.mergeResult = {
+			kind: "failed",
+			reason: "local-changes",
+			files: ["AGENTS.md"],
+		};
 		mocks.getPublished.mockResolvedValue(served());
 
 		const first = await hook("sync", dest);
 		const second = await hook("sync", dest);
 
 		expect(first.stdout).toBe(
-			"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout is behind and has uncommitted changes — commit or stash, then pull.\n",
+			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md), so nothing was updated. Commit or stash them, then run: git pull --ff-only origin main\n",
 		);
 		expect(second.stdout).toBe("");
-		expect(writes()).toEqual([]);
+	});
+
+	it("fast-forwards past local changes git does not object to", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.clean = false;
+		mocks.getPublished.mockResolvedValue(served());
+
+		const result = await hook("sync", dest);
+
+		expect(result.stdout).toContain("fast-forwarded main from");
+		expect(writes()).toEqual(["fetchRef", "fastForwardTo"]);
 	});
 
 	it("says it again for the next published version", async () => {
 		const dest = await makeTree();
 		inCheckout(dest);
 		fakeGit.state.clean = false;
+		fakeGit.state.mergeResult = {
+			kind: "failed",
+			reason: "local-changes",
+			files: ["AGENTS.md"],
+		};
 		mocks.getPublished.mockResolvedValue(served(7));
 		await hook("sync", dest);
 		mocks.getPublished.mockResolvedValue(served(8));
 
 		const next = await hook("sync", dest);
 
-		expect(next.stdout).toContain("v8 (aaaaaaa)");
+		expect(next.stdout).toContain("local changes would be overwritten");
 	});
 
 	it.each([
@@ -314,6 +336,45 @@ describe("sync --hook in a checkout of a repository project", () => {
 			"fabric: coding instructions sync skipped: gave up after 10 s\n",
 		);
 		expect(fakeGit.merges).toEqual([]);
+	});
+
+	it("fast-forwards after a fetch that took the whole fetch budget, on the first run", async () => {
+		const saved = { ...hookTiming };
+		hookTiming.deadlineMs = 4_000;
+		hookTiming.gitMarginMs = 100;
+		try {
+			const dest = await makeTree();
+			inCheckout(dest);
+			fakeGit.state.slowFetch = true;
+			mocks.getPublished.mockResolvedValue(served());
+
+			const result = await hook("sync", dest);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toContain("fast-forwarded main from");
+			expect(fakeGit.merges).toHaveLength(1);
+			expect(
+				(await traceEntries()).map((entry) => entry.outcome),
+			).toEqual(["fast-forwarded"]);
+		} finally {
+			Object.assign(hookTiming, saved);
+		}
+	});
+
+	it("traces which stage ran out of budget, and still tells the session where the checkout stands", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.fetchResult = { kind: "timed-out" };
+		mocks.getPublished.mockResolvedValue(served());
+
+		const result = await hook("sync", dest);
+
+		expect(result.stdout).toBe(
+			"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout is behind — run: git pull --ff-only origin main\n",
+		);
+		expect(await traceEntries()).toMatchObject([
+			{ outcome: "deadline", reason: "fetch" },
+		]);
 	});
 
 	it("only reports, fetching and merging nothing, with --no-fast-forward", async () => {

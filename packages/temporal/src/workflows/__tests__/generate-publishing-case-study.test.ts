@@ -318,6 +318,8 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 				// every attempt — see `ai-non-retryable-errors.ts`.
 				"AIProviderNotConfiguredError",
 				"AiUsageLimitExceededError",
+				"SubscriptionPlanExhaustedError",
+				"ChatGptPlanAuthError",
 			],
 		});
 

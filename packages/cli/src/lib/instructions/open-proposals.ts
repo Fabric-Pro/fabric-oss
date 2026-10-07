@@ -141,9 +141,12 @@ function isOpenProposal(value: unknown): value is OpenInstructionProposal {
 		| null
 		| undefined;
 	return (
-		typeof proposal.snapshotId === "string" &&
-		typeof proposal.version === "number" &&
-		typeof proposal.baseSnapshotId === "string" &&
+		(proposal.kind === "native"
+			? typeof proposal.operationId === "string" &&
+				isNativeBase(proposal.nativeBase)
+			: typeof proposal.snapshotId === "string" &&
+				typeof proposal.version === "number" &&
+				typeof proposal.baseSnapshotId === "string") &&
 		isKnown(SNAPSHOT_STATUSES, proposal.status) &&
 		(pullRequest === null ||
 			(typeof pullRequest === "object" &&
@@ -153,6 +156,19 @@ function isOpenProposal(value: unknown): value is OpenInstructionProposal {
 					typeof pullRequest.url === "string"))) &&
 		Array.isArray(proposal.changes) &&
 		proposal.changes.every(isChange)
+	);
+}
+
+function isNativeBase(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	return (
+		"generation" in value &&
+		Number.isSafeInteger(value.generation) &&
+		typeof value.generation === "number" &&
+		value.generation > 0 &&
+		"commitSha" in value &&
+		typeof value.commitSha === "string" &&
+		/^[a-f0-9]{40}$/.test(value.commitSha)
 	);
 }
 

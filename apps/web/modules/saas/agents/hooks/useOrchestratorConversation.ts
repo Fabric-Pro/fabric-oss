@@ -160,7 +160,19 @@ interface CreateConversationInput {
 interface SaveExecutionInput {
 	conversationId: string;
 	execution: OrchestratorExecution;
+	/**
+	 * This turn's messages only: the question, any answered clarifications
+	 * and the reply. The server adds them to the conversation as it is when
+	 * the save lands; never send the rest of the conversation.
+	 */
 	messages: ConversationMessage[];
+	/**
+	 * User messages to take out of the conversation in the same write: the
+	 * question the conversation was created with before its turn ran, and a
+	 * refused first message a failed removal left behind (Fizzy #2958).
+	 */
+	removeMessageIds?: string[];
+	/** Absent keeps the stored selection, `null` clears it. */
 	selectedMcpConfigIds?: string[] | null;
 	documentChatId?: string | null;
 }
@@ -308,100 +320,35 @@ export function useOrchestratorConversation(
 		},
 	});
 
-	// Save execution mutation
+	// Save one finished turn. The server adds the turn to the conversation
+	// under a row lock (Fizzy #2949): the client never writes back a
+	// conversation it read earlier, so a turn another tab saved in between
+	// is kept.
 	const saveExecutionMutation = useMutation({
 		mutationFn: async (input: SaveExecutionInput) => {
-			// Get current conversation
-			const current = await orpcClient.agents.conversations.get({
-				id: input.conversationId,
-			});
-
-			const currentMetadata =
-				(current.metadata as unknown as OrchestratorMetadata) || {
-					mode: "orchestrator",
-					executionMode,
-					executions: [],
-					lastUpdated: new Date().toISOString(),
-				};
-
-			// Guard: ensure executions is always an array even if DB metadata was
-			// corrupted by a concurrent tool-selection update that ran before this
-			// saveExecution completed (race condition on new conversation creation).
-			const existingExecutions = Array.isArray(currentMetadata.executions)
-				? currentMetadata.executions
-				: [];
-
-			// Add new execution
-			const updatedMetadata = mergeOrchestratorConversationMetadata({
-				existing: currentMetadata as unknown as Record<string, unknown>,
-				executionMode: currentMetadata.executionMode ?? executionMode,
-				executions: [...existingExecutions, input.execution],
-				instanceId,
-				// Use caller-provided selectedMcpConfigIds if given (avoids race
-				// where DB metadata was overwritten before executions were saved),
-				// otherwise fall back to whatever is already stored in the DB.
-				selectedMcpConfigIds:
-					input.selectedMcpConfigIds !== undefined
-						? (input.selectedMcpConfigIds ?? undefined)
-						: currentMetadata.selectedMcpConfigIds,
-				documentChatId: input.documentChatId,
-			});
-
-			// Update conversation with new messages and metadata
-			const result = await orpcClient.agents.conversations.update({
-				id: input.conversationId,
+			const removeMessageIds = input.removeMessageIds?.filter(
+				(id) => id.length > 0,
+			);
+			return await orpcClient.agents.conversations.saveTurn({
+				conversationId: input.conversationId,
+				organizationId,
 				messages: input.messages,
-				metadata: updatedMetadata as unknown as Record<string, unknown>,
+				execution: { ...input.execution },
+				removeMessageIds:
+					removeMessageIds && removeMessageIds.length > 0
+						? removeMessageIds
+						: undefined,
+				settings: {
+					// Used only when the conversation has none stored.
+					executionMode,
+					instanceId,
+					selectedMcpConfigIds: input.selectedMcpConfigIds,
+					documentChatId: input.documentChatId ?? undefined,
+				},
 			});
-
-			return result;
 		},
 		onSuccess: (data) => {
 			queryClient.invalidateQueries({ queryKey: listKey });
-			queryClient.invalidateQueries({ queryKey: detailKey(data.id) });
-		},
-	});
-
-	// Update execution mutation (for in-progress updates)
-	const updateExecutionMutation = useMutation({
-		mutationFn: async (input: {
-			conversationId: string;
-			executionId: string;
-			update: Partial<OrchestratorExecution>;
-		}) => {
-			const current = await orpcClient.agents.conversations.get({
-				id: input.conversationId,
-			});
-
-			const currentMetadata =
-				current.metadata as unknown as OrchestratorMetadata;
-			if (!currentMetadata) {
-				throw new Error("Conversation has no orchestrator metadata");
-			}
-
-			// Update the specific execution
-			const executions = currentMetadata.executions.map((exec) =>
-				exec.id === input.executionId
-					? { ...exec, ...input.update }
-					: exec,
-			);
-
-			const updatedMetadata = mergeOrchestratorConversationMetadata({
-				existing: currentMetadata as unknown as Record<string, unknown>,
-				executionMode: currentMetadata.executionMode ?? executionMode,
-				executions,
-				instanceId,
-				selectedMcpConfigIds: currentMetadata.selectedMcpConfigIds,
-			});
-
-			const result = await orpcClient.agents.conversations.update({
-				id: input.conversationId,
-				metadata: updatedMetadata as unknown as Record<string, unknown>,
-			});
-
-			return result;
-		},
-		onSuccess: (data) => {
 			queryClient.invalidateQueries({ queryKey: detailKey(data.id) });
 		},
 	});
@@ -443,21 +390,6 @@ export function useOrchestratorConversation(
 			return saveExecutionMutation.mutateAsync(input);
 		},
 		[saveExecutionMutation],
-	);
-
-	const updateExecution = useCallback(
-		async (
-			conversationId: string,
-			executionId: string,
-			update: Partial<OrchestratorExecution>,
-		) => {
-			return updateExecutionMutation.mutateAsync({
-				conversationId,
-				executionId,
-				update,
-			});
-		},
-		[updateExecutionMutation],
 	);
 
 	/**
@@ -541,13 +473,11 @@ export function useOrchestratorConversation(
 		isLoadingList,
 		isLoadingDetail,
 		isSaving: saveExecutionMutation.isPending,
-		isUpdating: updateExecutionMutation.isPending,
 
 		// Actions
 		createConversation,
 		selectConversation,
 		saveExecution,
-		updateExecution,
 		rehydrateConversation,
 		getLastExecution,
 		convertStepResults,

@@ -9,7 +9,7 @@
 		"dev": "tsx watch --import ./src/telemetry.ts src/index.ts",
 		"build": "tsup --config tsup.config.ts",
 		"start": "node --import ./dist/telemetry.js dist/index.js",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"typecheck": "pnpm run type-check"
 	},
 	"dependencies": {

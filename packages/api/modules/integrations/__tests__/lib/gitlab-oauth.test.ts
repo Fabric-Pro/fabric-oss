@@ -122,6 +122,9 @@ describe("exchangeCodeForToken", () => {
 				headers: {
 					"Content-Type": "application/x-www-form-urlencoded",
 				},
+				// The code and client credentials are never re-sent by a
+				// redirect.
+				redirect: "error",
 			}),
 		);
 

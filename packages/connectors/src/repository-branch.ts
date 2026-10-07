@@ -1,4 +1,22 @@
 import { shortBranchName } from "./azure-devops/discovery";
+import {
+	azureDevOpsHeaders,
+	gitlabHeaders,
+	gitlabHost,
+	parseAdoRepositoryUrl,
+} from "./repository-address";
+import {
+	AZURE_DEVOPS_API_VERSION,
+	getRepositoryJson,
+	isRecord,
+	repositoryApiTarget,
+} from "./repository-api";
+
+export {
+	gitlabHeaders,
+	gitlabHost,
+	parseAdoRepositoryUrl,
+} from "./repository-address";
 
 /**
  * Remote branch verification (request-path helper)
@@ -42,13 +60,18 @@ export interface VerifyRepositoryBranchInput {
 	 * the token as a Bearer header regardless.
 	 */
 	gitlabAuth?: "bearer" | "private-token";
+	/** Azure DevOps PATs use Basic; OAuth access tokens use Bearer. */
+	azureDevOpsAuth?: "basic" | "bearer";
 	branch: string;
+	signal?: AbortSignal;
 }
 
 const ADO_API_VERSION = "7.1";
 
 /** Map an HTTP status to an outcome shared by all three providers. */
-function outcomeFromStatus(status: number): BranchVerifyOutcome {
+function outcomeFromStatus(
+	status: number,
+): Exclude<BranchVerifyOutcome, "exists"> {
 	if (status === 401 || status === 403) {
 		return "unauthorized";
 	}
@@ -79,24 +102,6 @@ async function verifyGitHubBranch(
 	return outcomeFromStatus(response.status);
 }
 
-export function gitlabHost(): string {
-	// Pinned unconditionally: project repo integrations are gitlab.com-only
-	// (`parseRepoUrl` rejects every other host, and the PAT connect path pins
-	// the same host for exactly this reason). Deriving the fetch origin from a
-	// stored URL string would let one point these authenticated requests —
-	// which carry a live access token — at an internal host (SSRF).
-	return "https://gitlab.com";
-}
-
-export function gitlabHeaders(input: {
-	token: string;
-	gitlabAuth?: "bearer" | "private-token";
-}): Record<string, string> {
-	return input.gitlabAuth === "private-token"
-		? { "PRIVATE-TOKEN": input.token }
-		: { Authorization: `Bearer ${input.token}` };
-}
-
 async function verifyGitLabBranch(
 	input: VerifyRepositoryBranchInput,
 ): Promise<BranchVerifyOutcome> {
@@ -115,44 +120,6 @@ async function verifyGitLabBranch(
 }
 
 /** Extract org + project + API host from an Azure DevOps repository URL. */
-export function parseAdoRepositoryUrl(repositoryUrl: string): {
-	organization: string;
-	project: string;
-	host: string;
-} | null {
-	// Both patterns are anchored at `^`: a repository URL is parsed from its
-	// start, never found somewhere inside a longer string. Anchoring also
-	// removes the polynomial blow-up an unanchored search has on a caller-
-	// supplied URL — every position in the string was a candidate start, and
-	// the unbounded `[^.]+` / `[^/]+` span was re-scanned from each one.
-	// Bounded span: js/polynomial-redos
-	// https://dev.azure.com/{org}/{project}/_git/{repo}
-	const devAzure =
-		/^https?:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/[^/]+/i.exec(
-			repositoryUrl,
-		);
-	if (devAzure) {
-		return {
-			organization: devAzure[1],
-			project: decodeURIComponent(devAzure[2]),
-			host: "https://dev.azure.com",
-		};
-	}
-	// https://{org}.visualstudio.com/{project}/_git/{repo}
-	const legacy =
-		/^https?:\/\/([^.]+)\.visualstudio\.com\/([^/]+)\/_git\/[^/]+/i.exec(
-			repositoryUrl,
-		);
-	if (legacy) {
-		return {
-			organization: legacy[1],
-			project: decodeURIComponent(legacy[2]),
-			host: `https://${legacy[1]}.visualstudio.com`,
-		};
-	}
-	return null;
-}
-
 async function verifyAzureDevOpsBranch(
 	input: VerifyRepositoryBranchInput,
 ): Promise<BranchVerifyOutcome> {
@@ -189,10 +156,7 @@ async function verifyAzureDevOpsBranch(
 		repoName,
 	)}/refs?${params.toString()}`;
 	const response = await fetch(url, {
-		headers: {
-			Authorization: `Basic ${Buffer.from(`:${input.token}`).toString("base64")}`,
-			Accept: "application/json",
-		},
+		headers: azureDevOpsHeaders(input),
 	});
 	// ADO answers an invalid/expired PAT with a 203 + HTML sign-in page rather
 	// than a clean 401 — treat it as the credential failure it is.
@@ -231,6 +195,103 @@ export async function verifyRepositoryBranch(
 		}
 	} catch {
 		return "unreachable";
+	}
+}
+
+const BRANCH_HEAD_TIMEOUT_MS = 15_000;
+
+export type ResolveRepositoryBranchHeadResult =
+	| { ok: true; commitSha: string }
+	| { ok: false; outcome: Exclude<BranchVerifyOutcome, "exists"> };
+
+function missingBranchHead(): ResolveRepositoryBranchHeadResult {
+	return { ok: false, outcome: "unreachable" };
+}
+
+/**
+ * Resolve one configured branch's current commit without walking the bounded
+ * branch-picker pages. This is the commit pin for direct reads, so an exact
+ * ref is required even where a provider's branch filter is prefix-based.
+ */
+export async function resolveRepositoryBranchHead(
+	input: VerifyRepositoryBranchInput,
+): Promise<ResolveRepositoryBranchHeadResult> {
+	try {
+		const target = repositoryApiTarget(input);
+		if (!target) {
+			return missingBranchHead();
+		}
+		const options = { timeoutMs: BRANCH_HEAD_TIMEOUT_MS };
+		switch (input.provider) {
+			case "GITHUB": {
+				const response = await getRepositoryJson(
+					target,
+					`/branches/${encodeURIComponent(input.branch)}`,
+					options,
+				);
+				if (!response.ok) {
+					return response;
+				}
+				const commit = isRecord(response.data)
+					? response.data.commit
+					: null;
+				return isRecord(commit) && typeof commit.sha === "string"
+					? { ok: true, commitSha: commit.sha }
+					: missingBranchHead();
+			}
+			case "GITLAB": {
+				const response = await getRepositoryJson(
+					target,
+					`/repository/branches/${encodeURIComponent(input.branch)}`,
+					options,
+				);
+				if (!response.ok) {
+					return response;
+				}
+				const commit = isRecord(response.data)
+					? response.data.commit
+					: null;
+				return isRecord(commit) && typeof commit.id === "string"
+					? { ok: true, commitSha: commit.id }
+					: missingBranchHead();
+			}
+			case "AZURE_DEVOPS": {
+				const params = new URLSearchParams({
+					filter: `heads/${input.branch}`,
+					"api-version": AZURE_DEVOPS_API_VERSION,
+				});
+				const response = await getRepositoryJson(
+					target,
+					`/refs?${params.toString()}`,
+					options,
+				);
+				if (!response.ok) {
+					return response;
+				}
+				const expected = `refs/heads/${input.branch}`;
+				const refs = isRecord(response.data)
+					? response.data.value
+					: null;
+				if (!Array.isArray(refs)) {
+					return missingBranchHead();
+				}
+				const ref = refs.find(
+					(item) => isRecord(item) && item.name === expected,
+				);
+				if (ref === undefined) {
+					return { ok: false, outcome: "not-found" };
+				}
+				return isRecord(ref) && typeof ref.objectId === "string"
+					? { ok: true, commitSha: ref.objectId }
+					: missingBranchHead();
+			}
+			default: {
+				const unreachable: never = input.provider;
+				return unreachable;
+			}
+		}
+	} catch {
+		return missingBranchHead();
 	}
 }
 
@@ -366,10 +427,7 @@ async function listAzureDevOpsBranches(
 		repoName,
 	)}/refs?${params.toString()}`;
 	const response = await fetch(url, {
-		headers: {
-			Authorization: `Basic ${Buffer.from(`:${input.token}`).toString("base64")}`,
-			Accept: "application/json",
-		},
+		headers: azureDevOpsHeaders(input),
 	});
 	if (response.status === 203) {
 		return { ok: false, outcome: "unauthorized" };
@@ -429,6 +487,7 @@ export interface ResolveDefaultBranchInput {
 	repo: string;
 	azureOrganization?: string | null;
 	gitlabAuth?: "bearer" | "private-token";
+	azureDevOpsAuth?: "basic" | "bearer";
 }
 
 async function resolveGitHubDefaultBranch(
@@ -493,10 +552,7 @@ async function resolveAzureDevOpsDefaultBranch(
 		repoName,
 	)}?api-version=${ADO_API_VERSION}`;
 	const response = await fetch(url, {
-		headers: {
-			Authorization: `Basic ${Buffer.from(`:${input.token}`).toString("base64")}`,
-			Accept: "application/json",
-		},
+		headers: azureDevOpsHeaders(input),
 		signal: AbortSignal.timeout(5000),
 	});
 	// ADO answers a bad/expired PAT with 203 + an HTML sign-in page (`ok` is true

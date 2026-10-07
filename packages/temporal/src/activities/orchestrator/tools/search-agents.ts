@@ -14,6 +14,11 @@ import { getAgentsWithEmbeddings, updateAgentEmbedding } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { CacheKeys, CacheTTL, RedisCache } from "../../../lib/redis-cache";
+import {
+	rethrowIfTurnStopped,
+	settleAll,
+	startTurnHeartbeat,
+} from "../turn-dispatch";
 import { cosineSimilarity } from "./capability-embeddings";
 import {
 	type CapabilityWithKeywords,
@@ -112,8 +117,23 @@ function matchAlwaysAvailableAgents(query: string): Array<{
  * 1. Check always-available agents first
  * 2. Extract KEYWORDS from agent descriptions for BM25-style matching
  * 3. Combine with semantic search using hybrid scoring
+ *
+ * In a chat turn (`input.turnScope`) the embedding requests are checked
+ * against the turn record and aborted by a Stop (see searchAvailableTools),
+ * and a stop is rethrown rather than scored without embeddings.
  */
 export async function searchAvailableAgents(
+	input: SearchAvailableAgentsInput,
+): Promise<SearchAvailableAgentsOutput> {
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await runAgentSearch(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function runAgentSearch(
 	input: SearchAvailableAgentsInput,
 ): Promise<SearchAvailableAgentsOutput> {
 	const startTime = Date.now();
@@ -233,6 +253,9 @@ export async function searchAvailableAgents(
 			).catch(() => {});
 		}
 	} catch (error) {
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		console.warn(
 			"[SearchAgents] Failed to generate query embedding:",
 			error,
@@ -257,7 +280,11 @@ export async function searchAvailableAgents(
 	// Resolve embeddings for all filtered agents.
 	// Priority: cached embedding in metadata → generate on-the-fly and persist
 	// for next call (fire-and-forget). This reduces O(n) API calls to O(cache_misses).
-	const agentEmbeddings: (number[] | null)[] = await Promise.all(
+	// settleAll, not Promise.all: in a chat turn a stop rejects one callback
+	// while a sibling's embedding request may still be in flight (aborted by
+	// the turn guard). The activity must not return, and stop its heartbeat,
+	// before that request has settled.
+	const agentEmbeddings: (number[] | null)[] = await settleAll(
 		filteredAgents.map(async (agent) => {
 			// Redis L1: key is scoped to the caller's embedding model so
 			// different tenants with different models get separate cache entries.
@@ -336,6 +363,9 @@ export async function searchAvailableAgents(
 
 					return embedding;
 				} catch (error) {
+					if (input.turnScope) {
+						rethrowIfTurnStopped(error);
+					}
 					console.warn(
 						`[SearchAgents] Failed to generate embedding for ${agent.agentId}:`,
 						error,

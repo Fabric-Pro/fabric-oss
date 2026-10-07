@@ -13,6 +13,10 @@
  * 4. Unknown messageIds returned by the LLM are dropped.
  */
 
+import {
+	type DispatchGuard,
+	runWithDispatchGuard,
+} from "@repo/utils/dispatch-guard";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock @repo/database BEFORE the module graph loads anything that reaches
@@ -204,6 +208,49 @@ describe("extractRelevantExcerpts", () => {
 			expect(e.excerpt.length).toBeLessThanOrEqual(101);
 			expect(e.relevance).toBeNull();
 		}
+	});
+
+	it("rethrows a stop from the caller's dispatch guard instead of falling back", async () => {
+		// A stopped Advisor chat turn: the request was refused or aborted.
+		// The deterministic fallback would hand the stopped turn an answer.
+		class StopError extends Error {}
+		const stop = new StopError("turn stopped");
+		generateObjectMock.mockRejectedValue(stop);
+		const guard: DispatchGuard = {
+			key: "turn-1",
+			assertDispatchable: async () => undefined,
+			abortSignal: () => undefined,
+			rethrowIfStopped: (error) => {
+				if (error instanceof StopError) {
+					throw error;
+				}
+			},
+		};
+
+		await expect(
+			runWithDispatchGuard(guard, () =>
+				extractRelevantExcerpts({
+					rawMessages: raw(12),
+					query: "anything",
+					userId: "u",
+					maxExcerpts: 5,
+					maxCharsPerExcerpt: 100,
+				}),
+			),
+		).rejects.toBe(stop);
+
+		// Inside the same guard, an ordinary provider failure still falls back.
+		generateObjectMock.mockRejectedValue(new Error("provider 500"));
+		const res = await runWithDispatchGuard(guard, () =>
+			extractRelevantExcerpts({
+				rawMessages: raw(12),
+				query: "anything",
+				userId: "u",
+				maxExcerpts: 5,
+				maxCharsPerExcerpt: 100,
+			}),
+		);
+		expect(res.fallback).toBe(true);
 	});
 
 	it("does not hang on a message body with a huge unclosed HTML tag run (js/polynomial-redos)", async () => {

@@ -11,6 +11,7 @@
  * regardless of embedding freshness or search relevance.
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -42,6 +43,9 @@ export class ArchitectureDecisionsHandler implements StepHandler {
 			const output = await this.listDecisions(input);
 			return { handled: true, output };
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const message =
 				error instanceof Error ? error.message : String(error);
 			console.error("[ArchitectureDecisionsHandler] failed:", error);

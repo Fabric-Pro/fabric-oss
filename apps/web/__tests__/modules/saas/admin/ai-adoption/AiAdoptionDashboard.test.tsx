@@ -3,10 +3,17 @@
  * (Fizzy #2230, Phase 0). Coverage: populated payload renders the
  * acceptance tiles, composition labels, and usage tiles; the empty payload
  * shows the zero states; the period switcher refetches with the new day
- * count; low-sample decisions surface the caution badge.
+ * count; low-sample decisions surface the caution badge; the ChatGPT plan
+ * vs API table splits mixed organizations.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -136,6 +143,48 @@ const POPULATED = {
 			detail: "tightened the rubric",
 		},
 	],
+	billingSourceByOrganization: {
+		rows: [
+			{
+				organizationId: "org-a",
+				organizationName: "Example Org",
+				plan: {
+					requests: 30,
+					totalTokens: 45_000,
+					estimatedApiCostMicroUsd: 1_250_000,
+					referenceModels: ["gpt-6-astra"],
+				},
+				api: {
+					requests: 10,
+					totalTokens: 8_000,
+					costMicroUsd: 3_500_000,
+				},
+			},
+			{
+				organizationId: null,
+				organizationName: null,
+				plan: {
+					requests: 2,
+					totalTokens: 700,
+					estimatedApiCostMicroUsd: 20_000,
+					referenceModels: ["gpt-6-sol"],
+				},
+				api: { requests: 0, totalTokens: 0, costMicroUsd: 0 },
+			},
+			{
+				organizationId: "org-gone",
+				organizationName: null,
+				plan: {
+					requests: 0,
+					totalTokens: 0,
+					estimatedApiCostMicroUsd: 0,
+					referenceModels: [],
+				},
+				api: { requests: 4, totalTokens: 900, costMicroUsd: 70_000 },
+			},
+		],
+		totalOrganizations: 3,
+	},
 	minSampleSize: 30,
 };
 
@@ -168,6 +217,7 @@ const EMPTY = {
 	usageByFeature: [],
 	outcomeSegments: [],
 	changeAnnotations: [],
+	billingSourceByOrganization: { rows: [], totalOrganizations: 0 },
 	minSampleSize: 30,
 };
 
@@ -304,5 +354,85 @@ describe("AiAdoptionDashboard", () => {
 		expect(
 			await screen.findByText(/No verdicts recorded yet/),
 		).toBeInTheDocument();
+	});
+
+	it("splits each organization's calls between ChatGPT plan and API", async () => {
+		mockMetrics.mockResolvedValue(POPULATED);
+		renderDashboard();
+
+		const table = await screen.findByRole("table", {
+			name: "ChatGPT plan and API usage per organization",
+		});
+		const rows = within(table).getAllByRole("row");
+		// Header + three organizations, in the order the query returned them.
+		expect(rows).toHaveLength(4);
+
+		const mixed = within(rows[1] as HTMLElement);
+		expect(mixed.getByRole("rowheader")).toHaveTextContent("Example Org");
+		expect(mixed.getByText("30")).toBeInTheDocument();
+		expect(mixed.getByText("45K")).toBeInTheDocument();
+		expect(mixed.getByText("10")).toBeInTheDocument();
+		expect(mixed.getByText("8K")).toBeInTheDocument();
+		expect(mixed.getByText("$3.50")).toBeInTheDocument();
+		// 30 of 40 calls ran on the plan.
+		expect(mixed.getByText("75%")).toBeInTheDocument();
+		// What the plan calls would have cost on API billing, as an estimate.
+		expect(
+			within(table).getByRole("columnheader", {
+				name: "Est. API cost of plan usage",
+			}),
+		).toBeInTheDocument();
+		// Struck through — what it would have cost, not what was charged —
+		// with the explanation on focus.
+		const estimate = mixed.getByText("$1.25");
+		expect(estimate.tagName).toBe("S");
+		fireEvent.focus(estimate.closest("button") as HTMLElement);
+		expect(
+			(
+				await screen.findAllByText(
+					"Covered by members' ChatGPT plans, so nothing was billed. At the provider's API list prices these tokens would have cost about $1.25 (estimate, priced as gpt-6-astra).",
+				)
+			).length,
+		).toBeGreaterThan(0);
+
+		const unattributed = within(rows[2] as HTMLElement);
+		expect(unattributed.getByRole("rowheader")).toHaveTextContent(
+			"No organization",
+		);
+		expect(unattributed.getByText("100%")).toBeInTheDocument();
+
+		const apiOnly = within(rows[3] as HTMLElement);
+		expect(apiOnly.getByRole("rowheader")).toHaveTextContent(
+			"Deleted organization",
+		);
+		expect(apiOnly.getByText("$0.07")).toBeInTheDocument();
+		expect(apiOnly.getByText("0%")).toBeInTheDocument();
+
+		expect(screen.queryByText(/Showing the top/)).not.toBeInTheDocument();
+	});
+
+	it("says when the organization table is truncated", async () => {
+		mockMetrics.mockResolvedValue({
+			...POPULATED,
+			billingSourceByOrganization: {
+				...POPULATED.billingSourceByOrganization,
+				totalOrganizations: 75,
+			},
+		});
+		renderDashboard();
+
+		expect(
+			await screen.findByText(/Showing the top 3 of 75 organizations/),
+		).toBeInTheDocument();
+	});
+
+	it("omits the billing source table when the window has no usage", async () => {
+		mockMetrics.mockResolvedValue(EMPTY);
+		renderDashboard();
+
+		await screen.findAllByText("No activity in this period.");
+		expect(
+			screen.queryByText("ChatGPT plan vs API by organization"),
+		).not.toBeInTheDocument();
 	});
 });

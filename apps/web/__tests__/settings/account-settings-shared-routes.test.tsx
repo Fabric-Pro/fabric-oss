@@ -93,6 +93,14 @@ vi.mock("@saas/settings/components/NotificationDeliveryForm", () => ({
 vi.mock("@saas/settings/components/AiProvidersSettingsForm", () => ({
 	AiProvidersSettingsForm: () => <div>Personal AI provider keys</div>,
 }));
+// The page mounts the form through this wrapper since Fizzy #2770, which
+// also reads the ChatGPT plan status; same module-boundary stub.
+vi.mock(
+	"@saas/settings/components/chatgpt-plan/AccountAiProvidersSettings",
+	() => ({
+		AccountAiProvidersSettings: () => <div>Personal AI provider keys</div>,
+	}),
+);
 
 import PersonalSettingsRedirect from "../../app/(saas)/app/(account)/settings/[[...path]]/page";
 import OrgAccountAiProvidersPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/ai-providers/page";

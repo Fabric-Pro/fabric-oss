@@ -12,10 +12,11 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
+import { Label } from "@ui/components/label";
 import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 
 /**
@@ -37,6 +38,7 @@ export function InstructionsSettingsDialog({
 	canEdit: mayEdit,
 	pausedReason = null,
 	repositorySection,
+	repositoryMode = false,
 }: {
 	projectId: string;
 	open: boolean;
@@ -54,7 +56,10 @@ export function InstructionsSettingsDialog({
 	pausedReason?: string | null;
 	/** The Repository section (§7.4), when the project syncs or is left in repository mode. */
 	repositorySection?: ReactNode;
+	/** The project reads its files from a repository, so the rules apply to what Fabric reads rather than to uploads. */
+	repositoryMode?: boolean;
 }) {
+	const globsId = useId();
 	const actionError = useInstructionActionError();
 	const canEdit = mayEdit && pausedReason === null;
 	const t = useTranslations("projects.codingInstructions.settingsDialog");
@@ -128,7 +133,13 @@ export function InstructionsSettingsDialog({
 			<DialogContent className="max-w-xl">
 				<DialogHeader>
 					<DialogTitle>{t("title")}</DialogTitle>
-					<DialogDescription>{t("description")}</DialogDescription>
+					<DialogDescription>
+						{t(
+							repositoryMode
+								? "descriptionRepository"
+								: "description",
+						)}
+					</DialogDescription>
 				</DialogHeader>
 				{canEdit ? null : (
 					<p
@@ -139,8 +150,9 @@ export function InstructionsSettingsDialog({
 					</p>
 				)}
 				{repositorySection}
+				<Label htmlFor={globsId}>{t("textareaLabel")}</Label>
 				<Textarea
-					aria-label={t("textareaLabel")}
+					id={globsId}
 					placeholder={(settings.data?.defaultIgnoreGlobs ?? []).join(
 						"\n",
 					)}

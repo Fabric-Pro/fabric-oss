@@ -103,10 +103,15 @@ export function TwoFactorBlock() {
 		mutationFn: async () => {
 			const { data, error } = await authClient.twoFactor.enable({
 				password,
+				method: "totp",
 			});
 
 			if (error) {
 				throw error;
+			}
+
+			if (!data || data.method !== "totp") {
+				throw new Error("Unexpected two-factor enrollment method.");
 			}
 
 			const fresh = data.backupCodes ?? [];

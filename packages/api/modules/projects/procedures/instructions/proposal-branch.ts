@@ -30,14 +30,17 @@ import {
 	joinProposalBranch,
 	listMemberBranches,
 	listProposalBranchOwnerIds,
+	loadGitIntent,
 	type ProposalBranchNaming,
 	projectMemberBranch,
 	proposeBranchProposalAgain,
+	requestProposalBranchRefresh,
 	requestProposalBranchRetry,
 	startOverProposalBranch,
 	stopTrackingBranch,
 	tryBranchProposalAgain,
 } from "@repo/database";
+import { fileTypingFor } from "@repo/instructions";
 import { memberBranchRef } from "@repo/instructions/proposal-branch-ref";
 import {
 	repositoryIdentity,
@@ -50,6 +53,7 @@ import {
 	assertRepositoryProposalAccess,
 	canReviewInstructionProposals,
 } from "./proposal-authorization";
+import { runProposalBranchRefreshWorkflow } from "./proposal-branch-refresh-workflow";
 import {
 	type ProposalBranchView,
 	proposalBranchView,
@@ -252,6 +256,33 @@ function branchNotFound(): never {
 	throw new ORPCError("NOT_FOUND", { message: "Branch not found" });
 }
 
+function branchChanged(): never {
+	throw new ORPCError("CONFLICT", {
+		message: "The branch changed just now. Refresh and try again.",
+		data: { reason: "BRANCH_CHANGED" },
+	});
+}
+
+function refreshRefusal(refused: {
+	reason: "cooldown" | "provider_rate_limited";
+	retryAfterSeconds: number;
+}): never {
+	const retryAfter = refused.retryAfterSeconds;
+	throw new ORPCError("TOO_MANY_REQUESTS", {
+		message:
+			refused.reason === "provider_rate_limited"
+				? `The repository's provider asked Fabric to wait before trying again. Fabric will try again by itself; you can refresh in ${retryAfter} seconds.`
+				: `This pull request was refreshed a moment ago. Try again in ${retryAfter} seconds.`,
+		data: {
+			reason:
+				refused.reason === "provider_rate_limited"
+					? "PULL_REQUEST_PROVIDER_RATE_LIMITED"
+					: "PULL_REQUEST_REFRESH_COOLDOWN",
+			retryAfter,
+		},
+	});
+}
+
 /** The branch, for its owner or a reviewer; NOT_FOUND for anyone else. */
 async function readableBranch(
 	caller: ProposalBranchCaller & { branchId: string },
@@ -276,6 +307,59 @@ async function readableBranch(
 		return branch;
 	}
 	return branchNotFound();
+}
+
+/**
+ * Runs one authorized, bounded provider observation of an OPEN branch.
+ * Display polling stays database-only; this is only the explicit action.
+ */
+export async function refreshProposalBranch(
+	caller: ProposalBranchCaller & {
+		branchId: string;
+		expectedAttempt: number;
+	},
+): Promise<{ refreshed: boolean; pending: boolean }> {
+	const branch = await readableBranch(caller);
+	if (branch.attempt !== caller.expectedAttempt) {
+		return branchChanged();
+	}
+	const admission = await requestProposalBranchRefresh({
+		branchId: branch.id,
+		projectId: caller.projectId,
+		organizationId: caller.organizationId,
+		expectedAttempt: caller.expectedAttempt,
+	});
+	if (admission === null) {
+		const current = await readableBranch(caller);
+		if (current.attempt !== caller.expectedAttempt) {
+			return branchChanged();
+		}
+		return { refreshed: false, pending: false };
+	}
+	if (!admission.admitted) {
+		return refreshRefusal(admission);
+	}
+	const outcome = await runProposalBranchRefreshWorkflow({
+		branchId: branch.id,
+		projectId: caller.projectId,
+		organizationId: caller.organizationId,
+		expectedAttempt: admission.attempt,
+	});
+	return { refreshed: true, pending: outcome.kind === "pending" };
+}
+
+/**
+ * The individual suggestion's Refresh on an OPEN member-branch proposal: the
+ * branch's own Refresh for the branch the proposal is on, so the same
+ * authorization, cooldown, provider-backoff and attempt fences apply and a
+ * terminal provider fact settles the suggestion at once. A branch that is no
+ * longer OPEN is left to the sweeper.
+ */
+export async function refreshBranchOfProposal(
+	caller: ProposalBranchCaller & { branchId: string },
+): Promise<void> {
+	const branch = await readableBranch(caller);
+	await refreshProposalBranch({ ...caller, expectedAttempt: branch.attempt });
 }
 
 /** The branch, for its owner only; NOT_FOUND for anyone else. */
@@ -521,11 +605,41 @@ export async function readMyProposalBranchFile(
 	if (!entry || entry.state !== "written" || entry.snapshotId === null) {
 		return branchFileNotFound();
 	}
-	const file = await getInstructionFileByPath(
-		entry.snapshotId,
-		caller.organizationId,
-		caller.path,
-	);
+	const intent = await loadGitIntent({
+		snapshotId: entry.snapshotId,
+		projectId: caller.projectId,
+		organizationId: caller.organizationId,
+	});
+	const changed =
+		intent?.status === "READY"
+			? intent.gitIntentEntries.find(
+					(file) =>
+						file.path === caller.path && file.operation === "PUT",
+				)
+			: undefined;
+	const file = intent
+		? changed &&
+			changed.storageKey !== null &&
+			changed.sha256 !== null &&
+			changed.size !== null
+			? {
+					projectId: caller.projectId,
+					path: changed.path,
+					sha256: changed.sha256,
+					storageKey: changed.storageKey,
+					size: changed.size,
+					mimeType:
+						changed.mimeType ??
+						fileTypingFor(changed.path).mimeType,
+					isText: changed.isText,
+					mode: changed.mode,
+				}
+			: null
+		: await getInstructionFileByPath(
+				entry.snapshotId,
+				caller.organizationId,
+				caller.path,
+			);
 	if (
 		!file ||
 		file.projectId !== caller.projectId ||

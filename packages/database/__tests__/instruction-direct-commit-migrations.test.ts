@@ -10,8 +10,8 @@
  * rewritten or locked for it and the previous app version, which never reads
  * or writes them, is unaffected.
  *
- * The set is pinned too: every migration whose executable SQL names this
- * feature's new identifiers must be one of the three.
+ * The inventory also includes the native Git intent receipt constraint;
+ * further migrations naming these identifiers must be added explicitly.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,7 +26,12 @@ const DESTINATION =
 	"20261002150000_instruction_proposal_destination_repository_commit";
 const TRIGGER = "20261002150100_instruction_sync_trigger_commit_pushed";
 const COLUMNS = "20261002150200_instruction_snapshot_direct_commit_columns";
-const MIGRATIONS = [DESTINATION, TRIGGER, COLUMNS];
+const MIGRATIONS = [
+	DESTINATION,
+	TRIGGER,
+	COLUMNS,
+	"20261006110000_instruction_git_intents",
+];
 
 const NEW_IDENTIFIERS =
 	/'REPOSITORY_COMMIT'|'COMMIT_PUSHED'|"commitContext"|"commitOutcome"/;
@@ -56,7 +61,7 @@ function statements(name: string): string[] {
 }
 
 describe("direct commit migrations (Fizzy #2878 §10)", () => {
-	it("are exactly these three: no other migration names the feature's new identifiers", () => {
+	it("match the explicit inventory: no other migration names the feature's new identifiers", () => {
 		const touching = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name)

@@ -40,6 +40,7 @@ vi.mock("@repo/database", () => ({
 		// MCP configs or repository links.
 		mCPConfig: {
 			findFirst: async () => null,
+			findMany: async () => [],
 			updateMany: vi.fn(async () => ({ count: 0 })),
 		},
 		projectRepositoryIntegration: { findMany: async () => [] },

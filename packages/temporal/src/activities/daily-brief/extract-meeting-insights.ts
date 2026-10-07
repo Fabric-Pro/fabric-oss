@@ -14,6 +14,7 @@
  * back to the transcript's `summary` field when no contextId is present or the
  * context has no content.
  */
+import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	generateObject,
 	getAIModelWithMetadata,
@@ -545,7 +546,10 @@ export async function extractMeetingInsightsActivity(
 				transcriptCuid: t.id,
 				error: err instanceof Error ? err.message : String(err),
 			});
-			if (failOnError) {
+			// A spent ChatGPT plan fails every transcript alike; the workflow
+			// waits for a reset and runs the step again (Fizzy #2770), rather
+			// than storing an empty extraction for each.
+			if (failOnError || err instanceof SubscriptionPlanExhaustedError) {
 				throw err;
 			}
 			insights.push({

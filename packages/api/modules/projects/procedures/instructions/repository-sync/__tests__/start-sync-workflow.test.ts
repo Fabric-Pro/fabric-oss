@@ -14,6 +14,8 @@ const m = vi.hoisted(() => ({
 	start: vi.fn(),
 	getHandle: vi.fn(),
 	withCorrelationMemo: vi.fn((o: unknown) => o),
+	getProjectInstructionSettings: vi.fn(),
+	getInstructionRepositorySync: vi.fn(),
 }));
 
 vi.mock("@repo/instructions", () => ({
@@ -24,6 +26,22 @@ vi.mock("@repo/temporal", () => ({
 	getTemporalClient: async () => ({
 		workflow: { start: m.start, getHandle: m.getHandle },
 	}),
+}));
+vi.mock("@repo/database", () => ({
+	getProjectInstructionSettings: (...args: unknown[]) =>
+		m.getProjectInstructionSettings(...args),
+	getInstructionRepositorySync: (...args: unknown[]) =>
+		m.getInstructionRepositorySync(...args),
+	instructionRepositoryImportAllowed: (
+		settings: {
+			sourceOfTruth?: unknown;
+			migration?: { state?: unknown; syncId?: unknown };
+		} | null,
+		syncId: string,
+	) =>
+		settings?.sourceOfTruth === "REPOSITORY" &&
+		settings.migration?.state === "SWITCHING" &&
+		settings.migration.syncId === syncId,
 }));
 vi.mock("../../../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: m.withCorrelationMemo,
@@ -53,9 +71,29 @@ beforeEach(() => {
 	m.getHandle.mockReset();
 	m.withCorrelationMemo.mockClear();
 	m.withCorrelationMemo.mockImplementation((o: unknown) => o);
+	m.getProjectInstructionSettings.mockResolvedValue({
+		sourceOfTruth: "REPOSITORY",
+		migration: { state: "SWITCHING", syncId: "sync_1" },
+	});
+	m.getInstructionRepositorySync.mockResolvedValue({ id: "sync_1" });
 });
 
 describe("startInstructionRepositorySync", () => {
+	it("refuses an ordinary direct repository before starting a legacy import", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			migration: null,
+		});
+
+		await expect(
+			startInstructionRepositorySync(input),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { code: "REPOSITORY_DIRECT_READ" },
+		});
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
 	it("starts the workflow by the deterministic id, on the instructions queue, FAIL conflict policy, args=[input], through the correlation memo", async () => {
 		m.start.mockResolvedValue(undefined);
 

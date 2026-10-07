@@ -10,7 +10,7 @@
 	"name": "@repo/i18n",
 	"private": true,
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"version": "0.0.0",
 	"license": "Apache-2.0"

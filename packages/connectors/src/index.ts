@@ -78,6 +78,7 @@ export type {
 	ListRepositoryBranchesResult,
 	RepositoryBranchRef,
 	ResolveDefaultBranchInput,
+	ResolveRepositoryBranchHeadResult,
 	VerifyRepositoryBranchInput,
 } from "./repository-branch";
 // Remote branch verification + listing (request-path helpers)
@@ -85,18 +86,22 @@ export {
 	listRepositoryBranches,
 	parseAdoRepositoryUrl,
 	resolveDefaultBranch,
+	resolveRepositoryBranchHead,
 	verifyRepositoryBranch,
 } from "./repository-branch";
 // Branch history within a folder (request-path helper)
 export type {
 	ListRepositoryCommitsInput,
 	ListRepositoryCommitsResult,
+	ReadRepositoryCommitParentInput,
+	ReadRepositoryCommitParentResult,
 	RepositoryCommit,
 } from "./repository-commits";
 export {
 	COMMIT_MESSAGE_MAX_CHARS,
 	COMMITS_PAGE_SIZE,
 	listRepositoryCommits,
+	readRepositoryCommitParent,
 } from "./repository-commits";
 // Commit-to-commit path diff and one file at a commit (request-path helpers)
 export type {
@@ -123,8 +128,14 @@ export { readRepositoryFile } from "./repository-file";
 // GitHub / GitLab PAT validation (request-path helpers)
 export type { ValidateRepoPatResult } from "./repository-pat";
 export { validateGitHubPat, validateGitLabPat } from "./repository-pat";
+// Slack connector
+export {
+	listRepositoryPullRequests,
+	type RepositoryPullRequest,
+} from "./repository-pull-requests";
 // Repository tree listing (request-path helper)
 export type {
+	ListRepositoryTreeAtCommitInput,
 	ListRepositoryTreeInput,
 	ListRepositoryTreeOutcome,
 	ListRepositoryTreeResult,
@@ -133,9 +144,9 @@ export type {
 export {
 	isRepositoryTreeProvider,
 	listRepositoryTree,
+	listRepositoryTreeAtCommit,
 	MAX_REPOSITORY_TREE_ENTRIES,
 } from "./repository-tree";
-// Slack connector
 export { SlackConnector } from "./slack";
 // Federated connectors (auto-register on import)
 export { SlackFederatedConnector } from "./slack/slack-federated";

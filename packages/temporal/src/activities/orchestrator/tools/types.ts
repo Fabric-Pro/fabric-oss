@@ -4,6 +4,7 @@
  * Shared type definitions for the search activity modules.
  */
 
+import type { TurnScope } from "../turn-dispatch";
 import type { ToolCategory } from "./tool-index";
 
 // =============================================================================
@@ -37,6 +38,14 @@ export interface SearchAvailableToolsInput {
 	enabledIntegrationIds?: string[] | null;
 	/** Specific Fabric AI tool IDs to include (null = all, [] = none) */
 	enabledFabricToolIds?: string[] | null;
+	/**
+	 * The chat turn this lookup serves. When set, the activity runs inside the
+	 * turn's dispatch guard (set by the worker's turn-dispatch interceptor):
+	 * each embedding request is checked against the turn record and aborted
+	 * by the activity's cancellation, and a stop is rethrown instead of being
+	 * turned into an empty or fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface SearchAvailableToolsOutput {
@@ -102,6 +111,14 @@ export interface SearchAvailableAgentsInput {
 	// API keys are NOT passed in workflow inputs to avoid storing them in Temporal history
 	/** Specific agent IDs to search (null = all enabled) */
 	enabledAgentIds?: string[] | null;
+	/**
+	 * The chat turn this lookup serves. When set, the activity runs inside the
+	 * turn's dispatch guard (set by the worker's turn-dispatch interceptor):
+	 * each embedding request is checked against the turn record and aborted
+	 * by the activity's cancellation, and a stop is rethrown instead of being
+	 * turned into an empty or fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface SearchAvailableAgentsOutput {
@@ -191,6 +208,14 @@ export interface SearchAvailableIntegrationsInput {
 	 * options.
 	 */
 	executionSurface?: "LOOM_CHAT";
+	/**
+	 * The chat turn this lookup serves. When set, the activity runs inside the
+	 * turn's dispatch guard (set by the worker's turn-dispatch interceptor):
+	 * each embedding request is checked against the turn record and aborted
+	 * by the activity's cancellation, and a stop is rethrown instead of being
+	 * turned into an empty or fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface SearchAvailableIntegrationsOutput {

@@ -154,6 +154,38 @@ export function classifyFailureErrorType(
 }
 
 /**
+ * The scrape failures that are permanent for the URL itself: a robots
+ * disallow and an unsupported content type (an image or a file linked under
+ * the crawl prefix). `firecrawl-scrape-activity.ts` also refuses to retry an
+ * exhausted quota, a rejected key or a provider that cannot scrape, but those
+ * are about the account, not the page: once the account is fixed the next
+ * crawl can fetch it, so they count as transient here.
+ */
+const URL_PERMANENT_SCRAPE_FAILURES = new Set([
+	"FIRECRAWL_ROBOTS_BLOCKED",
+	"FIRECRAWL_UNSUPPORTED_CONTENT_TYPE",
+]);
+
+/**
+ * Whether a per-URL scrape failure is permanent for that URL (see
+ * `URL_PERMANENT_SCRAPE_FAILURES`). A retryable failure that ran out of
+ * attempts, a timeout, an account-level refusal, or anything else is
+ * transient.
+ *
+ * On a permanent failure the fetch-failure activity keeps nothing for a URL
+ * with no fetched content, so the prune removes it as before. Exported so
+ * it's directly unit-testable without spinning up a workflow.
+ */
+export function isPermanentScrapeFailure(error: unknown): boolean {
+	const cause = error instanceof ActivityFailure ? error.cause : error;
+	return (
+		cause instanceof ApplicationFailure &&
+		cause.nonRetryable === true &&
+		URL_PERMANENT_SCRAPE_FAILURES.has(cause.type ?? "")
+	);
+}
+
+/**
  * Walk an `ActivityFailure` / `ApplicationFailure` `cause` chain to surface
  * the meaningful Firecrawl message instead of Temporal's generic outer
  * wrapper ("Activity task failed"). Mirrors the helper used by the PM-sync
@@ -643,6 +675,29 @@ export async function urlSourceCrawlWorkflow(
 			},
 		});
 
+	// The records of a failed page fetch. Each is the only write that moves its
+	// page off a state nothing else finishes — a retried page left PENDING, a
+	// crawl's placeholder — and the workflow only logs one that fails, so they
+	// retry for about four minutes rather than the shared group's three seconds,
+	// riding out a short database outage. They write page rows, so they run
+	// where the page upserts do.
+	const {
+		recordUrlPageFetchFailureActivity,
+		recordUrlPageRetryFailureActivity,
+	} = proxyActivities<typeof activities>({
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
+		startToCloseTimeout: "1 minute",
+		retry: {
+			initialInterval: "1s",
+			maximumInterval: "1 minute",
+			backoffCoefficient: 2,
+			maximumAttempts: 10,
+		},
+	});
+
 	log.info("[UrlSourceCrawl] start", {
 		contextId,
 		url,
@@ -686,9 +741,10 @@ export async function urlSourceCrawlWorkflow(
 		// touch the parent's `extractionStatus` or the schedule fields —
 		// the parent stays as the user left it (typically COMPLETED with
 		// some FAILED children). Errors in this branch flow through the
-		// same outer catch which records FAILED state on the parent; we
-		// reset the child to FAILED with its own message via the upsert
-		// activity's `extractionStatus` write.
+		// outer catch, which leaves the parent alone in this mode. The
+		// child left PENDING by the retry's procedure is finished by the
+		// upsert and embed on success, and by the record below when the
+		// scrape fails.
 		if (mode === "retry-single-page") {
 			const targetUrl = retryPageUrl ?? url;
 			if (!targetUrl) {
@@ -698,44 +754,98 @@ export async function urlSourceCrawlWorkflow(
 				);
 			}
 
-			const page = await firecrawlScrapeActivity({
-				url: targetUrl,
-				apiKey,
-				...(providerName !== undefined ? { providerName } : {}),
-			});
+			// Finish the page the user retried, whatever happens: write a
+			// fetched page to the requested row, not to the URL a redirect
+			// landed on (that row would be finished while the requested one
+			// stayed PENDING), and put the page back to FAILED when the
+			// retry fails. The record is a new activity command, so this has
+			// its own gate, evaluated once, before the scrape; a history
+			// recorded before it replays the earlier path.
+			const finishRequestedPage = patched(
+				"url-source-retry-finishes-requested-page-2026-10-05",
+			);
 
-			const upsert = await upsertUrlPageActivity({
-				parentContextId: contextId,
-				projectId,
-				pageUrl: page.pageUrl,
-				pageTitle: page.pageTitle,
-				content: page.markdown,
-				etag: page.etag,
-				lastModifiedHeader: page.lastModifiedHeader,
-				userId,
-				organizationId,
-				// `manual-resync` mode forces re-embed even on hash match,
-				// matching the user's intent ("retry this one page").
-				mode: "manual-resync",
-				owner: companyOwner,
-			});
+			// Nothing else would move the page off PENDING. Best-effort: a
+			// record that fails is logged, and the retry's own error is what
+			// the run fails with either way.
+			const recordRetryFailure = async (
+				error: unknown,
+				stage: "fetch" | "index",
+			): Promise<void> => {
+				if (!finishRequestedPage || isCancellation(error)) {
+					return;
+				}
+				try {
+					await recordUrlPageRetryFailureActivity({
+						parentContextId: contextId,
+						projectId,
+						pageUrl: targetUrl,
+						reason: extractMeaningfulErrorMessage(error),
+						stage,
+						owner: companyOwner,
+					});
+				} catch (recordError) {
+					log.warn("[UrlSourceCrawl] retry failure record failed", {
+						pageUrl: targetUrl,
+						stage,
+						reason:
+							recordError instanceof Error
+								? recordError.message
+								: String(recordError),
+					});
+				}
+			};
 
-			if (!upsert.skipped) {
-				const effectiveUserId = userId ?? "";
-				await embedUrlPageActivity({
-					pageId: upsert.pageId,
+			let page: Awaited<ReturnType<typeof firecrawlScrapeActivity>>;
+			try {
+				page = await firecrawlScrapeActivity({
+					url: targetUrl,
+					apiKey,
+					...(providerName !== undefined ? { providerName } : {}),
+				});
+			} catch (scrapeError) {
+				await recordRetryFailure(scrapeError, "fetch");
+				throw scrapeError;
+			}
+
+			let upsert: Awaited<ReturnType<typeof upsertUrlPageActivity>>;
+			try {
+				upsert = await upsertUrlPageActivity({
 					parentContextId: contextId,
 					projectId,
-					pageUrl: page.pageUrl,
-					parentSourceTitle: parentSourceTitle ?? null,
+					pageUrl: finishRequestedPage ? targetUrl : page.pageUrl,
+					pageTitle: page.pageTitle,
 					content: page.markdown,
-					userId: effectiveUserId,
-					organizationId: organizationId ?? undefined,
+					etag: page.etag,
+					lastModifiedHeader: page.lastModifiedHeader,
+					userId,
+					organizationId,
+					// `manual-resync` mode forces re-embed even on hash match,
+					// matching the user's intent ("retry this one page").
+					mode: "manual-resync",
 					owner: companyOwner,
 				});
-				pagesIndexed = 1;
-			} else {
-				pagesSkipped = 1;
+
+				if (!upsert.skipped) {
+					const effectiveUserId = userId ?? "";
+					await embedUrlPageActivity({
+						pageId: upsert.pageId,
+						parentContextId: contextId,
+						projectId,
+						pageUrl: page.pageUrl,
+						parentSourceTitle: parentSourceTitle ?? null,
+						content: page.markdown,
+						userId: effectiveUserId,
+						organizationId: organizationId ?? undefined,
+						owner: companyOwner,
+					});
+					pagesIndexed = 1;
+				} else {
+					pagesSkipped = 1;
+				}
+			} catch (indexError) {
+				await recordRetryFailure(indexError, "index");
+				throw indexError;
 			}
 
 			log.info("[UrlSourceCrawl] retry-single-page completed", {
@@ -888,6 +998,12 @@ export async function urlSourceCrawlWorkflow(
 		const upsertedSkipped: boolean[] = [];
 		const upsertedPageIds: (string | null)[] = [];
 
+		// Requested URLs whose scrape failed and whose page the crawl keeps
+		// from the prune. Only the split branch fills it, and only when
+		// `keepFailedPages` (its gate, below) is on.
+		let keepFailedPages = false;
+		const failedKeptUrls: string[] = [];
+
 		if (patched("url-source-split-map-and-per-url-scrape-2026-05-15")) {
 			// NEW: map → per-URL scrape (sequential). Each scrape is its
 			// own activity, so a worker restart only kills the in-flight
@@ -963,6 +1079,28 @@ export async function urlSourceCrawlWorkflow(
 				"url-source-follow-content-links-2026-05-15",
 			);
 
+			// A page whose scrape fails is recorded as failed and kept from
+			// the prune, instead of being deleted by a crawl that merely
+			// could not fetch it this time. The record is a new activity
+			// command inside the scrape `catch`, so it has its own gate:
+			// replaying a history recorded before it, with a failed scrape,
+			// would otherwise trip
+			//   "Activity type of scheduled event 'firecrawlScrapeActivity'
+			//    does not match activity type of activity command
+			//    'recordUrlPageFetchFailureActivity'"
+			// The same gate decides what the prune keeps (below).
+			//
+			// Evaluated once, here, like `followLinks`, rather than in the
+			// `catch`: one decision covers every failure of the run and the
+			// prune's kept set. Every new history writes the marker, whether
+			// or not a scrape fails; a history without it — recorded before
+			// this deploy, or in flight across it — replays it as false and
+			// stays on the old path for the whole run instead of switching
+			// halfway through its loop.
+			keepFailedPages = patched(
+				"url-source-keep-failed-pages-2026-10-05",
+			);
+
 			while (queue.length > 0) {
 				const targetUrl = queue.shift() as string;
 				let page: {
@@ -986,6 +1124,52 @@ export async function urlSourceCrawlWorkflow(
 								? scrapeError.message
 								: String(scrapeError),
 					});
+					// Record the failure on the page at the requested URL —
+					// the only URL known when the scrape fails — with the
+					// real cause, not the "Activity task failed" wrapper; the
+					// activity adds the fetch-failure prefix. A cancel is not
+					// a fetch failure: the cancelled scope would refuse the
+					// activity anyway, and the cancel path finalizes.
+					//
+					// Best-effort, like the upsert and embed below: a record
+					// that fails is logged and the crawl goes on. The URL is
+					// kept unless the activity said not to (a permanent
+					// failure of a URL with no fetched content), so a record
+					// that could not run never lets the prune delete a page.
+					if (keepFailedPages && !isCancellation(scrapeError)) {
+						let kept = true;
+						try {
+							const recorded =
+								await recordUrlPageFetchFailureActivity({
+									parentContextId: contextId,
+									projectId,
+									pageUrl: targetUrl,
+									reason: extractMeaningfulErrorMessage(
+										scrapeError,
+									),
+									permanent:
+										isPermanentScrapeFailure(scrapeError),
+									userId,
+									organizationId,
+									owner: companyOwner,
+								});
+							kept = recorded.kept;
+						} catch (recordError) {
+							log.warn(
+								"[UrlSourceCrawl] fetch failure record failed",
+								{
+									pageUrl: targetUrl,
+									reason:
+										recordError instanceof Error
+											? recordError.message
+											: String(recordError),
+								},
+							);
+						}
+						if (kept) {
+							failedKeptUrls.push(targetUrl);
+						}
+					}
 					continue;
 				}
 				pages.push(page);
@@ -1208,8 +1392,19 @@ export async function urlSourceCrawlWorkflow(
 		// finished (max 119 min activity timeout + retries — call it a
 		// day to be safe), we can drop the conditional and call the
 		// activity unconditionally. Until then, keep this guard.
+		//
+		// Under `keepFailedPages` the kept set adds the failed pages the
+		// crawl keeps, but stays empty when no page was scraped: the
+		// activity's empty-set guard then deletes nothing, exactly as a
+		// crawl that fetched nothing always has. Only the input changes;
+		// the prune is scheduled as before in every case, so a history in
+		// which every scrape failed replays the same commands.
 		if (patched("url-source-prune-orphans-2026-05-15")) {
-			const keptUrls = pages.map((p) => p.pageUrl);
+			const scrapedUrls = pages.map((p) => p.pageUrl);
+			const keptUrls =
+				keepFailedPages && scrapedUrls.length > 0
+					? [...scrapedUrls, ...failedKeptUrls]
+					: scrapedUrls;
 			await pruneOrphanUrlPagesActivity({
 				parentContextId: contextId,
 				keptUrls,
@@ -1417,11 +1612,10 @@ export async function urlSourceCrawlWorkflow(
 		// parent's status (typically COMPLETED with mixed children) must
 		// remain accurate. Marking it FAILED here would falsely red-flag
 		// the entire URL source when only one child failed. The child
-		// page's own `extractionStatus` was already left in PENDING by
-		// the API procedure when it kicked us off; an in-flight Firecrawl
-		// failure means the upsert activity didn't run, so the row keeps
-		// its prior FAILED state. The user's UI sees the failure as the
-		// retry button reverting (status pill stays FAILED).
+		// page was left PENDING by the API procedure when it kicked us
+		// off; a failed scrape puts it back to FAILED before it reaches
+		// here (the retry branch above), so the UI's status pill reads
+		// FAILED again.
 		if (mode === "retry-single-page") {
 			throw ApplicationFailure.nonRetryable(
 				errorMessage,

@@ -1,4 +1,5 @@
 import { ORPCError, os } from "@orpc/server";
+import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { auth } from "@repo/auth";
 import { getTrustedClientIp } from "@repo/auth/lib/client-ip";
 // NOTE: `getTenantContext` comes from `@repo/database` via its index export,
@@ -25,6 +26,7 @@ import {
 	resolveBoundOrganization,
 	runWithProjectBindingHolder,
 } from "../lib/authorized-project-binding";
+import { chatGptPlanRefusalToORPCError } from "../lib/chatgpt-plan-errors";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "../lib/rate-limit";
 import {
 	type ActivityCaptureMeta,
@@ -193,6 +195,13 @@ const domainErrorMapper = os
 		try {
 			return await next();
 		} catch (error) {
+			// A member's own ChatGPT plan refused the call (Fizzy #2939): out of
+			// usage, or its sign-in needs renewing. Mapped for every procedure
+			// so the person learns which, instead of a generic failure.
+			const planRefusal = chatGptPlanRefusalToORPCError(error);
+			if (planRefusal) {
+				throw planRefusal;
+			}
 			if (error instanceof StoryVersionConflictError) {
 				throw new ORPCError("CONFLICT", {
 					message: error.message,
@@ -245,12 +254,24 @@ export const protectedProcedure = rootProcedure
 			throw new ORPCError("UNAUTHORIZED");
 		}
 
-		return await next({
-			context: {
-				session: session.session,
-				user: session.user,
+		const proceed = () =>
+			next({
+				context: {
+					session: session.session,
+					user: session.user,
+				},
+			});
+		// The person behind this browser session is driving the call, so its
+		// AI work may run on their own ChatGPT plan (Fizzy #2939). Marked as
+		// impersonated while an admin acts as them: the plan gate then refuses
+		// their plan for every call, even one a procedure marks plan-eligible.
+		return await runWithAiInteractiveContext(
+			{
+				userId: session.user.id,
+				impersonated: Boolean(session.session.impersonatedBy),
 			},
-		});
+			proceed,
+		);
 	})
 	// Global per-user request limiter. Mounted immediately AFTER the session
 	// middleware — it keys on `context.user.id` — and BEFORE anything that

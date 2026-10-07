@@ -126,6 +126,8 @@ export const addMessageToChat = tenantProtectedProcedure
 				{
 					userId: user.id,
 					organizationId: chat.organizationId || undefined,
+					// The member's own chat message (Fizzy #2939).
+					planEligible: true,
 				},
 			);
 		} catch (error) {

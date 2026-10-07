@@ -7,7 +7,12 @@
  */
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fastForwardTo, fetchRef } from "../src/lib/instructions/git.js";
+import {
+	cloneInto,
+	fastForwardTo,
+	fetchRef,
+	fetchRefFromUrl,
+} from "../src/lib/instructions/git.js";
 
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 
@@ -42,6 +47,10 @@ const WATCHED = [
 	"GIT_DIR",
 	"FABRIC_API_KEY",
 	"GIT_CONFIG_COUNT",
+	"GIT_TRACE",
+	"GIT_TRACE_CURL",
+	"GIT_TRACE_PACKET",
+	"GIT_TRACE2_EVENT",
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -88,6 +97,55 @@ afterEach(() => {
 
 const soon = (): number => Date.now() + 60_000;
 
+describe("Fabric gateway clone", () => {
+	const url =
+		"https://example.com:8443/api/v1/projects/p/instructions/repository/git/1";
+	const httpAuthorization = {
+		url,
+		authorization: "Bearer synthetic-fixture",
+	};
+	it("accepts the configured HTTPS gateway port and scopes authentication to it", async () => {
+		await expect(
+			cloneInto("/work/rules", url, "main", soon(), {
+				httpAuthorization,
+			}),
+		).resolves.toEqual({ kind: "cloned" });
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.args).toContain(url);
+		expect(calls[0]?.args.join(" ")).not.toContain("synthetic-fixture");
+		expect(calls[0]?.env.FABRIC_GIT_AUTH_HEADER).toBe(
+			"Authorization: Bearer synthetic-fixture",
+		);
+	});
+	it("does not send the gateway credential to a different clone URL", async () => {
+		await expect(
+			cloneInto(
+				"/work/rules",
+				"https://other.example.com/repo",
+				"main",
+				soon(),
+				{ httpAuthorization },
+			),
+		).resolves.toMatchObject({ kind: "unavailable" });
+		expect(calls).toHaveLength(0);
+	});
+	it.each([
+		"http://example.com/repo",
+		"https://user:secret@example.com/repo",
+		"https://example.com/repo?token=secret",
+	])(
+		"refuses an unsafe authenticated URL %s before spawning Git",
+		async (url) => {
+			await expect(
+				cloneInto("/work/rules", url, "main", soon(), {
+					httpAuthorization: { ...httpAuthorization, url },
+				}),
+			).resolves.toMatchObject({ kind: "unavailable" });
+			expect(calls).toHaveLength(0);
+		},
+	);
+});
+
 describe("fetchRef", () => {
 	it("runs the one fetch, with a refspec that is not forced, and then reads the tip", async () => {
 		answers.push({ code: 0 }, { code: 0, stdout: `${TIP}\n` });
@@ -99,6 +157,9 @@ describe("fetchRef", () => {
 		expect(calls[0]?.command).toBe("git");
 		expect(calls[0]?.cwd).toBe("/work/rules");
 		expect(calls[0]?.args).toEqual([
+			...(process.platform === "win32"
+				? ["-c", "core.fscache=false"]
+				: []),
 			"-c",
 			"core.fsmonitor=false",
 			"-c",
@@ -138,6 +199,43 @@ describe("fetchRef", () => {
 		expect(env.FABRIC_API_KEY).toBeUndefined();
 		expect(env.GIT_DIR).toBeUndefined();
 		expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+	});
+
+	it("uses a scoped child-only Fabric header and strips every trace variable", async () => {
+		process.env.GIT_TRACE = "/tmp/trace";
+		process.env.GIT_TRACE_CURL = "/tmp/curl-trace";
+		process.env.GIT_TRACE_PACKET = "/tmp/packet-trace";
+		process.env.GIT_TRACE2_EVENT = "/tmp/trace2";
+		answers.push({ code: 0 }, { code: 0, stdout: `${TIP}\n` });
+
+		await fetchRefFromUrl(
+			"/work/rules",
+			"https://fabric.example/api/v1/projects/project/instructions/repository/git/1",
+			"origin",
+			"main",
+			soon(),
+			{
+				url: "https://fabric.example",
+				authorization: "Bearer scoped-token",
+			},
+		);
+
+		const call = calls[0];
+		expect(call?.args).toContain(
+			"--config-env=http.https://fabric.example.extraHeader=FABRIC_GIT_AUTH_HEADER",
+		);
+		expect(call?.args.join(" ")).not.toContain("scoped-token");
+		expect(call?.env.FABRIC_GIT_AUTH_HEADER).toBe(
+			"Authorization: Bearer scoped-token",
+		);
+		for (const name of [
+			"GIT_TRACE",
+			"GIT_TRACE_CURL",
+			"GIT_TRACE_PACKET",
+			"GIT_TRACE2_EVENT",
+		]) {
+			expect(call?.env[name]).toBeUndefined();
+		}
 	});
 
 	it("turns every prompt off", async () => {
@@ -209,6 +307,9 @@ describe("fastForwardTo", () => {
 
 		expect(result).toEqual({ kind: "merged", head: TIP });
 		expect(calls[0]?.args).toEqual([
+			...(process.platform === "win32"
+				? ["-c", "core.fscache=false"]
+				: []),
 			"-c",
 			"core.fsmonitor=false",
 			"-c",

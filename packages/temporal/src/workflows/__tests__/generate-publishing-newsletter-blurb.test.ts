@@ -342,6 +342,8 @@ describe("generatePublishingNewsletterBlurbWorkflow", () => {
 				// it cannot say WHICH one, so this is the identity assertion.
 				"AIProviderNotConfiguredError",
 				"AiUsageLimitExceededError",
+				"SubscriptionPlanExhaustedError",
+				"ChatGptPlanAuthError",
 			],
 		});
 

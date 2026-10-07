@@ -11,6 +11,10 @@
  * All delegation uses SecureA2AClient with HMAC-signed tenant context.
  */
 
+import {
+	isAiImpersonatedRequest,
+	isAiInteractiveRequestFor,
+} from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { requireServiceUrl } from "@repo/utils";
 import { ApplicationFailure, Context } from "@temporalio/activity";
@@ -274,8 +278,11 @@ export async function delegateToPatternPlanner(
 		const aiToken = await issueAIToken({
 			userId: input.userId,
 			organizationId: input.organizationId,
+			impersonated: isAiImpersonatedRequest(),
 			source: "weave-planner",
 			expirySeconds: 30 * 60,
+			// Only inside a run a person started (Fizzy #2939).
+			planEligible: isAiInteractiveRequestFor(input.userId),
 		});
 
 		const task = await secureClient.sendMessageSecure(

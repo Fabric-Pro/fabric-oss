@@ -230,6 +230,8 @@ export const fetchApplicationLogsForBacklog = withOrganizationLogContext(
 );
 export * from "./browser-automation";
 export * from "./chat-activities";
+// How long background work waits for a ChatGPT plan window to reset (Fizzy #2770)
+export { estimatePlanPoolResetActivity } from "./chatgpt-plan-wait";
 // Code-Based Project Setup activities (GitHub MCP + orchestrator → docs)
 export * from "./code-based-setup";
 // Code Indexing activities (Phase 2: AST-aware code indexing)
@@ -1454,9 +1456,15 @@ export {
 	type PruneOrphanUrlPagesActivityInput,
 	type PruneOrphanUrlPagesActivityOutput,
 	pruneOrphanUrlPagesActivity,
+	type RecordUrlPageFetchFailureActivityInput,
+	type RecordUrlPageFetchFailureActivityOutput,
+	type RecordUrlPageRetryFailureActivityInput,
+	type RecordUrlPageRetryFailureActivityOutput,
 	type ReconcileUrlSourceSchedulesActivityInput,
 	type ReconcileUrlSourceSchedulesActivityOutput,
 	reconcileUrlSourceSchedulesActivity,
+	recordUrlPageFetchFailureActivity,
+	recordUrlPageRetryFailureActivity,
 	type UpdateParentStatusActivityInput,
 	type UpdateParentStatusActivityOutput,
 	type UpsertUrlPageActivityInput,

@@ -28,6 +28,7 @@ import {
 	getProjectInstructionSettings,
 	getProposalBranch,
 	getSyncRunReceiptByRunId,
+	instructionRepositoryImportAllowed,
 	listBranchOperations,
 	type MergeSyncTuple,
 	markBranchMergeSyncDispatched,
@@ -267,17 +268,32 @@ export async function runReconcile(
 		await recordStepFailure(branch, stepFailureOf(error));
 		return branch.state;
 	}
+	// A concurrent observer can record a provider backoff while this GET is
+	// in flight. Do not turn that newer backoff into a successful check: its
+	// deadline is provider-owned and must remain intact.
+	const current = await getProposalBranch(i);
+	if (
+		!current ||
+		current.untracked ||
+		current.state !== "OPEN" ||
+		current.attempt !== expected ||
+		(current.nextAttemptAt !== null &&
+			current.nextAttemptAt > current.databaseNow)
+	) {
+		return current?.state ?? null;
+	}
 	if (observation.state === "OPEN") {
-		const f = failureOf(branch.failure);
+		const f = failureOf(current.failure);
 		await transitionBranch({
-			branchId: branch.id,
-			organizationId: branch.organizationId,
+			branchId: current.id,
+			organizationId: current.organizationId,
 			from: ["OPEN"],
 			expectedAttempt: expected,
+			expectedNextAttemptAt: current.nextAttemptAt,
 			to: "unchanged",
 			bumpAttempt: false,
 			data: {
-				lastCheckedAt: branch.databaseNow,
+				lastCheckedAt: current.databaseNow,
 				pullRequestUrl: observation.url,
 				nextAttemptAt: null,
 				...(f.phase === "reconcile" ? { failure: null } : {}),
@@ -286,8 +302,8 @@ export async function runReconcile(
 		return "OPEN";
 	}
 	const observed = await recordBranchObservation({
-		branchId: branch.id,
-		organizationId: branch.organizationId,
+		branchId: current.id,
+		organizationId: current.organizationId,
 		observation: observationOf(observation),
 		expectedAttempt: expected,
 	});
@@ -364,7 +380,9 @@ async function fetchFinalHistory(
  * `classifyBranch` (spec §6.6, Decision 14), only when no journal operation
  * lacks an outcome, at the `factsRevision` the loop read:
  *
- * 1. the final history (`fetchFinalHistory`);
+ * 0. an established operation whose commit is the pull request's head takes
+ *    `included` without a fetch;
+ * 1. the final history (`fetchFinalHistory`), when any other remains;
  * 2. each established operation not already `included` takes `included`
  *    when `isAncestor(sha, headSha)` holds, `unverified` otherwise (a
  *    false or an error alike);
@@ -411,11 +429,28 @@ export async function runClassify(
 		});
 		return committed.kind === "done" ? status : "stale_revision";
 	};
-	const undecided = ops.filter(
-		(op) =>
-			(op.outcome === "acked" || op.outcome === "observed") &&
-			op.membership !== "included",
-	);
+	const headSha = headShaOf(branch.pullRequestObservation);
+	const undecided: BranchOperationRow[] = [];
+	for (const op of ops) {
+		if (
+			(op.outcome !== "acked" && op.outcome !== "observed") ||
+			op.membership === "included"
+		) {
+			continue;
+		}
+		if (op.sha === headSha) {
+			// The pull request's head commit is in its own history: no fetch,
+			// which a branch deleted without a provider head ref (Azure
+			// DevOps) could not answer.
+			await setOperationMembership({
+				operationId: op.id,
+				organizationId: branch.organizationId,
+				membership: "included",
+			});
+			continue;
+		}
+		undecided.push(op);
+	}
 	if (undecided.length === 0) {
 		return commit("done");
 	}
@@ -453,7 +488,6 @@ export async function runClassify(
 		});
 		return "retry_later";
 	};
-	const headSha = headShaOf(branch.pullRequestObservation);
 	if (headSha === null) {
 		return defer();
 	}
@@ -667,6 +701,7 @@ async function settleUnder(
 	const resumed =
 		branch.settlementPhase === "deleted" && branch.deletedAt !== null;
 	let closed: PullRequestObservation | null = null;
+	const closedHeadSha = (): string | null => closed?.headSha ?? null;
 
 	const refuse = async (foreign: boolean): Promise<SettleOutcome> => {
 		const refused = await refuseBranchStartOver({
@@ -794,6 +829,7 @@ async function settleUnder(
 			stepCredential(credential, "delete-1"),
 			branch,
 			ops,
+			closedHeadSha(),
 		);
 		if (deleted === "refused") {
 			// Azure DevOps refuses to delete a branch an active pull request
@@ -806,6 +842,7 @@ async function settleUnder(
 				stepCredential(credential, "delete-2"),
 				branch,
 				ops,
+				closedHeadSha(),
 			);
 			if (deleted === "refused") {
 				throw new ProposalStepFailure({
@@ -1144,6 +1181,27 @@ export async function runBranchMergeSync(
 	}
 
 	// Step 3: dispatch, after one conditional write.
+	if (!instructionRepositoryImportAllowed(settings, current.syncId)) {
+		const acknowledged = await clearBranchMergeSyncRequest({
+			kind: "direct_read",
+			...ids,
+			expected,
+			audit: {
+				action: "project.instructions.pull_request_merge_observed",
+				category: "project",
+				actor: { type: "system" },
+				organizationId: branch.organizationId,
+				projectId: branch.projectId,
+				resource: {
+					type: "project_instruction_proposal_branch",
+					id: branch.id,
+					name: `#${branch.number}`,
+				},
+				metadata: { branchId: branch.id, readState: "DIRECT" },
+			},
+		});
+		return acknowledged ? "acknowledged" : "moved";
+	}
 	const backoff = mergeSyncBackoffMs(mergeSyncDispatchesBefore(elapsed));
 	const nextAttempt = new Date(branch.databaseNow.getTime() + backoff);
 	assertMayContinue(i.signal);

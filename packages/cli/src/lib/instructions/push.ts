@@ -97,7 +97,7 @@ export interface PushPlan {
  * `.fabric/**` and the tool's own Claude settings file are exactly the paths a
  * tampered one would most want to name — here so it could read them out.
  */
-function assertPushablePath(candidate: string, source: string): void {
+export function assertPushablePath(candidate: string, source: string): void {
 	const check = checkRelativePath(candidate);
 	if (!check.ok) {
 		throw new Error(
@@ -355,6 +355,14 @@ export async function materializePushChanges(input: {
 	const changes: InstructionChange[] = [];
 	for (const entry of input.entries) {
 		if (entry.action === "delete") {
+			const current = await readFileSafely(input.root, entry.path, {
+				maxBytes: 0,
+			});
+			if (current !== null) {
+				throw new Error(
+					`Refusing to push: ${entry.path} reappeared after planning. Plan the changes again.`,
+				);
+			}
 			changes.push({ op: "delete", path: entry.path });
 			continue;
 		}
@@ -388,7 +396,7 @@ export interface AlreadyProposed {
 	/** The newest open proposal that carries it. */
 	proposal: {
 		snapshotId: string;
-		version: number;
+		version: number | null;
 		pullRequest: {
 			state: ProposalPullRequestState;
 			url: string | null;
@@ -436,17 +444,26 @@ const LIVE_SNAPSHOT_STATUSES: ReadonlySet<string> = new Set([
  */
 function carryingProposals(
 	proposals: readonly OpenInstructionProposal[],
-	baseSnapshotId: string,
+	base: string | { generation: number; commitSha: string },
 ): OpenInstructionProposal[] {
 	return proposals
 		.filter(
 			(proposal) =>
-				proposal.baseSnapshotId === baseSnapshotId &&
+				(typeof base === "string"
+					? proposal.kind !== "native" &&
+						proposal.baseSnapshotId === base
+					: proposal.kind === "native" &&
+						proposal.nativeBase.generation === base.generation &&
+						proposal.nativeBase.commitSha === base.commitSha) &&
 				LIVE_SNAPSHOT_STATUSES.has(proposal.status) &&
 				(proposal.pullRequest === null ||
 					LIVE_PULL_REQUEST_STATES.has(proposal.pullRequest.state)),
 		)
-		.sort((a, b) => b.version - a.version);
+		.sort((a, b) =>
+			a.kind === "native" || b.kind === "native"
+				? 0
+				: b.version - a.version,
+		);
 }
 
 /**
@@ -458,9 +475,9 @@ function carryingProposals(
 export function setAsideProposed(
 	plan: PushPlan,
 	proposals: readonly OpenInstructionProposal[],
-	baseSnapshotId: string,
+	base: string | { generation: number; commitSha: string },
 ): { plan: PushPlan; alreadyProposed: AlreadyProposed[] } {
-	const carrying = carryingProposals(proposals, baseSnapshotId);
+	const carrying = carryingProposals(proposals, base);
 	const carriedBy = (entry: PushPlanEntry) =>
 		carrying.find((proposal) =>
 			proposal.changes.some(
@@ -484,8 +501,11 @@ export function setAsideProposed(
 			path: entry.path,
 			action: entry.action,
 			proposal: {
-				snapshotId: proposal.snapshotId,
-				version: proposal.version,
+				snapshotId:
+					proposal.kind === "native"
+						? proposal.operationId
+						: proposal.snapshotId,
+				version: proposal.kind === "native" ? null : proposal.version,
 				pullRequest: proposal.pullRequest,
 			},
 		});

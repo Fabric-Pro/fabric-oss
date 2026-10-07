@@ -1165,6 +1165,7 @@ function FabricAgentLauncherSheet({
 						) : (
 							<FabricTemporalOrchestratorChat
 								key={`fabric-agent-launcher-${launcherKey}`}
+								advisorOrigin
 								organizationId={organizationId ?? undefined}
 								reasoningMode={reasoningMode}
 								// Simple mode runs the iterative preset, as

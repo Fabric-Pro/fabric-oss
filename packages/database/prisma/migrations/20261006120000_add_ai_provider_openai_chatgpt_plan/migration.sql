@@ -1,0 +1,14 @@
+-- AlterEnum
+-- The provider a member's own ChatGPT plan runs under (Fizzy #2939). It is
+-- never stored on an organization provider row: routing resolves it per user,
+-- and AI usage rows carry it so plan-billed calls stay apart from API calls.
+--
+-- Alone in its own migration: a value added by ALTER TYPE cannot be used in
+-- the transaction that adds it, and nothing may use this one before it has
+-- committed. Additive, with one hazard: a client from before this migration
+-- that selects "provider" throws on a row carrying the new value (its
+-- generated enum does not know it). Only code that ships with this migration
+-- writes it, and only for an organization with the CHATGPT_PLAN flag on, so
+-- the exposure is an older replica during a rolling deploy reading usage rows
+-- a newer replica wrote. The value cannot be removed while a row holds it.
+ALTER TYPE "AIProvider" ADD VALUE 'OPENAI_CHATGPT_PLAN';

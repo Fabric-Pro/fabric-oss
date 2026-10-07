@@ -3,6 +3,7 @@
 import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
+import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
 import { defaultCommitMessage } from "@saas/projects/lib/instructions-direct-commit";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -38,6 +39,7 @@ export function RenameInstructionFileDialog({
 	onOpenChange,
 	projectId,
 	baseSnapshotId,
+	nativeBase,
 	path,
 	content,
 	existingPaths,
@@ -50,7 +52,6 @@ export function RenameInstructionFileDialog({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	projectId: string;
-	baseSnapshotId: string;
 	/** The file being renamed. */
 	path: string;
 	/** Its text, which the new path receives unchanged. Null for a file that is not text: not renameable here. */
@@ -59,12 +60,13 @@ export function RenameInstructionFileDialog({
 	repositoryTarget: { repository: string; ref: string };
 	canCommit: boolean;
 	canPropose: boolean;
-	onChanged: () => void;
-	onCommitted?: (commit: { sha: string; ref: string }) => void;
-}) {
+	onChanged: () => unknown;
+	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+} & InstructionChangeBase) {
 	const t = useTranslations("projects.codingInstructions.renameDialog");
 	const tAdd = useTranslations("projects.codingInstructions.addFileDialog");
 	const tFile = useTranslations("projects.codingInstructions.fileView");
+	const tDirect = useTranslations("projects.codingInstructions.direct");
 	const actionError = useInstructionActionError();
 	const [newPath, setNewPath] = useState(path);
 	const [message, setMessage] = useState<string | null>(null);
@@ -104,7 +106,7 @@ export function RenameInstructionFileDialog({
 		mutationFn: () =>
 			editInstructionSnapshot({
 				projectId,
-				baseSnapshotId,
+				...(nativeBase ? { nativeBase } : { baseSnapshotId }),
 				publishOnReady: false,
 				proposal: true,
 				edits: [
@@ -117,7 +119,11 @@ export function RenameInstructionFileDialog({
 				],
 			}),
 		onSuccess: () => {
-			toast.success(tFile("suggestionSubmitted"));
+			toast.success(
+				nativeBase
+					? tDirect("suggestionSubmitted")
+					: tFile("suggestionSubmitted"),
+			);
 			close();
 			onChanged();
 		},
@@ -218,7 +224,9 @@ export function RenameInstructionFileDialog({
 									onClick={() =>
 										content !== null &&
 										commit.start({
-											baseSnapshotId,
+											...(nativeBase
+												? { nativeBase }
+												: { baseSnapshotId }),
 											message: commitMessage,
 											changes: [
 												{ op: "delete", path },

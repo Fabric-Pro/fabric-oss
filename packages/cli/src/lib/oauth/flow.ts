@@ -29,6 +29,9 @@ export const REQUESTED_SCOPES = [
 	"offline_access",
 ] as const;
 
+/** Required only when Fabric proxies native repository Git transport. */
+export const REPOSITORY_TRANSPORT_SCOPE = "repositories:read";
+
 const CLIENT_NAME = "Fabric CLI";
 
 export type FetchLike = (
@@ -66,6 +69,8 @@ export interface LoginOptions {
 	 * organization-wide. Without it the sign-in is for an organization.
 	 */
 	project?: string;
+	/** Additional capability scopes for an explicit command, never MCP setup. */
+	scopes?: readonly string[];
 	/** Reused when it was registered with this deployment. */
 	previous?: PreviousClient;
 	fetch?: FetchLike;
@@ -134,6 +139,7 @@ async function registerClient(
 	metadata: AuthorizationServerMetadata,
 	redirectUri: string,
 	signal: AbortSignal | undefined,
+	scopes: readonly string[],
 ): Promise<string> {
 	const response = await fetchImpl(metadata.registration_endpoint, {
 		method: "POST",
@@ -147,8 +153,8 @@ async function registerClient(
 			token_endpoint_auth_method: "none",
 			grant_types: ["authorization_code", "refresh_token"],
 			response_types: ["code"],
-			scope: REQUESTED_SCOPES.join(" "),
-			type: "native",
+			scope: scopes.join(" "),
+			application_type: "native",
 		}),
 		signal,
 	});
@@ -261,6 +267,7 @@ export async function loginWithBrowser(
 	const fetchImpl: FetchLike =
 		options.fetch ?? ((input, init) => fetch(input, init));
 	const now = options.now ?? Date.now;
+	const scopes = options.scopes ?? REQUESTED_SCOPES;
 
 	const metadata = await discoverAuthorizationServer(options.baseUrl, {
 		fetch: fetchImpl,
@@ -281,7 +288,7 @@ export async function loginWithBrowser(
 			response_type: "code",
 			client_id: clientId,
 			redirect_uri: listener.redirectUri,
-			scope: REQUESTED_SCOPES.join(" "),
+			scope: scopes.join(" "),
 			state,
 			code_challenge: codeChallengeS256(verifier),
 			code_challenge_method: "S256",
@@ -292,7 +299,12 @@ export async function loginWithBrowser(
 
 	try {
 		const previous = options.previous;
+		// A dynamically registered OAuth client has a server-enforced scope ceiling.
+		// An explicit capability request therefore needs a registration that includes
+		// it; reusing the default client would fail before consent with invalid_scope.
+		const needsScopedRegistration = options.scopes !== undefined;
 		const reusable =
+			!needsScopedRegistration &&
 			previous !== undefined &&
 			previous.tokenEndpoint === metadata.token_endpoint &&
 			sameLoopbackRedirect(previous.redirectUri, listener.redirectUri);
@@ -315,6 +327,7 @@ export async function loginWithBrowser(
 				metadata,
 				listener.redirectUri,
 				options.signal,
+				scopes,
 			);
 			registeredRedirectUri = listener.redirectUri;
 		}

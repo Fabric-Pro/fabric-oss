@@ -81,6 +81,16 @@ vi.mock("@repo/database", async () => ({
 	deleteInstructionRepositorySync: m.deleteInstructionRepositorySync,
 	updateInstructionRepositorySyncProposalSettings:
 		m.updateInstructionRepositorySyncProposalSettings,
+	instructionRepositoryImportAllowed: (
+		settings: {
+			sourceOfTruth?: unknown;
+			migration?: { state?: unknown; syncId?: unknown };
+		} | null,
+		syncId: string,
+	) =>
+		settings?.sourceOfTruth === "REPOSITORY" &&
+		settings.migration?.state === "SWITCHING" &&
+		settings.migration.syncId === syncId,
 	InstructionMigrationOpenError: m.MigrationOpenError,
 }));
 // What the move looks like to `disable`, without the pull request machinery
@@ -772,7 +782,7 @@ describe("repositorySync.configure", () => {
 			ignoreGlobsChanged: false,
 		});
 
-		it("queues a follow-up for the caller, and says so, when a changed selection meets an open run", async () => {
+		it("does not queue a legacy import when a changed selection meets an open run", async () => {
 			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
 			m.upsertInstructionRepositorySync.mockResolvedValue(
 				written({ ...stored, ref: "main" }),
@@ -780,29 +790,27 @@ describe("repositorySync.configure", () => {
 
 			const result = await handlers.configure?.({ input, context: ctx });
 
-			expect(m.queueRepositorySyncFollowUp).toHaveBeenCalledWith({
-				subject: "instructions",
-				projectId: "proj_1",
-				organizationId: "org_1",
-				requesterUserId: "user_1",
-			});
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
 			expect(result).toEqual({
 				syncId: "sync_1",
 				generation: 4,
-				syncQueued: true,
 			});
 		});
 
-		it("queues one for a changed ignore list too", async () => {
+		it("does not queue a legacy import for a changed ignore list", async () => {
 			m.isInstructionRepositorySyncRunning.mockResolvedValue(true);
 			m.upsertInstructionRepositorySync.mockResolvedValue({
 				...written(stored),
 				ignoreGlobsChanged: true,
 			});
 
-			expect(
-				await handlers.configure?.({ input, context: ctx }),
-			).toMatchObject({ syncQueued: true });
+			expect(await handlers.configure?.({ input, context: ctx })).toEqual(
+				{
+					syncId: "sync_1",
+					generation: 4,
+				},
+			);
+			expect(m.queueRepositorySyncFollowUp).not.toHaveBeenCalled();
 		});
 
 		it("queues nothing when no run is open", async () => {
@@ -927,7 +935,22 @@ describe("repositorySync.configure", () => {
 		expect(m.upsertInstructionRepositorySync).not.toHaveBeenCalled();
 	});
 
-	it("refuses an integration that is not ACTIVE", async () => {
+	it.each(["REPO_UNAVAILABLE", "ERROR", "DISCONNECTED"] as const)(
+		"refuses a %s integration as unavailable",
+		async (status) => {
+			m.getProjectRepoIntegration.mockResolvedValue({
+				...integration,
+				status,
+			});
+			await expect(
+				handlers.configure?.({ input, context: ctx }),
+			).rejects.toMatchObject({
+				data: { code: "REPOSITORY_UNAVAILABLE" },
+			});
+		},
+	);
+
+	it("refuses an integration whose sign-in expired as credentials-expired, not disconnected", async () => {
 		m.getProjectRepoIntegration.mockResolvedValue({
 			...integration,
 			status: "TOKEN_EXPIRED",
@@ -935,7 +958,7 @@ describe("repositorySync.configure", () => {
 		await expect(
 			handlers.configure?.({ input, context: ctx }),
 		).rejects.toMatchObject({
-			data: { code: "REPOSITORY_UNAVAILABLE" },
+			data: { code: "REPOSITORY_CREDENTIALS_EXPIRED" },
 		});
 	});
 
@@ -1179,29 +1202,26 @@ describe("while a move from uploads into the repository is open (Fizzy #2878 §9
 });
 
 describe("repositorySync.syncNow", () => {
-	it("starts a MANUAL run as the caller and audits", async () => {
+	it("refuses an ordinary direct repository without starting or auditing an import", async () => {
 		expect(
 			await handlers.syncNow?.({
 				input: { projectId: "proj_1" },
 				context: ctx,
 			}),
-		).toEqual({ started: true });
-		expect(m.startInstructionRepositorySync).toHaveBeenCalledWith({
-			projectId: "proj_1",
-			organizationId: "org_1",
-			trigger: "MANUAL",
-			requesterUserId: "user_1",
+		).toEqual({
+			started: false,
+			reason: "direct_repository",
 		});
-		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
-			ctx,
-			expect.objectContaining({
-				action: "project.instructions.repository_sync_started",
-				metadata: { trigger: "MANUAL" },
-			}),
-		);
+		expect(m.startInstructionRepositorySync).not.toHaveBeenCalled();
+		expect(m.recordAuditFromRequest).not.toHaveBeenCalled();
 	});
 
-	it("reports already_running without auditing a start", async () => {
+	it("reports already_running for the migration import without auditing a start", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+			migration: openMove("SWITCHING"),
+		});
 		m.startInstructionRepositorySync.mockResolvedValue(false);
 		expect(
 			await handlers.syncNow?.({
@@ -1232,6 +1252,11 @@ describe("repositorySync.syncNow", () => {
 				...syncRow.repositoryIntegration,
 				status: "TOKEN_EXPIRED",
 			},
+		});
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+			migration: openMove("SWITCHING"),
 		});
 		expect(
 			await handlers.syncNow?.({

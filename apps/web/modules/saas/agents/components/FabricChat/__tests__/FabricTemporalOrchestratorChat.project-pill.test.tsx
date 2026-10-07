@@ -23,6 +23,7 @@ const orpc = vi.hoisted(() => ({
 	attach: vi.fn(),
 	get: vi.fn(),
 	update: vi.fn(),
+	updateSettings: vi.fn(),
 }));
 
 const streamState = vi.hoisted(() => ({
@@ -97,7 +98,13 @@ vi.mock(
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: { conversations: { attach: orpc.attach } },
-		agents: { conversations: { get: orpc.get, update: orpc.update } },
+		agents: {
+			conversations: {
+				get: orpc.get,
+				update: orpc.update,
+				updateSettings: orpc.updateSettings,
+			},
+		},
 		ai: { documents: {} },
 	},
 }));

@@ -60,10 +60,10 @@
  *    deleted), but the user it mints for has `twoFactorEnabled: false` by then
  *    (`:163`), so the predicate does not apply to it in the first place.
  *  - `/two-factor/enable` mints only under `skipVerificationOnEnable`
- *    (`dist/plugins/two-factor/index.mjs:95-104`), which is unset here — see
- *    the DELIBERATELY ABSENT note below. First-time enrolment, resuming an
- *    abandoned one, and re-enrolling an active factor all take the same
- *    no-mint path; enrolment completes at `/two-factor/verify-totp` instead.
+ *    (`dist/plugins/two-factor/index.mjs`), which is unset here — see
+ *    the DELIBERATELY ABSENT note below. First-time enrolment and resuming an
+ *    abandoned one take the no-mint path; 1.7 refuses an already verified
+ *    factor. Enrolment completes at `/two-factor/verify-totp` instead.
  *  - `/two-factor/generate-backup-codes` and `/two-factor/get-totp-uri` never
  *    touch the session at all.
  *

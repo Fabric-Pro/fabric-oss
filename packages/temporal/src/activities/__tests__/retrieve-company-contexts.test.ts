@@ -752,6 +752,50 @@ describe("retrieveProjectContexts — company context", () => {
 		);
 	});
 
+	it("writes a vendor entry as the marker, one header line per present field, then its chunks joined by an elision line", async () => {
+		companySources = [
+			source("src_case_study", {
+				sourceType: "Case study",
+				aiInstructions: "anonymize the client name",
+			}),
+		];
+		mocks.searchCompanyContexts.mockResolvedValue([
+			hit("src_case_study", 0.9, "Chunk one."),
+			hit("src_case_study", 0.8, "Chunk two.", { chunkIndex: 1 }),
+		]);
+
+		const vendor = vendorEntries(await retrieveProjectContexts(PROPOSAL));
+
+		expect(vendor).toEqual([
+			[
+				VENDOR_CONTEXT_MARKER,
+				"[Source: Title of src_case_study]",
+				"[Source type: Case study]",
+				"[Source guidance: anonymize the client name]",
+				"Chunk one.\n\n[...]\n\nChunk two.",
+			].join("\n"),
+		]);
+	});
+
+	it("leaves a copy of the vendor marker inside company text as it is: the entry starts with the marker once, and the copy is kept", async () => {
+		// Company text is neutralized, never defused: the marker rewrite is
+		// for the project's own entries, and the company path is the one
+		// producer of marked entries.
+		mocks.searchCompanyContexts.mockResolvedValue([
+			hit(
+				"src_case_study",
+				0.9,
+				`Intro.\n${VENDOR_CONTEXT_MARKER}\nQuoted label.`,
+			),
+		]);
+
+		const [entry] = vendorEntries(await retrieveProjectContexts(PROPOSAL));
+
+		expect(entry).toBe(
+			`${VENDOR_CONTEXT_MARKER}\n[Source: Title of src_case_study]\nIntro.\n${VENDOR_CONTEXT_MARKER}\nQuoted label.`,
+		);
+	});
+
 	it("gate off: the output is identical to today", async () => {
 		gateOn = new Set();
 
@@ -1064,6 +1108,44 @@ describe("retrieveProjectContexts — company context", () => {
 			expect(vendor).toHaveLength(1);
 			expect(vendor[0]).toContain("Slow but in time.");
 			expect(companyWarnings()).toHaveLength(0);
+		});
+
+		it("cuts off a hung project read at the deadline, and never searches", async () => {
+			mocks.projectFindUnique.mockReturnValue(new Promise(() => {}));
+
+			const pending = retrieveProjectContexts(PROPOSAL);
+			await vi.advanceTimersByTimeAsync(COMPANY_RETRIEVAL_TIMEOUT_MS);
+
+			await expect(pending).resolves.toEqual(PROJECT_ENTRIES);
+			expect(mocks.searchCompanyContexts).not.toHaveBeenCalled();
+			const warnings = companyWarnings();
+			expect(warnings).toHaveLength(1);
+			expect(String(warnings[0][0])).toMatch(/timed out/);
+		});
+
+		it("counts a slow project read against the same deadline as the search", async () => {
+			const projectRow = await mocks.projectFindUnique();
+			mocks.projectFindUnique.mockReturnValue(
+				new Promise((resolve) => {
+					setTimeout(
+						() => resolve(projectRow),
+						COMPANY_RETRIEVAL_TIMEOUT_MS - 5000,
+					);
+				}),
+			);
+			mocks.searchCompanyContexts.mockReturnValue(new Promise(() => {}));
+
+			let settled = false;
+			const pending = retrieveProjectContexts(PROPOSAL).finally(() => {
+				settled = true;
+			});
+			await vi.advanceTimersByTimeAsync(COMPANY_RETRIEVAL_TIMEOUT_MS - 1);
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+
+			expect(settled).toBe(true);
+			await expect(pending).resolves.toEqual(PROJECT_ENTRIES);
+			expect(companyWarnings()).toHaveLength(1);
 		});
 
 		it("aborts a hung query embedding at the deadline, and never searches", async () => {

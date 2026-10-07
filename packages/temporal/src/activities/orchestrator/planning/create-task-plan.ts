@@ -15,6 +15,7 @@ import { generateText } from "@repo/ai";
 import { db } from "@repo/database";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import { getTaskPlanningSystemPrompt } from "../../prompts";
+import { startTurnHeartbeat } from "../turn-dispatch";
 import type {
 	CapabilityMatch,
 	CreateTaskPlanInput,
@@ -107,6 +108,19 @@ function deriveFrameTitle(
 export async function createTaskPlan(
 	input: CreateTaskPlanInput,
 ): Promise<TaskPlan> {
+	// In a chat turn (a Planner chat) heartbeat for the whole run, so a Stop
+	// reaches the activity while it waits on the planning model (the worker's
+	// turn-dispatch interceptor checks and aborts that request). A no-op
+	// without a scope.
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await planTask(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function planTask(input: CreateTaskPlanInput): Promise<TaskPlan> {
 	const planStartTime = Date.now();
 	console.log("[Orchestrator] Creating task plan");
 

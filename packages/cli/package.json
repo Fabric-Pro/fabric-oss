@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/cli",
-	"version": "0.5.1",
+	"version": "0.6.0",
 	"description": "CLI for the Fabric AI platform",
 	"keywords": [
 		"fabric",
@@ -32,7 +32,7 @@
 		"build": "tsup",
 		"dev": "tsup --watch",
 		"pack:deployment": "node scripts/pack-deployment.mjs",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"fabric": "node --import tsx/esm src/bin/fabric.ts"

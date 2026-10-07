@@ -6,6 +6,8 @@ import { FunctionTagsRequiredGate } from "@saas/get-started/components/FunctionT
 import { GetStartedController } from "@saas/get-started/components/GetStartedController";
 import { AiUsageLimitBanner } from "@saas/payments/components/AiUsageLimitBanner";
 import { TiptapEditorRegistryProvider } from "@saas/projects/components/excalidraw-auto-insert/TiptapEditorRegistry";
+import { ChatgptPlanReconnectDockNotice } from "@saas/settings/components/chatgpt-plan/ChatgptPlanReconnectActions";
+import { ChatgptPlanSharedFallbackDockNotice } from "@saas/settings/components/chatgpt-plan/ChatgptPlanSharedFallbackNotice";
 import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { AnthropicCapabilityBanner } from "@saas/shared/components/AnthropicCapabilityBanner";
 import { NavBar } from "@saas/shared/components/NavBar";
@@ -165,6 +167,8 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 								shellDockOffsetClass(isCollapsed),
 							)}
 						>
+							<ChatgptPlanReconnectDockNotice />
+							<ChatgptPlanSharedFallbackDockNotice />
 							<AiGatewayWarningBanner />
 							<AnthropicCapabilityBanner />
 							<AiUsageLimitBanner />

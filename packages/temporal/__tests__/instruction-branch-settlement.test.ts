@@ -37,6 +37,7 @@ const h = vi.hoisted(() => ({
 	beforePush: null as null | (() => void),
 	beforeDelete: null as null | (() => void),
 	credentialPhases: [] as string[],
+	beforeTransition: null as null | (() => void),
 	wake: vi.fn(),
 	startSync: vi.fn(),
 }));
@@ -47,7 +48,20 @@ vi.mock("@repo/database", async (importOriginal) => {
 		"./helpers/instruction-branch-fake-db"
 	);
 	h.fake = createFakeDatabase(real);
-	return h.fake.module;
+	return {
+		...h.fake.module,
+		transitionBranch: async (
+			...args: Parameters<typeof real.transitionBranch>
+		) => {
+			h.beforeTransition?.();
+			return h.fake.module.transitionBranch(args[0]);
+		},
+		recordBranchConfirmation: (
+			...args: Parameters<typeof real.recordBranchConfirmation>
+		) => h.fake.module.recordBranchConfirmation(...args),
+		instructionRepositoryImportAllowed:
+			real.instructionRepositoryImportAllowed,
+	};
 });
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({
@@ -369,6 +383,7 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 		h.storage.clear();
 		h.beforePush = null;
 		h.beforeDelete = null;
+		h.beforeTransition = null;
 		h.credentialPhases.length = 0;
 		for (const fn of Object.values(h.adapter)) {
 			fn.mockReset();
@@ -445,6 +460,30 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 				s.fake.state.now.getTime(),
 			);
 		});
+
+		it("keeps a newer provider backoff recorded after an OPEN reread", async () => {
+			const head = await opened();
+			const deadline = new Date(s.fake.state.now.getTime() + 120_000);
+			h.adapter.get.mockResolvedValueOnce(observation("OPEN", head));
+			h.beforeTransition = () => {
+				branch(s).failure = {
+					code: "PROVIDER_RATE_LIMITED",
+					phase: "reconcile",
+					retryable: true,
+				};
+				branch(s).nextAttemptAt = deadline;
+				h.beforeTransition = null;
+			};
+			expect(await reconcileInstructionProposalBranch(ids())).toEqual({
+				state: "OPEN",
+			});
+			expect(branch(s)).toMatchObject({
+				failure: expect.objectContaining({
+					code: "PROVIDER_RATE_LIMITED",
+				}),
+				nextAttemptAt: deadline,
+			});
+		});
 	});
 
 	// -----------------------------------------------------------------------
@@ -468,6 +507,15 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 			expect(branch(s).membership).toMatchObject({ status: "done" });
 			expect(branch(s).mergeSyncRequestedAt).toEqual(s.fake.state.now);
 			expect((await work()).kind).toBe("idle");
+		});
+
+		it("includes an operation at the observed head without a fetch, even after the branch ref is gone (Azure DevOps: no head ref)", async () => {
+			const head = await opened();
+			await observed("CLOSED", head);
+			h.origin.deleteRef(refFor(1));
+			expect(await classify()).toEqual({ outcome: "done" });
+			expect(membershipOf("snap_p1")).toEqual(["included"]);
+			expect(proposal(s, "snap_p1").pullRequestState).toBe("CLOSED");
 		});
 
 		it("falls back on the branch ref when its tip is the observed head (Azure DevOps: no head ref)", async () => {
@@ -556,8 +604,10 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 		});
 
 		it("an unavailable history retries with backoff (1, then 5 min), and after 24 h is unverified, never included", async () => {
-			const head = await opened();
-			await observed("MERGED", head);
+			await opened();
+			// The pull request's head is a commit Fabric did not push, so only
+			// its history could prove the operation included.
+			await observed("MERGED", "e".repeat(40));
 			h.origin.deleteRef(refFor(1));
 			expect(await classify()).toEqual({ outcome: "retry_later" });
 			expect(branch(s).membership).toMatchObject({
@@ -1201,6 +1251,24 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 			expect(h.wake).not.toHaveBeenCalled();
 		});
 
+		it("Azure DevOps (no head ref): a close that deletes the branch still classifies at once", async () => {
+			const head = await opened();
+			h.adapter.get.mockResolvedValueOnce(observation("OPEN", head));
+			h.adapter.get.mockResolvedValue(observation("CLOSED", head));
+			h.adapter.close.mockResolvedValueOnce(observation("CLOSED", head));
+			requestClose();
+			expect(await settle()).toEqual({ outcome: "closed" });
+			expect(h.origin.refSha(refFor(1))).toBeNull();
+			expect(membershipOf("snap_p1")).toEqual(["included"]);
+			expect(await work()).toMatchObject({ kind: "classify" });
+			expect(await classify()).toEqual({ outcome: "done" });
+			expect(proposal(s, "snap_p1").pullRequestState).toBe("CLOSED");
+			expect(branch(s).membership).toMatchObject({
+				status: "done",
+				attempts: 0,
+			});
+		});
+
 		it("MERGED wins: a pull request merged before the close is recorded MERGED, with no deletion", async () => {
 			const head = await opened();
 			h.adapter.get.mockResolvedValue(observation("MERGED", head));
@@ -1687,6 +1755,22 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 	// -----------------------------------------------------------------------
 
 	describe("dispatchBranchMergeSync", () => {
+		function retainMigrationImport(): void {
+			s.fake.state.settings = {
+				sourceOfTruth: "REPOSITORY",
+				migration: {
+					v: 1,
+					state: "SWITCHING",
+					branchId: "branch_move",
+					snapshotId: "snap_move",
+					syncId: SYNC,
+					pullRequestUrl: null,
+					startedAt: "2026-10-03T10:00:00.000Z",
+					userId: "user_example",
+				},
+			};
+		}
+
 		async function mergedAndClassified(): Promise<void> {
 			const head = await opened();
 			await observed("MERGED", head);
@@ -1695,6 +1779,7 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 		}
 
 		it("dispatches the current tuple once, then acknowledges a consuming receipt", async () => {
+			retainMigrationImport();
 			await mergedAndClassified();
 			expect(await dispatchBranchMergeSync(ids())).toEqual({
 				outcome: "dispatched",
@@ -1736,6 +1821,22 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 					metadata: { branchId: BRANCH_ID, syncRunKey: "sync_run_1" },
 				}),
 			]);
+		});
+
+		it("acknowledges an admitted branch in direct mode without a legacy import", async () => {
+			await mergedAndClassified();
+
+			expect(await dispatchBranchMergeSync(ids())).toEqual({
+				outcome: "acknowledged",
+			});
+			expect(h.startSync).not.toHaveBeenCalled();
+			expect(branch(s).mergeSyncRequestedAt).toBeNull();
+			expect(s.fake.state.audits).toContainEqual(
+				expect.objectContaining({
+					action: "project.instructions.pull_request_merge_observed",
+					metadata: expect.objectContaining({ readState: "DIRECT" }),
+				}),
+			);
 		});
 
 		it.each([

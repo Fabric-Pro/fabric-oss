@@ -107,6 +107,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				repository: {
+					getFile: {
+						queryOptions: (o: unknown) => ({
+							queryKey: ["nativeGetFile", o],
+							queryFn: async () => ({
+								state: "found",
+								body: TEXT_FILE.body,
+								size: TEXT_FILE.size,
+								nextOffset: null,
+							}),
+						}),
+					},
+				},
 				getFile: {
 					queryOptions: (o: unknown) => ({
 						queryKey: ["getFile", o],
@@ -232,6 +245,34 @@ describe("InstructionFileView — commit to the branch", () => {
 	});
 
 	describe("the editor", () => {
+		it("explains native commits and proposals without snapshot checks", async () => {
+			const user = userEvent.setup();
+			const nativeBase = { generation: 1, commitSha: SHA };
+			renderView({ nativeBase, snapshotId: undefined });
+			await startEditing(user);
+			expect(
+				screen.getByText(
+					/Fabric reads the committed files directly from Git/,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/once the files pass their checks/),
+			).toBeNull();
+			await user.click(
+				screen.getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+			await waitFor(() =>
+				expect(mocks.toastSuccess).toHaveBeenCalledWith(
+					"Suggestion submitted. Fabric is opening the pull request.",
+				),
+			);
+			expect(mocks.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({ nativeBase, proposal: true }),
+			);
+		});
+
 		it("offers a commit message, Commit to the branch as the primary action, and a pull request as the alternative", async () => {
 			const user = userEvent.setup();
 			renderView();

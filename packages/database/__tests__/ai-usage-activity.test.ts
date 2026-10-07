@@ -3,6 +3,8 @@
  *
  * - `listAiUsageActivity`: tenant XOR isolation, period filter, cursor
  *   pagination, totals shape.
+ * - Billing source: `chatgpt_plan` vs `api` filter, per-source totals and
+ *   the facet counts.
  * - `getMedianAiUsageByTaskType`: median computation for odd/even sample
  *   sets, null when no samples exist.
  *
@@ -13,18 +15,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findManyMock = vi.fn();
 const aggregateMock = vi.fn();
+const groupByMock = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	db: {
 		aiUsageLog: {
 			findMany: (args: unknown) => findManyMock(args),
 			aggregate: (args: unknown) => aggregateMock(args),
+			groupBy: (args: unknown) => groupByMock(args),
 		},
 	},
 	Prisma: {},
 }));
 
 import {
+	getAiUsageActivityFacets,
+	getAiUsageActivityTimeSeries,
 	getMedianAiUsageByTaskType,
 	listAiUsageActivity,
 } from "../prisma/queries/ai-usage-activity";
@@ -44,8 +50,10 @@ describe("listAiUsageActivity", () => {
 	beforeEach(() => {
 		findManyMock.mockReset();
 		aggregateMock.mockReset();
+		groupByMock.mockReset();
 		findManyMock.mockResolvedValue([]);
 		aggregateMock.mockResolvedValue(EMPTY_AGGREGATE);
+		groupByMock.mockResolvedValue([]);
 	});
 
 	it("filters personal context with `userId` AND `organizationId: null`", async () => {
@@ -183,6 +191,22 @@ describe("listAiUsageActivity", () => {
 			totalTokens: 2000,
 			costMicroUsd: 9999,
 			avgLatencyMs: 424,
+			bySource: {
+				chatgpt_plan: {
+					requests: 0,
+					inputTokens: 0,
+					outputTokens: 0,
+					totalTokens: 0,
+					costMicroUsd: 0,
+				},
+				api: {
+					requests: 0,
+					inputTokens: 0,
+					outputTokens: 0,
+					totalTokens: 0,
+					costMicroUsd: 0,
+				},
+			},
 		});
 	});
 
@@ -313,6 +337,191 @@ describe("listAiUsageActivity", () => {
 		).where;
 		expect(w4.projectId).toBeUndefined();
 		expect(w4.OR).toBeUndefined();
+	});
+});
+
+describe("billing source (ChatGPT plan vs API)", () => {
+	beforeEach(() => {
+		findManyMock.mockReset();
+		aggregateMock.mockReset();
+		groupByMock.mockReset();
+		findManyMock.mockResolvedValue([]);
+		aggregateMock.mockResolvedValue(EMPTY_AGGREGATE);
+		groupByMock.mockResolvedValue([]);
+	});
+
+	function whereOfFirstFindMany() {
+		return (
+			findManyMock.mock.calls[0]?.[0] as {
+				where: Record<string, unknown>;
+			}
+		).where;
+	}
+
+	it("`chatgpt_plan` narrows to the plan provider, `api` to every other provider", async () => {
+		await listAiUsageActivity({
+			organizationId: "org-1",
+			billingSource: "chatgpt_plan",
+		});
+		expect(whereOfFirstFindMany().provider).toBe("OPENAI_CHATGPT_PLAN");
+
+		findManyMock.mockClear();
+		await listAiUsageActivity({
+			organizationId: "org-1",
+			billingSource: "api",
+		});
+		const apiWhere = whereOfFirstFindMany();
+		expect(apiWhere.provider).toEqual({ not: "OPENAI_CHATGPT_PLAN" });
+		// Tenant scoping is untouched by the new filter.
+		expect(apiWhere.organizationId).toBe("org-1");
+	});
+
+	it("applies no provider predicate when no billing source is chosen", async () => {
+		await listAiUsageActivity({ organizationId: "org-1" });
+		expect(whereOfFirstFindMany().provider).toBeUndefined();
+	});
+
+	it("keeps the project `OR` and the billing source together", async () => {
+		await listAiUsageActivity({
+			organizationId: "org-1",
+			projectIds: ["proj-a", null],
+			billingSource: "api",
+		});
+		const where = whereOfFirstFindMany();
+		expect(where.OR).toEqual([
+			{ projectId: { in: ["proj-a"] } },
+			{ projectId: null },
+		]);
+		expect(where.provider).toEqual({ not: "OPENAI_CHATGPT_PLAN" });
+	});
+
+	it("splits mixed rows into plan and API totals over the filtered set", async () => {
+		groupByMock.mockResolvedValue([
+			{
+				provider: "OPENAI_CHATGPT_PLAN",
+				_count: { id: 7 },
+				_sum: {
+					inputTokens: 5000,
+					outputTokens: 2000,
+					totalTokens: 7000,
+					costMicroUsd: 0,
+				},
+			},
+			{
+				provider: "OPENAI_DIRECT",
+				_count: { id: 3 },
+				_sum: {
+					inputTokens: 600,
+					outputTokens: 300,
+					totalTokens: 900,
+					costMicroUsd: 4500,
+				},
+			},
+			{
+				provider: "ANTHROPIC_DIRECT",
+				_count: { id: 2 },
+				_sum: {
+					inputTokens: null,
+					outputTokens: null,
+					totalTokens: null,
+					costMicroUsd: 500,
+				},
+			},
+		]);
+
+		const result = await listAiUsageActivity({
+			organizationId: "org-1",
+			taskTypes: ["CHAT"],
+		});
+
+		expect(result.totals.bySource).toEqual({
+			chatgpt_plan: {
+				requests: 7,
+				inputTokens: 5000,
+				outputTokens: 2000,
+				totalTokens: 7000,
+				costMicroUsd: 0,
+			},
+			api: {
+				requests: 5,
+				inputTokens: 600,
+				outputTokens: 300,
+				totalTokens: 900,
+				costMicroUsd: 5000,
+			},
+		});
+		const groupArgs = groupByMock.mock.calls[0]?.[0] as {
+			by: string[];
+			where: Record<string, unknown>;
+		};
+		expect(groupArgs.by).toEqual(["provider"]);
+		// Same where as the rows, so the split honours every other filter.
+		expect(groupArgs.where).toEqual(whereOfFirstFindMany());
+	});
+
+	it("reports zeroed sources when nothing matched", async () => {
+		const result = await listAiUsageActivity({ userId: "user-1" });
+		expect(result.totals.bySource).toEqual({
+			chatgpt_plan: {
+				requests: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				totalTokens: 0,
+				costMicroUsd: 0,
+			},
+			api: {
+				requests: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				totalTokens: 0,
+				costMicroUsd: 0,
+			},
+		});
+	});
+
+	it("passes the billing source through to the time-series query", async () => {
+		await getAiUsageActivityTimeSeries({
+			organizationId: "org-1",
+			from: new Date("2026-09-01T00:00:00Z"),
+			to: new Date("2026-09-02T00:00:00Z"),
+			billingSource: "chatgpt_plan",
+		});
+		expect(whereOfFirstFindMany()).toMatchObject({
+			organizationId: "org-1",
+			provider: "OPENAI_CHATGPT_PLAN",
+		});
+	});
+
+	it("facets count both sources from an uncapped provider groupBy", async () => {
+		groupByMock.mockImplementation(async (args: { by: string[] }) => {
+			if (args.by.length === 1 && args.by[0] === "provider") {
+				return [
+					{ provider: "OPENAI_CHATGPT_PLAN", _count: { id: 4 } },
+					{ provider: "OPENAI_DIRECT", _count: { id: 10 } },
+					{ provider: "AZURE_OPENAI", _count: { id: 1 } },
+				];
+			}
+			return [];
+		});
+
+		const facets = await getAiUsageActivityFacets({ userId: "user-1" });
+
+		expect(facets.billingSources).toEqual([
+			{ value: "chatgpt_plan", requests: 4 },
+			{ value: "api", requests: 11 },
+		]);
+		const providerCall = groupByMock.mock.calls
+			.map((call) => call[0] as { by: string[]; take?: number })
+			.find((args) => args.by.join() === "provider");
+		expect(providerCall?.take).toBeUndefined();
+	});
+
+	it("facets report both sources at zero for an empty window", async () => {
+		const facets = await getAiUsageActivityFacets({ userId: "user-1" });
+		expect(facets.billingSources).toEqual([
+			{ value: "chatgpt_plan", requests: 0 },
+			{ value: "api", requests: 0 },
+		]);
 	});
 });
 

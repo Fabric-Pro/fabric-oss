@@ -56,6 +56,10 @@ import {
 } from "./InstructionProposalBranchPanel";
 import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
 import { branchPanelPollInterval } from "./lib/instructions-proposal-branch";
+import {
+	invalidateProposalViews,
+	invalidateProposalViewsAfterRefresh,
+} from "./lib/instructions-proposal-views";
 
 /**
  * A REPOSITORY proposal is MERGED or CLOSED once its pull request settles
@@ -71,6 +75,7 @@ type ValidationStatus =
 
 type ProposalRow = {
 	id: string;
+	contentKind?: "FULL_SNAPSHOT" | "GIT_INTENT";
 	version: number;
 	baseVersion: number | null;
 	status: ValidationStatus;
@@ -536,6 +541,10 @@ export function InstructionProposals({
 			input: { projectId, limit: PAGE_SIZE, cursor },
 		}),
 		enabled: open,
+		// Opening the dialog always shows the current state, never a read
+		// from earlier in the session.
+		staleTime: 0,
+		refetchOnMount: "always",
 		// Every 3 s while a proposal is being validated; every 10 s while a
 		// pull-request suggestion is pending or its merge sync is requested
 		// (spec §12); off once everything shown is settled. The list carries
@@ -605,6 +614,8 @@ export function InstructionProposals({
 	const branchOwners = useInfiniteQuery({
 		...branchOwnersOptions,
 		enabled: open && repositoryBacked && canReview,
+		staleTime: 0,
+		refetchOnMount: "always",
 		// Reviewer panels render from this read and never poll on their own,
 		// so it polls for them while any loaded branch is still in flight.
 		refetchInterval: (query) =>
@@ -628,15 +639,11 @@ export function InstructionProposals({
 		setFilePageInput(null);
 		setChangeToggles({});
 	};
-	const refreshState = () => {
+	const refreshState = (options?: { settling?: boolean }) => {
 		onChanged();
-		void proposals.refetch();
-		if (canReview && selectedId !== null) {
-			void detail.refetch();
-		}
-		if (repositoryBacked && canReview) {
-			void branchOwners.refetch();
-		}
+		void (options?.settling
+			? invalidateProposalViewsAfterRefresh(queryClient)
+			: invalidateProposalViews(queryClient));
 		void queryClient.invalidateQueries({
 			queryKey: orpc.projects.instructions.getPublished.queryOptions({
 				input: { projectId },
@@ -726,7 +733,7 @@ export function InstructionProposals({
 								: "refreshSuccess",
 						),
 					);
-					refreshState();
+					refreshState({ settling: true });
 				},
 				onError: (error, variables) => {
 					const seconds = refreshRetryAfterSeconds(error);
@@ -906,9 +913,15 @@ export function InstructionProposals({
 													: "outline"
 											}
 											className="h-auto min-w-0 flex-1 justify-between whitespace-normal p-3 text-left"
-											aria-label={t("proposalVersion", {
-												version: proposal.version,
-											})}
+											aria-label={t(
+												proposal.contentKind ===
+													"GIT_INTENT"
+													? "repositoryProposal"
+													: "proposalVersion",
+												{
+													version: proposal.version,
+												},
+											)}
 											disabled={!canReview}
 											onClick={() => {
 												setFilePageInput(null);
@@ -918,10 +931,16 @@ export function InstructionProposals({
 										>
 											<span className="flex min-w-0 flex-col gap-1">
 												<span>
-													{t("proposalVersion", {
-														version:
-															proposal.version,
-													})}
+													{t(
+														proposal.contentKind ===
+															"GIT_INTENT"
+															? "repositoryProposal"
+															: "proposalVersion",
+														{
+															version:
+																proposal.version,
+														},
+													)}
 												</span>
 												{proposal.note?.title ? (
 													<span className="font-medium [overflow-wrap:anywhere]">

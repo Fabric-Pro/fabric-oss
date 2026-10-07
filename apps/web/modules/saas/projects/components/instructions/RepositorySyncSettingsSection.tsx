@@ -61,8 +61,10 @@ export function RepositorySyncSettingsSection({
 	onChanged,
 	onMove,
 	migration,
+	directRepository = false,
 }: {
 	projectId: string;
+	directRepository?: boolean;
 	state: RepositorySyncState;
 	/**
 	 * The tab's read of the move while one is open: it says whether a blocked
@@ -258,29 +260,33 @@ export function RepositorySyncSettingsSection({
 						repository={repository}
 						configured={configured}
 					/>
-					<dt
-						id="instructions-sync-automatic-setting"
-						className="text-muted-foreground"
-					>
-						{t("automatic")}
-					</dt>
-					<dd>
-						{state.canConfigure ? (
-							<Switch
-								aria-labelledby="instructions-sync-automatic-setting"
-								aria-describedby="instructions-sync-automatic-setting-hint"
-								checked={configured.automatic}
-								disabled={busy}
-								onCheckedChange={setAutomatic}
-							/>
-						) : (
-							t(
-								configured.automatic
-									? "automaticOn"
-									: "automaticOff",
-							)
-						)}
-					</dd>
+					{directRepository ? null : (
+						<>
+							<dt
+								id="instructions-sync-automatic-setting"
+								className="text-muted-foreground"
+							>
+								{t("automatic")}
+							</dt>
+							<dd>
+								{state.canConfigure ? (
+									<Switch
+										aria-labelledby="instructions-sync-automatic-setting"
+										aria-describedby="instructions-sync-automatic-setting-hint"
+										checked={configured.automatic}
+										disabled={busy}
+										onCheckedChange={setAutomatic}
+									/>
+								) : (
+									t(
+										configured.automatic
+											? "automaticOn"
+											: "automaticOff",
+									)
+								)}
+							</dd>
+						</>
+					)}
 				</dl>
 			) : (
 				<p className="text-muted-foreground text-sm">
@@ -292,15 +298,24 @@ export function RepositorySyncSettingsSection({
 					className="text-muted-foreground text-sm"
 					data-testid="instructions-sync-selection-summary"
 				>
-					{instructionsSettingsSummary({
-						rootPath: configured.rootPath,
-						settings: settings.data,
-					})
-						.map((line) => translateSelectionMessage(tSync, line))
-						.join(" ")}
+					{directRepository
+						? t(
+								configured.rootPath === ""
+									? "directSelectionRoot"
+									: "directSelectionFolder",
+								{ folder: configured.rootPath },
+							)
+						: instructionsSettingsSummary({
+								rootPath: configured.rootPath,
+								settings: settings.data,
+							})
+								.map((line) =>
+									translateSelectionMessage(tSync, line),
+								)
+								.join(" ")}
 				</p>
 			) : null}
-			{configured && state.canConfigure ? (
+			{configured && state.canConfigure && !directRepository ? (
 				<p
 					id="instructions-sync-automatic-setting-hint"
 					className="text-muted-foreground text-xs"
@@ -309,8 +324,8 @@ export function RepositorySyncSettingsSection({
 				</p>
 			) : null}
 			{configured ? (
-				<div className="flex items-start justify-between gap-3">
-					<div className="flex flex-col gap-1">
+				<div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+					<div className="flex min-w-0 flex-1 flex-col gap-1">
 						<p
 							id="instructions-sync-reader-proposals"
 							className="text-sm"
@@ -321,7 +336,11 @@ export function RepositorySyncSettingsSection({
 							id="instructions-sync-reader-proposals-hint"
 							className="text-muted-foreground text-xs"
 						>
-							{t("readerProposalsHint")}
+							{t(
+								directRepository
+									? "directReaderProposalsHint"
+									: "readerProposalsHint",
+							)}
 						</p>
 					</div>
 					{state.canConfigure ? (
@@ -338,7 +357,7 @@ export function RepositorySyncSettingsSection({
 							}
 						/>
 					) : (
-						<p className="shrink-0 text-sm">
+						<p className="text-sm sm:max-w-64 sm:text-right">
 							{t(
 								configured.allowReaderProposals
 									? "readerProposalsOn"

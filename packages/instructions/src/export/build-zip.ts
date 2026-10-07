@@ -81,6 +81,14 @@ export async function buildInstructionSnapshotZip(input: {
 	snapshot: SnapshotForZip;
 	files: FileForZip[];
 }): Promise<{ url: string; key: string }> {
+	const snapshot = await getInstructionSnapshot(
+		input.snapshot.id,
+		input.projectId,
+		input.organizationId,
+	);
+	if (!snapshot || snapshot.contentKind !== "FULL_SNAPSHOT") {
+		throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
+	}
 	const storage = getStorageProvider();
 	const key = resolveExportKey(input.projectId, input.snapshot);
 
@@ -178,7 +186,11 @@ export async function warmInstructionSnapshotExport(input: {
 			input.projectId,
 			input.organizationId,
 		);
-		if (!snapshot || snapshot.status !== "READY") {
+		if (
+			!snapshot ||
+			snapshot.contentKind !== "FULL_SNAPSHOT" ||
+			snapshot.status !== "READY"
+		) {
 			return;
 		}
 		const storage = getStorageProvider();

@@ -17,7 +17,11 @@ export type LimitKind =
 	| "provider_quota"
 	| "provider_rate_limit"
 	| "context_length"
-	| "provider_overloaded";
+	| "provider_overloaded"
+	/** The member's own ChatGPT plan has no usage left in its window. */
+	| "subscription_exhausted"
+	/** The member's own ChatGPT plan is on but its sign-in must be renewed. */
+	| "subscription_reconnect";
 
 /** Which per-run limit stopped an `internal_budget` run. */
 export type BudgetLimit = "tokens" | "iterations";
@@ -36,7 +40,11 @@ export interface LimitSignal {
 	provider?: string;
 	/** Sanitized message suitable for internal logging (not raw shown to end user). */
 	message: string;
-	/** Retry hint in milliseconds when the provider supplies a Retry-After header. */
+	/**
+	 * Retry hint in milliseconds when the provider supplies a Retry-After
+	 * header, or, for `subscription_exhausted`, the time until the plan
+	 * window resets when it is known.
+	 */
 	retryAfterMs?: number;
 	/** Populated only when kind === "internal_budget". */
 	budget?: TokenBudgetStatus;

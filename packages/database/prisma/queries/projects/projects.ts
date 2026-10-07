@@ -1578,11 +1578,13 @@ export async function canEditProjectSettings(
 export async function canReadProjectInstructions(
 	projectId: string,
 	userId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	return projectPermissionHolds(
 		projectId,
 		userId,
 		Permissions.INSTRUCTION_READ,
+		client,
 	);
 }
 

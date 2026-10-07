@@ -26,6 +26,10 @@ import {
 	getGitLabApiCredential,
 	gitlabOutboundFetch,
 } from "@repo/integrations/gitlab";
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { executeMicrosoftTeamsTool } from "../../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
 import type { ExecuteStepInput } from "../../types";
@@ -477,6 +481,9 @@ export class IntegrationHandler implements StepHandler {
 				fallbackReason: `Integration ${integration.provider} failed: ${result.error}`,
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error(`[IntegrationHandler] Error: ${errorMessage}`);
@@ -799,6 +806,7 @@ export class IntegrationHandler implements StepHandler {
 					data: result.data,
 				};
 			} catch (error) {
+				rethrowIfDispatchStopped(error);
 				return {
 					success: false,
 					error:
@@ -1762,10 +1770,16 @@ export class IntegrationHandler implements StepHandler {
 			return { success: false, error: "query is required" };
 		}
 
+		// A model provider called outside the model factory: in a chat turn
+		// the request is checked against the turn record first and aborted
+		// (with the reading of its body) when the turn stops. Outside one
+		// `guardDispatch` returns no signal.
+		const signal = await guardDispatch();
 		const response = await fetch(
 			"https://api.perplexity.ai/chat/completions",
 			{
 				method: "POST",
+				signal,
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
 					"Content-Type": "application/json",

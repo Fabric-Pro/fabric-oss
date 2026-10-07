@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-	buildCodexCommands,
+	buildCodexCommand,
 	codexServerName as dialogCodexServerName,
 	editorServerName,
 	gatewayUrl,
@@ -86,10 +86,10 @@ describe("the Codex server name, in the CLI and in the Connect dialog", () => {
 				run,
 				interactive: false,
 			});
-			const [add, login] = buildCodexCommands(ORIGIN, id).split("\n");
-
-			expect(result?.registerLine).toBe(add);
-			expect(result?.loginLine).toBe(login);
+			expect(result?.registerLine).toBe(buildCodexCommand(ORIGIN, id));
+			expect(result?.loginLine).toBe(
+				`codex mcp login ${dialogCodexServerName(id)}`,
+			);
 			expect(result?.url).toBe(gatewayUrl(ORIGIN, id));
 		},
 	);

@@ -16,6 +16,8 @@
  *   2. Calls `upsertUrlPageActivity` in `manual-resync` semantics so
  *      content + extractionStatus are overwritten even on hash match.
  *   3. Calls `embedUrlPageActivity` to re-embed the page into Qdrant.
+ * A scrape that fails puts the page back to FAILED instead
+ * (`recordUrlPageRetryFailureActivity`).
  *
  * Tenant isolation: same `tenantProtectedProcedure` +
  * `requireProjectPermission(CONTEXT_UPDATE)` guards as `resyncUrlSource`.
@@ -195,19 +197,16 @@ export const resyncUrlPageProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Flip the child row's status to PENDING + clear the error
-		// optimistically. The workflow's upsert activity will move it
-		// back to PENDING / COMPLETED on success (it sets PENDING on
-		// content-change paths; the embed pipeline finalizes COMPLETED).
-		// On failure the workflow's retry-single-page branch DOES NOT
-		// touch the parent row, so the child stays in whatever state
-		// the upsert activity left it in.
+		// Flip the child row's status to PENDING optimistically. The
+		// workflow's upsert activity rewrites the content and clears the
+		// error, and the embed pipeline finalizes COMPLETED. The error is
+		// kept until then: when the retry's scrape fails, the workflow
+		// puts the row back to FAILED and reads it to choose the reason
+		// (`urlPageRetryFetchFailureWritableWhere`). The workflow's
+		// retry-single-page branch never touches the parent row.
 		await db.projectContextUrlPage.update({
 			where: { id: page.id },
-			data: {
-				extractionStatus: "PENDING",
-				extractionError: null,
-			},
+			data: { extractionStatus: "PENDING" },
 		});
 
 		try {

@@ -42,6 +42,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 // The canonical-form helper, imported from the module that defines it rather
 // than from the `@repo/database` barrel: this one is pure (node:crypto only),
@@ -134,6 +135,12 @@ export interface DispatchDocumentGenerationInput {
 	 * a caller suppress arbitrary project context from someone else's run.
 	 */
 	excludeContextId?: string;
+	/**
+	 * A person asked for this run in the product (the editor's regenerate or
+	 * the Documents tab), so it may run on their own ChatGPT plan (Fizzy
+	 * #2939). Unset for every other caller.
+	 */
+	planEligible?: boolean;
 	/**
 	 * The caller already asserted this type's capability, before a write that
 	 * changes the answer. Server-internal: no procedure schema carries it.
@@ -295,9 +302,11 @@ export async function dispatchDocumentGeneration(
 	const aiToken = await issueAIToken({
 		userId: input.userId,
 		organizationId: input.organizationId,
+		impersonated: isAiImpersonatedRequest(),
 		source: "project-document-generation",
 		// Use longer expiry for document generation (15 minutes)
 		expirySeconds: 900,
+		planEligible: input.planEligible,
 	});
 
 	const workflowId = buildGenerationWorkflowId(input);
@@ -345,6 +354,7 @@ export async function dispatchDocumentGeneration(
 						// QUEUED → GENERATING flip entirely — the document
 						// queues and never starts generating.
 						generationStartedAt: attemptStartedAt.toISOString(),
+						planEligible: input.planEligible,
 					},
 				],
 			}),

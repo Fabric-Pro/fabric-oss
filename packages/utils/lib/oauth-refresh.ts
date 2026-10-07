@@ -1,15 +1,31 @@
 /**
  * RFC 6749 §6 refresh-token grant against an OAuth 2.0 token endpoint.
  *
- * Routes through `safeFetchOutbound` for SSRF protection. Sends
- * `accept: application/json` (GitHub silently returns form-encoded
- * responses without it). Omits `client_secret` for public clients
- * (`token_endpoint_auth_method: "none"`).
+ * Routes through `safeFetchOutbound` for SSRF protection, with redirects
+ * refused. Sends `accept: application/json` (GitHub silently returns
+ * form-encoded responses without it). Authenticates the client with the
+ * method it was registered with (`clientAuthMethod`): HTTP Basic, the request
+ * body, or `client_id` alone for a public client.
+ *
+ * Error messages are built from the classified error code and a bounded,
+ * redacted `error_description`, never from a raw response body, so they are
+ * safe to log and to persist.
  *
  * Never throws — returns a discriminated `OAuthRefreshResult`.
  */
 
 import * as urlSecurity from "./url-security";
+
+/**
+ * RFC 7591 `token_endpoint_auth_method` values this client supports:
+ * `client_secret_basic` sends the credentials in an HTTP Basic
+ * `Authorization` header, `client_secret_post` in the form body, and `none`
+ * (a public client) sends `client_id` alone.
+ */
+export type OAuthClientAuthMethod =
+	| "client_secret_basic"
+	| "client_secret_post"
+	| "none";
 
 export type OAuthRefreshRequest = {
 	/** Resolved token endpoint URL. Caller handles discovery / fallbacks. */
@@ -19,6 +35,14 @@ export type OAuthRefreshRequest = {
 	clientId: string;
 	/** Undefined => public client (`token_endpoint_auth_method: "none"`). */
 	clientSecret?: string;
+	/**
+	 * How the client authenticates at the token endpoint. Omitted, a client
+	 * with a secret uses `client_secret_post` and one without uses `none`
+	 * (the behaviour before this option existed). `none` never sends a
+	 * secret, even when one is passed; `client_secret_basic` without a
+	 * secret fails without contacting the endpoint.
+	 */
+	clientAuthMethod?: OAuthClientAuthMethod;
 	/** Some providers require echoing scope on refresh. */
 	scope?: string;
 	/**
@@ -45,7 +69,9 @@ export type OAuthRefreshFailure = {
 	ok: false;
 	/**
 	 * Stable error code for caller logic. One of:
-	 *   - An RFC 6749 error code (e.g. `invalid_grant`, `invalid_client`).
+	 *   - A known OAuth error code (e.g. `invalid_grant`, `invalid_client`;
+	 *     see `classifyOAuthErrorCode`), or `unrecognized_error` for any other
+	 *     provider `error` value, which is never repeated.
 	 *   - `network_error` — fetch threw (network/SSRF/abort).
 	 *   - `invalid_response` — server returned 2xx but the body was missing
 	 *     `access_token` or could not be parsed as JSON.
@@ -53,7 +79,11 @@ export type OAuthRefreshFailure = {
 	 *     parseable JSON `error` field.
 	 */
 	errorCode: string;
-	/** Human-readable message safe to store in `lastRefreshError` columns. */
+	/**
+	 * Human-readable message safe to log and to store in `lastRefreshError`
+	 * columns: the classified code or a redacted, bounded `error_description`,
+	 * never a raw response body.
+	 */
 	errorMessage: string;
 };
 
@@ -69,7 +99,100 @@ type TokenResponseBody = {
 	error_description?: unknown;
 };
 
-const MAX_BODY_SNIPPET_LENGTH = 200;
+const MAX_ERROR_TEXT_LENGTH = 200;
+
+/**
+ * The OAuth error codes Fabric passes through as `errorCode`. A provider's
+ * `error` member is attacker-influenced text (it has been seen carrying the
+ * very refresh token that was sent), so only a code from this list is ever
+ * repeated; anything else becomes `unrecognized_error`.
+ */
+const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+	// RFC 6749 §5.2 (token endpoint) and §4.1.2.1 (authorization endpoint)
+	"invalid_request",
+	"invalid_client",
+	"invalid_grant",
+	"unauthorized_client",
+	"unsupported_grant_type",
+	"invalid_scope",
+	"access_denied",
+	"unsupported_response_type",
+	"server_error",
+	"temporarily_unavailable",
+	// RFC 6750 §3.1
+	"invalid_token",
+	"insufficient_scope",
+	// RFC 7591 §3.2.2
+	"invalid_redirect_uri",
+	"invalid_client_metadata",
+	"invalid_software_statement",
+	"unapproved_software_statement",
+	// RFC 8628 §3.5
+	"authorization_pending",
+	"slow_down",
+	"expired_token",
+	// GitHub's token endpoint (documented codes; repo-token-refresh-fault
+	// classifies `bad_refresh_token`).
+	"bad_refresh_token",
+	"bad_verification_code",
+	"incorrect_client_credentials",
+	"redirect_uri_mismatch",
+	"unverified_user_email",
+]);
+
+/** The code Fabric reports for a provider `error` it does not recognise. */
+export const UNRECOGNIZED_OAUTH_ERROR_CODE = "unrecognized_error";
+
+/**
+ * Classify a provider's `error` member: the code itself when it is a known
+ * OAuth error code, otherwise `unrecognized_error`. The raw value is never
+ * returned, so it is never logged or persisted.
+ */
+export function classifyOAuthErrorCode(value: unknown): string {
+	return typeof value === "string" && KNOWN_OAUTH_ERROR_CODES.has(value)
+		? value
+		: UNRECOGNIZED_OAUTH_ERROR_CODE;
+}
+
+/** Parameter names whose values are credentials wherever they appear. */
+const SECRET_PARAMETER_PATTERN =
+	/\b(access_token|refresh_token|id_token|client_secret|code_verifier|code|assertion|password|registration_access_token)(\s*["']?\s*[=:]\s*["']?)[^\s&"',;}]+/gi;
+
+/**
+ * Make provider-supplied error text safe to log and persist.
+ *
+ * Removes every exact `secrets` value, credential-named parameters
+ * (`refresh_token=…`, `"client_secret": "…"`), bearer values, JWTs and any
+ * other long token-shaped run, strips control characters, collapses
+ * whitespace and bounds the result to 200 characters.
+ */
+export function sanitizeOAuthErrorText(
+	text: string,
+	secrets: ReadonlyArray<string | null | undefined> = [],
+): string {
+	let out = text;
+	for (const secret of secrets) {
+		if (secret && secret.length >= 4) {
+			out = out.split(secret).join("[redacted]");
+		}
+	}
+	out = out
+		.replace(SECRET_PARAMETER_PATTERN, "$1$2[redacted]")
+		.replace(/\b(Bearer|Basic)\s+[^\s"',;]+/gi, "$1 [redacted]")
+		.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]")
+		.replace(/[A-Za-z0-9._~+/=-]{24,}/g, (run) =>
+			// URLs are not credentials; a long run inside one is a path.
+			run.includes("/") && !run.includes("=") ? run : "[redacted]",
+		)
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+		.replace(/[\u0000-\u001F\u007F]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (out.length <= MAX_ERROR_TEXT_LENGTH) {
+		return out;
+	}
+	return `${out.slice(0, MAX_ERROR_TEXT_LENGTH)}…`;
+}
 
 /**
  * Strip a leading UTF-8 BOM and surrounding whitespace from a credential.
@@ -106,26 +229,48 @@ function asNumber(value: unknown): number | null {
 	return null;
 }
 
-function truncateForError(text: string): string {
-	const trimmed = text.trim();
-	if (trimmed.length <= MAX_BODY_SNIPPET_LENGTH) {
-		return trimmed;
+/**
+ * The `error` code of a non-JSON error body, when the body is a form-encoded
+ * OAuth error (`error=bad_verification_code&…`, as GitHub sends). Only a
+ * well-formed RFC 6749 code is returned; nothing else from the body is used.
+ */
+function formEncodedErrorCode(rawBody: string): string | null {
+	try {
+		const code = new URLSearchParams(rawBody.trim()).get("error");
+		return code ? classifyOAuthErrorCode(code) : null;
+	} catch {
+		return null;
 	}
-	return `${trimmed.slice(0, MAX_BODY_SNIPPET_LENGTH)}…`;
 }
 
 function buildHttpFailure(
 	status: number,
-	bodySnippet: string,
+	rawBody: string,
 ): OAuthRefreshFailure {
 	const code = `http_${status}`;
-	const snippet = bodySnippet ? truncateForError(bodySnippet) : "";
+	const formError = rawBody ? formEncodedErrorCode(rawBody) : null;
 	return {
 		ok: false,
 		errorCode: code,
-		errorMessage: snippet
-			? `HTTP ${status} from token endpoint: ${snippet}`
+		errorMessage: formError
+			? `HTTP ${status} from token endpoint (error: ${formError})`
 			: `HTTP ${status} from token endpoint`,
+	};
+}
+
+function providerFailure(
+	parsed: TokenResponseBody,
+	providerError: string,
+	secrets: ReadonlyArray<string | undefined>,
+): OAuthRefreshFailure {
+	const errorCode = classifyOAuthErrorCode(providerError);
+	const description = asString(parsed.error_description);
+	return {
+		ok: false,
+		errorCode,
+		errorMessage: description
+			? sanitizeOAuthErrorText(description, secrets) || errorCode
+			: errorCode,
 	};
 }
 
@@ -146,14 +291,36 @@ export async function refreshOAuthToken(
 			? undefined
 			: sanitizeCredential(request.clientSecret);
 
+	const refreshToken = sanitizeCredential(request.refreshToken);
+	const secrets = [refreshToken, clientSecret];
+	const authMethod: OAuthClientAuthMethod =
+		request.clientAuthMethod ??
+		(clientSecret !== undefined ? "client_secret_post" : "none");
+
 	const body = new URLSearchParams({
 		grant_type: "refresh_token",
-		refresh_token: sanitizeCredential(request.refreshToken),
-		client_id: clientId,
+		refresh_token: refreshToken,
 	});
+	const headers: Record<string, string> = {
+		"content-type": "application/x-www-form-urlencoded",
+		accept: "application/json",
+	};
 
-	if (clientSecret !== undefined) {
-		body.set("client_secret", clientSecret);
+	if (authMethod === "client_secret_basic") {
+		if (clientSecret === undefined || clientSecret.length === 0) {
+			return {
+				ok: false,
+				errorCode: "missing_client_secret",
+				errorMessage:
+					"client_secret_basic authentication requires a client secret",
+			};
+		}
+		headers.authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+	} else {
+		body.set("client_id", clientId);
+		if (authMethod === "client_secret_post" && clientSecret !== undefined) {
+			body.set("client_secret", clientSecret);
+		}
 	}
 
 	if (request.scope !== undefined && request.scope.length > 0) {
@@ -164,11 +331,9 @@ export async function refreshOAuthToken(
 	try {
 		response = await urlSecurity.safeFetchOutbound(request.tokenEndpoint, {
 			method: "POST",
-			headers: {
-				"content-type": "application/x-www-form-urlencoded",
-				accept: "application/json",
-			},
+			headers,
 			body,
+			redirect: "error",
 			...(request.timeoutMs === undefined
 				? {}
 				: { signal: AbortSignal.timeout(request.timeoutMs) }),
@@ -178,7 +343,7 @@ export async function refreshOAuthToken(
 		return {
 			ok: false,
 			errorCode: "network_error",
-			errorMessage: message,
+			errorMessage: sanitizeOAuthErrorText(message, secrets),
 		};
 	}
 
@@ -202,14 +367,8 @@ export async function refreshOAuthToken(
 
 	if (!response.ok) {
 		const providerError = parsed ? asString(parsed.error) : null;
-		if (providerError) {
-			const description =
-				asString(parsed?.error_description) ?? providerError;
-			return {
-				ok: false,
-				errorCode: providerError,
-				errorMessage: description,
-			};
+		if (parsed && providerError) {
+			return providerFailure(parsed, providerError, secrets);
 		}
 		return buildHttpFailure(response.status, rawBody);
 	}
@@ -219,7 +378,7 @@ export async function refreshOAuthToken(
 			ok: false,
 			errorCode: "invalid_response",
 			errorMessage: rawBody
-				? `Token endpoint returned non-JSON body: ${truncateForError(rawBody)}`
+				? "Token endpoint returned a non-JSON body"
 				: "Token endpoint returned an empty body",
 		};
 	}
@@ -229,12 +388,7 @@ export async function refreshOAuthToken(
 	// as a failure too.
 	const providerError = asString(parsed.error);
 	if (providerError) {
-		const description = asString(parsed.error_description) ?? providerError;
-		return {
-			ok: false,
-			errorCode: providerError,
-			errorMessage: description,
-		};
+		return providerFailure(parsed, providerError, secrets);
 	}
 
 	const accessToken = asString(parsed.access_token);

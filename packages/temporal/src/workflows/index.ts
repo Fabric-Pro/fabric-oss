@@ -404,6 +404,10 @@ export {
 	projectInstructionProposalBranchWorkflow,
 	wakeSignal as proposalBranchWakeSignal,
 } from "./instruction-proposal-branch";
+export {
+	type ProposalBranchRefreshWorkflowInput,
+	projectInstructionProposalBranchRefreshWorkflow,
+} from "./instruction-proposal-branch-refresh";
 // Coding Instructions proposal pull requests (Fizzy #2563 spec §9): the
 // five-minute sweeper. Named, like the sync.
 export { instructionProposalPullRequestSweepWorkflow } from "./instruction-proposal-pull-request-sweep";

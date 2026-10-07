@@ -19,6 +19,25 @@ import {
 
 const RECEIVING_STATUSES = new Set(["RECEIVING", "VALIDATING"]);
 
+type ReceivingInstructionFile = {
+	id: string;
+	path: string;
+};
+
+type ReadyInstructionFile = ReceivingInstructionFile & {
+	kind: InstructionFileKind;
+	name: string | null;
+	description: string | null;
+	size: number;
+	mimeType: string | null;
+	isText: boolean;
+	mode: number | null;
+};
+
+type InstructionFileListResult =
+	| ReceivingInstructionFile[]
+	| ReadyInstructionFile[];
+
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible + requireProjectPermission(INSTRUCTION_READ).
  *
@@ -59,7 +78,7 @@ export const listFilesProcedure = tenantProtectedProcedure
 			includeReceiving: z.boolean().default(false),
 		}),
 	)
-	.handler(async ({ input, context }) => {
+	.handler(async ({ input, context }): Promise<InstructionFileListResult> => {
 		const organizationId = await requireHostingOrganizationId(
 			input.projectId,
 			context.user.id,
@@ -95,9 +114,15 @@ export const listFilesProcedure = tenantProtectedProcedure
 
 		if (!isReady) {
 			// RECEIVING/VALIDATING: ids and paths only — metadata is not final.
-			return files.map((f) => ({ id: f.id, path: f.path }));
+			const receivingFiles: ReceivingInstructionFile[] = files.map(
+				(f) => ({
+					id: f.id,
+					path: f.path,
+				}),
+			);
+			return receivingFiles;
 		}
-		return files.map((f) => ({
+		const readyFiles: ReadyInstructionFile[] = files.map((f) => ({
 			id: f.id,
 			path: f.path,
 			kind: f.kind,
@@ -108,4 +133,5 @@ export const listFilesProcedure = tenantProtectedProcedure
 			isText: f.isText,
 			mode: f.mode,
 		}));
+		return readyFiles;
 	});

@@ -30,10 +30,11 @@
  *   - `spawn` with no shell, stdin closed, and a timeout taken from the
  *     caller's absolute deadline (SIGTERM, then SIGKILL a second later unless
  *     the process has exited by then);
- *   - an environment with every `FABRIC_*` variable removed (the API key
- *     never reaches git or anything git might run), the variables that
- *     redirect git at a different repository removed, prompts disabled, and
- *     optional locks, lazy fetches and fsmonitor turned off;
+ *   - an environment with every inherited `FABRIC_*` variable removed, the
+ *     variables that redirect git at a different repository removed, prompts
+ *     disabled, and optional locks, lazy fetches and fsmonitor turned off.
+ *     The Fabric Git gateway adds a single URL-scoped Authorization header to
+ *     its child process only; no credential is written to Git configuration;
  *   - stdout capped at 64 KiB, stderr captured and never printed.
  *
  * The clone differs in one way: it needs the developer's own git credentials,
@@ -63,6 +64,7 @@ import {
 import {
 	exitReason,
 	type GitDeadline,
+	type GitHttpAuthorization,
 	type GitResult,
 	isNotARepository,
 	lines,
@@ -70,6 +72,7 @@ import {
 	simple,
 } from "./git-run.js";
 
+export { changedTrackedPaths } from "./git-diff.js";
 export {
 	cloneableUrl,
 	isBranchLiteral,
@@ -78,11 +81,12 @@ export {
 } from "./git-literals.js";
 export {
 	type GitDeadline,
+	type GitHttpAuthorization,
 	type GitResult,
 	gitEnvironment,
 	hookWriteEnvironment,
 } from "./git-run.js";
-export { fastForwardTo, fetchRef } from "./git-write.js";
+export { fastForwardTo, fetchRef, fetchRefFromUrl } from "./git-write.js";
 
 export interface WorkTree {
 	/** The work tree's top level, as git reports it. */
@@ -122,13 +126,6 @@ const OPERATION_MARKERS: ReadonlyArray<{
 	// HEAD markers above name which one while a step is stopped.
 	{ marker: "sequencer", operation: "cherry-pick" },
 ];
-
-/**
- * Paths this CLI itself writes into a checkout: the session hook's settings.
- * `init` puts one there in every checkout it sets up, so counting it as "your
- * working tree has changes" would make every such checkout permanently dirty.
- */
-const OWN_PATHS = [".claude/settings.local.json", ".codex/hooks.json"];
 
 /** The nearest existing directory at or above `dir`, or null. */
 async function nearestExistingDirectory(dir: string): Promise<string | null> {
@@ -360,40 +357,39 @@ export async function isAncestor(
 }
 
 /**
- * Whether the work tree has no changes, untracked files included — except the
- * session hook's own settings files (`OWN_PATHS`) while they are UNTRACKED,
- * which is how `init` leaves them. A committed copy of either that has been
- * modified is a change like any other.
- *
- * Two questions: everything but the own paths (untracked included), then the
- * own paths among tracked files only.
+ * Whether no tracked file's CONTENT differs from the index or from HEAD. Asked
+ * of git's own content comparison (`diff --quiet`, then `diff --cached
+ * --quiet`) rather than `status`: a file whose only difference is how its
+ * line endings are stored (`core.autocrlf`, a tool that rewrites generated
+ * files on every session) is listed by `status` but has no content change.
+ * Untracked files are not changes: `git pull --ff-only` is not stopped by
+ * them either, and when an incoming commit does want one of those paths git
+ * itself refuses, naming it.
  */
 export async function isClean(
 	root: string,
 	deadline: GitDeadline,
 ): Promise<GitResult<boolean>> {
-	const everythingElse = await porcelainIsEmpty(
-		root,
-		[
-			"--untracked-files=normal",
-			"--",
-			":/",
-			...OWN_PATHS.map((own) => `:(exclude,top)${own}`),
-		],
-		deadline,
-	);
-	if (everythingElse.kind !== "ok" || !everythingElse.value) {
-		return everythingElse;
+	for (const scope of [[], ["--cached"]]) {
+		const result = await simple(
+			root,
+			["diff", "--quiet", "--ignore-submodules=none", ...scope],
+			deadline,
+		);
+		if (result.kind !== "ok") {
+			return result;
+		}
+		if (result.value.code === 1) {
+			return { kind: "ok", value: false };
+		}
+		if (result.value.code !== 0) {
+			return {
+				kind: "unavailable",
+				reason: `git exited with status ${result.value.code}`,
+			};
+		}
 	}
-	return porcelainIsEmpty(
-		root,
-		[
-			"--untracked-files=no",
-			"--",
-			...OWN_PATHS.map((own) => `:(top)${own}`),
-		],
-		deadline,
-	);
+	return { kind: "ok", value: true };
 }
 
 /**
@@ -498,28 +494,6 @@ export async function checkoutAppearsIncomplete(
 			staged.value.code === 1 &&
 			untracked.value.stdout !== "",
 	};
-}
-
-async function porcelainIsEmpty(
-	root: string,
-	args: readonly string[],
-	deadline: GitDeadline,
-): Promise<GitResult<boolean>> {
-	const result = await simple(
-		root,
-		["status", "--porcelain=v1", "--ignore-submodules=none", ...args],
-		deadline,
-	);
-	if (result.kind !== "ok") {
-		return result;
-	}
-	if (result.value.code !== 0) {
-		return {
-			kind: "unavailable",
-			reason: `git exited with status ${result.value.code}`,
-		};
-	}
-	return { kind: "ok", value: result.value.stdout.trim() === "" };
 }
 
 /** The operation in progress in this checkout, or `null` when there is none. */
@@ -870,8 +844,12 @@ export async function cloneInto(
 	url: string,
 	ref: string,
 	deadline: GitDeadline,
+	options: { httpAuthorization?: GitHttpAuthorization } = {},
 ): Promise<CloneResult> {
-	if (cloneableUrl(url) !== url || !isBranchLiteral(ref)) {
+	const validUrl = options.httpAuthorization
+		? options.httpAuthorization.url === url
+		: cloneableUrl(url) === url;
+	if (!validUrl || !isBranchLiteral(ref)) {
 		return {
 			kind: "unavailable",
 			reason: "not a repository this will clone",
@@ -900,7 +878,7 @@ export async function cloneInto(
 			".",
 		],
 		deadline,
-		{ write: true },
+		{ write: true, ...options },
 	);
 	if (result.kind === "unavailable") {
 		return { kind: "unavailable", reason: result.reason };
@@ -908,4 +886,32 @@ export async function cloneInto(
 	return result.code === 0
 		? { kind: "cloned" }
 		: { kind: "failed", reason: cloneFailureOf(result.stderr) };
+}
+
+/**
+ * Restore the provider URL after a new clone travelled through Fabric's
+ * one-shot authenticated gateway. This is deliberately unavailable to
+ * adoption and existing-checkout paths.
+ */
+export async function setRemoteUrl(
+	root: string,
+	remote: string,
+	url: string,
+	deadline: GitDeadline,
+): Promise<GitResult<void>> {
+	if (!isRemoteName(remote) || cloneableUrl(url) !== url) {
+		return { kind: "unavailable", reason: "not a repository remote" };
+	}
+	const result = await runGit(
+		root,
+		["remote", "set-url", remote, url],
+		deadline,
+		{ write: true },
+	);
+	if (result.kind === "unavailable") {
+		return result;
+	}
+	return result.code === 0
+		? { kind: "ok", value: undefined }
+		: { kind: "unavailable", reason: "git refused the provider remote" };
 }

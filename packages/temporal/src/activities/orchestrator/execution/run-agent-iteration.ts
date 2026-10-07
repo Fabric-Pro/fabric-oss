@@ -409,6 +409,55 @@ interface AiSdkMessage {
 }
 
 /**
+ * The debug dumps below print a conversation's shape, never its text. The
+ * organization's company context, project material and what people asked can
+ * sit anywhere in it: in a tool's result, in a tool's arguments, or quoted in
+ * an earlier answer, which a follow-up turn carries as plain text.
+ */
+function sizeOf(value: unknown): number {
+	return typeof value === "string"
+		? value.length
+		: (JSON.stringify(value) ?? "").length;
+}
+
+function partForLog(part: unknown): unknown {
+	const { type, toolName } = (part ?? {}) as {
+		type?: unknown;
+		toolName?: unknown;
+	};
+	return {
+		type,
+		...(typeof toolName === "string" ? { toolName } : {}),
+		chars: sizeOf(part),
+	};
+}
+
+/** The messages a debug dump prints: roles, part types, tool names, sizes. */
+export function messagesForLog<M extends { role?: unknown; content: unknown }>(
+	messages: readonly M[],
+): unknown[] {
+	return messages.map((message) => ({
+		role: message.role,
+		...(Array.isArray(message.content)
+			? { parts: message.content.map(partForLog) }
+			: { chars: sizeOf(message.content) }),
+	}));
+}
+
+/**
+ * The tool calls a debug dump prints: ids, names, how many arguments and
+ * their size. Not the argument names: the model writes those too.
+ */
+export function toolCallsForLog(calls: readonly AgentToolCall[]): unknown[] {
+	return calls.map((call) => ({
+		id: call.id,
+		name: call.name,
+		argCount: Object.keys(call.args ?? {}).length,
+		argsChars: sizeOf(call.args),
+	}));
+}
+
+/**
  * Build a lookup map from toolCallId to toolName from all assistant messages
  */
 function buildToolCallIdToNameMap(
@@ -776,7 +825,7 @@ export async function runAgentIteration(
 	const lastMessages = messages.slice(-4);
 	console.log(
 		`[AgentIteration] Last ${lastMessages.length} messages being sent to LLM:`,
-		JSON.stringify(lastMessages, null, 2),
+		JSON.stringify(messagesForLog(lastMessages), null, 2),
 	);
 
 	console.log(
@@ -1265,7 +1314,7 @@ export async function runAgentIteration(
 		if (toolCallsToExecute.length > 0) {
 			console.log(
 				"[AgentIteration] Tool calls to execute:",
-				JSON.stringify(toolCallsToExecute, null, 2),
+				JSON.stringify(toolCallsForLog(toolCallsToExecute), null, 2),
 			);
 			return {
 				type: "tool_calls",

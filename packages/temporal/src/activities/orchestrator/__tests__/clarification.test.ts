@@ -14,6 +14,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { companyContextHintLine } from "../../../lib/company-context-hint";
 import { analyzeIntentClarityActivity } from "../clarification";
 
 describe("analyzeIntentClarityActivity", () => {
@@ -302,6 +303,110 @@ describe("analyzeIntentClarityActivity", () => {
 
 			expect(res.needsClarification).toBe(true);
 			expect(res.question).toBe("Which project should I target?");
+		});
+
+		// Without the organization the gate asked "which company?" for "our
+		// company", although the Advisor can search its company context
+		// (Fizzy #2719).
+		it("sends the organization ahead of the project and the request", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "What case studies does our company have?",
+				organizationContext:
+					'- This chat works for the organization "Example Org".',
+				projectContext: "Attached project: Example Portal",
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).toContain(
+				'## Organization context\n- This chat works for the organization "Example Org".',
+			);
+			expect(user.indexOf("## Organization context")).toBeLessThan(
+				user.indexOf("## Project context"),
+			);
+			expect(user.indexOf("## Project context")).toBeLessThan(
+				user.indexOf("## User request"),
+			);
+		});
+
+		it("omits the organization section when there is none", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "What case studies does our company have?",
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).not.toContain("## Organization context");
+		});
+
+		it("tells the model that 'our company' means the organization, and nothing more", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "anything",
+				organizationContext:
+					'- This chat works for the organization "Example Org".',
+				userId: "u",
+			});
+
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
+			expect(system).toContain(
+				'"Our company", "our organization" and similar explicit references to the user\'s own company mean that organization',
+			);
+			// "We" can be a client's team; only the explicit phrases are fixed.
+			expect(system).toContain(
+				'"We" and "us" are read in the conversation\'s context like any other reference',
+			);
+			// A client or partner the conversation does not name is still a
+			// question worth asking.
+			expect(system).toContain(
+				"A request about another company (a client, prospect, partner or competitor) that the conversation does not name is judged as usual.",
+			);
+			// Searching finds the material; it does not pick one of several
+			// case studies that would lead to different work.
+			expect(system).toContain(
+				"Never ask what material exists or where it is.",
+			);
+			expect(system).toContain(
+				"when several would lead to materially different work, asking is fine",
+			);
+			expect(system).toContain("do NOT stay silent on a real gap");
+		});
+
+		it("leaves the prompt as it was for a turn without organization context", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+
+			await analyzeIntentClarityActivity({
+				message: "What case studies does our company have?",
+				userId: "u",
+			});
+
+			const { instructions: system } = promptFor(
+				generateText.mock.calls[0][0],
+			);
+			expect(system).not.toContain("Organization context");
+			expect(system).not.toContain("never ask which company");
+		});
+
+		it("takes the preload's company-context hint as it is", async () => {
+			generateText.mockResolvedValue({ text: clearResponse });
+			const hint = `COMPANY CONTEXT:\n${companyContextHintLine("Example Org")}`;
+
+			await analyzeIntentClarityActivity({
+				message: "What case studies does our company have?",
+				organizationContext: hint,
+				userId: "u",
+			});
+
+			const { user } = promptFor(generateText.mock.calls[0][0]);
+			expect(user).toContain(`## Organization context\n${hint}\n\n`);
+			expect(user).toContain('the organization "Example Org"');
 		});
 	});
 });

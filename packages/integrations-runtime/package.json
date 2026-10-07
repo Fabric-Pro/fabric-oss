@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-runtime",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Plugin contract and runtime for Fabric integrations (Apache-2.0 attribution to Corsair)",
 	"keywords": [
 		"fabric",
@@ -36,13 +36,13 @@
 		"LICENSE-APACHE-2.0"
 	],
 	"scripts": {
-		"build": "tsup",
-		"dev": "tsup --watch",
-		"type-check": "tsc --noEmit"
+		"build": "tsdown",
+		"dev": "tsdown --watch",
+		"type-check": "tsgo --noEmit"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
-		"tsup": "^8.0.0",
+		"tsdown": "^0.23.0",
 		"typescript": "5.9.3"
 	}
 }

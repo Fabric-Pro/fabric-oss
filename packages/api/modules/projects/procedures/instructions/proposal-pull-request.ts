@@ -37,6 +37,7 @@ import {
 import type { ProposalOperationInput } from "@repo/temporal/instruction-proposal-pull-request-types";
 import { canReviewInstructionProposals } from "./proposal-authorization";
 import {
+	refreshBranchOfProposal,
 	startAdmittedBranchProposal,
 	wakeBranchAfterCommand,
 } from "./proposal-branch";
@@ -434,10 +435,12 @@ function refreshRefusal(refused: {
  * here. The row's check time is nulled and a retryable BLOCKED row made due
  * (`requestPullRequestRefresh`); then, for a row its branch's workflow
  * moves (QUEUED, OPENING, a retryable BLOCKED) on a member branch, that
- * workflow is woken now rather than on the sweeper's next tick. A proposal
- * not yet on a branch is left to the sweeper's Attach, an OPEN row to
- * Observe, CLOSE_REQUESTED to Close, and a non-retryable BLOCKED row to a
- * human. `refreshed: false` means the row is already settled.
+ * workflow is woken now rather than on the sweeper's next tick. An OPEN row
+ * on a member branch runs the branch's own Refresh (one bounded provider
+ * observation that settles a terminal pull request at once). A proposal
+ * not yet on a branch is left to the sweeper's Attach, CLOSE_REQUESTED to
+ * Close, and a non-retryable BLOCKED row to a human. `refreshed: false`
+ * means the row is already settled.
  *
  * Rationed on the server: the database admits one Refresh
  * per operation a minute, atomically, and never one that would override a
@@ -478,6 +481,16 @@ export async function refreshProposalPullRequest(
 		});
 		if (branchId !== null) {
 			await wakeBranchAfterCommand(branchId, caller);
+		}
+	} else if (refreshed.state === "OPEN") {
+		// An OPEN proposal on a member branch is observed now, through the
+		// branch's own Refresh, rather than at the sweeper's next tick.
+		const branchId = await proposalBranchIdOf({
+			snapshotId: caller.snapshotId,
+			organizationId: caller.organizationId,
+		});
+		if (branchId !== null) {
+			await refreshBranchOfProposal({ ...caller, branchId });
 		}
 	}
 	return { refreshed: true };

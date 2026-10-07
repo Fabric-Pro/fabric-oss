@@ -14,6 +14,16 @@
  *
  * A hash match skips embedding — that is the whole point of storing the hash.
  *
+ * A page a crawl could not fetch keeps its content and vectors and is marked
+ * FAILED with a fetch-failure reason (`record-url-page-fetch-failure-activity`).
+ * When a later fetch finds its content unchanged and it still holds vectors,
+ * it is COMPLETED again and its reason cleared
+ * (`urlPageFetchFailureRestorableWhere`), with no embed: its indexed content
+ * is the content just fetched. Any other page keeps its status. Both owners.
+ * A marked page that holds no vectors has nothing indexed, so its content is
+ * embedded like a changed page's (the company owner embeds any page that is
+ * not COMPLETED, below).
+ *
  * A company owner (Fizzy #2719) writes `CompanyContextUrlPage` under the
  * owner's organization, with two more reasons to re-embed a page whose content
  * hash matches:
@@ -28,9 +38,12 @@
  * A missing owner is the project owner, unchanged.
  */
 import { createHash } from "node:crypto";
-import type { ExtractionStatus } from "@repo/database";
+import {
+	type ExtractionStatus,
+	URL_PAGE_FETCH_FAILURE_PREFIX,
+	urlPageFetchFailureRestorableWhere,
+} from "@repo/database";
 import { db } from "@repo/database/prisma/client";
-import { resolveCompanyEmbeddingModel } from "@repo/rag";
 import {
 	type CompanyContextOwner,
 	type ContextOwner,
@@ -38,6 +51,7 @@ import {
 } from "../../lib/context-owner";
 import { companyLinkCrawlStore } from "../../lib/context-row-store";
 import { activityLogger } from "../lib/activity-logger";
+import { currentCompanyEmbeddingModel } from "./lib/company-embedding-model";
 
 export interface UpsertUrlPageActivityInput {
 	parentContextId: string;
@@ -107,11 +121,26 @@ export async function upsertUrlPageActivity(
 
 	const existing = await db.projectContextUrlPage.findFirst({
 		where: { parentContextId, pageUrl },
-		select: { id: true, contentHash: true },
+		select: {
+			id: true,
+			contentHash: true,
+			extractionStatus: true,
+			extractionError: true,
+			embeddedAt: true,
+		},
 	});
 
 	if (existing) {
 		const hashUnchanged = existing.contentHash === contentHash;
+		// A page a failed fetch marked that holds no vectors has nothing
+		// indexed to restore; its unchanged content is embedded instead.
+		const markedWithNothingIndexed =
+			existing.extractionStatus === "FAILED" &&
+			existing.embeddedAt === null &&
+			(existing.extractionError?.startsWith(
+				URL_PAGE_FETCH_FAILURE_PREFIX,
+			) ??
+				false);
 		// `manual-resync` is the explicit user-driven "Re-sync now" path.
 		// Treat it as authoritative — always overwrite content + contentHash
 		// regardless of whether the hash technically matches. This protects
@@ -125,7 +154,8 @@ export async function upsertUrlPageActivity(
 		// Scheduled re-syncs (cron path) keep the hash short-circuit to avoid
 		// pointless re-embeds on unchanged content.
 		const forceWrite = mode === "manual-resync";
-		const skipEmbedding = hashUnchanged && !forceWrite;
+		const keepsStoredContent = hashUnchanged && !forceWrite;
+		const skipEmbedding = keepsStoredContent && !markedWithNothingIndexed;
 
 		await db.projectContextUrlPage.update({
 			where: { id: existing.id },
@@ -134,17 +164,35 @@ export async function upsertUrlPageActivity(
 				lastFetchedAt: new Date(),
 				etag: etag ?? null,
 				lastModifiedHeader: lastModifiedHeader ?? null,
-				// Overwrite content when it actually changed OR when the user
-				// explicitly asked for a re-sync (manual-resync mode).
-				...(hashUnchanged && !forceWrite
+				// Overwrite content when it actually changed, when the user
+				// explicitly asked for a re-sync (manual-resync mode), or when
+				// a failed fetch left the page with nothing indexed. The
+				// earlier failure reason no longer describes the page.
+				...(skipEmbedding
 					? {}
 					: {
 							content,
 							contentHash,
 							extractionStatus: pendingStatus,
+							extractionError: null,
 						}),
 			},
 		});
+
+		// A page a failed fetch marked is COMPLETED again by its unchanged
+		// content; the WHERE leaves every other page's status alone.
+		let restored = false;
+		if (skipEmbedding) {
+			const { count } = await db.projectContextUrlPage.updateMany({
+				where: {
+					id: existing.id,
+					parentContextId,
+					...urlPageFetchFailureRestorableWhere(),
+				},
+				data: { extractionStatus: "COMPLETED", extractionError: null },
+			});
+			restored = count > 0;
+		}
 
 		activityLogger.info("Upsert url page activity updated existing", {
 			parentContextId,
@@ -152,6 +200,7 @@ export async function upsertUrlPageActivity(
 			hashUnchanged,
 			skipEmbedding,
 			forceWrite,
+			restored,
 			mode,
 		});
 
@@ -159,7 +208,11 @@ export async function upsertUrlPageActivity(
 			pageId: existing.id,
 			contentHash,
 			skipped: skipEmbedding,
-			reason: skipEmbedding ? "hash-unchanged" : undefined,
+			reason: skipEmbedding
+				? "hash-unchanged"
+				: keepsStoredContent
+					? "not-embedded"
+					: undefined,
 		};
 	}
 
@@ -241,7 +294,13 @@ async function upsertCompanyUrlPage(
 		};
 	}
 
-	const current = await currentEmbeddingModel(owner, userId);
+	// An unresolved model re-embeds the page: the embed step resolves the
+	// model again, and records on the page why it cannot.
+	const current = await currentCompanyEmbeddingModel(
+		owner,
+		userId,
+		"re-embedding the page",
+	);
 	const embedding = await crawls.getPageEmbedding(written.pageId);
 	const embeddedWithCurrentModel =
 		current !== null &&
@@ -273,31 +332,4 @@ async function upsertCompanyUrlPage(
 			? "not-embedded"
 			: "embedding-model-changed",
 	};
-}
-
-/**
- * The identity of the organization's current embedding model, or null when
- * it cannot be resolved. Null re-embeds the page: the embed step resolves the
- * model again, and records on the page why it cannot.
- */
-async function currentEmbeddingModel(
-	owner: CompanyContextOwner,
-	userId: string | null,
-): Promise<string | null> {
-	try {
-		const model = await resolveCompanyEmbeddingModel({
-			organizationId: owner.organizationId,
-			userId: userId ?? "",
-		});
-		return model.identity;
-	} catch (error) {
-		activityLogger.warn(
-			"Could not resolve the organization's embedding model; re-embedding the page",
-			{
-				organizationId: owner.organizationId,
-				error: error instanceof Error ? error.message : String(error),
-			},
-		);
-		return null;
-	}
 }

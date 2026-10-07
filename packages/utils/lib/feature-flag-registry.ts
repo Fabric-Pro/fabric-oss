@@ -286,6 +286,24 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2719. One switch for the company context page, retrieval and the empty-context notice together; off, all three are absent. Turning it off keeps every source and vector, and scheduled company crawls exit without calling the crawler; turning it back on restores everything. Roll out through the per-organization override so the web tier and the Temporal worker read the same value, and enable an organization only after BOTH the web deployment and the worker rollout have fully completed — workers polling the company context task queue are live and no older worker still polls project-documents. On a worker rollback, turn it off.",
 	},
+	CHATGPT_PLAN: {
+		label: "ChatGPT plan as a personal AI provider",
+		description:
+			"Lets a member connect their own ChatGPT plan with `fabric connect chatgpt` and run their own interactive AI work on it instead of the organization's provider.",
+		envVar: "FABRIC_FEATURE_CHATGPT_PLAN",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2939. Self-hosted deployments only: keep this off on the hosted SaaS until OpenAI confirms that plan sign-ins may be used by a multi-user hosted service. Enable it per organization only, never through the instance-wide switch, which would reach every organization without a row of its own. On, a member who has connected a plan and turned it on for this organization has their own interactive calls (feature enhancement, chat, document generation they start, the LangGraph agents) sent to their plan; embeddings and every background or scheduled job stay on the organization's provider. Off, nothing routes to a plan and the settings section is hidden, while stored connections and per-organization choices are kept, so turning it back on restores them exactly. Resolve it in API code and activities, never in workflow code.",
+	},
+	CHATGPT_PLAN_POOLING: {
+		label: "ChatGPT plan pooling for organizations",
+		description:
+			"Lets organization admins connect ChatGPT plan accounts for the organization's shared work, with `fabric connect chatgpt --org <slug> --shared`, and route allowlisted background jobs, and optionally members without a plan of their own, to them.",
+		envVar: "FABRIC_FEATURE_CHATGPT_PLAN_POOLING",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2770. Works only together with CHATGPT_PLAN, and only for an organization: enable it per organization, never through the instance-wide switch. On, the organization's AI Providers settings show the shared accounts and the pooling policy; nothing routes to a shared account until an organization owner has acknowledged the terms and turned pooling on there. Off, nothing routes to a shared account and every pool procedure answers NOT_FOUND, while connected accounts and the policy are kept, so turning it back on restores them exactly. Resolve it in API code and activities, never in workflow code.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

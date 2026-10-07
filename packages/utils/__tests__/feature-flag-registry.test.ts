@@ -991,7 +991,9 @@ describe("COMPANY_CONTEXT (#2719)", () => {
 
 	it("is appended after every org-scopable flag that preceded it", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
-		expect(ORG_SCOPABLE_FLAG_KEYS.at(-1)).toBe("COMPANY_CONTEXT");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("COMPANY_CONTEXT"),
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("PARLUME_MEETINGS"));
 	});
 
 	it("resolves off when neither an override nor the env var is set", () => {
@@ -1023,5 +1025,82 @@ describe("COMPANY_CONTEXT (#2719)", () => {
 				definition.envVar === "FABRIC_FEATURE_COMPANY_CONTEXT",
 		);
 		expect(owners.map(([key]) => key)).toEqual(["COMPANY_CONTEXT"]);
+	});
+});
+
+describe("CHATGPT_PLAN (#2939)", () => {
+	// Default OFF: on, a connected member's interactive calls leave the
+	// organization's provider for their own plan, so merging this entry must
+	// route nothing anywhere.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("CHATGPT_PLAN")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.CHATGPT_PLAN).toMatchObject({
+			envVar: "FABRIC_FEATURE_CHATGPT_PLAN",
+			default: false,
+			orgScopable: true,
+		});
+	});
+
+	it("is appended after every org-scopable flag that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN")).toBeGreaterThan(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("COMPANY_CONTEXT"),
+		);
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("CHATGPT_PLAN", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	it("lets one organization be enabled while the deployment stays off", () => {
+		expect(
+			resolveFlag("CHATGPT_PLAN", { org: true, global: false }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	it("does not share its env var with any other entry", () => {
+		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
+			([, definition]) =>
+				definition.envVar === "FABRIC_FEATURE_CHATGPT_PLAN",
+		);
+		expect(owners.map(([key]) => key)).toEqual(["CHATGPT_PLAN"]);
+	});
+});
+
+describe("CHATGPT_PLAN_POOLING (#2770)", () => {
+	// Default OFF: on, an organization's background jobs may leave its own
+	// provider for a shared plan account, so merging this entry must route
+	// nothing anywhere.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("CHATGPT_PLAN_POOLING")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.CHATGPT_PLAN_POOLING).toMatchObject({
+			envVar: "FABRIC_FEATURE_CHATGPT_PLAN_POOLING",
+			default: false,
+			orgScopable: true,
+		});
+	});
+
+	it("is appended after CHATGPT_PLAN", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN_POOLING")).toBe(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN") + 1,
+		);
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("CHATGPT_PLAN_POOLING", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	it("does not share its env var with any other entry", () => {
+		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
+			([, definition]) =>
+				definition.envVar === "FABRIC_FEATURE_CHATGPT_PLAN_POOLING",
+		);
+		expect(owners.map(([key]) => key)).toEqual(["CHATGPT_PLAN_POOLING"]);
 	});
 });

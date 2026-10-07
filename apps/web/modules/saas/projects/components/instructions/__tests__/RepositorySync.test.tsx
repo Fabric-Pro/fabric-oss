@@ -209,6 +209,7 @@ const CONFIGURED: RepositorySyncState = {
 	availableIntegrations: [INTEGRATION],
 };
 const copy = en.projects.codingInstructions.repositorySync;
+const directCopy = en.projects.codingInstructions.direct;
 
 function run(overrides: Partial<SyncRunView> = {}): SyncRunView {
 	return {
@@ -319,7 +320,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 	}
 
 	const submit = () =>
-		screen.getByRole("button", { name: copy.configureDialog.submit });
+		screen.getByRole("button", { name: directCopy.saveConnection });
 	const treeList = () => screen.getByRole("list", { name: copy.tree.label });
 	const box = (path: string) =>
 		within(treeList()).getByRole("checkbox", { name: path });
@@ -353,7 +354,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		);
 	}
 
-	it("seeds the branch from the integration, configures the ticked folder, starts the first sync, and closes", async () => {
+	it("saves the attached branch and folder without starting an import", async () => {
 		const user = userEvent.setup();
 		const { onOpenChange, onSaved } = renderDialog();
 
@@ -364,17 +365,13 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			screen.getByText("example-org/instructions"),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-		const notice = screen.getByText(copy.configureDialog.afterSyncNotice);
+		const notice = screen.getByText(directCopy.connectionNotice);
 		expect(notice).toBeInTheDocument();
-		expect(notice).toHaveTextContent(
-			"editors commit from Fabric straight to the branch, and readers can suggest pull requests. Only pushing from the CLI is turned off.",
-		);
-		expect(notice).not.toHaveTextContent(/editing in fabric/i);
 		expect(
-			screen.getByRole("checkbox", {
+			screen.queryByRole("checkbox", {
 				name: copy.configureDialog.automaticLabel,
 			}),
-		).toBeChecked();
+		).not.toBeInTheDocument();
 
 		await pickAgents(user);
 		await user.click(submit());
@@ -385,28 +382,32 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			repositoryIntegrationId: "int_1",
 			ref: "develop",
 			rootPath: "agents",
-			automatic: true,
 		});
-		expect(m.syncNow).toHaveBeenCalledWith({ projectId: "proj_1" });
-		expect(m.toastSuccess).toHaveBeenCalledWith(copy.syncNowResult.started);
+		expect(m.syncNow).not.toHaveBeenCalled();
+		expect(m.toastSuccess).toHaveBeenCalledWith(directCopy.connectionSaved);
 		expect(onSaved).toHaveBeenCalled();
 	});
 
-	it("starts no sync of its own, and says the new selection syncs next, when the server queued it behind an open run", async () => {
-		m.configure.mockResolvedValue({
-			syncId: "sync_1",
-			generation: 2,
-			syncQueued: true,
-		});
+	it("does not offer automatic imports for a previously scheduled connection", async () => {
 		const user = userEvent.setup();
-		const { onOpenChange, onSaved } = renderDialog();
+		const { onOpenChange, onSaved } = renderDialog({
+			current: { ...CONFIGURED.configured, automatic: true },
+		});
+		expect(
+			screen.queryByText(copy.configureDialog.automaticHint),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", {
+				name: copy.configureDialog.automaticLabel,
+			}),
+		).not.toBeInTheDocument();
 
-		await pickAgents(user);
 		await user.click(submit());
 
 		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 		expect(m.syncNow).not.toHaveBeenCalled();
-		expect(m.toastInfo).toHaveBeenCalledWith(copy.syncNowResult.queued);
+		expect(m.configure.mock.calls[0]?.[0]).not.toHaveProperty("automatic");
+		expect(m.toastInfo).not.toHaveBeenCalled();
 		expect(onSaved).toHaveBeenCalled();
 	});
 
@@ -477,51 +478,6 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			await screen.findByRole("checkbox", { name: "agents" }),
 		).toBeChecked();
 		expect(within(syncsList()).getByText("agents/")).toBeInTheDocument();
-	});
-
-	it("sends automatic: false when the member unticks Keep in sync automatically", async () => {
-		const user = userEvent.setup();
-		const { onOpenChange } = renderDialog();
-		await pickAgents(user);
-		await user.click(
-			screen.getByRole("checkbox", {
-				name: copy.configureDialog.automaticLabel,
-			}),
-		);
-		await user.click(submit());
-		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-		expect(m.configure).toHaveBeenCalledWith(
-			expect.objectContaining({ automatic: false }),
-		);
-	});
-
-	it("seeds the checkbox from the current configuration and says whom automatic runs publish as", () => {
-		renderDialog({ current: CONFIGURED.configured });
-		expect(
-			screen.getByRole("checkbox", {
-				name: copy.configureDialog.automaticLabel,
-			}),
-		).not.toBeChecked();
-		expect(
-			screen.getByText(copy.configureDialog.automaticHint),
-		).toBeInTheDocument();
-	});
-
-	it("reports a run that was already going without calling it a failure", async () => {
-		m.syncNow.mockResolvedValue({
-			started: false,
-			reason: "already_running",
-		});
-		const user = userEvent.setup();
-		renderDialog();
-		await pickAgents(user);
-		await user.click(submit());
-		await waitFor(() =>
-			expect(m.toastInfo).toHaveBeenCalledWith(
-				copy.syncNowResult.already_running,
-			),
-		);
-		expect(m.toastError).not.toHaveBeenCalled();
 	});
 
 	// B-3 (Task 9 review): the five inline codes `configure` can throw, each
@@ -612,18 +568,6 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		expect(submit()).toBeDisabled();
 	});
 
-	it("still calls onSaved and closes when configure saves but syncNow rejects", async () => {
-		m.syncNow.mockRejectedValue(new Error("boom"));
-		const user = userEvent.setup();
-		const { onOpenChange, onSaved } = renderDialog();
-		await pickAgents(user);
-		await user.click(submit());
-		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-		// The mapper's own copy, never the server's untranslated message.
-		expect(m.toastError).toHaveBeenCalledWith(copy.actionErrors.syncNow);
-		expect(onSaved).toHaveBeenCalled();
-	});
-
 	it("ignores Escape while the save is in flight, and closes once it has settled", async () => {
 		let finish: (value: unknown) => void = () => {};
 		m.configure.mockImplementation(
@@ -652,22 +596,6 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		await user.keyboard("{Escape}");
 
 		expect(onOpenChange).toHaveBeenCalledWith(false);
-	});
-
-	it("toasts when syncNow reports the repository connection is unavailable", async () => {
-		m.syncNow.mockResolvedValue({
-			started: false,
-			reason: "integration_unavailable",
-		});
-		const user = userEvent.setup();
-		renderDialog();
-		await pickAgents(user);
-		await user.click(submit());
-		await waitFor(() =>
-			expect(m.toastError).toHaveBeenCalledWith(
-				copy.syncNowResult.integration_unavailable,
-			),
-		);
 	});
 
 	describe("choosing the folder in the selection tree (Fizzy #2725, #2750 §4)", () => {
@@ -935,7 +863,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 			return rendered;
 		}
 
-		it("sends the staged rule WITH the configuration, never as a separate write, then starts the sync", async () => {
+		it("saves exclusions atomically with the connection without starting an import", async () => {
 			const user = userEvent.setup();
 			const { onOpenChange, onSaved } = await renderOnAgents();
 
@@ -963,13 +891,9 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 				repositoryIntegrationId: "int_1",
 				ref: "main",
 				rootPath: "agents",
-				automatic: false,
 				ignoreGlobs: [...DEFAULT_IGNORE_GLOBS, "skills/**"],
 			});
-			expect(m.syncNow).toHaveBeenCalledWith({ projectId: "proj_1" });
-			expect(m.configure.mock.invocationCallOrder[0]).toBeLessThan(
-				m.syncNow.mock.invocationCallOrder[0] ?? 0,
-			);
+			expect(m.syncNow).not.toHaveBeenCalled();
 			expect(onSaved).toHaveBeenCalled();
 		});
 
@@ -1127,7 +1051,7 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 				expect(onOpenChange).toHaveBeenCalledWith(false),
 			);
 			expect(configured()).not.toHaveProperty("ignoreGlobs");
-			expect(m.syncNow).toHaveBeenCalled();
+			expect(m.syncNow).not.toHaveBeenCalled();
 		});
 
 		it("sends no rules when the fresh list already has the staged change", async () => {

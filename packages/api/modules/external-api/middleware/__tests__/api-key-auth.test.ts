@@ -37,6 +37,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
+vi.mock("@repo/utils", () => ({ getBaseUrl: () => "https://app.example.com" }));
+
 vi.mock("../../../users/procedures/api-keys/verify", () => ({
 	verifyUserApiKey: mocks.verifyUserApiKey,
 }));
@@ -292,7 +294,10 @@ describe("a signed-in agent's access token", () => {
 		const res = await call(appEchoingContext(), ACCESS_TOKEN);
 
 		expect(res.status).toBe(200);
-		expect(mocks.verifyOAuthAccessToken).toHaveBeenCalledWith(ACCESS_TOKEN);
+		expect(mocks.verifyOAuthAccessToken).toHaveBeenCalledWith(
+			ACCESS_TOKEN,
+			{ appUrl: "https://app.example.com", audience: "api" },
+		);
 		expect(await res.json()).toEqual({
 			keyType: "oauth",
 			keyId: "client-row-1",
@@ -303,6 +308,27 @@ describe("a signed-in agent's access token", () => {
 		});
 		expect(mocks.verifyOrganizationApiKey).not.toHaveBeenCalled();
 		expect(mocks.verifyUserApiKey).not.toHaveBeenCalled();
+	});
+
+	it("uses the configured API resource rather than a caller's Host", async () => {
+		mocks.verifyOAuthAccessToken.mockResolvedValue({
+			valid: false,
+			reason: "unknown",
+		});
+		const res = await appEchoingContext().request(
+			"https://other.example.com/api/v1/projects",
+			{
+				headers: {
+					Authorization: `Bearer ${ACCESS_TOKEN}`,
+					Host: "other.example.com",
+				},
+			},
+		);
+		expect(res.status).toBe(401);
+		expect(mocks.verifyOAuthAccessToken).toHaveBeenCalledWith(
+			ACCESS_TOKEN,
+			{ appUrl: "https://app.example.com", audience: "api" },
+		);
 	});
 
 	it("names no project for an organization-wide token", async () => {

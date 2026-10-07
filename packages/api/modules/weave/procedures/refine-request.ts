@@ -14,6 +14,7 @@ import {
 } from "@repo/ai";
 import { db, hasProjectAccess } from "@repo/database";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	protectedProcedure,
@@ -175,6 +176,7 @@ export const refineRequestProcedure = protectedProcedure
 				isReady,
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			console.error("[weave/refine] LLM call failed:", error);
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message: `Refinement failed: ${error instanceof Error ? error.message : "Unknown error"}`,

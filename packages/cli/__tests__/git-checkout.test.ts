@@ -297,7 +297,7 @@ describe("a checkout classified and read with real git", () => {
 	});
 
 	itWithGit(
-		"counts an untracked file as a change, but not the hook's own settings",
+		"counts a tracked file's changed content as a change, but not untracked files",
 		async () => {
 			const f = await fixture();
 			git(f.checkout, "reset", "-q", "--hard", f.first);
@@ -306,12 +306,13 @@ describe("a checkout classified and read with real git", () => {
 				path.join(f.checkout, ".claude", "settings.local.json"),
 				"{}\n",
 			);
+			await writeFile(path.join(f.checkout, "NOTES.md"), "mine\n");
 
 			expect((await inspect(f.checkout, f.second)).line).toContain(
 				"— run: git pull --ff-only origin main",
 			);
 
-			await writeFile(path.join(f.checkout, "NOTES.md"), "mine\n");
+			await writeFile(path.join(f.checkout, "AGENTS.md"), "mine\n");
 
 			expect((await inspect(f.checkout, f.second)).line).toContain(
 				" and has uncommitted changes — commit or stash, then pull.",

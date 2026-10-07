@@ -27,9 +27,11 @@ describe("redirect URIs an anonymous client may register", () => {
 		"http://127.0.0.1/callback",
 		"http://localhost:5050/callback",
 		"http://[::1]:5050/callback",
-		"vscode://example.agent/callback",
-		"cursor://example.agent/callback",
 		"com.example.agent:/callback",
+		"HTTPS://example.com/callback",
+		"https://[2001:db8::1]/callback",
+		"https://münich.example/callback",
+		"https://example.com/callback?name=two%20words",
 	])("accepts %s", (uri) => {
 		expect(() => assertAllowedRedirectUri(uri)).not.toThrow();
 	});
@@ -43,8 +45,20 @@ describe("redirect URIs an anonymous client may register", () => {
 		"http://attacker.example/callback",
 		"http://127.0.0.1.attacker.example/callback",
 		"ftp://example.com/x",
+		"vscode://example.agent/callback",
+		"cursor://example.agent/callback",
+		"cursor://evil.example/callback",
+		"cursor://anysphere.cursor-mcp/other",
+		"cursor://anysphere.cursor-mcp/oauth/callback?x=1",
+		"cursor://anysphere.cursor-mcp/oauth/callback/",
+		"com.example.agent://callback",
+		"http://user:secret@127.0.0.1/callback",
+		"https://localhost/callback",
 		"https://user:secret@agent.example/callback",
 		"https://agent.example/callback#fragment",
+		"https://example.com/callback?name=two words",
+		"https://example.com/callback\t",
+		"https://example.com/callback\\name",
 		"not a url",
 		"",
 	])("refuses %s", (uri) => {
@@ -62,6 +76,39 @@ describe("redirect URIs an anonymous client may register", () => {
 	});
 });
 
+describe("registration payloads sent by editor clients", () => {
+	it.each([
+		[
+			"VS Code",
+			[
+				"https://insiders.vscode.dev/redirect",
+				"https://vscode.dev/redirect",
+				"http://127.0.0.1/",
+				"http://127.0.0.1:33418/",
+			],
+		],
+		[
+			"Cursor",
+			[
+				"cursor://anysphere.cursor-mcp/oauth/callback",
+				"https://www.cursor.com/agents/mcp/oauth/callback",
+				"http://localhost:8787/callback",
+			],
+		],
+		["legacy Cursor", ["cursor://anysphere.cursor-mcp/oauth/callback"]],
+	])("accepts %s", (_client, redirectUris) => {
+		const body = register({ redirect_uris: redirectUris });
+		expect(body.redirect_uris).toEqual(redirectUris);
+	});
+
+	it("registers Cursor's callback as a native client", () => {
+		const body = register({
+			redirect_uris: ["cursor://anysphere.cursor-mcp/oauth/callback"],
+		});
+		expect(body.application_type).toBe("native");
+	});
+});
+
 describe("the registration request as a whole", () => {
 	it("passes a plain public client through", () => {
 		const body = register();
@@ -74,6 +121,33 @@ describe("the registration request as a whole", () => {
 		const body = register({ token_endpoint_auth_method: undefined });
 
 		expect(body.token_endpoint_auth_method).toBe("none");
+	});
+
+	it.each([
+		"http://127.0.0.1:5050/callback",
+		"http://localhost:5050/callback",
+		"http://[::1]:5050/callback",
+	])(
+		"infers a native application for legacy registration at %s",
+		(redirect) => {
+			expect(
+				register({ redirect_uris: [redirect], type: "native" })
+					.application_type,
+			).toBe("native");
+		},
+	);
+
+	it("infers a web application for an HTTPS callback", () => {
+		expect(
+			register({ redirect_uris: ["https://agent.example/callback"] })
+				.application_type,
+		).toBe("web");
+	});
+
+	it("refuses DPoP because the protected endpoints do not verify its proof", () => {
+		expect(() => register({ dpop_bound_access_tokens: true })).toThrow(
+			"DPoP",
+		);
 	});
 
 	it("refuses a confidential client", () => {

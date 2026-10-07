@@ -12,11 +12,11 @@
 	"scripts": {
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
 		"@ai-sdk/mcp": "^2.0.49",
-		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@modelcontextprotocol/sdk": "^1.32.1",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/integrations": "workspace:*",

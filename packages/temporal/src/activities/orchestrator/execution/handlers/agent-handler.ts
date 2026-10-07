@@ -4,6 +4,7 @@
  * Handles steps that delegate to specialized agents via A2A protocol.
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
 import {
 	enrichWeaveDelegationMessage,
@@ -253,6 +254,11 @@ export class AgentHandler implements StepHandler {
 				// Pass execution context for PartyKit real-time updates
 				executionId: input.executionId,
 				stepId: input.step.id,
+				// A chat turn's scope: the turn record is checked before the
+				// send and each of its retries, the send is aborted by the
+				// activity's cancellation, and a stop is rethrown rather than
+				// reported as a failed delegation (which would fall back).
+				...(input.turnScope ? { turnScope: input.turnScope } : {}),
 			});
 
 			console.log(
@@ -364,6 +370,9 @@ export class AgentHandler implements StepHandler {
 				},
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error("[AgentHandler] Agent delegation failed:", error);

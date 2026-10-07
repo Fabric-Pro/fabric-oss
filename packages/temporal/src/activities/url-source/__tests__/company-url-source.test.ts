@@ -26,7 +26,11 @@
  *    and after it fails — and after a cancel that indexed some pages, with no
  *    page left PENDING without vectors;
  *  - leave a source whose delete has started alone: no crawl claims it, and
- *    an embed that finishes late removes its points and never makes it ready.
+ *    an embed that finishes late removes its points and never makes it ready;
+ *  - keep a page whose fetch fails, marked FAILED with why, out of the
+ *    crawl's prune: its content and current-model vectors stay, another
+ *    model's are removed, and a URL with no content is kept only when the
+ *    failure is not permanent. A project owner gets the same.
  * And a schedule's arguments without an owner must still run a project crawl
  * with exactly the project inputs.
  *
@@ -144,6 +148,8 @@ const h = vi.hoisted(() => {
 		pageSeq: 0,
 		/** Page URLs whose upsert fails on every attempt. */
 		failUpsert: new Set<string>(),
+		/** Page URLs whose fetch failure cannot be recorded, on any attempt. */
+		failFetchFailureRecord: new Set<string>(),
 	};
 	/** The Temporal client the gate asks whether a slot's crawl still runs. */
 	const temporal = { client: null as unknown };
@@ -459,8 +465,99 @@ const h = vi.hoisted(() => {
 					page.contentHash = contentHash;
 					page.extractionStatus = "PENDING";
 					page.extractionError = null;
+				} else {
+					// The query layer's rule: unchanged content completes a
+					// page a failed fetch marked FAILED that holds vectors.
+					const { URL_PAGE_FETCH_FAILURE_PREFIX } =
+						await vi.importActual<{
+							URL_PAGE_FETCH_FAILURE_PREFIX: string;
+						}>(
+							"@repo/database/prisma/queries/url-page-fetch-failure",
+						);
+					if (
+						page.extractionStatus === "FAILED" &&
+						page.embeddedAt !== null &&
+						page.extractionError?.startsWith(
+							URL_PAGE_FETCH_FAILURE_PREFIX,
+						)
+					) {
+						page.extractionStatus = "COMPLETED";
+						page.extractionError = null;
+					}
 				}
 				return { pageId: page.id, contentHash, unchanged };
+			},
+		),
+		// The query layer's rule: nothing under a source gone or being
+		// deleted; a URL no fetch has written is kept only on a transient
+		// failure, with a FAILED row; a page with content is kept, and
+		// marked FAILED when COMPLETED, CANCELLED or holding no vectors.
+		recordCompanyContextUrlPageFetchFailure: vi.fn(
+			async (input: {
+				parentSourceId: string;
+				organizationId: string;
+				pageUrl: string;
+				message: string;
+				permanent: boolean;
+			}) => {
+				if (state.failFetchFailureRecord.has(input.pageUrl)) {
+					throw new Error("database unavailable");
+				}
+				const source = sourceOf(
+					input.parentSourceId,
+					input.organizationId,
+				);
+				if (
+					!source ||
+					source.type !== "LINK" ||
+					source.deletingAt !== null
+				) {
+					return { kept: true, page: null };
+				}
+				let page = pagesUnder(
+					input.parentSourceId,
+					input.organizationId,
+				).find((row) => row.pageUrl === input.pageUrl);
+				if (input.permanent && (!page || page.contentHash === "")) {
+					if (page && !page.embeddedAt) {
+						pages.delete(page.id);
+					}
+					return { kept: false, page: null };
+				}
+				if (!page) {
+					const id = `page-${++state.pageSeq}`;
+					page = {
+						id,
+						parentSourceId: input.parentSourceId,
+						organizationId: input.organizationId,
+						pageUrl: input.pageUrl,
+						pageTitle: null,
+						content: "",
+						contentHash: "",
+						extractionStatus: "FAILED",
+						extractionError: input.message,
+						embeddedAt: null,
+						embeddingModel: null,
+						qdrantId: null,
+						chunkCount: 0,
+					};
+					pages.set(id, page);
+				} else if (
+					page.extractionStatus === "COMPLETED" ||
+					page.extractionStatus === "CANCELLED" ||
+					page.embeddedAt === null
+				) {
+					page.extractionStatus = "FAILED";
+					page.extractionError = input.message;
+				}
+				return {
+					kept: true,
+					page: {
+						id: page.id,
+						embeddedAt: page.embeddedAt,
+						embeddingModel: page.embeddingModel,
+					},
+				};
 			},
 		),
 		markCompanyContextUrlPageEmbedded: vi.fn(
@@ -599,6 +696,7 @@ const h = vi.hoisted(() => {
 		urlPageCreate: vi.fn(),
 		urlPageCreateMany: vi.fn(),
 		urlPageUpdate: vi.fn(),
+		urlPageUpdateMany: vi.fn(),
 		urlPageDeleteMany: vi.fn(),
 		updateContextExtractionStatus: vi.fn(),
 		markContextAsEmbedded: vi.fn(),
@@ -703,6 +801,7 @@ const h = vi.hoisted(() => {
 		state.modelError = null;
 		state.pageSeq = 0;
 		state.failUpsert.clear();
+		state.failFetchFailureRecord.clear();
 	}
 
 	return {
@@ -721,7 +820,11 @@ const h = vi.hoisted(() => {
 	};
 });
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// The failed-fetch message and row rule are pure; the real ones.
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/queries/url-page-fetch-failure",
+	)),
 	...h.queries,
 	db: {
 		...h.companyDb,
@@ -746,6 +849,7 @@ vi.mock("@repo/database/prisma/client", async (importOriginal) => ({
 			create: h.projectOnly.urlPageCreate,
 			createMany: h.projectOnly.urlPageCreateMany,
 			update: h.projectOnly.urlPageUpdate,
+			updateMany: h.projectOnly.urlPageUpdateMany,
 			deleteMany: h.projectOnly.urlPageDeleteMany,
 		},
 	},
@@ -780,6 +884,7 @@ vi.mock("../../lib/activity-logger", () => ({
 	activityLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { URL_PAGE_FETCH_FAILURE_PREFIX } from "@repo/database";
 import {
 	CONTEXT_OWNER_INVALID,
 	type ContextOwner,
@@ -798,6 +903,8 @@ import {
 } from "../company-gate-activity";
 import { embedUrlPageActivity } from "../embed-url-page-activity";
 import { pruneOrphanUrlPagesActivity } from "../prune-orphan-url-pages-activity";
+import { recordUrlPageFetchFailureActivity } from "../record-url-page-fetch-failure-activity";
+import { recordUrlPageRetryFailureActivity } from "../record-url-page-retry-failure-activity";
 import { updateParentStatusActivity } from "../update-parent-status-activity";
 import { upsertUrlPageActivity } from "../upsert-url-page-activity";
 
@@ -826,6 +933,8 @@ const ACTIVITIES = {
 	embedUrlPageActivity,
 	updateParentStatusActivity,
 	pruneOrphanUrlPagesActivity,
+	recordUrlPageFetchFailureActivity,
+	recordUrlPageRetryFailureActivity,
 	embedSingleContextActivity,
 	firecrawlMapActivity,
 	firecrawlScrapeActivity,
@@ -959,16 +1068,36 @@ afterAll(async () => {
 	await env?.teardown();
 });
 
-/** The crawler serves these pages; a URL listed in `failing` will not scrape. */
+/** A provider timeout, thrown as the scrape activity throws it: retryable. */
+const TIMED_OUT = "Request timed out after 60s";
+const timedOut = () =>
+	ApplicationFailure.retryable(TIMED_OUT, "FIRECRAWL_TIMEOUT");
+
+/** A URL that is not a page, thrown as the scrape activity throws it. */
+const unsupportedType = () =>
+	ApplicationFailure.nonRetryable(
+		"Unsupported content type: image/png",
+		"FIRECRAWL_UNSUPPORTED_CONTENT_TYPE",
+	);
+
+/**
+ * The crawler serves these pages. A URL in `failing` will not scrape: a set
+ * fails each with one non-retryable error, a map with the error it names.
+ */
 function serveSite(
 	pageContent: Record<string, string>,
-	failing: ReadonlySet<string> = new Set(),
+	failing: ReadonlySet<string> | ReadonlyMap<string, () => Error> = new Set(),
 ): void {
 	h.firecrawl.map.mockImplementation(async () => ({
 		urls: Object.keys(pageContent),
 	}));
 	h.firecrawl.scrape.mockImplementation(async ({ url }: { url: string }) => {
-		if (failing.has(url)) {
+		if (failing instanceof Map) {
+			const failure = failing.get(url);
+			if (failure) {
+				throw failure();
+			}
+		} else if (failing.has(url)) {
 			throw ApplicationFailure.nonRetryable(
 				"scrape failed",
 				"FIRECRAWL_TIMEOUT",
@@ -1126,6 +1255,28 @@ async function scheduled(
 	});
 }
 
+/** The run's own history replays against the workflow with no nondeterminism. */
+async function expectReplays(workflowId: string): Promise<void> {
+	const history = await env.client.workflow
+		.getHandle(workflowId)
+		.fetchHistory();
+	await expect(
+		Worker.runReplayHistory({ workflowBundle }, history, workflowId),
+	).resolves.toBeUndefined();
+}
+
+/** The input of the one activity of this name the run scheduled. */
+async function scheduledInput(
+	workflowId: string,
+	name: string,
+): Promise<Record<string, unknown> | undefined> {
+	const matching = (await scheduled(workflowId)).filter(
+		(activity) => activity.name === name,
+	);
+	expect(matching, name).toHaveLength(1);
+	return matching[0]?.input;
+}
+
 function expectNoProjectCalls(): void {
 	for (const [name, fn] of Object.entries(h.projectOnly)) {
 		expect(fn, name).not.toHaveBeenCalled();
@@ -1155,7 +1306,20 @@ describe("urlSourceCrawlWorkflow with a company owner", () => {
 		expect(run.result).toMatchObject({ success: true, pagesIndexed: 2 });
 
 		const activities = await scheduled(run.workflowId);
-		expect(activities[0].name).toBe("companyUrlCrawlGateActivity");
+		// A crawl whose every page is fetched records no fetch failure.
+		expect(activities.map((activity) => activity.name)).toEqual([
+			"companyUrlCrawlGateActivity",
+			"firecrawlMapActivity",
+			"bulkInitUrlPagesActivity",
+			"firecrawlScrapeActivity",
+			"upsertUrlPageActivity",
+			"embedUrlPageActivity",
+			"firecrawlScrapeActivity",
+			"upsertUrlPageActivity",
+			"embedUrlPageActivity",
+			"pruneOrphanUrlPagesActivity",
+			"updateParentStatusActivity",
+		]);
 		for (const activity of activities) {
 			expect(activity.taskQueue, activity.name).toBe(
 				COMPANY_CONTEXT_TASK_QUEUE,
@@ -2042,6 +2206,8 @@ describe("a website none of whose pages could be indexed", () => {
 		await crawl(companyCrawl());
 		expect(isReady(SOURCE, MODEL_A)).toBe(true);
 
+		const pageIds = [...h.pages.keys()].sort();
+
 		serveSite(
 			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
 			new Set([PAGE_A, PAGE_B]),
@@ -2055,6 +2221,24 @@ describe("a website none of whose pages could be indexed", () => {
 			embeddingModel: MODEL_A,
 		});
 		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+
+		// Each failure is recorded, and the prune still runs, with nothing
+		// kept, so it deletes nothing.
+		const activities = await scheduled(run.workflowId);
+		expect(
+			activities
+				.filter((a) => a.name === "recordUrlPageFetchFailureActivity")
+				.map((a) => a.input.pageUrl),
+		).toEqual([PAGE_A, PAGE_B]);
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toMatchObject({ keptUrls: [] });
+		expect([...h.pages.keys()].sort()).toEqual(pageIds);
+		for (const page of h.pages.values()) {
+			expect(page.extractionStatus).toBe("FAILED");
+			expect(h.points.has(page.id)).toBe(true);
+		}
+		await expectReplays(run.workflowId);
 	}, 120_000);
 
 	it("is not ready while it has pages and none holds the current model's vectors, whatever its own marks say", async () => {
@@ -2084,6 +2268,626 @@ describe("a website none of whose pages could be indexed", () => {
 		});
 		expect(isReady(SOURCE, MODEL_A)).toBe(true);
 	});
+});
+
+describe("a page a crawl cannot fetch", () => {
+	const PAGE_D = `${SITE}/d`;
+	const PAGE_E = `${SITE}/e.png`;
+
+	it("keeps it, marked FAILED with why and still searchable, while the prune removes a page the site dropped; the next fetch completes it again", async () => {
+		seedLinkSource();
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B", [PAGE_C]: "# C" });
+		await crawl(companyCrawl());
+		const pageB = pageByUrl(PAGE_B);
+		const pageC = pageByUrl(PAGE_C);
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+
+		serveSite(
+			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
+			new Map([[PAGE_B, timedOut]]),
+		);
+		const run = await crawl(companyCrawl({ mode: "scheduled" }));
+
+		expect(run.result?.success).toBe(true);
+		const recorded = await scheduledInput(
+			run.workflowId,
+			"recordUrlPageFetchFailureActivity",
+		);
+		// The requested URL and the bare cause: the activity adds the prefix.
+		expect(recorded).toEqual({
+			parentContextId: SOURCE,
+			pageUrl: PAGE_B,
+			reason: TIMED_OUT,
+			permanent: false,
+			userId: USER,
+			organizationId: ORG,
+			owner: OWNER,
+		});
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toMatchObject({ keptUrls: [PAGE_A, PAGE_B] });
+
+		expect(pageByUrl(PAGE_B)).toMatchObject({
+			id: pageB?.id,
+			content: "# B",
+			extractionStatus: "FAILED",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}${TIMED_OUT}`,
+			embeddingModel: MODEL_A,
+		});
+		expect(h.points.get(pageB?.id ?? "")?.embeddingModel).toBe(MODEL_A);
+		expect(pageC && h.pages.has(pageC.id)).toBe(false);
+		expect(pageC && h.points.has(pageC.id)).toBe(false);
+		expect(h.sources.get(SOURCE)).toMatchObject({
+			extractionStatus: "COMPLETED",
+			urlActiveWorkflowId: null,
+		});
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+		await expectReplays(run.workflowId);
+
+		// The next refresh fetches it unchanged: COMPLETED, no new embed.
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B" });
+		h.rag.embedCompanyContext.mockClear();
+		const next = await crawl(companyCrawl({ mode: "scheduled" }));
+
+		expect(next.result?.success).toBe(true);
+		expect(pageByUrl(PAGE_B)).toMatchObject({
+			extractionStatus: "COMPLETED",
+			extractionError: null,
+		});
+		expect(h.rag.embedCompanyContext).not.toHaveBeenCalled();
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+	}, 120_000);
+
+	it("keeps a link found in a page that times out as a FAILED page, and nothing for a link that is not a page", async () => {
+		seedLinkSource();
+		serveSite(
+			{ [PAGE_A]: `# A\n\nSee [D](${PAGE_D}) and [E](${PAGE_E}).` },
+			new Map([
+				[PAGE_D, timedOut],
+				[PAGE_E, unsupportedType],
+			]),
+		);
+
+		const run = await crawl(companyCrawl());
+
+		expect(run.result?.success).toBe(true);
+		const recorded = (await scheduled(run.workflowId))
+			.filter((a) => a.name === "recordUrlPageFetchFailureActivity")
+			.map((a) => a.input);
+		expect(recorded).toEqual([
+			expect.objectContaining({ pageUrl: PAGE_D, permanent: false }),
+			expect.objectContaining({
+				pageUrl: PAGE_E,
+				reason: "Unsupported content type: image/png",
+				permanent: true,
+			}),
+		]);
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toMatchObject({ keptUrls: [PAGE_A, PAGE_D] });
+		expect(pageByUrl(PAGE_D)).toMatchObject({
+			content: "",
+			extractionStatus: "FAILED",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}${TIMED_OUT}`,
+			embeddedAt: null,
+		});
+		expect(pageByUrl(PAGE_E)).toBeUndefined();
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("goes on with the crawl, finalizes it and keeps the page when the failure cannot be recorded", async () => {
+		seedLinkSource();
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B" });
+		await crawl(companyCrawl());
+		const pageB = pageByUrl(PAGE_B);
+
+		// B is fetched first, so the crawl must go on past it to reach A.
+		serveSite(
+			{ [PAGE_B]: "# B", [PAGE_A]: "# A changed" },
+			new Map([[PAGE_B, timedOut]]),
+		);
+		h.state.failFetchFailureRecord.add(PAGE_B);
+		const run = await crawl(companyCrawl({ mode: "scheduled" }));
+
+		expect(run.error).toBeUndefined();
+		expect(run.result?.success).toBe(true);
+		const names = (await scheduled(run.workflowId)).map((a) => a.name);
+		expect(
+			names.slice(names.indexOf("recordUrlPageFetchFailureActivity")),
+		).toEqual([
+			"recordUrlPageFetchFailureActivity",
+			"firecrawlScrapeActivity",
+			"upsertUrlPageActivity",
+			"embedUrlPageActivity",
+			"pruneOrphanUrlPagesActivity",
+			"updateParentStatusActivity",
+		]);
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toMatchObject({ keptUrls: [PAGE_A, PAGE_B] });
+		expect(pageByUrl(PAGE_A)?.content).toBe("# A changed");
+		expect(pageByUrl(PAGE_B)).toMatchObject({
+			id: pageB?.id,
+			content: "# B",
+			extractionStatus: "COMPLETED",
+		});
+		expect(h.sources.get(SOURCE)).toMatchObject({
+			extractionStatus: "COMPLETED",
+			urlActiveWorkflowId: null,
+		});
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+	}, 120_000);
+
+	it("removes another model's vectors from a page it cannot fetch on a re-process after a model switch, and the website becomes ready", async () => {
+		seedLinkSource();
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B" });
+		await crawl(companyCrawl());
+		const pageB = pageByUrl(PAGE_B);
+		expect(h.points.has(pageB?.id ?? "")).toBe(true);
+
+		h.state.model = {
+			identity: MODEL_B,
+			dimensions: 1536,
+			supported: true,
+		};
+		serveSite(
+			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
+			new Map([[PAGE_B, timedOut]]),
+		);
+		const run = await crawl(companyCrawl({ mode: "manual-resync" }));
+
+		expect(run.result?.success).toBe(true);
+		expect(pageByUrl(PAGE_A)?.embeddingModel).toBe(MODEL_B);
+		expect(pageByUrl(PAGE_B)).toMatchObject({
+			id: pageB?.id,
+			content: "# B",
+			extractionStatus: "FAILED",
+			embeddedAt: null,
+			embeddingModel: null,
+		});
+		expect(h.points.has(pageB?.id ?? "")).toBe(false);
+		expect(h.sources.get(SOURCE)).toMatchObject({
+			extractionStatus: "COMPLETED",
+			embeddingModel: MODEL_B,
+		});
+		expect(isReady(SOURCE, MODEL_B)).toBe(true);
+	}, 120_000);
+});
+
+/**
+ * The same crawl with a project owner. `ProjectContextUrlPage` lives in
+ * memory, behind the Prisma calls the project paths of the real bulk-init,
+ * upsert, fetch-failure and prune activities make, and every write applies
+ * its WHERE. The embed and the finalize are not what this is about.
+ */
+describe("a project crawl that cannot fetch a page", () => {
+	type ProjectPage = Record<string, unknown>;
+	let rows: ProjectPage[] = [];
+	let seq = 0;
+
+	/** Equality, null, `in`, `notIn`, `not: null`, `startsWith` and `OR`. */
+	function matches(
+		row: ProjectPage,
+		where: Record<string, unknown>,
+	): boolean {
+		return Object.entries(where).every(([key, condition]) => {
+			if (key === "OR") {
+				return (condition as Record<string, unknown>[]).some((arm) =>
+					matches(row, arm),
+				);
+			}
+			const value = row[key];
+			if (condition === null) {
+				return value === null || value === undefined;
+			}
+			if (typeof condition !== "object" || condition instanceof Date) {
+				return value === condition;
+			}
+			return Object.entries(condition).every(([operator, operand]) => {
+				if (operator === "in") {
+					return (operand as unknown[]).includes(value);
+				}
+				if (operator === "notIn") {
+					return !(operand as unknown[]).includes(value);
+				}
+				if (operator === "not" && operand === null) {
+					return value !== null && value !== undefined;
+				}
+				if (operator === "startsWith") {
+					return (
+						typeof value === "string" &&
+						value.startsWith(operand as string)
+					);
+				}
+				throw new Error(`Unsupported operator ${operator} on ${key}`);
+			});
+		});
+	}
+
+	const pick = (row: ProjectPage, select?: Record<string, boolean>) =>
+		select
+			? Object.fromEntries(
+					Object.keys(select).map((key) => [key, row[key]]),
+				)
+			: { ...row };
+
+	const newRow = (data: ProjectPage): ProjectPage => ({
+		id: `project-page-${++seq}`,
+		extractionError: null,
+		embeddedAt: null,
+		...data,
+	});
+
+	beforeEach(() => {
+		rows = [];
+		seq = 0;
+		const page = h.projectOnly;
+		page.urlPageFindFirst.mockImplementation(
+			async ({
+				where,
+				select,
+			}: {
+				where: ProjectPage;
+				select?: never;
+			}) => {
+				const row = rows.find((r) => matches(r, where));
+				return row ? pick(row, select) : null;
+			},
+		);
+		page.urlPageFindMany.mockImplementation(
+			async ({ where, select }: { where: ProjectPage; select?: never }) =>
+				rows
+					.filter((r) => matches(r, where))
+					.map((r) => pick(r, select)),
+		);
+		page.urlPageCreate.mockImplementation(
+			async ({ data, select }: { data: ProjectPage; select?: never }) => {
+				const row = newRow(data);
+				rows.push(row);
+				return pick(row, select);
+			},
+		);
+		page.urlPageCreateMany.mockImplementation(
+			async ({ data }: { data: ProjectPage[] }) => {
+				for (const item of data) {
+					rows.push(newRow(item));
+				}
+				return { count: data.length };
+			},
+		);
+		page.urlPageUpdate.mockImplementation(
+			async ({
+				where,
+				data,
+			}: {
+				where: ProjectPage;
+				data: ProjectPage;
+			}) => {
+				const row = rows.find((r) => matches(r, where));
+				if (!row) {
+					throw new Error("Record to update not found");
+				}
+				Object.assign(row, data);
+				return { ...row };
+			},
+		);
+		page.urlPageUpdateMany.mockImplementation(
+			async ({
+				where,
+				data,
+			}: {
+				where: ProjectPage;
+				data: ProjectPage;
+			}) => {
+				const hit = rows.filter((r) => matches(r, where));
+				for (const row of hit) {
+					Object.assign(row, data);
+				}
+				return { count: hit.length };
+			},
+		);
+		page.urlPageDeleteMany.mockImplementation(
+			async ({ where }: { where: ProjectPage }) => {
+				const before = rows.length;
+				rows = rows.filter((r) => !matches(r, where));
+				return { count: before - rows.length };
+			},
+		);
+	});
+
+	const projectCrawl = (over: Record<string, unknown> = {}) => ({
+		contextId: "ctx-1",
+		url: SITE,
+		scope: "PATH_PREFIX",
+		maxPages: 10,
+		projectId: "proj-1",
+		userId: USER,
+		organizationId: ORG,
+		apiKey: "fc-test-key",
+		providerName: "firecrawl",
+		urlRefreshMode: "WEEKLY",
+		parentSourceTitle: "Example docs",
+		mode: "initial",
+		...over,
+	});
+
+	const projectActivities = () => ({
+		firecrawlMapActivity,
+		firecrawlScrapeActivity,
+		bulkInitUrlPagesActivity,
+		upsertUrlPageActivity,
+		recordUrlPageFetchFailureActivity,
+		recordUrlPageRetryFailureActivity,
+		pruneOrphanUrlPagesActivity,
+		companyUrlCrawlGateActivity: vi.fn(),
+		embedUrlPageActivity: vi.fn(async () => ({
+			success: true,
+			chunkCount: 1,
+		})),
+		updateParentStatusActivity: vi.fn(async () => ({ success: true })),
+	});
+
+	const rowAt = (url: string) => rows.find((row) => row.pageUrl === url);
+
+	it("keeps it, marked FAILED with why and with its content, while the prune removes a page the site dropped", async () => {
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B", [PAGE_C]: "# C" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		// What the embeds would have left.
+		for (const row of rows) {
+			Object.assign(row, {
+				extractionStatus: "COMPLETED",
+				embeddedAt: new Date(),
+			});
+		}
+		const rowB = rowAt(PAGE_B);
+
+		serveSite(
+			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
+			new Map([[PAGE_B, timedOut]]),
+		);
+		const run = await crawl(projectCrawl({ mode: "scheduled" }), {
+			activities: projectActivities(),
+		});
+
+		expect(run.result?.success).toBe(true);
+		expect(
+			await scheduledInput(
+				run.workflowId,
+				"recordUrlPageFetchFailureActivity",
+			),
+		).toEqual({
+			parentContextId: "ctx-1",
+			projectId: "proj-1",
+			pageUrl: PAGE_B,
+			reason: TIMED_OUT,
+			permanent: false,
+			userId: USER,
+			organizationId: ORG,
+		});
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toEqual({ parentContextId: "ctx-1", keptUrls: [PAGE_A, PAGE_B] });
+		expect(rows.map((row) => row.pageUrl).sort()).toEqual([PAGE_A, PAGE_B]);
+		expect(rowAt(PAGE_B)).toMatchObject({
+			id: rowB?.id,
+			content: "# B",
+			extractionStatus: "FAILED",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}${TIMED_OUT}`,
+		});
+		expect(rowAt(PAGE_B)?.embeddedAt).toBeTruthy();
+		expect(
+			h.queries.recordCompanyContextUrlPageFetchFailure,
+		).not.toHaveBeenCalled();
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	// The prune deletes nothing when no page was fetched, so the failure
+	// record itself removes the empty rows it does not keep.
+	it("leaves no row behind for URLs the site refuses for good, even when the crawl fetched no page", async () => {
+		serveSite(
+			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
+			new Map([
+				[PAGE_A, unsupportedType],
+				[PAGE_B, unsupportedType],
+			]),
+		);
+
+		const run = await crawl(projectCrawl(), {
+			activities: projectActivities(),
+		});
+
+		expect(run.result?.success).toBe(true);
+		expect(
+			await scheduledInput(run.workflowId, "pruneOrphanUrlPagesActivity"),
+		).toEqual({ parentContextId: "ctx-1", keptUrls: [] });
+		expect(rows).toEqual([]);
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("puts a retried page whose scrape fails again back to FAILED with the new reason, keeping its content", async () => {
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		for (const row of rows) {
+			Object.assign(row, {
+				extractionStatus: "COMPLETED",
+				embeddedAt: new Date(),
+			});
+		}
+		// What the retry's procedure leaves on a page a failed fetch marked:
+		// PENDING, with the earlier reason kept.
+		Object.assign(rowAt(PAGE_B) as ProjectPage, {
+			extractionStatus: "PENDING",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}Earlier timeout`,
+		});
+
+		serveSite(
+			{ [PAGE_A]: "# A", [PAGE_B]: "# B" },
+			new Map([[PAGE_B, timedOut]]),
+		);
+		const run = await crawl(
+			projectCrawl({ mode: "retry-single-page", retryPageUrl: PAGE_B }),
+			{ activities: projectActivities() },
+		);
+
+		expect(run.error).toBeDefined();
+		expect(
+			await scheduledInput(
+				run.workflowId,
+				"recordUrlPageRetryFailureActivity",
+			),
+		).toEqual({
+			parentContextId: "ctx-1",
+			projectId: "proj-1",
+			pageUrl: PAGE_B,
+			reason: TIMED_OUT,
+			stage: "fetch",
+		});
+		expect(rowAt(PAGE_B)).toMatchObject({
+			content: "# B",
+			extractionStatus: "FAILED",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}${TIMED_OUT}`,
+		});
+		expect(rowAt(PAGE_B)?.embeddedAt).toBeTruthy();
+		expect(rowAt(PAGE_A)?.extractionStatus).toBe("COMPLETED");
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("writes a retried page the scrape fetched through a redirect to the requested row", async () => {
+		serveSite({ [PAGE_A]: "# A", [PAGE_B]: "# B" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		Object.assign(rowAt(PAGE_B) as ProjectPage, {
+			extractionStatus: "PENDING",
+		});
+		const landedOn = `${PAGE_B}-moved`;
+		h.firecrawl.scrape.mockImplementation(async () => ({
+			pageUrl: landedOn,
+			pageTitle: "Moved",
+			markdown: "# B moved",
+		}));
+
+		const run = await crawl(
+			projectCrawl({ mode: "retry-single-page", retryPageUrl: PAGE_B }),
+			{ activities: projectActivities() },
+		);
+
+		expect(run.result?.success).toBe(true);
+		expect(
+			(await scheduledInput(run.workflowId, "upsertUrlPageActivity"))
+				?.pageUrl,
+		).toBe(PAGE_B);
+		expect(rowAt(landedOn)).toBeUndefined();
+		expect(rowAt(PAGE_B)).toMatchObject({
+			content: "# B moved",
+			extractionStatus: "PENDING",
+			extractionError: null,
+		});
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("puts a retried page back to FAILED with its earlier reason when the upsert fails", async () => {
+		serveSite({ [PAGE_A]: "# A" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		const earlier = `${URL_PAGE_FETCH_FAILURE_PREFIX}Earlier timeout`;
+		Object.assign(rowAt(PAGE_A) as ProjectPage, {
+			extractionStatus: "PENDING",
+			extractionError: earlier,
+			embeddedAt: new Date(),
+		});
+
+		const run = await crawl(
+			projectCrawl({ mode: "retry-single-page", retryPageUrl: PAGE_A }),
+			{
+				activities: {
+					...projectActivities(),
+					upsertUrlPageActivity: async () => {
+						throw ApplicationFailure.nonRetryable(
+							"database unavailable",
+							"UPSERT_FAILED",
+						);
+					},
+				},
+			},
+		);
+
+		expect(run.error).toBeInstanceOf(WorkflowFailedError);
+		expect(
+			await scheduledInput(
+				run.workflowId,
+				"recordUrlPageRetryFailureActivity",
+			),
+		).toMatchObject({ pageUrl: PAGE_A, stage: "index" });
+		expect(rowAt(PAGE_A)).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: earlier,
+		});
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("marks a retried page the embed could not index FAILED with why, never as a fetch failure", async () => {
+		serveSite({ [PAGE_A]: "# A" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		Object.assign(rowAt(PAGE_A) as ProjectPage, {
+			extractionStatus: "PENDING",
+			extractionError: `${URL_PAGE_FETCH_FAILURE_PREFIX}Earlier timeout`,
+			embeddedAt: new Date(),
+		});
+		serveSite({ [PAGE_A]: "# A, changed" });
+
+		const run = await crawl(
+			projectCrawl({ mode: "retry-single-page", retryPageUrl: PAGE_A }),
+			{
+				activities: {
+					...projectActivities(),
+					embedUrlPageActivity: async () => {
+						throw ApplicationFailure.nonRetryable(
+							"Embedding provider timed out",
+							"EMBED_FAILED",
+						);
+					},
+				},
+			},
+		);
+
+		expect(run.error).toBeInstanceOf(WorkflowFailedError);
+		expect(rowAt(PAGE_A)).toMatchObject({
+			content: "# A, changed",
+			extractionStatus: "FAILED",
+			extractionError:
+				"Could not index this page: Embedding provider timed out",
+		});
+		await expectReplays(run.workflowId);
+	}, 120_000);
+
+	it("retries a retry's failure record, and still fails the run with the scrape's error when it cannot be written", async () => {
+		serveSite({ [PAGE_A]: "# A" });
+		await crawl(projectCrawl(), { activities: projectActivities() });
+		Object.assign(rowAt(PAGE_A) as ProjectPage, {
+			extractionStatus: "PENDING",
+		});
+		serveSite({ [PAGE_A]: "# A" }, new Map([[PAGE_A, timedOut]]));
+		const record = vi.fn(async () => {
+			throw new Error("database unavailable");
+		});
+
+		const run = await crawl(
+			projectCrawl({ mode: "retry-single-page", retryPageUrl: PAGE_A }),
+			{
+				activities: {
+					...projectActivities(),
+					recordUrlPageRetryFailureActivity: record,
+				},
+			},
+		);
+
+		expect(record).toHaveBeenCalledTimes(10);
+		expect(run.error).toBeInstanceOf(WorkflowFailedError);
+		expect((run.error as WorkflowFailedError).cause?.message).toContain(
+			TIMED_OUT,
+		);
+		expect(rowAt(PAGE_A)?.extractionStatus).toBe("PENDING");
+		await expectReplays(run.workflowId);
+	}, 120_000);
 });
 
 /**
@@ -2647,6 +3451,127 @@ describe("upsertUrlPageActivity with a company owner", () => {
 			reason: "hash-unchanged",
 		});
 	});
+
+	describe("on a page a failed fetch marked", () => {
+		const FETCH_FAILURE = `${URL_PAGE_FETCH_FAILURE_PREFIX}scrape failed`;
+
+		/** The page as a refresh whose scrape of it failed left it. */
+		async function seedFetchFailedPage(over: Record<string, unknown> = {}) {
+			const page = await seedPage();
+			await upsertUrlPageActivity(upsertInput());
+			Object.assign(page, {
+				extractionStatus: "FAILED",
+				extractionError: FETCH_FAILURE,
+				embeddedAt: new Date(),
+				embeddingModel: MODEL_A,
+				...over,
+			});
+			return page;
+		}
+
+		it("completes it again without an embed when its content is unchanged", async () => {
+			const page = await seedFetchFailedPage();
+
+			const result = await upsertUrlPageActivity(upsertInput());
+
+			expect(result).toMatchObject({
+				pageId: page.id,
+				skipped: true,
+				reason: "hash-unchanged",
+			});
+			expect(page).toMatchObject({
+				extractionStatus: "COMPLETED",
+				extractionError: null,
+				embeddingModel: MODEL_A,
+			});
+		});
+
+		it("re-embeds it when its vectors are another model's", async () => {
+			const page = await seedFetchFailedPage({
+				embeddingModel: MODEL_B,
+			});
+
+			const result = await upsertUrlPageActivity(upsertInput());
+
+			expect(result).toMatchObject({
+				pageId: page.id,
+				skipped: false,
+				reason: "embedding-model-changed",
+			});
+		});
+
+		it("re-embeds it when its content changed", async () => {
+			const page = await seedFetchFailedPage();
+
+			const result = await upsertUrlPageActivity(
+				upsertInput({ content: "# A, revised" }),
+			);
+
+			expect(result).toMatchObject({ pageId: page.id, skipped: false });
+			expect(page).toMatchObject({
+				content: "# A, revised",
+				extractionStatus: "PENDING",
+				extractionError: null,
+			});
+		});
+	});
+
+	// The new content's embed failed, so the vectors are the earlier
+	// version's: the same content fetched again is embedded, not completed.
+	it("re-embeds unchanged content whose embed failed after a content change", async () => {
+		const page = await seedPage();
+		await upsertUrlPageActivity(upsertInput());
+		Object.assign(page, {
+			extractionStatus: "COMPLETED",
+			embeddedAt: new Date(),
+			embeddingModel: MODEL_A,
+		});
+		const revised = upsertInput({ content: "# A, revised" });
+		await expect(upsertUrlPageActivity(revised)).resolves.toMatchObject({
+			skipped: false,
+		});
+		h.rag.embedCompanyContext.mockImplementationOnce(async () => ({
+			success: false,
+			error: "provider timeout",
+			chunksCreated: 0,
+		}));
+		await expect(
+			embedUrlPageActivity(
+				pageInput({ pageId: page.id, content: "# A, revised" }),
+			),
+		).rejects.toThrow("provider timeout");
+
+		const again = await upsertUrlPageActivity(revised);
+
+		expect(again).toMatchObject({ pageId: page.id, skipped: false });
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: "provider timeout",
+		});
+	});
+
+	it("re-embeds an unchanged page that failed for another reason, though it holds vectors from the current model", async () => {
+		const page = await seedPage();
+		await upsertUrlPageActivity(upsertInput());
+		Object.assign(page, {
+			extractionStatus: "FAILED",
+			extractionError: "provider timeout",
+			embeddedAt: new Date(),
+			embeddingModel: MODEL_A,
+		});
+
+		const result = await upsertUrlPageActivity(upsertInput());
+
+		expect(result).toMatchObject({
+			pageId: page.id,
+			skipped: false,
+			reason: "not-embedded",
+		});
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: "provider timeout",
+		});
+	});
 });
 
 describe("pruneOrphanUrlPagesActivity with a company owner", () => {
@@ -3094,5 +4019,342 @@ describe("bulkInitUrlPagesActivity with a company owner", () => {
 			}),
 		).rejects.toMatchObject({ type: CONTEXT_OWNER_INVALID });
 		expect(h.queries.createCompanyContextUrlPages).not.toHaveBeenCalled();
+	});
+});
+
+describe("recordUrlPageFetchFailureActivity with a company owner", () => {
+	const REASON = `${URL_PAGE_FETCH_FAILURE_PREFIX}scrape failed`;
+	const FETCHED_AT = new Date("2026-10-01T08:00:00.000Z");
+	const EMBEDDED_AT = new Date("2026-10-01T08:01:00.000Z");
+
+	const failInput = (over: Record<string, unknown> = {}) => ({
+		parentContextId: SOURCE,
+		pageUrl: PAGE_A,
+		reason: "scrape failed",
+		permanent: false,
+		userId: USER,
+		organizationId: ORG,
+		owner: OWNER,
+		...over,
+	});
+
+	/** PAGE_A as a crawl left it: fetched, and embedded with `model`. */
+	async function seedIndexedPage(
+		model: string,
+		over: Record<string, unknown> = {},
+	) {
+		const page = await seedPage({
+			content: "# A",
+			contentHash: "hash:# A",
+			extractionStatus: "COMPLETED",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: model,
+			qdrantId: "point:a",
+			chunkCount: 2,
+			lastFetchedAt: FETCHED_AT,
+			...over,
+		});
+		h.points.set(page.id, {
+			organizationId: ORG,
+			sourceId: SOURCE,
+			parentContextId: SOURCE,
+			embeddingModel: model,
+		});
+		return page;
+	}
+
+	/** The source as a finished crawl left it, embedded with `model`. */
+	function markSourceIndexed(model: string) {
+		Object.assign(h.sources.get(SOURCE) ?? {}, {
+			extractionStatus: "COMPLETED",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: model,
+		});
+	}
+
+	it("marks an indexed page FAILED with the reason, and it stays searchable", async () => {
+		const page = await seedIndexedPage(MODEL_A);
+		markSourceIndexed(MODEL_A);
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+
+		expect(
+			h.queries.recordCompanyContextUrlPageFetchFailure,
+		).toHaveBeenCalledWith({
+			parentSourceId: SOURCE,
+			organizationId: ORG,
+			pageUrl: PAGE_A,
+			message: REASON,
+			permanent: false,
+		});
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			content: "# A",
+			contentHash: "hash:# A",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL_A,
+			qdrantId: "point:a",
+			chunkCount: 2,
+			lastFetchedAt: FETCHED_AT,
+		});
+		expect(h.points.has(page.id)).toBe(true);
+		expect(h.rag.deleteCompanyContextRowPoints).not.toHaveBeenCalled();
+		expect(isReady(SOURCE, MODEL_A)).toBe(true);
+		expectNoProjectCalls();
+	});
+
+	it("removes another model's vectors from a page it cannot fetch, so the website becomes ready", async () => {
+		h.state.model = { ...h.state.model, identity: MODEL_B };
+		const page = await seedIndexedPage(MODEL_A);
+		await h.queries.createCompanyContextUrlPages({
+			parentSourceId: SOURCE,
+			organizationId: ORG,
+			pageUrls: [PAGE_B],
+		});
+		const pageB = pageByUrl(PAGE_B);
+		Object.assign(pageB ?? {}, {
+			content: "# B",
+			contentHash: "hash:# B",
+			extractionStatus: "COMPLETED",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL_B,
+		});
+		markSourceIndexed(MODEL_B);
+		expect(isReady(SOURCE, MODEL_B)).toBe(false);
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+
+		expect(h.rag.deleteCompanyContextRowPoints).toHaveBeenCalledWith({
+			organizationId: ORG,
+			contextIds: [page.id],
+		});
+		expect(
+			h.rag.deleteCompanyContextRowPoints.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			h.companyDb.companyContextUrlPage.updateMany.mock
+				.invocationCallOrder[0],
+		);
+		expect(h.points.has(page.id)).toBe(false);
+		const failed = {
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			content: "# A",
+			embeddedAt: null,
+			embeddingModel: null,
+			qdrantId: null,
+			chunkCount: 0,
+		};
+		expect(page).toMatchObject(failed);
+		expect(isReady(SOURCE, MODEL_B)).toBe(true);
+
+		// Again: nothing left to remove, and the same state.
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+		expect(h.rag.deleteCompanyContextRowPoints).toHaveBeenCalledOnce();
+		expect(page).toMatchObject(failed);
+	});
+
+	// The status rule leaves a PENDING page holding vectors alone, but
+	// another model's vectors keep the website out of search wherever they
+	// are, so they go all the same.
+	it("removes another model's vectors from a PENDING page it otherwise leaves alone", async () => {
+		h.state.model = { ...h.state.model, identity: MODEL_B };
+		const page = await seedIndexedPage(MODEL_A, {
+			extractionStatus: "PENDING",
+		});
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+
+		expect(h.points.has(page.id)).toBe(false);
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			embeddedAt: null,
+			embeddingModel: null,
+		});
+	});
+
+	it("leaves a page's vectors alone when the organization's model cannot be resolved", async () => {
+		const page = await seedIndexedPage(MODEL_A);
+		h.state.modelError = new Error("settings unavailable");
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+
+		expect(h.points.has(page.id)).toBe(true);
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL_A,
+		});
+	});
+
+	// The markers stay until the points are gone, so a retry finds them
+	// and removes them.
+	it("keeps a page's markers when its points cannot be removed, and fails for a retry", async () => {
+		h.state.model = { ...h.state.model, identity: MODEL_B };
+		const page = await seedIndexedPage(MODEL_A);
+		h.rag.deleteCompanyContextRowPoints.mockRejectedValueOnce(
+			new Error("qdrant unavailable"),
+		);
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).rejects.toThrow("qdrant unavailable");
+		expect(page).toMatchObject({
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL_A,
+		});
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+		expect(h.points.has(page.id)).toBe(false);
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			embeddedAt: null,
+			embeddingModel: null,
+		});
+	});
+
+	it("creates a FAILED page with no content for a URL the crawl found but could not fetch", async () => {
+		seedLinkSource();
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput({ pageUrl: PAGE_C })),
+		).resolves.toEqual({ kept: true });
+
+		expect(pageByUrl(PAGE_C)).toMatchObject({
+			parentSourceId: SOURCE,
+			organizationId: ORG,
+			content: "",
+			contentHash: "",
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			embeddedAt: null,
+		});
+		expect(h.rag.resolveCompanyEmbeddingModel).not.toHaveBeenCalled();
+		expect(h.rag.deleteCompanyContextRowPoints).not.toHaveBeenCalled();
+	});
+
+	it("removes the empty row of a URL refused for good, and keeps nothing", async () => {
+		await seedPage();
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput({ permanent: true })),
+		).resolves.toEqual({ kept: false });
+		await expect(
+			recordUrlPageFetchFailureActivity(
+				failInput({ pageUrl: PAGE_C, permanent: true }),
+			),
+		).resolves.toEqual({ kept: false });
+
+		expect(pageByUrl(PAGE_A)).toBeUndefined();
+		expect(pageByUrl(PAGE_C)).toBeUndefined();
+	});
+
+	it("marks and keeps an indexed page on a permanent failure too", async () => {
+		const page = await seedIndexedPage(MODEL_A);
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput({ permanent: true })),
+		).resolves.toEqual({ kept: true });
+
+		expect(page).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			embeddedAt: EMBEDDED_AT,
+		});
+		expect(h.points.has(page.id)).toBe(true);
+	});
+
+	it("writes nothing under a website being deleted, and removes no points", async () => {
+		h.state.model = { ...h.state.model, identity: MODEL_B };
+		const page = await seedIndexedPage(MODEL_A);
+		const before = { ...page };
+		Object.assign(h.sources.get(SOURCE) ?? {}, { deletingAt: new Date() });
+
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput()),
+		).resolves.toEqual({ kept: true });
+		await expect(
+			recordUrlPageFetchFailureActivity(failInput({ pageUrl: PAGE_C })),
+		).resolves.toEqual({ kept: true });
+
+		expect(page).toEqual(before);
+		expect(pageByUrl(PAGE_C)).toBeUndefined();
+		expect(h.points.has(page.id)).toBe(true);
+		expect(h.rag.deleteCompanyContextRowPoints).not.toHaveBeenCalled();
+	});
+
+	it("never touches another organization's page at the same URL", async () => {
+		h.state.model = { ...h.state.model, identity: MODEL_B };
+		seedLinkSource();
+		seedLinkSource({ id: "src-other", organizationId: OTHER_ORG });
+		await h.queries.createCompanyContextUrlPages({
+			parentSourceId: "src-other",
+			organizationId: OTHER_ORG,
+			pageUrls: [PAGE_A],
+		});
+		const theirs = pageByUrl(PAGE_A);
+		if (!theirs) {
+			throw new Error("page not seeded");
+		}
+		Object.assign(theirs, {
+			content: "# A",
+			contentHash: "hash:# A",
+			extractionStatus: "COMPLETED",
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL_A,
+		});
+		h.points.set(theirs.id, {
+			organizationId: OTHER_ORG,
+			sourceId: "src-other",
+			parentContextId: "src-other",
+			embeddingModel: MODEL_A,
+		});
+		const before = { ...theirs };
+
+		// This organization's source has no row at the URL yet, and the
+		// other organization's source is not this owner's to write.
+		await recordUrlPageFetchFailureActivity(failInput());
+		await expect(
+			recordUrlPageFetchFailureActivity(
+				failInput({ parentContextId: "src-other" }),
+			),
+		).resolves.toEqual({ kept: true });
+
+		expect(theirs).toEqual(before);
+		expect(h.points.has(theirs.id)).toBe(true);
+		expect(
+			[...h.pages.values()].filter(
+				(row) => row.pageUrl === PAGE_A && row.organizationId === ORG,
+			),
+		).toEqual([
+			expect.objectContaining({
+				parentSourceId: SOURCE,
+				extractionStatus: "FAILED",
+			}),
+		]);
+	});
+
+	it("refuses an owner whose organization is not the input's", async () => {
+		await expect(
+			recordUrlPageFetchFailureActivity(
+				failInput({ organizationId: OTHER_ORG }),
+			),
+		).rejects.toMatchObject({ type: CONTEXT_OWNER_INVALID });
+		expect(
+			h.queries.recordCompanyContextUrlPageFetchFailure,
+		).not.toHaveBeenCalled();
 	});
 });

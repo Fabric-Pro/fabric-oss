@@ -1,30 +1,8 @@
-/**
- * v1 Coding-instructions routes
- *
- *   GET  /projects/:projectId/instructions/published            manifest + delta
- *   POST /projects/:projectId/instructions/published/download   signed zip URL
- *   POST /projects/:projectId/instructions/published/files      signed URLs for named files
- *   POST /projects/:projectId/instructions/changes              propose a change, for review
- *   POST /projects/:projectId/instructions/versions             publish a change directly
- *   GET  /projects/:projectId/instructions/proposals/:snapshotId/pull-request
- *                                                               a repository proposal's pull request
- *   GET  /projects/:projectId/instructions/proposals/open       the caller's open proposals' hashes
- *
- * These exist so `@fabricorg/cli` can keep a working tree current
- * (`fabric instructions check | sync | init | push`). The oRPC twins under
- * `modules/projects/procedures/instructions/` are `tenantProtectedProcedure`
- * — Better Auth session cookie only — so no API key can reach them, and the
- * MCP gateway's `fabric_get_project_instruction_bundle` needs an MCP client
- * the CLI does not have. The SEMANTICS here mirror that gateway tool
- * (`apps/web/modules/saas/mcp/lib/gateway/platform-tools.ts`): same
- * `sinceDigest` bound, same delta query, same short-circuit on an equal
- * digest, same shared zip builder — two surfaces must not be able to answer
- * differently about the same snapshot.
- */
 import { config } from "@repo/config";
 import {
 	db,
 	getInstructionManifestDiff,
+	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
 	resolveCurrentInstructionSource,
@@ -35,6 +13,10 @@ import type { Context, Hono, Next } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { buildInstructionSnapshotZip } from "../projects/procedures/instructions/build-zip";
+import {
+	instructionChangeBaseSchema,
+	type InstructionChangeBase,
+} from "../projects/procedures/instructions/change-base";
 // Type-only: the implementation is imported lazily in the handler below, so
 // registering these routes does not pull the Temporal client and the storage
 // provider into the module graph of every request that never writes.
@@ -44,13 +26,45 @@ import type {
 } from "../projects/procedures/instructions/submit-change";
 import { badRequest, forbidden, notFound, ok } from "./helpers";
 import { instructionCliUpgradeNotice } from "./instruction-cli-compatibility";
+import { registerInstructionGitRoutes } from "./instruction-git-routes";
 import { resolveInstructionProject } from "./instruction-project-gate";
+import {
+	directPublishedResponse,
+	registerDirectInstructionRepositoryRoutes,
+} from "./instruction-repository-routes";
 
 /** The longest `sinceDigest` accepted, mirroring the MCP tools' input schemas. */
 const INSTRUCTION_DIGEST_MAX_LENGTH = 128;
 
 /** How long the signed archive URL stays valid — `buildInstructionSnapshotZip`'s own `expiresIn`. */
 const DOWNLOAD_URL_EXPIRES_IN_SECONDS = 600;
+
+async function refuseDirectRepositoryExport(
+	c: Context<{ Variables: ExternalApiVariables }>,
+	projectId: string,
+	organizationId: string,
+) {
+	const settings = await getProjectInstructionSettings(
+		projectId,
+		organizationId,
+	);
+	if (
+		settings.sourceOfTruth !== "REPOSITORY" ||
+		settings.migration !== null
+	) {
+		return null;
+	}
+	return c.json(
+		{
+			error: {
+				code: "REPOSITORY_DIRECT_READ",
+				message:
+					"This project reads its repository directly. Use the repository file endpoints or native Git instead of a snapshot download.",
+			},
+		},
+		409,
+	);
+}
 
 /**
  * A published snapshot that has passed every integrity check below. The
@@ -76,6 +90,7 @@ async function resolvePublishedSnapshot(
 	const snapshot = await getPublishedInstructionSnapshot(projectId);
 	if (
 		!snapshot ||
+		snapshot.contentKind !== "FULL_SNAPSHOT" ||
 		snapshot.status !== "READY" ||
 		snapshot.digest === null ||
 		snapshot.projectId !== projectId ||
@@ -232,11 +247,10 @@ const SNAPSHOT_ID_MAX_LENGTH = 128;
  * only the shape.
  */
 function readChangeBody(body: unknown):
-	| {
-			baseSnapshotId: string;
+	| (InstructionChangeBase & {
 			changes: InlineInstructionChange[];
 			note?: { title?: string; body?: string };
-	  }
+	  })
 	| { error: string } {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		return { error: "Body must be a JSON object." };
@@ -248,16 +262,13 @@ function readChangeBody(body: unknown):
 	// was absent — turns the stale-base check off for anyone who leaves it
 	// out, and leaves them no way to find out they are overwriting a version
 	// they never read.
-	if (
-		typeof raw.baseSnapshotId !== "string" ||
-		raw.baseSnapshotId.length === 0 ||
-		raw.baseSnapshotId.length > SNAPSHOT_ID_MAX_LENGTH
-	) {
+	const parsedBase = instructionChangeBaseSchema.safeParse(raw);
+	if (!parsedBase.success) {
 		return {
 			error: `baseSnapshotId is required: the id of the published snapshot this change is based on, as GET /projects/{projectId}/instructions/published returns it. It must be a string of 1 to ${SNAPSHOT_ID_MAX_LENGTH} characters.`,
 		};
 	}
-	const baseSnapshotId = raw.baseSnapshotId;
+	const base = parsedBase.data;
 
 	if (!Array.isArray(raw.changes)) {
 		return { error: "changes must be an array." };
@@ -302,7 +313,7 @@ function readChangeBody(body: unknown):
 	// line and credential rules are the admission's, which answer 422
 	// NOTE_REJECTED naming the field. `null` means none, as absent does.
 	if (raw.note === undefined || raw.note === null) {
-		return { baseSnapshotId, changes };
+		return { ...base, changes };
 	}
 	if (typeof raw.note !== "object" || Array.isArray(raw.note)) {
 		return {
@@ -316,7 +327,7 @@ function readChangeBody(body: unknown):
 		}
 	}
 	return {
-		baseSnapshotId,
+		...base,
 		changes,
 		note: {
 			...(typeof note.title === "string" ? { title: note.title } : {}),
@@ -328,6 +339,8 @@ function readChangeBody(body: unknown):
 export function registerInstructionRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerDirectInstructionRepositoryRoutes(app);
+	registerInstructionGitRoutes(app);
 	/**
 	 * GET /projects/:projectId/instructions/published
 	 *
@@ -372,6 +385,17 @@ export function registerInstructionRoutes(
 			if ("error" in resolved) {
 				return c.json({ error: resolved.error }, resolved.status);
 			}
+			const current = await resolveCurrentInstructionSource(
+				projectId,
+				resolved.organizationId,
+			);
+			const directResponse = await directPublishedResponse(
+				c,
+				projectId,
+				resolved.userId,
+				current,
+			);
+			if (directResponse) return directResponse;
 
 			// `sourceOfTruth` and `repository` come from ONE read of the
 			// project's settings, in both branches (Fizzy #2708 review): read
@@ -385,13 +409,12 @@ export function registerInstructionRoutes(
 				resolved.organizationId,
 			);
 			if (!snapshot) {
-				const { sourceOfTruth, repository } =
-					await resolveCurrentInstructionSource(
-						projectId,
-						resolved.organizationId,
-					);
 				return c.json(
-					ok({ published: false, sourceOfTruth, repository }),
+					ok({
+						published: false,
+						sourceOfTruth: current.sourceOfTruth,
+						repository: current.repository,
+					}),
 				);
 			}
 
@@ -504,6 +527,13 @@ export function registerInstructionRoutes(
 				return c.json({ error: resolved.error }, resolved.status);
 			}
 
+			const refusal = await refuseDirectRepositoryExport(
+				c,
+				projectId,
+				resolved.organizationId,
+			);
+			if (refusal) return refusal;
+
 			const snapshot = await resolvePublishedSnapshot(
 				projectId,
 				resolved.organizationId,
@@ -530,6 +560,13 @@ export function registerInstructionRoutes(
 				}
 				throw error;
 			}
+
+			const finalRefusal = await refuseDirectRepositoryExport(
+				c,
+				projectId,
+				resolved.organizationId,
+			);
+			if (finalRefusal) return finalRefusal;
 
 			return c.json(
 				ok({
@@ -582,6 +619,13 @@ export function registerInstructionRoutes(
 			if ("error" in resolved) {
 				return c.json({ error: resolved.error }, resolved.status);
 			}
+
+			const refusal = await refuseDirectRepositoryExport(
+				c,
+				projectId,
+				resolved.organizationId,
+			);
+			if (refusal) return refusal;
 
 			const snapshot = await resolvePublishedSnapshot(
 				projectId,
@@ -644,6 +688,13 @@ export function registerInstructionRoutes(
 					}),
 				})),
 			);
+
+			const finalRefusal = await refuseDirectRepositoryExport(
+				c,
+				projectId,
+				resolved.organizationId,
+			);
+			if (finalRefusal) return finalRefusal;
 
 			return c.json(
 				ok({
@@ -733,7 +784,9 @@ export function registerInstructionRoutes(
 				const result = await submitInstructionChange({
 					userId: resolved.userId,
 					projectId,
-					baseSnapshotId: body.baseSnapshotId,
+					...(body.nativeBase
+						? { nativeBase: body.nativeBase }
+						: { baseSnapshotId: body.baseSnapshotId }),
 					changes: body.changes,
 					...(body.note ? { note: body.note } : {}),
 					// The route's own constant, closed over above. Nothing
@@ -753,7 +806,21 @@ export function registerInstructionRoutes(
 					},
 					via: `v1:${apiCtx.keyType}-key`,
 				});
-				return c.json(ok(result));
+				return c.json(
+					ok(
+						"nativeBase" in result
+							? {
+									mode: result.mode,
+									operationId: result.snapshotId,
+									nativeBase: result.nativeBase,
+									putCount: result.putCount,
+									deleteCount: result.deleteCount,
+									status: result.status,
+									proposalStatus: result.proposalStatus,
+								}
+							: result,
+					),
+				);
 			} catch (error) {
 				const failure = submitChangeFailure(error);
 				if (!failure) {

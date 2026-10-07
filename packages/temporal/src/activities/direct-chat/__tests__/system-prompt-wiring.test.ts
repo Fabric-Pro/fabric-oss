@@ -11,10 +11,15 @@
  *     (`webSearch` or `fabric_web_search`) and vanish when tools are off.
  *   - `list_skills` is named in the capabilities block only when the skill
  *     tools were registered.
+ *   - Company context (Fizzy #2719): only a turn the Advisor opted in, for a
+ *     person the access resolver lets through to an organization with ready
+ *     sources, gets the search tool and the line naming the organization;
+ *     every other turn's tools and prompt are exactly what they were.
  *
  * Boundaries mocked: the AI SDK (the `streamText` request is captured and a
  * minimal empty stream returned), model resolution, the database, built-in /
- * advisor / skill tool factories and the shared agent-tool runtime.
+ * advisor / skill tool factories, the company context access resolver and
+ * search, and the shared agent-tool runtime.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,10 +28,17 @@ import type { DirectChatWorkflowInput } from "../../../types";
 const state = vi.hoisted(() => ({
 	streamText: undefined as undefined | ((req: unknown) => unknown),
 	captured: undefined as unknown,
+	modelContext: undefined as unknown,
 	provider: "OPENAI",
 	modelString: "gpt-test",
 	builtInTools: {} as Record<string, unknown>,
 	skills: [] as Array<{ slug: string }>,
+	companyContextAccess: null as null | {
+		organizationId: string;
+		organizationName: string;
+		readySourceCount: number;
+	},
+	resolveCompanyContextAccess: vi.fn(),
 }));
 
 vi.mock("@repo/agent-core/backend", () => ({
@@ -45,18 +57,21 @@ vi.mock("@repo/ai", () => ({
 			content: m.parts.map((p) => p.text).join(""),
 		})),
 	enhancePromptWithFabric: async () => ({ fabricUsed: false }),
-	getAIModelWithMetadata: async () => ({
-		model: { id: "test-model" },
-		metadata: {
-			provider: state.provider,
-			modelString: state.modelString,
-			canonicalName: state.modelString,
-			contextWindow: 200_000,
-			selectionSource: "test",
-		},
-		trackUsage: vi.fn(),
-		recordAggregateUsage: vi.fn(),
-	}),
+	getAIModelWithMetadata: async (_options: unknown, context: unknown) => {
+		state.modelContext = context;
+		return {
+			model: { id: "test-model" },
+			metadata: {
+				provider: state.provider,
+				modelString: state.modelString,
+				canonicalName: state.modelString,
+				contextWindow: 200_000,
+				selectionSource: "test",
+			},
+			trackUsage: vi.fn(),
+			recordAggregateUsage: vi.fn(),
+		};
+	},
 	getCurrentDateContext: () => "Today is October 2, 2026.",
 	isStepCount: (n: number) => n,
 	selectAggregateUsageForLogging: () => undefined,
@@ -86,9 +101,20 @@ vi.mock("@repo/ai/skills", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	ensureSensitiveOperationAuthority: vi.fn(),
+	getDefaultRagSettings: () => ({ similarityThreshold: 0.5 }),
+	getProjectRagSettings: vi.fn(),
 	getWorkflowById: vi.fn(),
 	listWorkflows: vi.fn(),
-	loadProjectDatabricksKnowledgeBinding: vi.fn(),
+	loadProjectDatabricksKnowledgeBinding: async () => null,
+}));
+vi.mock("../../../lib/company-context-chat-access", () => ({
+	resolveCompanyContextChatAccess: state.resolveCompanyContextAccess,
+}));
+vi.mock("../../../lib/company-context-search", () => ({
+	searchCompanyContext: vi.fn(),
+}));
+vi.mock("../../shared/project-context-block", () => ({
+	buildProjectContextBlock: async () => null,
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("../built-in-tools", () => ({
@@ -116,8 +142,8 @@ vi.mock("../../shared/databricks-knowledge", () => ({
 	buildDatabricksKnowledgeToolDefinition: vi.fn(),
 	databricksKnowledgeToolName: vi.fn(),
 	executeDatabricksKnowledgeSearchSafe: vi.fn(),
-	loadAgentDatabricksBindings: vi.fn(),
-	mergeDatabricksBindings: vi.fn(),
+	loadAgentDatabricksBindings: async () => [],
+	mergeDatabricksBindings: () => [],
 }));
 vi.mock("../../shared/read-only-gate", () => ({
 	guardToolWriteForReadOnly: vi.fn(),
@@ -129,7 +155,13 @@ import { DIRECT_CHAT_IDENTITY } from "../prompt-cache";
 type Captured = {
 	instructions: unknown;
 	messages: Array<{ role: string; content: unknown }>;
+	tools?: Record<string, unknown>;
 };
+
+/** The tools the model was given this turn, by name. */
+function toolNames(): string[] {
+	return Object.keys((state.captured as Captured).tools ?? {}).sort();
+}
 
 function contentOf(entry: unknown): string {
 	if (typeof entry === "string") {
@@ -182,6 +214,11 @@ beforeEach(() => {
 	state.modelString = "gpt-test";
 	state.builtInTools = {};
 	state.skills = [];
+	state.companyContextAccess = null;
+	state.resolveCompanyContextAccess.mockReset();
+	state.resolveCompanyContextAccess.mockImplementation(
+		async () => state.companyContextAccess,
+	);
 });
 
 describe("direct chat identity wiring", () => {
@@ -287,5 +324,175 @@ describe("direct chat web search and skills wiring", () => {
 		state.skills = [{ slug: "example-skill" }];
 		const text = await runTurn({ forceDisableTools: true });
 		expect(text).not.toContain("list_skills");
+	});
+});
+
+describe("direct chat company context wiring", () => {
+	const TOOL = "search_company_context";
+	const ACCESS = {
+		organizationId: "org-1",
+		organizationName: "Example Org",
+		readySourceCount: 2,
+	};
+	const HINT = 'This chat works for the organization "Example Org".';
+
+	/** The same turn without the Advisor opt-in: what every turn got before. */
+	async function baselineTurn(
+		overrides: Partial<DirectChatWorkflowInput> = {},
+	) {
+		const text = await runTurn(overrides);
+		return { text, tools: toolNames() };
+	}
+
+	it("offers the search and names the organization to an opted-in member, even with an empty explicit tool list", async () => {
+		state.companyContextAccess = ACCESS;
+
+		const text = await runTurn({
+			companyContextAdvisor: true,
+			enabledFabricToolIds: [],
+		});
+
+		expect(toolNames()).toContain(TOOL);
+		expect(text).toContain(HINT);
+		expect(text).toContain(`can be searched with ${TOOL}`);
+		// One line, straight after the Advisor tools' line.
+		expect(text).toMatch(
+			/Never use workspace document tools for that\.\n- This chat works for the organization "Example Org"\.[^\n]*\n\nDIAGRAMS:/,
+		);
+		expect(state.resolveCompanyContextAccess).toHaveBeenCalledTimes(1);
+		expect(state.resolveCompanyContextAccess).toHaveBeenCalledWith({
+			userId: "user-1",
+			requestOrganizationId: "org-1",
+			projectId: undefined,
+		});
+	});
+
+	it("offers both to a custom agent chosen in the Advisor, beside its own persona", async () => {
+		state.companyContextAccess = ACCESS;
+
+		const text = await runTurn({
+			companyContextAdvisor: true,
+			instanceId: "instance-1",
+			systemPrompt: PERSONA,
+			enabledFabricToolIds: [],
+		});
+
+		expect(toolNames()).toContain(TOOL);
+		expect(text).toContain(PERSONA);
+		expect(text).toContain(HINT);
+	});
+
+	it("asks about the chat's project, so its organization decides", async () => {
+		state.companyContextAccess = ACCESS;
+
+		await runTurn({ companyContextAdvisor: true, projectId: "project-1" });
+
+		expect(state.resolveCompanyContextAccess).toHaveBeenCalledWith({
+			userId: "user-1",
+			requestOrganizationId: "org-1",
+			projectId: "project-1",
+		});
+	});
+
+	// A project guest, or a member whose organization has the feature off:
+	// the resolver lets neither through.
+	it.each([
+		[
+			"a project guest in the host organization",
+			{ projectId: "project-1" },
+		],
+		["an organization with the feature off", {}],
+	])("leaves the turn exactly as it was for %s", async (_label, chat) => {
+		const before = await baselineTurn(chat);
+		state.companyContextAccess = null;
+
+		const text = await runTurn({ ...chat, companyContextAdvisor: true });
+
+		expect(state.resolveCompanyContextAccess).toHaveBeenCalledTimes(1);
+		expect(toolNames()).toEqual(before.tools);
+		expect(toolNames()).not.toContain(TOOL);
+		expect(text).toBe(before.text);
+		expect(text).not.toContain("Example Org");
+		// The bytes every turn had before company context existed.
+		expect(text).toContain(
+			"Never use workspace document tools for that.\n\nDIAGRAMS:",
+		);
+	});
+
+	it("treats an organization with no ready sources as nothing", async () => {
+		const before = await baselineTurn();
+		state.companyContextAccess = { ...ACCESS, readySourceCount: 0 };
+
+		const text = await runTurn({ companyContextAdvisor: true });
+
+		expect(toolNames()).toEqual(before.tools);
+		expect(text).toBe(before.text);
+	});
+
+	// Callers that start the same activity without the Advisor's opt-in.
+	it.each([
+		[
+			"a project comment reply",
+			{
+				projectId: "project-1",
+				systemPrompt:
+					"You are Fabric Agent replying inside a project comment thread.",
+			},
+		],
+		[
+			"the meeting agent",
+			{
+				featureKey: "parlume",
+				usageConversationId: "session-1",
+				systemPrompt: PERSONA,
+			},
+		],
+	] as const)(
+		"neither offers the search nor names the organization for %s, even for a member",
+		async (_label, chat) => {
+			state.companyContextAccess = ACCESS;
+
+			const text = await runTurn(
+				chat as Partial<DirectChatWorkflowInput>,
+			);
+
+			expect(state.resolveCompanyContextAccess).not.toHaveBeenCalled();
+			expect(toolNames()).not.toContain(TOOL);
+			expect(text).not.toContain("Example Org");
+			expect(text).not.toContain(TOOL);
+		},
+	);
+
+	it("drops both with the tools on the degraded retry, without asking", async () => {
+		state.companyContextAccess = ACCESS;
+
+		const text = await runTurn({
+			companyContextAdvisor: true,
+			forceDisableTools: true,
+		});
+
+		expect(state.resolveCompanyContextAccess).not.toHaveBeenCalled();
+		expect((state.captured as Captured).tools).toBeUndefined();
+		expect(text).not.toContain("Example Org");
+		expect(text).not.toContain(TOOL);
+	});
+});
+
+// Fizzy #2939: only a turn its starter marked plan-eligible may resolve the
+// member's own ChatGPT plan. Mention replies, meetings and every other
+// starter leave the field unset, and the activity then leaves it unset too:
+// outside a run a person started that resolves the organization's provider,
+// and inside one the run's marker decides (getAIModelWithMetadata).
+describe("direct chat ChatGPT plan eligibility", () => {
+	it("does not mark a turn nobody marked eligible", async () => {
+		await runTurn();
+		expect(
+			(state.modelContext as { planEligible?: boolean }).planEligible,
+		).toBeUndefined();
+	});
+
+	it("lets a turn the Advisor stream marked eligible resolve the plan", async () => {
+		await runTurn({ planEligible: true });
+		expect(state.modelContext).toMatchObject({ planEligible: true });
 	});
 });

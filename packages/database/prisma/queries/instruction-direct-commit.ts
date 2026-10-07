@@ -42,6 +42,7 @@ export function getDirectCommitSnapshot(input: {
 			userId: true,
 			version: true,
 			status: true,
+			contentKind: true,
 			source: true,
 			proposalDestination: true,
 			proposalStatus: true,

@@ -10,6 +10,10 @@
  */
 
 import { logger } from "@repo/logs";
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 
 const JINA_SEARCH_URL = "https://s.jina.ai";
 const JINA_READER_URL = "https://r.jina.ai";
@@ -55,6 +59,10 @@ export class JinaClient {
 
 		try {
 			const controller = new AbortController();
+			// Inside a dispatch guard (an Advisor chat turn) a stopped guard
+			// refuses before the request, and the request carries the
+			// guard's abort signal beside the timeout's.
+			const signal = await guardDispatch(controller.signal);
 			const timeoutId = setTimeout(
 				() => controller.abort(),
 				this.timeout,
@@ -66,7 +74,7 @@ export class JinaClient {
 					Authorization: `Bearer ${this.apiKey}`,
 					Accept: "text/plain",
 				},
-				signal: controller.signal,
+				signal,
 			});
 
 			clearTimeout(timeoutId);
@@ -89,6 +97,9 @@ export class JinaClient {
 				success: true,
 			};
 		} catch (error) {
+			// A stop leaves as an error: a { success: false } result would
+			// send the caller to its fallback request.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			logger.error(`[JinaClient] Search error: ${errorMessage}`);
@@ -111,6 +122,10 @@ export class JinaClient {
 
 		try {
 			const controller = new AbortController();
+			// Inside a dispatch guard (an Advisor chat turn) a stopped guard
+			// refuses before the request, and the request carries the
+			// guard's abort signal beside the timeout's.
+			const signal = await guardDispatch(controller.signal);
 			const timeoutId = setTimeout(
 				() => controller.abort(),
 				this.timeout,
@@ -122,7 +137,7 @@ export class JinaClient {
 					Authorization: `Bearer ${this.apiKey}`,
 					Accept: "text/plain",
 				},
-				signal: controller.signal,
+				signal,
 			});
 
 			clearTimeout(timeoutId);
@@ -145,6 +160,9 @@ export class JinaClient {
 				success: true,
 			};
 		} catch (error) {
+			// A stop leaves as an error: a { success: false } result would
+			// send the caller to its fallback request.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			logger.error(`[JinaClient] Scrape error: ${errorMessage}`);

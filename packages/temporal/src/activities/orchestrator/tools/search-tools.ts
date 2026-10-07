@@ -18,9 +18,11 @@ import { db } from "@repo/database";
 import { GITHUB_ACCOUNT, MICROSOFT_TEAMS_ACCOUNT } from "@repo/mcp-registry";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { getCapabilitiesByTenant } from "@repo/rag/lib/vector-store/capability-store";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 // Pure, import-free module shared with the workflow side.
 import { canonicalJson } from "../../../workflows/orchestrator/tool-result-progression";
 import { ingestOAuthIntegrationToolsActivity } from "../../oauth-tool-ingestion";
+import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
 import {
 	type CapabilityWithKeywords,
 	type KeywordMatch,
@@ -388,6 +390,8 @@ export async function findRelevantServersBySemantic(
 
 		return { serverNames, scores, isHighConfidence };
 	} catch (error) {
+		// A stopped chat turn is not a failed server search.
+		rethrowIfDispatchStopped(error);
 		console.error("[SearchTools] Semantic server search failed:", error);
 		return { serverNames: [], scores: [], isHighConfidence: false };
 	}
@@ -840,6 +844,9 @@ async function syncOAuthToolsIfNeeded(
 
 		return syncPerformed;
 	} catch (error) {
+		// Re-ingestion embeds the tools: a stopped chat turn is not a
+		// failed sync.
+		rethrowIfDispatchStopped(error);
 		console.warn("[ToolSync] Failed to sync OAuth tools:", error);
 		return false;
 	}
@@ -1361,8 +1368,24 @@ function _mergeWithAlwaysAvailable(
  *
  * This ensures deterministic matching for common patterns while preserving
  * semantic search for edge cases.
+ *
+ * In a chat turn (`input.turnScope`) the embedding requests are checked
+ * against the turn record and aborted by a Stop (the worker's turn-dispatch
+ * interceptor installs the guard; this heartbeats so the cancel arrives),
+ * and a stop is rethrown rather than degraded to keyword results.
  */
 export async function searchAvailableTools(
+	input: SearchAvailableToolsInput,
+): Promise<SearchAvailableToolsOutput> {
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await runToolSearch(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function runToolSearch(
 	input: SearchAvailableToolsInput,
 ): Promise<SearchAvailableToolsOutput> {
 	const startTime = Date.now();
@@ -1673,6 +1696,11 @@ export async function searchAvailableTools(
 			tenantContext,
 		);
 	} catch (error) {
+		// In a chat turn a stop is not a semantic-search failure to fall
+		// back from.
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		console.warn(
 			"[SearchTools] Semantic search failed, falling back to keyword search:",
 			error,

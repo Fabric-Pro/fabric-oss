@@ -122,7 +122,6 @@ describe("fastForwardEligibility", () => {
 			{ upstream: "origin/develop" },
 			"upstream-mismatch",
 		],
-		["uncommitted changes", { state: { clean: false } }, "dirty"],
 		["an index.lock or HEAD.lock", { lockFiles: true }, "git-busy"],
 		[
 			"the branch held by another work tree",
@@ -149,12 +148,10 @@ describe("fastForwardEligibility", () => {
 		).toEqual({ eligible: false, reason: "operation" });
 	});
 
-	it("tells a dirty tree from one that is merely busy by looking at the tree first", () => {
+	it("does not refuse uncommitted changes itself: git decides", () => {
 		expect(
-			fastForwardEligibility(
-				facts({ state: { clean: false }, lockFiles: true }),
-			),
-		).toEqual({ eligible: false, reason: "dirty" });
+			fastForwardEligibility(facts({ state: { clean: false } })),
+		).toEqual({ eligible: true });
 	});
 
 	it("compares the upstream with the remote this checkout fetches from", () => {
@@ -560,7 +557,7 @@ describe("fastForwardLines", () => {
 	});
 
 	it("keeps a ran-out budget to the log, and still says where the checkout stands", () => {
-		expect(lines({ kind: "deadline" })).toEqual({
+		expect(lines({ kind: "deadline", stage: "fetch" })).toEqual({
 			stdout: [BEHIND],
 			stderr: [`${HOOK_PREFIX} sync skipped: gave up after 10 s`],
 		});
@@ -572,7 +569,7 @@ describe("fastForwardLines", () => {
 			{ kind: "already-current" },
 			{ kind: "locked" },
 			{ kind: "opted-out" },
-			{ kind: "deadline" },
+			{ kind: "deadline", stage: "fetch" },
 			...(
 				[
 					"dirty",

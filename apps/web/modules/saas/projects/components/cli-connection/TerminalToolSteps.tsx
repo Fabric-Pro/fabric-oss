@@ -9,7 +9,7 @@ import { CommandBlock } from "./CommandBlock";
 import {
 	buildClaudeCodeCommand,
 	buildCloneAndInitLine,
-	buildCodexCommands,
+	buildCodexCommand,
 	buildInitLine,
 	type CloneChoice,
 	type LocalSetupTool,
@@ -44,7 +44,7 @@ const CLAUDE_CODE_MCP_NEXT_STEP =
 	"Then run /mcp in Claude Code and choose Authenticate. Your browser opens so you can approve the connection.";
 
 const CODEX_MCP_NEXT_STEP =
-	"The second command opens your browser so you can approve the connection.";
+	"The command opens your browser so you can approve the connection, and finishes once you have. Keep the terminal open until it does.";
 
 const UPLOAD_HOOK_NOTE =
 	"After that, at each session start a hook tells you when the published instructions have changed.";
@@ -195,7 +195,7 @@ function McpTerminalSteps({
 	const command =
 		tool === "claude-code"
 			? buildClaudeCodeCommand(origin, projectId)
-			: buildCodexCommands(origin, projectId);
+			: buildCodexCommand(origin, projectId);
 	const steps: SetupStep[] = [
 		{
 			id: "run",
@@ -207,7 +207,7 @@ function McpTerminalSteps({
 					label={
 						tool === "claude-code"
 							? "Copy the Claude Code command"
-							: "Copy the Codex commands"
+							: "Copy the Codex command"
 					}
 					testId={`agent-sign-in-${tool}`}
 				/>

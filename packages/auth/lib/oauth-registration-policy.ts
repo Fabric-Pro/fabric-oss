@@ -38,9 +38,22 @@ const LOOPBACK_HOSTNAMES: readonly string[] = [
 	"[::1]",
 ];
 
+/**
+ * Native callbacks that predate RFC 8252's reverse-domain naming. Matched
+ * exactly: these are public PKCE clients, open registration already permits
+ * arbitrary https redirects, so an exact match adds no new capability. The
+ * same list is patched into `@better-auth/oauth-provider` (patches/), whose
+ * own registration check would otherwise refuse them.
+ */
+const PRE_RFC8252_NATIVE_REDIRECT_URIS: readonly string[] = [
+	"cursor://anysphere.cursor-mcp/oauth/callback",
+];
+
 const MAX_REDIRECT_URIS = 5;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const MAX_CLIENT_NAME_LENGTH = 100;
+const PRIVATE_USE_SCHEME =
+	/^[a-z](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i;
 
 /**
  * Fields a client may send that Fabric never shows or follows. Dropped rather
@@ -55,6 +68,10 @@ const DROPPED_METADATA_FIELDS = [
 	"software_statement",
 	"contacts",
 	"post_logout_redirect_uris",
+	"backchannel_logout_uri",
+	"backchannel_logout_session_required",
+	"jwks",
+	"jwks_uri",
 ] as const;
 
 /**
@@ -90,10 +107,21 @@ export class OAuthRegistrationError extends Error {
 }
 
 export function assertAllowedRedirectUri(raw: string): void {
+	if (PRE_RFC8252_NATIVE_REDIRECT_URIS.includes(raw)) {
+		return;
+	}
 	if (raw.length > MAX_REDIRECT_URI_LENGTH) {
 		throw new OAuthRegistrationError(
 			"invalid_redirect_uri",
 			"redirect_uri is too long",
+		);
+	}
+	// Store absolute URI text, rather than WHATWG's lenient reinterpretation
+	// of whitespace or backslashes. Callers can percent-encode query spaces.
+	if (/[\s\\]/u.test(raw)) {
+		throw new OAuthRegistrationError(
+			"invalid_redirect_uri",
+			"redirect_uri must encode whitespace and must not contain backslashes",
 		);
 	}
 
@@ -119,12 +147,18 @@ export function assertAllowedRedirectUri(raw: string): void {
 			`redirect_uri scheme ${url.protocol} is not allowed`,
 		);
 	}
+	if (url.username || url.password) {
+		throw new OAuthRegistrationError(
+			"invalid_redirect_uri",
+			"redirect_uri must not contain credentials",
+		);
+	}
 
 	if (url.protocol === "https:") {
-		if (url.username || url.password) {
+		if (LOOPBACK_HOSTNAMES.includes(url.hostname)) {
 			throw new OAuthRegistrationError(
 				"invalid_redirect_uri",
-				"redirect_uri must not contain credentials",
+				"loopback redirect_uri must use http",
 			);
 		}
 		return;
@@ -140,8 +174,20 @@ export function assertAllowedRedirectUri(raw: string): void {
 		return;
 	}
 
-	// Any other scheme is a private-use scheme handing control to an installed
-	// app (`vscode:`, `cursor:`), which RFC 8252 section 7.1 permits.
+	// Native private-use callbacks follow RFC 8252's reverse-domain scheme and
+	// have no naming authority. This matches the provider's registration check.
+	const schemeSpecificPart = url.href.slice(url.protocol.length);
+	if (
+		!PRIVATE_USE_SCHEME.test(url.protocol.slice(0, -1)) ||
+		url.host ||
+		!schemeSpecificPart.startsWith("/") ||
+		schemeSpecificPart.startsWith("//")
+	) {
+		throw new OAuthRegistrationError(
+			"invalid_redirect_uri",
+			"private-use redirect_uri must use an authority-free reverse-domain scheme",
+		);
+	}
 }
 
 /**
@@ -169,6 +215,22 @@ export function applyRegistrationPolicy(body: Record<string, unknown>): void {
 		}
 		assertAllowedRedirectUri(uri);
 	}
+	// Old CLI versions send `type`, which 1.7's endpoint parser drops. Infer
+	// from the validated callbacks instead so those versions can still register.
+	if (body.application_type === undefined) {
+		body.application_type = redirectUris.some(
+			(uri) => new URL(uri as string).protocol !== "https:",
+		)
+			? "native"
+			: "web";
+	}
+	if (body.dpop_bound_access_tokens === true) {
+		throw new OAuthRegistrationError(
+			"invalid_client_metadata",
+			"DPoP is not supported by the protected endpoints",
+		);
+	}
+	body.dpop_bound_access_tokens = false;
 
 	if (
 		body.token_endpoint_auth_method !== undefined &&

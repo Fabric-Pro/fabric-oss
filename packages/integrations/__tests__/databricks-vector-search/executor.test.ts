@@ -808,3 +808,136 @@ describe("index metadata caching + request aborting", () => {
 		expect(searchSignalAborted).toBe(true);
 	});
 });
+
+describe("queryDatabricksVectorIndexes beforeRequest (a caller that may be told to stop)", () => {
+	const DETAIL = {
+		primary_key: "id",
+		status: { ready: true },
+		delta_sync_index_spec: { embedding_source_columns: [{ name: "text" }] },
+	};
+	const QUERY_RESULT = {
+		manifest: {
+			columns: [{ name: "id" }, { name: "text" }, { name: "score" }],
+		},
+		result: { data_array: [["1", "chunk", 0.9]] },
+	};
+
+	beforeEach(() => {
+		__resetDatabricksVectorSearchCachesForTests();
+	});
+
+	/** A transport that answers token, metadata and query requests. */
+	function transport(
+		opts: { queryStatuses?: number[]; queryDelayMs?: number } = {},
+	) {
+		const statuses = [...(opts.queryStatuses ?? [])];
+		const posts: string[] = [];
+		const settledPosts: string[] = [];
+		const fetchImpl = vi.fn(
+			async (input: string | URL | Request, init?: RequestInit) => {
+				const url = String(input);
+				if (url.endsWith("/oidc/v1/token")) {
+					return tokenResponse();
+				}
+				if (init?.method === "POST") {
+					posts.push(url);
+					const status = statuses.shift() ?? 200;
+					await new Promise<void>((resolve, reject) => {
+						const timer = setTimeout(
+							resolve,
+							opts.queryDelayMs ?? 0,
+						);
+						init.signal?.addEventListener("abort", () => {
+							clearTimeout(timer);
+							reject(init.signal?.reason);
+						});
+					}).finally(() => settledPosts.push(url));
+					return status === 200
+						? jsonResponse(QUERY_RESULT)
+						: new Response("busy", {
+								status,
+								headers: { "Retry-After": "0" },
+							});
+				}
+				return jsonResponse(DETAIL);
+			},
+		);
+		return {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			posts,
+			settledPosts,
+		};
+	}
+
+	it("checks before each index and before every search request, retries included", async () => {
+		const { fetchImpl, posts } = transport({ queryStatuses: [503, 200] });
+		const beforeRequest = vi.fn(async () => undefined);
+
+		const result = await queryDatabricksVectorIndexes(CREDS, {
+			indexNames: ["main.docs.a"],
+			query: "launch",
+			fetchImpl,
+			beforeRequest,
+		});
+
+		expect(result.chunks).toHaveLength(1);
+		expect(posts).toHaveLength(2);
+		// Once for the index, once per physical POST (the 503 and its retry).
+		expect(beforeRequest).toHaveBeenCalledTimes(3);
+	});
+
+	it("rejects with a refusal after the indexes in flight settle, never as a per-index failure", async () => {
+		class Refusal extends Error {}
+		const refusal = new Refusal("may not send");
+		let stopped = false;
+		const posts: string[] = [];
+		const postsAfterStop: string[] = [];
+		let inFlight = 0;
+		const fetchImpl = (async (
+			input: string | URL | Request,
+			init?: RequestInit,
+		) => {
+			const url = String(input);
+			if (url.endsWith("/oidc/v1/token")) {
+				return tokenResponse();
+			}
+			if (init?.method === "POST") {
+				posts.push(url);
+				if (stopped) {
+					postsAfterStop.push(url);
+				}
+				// The first search request is in flight when the caller is
+				// told to stop.
+				stopped = true;
+				inFlight += 1;
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				inFlight -= 1;
+				return jsonResponse(QUERY_RESULT);
+			}
+			// Index b's and c's metadata arrive after a's search started.
+			const delay = url.endsWith(".b") ? 10 : url.endsWith(".c") ? 15 : 0;
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			return jsonResponse(DETAIL);
+		}) as typeof fetch;
+		const beforeRequest = vi.fn(async () => {
+			if (stopped) {
+				throw refusal;
+			}
+		});
+
+		const error = await queryDatabricksVectorIndexes(CREDS, {
+			indexNames: ["main.docs.a", "main.docs.b", "main.docs.c"],
+			query: "launch",
+			fetchImpl,
+			beforeRequest,
+		}).catch((caught: unknown) => {
+			// Nothing this search sent is still running when it settles.
+			expect(inFlight).toBe(0);
+			return caught;
+		});
+
+		expect(error).toBe(refusal);
+		expect(posts).toHaveLength(1);
+		expect(postsAfterStop).toHaveLength(0);
+	});
+});

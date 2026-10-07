@@ -32,6 +32,7 @@ const m = vi.hoisted(() => ({
 	countLiveBranchChanges: vi.fn(),
 	projectMemberBranch: vi.fn(),
 	getInstructionFileByPath: vi.fn(),
+	loadGitIntent: vi.fn(),
 	getInstructionRepositorySyncForProposal: vi.fn(),
 	closeProposalBranch: vi.fn(),
 	startOverProposalBranch: vi.fn(),
@@ -39,10 +40,14 @@ const m = vi.hoisted(() => ({
 	stopTrackingBranch: vi.fn(),
 	tryBranchProposalAgain: vi.fn(),
 	proposeBranchProposalAgain: vi.fn(),
+	requestProposalBranchRefresh: vi.fn(),
 	getUsersByIds: vi.fn(),
 	getHandle: vi.fn(),
 	signal: vi.fn(),
 	signalWithStart: vi.fn(),
+	workflowStart: vi.fn(),
+	workflowResult: vi.fn(),
+	withDeadline: vi.fn(),
 	downloadFile: vi.fn(),
 	getSignedUrl: vi.fn(),
 }));
@@ -60,6 +65,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	projectMemberBranch: (...a: unknown[]) => m.projectMemberBranch(...a),
 	getInstructionFileByPath: (...a: unknown[]) =>
 		m.getInstructionFileByPath(...a),
+	loadGitIntent: (...a: unknown[]) => m.loadGitIntent(...a),
 	getInstructionRepositorySyncForProposal: (...a: unknown[]) =>
 		m.getInstructionRepositorySyncForProposal(...a),
 	closeProposalBranch: (...a: unknown[]) => m.closeProposalBranch(...a),
@@ -71,6 +77,8 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	tryBranchProposalAgain: (...a: unknown[]) => m.tryBranchProposalAgain(...a),
 	proposeBranchProposalAgain: (...a: unknown[]) =>
 		m.proposeBranchProposalAgain(...a),
+	requestProposalBranchRefresh: (...a: unknown[]) =>
+		m.requestProposalBranchRefresh(...a),
 	getUsersByIds: (...a: unknown[]) => m.getUsersByIds(...a),
 }));
 vi.mock("../../../../../lib/effective-project-permissions", () => ({
@@ -82,6 +90,11 @@ vi.mock("@repo/temporal", () => ({
 		workflow: {
 			getHandle: (...a: unknown[]) => m.getHandle(...a),
 			signalWithStart: (...a: unknown[]) => m.signalWithStart(...a),
+			start: (...a: unknown[]) => m.workflowStart(...a),
+		},
+		connection: {
+			withDeadline: (_deadline: number, operation: () => unknown) =>
+				m.withDeadline(_deadline, operation),
 		},
 	}),
 }));
@@ -150,6 +163,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	};
 });
 
+import { refreshBranchOfProposal } from "../proposal-branch";
 import "../proposal-branch-procedures";
 import { pullRequestView } from "../proposal-pull-request";
 
@@ -165,6 +179,8 @@ const RETRY =
 	"/projects/:projectId/instructions/proposal-branches/:branchId/retry";
 const STOP =
 	"/projects/:projectId/instructions/proposal-branches/:branchId/stop-tracking";
+const REFRESH =
+	"/projects/:projectId/instructions/proposal-branches/:branchId/refresh";
 const TRY_AGAIN =
 	"/projects/:projectId/instructions/proposals/:snapshotId/try-again";
 const PROPOSE_AGAIN =
@@ -259,6 +275,7 @@ beforeEach(() => {
 		}
 	}
 	m.requireHostingOrganizationId.mockResolvedValue("org_1");
+	m.loadGitIntent.mockResolvedValue(null);
 	m.resolveEffectiveProjectPermissions.mockImplementation(
 		async (_projectId: string, userId: string) => ACCESS[userId] ?? null,
 	);
@@ -268,6 +285,15 @@ beforeEach(() => {
 	m.getMemberProposalBranch.mockResolvedValue(branchRow());
 	m.getHandle.mockReturnValue({ signal: m.signal });
 	m.signal.mockResolvedValue(undefined);
+	m.requestProposalBranchRefresh.mockResolvedValue({
+		admitted: true,
+		attempt: 4,
+	});
+	m.workflowResult.mockResolvedValue({ state: "CLOSED" });
+	m.workflowStart.mockResolvedValue({ result: m.workflowResult });
+	m.withDeadline.mockImplementation(
+		async (_deadline: number, operation: () => unknown) => operation(),
+	);
 });
 
 function expectWoken() {
@@ -287,10 +313,143 @@ describe("member proposal branch procedures", () => {
 				START_OVER,
 				RETRY,
 				STOP,
+				REFRESH,
 				TRY_AGAIN,
 				PROPOSE_AGAIN,
 			].sort(),
 		);
+	});
+
+	describe("refreshBranch", () => {
+		it.each([OWNER, REVIEWER])(
+			"observes an OPEN branch for %s through the bounded refresh workflow",
+			async (caller) => {
+				await expect(
+					run(REFRESH, caller, {
+						branchId: "branch_1",
+						expectedAttempt: 4,
+					}),
+				).resolves.toEqual({ refreshed: true, pending: false });
+				expect(m.requestProposalBranchRefresh).toHaveBeenCalledWith({
+					branchId: "branch_1",
+					projectId: "project_1",
+					organizationId: "org_1",
+					expectedAttempt: 4,
+				});
+				expect(m.workflowStart).toHaveBeenCalledWith(
+					"projectInstructionProposalBranchRefreshWorkflow",
+					expect.objectContaining({
+						workflowId:
+							"project-instruction-proposal-branch-refresh-branch_1-4",
+						workflowIdConflictPolicy: "USE_EXISTING",
+						workflowExecutionTimeout: "75 seconds",
+						args: [
+							expect.objectContaining({
+								projectId: "project_1",
+							}),
+						],
+					}),
+				);
+				expect(m.withDeadline).toHaveBeenCalledWith(
+					expect.any(Number),
+					expect.any(Function),
+				);
+			},
+		);
+
+		it("refuses a stale attempt before admitting provider work", async () => {
+			await expect(
+				run(REFRESH, OWNER, {
+					branchId: "branch_1",
+					expectedAttempt: 3,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { reason: "BRANCH_CHANGED" },
+			});
+			expect(m.requestProposalBranchRefresh).not.toHaveBeenCalled();
+		});
+
+		it("does not start provider work when the atomic admission refuses cooldown", async () => {
+			m.requestProposalBranchRefresh.mockResolvedValue({
+				admitted: false,
+				reason: "cooldown",
+				retryAfterSeconds: 42,
+			});
+			await expect(
+				run(REFRESH, OWNER, {
+					branchId: "branch_1",
+					expectedAttempt: 4,
+				}),
+			).rejects.toMatchObject({
+				code: "TOO_MANY_REQUESTS",
+				data: {
+					reason: "PULL_REQUEST_REFRESH_COOLDOWN",
+					retryAfter: 42,
+				},
+			});
+			expect(m.workflowStart).not.toHaveBeenCalled();
+		});
+
+		it("is NOT_FOUND for another member before admitting provider work", async () => {
+			await expect(
+				run(REFRESH, OTHER, {
+					branchId: "branch_1",
+					expectedAttempt: 4,
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(m.requestProposalBranchRefresh).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("refreshBranchOfProposal", () => {
+		it("runs the branch's own refresh at the branch's current attempt", async () => {
+			await refreshBranchOfProposal({
+				projectId: "project_1",
+				organizationId: "org_1",
+				userId: OWNER,
+				branchId: "branch_1",
+			});
+
+			expect(m.requestProposalBranchRefresh).toHaveBeenCalledWith({
+				branchId: "branch_1",
+				projectId: "project_1",
+				organizationId: "org_1",
+				expectedAttempt: 4,
+			});
+			expect(m.workflowStart).toHaveBeenCalledWith(
+				"projectInstructionProposalBranchRefreshWorkflow",
+				expect.objectContaining({
+					args: [expect.objectContaining({ projectId: "project_1" })],
+				}),
+			);
+		});
+
+		it("is NOT_FOUND for another member and starts no provider work", async () => {
+			await expect(
+				refreshBranchOfProposal({
+					projectId: "project_1",
+					organizationId: "org_1",
+					userId: OTHER,
+					branchId: "branch_1",
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(m.requestProposalBranchRefresh).not.toHaveBeenCalled();
+		});
+
+		it("leaves a branch no longer OPEN to the sweeper", async () => {
+			m.requestProposalBranchRefresh.mockResolvedValue(null);
+
+			await expect(
+				refreshBranchOfProposal({
+					projectId: "project_1",
+					organizationId: "org_1",
+					userId: OWNER,
+					branchId: "branch_1",
+				}),
+			).resolves.toBeUndefined();
+			expect(m.workflowStart).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("myBranch", () => {
@@ -594,6 +753,36 @@ describe("member proposal branch procedures", () => {
 				"org_1",
 				"CLAUDE.md",
 			);
+		});
+
+		it("reads a native PUT without full snapshot rows and refuses an absent native path", async () => {
+			m.loadGitIntent.mockResolvedValue({
+				status: "READY",
+				gitIntentEntries: [{ ...FILE_ROW, operation: "PUT" }],
+			});
+			await expect(
+				run(FILE, OWNER, {
+					branchId: "branch_1",
+					path: "CLAUDE.md",
+					offset: 0,
+				}),
+			).resolves.toMatchObject({ body: "hello world" });
+			expect(m.getInstructionFileByPath).not.toHaveBeenCalled();
+			m.loadGitIntent.mockResolvedValue({
+				status: "READY",
+				gitIntentEntries: [],
+			});
+			await expect(
+				run(FILE, OWNER, {
+					branchId: "branch_1",
+					path: "CLAUDE.md",
+					offset: 0,
+				}),
+			).rejects.toMatchObject({
+				code: "NOT_FOUND",
+				data: { reason: "BRANCH_FILE_UNAVAILABLE" },
+			});
+			expect(m.getInstructionFileByPath).not.toHaveBeenCalled();
 		});
 
 		it("gives a binary as a signed URL", async () => {

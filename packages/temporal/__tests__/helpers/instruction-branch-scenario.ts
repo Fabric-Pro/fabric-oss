@@ -200,6 +200,7 @@ export function seedProposal(
 	sequence++;
 	const proposal: FakeProposal = {
 		id,
+		contentKind: "FULL_SNAPSHOT",
 		projectId: PROJECT,
 		organizationId: ORG,
 		userId: USER,

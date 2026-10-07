@@ -28,10 +28,12 @@ import {
 } from "@temporalio/worker";
 import * as activities from "./activities";
 import { assertInsecureConnectionAllowed, getTemporalConfig } from "./client";
+import { AiInteractiveActivityInboundInterceptor } from "./lib/ai-interactive-interceptor";
 import { validateAuditRetentionDays } from "./lib/audit-log-env";
 import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interceptor";
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
+import { TurnDispatchActivityInboundInterceptor } from "./lib/turn-dispatch-interceptor";
 import { selectTaskQueues } from "./lib/worker-task-queue-selection";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
@@ -90,6 +92,16 @@ function getCombinedInterceptors(): Partial<
 				// or renames the id gets no ambient context and must thread it
 				// to the gate explicitly (post-ship review finding).
 				() => new ProjectContextActivityInboundInterceptor(),
+				// Advisor Stop: an activity whose input object carries a
+				// top-level `turnScope` runs inside the turn's dispatch guard,
+				// so every model and embedding request it makes through the
+				// @repo/ai factory checks the turn record first and is aborted
+				// by the activity's cancellation. No `turnScope`, no change.
+				() => new TurnDispatchActivityInboundInterceptor(),
+				// A run a person started with `planEligible: true` carries a
+				// header with their user id; its activities' AI calls for that
+				// user may then run on their own ChatGPT plan (Fizzy #2939).
+				() => new AiInteractiveActivityInboundInterceptor(),
 			],
 		},
 	};

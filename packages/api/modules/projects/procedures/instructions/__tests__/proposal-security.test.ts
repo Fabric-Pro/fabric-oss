@@ -138,9 +138,9 @@ function buildApp() {
 	return app;
 }
 
-function proposeChange() {
+function proposeChange(path = CHANGES_PATH) {
 	return buildApp().request(
-		new Request(`http://localhost${CHANGES_PATH}`, {
+		new Request(`http://localhost${path}`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -243,36 +243,11 @@ describe("tenant (spec §13)", () => {
 	});
 });
 
-describe("delegation (spec §13, §16.1)", () => {
-	it("refuses a reader without the opt-in at admission", async () => {
+describe("direct repository proposal admission", () => {
+	it("refuses Fabric proposals for readers and editors before reading a snapshot base", async () => {
 		apiContext = organizationKey(ORG, [SCOPE_WRITE]);
-		m.resolveEffectiveProjectPermissions.mockResolvedValue(access(READER));
-
-		const response = await proposeChange();
-
-		// A reader passes the route's read gate and the inline entry point's
-		// proposal gate; the admission is what refuses, because a proposal to
-		// a repository pushes a branch there and that needs
-		// INSTRUCTION_CREATE unless an owner opted readers in.
-		expect(response.status).toBe(403);
-		const body = (await response.json()) as {
-			error: { message: string };
-		};
-		expect(body.error.message).toMatch(/pushes a branch to the repository/);
-		expect(m.getInstructionRepositorySyncForProposal).toHaveBeenCalledWith(
-			PROJECT,
-			ORG,
-		);
-		// Refused before the base is read, so a caller without standing
-		// learns nothing about the published snapshot, and before anything is
-		// created.
-		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
-		expectNothingWritten();
-
-		// The opt-in is the only difference: the same reader with it on, and
-		// an editor without it, both get past the authority check to the
-		// base.
 		for (const [permissions, allowReaders] of [
+			[READER, false],
 			[READER, true],
 			[EDITOR, false],
 		] as const) {
@@ -282,17 +257,26 @@ describe("delegation (spec §13, §16.1)", () => {
 			m.getInstructionRepositorySyncForProposal.mockResolvedValue(
 				syncRow(allowReaders),
 			);
-			const admitted = await proposeChange();
-			expect(admitted.status).toBe(412);
-			await expect(admitted.json()).resolves.toMatchObject({
-				error: { code: "REPOSITORY_BASE_UNAVAILABLE" },
+			const refused = await proposeChange();
+			expect(refused.status).toBe(412);
+			await expect(refused.json()).resolves.toMatchObject({
+				error: { code: "REPOSITORY_DIRECT_READ" },
 			});
 		}
+		expect(
+			m.getInstructionRepositorySyncForProposal,
+		).not.toHaveBeenCalled();
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
 		expectNothingWritten();
 	});
 });
 
 describe("API keys never grant more than the UI (spec §13)", () => {
+	beforeEach(() => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			sourceOfTruth: "UPLOAD",
+		});
+	});
 	it("a wildcard key still needs the creator's live permission for changes and status", async () => {
 		apiContext = organizationKey(ORG, ["*"]);
 
@@ -314,11 +298,11 @@ describe("API keys never grant more than the UI (spec §13)", () => {
 		expect(m.getProposalPullRequestStatus).not.toHaveBeenCalled();
 		expectNothingWritten();
 
-		// A creator who can only read: `*` includes `instructions:write`,
-		// and the repository proposal is still refused, because the tab
-		// would refuse the same person the same proposal.
+		// Upload publication requires CREATE even with a wildcard key.
 		m.resolveEffectiveProjectPermissions.mockResolvedValue(access(READER));
-		const readerChange = await proposeChange();
+		const readerChange = await proposeChange(
+			`/projects/${PROJECT}/instructions/versions`,
+		);
 		expect(readerChange.status).toBe(403);
 		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
 		expectNothingWritten();
@@ -361,12 +345,18 @@ describe("API keys never grant more than the UI (spec §13)", () => {
 
 		// The scope is there and the person's permission is not: an object
 		// with a message, from the route's gate and from the admission alike.
-		apiContext = organizationKey(ORG, [SCOPE_READ, SCOPE_WRITE]);
+		apiContext = organizationKey(ORG, [
+			SCOPE_READ,
+			SCOPE_WRITE,
+			"instructions:publish",
+		]);
 		m.resolveEffectiveProjectPermissions.mockResolvedValue(access([]));
 		const noRead = await proposeChange();
 		const noReadStatus = await readStatus();
 		m.resolveEffectiveProjectPermissions.mockResolvedValue(access(READER));
-		const noCreate = await proposeChange();
+		const noCreate = await proposeChange(
+			`/projects/${PROJECT}/instructions/versions`,
+		);
 		for (const response of [noRead, noReadStatus, noCreate]) {
 			expect(response.status).toBe(403);
 			const body = (await response.json()) as {

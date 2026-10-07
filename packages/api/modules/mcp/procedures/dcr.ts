@@ -1,8 +1,10 @@
 import { ORPCError } from "@orpc/server";
 import {
+	allowlistDcrClientMetadata,
 	getMcpConfigByIdInternal,
+	getMcpServerForTenant,
 	getOrganizationById,
-	updateMcpConfigAfterDcr,
+	replaceMcpOAuthRegistration,
 } from "@repo/database";
 import { encryptApiKey } from "@repo/utils";
 import { z } from "zod";
@@ -12,6 +14,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import {
+	registerOAuthClient,
+	resolveAuthorizationServer,
+} from "../lib/oauth-authorization-server";
 
 async function ensureConfigAdminAccess(cfg: any, userId: string) {
 	if (cfg.userId) {
@@ -96,13 +102,34 @@ export const dcrProcedures = {
 
 			await ensureConfigAdminAccess(cfg, userId);
 
-			const server = cfg.mcpServer as any;
-			const registrationEndpoint =
-				cfg.dcrRegistrationEndpoint ||
-				server.dcrRegistrationEndpoint ||
-				null;
+			// Register only for a server the config's tenant may use: never
+			// one another person or organization controls.
+			const accessibleServer = await getMcpServerForTenant(
+				cfg.mcpServerId,
+				{
+					userId: cfg.userId,
+					organizationId: cfg.organizationId,
+				},
+			);
+			if (!accessibleServer) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"This MCP config refers to a server you cannot use.",
+				});
+			}
 
-			if (!registrationEndpoint) {
+			const server = cfg.mcpServer as any;
+			// Register at the authorization server the connect flow would use
+			// (the catalog's, else the discovered one), and bind the new client
+			// to it. A stored registration endpoint from an earlier flow is not
+			// reused: which AS it belongs to is not recorded.
+			const snapshot = await resolveAuthorizationServer({
+				server,
+				baseUrl: cfg.baseUrl || server?.defaultUrl || null,
+			});
+			const registrationEndpoint = snapshot?.registrationEndpoint ?? null;
+
+			if (!snapshot || !registrationEndpoint) {
 				return {
 					success: false,
 					message:
@@ -110,13 +137,15 @@ export const dcrProcedures = {
 				};
 			}
 
-			const metadata: Record<string, any> = {
+			const metadata: Record<string, unknown> = {
 				client_name: server.name ?? "Fabric MCP Client",
 				redirect_uris: [input.redirectUri],
 				grant_types: ["authorization_code", "refresh_token"],
 				response_types: ["code"],
 				token_endpoint_auth_method: "client_secret_basic",
 			};
+			// `input.metadata` may override it; what was requested is what the
+			// AS registers when its response does not say otherwise.
 
 			const scopes =
 				(input.scopes && input.scopes.length > 0
@@ -138,49 +167,51 @@ export const dcrProcedures = {
 				}
 			}
 
-			const res = await fetch(registrationEndpoint, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(metadata),
+			const requestedAuthMethod =
+				metadata.token_endpoint_auth_method === "client_secret_post" ||
+				metadata.token_endpoint_auth_method === "none"
+					? metadata.token_endpoint_auth_method
+					: "client_secret_basic";
+			const registered = await registerOAuthClient({
+				registrationEndpoint,
+				metadata,
 			});
-
-			const json = (await res.json().catch(() => null as any)) as any;
-
-			if (!res.ok || !json) {
-				const message =
-					(json && (json.error_description as string | undefined)) ||
-					(json && (json.error as string | undefined)) ||
-					`Dynamic client registration failed (${res.status})`;
-				return { success: false, message };
+			if (!registered.ok) {
+				return { success: false, message: registered.message };
 			}
-
-			const clientId = (json.client_id as string | undefined) ?? null;
-			const clientSecret =
-				(json.client_secret as string | undefined) ?? null;
-
-			if (!clientId) {
-				return {
-					success: false,
-					message: "Dynamic registration response missing client_id",
-				};
-			}
-
-			const sanitizedMetadata: Record<string, any> = { ...json };
-			delete sanitizedMetadata.client_secret;
 
 			const now = new Date();
 
-			await updateMcpConfigAfterDcr({
+			// A new client replaces the registration: its binding is the AS it
+			// was registered at, and the old client's tokens are cleared.
+			const written = await replaceMcpOAuthRegistration({
 				configId: cfg.id,
-				oauthClientId: clientId,
-				encryptedOauthClientSecret: clientSecret
-					? encryptApiKey(clientSecret)
-					: null,
-				dcrRegistrationEndpoint: registrationEndpoint,
-				dcrClientMetadata: sanitizedMetadata,
-				dcrRegisteredAt: now,
+				// Derived from the read above: refused if the config's
+				// credentials changed since (a newer grant or registration).
+				expectedGeneration: cfg.oauthGrantGeneration,
+				client: {
+					oauthClientId: registered.clientId,
+					encryptedOauthClientSecret: registered.clientSecret
+						? encryptApiKey(registered.clientSecret)
+						: null,
+					dcrClientMetadata: allowlistDcrClientMetadata(
+						registered.response,
+						snapshot.binding.authorizationServerUrl,
+						requestedAuthMethod,
+					),
+					dcrRegistrationEndpoint: registrationEndpoint,
+					dcrRegisteredAt: now,
+				},
+				binding: snapshot.binding,
 			});
+			if (!written.written) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"This MCP connection changed during registration. Please try again.",
+				});
+			}
 
+			const clientId = registered.clientId;
 			return {
 				success: true,
 				message: "Dynamic client registration completed",
@@ -210,14 +241,21 @@ export const dcrProcedures = {
 
 			await ensureConfigAdminAccess(cfg, userId);
 
-			await updateMcpConfigAfterDcr({
+			// Removing the client removes what its grant belongs to: tokens and
+			// binding go with it, and the generation moves so nothing in flight
+			// writes them back.
+			const removed = await replaceMcpOAuthRegistration({
 				configId: cfg.id,
-				oauthClientId: null,
-				encryptedOauthClientSecret: null,
-				dcrRegistrationEndpoint: null,
-				dcrClientMetadata: null,
-				dcrRegisteredAt: null,
+				expectedGeneration: cfg.oauthGrantGeneration,
+				client: null,
+				binding: null,
 			});
+			if (!removed.written) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"This MCP connection changed meanwhile. Reload and try again.",
+				});
+			}
 
 			return { success: true };
 		}),

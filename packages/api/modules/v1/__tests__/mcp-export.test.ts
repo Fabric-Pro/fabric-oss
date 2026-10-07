@@ -9,6 +9,7 @@ const mockListCustomMcpServersForTenant = vi.fn();
 const mockListSystemMcpServers = vi.fn();
 const mockLogDataEvent = vi.fn().mockResolvedValue(undefined);
 const mockGetGitLabConnectionToken = vi.fn();
+const mockMarkReconnectRequired = vi.fn();
 
 vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
 	...(await importOriginal<object>()),
@@ -16,7 +17,7 @@ vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
 		mockGetGitLabConnectionToken(...args),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
 	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",
@@ -43,6 +44,11 @@ vi.mock("@repo/database", () => ({
 		mockListMcpConfigsForTenant(...args),
 	listSystemMcpServers: (...args: unknown[]) =>
 		mockListSystemMcpServers(...args),
+	markMcpOAuthReconnectRequired: (...args: unknown[]) =>
+		mockMarkReconnectRequired(...args),
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
+	)),
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -62,7 +68,31 @@ vi.mock("../../external-api/middleware/api-key-auth", () => ({
 	},
 }));
 
+import {
+	buildMcpOAuthBinding,
+	withCredentialFingerprint,
+} from "@repo/database/prisma/queries/lib/mcp-oauth-binding";
 import { buildMcpConfigExportResponse, registerMcpRoutes } from "../mcp";
+
+const GITHUB_BINDING = buildMcpOAuthBinding({
+	authorizationServerUrl: "https://github.com/login/oauth",
+	tokenEndpoint: "https://github.com/login/oauth/access_token",
+	source: "catalog",
+});
+
+/** The binding of an OAuth config, fingerprinted for what it stores. */
+function boundTo(credentials: {
+	oauthClientId?: string | null;
+	encryptedOauthClientSecret?: string | null;
+	encryptedRefreshToken: string | null;
+}) {
+	return withCredentialFingerprint(GITHUB_BINDING, {
+		oauthClientId: credentials.oauthClientId ?? null,
+		encryptedOauthClientSecret:
+			credentials.encryptedOauthClientSecret ?? null,
+		encryptedRefreshToken: credentials.encryptedRefreshToken,
+	});
+}
 
 function createConfig(overrides: Record<string, unknown> = {}) {
 	return {
@@ -160,6 +190,9 @@ describe("MCP export", () => {
 				authType: "OAUTH2",
 				apiKeyMethod: null,
 				scopes: ["read", "write"],
+				oauthBinding: boundTo({
+					encryptedRefreshToken: "refresh-token",
+				}),
 				encryptedRefreshToken: "refresh-token",
 				tokenExpiresAt: new Date("2026-03-29T12:00:00.000Z"),
 				mcpServer: {
@@ -203,6 +236,94 @@ describe("MCP export", () => {
 			timeoutMs: 5000,
 			disabled: false,
 			provider: "github",
+		});
+	});
+
+	describe("the exported refresh token", () => {
+		const githubOAuth = (overrides: Record<string, unknown> = {}) =>
+			createConfig({
+				id: "cfg-gh",
+				displayName: "GitHub",
+				baseUrl: "https://api.githubcopilot.com/mcp/",
+				authType: "OAUTH2",
+				apiKeyMethod: null,
+				oauthClientId: "gh-client",
+				encryptedOauthClientSecret: "gh-secret",
+				encryptedRefreshToken: "gh-refresh",
+				oauthGrantGeneration: 3,
+				oauthBinding: boundTo({
+					oauthClientId: "gh-client",
+					encryptedOauthClientSecret: "gh-secret",
+					encryptedRefreshToken: "gh-refresh",
+				}),
+				mcpServer: {
+					key: "github",
+					name: "GitHub",
+					description: "GitHub MCP",
+					defaultUrl: "https://api.githubcopilot.com/mcp/",
+					transport: "HTTP",
+				},
+				...overrides,
+			});
+
+		async function exportOf(row: Record<string, unknown>) {
+			mockListMcpConfigsForTenant.mockResolvedValue([row]);
+			mockGetValidAccessToken.mockResolvedValue("gh-access");
+			mockGetMcpConfigById.mockResolvedValue(row);
+			const result = await buildMcpConfigExportResponse({
+				userId: "user-1",
+				organizationId: null,
+			});
+			return result.servers[0] as { oauth?: Record<string, unknown> };
+		}
+
+		it("is exported for a grant whose credentials match its binding", async () => {
+			const server = await exportOf(githubOAuth());
+
+			expect(server.oauth).toMatchObject({
+				accessToken: "gh-access",
+				refreshToken: "decrypted:gh-refresh",
+			});
+			expect(mockMarkReconnectRequired).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["the client id", { oauthClientId: "client-from-elsewhere" }],
+			[
+				"the client secret",
+				{ encryptedOauthClientSecret: "secret-elsewhere" },
+			],
+			[
+				"the refresh token",
+				{ encryptedRefreshToken: "refresh-elsewhere" },
+			],
+		])(
+			"is withheld, and the config flagged, after a legacy write of %s",
+			async (_label, legacyWrite) => {
+				const server = await exportOf(githubOAuth(legacyWrite));
+
+				expect(server.oauth?.accessToken).toBe("gh-access");
+				expect(server.oauth).not.toHaveProperty("refreshToken");
+				expect(mockMarkReconnectRequired).toHaveBeenCalledWith(
+					expect.objectContaining({
+						configId: "cfg-gh",
+						expectedGeneration: 3,
+					}),
+				);
+			},
+		);
+
+		it.each([
+			["an unbound grant", null],
+			[
+				"a bearer-only import",
+				{ mode: "bearer-only", importedAt: "2026-10-06T00:00:00.000Z" },
+			],
+		])("is withheld for %s", async (_label, oauthBinding) => {
+			const server = await exportOf(githubOAuth({ oauthBinding }));
+
+			expect(server.oauth?.accessToken).toBe("gh-access");
+			expect(server.oauth).not.toHaveProperty("refreshToken");
 		});
 	});
 

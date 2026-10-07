@@ -36,10 +36,10 @@
 
 import { db } from "@repo/database";
 
-// Relative rather than by package name, matching the drop job beside it: only
-// `@repo/temporal` and `@repo/tsconfig` are declared at the repository root, so
-// the other workspace packages do not resolve from here. Declaring them would
-// be an install; a path is enough for a script.
+// Relative rather than by package name, matching the drop job beside it: the
+// repository root declares no application packages, so they do not resolve
+// from here, and declaring one would add its files to every Turbo task hash
+// (see turbo.json). A path is enough for a script.
 import { seedDefaultMcpConfigsForTenant } from "../packages/agent-core/src/backend";
 import { ensureUserHasOrganization } from "../packages/auth/lib/ensure-user-organization";
 

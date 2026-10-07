@@ -35,8 +35,9 @@ const { store, fake, KnownRequestError } = vi.hoisted(() => {
 	};
 
 	/**
-	 * Equality match over plain fields, `in`, `notIn`, `not: null` and `OR`.
-	 * A field a row never set reads as null, as an unset nullable column does.
+	 * Equality match over plain fields, `in`, `notIn`, `not: null`,
+	 * `startsWith` and `OR`. A field a row never set reads as null, as an
+	 * unset nullable column does.
 	 */
 	function matches(row: Row, where: Row = {}): boolean {
 		return Object.entries(where).every(([key, condition]) => {
@@ -60,7 +61,17 @@ const { store, fake, KnownRequestError } = vi.hoisted(() => {
 					return !(c.notIn as unknown[]).includes(row[key]);
 				}
 				if ("not" in c) {
-					return row[key] !== c.not;
+					// An unset field is null to Prisma, as in the `null` case.
+					return c.not === null
+						? row[key] !== null && row[key] !== undefined
+						: row[key] !== c.not;
+				}
+				if ("startsWith" in c) {
+					const value = row[key];
+					return (
+						typeof value === "string" &&
+						value.startsWith(c.startsWith as string)
+					);
 				}
 			}
 			if (condition === null) {
@@ -91,6 +102,46 @@ const { store, fake, KnownRequestError } = vi.hoisted(() => {
 					rows().find((row) => matches(row, where)) ?? null,
 			),
 			count: vi.fn(async (_args?: { where?: Row }) => 0),
+			groupBy: vi.fn(
+				async ({
+					by,
+					where,
+					_max,
+				}: {
+					by: string[];
+					where?: Row;
+					_max?: Record<string, true>;
+				}) => {
+					const groups = new Map<string, Row>();
+					for (const row of rows().filter((r) => matches(r, where))) {
+						const key = JSON.stringify(
+							by.map((field) => row[field]),
+						);
+						const group = groups.get(key) ?? {
+							...Object.fromEntries(
+								by.map((field) => [field, row[field]]),
+							),
+							_count: { _all: 0 },
+							_max: Object.fromEntries(
+								Object.keys(_max ?? {}).map((field) => [
+									field,
+									null,
+								]),
+							),
+						};
+						(group._count as { _all: number })._all += 1;
+						const max = group._max as Record<string, Date | null>;
+						for (const field of Object.keys(max)) {
+							const value = row[field] as Date | undefined;
+							if (value && (!max[field] || value > max[field])) {
+								max[field] = value;
+							}
+						}
+						groups.set(key, group);
+					}
+					return [...groups.values()];
+				},
+			),
 			create: vi.fn(async ({ data }: { data: Row }) => ({
 				id: "created-1",
 				...data,
@@ -171,7 +222,9 @@ import {
 	markCompanyContextUrlPageEmbedded,
 	pruneCompanyContextUrlPages,
 	recordCompanyContextSourceIndexingFailure,
+	recordCompanyContextUrlPageFetchFailure,
 	releaseCompanyContextSourceClaim,
+	summarizeCompanyContextCrawlPages,
 	updateCompanyContextSourceMetadata,
 	updateCompanyContextSourceStatus,
 	updateCompanyContextUrlPage,
@@ -179,6 +232,7 @@ import {
 	upsertCompanyContextUrlPage,
 } from "../company-context";
 import { hashContextContent } from "../projects/context-content-hash";
+import { urlPageFetchFailureMessage } from "../url-page-fetch-failure";
 
 const ORG_A = "org-a";
 const ORG_B = "org-b";
@@ -1472,6 +1526,478 @@ describe("crawled pages", () => {
 				embeddingModel: "",
 			}),
 		).rejects.toThrow();
+	});
+
+	it("summarizes each crawling source's pages from one read, in one organization only", async () => {
+		const early = new Date("2026-10-02T21:30:00Z");
+		const late = new Date("2026-10-02T22:00:00Z");
+		store.pages = [
+			{
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				extractionStatus: "COMPLETED",
+				lastFetchedAt: early,
+			},
+			{
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				extractionStatus: "FAILED",
+				lastFetchedAt: late,
+			},
+			{
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				extractionStatus: "PENDING",
+				lastFetchedAt: early,
+			},
+			{
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				extractionStatus: "EXTRACTING",
+				lastFetchedAt: early,
+			},
+			// Left over from an earlier crawl that ended: this one fetches it
+			// again, so it is still to do.
+			{
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				extractionStatus: "CANCELLED",
+				lastFetchedAt: early,
+			},
+			{
+				parentSourceId: "src-b",
+				organizationId: ORG_B,
+				extractionStatus: "PENDING",
+				lastFetchedAt: late,
+			},
+		];
+
+		const summaries = await summarizeCompanyContextCrawlPages({
+			organizationId: ORG_A,
+			parentSourceIds: ["src-a", "src-b"],
+		});
+
+		expect(Object.fromEntries(summaries)).toEqual({
+			"src-a": { totalPages: 5, processedPages: 2, lastFetchedAt: late },
+		});
+		const args = fake.companyContextUrlPage.groupBy.mock.calls[0][0];
+		expect(args.where).toEqual({
+			organizationId: ORG_A,
+			parentSourceId: { in: ["src-a", "src-b"] },
+		});
+	});
+
+	it("summarizes nothing, without a query, when no source is crawling", async () => {
+		const summaries = await summarizeCompanyContextCrawlPages({
+			organizationId: ORG_A,
+			parentSourceIds: [],
+		});
+
+		expect(summaries.size).toBe(0);
+		expect(fake.companyContextUrlPage.groupBy).not.toHaveBeenCalled();
+	});
+});
+
+describe("a crawled page whose fetch failed", () => {
+	const FETCHED_AT = new Date("2026-10-01T08:00:00.000Z");
+	const EMBEDDED_AT = new Date("2026-10-01T08:01:00.000Z");
+	const REASON = urlPageFetchFailureMessage("Firecrawl timed out");
+	const page = (id: string) =>
+		store.pages.find((row) => row.id === id) as Row;
+	const fail = (
+		over: Partial<{
+			parentSourceId: string;
+			organizationId: string;
+			pageUrl: string;
+			message: string;
+			permanent: boolean;
+		}> = {},
+	) =>
+		recordCompanyContextUrlPageFetchFailure({
+			parentSourceId: "src-a",
+			organizationId: ORG_A,
+			pageUrl: "https://example.com/a",
+			message: REASON,
+			permanent: false,
+			...over,
+		});
+
+	/** page-a1 as a crawl left it: fetched, embedded and searchable. */
+	function indexPageA1(over: Row = {}) {
+		Object.assign(page("page-a1"), {
+			content: "old",
+			extractionStatus: "COMPLETED",
+			extractionError: null,
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL,
+			qdrantId: "point-a1",
+			chunkCount: 3,
+			lastFetchedAt: FETCHED_AT,
+			...over,
+		});
+	}
+
+	it("marks an indexed page FAILED with the reason, keeping its content, vectors and fetch time", async () => {
+		indexPageA1();
+
+		await expect(fail()).resolves.toEqual({
+			kept: true,
+			page: {
+				id: "page-a1",
+				embeddedAt: EMBEDDED_AT,
+				embeddingModel: MODEL,
+			},
+		});
+
+		expect(page("page-a1")).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			content: "old",
+			contentHash: hashContextContent("old"),
+			embeddedAt: EMBEDDED_AT,
+			embeddingModel: MODEL,
+			qdrantId: "point-a1",
+			chunkCount: 3,
+			lastFetchedAt: FETCHED_AT,
+		});
+		const { where, data } =
+			fake.companyContextUrlPage.updateMany.mock.calls[0][0];
+		expect(where).toMatchObject({ id: "page-a1", organizationId: ORG_A });
+		expect(data).toEqual({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+		});
+	});
+
+	it("marks a CANCELLED leftover and a placeholder without vectors FAILED", async () => {
+		indexPageA1({
+			extractionStatus: "CANCELLED",
+			embeddedAt: null,
+			embeddingModel: null,
+		});
+		page("page-a2").extractionStatus = "PENDING";
+
+		await expect(fail()).resolves.toMatchObject({ kept: true });
+		await expect(
+			fail({ pageUrl: "https://example.com/b" }),
+		).resolves.toMatchObject({ kept: true });
+
+		for (const id of ["page-a1", "page-a2"]) {
+			expect(page(id)).toMatchObject({
+				extractionStatus: "FAILED",
+				extractionError: REASON,
+			});
+		}
+	});
+
+	// Its re-index is already under way or already failed: the crawl keeps
+	// it, and leaves it on that path.
+	it("leaves a PENDING or FAILED page that holds vectors as it is, and keeps it", async () => {
+		for (const [status, error] of [
+			["PENDING", null],
+			["FAILED", "Embedding provider timed out"],
+		] as const) {
+			indexPageA1({ extractionStatus: status, extractionError: error });
+
+			await expect(fail()).resolves.toEqual({
+				kept: true,
+				page: {
+					id: "page-a1",
+					embeddedAt: EMBEDDED_AT,
+					embeddingModel: MODEL,
+				},
+			});
+			expect(page("page-a1")).toMatchObject({
+				extractionStatus: status,
+				extractionError: error,
+				embeddedAt: EMBEDDED_AT,
+			});
+		}
+	});
+
+	it("creates a FAILED page, with no content, for a URL the source has no row for", async () => {
+		await expect(
+			fail({ pageUrl: "https://example.com/new" }),
+		).resolves.toEqual({
+			kept: true,
+			page: { id: "created-1", embeddedAt: null, embeddingModel: null },
+		});
+
+		const { data } = fake.companyContextUrlPage.create.mock.calls[0][0];
+		expect(data).toEqual({
+			parentSourceId: "src-a",
+			organizationId: ORG_A,
+			pageUrl: "https://example.com/new",
+			content: "",
+			contentHash: "",
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+		});
+	});
+
+	it("removes the empty row of a URL refused for good, and does not keep it", async () => {
+		page("page-a2").extractionStatus = "PENDING";
+
+		await expect(
+			fail({ pageUrl: "https://example.com/new", permanent: true }),
+		).resolves.toEqual({ kept: false, page: null });
+		await expect(
+			fail({ pageUrl: "https://example.com/b", permanent: true }),
+		).resolves.toEqual({ kept: false, page: null });
+
+		expect(fake.companyContextUrlPage.create).not.toHaveBeenCalled();
+		expect(fake.companyContextUrlPage.updateMany).not.toHaveBeenCalled();
+		expect(fake.companyContextUrlPage.deleteMany).toHaveBeenCalledTimes(1);
+		expect(fake.companyContextUrlPage.deleteMany).toHaveBeenCalledWith({
+			where: {
+				id: "page-a2",
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				contentHash: "",
+				embeddedAt: null,
+			},
+		});
+	});
+
+	it("marks and keeps an indexed page on a permanent failure too", async () => {
+		indexPageA1();
+
+		await expect(fail({ permanent: true })).resolves.toMatchObject({
+			kept: true,
+			page: { id: "page-a1" },
+		});
+		expect(page("page-a1")).toMatchObject({
+			extractionStatus: "FAILED",
+			extractionError: REASON,
+			embeddedAt: EMBEDDED_AT,
+		});
+	});
+
+	it("writes nothing under a source being deleted", async () => {
+		indexPageA1();
+		Object.assign(store.sources.find((row) => row.id === "src-a") as Row, {
+			deletingAt: new Date("2026-10-01T09:00:00.000Z"),
+		});
+
+		await expect(fail()).resolves.toEqual({ kept: true, page: null });
+		await expect(
+			fail({ pageUrl: "https://example.com/new" }),
+		).resolves.toEqual({ kept: true, page: null });
+
+		expect(fake.companyContextUrlPage.create).not.toHaveBeenCalled();
+		expect(fake.companyContextUrlPage.updateMany).not.toHaveBeenCalled();
+		expect(page("page-a1").extractionStatus).toBe("COMPLETED");
+	});
+
+	it("treats a source deleted before the create as nothing to record", async () => {
+		fake.companyContextUrlPage.create.mockRejectedValueOnce(
+			new KnownRequestError("foreign key", "P2003"),
+		);
+
+		await expect(
+			fail({ pageUrl: "https://example.com/new" }),
+		).resolves.toEqual({ kept: true, page: null });
+	});
+
+	it("marks the page a concurrent writer created first", async () => {
+		fake.companyContextUrlPage.findFirst
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce({
+				id: "page-raced",
+				contentHash: "",
+				embeddedAt: null,
+				embeddingModel: null,
+			});
+		fake.companyContextUrlPage.create.mockRejectedValueOnce(
+			new KnownRequestError("unique", "P2002"),
+		);
+
+		await expect(
+			fail({ pageUrl: "https://example.com/new" }),
+		).resolves.toEqual({
+			kept: true,
+			page: { id: "page-raced", embeddedAt: null, embeddingModel: null },
+		});
+		const { where, data } =
+			fake.companyContextUrlPage.updateMany.mock.calls[0][0];
+		expect(where).toMatchObject({
+			id: "page-raced",
+			organizationId: ORG_A,
+		});
+		expect(data).toMatchObject({ extractionStatus: "FAILED" });
+	});
+
+	it("rethrows any other create failure", async () => {
+		fake.companyContextUrlPage.create.mockRejectedValueOnce(
+			new Error("connection reset"),
+		);
+
+		await expect(
+			fail({ pageUrl: "https://example.com/new" }),
+		).rejects.toThrow("connection reset");
+	});
+
+	// Another organization holds a page at the same URL; neither a call
+	// for this organization's source nor one naming the other's source
+	// reaches it.
+	it("never touches another organization's page", async () => {
+		indexPageA1();
+		const other = { ...page("page-b1") };
+
+		await fail();
+		await expect(fail({ parentSourceId: "src-b" })).resolves.toEqual({
+			kept: true,
+			page: null,
+		});
+
+		expect(page("page-b1")).toEqual(other);
+		for (const call of fake.companyContextUrlPage.updateMany.mock.calls) {
+			expect(call[0].where.organizationId).toBe(ORG_A);
+		}
+		for (const call of fake.companyContextUrlPage.findFirst.mock.calls) {
+			expect(call[0].where?.organizationId).toBe(ORG_A);
+		}
+	});
+
+	it("leaves the same state when the same failure is recorded twice", async () => {
+		indexPageA1();
+		page("page-a2").extractionStatus = "CANCELLED";
+
+		await fail();
+		await fail({ pageUrl: "https://example.com/b" });
+		const once = structuredClone(store.pages);
+		await fail();
+		await fail({ pageUrl: "https://example.com/b" });
+
+		expect(store.pages).toEqual(once);
+	});
+
+	describe("and is fetched again", () => {
+		const fetchAgain = (
+			over: Partial<{
+				parentSourceId: string;
+				organizationId: string;
+				content: string;
+				force: boolean;
+			}> = {},
+		) =>
+			upsertCompanyContextUrlPage({
+				parentSourceId: "src-a",
+				organizationId: ORG_A,
+				pageUrl: "https://example.com/a",
+				content: "old",
+				...over,
+			});
+
+		it("completes the page again when its content is unchanged, keeping its vectors", async () => {
+			indexPageA1();
+			await fail();
+
+			await expect(fetchAgain()).resolves.toMatchObject({
+				pageId: "page-a1",
+				unchanged: true,
+			});
+
+			expect(page("page-a1")).toMatchObject({
+				extractionStatus: "COMPLETED",
+				extractionError: null,
+				content: "old",
+				contentHash: hashContextContent("old"),
+				embeddedAt: EMBEDDED_AT,
+				embeddingModel: MODEL,
+				qdrantId: "point-a1",
+				chunkCount: 3,
+			});
+			for (const call of fake.companyContextUrlPage.updateMany.mock
+				.calls) {
+				expect(call[0].where).toMatchObject({
+					id: "page-a1",
+					organizationId: ORG_A,
+				});
+			}
+		});
+
+		// Failed for another reason (its re-embed, after a content change),
+		// marked by a failed fetch but holding no vectors, or waiting for its
+		// re-embed: none says the stored content is the indexed one.
+		it("leaves every other page that is not COMPLETED as it is when its content is unchanged", async () => {
+			for (const over of [
+				{
+					extractionStatus: "FAILED",
+					extractionError: "Embedding provider timed out",
+				},
+				{
+					extractionStatus: "FAILED",
+					extractionError: REASON,
+					embeddedAt: null,
+					embeddingModel: null,
+				},
+				{ extractionStatus: "PENDING", extractionError: null },
+				{ extractionStatus: "PENDING", extractionError: REASON },
+			]) {
+				indexPageA1(over);
+
+				await expect(fetchAgain()).resolves.toMatchObject({
+					unchanged: true,
+				});
+
+				expect(page("page-a1")).toMatchObject(over);
+			}
+		});
+
+		it("queues changed content for embedding, clearing the reason", async () => {
+			indexPageA1();
+			await fail();
+
+			await expect(fetchAgain({ content: "new" })).resolves.toMatchObject(
+				{
+					unchanged: false,
+				},
+			);
+
+			expect(page("page-a1")).toMatchObject({
+				content: "new",
+				contentHash: hashContextContent("new"),
+				extractionStatus: "PENDING",
+				extractionError: null,
+			});
+		});
+
+		it("queues unchanged content for embedding on a forced re-sync", async () => {
+			indexPageA1();
+			await fail();
+
+			await expect(fetchAgain({ force: true })).resolves.toMatchObject({
+				unchanged: false,
+			});
+
+			expect(page("page-a1")).toMatchObject({
+				extractionStatus: "PENDING",
+				extractionError: null,
+			});
+		});
+
+		// A read that slipped to another organization's page id still writes
+		// nothing there: every write carries the organization.
+		it("never completes another organization's page", async () => {
+			Object.assign(page("page-b1"), {
+				content: "old",
+				contentHash: hashContextContent("old"),
+				extractionStatus: "FAILED",
+				extractionError: REASON,
+				embeddedAt: EMBEDDED_AT,
+				embeddingModel: MODEL,
+			});
+			const other = { ...page("page-b1") };
+			fake.companyContextUrlPage.findFirst.mockResolvedValueOnce({
+				id: "page-b1",
+				contentHash: hashContextContent("old"),
+			});
+
+			await fetchAgain();
+
+			expect(page("page-b1")).toEqual(other);
+		});
 	});
 });
 

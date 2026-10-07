@@ -14,6 +14,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { createFabricClient } from "./client";
 import type { FabricConfig, FabricPattern } from "./types";
 
@@ -109,6 +110,8 @@ export async function executePatternFull(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Full mode pattern execution failed", {
 			pattern,
@@ -168,6 +171,8 @@ export async function* executePatternFullStream(
 			}
 		}
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		yield { type: "error", content: errorMessage };
 	}
@@ -227,6 +232,8 @@ export async function analyzeYouTubeFull(options: {
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		return {
 			output: "",

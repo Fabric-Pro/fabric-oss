@@ -13,6 +13,7 @@
  */
 
 import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	hashOAuthToken,
@@ -25,8 +26,8 @@ import {
 	oauthIssuer,
 } from "../oauth-scopes";
 import {
-	ORGANIZATION_ID,
 	oauthFixtures as membership,
+	ORGANIZATION_ID,
 	resetOAuthFixtures,
 } from "./support/oauth-database-mock";
 import {
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 /** Walk register, authorize and consent, and return the token response. */
-async function signIn(ctx: Harness) {
+async function signIn(ctx: Harness, tokenHeaders: Record<string, string> = {}) {
 	const { body: client } = await register(ctx.call);
 
 	const authorize = await ctx.call(await authorizeUrl(client.client_id), {
@@ -73,7 +74,10 @@ async function signIn(ctx: Harness) {
 
 	const token = await ctx.call("/oauth2/token", {
 		method: "POST",
-		headers: { "content-type": "application/x-www-form-urlencoded" },
+		headers: {
+			"content-type": "application/x-www-form-urlencoded",
+			...tokenHeaders,
+		},
 		body: new URLSearchParams({
 			grant_type: "authorization_code",
 			code,
@@ -86,6 +90,7 @@ async function signIn(ctx: Harness) {
 
 	return {
 		client,
+		code,
 		consentLocation,
 		consentStatus: consent.status,
 		tokenResponse: token,
@@ -98,7 +103,186 @@ async function signIn(ctx: Harness) {
 	};
 }
 
+async function dpopProof() {
+	const { publicKey, privateKey } = await generateKeyPair("ES256");
+	return new SignJWT({
+		htm: "POST",
+		htu: `${APP_URL}/api/auth/oauth2/token`,
+		jti: crypto.randomUUID(),
+	})
+		.setIssuedAt()
+		.setProtectedHeader({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: await exportJWK(publicKey),
+		})
+		.sign(privateKey);
+}
+
 describe("the OAuth authorization server as configured for Fabric", () => {
+	it("refuses a valid optional DPoP proof without consuming the authorization code or issuing a bound token", async () => {
+		const ctx = await boot();
+		const flow = await signIn(ctx, { DPoP: await dpopProof() });
+		expect(flow.tokenResponse.status).toBe(400);
+		expect(flow.tokens).toMatchObject({ error: "invalid_request" });
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(0);
+		expect(await rowsOf(ctx, "oauthRefreshToken")).toHaveLength(0);
+		const bearer = await ctx.call("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				code: flow.code,
+				redirect_uri: REDIRECT_URI,
+				client_id: flow.client.client_id,
+				code_verifier: VERIFIER,
+				resource: `${APP_URL}/api/mcp-gateway`,
+			}).toString(),
+		});
+		expect(bearer.status).toBe(200);
+		expect(await bearer.json()).toMatchObject({ token_type: "Bearer" });
+		expect(
+			(await rowsOf(ctx, "oauthAccessToken"))[0].confirmation,
+		).toBeFalsy();
+	});
+
+	it("refuses DPoP on refresh without rotating the existing bearer grant", async () => {
+		const ctx = await boot();
+		const { client, tokens } = await signIn(ctx);
+		const form = new URLSearchParams({
+			grant_type: "refresh_token",
+			refresh_token: tokens.refresh_token,
+			client_id: client.client_id,
+		});
+		const rejected = await ctx.call("/oauth2/token", {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				dPoP: await dpopProof(),
+			},
+			body: form.toString(),
+		});
+		expect(rejected.status).toBe(400);
+		expect(await rejected.json()).toMatchObject({
+			error: "invalid_request",
+		});
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(1);
+		expect(await rowsOf(ctx, "oauthRefreshToken")).toHaveLength(1);
+		expect((await rowsOf(ctx, "oauthRefreshToken"))[0].revoked).toBeFalsy();
+		const bearer = await ctx.call("/oauth2/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: form.toString(),
+		});
+		expect(bearer.status).toBe(200);
+		expect(await bearer.json()).toMatchObject({ token_type: "Bearer" });
+	});
+
+	it("also refuses optional DPoP in server token calls that bypass HTTP request hooks", async () => {
+		const ctx = await boot();
+		const { client, tokens } = await signIn(ctx);
+		await expect(
+			ctx.auth.api.oauth2Token({
+				body: {
+					grant_type: "refresh_token",
+					refresh_token: tokens.refresh_token,
+					client_id: client.client_id,
+				},
+				headers: new Headers({ DPoP: await dpopProof() }),
+				asResponse: true,
+			}),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			body: { error: "invalid_request" },
+		});
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(1);
+		expect((await rowsOf(ctx, "oauthRefreshToken"))[0].revoked).toBeFalsy();
+	});
+	it("keeps new provider management and unused logout endpoints unavailable", async () => {
+		const ctx = await boot();
+		for (const [path, method] of [
+			["/admin/oauth2/create-client", "POST"],
+			["/admin/oauth2/update-client", "POST"],
+			["/oauth2/public-client-prelogin", "POST"],
+			["/oauth2/end-session", "GET"],
+			["/oauth2/end-session/confirm", "POST"],
+			["/oauth2/userinfo", "GET"],
+			["/admin/oauth2/resources", "POST"],
+			["/admin/oauth2/resources", "GET"],
+			["/admin/oauth2/resources/example-resource", "GET"],
+			["/admin/oauth2/resources/example-resource", "PATCH"],
+			["/admin/oauth2/resources/example-resource", "DELETE"],
+			[
+				"/admin/oauth2/resources/example-resource/clients/example-client",
+				"PUT",
+			],
+			[
+				"/admin/oauth2/resources/example-resource/clients/example-client",
+				"DELETE",
+			],
+		] as const) {
+			const response = await ctx.call(path, {
+				method,
+				headers: { "content-type": "application/json" },
+				...(method === "GET" ? {} : { body: "{}" }),
+			});
+			expect(response.status, `${method} ${path}`).toBe(404);
+		}
+		expect(await rowsOf(ctx, "oauthClient")).toHaveLength(0);
+	});
+
+	it.each([
+		"http://127.0.0.1:5050/callback",
+		"http://localhost:5050/callback",
+	])("supports legacy registration metadata with %s", async (redirect) => {
+		const ctx = await boot();
+		const response = await ctx.call("/oauth2/register", {
+			method: "POST",
+			headers: { "content-type": "application/json", cookie: "" },
+			body: JSON.stringify({
+				redirect_uris: [redirect],
+				type: "native",
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(response.status).toBe(201);
+		expect(await response.json()).toMatchObject({
+			application_type: "native",
+			token_endpoint_auth_method: "none",
+		});
+	});
+
+	it("revokes access on browser sign-out while preserving the offline refresh grant", async () => {
+		const ctx = await boot();
+		const { client, tokens } = await signIn(ctx);
+		expect(
+			(
+				await ctx.call("/sign-out", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: "{}",
+				})
+			).status,
+		).toBe(200);
+		expect((await rowsOf(ctx, "oauthAccessToken"))[0].revoked).toBeTruthy();
+		expect((await rowsOf(ctx, "oauthRefreshToken"))[0].revoked).toBeFalsy();
+		const refreshed = await ctx.call("/oauth2/token", {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				cookie: "",
+			},
+			body: new URLSearchParams({
+				grant_type: "refresh_token",
+				refresh_token: tokens.refresh_token,
+				client_id: client.client_id,
+			}).toString(),
+		});
+		expect(refreshed.status).toBe(200);
+		expect(await refreshed.json()).toMatchObject({
+			scope: OAUTH_SCOPES.join(" "),
+		});
+	});
 	it("publishes metadata whose issuer is the path-inserted /api/auth issuer", async () => {
 		const { auth } = await boot();
 
@@ -120,6 +304,7 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 		]);
 		expect(metadata.scopes_supported).toEqual([...OAUTH_SCOPES]);
 		expect(metadata.jwks_uri).toBeUndefined();
+		expect(metadata.dpop_signing_alg_values_supported).toEqual([]);
 	});
 
 	it("shows consent for a client that registered itself and binds the organization", async () => {
@@ -412,7 +597,7 @@ describe("dynamic registration", () => {
 			"https://agent.example/callback",
 			"http://127.0.0.1:5050/callback",
 			"http://localhost:5050/callback",
-			"vscode://example.agent/callback",
+			"com.example.agent:/callback",
 		]) {
 			const response = await ctx.call("/oauth2/register", {
 				method: "POST",
@@ -423,6 +608,66 @@ describe("dynamic registration", () => {
 				}),
 			});
 			expect(response.ok, redirect).toBe(true);
+		}
+	});
+
+	it("registers Cursor's pre-RFC 8252 callback and accepts it at authorize, and nothing near it", async () => {
+		const ctx = await boot();
+		const cursorCallback = "cursor://anysphere.cursor-mcp/oauth/callback";
+		const registerBody = (redirectUris: string[]) =>
+			JSON.stringify({
+				client_name: "Cursor",
+				redirect_uris: redirectUris,
+				token_endpoint_auth_method: "none",
+				grant_types: ["authorization_code", "refresh_token"],
+				scope: OAUTH_SCOPES.join(" "),
+			});
+		const registerClient = (redirectUris: string[]) =>
+			ctx.call("/oauth2/register", {
+				method: "POST",
+				headers: { "content-type": "application/json", cookie: "" },
+				body: registerBody(redirectUris),
+			});
+
+		const legacy = await registerClient([cursorCallback]);
+		expect(legacy.status).toBe(201);
+		const current = await registerClient([
+			cursorCallback,
+			"https://www.cursor.com/agents/mcp/oauth/callback",
+			"http://localhost:8787/callback",
+		]);
+		expect(current.status).toBe(201);
+		const { client_id: clientId } = (await current.json()) as {
+			client_id: string;
+		};
+
+		for (const redirect of [
+			cursorCallback,
+			"https://www.cursor.com/agents/mcp/oauth/callback",
+			"http://localhost:8787/callback",
+		]) {
+			const url = new URL(
+				await authorizeUrl(clientId),
+				"http://localhost",
+			);
+			url.searchParams.set("redirect_uri", redirect);
+			const authorize = await ctx.call(`${url.pathname}${url.search}`, {
+				redirect: "manual",
+				headers: { accept: "text/html" },
+			});
+			const location = authorize.headers.get("location") ?? "";
+			expect(location, redirect).toContain("/auth/oauth/consent");
+			expect(location, redirect).not.toContain("error=");
+		}
+
+		for (const nearMiss of [
+			"cursor://evil.example/callback",
+			"cursor://anysphere.cursor-mcp/other",
+			`${cursorCallback}?x=1`,
+			`${cursorCallback}/`,
+		]) {
+			const response = await registerClient([nearMiss]);
+			expect(response.status, nearMiss).toBe(400);
 		}
 	});
 

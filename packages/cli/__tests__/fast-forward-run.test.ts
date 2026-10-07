@@ -363,26 +363,112 @@ describe("a checkout it must leave alone", () => {
 		await nothingLeftBehind(fx);
 	}
 
-	itWithGit("is dirty: a tracked file edited", async () => {
+	itWithGit(
+		"has a local edit to a file the upstream commit changes: git refuses, naming it, and the tree is untouched",
+		async () => {
+			const fx = await fixture();
+			const tip = await advance(fx);
+			await writeFile(path.join(fx.checkout, "AGENTS.md"), "mine\n");
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "merge-failed",
+				reason: "local-changes",
+				files: ["AGENTS.md"],
+			});
+			expect(head(fx)).toBe(fx.first);
+			expect(
+				await readFile(path.join(fx.checkout, "AGENTS.md"), "utf8"),
+			).toBe("mine\n");
+			await nothingLeftBehind(fx);
+			expect(result.stdout).toHaveLength(1);
+			expect(result.stdout[0]).toContain("(AGENTS.md)");
+			expect(result.stdout[0]).toContain("would be overwritten");
+		},
+	);
+
+	itWithGit(
+		"has an untracked file the upstream commit adds: git refuses, naming it",
+		async () => {
+			const fx = await fixture();
+			const tip = await advance(fx, "NOTES.md");
+			await writeFile(path.join(fx.checkout, "NOTES.md"), "mine\n");
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "merge-failed",
+				reason: "local-changes",
+				files: ["NOTES.md"],
+			});
+			expect(head(fx)).toBe(fx.first);
+			await nothingLeftBehind(fx);
+		},
+	);
+
+	itWithGit(
+		"fast-forwards past line-ending-only edits, an untracked folder and changes to files the upstream commit leaves alone",
+		async () => {
+			const fx = await fixture();
+			await commit(fx.seed, "tools/a.md", "a" + "\n");
+			await commit(fx.seed, "tools/b.md", "b" + "\n");
+			gitIn(fx.seed, "push", "-q", "origin", "main");
+			gitIn(fx.checkout, "pull", "-q", "--ff-only");
+			const base = head(fx);
+			gitIn(fx.checkout, "config", "core.autocrlf", "true");
+			await writeFile(path.join(fx.checkout, "tools/a.md"), "a" + "\r\n");
+			await writeFile(path.join(fx.checkout, "tools/b.md"), "b" + "\r\n");
+			await mkdir(path.join(fx.checkout, "engineers/example-dev"), {
+				recursive: true,
+			});
+			await writeFile(
+				path.join(fx.checkout, "engineers/example-dev/context.md"),
+				"mine" + "\n",
+			);
+			const tip = await advance(fx, "AGENTS.md");
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "fast-forwarded",
+				from: base,
+				to: tip,
+			});
+			expect(head(fx)).toBe(tip);
+			expect(
+				await exists(
+					path.join(fx.checkout, "engineers/example-dev/context.md"),
+				),
+			).toBe(true);
+			await nothingLeftBehind(fx);
+		},
+	);
+
+	itWithGit(
+		"reads a checkout whose only differences are line endings as clean",
+		async () => {
+			const fx = await fixture();
+			gitIn(fx.checkout, "config", "core.autocrlf", "true");
+			await writeFile(
+				path.join(fx.checkout, "AGENTS.md"),
+				"one" + "\r\n",
+			);
+
+			const clean = await git.isClean(fx.checkout, Date.now() + 60_000);
+
+			expect(clean).toEqual({ kind: "ok", value: true });
+		},
+	);
+
+	itWithGit("reads a real content change as not clean", async () => {
 		const fx = await fixture();
-		const tip = await advance(fx);
-		await writeFile(path.join(fx.checkout, "AGENTS.md"), "mine\n");
+		await writeFile(path.join(fx.checkout, "AGENTS.md"), "changed" + "\n");
 
-		const result = await run(fx, { published: tip });
-
-		await leftAlone(fx, result, "dirty");
-		expect(result.stdout).toHaveLength(1);
-		expect(result.stdout[0]).toContain("has uncommitted changes");
-	});
-
-	itWithGit("is dirty: an untracked file", async () => {
-		const fx = await fixture();
-		const tip = await advance(fx);
-		await writeFile(path.join(fx.checkout, "NOTES.md"), "mine\n");
-
-		const result = await run(fx, { published: tip });
-
-		await leftAlone(fx, result, "dirty");
+		expect(await git.isClean(fx.checkout, Date.now() + 60_000)).toEqual({
+			kind: "ok",
+			value: false,
+		});
 	});
 
 	itWithGit("is on another branch", async () => {
@@ -575,7 +661,7 @@ describe("the clock", () => {
 
 			const result = await run(fx, { published: tip, budgetMs: 1_000 });
 
-			expect(result.outcome).toEqual({ kind: "deadline" });
+			expect(result.outcome).toMatchObject({ kind: "deadline" });
 			expect(head(fx)).toBe(fx.first);
 			expect(
 				gitIn(fx.checkout, "rev-parse", "refs/remotes/origin/main"),
@@ -679,9 +765,9 @@ describe("what is said once", () => {
 
 			expect(first.stdout).toHaveLength(1);
 			expect(again.stdout).toEqual([]);
-			expect(again.outcome).toEqual({
-				kind: "not-safe",
-				reason: "dirty",
+			expect(again.outcome).toMatchObject({
+				kind: "merge-failed",
+				reason: "local-changes",
 			});
 			expect(newer.stdout).toHaveLength(1);
 		},
@@ -737,7 +823,7 @@ describe("what is said once", () => {
 				v: 1,
 				projectId: "project-1",
 				publishedVersion: 12,
-				reason: "not-safe:dirty",
+				reason: "merge-failed:local-changes",
 			});
 			if (process.platform !== "win32") {
 				expect((await stat(file)).mode & 0o777).toBe(0o600);
@@ -783,7 +869,7 @@ describe("the trace", () => {
 			expect(
 				entries.map((entry) => [entry.outcome, entry.reason]),
 			).toEqual([
-				["not-safe", "dirty"],
+				["merge-failed", "local-changes"],
 				["fast-forwarded", null],
 			]);
 			for (const entry of entries) {

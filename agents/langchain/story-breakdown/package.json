@@ -12,7 +12,7 @@
 		"dev:legacy-all": "concurrently \"npm run dev:legacy-agui\" \"npm run dev:legacy-a2a\"",
 		"build": "tsup --config tsup.config.ts",
 		"start": "PORT=8127 node dist/unified-server.js",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run"
 	},
 	"dependencies": {

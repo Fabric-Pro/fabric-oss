@@ -262,7 +262,8 @@
 			"empty": {
 				"title": "No background jobs",
 				"description": "When Fabric monitors a Teams or Slack channel, ingests a repository or document, or suggests publishing topics, its progress appears here."
-			}
+			},
+			"aiProviderMissing": "This organization has no AI provider for background work."
 		},
 		"notifications": {
 			"openLabel": "Notifications",
@@ -308,6 +309,11 @@
 			"undo": "Undo",
 			"loadMore": "Load more",
 			"loading": "Loading…"
+		},
+		"aiProviderMissing": {
+			"title": "This organization has no AI provider for background work",
+			"body": "Background work such as the Daily Brief runs on the organization's AI provider. Configure one, then regenerate the brief.",
+			"configure": "Configure provider"
 		}
 	},
 	"auth": {
@@ -335,12 +341,14 @@
 					"mcp:read": "Read this organization's projects and context.",
 					"instructions:read": "Read coding instructions.",
 					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
+					"repositories:read": "Read the attached repository's files and history to clone or update it through Fabric.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"scopesProject": {
 					"mcp:read": "Read this project and its context.",
 					"instructions:read": "Read this project's coding instructions.",
 					"instructions:write": "Suggest changes to this project's coding instructions. Suggestions are held for review and are never published by the agent.",
+					"repositories:read": "Read this attached repository's files and history to clone or update it through Fabric.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"revokeHint": "You can revoke this at any time under Connected agents in your account settings."
@@ -1580,6 +1588,14 @@
 						"enabled_providers_changed": "AI gateway allowed providers changed",
 						"deleted": "AI provider deleted"
 					},
+					"chatgpt_plan": {
+						"account_connected": "Shared ChatGPT plan account connected",
+						"account_updated": "Shared ChatGPT plan account updated",
+						"account_disconnected": "Shared ChatGPT plan account disconnected",
+						"policy_changed": "ChatGPT plan pooling policy changed",
+						"terms_acknowledged": "ChatGPT plan pooling terms accepted",
+						"api_fallback_used": "Background AI work fell back to the organization provider"
+					},
 					"restored": "Organization restored",
 					"purged": "Organization permanently deleted",
 					"todo": {
@@ -1619,6 +1635,11 @@
 						"embedding_changed": "Embedding AI provider changed",
 						"enabled_providers_changed": "AI gateway allowed providers changed",
 						"deleted": "AI provider deleted"
+					},
+					"chatgpt_plan": {
+						"connected": "ChatGPT plan connected",
+						"disconnected": "ChatGPT plan disconnected",
+						"organization_use_changed": "ChatGPT plan use changed"
 					}
 				},
 				"project": {
@@ -1730,6 +1751,7 @@
 						"pull_request_close_requested": "Coding-instructions pull request close requested",
 						"pull_request_retry_requested": "Coding-instructions pull request retry requested",
 						"pull_request_merge_sync_requested": "Coding-instructions merge sync requested",
+						"pull_request_merge_observed": "Coding-instructions pull request merge acknowledged",
 						"published_unscanned": "Coding instructions published before secret scan",
 						"deferred_scan_issues_found": "Coding-instructions secret scan found issues after publishing",
 						"deferred_scan_incomplete": "Coding-instructions secret scan could not finish",
@@ -2441,6 +2463,142 @@
 			"revokeFailed": "The agent could not be revoked. Try again.",
 			"loadFailed": "Connected agents could not be loaded."
 		},
+		"chatgptPlan": {
+			"title": "ChatGPT plan",
+			"description": "Run your own AI work in this organization on your ChatGPT plan instead of the organization's provider. Background and scheduled work stays on the organization's provider unless you include it below.",
+			"loadFailed": "Your ChatGPT plan connection could not be loaded.",
+			"notConnected": "No ChatGPT plan is connected.",
+			"howToConnect": "Connect your plan from a terminal with the Fabric CLI. It asks you to approve the connection here in Fabric, opens a ChatGPT sign-in in your browser and stores the connection on your account.",
+			"copyCommand": "Copy command",
+			"copied": "Command copied",
+			"copyFailed": "The command could not be copied. Select it and copy it manually.",
+			"connectedAs": "Connected as",
+			"unknownAccount": "ChatGPT account",
+			"statusActive": "Active",
+			"statusNeedsReconnect": "Needs reconnect",
+			"reconnectTitle": "Reconnect your ChatGPT plan",
+			"reconnectDescription": "Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
+			"useInOrganization": "Use my ChatGPT plan in this organization",
+			"useInOrganizationHelp": "When on, your own AI work in {organization} runs on your plan.",
+			"turnedOn": "Your ChatGPT plan is on for this organization",
+			"turnedOff": "Your ChatGPT plan is off for this organization",
+			"updateFailed": "The setting could not be saved. Try again.",
+			"usageEstimate": "Fabric used about {percent}% of your {hours}-hour window (estimate)",
+			"usageEstimateNote": "An estimate from Fabric's own requests only. Your plan's real limits and other usage are shown in",
+			"usageLink": "ChatGPT Settings → Usage",
+			"opensInNewTab": "(opens in a new tab)",
+			"disconnect": "Disconnect",
+			"disconnecting": "Disconnecting…",
+			"disconnected": "ChatGPT plan disconnected",
+			"disconnectFailed": "The plan could not be disconnected. Try again.",
+			"disconnectConfirmTitle": "Disconnect your ChatGPT plan?",
+			"disconnectConfirmDescription": "Fabric deletes its stored sign-in for your plan, and your AI work goes back to the organization's provider in every organization. You can connect again at any time.",
+			"cancel": "Cancel",
+			"prompt": {
+				"title": "Use your ChatGPT plan in this organization?",
+				"description": "Your own AI work here can run on your connected ChatGPT plan. You can change this later in your AI provider settings.",
+				"turnOn": "Turn on",
+				"notNow": "Not now",
+				"failed": "Your answer could not be saved. Try again."
+			},
+			"includeBackgroundJobs": "Also use it for background jobs and agents",
+			"backgroundJobsWarningTitle": "Background jobs use your plan while you are away",
+			"backgroundJobsWarning": "Background jobs run when you're not using Fabric, for example scheduled reports, daily briefs and publishing suggestions for projects you own. They count against your ChatGPT plan's 5-hour and weekly limits and can use them up before you start working. This includes AI agents that Fabric starts on your behalf without you, such as scheduled document updates. OpenAI's documentation does not describe this kind of use, so it may change or be restricted.",
+			"backgroundJobsOn": "Background jobs and agents now use your ChatGPT plan here.",
+			"backgroundJobsOff": "Background jobs and agents use the organization's provider again.",
+			"connect": {
+				"title": "Connect your ChatGPT plan",
+				"description": "The Fabric CLI asked to connect your ChatGPT plan to your account, {email}. Next it signs you in to ChatGPT on your computer and sends the sign-in here, where it is stored encrypted.",
+				"chooseOrganizations": "Use my plan for my own work in",
+				"noOrganizations": "ChatGPT plan isn't enabled for any of your organizations. Ask your Fabric admin to enable it.",
+				"approve": "Connect",
+				"approving": "Connecting…",
+				"cancel": "Cancel",
+				"failed": "The connection could not be approved. Try again.",
+				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt` again.",
+				"returnToTerminal": "Return to your terminal to finish signing in to ChatGPT. You can close this tab.",
+				"cancelled": "Connection cancelled. You can close this tab.",
+				"close": "Close"
+			},
+			"connectShared": {
+				"title": "Connect a shared ChatGPT plan account",
+				"description": "The Fabric CLI asked to connect a ChatGPT account that {organization} shares. Next it signs in to ChatGPT on your computer — sign in with the account the organization should share, not your own — and sends the sign-in here, where it is stored encrypted. Admins choose which work it serves in the organization's AI providers settings.",
+				"notAllowed": "You can connect a shared ChatGPT plan account only to an organization you administer, with ChatGPT plan pooling enabled.",
+				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt --org <slug> --shared` again.",
+				"returnToTerminal": "Return to your terminal to finish signing in to the shared ChatGPT account. You can close this tab."
+			},
+			"sharedFallback": {
+				"title": "Your ChatGPT plan reached its limit",
+				"description": "Your own ChatGPT plan has no usage left in this window. Your AI work here now runs on your organization's shared ChatGPT plan until your plan resets.",
+				"descriptionUntil": "Your own ChatGPT plan has no usage left in this window. Your AI work here now runs on your organization's shared ChatGPT plan until about {time}, when your plan resets."
+			},
+			"reconnectCommandHint": "To reconnect, run this in a terminal:",
+			"openSettings": "Open ChatGPT plan settings",
+			"useOrganizationBilling": "Use organization billing",
+			"usingOrganizationBilling": "This organization now uses its own API billing for your AI work.",
+			"cli": {
+				"helpLabel": "How to install the Fabric CLI",
+				"helpTitle": "How to install the Fabric CLI",
+				"servedPrimary": "This line runs the Fabric CLI this deployment serves, with nothing to install first. It needs Node.js 22 or later.",
+				"noCliYet": "No Fabric CLI yet? Run the one this deployment serves (Node.js 22 or later):",
+				"installFirst": "Install the Fabric CLI first (Node.js 22 or later):",
+				"permanentInstall": "Or install the CLI permanently:",
+				"checkVersion": "Run fabric --version to check that it is installed."
+			},
+			"providerStatus": {
+				"chip": "ChatGPT plan",
+				"ownWork": "Your own AI work in {organization} runs on your ChatGPT plan.",
+				"everythingElse": "The AI provider below serves everything else, such as background jobs and document search.",
+				"onlyTitle": "Only your ChatGPT plan is set up",
+				"onlyDescription": "Your own AI work in {organization} runs on your ChatGPT plan. Background jobs and document search need an AI provider: add one below."
+			}
+		},
+		"chatgptPlanPool": {
+			"title": "Shared ChatGPT plans",
+			"description": "ChatGPT accounts the organization shares. Allowlisted background jobs, and where you allow it the own work of members without a plan of their own, run on them instead of the organization's AI provider.",
+			"loadFailed": "The shared ChatGPT plans could not be loaded. Reload the page to try again.",
+			"policyTitle": "Pooling policy",
+			"policyDescription": "Whether work may run on the shared accounts at all, and what happens when every plan has no usage left.",
+			"termsTitle": "Terms for sharing ChatGPT plans",
+			"termsBody": "Sharing a ChatGPT plan across an organization is governed by OpenAI's terms for that plan. By accepting, you confirm that the organization holds the accounts it connects here and may use them for its members' and its background work.",
+			"termsAcceptedOn": "Accepted on {date}.",
+			"acceptTerms": "Accept terms",
+			"termsAccepted": "Terms accepted",
+			"ownerOnly": "Only an organization owner can accept these terms.",
+			"poolingEnabled": "Run work on shared plans",
+			"poolingEnabledHelp": "Off, nothing runs on the shared accounts; they stay connected.",
+			"poolingNeedsTerms": "An organization owner must accept the terms before this can be turned on.",
+			"backgroundFallback": "When every plan is spent, background jobs",
+			"backgroundNever": "Wait for a plan to reset, then fail",
+			"backgroundAuto": "Run on the organization's AI provider",
+			"backgroundAutoWarningTitle": "Background jobs will be billed to the organization",
+			"backgroundAutoWarning": "Once every shared plan is spent, allowlisted background jobs run on the organization's own AI provider without asking anyone. Each switch to it is recorded in the audit log.",
+			"headroom": "Headroom kept for people",
+			"headroomChoice": "{percent}% of each window",
+			"headroomHelp": "Background jobs prefer accounts that still have this much of their estimated five-hour window left.",
+			"policyUpdated": "Pooling policy updated",
+			"accountsTitle": "Shared accounts",
+			"accountsDescription": "Each account's status, an estimate of its current five-hour window, and the work it serves.",
+			"emptyAccounts": "No shared account is connected yet. An organization admin connects one from a terminal:",
+			"connectAnother": "To connect another account, run:",
+			"statusActive": "Active",
+			"statusNeedsReconnect": "Needs reconnect",
+			"statusCooling": "Cooling until {time}",
+			"unknownAccount": "Unknown account",
+			"usageEstimate": "About {percent}% of a {hours}-hour window used through Fabric (estimate)",
+			"enabled": "Enabled",
+			"serveInteractive": "Serves the own work of members without a plan",
+			"serveBackground": "Serves allowlisted background jobs",
+			"accountUpdated": "Account updated",
+			"updateFailed": "The change could not be saved. Try again.",
+			"disconnect": "Disconnect",
+			"disconnecting": "Disconnecting…",
+			"disconnected": "Account disconnected",
+			"disconnectFailed": "The account could not be disconnected. Try again.",
+			"disconnectConfirmTitle": "Disconnect this shared account?",
+			"disconnectConfirmDescription": "{label} is signed out at OpenAI and removed from Fabric. Nothing runs on it any more; connect it again with the Fabric CLI to bring it back.",
+			"cancel": "Cancel"
+		},
 		"brandKit": {
 			"title": "Brand kit",
 			"description": "Accent colors and brand guidance for Glossy editions. The logo and theme color above are part of the kit too. Without a theme color or accent colors, Glossy visuals stay neutral or use the recipient's brand colors.",
@@ -2466,11 +2624,11 @@
 		},
 		"companyContext": {
 			"title": "Company context",
-			"description": "What your company says about itself — capabilities, case studies and positioning — maintained once for every Proposal and Business Case.",
+			"description": "What your company says about itself — capabilities, case studies and positioning — maintained once for every Proposal and Business Case, and for the Advisor.",
 			"usage": {
 				"title": "Where this is used",
 				"body": "Proposals and Business Cases draw on these sources to describe your company and its past work, and may quote them word for word. Those documents go to clients, so add only material you're comfortable sharing with a client.",
-				"scope": "Other document types don't use company context, and it never appears in a project's own Context tab."
+				"scope": "The Advisor can also search these sources when a member of your organization asks about the company; project guests never see them. Other document types don't use company context, and it never appears in a project's own Context tab."
 			},
 			"readOnly": "An organization admin manages company context. You can view and download its sources; ask an admin to add, change or remove them.",
 			"list": {
@@ -2510,12 +2668,13 @@
 				"added": "Added {date}",
 				"lastSynced": "Last synced {date}",
 				"pageCount": "{count, plural, one {# page} other {# pages}}",
+				"crawlProgress": "{processed} of {total, plural, one {# page} other {# pages}} found so far",
+				"crawlHint": "Proposals and Business Cases use this website once the crawl finishes. A large site can take a few hours.",
 				"refresh": {
 					"ONCE": "No automatic refresh",
 					"DAILY": "Refreshes daily",
 					"WEEKLY": "Refreshes weekly",
-					"MONTHLY": "Refreshes monthly",
-					"LIVE": "Refreshes live"
+					"MONTHLY": "Refreshes monthly"
 				}
 			},
 			"actions": {
@@ -5864,6 +6023,55 @@
 			}
 		},
 		"codingInstructions": {
+			"direct": {
+				"title": "Coding instructions",
+				"description": "Read from the attached Git repository. Files load when you open them.",
+				"refresh": "Refresh",
+				"refreshUpToDate": "Up to date.",
+				"refreshUpdated": "Updated to {sha7}.",
+				"configure": "Repository settings",
+				"repository": "Open repository",
+				"source": "Source",
+				"commit": "Commit",
+				"files": "{count, plural, one {# file} other {# files}}",
+				"filesLabel": "Files",
+				"connect": "Connect your agent",
+				"commits": "Commits",
+				"proposals": "Pull requests",
+				"connectionNotice": "Saving changes the repository connection. Fabric reads files directly from Git.",
+				"connectionSaved": "Repository connection saved.",
+				"commitNotice": "Committing pushes to {ref} in {repository}. The commit names you as author with a Fabric no-reply address. Fabric reads the committed files directly from Git.",
+				"suggestionSubmitted": "Suggestion submitted. Fabric is opening the pull request.",
+				"deleteSuggestionConfirm": "Suggest deleting {path}? Fabric opens a pull request in {repository} against {ref}.",
+				"configureDescription": "Choose the repository, branch, folder and exclusion rules. Files remain in Git.",
+				"saveConnection": "Save connection",
+				"unavailable": "The repository cannot be read right now. Check the connection and try again.",
+				"disconnected": "Connect a repository to read its coding instructions.",
+				"credentialsExpired": "The repository sign-in has expired. Reconnect it in the project's repository settings.",
+				"reconnect": "Reconnect repository",
+				"notFound": "The configured repository or branch could not be found.",
+				"selectFile": "Select a file to read it from Git.",
+				"searchNoMatches": "No files match the current search or filter. Clear it to see a file here.",
+				"fileUnavailable": "This file cannot be displayed. Open it in the repository to inspect it.",
+				"copyPath": "Copy path",
+				"copyContent": "Copy loaded content",
+				"copied": "Copied.",
+				"copyFailed": "Could not copy.",
+				"loadMore": "Load more",
+				"loading": "Loading from Git…",
+				"loadError": "Could not load this repository data. Try again.",
+				"incomplete": "This repository listing is incomplete. Open the repository to see all files.",
+				"empty": "No files match the configured folder and exclusion rules.",
+				"historyDescription": "History from the attached repository, at commit {sha}.",
+				"proposalDescription": "Open pull requests targeting {ref}. Review and merge them in the repository.",
+				"noProposals": "No open pull requests target this branch.",
+				"noCommits": "No commits found.",
+				"filter": "Search loaded commits",
+				"openCommit": "Open commit and diff",
+				"draft": "Draft",
+				"viewPullRequest": "View pull request #{number}",
+				"readOnly": "Make changes in your Git checkout or repository. Fabric shows what is committed."
+			},
 			"discardUpload": {
 				"confirmTitle": "Discard this upload?",
 				"confirmBody": "It never finished uploading, so nothing from it was kept or published. You can upload again afterwards.",
@@ -6025,6 +6233,7 @@
 				"editFabricignoreRepository": "This file decides what the version leaves out, so it can only be changed in the repository.",
 				"couldNotLoad": "Could not load this file.",
 				"binaryFile": "This is a binary file.",
+				"fileTooLarge": "This file is too large to show inline.",
 				"downloadIt": "Download it",
 				"truncated": "Showing the first {offset} characters. Download the version for the full file.",
 				"invocationDisabled": "Disabled, runs only when a person calls it",
@@ -6180,6 +6389,7 @@
 			"settingsDialog": {
 				"title": "Coding instructions settings",
 				"description": "Folders and files to leave out of every upload, one glob per line. An uploaded .fabricignore always takes priority over this list.",
+				"descriptionRepository": "Folders and files to leave out of the instructions Fabric reads from the repository, one glob per line.",
 				"readOnlyNotice": "You can see these settings, but only people who can change coding instructions can edit them.",
 				"textareaLabel": "Ignore globs",
 				"resetToDefaults": "Reset to defaults",
@@ -6566,8 +6776,11 @@
 					"switched": "Switched to upload mode.",
 					"readerProposalsLabel": "Let read-only members propose changes as pull requests",
 					"readerProposalsHint": "A suggestion pushes a branch to the repository, which can start the repository's CI before anyone reviews it. A merged suggestion syncs even while automatic sync is off.",
+					"directReaderProposalsHint": "A suggestion opens a pull request in the attached repository. Fabric reads that repository directly.",
 					"readerProposalsOn": "Read-only members can propose changes",
 					"readerProposalsOff": "Only members who can change coding instructions can propose changes",
+					"directSelectionRoot": "Fabric reads files from the repository root. Repository rules and configured exclusions apply when a file is opened.",
+					"directSelectionFolder": "Fabric reads files under {folder}/. Repository rules and configured exclusions apply when a file is opened.",
 					"readerProposalsTurnedOn": "Read-only members can now propose changes as pull requests.",
 					"readerProposalsTurnedOff": "Read-only members can no longer propose changes.",
 					"migrationPaused": "These instructions are being moved into this repository. Its settings are paused until the pull request is merged and synced, or the move is canceled.",
@@ -6686,7 +6899,7 @@
 				"openIn": "Open in {provider}",
 				"filterLabel": "Filter loaded commits",
 				"filterPlaceholder": "Filter loaded commits",
-				"loadedCount": "Showing {count} loaded commits",
+				"loadedCount": "Showing {count, plural, one {# loaded commit} other {# loaded commits}}",
 				"loadedListLabel": "Loaded commits",
 				"filterEmpty": "No loaded commits match that filter.",
 				"selectCommit": "Select a loaded commit to see its details.",
@@ -6727,6 +6940,7 @@
 				"listError": "Could not load proposals. Reload the dialog and try again.",
 				"detailError": "Could not load this proposal. Reload the dialog and try again.",
 				"proposalVersion": "Proposal version {version}",
+				"repositoryProposal": "Repository change #{version}",
 				"submittedBy": "Submitted by {name} {time}",
 				"anonymousUser": "a member",
 				"checking": "Checking",
@@ -6890,6 +7104,8 @@
 					"stopTrackingSuccess": "Fabric stopped tracking this branch.",
 					"refresh": "Refresh",
 					"refreshSuccess": "Refreshed.",
+					"refreshPending": "Fabric is checking the pull request. The result will appear shortly.",
+					"refreshSettled": "This pull request is already settled.",
 					"retryConfirm": "Fabric looks for the pull request again and, if none exists, asks the repository to open it again.",
 					"tryAgain": "Try again",
 					"tryAgainSuccess": "Fabric is trying to add this change to your branch again.",

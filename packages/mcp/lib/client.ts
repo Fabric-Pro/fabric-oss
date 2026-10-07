@@ -11,14 +11,24 @@
  * @see https://spec.modelcontextprotocol.io/specification/basic/transports/
  */
 
-import { createMCPClient, type OAuthClientProvider } from "@ai-sdk/mcp";
+import { createMCPClient } from "@ai-sdk/mcp";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { getMcpConfigById, getValidAccessToken } from "@repo/database";
+import {
+	credentialFingerprintMatches,
+	getMcpConfigById,
+	getMcpOAuthGrantGeneration,
+	getValidAccessToken,
+	markMcpOAuthReconnectRequired,
+	parseMcpOAuthBinding,
+	sameAuthorizationServer,
+} from "@repo/database";
 import {
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	parseGitLabOrigin,
 } from "@repo/integrations/gitlab";
+import { classifyOAuthErrorCode } from "@repo/utils/oauth-refresh";
 import {
 	GitLabMcpCredentialError,
 	type GitLabMcpFetch,
@@ -294,6 +304,96 @@ function isRedirectRefusal(error: unknown): boolean {
 }
 
 /**
+ * The SDK (1.32+) sends its OAuth requests with `redirect: "manual"` and then
+ * follows a same-origin redirect itself, re-sending the request. A token
+ * request carries a refresh token or authorization code and the client
+ * credentials, so for those — and for anything else the SDK sends off the MCP
+ * server's own origin — the redirect is refused outright instead
+ * (`redirect: "error"`): credentials go to the bound token endpoint and
+ * nowhere it points. The MCP server's own requests keep the SDK's
+ * same-origin redirect handling.
+ */
+export function oauthRequestsRefuseRedirects(
+	serverUrl: URL,
+	baseFetch: GitLabMcpFetch,
+): GitLabMcpFetch {
+	return (input, init) => {
+		let offOrigin = true;
+		try {
+			offOrigin =
+				new URL(typeof input === "string" ? input : input.toString())
+					.origin !== serverUrl.origin;
+		} catch {
+			offOrigin = true;
+		}
+		const tokenRequest = init?.body instanceof URLSearchParams;
+		if (tokenRequest) {
+			return baseFetch(input, { ...init, redirect: "error" }).then(
+				sanitizeTokenErrorResponse,
+			);
+		}
+		if (offOrigin) {
+			return baseFetch(input, { ...init, redirect: "error" });
+		}
+		return baseFetch(input, init);
+	};
+}
+
+function jsonError(code: string, status: number): Response {
+	return new Response(JSON.stringify({ error: code }), {
+		status,
+		headers: { "content-type": "application/json" },
+	});
+}
+
+/**
+ * The SDK turns a token endpoint's error response into the message of the
+ * error it throws (`error_description`, or the raw body when it is not an
+ * OAuth error), and that error then travels into Fabric's messages, `cause`
+ * chains and logs. A token endpoint can echo what it was sent — a refresh
+ * token, a code, a client secret — so before the SDK sees an error response
+ * it is reduced to the classified `error` code alone (`classifyOAuthErrorCode`;
+ * the SDK's error classes still key on it, e.g. `invalid_grant`). A 2xx body
+ * that is an OAuth error, or not JSON at all, is reduced the same way.
+ * Successful token responses pass through unchanged.
+ */
+export async function sanitizeTokenErrorResponse(
+	response: Response,
+): Promise<Response> {
+	let text = "";
+	try {
+		text = await response.clone().text();
+	} catch {
+		text = "";
+	}
+	let parsed: unknown = null;
+	try {
+		parsed = text ? JSON.parse(text) : null;
+	} catch {
+		parsed = null;
+	}
+	const body =
+		parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	if (response.ok) {
+		if (!body) {
+			return jsonError("server_error", 502);
+		}
+		if (body.error !== undefined && body.access_token === undefined) {
+			return jsonError(classifyOAuthErrorCode(body.error), 400);
+		}
+		return response;
+	}
+	return jsonError(
+		body && body.error !== undefined
+			? classifyOAuthErrorCode(body.error)
+			: "server_error",
+		response.status,
+	);
+}
+
+/**
  * Creates an MCP client with the appropriate transport.
  * Uses official MCP SDK transports for better compatibility.
  *
@@ -364,6 +464,9 @@ export async function createMcpClient(
 	// config is not used for OAuth because it accepts no fetch implementation:
 	// the SDK would resolve and connect on its own, and a name that answered
 	// a public address to the check above could answer a private one to it.
+	const guardedFetch = authProvider
+		? oauthRequestsRefuseRedirects(url, transportFetch)
+		: transportFetch;
 	const createTransport = () => {
 		const requestInit =
 			Object.keys(finalHeaders).length > 0
@@ -371,12 +474,12 @@ export async function createMcpClient(
 				: undefined;
 		return transport === "SSE"
 			? new SSEClientTransport(url, {
-					fetch: transportFetch,
+					fetch: guardedFetch,
 					requestInit,
 					authProvider,
 				})
 			: new StreamableHTTPClientTransport(url, {
-					fetch: transportFetch,
+					fetch: guardedFetch,
 					requestInit,
 					authProvider,
 				});
@@ -591,6 +694,11 @@ interface McpClientForConfig {
 	 * connection whose token the client carries. `undefined` otherwise.
 	 */
 	gitlabConnectionGeneration?: number;
+	/**
+	 * For an OAuth2 config served by the database-backed provider: the grant
+	 * generation the client was built for. `undefined` otherwise.
+	 */
+	oauthGrantGeneration?: number;
 }
 
 /**
@@ -659,7 +767,7 @@ async function buildMcpClientForConfig(
 
 	// The refresh circuit breaker (recordRefreshFailure) flips needsReauth after
 	// persistent refresh failures, and only a successful re-auth
-	// (updateMcpConfigTokens) clears it. Connecting before then would just
+	// (a new grant through the connect flow) clears it. Connecting before then would just
 	// re-hammer a dead refresh token on every request.
 	//
 	// Scoped to OAUTH2 deliberately: the flag describes an OAuth GRANT, and the
@@ -803,6 +911,9 @@ async function buildMcpClientForConfig(
 				organizationId,
 				redirectUri: effectiveRedirectUri,
 				onAuthorizationRequired,
+				// The grant of the same read `serverUrl` came from: the
+				// provider refuses a row that has moved on since.
+				expectedGrantGeneration: mcpConfig.oauthGrantGeneration,
 			});
 
 			const client = await createMcpClient({
@@ -817,6 +928,7 @@ async function buildMcpClientForConfig(
 				serverUrl,
 				transport,
 				gitlabOrigin,
+				oauthGrantGeneration: mcpConfig.oauthGrantGeneration,
 			};
 		} catch (error) {
 			// Re-throw OAuth authorization required errors
@@ -942,6 +1054,13 @@ interface CachedMcpClient {
 	 * cached use (`isCachedGitLabClientUsable`).
 	 */
 	gitlabConnectionGeneration?: number;
+	/**
+	 * Set for an OAuth2 client built on the database-backed provider: the
+	 * config's grant generation at build time. A client whose config has
+	 * since been reconnected, revoked or re-registered is dropped before use
+	 * (its provider would refuse every call anyway).
+	 */
+	oauthGrantGeneration?: number;
 	createdAt: number;
 	lastUsedAt: number;
 }
@@ -1061,6 +1180,32 @@ export async function getCachedMcpClientForConfig(
 			if (!usable) {
 				// Only this entry: a concurrent call may already have
 				// replaced it with a freshly built client.
+				if (mcpClientCache.get(cacheKey) === cached) {
+					mcpClientCache.delete(cacheKey);
+				}
+				try {
+					await cached.client.close();
+				} catch {
+					// Ignore close errors
+				}
+				cached = undefined;
+			}
+		}
+		// An OAuth2 client serves the grant it was built for. Once the config's
+		// credentials changed (reconnect, revoke, re-registration), drop it so
+		// the next client is built on the current grant. A failed read drops
+		// it too: an unproven client is never reused.
+		if (cached && cached.oauthGrantGeneration !== undefined) {
+			let current: number | null = null;
+			try {
+				current = await getMcpOAuthGrantGeneration(configId);
+			} catch (error) {
+				console.warn(
+					`[MCP Client Cache] Could not re-check the cached OAuth client for ${cached.serverName}; dropping it`,
+					error instanceof Error ? error.message : error,
+				);
+			}
+			if (current !== cached.oauthGrantGeneration) {
 				if (mcpClientCache.get(cacheKey) === cached) {
 					mcpClientCache.delete(cacheKey);
 				}
@@ -1198,6 +1343,7 @@ export async function getCachedMcpClientForConfig(
 			transport: result.transport,
 			gitlabOrigin: result.gitlabOrigin,
 			gitlabConnectionGeneration: result.gitlabConnectionGeneration,
+			oauthGrantGeneration: result.oauthGrantGeneration,
 			createdAt: Date.now(),
 			lastUsedAt: Date.now(),
 		});
@@ -1307,6 +1453,17 @@ interface StdioWrapperClient {
 }
 
 /**
+ * Google's authorization server and token endpoint, as pinned for Google in
+ * Fabric's provider table (`PINNED_OAUTH_PROVIDERS` in
+ * packages/api/modules/mcp/lib/oauth-authorization-server.ts) and allowlisted
+ * by the binding backfill: where the Google Drive STDIO server refreshes.
+ */
+const GOOGLE_PINNED_OAUTH = {
+	authorizationServerUrl: "https://accounts.google.com",
+	tokenEndpoint: "https://oauth2.googleapis.com/token",
+} as const;
+
+/**
  * Configuration for STDIO MCP client creation
  */
 interface CreateStdioMcpClientOptions {
@@ -1324,6 +1481,8 @@ interface CreateStdioMcpClientOptions {
 		encryptedAccessToken?: string | null;
 		encryptedRefreshToken?: string | null;
 		tokenExpiresAt?: Date | null;
+		oauthBinding?: unknown;
+		oauthGrantGeneration?: number;
 	};
 	mcpServer: {
 		name?: string;
@@ -1439,10 +1598,55 @@ async function createStdioMcpClientForConfig(
 	) {
 		const { decryptApiKey } = await import("@repo/utils");
 
+		// The wrapper's server refreshes with the client secret and refresh
+		// token on its own, so both are handed over only for a grant bound
+		// to its authorization server and still the credential set that
+		// binding was written with (`credentialFingerprint`). A mismatch —
+		// a writer outside the credential module replaced one of them —
+		// sends nothing and flags the config for reconnect. An unbound or
+		// bearer-only grant gets the access token alone, as the HTTP
+		// transports serve it.
+		const binding = parseMcpOAuthBinding(mcpConfig.oauthBinding);
+		const storedCredentials = {
+			oauthClientId: mcpConfig.oauthClientId ?? null,
+			encryptedOauthClientSecret:
+				mcpConfig.encryptedOauthClientSecret ?? null,
+			encryptedRefreshToken: mcpConfig.encryptedRefreshToken ?? null,
+		};
+		if (
+			binding &&
+			!credentialFingerprintMatches(binding, storedCredentials)
+		) {
+			await markMcpOAuthReconnectRequired({
+				configId,
+				expectedGeneration: mcpConfig.oauthGrantGeneration ?? 0,
+				reason: "Reconnect required: the stored OAuth credentials do not match the connection they were bound with.",
+			});
+			throw new McpClientError({
+				message: `Authentication required for "${serverName}". Please reconnect it in MCP Settings.`,
+				code: "OAUTH_AUTH_REQUIRED",
+				serverName,
+				isAuthError: true,
+			});
+		}
+		// The child process refreshes at Google's token endpoint, which it
+		// chooses itself: hand it the secret and refresh token only for a
+		// binding that names exactly that AS and endpoint (Fabric's pinned
+		// Google entry). A grant bound anywhere else gets the access token
+		// alone.
+		const handOverRefreshCredentials =
+			!!binding &&
+			sameAuthorizationServer(
+				binding.authorizationServerUrl,
+				GOOGLE_PINNED_OAUTH.authorizationServerUrl,
+			) &&
+			binding.tokenEndpoint === GOOGLE_PINNED_OAUTH.tokenEndpoint;
+
 		// Build OAuth client keys JSON
-		const clientSecret = mcpConfig.encryptedOauthClientSecret
-			? decryptApiKey(mcpConfig.encryptedOauthClientSecret)
-			: "";
+		const clientSecret =
+			handOverRefreshCredentials && mcpConfig.encryptedOauthClientSecret
+				? decryptApiKey(mcpConfig.encryptedOauthClientSecret)
+				: "";
 		const oauthKeys = {
 			web: {
 				client_id: mcpConfig.oauthClientId ?? "",
@@ -1453,9 +1657,10 @@ async function createStdioMcpClientForConfig(
 
 		// Build credentials (tokens) JSON
 		const accessToken = decryptApiKey(mcpConfig.encryptedAccessToken);
-		const refreshToken = mcpConfig.encryptedRefreshToken
-			? decryptApiKey(mcpConfig.encryptedRefreshToken)
-			: "";
+		const refreshToken =
+			handOverRefreshCredentials && mcpConfig.encryptedRefreshToken
+				? decryptApiKey(mcpConfig.encryptedRefreshToken)
+				: "";
 		const creds = {
 			access_token: accessToken,
 			refresh_token: refreshToken,

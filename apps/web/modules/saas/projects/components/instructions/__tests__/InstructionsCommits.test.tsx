@@ -82,6 +82,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				repository: {
+					getCommitParent: {
+						queryOptions: () => ({
+							queryKey: ["commitParent"],
+							enabled: false,
+						}),
+					},
+				},
 				repositorySync: {
 					listCommits: {
 						queryOptions: (o: {

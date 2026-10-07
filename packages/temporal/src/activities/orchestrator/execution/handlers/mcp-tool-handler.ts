@@ -22,6 +22,7 @@ import {
 	invalidateMcpClientCache,
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
 import type { z } from "zod";
 import { makeInFlightToolCompactor } from "../../../agentic-loop/in-flight-tool-compaction";
@@ -302,6 +303,9 @@ export class McpToolHandler implements StepHandler {
 				output,
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error("[McpToolHandler] MCP tool execution failed:", error);
@@ -389,6 +393,7 @@ export class McpToolHandler implements StepHandler {
 
 			return authorizedTools;
 		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			// Fail closed — authority check errors block all external tools
 			console.error(
 				"[McpToolHandler] Authority check error, blocking tools:",
@@ -905,6 +910,8 @@ export class McpToolHandler implements StepHandler {
 					);
 					return { ...toolCall, input: JSON.stringify(repairedArgs) };
 				} catch (repairError) {
+					// A stop ends the stream; it is not a failed repair.
+					rethrowIfDispatchStopped(repairError);
 					console.error(
 						`[McpToolHandler] Failed to repair tool call "${toolCall.toolName}":`,
 						repairError,

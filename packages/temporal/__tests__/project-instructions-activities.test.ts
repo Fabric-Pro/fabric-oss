@@ -400,6 +400,7 @@ beforeEach(() => {
 	// tests below exercise their intended logic rather than the gate.
 	m.getInstructionSnapshotById.mockResolvedValue({
 		id: "s",
+		contentKind: "FULL_SNAPSHOT",
 		projectId: "p",
 		organizationId: "o",
 		publishOnReady: true,
@@ -420,6 +421,7 @@ beforeEach(() => {
 function freezeIgnoreSettings(settingsFrozen: unknown) {
 	m.getInstructionSnapshotById.mockResolvedValue({
 		id: "s",
+		contentKind: "FULL_SNAPSHOT",
 		projectId: "p",
 		organizationId: "o",
 		publishOnReady: true,
@@ -432,6 +434,7 @@ function freezeIgnoreSettings(settingsFrozen: unknown) {
 function repositorySyncSnapshot(overrides: Record<string, unknown> = {}) {
 	const snapshot = {
 		id: "s",
+		contentKind: "FULL_SNAPSHOT",
 		projectId: "p",
 		organizationId: "o",
 		publishOnReady: true,
@@ -460,6 +463,19 @@ function repositorySyncSnapshot(overrides: Record<string, unknown> = {}) {
 // into the immutable snapshot under a digest built from the declared hashes.
 // ---------------------------------------------------------------------------
 describe("verifyAndScanInstructionFiles", () => {
+	it("refuses a native Git operation before legacy scanning or file I/O", async () => {
+		repositorySyncSnapshot({ contentKind: "GIT_INTENT" });
+		await expect(verifyAndScanInstructionFiles(snap)).rejects.toThrow(
+			"Repository operations are not instruction snapshots",
+		);
+		expect(m.claimInstructionSnapshotValidation).not.toHaveBeenCalled();
+		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+		expect(m.listObjects).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+		expect(scanTextForSecrets).not.toHaveBeenCalled();
+	});
+
 	it("skips content checks only for a persisted repository-sync snapshot", async () => {
 		await stage([
 			{
@@ -2050,6 +2066,7 @@ describe("publishInstructionSnapshotActivity", () => {
 	it("skips the publish call when the snapshot is manual (publishOnReady false)", async () => {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			publishOnReady: false,
@@ -2871,6 +2888,7 @@ describe("storage delete failures are not success (I1)", () => {
 				projectId: "p",
 				organizationId: "o",
 				status: "REJECTED",
+				contentKind: "FULL_SNAPSHOT",
 			});
 
 			await expect(
@@ -2904,6 +2922,7 @@ describe("storage delete failures are not success (I1)", () => {
 				projectId: "p",
 				organizationId: "o",
 				status: "READY",
+				contentKind: "FULL_SNAPSHOT",
 				publishOnReady: true,
 				settingsFrozen: {
 					layer: "default",
@@ -3054,6 +3073,7 @@ describe("the pre-verdict activities refuse an already-REJECTED snapshot", () =>
 	function rejectedSnapshot() {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			status: "REJECTED",
@@ -3118,6 +3138,7 @@ describe("the pre-verdict activities refuse an already-REJECTED snapshot", () =>
 describe("the gate CLAIMS the snapshot before it touches storage", () => {
 	const row = (status: string) => ({
 		id: "s",
+		contentKind: "FULL_SNAPSHOT",
 		projectId: "p",
 		organizationId: "o",
 		status,
@@ -3296,6 +3317,7 @@ describe("derived snapshots (Fizzy #2546)", () => {
 	function derivedSnapshotRow() {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			publishOnReady: true,
@@ -3573,6 +3595,7 @@ describe("publish first, scan afterwards (Fizzy #2737)", () => {
 	function fastRow(overrides: Record<string, unknown> = {}) {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			userId: "acknowledger",
@@ -4744,6 +4767,7 @@ describe("secret findings are bounded while they are collected", () => {
 	it("the deferred scan keeps 100 findings across dense files and reports ISSUES_FOUND", async () => {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			userId: "acknowledger",
@@ -5042,6 +5066,7 @@ describe("storage round trips overlap, verdicts keep manifest order", () => {
 	it("the deferred scan's last attempt names an unreadable file in manifest order, ahead of a later finding", async () => {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			userId: "acknowledger",
@@ -5094,6 +5119,7 @@ describe("the validation attempt ownership token", () => {
 		status = "VALIDATING",
 	) => ({
 		id: "s",
+		contentKind: "FULL_SNAPSHOT",
 		projectId: "p",
 		organizationId: "o",
 		status,
@@ -5262,6 +5288,7 @@ describe("per-file progress of the check passes", () => {
 	const row = (overrides: Record<string, unknown> = {}) =>
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			userId: "u",
@@ -5439,6 +5466,7 @@ describe("incremental derived snapshots", () => {
 	function derivedRow(overrides: Record<string, unknown> = {}) {
 		m.getInstructionSnapshotById.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			projectId: "p",
 			organizationId: "o",
 			userId: "u",

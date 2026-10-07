@@ -6,6 +6,11 @@
  */
 
 import { resolveOpenAiApiKey } from "@repo/ai";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import {
 	createFirstClassFrame,
 	getFirstClassFrame,
@@ -52,6 +57,9 @@ export class FabricAiHandler implements StepHandler {
 				output,
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error("[FabricAiHandler] Fabric AI tool failed:", error);
@@ -470,6 +478,7 @@ export class FabricAiHandler implements StepHandler {
 				const aiToken = await issueAIToken({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-youtube-metadata",
 				});
 
@@ -513,6 +522,7 @@ export class FabricAiHandler implements StepHandler {
 				const commentsAiToken = await issueAITokenComments({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-youtube-comments",
 				});
 
@@ -556,6 +566,7 @@ export class FabricAiHandler implements StepHandler {
 				const playlistAiToken = await issueAITokenPlaylist({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-youtube-playlist",
 				});
 
@@ -1102,11 +1113,16 @@ export class FabricAiHandler implements StepHandler {
 					);
 				}
 
-				// Call OpenAI TTS
+				// Call OpenAI TTS. Built outside the model factory, so in a chat
+				// turn the request is checked against the turn record first and
+				// aborted (with the reading of its body) when the turn stops;
+				// outside one `guardDispatch` returns no signal.
+				const ttsSignal = await guardDispatch();
 				const ttsResponse = await fetch(
 					"https://api.openai.com/v1/audio/speech",
 					{
 						method: "POST",
+						signal: ttsSignal,
 						headers: {
 							Authorization: `Bearer ${openAiApiKey}`,
 							"Content-Type": "application/json",

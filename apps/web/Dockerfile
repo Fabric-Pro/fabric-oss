@@ -134,7 +134,7 @@ RUN pnpm --filter @repo/database generate
 # This is REQUIRED because several deps (e.g. @fabricorg/integrations-*) are
 # build-output packages — their package.json `exports` point at ./dist/*, dist is
 # gitignored (not in the CI checkout), and `next build` can't resolve them until
-# their `tsup` build has produced dist. (Source-only packages like @repo/logs
+# their build has produced dist. (Source-only packages like @repo/logs
 # export raw .ts and are transpiled by Next directly, so they don't need this.)
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DOCKER_BUILD=true

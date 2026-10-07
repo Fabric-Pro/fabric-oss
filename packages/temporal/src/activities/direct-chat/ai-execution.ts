@@ -46,6 +46,8 @@ import {
 import type { McpClientType } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
+import { resolveCompanyContextChatAccess } from "../../lib/company-context-chat-access";
+import { companyContextHintLine } from "../../lib/company-context-hint";
 import type {
 	ActivityHeartbeatDetails,
 	DirectChatToolCall,
@@ -99,6 +101,7 @@ import {
 	resolveOutputTokenBudget,
 } from "./build-provider-options";
 import { createBuiltInTools } from "./built-in-tools";
+import { createCompanyContextTools } from "./company-context-tool";
 import {
 	decideForcedToolChoice,
 	modelRejectsForcedToolChoice,
@@ -782,6 +785,18 @@ async function runDirectChatTurn({
 		mcpServerCount: mcpToolInfo.length,
 	});
 
+	// Company context (Fizzy #2719): asked once for this turn, while the
+	// tools below load, and only when the Advisor opted the turn in and tools
+	// can run. It never throws. The search tool asks again on every call.
+	const companyContextAccessPromise =
+		input.companyContextAdvisor === true && !input.forceDisableTools
+			? resolveCompanyContextChatAccess({
+					userId,
+					requestOrganizationId: organizationId,
+					projectId,
+				})
+			: Promise.resolve(null);
+
 	// ==========================================================================
 	// SMART MCP TOOL LOADING: Only connect to servers that are likely needed
 	// ==========================================================================
@@ -1148,12 +1163,29 @@ async function runDirectChatTurn({
 	}
 	mcpTools = mcpCapped.tools;
 
+	// The organization's company context, for a member: outside the chat's
+	// tool list like the Advisor tools, so an explicit (even empty) list
+	// cannot drop it, and never in a tool picker. An organization with
+	// nothing ready to search gets neither the tool nor the hint, and the
+	// turn stays exactly what it was.
+	const companyContextAccess = await companyContextAccessPromise;
+	const companyContextTools =
+		companyContextAccess && companyContextAccess.readySourceCount > 0
+			? createCompanyContextTools({
+					companyContextAdvisor: input.companyContextAdvisor,
+					userId,
+					organizationId,
+					projectId,
+				})
+			: {};
+
 	// Combine all tools
 	const allTools = {
 		...builtInTools,
 		...mcpTools,
 		...workflowTools,
 		...advisorTools,
+		...companyContextTools,
 		...skillTools,
 		...databricksKnowledgeTools,
 	};
@@ -1215,6 +1247,9 @@ async function runDirectChatTurn({
 			projectId,
 			featureKey: input.featureKey ?? "chat-agent",
 			conversationId: input.usageConversationId ?? conversationId,
+			// Unset, not false: inside a run a person started, the run's own
+			// marker decides (Fizzy #2939).
+			planEligible: input.planEligible === true ? true : undefined,
 		},
 	);
 	recordAggregateUsage = recordResolvedAggregateUsage;
@@ -1230,6 +1265,15 @@ async function runDirectChatTurn({
 
 	// Track usage (fire-and-forget)
 	trackUsage();
+
+	// Appended to the Advisor tools' line rather than given its own, so a
+	// turn without it renders exactly the bytes it did before.
+	const companyContextHint =
+		toolsEnabled &&
+		companyContextAccess &&
+		Object.keys(companyContextTools).length > 0
+			? `\n${companyContextHintLine(companyContextAccess.organizationName)}`
+			: "";
 
 	const capabilitiesInstructions = `CAPABILITIES:
 ${describeToolAvailability({
@@ -1259,7 +1303,7 @@ If the user asks for something one of them does, say those tools were left out o
 		: ""
 }
 ${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
-${toolsEnabled ? `- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows${"list_skills" in skillTools ? " and list_skills" : ""}, and base the suggestions on what they return. Never use workspace document tools for that.` : ""}
+${toolsEnabled ? `- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows${"list_skills" in skillTools ? " and list_skills" : ""}, and base the suggestions on what they return. Never use workspace document tools for that.` : ""}${companyContextHint}
 
 ${DIAGRAM_RENDERING_GUIDANCE}`;
 

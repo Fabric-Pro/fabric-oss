@@ -69,7 +69,7 @@ export interface AuthorizationServerMetadata {
 /**
  * Combined OAuth metadata after discovery
  */
-export interface MCPOAuthMetadata {
+interface MCPOAuthMetadata {
 	/** Resource identifier */
 	resource?: string;
 	/** Authorization server URL */
@@ -88,6 +88,15 @@ export interface MCPOAuthMetadata {
 	codeChallengeMethodsSupported?: string[];
 	/** When this metadata was cached */
 	cachedAt?: string;
+	/**
+	 * The authorization server URL the metadata was actually fetched from:
+	 * the protected resource's first `authorization_servers` entry, or the MCP
+	 * server's origin when that was not available. This (not the document's
+	 * self-declared `issuer`) is the identity credentials are bound to.
+	 */
+	authorizationServerUrl?: string;
+	/** The RFC 8414 / OIDC document as fetched. */
+	authorizationServerMetadata?: AuthorizationServerMetadata;
 }
 
 /**
@@ -258,6 +267,7 @@ export async function discoverOAuthEndpoints(
 
 		// Step 3: Fallback to direct discovery if no protected resource metadata
 		if (!authServerMetadata) {
+			authServerUrl = baseOrigin;
 			authServerMetadata =
 				await fetchAuthorizationServerMetadata(baseOrigin);
 		}
@@ -286,6 +296,8 @@ export async function discoverOAuthEndpoints(
 			codeChallengeMethodsSupported:
 				authServerMetadata.code_challenge_methods_supported,
 			cachedAt: new Date().toISOString(),
+			authorizationServerUrl: authServerUrl,
+			authorizationServerMetadata: authServerMetadata,
 		};
 
 		return {

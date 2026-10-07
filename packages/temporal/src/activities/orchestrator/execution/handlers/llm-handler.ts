@@ -6,6 +6,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput } from "../../types";
 import { getAiModel } from "../../utils";
 import type { HandlerContext, HandlerResult, StepHandler } from "./types";
@@ -32,6 +33,9 @@ export class LlmHandler implements StepHandler {
 				output,
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error("[LlmHandler] LLM step failed:", error);

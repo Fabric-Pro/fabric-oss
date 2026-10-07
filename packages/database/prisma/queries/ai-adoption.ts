@@ -3,6 +3,7 @@ import type {
 	AnswerSource,
 	PendingBacklogProposalStatus,
 } from "../generated/client";
+import type { ChatGptPlanModelUsage } from "./ai-usage-activity";
 
 /**
  * Read-only aggregates for the platform-admin "AI Adoption" dashboard
@@ -17,7 +18,9 @@ import type {
  *   index if this table ever grows hot.
  * - PendingBacklogProposal has a [createdAt] index; BacklogUpdateSession is
  *   aggregated via its primary-key-sized row count.
- * - AiUsageLog is the big table: exactly one groupBy pass over the range.
+ * - AiUsageLog is the big table: one groupBy pass per aggregate (the
+ *   platform summary and the per-organization billing-source split), each
+ *   the same clamped createdAt range scan.
  */
 
 const MAX_PERIOD_DAYS = 365;
@@ -53,6 +56,25 @@ export interface BacklogProposalAdoption {
 		appliedChanges: number;
 		failedChanges: number;
 	};
+}
+
+export interface AiBillingSourceOrganizationRow {
+	/** null = rows recorded without an organization. */
+	organizationId: string | null;
+	organizationName: string | null;
+	plan: {
+		requests: number;
+		totalTokens: number;
+		/** Tokens per plan model, for the API-equivalent estimate. */
+		usageByModel: ChatGptPlanModelUsage[];
+	};
+	api: { requests: number; totalTokens: number; costMicroUsd: number };
+}
+
+export interface AiBillingSourceByOrganization {
+	rows: AiBillingSourceOrganizationRow[];
+	/** Organizations with any usage in the window, before the row cap. */
+	totalOrganizations: number;
 }
 
 export interface AiUsageAdoptionSummary {
@@ -262,4 +284,100 @@ export async function getAiUsageAdoptionSummary(
 		}
 	}
 	return summary;
+}
+
+const BILLING_SOURCE_ORG_ROW_CAP = 50;
+
+/**
+ * Per-organization split of LLM calls between members' own ChatGPT plans and
+ * API-billed providers. Plan rows record cost 0, so only API cost is
+ * reported. Ordered by plan requests, then API requests; capped at
+ * BILLING_SOURCE_ORG_ROW_CAP rows.
+ */
+export async function getAiBillingSourceByOrganization(
+	range: AiAdoptionRange,
+): Promise<AiBillingSourceByOrganization> {
+	const { from, to } = clampRange(range);
+
+	const [groups, planModelGroups] = await Promise.all([
+		db.aiUsageLog.groupBy({
+			by: ["organizationId", "provider"],
+			where: { createdAt: { gte: from, lte: to } },
+			_count: { _all: true },
+			_sum: { totalTokens: true, costMicroUsd: true },
+		}),
+		db.aiUsageLog.groupBy({
+			by: ["organizationId", "providerModelId"],
+			where: {
+				createdAt: { gte: from, lte: to },
+				provider: "OPENAI_CHATGPT_PLAN",
+			},
+			_sum: {
+				inputTokens: true,
+				outputTokens: true,
+				cachedInputTokens: true,
+			},
+		}),
+	]);
+
+	const byOrg = new Map<string | null, AiBillingSourceOrganizationRow>();
+	for (const group of groups) {
+		let row = byOrg.get(group.organizationId);
+		if (!row) {
+			row = {
+				organizationId: group.organizationId,
+				organizationName: null,
+				plan: { requests: 0, totalTokens: 0, usageByModel: [] },
+				api: { requests: 0, totalTokens: 0, costMicroUsd: 0 },
+			};
+			byOrg.set(group.organizationId, row);
+		}
+		const requests = group._count._all;
+		const totalTokens = group._sum.totalTokens ?? 0;
+		if (group.provider === "OPENAI_CHATGPT_PLAN") {
+			row.plan.requests += requests;
+			row.plan.totalTokens += totalTokens;
+		} else {
+			row.api.requests += requests;
+			row.api.totalTokens += totalTokens;
+			row.api.costMicroUsd += group._sum.costMicroUsd ?? 0;
+		}
+	}
+
+	for (const group of planModelGroups) {
+		byOrg.get(group.organizationId)?.plan.usageByModel.push({
+			providerModelId: group.providerModelId,
+			inputTokens: group._sum.inputTokens ?? 0,
+			outputTokens: group._sum.outputTokens ?? 0,
+			cachedInputTokens: group._sum.cachedInputTokens ?? 0,
+		});
+	}
+
+	const rows = Array.from(byOrg.values())
+		.sort(
+			(a, b) =>
+				b.plan.requests - a.plan.requests ||
+				b.api.requests - a.api.requests,
+		)
+		.slice(0, BILLING_SOURCE_ORG_ROW_CAP);
+
+	const organizationIds = rows
+		.map((row) => row.organizationId)
+		.filter((id): id is string => id !== null);
+	if (organizationIds.length > 0) {
+		const organizations = await db.organization.findMany({
+			where: { id: { in: organizationIds } },
+			select: { id: true, name: true },
+		});
+		const nameById = new Map(
+			organizations.map((org) => [org.id, org.name]),
+		);
+		for (const row of rows) {
+			if (row.organizationId) {
+				row.organizationName = nameById.get(row.organizationId) ?? null;
+			}
+		}
+	}
+
+	return { rows, totalOrganizations: byOrg.size };
 }

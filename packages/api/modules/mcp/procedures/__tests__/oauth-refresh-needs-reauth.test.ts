@@ -21,34 +21,40 @@ const {
 	getMcpConfigByIdInternalMock,
 	getOrganizationByIdMock,
 	verifyMembershipMock,
-	updateMcpConfigTokensMock,
+	refreshMcpOAuthAccessTokenMock,
 	safeFetchOutboundMock,
 	decryptApiKeyMock,
 } = vi.hoisted(() => ({
 	getMcpConfigByIdInternalMock: vi.fn(),
 	getOrganizationByIdMock: vi.fn(),
 	verifyMembershipMock: vi.fn(),
-	updateMcpConfigTokensMock: vi.fn(),
+	refreshMcpOAuthAccessTokenMock: vi.fn(),
 	safeFetchOutboundMock: vi.fn(),
 	decryptApiKeyMock: vi.fn((s: string) => s),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// The config's server is one its tenant may use (see the tenant tests).
+	getMcpServerForTenant: async () => ({ isSystemProvided: true }),
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
+	)),
 	clearRefreshFailures: vi.fn(),
 	createOauthState: vi.fn(),
 	db: { mCPConfig: { update: vi.fn() } },
 	deleteOauthState: vi.fn(),
-	getCachedOAuthMetadata: vi.fn(),
 	getGoogleAccountEmail: vi.fn(),
 	getMcpConfigByIdInternal: (...args: unknown[]) =>
 		getMcpConfigByIdInternalMock(...args),
+	getMcpServerDefaultTokenExpiry: () => null,
 	getOauthState: vi.fn(),
 	getOrganizationById: (...args: unknown[]) =>
 		getOrganizationByIdMock(...args),
-	updateMcpConfigAfterDcr: vi.fn(),
-	updateMcpConfigTokens: (...args: unknown[]) =>
-		updateMcpConfigTokensMock(...args),
-	updateOAuthMetadataCache: vi.fn(),
+	// The procedure's whole refresh is the shared, bound refresh path.
+	refreshMcpOAuthAccessToken: (...args: unknown[]) =>
+		refreshMcpOAuthAccessTokenMock(...args),
+	replaceMcpOAuthRegistration: vi.fn(),
+	saveMcpOAuthGrant: vi.fn(),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -141,7 +147,7 @@ function makeConfig(
 beforeEach(() => {
 	vi.clearAllMocks();
 	decryptApiKeyMock.mockImplementation((s: string) => s);
-	updateMcpConfigTokensMock.mockResolvedValue(undefined);
+	refreshMcpOAuthAccessTokenMock.mockResolvedValue({ status: "refreshed" });
 	safeFetchOutboundMock.mockImplementation(async (url: string) => {
 		if (url.includes("/token")) {
 			return {
@@ -179,11 +185,13 @@ describe("oauth.refresh — needsReauth circuit breaker", () => {
 		// decrypted — the guard sits ahead of both.
 		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
 		expect(decryptApiKeyMock).not.toHaveBeenCalled();
-		expect(updateMcpConfigTokensMock).not.toHaveBeenCalled();
+		expect(refreshMcpOAuthAccessTokenMock).not.toHaveBeenCalled();
 	});
 
-	it("still refreshes normally when the breaker has not tripped", async () => {
-		getMcpConfigByIdInternalMock.mockResolvedValue(makeConfig());
+	it("still refreshes normally when the breaker has not tripped, through the bound refresh path", async () => {
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			makeConfig({ oauthGrantGeneration: 3 }),
+		);
 
 		const result = await handler({
 			input: { configId: "cfg_1" },
@@ -191,7 +199,51 @@ describe("oauth.refresh — needsReauth circuit breaker", () => {
 		});
 
 		expect(result).toEqual({ success: true });
-		expect(updateMcpConfigTokensMock).toHaveBeenCalledTimes(1);
+		expect(refreshMcpOAuthAccessTokenMock).toHaveBeenCalledTimes(1);
+		expect(refreshMcpOAuthAccessTokenMock).toHaveBeenCalledWith("cfg_1", {
+			recordFailures: false,
+			markReconnectRequired: true,
+			expectedGeneration: 3,
+		});
+		// The procedure itself neither discovers nor posts anything: the
+		// catalog's and the MCP server's endpoints play no part.
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+		expect(decryptApiKeyMock).not.toHaveBeenCalled();
+	});
+
+	it("tells the caller to reconnect when the credentials are not bound", async () => {
+		getMcpConfigByIdInternalMock.mockResolvedValue(makeConfig());
+		refreshMcpOAuthAccessTokenMock.mockResolvedValue({
+			status: "reconnect-required",
+		});
+
+		await expect(
+			handler({
+				input: { configId: "cfg_1" },
+				context: { user: { id: "user_1" } },
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("Reconnect"),
+		});
+		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
+	});
+
+	it("reports a refresh that lost a race or failed as unsuccessful", async () => {
+		getMcpConfigByIdInternalMock.mockResolvedValue(makeConfig());
+		for (const outcome of [
+			{ status: "superseded" },
+			{ status: "failed", errorCode: "invalid_grant", errorMessage: "x" },
+			{ status: "skipped", reason: "needs-reauth" },
+		]) {
+			refreshMcpOAuthAccessTokenMock.mockResolvedValueOnce(outcome);
+			await expect(
+				handler({
+					input: { configId: "cfg_1" },
+					context: { user: { id: "user_1" } },
+				}),
+			).resolves.toEqual({ success: false });
+		}
 	});
 
 	it("no-ops a non-OAUTH2 config even if it still carries a refresh token and a tripped breaker", async () => {
@@ -230,6 +282,6 @@ describe("oauth.refresh — needsReauth circuit breaker", () => {
 		// provider.
 		expect(safeFetchOutboundMock).not.toHaveBeenCalled();
 		expect(decryptApiKeyMock).not.toHaveBeenCalled();
-		expect(updateMcpConfigTokensMock).not.toHaveBeenCalled();
+		expect(refreshMcpOAuthAccessTokenMock).not.toHaveBeenCalled();
 	});
 });

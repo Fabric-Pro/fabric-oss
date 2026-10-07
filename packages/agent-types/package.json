@@ -9,13 +9,17 @@
 			"types": "./src/index.ts",
 			"default": "./src/index.ts"
 		},
+		"./chatgpt-plan-fetch": {
+			"types": "./src/chatgpt-plan-fetch.ts",
+			"default": "./src/chatgpt-plan-fetch.ts"
+		},
 		"./databricks-compat": {
 			"types": "./src/databricks-compat.ts",
 			"default": "./src/databricks-compat.ts"
 		}
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",

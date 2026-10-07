@@ -177,7 +177,7 @@ describe("ConnectCliDialog — minting", () => {
 		expect(onKeyIssued).toHaveBeenCalledTimes(1);
 	});
 
-	it("mints a key the CLI can use in CI: the exact instructions scope alongside the gateway's", async () => {
+	it("mints the instruction and MCP scopes without complete repository access", async () => {
 		const user = setupUser();
 		renderInstructions();
 		await user.click(
@@ -234,6 +234,36 @@ describe("ConnectCliDialog — minting", () => {
 });
 
 describe("ConnectCliDialog — what the key grants", () => {
+	it("explains the separate repository capability for headless Git setup before minting", async () => {
+		const user = setupUser();
+		renderInstructions();
+		await user.click(screen.getByText("CI or headless? Use an API key"));
+		const help = await screen.findByTestId(
+			"connect-cli-repository-key-help",
+		);
+		expect(help).toHaveTextContent("This key connects Fabric MCP");
+		expect(help).toHaveTextContent("repositories:read");
+		expect(help).toHaveTextContent("complete attached repository");
+		expect(help).toHaveTextContent("repository-read permission");
+		expect(
+			within(help).getByRole("link", { name: "API keys settings" }),
+		).toHaveAttribute(
+			"href",
+			`/app/${ORGANIZATION_SLUG}/settings/api-keys`,
+		);
+		expect(createKeyMock).not.toHaveBeenCalled();
+		await mintKey(user);
+		expect(help).not.toBeInTheDocument();
+	});
+
+	it("keeps upload setup separate from complete repository access", async () => {
+		renderInstructions({ kind: "upload" });
+		await screen.findByRole("dialog");
+		expect(
+			screen.queryByTestId("connect-cli-repository-key-help"),
+		).not.toBeInTheDocument();
+	});
+
 	it("states three facts in sentence case, before anything is minted", async () => {
 		renderHost({ startOpen: true });
 

@@ -153,6 +153,7 @@ export function ApiKeyAlternative({
 	uncopiedSecretOnScreen,
 	keyCopied,
 	organizationSlug,
+	repositorySetup = false,
 }: {
 	facts: readonly KeyFact[];
 	open: boolean;
@@ -169,6 +170,7 @@ export function ApiKeyAlternative({
 	uncopiedSecretOnScreen: boolean;
 	keyCopied: boolean;
 	organizationSlug?: string;
+	repositorySetup?: boolean;
 }) {
 	return (
 		<DisclosureRow
@@ -191,6 +193,28 @@ export function ApiKeyAlternative({
 					</div>
 				))}
 			</dl>
+			{repositorySetup && !keyIssued ? (
+				<p
+					className="text-muted-foreground text-sm"
+					data-testid="connect-cli-repository-key-help"
+				>
+					This key connects Fabric MCP. To clone or update the
+					complete attached repository in CI, create a key with{" "}
+					<code>instructions:read</code> and{" "}
+					<code>repositories:read</code> in{" "}
+					{organizationSlug ? (
+						<Link
+							className="underline underline-offset-4"
+							href={`/app/${organizationSlug}/settings/api-keys`}
+						>
+							API keys settings
+						</Link>
+					) : (
+						"the organization's API keys settings"
+					)}
+					. Your account needs repository-read permission.
+				</p>
+			) : null}
 
 			{keyIssued ? (
 				<>

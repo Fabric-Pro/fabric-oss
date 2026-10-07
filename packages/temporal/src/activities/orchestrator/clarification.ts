@@ -30,6 +30,12 @@ const CLARITY_HEARTBEAT_INTERVAL_MS = 5_000;
 export interface AnalyzeIntentClarityInput {
 	message: string;
 	projectContext?: string;
+	/**
+	 * The organization the chat works for, when the Advisor may search its
+	 * company context: the preload's company-context hint, header and all.
+	 * Without it "our company" reads as unresolved.
+	 */
+	organizationContext?: string;
 	conversationSummary?: string;
 	/** Required for model resolution (mirrors loom-routing). */
 	userId: string;
@@ -49,7 +55,21 @@ export interface AnalyzeIntentClarityResult {
 	reasoning?: string;
 }
 
-const INTENT_CLARITY_PROMPT = `You are the intake reviewer for a multi-agent software-delivery assistant. Before the system commits to an expensive multi-step plan, decide whether the user's request is ambiguous in a way that would MATERIALLY change the work.
+/**
+ * The organization rule, sent only with an organization context. Without one
+ * the prompt is exactly what it was before the rule existed, so a turn that
+ * cannot search company context (a guest's, a run without ready sources) is
+ * still asked which company "ours" means when that is unresolved.
+ */
+const ORGANIZATION_CONTEXT_RULE = `"Organization context" names the organization the user works for, and it is binding too:
+- "Our company", "our organization" and similar explicit references to the user's own company mean that organization; never ask which company such a reference means. "We" and "us" are read in the conversation's context like any other reference, and may mean someone else, such as a client's team. A request about another company (a client, prospect, partner or competitor) that the conversation does not name is judged as usual.
+- The organization's own material (capabilities, services, case studies, positioning) is searched by the system directly. Never ask what material exists or where it is. Which piece of it to use is judged as usual: when several would lead to materially different work, asking is fine.
+
+`;
+
+const intentClarityPrompt = (
+	organizationRule: string,
+) => `You are the intake reviewer for a multi-agent software-delivery assistant. Before the system commits to an expensive multi-step plan, decide whether the user's request is ambiguous in a way that would MATERIALLY change the work.
 
 Ask a clarifying question ONLY when there is genuine, material ambiguity — an unclear target or scope, an unstated key decision, or multiple plausible interpretations that lead to very different work. If the request is clear enough to act on, DO NOT ask — let the system proceed.
 
@@ -64,12 +84,14 @@ Ask a clarifying question ONLY when there is genuine, material ambiguity — an 
 - Identifiers shaped like a prefix plus a number — "F-12", "F-012", "US-7" (features) or "B-3" (bugs) — name items on that project's roadmap, which the system reads directly. Never ask what such an identifier is, what kind of item it names or where it lives; a request naming them (e.g. "compare F-003 and F-005") is clear on that point, though any other ambiguity in it is judged as usual.
 - The project's documents (PRDs, specs, architecture docs and the rest) and its Context-tab sources (uploaded files, links, notes, transcripts) are listed and read by the system directly. Never ask which documents, PRDs, files or sources exist, how many there are, or which one is meant when the request names a kind ("the PRD", "our specs", "the uploaded files") — the system finds them, and reads every match when there is more than one.
 
-That said, do NOT stay silent on a real gap: if the conversation genuinely does not settle it, ask as normal. Suppressing a needed question is also a failure — the test is whether the conversation answers it, not whether a conversation exists.
+${organizationRule}That said, do NOT stay silent on a real gap: if the conversation genuinely does not settle it, ask as normal. Suppressing a needed question is also a failure — the test is whether the conversation answers it, not whether a conversation exists.
 
 When you ask, provide ONE concise question and up to 3 short, distinct suggested answers (the user can also type their own). Use calm, neutral language; never imply an answer is required or "best". Be conservative: when in doubt, do NOT ask.
 
 Respond with JSON only:
 { "needsClarification": boolean, "question": "<one concise question; omit when false>", "options": ["<short>", "<short>", "<short>"], "reasoning": "<one short sentence>" }`;
+
+const INTENT_CLARITY_PROMPT = intentClarityPrompt("");
 
 /**
  * Decide whether to ask the user a single clarifying question before planning.
@@ -102,7 +124,9 @@ export async function analyzeIntentClarityActivity(
 			model: guarded.model,
 			// A cancelled activity aborts the request in flight.
 			abortSignal: activityAbortSignal(),
-			instructions: INTENT_CLARITY_PROMPT,
+			instructions: input.organizationContext
+				? intentClarityPrompt(ORGANIZATION_CONTEXT_RULE)
+				: INTENT_CLARITY_PROMPT,
 			messages: [
 				{
 					role: "user",
@@ -113,6 +137,10 @@ export async function analyzeIntentClarityActivity(
 					content: `${
 						input.conversationSummary
 							? `## Conversation so far\n${input.conversationSummary.slice(0, 2000)}\n\n`
+							: ""
+					}${
+						input.organizationContext
+							? `## Organization context\n${input.organizationContext.slice(0, 1000)}\n\n`
 							: ""
 					}${
 						input.projectContext

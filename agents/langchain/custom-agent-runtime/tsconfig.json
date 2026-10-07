@@ -12,7 +12,8 @@
 		"declarationMap": true,
 		"sourceMap": true,
 		"resolveJsonModule": true,
-		"noImplicitAny": false
+		"noImplicitAny": false,
+		"types": ["node"]
 	},
 	"include": ["*.ts"],
 	"exclude": ["node_modules", "dist"]

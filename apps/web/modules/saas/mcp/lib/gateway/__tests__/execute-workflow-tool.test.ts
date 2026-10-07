@@ -28,6 +28,12 @@ const mocks = vi.hoisted(() => ({
 	createExecutionWithinConcurrencyCap: vi.fn(),
 }));
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	db: { workflowExecution: { update: mocks.executionUpdate } },
 	getWorkflowById: mocks.getWorkflowById,

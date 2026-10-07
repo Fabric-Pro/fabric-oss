@@ -848,6 +848,9 @@ export const oauthProviders: Record<OAuthProviderType, OAuthProviderConfig> = {
 		): Promise<OAuthTokenResponse> => {
 			const response = await fetch("https://gitlab.com/oauth/token", {
 				method: "POST",
+				// Carries the refresh token and client credentials: never
+				// re-sent by a redirect.
+				redirect: "error",
 				headers: {
 					"Content-Type": "application/x-www-form-urlencoded",
 				},
@@ -1387,30 +1390,88 @@ export async function getOAuthCredentialsWithDb(
 			GITLAB: "gitlab",
 		};
 		const mcpServerKey = mcpServerKeyMap[provider.type];
-		if (mcpServerKey) {
+		// Only for a known person: without a user there is no tenant to
+		// scope the lookup to, and an unscoped one would match anyone's row.
+		if (mcpServerKey && userId) {
+			// Exclusive tenant arms: the person's config in this organization,
+			// or their personal one — never both, never anyone else's.
 			const tenantFilter = organizationId
 				? { userId, organizationId }
-				: userId
-					? { userId, organizationId: null as string | null }
-					: {};
+				: { userId, organizationId: null as string | null };
 
-			const mcpConfig = await db.mCPConfig.findFirst({
+			const rows = await db.mCPConfig.findMany({
 				where: {
 					...tenantFilter,
 					enabled: true,
 					oauthClientId: { not: null },
-					mcpServer: { key: mcpServerKey },
+					// The catalog's GitLab server only: a custom server may
+					// reuse the key, and its owner chooses where it points.
+					mcpServer: { key: mcpServerKey, isSystemProvided: true },
 				},
 				select: {
+					id: true,
 					oauthClientId: true,
 					encryptedOauthClientSecret: true,
+					encryptedRefreshToken: true,
+					oauthBinding: true,
 				},
+				orderBy: { id: "asc" },
 			});
-			if (mcpConfig?.oauthClientId) {
+			// A bound row (the MCP connect flow bound its client) is used only
+			// when its authorization server is the one this provider sends the
+			// client to and its `credentialFingerprint` still matches the
+			// stored id and secret — secret or not. A bearer-only marker is
+			// never used. An unbound row (written before bindings) is used
+			// only when it holds no client secret: a public client's id alone
+			// is nothing secret to misdirect. An unbound row WITH a secret is
+			// refused, and a writer outside the credential module that adds a
+			// secret to an unbound public row makes it exactly that case.
+			const {
+				credentialFingerprintMatches,
+				isMcpOAuthBearerOnly,
+				parseMcpOAuthBinding,
+				sameAuthorizationServer,
+			} = await import(
+				"@repo/database/prisma/queries/lib/mcp-oauth-binding"
+			);
+			const providerAuthorizationServer = new URL(provider.tokenUrl)
+				.origin;
+			const sameTokenEndpoint = (a: string, b: string) => {
+				try {
+					return new URL(a).href === new URL(b).href;
+				} catch {
+					return false;
+				}
+			};
+			const usable = rows.find((row) => {
+				if (
+					!row.oauthClientId ||
+					isMcpOAuthBearerOnly(row.oauthBinding)
+				) {
+					return false;
+				}
+				const binding = parseMcpOAuthBinding(row.oauthBinding);
+				if (!binding) {
+					return row.encryptedOauthClientSecret === null;
+				}
+				return (
+					sameAuthorizationServer(
+						binding.authorizationServerUrl,
+						providerAuthorizationServer,
+					) &&
+					// The exact endpoint this provider sends the client to.
+					sameTokenEndpoint(
+						binding.tokenEndpoint,
+						provider.tokenUrl,
+					) &&
+					credentialFingerprintMatches(binding, row)
+				);
+			});
+			if (usable?.oauthClientId) {
 				return {
-					clientId: mcpConfig.oauthClientId,
-					clientSecret: mcpConfig.encryptedOauthClientSecret
-						? decryptApiKey(mcpConfig.encryptedOauthClientSecret)
+					clientId: usable.oauthClientId,
+					clientSecret: usable.encryptedOauthClientSecret
+						? decryptApiKey(usable.encryptedOauthClientSecret)
 						: undefined,
 				};
 			}
@@ -1477,6 +1538,9 @@ export async function exchangeCodeForTokens(
 		method: "POST",
 		headers,
 		body,
+		// GitLab's client may be an MCP config's (see `getOAuthCredentialsWithDb`),
+		// verified for this exact endpoint: a redirect must not re-send it.
+		...(provider.type === "GITLAB" ? { redirect: "error" as const } : {}),
 	});
 
 	if (!response.ok) {

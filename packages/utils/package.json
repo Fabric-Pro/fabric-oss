@@ -209,6 +209,11 @@
 			"import": "./lib/project-context.ts",
 			"default": "./lib/project-context.ts"
 		},
+		"./dispatch-guard": {
+			"types": "./lib/dispatch-guard.ts",
+			"import": "./lib/dispatch-guard.ts",
+			"default": "./lib/dispatch-guard.ts"
+		},
 		"./read-only-mode": {
 			"types": "./lib/read-only-mode.ts",
 			"import": "./lib/read-only-mode.ts",
@@ -395,7 +400,7 @@
 	"scripts": {
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"types": "./index.ts",
 	"version": "0.0.1",

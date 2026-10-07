@@ -11,6 +11,10 @@
  *     `continueAsNew`) — forwards the cached header onto every outbound
  *     call so the activity / child workflow sees the same correlation.
  *
+ * The same path carries the AI-interactive header (the user id of a person
+ * who started the run with `planEligible`, Fizzy #2939), so every activity
+ * and child of that run sees it too.
+ *
  * One registration in the worker covers every current AND every future
  * workflow with zero per-workflow code changes. Mirrors the pattern used
  * by `@temporalio/interceptors-opentelemetry` for W3C trace context.
@@ -29,6 +33,15 @@ import type {
 } from "@temporalio/workflow";
 
 export const TEMPORAL_CORRELATION_HEADER = "x-correlation-id";
+/** Set by `lib/ai-interactive-interceptor.ts`; forwarded the same way. */
+export const TEMPORAL_AI_INTERACTIVE_HEADER = "x-fabric-ai-interactive-user";
+export const TEMPORAL_AI_IMPERSONATED_HEADER = "x-fabric-ai-impersonated-user";
+
+const PROPAGATED_HEADERS = [
+	TEMPORAL_CORRELATION_HEADER,
+	TEMPORAL_AI_INTERACTIVE_HEADER,
+	TEMPORAL_AI_IMPERSONATED_HEADER,
+] as const;
 
 class CorrelationWorkflowInboundInterceptor
 	implements WorkflowInboundCallsInterceptor
@@ -44,9 +57,15 @@ class CorrelationWorkflowInboundInterceptor
 		input: WorkflowExecuteInput,
 		next: Next<WorkflowInboundCallsInterceptor, "execute">,
 	): Promise<unknown> {
-		const payload = input.headers?.[TEMPORAL_CORRELATION_HEADER];
-		if (payload) {
-			this.headerPatch = { [TEMPORAL_CORRELATION_HEADER]: payload };
+		const patch: TemporalHeaders = {};
+		for (const key of PROPAGATED_HEADERS) {
+			const payload = input.headers?.[key];
+			if (payload) {
+				patch[key] = payload;
+			}
+		}
+		if (Object.keys(patch).length > 0) {
+			this.headerPatch = patch;
 		}
 		return next(input);
 	}

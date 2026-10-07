@@ -137,6 +137,130 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 		).toMatchObject({ turnScope: TURN.turnScope });
 	});
 
+	it("passes the turn scope to the lookup activities, and nothing new without a turn", async () => {
+		const lookups = () => {
+			mocks
+				.stub("retrieveWorkspaceDocumentsActivity")
+				.mockResolvedValue({ context: "", chunkCount: 0 });
+			mocks
+				.stub("retrieveProjectContextsActivity")
+				.mockResolvedValue({ context: "", chunkCount: 0 });
+			mocks.stub("searchProjectTeamsMessages").mockResolvedValue({
+				messages: [],
+				totalCount: 0,
+				query: "launch",
+				searchedChats: [],
+				errors: [],
+			});
+			mocks
+				.stub("executeDatabricksKnowledgeSearchActivity")
+				.mockResolvedValue({
+					summary: "No matching content found.",
+					chunks: [],
+					failures: [],
+					skippedIndexes: [],
+				});
+		};
+		// An agent's Databricks knowledge tool, as preloading registers it.
+		const preloadedResources = {
+			mcpTools: [],
+			agents: [],
+			toolMap: {
+				search_databricks_indexes: {
+					serverName: "databricks-vector-search",
+					definition: {
+						description: "Search the Databricks knowledge base.",
+						inputSchema: { type: "object", properties: {} },
+					},
+					dispatchMetadata: {
+						integrationId: "integration-1",
+						indexNames: ["catalog.idx"],
+					},
+				},
+			},
+		};
+		const steps = (): Step[] => [
+			{
+				calls: [
+					{ name: "search_tools", args: { query: "launch plan" } },
+					{ name: "workspace_rag_query", args: { query: "launch" } },
+					{ name: "project_rag_query", args: { query: "launch" } },
+					{
+						name: "search_teams_messages",
+						args: { query: "launch" },
+					},
+					{
+						name: "search_databricks_indexes",
+						args: { query: "launch" },
+					},
+				],
+			},
+			{ answer: "The 12th." },
+		];
+
+		lookups();
+		await runTurn(mocks, {
+			message: "What is the launch date?",
+			workspaceIds: ["ws-1"],
+			preloadedResources,
+			steps: steps(),
+			turn: TURN,
+		});
+		const scope = { turnScope: TURN.turnScope };
+		for (const name of [
+			"searchAvailableTools",
+			"searchAvailableAgents",
+			"searchAvailableIntegrations",
+			"searchProjectTeamsMessages",
+			"executeDatabricksKnowledgeSearchActivity",
+		]) {
+			expect(mocks.stub(name).mock.calls[0]?.[0], name).toMatchObject(
+				scope,
+			);
+		}
+		// Positional activities take it as a trailing options argument.
+		expect(
+			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0],
+		).toHaveLength(8);
+		expect(
+			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0]?.[7],
+		).toEqual(scope);
+		expect(
+			mocks.stub("retrieveProjectContextsActivity").mock.calls[0],
+		).toHaveLength(6);
+		expect(
+			mocks.stub("retrieveProjectContextsActivity").mock.calls[0]?.[5],
+		).toEqual(scope);
+
+		// A run with no turn schedules them exactly as before.
+		installDefaultStubs(mocks);
+		lookups();
+		await runTurn(mocks, {
+			message: "What is the launch date?",
+			workspaceIds: ["ws-1"],
+			preloadedResources,
+			steps: steps(),
+		});
+		for (const name of [
+			"searchAvailableTools",
+			"searchAvailableAgents",
+			"searchAvailableIntegrations",
+			"searchProjectTeamsMessages",
+			"executeDatabricksKnowledgeSearchActivity",
+		]) {
+			expect(
+				mocks.stub(name).mock.calls[0]?.[0],
+				name,
+			).not.toHaveProperty("turnScope");
+		}
+		expect(
+			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0],
+		).toHaveLength(7);
+		expect(
+			mocks.stub("retrieveProjectContextsActivity").mock.calls[0],
+		).toHaveLength(5);
+	});
+
 	it("budget synthesis: a refused dispatch is not replaced by the deterministic summary", async () => {
 		// A budget below the synthesis reserve exhausts before the first
 		// round, so the only model call is the synthesis.

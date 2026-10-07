@@ -9,6 +9,7 @@
  * digest short-circuits before a single file row is read, and an unknown base
  * answers `changes: null` with the full manifest still attached.
  */
+import { ORPCError } from "@orpc/client";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +30,10 @@ const { mocks } = vi.hoisted(() => ({
 		getProposalPullRequestStatus: vi.fn(),
 		/** `readOpenProposals`, the service behind `proposals/open`. */
 		readOpenProposals: vi.fn(),
+		getDirectRepositoryState: vi.fn(),
+		listDirectRepositoryFilesForApi: vi.fn(),
+		getDirectRepositoryFileForApi: vi.fn(),
+		directRepositoryAvailability: vi.fn(),
 		/** The real service behind the route, for the cases that run it whole. */
 		realProposalPullRequestStatus: null as
 			| null
@@ -117,6 +122,19 @@ vi.mock(
 // route owns the gates, the tenant and the creator it reads for.
 vi.mock("../../projects/procedures/instructions/open-proposals", () => ({
 	readOpenProposals: mocks.readOpenProposals,
+}));
+
+vi.mock("../instruction-direct-repository", () => ({
+	getDirectRepositoryState: mocks.getDirectRepositoryState,
+	listDirectRepositoryFilesForApi: mocks.listDirectRepositoryFilesForApi,
+	getDirectRepositoryFileForApi: mocks.getDirectRepositoryFileForApi,
+	directRepositoryAvailability: mocks.directRepositoryAvailability,
+}));
+
+// Git transport has its own route contract suite. Keep this legacy published
+// route suite isolated from its provider credential boundary.
+vi.mock("../instruction-git-routes", () => ({
+	registerInstructionGitRoutes: vi.fn(),
 }));
 
 /**
@@ -208,6 +226,7 @@ function readySnapshot(overrides: Record<string, unknown> = {}) {
 		projectId: PROJECT,
 		organizationId: ORG,
 		status: "READY",
+		contentKind: "FULL_SNAPSHOT",
 		version: 7,
 		digest: "d".repeat(64),
 		fileCount: 2,
@@ -317,6 +336,11 @@ beforeEach(() => {
 		sourceOfTruth: "UPLOAD",
 		repository: null,
 	});
+	mocks.getDirectRepositoryState.mockResolvedValue({
+		availability: "UPLOAD",
+		readState: "DIRECT",
+	});
+	mocks.directRepositoryAvailability.mockReturnValue("UNAVAILABLE");
 	mocks.findOrganization.mockResolvedValue({ id: ORG });
 	mocks.findUser.mockResolvedValue({
 		email: "dev@example.com",
@@ -771,6 +795,247 @@ describe("authorization", () => {
 // GET published
 // ---------------------------------------------------------------------------
 describe("GET /projects/:projectId/instructions/published", () => {
+	it("uses the direct repository state without loading a snapshot", async () => {
+		mocks.getDirectRepositoryState.mockResolvedValue({
+			availability: "READY",
+			readState: "DIRECT",
+			generation: 7,
+			currentCommitSha: "a".repeat(40),
+			ref: "main",
+			rootPath: "guidance",
+			provider: "AZURE_DEVOPS",
+			repository: {
+				provider: "AZURE_DEVOPS",
+				host: "dev.azure.com",
+				path: "example-org/example-project/_git/instructions",
+				cloneUrl:
+					"https://dev.azure.com/example-org/example-project/_git/instructions",
+			},
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: {
+				"user-agent":
+					"fabric-cli/0.5.0 (node/22; win32; instructions-stream-v1; instructions-repository-direct-v1)",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toBeNull();
+		await expect(response.json()).resolves.toEqual({
+			data: {
+				published: false,
+				sourceOfTruth: "REPOSITORY",
+				repository: {
+					provider: "AZURE_DEVOPS",
+					host: "dev.azure.com",
+					path: "example-org/example-project/_git/instructions",
+					cloneUrl:
+						"https://dev.azure.com/example-org/example-project/_git/instructions",
+					ref: "main",
+					rootPath: "guidance",
+					generation: 7,
+				},
+				direct: {
+					availability: "READY",
+					readState: "DIRECT",
+					generation: 7,
+					currentCommitSha: "a".repeat(40),
+					ref: "main",
+					rootPath: "guidance",
+					provider: "AZURE_DEVOPS",
+					repository: {
+						provider: "AZURE_DEVOPS",
+						host: "dev.azure.com",
+						path: "example-org/example-project/_git/instructions",
+						cloneUrl:
+							"https://dev.azure.com/example-org/example-project/_git/instructions",
+					},
+				},
+			},
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+		expect(mocks.listInstructionFiles).not.toHaveBeenCalled();
+	});
+
+	it("accepts a staged CLI that explicitly declares direct repository support", async () => {
+		mocks.getDirectRepositoryState.mockResolvedValue({
+			availability: "READY",
+			readState: "DIRECT",
+			generation: 7,
+			currentCommitSha: "a".repeat(40),
+			ref: "main",
+			rootPath: "",
+			provider: "GITHUB",
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/instructions",
+				cloneUrl: "https://github.com/example-org/instructions.git",
+			},
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH, {
+			headers: {
+				"user-agent":
+					"fabric-cli/0.4.0 (node/22; win32; instructions-stream-v1; instructions-repository-direct-v1)",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Fabric-Cli-Upgrade")).toBeNull();
+	});
+
+	it.each([
+		"fabric-cli/0.5.1 (node/22; win32; instructions-stream-v1)",
+		"fabric-cli/0.6.0 (node/22; win32; instructions-stream-v1)",
+	])(
+		"requires the direct repository capability from an unmarked CLI regardless of semver: %s",
+		async (userAgent) => {
+			mocks.getDirectRepositoryState.mockResolvedValue({
+				availability: "READY",
+				readState: "DIRECT",
+				generation: 7,
+				currentCommitSha: "a".repeat(40),
+				ref: "main",
+				rootPath: "",
+				provider: "GITHUB",
+				repository: {
+					provider: "GITHUB",
+					host: "github.com",
+					path: "example-org/instructions",
+					cloneUrl: "https://github.com/example-org/instructions.git",
+				},
+			});
+
+			const response = await buildApp().request(PUBLISHED_PATH, {
+				headers: { "user-agent": userAgent },
+			});
+
+			expect(response.status).toBe(409);
+			expect(response.headers.get("X-Fabric-Cli-Upgrade")).toContain(
+				"directly from its repository",
+			);
+			await expect(response.json()).resolves.toEqual({
+				error: {
+					message: expect.stringContaining(
+						"directly from its repository",
+					),
+					code: "CLI_UPGRADE_REQUIRED",
+				},
+			});
+		},
+	);
+
+	it("does not fall back to a legacy snapshot while a direct repository is unavailable", async () => {
+		mocks.resolveCurrentInstructionSource.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/instructions",
+				ref: "main",
+				rootPath: "",
+				generation: 8,
+				cloneUrl: "https://github.com/example-org/instructions.git",
+			},
+		});
+		mocks.getDirectRepositoryState.mockResolvedValue({
+			availability: "CREDENTIALS_EXPIRED",
+			readState: "DIRECT",
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: {
+				published: false,
+				sourceOfTruth: "REPOSITORY",
+				repository: {
+					provider: "GITHUB",
+					host: "github.com",
+					path: "example-org/instructions",
+					ref: "main",
+					rootPath: "",
+					generation: 8,
+					cloneUrl: "https://github.com/example-org/instructions.git",
+				},
+				direct: {
+					availability: "CREDENTIALS_EXPIRED",
+					readState: "DIRECT",
+				},
+			},
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("refuses a revoked project read instead of releasing an unavailable repository descriptor", async () => {
+		mocks.resolveCurrentInstructionSource.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/instructions",
+				ref: "main",
+				rootPath: "",
+				generation: 8,
+				cloneUrl: "https://github.com/example-org/instructions.git",
+			},
+		});
+		mocks.getDirectRepositoryState.mockRejectedValue(
+			new ORPCError("NOT_FOUND", { message: "Project not found" }),
+		);
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+
+		expect(response.status).toBe(404);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message: "Repository file or commit was not found.",
+				code: "PROJECT_NOT_FOUND",
+			},
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("refuses a direct response when the repository configuration changes during the read", async () => {
+		mocks.resolveCurrentInstructionSource
+			.mockResolvedValueOnce({
+				sourceOfTruth: "REPOSITORY",
+				repository: {
+					provider: "GITHUB",
+					host: "github.com",
+					path: "example-org/first-instructions",
+					ref: "main",
+					rootPath: "",
+					generation: 7,
+					cloneUrl:
+						"https://github.com/example-org/first-instructions.git",
+				},
+			})
+			.mockResolvedValueOnce({
+				sourceOfTruth: "UPLOAD",
+				repository: null,
+			});
+		mocks.getDirectRepositoryState.mockResolvedValue({
+			availability: "UPLOAD",
+			readState: "DIRECT",
+		});
+
+		const response = await buildApp().request(PUBLISHED_PATH);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"Repository settings changed while their current state was being read. Refresh and try again.",
+				code: "REPOSITORY_CONFIGURATION_CHANGED",
+			},
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
 	it("returns the manifest and the resolved source of truth", async () => {
 		const response = await buildApp().request(PUBLISHED_PATH);
 
@@ -980,6 +1245,10 @@ describe("GET /projects/:projectId/instructions/published", () => {
 					sourceOfTruth: "REPOSITORY",
 					repository: REPOSITORY,
 				});
+				mocks.getDirectRepositoryState.mockResolvedValue({
+					availability: "MIGRATING",
+					readState: "DIRECT",
+				});
 
 				const response = await buildApp().request(PUBLISHED_PATH);
 				const body = (await response.json()) as {
@@ -1182,6 +1451,172 @@ describe("GET /projects/:projectId/instructions/published", () => {
 		};
 
 		expect(body.data.published).toBe(false);
+	});
+});
+
+describe("GET /projects/:projectId/instructions/repository", () => {
+	it("returns direct repository state and only reads bounded pinned metadata", async () => {
+		mocks.getDirectRepositoryState.mockResolvedValue({
+			availability: "READY",
+			readState: "DIRECT",
+			generation: 7,
+			currentCommitSha: "a".repeat(40),
+			ref: "main",
+			rootPath: "",
+			provider: "GITHUB",
+			repository: {
+				provider: "GITHUB",
+				host: "github.com",
+				path: "example-org/instructions",
+				cloneUrl: "https://github.com/example-org/instructions.git",
+			},
+		});
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository`,
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			data: { availability: "READY", currentCommitSha: "a".repeat(40) },
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("keeps a deterministic configuration conflict from becoming an unavailable response", async () => {
+		mocks.getDirectRepositoryState.mockRejectedValue(
+			new ORPCError("CONFLICT", {
+				data: { code: "REPOSITORY_CONFIGURATION_CHANGED" },
+			}),
+		);
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository`,
+		);
+
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message:
+					"Repository configuration changed. Refresh and try again.",
+				code: "REPOSITORY_CONFIGURATION_CHANGED",
+			},
+		});
+		expect(mocks.getDirectRepositoryState).toHaveBeenCalledOnce();
+	});
+});
+
+describe("GET /projects/:projectId/instructions/repository/files", () => {
+	it("pins the first listing at a returned commit without a snapshot manifest", async () => {
+		mocks.listDirectRepositoryFilesForApi.mockResolvedValue({
+			generation: 7,
+			commitSha: "a".repeat(40),
+			files: [
+				{
+					path: "AGENTS.md",
+					kind: "INSTRUCTION",
+					blobId: "b".repeat(40),
+					size: 12,
+					mode: "100644",
+				},
+			],
+			incomplete: false,
+			refusal: null,
+		});
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository/files`,
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			data: {
+				generation: 7,
+				commitSha: "a".repeat(40),
+				incomplete: false,
+			},
+		});
+		expect(
+			mocks.listDirectRepositoryFilesForApi,
+		).toHaveBeenCalledExactlyOnceWith({
+			projectId: PROJECT,
+			userId: "user-1",
+			signal: expect.any(AbortSignal),
+		});
+		expect(mocks.listInstructionFiles).not.toHaveBeenCalled();
+	});
+
+	it("rejects mutable repository references before resolving the project", async () => {
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository/files?generation=7&commitSha=main`,
+		);
+
+		expect(response.status).toBe(400);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.listDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+});
+
+describe("GET /projects/:projectId/instructions/repository/file", () => {
+	it("serves a page from an explicit pinned commit", async () => {
+		mocks.getDirectRepositoryFileForApi.mockResolvedValue({
+			generation: 7,
+			commitSha: "a".repeat(40),
+			read: {
+				state: "found",
+				text: "\uFEFFfirst\r\nsecond",
+				textLength: 13,
+			},
+		});
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository/file?generation=7&commitSha=${"a".repeat(40)}&path=AGENTS.md&offset=1&maxLength=5`,
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			data: {
+				generation: 7,
+				commitSha: "a".repeat(40),
+				state: "found",
+				body: "first",
+				offset: 1,
+				nextOffset: 6,
+				truncated: true,
+			},
+		});
+		expect(
+			mocks.getDirectRepositoryFileForApi,
+		).toHaveBeenCalledExactlyOnceWith({
+			projectId: PROJECT,
+			userId: "user-1",
+			generation: 7,
+			commitSha: "a".repeat(40),
+			path: "AGENTS.md",
+			signal: expect.any(AbortSignal),
+		});
+		expect(mocks.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("keeps a deterministic missing-file refusal from retryable unavailability", async () => {
+		mocks.getDirectRepositoryFileForApi.mockRejectedValue(
+			new ORPCError("NOT_FOUND", {
+				data: { code: "REPOSITORY_FILE_NOT_FOUND" },
+			}),
+		);
+
+		const response = await buildApp().request(
+			`/projects/${PROJECT}/instructions/repository/file?generation=7&commitSha=${"a".repeat(40)}&path=missing.md&offset=0&maxLength=20`,
+		);
+
+		expect(response.status).toBe(404);
+		await expect(response.json()).resolves.toEqual({
+			error: {
+				message: "Repository file or commit was not found.",
+				code: "REPOSITORY_FILE_NOT_FOUND",
+			},
+		});
+		expect(mocks.getDirectRepositoryFileForApi).toHaveBeenCalledOnce();
 	});
 });
 
@@ -1441,6 +1876,68 @@ describe("POST /projects/:projectId/instructions/published/files", () => {
 		expect(response.status).toBe(403);
 		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
 	});
+});
+
+describe("direct repositories refuse legacy published exports", () => {
+	it.each(["download", "files"])(
+		"refuses %s when the source switches during storage work",
+		async (route) => {
+			mocks.getProjectInstructionSettings
+				.mockResolvedValueOnce({
+					sourceOfTruth: "UPLOAD",
+					migration: null,
+				})
+				.mockResolvedValue({
+					sourceOfTruth: "REPOSITORY",
+					migration: null,
+				});
+			mocks.buildInstructionSnapshotZip.mockResolvedValue({
+				url: "https://storage.example/old-upload.zip",
+			});
+			mocks.getSignedUrl.mockResolvedValue(
+				"https://storage.example/old-upload-file",
+			);
+			const response = await buildApp().request(
+				postJson(`${PUBLISHED_PATH}/${route}`, {
+					digest: readySnapshot().digest,
+					paths: ["AGENTS.md"],
+				}),
+			);
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				error: { code: "REPOSITORY_DIRECT_READ" },
+			});
+		},
+	);
+
+	it.each(["download", "files"])(
+		"refuses %s before snapshot or storage work",
+		async (route) => {
+			mocks.getProjectInstructionSettings.mockResolvedValue({
+				sourceOfTruth: "REPOSITORY",
+				migration: null,
+			});
+			mocks.getPublishedInstructionSnapshot.mockResolvedValue(
+				readySnapshot(),
+			);
+			const response = await buildApp().request(
+				postJson(`${PUBLISHED_PATH}/${route}`, {
+					digest: "d".repeat(64),
+					paths: ["AGENTS.md"],
+				}),
+			);
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				error: { code: "REPOSITORY_DIRECT_READ" },
+			});
+			expect(
+				mocks.getPublishedInstructionSnapshot,
+			).not.toHaveBeenCalled();
+			expect(mocks.listInstructionFiles).not.toHaveBeenCalled();
+			expect(mocks.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+			expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------

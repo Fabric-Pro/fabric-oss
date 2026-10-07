@@ -35,6 +35,7 @@ import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { zodSchema } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 
 /** Fixed taxonomy, in display order. "Other" always sorts last in the UI. */
 const QUESTION_TOPICS = [
@@ -348,7 +349,8 @@ export async function classifyQuestionTopics({
 			}
 		}
 		return result;
-	} catch {
+	} catch (error) {
+		rethrowChatGptPlanRefusal(error);
 		// Decided labels must survive a language-path failure; leftovers stay
 		// FALLBACK_TOPIC, which `result` already carries for every index the
 		// decision pass didn't resolve.

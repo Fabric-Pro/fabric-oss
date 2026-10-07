@@ -12,6 +12,7 @@
  */
 
 import { AI_TOKEN_HEADER, exchangeTokenForKey } from "@repo/ai-token";
+import { rememberChatGptPlanExchange } from "./chatgpt-plan-reexchange";
 
 /**
  * AI credentials resolved from token exchange
@@ -33,6 +34,8 @@ export interface AICredentials {
 	billingMode?: string;
 	/** Stripe customer id when metering is active */
 	billingCustomerId?: string;
+	/** The ChatGPT plan behind `apiKey`, when one serves the token (Fizzy #2770). */
+	planSource?: string;
 }
 
 /**
@@ -135,6 +138,17 @@ async function exchangeTokenForCredentials(
 		enableCache: true,
 	});
 
+	// So a plan that refuses a call as spent can be swapped for another.
+	if (result.provider === "OPENAI_CHATGPT_PLAN" && result.planSource) {
+		rememberChatGptPlanExchange({
+			accessToken: result.apiKey,
+			aiToken: token,
+			fabricBaseUrl,
+			planSource: result.planSource,
+			expiresInSeconds: result.expiresIn,
+		});
+	}
+
 	return {
 		apiKey: result.apiKey,
 		provider: result.provider,
@@ -144,6 +158,7 @@ async function exchangeTokenForCredentials(
 		deploymentName: result.deploymentName,
 		billingMode: result.billingMode,
 		billingCustomerId: result.billingCustomerId,
+		planSource: result.planSource,
 	};
 }
 

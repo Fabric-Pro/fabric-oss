@@ -702,7 +702,7 @@ describe("ConnectCliDialog — the project purpose", () => {
 		expect(screen.queryByText(/needs node\.js/i)).not.toBeInTheDocument();
 	});
 
-	it("adds Codex over MCP, then signs it in, one command to a line", async () => {
+	it("adds Codex over MCP with one command, which opens the browser itself", async () => {
 		const user = setupUser();
 		renderHost({ startOpen: true });
 
@@ -711,18 +711,17 @@ describe("ConnectCliDialog — the project purpose", () => {
 		const block = screen.getByTestId("agent-sign-in-codex");
 		expect(
 			[...block.querySelectorAll("code")].map((row) => row.textContent),
-		).toEqual([
-			`codex mcp add fabric-ewrite --url ${PROJECT_GATEWAY}`,
-			"codex mcp login fabric-ewrite",
-		]);
+		).toEqual([`codex mcp add fabric-ewrite --url ${PROJECT_GATEWAY}`]);
+		expect(block).not.toHaveTextContent("codex mcp login");
+		expect(screen.queryByText(/second command/i)).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/command opens your browser/i),
+		).toBeInTheDocument();
 		await user.click(
-			screen.getByRole("button", { name: "Copy the Codex commands" }),
+			screen.getByRole("button", { name: "Copy the Codex command" }),
 		);
 		expect(clipboardWrite).toHaveBeenCalledWith(
-			[
-				`codex mcp add fabric-ewrite --url ${PROJECT_GATEWAY}`,
-				"codex mcp login fabric-ewrite",
-			].join("\n"),
+			`codex mcp add fabric-ewrite --url ${PROJECT_GATEWAY}`,
 		);
 		expect(screen.queryByText(/\/hooks/)).not.toBeInTheDocument();
 	});

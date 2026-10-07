@@ -24,7 +24,8 @@ export async function resolveModelForTenant(
 		// Use centralized model resolution
 		const { metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: taskType as AiTaskType },
-			{ userId: tenant.userId, organizationId },
+			// Callers get the raw provider key below, which the plan does not have.
+			{ userId: tenant.userId, organizationId, excludeChatGptPlan: true },
 		);
 
 		// Track usage (fire-and-forget)

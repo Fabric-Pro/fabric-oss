@@ -14,7 +14,7 @@
 	"scripts": {
 		"test": "vitest run --passWithNoTests",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"types": "./index.ts",
 	"version": "0.0.1",

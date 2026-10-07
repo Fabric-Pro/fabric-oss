@@ -118,6 +118,8 @@ type SyncLinesProps = {
 	onConfigure?: () => void;
 	/** Present while a rejected-version banner is on the page to point at. */
 	onSeeFindings?: () => void;
+	/** This run's ready snapshot is waiting for the published pointer. */
+	publishing?: boolean;
 };
 
 function SyncLines({
@@ -127,6 +129,7 @@ function SyncLines({
 	onSeeFindings,
 	publishedVersion = null,
 	published = null,
+	publishing = false,
 	syncingCommit = null,
 }: SyncLinesProps) {
 	const t = useTranslations("projects.codingInstructions.repositorySync");
@@ -228,7 +231,15 @@ function SyncLines({
 					) : null}
 				</p>
 			) : null}
-			{running && progress ? (
+			{running && publishing ? (
+				<div className="text-primary">
+					<SyncProgressLine
+						phase={tChecks("publishing")}
+						text={tChecks("publishing")}
+						testId="repository-sync-progress"
+					/>
+				</div>
+			) : running && progress ? (
 				// Only the phase is announced; the count beside it is not read
 				// out on every poll (`SyncProgressLine`).
 				<div className="text-primary">

@@ -5,6 +5,11 @@
 			"constraint": "project_context_repositorySyncId_fkey",
 			"validateBy": "2026-10-14",
 			"followUp": "Validate in the next release after Living Memory repository sync deploys; every pre-existing row is NULL, so it checks nothing but the rows the sync wrote."
+		},
+		{
+			"constraint": "project_instruction_snapshot_git_intent_shape",
+			"validateBy": "2026-10-20",
+			"followUp": "Validate in the next release after native repository intent writers are deployed; existing rows use FULL_SNAPSHOT and new GIT_INTENT rows are checked on write."
 		}
 	]
 }

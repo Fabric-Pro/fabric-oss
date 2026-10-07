@@ -30,7 +30,13 @@ const {
 	serverFindUniqueMock,
 	findUsableGitLabConnectionMock,
 	triggerMcpToolIngestionMock,
+	importMcpOAuthTokensMock,
+	replaceMcpOAuthRegistrationMock,
+	transactionState,
 } = vi.hoisted(() => ({
+	transactionState: { active: false, tx: null as unknown },
+	importMcpOAuthTokensMock: vi.fn(),
+	replaceMcpOAuthRegistrationMock: vi.fn(),
 	getMcpConfigByIdMock: vi.fn(),
 	getMcpConfigForTenantAndServerMock: vi.fn(),
 	getMcpServerByIdMock: vi.fn(),
@@ -43,7 +49,31 @@ const {
 	triggerMcpToolIngestionMock: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// The real tenant rule over the server row the test set up: system, or
+	// a custom server owned by exactly this tenant.
+	getMcpServerForTenant: async (
+		id: string,
+		tenant: { userId: string | null; organizationId: string | null },
+	) => {
+		const server = (await serverFindUniqueMock({
+			where: { id },
+		})) as Record<string, unknown> | null;
+		if (!server) {
+			return null;
+		}
+		if (server.isSystemProvided !== false) {
+			return server;
+		}
+		return server.userId === tenant.userId &&
+			(server.organizationId ?? null) === tenant.organizationId
+			? server
+			: null;
+	},
+	// The pure binding helpers are the real ones.
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
+	)),
 	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",
@@ -51,6 +81,22 @@ vi.mock("@repo/database", () => ({
 	createMcpClientSession: vi.fn(),
 	createMcpConfig: (...args: unknown[]) => createMcpConfigMock(...args),
 	db: {
+		// One transaction: the callback runs with a client whose writes are
+		// the same mocks, flagged so a test can see what ran inside it.
+		$transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+			const tx = {
+				mCPConfig: {
+					updateMany: (...args: unknown[]) => updateManyMock(...args),
+				},
+			};
+			transactionState.active = true;
+			transactionState.tx = tx;
+			try {
+				return await fn(tx);
+			} finally {
+				transactionState.active = false;
+			}
+		},
 		mCPConfig: {
 			updateMany: (...args: unknown[]) => updateManyMock(...args),
 			findUniqueOrThrow: (...args: unknown[]) =>
@@ -66,8 +112,12 @@ vi.mock("@repo/database", () => ({
 		getMcpConfigForTenantAndServerMock(...args),
 	getMcpServerById: (...args: unknown[]) => getMcpServerByIdMock(...args),
 	getOrganizationById: vi.fn(),
+	importMcpOAuthTokens: (...args: unknown[]) =>
+		importMcpOAuthTokensMock(...args),
 	listMcpConfigsForTenant: vi.fn(),
 	recordAudit: vi.fn(),
+	replaceMcpOAuthRegistration: (...args: unknown[]) =>
+		replaceMcpOAuthRegistrationMock(...args),
 	updateMcpConfigEnabled: vi.fn(),
 	upsertMcpConfig: (...args: unknown[]) => upsertMcpConfigMock(...args),
 }));
@@ -132,6 +182,10 @@ vi.mock("@orpc/server", () => ({
 	},
 }));
 
+import {
+	buildMcpOAuthBinding,
+	withCredentialFingerprint,
+} from "@repo/database/prisma/queries/lib/mcp-oauth-binding";
 import { configProcedures } from "../configs";
 
 const handler = (
@@ -178,6 +232,12 @@ function upsertInput(overrides: Record<string, unknown> = {}) {
 }
 
 /** The `data` payload the explicit-configId update path wrote. */
+/** The token set `mcp.configs.upsert` imported through the credential module. */
+function importedTokens(): Record<string, unknown> {
+	expect(importMcpOAuthTokensMock).toHaveBeenCalledOnce();
+	return importMcpOAuthTokensMock.mock.calls[0]?.[0].tokens;
+}
+
 function writtenData(): Record<string, unknown> {
 	expect(updateManyMock).toHaveBeenCalledOnce();
 	return updateManyMock.mock.calls[0]![0].data;
@@ -207,6 +267,16 @@ beforeEach(() => {
 	});
 	findUsableGitLabConnectionMock.mockResolvedValue(null);
 	updateManyMock.mockResolvedValue({ count: 1 });
+	for (const credentialWrite of [
+		importMcpOAuthTokensMock,
+		replaceMcpOAuthRegistrationMock,
+	]) {
+		credentialWrite.mockResolvedValue({
+			written: true,
+			generation: 1,
+			config: { id: "cfg_1", oauthGrantGeneration: 1 },
+		});
+	}
 	findUniqueOrThrowMock.mockImplementation(async () => ({
 		id: "cfg_1",
 		authType: "API_KEY",
@@ -517,6 +587,7 @@ describe("mcp.configs.upsert — GitLab personal servers take no token", () => {
 					}),
 				).rejects.toMatchObject({ code: "BAD_REQUEST" });
 				expect(updateManyMock).not.toHaveBeenCalled();
+				expect(importMcpOAuthTokensMock).not.toHaveBeenCalled();
 			},
 		);
 
@@ -546,6 +617,7 @@ describe("mcp.configs.upsert — GitLab personal servers take no token", () => {
 				for (const column of [...TOKEN_COLUMNS, "encryptedApiKey"]) {
 					expect(written).not.toHaveProperty(column);
 				}
+				expect(importMcpOAuthTokensMock).not.toHaveBeenCalled();
 			},
 		);
 	}
@@ -583,16 +655,18 @@ describe("mcp.configs.upsert — GitLab personal servers take no token", () => {
 			context: { user: { id: "user_1" } },
 		});
 
-		expect(writtenData()).toMatchObject({
+		expect(importedTokens()).toMatchObject({
 			encryptedAccessToken: "encrypted:linear-access",
 			accessTokenHash: "hashed:linear-access",
 			encryptedRefreshToken: "encrypted:linear-refresh",
 		});
+		// Token columns never ride the settings write.
+		expect(writtenData()).not.toHaveProperty("encryptedAccessToken");
 	});
 });
 
 describe("mcp.configs.upsert — token columns fail closed on a server lookup miss", () => {
-	it("stores no token when the server's key cannot be read", async () => {
+	it("refuses, writing nothing, when the server cannot be read for this tenant", async () => {
 		getMcpConfigByIdMock.mockResolvedValue(
 			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
 		);
@@ -600,40 +674,67 @@ describe("mcp.configs.upsert — token columns fail closed on a server lookup mi
 		getMcpServerByIdMock.mockResolvedValue(null);
 		serverFindUniqueMock.mockResolvedValue(null);
 
-		await handler({
-			input: upsertInput({
+		for (const fields of [
+			{
 				authType: "OAUTH2",
 				accessToken: "orphan-access",
 				refreshToken: "orphan-refresh",
 				encryptedAccessToken: "enc-orphan",
-			}),
-			context: { user: { id: "user_1" } },
-		});
-
-		const written = writtenData();
-		for (const column of [
-			"encryptedAccessToken",
-			"accessTokenHash",
-			"encryptedRefreshToken",
+			},
+			{ authType: "API_KEY", apiKey: "orphan-key" },
 		]) {
-			expect(written).not.toHaveProperty(column);
+			await expect(
+				handler({
+					input: upsertInput(fields),
+					context: { user: { id: "user_1" } },
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
 		}
+		expect(updateManyMock).not.toHaveBeenCalled();
+		expect(importMcpOAuthTokensMock).not.toHaveBeenCalled();
+		expect(replaceMcpOAuthRegistrationMock).not.toHaveBeenCalled();
 	});
 
-	it("stores no API key when the server's key cannot be read", async () => {
-		getMcpConfigByIdMock.mockResolvedValue(
-			condemnedOAuthConfig({ needsReauth: false, status: "HEALTHY" }),
-		);
-		getMcpServerByIdMock.mockResolvedValue(null);
-		serverFindUniqueMock.mockResolvedValue(null);
+	for (const [label, owner] of [
+		[
+			"another organization's",
+			{ userId: "user_1", organizationId: "other-org" },
+		],
+		["another user's", { userId: "user_2", organizationId: null }],
+	] as const) {
+		it(`refuses ${label} private server before any binding or write`, async () => {
+			getMcpConfigByIdMock.mockResolvedValue(null);
+			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
+			serverFindUniqueMock.mockResolvedValue({
+				id: "srv_foreign",
+				key: "custom:foreign",
+				isSystemProvided: false,
+				...owner,
+				oauthTokenEndpoint: "https://as.attacker.example/token",
+				oauthAuthorizationEndpoint:
+					"https://as.attacker.example/authorize",
+			});
 
-		await handler({
-			input: upsertInput({ authType: "API_KEY", apiKey: "orphan-key" }),
-			context: { user: { id: "user_1" } },
+			await expect(
+				handler({
+					input: {
+						mcpServerId: "srv_foreign",
+						organizationId: null,
+						scopes: [],
+						enabled: true,
+						authType: "OAUTH2",
+						oauthClientId: "manual-client",
+						oauthClientSecret: "manual-secret",
+					},
+					context: { user: { id: "user_1" } },
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(createMcpConfigMock).not.toHaveBeenCalled();
+			expect(upsertMcpConfigMock).not.toHaveBeenCalled();
+			expect(updateManyMock).not.toHaveBeenCalled();
+			expect(replaceMcpOAuthRegistrationMock).not.toHaveBeenCalled();
 		});
-
-		expect(writtenData()).not.toHaveProperty("encryptedApiKey");
-	});
+	}
 
 	it("still stores an API key for a tenant-owned (non-system) server it can read", async () => {
 		getMcpConfigByIdMock.mockResolvedValue(
@@ -668,7 +769,7 @@ describe("mcp.configs.upsert — token columns fail closed on a server lookup mi
 			context: { user: { id: "user_1" } },
 		});
 
-		expect(writtenData()).toMatchObject({
+		expect(importedTokens()).toMatchObject({
 			encryptedAccessToken: "encrypted:custom-access",
 			accessTokenHash: "hashed:custom-access",
 		});
@@ -735,5 +836,403 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 		});
 
 		expect(triggerMcpToolIngestionMock).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * Where an OAuth credential belongs is decided by the credential module, not
+ * by the settings write: a new URL or a new client replaces the registration
+ * (tokens wiped, config unbound, generation moved), and hand-imported tokens
+ * are bound only to the catalog's authorization server, never to whatever
+ * binding the config held.
+ */
+describe("mcp.configs.upsert — OAuth credential binding", () => {
+	/**
+	 * A config the connect flow bound: its binding carries the fingerprint of
+	 * the credentials it stores, unless the test passes `oauthBinding`.
+	 */
+	function boundOAuthConfig(overrides: Record<string, unknown> = {}) {
+		const row = rawBoundOAuthConfig(overrides) as Record<string, unknown>;
+		if ("oauthBinding" in overrides) {
+			return row;
+		}
+		return {
+			...row,
+			oauthBinding: withCredentialFingerprint(
+				buildMcpOAuthBinding({
+					authorizationServerUrl: "https://as.example.com",
+					tokenEndpoint: "https://as.example.com/token",
+					source: "discovery",
+				}),
+				{
+					oauthClientId: (row.oauthClientId as string | null) ?? null,
+					encryptedOauthClientSecret:
+						(row.encryptedOauthClientSecret as string | null) ??
+						null,
+					encryptedRefreshToken:
+						(row.encryptedRefreshToken as string | null) ?? null,
+				},
+			),
+		};
+	}
+
+	function rawBoundOAuthConfig(overrides: Record<string, unknown> = {}) {
+		return condemnedOAuthConfig({
+			needsReauth: false,
+			status: "HEALTHY",
+			oauthGrantGeneration: 7,
+			oauthClientId: "dcr-client",
+			encryptedOauthClientSecret: "encrypted:dcr-secret",
+			dcrClientMetadata: {
+				token_endpoint_auth_method: "client_secret_basic",
+			},
+			dcrRegistrationEndpoint: "https://as.example.com/register",
+			dcrRegisteredAt: new Date("2026-01-01T00:00:00Z"),
+			encryptedAccessToken: "enc-old-access",
+			accessTokenHash: "hash-old-access",
+			encryptedRefreshToken: "enc-old-refresh",
+			oauthBinding: {
+				authorizationServerUrl: "https://as.example.com",
+				tokenEndpoint: "https://as.example.com/token",
+			},
+			...overrides,
+		});
+	}
+
+	// What each credential write saw: inside the settings transaction?
+	const writesInTransaction: boolean[] = [];
+
+	beforeEach(() => {
+		writesInTransaction.length = 0;
+		const written = (generation: number) => ({
+			written: true,
+			generation,
+			config: { id: "cfg_1", oauthGrantGeneration: generation },
+		});
+		replaceMcpOAuthRegistrationMock.mockImplementation(async () => {
+			writesInTransaction.push(transactionState.active);
+			return written(8);
+		});
+		importMcpOAuthTokensMock.mockImplementation(async () => {
+			writesInTransaction.push(transactionState.active);
+			return written(8);
+		});
+		findUniqueOrThrowMock.mockImplementation(async () => ({
+			...boundOAuthConfig(),
+			authType: "OAUTH2",
+			enabled: false,
+		}));
+	});
+
+	it("a baseUrl change retires the credentials and the client, in the same transaction as the new URL", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				baseUrl: "https://moved.example.com/mcp",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(replaceMcpOAuthRegistrationMock).toHaveBeenCalledOnce();
+		const write = replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0];
+		expect(write).toMatchObject({
+			configId: "cfg_1",
+			tenant: { userId: "user_1", organizationId: null },
+			expectedGeneration: 7,
+			binding: null,
+			tokens: null,
+			// The URL decided where this client's secret went: it goes too.
+			client: null,
+			tx: transactionState.tx,
+		});
+		// The new URL and the retirement land together.
+		expect(writtenData()).toMatchObject({
+			baseUrl: "https://moved.example.com/mcp",
+		});
+		expect(writesInTransaction).toEqual([true]);
+		expect(importMcpOAuthTokensMock).not.toHaveBeenCalled();
+	});
+
+	it("a baseUrl change on a CUSTOM server drops the client even when the row names endpoints (its owner can edit them)", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		serverFindUniqueMock.mockResolvedValue({
+			key: "custom:catalog",
+			isSystemProvided: false,
+			userId: "user_1",
+			organizationId: null,
+			oauthTokenEndpoint: "https://as.example.com/token",
+			oauthAuthorizationEndpoint: "https://as.example.com/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				baseUrl: "https://moved.example.com/mcp",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(
+			replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0].client,
+		).toBeNull();
+	});
+
+	it("a client entered by hand on a custom server is bound to the endpoints the server names right then", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		serverFindUniqueMock.mockResolvedValue({
+			key: "custom:catalog",
+			isSystemProvided: false,
+			userId: "user_1",
+			organizationId: null,
+			oauthTokenEndpoint: "https://as.example.com/token",
+			oauthAuthorizationEndpoint: "https://as.example.com/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				oauthClientId: "manual-client",
+				oauthClientSecret: "manual-secret",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(
+			replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0],
+		).toMatchObject({
+			client: { oauthClientId: "manual-client" },
+			binding: {
+				tokenEndpoint: "https://as.example.com/token",
+				source: "catalog",
+			},
+		});
+	});
+
+	it("an imported token on a CUSTOM server is not bound to the row's endpoints", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		serverFindUniqueMock.mockResolvedValue({
+			key: "custom:catalog",
+			isSystemProvided: false,
+			userId: "user_1",
+			organizationId: null,
+			oauthTokenEndpoint: "https://as.example.com/token",
+			oauthAuthorizationEndpoint: "https://as.example.com/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				refreshToken: "imported",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		// Explicitly bearer-only: served until it expires, never refreshed.
+		expect(
+			importMcpOAuthTokensMock.mock.calls[0]?.[0].binding,
+		).toMatchObject({ mode: "bearer-only" });
+	});
+
+	it("a baseUrl change keeps a client whose AS a SYSTEM catalog row names independently of the URL", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		serverFindUniqueMock.mockResolvedValue({
+			key: "custom:catalog",
+			isSystemProvided: true,
+			oauthTokenEndpoint: "https://as.example.com/token",
+			oauthAuthorizationEndpoint: "https://as.example.com/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				baseUrl: "https://moved.example.com/mcp",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const write = replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0];
+		expect(write).toMatchObject({
+			client: { oauthClientId: "dcr-client" },
+			tokens: null,
+			// It keeps the catalog AS it was carried for; the credential
+			// module fingerprints it there only if that is the AS and token
+			// endpoint its stored binding verified (it is, here).
+			binding: {
+				authorizationServerUrl: "https://as.example.com",
+				tokenEndpoint: "https://as.example.com/token",
+			},
+			keptClient: {
+				oauthClientId: "dcr-client",
+				encryptedOauthClientSecret: "encrypted:dcr-secret",
+			},
+		});
+	});
+
+	it("a baseUrl change drops an UNBOUND client holding a secret instead of carrying it", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(
+			boundOAuthConfig({ oauthBinding: null }),
+		);
+		serverFindUniqueMock.mockResolvedValue({
+			key: "custom:catalog",
+			isSystemProvided: true,
+			oauthTokenEndpoint: "https://as.example.com/token",
+			oauthAuthorizationEndpoint: "https://as.example.com/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				baseUrl: "https://moved.example.com/mcp",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(
+			replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0],
+		).toMatchObject({ client: null, binding: null });
+	});
+
+	it("rolls the URL change back when the credential write lost a race", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		replaceMcpOAuthRegistrationMock.mockResolvedValue({
+			written: false,
+			generation: null,
+			config: null,
+		});
+
+		await expect(
+			handler({
+				input: upsertInput({
+					authType: "OAUTH2",
+					baseUrl: "https://moved.example.com/mcp",
+				}),
+				context: { user: { id: "user_1" } },
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		// The transaction callback threw, so the settings write it made is
+		// rolled back with it.
+		expect(updateManyMock).toHaveBeenCalledOnce();
+	});
+
+	it("an unchanged baseUrl leaves the credentials alone", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				baseUrl: "https://mcp.example.com/v1/mcp",
+				oauthClientId: "dcr-client",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		expect(replaceMcpOAuthRegistrationMock).not.toHaveBeenCalled();
+		expect(importMcpOAuthTokensMock).not.toHaveBeenCalled();
+	});
+
+	it("a new client replaces the registration and wipes the old client's tokens", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				oauthClientId: "manual-client",
+				oauthClientSecret: "manual-secret",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const write = replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0];
+		expect(write).toMatchObject({
+			expectedGeneration: 7,
+			binding: null,
+			tokens: null,
+			client: {
+				oauthClientId: "manual-client",
+				encryptedOauthClientSecret: "encrypted:manual-secret",
+				dcrClientMetadata: {
+					token_endpoint_auth_method: "client_secret_post",
+				},
+				dcrRegisteredAt: null,
+			},
+		});
+		expect(writtenData()).not.toHaveProperty("oauthClientId");
+		expect(writtenData()).not.toHaveProperty("encryptedOauthClientSecret");
+	});
+
+	it("a new client id never inherits the old client's secret", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				oauthClientId: "manual-client",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const write = replaceMcpOAuthRegistrationMock.mock.calls[0]?.[0];
+		expect(write.client).toMatchObject({
+			oauthClientId: "manual-client",
+			encryptedOauthClientSecret: null,
+		});
+	});
+
+	it("an imported token is a whole new grant: omitted tokens are cleared, and nothing is bound without a catalog endpoint", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				refreshToken: "imported-refresh",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const write = importMcpOAuthTokensMock.mock.calls[0]?.[0];
+		// No AS may be trusted for it: explicitly bearer-only.
+		expect(write.binding).toMatchObject({ mode: "bearer-only" });
+		expect(write.expectedGeneration).toBe(7);
+		expect(write.tokens).toEqual({
+			encryptedRefreshToken: "encrypted:imported-refresh",
+			// The old grant's access token is not kept beside it.
+			encryptedAccessToken: null,
+			accessTokenHash: null,
+			tokenExpiresAt: null,
+		});
+		expect(writesInTransaction).toEqual([true]);
+	});
+
+	it("an imported access token does not keep the old refresh token under the import's binding", async () => {
+		getMcpConfigByIdMock.mockResolvedValue(boundOAuthConfig());
+		serverFindUniqueMock.mockResolvedValue({
+			key: "github-remote",
+			isSystemProvided: true,
+			defaultUrl: "https://api.githubcopilot.com/mcp/",
+			oauthTokenEndpoint: "https://github.com/login/oauth/access_token",
+			oauthAuthorizationEndpoint:
+				"https://github.com/login/oauth/authorize",
+		});
+
+		await handler({
+			input: upsertInput({
+				authType: "OAUTH2",
+				accessToken: "imported-access",
+			}),
+			context: { user: { id: "user_1" } },
+		});
+
+		const write = importMcpOAuthTokensMock.mock.calls[0]?.[0];
+		expect(write.tokens).toMatchObject({
+			encryptedAccessToken: "encrypted:imported-access",
+			encryptedRefreshToken: null,
+		});
+		expect(write.binding).toMatchObject({
+			authorizationServerUrl: "https://github.com/login/oauth",
+			tokenEndpoint: "https://github.com/login/oauth/access_token",
+			source: "catalog",
+		});
 	});
 });

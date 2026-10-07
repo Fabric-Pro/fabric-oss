@@ -30,6 +30,10 @@ import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
 import {
+	createNonStrictJsonSchemaMiddleware,
+	strictJsonSchemaNamespacesFor,
+} from "./lib/non-strict-json-schema-middleware";
+import {
 	createPromptSteeredStructuredOutputMiddleware,
 	databricksModelNeedsPromptSteeredStructuredOutput,
 } from "./lib/prompt-steered-structured-output-middleware";
@@ -321,6 +325,16 @@ function wrapWithProviderMiddleware(
 			}),
 		);
 	}
+
+	// Always applied, and last so it is the innermost wrapper: it sees the
+	// params after every middleware above, so a call whose JSON response
+	// format was replaced by the prompt-steered middleware no longer has one
+	// and passes through untouched. See non-strict-json-schema-middleware.ts.
+	middleware.push(
+		createNonStrictJsonSchemaMiddleware(
+			strictJsonSchemaNamespacesFor(resolvedProvider, viaGateway),
+		),
+	);
 
 	// Type assertion needed due to AI SDK type constraints
 	return wrapLanguageModel({

@@ -1,5 +1,6 @@
 import {
 	AI_SEGMENT_MIN_SAMPLE,
+	getAiBillingSourceByOrganization,
 	getAiChangeAnnotations,
 	getAiOutcomeSegments,
 	getAiUsageAdoptionSummary,
@@ -8,6 +9,7 @@ import {
 	getMaturationAnswerAdoption,
 } from "@repo/database";
 import { z } from "zod";
+import { estimateChatGptPlanApiCost } from "../../../lib/chatgpt-plan-cost";
 import {
 	adminProcedure,
 	Permissions,
@@ -17,8 +19,8 @@ import {
 /**
  * Aggregated AI-adoption metrics for the platform-admin dashboard
  * (Fizzy #2230, Phase 0): maturation answer acceptance (as-is / edited /
- * manual), AI Backlog Update proposal outcomes, and platform LLM call
- * volume as context. Read-only; no per-request writes.
+ * manual), AI Backlog Update proposal outcomes, platform LLM call
+ * volume as context, and its ChatGPT plan vs API split by organization. Read-only; no per-request writes.
  *
  * AUTHORIZATION: instance admin only (adminProcedure). Metrics are
  * platform-wide, not tenant-scoped.
@@ -54,6 +56,7 @@ export const getAiAdoptionMetricsProcedure = adminProcedure
 			usageByFeature,
 			outcomeSegments,
 			changeAnnotations,
+			billingSourceByOrganization,
 		] = await Promise.all([
 			getMaturationAnswerAdoption(range),
 			getBacklogProposalAdoption(range),
@@ -61,6 +64,7 @@ export const getAiAdoptionMetricsProcedure = adminProcedure
 			getAiUsageByFeature(range),
 			getAiOutcomeSegments(range),
 			getAiChangeAnnotations(range),
+			getAiBillingSourceByOrganization(range),
 		]);
 
 		return {
@@ -73,6 +77,23 @@ export const getAiAdoptionMetricsProcedure = adminProcedure
 			usageByFeature,
 			outcomeSegments,
 			changeAnnotations,
+			billingSourceByOrganization: {
+				...billingSourceByOrganization,
+				rows: await Promise.all(
+					billingSourceByOrganization.rows.map(async (row) => {
+						const { usageByModel, ...plan } = row.plan;
+						return {
+							...row,
+							plan: {
+								...plan,
+								...(await estimateChatGptPlanApiCost(
+									usageByModel,
+								)),
+							},
+						};
+					}),
+				),
+			},
 			minSampleSize: AI_SEGMENT_MIN_SAMPLE,
 		};
 	});

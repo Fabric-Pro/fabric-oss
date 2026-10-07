@@ -74,6 +74,10 @@ import {
 } from "../hooks";
 import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
+import {
+	loadCodingInstructionsTab,
+	warmCodingInstructions,
+} from "./instructions/lib/coding-instructions-warmup";
 // ProjectHeader is always visible, keep static import
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
@@ -221,13 +225,10 @@ const SecurityAccessibilityPage = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
-const CodingInstructionsTab = dynamic(
-	() =>
-		import("./instructions/CodingInstructionsTab").then(
-			(m) => m.CodingInstructionsTab,
-		),
-	{ loading: () => <TabContentSkeleton />, ssr: false },
-);
+const CodingInstructionsTab = dynamic(loadCodingInstructionsTab, {
+	loading: () => <TabContentSkeleton />,
+	ssr: false,
+});
 
 /**
  * How the "More" menu groups the tabs that do not fit on the row. The row
@@ -574,6 +575,17 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	// the hook's doc comment. The sessionStorage persistence effect below then
 	// records the resolved tab as usual.
 	const tabDeepLink = useProjectTabDeepLink(isTabId);
+	// The tab's first reads need nothing from `projects.get`, so they start
+	// as soon as the page knows the tab is wanted instead of after the project
+	// and the tab's code have loaded in turn.
+	const wantsCodingInstructions =
+		rawActiveTab === "coding-instructions" ||
+		tabDeepLink?.tab === "coding-instructions";
+	useEffect(() => {
+		if (wantsCodingInstructions) {
+			warmCodingInstructions(queryClient, projectId);
+		}
+	}, [wantsCodingInstructions, queryClient, projectId]);
 	useEffect(() => {
 		if (tabDeepLink) {
 			initialTabSourceRef.current = "stored";
@@ -1180,6 +1192,15 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 									anchor={`project-tab-${tab.id}`}
 									beta={showBetaLabel && isBetaTab(tab.id)}
 									overflowed={index >= inlineCount}
+									onIntent={
+										tab.id === "coding-instructions"
+											? () =>
+													warmCodingInstructions(
+														queryClient,
+														projectId,
+													)
+											: undefined
+									}
 									onSelect={() => {
 										startTransition(() =>
 											setActiveTab(tab.id),

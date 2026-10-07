@@ -11,7 +11,7 @@
 		}
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",

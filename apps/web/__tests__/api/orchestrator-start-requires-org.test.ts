@@ -210,16 +210,22 @@ describe("POST orchestrator-temporal — organization is required and verified",
 		);
 		expect(getAIModelWithMetadataMock).toHaveBeenCalledWith(
 			expect.anything(),
-			{ userId: USER_ID, organizationId: "org-active" },
+			{
+				userId: USER_ID,
+				organizationId: "org-active",
+				planEligible: true,
+			},
 		);
 		const [, options] = startWorkflowMock.mock.calls[0] as [
 			string,
 			{
-				args: [{ organizationId?: string }];
+				args: [{ organizationId?: string; planEligible?: boolean }];
 				memo: Record<string, unknown>;
 			},
 		];
 		expect(options.args[0].organizationId).toBe("org-active");
+		// A person typed this turn: its AI steps may use their ChatGPT plan.
+		expect(options.args[0].planEligible).toBe(true);
 		expect(options.memo).toMatchObject({
 			userId: USER_ID,
 			organizationId: "org-active",
@@ -250,7 +256,7 @@ describe("POST orchestrator-temporal — a project guest is refused at start", (
 	});
 });
 
-describe("POST orchestrator-temporal — planner modes keep the legacy path", () => {
+describe("POST orchestrator-temporal — the Planner runs as a turn; Weave keeps the legacy path", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		delete process.env.CACHE_HOST;
@@ -268,11 +274,32 @@ describe("POST orchestrator-temporal — planner modes keep the legacy path", ()
 		});
 	});
 
-	it("R1-4: a save_reuse start creates no turn and passes no turnId", async () => {
+	it("R1-4: a save_reuse (Planner) start is admitted as a turn and passes its turnId", async () => {
 		const { admitConversationTurn } = await import("@repo/database");
 		const { status } = await post({
 			message: "hello",
 			executionMode: "save_reuse",
+		});
+		expect(status).toBe(200);
+		expect(vi.mocked(admitConversationTurn)).toHaveBeenCalledWith(
+			expect.objectContaining({ executionMode: "save_reuse" }),
+		);
+		const [, options] = startWorkflowMock.mock.calls[0] as [
+			string,
+			{ args: [Record<string, unknown>]; workflowIdReusePolicy: string },
+		];
+		expect(options.args[0]).toMatchObject({
+			executionMode: "save_reuse",
+			turnId: "turn-example-1",
+		});
+		expect(options.workflowIdReusePolicy).toBe("REJECT_DUPLICATE");
+	});
+
+	it("R1-4: a weave start creates no turn and passes no turnId", async () => {
+		const { admitConversationTurn } = await import("@repo/database");
+		const { status } = await post({
+			message: "hello",
+			executionMode: "weave",
 		});
 		expect(status).toBe(200);
 		expect(vi.mocked(admitConversationTurn)).not.toHaveBeenCalled();
@@ -293,7 +320,7 @@ describe("POST orchestrator-temporal — planner modes keep the legacy path", ()
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 
-	it("R2-2: refuses a save_reuse start naming the caller's conversation from another organization", async () => {
+	it("R2-2: refuses a weave start naming the caller's conversation from another organization", async () => {
 		const { status } = await post({
 			message: "hello",
 			executionMode: "weave",

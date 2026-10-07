@@ -1,5 +1,16 @@
 # @fabricorg/integrations-linear
 
+## 0.1.10
+
+### Patch Changes
+
+- 436db8c: The Fabric SDK, SDK MCP server and integration packages are now built with tsdown instead of tsup, with the same entry points, exports and ES2015 output; `@fabricorg/sdk-mcp` also exports its `FabricLike` client type.
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+  - @fabricorg/sdk@0.5.0
+  - @fabricorg/integrations-runtime@0.1.1
+
 ## 0.1.9
 
 ### Patch Changes

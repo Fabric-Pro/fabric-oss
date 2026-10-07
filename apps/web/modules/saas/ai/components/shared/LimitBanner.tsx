@@ -15,6 +15,8 @@
 "use client";
 
 import type { LimitSignal } from "@repo/ai/limits";
+import { ChatgptPlanReconnectActions } from "@saas/settings/components/chatgpt-plan/ChatgptPlanReconnectActions";
+import { planResetHint } from "@saas/shared/lib/ai-error-message";
 import { Button } from "@ui/components/button";
 import { AlertTriangleIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import Link from "next/link";
@@ -119,6 +121,21 @@ function getBannerCopy(
 					signal.provider ? ` (${signal.provider})` : ""
 				} and could not handle this request. Please retry in a moment.`,
 			};
+		// Neutral: the spent plan may be the member's own or one the
+		// organization shares with members who have none (Fizzy #2770).
+		case "subscription_exhausted":
+			return {
+				title: "The ChatGPT plan has no usage left",
+				description:
+					"The ChatGPT plan serving your work reached its usage limit, so this request was not sent again. Wait for the limit to reset and try again, or cancel. If it is your own plan, ChatGPT Settings → Usage shows when it resets.",
+				retryHint: planResetHint(signal.retryAfterMs) || undefined,
+			};
+		case "subscription_reconnect":
+			return {
+				title: "Reconnect your ChatGPT plan",
+				description:
+					"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
+			};
 	}
 }
 
@@ -157,6 +174,11 @@ export function LimitBanner({
 						<p className="text-xs text-muted-foreground mt-1">
 							{copy.retryHint}
 						</p>
+					) : null}
+					{signal.kind === "subscription_reconnect" ? (
+						<div className="mt-3">
+							<ChatgptPlanReconnectActions />
+						</div>
 					) : null}
 					{showBillingLink ? (
 						<div className="mt-3">

@@ -113,6 +113,18 @@ export function migrationOfSettings(
 		: null;
 }
 
+/** Ordinary repository reads use Git; only an open migration still imports. */
+export function instructionRepositoryImportAllowed(
+	settings: unknown,
+	syncId: string,
+): boolean {
+	if (!isRecord(settings) || settings.sourceOfTruth !== "REPOSITORY") {
+		return false;
+	}
+	const migration = migrationOfSettings(settings);
+	return migration?.state === "SWITCHING" && migration.syncId === syncId;
+}
+
 /**
  * Whether a pull request's recorded observation says it merged into a branch
  * other than the one the sync reads (`targetMismatch`, set by the branch

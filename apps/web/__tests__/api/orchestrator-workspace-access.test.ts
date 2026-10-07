@@ -118,7 +118,11 @@ describe("POST orchestrator-temporal/stream — workspace access", () => {
 		delete process.env.CACHE_HOST;
 		delete process.env.REDIS_URL;
 
-		getSessionMock.mockResolvedValue({ user: { id: SESSION_USER_ID } });
+		// A real session always carries its `session` record.
+		getSessionMock.mockResolvedValue({
+			user: { id: SESSION_USER_ID },
+			session: {},
+		});
 		getAIModelWithMetadataMock.mockResolvedValue({
 			trackUsage: trackUsageMock,
 		});

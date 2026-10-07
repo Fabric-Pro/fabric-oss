@@ -1,17 +1,27 @@
 import { ORPCError } from "@orpc/server";
 import {
+	bearerOnlyOAuthMarker,
 	clearMcpConfigFromReportInstances,
 	createMcpClientSession,
 	createMcpConfig,
 	db,
 	deleteMcpConfig,
+	explicitClientMetadata,
 	getMcpConfigById,
 	getMcpConfigForTenantAndServer,
 	getMcpServerById,
+	getMcpServerForTenant,
 	getOrganizationById,
+	importMcpOAuthTokens,
 	isGitLabPersonalMcpServerKey,
+	isStoredMcpOAuthClientTrusted,
 	listMcpConfigsForTenant,
+	type McpOAuthImportedTokens,
+	type McpOAuthImportSource,
+	type McpOAuthStoredAccessToken,
+	type McpOAuthStoredCredentials,
 	recordAudit,
+	replaceMcpOAuthRegistration,
 	updateMcpConfigEnabled,
 	upsertMcpConfig,
 } from "@repo/database";
@@ -31,6 +41,10 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { removeGitLabPersonalMcpConfig } from "../lib/gitlab-config-removal";
+import {
+	enteredClientBindingFor,
+	independentBindingFor,
+} from "../lib/oauth-authorization-server";
 
 // NOTE: AI provider config is now fetched directly inside Temporal activities
 // using getAIProviderConfig(). This ensures proper tenant isolation and
@@ -272,6 +286,7 @@ export const configProcedures = {
 				encryptedApiKey,
 				encryptedAccessToken,
 				encryptedRefreshToken,
+				tokenExpiresAt,
 				...rest
 			} = input as any;
 			let mcpServerId: string = inputMcpServerId;
@@ -339,25 +354,31 @@ export const configProcedures = {
 			const requestedAuthType =
 				input.authType ?? existingConfig?.authType ?? "NONE";
 
+			// The server, as this tenant may use it: a system server, or a
+			// custom server this tenant owns (exclusive tenant filter). A config
+			// is never created for, or moved onto, a server another person or
+			// organization controls — its endpoints would receive this config's
+			// client secret and tokens. Refused before anything is written.
+			const serverKey = await getMcpServerForTenant(mcpServerId, {
+				userId: tenantUserId,
+				organizationId: organizationId ?? null,
+			});
+			if (!serverKey) {
+				throw new ORPCError("NOT_FOUND", {
+					message: "MCP server not found",
+				});
+			}
+
 			// GitLab personal servers never take a credential here: their
 			// credential is the person's GitLab connection, written only by
 			// the GitLab connection service, and every reader of these rows
 			// resolves through that connection whatever `authType` the row
 			// names. A token or API key stored on the config would be a
-			// second, unmanaged copy of a GitLab grant. Fails closed: a server
-			// whose key cannot be read (no such row) takes no credential
-			// either, rather than being assumed not GitLab. Looked up by id
-			// alone — `getMcpServerById` without a tenant finds only system
-			// servers, so it would miss every custom one.
-			const serverKey = await db.mCPServer.findUnique({
-				where: { id: mcpServerId },
-				select: { key: true },
-			});
+			// second, unmanaged copy of a GitLab grant.
 			const isGitLabPersonalServer = isGitLabPersonalMcpServerKey(
 				serverKey?.key,
 			);
-			const credentialColumnsWritable =
-				serverKey !== null && !isGitLabPersonalServer;
+			const credentialColumnsWritable = !isGitLabPersonalServer;
 			// A GitLab personal server's config is always stored as OAUTH2,
 			// the only auth type those servers offer: every screen and reader
 			// then sees one shape. Forced rather than refused, so a client
@@ -469,22 +490,28 @@ export const configProcedures = {
 						: undefined,
 			};
 
-			if (oauthClientId) {
-				data.oauthClientId = oauthClientId;
-			} else if (
-				existingConfig?.oauthClientId &&
-				effectiveAuthType === "OAUTH2"
-			) {
-				data.oauthClientId = existingConfig.oauthClientId;
-			}
-
-			if (
+			// OAuth client and token columns are written through the
+			// credential module below, never as part of `data`: a change to
+			// where the credentials belong must wipe or rebind them.
+			const newClientId =
+				typeof oauthClientId === "string" && oauthClientId.length > 0
+					? oauthClientId
+					: undefined;
+			const newClientSecretCiphertext =
 				typeof oauthClientSecret === "string" &&
 				oauthClientSecret.length > 0
-			) {
-				data.encryptedOauthClientSecret =
-					encryptApiKey(oauthClientSecret);
-			}
+					? encryptApiKey(oauthClientSecret)
+					: undefined;
+			const clientChanged =
+				(newClientId !== undefined &&
+					newClientId !== (existingConfig?.oauthClientId ?? null)) ||
+				newClientSecretCiphertext !== undefined;
+			// A new URL may answer with a different authorization server, so
+			// whatever was granted through the old one is not carried over.
+			const baseUrlChanged =
+				!!existingConfig &&
+				rest.baseUrl !== undefined &&
+				(rest.baseUrl || null) !== (existingConfig.baseUrl || null);
 
 			// Prefer plaintext -> encrypt; else use provided encrypted values.
 			// Only where credential columns are writable (see above).
@@ -495,47 +522,69 @@ export const configProcedures = {
 			} else if (encryptedApiKey !== undefined) {
 				data.encryptedApiKey = encryptedApiKey;
 			}
-			if (!credentialColumnsWritable) {
-				// Fall through with no token fields set.
-			} else if (
-				typeof accessToken === "string" &&
-				accessToken.length > 0
-			) {
-				data.encryptedAccessToken = encryptApiKey(accessToken);
-				data.accessTokenHash = hashApiKey(accessToken);
-			} else if (encryptedAccessToken !== undefined) {
-				data.encryptedAccessToken = encryptedAccessToken;
-				// Caller passed an already-encrypted token; decrypt it once so
-				// we can compute the matching lookup hash. Failing decrypt
-				// leaves the hash null — the row will work for everything
-				// except bearer-based MCP shim resolution until a refresh.
-				if (encryptedAccessToken === null) {
-					data.accessTokenHash = null;
-				} else {
-					try {
-						data.accessTokenHash = hashApiKey(
-							decryptApiKey(encryptedAccessToken),
-						);
-					} catch {
-						data.accessTokenHash = null;
+
+			// A hand-imported token set is a whole new grant: the tokens it
+			// names replace every token column, and anything it omits is
+			// cleared — never kept from the old grant under the import's
+			// binding.
+			let importedTokens: McpOAuthImportedTokens | null = null;
+			let tokensImported = false;
+			// How the access token arrived. Only plaintext — encrypted and
+			// hashed by the server now — can be a new grant that lifts the
+			// refresh circuit breaker; a ciphertext (the shape `configs.list`
+			// returns) never can.
+			let accessTokenSource: McpOAuthImportSource = "ciphertext";
+			if (credentialColumnsWritable) {
+				const tokens: McpOAuthImportedTokens = {
+					encryptedAccessToken: null,
+					accessTokenHash: null,
+					encryptedRefreshToken: null,
+					tokenExpiresAt: null,
+				};
+				if (typeof accessToken === "string" && accessToken.length > 0) {
+					tokens.encryptedAccessToken = encryptApiKey(accessToken);
+					tokens.accessTokenHash = hashApiKey(accessToken);
+					accessTokenSource = "plaintext";
+					tokensImported = true;
+				} else if (encryptedAccessToken !== undefined) {
+					tokens.encryptedAccessToken = encryptedAccessToken;
+					// Caller passed an already-encrypted token; decrypt it once so
+					// we can compute the matching lookup hash. Failing decrypt
+					// leaves the hash null — the row will work for everything
+					// except bearer-based MCP shim resolution until a refresh.
+					if (encryptedAccessToken !== null) {
+						try {
+							tokens.accessTokenHash = hashApiKey(
+								decryptApiKey(encryptedAccessToken),
+							);
+						} catch {
+							tokens.accessTokenHash = null;
+						}
 					}
+					tokensImported = true;
 				}
-			}
-			if (!credentialColumnsWritable) {
-				// See above.
-			} else if (
-				typeof refreshToken === "string" &&
-				refreshToken.length > 0
-			) {
-				data.encryptedRefreshToken = encryptApiKey(refreshToken);
-			} else if (encryptedRefreshToken !== undefined) {
-				data.encryptedRefreshToken = encryptedRefreshToken;
+				if (
+					typeof refreshToken === "string" &&
+					refreshToken.length > 0
+				) {
+					tokens.encryptedRefreshToken = encryptApiKey(refreshToken);
+					tokensImported = true;
+				} else if (encryptedRefreshToken !== undefined) {
+					tokens.encryptedRefreshToken = encryptedRefreshToken;
+					tokensImported = true;
+				}
+				if (tokensImported) {
+					tokens.tokenExpiresAt = tokenExpiresAt ?? null;
+				}
+				importedTokens = tokensImported ? tokens : null;
 			}
 
 			// Moving off OAuth retires the OAuth circuit breaker with it.
-			// `needsReauth` describes an OAuth GRANT, and its only exit is a
-			// successful OAuth reconnect — something an API_KEY / NONE config
-			// has no way to perform. Left set, the flag would refuse the config
+			// `needsReauth` describes an OAuth GRANT, and its only exits are a
+			// new grant — a successful OAuth reconnect, or importing a usable
+			// token set below, whose credential write resets the breaker in the
+			// same statement — and an API_KEY / NONE config can perform
+			// neither. Left set, the flag would refuse the config
 			// at MCP client creation and hide it from tool discovery while the
 			// new credential works perfectly, with nothing the user can do
 			// about it. Reset the diagnostics alongside it so triage doesn't
@@ -544,7 +593,9 @@ export const configProcedures = {
 			// Gated on the STORED type being OAUTH2 so this only fires on an
 			// actual departure from OAuth: an OAuth config edited while
 			// STAYING OAuth must not be able to launder a condemned grant by
-			// touching an unrelated field.
+			// touching an unrelated field. (A token import is not an unrelated
+			// field: it replaces the grant, and the credential module resets
+			// the breaker only when it installs a usable access token.)
 			//
 			// Only a server that actually OFFERS the target auth type can be
 			// moved onto it. Where a server declares OAuth alone — the GitLab
@@ -586,53 +637,274 @@ export const configProcedures = {
 				}
 			}
 
-			let record: any;
-			if (configId && existingConfig) {
-				// Explicit update by config ID
-				const { apiKeyMethod: dataApiKeyMethod, ...restData } = data;
-				const updateData =
-					dataApiKeyMethod === null
-						? restData
-						: {
-								...restData,
-								...(dataApiKeyMethod !== undefined
-									? { apiKeyMethod: dataApiKeyMethod }
-									: {}),
-							};
-				// Defense-in-depth: verify tenant ownership at write time
-				const updated = await db.mCPConfig.updateMany({
-					where: {
-						id: configId,
-						userId: tenantUserId,
-						organizationId: organizationId ?? null,
-					},
-					data: updateData,
-				});
-				if (updated.count === 0) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "MCP config not found or not owned by you",
+			// The OAuth credential write, through the credential module.
+			// - A client change (or, for an existing config, a URL change)
+			//   replaces the registration: the tokens it held are wiped, the
+			//   generation moves, and the config is unbound until the connect
+			//   flow binds a new grant. A URL change also drops the client,
+			//   unless its authorization server does not depend on the URL
+			//   (the catalog names it for this server).
+			// - Imported tokens are a new grant bound to the catalog's
+			//   authorization server when the catalog names one, otherwise
+			//   left unbound (and an unbound config is never refreshed).
+			// Every credential write is conditional on the generation read
+			// above, and for an existing config it lands in the SAME
+			// transaction as the settings write: a new URL is never visible
+			// with the old URL's credentials.
+			const tenantGuard = {
+				userId: tenantUserId,
+				organizationId: organizationId ?? null,
+			};
+			const effectiveUrl: string | null =
+				(rest.baseUrl !== undefined
+					? rest.baseUrl
+					: existingConfig?.baseUrl) ||
+				serverKey?.defaultUrl ||
+				null;
+			// Imported tokens are bound only to an AS configured independently
+			// of the person (a system catalog row or Fabric's known table);
+			// tokens imported with a newly entered client go with that client.
+			const importBinding = tokensImported
+				? independentBindingFor(serverKey ?? {}, effectiveUrl)
+				: null;
+			const needsRegistrationReplacement =
+				clientChanged || baseUrlChanged;
+			const credentialChange =
+				needsRegistrationReplacement || tokensImported;
+
+			const replacementClient = () => {
+				if (clientChanged) {
+					const clientId: string | null =
+						newClientId ?? existingConfig?.oauthClientId ?? null;
+					if (!clientId) {
+						return null;
+					}
+					// A secret never carries over to a different client id.
+					const sameClient =
+						clientId === existingConfig?.oauthClientId;
+					return {
+						oauthClientId: clientId,
+						encryptedOauthClientSecret:
+							newClientSecretCiphertext ??
+							(sameClient
+								? (existingConfig?.encryptedOauthClientSecret ??
+									null)
+								: null),
+						// A hand-entered client: the method Fabric has always
+						// used for those, recorded explicitly.
+						dcrClientMetadata: explicitClientMetadata(),
+						dcrRegistrationEndpoint: null,
+						dcrRegisteredAt: null,
+					};
+				}
+				// URL change only: keep the client only when its authorization
+				// server does not come from the URL, and only a client still
+				// matching its binding's fingerprint (one replaced by a writer
+				// outside the credential module is dropped, not re-bound).
+				if (
+					existingConfig?.oauthClientId &&
+					independentBindingFor(serverKey ?? {}, null) &&
+					isStoredMcpOAuthClientTrusted(
+						storedCredentialsOf(existingConfig),
+					)
+				) {
+					return {
+						oauthClientId: existingConfig.oauthClientId,
+						encryptedOauthClientSecret:
+							existingConfig.encryptedOauthClientSecret ?? null,
+						dcrClientMetadata:
+							(existingConfig.dcrClientMetadata as Record<
+								string,
+								unknown
+							> | null) ?? null,
+						dcrRegistrationEndpoint:
+							existingConfig.dcrRegistrationEndpoint ?? null,
+						dcrRegisteredAt: existingConfig.dcrRegisteredAt ?? null,
+					};
+				}
+				return null;
+			};
+
+			// The access token a row held when it was read at the generation
+			// the write is fenced on: an import compares against it (the same
+			// token re-submitted is not a new grant), and the write is also
+			// fenced on it.
+			const storedAccessTokenOf = (row: {
+				encryptedAccessToken?: string | null;
+				accessTokenHash?: string | null;
+				tokenExpiresAt?: Date | null;
+			}): McpOAuthStoredAccessToken => ({
+				encryptedAccessToken: row.encryptedAccessToken ?? null,
+				accessTokenHash: row.accessTokenHash ?? null,
+				tokenExpiresAt: row.tokenExpiresAt ?? null,
+			});
+			// The credentials a row held when it was read: an import that keeps
+			// its client is fenced on it, and fingerprints the new binding with
+			// it only when it still matched the row's binding.
+			const storedCredentialsOf = (row: {
+				oauthClientId?: string | null;
+				encryptedOauthClientSecret?: string | null;
+				encryptedRefreshToken?: string | null;
+				oauthBinding?: unknown;
+			}): McpOAuthStoredCredentials => ({
+				oauthClientId: row.oauthClientId ?? null,
+				encryptedOauthClientSecret:
+					row.encryptedOauthClientSecret ?? null,
+				encryptedRefreshToken: row.encryptedRefreshToken ?? null,
+				oauthBinding: row.oauthBinding ?? null,
+			});
+
+			const writeCredentials = async (
+				configRowId: string,
+				expectedGeneration: number,
+				storedAccessToken: McpOAuthStoredAccessToken,
+				stored: McpOAuthStoredCredentials,
+				tx?: Parameters<typeof replaceMcpOAuthRegistration>[0]["tx"],
+			) => {
+				const client = needsRegistrationReplacement
+					? replacementClient()
+					: null;
+				// A URL change that carries the stored client over keeps it,
+				// rather than entering a new one: the credential module then
+				// fingerprints it under the new binding only when that names the
+				// AS and token endpoint the client is verified for.
+				const keptClient =
+					needsRegistrationReplacement && !clientChanged && client
+						? stored
+						: undefined;
+				// Whenever tokens are imported, the import rule decides the
+				// binding: the independent pinned AS, else bearer-only. A custom
+				// row's editable endpoints never receive an imported refresh
+				// token — not even when the same save also enters a client. If
+				// the save enters a client too, bearer-only wins for this save,
+				// and the client is bound at its next OAuth start/callback.
+				//
+				// A client entered by hand WITHOUT tokens is bound when it is
+				// entered: to the independent AS, or on a custom server to the
+				// endpoints it names now. Changing those endpoints later removes
+				// the client.
+				//
+				// A client carried over a URL change keeps the independent AS's
+				// binding it was verified for (the module re-checks that).
+				const replacementBinding = tokensImported
+					? (importBinding ?? bearerOnlyOAuthMarker())
+					: clientChanged && client
+						? enteredClientBindingFor(serverKey ?? {}, effectiveUrl)
+						: keptClient
+							? // The AS that let it be carried (not the URL's).
+								independentBindingFor(serverKey ?? {}, null)
+							: null;
+				const written = needsRegistrationReplacement
+					? await replaceMcpOAuthRegistration({
+							configId: configRowId,
+							tenant: tenantGuard,
+							expectedGeneration,
+							client,
+							keptClient,
+							binding: replacementBinding,
+							tokens: importedTokens,
+							storedAccessToken,
+							accessTokenSource,
+							tx,
+						})
+					: await importMcpOAuthTokens({
+							configId: configRowId,
+							tenant: tenantGuard,
+							expectedGeneration,
+							tokens: importedTokens,
+							binding: replacementBinding,
+							storedAccessToken,
+							stored,
+							accessTokenSource,
+							tx,
+						});
+				if (!written.written) {
+					throw new ORPCError("CONFLICT", {
+						message:
+							"This MCP connection changed while it was being saved. Reload and try again.",
 					});
 				}
+			};
+
+			const { apiKeyMethod: dataApiKeyMethod, ...restData } = data;
+			const updateData =
+				dataApiKeyMethod === null
+					? restData
+					: {
+							...restData,
+							...(dataApiKeyMethod !== undefined
+								? { apiKeyMethod: dataApiKeyMethod }
+								: {}),
+						};
+
+			let record: any;
+			if (existingConfig && (configId || credentialChange)) {
+				// Update by id. With a credential change the settings write and
+				// the credential write are one transaction.
+				const targetId: string = existingConfig.id;
+				const writeSettings = async (client: typeof db) => {
+					// Defense-in-depth: verify tenant ownership at write time
+					const updated = await client.mCPConfig.updateMany({
+						where: {
+							id: targetId,
+							userId: tenantUserId,
+							organizationId: organizationId ?? null,
+						},
+						data: updateData,
+					});
+					if (updated.count === 0) {
+						throw new ORPCError("FORBIDDEN", {
+							message: "MCP config not found or not owned by you",
+						});
+					}
+				};
+				if (credentialChange) {
+					await db.$transaction(async (tx) => {
+						await writeSettings(tx as unknown as typeof db);
+						await writeCredentials(
+							targetId,
+							existingConfig.oauthGrantGeneration,
+							storedAccessTokenOf(existingConfig),
+							storedCredentialsOf(existingConfig),
+							tx,
+						);
+					});
+				} else {
+					await writeSettings(db);
+				}
 				record = await db.mCPConfig.findUniqueOrThrow({
-					where: { id: configId },
+					where: { id: targetId },
 					include: { mcpServer: true },
 				});
-			} else if (forceCreate) {
-				// Always create a new config
-				record = await createMcpConfig({
-					mcpServerId,
-					userId: tenantUserId,
-					organizationId,
-					data,
-				});
 			} else {
-				// Default upsert behavior (backward compat for OAuth callbacks, etc.)
-				record = await upsertMcpConfig({
-					mcpServerId,
-					userId: tenantUserId,
-					organizationId,
-					data,
-				});
+				record = forceCreate
+					? // Always create a new config
+						await createMcpConfig({
+							mcpServerId,
+							userId: tenantUserId,
+							organizationId,
+							data,
+						})
+					: // Default upsert behavior (backward compat for OAuth callbacks, etc.)
+						await upsertMcpConfig({
+							mcpServerId,
+							userId: tenantUserId,
+							organizationId,
+							data,
+						});
+				if (credentialChange) {
+					// A new row: it holds no earlier credential to retire.
+					await writeCredentials(
+						record.id,
+						record.oauthGrantGeneration ?? 0,
+						storedAccessTokenOf(record),
+						storedCredentialsOf(record),
+					);
+					record = await db.mCPConfig.findUniqueOrThrow({
+						where: { id: record.id },
+						include: { mcpServer: true },
+					});
+				}
 			}
 
 			// Trigger tool ingestion workflow if config is enabled

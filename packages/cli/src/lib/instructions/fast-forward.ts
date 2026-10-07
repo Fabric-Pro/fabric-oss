@@ -32,16 +32,27 @@ type BehindReason = "dirty" | "wrong-branch" | "detached" | "operation";
 
 export type NotSafeReason = BehindReason | FastForwardNotSafe;
 
+/**
+ * Where the hook's budget ran out: reading the checkout before any fetch,
+ * the fetch itself, or the local steps (re-reading the checkout, the merge)
+ * after a fetch that finished.
+ */
+export type DeadlineStage = "read" | "fetch" | "merge";
+
 export type FfOutcome =
 	| { kind: "fast-forwarded"; from: string; to: string }
 	| { kind: "already-current" }
 	| { kind: "not-safe"; reason: NotSafeReason }
 	| { kind: "fetch-failed"; reason: FastForwardFetchFailure }
-	| { kind: "merge-failed"; reason: FastForwardMergeFailure }
+	| {
+			kind: "merge-failed";
+			reason: FastForwardMergeFailure;
+			files?: string[];
+	  }
 	| { kind: "locked" }
 	| { kind: "abandoned-lock"; lockPath: string }
 	| { kind: "opted-out" }
-	| { kind: "deadline" };
+	| { kind: "deadline"; stage: DeadlineStage };
 
 /** What the gate reads: the checkout's own report plus what the write needs. */
 export interface FastForwardFacts {
@@ -98,9 +109,6 @@ export function fastForwardEligibility(facts: FastForwardFacts): Eligibility {
 	}
 	if (facts.upstream !== `${remote}/${ref}`) {
 		return no("upstream-mismatch");
-	}
-	if (!state.clean) {
-		return no("dirty");
 	}
 	if (facts.lockFiles) {
 		return no("git-busy");
@@ -286,11 +294,15 @@ export function fastForwardLines(
 		case "merge-failed": {
 			const text = outcomeLine("ff-merge-failed", {
 				reason: outcome.reason,
+				files: outcome.files,
 				ref: context.ref,
 				remote: context.remote,
 				commands: context.commands,
 			});
-			if (outcome.reason === "diverged") {
+			if (
+				outcome.reason === "diverged" ||
+				outcome.reason === "local-changes"
+			) {
 				stdout.push(text);
 				otherLine();
 			} else {

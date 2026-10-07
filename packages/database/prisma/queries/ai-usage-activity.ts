@@ -34,6 +34,49 @@ function buildProjectIdClause(
 	return { OR: [{ projectId: { in: ids } }, { projectId: null }] };
 }
 
+const CHATGPT_PLAN_PROVIDER = "OPENAI_CHATGPT_PLAN" satisfies AIProvider;
+
+/**
+ * Who pays for a call: `chatgpt_plan` rows ran on a member's own ChatGPT
+ * plan (cost recorded as 0), `api` rows are billed through an API key.
+ */
+export type AiUsageBillingSource = "chatgpt_plan" | "api";
+
+function buildBillingSourceClause(
+	billingSource: AiUsageBillingSource | undefined,
+): Prisma.AiUsageLogWhereInput {
+	if (billingSource === "chatgpt_plan") {
+		return { provider: CHATGPT_PLAN_PROVIDER };
+	}
+	if (billingSource === "api") {
+		return { provider: { not: CHATGPT_PLAN_PROVIDER } };
+	}
+	return {};
+}
+
+function billingSourceOf(provider: AIProvider): AiUsageBillingSource {
+	return provider === CHATGPT_PLAN_PROVIDER ? "chatgpt_plan" : "api";
+}
+
+export interface AiUsageBillingSourceTotals {
+	requests: number;
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+	costMicroUsd: number;
+}
+
+/**
+ * Tokens a member's ChatGPT plan served, per plan model — what the API layer
+ * prices as an API-equivalent estimate. The real cost of these rows is 0.
+ */
+export interface ChatGptPlanModelUsage {
+	providerModelId: string;
+	inputTokens: number;
+	outputTokens: number;
+	cachedInputTokens: number;
+}
+
 type TenantParams =
 	| { organizationId: string; userId?: string }
 	| { userId: string; organizationId?: null | undefined };
@@ -70,6 +113,7 @@ export interface AiUsageActivityTotals {
 	totalTokens: number;
 	costMicroUsd: number;
 	avgLatencyMs: number;
+	bySource: Record<AiUsageBillingSource, AiUsageBillingSourceTotals>;
 }
 
 export interface AiUsageActivityResult {
@@ -77,6 +121,8 @@ export interface AiUsageActivityResult {
 	nextCursor: string | null;
 	totals: AiUsageActivityTotals;
 	periodDays: number;
+	/** Plan rows' tokens per plan model, for the API-equivalent estimate. */
+	planUsageByModel: ChatGptPlanModelUsage[];
 }
 
 export type AiUsageActivitySortBy =
@@ -101,6 +147,7 @@ export async function listAiUsageActivity(
 		// specific members. Distinct from the tenant `userId` on personal
 		// context, which identifies WHICH user's personal data to read.
 		filterUserIds?: string[];
+		billingSource?: AiUsageBillingSource;
 		minCostMicroUsd?: number;
 		maxCostMicroUsd?: number;
 		minLatencyMs?: number;
@@ -179,6 +226,7 @@ export async function listAiUsageActivity(
 			? { providerModelId: { in: params.providerModelIds } }
 			: {}),
 		...projectIdClause,
+		...buildBillingSourceClause(params.billingSource),
 		...("organizationId" in params &&
 		params.organizationId &&
 		params.filterUserIds &&
@@ -203,50 +251,96 @@ export async function listAiUsageActivity(
 		{ id: sortOrder },
 	];
 
-	const [rawRows, totalsAggregate] = await Promise.all([
-		db.aiUsageLog.findMany({
-			where,
-			orderBy,
-			take: limit + 1,
-			...(params.cursor
-				? { cursor: { id: params.cursor }, skip: 1 }
-				: {}),
-			select: {
-				id: true,
-				createdAt: true,
-				userId: true,
-				provider: true,
-				modelCanonicalName: true,
-				providerModelId: true,
-				taskType: true,
-				agentId: true,
-				conversationId: true,
-				jobType: true,
-				projectId: true,
-				inputTokens: true,
-				outputTokens: true,
-				totalTokens: true,
-				costMicroUsd: true,
-				latencyMs: true,
-				success: true,
-				errorMessage: true,
-				project: {
-					select: { name: true },
+	const [rawRows, totalsAggregate, sourceGroups, planModelGroups] =
+		await Promise.all([
+			db.aiUsageLog.findMany({
+				where,
+				orderBy,
+				take: limit + 1,
+				...(params.cursor
+					? { cursor: { id: params.cursor }, skip: 1 }
+					: {}),
+				select: {
+					id: true,
+					createdAt: true,
+					userId: true,
+					provider: true,
+					modelCanonicalName: true,
+					providerModelId: true,
+					taskType: true,
+					agentId: true,
+					conversationId: true,
+					jobType: true,
+					projectId: true,
+					inputTokens: true,
+					outputTokens: true,
+					totalTokens: true,
+					costMicroUsd: true,
+					latencyMs: true,
+					success: true,
+					errorMessage: true,
+					project: {
+						select: { name: true },
+					},
 				},
-			},
-		}),
-		db.aiUsageLog.aggregate({
-			where,
-			_sum: {
-				inputTokens: true,
-				outputTokens: true,
-				totalTokens: true,
-				costMicroUsd: true,
-			},
-			_count: { id: true },
-			_avg: { latencyMs: true },
-		}),
-	]);
+			}),
+			db.aiUsageLog.aggregate({
+				where,
+				_sum: {
+					inputTokens: true,
+					outputTokens: true,
+					totalTokens: true,
+					costMicroUsd: true,
+				},
+				_count: { id: true },
+				_avg: { latencyMs: true },
+			}),
+			db.aiUsageLog.groupBy({
+				by: ["provider"],
+				where,
+				_count: { id: true },
+				_sum: {
+					inputTokens: true,
+					outputTokens: true,
+					totalTokens: true,
+					costMicroUsd: true,
+				},
+			}),
+			db.aiUsageLog.groupBy({
+				by: ["providerModelId"],
+				where: { AND: [where, { provider: CHATGPT_PLAN_PROVIDER }] },
+				_sum: {
+					inputTokens: true,
+					outputTokens: true,
+					cachedInputTokens: true,
+				},
+			}),
+		]);
+
+	const bySource: Record<AiUsageBillingSource, AiUsageBillingSourceTotals> = {
+		chatgpt_plan: {
+			requests: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			costMicroUsd: 0,
+		},
+		api: {
+			requests: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			costMicroUsd: 0,
+		},
+	};
+	for (const group of sourceGroups) {
+		const bucket = bySource[billingSourceOf(group.provider)];
+		bucket.requests += group._count.id;
+		bucket.inputTokens += group._sum.inputTokens ?? 0;
+		bucket.outputTokens += group._sum.outputTokens ?? 0;
+		bucket.totalTokens += group._sum.totalTokens ?? 0;
+		bucket.costMicroUsd += group._sum.costMicroUsd ?? 0;
+	}
 
 	const hasMore = rawRows.length > limit;
 	const sliced = hasMore ? rawRows.slice(0, limit) : rawRows;
@@ -315,7 +409,14 @@ export async function listAiUsageActivity(
 			totalTokens: totalsAggregate._sum.totalTokens ?? 0,
 			costMicroUsd: totalsAggregate._sum.costMicroUsd ?? 0,
 			avgLatencyMs: Math.round(totalsAggregate._avg.latencyMs ?? 0),
+			bySource,
 		},
+		planUsageByModel: planModelGroups.map((group) => ({
+			providerModelId: group.providerModelId,
+			inputTokens: group._sum.inputTokens ?? 0,
+			outputTokens: group._sum.outputTokens ?? 0,
+			cachedInputTokens: group._sum.cachedInputTokens ?? 0,
+		})),
 	};
 }
 
@@ -332,6 +433,8 @@ export interface AiUsageActivityFacets {
 		requests: number;
 	}>;
 	projects: Array<{ id: string; name: string }>;
+	/** Always both sources, in a fixed order, so the filter never reflows. */
+	billingSources: Array<{ value: AiUsageBillingSource; requests: number }>;
 	users: Array<{
 		id: string;
 		name: string | null;
@@ -371,36 +474,50 @@ export async function getAiUsageActivityFacets(
 	const where: Prisma.AiUsageLogWhereInput = { ...tenantWhere, createdAt };
 	const isOrg = "organizationId" in params && params.organizationId;
 
-	const [modelGroups, projectIds, userGroups] = await Promise.all([
-		db.aiUsageLog.groupBy({
-			by: ["providerModelId", "modelCanonicalName", "provider"],
-			where,
-			_count: { id: true },
-			orderBy: { _count: { id: "desc" } },
-			take: 30,
-		}),
-		db.aiUsageLog.findMany({
-			where: { ...where, projectId: { not: null } },
-			distinct: ["projectId"],
-			select: { projectId: true },
-			take: 100,
-		}),
-		// Only relevant on org pages — personal users see only their own runs.
-		isOrg
-			? db.aiUsageLog.groupBy({
-					by: ["userId"],
-					where: { ...where, userId: { not: null } },
-					_count: { id: true },
-					orderBy: { _count: { id: "desc" } },
-					take: 200,
-				})
-			: Promise.resolve(
-					[] as Array<{
-						userId: string | null;
-						_count: { id: number };
-					}>,
-				),
-	]);
+	const [modelGroups, projectIds, userGroups, providerGroups] =
+		await Promise.all([
+			db.aiUsageLog.groupBy({
+				by: ["providerModelId", "modelCanonicalName", "provider"],
+				where,
+				_count: { id: true },
+				orderBy: { _count: { id: "desc" } },
+				take: 30,
+			}),
+			db.aiUsageLog.findMany({
+				where: { ...where, projectId: { not: null } },
+				distinct: ["projectId"],
+				select: { projectId: true },
+				take: 100,
+			}),
+			// Only relevant on org pages — personal users see only their own runs.
+			isOrg
+				? db.aiUsageLog.groupBy({
+						by: ["userId"],
+						where: { ...where, userId: { not: null } },
+						_count: { id: true },
+						orderBy: { _count: { id: "desc" } },
+						take: 200,
+					})
+				: Promise.resolve(
+						[] as Array<{
+							userId: string | null;
+							_count: { id: number };
+						}>,
+					),
+			db.aiUsageLog.groupBy({
+				by: ["provider"],
+				where,
+				_count: { id: true },
+			}),
+		]);
+
+	const sourceRequests: Record<AiUsageBillingSource, number> = {
+		chatgpt_plan: 0,
+		api: 0,
+	};
+	for (const group of providerGroups) {
+		sourceRequests[billingSourceOf(group.provider)] += group._count.id;
+	}
 
 	const projectIdList = projectIds
 		.map((row) => row.projectId)
@@ -441,6 +558,10 @@ export async function getAiUsageActivityFacets(
 			requests: row._count.id,
 		})),
 		projects: projectRows.map((row) => ({ id: row.id, name: row.name })),
+		billingSources: [
+			{ value: "chatgpt_plan", requests: sourceRequests.chatgpt_plan },
+			{ value: "api", requests: sourceRequests.api },
+		],
 		users: userGroups
 			.filter((row): row is typeof row & { userId: string } =>
 				Boolean(row.userId),
@@ -493,6 +614,7 @@ export async function getAiUsageActivityTimeSeries(
 		// with no project". `[]` means "no filter" (all rows match).
 		projectIds?: Array<string | null>;
 		filterUserIds?: string[];
+		billingSource?: AiUsageBillingSource;
 		minCostMicroUsd?: number;
 		maxCostMicroUsd?: number;
 		minLatencyMs?: number;
@@ -552,6 +674,7 @@ export async function getAiUsageActivityTimeSeries(
 			? { providerModelId: { in: params.providerModelIds } }
 			: {}),
 		...projectIdClause,
+		...buildBillingSourceClause(params.billingSource),
 		...("organizationId" in params &&
 		params.organizationId &&
 		params.filterUserIds &&

@@ -12,6 +12,7 @@ import {
 	REPOSITORY_SYNC_IDLE_POLL_MS,
 	type RepositorySyncConfiguration,
 	type RepositorySyncState,
+	repositorySyncOwnsSnapshotProgress,
 	repositorySyncPollInterval,
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
@@ -964,5 +965,74 @@ describe("syncRunProgress", () => {
 				latestRun: open({ phase: "COPYING", done: 9, total: 8 }),
 			}),
 		).toEqual({ kind: "preparing" });
+	});
+});
+
+describe("repositorySyncOwnsSnapshotProgress", () => {
+	it("uses the in-flight version while the run receipt has not recorded its snapshot id", () => {
+		const state = {
+			...CONFIGURED,
+			running: true,
+			latestRun: run({
+				finishedAt: null,
+				status: null,
+				snapshotId: null,
+				snapshotVersion: 8,
+			}),
+			inFlightSnapshot: {
+				status: "VALIDATING",
+				version: 8,
+				scanPending: false,
+				progress: { phase: "SAVING" as const, done: 3, total: 8 },
+			},
+		};
+
+		expect(
+			repositorySyncOwnsSnapshotProgress(state, {
+				id: "snap_8",
+				version: 8,
+			}),
+		).toBe(true);
+		expect(
+			repositorySyncOwnsSnapshotProgress(state, {
+				id: "snap_9",
+				version: 9,
+			}),
+		).toBe(false);
+	});
+
+	it("does not replace a recorded snapshot identity with a coincident in-flight version", () => {
+		expect(
+			repositorySyncOwnsSnapshotProgress(
+				{
+					...CONFIGURED,
+					running: true,
+					latestRun: run({
+						finishedAt: null,
+						snapshotId: "snap_old",
+					}),
+					inFlightSnapshot: {
+						status: "VALIDATING",
+						version: 8,
+						scanPending: false,
+						progress: { phase: "SAVING", done: 3, total: 8 },
+					},
+				},
+				{ id: "snap_new", version: 8 },
+			),
+		).toBe(false);
+	});
+
+	it("does not take ownership after the matching run has finished", () => {
+		expect(
+			repositorySyncOwnsSnapshotProgress(
+				{
+					...CONFIGURED,
+					running: true,
+					latestRun: run({ finishedAt: new Date() }),
+				},
+				{ id: "snap_1", version: 4 },
+			),
+		).toBe(false);
 	});
 });

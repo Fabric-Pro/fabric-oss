@@ -42,7 +42,6 @@ import {
 	getProjectInstructionSettings,
 	isProjectReadOnly,
 	joinProposalBranch,
-	listInstructionFiles,
 	type ProposalBranchNaming,
 	recordDirectCommitPushed,
 } from "@repo/database";
@@ -73,7 +72,6 @@ import {
 	hashIntentBlobs,
 	type Intent,
 	intentsOf,
-	toFileRow,
 } from "./instruction-branch-append";
 import {
 	type BranchCredential,
@@ -99,10 +97,11 @@ import {
 import {
 	type BranchWritePlanEntry,
 	buildBranchCommit,
-	computeEffectiveDelta,
+	type EffectiveDelta,
 	findTreeConflicts,
 } from "./instruction-proposal-commit";
 import { gitCall } from "./instruction-proposal-operation";
+import { loadInstructionChangeDelta } from "./instruction-change-delta";
 import {
 	assertObjectId,
 	type GitCallBase,
@@ -588,7 +587,10 @@ export async function runDirectCommit(
 		return { kind: "not_ready" };
 	}
 	const parsed = directCommitContextSchema.safeParse(row.commitContext);
-	if (!parsed.success || row.baseSnapshotId === null) {
+	if (
+		!parsed.success ||
+		(row.contentKind !== "GIT_INTENT" && row.baseSnapshotId === null)
+	) {
 		throw fail("CONFIGURATION_CHANGED", false);
 	}
 	const context = parsed.data;
@@ -634,7 +636,6 @@ export async function runDirectCommit(
 		}
 		return settle(row, context, { kind: "pushed", sha: own });
 	}
-	const baseSnapshotId = row.baseSnapshotId;
 	return withBranchRepoCredential(
 		{ branch, phase: PHASE, signal: i.signal },
 		async (credential) => {
@@ -654,14 +655,7 @@ export async function runDirectCommit(
 			);
 			safeHeartbeat();
 
-			const [baseRows, changeRows] = await Promise.all([
-				listInstructionFiles(baseSnapshotId, row.organizationId),
-				listInstructionFiles(row.id, row.organizationId),
-			]);
-			const delta = computeEffectiveDelta(
-				baseRows.map(toFileRow),
-				changeRows.map(toFileRow),
-			);
+			const delta = await loadInstructionChangeDelta(row);
 			const blobs = await hashIntentBlobs(credential, delta);
 			await gitCall(PHASE, credential, () =>
 				ensureCommit({ ...git, sha: context.baseCommitSha }),
@@ -773,20 +767,18 @@ async function planAgainstTip(i: {
 	if (writes.length === 0) {
 		return { kind: "unchanged" };
 	}
-	const deltaTip = {
-		added: [] as Intent["row"][],
-		modified: [] as Intent["row"][],
-		deleted: [] as Intent["row"][],
+	const deltaTip: EffectiveDelta = {
+		added: [],
+		modified: [],
+		deleted: [],
 	};
 	for (const w of writes) {
 		const before = tipEntries.get(w.rawPath) ?? null;
-		const bucket =
-			w.after === null
-				? "deleted"
-				: before === null
-					? "added"
-					: "modified";
-		deltaTip[bucket].push(w.row);
+		if (w.kind === "deleted") {
+			deltaTip.deleted.push(w.row);
+		} else {
+			deltaTip[before === null ? "added" : "modified"].push(w.row);
+		}
 	}
 	if (findTreeConflicts(i.listed, deltaTip, i.rootPath)) {
 		throw fail("TREE_CONFLICT", false);

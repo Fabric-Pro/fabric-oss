@@ -12,7 +12,7 @@
 		"./workflow-ids": "./src/workflow-ids.ts"
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run"
 	},
 	"devDependencies": {

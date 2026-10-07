@@ -212,6 +212,42 @@ describe("orchestrator memory regression", () => {
 		);
 	});
 
+	it("passes a chat turn's scope to the memory load", async () => {
+		const input = {
+			executionId: "exec-1",
+			message: "Help me inspect this bug",
+			userId: "user-1",
+			organizationId: "org-1",
+			executionMode: "default",
+			history: [],
+			systemPrompt: "Base system prompt",
+		} as any;
+		const turnScope = {
+			turnId: "turn-example-1",
+			executionId: "exec-1",
+			userId: "user-1",
+			organizationId: "org-1",
+		};
+
+		await executeInitializationPhase(
+			createInitialState(input),
+			input,
+			vi.fn(),
+			{ cancellationAware: true, turnScope },
+		);
+
+		expect(
+			activityStubs.loadOrchestratorMemoryActivity,
+		).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: "org-1",
+			projectId: null,
+			workspaceId: null,
+			currentQuery: "Help me inspect this bug",
+			turnScope,
+		});
+	});
+
 	it("still stores semantic and episodic memory during completion", async () => {
 		const startTime = Date.now() - 2_000;
 

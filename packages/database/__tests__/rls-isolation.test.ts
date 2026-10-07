@@ -1771,6 +1771,274 @@ describe("PostgreSQL RLS Policies", () => {
 		});
 	});
 
+	describe("ChatGPT plan org use RLS Isolation (Fizzy #2939)", () => {
+		// One person's choice to run their work in an organization on their own
+		// ChatGPT plan: a colleague in the same organization must neither read
+		// it nor set it on their behalf.
+		let useOrgAUserA: string;
+		let useOrgAUserB: string;
+
+		beforeAll(async () => {
+			useOrgAUserA = (
+				await db.chatGptPlanOrgUse.create({
+					data: {
+						organizationId: TEST_ORGS.orgA,
+						userId: TEST_USERS.userA,
+						enabled: true,
+					},
+				})
+			).id;
+			useOrgAUserB = (
+				await db.chatGptPlanOrgUse.create({
+					data: {
+						organizationId: TEST_ORGS.orgA,
+						userId: TEST_USERS.userB,
+						enabled: false,
+					},
+				})
+			).id;
+		});
+
+		afterAll(async () => {
+			await db.chatGptPlanOrgUse.deleteMany({
+				where: { id: { in: [useOrgAUserA, useOrgAUserB] } },
+			});
+		});
+
+		it("chat_gpt_plan_org_use: a colleague in the same org cannot read it", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgUse.findUnique({
+						where: { id: useOrgAUserA },
+					}),
+			);
+			expect(row).toBeNull();
+			// Positive control: user B's own row is readable, so the null above
+			// is the userId predicate rather than a policy that denies all.
+			const own = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgUse.findUnique({
+						where: { id: useOrgAUserB },
+					}),
+			);
+			expect(own).not.toBeNull();
+		});
+
+		it("chat_gpt_plan_org_use: a member cannot read their own row from another org", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgUse.findUnique({
+						where: { id: useOrgAUserA },
+					}),
+			);
+			expect(row).toBeNull();
+		});
+
+		// The (Org B, user B) pair is empty, so a rejection here is the policy's
+		// WITH CHECK and not the unique index.
+		it("chat_gpt_plan_org_use: a member cannot write a row attributed to a colleague", async () => {
+			await expect(
+				asRlsRole(
+					{
+						type: "organization",
+						tenantId: TEST_ORGS.orgB,
+						userId: TEST_USERS.userA,
+					},
+					(tx) =>
+						tx.chatGptPlanOrgUse.create({
+							data: {
+								organizationId: TEST_ORGS.orgB,
+								userId: TEST_USERS.userB,
+								enabled: true,
+							},
+						}),
+				),
+			).rejects.toThrow();
+		});
+	});
+
+	describe("ChatGPT plan pooling RLS Isolation (Fizzy #2770)", () => {
+		// The organization's shared plan accounts and its pooling policy belong
+		// to the organization: every member reads the same rows, and no other
+		// tenant reads any of them.
+		let orgAAccountId: string;
+		let orgBAccountId: string;
+
+		beforeAll(async () => {
+			const account = (organizationId: string, subject: string) => ({
+				organizationId,
+				label: "Shared plan",
+				connectedByUserId: TEST_USERS.userA,
+				subject,
+				clientId: "client",
+				hostId: "host",
+				encryptedAccessToken: "enc-access",
+				encryptedRefreshToken: "enc-refresh",
+				accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+				scopes: [],
+			});
+			orgAAccountId = (
+				await db.chatGptPlanOrgAccount.create({
+					data: account(TEST_ORGS.orgA, "rls-subject-org-a"),
+				})
+			).id;
+			orgBAccountId = (
+				await db.chatGptPlanOrgAccount.create({
+					data: account(TEST_ORGS.orgB, "rls-subject-org-b"),
+				})
+			).id;
+			await db.chatGptPlanOrgPolicy.createMany({
+				data: [
+					{ organizationId: TEST_ORGS.orgA },
+					{ organizationId: TEST_ORGS.orgB },
+				],
+			});
+		});
+
+		afterAll(async () => {
+			await db.chatGptPlanOrgAccount.deleteMany({
+				where: { id: { in: [orgAAccountId, orgBAccountId] } },
+			});
+			await db.chatGptPlanOrgPolicy.deleteMany({
+				where: {
+					organizationId: { in: [TEST_ORGS.orgA, TEST_ORGS.orgB] },
+				},
+			});
+		});
+
+		// Read as a member who did NOT connect the account: proves the policy is
+		// org_only rather than keyed on the connecting user.
+		it("chat_gpt_plan_org_account: another member of the owning org CAN read it", async () => {
+			const row = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgAccount.findUnique({
+						where: { id: orgAAccountId },
+					}),
+			);
+			expect(row?.id).toBe(orgAAccountId);
+		});
+
+		it("chat_gpt_plan_org_account: Org B context cannot read Org A's account", async () => {
+			const rows = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgB,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgAccount.findMany({
+						where: { id: { in: [orgAAccountId, orgBAccountId] } },
+						select: { id: true },
+					}),
+			);
+			// Positive control in the same read: Org B's own account is visible.
+			expect(rows.map((row) => row.id)).toEqual([orgBAccountId]);
+		});
+
+		it("chat_gpt_plan_org_account: a personal context reads nothing", async () => {
+			const rows = await asRlsRole(
+				{
+					type: "personal",
+					tenantId: TEST_USERS.userA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgAccount.findMany({
+						where: { id: { in: [orgAAccountId, orgBAccountId] } },
+					}),
+			);
+			expect(rows).toEqual([]);
+		});
+
+		it("chat_gpt_plan_org_account: a member cannot write an account into another org", async () => {
+			await expect(
+				asRlsRole(
+					{
+						type: "organization",
+						tenantId: TEST_ORGS.orgA,
+						userId: TEST_USERS.userA,
+					},
+					(tx) =>
+						tx.chatGptPlanOrgAccount.create({
+							data: {
+								organizationId: TEST_ORGS.orgB,
+								label: "Planted",
+								connectedByUserId: TEST_USERS.userA,
+								subject: "rls-subject-planted",
+								clientId: "client",
+								hostId: "host",
+								encryptedAccessToken: "enc-access",
+								encryptedRefreshToken: "enc-refresh",
+								accessTokenExpiresAt: new Date(),
+								scopes: [],
+							},
+						}),
+				),
+			).rejects.toThrow();
+		});
+
+		it("chat_gpt_plan_org_policy: only the owning org reads its policy", async () => {
+			const rows = await asRlsRole(
+				{
+					type: "organization",
+					tenantId: TEST_ORGS.orgA,
+					userId: TEST_USERS.userB,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgPolicy.findMany({
+						where: {
+							organizationId: {
+								in: [TEST_ORGS.orgA, TEST_ORGS.orgB],
+							},
+						},
+						select: { organizationId: true },
+					}),
+			);
+			expect(rows.map((row) => row.organizationId)).toEqual([
+				TEST_ORGS.orgA,
+			]);
+		});
+
+		it("chat_gpt_plan_org_policy: a personal context reads nothing", async () => {
+			const rows = await asRlsRole(
+				{
+					type: "personal",
+					tenantId: TEST_USERS.userA,
+					userId: TEST_USERS.userA,
+				},
+				(tx) =>
+					tx.chatGptPlanOrgPolicy.findMany({
+						where: {
+							organizationId: {
+								in: [TEST_ORGS.orgA, TEST_ORGS.orgB],
+							},
+						},
+					}),
+			);
+			expect(rows).toEqual([]);
+		});
+	});
+
 	describe("Attachment retention minimum under RLS", () => {
 		// The purge's scan-bound proof (#1749) depends on MIN() observing EVERY
 		// row. `project` carries a `user_owned` policy, so under an RLS-enforcing

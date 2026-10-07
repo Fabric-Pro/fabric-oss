@@ -5,7 +5,7 @@
  * and provides additional utility functions for working with AI gateways.
  */
 
-import type { AIProvider } from "@repo/database";
+import type { ConfigurableAIProvider } from "@repo/database";
 
 // Re-export ProviderMetadata type with alias to avoid conflicts with AI SDK
 export type { ProviderMetadata as AIProviderMetadata } from "@repo/database";
@@ -37,7 +37,7 @@ export const DEFAULT_BASE_URLS: Partial<Record<string, string>> =
  * Check if a provider requires a custom base URL
  */
 export function requiresBaseUrl(provider: string): boolean {
-	const metadata = PROVIDER_METADATA[provider as AIProvider];
+	const metadata = PROVIDER_METADATA[provider as ConfigurableAIProvider];
 	return metadata?.requiresBaseUrl ?? false;
 }
 
@@ -55,7 +55,7 @@ export function validateApiKeyFormat(
 	provider: string,
 	apiKey: string,
 ): { valid: boolean; message?: string } {
-	const metadata = PROVIDER_METADATA[provider as AIProvider];
+	const metadata = PROVIDER_METADATA[provider as ConfigurableAIProvider];
 	if (!metadata?.keyPrefix) {
 		return { valid: true };
 	}

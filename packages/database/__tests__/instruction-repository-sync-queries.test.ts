@@ -2206,6 +2206,12 @@ describe("claimDueInstructionSyncRows (spec §6.1)", () => {
 			`s2."nextCheckAt" <= (clock_timestamp() AT TIME ZONE 'UTC')`,
 		);
 		expect(sql).toContain(`i."status" = 'ACTIVE'`);
+		expect(sql).toContain(
+			`p."instructionSettings"->>'sourceOfTruth' = 'REPOSITORY'`,
+		);
+		expect(sql).toContain(
+			"instruction_repository_migration_import_allowed(",
+		);
 		// Oldest due first: an unprocessed lease (now + 2 min) sorts ahead of
 		// every row a finished check pushed to now + 15 min.
 		expect(sql).toContain(
@@ -2494,6 +2500,22 @@ describe("recordInstructionSyncCheckFailure (spec §6.1, Decision 35)", () => {
 });
 
 describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
+	function switchingSettings(syncId: string) {
+		return {
+			sourceOfTruth: "REPOSITORY",
+			migration: {
+				v: 1,
+				state: "SWITCHING",
+				branchId: "branch_1",
+				snapshotId: "snap_move",
+				syncId,
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: "user_1",
+			},
+		};
+	}
+
 	function stored(overrides: Record<string, unknown> = {}) {
 		return {
 			id: "sync_1",
@@ -2509,7 +2531,10 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 			suppressedGeneration: null,
 			repositoryIntegration: {
 				projectId: "proj_1",
-				project: { organizationId: "org_1" },
+				project: {
+					organizationId: "org_1",
+					instructionSettings: switchingSettings("sync_1"),
+				},
 			},
 			...overrides,
 		};
@@ -2559,7 +2584,12 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 				repositoryIntegration: {
 					select: {
 						projectId: true,
-						project: { select: { organizationId: true } },
+						project: {
+							select: {
+								organizationId: true,
+								instructionSettings: true,
+							},
+						},
 					},
 				},
 			}),
@@ -2581,7 +2611,10 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 			{
 				repositoryIntegration: {
 					projectId: "proj_2",
-					project: { organizationId: "org_1" },
+					project: {
+						organizationId: "org_1",
+						instructionSettings: switchingSettings("sync_2"),
+					},
 				},
 			},
 		],
@@ -2602,7 +2635,10 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 				projectId: "proj_2",
 				repositoryIntegration: {
 					projectId: "proj_2",
-					project: { organizationId: "org_1" },
+					project: {
+						organizationId: "org_1",
+						instructionSettings: switchingSettings("sync_2"),
+					},
 				},
 			}),
 		]);
@@ -2612,6 +2648,30 @@ describe("findInstructionSyncsForPush (spec §6.2, Decision 46)", () => {
 		});
 		// The consistent row still counts; the other is dropped.
 		expect(rows.map((row) => row.id)).toEqual(["sync_2"]);
+	});
+
+	it("drops ordinary direct repository rows from push-triggered imports", async () => {
+		m.sync.findMany.mockResolvedValue([
+			stored({
+				repositoryIntegration: {
+					projectId: "proj_1",
+					project: {
+						organizationId: "org_1",
+						instructionSettings: {
+							sourceOfTruth: "REPOSITORY",
+							migration: null,
+						},
+					},
+				},
+			}),
+		]);
+
+		await expect(
+			findInstructionSyncsForPush({
+				repositoryUrl: REPO_URL,
+				ref: "main",
+			}),
+		).resolves.toEqual([]);
 	});
 });
 

@@ -141,7 +141,7 @@ describe("POST /api/ai/generate — usage logging", () => {
 
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			expect.not.objectContaining({ usageLogging: "aggregate" }),
-			{ userId: USER_ID, organizationId: ACTIVE_ORG },
+			{ userId: USER_ID, organizationId: ACTIVE_ORG, planEligible: true },
 		);
 	});
 });

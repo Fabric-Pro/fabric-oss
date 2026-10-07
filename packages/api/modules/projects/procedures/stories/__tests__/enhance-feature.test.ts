@@ -580,6 +580,63 @@ describe("enhanceFeatureProcedure — AI could not run at all", () => {
 		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
 	});
 
+	// Fizzy #2939: a member's own ChatGPT plan that is spent or needs
+	// reconnecting refused the call before any output, exactly like a missing
+	// provider, so the stage must not advance and the person must learn why.
+	it("refuses with the reset time when the member's ChatGPT plan is spent", async () => {
+		const { SubscriptionPlanExhaustedError } = await import(
+			"@repo/agent-types/chatgpt-plan-fetch"
+		);
+		const resetAt = new Date(Date.now() + 90 * 60_000);
+		mocks.generateObject.mockRejectedValue(
+			new SubscriptionPlanExhaustedError("No usage left", resetAt),
+		);
+
+		const err = (await errorFrom(
+			handlers.enhance({ input: enhanceInput, context: ctx }),
+		)) as {
+			code?: string;
+			message?: string;
+			data?: Record<string, unknown>;
+		};
+
+		expect(err.code).toBe("TOO_MANY_REQUESTS");
+		expect(err.message).toContain("resets in about");
+		expect(err.data).toMatchObject({
+			code: "CHATGPT_PLAN_EXHAUSTED",
+			resetAt: resetAt.toISOString(),
+		});
+		expect(mocks.updateStoryDraftingStage).not.toHaveBeenCalled();
+		expect(mocks.updateStory).not.toHaveBeenCalled();
+		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
+	});
+
+	it("refuses with reconnect guidance when the member's ChatGPT plan needs signing in again", async () => {
+		const { ChatGptPlanAuthError } = await import(
+			"@repo/ai/lib/chatgpt-plan/oauth"
+		);
+		mocks.generateObject.mockRejectedValue(
+			new ChatGptPlanAuthError(
+				"needs reconnect",
+				"needs_reconnect",
+				true,
+			),
+		);
+
+		const err = (await errorFrom(
+			handlers.enhance({ input: enhanceInput, context: ctx }),
+		)) as {
+			code?: string;
+			message?: string;
+			data?: Record<string, unknown>;
+		};
+
+		expect(err.code).toBe("PRECONDITION_FAILED");
+		expect(err.message).toContain("needs to be reconnected");
+		expect(err.data).toMatchObject({ code: "CHATGPT_PLAN_UNAVAILABLE" });
+		expect(mocks.updateStoryDraftingStage).not.toHaveBeenCalled();
+	});
+
 	it("still advances the stage when the model ran and produced nothing", async () => {
 		// The contrast that keeps the fix targeted: a genuine generation
 		// failure is the case the advance-anyway behaviour was written for,

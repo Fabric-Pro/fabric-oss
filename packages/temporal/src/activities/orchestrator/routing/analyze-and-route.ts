@@ -18,6 +18,7 @@
 
 import { generateText } from "@repo/ai";
 import { db } from "@repo/database";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { RoutingDecision } from "../../../workflows/orchestrator/types";
 import { getRoutingSystemPrompt } from "../../prompts";
 import { getAgentCapabilities } from "../delegation/agent-capabilities";
@@ -31,6 +32,7 @@ import {
 	searchAvailableTools,
 	searchAvailableWorkflows,
 } from "../tools";
+import { startTurnHeartbeat } from "../turn-dispatch";
 import type { AnalyzeAndRouteInput } from "../types";
 import { safeParseJson } from "../utils/json-parser";
 import { getAiModel } from "../utils/model-selector";
@@ -83,8 +85,32 @@ export function shouldSearchIntegrations(params: {
  * 4. Searches for matching workflows
  * 5. Uses an LLM to determine the optimal routing
  * 6. Checks if the primary agent is a generalist for complete-task delegation
+ *
+ * In a chat turn (`input.turnScope`, a Planner chat) the activity heartbeats
+ * every five seconds for its whole run, so a Stop reaches it while it waits
+ * on a lookup or the routing model, and the lookups get the scope too, so a
+ * stop is rethrown rather than read as "no matches". Without a scope it
+ * behaves as before.
  */
 export async function analyzeAndRoute(
+	input: AnalyzeAndRouteInput,
+): Promise<RoutingDecision> {
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await routeTask(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+/** The scope spread for an in-process lookup; empty without a turn. */
+function lookupTurnScope(
+	input: AnalyzeAndRouteInput,
+): Pick<AnalyzeAndRouteInput, "turnScope"> {
+	return input.turnScope ? { turnScope: input.turnScope } : {};
+}
+
+async function routeTask(
 	input: AnalyzeAndRouteInput,
 ): Promise<RoutingDecision> {
 	const routingStartTime = Date.now();
@@ -122,6 +148,7 @@ export async function analyzeAndRoute(
 		enabledIntegrationIds: input.enabledIntegrationIds,
 		enabledFabricToolIds: input.enabledFabricToolIds,
 		// Semantic search is now the default - uses Qdrant vector search
+		...lookupTurnScope(input),
 	});
 
 	// ==========================================================================
@@ -441,6 +468,7 @@ export async function analyzeAndRoute(
 		userId: input.userId,
 		organizationId: input.organizationId,
 		enabledAgentIds: input.enabledAgentIds,
+		...lookupTurnScope(input),
 	});
 
 	// ==========================================================================
@@ -556,6 +584,7 @@ export async function analyzeAndRoute(
 			userId: input.userId,
 			organizationId: input.organizationId,
 			enabledIntegrationIds: input.enabledIntegrationIds,
+			...lookupTurnScope(input),
 		});
 
 		console.log("[Orchestrator] Integration search results:", {
@@ -1180,6 +1209,7 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 			}
 		}
 	} catch (error) {
+		rethrowIfDispatchStopped(error);
 		console.warn(
 			`[Orchestrator] Failed to fetch agent capabilities for ${primaryAgent}:`,
 			error,

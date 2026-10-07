@@ -157,14 +157,12 @@ describe("resyncUrlPage — happy path", () => {
 			context: personalCtx,
 		});
 
-		// Child row optimistically marked PENDING + error cleared.
+		// Child row optimistically marked PENDING. Its error is kept, so a
+		// retry whose scrape fails can put the reason back.
 		expect(mockProjectContextUrlPageUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: { id: "page-1" },
-				data: expect.objectContaining({
-					extractionStatus: "PENDING",
-					extractionError: null,
-				}),
+				data: { extractionStatus: "PENDING" },
 			}),
 		);
 

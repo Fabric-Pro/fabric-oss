@@ -108,6 +108,7 @@ function LinkDialogHost({
 		organizationId: "org-1",
 		organizationSlug: "example-org",
 		requireKnowledgeBaseCategory: false,
+		allowLiveRefresh: true,
 		onComplete,
 	});
 	const text = useTextSourceForm({ adapter, onComplete });

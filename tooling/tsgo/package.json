@@ -1,0 +1,13 @@
+{
+	"name": "@repo/tsgo",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"bin": {
+		"tsgo": "./bin/tsgo.mjs"
+	},
+	"dependencies": {
+		"typescript": "7.0.2"
+	}
+}

@@ -184,6 +184,7 @@ async function sendAgentUsageEvent(
 	const model = configurable?.ai_model;
 	const billingMode = configurable?.ai_billing_mode;
 	const billingCustomerId = configurable?.ai_billing_customer_id;
+	const planSource = configurable?.ai_plan_source;
 	const configProjectId = configurable?.project_id;
 
 	if (
@@ -233,6 +234,11 @@ async function sendAgentUsageEvent(
 					typeof billingCustomerId === "string"
 						? billingCustomerId
 						: undefined,
+				// Which ChatGPT plan served the call (Fizzy #2770); Fabric
+				// records a shared account only when it is the token's own
+				// organization's.
+				planSource:
+					typeof planSource === "string" ? planSource : undefined,
 			}),
 			signal: AbortSignal.timeout(10_000),
 		});

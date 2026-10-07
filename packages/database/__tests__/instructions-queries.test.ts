@@ -1,6 +1,9 @@
 import { sqltag } from "@prisma/client/runtime/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolvedPullRequestOperation } from "../prisma/queries/instruction-proposal-pull-requests";
+import {
+	resolvedPullRequestOperation,
+	unresolvedPullRequestOperation,
+} from "../prisma/queries/instruction-proposal-pull-requests";
 
 // Declared inside `vi.hoisted` because `vi.mock` factories are hoisted above
 // the module body: a class declared at the top level of this file would not
@@ -271,6 +274,7 @@ describe("listInstructionSnapshots proposal visibility", () => {
 				where: {
 					projectId: "p",
 					organizationId: "org_1",
+					contentKind: "FULL_SNAPSHOT",
 					OR: NON_REVIEWER_VISIBILITY,
 				},
 			}),
@@ -330,7 +334,11 @@ describe("listInstructionSnapshots proposal visibility", () => {
 
 		expect(mocks.snapshot.findMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { projectId: "p", organizationId: "org_1" },
+				where: {
+					projectId: "p",
+					organizationId: "org_1",
+					contentKind: "FULL_SNAPSHOT",
+				},
 			}),
 		);
 	});
@@ -1046,6 +1054,7 @@ describe("publishInstructionSnapshot", () => {
 		for (const proposalStatus of ["PENDING", "REJECTED"] as const) {
 			lockedPointer("base", 7);
 			mocks.snapshot.findFirst.mockResolvedValueOnce({
+				contentKind: "FULL_SNAPSHOT",
 				id: "proposal",
 				status: "READY",
 				proposalStatus,
@@ -1073,6 +1082,7 @@ describe("publishInstructionSnapshot", () => {
 	it("refuses a snapshot that is not READY", async () => {
 		lockedPointer(null);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "s",
 			status: "VALIDATING",
 			version: 8,
@@ -1125,7 +1135,13 @@ describe("publishInstructionSnapshot", () => {
 		});
 		mocks.snapshot.findFirst.mockImplementation(async () => {
 			order.push("snapshot");
-			return { id: "s", status: "READY", version: 8, publishedAt: null };
+			return {
+				contentKind: "FULL_SNAPSHOT",
+				id: "s",
+				status: "READY",
+				version: 8,
+				publishedAt: null,
+			};
 		});
 		mocks.project.updateMany.mockImplementation(async () => {
 			order.push("write");
@@ -1149,6 +1165,7 @@ describe("publishInstructionSnapshot", () => {
 	it("moves the pointer and stamps publishedAt via a single conditional write", async () => {
 		lockedPointer("older-snap", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "s",
 			status: "READY",
 			version: 8,
@@ -1185,6 +1202,7 @@ describe("publishInstructionSnapshot", () => {
 		// already-published marker (which the suite below covers).
 		lockedPointer("s", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "s",
 			status: "READY",
 			version: 8,
@@ -1209,6 +1227,7 @@ describe("publishInstructionSnapshot", () => {
 	it("refuses when the conditional write matches nothing and the pointer belongs to a different, newer snapshot", async () => {
 		lockedPointer("newer-snap", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "s",
 			status: "READY",
 			version: 5,
@@ -1254,6 +1273,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 		// from this locked read — not from a second, unlocked one.
 		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v7",
 			status: "READY",
 			version: 7,
@@ -1306,6 +1326,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 	it("is idempotent: publishing the version that is already the pointer writes nothing", async () => {
 		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v7",
 			status: "READY",
 			version: 7,
@@ -1331,6 +1352,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 	it("still refuses a snapshot that is not READY, and writes nothing", async () => {
 		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v7",
 			status: "REJECTED",
 			version: 7,
@@ -1347,6 +1369,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 	it("publishes the first version of a project that has published nothing yet", async () => {
 		lockedPointer(null, null);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v1",
 			status: "READY",
 			version: 1,
@@ -1388,6 +1411,7 @@ describe("publishInstructionSnapshot with allowRollback", () => {
 	it("leaves the automatic path on the version rule when the flag is absent", async () => {
 		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v7",
 			status: "READY",
 			version: 7,
@@ -1443,6 +1467,7 @@ describe("publishInstructionSnapshot: an automatic publish applies at most once"
 		// v7 is published again after the rollback; v9 has already published.
 		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1469,6 +1494,7 @@ describe("publishInstructionSnapshot: an automatic publish applies at most once"
 		// predicate would match again.
 		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1494,6 +1520,7 @@ describe("publishInstructionSnapshot: an automatic publish applies at most once"
 	it("still publishes a snapshot that has never held the pointer", async () => {
 		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1521,6 +1548,7 @@ describe("publishInstructionSnapshot: an automatic publish applies at most once"
 	it("lets the manual path republish a version that has published before", async () => {
 		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v7",
 			status: "READY",
 			version: 7,
@@ -1577,6 +1605,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		// order.
 		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v8",
 			status: "READY",
 			version: 8,
@@ -1605,6 +1634,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		// The pointer is v8 now, and B's lock read sees it.
 		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1639,6 +1669,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	it("answers a call for the snapshot that already holds the pointer as published, without writing", async () => {
 		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v8",
 			status: "READY",
 			version: 8,
@@ -1657,6 +1688,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	it("keeps the version rule for a full upload, which replaces the whole tree", async () => {
 		lockedPointer("older-snap", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "s",
 			status: "READY",
 			version: 8,
@@ -1696,6 +1728,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	it("refuses a derived version whose base has been deleted, without writing anything", async () => {
 		lockedPointer("v8", 8);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1731,6 +1764,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 		// arm is even reached.
 		lockedPointer("v9", 9);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -1753,6 +1787,7 @@ describe("publishInstructionSnapshot with requireBaseUnmoved", () => {
 	it("leaves a call with neither flag on the version rule", async () => {
 		lockedPointer("v7", 7);
 		mocks.snapshot.findFirst.mockResolvedValue({
+			contentKind: "FULL_SNAPSHOT",
 			id: "v9",
 			status: "READY",
 			version: 9,
@@ -2106,6 +2141,7 @@ describe("startInstructionSnapshotValidation", () => {
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
+				contentKind: "FULL_SNAPSHOT",
 				status: { in: ["RECEIVING", "FAILED"] },
 			},
 			data: {
@@ -2174,6 +2210,7 @@ describe("claimInstructionSnapshotValidation", () => {
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
+				contentKind: "FULL_SNAPSHOT",
 				status: "RECEIVING",
 			},
 			data: {
@@ -2201,6 +2238,7 @@ describe("claimInstructionSnapshotValidation", () => {
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
+				contentKind: "FULL_SNAPSHOT",
 				status: { in: ["RECEIVING", "FAILED"] },
 				validationAttemptId: "attempt_1",
 			},
@@ -2598,6 +2636,7 @@ describe("failInstructionSnapshot", () => {
 				id: "s",
 				projectId: "p",
 				organizationId: "org_1",
+				contentKind: "FULL_SNAPSHOT",
 				status: { in: ["RECEIVING", "VALIDATING"] },
 			},
 			// The token goes with the run, so a stale attempt of it can no
@@ -4118,6 +4157,7 @@ describe("REPOSITORY proposals in the existing writers", () => {
 				for (const allowRollback of [true, false]) {
 					lockedPointer("base", 7);
 					mocks.snapshot.findFirst.mockResolvedValueOnce({
+						contentKind: "FULL_SNAPSHOT",
 						id: "proposal",
 						status: "READY",
 						proposalStatus,
@@ -4152,6 +4192,7 @@ describe("REPOSITORY proposals in the existing writers", () => {
 			async (proposalStatus) => {
 				lockedPointer("base", 7);
 				mocks.snapshot.findFirst.mockResolvedValueOnce({
+					contentKind: "FULL_SNAPSHOT",
 					id: "proposal",
 					status: "READY",
 					proposalStatus,
@@ -4311,6 +4352,8 @@ describe("REPOSITORY proposals in the existing writers", () => {
 describe("retention of pull-request operations", () => {
 	const RESOLVED_SQL =
 		'(s."pullRequestState" IS NULL OR s."pullRequestState" IN (\'MERGED\', \'CLOSED\', \'CANCELED\')) AND s."mergeSyncRequestedAt" IS NULL AND NOT s."pullRequestObligationOpen"';
+	const RESOLVED_DIRECT_COMMIT_SQL =
+		'(s."proposalDestination" IS DISTINCT FROM \'REPOSITORY_COMMIT\' OR (s."commitOutcome" IS NOT NULL AND s."commitOutcome" <> \'null\'::jsonb))';
 	const DECIDED = {
 		OR: [
 			{ proposalStatus: null },
@@ -4370,8 +4413,29 @@ describe("retention of pull-request operations", () => {
 		const statement = sqltag(strings, ...values);
 		const sql = statement.sql.replace(/\s+/g, " ");
 		expect(sql.split(`AND ${RESOLVED_SQL}`)).toHaveLength(3);
+		expect(sql.split(`AND ${RESOLVED_DIRECT_COMMIT_SQL}`)).toHaveLength(3);
 		// The fragment adds text, never a parameter.
 		expect(statement.values).toEqual([5, 2, 0, 25]);
+	});
+
+	it("keeps direct commits with either SQL or JSON null outcomes", () => {
+		expect(unresolvedPullRequestOperation()).toMatchObject({
+			OR: expect.arrayContaining([
+				{
+					proposalDestination: "REPOSITORY_COMMIT",
+					commitOutcome: { equals: "AnyNull" },
+				},
+			]),
+		});
+		expect(resolvedPullRequestOperation()).toMatchObject({
+			AND: expect.arrayContaining([
+				{
+					OR: expect.arrayContaining([
+						{ commitOutcome: { not: "AnyNull" } },
+					]),
+				},
+			]),
+		});
 	});
 
 	it("the DELETE refuses unresolved operations and admits MERGED and CLOSED", async () => {
@@ -4408,6 +4472,13 @@ describe("retention of pull-request operations", () => {
 		[
 			"a record obligation",
 			{ pullRequestState: "CANCELED", pullRequestObligationOpen: true },
+		],
+		[
+			"a direct commit with no durable outcome",
+			{
+				proposalDestination: "REPOSITORY_COMMIT",
+				commitOutcome: null,
+			},
 		],
 	])(
 		"a manual delete of %s is refused as pull_request_unresolved and undoes the file delete",

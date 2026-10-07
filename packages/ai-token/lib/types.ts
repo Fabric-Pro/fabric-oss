@@ -25,6 +25,17 @@ export interface AITokenClaims {
 	org?: string;
 	/** Source identifier for audit logging (e.g., "document-generator", "orchestrator") */
 	src: string;
+	/**
+	 * Present (true) only on a token minted for the member's own interactive
+	 * work; the exchange may then hand over their ChatGPT plan (Fizzy #2939).
+	 */
+	pe?: true;
+	/**
+	 * Present (true) when an admin acting as the member minted the token. The
+	 * exchange then never hands over the member's ChatGPT plan, whatever else
+	 * the member chose. Never present together with `pe`.
+	 */
+	imp?: true;
 }
 
 /**
@@ -39,6 +50,17 @@ export interface IssueTokenOptions {
 	source: string;
 	/** Custom expiry in seconds (default: 300 = 5 minutes) */
 	expirySeconds?: number;
+	/**
+	 * The token serves the member's own interactive work, so the exchange may
+	 * resolve their ChatGPT plan. Leave unset for background work.
+	 */
+	planEligible?: boolean;
+	/**
+	 * An admin acting as the member is behind this mint (Fizzy #2939).
+	 * Required, so every mint decides: pass the request's own answer
+	 * (`isAiImpersonatedRequest()` inside a request or a Temporal run).
+	 */
+	impersonated: boolean;
 }
 
 /**
@@ -78,6 +100,11 @@ export interface ExchangeResult {
 	billingMode?: string;
 	/** Stripe customer id used for metered billing when applicable */
 	billingCustomerId?: string;
+	/**
+	 * The ChatGPT plan behind `apiKey`, by its opaque key, when a plan serves
+	 * the token (Fizzy #2770); see `ExchangeClientConfig.excludeSources`.
+	 */
+	planSource?: string;
 }
 
 /**

@@ -68,11 +68,6 @@ describe("ConnectCliDialog — VS Code and Cursor", () => {
 			"VS Code asks you to confirm the server.",
 		);
 		expect(steps[1]).toHaveTextContent("Approve in your browser");
-		expect(
-			screen.getByText(
-				/compares your checkout with the published commit at each session start\. Pulling stays with you\./i,
-			),
-		).toBeInTheDocument();
 	});
 
 	it("draws the tool's mark on a chip inside the link", async () => {
@@ -109,9 +104,6 @@ describe("ConnectCliDialog — VS Code and Cursor", () => {
 		});
 		expect(
 			screen.getByText(/Cursor asks you to confirm the server\./i),
-		).toBeInTheDocument();
-		expect(
-			screen.getByText(/Pulling stays with you\./i),
 		).toBeInTheDocument();
 	});
 

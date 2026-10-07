@@ -6,7 +6,10 @@
  * slashes (release/1.2) are URL-encoded; the helper never throws.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyRepositoryBranch } from "../repository-branch";
+import {
+	resolveRepositoryBranchHead,
+	verifyRepositoryBranch,
+} from "../repository-branch";
 
 const mockFetch = vi.fn();
 
@@ -20,11 +23,10 @@ afterEach(() => {
 });
 
 function jsonResponse(status: number, body: unknown = {}) {
-	return {
-		ok: status >= 200 && status < 300,
+	return new Response(JSON.stringify(body), {
 		status,
-		json: async () => body,
-	};
+		headers: { "content-type": "application/json" },
+	});
 }
 
 const githubInput = {
@@ -193,6 +195,20 @@ describe("verifyRepositoryBranch — Azure DevOps", () => {
 		expect(init.headers.Authorization).toMatch(/^Basic /);
 	});
 
+	it("uses Bearer for Azure DevOps OAuth tokens while keeping PATs on Basic", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, { value: [{ name: "refs/heads/main" }] }),
+		);
+
+		await verifyRepositoryBranch({
+			...adoInput,
+			azureDevOpsAuth: "bearer",
+		});
+
+		const [, init] = mockFetch.mock.calls[0];
+		expect(init.headers.Authorization).toBe("Bearer ado-pat");
+	});
+
 	it("returns 'not-found' when the prefix filter matches only other branches", async () => {
 		mockFetch.mockResolvedValue(
 			jsonResponse(200, { value: [{ name: "refs/heads/main-backup" }] }),
@@ -265,6 +281,72 @@ describe("verifyRepositoryBranch — Azure DevOps", () => {
 		const [url] = mockFetch.mock.calls[0] as [string];
 		expect(url).toContain("/_apis/git/repositories/My%20Repo/refs?");
 		expect(url).not.toContain("My%2520Repo");
+	});
+});
+
+describe("resolveRepositoryBranchHead", () => {
+	it("uses the canonical legacy Azure DevOps API address", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, {
+				value: [{ name: "refs/heads/main", objectId: "a".repeat(40) }],
+			}),
+		);
+		await expect(
+			resolveRepositoryBranchHead({
+				...adoInput,
+				repositoryUrl:
+					"https://example-org.visualstudio.com/Project/_git/widgets",
+			}),
+		).resolves.toEqual({ ok: true, commitSha: "a".repeat(40) });
+		expect(new URL(mockFetch.mock.calls[0][0]).pathname).toBe(
+			"/Project/_apis/git/repositories/widgets/refs",
+		);
+	});
+
+	it("does not start a provider request when its caller already cancelled", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			resolveRepositoryBranchHead({
+				...githubInput,
+				signal: controller.signal,
+			}),
+		).resolves.toEqual({ ok: false, outcome: "unreachable" });
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("uses the exact ADO ref rather than a bounded branch picker", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, {
+				value: [
+					{ name: "refs/heads/release/1.2-old", objectId: "wrong" },
+					{ name: "refs/heads/release/1.2", objectId: "pinned" },
+				],
+			}),
+		);
+
+		await expect(
+			resolveRepositoryBranchHead({
+				...adoInput,
+				branch: "release/1.2",
+			}),
+		).resolves.toEqual({ ok: true, commitSha: "pinned" });
+		const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		expect(url).toContain("filter=heads%2Frelease%2F1.2");
+		expect(init.signal).toBeInstanceOf(AbortSignal);
+	});
+
+	it("returns the GitHub branch's provider commit id", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, { commit: { sha: "provider-blob-free-commit" } }),
+		);
+
+		await expect(resolveRepositoryBranchHead(githubInput)).resolves.toEqual(
+			{
+				ok: true,
+				commitSha: "provider-blob-free-commit",
+			},
+		);
 	});
 });
 

@@ -57,6 +57,10 @@ export type ListRepositoryCommitsInput = RepositoryApiInput & {
 	path: string;
 	/** 1-based. */
 	page: number;
+	/** An immutable reference, validated by direct callers before reading. */
+	commitSha?: string;
+	/** Native history links do not need one extra ADO request per parent. */
+	includeParents?: boolean;
 };
 
 export type ListRepositoryCommitsResult =
@@ -175,7 +179,7 @@ function query(input: ListRepositoryCommitsInput): string {
 	switch (input.provider) {
 		case "GITHUB": {
 			const params = new URLSearchParams({
-				sha: input.branch,
+				sha: input.commitSha ?? input.branch,
 				per_page: String(COMMITS_PAGE_SIZE),
 				page: String(input.page),
 			});
@@ -186,7 +190,7 @@ function query(input: ListRepositoryCommitsInput): string {
 		}
 		case "GITLAB": {
 			const params = new URLSearchParams({
-				ref_name: input.branch,
+				ref_name: input.commitSha ?? input.branch,
 				per_page: String(COMMITS_PAGE_SIZE),
 				page: String(input.page),
 			});
@@ -197,8 +201,11 @@ function query(input: ListRepositoryCommitsInput): string {
 		}
 		case "AZURE_DEVOPS": {
 			const params = new URLSearchParams({
-				"searchCriteria.itemVersion.version": input.branch,
-				"searchCriteria.itemVersion.versionType": "branch",
+				"searchCriteria.itemVersion.version":
+					input.commitSha ?? input.branch,
+				"searchCriteria.itemVersion.versionType": input.commitSha
+					? "commit"
+					: "branch",
 				"searchCriteria.$top": String(COMMITS_PAGE_SIZE),
 				"searchCriteria.$skip": String(
 					(input.page - 1) * COMMITS_PAGE_SIZE,
@@ -225,7 +232,11 @@ function query(input: ListRepositoryCommitsInput): string {
 export async function listRepositoryCommits(
 	input: ListRepositoryCommitsInput,
 ): Promise<ListRepositoryCommitsResult> {
-	if (!Number.isInteger(input.page) || input.page < 1) {
+	if (
+		!Number.isInteger(input.page) ||
+		input.page < 1 ||
+		(input.commitSha !== undefined && !OBJECT_ID.test(input.commitSha))
+	) {
 		return { ok: false, outcome: "unreachable" };
 	}
 	const target = repositoryApiTarget(input);
@@ -269,7 +280,7 @@ export async function listRepositoryCommits(
 	return {
 		ok: true,
 		commits:
-			input.provider === "AZURE_DEVOPS"
+			input.provider === "AZURE_DEVOPS" && input.includeParents !== false
 				? await withAzureDevOpsParents(target, commits)
 				: commits,
 		hasMore: entries.length >= COMMITS_PAGE_SIZE,
@@ -278,6 +289,50 @@ export async function listRepositoryCommits(
 
 /** Parent reads in flight at once: a page is at most `COMMITS_PAGE_SIZE` commits. */
 const AZURE_DEVOPS_PARENT_READS = 6;
+
+export type ReadRepositoryCommitParentInput = RepositoryApiInput & {
+	sha: string;
+};
+
+export type ReadRepositoryCommitParentResult =
+	| { ok: true; parent: string | null }
+	| { ok: false; outcome: RepositoryFailure };
+
+async function readAzureDevOpsParent(
+	target: RepositoryApiTarget,
+	sha: string,
+): Promise<ReadRepositoryCommitParentResult> {
+	const answer = await getRepositoryJson(
+		target,
+		`/commits/${sha}?api-version=${AZURE_DEVOPS_API_VERSION}`,
+	);
+	if (!answer.ok) {
+		return answer;
+	}
+	return isRecord(answer.data)
+		? { ok: true, parent: firstParent(answer.data.parents) }
+		: { ok: false, outcome: "unreachable" };
+}
+
+/**
+ * The first parent of one Azure DevOps commit, for the commit a person
+ * selected: the list endpoints leave parents out, and reading one per listed
+ * commit costs a request each. Other providers list their parents with the
+ * commit, so asking for one is `unreachable`. Never throws.
+ */
+export async function readRepositoryCommitParent(
+	input: ReadRepositoryCommitParentInput,
+): Promise<ReadRepositoryCommitParentResult> {
+	const target = repositoryApiTarget(input);
+	if (
+		target === null ||
+		input.provider !== "AZURE_DEVOPS" ||
+		!OBJECT_ID.test(input.sha)
+	) {
+		return { ok: false, outcome: "unreachable" };
+	}
+	return readAzureDevOpsParent(target, input.sha);
+}
 
 /**
  * Azure DevOps leaves `parents` out of its commit list (both `GET commits` and
@@ -299,15 +354,9 @@ async function withAzureDevOpsParents(
 		while (next < missing.length) {
 			const index = missing[next++] as number;
 			const commit = result[index] as RepositoryCommit;
-			const answer = await getRepositoryJson(
-				target,
-				`/commits/${commit.sha}?api-version=${AZURE_DEVOPS_API_VERSION}`,
-			);
-			if (answer.ok && isRecord(answer.data)) {
-				result[index] = {
-					...commit,
-					parent: firstParent(answer.data.parents),
-				};
+			const answer = await readAzureDevOpsParent(target, commit.sha);
+			if (answer.ok) {
+				result[index] = { ...commit, parent: answer.parent };
 			}
 		}
 	}

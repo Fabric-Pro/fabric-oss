@@ -191,6 +191,111 @@ describe("InstructionsResource.getPublished", () => {
 	});
 });
 
+describe("InstructionsResource direct repository reads", () => {
+	it("gets credential-free direct repository state", async () => {
+		const { client, captured } = buildClient({
+			org: "example-org",
+			responseBody: {
+				availability: "READY",
+				readState: "DIRECT",
+				generation: 7,
+				currentCommitSha: "a".repeat(40),
+				ref: "main",
+				rootPath: "guidance",
+				provider: "GITHUB",
+				repository: {
+					provider: "GITHUB",
+					host: "github.com",
+					path: "example-org/instructions",
+					cloneUrl: "https://github.com/example-org/instructions.git",
+				},
+			},
+		});
+
+		const state = await client.instructions.getRepositoryState("project-1");
+
+		expect(lastRequest(captured).url).toBe(
+			"https://test.fabric/api/v1/projects/project-1/instructions/repository?org=example-org",
+		);
+		expect(state).toMatchObject({
+			availability: "READY",
+			currentCommitSha: "a".repeat(40),
+		});
+	});
+
+	it("keeps list and file reads pinned to one full commit id", async () => {
+		const { client, captured } = buildClient({
+			responseBody: {
+				generation: 7,
+				commitSha: "a".repeat(40),
+				files: [],
+				incomplete: false,
+				refusal: null,
+			},
+		});
+
+		await client.instructions.listRepositoryFiles("project-1", {
+			generation: 7,
+			commitSha: "a".repeat(40),
+		});
+		expect(lastRequest(captured).url).toBe(
+			`https://test.fabric/api/v1/projects/project-1/instructions/repository/files?generation=7&commitSha=${"a".repeat(40)}`,
+		);
+
+		await client.instructions.getRepositoryFile("project-1", {
+			generation: 7,
+			commitSha: "a".repeat(40),
+			path: "AGENTS.md",
+			offset: 4,
+			maxLength: 50,
+		});
+		expect(lastRequest(captured).url).toBe(
+			`https://test.fabric/api/v1/projects/project-1/instructions/repository/file?generation=7&commitSha=${"a".repeat(40)}&path=AGENTS.md&offset=4&maxLength=50`,
+		);
+	});
+
+	it.each([
+		[409, "REPOSITORY_CONFIGURATION_CHANGED"],
+		[404, "REPOSITORY_FILE_NOT_FOUND"],
+	])(
+		"does not retry deterministic repository refusal %i",
+		async (status, code) => {
+			let attempts = 0;
+			const client = createFabric({
+				apiKey: "fab_test_key",
+				baseUrl: "https://test.fabric",
+				fetch: async () => {
+					attempts++;
+					return new Response(
+						JSON.stringify({
+							error: {
+								message: "Deterministic repository refusal",
+								code,
+							},
+						}),
+						{
+							status,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				},
+				retry: { initialDelayMs: 1 },
+			});
+
+			await expect(
+				client.instructions.getRepositoryFile("project-1", {
+					generation: 7,
+					commitSha: "a".repeat(40),
+					path: "missing.md",
+					offset: 0,
+					maxLength: 50,
+				}),
+			).rejects.toMatchObject({ status, code });
+			expect(attempts).toBe(1);
+		},
+	);
+});
+
 describe("InstructionsResource.createDownloadUrl", () => {
 	it("POSTs and carries an Idempotency-Key", async () => {
 		const { client, captured } = buildClient({

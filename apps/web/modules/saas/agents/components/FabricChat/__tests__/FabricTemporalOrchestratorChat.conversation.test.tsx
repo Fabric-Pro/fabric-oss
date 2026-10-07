@@ -36,6 +36,8 @@ const orpc = vi.hoisted(() => ({
 	attach: vi.fn(),
 	get: vi.fn(),
 	update: vi.fn(),
+	updateSettings: vi.fn(),
+	removeMessage: vi.fn(),
 }));
 
 const streamState = vi.hoisted(() => ({
@@ -123,7 +125,14 @@ vi.mock(
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: { conversations: { attach: orpc.attach } },
-		agents: { conversations: { get: orpc.get, update: orpc.update } },
+		agents: {
+			conversations: {
+				get: orpc.get,
+				update: orpc.update,
+				updateSettings: orpc.updateSettings,
+				removeMessage: orpc.removeMessage,
+			},
+		},
 		ai: { documents: {} },
 	},
 }));
@@ -263,6 +272,8 @@ beforeEach(() => {
 	});
 	orpc.get.mockResolvedValue({ messages: [] });
 	orpc.update.mockResolvedValue({});
+	orpc.updateSettings.mockResolvedValue({ id: "conv" });
+	orpc.removeMessage.mockResolvedValue({ removed: true });
 	window.HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
@@ -381,14 +392,6 @@ describe("FabricTemporalOrchestratorChat — conversation before the first strea
 		const seededId =
 			conversationHook.createConversation.mock.calls[0][0]
 				.initialMessageId;
-		// What the record holds by the time the turn lands: the seeded
-		// question, plus anything the workflow appended mid-turn.
-		orpc.get.mockResolvedValue({
-			messages: [
-				{ id: seededId, role: "user", content: "First question" },
-				{ id: "sys_1", role: "system", content: "Operation result" },
-			],
-		});
 
 		streamState.current = idleStream({
 			isComplete: true,
@@ -406,16 +409,127 @@ describe("FabricTemporalOrchestratorChat — conversation before the first strea
 		);
 		const saved = conversationHook.saveExecution.mock.calls[0][0];
 		expect(saved.conversationId).toBe("conv_new");
+		// Only this turn is sent; the server takes the seeded copy out in the
+		// same locked write, keeping whatever the workflow appended mid-turn.
 		expect(
 			saved.messages.map((m: { role: string; content: string }) => [
 				m.role,
 				m.content,
 			]),
 		).toEqual([
-			["system", "Operation result"],
 			["user", "First question"],
 			["assistant", "The answer"],
 		]);
+		expect(saved.removeMessageIds).toEqual([seededId]);
+		// A fresh id: the server keeps a stored message whose id it is sent
+		// again, so the seeded id would keep the seed and drop this copy.
+		expect(saved.messages[0].id).not.toBe(seededId);
+	});
+
+	/**
+	 * Fizzy #2949: the save used to read the conversation and write the
+	 * whole message list back, so a turn another tab saved between that read
+	 * and the write was lost. The chat now sends only its own turn and never
+	 * reads the conversation to build the save.
+	 */
+	it("sends only its own turn, never the conversation it read, so another tab's turn is kept", async () => {
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+		await send("My question");
+		// What the record holds when this turn lands: a turn another tab
+		// saved meanwhile.
+		orpc.get.mockResolvedValue({
+			messages: [
+				{
+					id: "other_q",
+					role: "user",
+					content: "Other tab's question",
+				},
+				{
+					id: "other_a",
+					role: "assistant",
+					content: "Other tab's answer",
+				},
+			],
+		});
+
+		streamState.current = idleStream({
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "completed",
+				executionId: "exec_mine",
+				result: { response: "My answer" },
+			},
+		});
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_existing"
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(conversationHook.saveExecution).toHaveBeenCalledTimes(1),
+		);
+		const saved = conversationHook.saveExecution.mock.calls[0][0];
+		expect(saved.conversationId).toBe("conv_existing");
+		expect(saved.execution.id).toBe("exec_mine");
+		expect(
+			saved.messages.map((m: { role: string; content: string }) => [
+				m.role,
+				m.content,
+			]),
+		).toEqual([
+			["user", "My question"],
+			["assistant", "My answer"],
+		]);
+		expect(saved.removeMessageIds).toEqual([]);
+		expect(orpc.get).not.toHaveBeenCalled();
+		expect(orpc.update).not.toHaveBeenCalled();
+	});
+
+	it("creates the conversation with the turn's question id when it could not be created up front", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => undefined);
+		conversationHook.createConversation.mockRejectedValueOnce(
+			new Error("offline"),
+		);
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		await send("Hello");
+
+		streamState.current = idleStream({
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "completed",
+				executionId: "exec_1",
+				result: { response: "Hi" },
+			},
+		});
+		rerender(<FabricTemporalOrchestratorChat reasoningMode="balanced" />);
+
+		await waitFor(() =>
+			expect(conversationHook.saveExecution).toHaveBeenCalledTimes(1),
+		);
+		expect(conversationHook.createConversation).toHaveBeenCalledTimes(2);
+		const created = conversationHook.createConversation.mock.calls[1][0];
+		const saved = conversationHook.saveExecution.mock.calls[0][0];
+		// The conversation is created holding the question under the id the
+		// save sends it with, so the server finds it stored and does not add
+		// a second copy.
+		expect(created.initialMessage).toBe("Hello");
+		expect(created.initialMessageId).toBe(saved.messages[0].id);
+		expect(saved.messages[0]).toMatchObject({
+			role: "user",
+			content: "Hello",
+		});
+		expect(saved.removeMessageIds).toBeUndefined();
 	});
 });
 
@@ -497,6 +611,9 @@ describe("FabricTemporalOrchestratorChat — a message refused because another i
 		});
 		expect(conversationHook.saveExecution).not.toHaveBeenCalled();
 		expect(conversationHook.createConversation).not.toHaveBeenCalled();
+		// The conversation already existed, so this send saved nothing in it
+		// and has nothing to take back out.
+		expect(orpc.removeMessage).not.toHaveBeenCalled();
 	});
 
 	describe("a refused message that carried attachments", () => {
@@ -745,6 +862,298 @@ describe("FabricTemporalOrchestratorChat — a message refused because another i
 		).toBe("a new draft");
 		expect(screen.getByTestId("failed-turn")).toBeTruthy();
 	});
+
+	// A new chat is created holding its first question before the turn is
+	// admitted (#2040). Refused, that question was never answered and must
+	// not stay in the saved conversation (Fizzy #2958).
+	describe("the first message of a new chat", () => {
+		it("is taken back out of the conversation it was saved in", async () => {
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			render(<FabricTemporalOrchestratorChat reasoningMode="balanced" />);
+
+			await send("Review the last commits");
+
+			const seededId =
+				conversationHook.createConversation.mock.calls[0][0]
+					.initialMessageId;
+			expect(seededId).toEqual(expect.any(String));
+			expect(sendMessage.mock.calls[0].at(-1)).toEqual({
+				conversationId: "conv_new",
+			});
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(1);
+			expect(orpc.removeMessage).toHaveBeenCalledWith({
+				conversationId: "conv_new",
+				messageId: seededId,
+				organizationId: undefined,
+			});
+			// Never an explicit null: the server refuses a request that names
+			// no organization.
+			expect(orpc.removeMessage.mock.calls[0][0].organizationId).not.toBe(
+				null,
+			);
+			expect(screen.getByTestId("failed-turn").textContent).toContain(
+				"already being answered",
+			);
+		});
+
+		/**
+		 * Refuses the first send the way the hook does, lets the user send
+		 * again (the same text, or `resendText`), completes that turn, and
+		 * returns what the chat saved for it. `stored` is what the
+		 * conversation record holds when the resend's turn is saved.
+		 */
+		async function resendAfterRefusal(
+			stored: (seededId: string) => unknown[],
+			resendText?: string,
+		) {
+			let sends = 0;
+			const sendMessage = vi.fn(async (content: string) => {
+				sends++;
+				if (sends === 1) {
+					streamState.current = { ...refusedStream(), sendMessage };
+					streamOptions.current?.onTurnRefused?.(content);
+				}
+				return null;
+			});
+			streamState.current = idleStream({ sendMessage });
+			const { rerender } = render(
+				<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+			);
+
+			await send("Review the last commits");
+			const seededId: string =
+				conversationHook.createConversation.mock.calls[0][0]
+					.initialMessageId;
+			await act(async () => {
+				await Promise.resolve();
+			});
+			orpc.get.mockResolvedValue({ messages: stored(seededId) });
+			if (resendText !== undefined) {
+				fireEvent.change(screen.getByLabelText("Message"), {
+					target: { value: resendText },
+				});
+			}
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "Send" }));
+			});
+			expect(sendMessage).toHaveBeenCalledTimes(2);
+			// The resend runs in the conversation already created.
+			expect(conversationHook.createConversation).toHaveBeenCalledTimes(
+				1,
+			);
+
+			streamState.current = idleStream({
+				sendMessage,
+				isComplete: true,
+				state: {
+					...(idleStream().state as Record<string, unknown>),
+					status: "completed",
+					executionId: "exec_2",
+					result: { response: "The review" },
+				},
+			});
+			rerender(
+				<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+			);
+
+			await waitFor(() =>
+				expect(conversationHook.saveExecution).toHaveBeenCalledTimes(1),
+			);
+			const saved = conversationHook.saveExecution.mock.calls[0][0];
+			expect(saved.conversationId).toBe("conv_new");
+			return {
+				seededId,
+				removeMessageIds: saved.removeMessageIds as string[],
+				messages: saved.messages as Array<{
+					id: string;
+					role: string;
+					content: string;
+				}>,
+			};
+		}
+
+		it("is saved exactly once when sent again after the removal succeeded", async () => {
+			const { seededId, messages } = await resendAfterRefusal(() => []);
+
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(1);
+			expect(messages.map((m) => [m.role, m.content])).toEqual([
+				["user", "Review the last commits"],
+				["assistant", "The review"],
+			]);
+			// Never under the seed's id: a removal still in flight deletes
+			// only that id, and must not reach the new question.
+			expect(messages[0]?.id).not.toBe(seededId);
+		});
+
+		it("is saved exactly once when sent again after the removal failed", async () => {
+			orpc.removeMessage.mockRejectedValue(new Error("offline"));
+			vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+			// The seed survived the failed removal.
+			const { seededId, removeMessageIds, messages } =
+				await resendAfterRefusal((id) => [
+					{
+						id,
+						role: "user",
+						content: "Review the last commits",
+					},
+				]);
+
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(2);
+			// The surviving seed is dropped in the same write, and the
+			// question saved once, under a new id.
+			expect(removeMessageIds).toEqual([seededId]);
+			expect(messages.map((m) => [m.role, m.content])).toEqual([
+				["user", "Review the last commits"],
+				["assistant", "The review"],
+			]);
+			expect(messages[0]?.id).not.toBe(seededId);
+		});
+
+		it("is removed late without touching a newer question saved in the meantime", async () => {
+			// The first removal hangs (its commit's response is lost, or it
+			// is just slow) and only fails after the user has sent another
+			// question and that turn has been saved; then the retry runs.
+			let failFirstRemoval: (error: Error) => void = () => undefined;
+			orpc.removeMessage
+				.mockImplementationOnce(
+					() =>
+						new Promise((_resolve, reject) => {
+							failFirstRemoval = reject;
+						}),
+				)
+				.mockResolvedValueOnce({ removed: true });
+
+			const { seededId, messages } = await resendAfterRefusal(
+				() => [],
+				"Something else entirely",
+			);
+			expect(messages.map((m) => [m.role, m.content])).toEqual([
+				["user", "Something else entirely"],
+				["assistant", "The review"],
+			]);
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(1);
+
+			await act(async () => {
+				failFirstRemoval(new Error("response lost"));
+				await Promise.resolve();
+			});
+			await waitFor(() =>
+				expect(orpc.removeMessage).toHaveBeenCalledTimes(2),
+			);
+
+			// Every removal names the seed, and the saved question is not
+			// the seed, so neither the late attempt nor the retry can delete
+			// it.
+			const removedIds = orpc.removeMessage.mock.calls.map(
+				(call) => (call[0] as { messageId: string }).messageId,
+			);
+			expect(removedIds).toEqual([seededId, seededId]);
+			expect(messages[0]?.id).not.toBe(seededId);
+		});
+
+		it("retries a failed removal once", async () => {
+			orpc.removeMessage
+				.mockRejectedValueOnce(new Error("offline"))
+				.mockResolvedValueOnce({ removed: true });
+			const warn = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			render(<FabricTemporalOrchestratorChat reasoningMode="balanced" />);
+
+			await send("Review the last commits");
+			await act(async () => {
+				await Promise.resolve();
+			});
+
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(2);
+			expect(orpc.removeMessage.mock.calls[1][0]).toEqual(
+				orpc.removeMessage.mock.calls[0][0],
+			);
+			expect(warn).not.toHaveBeenCalled();
+		});
+
+		it("still shows the notice when the removal fails twice", async () => {
+			orpc.removeMessage.mockRejectedValue(new Error("offline"));
+			const warn = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			const sendMessage = refusingFirstSend();
+			streamState.current = idleStream({ sendMessage });
+			render(<FabricTemporalOrchestratorChat reasoningMode="balanced" />);
+
+			await send("Review the last commits");
+			await act(async () => {
+				await Promise.resolve();
+			});
+
+			expect(orpc.removeMessage).toHaveBeenCalledTimes(2);
+			expect(screen.getByTestId("failed-turn").textContent).toContain(
+				"already being answered",
+			);
+			expect(
+				(screen.getByLabelText("Message") as HTMLTextAreaElement).value,
+			).toBe("Review the last commits");
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("refused first message"),
+				expect.any(Error),
+			);
+		});
+
+		it("is not removed by a later refusal after its own turn's save failed", async () => {
+			vi.spyOn(console, "error").mockImplementation(() => undefined);
+			let sends = 0;
+			const sendMessage = vi.fn(async (content: string) => {
+				sends++;
+				if (sends === 2) {
+					streamState.current = { ...refusedStream(), sendMessage };
+					streamOptions.current?.onTurnRefused?.(content);
+				}
+				return null;
+			});
+			streamState.current = idleStream({ sendMessage });
+			const { rerender } = render(
+				<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+			);
+
+			// The first turn runs and answers, but its save fails, so the
+			// chat still holds the id of the question it was created with.
+			await send("First question");
+			conversationHook.saveExecution.mockRejectedValueOnce(
+				new Error("save failed"),
+			);
+			streamState.current = idleStream({
+				sendMessage,
+				isComplete: true,
+				state: {
+					...(idleStream().state as Record<string, unknown>),
+					status: "completed",
+					executionId: "exec_1",
+					result: { response: "The answer" },
+				},
+			});
+			rerender(
+				<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+			);
+			await waitFor(() =>
+				expect(conversationHook.saveExecution).toHaveBeenCalledTimes(1),
+			);
+
+			// The next message is refused. It did not create the
+			// conversation, so the first question, which was answered, stays.
+			await send("Second question");
+			expect(sendMessage).toHaveBeenCalledTimes(2);
+			expect(screen.getByTestId("failed-turn")).toBeTruthy();
+			expect(conversationHook.createConversation).toHaveBeenCalledTimes(
+				1,
+			);
+			expect(orpc.removeMessage).not.toHaveBeenCalled();
+		});
+	});
 });
 
 describe("FabricTemporalOrchestratorChat — turn in flight until it is saved", () => {
@@ -880,6 +1289,40 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 		);
 		await screen.findByText("Question from the drawer");
 
+		expect(orpc.update).not.toHaveBeenCalled();
+		expect(orpc.updateSettings).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * The page's snapshot of the conversation can predate an execution
+	 * another tab saved. A settings change used to write that snapshot's
+	 * metadata back whole, erasing the execution (Fizzy #2949); it now sends
+	 * only the settings, for the server to merge under its row lock.
+	 */
+	it("sends only the changed settings, never the snapshot's executions", async () => {
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([])}
+			/>,
+		);
+		await screen.findByText("Question from the drawer");
+
+		fireEvent.click(screen.getByRole("button", { name: "pick chat tool" }));
+
+		await waitFor(() =>
+			expect(orpc.updateSettings).toHaveBeenCalledTimes(1),
+		);
+		expect(orpc.updateSettings).toHaveBeenCalledWith({
+			conversationId: "conv_drawer",
+			organizationId: undefined,
+			settings: {
+				executionMode: "balanced",
+				instanceId: undefined,
+				selectedMcpConfigIds: ["mcp_1"],
+			},
+		});
 		expect(orpc.update).not.toHaveBeenCalled();
 	});
 });

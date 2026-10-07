@@ -21,10 +21,7 @@ import {
 } from "./proposal-branch-view";
 
 /** One open proposal on the wire (spec §14.2 "Response"). */
-export type OpenProposalView = {
-	snapshotId: string;
-	version: number;
-	baseSnapshotId: string;
+type OpenProposalDetails = {
 	status: "RECEIVING" | "VALIDATING" | "READY" | "REJECTED" | "FAILED";
 	pullRequest: {
 		state:
@@ -47,6 +44,16 @@ export type OpenProposalView = {
 	branch: ProposalBranchView | null;
 };
 
+export type OpenProposalView = OpenProposalDetails &
+	(
+		| { snapshotId: string; version: number; baseSnapshotId: string }
+		| {
+				kind: "native";
+				operationId: string;
+				nativeBase: { generation: number; commitSha: string };
+		  }
+	);
+
 /**
  * The open proposals of `userId` (the API key's creator) in the project and
  * organization the route resolved, newest version first, at most 20.
@@ -64,10 +71,17 @@ export async function readOpenProposals(i: {
 	});
 	return {
 		proposals: rows.map((row) => ({
-			snapshotId: row.candidate.snapshotId,
-			version: row.candidate.version,
-			// The selection never returns a row with a null base.
-			baseSnapshotId: row.candidate.baseSnapshotId as string,
+			...(row.candidate.nativeBase
+				? {
+						kind: "native" as const,
+						operationId: row.candidate.snapshotId,
+						nativeBase: row.candidate.nativeBase,
+					}
+				: {
+						snapshotId: row.candidate.snapshotId,
+						version: row.candidate.version,
+						baseSnapshotId: row.candidate.baseSnapshotId,
+					}),
 			status: row.status,
 			pullRequest: row.pullRequest,
 			// Field by field: a delete's `sha256` is present and exactly null.

@@ -139,17 +139,17 @@ overrides:
   "fast-xml-parser@^5.0.0": "^5.11.1"
   "@grpc/grpc-js@^1.14.0": "^1.14.5"
   "@fastify/busboy@>=3.0.0 <3.2.1": "3.2.1"
-  "shell-quote@^1.8.0": "^1.9.0"
+  "shell-quote@^1.8.0": "^1.11.0"
   "handlebars@^4.0.0": "^4.7.9"
   "protobufjs@^7.0.0": "^7.6.5"
   "protobufjs@^8.0.0": "^8.6.6"
   "@hono/node-server@^1.0.0": "^1.19.15"
-  "sharp@<0.35.0": "^0.35.4"
+  "sharp@<0.35.0": "^0.35.5"
   # `next` carries its own `sharp` optional peer and resolved it to 0.35.3,
   # which the `<0.35.0` key above cannot reach — so GHSA-rgj7-g3m4-5g8c (libheif)
   # survived bumping every first-party declaration. This key catches the 0.35.x
   # line itself.
-  "sharp@^0.35.0": "^0.35.4"
+  "sharp@^0.35.0": "^0.35.5"
   "@xmldom/xmldom@^0.8.0": "^0.8.15"
   "axios": "^1.20.0"
   "browserslist": "^4.28.8"
@@ -181,13 +181,13 @@ overrides:
   "undici@^8.0.0": "^8.11.2"
   "underscore@^1.0.0": "^1.13.8"
   "socket.io-parser@^4.0.0": "^4.2.7"
-  "@modelcontextprotocol/sdk@^1.10.0": "^1.30.0"
+  "@modelcontextprotocol/sdk": "^1.32.1"
   "@opentelemetry/exporter-prometheus": ">=0.217.0"
   "@opentelemetry/propagator-jaeger": ">=2.9.0 <3"
   "rollup@^4.0.0": "^4.59.0"
   "expr-eval": "npm:expr-eval-fork@^3.0.3"
   "langsmith": ">=0.6.0 <1.0.0"
-  "shell-quote": "^1.9.0"
+  "shell-quote": "^1.11.0"
   "form-data": "^4.0.6"
   "ws": "^8.21.0"
   "@grpc/grpc-js": "^1.14.5"
@@ -225,10 +225,10 @@ overrides:
   # `@better-auth/core` at `@better-fetch/fetch@1.1.21` / `better-call@1.3.5`
   # alongside the good one. apps/web then type-checked against the old
   # better-fetch and produced 51 errors across every auth, organization and
-  # settings component. These three pins are not an upgrade: they are the
-  # versions already in use, held still so a Next bump cannot silently fork the
+  # settings component. These pins hold the compatible auth peer versions
+  # together so a Next bump cannot silently fork the
   # island. Drop them if better-auth ever stops declaring `next` as a peer.
-  "@better-fetch/fetch": "1.3.1"
+  "@better-fetch/fetch": "1.3.2"
   "better-call": "1.4.0"
   "@better-auth/utils": "0.4.2"
   "js-yaml@^3.0.0": "^3.15.2"
@@ -291,5 +291,6 @@ allowBuilds:
   "workerd": false
 
 patchedDependencies:
+  '@better-auth/oauth-provider@1.7.7': patches/@better-auth__oauth-provider@1.7.7.patch
   '@graphql-tools/utils@10.10.1': patches/@graphql-tools__utils@10.10.1.patch
   braces@3.0.3: patches/braces@3.0.3.patch

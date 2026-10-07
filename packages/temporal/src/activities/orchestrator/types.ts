@@ -45,6 +45,15 @@ export interface AnalyzeAndRouteInput {
 	memoryContext?: string;
 	/** Attached image URLs for image editing/generation */
 	attachedImageUrls?: string[];
+	/**
+	 * The chat turn (a Planner chat) this activity serves. When set, the
+	 * worker's turn-dispatch interceptor runs the activity inside the turn's
+	 * dispatch guard: every factory model and embedding request is checked
+	 * against the turn record and aborted by the activity's cancellation, the
+	 * activity heartbeats so a Stop reaches it, and a stop is rethrown instead
+	 * of being turned into a fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface CreateTaskPlanInput {
@@ -63,6 +72,15 @@ export interface CreateTaskPlanInput {
 	history?: Array<{ role: "user" | "assistant"; content: string }>;
 	/** Attached image URLs for image editing/generation */
 	attachedImageUrls?: string[];
+	/**
+	 * The chat turn (a Planner chat) this activity serves. When set, the
+	 * worker's turn-dispatch interceptor runs the activity inside the turn's
+	 * dispatch guard: every factory model and embedding request is checked
+	 * against the turn record and aborted by the activity's cancellation, the
+	 * activity heartbeats so a Stop reaches it, and a stop is rethrown instead
+	 * of being turned into a fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface ExecuteStepInput {
@@ -148,6 +166,15 @@ export interface ExecuteStepInput {
 		reason: string;
 		capabilities: string[];
 	}>;
+	/**
+	 * The chat turn (a Planner chat) this activity serves. When set, the
+	 * worker's turn-dispatch interceptor runs the activity inside the turn's
+	 * dispatch guard: every factory model and embedding request is checked
+	 * against the turn record and aborted by the activity's cancellation, the
+	 * activity heartbeats so a Stop reaches it, and a stop is rethrown instead
+	 * of being turned into a fallback result. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface ExecuteStepOutput {
@@ -222,6 +249,13 @@ export interface ExecuteMcpToolInput {
 	lettaAgentId?: string | null;
 	/** Attached image URLs (fallback for image tools when not in args) */
 	attachedImageUrls?: string[];
+	/**
+	 * The Advisor's company-context opt-in
+	 * (`OrchestratorWorkflowInput.companyContextAdvisor`), sent only by a turn
+	 * that pre-registered the company context search. The catalog adapter
+	 * hands it to the tool's builder, which builds nothing without it.
+	 */
+	companyContextAdvisor?: boolean;
 	/**
 	 * The Advisor chat turn the call belongs to. Carried into the image tool
 	 * (`fabric_generate_image`), whose provider requests are checked against

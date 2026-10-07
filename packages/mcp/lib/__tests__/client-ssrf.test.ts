@@ -33,11 +33,7 @@ vi.mock("@repo/database", () => ({
 	getMcpConfigById: vi.fn(),
 	getValidAccessToken: vi.fn(),
 	getMcpConfigByIdInternal: vi.fn(),
-	updateMcpConfigTokens: vi.fn(),
-	getCachedOAuthMetadata: vi.fn(),
-	clearRefreshFailures: vi.fn(),
-	recordRefreshFailure: vi.fn(),
-	isPermanentGrantFailure: vi.fn(),
+	getMcpOAuthGrantGeneration: vi.fn(),
 	// The config owner is a member whose role allows MCP read and connect
 	// (the organization gate in ../organization-access).
 	canConnectOrganizationMcpConfigs: async () => true,
@@ -54,7 +50,11 @@ vi.mock("node:dns", async (importOriginal) => {
 	};
 });
 
-import { createMcpClient, McpClientError } from "../client";
+import {
+	createMcpClient,
+	McpClientError,
+	oauthRequestsRefuseRedirects,
+} from "../client";
 import { fetchMcpServer, getMcpServerBlockedReason } from "../server-url-guard";
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -196,7 +196,9 @@ describe("createMcpClient outbound guard", () => {
 				requestInit?: RequestInit;
 			},
 		];
-		expect(httpOptions.fetch).toBe(fetchMcpServer);
+		// The guarded fetch, wrapped so the SDK's OAuth requests refuse
+		// redirects (see the `oauthRequestsRefuseRedirects` suite below).
+		expect(typeof httpOptions.fetch).toBe("function");
 		expect(httpOptions.authProvider).toBe(authProvider);
 		expect(httpOptions.requestInit?.headers).toEqual({ "X-Tenant": "t" });
 		// The client is created from that transport, never from a URL config
@@ -218,8 +220,33 @@ describe("createMcpClient outbound guard", () => {
 			URL,
 			{ fetch?: unknown; authProvider?: unknown },
 		];
-		expect(sseOptions.fetch).toBe(fetchMcpServer);
+		expect(typeof sseOptions.fetch).toBe("function");
 		expect(sseOptions.authProvider).toBe(authProvider);
+	});
+
+	it("routes the OAuth path's requests through the guarded fetch it was given", async () => {
+		const baseFetch = vi.fn(
+			async (_url: string | URL, _init?: RequestInit) =>
+				new Response("{}"),
+		);
+		await createMcpClient({
+			serverUrl: "https://mcp.example.com/mcp",
+			transport: "HTTP",
+			authProvider: { tokens: vi.fn() } as never,
+			fetch: baseFetch,
+		});
+		const [, httpOptions] = streamableCtor.mock.calls[0] as [
+			URL,
+			{ fetch: (url: string, init?: RequestInit) => Promise<Response> },
+		];
+		await httpOptions.fetch("https://mcp.example.com/mcp", {
+			method: "POST",
+			body: "{}",
+		});
+		expect(baseFetch).toHaveBeenCalledWith("https://mcp.example.com/mcp", {
+			method: "POST",
+			body: "{}",
+		});
 	});
 
 	it("refuses the OAuth connection itself when the name answers a private address after passing the pre-connect check", async () => {
@@ -284,5 +311,70 @@ describe("createMcpClient outbound guard", () => {
 			transport: "HTTP",
 		});
 		expect(createMCPClientMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("oauthRequestsRefuseRedirects", () => {
+	const serverUrl = new URL("https://mcp.example.com/mcp");
+
+	it("refuses redirects for a token request, even on the MCP server's own origin", async () => {
+		const baseFetch = vi.fn(
+			async (_url: string | URL, _init?: RequestInit) =>
+				new Response("{}"),
+		);
+		const wrapped = oauthRequestsRefuseRedirects(serverUrl, baseFetch);
+		const body = new URLSearchParams({ grant_type: "refresh_token" });
+
+		await wrapped("https://mcp.example.com/token", {
+			method: "POST",
+			body,
+			redirect: "manual",
+		});
+
+		expect(baseFetch).toHaveBeenCalledWith(
+			"https://mcp.example.com/token",
+			{
+				method: "POST",
+				body,
+				redirect: "error",
+			},
+		);
+	});
+
+	it("refuses redirects for anything sent off the MCP server's origin", async () => {
+		const baseFetch = vi.fn(
+			async (_url: string | URL, _init?: RequestInit) =>
+				new Response("{}"),
+		);
+		const wrapped = oauthRequestsRefuseRedirects(serverUrl, baseFetch);
+
+		await wrapped(
+			new URL(
+				"https://as.example.com/.well-known/oauth-authorization-server",
+			),
+			{ redirect: "manual" },
+		);
+
+		expect(baseFetch.mock.calls[0]?.[1]).toEqual({ redirect: "error" });
+	});
+
+	it("leaves the MCP server's own requests to the SDK's same-origin handling", async () => {
+		const baseFetch = vi.fn(
+			async (_url: string | URL, _init?: RequestInit) =>
+				new Response("{}"),
+		);
+		const wrapped = oauthRequestsRefuseRedirects(serverUrl, baseFetch);
+		const init = {
+			method: "POST",
+			body: "{}",
+			redirect: "manual" as const,
+		};
+
+		await wrapped("https://mcp.example.com/mcp", init);
+
+		expect(baseFetch).toHaveBeenCalledWith(
+			"https://mcp.example.com/mcp",
+			init,
+		);
 	});
 });

@@ -8,7 +8,7 @@
 	"scripts": {
 		"dev": "tsx watch --import ./src/telemetry.ts src/index.ts",
 		"build": "tsup --config tsup.config.ts",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"start": "node --import ./dist/telemetry.js dist/index.js",
 		"test": "vitest run"
 	},

@@ -38,6 +38,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				repository: {
+					getState: {
+						queryOptions: queryOptionsStub(
+							"repository-getState",
+							async () => ({
+								availability: "UPLOAD",
+							}),
+						),
+					},
+				},
 				list: {
 					queryOptions: queryOptionsStub("list", async () => []),
 				},
@@ -247,10 +257,12 @@ function read(migrationState: string | null) {
 async function tick(ms: number) {
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(ms);
-		for (let settle = 0; settle < 5; settle++) {
-			await vi.advanceTimersByTimeAsync(0);
-		}
 	});
+	for (let settle = 0; settle < 5; settle++) {
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+	}
 }
 
 function Wrapper({ children }: { children: ReactNode }) {

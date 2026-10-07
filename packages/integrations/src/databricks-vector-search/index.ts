@@ -197,6 +197,12 @@ function requireCredentials(credentials: Record<string, string>): {
 function buildClient(
 	credentials: Record<string, string>,
 	options?: ExecOptions,
+	/**
+	 * Awaited before every physical request this client sends (each retry
+	 * included). The token provider keeps the unwrapped fetch: its token
+	 * request is cached and shared by every caller of this host.
+	 */
+	beforeRequest?: () => Promise<void>,
 ): DatabricksApiClient {
 	const { host, clientId, clientSecret } = requireCredentials(credentials);
 	const secretDigest = createHash("sha256")
@@ -216,11 +222,14 @@ function buildClient(
 			providerCache.set(cacheKey, tokenProvider);
 		}
 	}
-	return new DatabricksApiClient({
-		host,
-		tokenProvider,
-		fetchImpl: options?.fetchImpl,
-	});
+	const baseFetch = options?.fetchImpl;
+	const fetchImpl: typeof fetch | undefined = beforeRequest
+		? async (input, init) => {
+				await beforeRequest();
+				return (baseFetch ?? globalThis.fetch)(input, init);
+			}
+		: baseFetch;
+	return new DatabricksApiClient({ host, tokenProvider, fetchImpl });
 }
 
 export async function verifyDatabricksVectorSearchConnection(
@@ -473,6 +482,17 @@ export async function queryDatabricksVectorIndexes(
 		 * requests after they stop waiting.
 		 */
 		signal?: AbortSignal;
+		/**
+		 * Called before each index's work starts and before every physical
+		 * search request (each retry included); throwing refuses the request.
+		 * A refusal is not recorded as one index's failure: the search waits
+		 * for the indexes already in flight to settle, then rejects with the
+		 * refusal, so a caller that may no longer send (a stopped chat turn)
+		 * gets neither further requests nor a partial result. Not applied to
+		 * the shared, cached token and index-metadata requests other callers
+		 * may be waiting on.
+		 */
+		beforeRequest?: () => Promise<void>;
 	},
 ): Promise<DatabricksVectorSearchResult> {
 	const { indexNames, query, signal } = args;
@@ -482,7 +502,28 @@ export async function queryDatabricksVectorIndexes(
 	if (!indexNames?.length) {
 		throw new Error("At least one index must be selected");
 	}
+	// The first refusal from `beforeRequest`, kept so it is rethrown after
+	// the other indexes settle instead of being recorded as a failure.
+	let refusal: { error: unknown } | undefined;
+	const beforeRequest = args.beforeRequest
+		? async () => {
+				if (refusal) {
+					throw refusal.error;
+				}
+				try {
+					await args.beforeRequest?.();
+				} catch (error) {
+					refusal ??= { error };
+					throw error;
+				}
+			}
+		: undefined;
+	// Shared index-metadata fetches go through an unguarded client: another
+	// caller may be coalesced onto the same request.
 	const client = buildClient(credentials, { fetchImpl: args.fetchImpl });
+	const searchClient = beforeRequest
+		? buildClient(credentials, { fetchImpl: args.fetchImpl }, beforeRequest)
+		: client;
 	const { host } = requireCredentials(credentials);
 	const numResults = normalizeNumResults(args.numResults);
 
@@ -497,12 +538,16 @@ export async function queryDatabricksVectorIndexes(
 		queriedIndexNames,
 		QUERY_CONCURRENCY,
 		async (indexName) => {
+			if (refusal) {
+				return;
+			}
 			try {
+				await beforeRequest?.();
 				const meta = await waitAbortable(
 					getIndexQueryMeta(client, host, indexName),
 					signal,
 				);
-				const result = await client.request<{
+				const result = await searchClient.request<{
 					manifest?: { columns?: Array<{ name: string }> };
 					result?: { data_array?: unknown[][] };
 				}>(
@@ -537,12 +582,21 @@ export async function queryDatabricksVectorIndexes(
 				}
 				successCount++;
 			} catch (error) {
+				if (refusal) {
+					// Refused (here or in a sibling): rethrown below, once
+					// every index already in flight has settled.
+					return;
+				}
 				queryFailures.push(
 					`${indexName}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		},
 	);
+
+	if (refusal) {
+		throw refusal.error;
+	}
 
 	if (successCount === 0 && queryFailures.length > 0) {
 		throw new Error(

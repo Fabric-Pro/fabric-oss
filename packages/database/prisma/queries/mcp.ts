@@ -11,6 +11,10 @@ import {
 	GITLAB_PERSONAL_MCP_SERVER_KEYS,
 	isGitLabPersonalMcpServerKey,
 } from "./lib/gitlab-personal-keys";
+import {
+	wipeMcpOAuthTokens,
+	wipeMcpOAuthTokensWhere,
+} from "./mcp-oauth-credentials";
 
 // Re-export sentinel helpers so `@repo/integrations` consumers
 // (`getProjectPMServerKey`) can recognise key-sentinel ids through the
@@ -183,6 +187,36 @@ export async function getMcpServerById(
  * List only system-provided MCP servers (public registry)
  * Used for the public MCP registry page that doesn't require authentication
  */
+/**
+ * An MCP server the given tenant may use, or null: a system-provided server,
+ * or a custom server owned by exactly this tenant — the exclusive tenant
+ * filter (`{ organizationId, userId }` in an organization, `{ organizationId:
+ * null, userId }` personally; never OR-ed). A tenant without a user owns no
+ * custom server. Every path that writes or uses a config's OAuth credentials
+ * checks its server through this: a config must never send a secret to the
+ * endpoints of a server another person or organization controls.
+ */
+export async function getMcpServerForTenant(
+	id: string,
+	tenant: { userId: string | null; organizationId: string | null },
+) {
+	const server = await db.mCPServer.findUnique({ where: { id } });
+	if (!server) {
+		return null;
+	}
+	if (server.isSystemProvided) {
+		return server;
+	}
+	if (!tenant.userId) {
+		return null;
+	}
+	const ownedHere = tenant.organizationId
+		? server.userId === tenant.userId &&
+			server.organizationId === tenant.organizationId
+		: server.userId === tenant.userId && server.organizationId === null;
+	return ownedHere ? server : null;
+}
+
 export async function listSystemMcpServers() {
 	const servers = await db.mCPServer.findMany({
 		where: {
@@ -600,7 +634,60 @@ export async function updateCustomMcpServer({
 	if (existing.isSystemProvided) {
 		throw new Error("Cannot modify system-provided MCP server");
 	}
-	return db.mCPServer.update({ where: { id }, data });
+
+	// A change to where this server's OAuth flows go (its URL, discovery
+	// document, endpoints or registration endpoint) retires every config that
+	// inherits it, in the same transaction as the server update:
+	// - tokens, binding AND client registration are removed — a client
+	//   entered or registered for the old endpoints must not be presented to
+	//   the new ones;
+	// - every such config's grant generation moves, whatever it held, so an
+	//   OAuth flow already started against the old endpoints cannot complete.
+	// Their owners reconnect.
+	const changed = <K extends keyof typeof data>(key: K) =>
+		data[key] !== undefined &&
+		(data[key] ?? null) !==
+			((existing as Record<string, unknown>)[key] ?? null);
+	const endpointsChanged =
+		changed("oauthDiscoveryUrl") ||
+		changed("oauthAuthorizationEndpoint") ||
+		changed("oauthTokenEndpoint") ||
+		changed("dcrRegistrationEndpoint");
+	const defaultUrlChanged = changed("defaultUrl");
+
+	if (!endpointsChanged && !defaultUrlChanged) {
+		return db.mCPServer.update({ where: { id }, data });
+	}
+
+	return db.$transaction(async (tx) => {
+		const updated = await tx.mCPServer.update({ where: { id }, data });
+		await wipeMcpOAuthTokensWhere({
+			client: tx,
+			where: {
+				mcpServerId: id,
+				AND: [
+					// A URL change reaches only the configs that use the
+					// server's URL: no URL of their own, or a copy of the old one.
+					...(endpointsChanged
+						? []
+						: [
+								{
+									OR: [
+										{ baseUrl: null },
+										{ baseUrl: "" },
+										...(existing.defaultUrl
+											? [{ baseUrl: existing.defaultUrl }]
+											: []),
+									],
+								},
+							]),
+				],
+			},
+			clearBinding: true,
+			clearClient: true,
+		});
+		return updated;
+	});
 }
 
 export async function deleteCustomMcpServer({
@@ -1033,13 +1120,9 @@ export async function createMcpConfig({
 		transport: MCPTransport | null;
 		authType: MCPAuthType;
 		apiKeyMethod: MCPApiKeyMethod | null;
-		oauthClientId: string | null;
-		encryptedOauthClientSecret: string | null;
+		// OAuth client and token columns are written only through
+		// `./mcp-oauth-credentials`, which binds and fences them.
 		encryptedApiKey: string | null;
-		encryptedAccessToken: string | null;
-		accessTokenHash: string | null;
-		encryptedRefreshToken: string | null;
-		tokenExpiresAt: Date | null;
 		scopes: string[];
 		commandArgs: string[];
 		enabled: boolean;
@@ -1063,13 +1146,7 @@ export async function createMcpConfig({
 		transport: data.transport ?? null,
 		authType: data.authType ?? ("NONE" as MCPAuthType),
 		apiKeyMethod: data.apiKeyMethod ?? ("BEARER" as MCPApiKeyMethod),
-		oauthClientId: data.oauthClientId ?? null,
-		encryptedOauthClientSecret: data.encryptedOauthClientSecret ?? null,
 		encryptedApiKey: data.encryptedApiKey ?? null,
-		encryptedAccessToken: data.encryptedAccessToken ?? null,
-		accessTokenHash: data.accessTokenHash ?? null,
-		encryptedRefreshToken: data.encryptedRefreshToken ?? null,
-		tokenExpiresAt: data.tokenExpiresAt ?? null,
 		scopes: data.scopes ?? [],
 		commandArgs: data.commandArgs ?? [],
 		enabled: data.enabled ?? true,
@@ -1097,13 +1174,9 @@ export async function upsertMcpConfig({
 		transport: MCPTransport | null;
 		authType: MCPAuthType;
 		apiKeyMethod: MCPApiKeyMethod | null;
-		oauthClientId: string | null;
-		encryptedOauthClientSecret: string | null;
+		// OAuth client and token columns are written only through
+		// `./mcp-oauth-credentials`, which binds and fences them.
 		encryptedApiKey: string | null;
-		encryptedAccessToken: string | null;
-		accessTokenHash: string | null;
-		encryptedRefreshToken: string | null;
-		tokenExpiresAt: Date | null;
 		scopes: string[];
 		commandArgs: string[];
 		enabled: boolean;
@@ -1153,13 +1226,7 @@ export async function upsertMcpConfig({
 		transport: data.transport ?? null,
 		authType: data.authType ?? ("NONE" as MCPAuthType),
 		apiKeyMethod: data.apiKeyMethod ?? ("BEARER" as MCPApiKeyMethod),
-		oauthClientId: data.oauthClientId ?? null,
-		encryptedOauthClientSecret: data.encryptedOauthClientSecret ?? null,
 		encryptedApiKey: data.encryptedApiKey ?? null,
-		encryptedAccessToken: data.encryptedAccessToken ?? null,
-		accessTokenHash: data.accessTokenHash ?? null,
-		encryptedRefreshToken: data.encryptedRefreshToken ?? null,
-		tokenExpiresAt: data.tokenExpiresAt ?? null,
 		scopes: data.scopes ?? [],
 		commandArgs: data.commandArgs ?? [],
 		enabled: data.enabled ?? true,
@@ -1214,111 +1281,6 @@ export async function setMcpConfigHealth({
 	});
 }
 
-export async function updateMcpConfigTokens({
-	configId,
-	encryptedAccessToken,
-	accessTokenHash,
-	encryptedRefreshToken,
-	tokenExpiresAt,
-}: {
-	configId: string;
-	/** Access token - can be null to clear tokens */
-	encryptedAccessToken: string | null;
-	/**
-	 * HMAC-SHA-256 of the plaintext access token (`hashApiKey(plaintext)`).
-	 * Required when `encryptedAccessToken` is set; pass `null` only when clearing.
-	 * Used by the GitLab MCP shim to look up a config from a bearer in O(1)
-	 * without decrypting every row.
-	 */
-	accessTokenHash: string | null;
-	encryptedRefreshToken?: string | null;
-	tokenExpiresAt?: Date | null;
-}) {
-	try {
-		// When writing a NON-NULL access token (fresh OAuth, successful
-		// refresh), reset the status fields too. The 3-strike circuit
-		// breaker in `recordRefreshFailure` flips the config to
-		// `status: "UNAVAILABLE"` + `needsReauth: true` after persistent
-		// failures; previously nothing reset those flags on successful
-		// recovery, so a config that had failed several times then was
-		// reconnected (or whose refresh path recovered) stayed
-		// UNAVAILABLE in the UI even though tokens were fresh. Saving
-		// new valid tokens IS the recovery signal — surface it.
-		//
-		// Clearing tokens (encryptedAccessToken === null) leaves status
-		// alone so callers that intentionally clear can set their own.
-		const recovering = encryptedAccessToken !== null;
-		return await db.mCPConfig.update({
-			where: { id: configId },
-			data: {
-				encryptedAccessToken,
-				accessTokenHash,
-				encryptedRefreshToken: encryptedRefreshToken ?? null,
-				tokenExpiresAt: tokenExpiresAt ?? null,
-				...(recovering
-					? {
-							status: "HEALTHY" as MCPStatus,
-							needsReauth: false,
-							refreshFailureCount: 0,
-							lastRefreshFailedAt: null,
-							lastRefreshError: null,
-							consecutiveFailures: 0,
-						}
-					: {}),
-			},
-		});
-	} catch (error) {
-		// `accessTokenHash` is uniquely indexed. Two configs sharing the
-		// same plaintext token is statistically impossible (256-bit
-		// random) — a P2002 here means a real bug (token reuse,
-		// duplicated row, hash collision). Surface it loudly so the
-		// caller can act, instead of swallowing it as silent staleness.
-		if (
-			error instanceof Prisma.PrismaClientKnownRequestError &&
-			error.code === "P2002"
-		) {
-			const wrapped = new Error(
-				`MCPConfig token write conflicted on a unique constraint for configId=${configId}: ${error.message}`,
-			);
-			(wrapped as { cause?: unknown }).cause = error;
-			throw wrapped;
-		}
-		throw error;
-	}
-}
-
-export async function updateMcpConfigAfterDcr({
-	configId,
-	oauthClientId,
-	encryptedOauthClientSecret,
-	dcrRegistrationEndpoint,
-	dcrClientMetadata,
-	dcrRegisteredAt,
-}: {
-	configId: string;
-	oauthClientId: string | null;
-	encryptedOauthClientSecret: string | null;
-	dcrRegistrationEndpoint?: string | null;
-	dcrClientMetadata?: Record<string, unknown> | null;
-	dcrRegisteredAt?: Date | null;
-}) {
-	return db.mCPConfig.update({
-		where: { id: configId },
-		data: {
-			oauthClientId,
-			encryptedOauthClientSecret,
-			dcrRegistrationEndpoint: dcrRegistrationEndpoint ?? null,
-			dcrClientMetadata:
-				dcrClientMetadata === undefined
-					? undefined
-					: dcrClientMetadata === null
-						? Prisma.JsonNull
-						: (dcrClientMetadata as any),
-			dcrRegisteredAt: dcrRegisteredAt ?? null,
-		},
-	});
-}
-
 // Short-lived session tokens
 export async function createMcpClientSession({
 	configId,
@@ -1360,6 +1322,8 @@ export async function createOauthState({
 	organizationId,
 	codeVerifier,
 	redirectUri,
+	authorizationServerSnapshot,
+	expectedGrantGeneration,
 }: {
 	mcpServerId: string;
 	configId: string;
@@ -1367,6 +1331,13 @@ export async function createOauthState({
 	organizationId?: string;
 	codeVerifier?: string;
 	redirectUri?: string;
+	/**
+	 * What `start` resolved — the authorization server, endpoints and client —
+	 * for the callback to use unchanged. Not secret.
+	 */
+	authorizationServerSnapshot?: Record<string, unknown>;
+	/** The config's `oauthGrantGeneration` when `start` ran. */
+	expectedGrantGeneration?: number;
 }) {
 	const state = crypto.randomUUID();
 	const now = new Date();
@@ -1381,6 +1352,13 @@ export async function createOauthState({
 			organizationId: organizationId ?? null,
 			codeVerifier: codeVerifier ?? null,
 			redirectUri: redirectUri ?? null,
+			...(authorizationServerSnapshot
+				? {
+						authorizationServerSnapshot:
+							authorizationServerSnapshot as Prisma.InputJsonValue,
+					}
+				: {}),
+			expectedGrantGeneration: expectedGrantGeneration ?? null,
 			expiresAt,
 		},
 	});
@@ -1411,21 +1389,13 @@ export async function revokeOAuthTokens(
 	configId: string,
 	tenant: { userId: string; organizationId: string | null },
 ): Promise<number> {
-	const result = await db.mCPConfig.updateMany({
-		where: {
-			id: configId,
-			...(tenant.organizationId
-				? {
-						organizationId: tenant.organizationId,
-						userId: tenant.userId,
-					}
-				: { organizationId: null, userId: tenant.userId }),
-		},
-		data: {
-			encryptedAccessToken: null,
-			accessTokenHash: null,
-			encryptedRefreshToken: null,
-			tokenExpiresAt: null,
+	// Through the credential module: the wipe increments the grant
+	// generation, so a refresh already in flight cannot write the revoked
+	// grant back.
+	return wipeMcpOAuthTokens({
+		configId,
+		tenant,
+		extraData: {
 			status: "UNAVAILABLE", // Mark as unavailable since no valid tokens
 			encryptedAtlassianCloudAccessToken: null,
 			encryptedAtlassianCloudRefreshToken: null,
@@ -1440,7 +1410,6 @@ export async function revokeOAuthTokens(
 			atlassianCloudLastRefreshError: null,
 		},
 	});
-	return result.count;
 }
 
 /**
@@ -1452,19 +1421,15 @@ export async function revokeOAuthTokens(
  * Org configs are NOT affected - use revokeAllOrgOAuthTokens for those.
  */
 export async function revokeAllUserOAuthTokens(userId: string) {
-	return db.mCPConfig.updateMany({
+	const count = await wipeMcpOAuthTokensWhere({
 		where: {
 			userId,
 			organizationId: null, // XOR: Only personal configs
 			authType: "OAUTH2",
 		},
-		data: {
-			encryptedAccessToken: null,
-			encryptedRefreshToken: null,
-			tokenExpiresAt: null,
-			status: "UNAVAILABLE",
-		},
+		extraData: { status: "UNAVAILABLE" },
 	});
+	return { count };
 }
 
 /**
@@ -1476,18 +1441,14 @@ export async function revokeAllUserOAuthTokens(userId: string) {
  * Personal configs are NOT affected - use revokeAllUserOAuthTokens for those.
  */
 export async function revokeAllOrgOAuthTokens(organizationId: string) {
-	return db.mCPConfig.updateMany({
+	const count = await wipeMcpOAuthTokensWhere({
 		where: {
 			organizationId,
 			authType: "OAUTH2",
 		},
-		data: {
-			encryptedAccessToken: null,
-			encryptedRefreshToken: null,
-			tokenExpiresAt: null,
-			status: "UNAVAILABLE",
-		},
+		extraData: { status: "UNAVAILABLE" },
 	});
+	return { count };
 }
 
 /**
@@ -1662,7 +1623,9 @@ export async function getValidAccessToken({
 	// check token age against known lifetime.
 	const server = cfg.mcpServer as { defaultUrl?: string } | null;
 	const serverBaseUrl = cfg.baseUrl || server?.defaultUrl;
-	const knownExpiry = getServerDefaultTokenExpiry(serverBaseUrl);
+	const { getMcpServerDefaultTokenExpiry, refreshMcpOAuthAccessToken } =
+		await import("./mcp-oauth-refresh");
+	const knownExpiry = getMcpServerDefaultTokenExpiry(serverBaseUrl);
 	const tokenAge = cfg.updatedAt
 		? Date.now() - new Date(cfg.updatedAt).getTime()
 		: Number.POSITIVE_INFINITY;
@@ -1703,7 +1666,7 @@ export async function getValidAccessToken({
 	// Circuit breaker: the refresh token has already failed
 	// MAX_REFRESH_FAILURES times, so another attempt would just re-hammer a
 	// dead token and record a further failure. Only a successful re-auth
-	// (updateMcpConfigTokens / clearRefreshFailures) clears the flag.
+	// (a new grant through the connect flow) clears the flag.
 	if (cfg.needsReauth) {
 		if (!isExpired) {
 			// Proactive-refresh window: the current token is still valid.
@@ -1714,32 +1677,41 @@ export async function getValidAccessToken({
 		return null;
 	}
 
-	// Refresh the token. Only count a failure against the 3-strike circuit
-	// breaker when the token is hard-expired — a proactive miss in the soft
-	// (75%-100%) window falls through to the still-valid current token below,
-	// so transient errors there must not flip the config to needsReauth.
-	const refreshed = await refreshAccessToken(configId, {
+	// Refresh through the one bound refresh path. Only count a failure
+	// against the 3-strike circuit breaker when the token is hard-expired — a
+	// proactive miss in the soft (75%-100%) window falls through to the
+	// still-valid current token below, so transient errors there must not
+	// flip the config to needsReauth.
+	const outcome = await refreshMcpOAuthAccessToken(configId, {
 		recordFailures: isExpired,
+		expectedGeneration: cfg.oauthGrantGeneration,
 	});
-	if (!refreshed) {
-		// If proactive refresh failed, only return stale token in the soft window (75%-100%)
-		if (!isExpired) {
+	if (outcome.status === "refreshed") {
+		return outcome.accessToken;
+	}
+	if (outcome.status === "superseded") {
+		// The credentials changed while refreshing (another refresh won, or the
+		// config was reconnected or revoked). Use what is on the row now, if it
+		// is a live token for a grant that is not condemned.
+		const current = await getMcpConfigByIdInternal(configId);
+		if (
+			current?.encryptedAccessToken &&
+			!current.needsReauth &&
+			(!current.tokenExpiresAt || current.tokenExpiresAt > new Date())
+		) {
 			return (await import("@repo/utils")).decryptApiKey(
-				cfg.encryptedAccessToken,
+				current.encryptedAccessToken,
 			);
 		}
-		return null; // Hard-expired and refresh failed
-	}
-
-	// Get the new token (internal - already authorized above)
-	const updatedCfg = await getMcpConfigByIdInternal(configId);
-	if (!updatedCfg?.encryptedAccessToken) {
 		return null;
 	}
-
-	return (await import("@repo/utils")).decryptApiKey(
-		updatedCfg.encryptedAccessToken,
-	);
+	// If proactive refresh failed, only return stale token in the soft window (75%-100%)
+	if (!isExpired) {
+		return (await import("@repo/utils")).decryptApiKey(
+			cfg.encryptedAccessToken,
+		);
+	}
+	return null; // Hard-expired and refresh failed
 }
 
 /**
@@ -1756,6 +1728,13 @@ type RecordRefreshFailureArgs = {
 	configId: string;
 	/** Stored to `lastRefreshError`, truncated to 500 characters. */
 	errorMessage: string;
+	/**
+	 * The `oauthGrantGeneration` the failed refresh was made under. Every
+	 * write below is conditional on the config still holding it, so a failure
+	 * of a grant that has since been revoked, replaced or reconnected never
+	 * lands on the new one.
+	 */
+	expectedGeneration?: number;
 } & (
 	| {
 			/**
@@ -1806,6 +1785,7 @@ export async function recordRefreshFailure({
 	errorMessage,
 	permanent = false,
 	expectedRefreshToken,
+	expectedGeneration,
 }: RecordRefreshFailureArgs): Promise<{
 	needsReauth: boolean;
 	failureCount: number;
@@ -1815,6 +1795,21 @@ export async function recordRefreshFailure({
 	if (!cfg) {
 		return { needsReauth: false, failureCount: 0 };
 	}
+	// A failure of a grant the config no longer holds says nothing about the
+	// one it holds now.
+	if (
+		expectedGeneration !== undefined &&
+		cfg.oauthGrantGeneration !== expectedGeneration
+	) {
+		return {
+			needsReauth: cfg.needsReauth,
+			failureCount: cfg.refreshFailureCount ?? 0,
+		};
+	}
+	const generationGuard =
+		expectedGeneration === undefined
+			? {}
+			: { oauthGrantGeneration: expectedGeneration };
 
 	// Already condemned — the breaker has tripped and only a fresh user grant
 	// clears it. Re-writing the row would inflate counters and overwrite the
@@ -1864,6 +1859,7 @@ export async function recordRefreshFailure({
 				id: configId,
 				encryptedRefreshToken: expectedRefreshToken,
 				needsReauth: false,
+				...generationGuard,
 			},
 			data: {
 				...diagnostics,
@@ -1881,7 +1877,7 @@ export async function recordRefreshFailure({
 			// than written as `false`, so this write cannot clear a flag a
 			// concurrent, better-evidenced failure set.
 			const recorded = await db.mCPConfig.updateMany({
-				where: { id: configId, needsReauth: false },
+				where: { id: configId, needsReauth: false, ...generationGuard },
 				data: diagnostics,
 			});
 
@@ -1921,7 +1917,7 @@ export async function recordRefreshFailure({
 		// already behind the breaker, so declining changes no outcome and
 		// preserves the diagnostics of the failure that tripped it.
 		const condemned = await db.mCPConfig.updateMany({
-			where: { id: configId, needsReauth: false },
+			where: { id: configId, needsReauth: false, ...generationGuard },
 			data: {
 				...diagnostics,
 				needsReauth: true,
@@ -1950,7 +1946,7 @@ export async function recordRefreshFailure({
 	// actually tripped it (the same reasoning as the already-condemned early
 	// return above).
 	const recorded = await db.mCPConfig.updateMany({
-		where: { id: configId, needsReauth: false },
+		where: { id: configId, needsReauth: false, ...generationGuard },
 		data: diagnostics,
 	});
 
@@ -1968,11 +1964,23 @@ export async function recordRefreshFailure({
 }
 
 /**
- * Clear refresh failure tracking after successful refresh
+ * Clear refresh failure tracking after a successful grant, only while the
+ * config still holds the grant generation the caller saw succeed: a success
+ * of a grant that has since been revoked or replaced must not clear the
+ * breaker of the one that replaced it. Returns whether it applied.
+ *
+ * The token writes in `./mcp-oauth-credentials` reset the breaker themselves;
+ * this is for flows whose credential lives elsewhere (GitLab personal).
  */
-export async function clearRefreshFailures(configId: string): Promise<void> {
-	await db.mCPConfig.update({
-		where: { id: configId },
+export async function clearRefreshFailures(
+	configId: string,
+	options: { expectedGeneration: number },
+): Promise<boolean> {
+	const result = await db.mCPConfig.updateMany({
+		where: {
+			id: configId,
+			oauthGrantGeneration: options.expectedGeneration,
+		},
 		data: {
 			refreshFailureCount: 0,
 			lastRefreshFailedAt: null,
@@ -1987,347 +1995,7 @@ export async function clearRefreshFailures(configId: string): Promise<void> {
 			consecutiveFailures: 0,
 		},
 	});
-}
-
-/**
- * Update OAuth metadata cache
- */
-export async function updateOAuthMetadataCache({
-	configId,
-	metadata,
-}: {
-	configId: string;
-	metadata: Record<string, unknown>;
-}): Promise<void> {
-	await db.mCPConfig.update({
-		where: { id: configId },
-		data: {
-			oauthMetadataCache: metadata as Prisma.JsonObject,
-			oauthMetadataCachedAt: new Date(),
-		},
-	});
-}
-
-/**
- * Get cached OAuth metadata if still valid
- * @param maxAgeMs Maximum age of cache in milliseconds (default: 24 hours)
- */
-export async function getCachedOAuthMetadata({
-	configId,
-	maxAgeMs = 24 * 60 * 60 * 1000,
-}: {
-	configId: string;
-	maxAgeMs?: number;
-}): Promise<Record<string, unknown> | null> {
-	// Internal function - used after authorization has been verified
-	const cfg = await getMcpConfigByIdInternal(configId);
-	if (!cfg?.oauthMetadataCache || !cfg.oauthMetadataCachedAt) {
-		return null;
-	}
-
-	const cacheAge = Date.now() - cfg.oauthMetadataCachedAt.getTime();
-	if (cacheAge > maxAgeMs) {
-		return null;
-	}
-
-	return cfg.oauthMetadataCache as Record<string, unknown>;
-}
-
-/**
- * Refresh access token using refresh token
- * Internal helper function with improved error tracking
- *
- * @param options.recordFailures  Whether a failure here counts against the
- *   3-strike refresh circuit breaker. Pass `false` for proactive refreshes in
- *   the soft (75%–100%) window: the caller still holds a valid access token and
- *   falls back to it, so a transient 5xx/network blip — or a preflight gap such
- *   as a missing token endpoint — must not accumulate strikes and flip a working
- *   config to `needsReauth`/`UNAVAILABLE`. Defaults to `true` for hard-expired
- *   refreshes, where a failure genuinely leaves the config unusable.
- */
-async function refreshAccessToken(
-	configId: string,
-	options?: { recordFailures?: boolean },
-): Promise<boolean> {
-	const recordFailures = options?.recordFailures ?? true;
-
-	// Internal function - used after authorization has been verified
-	const cfg = await getMcpConfigByIdInternal(configId);
-	if (!cfg) {
-		return false;
-	}
-
-	// Circuit-breaker recheck. `getValidAccessToken` checks the flag on its
-	// own snapshot, but concurrent callers can all pass that check before
-	// another request trips the breaker. This reload is the last read before
-	// any token-endpoint contact, so re-checking here keeps enforcement
-	// race-tight and prevents further failure records for a dead token.
-	if (cfg.needsReauth) {
-		return false;
-	}
-
-	const server = cfg.mcpServer as any;
-
-	// Discover token endpoint
-	// Priority: server.oauthDiscoveryUrl > derive from cfg.baseUrl or server.defaultUrl
-	let discoveryUrl = server.oauthDiscoveryUrl;
-	const effectiveBaseUrl = cfg.baseUrl || server?.defaultUrl;
-	if (!discoveryUrl && effectiveBaseUrl) {
-		try {
-			const url = new URL(effectiveBaseUrl);
-			discoveryUrl = `${url.origin}/.well-known/oauth-authorization-server`;
-		} catch {
-			if (recordFailures) {
-				// Local configuration gap, not evidence about the grant.
-				await recordRefreshFailure({
-					configId,
-					errorMessage: "Invalid base URL format",
-					permanent: false,
-				});
-			}
-			return false;
-		}
-	}
-
-	const discovery = await discoverOAuthEndpoints(discoveryUrl);
-	const tokenEndpoint =
-		server.oauthTokenEndpoint ??
-		discovery?.token_endpoint ??
-		getKnownTokenEndpoint(effectiveBaseUrl);
-
-	if (!tokenEndpoint) {
-		if (recordFailures) {
-			await recordRefreshFailure({
-				configId,
-				errorMessage: "Token endpoint not available",
-				permanent: false,
-			});
-		}
-		return false;
-	}
-	// For public OAuth clients (token_endpoint_auth_method: 'none'), client_secret is not required
-	const isPublicClient = isPublicOAuthClient(cfg);
-	if (!cfg.oauthClientId) {
-		if (recordFailures) {
-			await recordRefreshFailure({
-				configId,
-				errorMessage: "OAuth client ID not configured",
-				permanent: false,
-			});
-		}
-		return false;
-	}
-	if (!isPublicClient && !cfg.encryptedOauthClientSecret) {
-		if (recordFailures) {
-			await recordRefreshFailure({
-				configId,
-				errorMessage: "OAuth client secret not configured",
-				permanent: false,
-			});
-		}
-		return false;
-	}
-	if (!cfg.encryptedRefreshToken) {
-		if (recordFailures) {
-			await recordRefreshFailure({
-				configId,
-				errorMessage: "No refresh token available",
-				permanent: false,
-			});
-		}
-		return false;
-	}
-
-	const { decryptApiKey, encryptApiKey, hashApiKey } = await import(
-		"@repo/utils"
-	);
-	const { refreshOAuthToken } = await import("@repo/utils/oauth-refresh");
-	const refreshToken = decryptApiKey(cfg.encryptedRefreshToken);
-
-	const result = await refreshOAuthToken({
-		tokenEndpoint,
-		refreshToken,
-		clientId: cfg.oauthClientId,
-		clientSecret:
-			!isPublicClient && cfg.encryptedOauthClientSecret
-				? decryptApiKey(cfg.encryptedOauthClientSecret)
-				: undefined,
-	});
-
-	if (!result.ok) {
-		if (recordFailures) {
-			// Only a provider rejection of the grant itself may condemn the
-			// credential; a 5xx, a network blip or an unparseable response
-			// records diagnostics without tripping the breaker.
-			let permanent = isPermanentGrantFailure(result.errorCode);
-			if (permanent) {
-				// ...and even a rejection only proves the grant is dead if the
-				// refresh token we posted is STILL the one on the row. With
-				// providers that rotate refresh tokens (Atlassian Rovo,
-				// GitLab) a concurrent caller can win the race and persist a
-				// valid replacement while we are in flight; our `invalid_grant`
-				// then describes a token that has already been superseded, and
-				// condemning on it kills a live credential that only a user
-				// reconnect can revive. Reload once and compare the DECRYPTED
-				// values — `encryptApiKey` is non-deterministic, so comparing
-				// ciphertext would report every row as rotated.
-				const reloadedCfg = await getMcpConfigByIdInternal(configId);
-				const reloadedRefreshToken = reloadedCfg?.encryptedRefreshToken
-					? decryptApiKey(reloadedCfg.encryptedRefreshToken)
-					: null;
-				if (
-					reloadedRefreshToken &&
-					reloadedRefreshToken !== refreshToken
-				) {
-					// `console.error` because most log shippers drop
-					// warn-level by default.
-					console.error(
-						"[MCP] refresh rejected a token that has since been rotated by a parallel refresh — recording the failure without condemning",
-						{ configId },
-					);
-					permanent = false;
-				}
-			}
-			await recordRefreshFailure({
-				configId,
-				errorMessage: `Token refresh failed: ${result.errorMessage}`,
-				permanent,
-				// The ciphertext behind the token we actually posted. The
-				// comparison above can only see rotations that landed before
-				// its reload; passing this makes the condemning write itself
-				// conditional on the row still holding it.
-				expectedRefreshToken: cfg.encryptedRefreshToken,
-			});
-		}
-		return false;
-	}
-
-	// Use server-specific default expiry for known servers that omit expires_in.
-	// For unknown servers, preserve null to avoid expiring long-lived tokens.
-	const serverDefaultExpiry = getServerDefaultTokenExpiry(
-		cfg.baseUrl || server?.defaultUrl,
-	);
-	const effectiveExpiresIn = result.expiresIn ?? serverDefaultExpiry ?? null;
-
-	const now = Date.now();
-	const expiresAt = effectiveExpiresIn
-		? new Date(now + effectiveExpiresIn * 1000)
-		: null;
-
-	await updateMcpConfigTokens({
-		configId: cfg.id,
-		encryptedAccessToken: encryptApiKey(result.accessToken),
-		accessTokenHash: hashApiKey(result.accessToken),
-		encryptedRefreshToken: result.refreshToken
-			? encryptApiKey(result.refreshToken)
-			: cfg.encryptedRefreshToken,
-		tokenExpiresAt: expiresAt,
-	});
-
-	// Clear failure tracking on success
-	await clearRefreshFailures(configId);
-
-	return true;
-}
-
-/**
- * Default token expiry (in seconds) for known OAuth servers that omit `expires_in`.
- * Only add servers here that are known to issue short-lived tokens.
- * For unknown servers, returns null to preserve `tokenExpiresAt: null`.
- */
-const SERVER_DEFAULT_TOKEN_EXPIRY: Array<{
-	hostname: string;
-	expirySeconds: number;
-}> = [
-	{ hostname: "mcp.notion.com", expirySeconds: 3600 }, // Notion tokens expire in ~1 hour
-];
-
-function getServerDefaultTokenExpiry(
-	baseUrl: string | null | undefined,
-): number | null {
-	if (!baseUrl) {
-		return null;
-	}
-	try {
-		const parsed = new URL(baseUrl);
-		for (const entry of SERVER_DEFAULT_TOKEN_EXPIRY) {
-			if (parsed.hostname === entry.hostname) {
-				return entry.expirySeconds;
-			}
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-/**
- * Helper for OAuth endpoint discovery
- */
-async function discoverOAuthEndpoints(discoveryUrl?: string | null) {
-	if (!discoveryUrl) {
-		return null;
-	}
-	try {
-		const { safeFetchOutbound } = await import("@repo/utils/url-security");
-		const res = await safeFetchOutbound(discoveryUrl);
-		if (!res.ok) {
-			return null;
-		}
-		const json = (await res.json()) as { token_endpoint?: string };
-		return {
-			token_endpoint: json.token_endpoint,
-		};
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Known token endpoints for OAuth servers that don't support RFC 8414/9728 discovery.
- * Used as a fallback in the refresh path when discovery and server config fail.
- */
-const KNOWN_TOKEN_ENDPOINTS: Array<{
-	hostname: string;
-	tokenEndpoint: string;
-}> = [
-	{
-		hostname: "api.githubcopilot.com",
-		tokenEndpoint: "https://github.com/login/oauth/access_token",
-	},
-	{
-		hostname: "gitlab.com",
-		tokenEndpoint: "https://gitlab.com/oauth/token",
-	},
-];
-
-function getKnownTokenEndpoint(
-	baseUrl: string | null | undefined,
-): string | null {
-	if (!baseUrl) {
-		return null;
-	}
-	try {
-		const parsed = new URL(baseUrl);
-		for (const entry of KNOWN_TOKEN_ENDPOINTS) {
-			if (parsed.hostname === entry.hostname) {
-				return entry.tokenEndpoint;
-			}
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-/**
- * Check if the OAuth client is a public client (no client_secret required)
- * Based on token_endpoint_auth_method from DCR response stored in dcrClientMetadata
- */
-function isPublicOAuthClient(cfg: { dcrClientMetadata?: unknown }): boolean {
-	const metadata = cfg.dcrClientMetadata as Record<string, unknown> | null;
-	const authMethod = metadata?.token_endpoint_auth_method;
-	return authMethod === "none";
+	return result.count > 0;
 }
 
 // =============================================================================

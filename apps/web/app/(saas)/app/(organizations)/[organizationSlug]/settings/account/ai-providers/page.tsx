@@ -1,5 +1,6 @@
 import { getSession } from "@saas/auth/lib/server";
-import { AiProvidersSettingsForm } from "@saas/settings/components/AiProvidersSettingsForm";
+import { AccountAiProvidersSettings } from "@saas/settings/components/chatgpt-plan/AccountAiProvidersSettings";
+import { ChatgptPlanSettings } from "@saas/settings/components/chatgpt-plan/ChatgptPlanSettings";
 import { SettingsHero } from "@saas/settings/components/SettingsHero";
 import { SettingsList } from "@saas/shared/components/SettingsList";
 import { redirect } from "next/navigation";
@@ -34,6 +35,8 @@ export async function generateMetadata() {
  * `organizationSlug` is deliberately not read. Like its four siblings, nothing
  * here is scoped per tenant: the form posts `organizationId: null` throughout,
  * which is what makes the key the caller's rather than the organization's.
+ * The ChatGPT plan section is the one per-organization choice on the page, and
+ * the server resolves that organization from the session, not from the URL.
  */
 export default async function AccountAiProvidersSettingsPage() {
 	const session = await getSession();
@@ -50,8 +53,9 @@ export default async function AccountAiProvidersSettingsPage() {
 				description="Connect an AI provider with your own API key. It travels with you into every organization you work in, and is used when the organization you are in has no provider of its own."
 			/>
 			<SettingsList>
-				<AiProvidersSettingsForm />
+				<AccountAiProvidersSettings />
 			</SettingsList>
+			<ChatgptPlanSettings />
 		</>
 	);
 }

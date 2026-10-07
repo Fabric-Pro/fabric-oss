@@ -156,6 +156,9 @@ export async function exchangeCodeForToken(
 			"Content-Type": "application/x-www-form-urlencoded",
 		},
 		body: body.toString(),
+		// Carries the code and client credentials (possibly an MCP config's,
+		// verified for this exact endpoint): never re-sent by a redirect.
+		redirect: "error",
 	});
 
 	if (!response.ok) {

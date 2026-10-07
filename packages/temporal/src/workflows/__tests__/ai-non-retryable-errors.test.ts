@@ -207,3 +207,34 @@ describe("every workflow proxy that reaches a model refuses to retry it", () => 
 		});
 	}
 });
+
+describe("a spent ChatGPT plan window is non-retryable (Fizzy #2939)", () => {
+	// Temporal records the failure type from the thrown error's class, so the
+	// name the plan wrapper throws must be the string in the list.
+	it("records the plan wrapper's error under a type the list names", async () => {
+		const { SubscriptionPlanExhaustedError } = await import(
+			"@repo/agent-types/chatgpt-plan-fetch"
+		);
+		const { ensureApplicationFailure } = await import("@temporalio/common");
+
+		const failure = ensureApplicationFailure(
+			new SubscriptionPlanExhaustedError("No usage left", null),
+		);
+
+		expect(AI_NON_RETRYABLE_ERROR_TYPES).toContain(failure.type);
+	});
+
+	// Fizzy #2770: a plan that ran out after output started, with another plan
+	// left to serve the call. Retried, so the next attempt resolves that plan.
+	it("leaves PlanSourceRotatedError retryable", async () => {
+		const { PlanSourceRotatedError } = await import(
+			"@repo/agent-types/chatgpt-plan-fetch"
+		);
+		const { ensureApplicationFailure } = await import("@temporalio/common");
+
+		const failure = ensureApplicationFailure(new PlanSourceRotatedError());
+
+		expect(failure.type).toBe("PlanSourceRotatedError");
+		expect(AI_NON_RETRYABLE_ERROR_TYPES).not.toContain(failure.type);
+	});
+});

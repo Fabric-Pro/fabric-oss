@@ -64,6 +64,10 @@ const REACHABLE = [
 	"GET /projects/:projectId/instructions/proposals/:snapshotId/pull-request",
 	"GET /projects/:projectId/instructions/proposals/open",
 	"GET /projects/:projectId/instructions/published",
+	"GET /projects/:projectId/instructions/repository",
+	"GET /projects/:projectId/instructions/repository/file",
+	"GET /projects/:projectId/instructions/repository/files",
+	"GET /projects/:projectId/instructions/repository/git/:generation/info/refs",
 	"PATCH /projects/:projectId/features/:id",
 	"POST /instructions/checkouts/resolve",
 	"POST /projects/:projectId/documents",
@@ -71,6 +75,7 @@ const REACHABLE = [
 	"POST /projects/:projectId/instructions/changes",
 	"POST /projects/:projectId/instructions/published/download",
 	"POST /projects/:projectId/instructions/published/files",
+	"POST /projects/:projectId/instructions/repository/git/:generation/git-upload-pack",
 	"POST /projects/:projectId/instructions/versions",
 	"PUT /projects/:projectId/contexts/synced-files",
 ];

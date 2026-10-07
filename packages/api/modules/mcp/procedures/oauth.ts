@@ -1,16 +1,25 @@
 import { ORPCError } from "@orpc/server";
 import {
+	allowlistDcrClientMetadata,
 	clearRefreshFailures,
 	createOauthState,
+	credentialFingerprintMatches,
 	db,
 	deleteOauthState,
-	getCachedOAuthMetadata,
+	explicitClientMetadata,
 	getGoogleAccountEmail,
 	getMcpConfigByIdInternal,
+	getMcpServerDefaultTokenExpiry,
+	getMcpServerForTenant,
 	getOauthState,
 	getOrganizationById,
-	updateMcpConfigTokens,
-	updateOAuthMetadataCache,
+	isPublicMcpOAuthClient,
+	parseMcpOAuthBinding,
+	refreshMcpOAuthAccessToken,
+	replaceMcpOAuthRegistration,
+	resolveMcpClientAuthMethod,
+	sameAuthorizationServer,
+	saveMcpOAuthGrant,
 } from "@repo/database";
 import {
 	getGitLabConnectionGeneration,
@@ -18,10 +27,15 @@ import {
 	gitlabOutboundFetch,
 	isGitLabPersonalMcpServerKey,
 	parseGitLabOrigin,
+	readGitLabConnectionIssuer,
 	refreshGitLabConnection,
 } from "@repo/integrations/gitlab";
 import { triggerMcpToolIngestion } from "@repo/temporal";
 import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
+import {
+	classifyOAuthErrorCode,
+	sanitizeOAuthErrorText,
+} from "@repo/utils/oauth-refresh";
 import {
 	assertSafeOutboundUrl,
 	safeFetchOutbound,
@@ -36,30 +50,21 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import {
-	discoverOAuthEndpoints as discoverOAuthEndpointsRFC,
+	getEnvOAuthCredentials,
+	gitlabConnectionAuthorizationServer,
+	oauthClientFingerprint,
+	parseOAuthFlowSnapshot,
+	registerOAuthClient,
+	resolveAuthorizationServer,
+	resolveIndependentAuthorizationServer,
+	serializeOAuthFlowSnapshot,
+	snapshotFromBinding,
+} from "../lib/oauth-authorization-server";
+import {
 	generateCodeChallenge,
 	generateCodeVerifier,
 	generateStructuredState,
-	type MCPOAuthMetadata,
 } from "../lib/oauth-discovery";
-
-/**
- * Derive OAuth discovery URL from MCP base URL
- */
-function deriveDiscoveryUrlFromBaseUrl(baseUrl: string): string {
-	const url = new URL(baseUrl);
-	return url.origin;
-}
-
-/**
- * Check if the OAuth client is a public client (no client_secret required)
- * Based on token_endpoint_auth_method from DCR response
- */
-function isPublicOAuthClient(cfg: { dcrClientMetadata?: unknown }): boolean {
-	const metadata = cfg.dcrClientMetadata as Record<string, unknown> | null;
-	const authMethod = metadata?.token_endpoint_auth_method;
-	return authMethod === "none";
-}
 
 /**
  * Known MCP servers that use OAuth client allowlists.
@@ -165,63 +170,6 @@ export function getOAuthCredentialErrorMessage(
 }
 
 /**
- * Known MCP servers that don't support DCR but can use pre-configured
- * OAuth credentials from environment variables.
- *
- * These servers expose proper OAuth discovery (RFC 9728/8414) but have
- * no registration_endpoint, so clients must be pre-registered.
- */
-const ENV_OAUTH_CREDENTIALS: Array<{
-	hostname?: string;
-	serverKey?: string;
-	clientIdEnvVar: string;
-	clientSecretEnvVar: string;
-}> = [
-	{
-		hostname: "mcp.slack.com",
-		clientIdEnvVar: "SLACK_CLIENT_ID",
-		clientSecretEnvVar: "SLACK_CLIENT_SECRET",
-	},
-	{
-		hostname: "api.githubcopilot.com",
-		clientIdEnvVar: "FABRIC_GITHUB_CLIENT_ID",
-		clientSecretEnvVar: "FABRIC_GITHUB_CLIENT_SECRET",
-	},
-	{
-		serverKey: "google-drive",
-		clientIdEnvVar: "GOOGLE_CLIENT_ID",
-		clientSecretEnvVar: "GOOGLE_CLIENT_SECRET",
-	},
-	{
-		serverKey: "gitlab",
-		clientIdEnvVar: "GITLAB_CLIENT_ID",
-		clientSecretEnvVar: "GITLAB_CLIENT_SECRET",
-	},
-];
-
-/**
- * Known OAuth endpoints for MCP servers that don't support RFC 9728/8414 discovery.
- * Used as a fallback when both server.oauthAuthorizationEndpoint and discovery fail.
- */
-const KNOWN_OAUTH_ENDPOINTS: Array<{
-	hostname?: string;
-	serverKey?: string;
-	authorizationEndpoint: string;
-	tokenEndpoint: string;
-}> = [
-	{
-		hostname: "api.githubcopilot.com",
-		authorizationEndpoint: "https://github.com/login/oauth/authorize",
-		tokenEndpoint: "https://github.com/login/oauth/access_token",
-	},
-	{
-		serverKey: "gitlab",
-		authorizationEndpoint: "https://gitlab.com/oauth/authorize",
-		tokenEndpoint: "https://gitlab.com/oauth/token",
-	},
-];
-
-/**
  * Default OAuth scopes for known servers that don't advertise scopes_supported
  * in their discovery document. Without these, the authorization URL gets an
  * empty scope parameter and the provider only grants minimal (public) access.
@@ -248,42 +196,6 @@ const KNOWN_DEFAULT_SCOPES: Array<{
 		scopes: ["api", "read_user"],
 	},
 ];
-
-/**
- * Default token expiry (in seconds) for OAuth servers that omit `expires_in`.
- * Only add servers here that are known to issue short-lived tokens without
- * including `expires_in` in the response. For unknown servers, we preserve
- * `tokenExpiresAt: null` to avoid prematurely expiring long-lived tokens.
- */
-const SERVER_DEFAULT_TOKEN_EXPIRY: Array<{
-	hostname: string;
-	expirySeconds: number;
-}> = [
-	{ hostname: "mcp.notion.com", expirySeconds: 3600 }, // Notion tokens expire in ~1 hour
-];
-
-/**
- * Get default token expiry for a known server when `expires_in` is missing.
- * Returns null for unknown servers (preserves null tokenExpiresAt).
- */
-function getServerDefaultTokenExpiry(
-	baseUrl: string | null | undefined,
-): number | null {
-	if (!baseUrl) {
-		return null;
-	}
-	try {
-		const parsed = new URL(baseUrl);
-		for (const entry of SERVER_DEFAULT_TOKEN_EXPIRY) {
-			if (parsed.hostname === entry.hostname) {
-				return entry.expirySeconds;
-			}
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
 
 /**
  * Get default scopes for a known server when discovery doesn't provide them.
@@ -314,140 +226,6 @@ function getKnownDefaultScopes(
 		}
 	}
 	return null;
-}
-
-/**
- * Get known OAuth endpoints for servers that don't support standard discovery.
- */
-function getKnownOAuthEndpoints(
-	baseUrl: string | null | undefined,
-	serverKey?: string | null,
-): { authorizationEndpoint: string; tokenEndpoint: string } | null {
-	for (const entry of KNOWN_OAUTH_ENDPOINTS) {
-		if (entry.serverKey && serverKey && entry.serverKey === serverKey) {
-			return {
-				authorizationEndpoint: entry.authorizationEndpoint,
-				tokenEndpoint: entry.tokenEndpoint,
-			};
-		}
-	}
-	if (!baseUrl) {
-		return null;
-	}
-	try {
-		const parsed = new URL(baseUrl);
-		for (const entry of KNOWN_OAUTH_ENDPOINTS) {
-			if (entry.hostname && parsed.hostname === entry.hostname) {
-				return {
-					authorizationEndpoint: entry.authorizationEndpoint,
-					tokenEndpoint: entry.tokenEndpoint,
-				};
-			}
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-/**
- * Get pre-configured OAuth credentials from environment variables
- * for known MCP servers that don't support DCR.
- * Uses strict hostname matching to prevent credential leakage to lookalike domains.
- */
-function getEnvOAuthCredentials(
-	baseUrl: string | null | undefined,
-	serverKey?: string | null,
-): { clientId: string; clientSecret: string } | null {
-	// Try hostname match first (for HTTP/SSE servers with a baseUrl)
-	if (baseUrl) {
-		try {
-			const parsed = new URL(baseUrl);
-			if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-				for (const entry of ENV_OAUTH_CREDENTIALS) {
-					if (entry.hostname && parsed.hostname === entry.hostname) {
-						const clientId = process.env[entry.clientIdEnvVar];
-						const clientSecret =
-							process.env[entry.clientSecretEnvVar];
-						if (clientId && clientSecret) {
-							return { clientId, clientSecret };
-						}
-					}
-				}
-			}
-		} catch {
-			// Invalid URL, fall through to serverKey match
-		}
-	}
-	// Then try server key match (for STDIO servers with no baseUrl)
-	if (serverKey) {
-		for (const entry of ENV_OAUTH_CREDENTIALS) {
-			if (entry.serverKey && entry.serverKey === serverKey) {
-				const clientId = process.env[entry.clientIdEnvVar];
-				const clientSecret = process.env[entry.clientSecretEnvVar];
-				if (clientId && clientSecret) {
-					return { clientId, clientSecret };
-				}
-			}
-		}
-	}
-	return null;
-}
-
-/**
- * Discovery function using RFC 9728/8414
- * Returns legacy-compatible format for backward compatibility
- */
-async function discoverOAuthEndpoints(baseUrlOrDiscoveryUrl?: string | null) {
-	if (!baseUrlOrDiscoveryUrl) {
-		return null;
-	}
-	try {
-		const url = new URL(baseUrlOrDiscoveryUrl);
-		assertSafeOutboundUrl(url.toString());
-
-		// If the URL is a direct well-known endpoint (e.g., OIDC discovery URL),
-		// fetch it directly instead of going through RFC 9728 discovery
-		if (url.pathname.includes("/.well-known/")) {
-			const res = await safeFetchOutbound(baseUrlOrDiscoveryUrl, {
-				headers: { Accept: "application/json" },
-				signal: AbortSignal.timeout(10000),
-			});
-			if (!res.ok) {
-				return null;
-			}
-			const json = (await res.json()) as Record<string, unknown>;
-			return {
-				authorization_endpoint: json.authorization_endpoint as
-					| string
-					| undefined,
-				token_endpoint: json.token_endpoint as string | undefined,
-				registration_endpoint: json.registration_endpoint as
-					| string
-					| undefined,
-				scopes_supported:
-					(json.scopes_supported as string[] | undefined) ?? [],
-			};
-		}
-
-		// Otherwise, use RFC 9728/8414 discovery from origin
-		const result = await discoverOAuthEndpointsRFC(url.origin);
-		if (!result.success || !result.metadata) {
-			return null;
-		}
-		return {
-			authorization_endpoint: result.metadata.authorizationEndpoint,
-			token_endpoint: result.metadata.tokenEndpoint,
-			registration_endpoint: result.metadata.registrationEndpoint,
-			scopes_supported: result.metadata.scopesSupported ?? [],
-		};
-	} catch (error) {
-		console.error(
-			`OAuth discovery failed for ${baseUrlOrDiscoveryUrl}:`,
-			error,
-		);
-		return null;
-	}
 }
 
 export const oauthProcedures = {
@@ -523,6 +301,24 @@ export const oauthProcedures = {
 				});
 			}
 
+			// The config's server must be one its tenant may use (a system
+			// server, or a custom server that tenant owns). A config pointing at
+			// another person's or organization's private server would send its
+			// client and code to endpoints they control.
+			const accessibleServer = await getMcpServerForTenant(
+				cfg.mcpServerId,
+				{
+					userId: cfg.userId,
+					organizationId: cfg.organizationId,
+				},
+			);
+			if (!accessibleServer) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"This MCP config refers to a server you cannot use. Remove it and add the server again.",
+				});
+			}
+
 			const server = cfg.mcpServer as any;
 
 			// Check if this MCP server uses an OAuth client allowlist
@@ -534,216 +330,343 @@ export const oauthProcedures = {
 				});
 			}
 
-			// Attempt automatic discovery and DCR if credentials are missing and auto mode is enabled
-			//
-			// Never for a GitLab personal server that already holds a client:
-			// that registration may be the issuer of the person's GitLab
-			// credential (a public client has no secret, so the generic check
-			// below would re-register it on every start), and replacing it
-			// would leave the credential unable to refresh.
+			// ONE authorization server for the whole flow. It decides where a
+			// client is registered, where the user authorizes, and — carried in
+			// the OAuth state row — where the callback exchanges the code. The
+			// callback never re-discovers.
+			const effectiveBaseUrl: string | null =
+				cfg.baseUrl || server.defaultUrl || null;
+			// Fabric's own client (system-provided servers only), together with
+			// the one AS it may go to — both from the same pinned provider entry,
+			// never a catalog row's editable fields.
+			const fabricClient = getEnvOAuthCredentials(
+				effectiveBaseUrl,
+				server,
+			);
+			if (fabricClient?.kind === "conflict") {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"This MCP server's URL belongs to a different service than its catalog entry. Use the server's own URL, or connect it as a custom server.",
+				});
+			}
+			const envCreds = fabricClient;
+			const known = fabricClient?.snapshot ?? null;
+			const isGitLabPersonal = isGitLabPersonalMcpServerKey(server?.key);
+			const existingBinding = parseMcpOAuthBinding(cfg.oauthBinding);
+			const holdsEnvClient =
+				!!envCreds &&
+				!!cfg.oauthClientId &&
+				cfg.oauthClientId === envCreds.clientId;
+			// An AS configured independently of both the MCP server and the
+			// config's owner: a system catalog row's endpoints, or the known
+			// table, on the effective URL. A custom row's endpoints do not
+			// count — their owner can change them.
+			const independentAs = resolveIndependentAuthorizationServer(
+				server,
+				effectiveBaseUrl,
+			);
+			const conflict = () =>
+				new ORPCError("CONFLICT", {
+					message:
+						"This MCP connection changed while connecting. Please try again.",
+				});
+			const hasUsableClient = (c: NonNullable<typeof cfg>) =>
+				!!c.oauthClientId &&
+				(isPublicMcpOAuthClient(c) || !!c.encryptedOauthClientSecret);
+
+			// Fabric's own pre-registered client takes its AS from Fabric's
+			// pinned configuration only: neither an MCP server nor a catalog
+			// row anyone can edit may name where Fabric's secret goes.
+			let snapshot = holdsEnvClient
+				? known
+				: await resolveAuthorizationServer({
+						server,
+						baseUrl: effectiveBaseUrl,
+					});
+
+			// A stored client is trusted only while it is the set its binding
+			// was written with (`credentialFingerprint`): a writer outside the
+			// credential module (the previous app version during a rolling
+			// deploy) may have replaced the id or secret under the binding.
+			const bindingIntact =
+				!!existingBinding &&
+				credentialFingerprintMatches(existingBinding, cfg);
+			let mustRegister =
+				!hasUsableClient(cfg) ||
+				// Fabric's own client is reinstalled from its pinned
+				// configuration unless the stored copy is intact.
+				(holdsEnvClient && !bindingIntact);
+			// Set when a stored client is dropped because nothing independent
+			// says which AS it belongs to.
+			let droppedUnboundClient = false;
+			if (cfg.oauthClientId && !holdsEnvClient) {
+				const isDcrClient = !!cfg.dcrRegisteredAt;
+				// A stored client start cannot trust is never reused, bound or
+				// sent: Fabric's own client is reinstalled from its pinned
+				// configuration, a registered client is replaced by a new
+				// registration, and anything else (a hand-entered client, a
+				// GitLab one that may have issued the person's GitLab grant)
+				// must be entered again — which binds it with verified
+				// provenance.
+				const untrustedStoredClient = () => {
+					if (envCreds || (isDcrClient && !isGitLabPersonal)) {
+						mustRegister = true;
+						return;
+					}
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"This MCP server's stored OAuth client credentials changed outside Fabric's connect flow. Enter the OAuth client credentials again, then connect.",
+					});
+				};
+				if (existingBinding) {
+					// A bound client is reused only at the AS it is bound to —
+					// and then with the binding's own pinned endpoints, never
+					// endpoints from the document just fetched — and only
+					// while it is the client the binding was written with.
+					const pinned =
+						bindingIntact &&
+						snapshot &&
+						sameAuthorizationServer(
+							existingBinding.authorizationServerUrl,
+							snapshot.binding.authorizationServerUrl,
+						)
+							? snapshotFromBinding(existingBinding, snapshot)
+							: null;
+					if (pinned) {
+						snapshot = pinned;
+					} else if (!bindingIntact) {
+						untrustedStoredClient();
+					} else if (isGitLabPersonal || !isDcrClient) {
+						throw new ORPCError("BAD_REQUEST", {
+							message:
+								"This MCP server now uses a different authorization server than the one its OAuth client belongs to. Remove the stored OAuth client credentials and connect again.",
+						});
+					} else {
+						mustRegister = true;
+					}
+				} else if (cfg.encryptedOauthClientSecret) {
+					// Unbound and holding a secret: nothing records which AS
+					// that secret was issued by — the previous app version may
+					// have written one from another AS under the same client
+					// id — so it is neither reused nor bound here.
+					untrustedStoredClient();
+				} else {
+					// An unbound public client goes only to an AS configured
+					// independently of the MCP server: for GitLab, the issuer
+					// recorded on the person's connection, else the independent
+					// AS; otherwise the independent AS (system catalog or known
+					// table). Never one discovered from the MCP server, nor a
+					// custom row's.
+					let independent: typeof snapshot = null;
+					if (isGitLabPersonal && cfg.userId) {
+						const issuer = await readGitLabConnectionIssuer({
+							userId: cfg.userId,
+							organizationId: cfg.organizationId ?? null,
+						});
+						const origin =
+							issuer &&
+							issuer.kind !== "pat" &&
+							issuer.clientId === cfg.oauthClientId &&
+							(issuer.kind === "app" ||
+								issuer.mcpConfigId === cfg.id)
+								? parseGitLabOrigin(issuer.origin)
+								: null;
+						independent =
+							origin?.ok === true
+								? gitlabConnectionAuthorizationServer(
+										origin.origin,
+									)
+								: null;
+					}
+					independent ??= independentAs;
+					if (independent) {
+						snapshot = independent;
+						if (isGitLabPersonal && hasUsableClient(cfg)) {
+							// Only a public client reaches here (an unbound or
+							// bearer-only row holding a secret was refused above).
+							// A GitLab grant goes to the person's connection, not
+							// through `saveMcpOAuthGrant`, so nothing else would
+							// ever bind this client — and the connection uses a
+							// stored MCP client only when it is bound to the
+							// connection's instance. Bind it now, to the AS it
+							// is about to be sent to, in one fenced write that
+							// keeps the client as it is. The write also clears
+							// any tokens on the row, so a bearer-only import is
+							// replaced by this binding rather than left behind it.
+							const written = await replaceMcpOAuthRegistration({
+								configId: cfg.id,
+								expectedGeneration: cfg.oauthGrantGeneration,
+								client: {
+									oauthClientId: cfg.oauthClientId,
+									encryptedOauthClientSecret:
+										cfg.encryptedOauthClientSecret,
+									dcrClientMetadata:
+										(cfg.dcrClientMetadata as Record<
+											string,
+											unknown
+										> | null) ?? null,
+									dcrRegistrationEndpoint:
+										cfg.dcrRegistrationEndpoint ?? null,
+									dcrRegisteredAt:
+										cfg.dcrRegisteredAt ?? null,
+								},
+								binding: independent.binding,
+								// The stored client, kept: bound only if it may
+								// follow this binding (a public client may).
+								keptClient: {
+									oauthClientId: cfg.oauthClientId,
+									encryptedOauthClientSecret:
+										cfg.encryptedOauthClientSecret,
+									encryptedRefreshToken:
+										cfg.encryptedRefreshToken ?? null,
+									oauthBinding: cfg.oauthBinding,
+								},
+							});
+							if (!written.written || !written.config) {
+								throw conflict();
+							}
+							cfg = written.config;
+						}
+					} else if (isGitLabPersonal) {
+						throw new ORPCError("BAD_REQUEST", {
+							message:
+								"Fabric cannot confirm which GitLab instance this MCP server's OAuth client belongs to. Reconnect GitLab in Settings > Integrations, then connect this server again.",
+						});
+					} else {
+						mustRegister = true;
+						droppedUnboundClient = true;
+					}
+				}
+			}
+
+			// Dynamic client registration at the snapshot's AS. Never for a
+			// GitLab personal server that already holds a client: that
+			// registration may be the issuer of the person's GitLab credential,
+			// and replacing it would leave the credential unable to refresh.
 			if (
 				input.autoDiscoverAndRegister &&
-				cfg.baseUrl &&
-				(!cfg.oauthClientId || !cfg.encryptedOauthClientSecret) &&
-				!(
-					isGitLabPersonalMcpServerKey(server?.key) &&
-					cfg.oauthClientId
-				)
+				mustRegister &&
+				snapshot?.registrationEndpoint &&
+				!(isGitLabPersonal && cfg.oauthClientId)
 			) {
+				const registrationSnapshot = snapshot;
+				const registrationEndpoint = snapshot.registrationEndpoint;
+				// IMPORTANT: client_name should be OUR app name, not the MCP server name
+				// This identifies us as the OAuth client connecting to the server
+				const requestedAuthMethod = "client_secret_basic" as const;
+				const metadata: Record<string, unknown> = {
+					client_name: "Fabric Portal",
+					redirect_uris: [input.redirectUri],
+					grant_types: ["authorization_code", "refresh_token"],
+					response_types: ["code"],
+					token_endpoint_auth_method: requestedAuthMethod,
+				};
+				if (cfg.scopes && cfg.scopes.length > 0) {
+					metadata.scope = cfg.scopes.join(" ");
+				}
+
+				let registered: Awaited<ReturnType<typeof registerOAuthClient>>;
 				try {
-					// Derive discovery URL from base URL
-					const discoveryUrl = deriveDiscoveryUrlFromBaseUrl(
-						cfg.baseUrl,
-					);
-
-					// Fetch OpenID Connect configuration
-					const discovery =
-						await discoverOAuthEndpoints(discoveryUrl);
-
-					if (discovery?.registration_endpoint) {
-						// Perform DCR registration
-						// IMPORTANT: client_name should be OUR app name, not the MCP server name
-						// This identifies us as the OAuth client connecting to the server
-						const metadata: Record<string, any> = {
-							client_name: "Fabric Portal",
-							redirect_uris: [input.redirectUri],
-							grant_types: [
-								"authorization_code",
-								"refresh_token",
-							],
-							response_types: ["code"],
-							token_endpoint_auth_method: "client_secret_basic",
-						};
-
-						if (cfg.scopes && cfg.scopes.length > 0) {
-							metadata.scope = cfg.scopes.join(" ");
-						}
-
-						console.log(
-							`[OAuth DCR] Attempting registration at ${discovery.registration_endpoint}`,
-							{ metadata },
-						);
-
-						const res = await safeFetchOutbound(
-							discovery.registration_endpoint,
-							{
-								method: "POST",
-								headers: { "content-type": "application/json" },
-								body: JSON.stringify(metadata),
-							},
-						);
-
-						const json = (await res
-							.json()
-							.catch(() => null as any)) as any;
-
-						// Log the response for debugging
-						console.log(
-							`[OAuth DCR] Registration response: status=${res.status}`,
-							{
-								endpoint: discovery.registration_endpoint,
-								response: json,
-							},
-						);
-
-						if (!res.ok) {
-							console.error(
-								`[OAuth DCR] Registration failed with status ${res.status}`,
-								{
-									endpoint: discovery.registration_endpoint,
-									response: json,
-									error: json?.error,
-									errorDescription: json?.error_description,
-									clientName: metadata.client_name,
-								},
-							);
-						}
-
-						if (res.ok && json) {
-							const clientId =
-								(json.client_id as string | undefined) ?? null;
-							const clientSecret =
-								(json.client_secret as string | undefined) ??
-								null;
-
-							if (clientId) {
-								// Update config with DCR credentials
-								const { updateMcpConfigAfterDcr } =
-									await import("@repo/database");
-
-								const sanitizedMetadata: Record<string, any> = {
-									...json,
-								};
-								delete sanitizedMetadata.client_secret;
-
-								await updateMcpConfigAfterDcr({
-									configId: cfg.id,
-									oauthClientId: clientId,
-									encryptedOauthClientSecret: clientSecret
-										? encryptApiKey(clientSecret)
-										: null,
-									dcrRegistrationEndpoint:
-										discovery.registration_endpoint,
-									dcrClientMetadata: sanitizedMetadata,
-									dcrRegisteredAt: new Date(),
-								});
-
-								// Refresh config to get updated credentials
-								const updatedCfg =
-									await getMcpConfigByIdInternal(
-										input.configId,
-									);
-								if (!updatedCfg) {
-									throw new ORPCError(
-										"INTERNAL_SERVER_ERROR",
-										{
-											message:
-												"Failed to refresh config after DCR",
-										},
-									);
-								}
-								cfg = updatedCfg;
-							}
-						}
-					}
-				} catch (error: any) {
-					// Log error but don't fail - user can still provide manual credentials
-					console.error("Automatic DCR failed:", error);
-				}
-			}
-
-			// Fallback: If DCR didn't populate credentials, try pre-configured env var credentials
-			// for known servers that don't support DCR (e.g., Slack)
-			// Only fill fields that are actually missing to avoid clobbering user-provided values
-			if (!cfg.oauthClientId || !cfg.encryptedOauthClientSecret) {
-				const envCreds = getEnvOAuthCredentials(
-					cfg.baseUrl,
-					server.key,
-				);
-				if (envCreds) {
-					const needsClientId = !cfg.oauthClientId;
-					const needsClientSecret = !cfg.encryptedOauthClientSecret;
-					console.log(
-						`[OAuth] Using pre-configured env credentials for ${cfg.baseUrl} (clientId: ${needsClientId ? "from env" : "existing"}, secret: ${needsClientSecret ? "from env" : "existing"})`,
-					);
-					const { updateMcpConfigAfterDcr } = await import(
-						"@repo/database"
-					);
-					await updateMcpConfigAfterDcr({
-						configId: cfg.id,
-						oauthClientId: needsClientId
-							? envCreds.clientId
-							: cfg.oauthClientId,
-						encryptedOauthClientSecret: needsClientSecret
-							? encryptApiKey(envCreds.clientSecret)
-							: cfg.encryptedOauthClientSecret,
+					registered = await registerOAuthClient({
+						registrationEndpoint,
+						metadata,
 					});
-					// Refresh config to pick up the new credentials
-					const updatedCfg = await getMcpConfigByIdInternal(
-						input.configId,
+				} catch (error) {
+					// Log but don't fail - the env fallback may still apply.
+					console.error(
+						"Automatic DCR failed:",
+						error instanceof Error ? error.message : String(error),
 					);
-					if (updatedCfg) {
-						cfg = updatedCfg;
+					registered = { ok: false, status: null, message: "" };
+				}
+				if (registered.ok) {
+					const written = await replaceMcpOAuthRegistration({
+						configId: cfg.id,
+						expectedGeneration: cfg.oauthGrantGeneration,
+						client: {
+							oauthClientId: registered.clientId,
+							encryptedOauthClientSecret: registered.clientSecret
+								? encryptApiKey(registered.clientSecret)
+								: null,
+							dcrClientMetadata: allowlistDcrClientMetadata(
+								registered.response,
+								registrationSnapshot.binding
+									.authorizationServerUrl,
+								requestedAuthMethod,
+							),
+							dcrRegistrationEndpoint: registrationEndpoint,
+							dcrRegisteredAt: new Date(),
+						},
+						binding: registrationSnapshot.binding,
+					});
+					// The row exactly as this write left it — never a re-read,
+					// which could adopt a registration someone else wrote since.
+					if (!written.written || !written.config) {
+						throw conflict();
 					}
+					cfg = written.config;
+					mustRegister = false;
+					droppedUnboundClient = false;
 				}
 			}
 
-			// Discover OAuth endpoints
-			// Priority: server.oauthDiscoveryUrl > derive from cfg.baseUrl (automatic mode)
-			let discoveryUrl = server.oauthDiscoveryUrl;
-			if (!discoveryUrl && cfg.baseUrl) {
-				// Automatic mode: derive discovery URL from base URL
-				discoveryUrl = deriveDiscoveryUrlFromBaseUrl(cfg.baseUrl);
+			// Fallback: Fabric's pre-registered client for known servers that
+			// don't support DCR (e.g., Slack). It replaces whatever unusable
+			// client the config holds, and binds to Fabric's pinned AS only.
+			if (mustRegister && envCreds) {
+				if (!known) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Authorization endpoint not available - please configure OAuth discovery URL or authorization endpoint",
+					});
+				}
+				console.log(
+					`[OAuth] Using pre-configured client credentials for ${server.key ?? "server"}`,
+				);
+				const written = await replaceMcpOAuthRegistration({
+					configId: cfg.id,
+					expectedGeneration: cfg.oauthGrantGeneration,
+					client: {
+						oauthClientId: envCreds.clientId,
+						encryptedOauthClientSecret: encryptApiKey(
+							envCreds.clientSecret,
+						),
+						// Fabric's own clients authenticate in the request body,
+						// recorded per client.
+						dcrClientMetadata: explicitClientMetadata(),
+						dcrRegistrationEndpoint: null,
+						dcrRegisteredAt: null,
+					},
+					binding: known.binding,
+				});
+				if (!written.written || !written.config) {
+					throw conflict();
+				}
+				cfg = written.config;
+				snapshot = known;
+				mustRegister = false;
+				droppedUnboundClient = false;
 			}
 
-			const discovery = await discoverOAuthEndpoints(
-				discoveryUrl ?? null,
-			);
-			// Resolve authorization endpoint:
-			// 1. Server record (enterprise seed)
-			// 2. Discovery (RFC 9728/8414)
-			// 3. Known endpoints fallback (for servers without discovery support)
-			const knownEndpoints = getKnownOAuthEndpoints(
-				cfg.baseUrl,
-				server.key,
-			);
-			const authorizationEndpoint =
-				server.oauthAuthorizationEndpoint ??
-				discovery?.authorization_endpoint ??
-				knownEndpoints?.authorizationEndpoint;
+			if (droppedUnboundClient) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Fabric cannot confirm which authorization server this MCP server's stored OAuth client belongs to, and the server does not support registering a new client. Configure the server's OAuth token and authorization endpoints, or remove the stored client credentials and enter ones issued for its authorization server.",
+				});
+			}
 
-			if (!authorizationEndpoint) {
+			if (!snapshot) {
 				throw new ORPCError("BAD_REQUEST", {
 					message:
 						"Authorization endpoint not available - please configure OAuth discovery URL or authorization endpoint",
 				});
 			}
+			const authorizationEndpoint = snapshot.authorizationEndpoint;
 
 			// Auto-populate scopes for known servers.
 			// Applies to servers with env credentials OR servers with known default scopes
 			// (e.g., GitLab needs api+read_user even when using DCR without env vars).
-			const isKnownEnvServer =
-				getEnvOAuthCredentials(cfg.baseUrl, server.key) !== null;
+			const isKnownEnvServer = envCreds !== null;
 			const hasKnownScopes =
 				getKnownDefaultScopes(cfg.baseUrl, server.key) !== null;
 			if (
@@ -761,9 +684,8 @@ export const oauthProcedures = {
 				const scopesToUse =
 					knownScopes && knownScopes.length > 0
 						? knownScopes
-						: discovery?.scopes_supported &&
-								discovery.scopes_supported.length > 0
-							? discovery.scopes_supported
+						: snapshot.scopesSupported.length > 0
+							? snapshot.scopesSupported
 							: null;
 
 				if (scopesToUse && scopesToUse.length > 0) {
@@ -782,8 +704,8 @@ export const oauthProcedures = {
 			}
 
 			// For public OAuth clients (token_endpoint_auth_method: 'none'), client_secret is not required
-			const isPublicClient = isPublicOAuthClient(cfg);
-			if (!cfg.oauthClientId) {
+			const isPublicClient = isPublicMcpOAuthClient(cfg);
+			if (!cfg.oauthClientId || mustRegister) {
 				const hostMessage = getOAuthCredentialErrorMessage(
 					cfg.baseUrl,
 					server.key,
@@ -833,7 +755,8 @@ export const oauthProcedures = {
 				effectiveRedirectUri = `${origin}/api/auth/callback/google`;
 			}
 
-			// Also store in DB for backward compatibility and additional validation
+			// The state row carries this flow's AS, endpoints and client, and the
+			// config's grant generation, to the callback.
 			const state = await createOauthState({
 				mcpServerId: server.id,
 				configId: cfg.id,
@@ -841,6 +764,12 @@ export const oauthProcedures = {
 				organizationId: cfg.organizationId ?? undefined,
 				codeVerifier,
 				redirectUri: effectiveRedirectUri,
+				authorizationServerSnapshot: serializeOAuthFlowSnapshot({
+					binding: snapshot.binding,
+					clientId: cfg.oauthClientId,
+					clientFingerprint: oauthClientFingerprint(cfg),
+				}),
+				expectedGrantGeneration: cfg.oauthGrantGeneration,
 			});
 
 			// Use the DB state as the primary state (contains the structured payload internally)
@@ -949,85 +878,62 @@ export const oauthProcedures = {
 				};
 			}
 
+			// As in `start`: never complete a flow for a config whose server its
+			// tenant may not use.
+			const accessibleServer = await getMcpServerForTenant(
+				cfg.mcpServerId,
+				{
+					userId: cfg.userId,
+					organizationId: cfg.organizationId,
+				},
+			);
+			if (!accessibleServer) {
+				await deleteOauthState(input.state);
+				return {
+					success: false,
+					message:
+						"This MCP config refers to a server you cannot use.",
+				};
+			}
+
 			const server = cfg.mcpServer as any;
 
-			// Try to use cached OAuth metadata first, then fall back to discovery
-			let tokenEndpoint: string | undefined;
-			let _oauthMetadata: MCPOAuthMetadata | null = null;
-
-			// Check for cached metadata
-			const cachedMetadata = await getCachedOAuthMetadata({
-				configId: cfg.id,
-			});
-			if (cachedMetadata?.tokenEndpoint) {
-				tokenEndpoint = cachedMetadata.tokenEndpoint as string;
-				_oauthMetadata = cachedMetadata as MCPOAuthMetadata;
-			}
-
-			// If no cached metadata, discover OAuth endpoints using RFC 9728/8414
-			// Priority: server.oauthDiscoveryUrl > derive from cfg.baseUrl or server.defaultUrl
-			if (!tokenEndpoint) {
-				let discoveryUrl = server.oauthDiscoveryUrl;
-				const effectiveBaseUrl = cfg.baseUrl || server.defaultUrl;
-				if (!discoveryUrl && effectiveBaseUrl) {
-					discoveryUrl =
-						deriveDiscoveryUrlFromBaseUrl(effectiveBaseUrl);
-				}
-				if (discoveryUrl) {
-					const discovery =
-						await discoverOAuthEndpoints(discoveryUrl);
-					if (discovery?.token_endpoint) {
-						tokenEndpoint = discovery.token_endpoint;
-						_oauthMetadata =
-							discovery as unknown as MCPOAuthMetadata;
-
-						// Cache the discovered metadata for future use
-						await updateOAuthMetadataCache({
-							configId: cfg.id,
-							metadata: discovery as unknown as Record<
-								string,
-								unknown
-							>,
-						});
-					}
-				}
-			}
-
-			// Fall back to server-configured endpoints, then known endpoints.
-			// Track whether we sourced the endpoint from KNOWN_OAUTH_ENDPOINTS so we
-			// can decide later whether to cache it (see the cache-write block below).
-			let tokenEndpointFromKnownEndpoints = false;
-			if (!tokenEndpoint) {
-				tokenEndpoint = server.oauthTokenEndpoint;
-			}
-			if (!tokenEndpoint) {
-				const baseUrl = cfg.baseUrl || server.defaultUrl;
-				tokenEndpoint = getKnownOAuthEndpoints(
-					baseUrl,
-					server.key,
-				)?.tokenEndpoint;
-				if (tokenEndpoint) {
-					tokenEndpointFromKnownEndpoints = true;
-				}
-			}
-
-			if (!tokenEndpoint) {
+			// Exchange the code with exactly the AS, endpoint and client that
+			// `start` resolved — never re-discovered: whatever the MCP server
+			// advertises now changes nothing. A flow whose config changed since
+			// (reconnect, revoke, re-registration) is refused.
+			const flow = parseOAuthFlowSnapshot(
+				stateRecord.authorizationServerSnapshot,
+			);
+			const expectedGeneration = stateRecord.expectedGrantGeneration;
+			if (!flow || expectedGeneration === null) {
+				await deleteOauthState(input.state);
 				return {
 					success: false,
-					message: "Token endpoint not available",
+					message:
+						"This sign-in can no longer be completed. Please connect again.",
 				};
 			}
+			if (
+				cfg.oauthGrantGeneration !== expectedGeneration ||
+				cfg.oauthClientId !== flow.clientId ||
+				// The client secret sent below must be the one `start`
+				// resolved: a writer that does not move the generation (the
+				// previous app version) may have replaced it under the same id.
+				oauthClientFingerprint(cfg) !== flow.clientFingerprint
+			) {
+				await deleteOauthState(input.state);
+				return {
+					success: false,
+					message:
+						"This MCP connection changed while signing in. Please connect again.",
+				};
+			}
+			const tokenEndpoint = flow.binding.tokenEndpoint;
 			assertSafeOutboundUrl(tokenEndpoint);
 
-			// For public OAuth clients (token_endpoint_auth_method: 'none'), client_secret is not required
-			const isPublicClient = isPublicOAuthClient(cfg);
-			if (!cfg.oauthClientId) {
-				return {
-					success: false,
-					message: "OAuth client ID not configured",
-				};
-			}
-			if (!isPublicClient && !cfg.encryptedOauthClientSecret) {
+			const authMethod = resolveMcpClientAuthMethod(cfg);
+			if (authMethod !== "none" && !cfg.encryptedOauthClientSecret) {
 				return {
 					success: false,
 					message: "OAuth client secret not configured",
@@ -1038,14 +944,26 @@ export const oauthProcedures = {
 				grant_type: "authorization_code",
 				code: input.code,
 				redirect_uri: stateRecord.redirectUri || "",
-				client_id: cfg.oauthClientId,
 			});
-			// Only include client_secret for confidential clients
-			if (!isPublicClient && cfg.encryptedOauthClientSecret) {
-				const clientSecret = decryptApiKey(
-					cfg.encryptedOauthClientSecret,
-				);
-				body.set("client_secret", clientSecret);
+			const exchangeHeaders: Record<string, string> = {
+				"content-type": "application/x-www-form-urlencoded",
+				accept: "application/json",
+			};
+			// Client authentication with the method the client was registered
+			// with.
+			const clientSecret =
+				authMethod !== "none" && cfg.encryptedOauthClientSecret
+					? decryptApiKey(cfg.encryptedOauthClientSecret)
+					: undefined;
+			if (authMethod === "client_secret_basic" && clientSecret) {
+				exchangeHeaders.authorization = `Basic ${Buffer.from(
+					`${flow.clientId}:${clientSecret}`,
+				).toString("base64")}`;
+			} else {
+				body.set("client_id", flow.clientId);
+				if (clientSecret) {
+					body.set("client_secret", clientSecret);
+				}
 			}
 			if (stateRecord.codeVerifier) {
 				body.set("code_verifier", stateRecord.codeVerifier);
@@ -1089,11 +1007,9 @@ export const oauthProcedures = {
 
 			const exchangeInit: RequestInit = {
 				method: "POST",
-				headers: {
-					"content-type": "application/x-www-form-urlencoded",
-					accept: "application/json",
-				},
+				headers: exchangeHeaders,
 				body,
+				redirect: "error",
 			};
 			// A GitLab exchange goes through the GitLab outbound path (a
 			// self-hosted instance through the outbound guard); a redirect
@@ -1109,10 +1025,19 @@ export const oauthProcedures = {
 			const json = await res.json().catch(() => null as any);
 
 			if (!res.ok || !json) {
+				// The description is redacted; the `error` code is classified
+				// and never repeated verbatim.
 				const errorMsg =
-					json?.error_description ||
-					json?.error ||
-					`HTTP ${res.status}`;
+					typeof json?.error_description === "string" &&
+					json.error_description
+						? sanitizeOAuthErrorText(json.error_description, [
+								input.code,
+								clientSecret,
+								stateRecord.codeVerifier,
+							])
+						: json?.error !== undefined && json?.error !== null
+							? classifyOAuthErrorCode(json.error)
+							: `HTTP ${res.status}`;
 				return {
 					success: false,
 					message: `Token exchange failed: ${errorMsg}`,
@@ -1136,7 +1061,7 @@ export const oauthProcedures = {
 			// (e.g. Notion). For unknown servers, preserve null to avoid expiring long-lived tokens.
 			const serverBaseUrl = cfg.baseUrl || server.defaultUrl;
 			const serverDefaultExpiry =
-				getServerDefaultTokenExpiry(serverBaseUrl);
+				getMcpServerDefaultTokenExpiry(serverBaseUrl);
 			const effectiveExpiresIn =
 				expiresIn ?? serverDefaultExpiry ?? undefined;
 
@@ -1201,47 +1126,45 @@ export const oauthProcedures = {
 							"Your GitLab connection changed while this sign-in was completing. Please connect GitLab again.",
 					};
 				}
+				// The connection service owns the credential; only the breaker
+				// of this grant generation is cleared here.
+				await clearRefreshFailures(cfg.id, { expectedGeneration });
 			} else {
-				await updateMcpConfigTokens({
+				// Tokens and the binding of the AS that issued them, in one
+				// write, only while the config still holds the generation
+				// `start` saw.
+				const saved = await saveMcpOAuthGrant({
 					configId: cfg.id,
-					encryptedAccessToken: encryptApiKey(accessToken),
-					accessTokenHash: hashApiKey(accessToken),
-					encryptedRefreshToken: refreshToken
-						? encryptApiKey(refreshToken)
-						: null,
-					tokenExpiresAt: expiresAt,
+					expectedGeneration,
+					binding: {
+						...flow.binding,
+						boundAt: new Date().toISOString(),
+					},
+					tokens: {
+						encryptedAccessToken: encryptApiKey(accessToken),
+						accessTokenHash: hashApiKey(accessToken),
+						encryptedRefreshToken: refreshToken
+							? encryptApiKey(refreshToken)
+							: null,
+						tokenExpiresAt: expiresAt,
+					},
+					// Written only while the stored client is still the one the
+					// code was exchanged with.
+					client: {
+						oauthClientId: cfg.oauthClientId,
+						encryptedOauthClientSecret:
+							cfg.encryptedOauthClientSecret,
+					},
 				});
-			}
-
-			// Cache the token endpoint only when it came from KNOWN_OAUTH_ENDPOINTS.
-			// Rationale:
-			//  • Cache hit path: already in the cache, nothing to do.
-			//  • Discovery path: already cached above at the discovery success branch.
-			//  • server.oauthTokenEndpoint: MUST NOT be cached here. The server row is
-			//    the source of truth, and caching masks later admin/operator fixes for
-			//    up to 24h (the oauthMetadataCache TTL) — refreshes would keep using
-			//    the stale endpoint even after the server config is corrected.
-			//  • KNOWN_OAUTH_ENDPOINTS: IS useful to cache, because oauth-provider.ts's
-			//    own fallback chain uses hostname-based matching (not serverKey), so
-			//    serverKey-matched entries (e.g. self-hosted GitLab) would otherwise
-			//    be unreachable from the refresh path without this bridge.
-			if (tokenEndpoint && tokenEndpointFromKnownEndpoints) {
-				const cachedMeta = _oauthMetadata
-					? (_oauthMetadata as unknown as Record<string, unknown>)
-					: {};
-				if (!cachedMeta.tokenEndpoint) {
-					await updateOAuthMetadataCache({
-						configId: cfg.id,
-						metadata: {
-							...cachedMeta,
-							tokenEndpoint,
-						},
-					});
+				if (!saved.written) {
+					await deleteOauthState(input.state);
+					return {
+						success: false,
+						message:
+							"This MCP connection changed while signing in. Please connect again.",
+					};
 				}
 			}
-
-			// Clear any previous refresh failures since we have fresh tokens
-			await clearRefreshFailures(cfg.id);
 
 			// Trigger tool ingestion now that we have valid OAuth tokens
 			// This is deferred for OAuth2 configs in the upsert handler
@@ -1434,103 +1357,20 @@ export const oauthProcedures = {
 				return { success: false };
 			}
 
-			const server = cfg.mcpServer as any;
-
-			// Discover OAuth endpoints
-			// Priority: server.oauthDiscoveryUrl > derive from cfg.baseUrl or server.defaultUrl
-			let discoveryUrl = server.oauthDiscoveryUrl;
-			const effectiveBaseUrl = cfg.baseUrl || server?.defaultUrl;
-			if (!discoveryUrl && effectiveBaseUrl) {
-				discoveryUrl = deriveDiscoveryUrlFromBaseUrl(effectiveBaseUrl);
-			}
-
-			const discovery = await discoverOAuthEndpoints(
-				discoveryUrl ?? null,
-			);
-			const tokenEndpoint =
-				server.oauthTokenEndpoint ??
-				discovery?.token_endpoint ??
-				getKnownOAuthEndpoints(cfg.baseUrl, server.key)?.tokenEndpoint;
-
-			if (!tokenEndpoint) {
-				return { success: false };
-			}
-			assertSafeOutboundUrl(tokenEndpoint);
-
-			// For public OAuth clients (token_endpoint_auth_method: 'none'), client_secret is not required
-			const isPublicClient = isPublicOAuthClient(cfg);
-			if (!cfg.oauthClientId) {
-				return { success: false };
-			}
-			if (!isPublicClient && !cfg.encryptedOauthClientSecret) {
-				return { success: false };
-			}
-
-			const refreshTokenPlain = decryptApiKey(cfg.encryptedRefreshToken);
-
-			const body = new URLSearchParams({
-				grant_type: "refresh_token",
-				refresh_token: refreshTokenPlain,
-				client_id: cfg.oauthClientId,
+			// The one bound refresh path: posts only to the token endpoint the
+			// config's credentials are bound to, never re-discovered. An unbound
+			// config is not refreshed at all; it is flagged for reconnect.
+			const outcome = await refreshMcpOAuthAccessToken(cfg.id, {
+				recordFailures: false,
+				markReconnectRequired: true,
+				expectedGeneration: cfg.oauthGrantGeneration,
 			});
-			// Only include client_secret for confidential clients
-			if (!isPublicClient && cfg.encryptedOauthClientSecret) {
-				const clientSecret = decryptApiKey(
-					cfg.encryptedOauthClientSecret,
-				);
-				body.set("client_secret", clientSecret);
+			if (outcome.status === "reconnect-required") {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: `Reconnect "${cfg.displayName || "MCP server"}" in MCP Settings: its OAuth credentials are not bound to a known authorization server.`,
+				});
 			}
-
-			const res = await safeFetchOutbound(tokenEndpoint, {
-				method: "POST",
-				headers: {
-					"content-type": "application/x-www-form-urlencoded",
-					accept: "application/json",
-				},
-				body,
-			});
-			const json = await res.json().catch(() => null as any);
-
-			if (!res.ok || !json) {
-				return { success: false };
-			}
-
-			const accessToken = json.access_token as string | undefined;
-			const newRefreshToken =
-				(json.refresh_token as string | undefined) ?? null;
-			const expiresIn =
-				(json.expires_in as number | undefined) ?? undefined;
-
-			if (!accessToken) {
-				return { success: false };
-			}
-
-			// Use server-specific default for known servers, preserve null for unknown
-			const serverDefaultExpiry = getServerDefaultTokenExpiry(
-				cfg.baseUrl || server?.defaultUrl,
-			);
-			const effectiveExpiresIn =
-				expiresIn ?? serverDefaultExpiry ?? undefined;
-
-			const now = Date.now();
-			const expiresAt = effectiveExpiresIn
-				? new Date(now + effectiveExpiresIn * 1000)
-				: null;
-
-			const encryptedAccessToken = encryptApiKey(accessToken);
-			const encryptedRefreshToken = newRefreshToken
-				? encryptApiKey(newRefreshToken)
-				: cfg.encryptedRefreshToken;
-
-			await updateMcpConfigTokens({
-				configId: cfg.id,
-				encryptedAccessToken,
-				accessTokenHash: hashApiKey(accessToken),
-				encryptedRefreshToken,
-				tokenExpiresAt: expiresAt,
-			});
-
-			return { success: true };
+			return { success: outcome.status === "refreshed" };
 		}),
 };
 

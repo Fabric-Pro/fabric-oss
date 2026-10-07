@@ -14,7 +14,7 @@ import {
 	buildProjectResource,
 	OAUTH_GATEWAY_RESOURCE_PATH,
 } from "@repo/utils/oauth-project-resource";
-import { OAUTH_SCOPES } from "./oauth-scopes";
+import { OAUTH_DEFAULT_SCOPES } from "./oauth-scopes";
 
 export interface ProtectedResourceMetadata {
 	resource: string;
@@ -40,7 +40,7 @@ export function buildGatewayProtectedResourceMetadata(params: {
 			? buildProjectResource(params.appUrl, "mcp", params.projectId)
 			: `${params.appUrl.replace(/\/+$/, "")}${OAUTH_GATEWAY_RESOURCE_PATH}`,
 		authorization_servers: [params.issuer],
-		scopes_supported: [...OAUTH_SCOPES],
+		scopes_supported: [...OAUTH_DEFAULT_SCOPES],
 		bearer_methods_supported: ["header"],
 		resource_name: "Fabric",
 	};

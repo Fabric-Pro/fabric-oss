@@ -40,6 +40,7 @@ const m = vi.hoisted(() => ({
 	tx: { tag: "tx" },
 	patch: vi.fn(),
 	getProjectRepoIntegration: vi.fn(),
+	getProjectInstructionSettings: vi.fn(),
 	subjectFor: vi.fn(),
 	/** The fake adapter every activity must go through (Decision 46). */
 	subject: {
@@ -64,11 +65,18 @@ const m = vi.hoisted(() => ({
 
 // Exactly these three: reading any instruction query straight from
 // @repo/database, rather than through the subject, fails on the mock.
-vi.mock("@repo/database", () => ({
-	db: m.db,
-	computeSchedulingPatch: m.patch,
-	getProjectRepoIntegration: m.getProjectRepoIntegration,
-}));
+vi.mock("@repo/database", async () => {
+	const { instructionRepositoryImportAllowed } = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/instruction-migration-pointer")
+	>("@repo/database/prisma/queries/instruction-migration-pointer");
+	return {
+		db: m.db,
+		computeSchedulingPatch: m.patch,
+		getProjectRepoIntegration: m.getProjectRepoIntegration,
+		getProjectInstructionSettings: m.getProjectInstructionSettings,
+		instructionRepositoryImportAllowed,
+	};
+});
 vi.mock("../src/activities/lib/repository-sync-subjects", () => ({
 	repositorySyncSubject: m.subjectFor,
 }));
@@ -140,6 +148,20 @@ const INTEGRATION = {
 	repositoryUrl: "https://github.com/example-org/example-repo",
 };
 
+const SWITCHING_SETTINGS = {
+	sourceOfTruth: "REPOSITORY",
+	migration: {
+		v: 1,
+		state: "SWITCHING",
+		branchId: "branch_1",
+		snapshotId: "snap_move",
+		syncId: "sync_1",
+		pullRequestUrl: null,
+		startedAt: "2026-10-03T10:00:00.000Z",
+		userId: "user_1",
+	},
+} as const;
+
 /** The fake `computeSchedulingPatch` tags its effect, so a write shows which effect it carries. */
 function patchFor(effect: object): { effect: object } {
 	return { effect };
@@ -178,6 +200,7 @@ beforeEach(() => {
 		m.db.$transaction,
 		m.patch,
 		m.getProjectRepoIntegration,
+		m.getProjectInstructionSettings,
 		m.subjectFor,
 		m.subject.listDueAndClaim,
 		m.subject.leaseHeld,
@@ -213,6 +236,7 @@ beforeEach(() => {
 	});
 	m.subject.startRun.mockResolvedValue(STARTED);
 	m.getProjectRepoIntegration.mockResolvedValue(INTEGRATION);
+	m.getProjectInstructionSettings.mockResolvedValue(SWITCHING_SETTINGS);
 	m.resolveFreshRepoToken.mockResolvedValue({
 		token: TOKEN,
 		provider: "GITHUB",
@@ -288,6 +312,18 @@ describe("checkInstructionSyncRemoteHead (spec §6.1)", () => {
 	});
 	afterEach(() => {
 		vi.useRealTimers();
+	});
+
+	it("does not read a direct repository through the retired import poll", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			sourceOfTruth: "REPOSITORY",
+			migration: null,
+		});
+
+		expect(await checkInstructionSyncRemoteHead(CHECK)).toEqual({
+			outcome: "stale",
+		});
+		expectNoRepositoryAccess();
 	});
 
 	it("resolves the claimed kind's subject, checks the lease and the delegate's permission first, then reads the head over a credential-free URL with the token only in the child env", async () => {

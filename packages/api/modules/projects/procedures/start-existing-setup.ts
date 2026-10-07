@@ -18,6 +18,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import {
 	resolveDefaultBranch,
@@ -236,6 +237,7 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 		const aiToken = await issueAIToken({
 			userId: user.id,
 			organizationId,
+			impersonated: isAiImpersonatedRequest(),
 			source: "existing-project-setup",
 			expirySeconds: 7200, // 2 hours — sequential doc gen can take a while
 		});

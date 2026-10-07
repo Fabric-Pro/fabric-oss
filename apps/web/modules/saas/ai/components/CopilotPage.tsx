@@ -69,6 +69,7 @@ import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/component
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
+import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { AsanaIcon } from "@saas/workflows/lib/plugins/asana/icon";
 import { AttioIcon } from "@saas/workflows/lib/plugins/attio/icon";
 import { CanvaIcon } from "@saas/workflows/lib/plugins/canva/icon";
@@ -1617,14 +1618,7 @@ export function ComposeInput({
 	// auto-restart path knows to bail.
 	const stopRequestedRef = useRef(false);
 
-	useEffect(() => {
-		const el = textareaRef.current;
-		if (!el) {
-			return;
-		}
-		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-	}, [value]);
+	useAutoResizeTextarea(textareaRef, value, 200);
 
 	useEffect(() => {
 		setHasSpeechSupport(

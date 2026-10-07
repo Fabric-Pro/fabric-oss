@@ -29,6 +29,9 @@ const INTEGRATION_TESTS = [
 	// (advisory locks and conditional UPDATEs; a mocked client cannot show
 	// either honoured).
 	"__tests__/conversation-turn-admission.integration.test.ts",
+	// Advisor turn saves racing on one conversation under a row lock
+	// (Fizzy #2949); a mocked client cannot show the lock honoured.
+	"__tests__/save-conversation-turn.integration.test.ts",
 	// Excalidraw default-MCP backfill migration replay.
 	// Requires DATABASE_URL to run the migration's data-write steps
 	// against a real Postgres. The test's

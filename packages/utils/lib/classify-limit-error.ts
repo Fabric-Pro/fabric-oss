@@ -7,6 +7,9 @@ import type { LimitKind, LimitSignal } from "./limit-signal";
  * `null` as "not a limit problem, handle as a generic error."
  *
  * Shapes covered:
+ *   - A spent ChatGPT plan window (`subscription_sharing_usage_limit_exceeded`,
+ *     `SubscriptionPlanExhaustedError`), checked first: the plan route reports
+ *     it as 402/429, which would otherwise read as a quota or rate limit.
  *   - AI SDK `APICallError` / `AI_APICallError` with HTTP statusCode 402/429/529.
  *   - OpenAI-style error.code: "insufficient_quota", "rate_limit_exceeded",
  *     "context_length_exceeded".
@@ -28,6 +31,23 @@ export function classifyLimitError(error: unknown): LimitSignal | null {
 	const anthropicType = pickAnthropicType(err);
 	const retryAfterMs = pickRetryAfterMs(err);
 	const message = sanitize(pickMessage(err));
+
+	// 0) A member's own ChatGPT plan needs reconnecting, or ran out. Before the
+	// status mapping: both arrive as 4xx that would read as something else.
+	if (
+		pickName(err) === "ChatGptPlanAuthError" ||
+		code === "CHATGPT_PLAN_UNAVAILABLE"
+	) {
+		return make("subscription_reconnect", message, "openai");
+	}
+	if (code === CHATGPT_PLAN_EXHAUSTED_CODE || mentionsPlanExhaustion(err)) {
+		return make(
+			"subscription_exhausted",
+			message,
+			"openai",
+			pickPlanResetMs(err) ?? retryAfterMs,
+		);
+	}
 
 	// 1) HTTP status-based mapping (most reliable across providers).
 	if (statusCode === 402) {
@@ -104,6 +124,65 @@ export function classifyLimitError(error: unknown): LimitSignal | null {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+const CHATGPT_PLAN_EXHAUSTED_CODE = "subscription_sharing_usage_limit_exceeded";
+
+/** The class name of the error or of one it wraps. */
+function pickName(err: ErrorBag, depth = 0): string | undefined {
+	const name = err.name ?? err.constructor?.name;
+	if (name === "ChatGptPlanAuthError" || depth >= 8) {
+		return name;
+	}
+	for (const kid of childBags(err)) {
+		const found = pickName(toErrorBag(kid), depth + 1);
+		if (found === "ChatGptPlanAuthError") {
+			return found;
+		}
+	}
+	return name;
+}
+
+/** The code in a message or an unparsed response body (an agent's relayed error). */
+function mentionsPlanExhaustion(err: ErrorBag, depth = 0): boolean {
+	const body = (err as { responseBody?: unknown }).responseBody;
+	if (
+		(typeof err.message === "string" &&
+			err.message.includes(CHATGPT_PLAN_EXHAUSTED_CODE)) ||
+		(typeof body === "string" && body.includes(CHATGPT_PLAN_EXHAUSTED_CODE))
+	) {
+		return true;
+	}
+	return (
+		depth < 8 &&
+		childBags(err).some((kid) =>
+			mentionsPlanExhaustion(toErrorBag(kid), depth + 1),
+		)
+	);
+}
+
+/** Milliseconds until a `SubscriptionPlanExhaustedError.resetAt`, if any. */
+function pickPlanResetMs(err: ErrorBag, depth = 0): number | undefined {
+	const raw = (err as { resetAt?: unknown }).resetAt;
+	const at =
+		raw instanceof Date
+			? raw.getTime()
+			: typeof raw === "string"
+				? Date.parse(raw)
+				: Number.NaN;
+	if (!Number.isNaN(at)) {
+		return Math.max(0, at - Date.now());
+	}
+	if (depth >= 8) {
+		return undefined;
+	}
+	for (const kid of childBags(err)) {
+		const found = pickPlanResetMs(toErrorBag(kid), depth + 1);
+		if (found !== undefined) {
+			return found;
+		}
+	}
+	return undefined;
+}
 
 interface ErrorBag {
 	name?: string;

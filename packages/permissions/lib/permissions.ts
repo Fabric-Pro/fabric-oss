@@ -105,6 +105,10 @@ export const Permissions = {
 	INSTRUCTION_CREATE: "instruction:create",
 	INSTRUCTION_UPDATE: "instruction:update",
 	INSTRUCTION_DELETE: "instruction:delete",
+	// Full native Git transport reads repository history and files beyond the
+	// selected coding-instructions tree. It is deliberately separate from
+	// INSTRUCTION_READ, which remains safe for viewers and MCP readers.
+	REPOSITORY_READ: "repository:read",
 
 	// Agents
 	AGENT_READ: "agent:read",

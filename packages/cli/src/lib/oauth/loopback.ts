@@ -21,6 +21,8 @@ export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface CallbackResult {
 	code: string;
+	/** Every query parameter of the accepted callback. */
+	params: URLSearchParams;
 }
 
 export interface LoopbackListener {
@@ -37,13 +39,22 @@ export async function startLoopbackListener(options: {
 	state: string;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	/** The callback path; `/callback` unless the authorization server fixes one. */
+	callbackPath?: string;
+	/**
+	 * A port to try first, for a server that registers it; an ephemeral port
+	 * is used when it is taken.
+	 */
+	preferredPort?: number;
+	/** The query parameter carrying the grant; `code` unless the sender names another. */
+	codeParam?: string;
 }): Promise<LoopbackListener> {
-	let settle: (outcome: { code: string } | { error: Error }) => void =
-		() => {};
+	const callbackPath = options.callbackPath ?? CALLBACK_PATH;
+	let settle: (outcome: CallbackResult | { error: Error }) => void = () => {};
 	const result = new Promise<CallbackResult>((resolve, reject) => {
 		settle = (outcome) => {
 			if ("code" in outcome) {
-				resolve({ code: outcome.code });
+				resolve(outcome);
 			} else {
 				reject(outcome.error);
 			}
@@ -55,14 +66,14 @@ export async function startLoopbackListener(options: {
 
 	const server: Server = createServer((request, response) => {
 		const url = new URL(request.url ?? "/", "http://127.0.0.1");
-		if (request.method !== "GET" || url.pathname !== CALLBACK_PATH) {
+		if (request.method !== "GET" || url.pathname !== callbackPath) {
 			response.writeHead(404).end();
 			return;
 		}
 
 		const error = url.searchParams.get("error");
 		const state = url.searchParams.get("state");
-		const code = url.searchParams.get("code");
+		const code = url.searchParams.get(options.codeParam ?? "code");
 
 		if (state !== options.state) {
 			response
@@ -115,13 +126,22 @@ export async function startLoopbackListener(options: {
 					"You can close this tab and return to your terminal.",
 				),
 			);
-		settle({ code });
+		settle({ code, params: url.searchParams });
 	});
 
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", () => resolve());
-	});
+	const listen = (port: number) =>
+		new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(port, "127.0.0.1", () => {
+				server.off("error", reject);
+				resolve();
+			});
+		});
+	if (options.preferredPort === undefined) {
+		await listen(0);
+	} else {
+		await listen(options.preferredPort).catch(() => listen(0));
+	}
 
 	const { port } = server.address() as AddressInfo;
 	const timer = setTimeout(
@@ -144,7 +164,7 @@ export async function startLoopbackListener(options: {
 	result.then(close, close);
 
 	return {
-		redirectUri: `http://127.0.0.1:${port}${CALLBACK_PATH}`,
+		redirectUri: `http://127.0.0.1:${port}${callbackPath}`,
 		result,
 		close,
 	};

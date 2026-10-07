@@ -235,7 +235,8 @@
 			"empty": {
 				"title": "Keine Hintergrundaufgaben",
 				"description": "Sobald Fabric einen Teams- oder Slack-Kanal überwacht oder ein Repository bzw. Dokument erfasst, erscheint der Fortschritt hier."
-			}
+			},
+			"aiProviderMissing": "Diese Organisation hat keinen KI-Anbieter für Hintergrundaufgaben."
 		},
 		"notifications": {
 			"openLabel": "Benachrichtigungen",
@@ -278,6 +279,11 @@
 			"undo": "Rückgängig",
 			"loadMore": "Mehr laden",
 			"loading": "Lädt…"
+		},
+		"aiProviderMissing": {
+			"title": "Diese Organisation hat keinen KI-Anbieter für Hintergrundaufgaben",
+			"body": "Hintergrundaufgaben wie das tägliche Briefing laufen über den KI-Anbieter der Organisation. Richte einen ein und erstelle das Briefing dann neu.",
+			"configure": "Anbieter einrichten"
 		}
 	},
 	"auth": {
@@ -1287,6 +1293,14 @@
 						"enabled_providers_changed": "Aktivierte Anbieter eines KI-Anbieters geändert",
 						"deleted": "KI-Anbieter gelöscht"
 					},
+					"chatgpt_plan": {
+						"account_connected": "Gemeinsames ChatGPT-Plan-Konto verbunden",
+						"account_updated": "Gemeinsames ChatGPT-Plan-Konto aktualisiert",
+						"account_disconnected": "Gemeinsames ChatGPT-Plan-Konto getrennt",
+						"policy_changed": "Richtlinie für ChatGPT-Plan-Pooling geändert",
+						"terms_acknowledged": "Bedingungen für ChatGPT-Plan-Pooling akzeptiert",
+						"api_fallback_used": "Hintergrund-KI-Arbeit auf den Anbieter der Organisation ausgewichen"
+					},
 					"restored": "Organisation wiederhergestellt",
 					"purged": "Organisation endgültig gelöscht",
 					"todo": {
@@ -1326,6 +1340,11 @@
 						"embedding_changed": "Embedding-KI-Anbieter geändert",
 						"enabled_providers_changed": "Aktivierte Anbieter eines KI-Anbieters geändert",
 						"deleted": "KI-Anbieter gelöscht"
+					},
+					"chatgpt_plan": {
+						"connected": "ChatGPT-Plan verbunden",
+						"disconnected": "ChatGPT-Plan getrennt",
+						"organization_use_changed": "Nutzung des ChatGPT-Plans geändert"
 					}
 				},
 				"project": {
@@ -2068,11 +2087,11 @@
 		},
 		"companyContext": {
 			"title": "Unternehmenskontext",
-			"description": "Was Ihr Unternehmen über sich selbst sagt – Leistungen, Fallstudien und Positionierung –, einmal gepflegt für jedes Angebot und jeden Business Case.",
+			"description": "Was Ihr Unternehmen über sich selbst sagt – Leistungen, Fallstudien und Positionierung –, einmal gepflegt für jedes Angebot und jeden Business Case sowie für den Advisor.",
 			"usage": {
 				"title": "Wo dies verwendet wird",
 				"body": "Angebote und Business Cases stützen sich auf diese Quellen, um Ihr Unternehmen und seine bisherigen Projekte zu beschreiben, und können sie wörtlich zitieren. Diese Dokumente gehen an Kunden – fügen Sie daher nur Material hinzu, das Sie auch mit einem Kunden teilen würden.",
-				"scope": "Andere Dokumenttypen verwenden den Unternehmenskontext nicht, und er erscheint nie im Kontext-Tab eines Projekts."
+				"scope": "Auch der Advisor kann diese Quellen durchsuchen, wenn ein Mitglied Ihrer Organisation nach dem Unternehmen fragt; Projektgäste sehen sie nie. Andere Dokumenttypen verwenden den Unternehmenskontext nicht, und er erscheint nie im Kontext-Tab eines Projekts."
 			},
 			"readOnly": "Ein Administrator der Organisation verwaltet den Unternehmenskontext. Sie können die Quellen ansehen und herunterladen; bitten Sie einen Administrator, Quellen hinzuzufügen, zu ändern oder zu entfernen.",
 			"list": {
@@ -2112,12 +2131,13 @@
 				"added": "Hinzugefügt am {date}",
 				"lastSynced": "Zuletzt synchronisiert am {date}",
 				"pageCount": "{count, plural, one {# Seite} other {# Seiten}}",
+				"crawlProgress": "{processed} von {total, plural, one {# bisher gefundenen Seite} other {# bisher gefundenen Seiten}}",
+				"crawlHint": "Angebote und Business Cases nutzen diese Website, sobald das Crawling abgeschlossen ist. Bei einer großen Website kann das einige Stunden dauern.",
 				"refresh": {
 					"ONCE": "Keine automatische Aktualisierung",
 					"DAILY": "Tägliche Aktualisierung",
 					"WEEKLY": "Wöchentliche Aktualisierung",
-					"MONTHLY": "Monatliche Aktualisierung",
-					"LIVE": "Live-Aktualisierung"
+					"MONTHLY": "Monatliche Aktualisierung"
 				}
 			},
 			"actions": {
@@ -2171,6 +2191,142 @@
 					"text": "Text"
 				}
 			}
+		},
+		"chatgptPlan": {
+			"title": "ChatGPT-Plan",
+			"description": "Führe deine eigene KI-Arbeit in dieser Organisation über deinen ChatGPT-Plan statt über den Anbieter der Organisation aus. Hintergrund- und geplante Aufgaben bleiben beim Anbieter der Organisation, sofern du sie unten nicht einschließt.",
+			"loadFailed": "Deine ChatGPT-Plan-Verbindung konnte nicht geladen werden.",
+			"notConnected": "Es ist kein ChatGPT-Plan verbunden.",
+			"howToConnect": "Verbinde deinen Plan im Terminal mit der Fabric CLI. Sie bittet dich, die Verbindung hier in Fabric zu bestätigen, öffnet die ChatGPT-Anmeldung in deinem Browser und speichert die Verbindung in deinem Konto.",
+			"copyCommand": "Befehl kopieren",
+			"copied": "Befehl kopiert",
+			"copyFailed": "Der Befehl konnte nicht kopiert werden. Markiere ihn und kopiere ihn manuell.",
+			"connectedAs": "Verbunden als",
+			"unknownAccount": "ChatGPT-Konto",
+			"statusActive": "Aktiv",
+			"statusNeedsReconnect": "Erneut verbinden",
+			"reconnectTitle": "Verbinde deinen ChatGPT-Plan erneut",
+			"reconnectDescription": "Deine ChatGPT-Verbindung muss erneut hergestellt werden. Verbinde sie erneut oder stelle diese Organisation auf die API-Abrechnung der Organisation um.",
+			"useInOrganization": "Meinen ChatGPT-Plan in dieser Organisation nutzen",
+			"useInOrganizationHelp": "Wenn aktiviert, läuft deine eigene KI-Arbeit in {organization} über deinen Plan.",
+			"turnedOn": "Dein ChatGPT-Plan ist für diese Organisation aktiviert",
+			"turnedOff": "Dein ChatGPT-Plan ist für diese Organisation deaktiviert",
+			"updateFailed": "Die Einstellung konnte nicht gespeichert werden. Versuche es erneut.",
+			"usageEstimate": "Fabric hat etwa {percent} % deines {hours}-Stunden-Fensters genutzt (Schätzung)",
+			"usageEstimateNote": "Eine Schätzung nur aus Fabrics eigenen Anfragen. Die echten Limits deines Plans und andere Nutzung findest du unter",
+			"usageLink": "ChatGPT-Einstellungen → Nutzung",
+			"opensInNewTab": "(öffnet in einem neuen Tab)",
+			"disconnect": "Trennen",
+			"disconnecting": "Wird getrennt…",
+			"disconnected": "ChatGPT-Plan getrennt",
+			"disconnectFailed": "Der Plan konnte nicht getrennt werden. Versuche es erneut.",
+			"disconnectConfirmTitle": "ChatGPT-Plan trennen?",
+			"disconnectConfirmDescription": "Fabric löscht die gespeicherte Anmeldung für deinen Plan, und deine KI-Arbeit läuft in jeder Organisation wieder über den Anbieter der Organisation. Du kannst dich jederzeit erneut verbinden.",
+			"cancel": "Abbrechen",
+			"prompt": {
+				"title": "Deinen ChatGPT-Plan in dieser Organisation nutzen?",
+				"description": "Deine eigene KI-Arbeit hier kann über deinen verbundenen ChatGPT-Plan laufen. Du kannst das später in deinen KI-Anbieter-Einstellungen ändern.",
+				"turnOn": "Aktivieren",
+				"notNow": "Nicht jetzt",
+				"failed": "Deine Antwort konnte nicht gespeichert werden. Versuche es erneut."
+			},
+			"includeBackgroundJobs": "Auch für Hintergrundaufgaben und Agenten nutzen",
+			"backgroundJobsWarningTitle": "Hintergrundaufgaben nutzen deinen Plan, während du nicht da bist",
+			"backgroundJobsWarning": "Hintergrundaufgaben laufen, wenn du Fabric nicht nutzt, zum Beispiel geplante Berichte, tägliche Briefings und Veröffentlichungsvorschläge für Projekte, die dir gehören. Sie zählen gegen die 5-Stunden- und Wochenlimits deines ChatGPT-Plans und können sie aufbrauchen, bevor du mit der Arbeit beginnst. Das gilt auch für KI-Agenten, die Fabric ohne dich in deinem Namen startet, etwa geplante Dokumentaktualisierungen. Die Dokumentation von OpenAI beschreibt diese Art der Nutzung nicht, sie kann sich also ändern oder eingeschränkt werden.",
+			"backgroundJobsOn": "Hintergrundaufgaben und Agenten nutzen hier jetzt deinen ChatGPT-Plan.",
+			"backgroundJobsOff": "Hintergrundaufgaben und Agenten nutzen wieder den Anbieter der Organisation.",
+			"connect": {
+				"title": "Verbinde deinen ChatGPT-Plan",
+				"description": "Die Fabric CLI möchte deinen ChatGPT-Plan mit deinem Konto {email} verbinden. Als Nächstes meldet sie dich auf deinem Computer bei ChatGPT an und sendet die Anmeldung hierher, wo sie verschlüsselt gespeichert wird.",
+				"chooseOrganizations": "Meinen Plan für meine eigene Arbeit nutzen in",
+				"noOrganizations": "Der ChatGPT-Plan ist für keine deiner Organisationen aktiviert. Bitte deinen Fabric-Admin, ihn zu aktivieren.",
+				"approve": "Verbinden",
+				"approving": "Wird verbunden…",
+				"cancel": "Abbrechen",
+				"failed": "Die Verbindung konnte nicht bestätigt werden. Versuche es erneut.",
+				"invalidLink": "Diesem Link fehlen die CLI-Angaben. Führe `fabric connect chatgpt` erneut aus.",
+				"returnToTerminal": "Kehre zu deinem Terminal zurück, um die ChatGPT-Anmeldung abzuschließen. Du kannst diesen Tab schließen.",
+				"cancelled": "Verbindung abgebrochen. Du kannst diesen Tab schließen.",
+				"close": "Schließen"
+			},
+			"connectShared": {
+				"title": "Gemeinsames ChatGPT-Plan-Konto verbinden",
+				"description": "Die Fabric CLI möchte ein ChatGPT-Konto verbinden, das {organization} gemeinsam nutzt. Als Nächstes meldet sie sich auf deinem Computer bei ChatGPT an – melde dich mit dem Konto an, das die Organisation teilen soll, nicht mit deinem eigenen – und sendet die Anmeldung hierher, wo sie verschlüsselt gespeichert wird. Admins legen in den KI-Anbieter-Einstellungen der Organisation fest, welche Arbeit es übernimmt.",
+				"notAllowed": "Ein gemeinsames ChatGPT-Plan-Konto kannst du nur mit einer Organisation verbinden, die du verwaltest und in der ChatGPT-Plan-Pooling aktiviert ist.",
+				"invalidLink": "Diesem Link fehlen die CLI-Angaben. Führe `fabric connect chatgpt --org <slug> --shared` erneut aus.",
+				"returnToTerminal": "Kehre zu deinem Terminal zurück, um die Anmeldung beim gemeinsamen ChatGPT-Konto abzuschließen. Du kannst diesen Tab schließen."
+			},
+			"sharedFallback": {
+				"title": "Dein ChatGPT-Plan hat sein Limit erreicht",
+				"description": "Dein eigener ChatGPT-Plan hat in diesem Fenster keine Nutzung mehr übrig. Deine KI-Arbeit hier läuft jetzt über den gemeinsamen ChatGPT-Plan deiner Organisation, bis dein Plan zurückgesetzt wird.",
+				"descriptionUntil": "Dein eigener ChatGPT-Plan hat in diesem Fenster keine Nutzung mehr übrig. Deine KI-Arbeit hier läuft jetzt über den gemeinsamen ChatGPT-Plan deiner Organisation, bis etwa {time}, wenn dein Plan zurückgesetzt wird."
+			},
+			"reconnectCommandHint": "Führe zum erneuten Verbinden Folgendes im Terminal aus:",
+			"openSettings": "ChatGPT-Plan-Einstellungen öffnen",
+			"useOrganizationBilling": "Abrechnung der Organisation nutzen",
+			"usingOrganizationBilling": "Diese Organisation nutzt jetzt ihre eigene API-Abrechnung für deine KI-Arbeit.",
+			"cli": {
+				"helpLabel": "So installierst du die Fabric CLI",
+				"helpTitle": "So installierst du die Fabric CLI",
+				"servedPrimary": "Diese Zeile startet die Fabric CLI, die dieses Deployment bereitstellt – ohne vorherige Installation. Sie benötigt Node.js 22 oder neuer.",
+				"noCliYet": "Noch keine Fabric CLI? Starte die, die dieses Deployment bereitstellt (Node.js 22 oder neuer):",
+				"installFirst": "Installiere zuerst die Fabric CLI (Node.js 22 oder neuer):",
+				"permanentInstall": "Oder installiere die CLI dauerhaft:",
+				"checkVersion": "Mit fabric --version prüfst du, ob sie installiert ist."
+			},
+			"providerStatus": {
+				"chip": "ChatGPT-Plan",
+				"ownWork": "Deine eigene KI-Arbeit in {organization} läuft über deinen ChatGPT-Plan.",
+				"everythingElse": "Der KI-Anbieter unten übernimmt alles andere, etwa Hintergrundaufgaben und die Dokumentsuche.",
+				"onlyTitle": "Nur dein ChatGPT-Plan ist eingerichtet",
+				"onlyDescription": "Deine eigene KI-Arbeit in {organization} läuft über deinen ChatGPT-Plan. Hintergrundaufgaben und die Dokumentsuche brauchen einen KI-Anbieter: Füge unten einen hinzu."
+			}
+		},
+		"chatgptPlanPool": {
+			"title": "Gemeinsame ChatGPT-Pläne",
+			"description": "ChatGPT-Konten, die die Organisation gemeinsam nutzt. Freigegebene Hintergrundaufgaben – und, wo du es erlaubst, die eigene Arbeit von Mitgliedern ohne eigenen Plan – laufen darauf statt über den KI-Anbieter der Organisation.",
+			"loadFailed": "Die gemeinsamen ChatGPT-Pläne konnten nicht geladen werden. Lade die Seite neu, um es erneut zu versuchen.",
+			"policyTitle": "Pooling-Richtlinie",
+			"policyDescription": "Ob überhaupt Arbeit auf den gemeinsamen Konten laufen darf und was passiert, wenn kein Plan mehr Nutzung übrig hat.",
+			"termsTitle": "Bedingungen für gemeinsame ChatGPT-Pläne",
+			"termsBody": "Für das Teilen eines ChatGPT-Plans in einer Organisation gelten die Bedingungen von OpenAI für diesen Plan. Mit der Zustimmung bestätigst du, dass die Organisation die hier verbundenen Konten besitzt und sie für die Arbeit ihrer Mitglieder und ihre Hintergrundaufgaben nutzen darf.",
+			"termsAcceptedOn": "Akzeptiert am {date}.",
+			"acceptTerms": "Bedingungen akzeptieren",
+			"termsAccepted": "Bedingungen akzeptiert",
+			"ownerOnly": "Nur ein Eigentümer der Organisation kann diese Bedingungen akzeptieren.",
+			"poolingEnabled": "Arbeit auf gemeinsamen Plänen ausführen",
+			"poolingEnabledHelp": "Aus läuft nichts auf den gemeinsamen Konten; sie bleiben verbunden.",
+			"poolingNeedsTerms": "Ein Eigentümer der Organisation muss zuerst die Bedingungen akzeptieren.",
+			"backgroundFallback": "Hintergrundaufgaben, wenn alle Pläne aufgebraucht sind",
+			"backgroundNever": "Auf das Zurücksetzen eines Plans warten, dann fehlschlagen",
+			"backgroundAuto": "Über den KI-Anbieter der Organisation laufen",
+			"backgroundAutoWarningTitle": "Hintergrundaufgaben werden der Organisation berechnet",
+			"backgroundAutoWarning": "Sobald alle gemeinsamen Pläne aufgebraucht sind, laufen freigegebene Hintergrundaufgaben ohne Rückfrage über den eigenen KI-Anbieter der Organisation. Jeder Wechsel dorthin wird im Audit-Log festgehalten.",
+			"headroom": "Reserve für Menschen",
+			"headroomChoice": "{percent} % jedes Fensters",
+			"headroomHelp": "Hintergrundaufgaben bevorzugen Konten, die noch so viel ihres geschätzten Fünf-Stunden-Fensters übrig haben.",
+			"policyUpdated": "Pooling-Richtlinie aktualisiert",
+			"accountsTitle": "Gemeinsame Konten",
+			"accountsDescription": "Status jedes Kontos, eine Schätzung seines aktuellen Fünf-Stunden-Fensters und die Arbeit, die es übernimmt.",
+			"emptyAccounts": "Noch ist kein gemeinsames Konto verbunden. Ein Admin der Organisation verbindet eines im Terminal:",
+			"connectAnother": "Um ein weiteres Konto zu verbinden, führe aus:",
+			"statusActive": "Aktiv",
+			"statusNeedsReconnect": "Erneut verbinden",
+			"statusCooling": "Pausiert bis {time}",
+			"unknownAccount": "Unbekanntes Konto",
+			"usageEstimate": "Etwa {percent} % eines {hours}-Stunden-Fensters über Fabric genutzt (Schätzung)",
+			"enabled": "Aktiviert",
+			"serveInteractive": "Übernimmt die eigene Arbeit von Mitgliedern ohne Plan",
+			"serveBackground": "Übernimmt freigegebene Hintergrundaufgaben",
+			"accountUpdated": "Konto aktualisiert",
+			"updateFailed": "Die Änderung konnte nicht gespeichert werden. Versuche es erneut.",
+			"disconnect": "Trennen",
+			"disconnecting": "Wird getrennt…",
+			"disconnected": "Konto getrennt",
+			"disconnectFailed": "Das Konto konnte nicht getrennt werden. Versuche es erneut.",
+			"disconnectConfirmTitle": "Dieses gemeinsame Konto trennen?",
+			"disconnectConfirmDescription": "{label} wird bei OpenAI abgemeldet und aus Fabric entfernt. Danach läuft nichts mehr darauf; verbinde es mit der Fabric CLI erneut, um es zurückzuholen.",
+			"cancel": "Abbrechen"
 		}
 	},
 	"start": {

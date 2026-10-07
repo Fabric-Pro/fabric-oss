@@ -3,6 +3,7 @@ import { generateObject, getAIModelWithMetadata } from "@repo/ai";
 import { db, hasProjectAccess } from "@repo/database";
 import { zodSchema } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -100,7 +101,8 @@ export const suggestTerminalStatusesProcedure = tenantProtectedProcedure
 				};
 			}
 			return { terminalStatuses: cleaned, usedFallback: false };
-		} catch {
+		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			return {
 				terminalStatuses: DEFAULT_TERMINAL_STATUSES,
 				usedFallback: true,

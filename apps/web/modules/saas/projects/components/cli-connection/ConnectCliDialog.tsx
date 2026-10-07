@@ -591,6 +591,10 @@ export function ConnectCliDialog({
 							// dismissal guard is never hiding behind a closed row.
 							open={keyFlowOpen || keyIssued}
 							organizationSlug={organizationSlug}
+							repositorySetup={
+								isInstructionsPurpose &&
+								localSetup?.kind === "repository"
+							}
 							uncopiedSecretOnScreen={uncopiedSecretOnScreen}
 						/>
 					</div>

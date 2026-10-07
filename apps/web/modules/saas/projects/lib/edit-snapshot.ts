@@ -1,6 +1,10 @@
 import { sha256Hex } from "@repo/instructions";
 import { orpcClient } from "@shared/lib/orpc-client"; // the raw client createTanstackQueryUtils wraps (see orpc-query-utils.ts:4)
 import { putWithRetry } from "./upload-snapshot";
+import {
+	type InstructionChangeBase,
+	instructionBlobBase64,
+} from "./instruction-change-source";
 
 /**
  * One change to the published tree, as the tab's Edit / Delete file / Add file
@@ -14,10 +18,12 @@ export type InstructionEdit =
 	| { op: "put"; path: string; body: Blob }
 	| { op: "delete"; path: string };
 
-export type EditInstructionSnapshotResult = {
-	snapshotId: string;
-	version: number;
-};
+export type EditInstructionSnapshotResult =
+	| {
+			snapshotId: string;
+			version: number;
+	  }
+	| { kind: "native"; operationId: string };
 
 /**
  * Turns a small set of per-path changes into a new version, on exactly the
@@ -44,25 +50,51 @@ export type EditInstructionSnapshotResult = {
  * Only the uploaded files are hashed that way: an inherited file is the
  * source's already-hashed object, copied inside storage.
  */
-export async function editInstructionSnapshot(input: {
-	projectId: string;
-	baseSnapshotId: string;
-	publishOnReady: boolean;
-	/** Submit the derived snapshot for editor review instead of direct publication. */
-	proposal?: boolean;
-	/**
-	 * Publish as soon as the integrity checks pass and run the secret scan
-	 * afterwards — the member's acknowledged choice (Fizzy #2737). Never with
-	 * a proposal, which publishes only through review; only sent when true.
-	 */
-	publishBeforeScan?: boolean;
-	/**
-	 * A proposal's title and description (Fizzy #2563 spec §5.1 step 6).
-	 * Sent only with a proposal: a direct version stores no note.
-	 */
-	note?: { title?: string; body?: string };
-	edits: InstructionEdit[];
-}): Promise<EditInstructionSnapshotResult> {
+export async function editInstructionSnapshot(
+	input: {
+		projectId: string;
+		publishOnReady: boolean;
+		/** Submit the derived snapshot for editor review instead of direct publication. */
+		proposal?: boolean;
+		/**
+		 * Publish as soon as the integrity checks pass and run the secret scan
+		 * afterwards — the member's acknowledged choice (Fizzy #2737). Never with
+		 * a proposal, which publishes only through review; only sent when true.
+		 */
+		publishBeforeScan?: boolean;
+		/**
+		 * A proposal's title and description (Fizzy #2563 spec §5.1 step 6).
+		 * Sent only with a proposal: a direct version stores no note.
+		 */
+		note?: { title?: string; body?: string };
+		edits: InstructionEdit[];
+	} & InstructionChangeBase,
+): Promise<EditInstructionSnapshotResult> {
+	if (input.nativeBase) {
+		if (!input.proposal)
+			throw new Error(
+				"Native repository writes require a commit or proposal",
+			);
+		const changes = await Promise.all(
+			input.edits.map(async (edit) =>
+				edit.op === "delete"
+					? edit
+					: {
+							op: "put" as const,
+							path: edit.path,
+							content: await instructionBlobBase64(edit.body),
+							encoding: "base64" as const,
+						},
+			),
+		);
+		return orpcClient.projects.instructions.submitGitChange({
+			projectId: input.projectId,
+			nativeBase: input.nativeBase,
+			mode: "proposal",
+			changes,
+			note: input.note,
+		});
+	}
 	const puts = new Map<string, Blob>();
 	const changes: Array<
 		| { op: "put"; path: string; size: number; sha256: string }

@@ -30,6 +30,7 @@ import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
 import { logger } from "@repo/logs";
 import { zodSchema } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -236,6 +237,7 @@ export const getPersonalInsightsProcedure = tenantProtectedProcedure
 				actionItems: object.actionItems ?? [],
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			// NOTHING derived from the error may be interpolated anywhere, here
 			// or in the log lines below. A generateObject failure attaches the
 			// offending prompt — the whole transcript — to its `text`, and its

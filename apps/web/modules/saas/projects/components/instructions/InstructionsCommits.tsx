@@ -17,7 +17,13 @@ import {
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import {
+	skipToken,
+	useMutation,
+	useQueries,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -71,6 +77,7 @@ export function InstructionsCommits({
 	syncRuns,
 	onChanged,
 	onCommitted,
+	repositoryPin,
 }: {
 	projectId: string;
 	open: boolean;
@@ -85,6 +92,7 @@ export function InstructionsCommits({
 	syncRuns?: ReactNode;
 	onChanged: () => void;
 	onCommitted?: (commit: { sha: string; ref: string }) => void;
+	repositoryPin?: { generation: number; commitSha: string };
 }) {
 	const t = useTranslations("projects.codingInstructions.commits");
 	const actionError = useInstructionActionError();
@@ -98,16 +106,18 @@ export function InstructionsCommits({
 
 	const pages = useQueries({
 		queries: cursors.map((cursor) => ({
-			...orpc.projects.instructions.repositorySync.listCommits.queryOptions(
-				{
-					input: { projectId, cursor },
-				},
-			),
+			...(repositoryPin
+				? orpc.projects.instructions.repository.listCommits.queryOptions(
+						{ input: { projectId, ...repositoryPin, cursor } },
+					)
+				: orpc.projects.instructions.repositorySync.listCommits.queryOptions(
+						{ input: { projectId, cursor } },
+					)),
 			enabled: open,
 		})),
 	});
-	const loaded = pages.flatMap((page) =>
-		page.data ? (page.data.commits as CommitRow[]) : [],
+	const loaded: CommitRow[] = pages.flatMap(
+		(page) => page.data?.commits ?? [],
 	);
 	const badges = commitBadges(loaded, published);
 	const entries: CommitEntry[] = loaded.map((row, index) => ({
@@ -124,9 +134,39 @@ export function InstructionsCommits({
 			.toLocaleLowerCase()
 			.includes(normalizedFilter);
 	});
-	const selectedEntry =
+	const listedEntry =
 		visibleEntries.find(({ row }) => row.sha === selectedSha) ??
 		(normalizedFilter === "" ? (visibleEntries[0] ?? null) : null);
+	// Azure DevOps lists commits without parents, and reading one per row
+	// costs a request each, so only the selected commit's parent is read.
+	const parentLookup = useQuery(
+		orpc.projects.instructions.repository.getCommitParent.queryOptions({
+			input:
+				open &&
+				repositoryPin &&
+				provider === "AZURE_DEVOPS" &&
+				listedEntry &&
+				listedEntry.row.parent === null
+					? {
+							projectId,
+							generation: repositoryPin.generation,
+							sha: listedEntry.row.sha,
+						}
+					: skipToken,
+		}),
+	);
+	const selectedEntry: CommitEntry | null =
+		listedEntry &&
+		listedEntry.row.parent === null &&
+		parentLookup.data?.sha === listedEntry.row.sha
+			? {
+					...listedEntry,
+					row: {
+						...listedEntry.row,
+						parent: parentLookup.data.parent,
+					},
+				}
+			: listedEntry;
 	const last = pages[pages.length - 1];
 	const nextCursor = last?.data?.nextCursor ?? null;
 	const firstFailed = pages[0]?.isError ?? false;
@@ -268,6 +308,7 @@ export function InstructionsCommits({
 								</p>
 							) : (
 								<div
+									role="group"
 									aria-label={t("loadedListLabel")}
 									className="flex flex-col"
 								>

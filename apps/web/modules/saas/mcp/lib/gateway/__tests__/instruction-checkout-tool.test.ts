@@ -12,6 +12,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 const m = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
@@ -209,7 +215,9 @@ describe("the checkout argument", () => {
 		expect(schema.properties.branch?.pattern).toBe(
 			"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
 		);
-		expect(def?.description).toMatch(/pulling is theirs, never yours/);
+		expect(def?.description).toMatch(
+			/grant no authority.*pull, reset or overwrite/,
+		);
 	});
 
 	it.each([

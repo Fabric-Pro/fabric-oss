@@ -77,6 +77,9 @@ vi.mock("../src/lib/correlation-interceptor", () => ({
 vi.mock("../src/lib/project-context-interceptor", () => ({
 	ProjectContextActivityInboundInterceptor: class {},
 }));
+vi.mock("../src/lib/turn-dispatch-interceptor", () => ({
+	TurnDispatchActivityInboundInterceptor: class {},
+}));
 vi.mock("@repo/observability", () => ({
 	createMetricsHttpServer: vi.fn(() => ({
 		close: (done: () => void) => done(),

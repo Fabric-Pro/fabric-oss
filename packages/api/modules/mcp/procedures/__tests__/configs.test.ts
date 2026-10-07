@@ -10,6 +10,13 @@ import { z } from "zod";
 
 // Mock database functions
 vi.mock("@repo/database", () => ({
+	// The upsert resolves the server for the caller's tenant; these are
+	// ordinary system servers.
+	getMcpServerForTenant: async (id: string) => ({
+		id,
+		key: `example-${id}`,
+		isSystemProvided: true,
+	}),
 	getMcpConfigById: vi.fn(),
 	getMcpConfigForTenantAndServer: vi.fn(),
 	getOrganizationById: vi.fn(),

@@ -19,7 +19,7 @@ import {
 	getScheduleClient,
 	ScheduleAlreadyRunning,
 	ScheduleNotFoundError,
-} from "@repo/temporal";
+} from "../packages/temporal/index";
 
 const SCHEDULE_ID = "project-delete-cleanup";
 const WORKFLOW_NAME = "projectDeleteCleanupWorkflow";

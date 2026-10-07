@@ -1,9 +1,11 @@
 import {
+	azureDevOpsHeaders,
 	gitlabHeaders,
 	gitlabHost,
 	parseAdoRepositoryUrl,
-	type VerifyRepositoryBranchInput,
-} from "./repository-branch";
+} from "./repository-address";
+import { readCappedRepositoryBody } from "./repository-body";
+import type { VerifyRepositoryBranchInput } from "./repository-branch";
 
 /**
  * What the request-path repository readers that ask the provider about
@@ -31,8 +33,10 @@ export type RepositoryApiTarget = {
 	/** The repository's API root, no trailing slash. */
 	base: string;
 	headers: Record<string, string>;
+	signal?: AbortSignal;
 	/** The provider's web page for one commit. */
 	commitUrl(sha: string): string;
+	pullRequestUrl(number: number): string;
 };
 
 export const AZURE_DEVOPS_API_VERSION = "7.1";
@@ -49,6 +53,7 @@ export function repositoryApiTarget(
 			const repository = `${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}`;
 			return {
 				provider: "GITHUB",
+				signal: input.signal,
 				base: `https://api.github.com/repos/${repository}`,
 				headers: {
 					Authorization: `Bearer ${input.token}`,
@@ -57,6 +62,8 @@ export function repositoryApiTarget(
 				},
 				commitUrl: (sha) =>
 					`https://github.com/${repository}/commit/${sha}`,
+				pullRequestUrl: (number) =>
+					`https://github.com/${repository}/pull/${number}`,
 			};
 		}
 		case "GITLAB": {
@@ -64,10 +71,13 @@ export function repositoryApiTarget(
 			const path = `${input.owner}/${input.repo}`;
 			return {
 				provider: "GITLAB",
+				signal: input.signal,
 				base: `${host}/api/v4/projects/${encodeURIComponent(path)}`,
 				headers: gitlabHeaders(input),
 				commitUrl: (sha) =>
 					`${host}/${path.split("/").map(encodeURIComponent).join("/")}/-/commit/${sha}`,
+				pullRequestUrl: (number) =>
+					`${host}/${path.split("/").map(encodeURIComponent).join("/")}/-/merge_requests/${number}`,
 			};
 		}
 		case "AZURE_DEVOPS": {
@@ -92,13 +102,13 @@ export function repositoryApiTarget(
 			const root = `${host}${modernHost ? `/${encodeURIComponent(organization)}` : ""}${projectSegment}`;
 			return {
 				provider: "AZURE_DEVOPS",
+				signal: input.signal,
 				base: `${root}/_apis/git/repositories/${encodeURIComponent(repoName)}`,
-				headers: {
-					Authorization: `Basic ${Buffer.from(`:${input.token}`).toString("base64")}`,
-					Accept: "application/json",
-				},
+				headers: azureDevOpsHeaders(input),
 				commitUrl: (sha) =>
 					`${root}/_git/${encodeURIComponent(repoName)}/commit/${sha}`,
+				pullRequestUrl: (number) =>
+					`${root}/_git/${encodeURIComponent(repoName)}/pullrequest/${number}`,
 			};
 		}
 		default: {
@@ -122,6 +132,15 @@ export type RepositoryJson =
 	| { ok: true; data: unknown }
 	| { ok: false; outcome: RepositoryFailure };
 
+export function repositoryRequestSignal(
+	timeoutMs: number,
+	signal?: AbortSignal,
+): AbortSignal {
+	signal?.throwIfAborted();
+	const timeout = AbortSignal.timeout(timeoutMs);
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 /**
  * One GET on the repository's API, parsed as JSON. Never throws: a network
  * failure, a timeout, an oversize or non-JSON body is `unreachable`; Azure
@@ -130,12 +149,16 @@ export type RepositoryJson =
 export async function getRepositoryJson(
 	target: RepositoryApiTarget,
 	pathAndQuery: string,
+	options: { timeoutMs?: number } = {},
 ): Promise<RepositoryJson> {
 	let response: Response;
 	try {
 		response = await fetch(`${target.base}${pathAndQuery}`, {
 			headers: target.headers,
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+			signal: repositoryRequestSignal(
+				options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+				target.signal,
+			),
 		});
 	} catch {
 		return { ok: false, outcome: "unreachable" };
@@ -148,71 +171,23 @@ export async function getRepositoryJson(
 		return { ok: false, outcome: failureFromStatus(response.status) };
 	}
 	try {
-		const reader = response.body?.getReader();
-		if (!reader) {
-			return { ok: true, data: JSON.parse(await response.text()) };
-		}
-		const chunks: Uint8Array[] = [];
-		let total = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) {
-				break;
-			}
-			total += value.byteLength;
-			if (total > MAX_RESPONSE_BYTES) {
-				await reader.cancel().catch(() => {});
-				return { ok: false, outcome: "unreachable" };
-			}
-			chunks.push(value);
+		const body = await readCappedRepositoryBody(
+			response,
+			MAX_RESPONSE_BYTES,
+			{
+				refuseDeclaredLength: true,
+			},
+		);
+		if (!body.complete) {
+			return { ok: false, outcome: "unreachable" };
 		}
 		return {
 			ok: true,
-			data: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+			data: JSON.parse(Buffer.from(body.bytes).toString("utf8")),
 		};
 	} catch {
 		return { ok: false, outcome: "unreachable" };
 	}
-}
-
-type RepositoryHeadSize =
-	| { ok: true; size: number | null }
-	| { ok: false; outcome: RepositoryFailure };
-
-/**
- * One HEAD on the repository's API, answering the size the provider reports in
- * `sizeHeader` (null when the header is absent or is not a whole number). The
- * body of a HEAD is never read, so a caller can refuse a file that is too large
- * before a GET buffers it. Never throws: a network failure or a timeout is
- * `unreachable`; Azure DevOps's 203 sign-in page for a rejected token is
- * `unauthorized`.
- */
-export async function headRepositorySize(
-	target: RepositoryApiTarget,
-	pathAndQuery: string,
-	sizeHeader: string,
-): Promise<RepositoryHeadSize> {
-	let response: Response;
-	try {
-		response = await fetch(`${target.base}${pathAndQuery}`, {
-			method: "HEAD",
-			headers: target.headers,
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-		});
-	} catch {
-		return { ok: false, outcome: "unreachable" };
-	}
-	if (response.status === 203) {
-		return { ok: false, outcome: "unauthorized" };
-	}
-	if (!response.ok) {
-		await response.body?.cancel().catch(() => {});
-		return { ok: false, outcome: failureFromStatus(response.status) };
-	}
-	const reported = response.headers.get(sizeHeader);
-	const size =
-		reported !== null && /^\d+$/.test(reported) ? Number(reported) : null;
-	return { ok: true, size };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

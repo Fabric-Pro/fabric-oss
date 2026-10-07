@@ -11,7 +11,9 @@
  * - Variable interpolation for step inputs ({{step-X.output}}, etc.)
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { HANDLER_PRIORITY } from "../../config";
+import { throwIfTurnStopped } from "../../turn-dispatch";
 import type {
 	AgentVariable,
 	ExecuteStepInput,
@@ -388,6 +390,14 @@ export class HandlerRegistry {
 
 		const result = await handler.execute(context);
 
+		// In a chat turn, a step that saw the turn stop does not report a
+		// result or fall back to another handler, whatever the handler made of
+		// the stop (a partial result whose aborted parts became "no results",
+		// an error turned into a fallback request): the activity was cancelled
+		// or the turn's dispatch guard refused a request. Without a turn, as
+		// before.
+		throwIfStepStopped(resolvedInput);
+
 		// If handler succeeded, return output
 		if (result.handled && result.output) {
 			return result.output;
@@ -412,6 +422,7 @@ export class HandlerRegistry {
 				result,
 				fallbackHandler,
 			);
+			throwIfStepStopped(resolvedInput);
 			if (fallbackResult.handled && fallbackResult.output) {
 				return fallbackResult.output;
 			}
@@ -458,6 +469,7 @@ export class HandlerRegistry {
 					);
 					return { handled: true, output };
 				} catch (error) {
+					rethrowIfDispatchStopped(error);
 					const errorMessage =
 						error instanceof Error ? error.message : String(error);
 					return { handled: false, error: errorMessage };
@@ -487,6 +499,17 @@ export class HandlerRegistry {
 				enabled: entry.config.enabled,
 			};
 		});
+	}
+}
+
+/**
+ * For a step that serves a chat turn (`turnScope`): throws the stop when the
+ * activity was cancelled or the turn's dispatch guard has seen the turn stop.
+ * A no-op for a step without a turn, so such a run keeps its behaviour.
+ */
+function throwIfStepStopped(input: ExecuteStepInput): void {
+	if (input.turnScope) {
+		throwIfTurnStopped();
 	}
 }
 

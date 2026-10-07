@@ -48,6 +48,7 @@ const STOP_BUTTON_TOOLTIP = "Stop this response · Esc";
 const TEXTAREA_MAX_HEIGHT = 200;
 
 import { useClipboardImagePaste } from "@saas/projects/lib/use-clipboard-image-paste";
+import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import {
 	type ChangeEvent,
 	forwardRef,
@@ -276,19 +277,10 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(
 		// The textarea grows with its text up to TEXTAREA_MAX_HEIGHT and only
 		// scrolls past that. Without this it keeps its default two-row height
 		// and a long prompt scrolls inside a sliver. The hero pill passes
-		// rows={1}, so it starts one line tall rather than two. `hero` stays in
-		// the dependencies because switching variants changes the rows and
+		// rows={1}, so it starts one line tall rather than two. `hero` is the
+		// layout key because switching variants changes the rows and
 		// typography being measured even when the text does not change.
-		useEffect(() => {
-			const el = textareaRef.current;
-			if (!el) {
-				return;
-			}
-			el.style.height = "auto";
-			const overflows = el.scrollHeight > TEXTAREA_MAX_HEIGHT;
-			el.style.height = `${overflows ? TEXTAREA_MAX_HEIGHT : el.scrollHeight}px`;
-			el.style.overflowY = overflows ? "auto" : "hidden";
-		}, [hero, value, textareaRef]);
+		useAutoResizeTextarea(textareaRef, value, TEXTAREA_MAX_HEIGHT, hero);
 
 		// Track cursor position for @ detection
 		const [cursorPosition, setCursorPosition] = useState(0);

@@ -1,6 +1,10 @@
 import { ORPCError } from "@orpc/client";
-import { listAiUsageActivity } from "@repo/database";
+import {
+	type AiUsageActivityResult,
+	listAiUsageActivity,
+} from "@repo/database";
 import { z } from "zod";
+import { estimateChatGptPlanApiCost } from "../../../lib/chatgpt-plan-cost";
 import {
 	requireOrganizationAdmin,
 	tenantProtectedProcedure,
@@ -37,6 +41,7 @@ const inputSchema = z.object({
 	providerModelIds: z.array(z.string()).optional(),
 	projectIds: z.array(z.string().nullable()).optional(),
 	userIds: z.array(z.string()).optional(),
+	billingSource: z.enum(["chatgpt_plan", "api"]).optional(),
 	minCostMicroUsd: z.number().int().min(0).optional(),
 	maxCostMicroUsd: z.number().int().min(0).optional(),
 	minLatencyMs: z.number().int().min(0).optional(),
@@ -48,6 +53,16 @@ const inputSchema = z.object({
 	cursor: z.string().optional(),
 	limit: z.number().int().min(1).max(100).optional(),
 });
+
+/** Adds what the ChatGPT plan rows would have cost on API billing (estimate). */
+async function withPlanApiEstimate(result: AiUsageActivityResult) {
+	const { planUsageByModel, ...rest } = result;
+	return {
+		...rest,
+		chatGptPlanApiEstimate:
+			await estimateChatGptPlanApiCost(planUsageByModel),
+	};
+}
 
 export const listAiActivity = tenantProtectedProcedure
 	// Visibility-only — no billing permission required. Org access is
@@ -75,6 +90,7 @@ export const listAiActivity = tenantProtectedProcedure
 				providerModelIds,
 				projectIds,
 				userIds,
+				billingSource,
 				minCostMicroUsd,
 				maxCostMicroUsd,
 				minLatencyMs,
@@ -107,6 +123,7 @@ export const listAiActivity = tenantProtectedProcedure
 				status,
 				providerModelIds,
 				projectIds,
+				billingSource,
 				minCostMicroUsd,
 				maxCostMicroUsd,
 				minLatencyMs,
@@ -127,16 +144,20 @@ export const listAiActivity = tenantProtectedProcedure
 					},
 				);
 
-				return await listAiUsageActivity({
-					organizationId,
-					filterUserIds: userIds,
-					...sharedArgs,
-				});
+				return withPlanApiEstimate(
+					await listAiUsageActivity({
+						organizationId,
+						filterUserIds: userIds,
+						...sharedArgs,
+					}),
+				);
 			}
 
-			return await listAiUsageActivity({
-				userId: user.id,
-				...sharedArgs,
-			});
+			return withPlanApiEstimate(
+				await listAiUsageActivity({
+					userId: user.id,
+					...sharedArgs,
+				}),
+			);
 		},
 	);

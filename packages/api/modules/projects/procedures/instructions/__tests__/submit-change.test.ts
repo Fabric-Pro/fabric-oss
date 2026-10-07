@@ -96,6 +96,13 @@ vi.mock("../direct-commit-workflow", () => ({
 	startDirectCommitWorkflow: (...a: unknown[]) =>
 		m.startDirectCommitWorkflow(...a),
 }));
+vi.mock("../submit-git-intent", () => ({
+	submitGitIntentChange: vi.fn(() => {
+		throw new Error(
+			"An uploaded-snapshot change cannot enter Git admission.",
+		);
+	}),
+}));
 vi.mock("../proposal-authorization", () => ({
 	assertInstructionDeriveAccess: (...a: unknown[]) =>
 		m.assertInstructionDeriveAccess(...a),

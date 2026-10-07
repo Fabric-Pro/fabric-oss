@@ -70,7 +70,7 @@ export const finalizeSnapshotProcedure = tenantProtectedProcedure
 			input.projectId,
 			organizationId,
 		);
-		if (!snapshot) {
+		if (!snapshot || snapshot.contentKind !== "FULL_SNAPSHOT") {
 			throw new ORPCError("NOT_FOUND", { message: "Upload not found" });
 		}
 		await assertInstructionSnapshotMutationAccess({

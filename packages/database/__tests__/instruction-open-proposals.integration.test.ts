@@ -176,7 +176,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					techStack: [],
 					features: [],
 					tags: [],
-					instructionSettings: { sourceOfTruth: "REPOSITORY" },
+					instructionSettings: { sourceOfTruth: "UPLOAD" },
 				},
 			});
 			projectId = project.id;
@@ -315,6 +315,14 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				where: { id: { in: [USER_ID, OTHER_USER_ID] } },
 			});
 			await db.$disconnect();
+		});
+
+		beforeAll(async () => {
+			// Legacy proposals existed before this project switched to direct Git.
+			await db.project.update({
+				where: { id: projectId },
+				data: { instructionSettings: { sourceOfTruth: "REPOSITORY" } },
+			});
 		});
 
 		const list = (over: { userId?: string; limit?: number } = {}) =>

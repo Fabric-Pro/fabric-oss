@@ -81,12 +81,19 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 	);
 }
 
-function renderDialog({ canEdit = true }: { canEdit?: boolean } = {}) {
+function renderDialog({
+	canEdit = true,
+	repositoryMode = false,
+}: {
+	canEdit?: boolean;
+	repositoryMode?: boolean;
+} = {}) {
 	return render(
 		<InstructionsSettingsDialog
 			projectId="p"
 			open
 			canEdit={canEdit}
+			repositoryMode={repositoryMode}
 			onOpenChange={() => undefined}
 		/>,
 		{ wrapper: TestQueryProvider },
@@ -122,6 +129,16 @@ describe("InstructionsSettingsDialog", () => {
 		await waitFor(() => expect(updateCalls).toHaveLength(1));
 		// `null`, not `[]`: "no override", the same thing Reset writes.
 		expect(updateCalls[0]).toEqual({ projectId: "p", ignoreGlobs: null });
+	});
+
+	it("describes the rules for repository mode and shows a visible label on the globs", async () => {
+		renderDialog({ repositoryMode: true });
+		const textarea = await screen.findByLabelText("textareaLabel");
+		expect(screen.getByText("descriptionRepository")).toBeInTheDocument();
+		expect(screen.queryByText("description")).not.toBeInTheDocument();
+		const label = screen.getByText("textareaLabel");
+		expect(label.tagName).toBe("LABEL");
+		expect(label).toHaveAttribute("for", textarea.id);
 	});
 
 	it("seeds from the project's own override and saves the edited list", async () => {

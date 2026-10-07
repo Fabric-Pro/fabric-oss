@@ -7,6 +7,7 @@ import {
 } from "../../../../orpc/procedures";
 import { MAX_CHANGES } from "./change-set";
 import { assertRepositoryWritable } from "./read-only-guard";
+import { instructionChangeBaseSchema } from "./change-base";
 import { submitInstructionChange } from "./submit-change";
 
 /**
@@ -62,44 +63,57 @@ export const commitChangeProcedure = tenantProtectedProcedure
 		summary: "Commit a change to a repository-backed project's branch",
 	})
 	.input(
-		z.object({
-			projectId: z.string(),
-			// Accepted for shape parity with the sibling procedures and
-			// ignored: the project supplies the tenant.
-			organizationId: z.string().nullable().optional(),
-			baseSnapshotId: z.string().min(1).max(128),
-			message: z.string().min(1).max(10_000),
-			changes: z
-				.array(
-					z.discriminatedUnion("op", [
-						z.object({
-							op: z.literal("put"),
-							path: z.string().min(1).max(4096),
-							content: z.string(),
-							encoding: z.enum(["utf8", "base64"]).optional(),
-						}),
-						z.object({
-							op: z.literal("delete"),
-							path: z.string().min(1).max(4096),
-						}),
-					]),
-				)
-				.min(1)
-				.max(MAX_CHANGES),
-		}),
+		z
+			.object({
+				projectId: z.string(),
+				// Accepted for shape parity with the sibling procedures and
+				// ignored: the project supplies the tenant.
+				organizationId: z.string().nullable().optional(),
+				message: z.string().min(1).max(10_000),
+				changes: z
+					.array(
+						z.discriminatedUnion("op", [
+							z.object({
+								op: z.literal("put"),
+								path: z.string().min(1).max(4096),
+								content: z.string(),
+								encoding: z.enum(["utf8", "base64"]).optional(),
+							}),
+							z.object({
+								op: z.literal("delete"),
+								path: z.string().min(1).max(4096),
+							}),
+						]),
+					)
+					.min(1)
+					.max(MAX_CHANGES),
+			})
+			.and(instructionChangeBaseSchema),
 	)
 	.handler(async ({ input, context }) => {
 		await assertRepositoryWritable(input.projectId);
 		const result = await submitInstructionChange({
 			userId: context.user.id,
 			projectId: input.projectId,
-			baseSnapshotId: input.baseSnapshotId,
+			...(input.nativeBase
+				? { nativeBase: input.nativeBase }
+				: { baseSnapshotId: input.baseSnapshotId }),
 			changes: input.changes,
 			mode: "commit",
 			message: input.message,
 			audit: context,
 			via: "orpc",
 		});
+		if ("nativeBase" in result) {
+			return {
+				kind: "native" as const,
+				operationId: result.snapshotId,
+				nativeBase: result.nativeBase,
+				putCount: result.putCount,
+				deleteCount: result.deleteCount,
+				status: result.status,
+			};
+		}
 		return {
 			snapshotId: result.snapshotId,
 			version: result.version,

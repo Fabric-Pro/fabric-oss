@@ -12,10 +12,22 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: async () => ({
+		availability: "UPLOAD",
+		readState: "DIRECT",
+	}),
+}));
+vi.mock("@repo/api/lib/effective-project-permissions", () => ({
+	resolveEffectiveProjectPermissions: async () => ({
+		permissions: ["instruction:read"],
+	}),
+}));
+
 const mocks = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
 	getProjectSummaryById: vi.fn(),
-	getPublishedInstructionSummariesForProjects: vi.fn(),
+	getInstructionSummariesForProjects: vi.fn(),
 	getStoryById: vi.fn(),
 	getDocumentById: vi.fn(),
 	getContextById: vi.fn(),
@@ -27,8 +39,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getProjectSummaryById: mocks.getProjectSummaryById,
-	getPublishedInstructionSummariesForProjects:
-		mocks.getPublishedInstructionSummariesForProjects,
+	getInstructionSummariesForProjects:
+		mocks.getInstructionSummariesForProjects,
 	getStoryById: mocks.getStoryById,
 	getDocumentById: mocks.getDocumentById,
 	getContextById: mocks.getContextById,
@@ -42,6 +54,7 @@ vi.mock("@repo/database", () => ({
 	readProjectContextBodyPage: vi.fn(),
 	hasPermission: () => true,
 	Permissions: {
+		INSTRUCTION_READ: "instruction:read",
 		PROJECT_UPDATE: "project:update",
 		STORY_UPDATE: "story:update",
 		CONTEXT_CREATE: "context:create",
@@ -101,9 +114,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getProjectAccessContext.mockResolvedValue({ organizationId: ORG });
 	mocks.getProjectSummaryById.mockResolvedValue(PROJECT_SUMMARY);
-	mocks.getPublishedInstructionSummariesForProjects.mockResolvedValue(
-		new Map(),
-	);
+	mocks.getInstructionSummariesForProjects.mockResolvedValue(new Map());
 	mocks.getStoryById.mockResolvedValue(null);
 	mocks.listProjects.mockResolvedValue({
 		projects: [],

@@ -12,10 +12,11 @@
  * So these tests run the real resolver, the real middleware and the real
  * `generateText`/`streamText` against a mock provider model, and count the
  * writes at the `@repo/database` boundary. Aggregate mode is pinned too: its
- * caller records one row for a whole turn, so a wrapped model there would
- * count every step twice.
+ * caller records one row for a whole turn, so a usage-logged model there
+ * would count every step twice.
  */
 
+import { isDispatchGuardedModel } from "@repo/utils/dispatch-guard";
 import { generateText, streamText } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -322,14 +323,18 @@ describe("getAIModelWithMetadata — per-call usage logging (default)", () => {
 });
 
 describe("getAIModelWithMetadata — aggregate usage logging", () => {
-	it("returns the provider model unwrapped, so its calls write no row", async () => {
+	it("returns the provider model without the usage logger, so its calls write no row", async () => {
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT", usageLogging: "aggregate" },
 			CONTEXT,
 		);
 
-		expect(resolved.model).toBe(model);
+		// Wrapped only in the dispatch guard (a pass-through with no guard
+		// active; see dispatch-guard-middleware.test.ts), never in the usage
+		// logger: the call reaches the provider model and writes no row.
+		expect(isDispatchGuardedModel(resolved.model)).toBe(true);
 		await generateText({ model: resolved.model, prompt: "Hi" });
+		expect(model.doGenerateCalls).toHaveLength(1);
 		expect(logAiUsageAsyncMock).not.toHaveBeenCalled();
 	});
 });

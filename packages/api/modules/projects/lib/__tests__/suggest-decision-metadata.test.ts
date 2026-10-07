@@ -90,4 +90,28 @@ describe("suggestDecisionMetadata", () => {
 		mocks.generateObject.mockRejectedValue(new Error("boom"));
 		await expect(suggestDecisionMetadata(baseInput)).resolves.toBeNull();
 	});
+
+	// Fizzy #2939: a refusal from the member's own ChatGPT plan is not "no
+	// suggestion" — the person must learn to wait or reconnect.
+	it("passes on a ChatGPT plan that needs reconnecting instead of returning null", async () => {
+		const { ChatGptPlanAuthError } = await import(
+			"@repo/ai/lib/chatgpt-plan/oauth"
+		);
+		const refusal = new ChatGptPlanAuthError(
+			"Reconnect",
+			"needs_reconnect",
+			true,
+		);
+		mocks.getAIModelWithMetadata.mockRejectedValue(refusal);
+		await expect(suggestDecisionMetadata(baseInput)).rejects.toBe(refusal);
+	});
+
+	it("passes on a spent ChatGPT plan instead of returning null", async () => {
+		const { SubscriptionPlanExhaustedError } = await import(
+			"@repo/agent-types/chatgpt-plan-fetch"
+		);
+		const refusal = new SubscriptionPlanExhaustedError("Spent", null);
+		mocks.generateObject.mockRejectedValue(refusal);
+		await expect(suggestDecisionMetadata(baseInput)).rejects.toBe(refusal);
+	});
 });

@@ -208,6 +208,17 @@ vi.mock("../client", () => ({
 const { listOAuthConnections, revokeOAuthConnection, verifyOAuthAccessToken } =
 	await import("./oauth-access-token");
 
+const RESOURCE = {
+	appUrl: "https://app.example.com",
+	audience: "api" as const,
+};
+const MCP_RESOURCE = { ...RESOURCE, audience: "mcp" as const };
+const ALL_RESOURCES = [
+	`${RESOURCE.appUrl}/api/mcp-gateway`,
+	`${RESOURCE.appUrl}/api/mcp-gateway/`,
+	`${RESOURCE.appUrl}/api/v1`,
+];
+
 const NOW = new Date("2026-10-02T12:00:00Z");
 const TOKEN = "secret-token-value";
 const PRESENTED = `${OAUTH_ACCESS_TOKEN_PREFIX}${TOKEN}`;
@@ -222,6 +233,8 @@ beforeEach(() => {
 			referenceId: "org-example-alpha",
 			scopes: ["mcp:read", "instructions:read"],
 			expiresAt: new Date(NOW.getTime() + 60_000),
+			confirmation: null,
+			resources: [...ALL_RESOURCES],
 		},
 	];
 	rows.refreshTokens = [
@@ -278,8 +291,78 @@ beforeEach(() => {
 });
 
 describe("verifying a presented access token", () => {
+	it.each(
+		[
+			undefined,
+			null,
+			[],
+			"https://app.example.com/api/v1",
+			[null],
+			[42],
+			[""],
+			["not-a-uri"],
+			["https://other.example.com/api/v1"],
+			[`${RESOURCE.appUrl}/api/v1`, "not-a-uri"],
+			[`${RESOURCE.appUrl}/api/v1`, "https://other.example.com/api/v1"],
+			[`${RESOURCE.appUrl}/api/v1#fragment`],
+			[`${RESOURCE.appUrl}/api/v1?query=1`],
+			[`${RESOURCE.appUrl}/api/v1/`],
+		].map((resources) => ({ resources })),
+	)(
+		"refuses empty or malformed resource metadata %j",
+		async ({ resources }) => {
+			rows.accessTokens[0].resources = resources;
+			expect(
+				await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW),
+			).toEqual({ valid: false, reason: "unknown" });
+		},
+	);
+
+	it("honors an explicit API resource even for an organization reference", async () => {
+		rows.accessTokens[0].resources = [`${RESOURCE.appUrl}/api/v1`];
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).valid,
+		).toBe(true);
+		expect(
+			await verifyOAuthAccessToken(PRESENTED, MCP_RESOURCE, NOW),
+		).toEqual({ valid: false, reason: "unknown" });
+	});
+	it.each(["/api/mcp-gateway", "/api/mcp-gateway/"])(
+		"honors the MCP resource spelling %s without admitting the API",
+		async (path) => {
+			rows.accessTokens[0].resources = [`${RESOURCE.appUrl}${path}`];
+			expect(
+				(await verifyOAuthAccessToken(PRESENTED, MCP_RESOURCE, NOW))
+					.valid,
+			).toBe(true);
+			expect(
+				await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW),
+			).toEqual({ valid: false, reason: "unknown" });
+		},
+	);
+	it("preserves both surfaces for mapped legacy organization grants", async () => {
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).valid,
+		).toBe(true);
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, MCP_RESOURCE, NOW)).valid,
+		).toBe(true);
+	});
+
+	it.each([{ jkt: "example-key" }, {}, { jkt: "" }, "malformed", undefined])(
+		"refuses unsupported token confirmation metadata %j",
+		async (confirmation) => {
+			rows.accessTokens[0].confirmation = confirmation;
+			expect(
+				await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW),
+			).toEqual({
+				valid: false,
+				reason: "unknown",
+			});
+		},
+	);
 	it("returns the owner, the organization the token is bound to and its scopes", async () => {
-		const result = await verifyOAuthAccessToken(PRESENTED, NOW);
+		const result = await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW);
 
 		expect(result).toEqual({
 			valid: true,
@@ -298,16 +381,21 @@ describe("verifying a presented access token", () => {
 	});
 
 	it("looks the token up by its digest and never by the token", async () => {
-		await verifyOAuthAccessToken(PRESENTED, NOW);
+		await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW);
 
 		expect(rows.findUniqueWhere).toEqual([
 			{ token: hashOAuthToken(TOKEN) },
 		]);
+		expect(tables.oauthAccessToken.findUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({ resources: true }),
+			}),
+		);
 	});
 
 	it("does not touch the database for a value that is not an access token", async () => {
 		for (const other of ["fab_key", "org_key", "garbage", ""]) {
-			expect(await verifyOAuthAccessToken(other, NOW)).toEqual({
+			expect(await verifyOAuthAccessToken(other, RESOURCE, NOW)).toEqual({
 				valid: false,
 				reason: "unknown",
 			});
@@ -319,6 +407,7 @@ describe("verifying a presented access token", () => {
 		expect(
 			await verifyOAuthAccessToken(
 				`${OAUTH_ACCESS_TOKEN_PREFIX}other`,
+				RESOURCE,
 				NOW,
 			),
 		).toEqual({
@@ -330,16 +419,24 @@ describe("verifying a presented access token", () => {
 	it("refuses an expired token", async () => {
 		rows.accessTokens[0].expiresAt = new Date(NOW.getTime() - 1);
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "expired",
+		});
+	});
+
+	it("refuses an access token marked revoked by the provider", async () => {
+		rows.accessTokens[0].revoked = NOW;
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
+			valid: false,
+			reason: "revoked",
 		});
 	});
 
 	it("refuses a token whose client was disabled", async () => {
 		rows.clients[0].disabled = true;
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "client_disabled",
 		});
@@ -348,7 +445,7 @@ describe("verifying a presented access token", () => {
 	it("refuses a token once its owner is no longer a member of the bound organization", async () => {
 		rows.members = [];
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
@@ -357,19 +454,21 @@ describe("verifying a presented access token", () => {
 	it("refuses a token for a user who is banned, until the ban lapses", async () => {
 		rows.users[0].banned = true;
 		rows.users[0].banExpires = null;
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "user_banned",
 		});
 
 		rows.users[0].banExpires = new Date(NOW.getTime() - 1000);
-		expect((await verifyOAuthAccessToken(PRESENTED, NOW)).valid).toBe(true);
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).valid,
+		).toBe(true);
 	});
 
 	it("refuses a token that is bound to no organization", async () => {
 		rows.accessTokens[0].referenceId = null;
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "no_organization",
 		});
@@ -378,7 +477,7 @@ describe("verifying a presented access token", () => {
 	it("refuses a token whose owner no longer exists", async () => {
 		rows.users = [];
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "unknown",
 		});
@@ -407,14 +506,16 @@ describe("revoking a connected agent", () => {
 	});
 
 	it("makes the revoked token fail at the next request", async () => {
-		expect((await verifyOAuthAccessToken(PRESENTED, NOW)).valid).toBe(true);
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).valid,
+		).toBe(true);
 
 		await revokeOAuthConnection({
 			userId: "user-1",
 			consentId: "consent-1",
 		});
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "unknown",
 		});
@@ -567,6 +668,12 @@ describe("listing connected agents", () => {
 			expect(await listOAuthConnections("user-1", NOW)).toEqual([]);
 		});
 
+		it("when its only access token was marked revoked", async () => {
+			rows.accessTokens[0].revoked = NOW;
+			rows.refreshTokens = [];
+			expect(await listOAuthConnections("user-1", NOW)).toEqual([]);
+		});
+
 		it("when its refresh token was spent or has expired", async () => {
 			rows.accessTokens = [];
 			rows.refreshTokens = [
@@ -621,7 +728,7 @@ describe("verifying a project grant", () => {
 	});
 
 	it("returns the project, its audience and the organization hosting it", async () => {
-		const result = await verifyOAuthAccessToken(PRESENTED, NOW);
+		const result = await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW);
 
 		expect(result).toMatchObject({
 			valid: true,
@@ -635,7 +742,9 @@ describe("verifying a project grant", () => {
 	it("carries the API audience of an API grant", async () => {
 		rows.accessTokens[0].referenceId = "project:api:project-example-one";
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toMatchObject({
+		expect(
+			await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW),
+		).toMatchObject({
 			valid: true,
 			projectId: "project-example-one",
 			audience: "api",
@@ -649,13 +758,15 @@ describe("verifying a project grant", () => {
 			{ projectId: "project-example-one", userId: "user-1" },
 		];
 
-		expect((await verifyOAuthAccessToken(PRESENTED, NOW)).valid).toBe(true);
+		expect(
+			(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).valid,
+		).toBe(true);
 	});
 
 	it("refuses once its owner can no longer read the project", async () => {
 		rows.projects[0].userId = "someone-else";
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
@@ -664,7 +775,7 @@ describe("verifying a project grant", () => {
 	it("refuses once the organization membership behind the project access is gone", async () => {
 		rows.members = [];
 
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
@@ -672,7 +783,7 @@ describe("verifying a project grant", () => {
 
 	it("refuses a deleted project, a missing project and a deleted organization alike", async () => {
 		rows.projects[0].deletedAt = NOW;
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
@@ -682,13 +793,13 @@ describe("verifying a project grant", () => {
 			name: "Example Alpha",
 			deletedAt: NOW,
 		};
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
 
 		rows.projects = [];
-		expect(await verifyOAuthAccessToken(PRESENTED, NOW)).toEqual({
+		expect(await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW)).toEqual({
 			valid: false,
 			reason: "not_a_member",
 		});
@@ -704,7 +815,7 @@ describe("verifying a project grant", () => {
 			rows.accessTokens[0].referenceId = referenceId;
 
 			expect(
-				await verifyOAuthAccessToken(PRESENTED, NOW),
+				await verifyOAuthAccessToken(PRESENTED, RESOURCE, NOW),
 				referenceId,
 			).toEqual({ valid: false, reason: "no_organization" });
 		}

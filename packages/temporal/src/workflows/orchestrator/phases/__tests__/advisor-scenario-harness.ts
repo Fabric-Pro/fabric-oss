@@ -214,10 +214,16 @@ export interface TurnOptions {
 	isCancelled?: () => boolean;
 	/** The attached project; defaults to "project-1", null for none. */
 	projectId?: string | null;
+	/** Attached workspaces (the workspace_rag tools need one). */
+	workspaceIds?: string[];
 	/** Images the user attached to the message. */
 	attachedImageUrls?: string[];
 	/** `state.preloadedResources`, as initialization would have set it. */
 	preloadedResources?: Record<string, unknown>;
+	/** Extra workflow input fields, such as the Advisor's opt-in. */
+	input?: Record<string, unknown>;
+	/** Autonomy level for the risk gate; defaults to the loop's own. */
+	autonomyLevel?: "CONSERVATIVE" | "BALANCED" | "AUTONOMOUS";
 	/** The turn contract options the workflow passes (absent = legacy run). */
 	turn?: IterativeTurnOptions;
 }
@@ -273,9 +279,14 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 				? "project-1"
 				: (options.projectId ?? undefined),
 		attachedImageUrls: options.attachedImageUrls,
+		workspaceIds: options.workspaceIds,
 		enabledMcpConfigIds: options.enabledMcpConfigIds,
 		enabledFabricToolIds: options.enabledFabricToolIds,
 		history: options.history ?? [],
+		...(options.autonomyLevel
+			? { autonomyLevel: options.autonomyLevel }
+			: {}),
+		...options.input,
 	};
 	const state = createInitialState(input as never);
 	state.enrichedMessage = options.message;

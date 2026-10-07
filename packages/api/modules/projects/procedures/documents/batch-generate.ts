@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/client";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -164,6 +165,7 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 		const aiToken = await issueAIToken({
 			userId: user.id,
 			organizationId: project.organizationId || undefined,
+			impersonated: isAiImpersonatedRequest(),
 			source: "batch-document-generation",
 			// Use longer expiry for batch operations (30 minutes)
 			expirySeconds: 1800,

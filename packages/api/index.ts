@@ -279,7 +279,7 @@ export const app = new Hono()
 	})
 	// OpenAPI schema endpoint
 	.get("/openapi", async (c) => {
-		const authSchema = await auth.api.generateOpenAPISchema();
+		const authSchema = await auth.api.generateOpenAPISchema({});
 
 		const appSchema = await new OpenAPIGenerator({
 			schemaConverters: [new ZodToJsonSchemaConverter()],

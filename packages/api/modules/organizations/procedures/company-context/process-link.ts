@@ -90,7 +90,12 @@ const processLinkInput = z
 			.min(MIN_MAX_PAGES)
 			.max(MAX_MAX_PAGES)
 			.default(DEFAULT_MAX_PAGES),
-		refreshMode: z.enum(URL_REFRESH_MODE_VALUES).default("ONCE"),
+		// No LIVE: nothing re-fetches a company website when a Proposal or
+		// Business Case retrieves it, so LIVE would behave as ONCE.
+		refreshMode: z
+			.enum(URL_REFRESH_MODE_VALUES)
+			.exclude(["LIVE"])
+			.default("ONCE"),
 		sourceType: z
 			.string()
 			.trim()

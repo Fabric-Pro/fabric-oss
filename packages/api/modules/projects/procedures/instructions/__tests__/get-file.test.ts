@@ -64,6 +64,7 @@ describe("projects.instructions.getFile", () => {
 	it("returns a paged text body and never a body for a non-READY snapshot", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			status: "READY",
 			proposalStatus: null,
 		});
@@ -102,6 +103,7 @@ describe("projects.instructions.getFile", () => {
 
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			status: "VALIDATING",
 			proposalStatus: null,
 		});
@@ -121,6 +123,7 @@ describe("projects.instructions.getFile", () => {
 	it("returns a signed url instead of a body for binaries", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "s",
+			contentKind: "FULL_SNAPSHOT",
 			status: "READY",
 			proposalStatus: null,
 		});
@@ -158,6 +161,7 @@ describe("projects.instructions.getFile", () => {
 		async (proposalStatus) => {
 			m.getInstructionSnapshot.mockResolvedValue({
 				id: "s",
+				contentKind: "FULL_SNAPSHOT",
 				status: "READY",
 				proposalStatus,
 			});
