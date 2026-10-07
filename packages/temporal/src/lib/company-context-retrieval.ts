@@ -8,57 +8,31 @@
  * `retrieveProjectContexts`: a short list of context strings, each labeled as
  * vendor material, that the activity appends after the project entries.
  *
- * Who gets it, and whose:
+ * What is generation's own, and stays here:
+ * - Only Proposal and Business Case retrieve it; every other document type
+ *   is unchanged.
  * - The organization is the project row's, never the workflow input's. The
  *   project-setup path passes the session's organization, which for a user in
  *   two organizations can be a different tenant than the project's.
- * - The `COMPANY_CONTEXT` gate is read for that organization.
- * - The author must be a member of that organization. A project guest is not,
- *   even when they are a member elsewhere: company material is the host's,
- *   and the project invitation does not extend to it.
- *
- * What it finds:
  * - The query is the document type's vendor-side intent plus the project's
  *   name, description and goals, so the material is chosen for the project
  *   being proposed, not only for the document type.
- * - It is embedded with the organization's embedding model, separately from
- *   the project query, and only vectors of that model, from sources that are
- *   ready right now (`companyContextReadyWhere`), can answer it.
- * - A crawled page's hit counts only while its page row exists and holds
- *   that model's vectors: a page's vectors can outlive its row when the
- *   prune that removed the row could not remove them.
- * - A model whose dimension no collection can hold skips the search.
- * - Hits group by source, best first; at most four sources, three chunks each.
+ * - The threshold is the project path's, from the project's RAG settings.
  *
- * What it returns: strings starting with `VENDOR_CONTEXT_MARKER`, then the
- * source label, type and guidance, then the matched text — neutralized here,
- * because one of the four render sites (the agent's own prompt builder) does
- * not neutralize what it is given.
+ * Everything else — the gate and membership checks (a project guest is not a
+ * member, so gets none), the organization's embedding model, the ready-source
+ * filter, the live-page check, grouping, the vendor marker, source guidance
+ * and neutralization — is the shared search in `company-context-search.ts`.
  *
- * It never throws, and never takes longer than `COMPANY_RETRIEVAL_TIMEOUT_MS`.
- * A failure or a timeout is logged once and yields no company entries, so the
- * author keeps their project context whatever happens here.
+ * It never throws, and never takes longer than `COMPANY_RETRIEVAL_TIMEOUT_MS`. A failure or a timeout is logged once and
+ * yields no company entries, so the author keeps their project context
+ * whatever happens here.
  */
 
-import { VENDOR_CONTEXT_MARKER } from "@repo/agent-types";
-import {
-	companyContextReadyWhere,
-	db,
-	getProjectRagSettings,
-	isFeatureEnabled,
-	isOrganizationMember,
-} from "@repo/database";
+import { db, getProjectRagSettings } from "@repo/database";
 import { logger } from "@repo/logs";
-import {
-	COMPANY_EMBEDDING_RESOLUTION,
-	type CompanyContextSearchHit,
-	companyEmbeddingIdentity,
-	generateEmbedding,
-	resolveCompanyEmbeddingModel,
-	searchCompanyContexts,
-} from "@repo/rag";
-import { neutralizeAiChatAttachmentBody } from "@repo/utils/ai-chat-attachment";
 import { heartbeat } from "@temporalio/activity";
+import { searchCompanyContext } from "./company-context-search";
 
 /**
  * The vendor-side question each document type asks of the company context.
@@ -71,12 +45,6 @@ const COMPANY_CONTEXT_INTENTS: Record<string, string> = {
 		"What evidence from our company's past work supports a decision about a project like this one: comparable projects and their measured outcomes, delivery track record, capabilities, reusable assets, typical effort, and the risks we have seen?",
 };
 
-/** Company entries per generation, after grouping hits by source. */
-const MAX_COMPANY_ENTRIES = 4;
-/** Chunks of one source kept in its entry. */
-const MAX_CHUNKS_PER_ENTRY = 3;
-/** Hits requested from the search: enough to fill four sources. */
-const COMPANY_SEARCH_TOP_K = MAX_COMPANY_ENTRIES * MAX_CHUNKS_PER_ENTRY;
 /** Each project field's share of the query; keeps it inside one embedding input. */
 const MAX_PROFILE_FIELD_CHARS = 2000;
 
@@ -92,25 +60,11 @@ const MAX_PROFILE_FIELD_CHARS = 2000;
  */
 export const COMPANY_RETRIEVAL_TIMEOUT_MS = 20_000;
 
-/** What the deadline race resolves with when the company half ran out of time. */
+/** What the reads' race resolves with when the deadline came first. */
 const TIMED_OUT = Symbol("company-context-retrieval-timed-out");
 
-const READY_SOURCE_SELECT = {
-	id: true,
-	sourceTitle: true,
-	originalFilename: true,
-	sourceUrl: true,
-	sourceType: true,
-	aiInstructions: true,
-} as const;
-
-interface ReadySource {
-	id: string;
-	sourceTitle: string | null;
-	originalFilename: string | null;
-	sourceUrl: string | null;
-	sourceType: string | null;
-	aiInstructions: string | null;
+function heartbeatCompanyRetrieval(): void {
+	heartbeat({ phase: "retrieving_company_context" });
 }
 
 interface ProjectProfile {
@@ -141,180 +95,14 @@ function buildCompanyContextQuery(
 	return `${intent}\n\n${profile}`;
 }
 
-function sourceLabel(source: ReadySource): string {
-	return (
-		source.sourceTitle ||
-		source.originalFilename ||
-		source.sourceUrl ||
-		"Company context"
-	);
-}
-
-function formatVendorEntry(source: ReadySource, chunks: string[]): string {
-	const header = [
-		VENDOR_CONTEXT_MARKER,
-		`[Source: ${sourceLabel(source)}]`,
-		source.sourceType ? `[Source type: ${source.sourceType}]` : null,
-		source.aiInstructions
-			? `[Source guidance: ${source.aiInstructions}]`
-			: null,
-	]
-		.filter((line): line is string => line !== null)
-		.join("\n");
-	return neutralizeAiChatAttachmentBody(
-		`${header}\n${chunks.join("\n\n[...]\n\n")}`,
-	);
-}
-
 /**
- * Drop the hits of crawled pages whose row is gone, or no longer holds
- * `embeddingModel`'s vectors, under a ready source. One query, scoped to the
- * organization and its ready sources, for the pages among the hits; a hit on
- * a source's own text needs none.
+ * The project row, which names the organization and gives the query its
+ * profile, and its RAG settings, which give the threshold. Read beside each
+ * other: a gate that turns out to be off costs the settings read only.
  */
-async function keepLivePageHits(
-	hits: readonly CompanyContextSearchHit[],
-	scope: {
-		organizationId: string;
-		sourceIds: readonly string[];
-		embeddingModel: string;
-	},
-): Promise<CompanyContextSearchHit[]> {
-	const isPageHit = (hit: CompanyContextSearchHit) =>
-		Boolean(hit.parentContextId);
-	const pageIds = [
-		...new Set(hits.filter(isPageHit).map((hit) => hit.contextId)),
-	];
-	if (pageIds.length === 0) {
-		return [...hits];
-	}
-	const livePages = await db.companyContextUrlPage.findMany({
-		where: {
-			organizationId: scope.organizationId,
-			id: { in: pageIds },
-			parentSourceId: { in: [...scope.sourceIds] },
-			embeddedAt: { not: null },
-			embeddingModel: scope.embeddingModel,
-		},
-		select: { id: true, parentSourceId: true },
-	});
-	const parentOf = new Map(
-		livePages.map((page) => [page.id, page.parentSourceId]),
-	);
-	return hits.filter(
-		(hit) =>
-			!isPageHit(hit) || parentOf.get(hit.contextId) === hit.sourceId,
-	);
-}
-
-/**
- * Group hits by source in score order, keep only sources that are still
- * ready, and cap the result. Hits arrive best first, so the first hit of a
- * source fixes its rank.
- */
-function selectVendorEntries(
-	hits: readonly CompanyContextSearchHit[],
-	readySources: ReadonlyMap<string, ReadySource>,
-): string[] {
-	const selected = new Map<
-		string,
-		{ source: ReadySource; chunks: string[] }
-	>();
-	for (const hit of hits) {
-		const source = readySources.get(hit.sourceId);
-		if (!source) {
-			continue;
-		}
-		const entry = selected.get(hit.sourceId);
-		if (entry) {
-			if (entry.chunks.length < MAX_CHUNKS_PER_ENTRY) {
-				entry.chunks.push(hit.content);
-			}
-		} else if (selected.size < MAX_COMPANY_ENTRIES) {
-			selected.set(hit.sourceId, { source, chunks: [hit.content] });
-		}
-	}
-	return [...selected.values()].map(({ source, chunks }) =>
-		formatVendorEntry(source, chunks),
-	);
-}
-
-/**
- * The company context entries for one generation run, or none. Never throws,
- * and gives up after `COMPANY_RETRIEVAL_TIMEOUT_MS`: a hung embedding call or
- * search must not hold, or fail, the activity the project entries ride in.
- */
-export async function retrieveCompanyContextEntries(input: {
-	projectId: string;
-	userId: string;
-	documentType: string;
-}): Promise<string[]> {
-	const { projectId } = input;
-	const documentType = input.documentType.toUpperCase();
-	const intent = COMPANY_CONTEXT_INTENTS[documentType];
-	if (!intent) {
-		return [];
-	}
-
-	try {
-		heartbeat({ phase: "retrieving_company_context" });
-	} catch {
-		// Not in an activity context (e.g. tests).
-	}
-
-	const controller = new AbortController();
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
-		timer = setTimeout(
-			() => resolve(TIMED_OUT),
-			COMPANY_RETRIEVAL_TIMEOUT_MS,
-		);
-	});
-	try {
-		const entries = await Promise.race([
-			findCompanyContextEntries(
-				{ ...input, documentType, intent },
-				controller.signal,
-			),
-			deadline,
-		]);
-		if (entries !== TIMED_OUT) {
-			return entries;
-		}
-		// Cancels the embedding call if that is where it hangs; whatever
-		// else is in flight finishes unobserved and is ignored.
-		controller.abort();
-		logger.warn(
-			"[CompanyContext] Company context retrieval timed out; continuing with project context only",
-			{
-				projectId,
-				documentType,
-				timeoutMs: COMPANY_RETRIEVAL_TIMEOUT_MS,
-			},
-		);
-		return [];
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-/**
- * The retrieval `retrieveCompanyContextEntries` bounds. Never throws; once
- * `signal` is aborted it stops at its next step and logs nothing, since the
- * caller already logged the timeout.
- */
-async function findCompanyContextEntries(
-	input: {
-		projectId: string;
-		userId: string;
-		documentType: string;
-		intent: string;
-	},
-	signal: AbortSignal,
-): Promise<string[]> {
-	const { projectId, userId, documentType, intent } = input;
-	try {
-		const project = await db.project.findUnique({
+function readProject(projectId: string) {
+	return Promise.all([
+		db.project.findUnique({
 			where: { id: projectId },
 			select: {
 				organizationId: true,
@@ -322,124 +110,51 @@ async function findCompanyContextEntries(
 				description: true,
 				goals: true,
 			},
-		});
-		const organizationId = project?.organizationId;
-		if (!project || !organizationId) {
-			return [];
-		}
+		}),
+		getProjectRagSettings(projectId),
+	]);
+}
 
-		if (!(await isFeatureEnabled("COMPANY_CONTEXT", organizationId))) {
-			return [];
-		}
-		if (!(await isOrganizationMember(userId, organizationId))) {
-			logger.info(
-				"[CompanyContext] Author is not a member of the project's organization; company context not retrieved",
-				{ projectId, organizationId },
-			);
-			return [];
-		}
+/**
+ * The company context entries for one generation run, or none. Never throws,
+ * and gives up `COMPANY_RETRIEVAL_TIMEOUT_MS` after it starts: a hung read,
+ * embedding call or search must not hold, or fail, the activity the project
+ * entries ride in.
+ */
+export async function retrieveCompanyContextEntries(input: {
+	projectId: string;
+	userId: string;
+	documentType: string;
+}): Promise<string[]> {
+	const { projectId, userId } = input;
+	const documentType = input.documentType.toUpperCase();
+	const intent = COMPANY_CONTEXT_INTENTS[documentType];
+	if (!intent) {
+		return [];
+	}
 
-		const model = await resolveCompanyEmbeddingModel({
-			organizationId,
-			userId,
-		});
-		if (!model.supported) {
-			logger.warn(
-				"[CompanyContext] Skipping company context: unsupported embedding model for the company context collection",
-				{
-					projectId,
-					organizationId,
-					embeddingModel: model.identity,
-					dimensions: model.dimensions,
-				},
-			);
-			return [];
-		}
+	// One deadline from the first heartbeat covers the whole company half:
+	// the reads below count against it, and the search gets what is left.
+	const startedAt = Date.now();
+	try {
+		heartbeatCompanyRetrieval();
+	} catch {
+		// Not in an activity context (e.g. tests).
+	}
 
-		const readyRows: ReadySource[] = await db.companyContextSource.findMany(
-			{
-				where: {
-					organizationId,
-					...companyContextReadyWhere(model.identity),
-				},
-				select: READY_SOURCE_SELECT,
-			},
-		);
-		if (readyRows.length === 0) {
-			return [];
-		}
-		const readySources = new Map(readyRows.map((row) => [row.id, row]));
-
-		// The project path's threshold, from the same settings.
-		const ragSettings = await getProjectRagSettings(projectId);
-		const query = buildCompanyContextQuery(intent, project);
-		if (signal.aborted) {
-			return [];
-		}
-		// Embedded with the organization's model, the one `model` names and
-		// the sources were written with — never the author's personal one.
-		const queryEmbedding = await generateEmbedding(
-			query,
-			{
-				userId,
-				organizationId,
-				projectId,
-				tags: ["company-context-retrieval"],
-				...COMPANY_EMBEDDING_RESOLUTION,
-			},
-			undefined,
-			signal,
-		);
-		// The call resolves the model again. Should the organization have
-		// switched models in between, the query vector lives in another
-		// embedding space than the ready sources': no search this run.
-		const queryModel = companyEmbeddingIdentity(queryEmbedding);
-		if (queryModel !== model.identity) {
-			logger.info(
-				"[CompanyContext] The organization's embedding model changed during retrieval; company context not retrieved this run",
-				{
-					projectId,
-					organizationId,
-					embeddingModel: model.identity,
-					queryModel,
-				},
-			);
-			return [];
-		}
-		if (signal.aborted) {
-			return [];
-		}
-		const { embedding } = queryEmbedding;
-
-		const hits = await searchCompanyContexts({
-			organizationId,
-			embeddingModel: model.identity,
-			queryEmbedding: embedding,
-			sourceIds: [...readySources.keys()],
-			topK: COMPANY_SEARCH_TOP_K,
-			minSimilarity: ragSettings.similarityThreshold ?? 0.5,
-		});
-
-		const liveHits = await keepLivePageHits(hits, {
-			organizationId,
-			sourceIds: [...readySources.keys()],
-			embeddingModel: model.identity,
-		});
-		const entries = selectVendorEntries(liveHits, readySources);
-		logger.info("[CompanyContext] Company context retrieved", {
-			projectId,
-			organizationId,
-			documentType,
-			readySourceCount: readyRows.length,
-			hitCount: hits.length,
-			goneHitCount: hits.length - liveHits.length,
-			entryCount: entries.length,
-		});
-		return entries;
+	let reads: Awaited<ReturnType<typeof readProject>> | typeof TIMED_OUT;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		reads = await Promise.race([
+			readProject(projectId),
+			new Promise<typeof TIMED_OUT>((resolve) => {
+				timer = setTimeout(
+					() => resolve(TIMED_OUT),
+					COMPANY_RETRIEVAL_TIMEOUT_MS,
+				);
+			}),
+		]);
 	} catch (error) {
-		if (signal.aborted) {
-			return [];
-		}
 		logger.warn(
 			"[CompanyContext] Company context retrieval failed; continuing with project context only",
 			{
@@ -449,5 +164,40 @@ async function findCompanyContextEntries(
 			},
 		);
 		return [];
+	} finally {
+		clearTimeout(timer);
 	}
+	if (reads === TIMED_OUT) {
+		// The reads in flight finish unobserved and are ignored.
+		logger.warn(
+			"[CompanyContext] Company context retrieval timed out; continuing with project context only",
+			{
+				projectId,
+				documentType,
+				timeoutMs: COMPANY_RETRIEVAL_TIMEOUT_MS,
+			},
+		);
+		return [];
+	}
+	const [project, ragSettings] = reads;
+	const organizationId = project?.organizationId;
+	if (!project || !organizationId) {
+		return [];
+	}
+
+	const { entries } = await searchCompanyContext({
+		organizationId,
+		userId,
+		query: buildCompanyContextQuery(intent, project),
+		// The project path's threshold, from the same settings.
+		minSimilarity: ragSettings.similarityThreshold ?? 0.5,
+		timeoutMs: Math.max(
+			COMPANY_RETRIEVAL_TIMEOUT_MS - (Date.now() - startedAt),
+			0,
+		),
+		heartbeat: heartbeatCompanyRetrieval,
+		projectId,
+		logContext: { projectId, documentType },
+	});
+	return entries.map((entry) => entry.text);
 }

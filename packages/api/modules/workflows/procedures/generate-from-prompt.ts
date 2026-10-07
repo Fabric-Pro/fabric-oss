@@ -17,6 +17,7 @@ import {
 // Anthropic-direct 4,096 truncation this guards against.
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requirePermission,
@@ -283,6 +284,7 @@ export const generateFromPromptProcedure = tenantProtectedProcedure
 					{ userId: user.id, organizationId },
 				);
 			} catch (error) {
+				rethrowChatGptPlanRefusal(error);
 				return {
 					success: false,
 					action: "replace" as const,
@@ -449,6 +451,7 @@ Respond with a JSON object only, no markdown or code fences:
 				explanation: parsedResponse.explanation,
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			console.error("[Generate Workflow] Error:", error);
 			return {
 				success: false,

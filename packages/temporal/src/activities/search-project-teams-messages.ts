@@ -25,6 +25,12 @@ import {
 	TEAMS_TOOL_LIMITS,
 } from "@repo/integrations/microsoft";
 import { subDays } from "date-fns";
+import {
+	rethrowIfTurnStopped,
+	settleAll,
+	startTurnHeartbeat,
+	type TurnScope,
+} from "./orchestrator/turn-dispatch";
 
 // Excerpt enriched with the routing IDs the agent needs for follow-ups
 // (get_full_message / list_message_replies require chatId OR teamId+channelId).
@@ -129,6 +135,15 @@ export interface SearchProjectTeamsMessagesInput {
 	organizationId?: string;
 	/** Maximum number of messages to return (default: 15) */
 	limit?: number;
+	/**
+	 * The chat turn this search serves. When set, the activity runs inside the
+	 * turn's dispatch guard (set by the worker's turn-dispatch interceptor):
+	 * the relevance extractor's model request is checked against the turn
+	 * record and aborted by a Stop, and a stop is rethrown rather than
+	 * reported as a failed search or a deterministic excerpt fallback.
+	 * Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 /**
@@ -194,6 +209,17 @@ export async function checkProjectHasTeamsIntegration(params: {
  * as INTEGRATION contexts.
  */
 export async function searchProjectTeamsMessages(
+	input: SearchProjectTeamsMessagesInput,
+): Promise<SearchProjectTeamsMessagesResult> {
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await runTeamsMessageSearch(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function runTeamsMessageSearch(
 	input: SearchProjectTeamsMessagesInput,
 ): Promise<SearchProjectTeamsMessagesResult> {
 	const {
@@ -369,7 +395,10 @@ export async function searchProjectTeamsMessages(
 		if (normalizedAlt) {
 			passPromises.push(runSearchPass(normalizedAlt));
 		}
-		const passes = await Promise.all(passPromises);
+		// settleAll, not Promise.all, here and for the extractor passes
+		// below: a failing pass must not let the activity return (and stop
+		// its heartbeat) while the other pass's request is still running.
+		const passes = await settleAll(passPromises);
 		const pass1Filtered = passes[0] ?? [];
 		const pass2Filtered = passes[1] ?? [];
 
@@ -385,7 +414,7 @@ export async function searchProjectTeamsMessages(
 		// Run the extractor per pass (different query) so each pass surfaces
 		// its own most-relevant subset, then dedupe by messageId keeping the
 		// higher relevance score.
-		const extractorPasses = await Promise.all([
+		const extractorPasses = await settleAll([
 			extractRelevantExcerpts({
 				rawMessages: toRawExtractable(pass1Filtered),
 				query,
@@ -458,6 +487,10 @@ export async function searchProjectTeamsMessages(
 			twoPass: !!normalizedAlt,
 		};
 	} catch (error) {
+		// In a chat turn a stop is not a failed search.
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 

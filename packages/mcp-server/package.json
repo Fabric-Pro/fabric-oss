@@ -9,10 +9,10 @@
 		".": "./index.ts"
 	},
 	"scripts": {
-		"build": "tsup",
-		"dev": "tsup --watch",
+		"build": "tsdown",
+		"dev": "tsdown --watch",
 		"clean": "rm -rf dist",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
 		"@upstash/ratelimit": "^2.0.7",
@@ -22,7 +22,7 @@
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
 		"@types/node": "^22.15.29",
-		"tsup": "^8.5.0",
+		"tsdown": "^0.23.0",
 		"typescript": "^5.9.3"
 	},
 	"keywords": [

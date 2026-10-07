@@ -134,7 +134,7 @@ export const ALL_AUDIO_CAPABLE_PROVIDERS: readonly AIProvider[] = [
 // ============================================================================
 
 export interface ProviderMetadata {
-	id: AIProvider;
+	id: ConfigurableAIProvider;
 	name: string;
 	displayName: string;
 	category: "gateway" | "direct" | "cloud";
@@ -160,10 +160,27 @@ export interface ProviderMetadata {
 }
 
 /**
- * Complete metadata for all AI providers.
+ * A provider a person or an organization can configure with a key.
+ * `OPENAI_CHATGPT_PLAN` is not one: it is a member's own ChatGPT plan,
+ * connected with `fabric connect chatgpt` and resolved per user, so it has no
+ * settings entry, no key and no base URL.
+ */
+export type ConfigurableAIProvider = Exclude<AIProvider, "OPENAI_CHATGPT_PLAN">;
+
+export function isConfigurableAIProvider(
+	provider: AIProvider,
+): provider is ConfigurableAIProvider {
+	return provider !== "OPENAI_CHATGPT_PLAN";
+}
+
+/**
+ * Complete metadata for all configurable AI providers.
  * This is the single source of truth for provider information.
  */
-export const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
+export const AI_PROVIDER_METADATA: Record<
+	ConfigurableAIProvider,
+	ProviderMetadata
+> = {
 	// AI Gateways
 	VERCEL_GATEWAY: {
 		id: "VERCEL_GATEWAY",
@@ -643,6 +660,9 @@ export function canProviderSupportAudio(provider: AIProvider): boolean {
  * Get the display name for a provider
  */
 export function getProviderDisplayName(provider: AIProvider): string {
+	if (!isConfigurableAIProvider(provider)) {
+		return "ChatGPT plan";
+	}
 	return (
 		AI_PROVIDER_METADATA[provider]?.displayName ??
 		provider.replace(/_/g, " ")
@@ -655,7 +675,9 @@ export function getProviderDisplayName(provider: AIProvider): string {
 export function getProviderMetadata(
 	provider: AIProvider,
 ): ProviderMetadata | undefined {
-	return AI_PROVIDER_METADATA[provider];
+	return isConfigurableAIProvider(provider)
+		? AI_PROVIDER_METADATA[provider]
+		: undefined;
 }
 
 /**

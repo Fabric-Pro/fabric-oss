@@ -25,6 +25,10 @@ import {
 	logModelUsageAsync,
 } from "@repo/ai";
 import { logger } from "@repo/logs";
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { createFabricClient } from "./client";
 import type {
 	ChatPrompt,
@@ -198,9 +202,12 @@ export async function executePatternDelegated(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					// The raw key goes to the Fabric AI server below.
+					excludeChatGptPlan: true,
 				},
 			);
-		} catch (_error) {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			return {
 				output: "",
 				success: false,
@@ -281,8 +288,10 @@ export async function executePatternDelegated(
 
 		// 8. Call Fabric AI's delegated endpoint
 		const delegatedStart = Date.now();
+		const signal = await guardDispatch();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "POST",
+			signal,
 			headers: {
 				"Content-Type": "application/json",
 				...(fabricApiKey ? { "X-API-Key": fabricApiKey } : {}),
@@ -373,6 +382,8 @@ export async function executePatternDelegated(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a { success: false } result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Delegated pattern execution failed", {
 			pattern,
@@ -433,9 +444,12 @@ export async function* executePatternDelegatedStream(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					// The raw key goes to the Fabric AI server below.
+					excludeChatGptPlan: true,
 				},
 			);
-		} catch (_error) {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			yield { type: "error", content: "No AI provider configured" };
 			return;
 		}
@@ -504,8 +518,10 @@ export async function* executePatternDelegatedStream(
 
 		// 6. Call delegated endpoint
 		const delegatedStart = Date.now();
+		const signal = await guardDispatch();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "POST",
+			signal,
 			headers: {
 				"Content-Type": "application/json",
 				...(fabricApiKey ? { "X-API-Key": fabricApiKey } : {}),
@@ -608,6 +624,8 @@ export async function* executePatternDelegatedStream(
 			reader.releaseLock();
 		}
 	} catch (err) {
+		// A stop leaves as an error, never as an error event.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		yield { type: "error", content: errorMessage };
 	}
@@ -624,12 +642,16 @@ export async function isDelegatedModeSupported(
 		const baseUrl = fabricClient.getBaseUrl();
 
 		// Try OPTIONS request to check if endpoint exists
+		const signal = await guardDispatch();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "OPTIONS",
+			signal,
 		});
 
 		return response.ok || response.status === 405; // 405 = Method not allowed but endpoint exists
-	} catch {
+	} catch (error) {
+		// A stop is not "unsupported": false would start the hybrid fallback.
+		rethrowIfDispatchStopped(error);
 		return false;
 	}
 }

@@ -258,6 +258,17 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				organizationId: z.string().nullable().optional(), // If provided, saves to org-level config
 			})
 			.superRefine((input, ctx) => {
+				// A member connects their own ChatGPT plan with the CLI; it is
+				// never a provider row anyone configures with a key.
+				if (input.provider === "OPENAI_CHATGPT_PLAN") {
+					ctx.addIssue({
+						code: "custom",
+						path: ["provider"],
+						message:
+							"A ChatGPT plan is connected with `fabric connect chatgpt`, not configured as a provider",
+					});
+					return;
+				}
 				const metadata = getProviderMetadata(
 					input.provider as AIProvider,
 				);

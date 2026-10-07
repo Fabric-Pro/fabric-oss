@@ -82,6 +82,7 @@ const state = vi.hoisted(() => ({
 	proposeAgain: vi.fn(),
 	proposeAgainError: null as Error | null,
 	closeBranch: vi.fn(),
+	refreshBranch: vi.fn(),
 	startOverBranch: vi.fn(),
 	retryBranch: vi.fn(),
 	stopTrackingBranch: vi.fn(),
@@ -145,12 +146,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 				proposals: {
 					list: {
+						key: () => ["list"],
 						queryOptions: queryOptions("list", () => ({
 							items: state.rows,
 							nextCursor: state.nextCursor,
 						})),
 					},
 					get: {
+						key: () => ["get"],
 						queryOptions: queryOptions("get", () => state.detail),
 					},
 					file: {
@@ -197,6 +200,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						}),
 					},
 					myBranch: {
+						key: () => ["myBranch"],
 						queryOptions: queryOptions("myBranch", (input) => {
 							state.myBranchQueryFn(input);
 							return {
@@ -216,6 +220,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					 * `pageParam` TanStack Query is asking for.
 					 */
 					branches: {
+						key: () => ["branches"],
 						infiniteOptions: (options: {
 							input: (cursor: string | undefined) => unknown;
 							initialPageParam: string | undefined;
@@ -273,6 +278,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 								throw state.branchCommandError;
 							}
 							return { changed: true, attempt: 1 };
+						}),
+					},
+					refreshBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.refreshBranch(input);
+							if (state.branchCommandError) {
+								throw state.branchCommandError;
+							}
+							return { refreshed: true, pending: false };
 						}),
 					},
 					startOverBranch: {
@@ -1420,6 +1434,64 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("re-reads the suggestions, the branch view and the reviewer branches after a suggestion Refresh, and again once the backend settles", async () => {
+		vi.useFakeTimers();
+		const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+		try {
+			state.rows = [repositoryRow({ state: "OPEN" })];
+			renderList();
+			await tick(0);
+			await act(async () => {
+				screen.getByRole("button", { name: prCopy.refresh }).click();
+			});
+			await tick(0);
+			const invalidatedKeys = () =>
+				invalidate.mock.calls.map(([filters]) =>
+					JSON.stringify(filters?.queryKey),
+				);
+			for (const key of [
+				'["list"]',
+				'["get"]',
+				'["myBranch"]',
+				'["branches"]',
+			]) {
+				expect(invalidatedKeys()).toContain(key);
+			}
+			const afterAnswer = invalidate.mock.calls.length;
+			await tick(3_000);
+			expect(invalidate.mock.calls.length).toBeGreaterThan(afterAnswer);
+		} finally {
+			invalidate.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("reads the suggestions again whenever the dialog opens, never serving the earlier read", async () => {
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+		});
+		const dialog = (open: boolean) => (
+			<QueryClientProvider client={client}>
+				<InstructionProposals
+					projectId="p"
+					open={open}
+					onOpenChange={() => undefined}
+					onChanged={() => undefined}
+					canReview={false}
+					repositoryBacked
+				/>
+			</QueryClientProvider>
+		);
+		const view = render(dialog(true));
+		await waitFor(() => expect(state.listCalls).toBe(1));
+		view.rerender(dialog(false));
+		view.rerender(dialog(true));
+		await waitFor(() => expect(state.listCalls).toBe(2));
+		view.unmount();
+		render(dialog(true));
+		await waitFor(() => expect(state.listCalls).toBe(3));
 	});
 
 	// The server admits one Refresh per pull request a minute and answers

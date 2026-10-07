@@ -5,6 +5,11 @@
  * in-memory database that applies `where` clauses the way Prisma does and a
  * real per-key lock (`helpers/gitlab-fake-db`).
  */
+
+import {
+	buildMcpOAuthBinding,
+	withCredentialFingerprint,
+} from "@repo/database/prisma/queries/lib/mcp-oauth-binding";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createGitLabFakeDb,
@@ -98,7 +103,35 @@ function wiRow(
 	};
 }
 
+/**
+ * The person's `gitlab-official` MCP config. Its client is bound to
+ * gitlab.com by the MCP connect flow (the binding's fingerprint covers what
+ * the row stores) unless the test passes `oauthBinding` itself.
+ */
 function officialRow(extra: Record<string, unknown> = {}) {
+	const row = rawOfficialRow(extra);
+	if ("oauthBinding" in extra) {
+		return row;
+	}
+	return {
+		...row,
+		oauthBinding: withCredentialFingerprint(GITLAB_COM_BINDING, {
+			oauthClientId: row.oauthClientId as string | null,
+			encryptedOauthClientSecret: row.encryptedOauthClientSecret as
+				| string
+				| null,
+			encryptedRefreshToken: row.encryptedRefreshToken as string | null,
+		}),
+	};
+}
+
+const GITLAB_COM_BINDING = buildMcpOAuthBinding({
+	authorizationServerUrl: "https://gitlab.com",
+	tokenEndpoint: "https://gitlab.com/oauth/token",
+	source: "discovery",
+});
+
+function rawOfficialRow(extra: Record<string, unknown> = {}) {
 	return {
 		id: "cfg-official",
 		userId: USER,
@@ -202,6 +235,248 @@ describe("issuer identity", () => {
 		expect(stored.issuer).toMatchObject({
 			kind: "mcp-dcr",
 			clientId: "dcr-client",
+		});
+	});
+
+	describe("a DCR client with a binding", () => {
+		// A confidential DCR client written by the MCP connect flow: its
+		// binding carries the fingerprint of the id and secret it stores.
+		const confidentialRow = (secretNow: string) =>
+			officialRow({
+				encryptedOauthClientSecret: secretNow,
+				dcrClientMetadata: {
+					token_endpoint_auth_method: "client_secret_post",
+				},
+				encryptedAccessToken: null,
+				encryptedRefreshToken: null,
+				oauthBinding: withCredentialFingerprint(
+					buildMcpOAuthBinding({
+						authorizationServerUrl: "https://gitlab.com",
+						tokenEndpoint: "https://gitlab.com/oauth/token",
+						source: "discovery",
+					}),
+					{
+						oauthClientId: "dcr-client",
+						encryptedOauthClientSecret: "enc:dcr-secret",
+						encryptedRefreshToken: null,
+					},
+				),
+			});
+		const dcrIssued = () =>
+			wiRow(
+				expiredOAuth({
+					issuer: {
+						kind: "mcp-dcr",
+						mcpConfigId: "cfg-official",
+						serverKey: "gitlab-official",
+						clientId: "dcr-client",
+						origin: "https://gitlab.com",
+					},
+					connectionGeneration: 1,
+				}),
+			);
+
+		it("refreshes with the client while it matches its binding", async () => {
+			state.fake = createGitLabFakeDb({
+				mCPServer: [officialServer],
+				mCPConfig: [confidentialRow("enc:dcr-secret")],
+				workflowIntegration: [dcrIssued()],
+			});
+			fetchMock.mockResolvedValueOnce(
+				tokenResponse("new-access", "new-refresh"),
+			);
+
+			await expect(getGitLabAccessToken(USER, ORG)).resolves.toBe(
+				"new-access",
+			);
+			expect(bodyOf(tokenCalls()[0]).get("client_secret")).toBe(
+				"dcr-secret",
+			);
+		});
+
+		it.each([
+			[
+				"an intact client bound to another GitLab instance",
+				() =>
+					officialRow({
+						encryptedOauthClientSecret: "enc:dcr-secret",
+						dcrClientMetadata: {
+							token_endpoint_auth_method: "client_secret_post",
+						},
+						encryptedAccessToken: null,
+						encryptedRefreshToken: null,
+						oauthBinding: withCredentialFingerprint(
+							buildMcpOAuthBinding({
+								authorizationServerUrl:
+									"https://gitlab.example.com",
+								tokenEndpoint:
+									"https://gitlab.example.com/oauth/token",
+								source: "discovery",
+							}),
+							{
+								oauthClientId: "dcr-client",
+								encryptedOauthClientSecret: "enc:dcr-secret",
+								encryptedRefreshToken: null,
+							},
+						),
+					}),
+			],
+			[
+				"an unbound client holding a secret",
+				() =>
+					officialRow({
+						encryptedOauthClientSecret: "enc:dcr-secret",
+						dcrClientMetadata: {
+							token_endpoint_auth_method: "client_secret_post",
+						},
+						encryptedAccessToken: null,
+						encryptedRefreshToken: null,
+						oauthBinding: null,
+					}),
+			],
+			[
+				// A public client: only the bearer-only rule refuses it.
+				"a bearer-only marker (public client)",
+				() =>
+					officialRow({
+						oauthBinding: {
+							mode: "bearer-only",
+							importedAt: "2026-10-06T00:00:00.000Z",
+						},
+					}),
+			],
+		])(
+			"never sends the secret of %s to the connection's instance, and condemns nothing",
+			async (_label, row) => {
+				state.fake = createGitLabFakeDb({
+					mCPServer: [officialServer],
+					mCPConfig: [row()],
+					workflowIntegration: [dcrIssued()],
+				});
+
+				const result = await getFreshGitLabAccessToken(USER, ORG);
+
+				expect(result).toMatchObject({ ok: false });
+				expect(tokenCalls()).toHaveLength(0);
+				expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(
+					"dcr-secret",
+				);
+				const integration = state.fake.tables.workflowIntegration[0];
+				expect(
+					(integration.settings as Record<string, unknown>)
+						.needsReauth,
+				).not.toBe(true);
+			},
+		);
+
+		it("refreshes with an UNBOUND public client (no secret): its id alone is nothing secret", async () => {
+			// What every GitLab MCP config with a client looks like before it
+			// is reconnected: a public DCR client, never bound.
+			state.fake = createGitLabFakeDb({
+				mCPServer: [officialServer],
+				mCPConfig: [
+					officialRow({
+						encryptedAccessToken: null,
+						encryptedRefreshToken: null,
+						oauthBinding: null,
+					}),
+				],
+				workflowIntegration: [dcrIssued()],
+			});
+			fetchMock.mockResolvedValueOnce(
+				tokenResponse("new-access", "new-refresh"),
+			);
+
+			await expect(getGitLabAccessToken(USER, ORG)).resolves.toBe(
+				"new-access",
+			);
+			const body = bodyOf(tokenCalls()[0]);
+			expect(body.get("client_id")).toBe("dcr-client");
+			expect(body.get("client_secret")).toBeNull();
+		});
+
+		it("refuses a client bound to the connection's instance at another token endpoint", async () => {
+			state.fake = createGitLabFakeDb({
+				mCPServer: [officialServer],
+				mCPConfig: [
+					officialRow({
+						encryptedAccessToken: null,
+						encryptedRefreshToken: null,
+						oauthBinding: withCredentialFingerprint(
+							buildMcpOAuthBinding({
+								authorizationServerUrl: "https://gitlab.com",
+								tokenEndpoint:
+									"https://gitlab.com/elsewhere/token",
+								source: "discovery",
+							}),
+							{
+								oauthClientId: "dcr-client",
+								encryptedOauthClientSecret: null,
+								encryptedRefreshToken: null,
+							},
+						),
+					}),
+				],
+				workflowIntegration: [dcrIssued()],
+			});
+
+			const result = await getFreshGitLabAccessToken(USER, ORG);
+
+			expect(result).toMatchObject({ ok: false });
+			expect(tokenCalls()).toHaveLength(0);
+		});
+
+		it("refuses a BOUND public client bound to another GitLab instance", async () => {
+			state.fake = createGitLabFakeDb({
+				mCPServer: [officialServer],
+				mCPConfig: [
+					officialRow({
+						encryptedAccessToken: null,
+						encryptedRefreshToken: null,
+						oauthBinding: withCredentialFingerprint(
+							buildMcpOAuthBinding({
+								authorizationServerUrl:
+									"https://gitlab.example.com",
+								tokenEndpoint:
+									"https://gitlab.example.com/oauth/token",
+								source: "discovery",
+							}),
+							{
+								oauthClientId: "dcr-client",
+								encryptedOauthClientSecret: null,
+								encryptedRefreshToken: null,
+							},
+						),
+					}),
+				],
+				workflowIntegration: [dcrIssued()],
+			});
+
+			const result = await getFreshGitLabAccessToken(USER, ORG);
+
+			expect(result).toMatchObject({ ok: false });
+			expect(tokenCalls()).toHaveLength(0);
+		});
+
+		it("sends nothing once a legacy writer replaced its secret under the same id, and condemns nothing", async () => {
+			state.fake = createGitLabFakeDb({
+				mCPServer: [officialServer],
+				mCPConfig: [confidentialRow("enc:secret-from-elsewhere")],
+				workflowIntegration: [dcrIssued()],
+			});
+
+			const result = await getFreshGitLabAccessToken(USER, ORG);
+
+			expect(result).toMatchObject({ ok: false });
+			expect(tokenCalls()).toHaveLength(0);
+			expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(
+				"secret-from-elsewhere",
+			);
+			const row = state.fake.tables.workflowIntegration[0];
+			expect(
+				(row.settings as Record<string, unknown>).needsReauth,
+			).not.toBe(true);
+			expect(readCredential(row).refresh_token).toBe("old-refresh");
 		});
 	});
 
@@ -475,7 +750,12 @@ describe("lifecycle lock and generation fence", () => {
 				{ id: "srv-linear", key: "linear", defaultUrl: null },
 			],
 			mCPConfig: [
-				officialRow(),
+				// Bound by the connect flow, which leaves a GitLab row's token
+				// columns empty.
+				officialRow({
+					encryptedAccessToken: null,
+					encryptedRefreshToken: null,
+				}),
 				{
 					...officialRow({
 						id: "cfg-legacy",
@@ -549,6 +829,8 @@ describe("lifecycle lock and generation fence", () => {
 		);
 		expect(revoke).toBeDefined();
 		expect(bodyOf(revoke as unknown[]).get("client_id")).toBe("dcr-client");
+		// The token and client credentials are never re-sent by a redirect.
+		expect((revoke as unknown[])[1]).toMatchObject({ redirect: "error" });
 		expect(await getGitLabAccessToken(USER, ORG)).toBeNull();
 	});
 });

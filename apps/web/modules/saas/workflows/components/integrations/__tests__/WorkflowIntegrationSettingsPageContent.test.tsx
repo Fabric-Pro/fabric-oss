@@ -65,11 +65,20 @@ vi.mock("../../../lib/plugins", () => ({
 			actions: [],
 			formFields: [],
 		},
+		{
+			type: "GOOGLE_DRIVE",
+			label: "Google Drive",
+			description: "Cloud storage",
+			category: "knowledge",
+			actions: [],
+			formFields: [],
+		},
 	],
 }));
 
 import type { FeatureFlagKey } from "@repo/utils/feature-flag-registry";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
+import type { IntegrationType } from "../../../lib/plugins";
 import { WorkflowIntegrationSettingsPageContent } from "../WorkflowIntegrationSettingsPageContent";
 
 function renderPage(
@@ -77,12 +86,14 @@ function renderPage(
 	flags: Partial<Record<FeatureFlagKey, boolean>> = {
 		LINEAR_INTEGRATION: false,
 	},
+	initialIntegration?: IntegrationType,
 ) {
 	return render(
 		<FeatureFlagProvider value={flags as Record<FeatureFlagKey, boolean>}>
 			<WorkflowIntegrationSettingsPageContent
 				organizationId="org-example"
 				settingsBasePath={settingsBasePath}
+				initialIntegration={initialIntegration}
 			/>
 		</FeatureFlagProvider>,
 	);
@@ -129,5 +140,35 @@ describe("WorkflowIntegrationSettingsPageContent — Linear visibility", () => {
 		});
 
 		expect(screen.getAllByText("Linear").length).toBeGreaterThan(0);
+	});
+});
+
+describe("WorkflowIntegrationSettingsPageContent — Google Drive verification notice", () => {
+	it("renders the verification notice when active integration is GOOGLE_DRIVE", () => {
+		renderPage(
+			"/app/example-org/settings/integrations",
+			undefined,
+			"GOOGLE_DRIVE",
+		);
+
+		expect(
+			screen.getByText(
+				"Google Drive access requires Google verification",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("does not render the verification notice for non-Google-Drive integration", () => {
+		renderPage(
+			"/app/example-org/settings/integrations",
+			undefined,
+			"GITHUB",
+		);
+
+		expect(
+			screen.queryByText(
+				"Google Drive access requires Google verification",
+			),
+		).not.toBeInTheDocument();
 	});
 });

@@ -184,7 +184,9 @@ async function triggerImageGeneration(
 		// Dynamically import Temporal client to avoid circular dependency issues
 		// The @repo/temporal package depends on @repo/database, so we can't add it
 		// as a direct dependency. Using string variable to bypass TypeScript resolution.
-		const modulePath = "@repo/temporal";
+		// A relative path, because the package name does not resolve from here; the
+		// repository root no longer declares it (see turbo.json).
+		const modulePath = "../../temporal/index";
 		const temporalModule = (await import(modulePath)) as TemporalModule;
 		const client = await temporalModule.getTemporalClient();
 

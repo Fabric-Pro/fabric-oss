@@ -19,6 +19,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	db: {},
 	// The project read gate, behind every project-scoped read and the

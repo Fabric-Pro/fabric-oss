@@ -1,5 +1,6 @@
 "use client";
 
+import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
 import {
 	type CommitChange,
 	type CommitRefusal,
@@ -22,7 +23,6 @@ import { useInstructionActionError } from "./use-instruction-action-error";
 
 /** What a commit is made of: the version it was stated against, its words, and its changes. */
 export type DirectCommitRequest = {
-	baseSnapshotId: string;
 	message: string;
 	changes: CommitChange[];
 	/**
@@ -30,7 +30,7 @@ export type DirectCommitRequest = {
 	 * branch-moved dialog. Never sent to the server; absent hides the button.
 	 */
 	suggest?: () => void;
-};
+} & InstructionChangeBase;
 
 type Flow =
 	| { phase: "idle" }
@@ -39,6 +39,7 @@ type Flow =
 			phase: "watching";
 			request: DirectCommitRequest;
 			snapshotId: string;
+			native: boolean;
 	  }
 	| {
 			phase: "pull-request";
@@ -78,12 +79,13 @@ export function useDirectCommit({
 	/** The synced branch, for the words. */
 	branch: string;
 	/** The tab's lists and published pointer should be re-read. */
-	onChanged: () => void;
+	onChanged: () => unknown;
 	/**
 	 * A commit landed on the branch. Fabric's copy follows from a sync of the
 	 * real tree a few seconds later, so the tab keeps reading until it has.
+	 * A returned promise is awaited before the commit is announced.
 	 */
-	onCommitted?: (commit: { sha: string; ref: string }) => void;
+	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
 	onFinished?: (result: SettledCommit) => void;
 }): {
 	start: (request: DirectCommitRequest) => void;
@@ -103,16 +105,23 @@ export function useDirectCommit({
 		mutationFn: (request: DirectCommitRequest) =>
 			orpcClient.projects.instructions.commitChange({
 				projectId,
-				baseSnapshotId: request.baseSnapshotId,
+				...(request.nativeBase
+					? { nativeBase: request.nativeBase }
+					: { baseSnapshotId: request.baseSnapshotId }),
 				message: request.message,
 				changes: request.changes,
 			}),
-		onSuccess: (result, request) =>
+		onSuccess: (result, request) => {
 			setFlow({
 				phase: "watching",
 				request,
-				snapshotId: result.snapshotId,
-			}),
+				snapshotId:
+					result.kind === "native"
+						? result.operationId
+						: result.snapshotId,
+				native: result.kind === "native",
+			});
+		},
 		onError: (error: Error) => {
 			setFlow({ phase: "idle" });
 			const refusal = commitRefusal(error);
@@ -141,16 +150,23 @@ export function useDirectCommit({
 		(result: SettledCommit) => {
 			switch (result.kind) {
 				case "committed":
-					toast.success(
-						t("committed", {
-							sha7: shortCommit(result.sha) ?? "",
-							ref: result.ref,
-						}),
-					);
-					setFlow({ phase: "idle" });
-					onChanged();
-					onCommitted?.({ sha: result.sha, ref: result.ref });
-					onFinished?.(result);
+					void (async () => {
+						// The commit is announced once the page shows it, not
+						// before: the old file would otherwise sit under the
+						// toast until the re-read finishes.
+						await Promise.allSettled([
+							onChanged(),
+							onCommitted?.({ sha: result.sha, ref: result.ref }),
+						]);
+						toast.success(
+							t("committed", {
+								sha7: shortCommit(result.sha) ?? "",
+								ref: result.ref,
+							}),
+						);
+						setFlow({ phase: "idle" });
+						onFinished?.(result);
+					})();
 					return;
 				case "unchanged":
 					toast.info(t("unchanged"));
@@ -213,6 +229,7 @@ export function useDirectCommit({
 					key={flow.snapshotId}
 					projectId={projectId}
 					snapshotId={flow.snapshotId}
+					native={flow.native}
 					branch={branch}
 					onSettled={settled}
 				/>

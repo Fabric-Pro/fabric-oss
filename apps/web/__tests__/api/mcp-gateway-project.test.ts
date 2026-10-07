@@ -78,7 +78,8 @@ const resolveUserOrganization = vi.fn();
 const isOrganizationLive = vi.fn();
 vi.mock("@repo/database", () => ({
 	isOrganizationLive: (...args: unknown[]) => isOrganizationLive(...args),
-	verifyOAuthAccessToken: (token: string) => verifyOAuthAccessToken(token),
+	verifyOAuthAccessToken: (...args: unknown[]) =>
+		verifyOAuthAccessToken(...args),
 	resolveOAuthProjectGrantTarget: (userId: string, projectId: string) =>
 		resolveOAuthProjectGrantTarget(userId, projectId),
 	db: { user: { findUnique: (args: unknown) => userFindUnique(args) } },
@@ -408,6 +409,18 @@ describe("the organization-wide URL", () => {
 		});
 
 		expect(response.status).toBe(401);
+	});
+
+	it("checks the configured MCP resource independently of request Host", async () => {
+		const { response } = await postOrganization(initializeBody, {
+			authorization: WIDE_TOKEN,
+			host: "other.example.com",
+		});
+		expect(response.status).toBe(200);
+		expect(verifyOAuthAccessToken).toHaveBeenCalledWith(
+			"fat_organization",
+			{ appUrl: ORIGIN, audience: "mcp" },
+		);
 	});
 
 	it("still serves an organization-wide token, in no project", async () => {

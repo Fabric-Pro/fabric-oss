@@ -12,6 +12,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listMcpConfigsForTenant = vi.hoisted(() => vi.fn());
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({ listMcpConfigsForTenant }));
 
 import { PROJECT_BOUND_TOOL_NAMES } from "../project-binding";

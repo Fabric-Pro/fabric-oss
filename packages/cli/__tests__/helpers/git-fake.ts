@@ -39,6 +39,12 @@ export interface FakeCheckoutState {
 	 * `git.ts` kills a stalled child at its deadline.
 	 */
 	stall: boolean;
+	/**
+	 * Set: `fetchRef` is a slow remote that answers just inside its deadline,
+	 * with `fetchResult`, so what is left of the budget is what a real slow
+	 * fetch leaves.
+	 */
+	slowFetch: boolean;
 	/** Remote name → EFFECTIVE fetch URL (`null`: none). */
 	remotes: Record<string, string | null>;
 	branch: string | null;
@@ -89,6 +95,7 @@ export function defaultFakeState(): FakeCheckoutState {
 		toplevel: null,
 		unavailable: null,
 		stall: false,
+		slowFetch: false,
 		remotes: {},
 		branch: "main",
 		head: HEAD_SHA,
@@ -300,6 +307,11 @@ export const gitFake = {
 	) {
 		fakeGit.calls.push("fetchRef");
 		fakeGit.fetches.push({ remote, ref, deadline });
+		if (fakeGit.state.slowFetch) {
+			await new Promise((resolve) =>
+				setTimeout(resolve, Math.max(0, deadline - Date.now() - 20)),
+			);
+		}
 		return fakeGit.state.fetchResult;
 	},
 	async fastForwardTo(_root: string, sha: string, deadline: number) {

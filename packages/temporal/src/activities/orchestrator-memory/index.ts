@@ -27,6 +27,12 @@ import {
 	searchSimilarEpisodes,
 	storeEpisodeEmbedding,
 } from "@repo/rag/lib/vector-store";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	rethrowIfTurnStopped,
+	startTurnHeartbeat,
+	type TurnScope,
+} from "../orchestrator/turn-dispatch";
 
 // =============================================================================
 // HELPERS
@@ -61,6 +67,14 @@ export interface LoadOrchestratorMemoryInput {
 	projectId?: string | null;
 	workspaceId?: string | null;
 	currentQuery?: string;
+	/**
+	 * The chat turn this load serves. When set, the activity runs inside the
+	 * turn's dispatch guard (set by the worker's turn-dispatch interceptor):
+	 * the episodic-search embedding is checked against the turn record and
+	 * aborted by a Stop, and a stop is rethrown rather than degraded to an
+	 * empty memory context. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export interface LoadOrchestratorMemoryOutput {
@@ -129,6 +143,17 @@ export interface UpdateRecentActivityInput {
  * Combines hot preferences + recent episodes + semantically relevant episodes
  */
 export async function loadOrchestratorMemoryActivity(
+	input: LoadOrchestratorMemoryInput,
+): Promise<LoadOrchestratorMemoryOutput> {
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await loadOrchestratorMemory(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function loadOrchestratorMemory(
 	input: LoadOrchestratorMemoryInput,
 ): Promise<LoadOrchestratorMemoryOutput> {
 	const { userId, organizationId, projectId, workspaceId, currentQuery } =
@@ -203,6 +228,10 @@ export async function loadOrchestratorMemoryActivity(
 			recentEpisodes,
 		};
 	} catch (error) {
+		// In a chat turn a stop is not a memory failure to degrade from.
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		logger.error("[OrchestratorMemory] Failed to load memory context", {
 			error: error instanceof Error ? error.message : "Unknown error",
 		});
@@ -280,6 +309,9 @@ export async function searchEpisodicMemoryActivity(
 
 		return results;
 	} catch (error) {
+		// Called inline by loadOrchestratorMemoryActivity: inside a chat
+		// turn's dispatch guard a stop is not an empty search.
+		rethrowIfDispatchStopped(error);
 		logger.error("[OrchestratorMemory] Episodic search failed", {
 			error: error instanceof Error ? error.message : "Unknown error",
 		});

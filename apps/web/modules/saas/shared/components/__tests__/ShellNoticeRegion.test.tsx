@@ -13,6 +13,36 @@ vi.mock("@saas/shared/components/MfaSetupBanner", () => ({
 	MfaSetupBanner: () => <div data-testid="security-notice">Secure</div>,
 }));
 
+const chatgptPlanVisible = { current: false };
+vi.mock("@saas/settings/components/chatgpt-plan/ChatgptPlanPrompt", () => ({
+	useChatgptPlanPromptVisible: () => chatgptPlanVisible.current,
+	ChatgptPlanPrompt: () => <div data-testid="chatgpt-plan-notice">Plan</div>,
+}));
+
+const chatgptPlanReconnectVisible = { current: false };
+vi.mock(
+	"@saas/settings/components/chatgpt-plan/ChatgptPlanReconnectActions",
+	() => ({
+		useChatgptPlanReconnectNoticeVisible: () =>
+			chatgptPlanReconnectVisible.current,
+		ChatgptPlanReconnectNotice: () => (
+			<div data-testid="chatgpt-plan-reconnect-notice">Reconnect</div>
+		),
+	}),
+);
+
+const chatgptPlanSharedFallbackVisible = { current: false };
+vi.mock(
+	"@saas/settings/components/chatgpt-plan/ChatgptPlanSharedFallbackNotice",
+	() => ({
+		useChatgptPlanSharedFallbackVisible: () =>
+			chatgptPlanSharedFallbackVisible.current,
+		ChatgptPlanSharedFallbackNotice: () => (
+			<div data-testid="chatgpt-plan-shared-fallback-notice">Shared</div>
+		),
+	}),
+);
+
 vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string) =>
 		key === "app.shellNotices.ariaLabel"
@@ -25,6 +55,9 @@ import { ShellNoticeRegion, ShellNoticeStack } from "../ShellNoticeRegion";
 beforeEach(() => {
 	pathname.current = "/app/example-org/start";
 	securityVisible.current = true;
+	chatgptPlanVisible.current = false;
+	chatgptPlanReconnectVisible.current = false;
+	chatgptPlanSharedFallbackVisible.current = false;
 	useMfaNoticeVisible.mockClear();
 });
 
@@ -39,9 +72,8 @@ describe("ShellNoticeStack", () => {
 	});
 
 	it("renders members in the order it is given", () => {
-		// The region ships with one real member today, so tier ordering is
-		// proven here with stubs. Real two-member ordering becomes testable in
-		// the browser once a second shell notice exists.
+		// The stack keeps whatever order the region hands it; the region's own
+		// tier order is pinned in the "ShellNoticeRegion" cases below.
 		render(
 			<ShellNoticeStack
 				notices={[
@@ -107,6 +139,36 @@ describe("ShellNoticeRegion", () => {
 	it("renders the security notice when it has something to say", () => {
 		render(<ShellNoticeRegion />);
 		expect(screen.getByTestId("security-notice")).toBeInTheDocument();
+	});
+
+	it("puts the ChatGPT plan prompt after the security notice", () => {
+		chatgptPlanVisible.current = true;
+		render(<ShellNoticeRegion />);
+		expect(screen.getByRole("complementary").textContent).toBe(
+			"SecurePlan",
+		);
+	});
+
+	it("puts the ChatGPT plan reconnect notice after security and before the prompt", () => {
+		chatgptPlanVisible.current = true;
+		chatgptPlanReconnectVisible.current = true;
+		render(<ShellNoticeRegion />);
+		expect(screen.getByRole("complementary").textContent).toBe(
+			"SecureReconnectPlan",
+		);
+	});
+
+	// Fizzy #2770: the member's own plan is spent and the shared plan carries
+	// their work. A warning with nothing to act on, so after the reconnect
+	// notice and before the one-time prompt.
+	it("puts the shared-plan warning after reconnect and before the prompt", () => {
+		chatgptPlanVisible.current = true;
+		chatgptPlanReconnectVisible.current = true;
+		chatgptPlanSharedFallbackVisible.current = true;
+		render(<ShellNoticeRegion />);
+		expect(screen.getByRole("complementary").textContent).toBe(
+			"SecureReconnectSharedPlan",
+		);
 	});
 
 	it("renders nothing when no member is visible", () => {

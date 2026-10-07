@@ -79,6 +79,7 @@ import {
 
 const snapshot = {
 	id: "s",
+	contentKind: "FULL_SNAPSHOT",
 	version: 3,
 	digest: "d1g357",
 	readyAt: new Date("2026-01-01T00:00:00Z"),
@@ -103,7 +104,7 @@ beforeEach(() => {
 	// path rather than the reuse path added in R32.
 	m.getFileMetadata.mockResolvedValue(null);
 	// Default: the snapshot is still there when the archive finishes.
-	m.getInstructionSnapshot.mockResolvedValue({ id: "s" });
+	m.getInstructionSnapshot.mockResolvedValue(snapshot);
 	m.deleteObjects.mockResolvedValue({ deleted: 1, errors: [] });
 	m.appendCalls = [];
 	m.downloadFile.mockResolvedValue({
@@ -114,6 +115,24 @@ beforeEach(() => {
 });
 
 describe("buildInstructionSnapshotZip", () => {
+	it("refuses a Git intent before touching snapshot storage", async () => {
+		m.getInstructionSnapshot.mockResolvedValue({
+			...snapshot,
+			contentKind: "GIT_INTENT",
+		});
+		await expect(
+			buildInstructionSnapshotZip({
+				projectId: "proj_1",
+				organizationId: "org_1",
+				snapshot,
+				files: [],
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(m.getFileMetadata).not.toHaveBeenCalled();
+		expect(m.downloadFile).not.toHaveBeenCalled();
+		expect(m.uploadFile).not.toHaveBeenCalled();
+	});
+
 	it("adds each entry under its stored path, keeps the stored mode, and preserves input order even when downloads resolve out of order", async () => {
 		// Synthetic paths only. Deliberately reversed resolution timing
 		// (a.md slowest, c.md instant): the downloads now run CONCURRENTLY,
@@ -453,6 +472,7 @@ describe("buildInstructionSnapshotZip", () => {
 		);
 		m.uploadFile.mockResolvedValue(undefined);
 		m.getInstructionSnapshot.mockResolvedValue(null);
+		m.getInstructionSnapshot.mockResolvedValueOnce(snapshot);
 
 		const error = await buildInstructionSnapshotZip({
 			projectId: "proj_1",
@@ -491,6 +511,7 @@ describe("buildInstructionSnapshotZip", () => {
 		);
 		m.uploadFile.mockResolvedValue(undefined);
 		m.getInstructionSnapshot.mockResolvedValue(null);
+		m.getInstructionSnapshot.mockResolvedValueOnce(snapshot);
 		m.deleteObjects.mockResolvedValue({
 			deleted: 0,
 			errors: [
@@ -546,7 +567,7 @@ describe("buildInstructionSnapshotZip", () => {
 
 		// An object that already existed is one a concurrent delete's own
 		// prefix sweep collects; nothing new was written to resurrect.
-		expect(m.getInstructionSnapshot).not.toHaveBeenCalled();
+		expect(m.getInstructionSnapshot).toHaveBeenCalledTimes(1);
 		expect(m.deleteObjects).not.toHaveBeenCalled();
 	});
 });

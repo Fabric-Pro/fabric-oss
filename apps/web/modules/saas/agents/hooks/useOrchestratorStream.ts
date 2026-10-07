@@ -73,6 +73,15 @@ export interface UseOrchestratorStreamOptions {
 	 */
 	modelOverride?: string;
 	/**
+	 * Set only by the Advisor (the Fabric AI page and the Fabric Agent
+	 * drawer), never by the MCP chat dialog or a registered agent's try
+	 * workspace, which mount the same chat. The route lets only an Advisor
+	 * chat draw on the organization's company context; membership is still
+	 * checked on the server (Fizzy #2719). Sent on the initial POST only: a
+	 * reconnect starts nothing.
+	 */
+	advisorOrigin?: boolean;
+	/**
 	 * Surface that mounts this hook — used for the
 	 * `ai_generation_cancelled` telemetry event. The orchestrator hook
 	 * is mounted by the standalone Loom Orchestrator page; surfaces
@@ -180,7 +189,9 @@ interface LimitSignalSummary {
 		| "provider_quota"
 		| "provider_rate_limit"
 		| "context_length"
-		| "provider_overloaded";
+		| "provider_overloaded"
+		| "subscription_exhausted"
+		| "subscription_reconnect";
 	provider?: string;
 	message: string;
 	retryAfterMs?: number;
@@ -496,6 +507,7 @@ export function useOrchestratorStream(
 		systemPrompt,
 		instanceId,
 		modelOverride,
+		advisorOrigin = false,
 		surface = "loom-orchestrator",
 		telemetrySurface,
 		onStopFailed,
@@ -1008,6 +1020,8 @@ export function useOrchestratorStream(
 					// ("loom-orchestrator"). Without it the workflow sees
 					// surface: undefined and never asks.
 					surface: surfaceRef.current,
+					// Omitted, not false, outside the Advisor.
+					advisorOrigin: advisorOrigin ? true : undefined,
 					// The message's idempotency key: a retry of this POST
 					// attaches to the turn it already created.
 					clientRequestKey,
@@ -1048,8 +1062,8 @@ export function useOrchestratorStream(
 				// value would tear it down and back up for nothing.
 				// A message the server runs as a turn is idempotent by its key,
 				// so a request whose outcome is unknown can be sent again;
-				// a planner-mode message has no turn and cannot (see the
-				// shared orchestrator-turn-modes module).
+				// a Weave message has no turn and cannot (see the shared
+				// orchestrator-turn-modes module).
 				const keyIdempotent = executionModeUsesTurns(executionMode);
 				while (true) {
 					let sawTerminal = false;
@@ -1362,9 +1376,9 @@ export function useOrchestratorStream(
 					// always read the ref. Without one, the message's key
 					// still lets the initial body reconnect (see
 					// `buildResumeRequestBody`) — but only in a mode the
-					// server runs as a turn: a planner mode has no turn, the
-					// server ignores the key, and a re-send would start a
-					// second run.
+					// server runs as a turn: Weave has no turn, the server
+					// ignores the key, and a re-send would start a second
+					// run.
 					const resumableExecutionId =
 						executionIdRef.current ??
 						(executionModeUsesTurns(executionMode)
@@ -1525,6 +1539,7 @@ export function useOrchestratorStream(
 			systemPrompt,
 			instanceId,
 			modelOverride,
+			advisorOrigin,
 			resetPartykit,
 		],
 	);

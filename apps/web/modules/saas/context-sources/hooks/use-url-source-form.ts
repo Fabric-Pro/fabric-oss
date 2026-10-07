@@ -55,6 +55,13 @@ interface UseUrlSourceFormOptions {
 	 * the payload never carries one.
 	 */
 	requireKnowledgeBaseCategory: boolean;
+	/**
+	 * Offer the Live refresh cadence. Live is honored only where retrieval
+	 * re-fetches the page on each AI run, which the project task agent does
+	 * (`rag-context.ts`) and company context retrieval does not; an owner
+	 * that cannot honor it turns this off so Live is never offered there.
+	 */
+	allowLiveRefresh: boolean;
 	/** Fires once per link that was accepted — N times for N pasted URLs. */
 	onSourceAdded?: (added: ContextSourceAdded) => void;
 	/** Nothing left to review: close and reset the dialog. */
@@ -72,6 +79,7 @@ export function useUrlSourceForm({
 	organizationId,
 	organizationSlug,
 	requireKnowledgeBaseCategory,
+	allowLiveRefresh,
 	onSourceAdded,
 	onComplete,
 }: UseUrlSourceFormOptions) {
@@ -455,6 +463,7 @@ export function useUrlSourceForm({
 		bulkProgress,
 		bulkResults,
 		requireKnowledgeBaseCategory,
+		allowLiveRefresh,
 		hasAnyScrapeCapable,
 		hasCrawlCapable,
 		scrapeProviderName,

@@ -694,6 +694,11 @@ function CompanySourceRow({
 	const StateIcon = presentation.icon;
 	const TypeIcon = typeIcon(source.type);
 	const isLink = source.type === "LINK";
+	// A website saved as LIVE before company context stopped offering it is
+	// re-fetched by nothing, so it reads as what it does: no automatic
+	// refresh.
+	const refreshMode =
+		source.urlRefreshMode === "LIVE" ? "ONCE" : source.urlRefreshMode;
 	const crawling =
 		source.crawlInProgress ||
 		source.extractionStatus === "PENDING" ||
@@ -766,17 +771,23 @@ function CompanySourceRow({
 							/>
 							{t(`status.${state}`)}
 						</span>
-						{isLink && source.urlPageCount > 0 ? (
+						{source.crawlProgress ? (
+							<span data-testid="company-source-crawl-progress">
+								{t("row.crawlProgress", {
+									processed:
+										source.crawlProgress.processedPages,
+									total: source.crawlProgress.totalPages,
+								})}
+							</span>
+						) : isLink && source.urlPageCount > 0 ? (
 							<span>
 								{t("row.pageCount", {
 									count: source.urlPageCount,
 								})}
 							</span>
 						) : null}
-						{isLink && source.urlRefreshMode ? (
-							<span>
-								{t(`row.refresh.${source.urlRefreshMode}`)}
-							</span>
+						{isLink && refreshMode ? (
+							<span>{t(`row.refresh.${refreshMode}`)}</span>
 						) : null}
 						{isLink && source.urlLastSyncedAt ? (
 							<span>
@@ -792,6 +803,15 @@ function CompanySourceRow({
 							</span>
 						)}
 					</div>
+
+					{isLink && source.crawlInProgress && !source.ready ? (
+						<p
+							className="text-muted-foreground text-xs"
+							data-testid="company-source-crawl-hint"
+						>
+							{t("row.crawlHint")}
+						</p>
+					) : null}
 
 					{showError ? (
 						<p

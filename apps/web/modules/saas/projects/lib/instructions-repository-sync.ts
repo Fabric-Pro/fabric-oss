@@ -52,9 +52,11 @@ type SyncLimitView = {
 		| "fileSize"
 		| "totalSize"
 		| "inventory"
-		| "repositorySize";
+		| "repositorySize"
+		| "doubleStarGroups";
 	max: number;
 	actual?: number;
+	line?: number;
 	/** `actual` is a lower bound: the check could not learn the size. */
 	atLeast?: true;
 };
@@ -338,6 +340,31 @@ export function syncRunProgress(
 	}
 }
 
+/**
+ * Whether the repository-sync line is already presenting this snapshot's
+ * progress. A run can create the snapshot before its receipt has the id, so
+ * the in-flight snapshot's project-local version is the fallback identity.
+ */
+export function repositorySyncOwnsSnapshotProgress(
+	state: Pick<
+		RepositorySyncState,
+		"configured" | "inFlightSnapshot" | "latestRun" | "running"
+	>,
+	snapshot: { id: string; version: number },
+): boolean {
+	const run = state.latestRun;
+	return (
+		state.running &&
+		state.configured !== null &&
+		run !== null &&
+		run.finishedAt === null &&
+		run.fromCurrentConfiguration &&
+		(run.snapshotId === snapshot.id ||
+			(run.snapshotId === null &&
+				state.inFlightSnapshot?.version === snapshot.version))
+	);
+}
+
 export function offersSyncFromRepository(state: RepositorySyncState): boolean {
 	return (
 		state.canConfigure &&
@@ -533,6 +560,8 @@ function limitMessage(limit: SyncLimitView): SyncMessage | null {
 				key: "errors.limit.repositorySize",
 				values: { max: formatByteSize(limit.max) },
 			};
+		case "doubleStarGroups":
+			return null;
 		default: {
 			const unreachable: never = limit.kind;
 			return unreachable;

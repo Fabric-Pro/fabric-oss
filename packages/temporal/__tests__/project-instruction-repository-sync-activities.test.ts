@@ -60,35 +60,47 @@ const m = vi.hoisted(() => ({
 	log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@repo/database", () => ({
-	InstructionInheritedSourceError:
-		databaseErrors.InstructionInheritedSourceError,
-	getInstructionRepositorySyncForRun: m.getInstructionRepositorySyncForRun,
-	clearInstructionSyncPause: m.clearInstructionSyncPause,
-	listUnfinishedInstructionRepositorySyncRunReceipts:
-		m.listUnfinishedInstructionRepositorySyncRunReceipts,
-	insertInstructionRepositorySyncRun: m.insertInstructionRepositorySyncRun,
-	canCreateProjectInstructions: m.canCreateProjectInstructions,
-	getInstructionSnapshotBySyncRunKey: m.getInstructionSnapshotBySyncRunKey,
-	getProjectRepoIntegration: m.getProjectRepoIntegration,
-	getPublishedInstructionTree: m.getPublishedInstructionTree,
-	getProjectInstructionSettings: m.getProjectInstructionSettings,
-	createInstructionSnapshot: m.createInstructionSnapshot,
-	claimInstructionFileStagingKeys: m.claimInstructionFileStagingKeys,
-	recordInstructionSyncRunProgress: m.recordInstructionSyncRunProgress,
-	recordAudit: m.recordAudit,
-	getInstructionSnapshotWithPublishedPointer:
-		m.getInstructionSnapshotWithPublishedPointer,
-	rejectAbandonedInstructionSnapshot: m.rejectAbandonedInstructionSnapshot,
-	markAbandonedInstructionSnapshotSwept:
-		m.markAbandonedInstructionSnapshotSwept,
-	rotateAbandonedInstructionSnapshot: m.rotateAbandonedInstructionSnapshot,
-	completeInstructionRepositorySyncRun:
-		m.completeInstructionRepositorySyncRun,
-	deleteInstructionSnapshot: m.deleteInstructionSnapshot,
-	listPrunableInstructionSnapshots: m.listPrunableInstructionSnapshots,
-	settleInstructionMigrationAfterSync: m.settleInstructionMigrationAfterSync,
-}));
+vi.mock("@repo/database", async () => {
+	const { instructionRepositoryImportAllowed } = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/instruction-migration-pointer")
+	>("@repo/database/prisma/queries/instruction-migration-pointer");
+	return {
+		InstructionInheritedSourceError:
+			databaseErrors.InstructionInheritedSourceError,
+		getInstructionRepositorySyncForRun:
+			m.getInstructionRepositorySyncForRun,
+		clearInstructionSyncPause: m.clearInstructionSyncPause,
+		listUnfinishedInstructionRepositorySyncRunReceipts:
+			m.listUnfinishedInstructionRepositorySyncRunReceipts,
+		insertInstructionRepositorySyncRun:
+			m.insertInstructionRepositorySyncRun,
+		canCreateProjectInstructions: m.canCreateProjectInstructions,
+		getInstructionSnapshotBySyncRunKey:
+			m.getInstructionSnapshotBySyncRunKey,
+		getProjectRepoIntegration: m.getProjectRepoIntegration,
+		getPublishedInstructionTree: m.getPublishedInstructionTree,
+		getProjectInstructionSettings: m.getProjectInstructionSettings,
+		createInstructionSnapshot: m.createInstructionSnapshot,
+		claimInstructionFileStagingKeys: m.claimInstructionFileStagingKeys,
+		recordInstructionSyncRunProgress: m.recordInstructionSyncRunProgress,
+		recordAudit: m.recordAudit,
+		getInstructionSnapshotWithPublishedPointer:
+			m.getInstructionSnapshotWithPublishedPointer,
+		rejectAbandonedInstructionSnapshot:
+			m.rejectAbandonedInstructionSnapshot,
+		markAbandonedInstructionSnapshotSwept:
+			m.markAbandonedInstructionSnapshotSwept,
+		rotateAbandonedInstructionSnapshot:
+			m.rotateAbandonedInstructionSnapshot,
+		completeInstructionRepositorySyncRun:
+			m.completeInstructionRepositorySyncRun,
+		deleteInstructionSnapshot: m.deleteInstructionSnapshot,
+		listPrunableInstructionSnapshots: m.listPrunableInstructionSnapshots,
+		settleInstructionMigrationAfterSync:
+			m.settleInstructionMigrationAfterSync,
+		instructionRepositoryImportAllowed,
+	};
+});
 vi.mock("@repo/connectors", () => ({
 	readRepositoryBlobSizes: m.readRepositoryBlobSizes,
 }));
@@ -195,6 +207,21 @@ const CONTEXT: SyncRunContext = {
 	runKey: "sync_1:run_a",
 };
 
+const SWITCHING_SETTINGS = {
+	ignoreGlobs: null,
+	sourceOfTruth: "REPOSITORY",
+	migration: {
+		v: 1,
+		state: "SWITCHING",
+		branchId: "branch_1",
+		snapshotId: "snap_move",
+		syncId: "sync_1",
+		pullRequestUrl: null,
+		startedAt: "2026-10-03T10:00:00.000Z",
+		userId: "user_1",
+	},
+} as const;
+
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** A published snapshot this sync (integration `int_1`, branch `main`) published. */
@@ -278,10 +305,7 @@ beforeEach(() => {
 	m.readRepositoryBlobSizes.mockResolvedValue({ ok: false });
 	m.revParseRootTree.mockResolvedValue("t".repeat(40));
 	m.getPublishedInstructionTree.mockResolvedValue(null);
-	m.getProjectInstructionSettings.mockResolvedValue({
-		ignoreGlobs: null,
-		sourceOfTruth: "REPOSITORY",
-	});
+	m.getProjectInstructionSettings.mockResolvedValue(SWITCHING_SETTINGS);
 	m.createInstructionSnapshot.mockImplementation(
 		async ({
 			files,
@@ -378,6 +402,29 @@ describe("beginInstructionRepositorySyncRun (spec §5.3.1)", () => {
 			error: "NOT_CONFIGURED",
 		});
 		expect(m.insertInstructionRepositorySyncRun).not.toHaveBeenCalled();
+	});
+
+	it("refuses a direct repository before creating a receipt or touching its provider", async () => {
+		m.getProjectInstructionSettings.mockResolvedValue({
+			ignoreGlobs: null,
+			sourceOfTruth: "REPOSITORY",
+			migration: null,
+		});
+
+		expect(await beginInstructionRepositorySyncRun(input)).toEqual({
+			ok: false,
+			error: "CONFIGURATION_CHANGED",
+		});
+		// A lookup permits an already-admitted legacy run to recover. This
+		// new direct-repository run has none, so it cannot allocate work.
+		expect(m.getInstructionSnapshotBySyncRunKey).toHaveBeenCalledWith(
+			"sync_1:run_a",
+			"proj_1",
+			"org_1",
+		);
+		expect(m.insertInstructionRepositorySyncRun).not.toHaveBeenCalled();
+		expect(m.resolveFreshRepoToken).not.toHaveBeenCalled();
+		expect(m.createInstructionSnapshot).not.toHaveBeenCalled();
 	});
 
 	it("a manual run acts as the requester and inserts its run row once, keyed by syncId:runId", async () => {

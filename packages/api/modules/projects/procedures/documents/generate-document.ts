@@ -135,6 +135,7 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 				promptId: input.promptId,
 				promptVersionId: input.promptVersionId,
 				currentDocument,
+				planEligible: true,
 			});
 		} catch (error) {
 			// One exception to the generalization below: a structured refusal

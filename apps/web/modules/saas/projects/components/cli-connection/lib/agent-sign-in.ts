@@ -27,8 +27,12 @@
  *   - Cursor: `cursor://anysphere.cursor-deeplink/mcp/install?name=...&config=`
  *     with the base64 of the server's JSON
  *     (https://cursor.com/docs/context/mcp/install-links).
- *   - Codex: `codex mcp add <name> --url <url>`, then `codex mcp login <name>`
- *     (https://developers.openai.com/codex/mcp).
+ *   - Codex: `codex mcp add <name> --url <url>`. For a server that answers
+ *     with an OAuth challenge, which a project's gateway does, the add itself
+ *     opens the browser and waits for the callback, so no `codex mcp login`
+ *     follows (https://developers.openai.com/codex/mcp; the CLI's own
+ *     registration in `packages/cli/src/lib/instructions/agent-mcp.ts` relies
+ *     on the same behaviour).
  */
 
 import { buildProjectResource } from "@repo/utils/oauth-project-resource";
@@ -137,12 +141,8 @@ export function codexServerName(projectId: string): string {
 	return editorServerName("", projectId);
 }
 
-export function buildCodexCommands(origin: string, projectId: string): string {
-	const name = codexServerName(projectId);
-	return [
-		`codex mcp add ${name} --url ${gatewayUrl(origin, projectId)}`,
-		`codex mcp login ${name}`,
-	].join("\n");
+export function buildCodexCommand(origin: string, projectId: string): string {
+	return `codex mcp add ${codexServerName(projectId)} --url ${gatewayUrl(origin, projectId)}`;
 }
 
 /**

@@ -47,6 +47,7 @@ export {
 	exchangeTokenForKey,
 	getSecureAIKey,
 	invalidateCachedKey,
+	TokenExchangeError,
 	validateTokenLocally,
 } from "./lib/client";
 // Token Issuance (Fabric-side)

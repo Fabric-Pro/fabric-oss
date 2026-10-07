@@ -17,7 +17,17 @@
  * - All exchanges are logged for auditing
  */
 
-import { DEFAULT_BASE_URLS, getAIModelWithMetadata } from "@repo/ai";
+import {
+	type AIModelMetadata,
+	DEFAULT_BASE_URLS,
+	getAIModelWithMetadata,
+} from "@repo/ai";
+import {
+	chatGptPlanExhaustedRefusal,
+	chatGptPlanReconnectRefusal,
+	getChatGptPlanAgentConfig,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	AI_TOKEN_HEADER,
 	getRemainingValidity,
@@ -41,11 +51,42 @@ interface ExchangeResponse {
 	jinaApiKey?: string;
 	/** For Azure AI Foundry - the user-defined deployment name */
 	deploymentName?: string;
+	/**
+	 * The ChatGPT plan behind `apiKey`, by its opaque key, when one serves the
+	 * agent (Fizzy #2770). Sent back in `excludeSources` after that plan
+	 * refuses a call as spent, to get another plan's token.
+	 */
+	planSource?: string;
+}
+
+// An opaque plan key from the agent: `user:<id>` or `org:<id>`. Only an
+// exclusion; one naming no plan of this token's member or organization
+// matches nothing in the resolver.
+const PLAN_SOURCE_KEY = /^(user|org):[\w-]{1,128}$/;
+
+/** The plans the agent asks to skip, read from an optional JSON body. */
+async function readExcludedSources(request: Request): Promise<string[]> {
+	try {
+		const body = (await request.json()) as { excludeSources?: unknown };
+		return Array.isArray(body?.excludeSources)
+			? body.excludeSources
+					.filter(
+						(key): key is string =>
+							typeof key === "string" &&
+							PLAN_SOURCE_KEY.test(key),
+					)
+					.slice(0, 20)
+			: [];
+	} catch {
+		return [];
+	}
 }
 
 interface ErrorResponse {
 	error: string;
 	code?: string;
+	/** A spent ChatGPT plan window's reset time, when known. */
+	resetAt?: string | null;
 }
 
 /**
@@ -109,15 +150,48 @@ export async function POST(
 			remainingValidity: getRemainingValidity(claims),
 		});
 
+		const excludePlanSources = await readExcludedSources(request);
+
 		// Get AI model with metadata using centralized entry point
 		// This handles provider resolution, model selection, and usage tracking
 		let modelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
 		try {
-			modelResult = await getAIModelWithMetadata(
-				{ taskType: "COMPLEX" },
-				{ userId, organizationId },
-			);
+			const resolve = () =>
+				getAIModelWithMetadata(
+					{ taskType: "COMPLEX" },
+					// Only a token minted for the member's own interactive work
+					// may resolve their ChatGPT plan (Fizzy #2939).
+					{
+						userId,
+						organizationId,
+						planEligible: claims.pe === true,
+						...(excludePlanSources.length > 0 && {
+							excludePlanSources,
+						}),
+					},
+				);
+			// Minted while an admin acted as the member: resolved as that same
+			// impersonated request, which the plan gate refuses outright — even
+			// for work the member let run on their plan in the background.
+			modelResult = claims.imp
+				? await runWithAiInteractiveContext(
+						{ userId, impersonated: true },
+						resolve,
+					)
+				: await resolve();
 		} catch (error) {
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return NextResponse.json(reconnect.body, {
+					status: reconnect.status,
+				});
+			}
+			const exhausted = chatGptPlanExhaustedRefusal(error);
+			if (exhausted) {
+				return NextResponse.json(exhausted.body, {
+					status: exhausted.status,
+				});
+			}
 			console.warn("[AI Exchange] No AI provider configured", {
 				userId,
 				organizationId,
@@ -136,6 +210,17 @@ export async function POST(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
+		if (metadata.provider === "OPENAI_CHATGPT_PLAN") {
+			return exchangeChatGptPlan({
+				userId,
+				source: metadata.planSource,
+				model: metadata.modelString,
+				tokenValiditySeconds: getRemainingValidity(claims),
+				billingMode: metadata.billingMode,
+				jinaApiKey: await lookupJinaApiKey(userId, organizationId),
+			});
+		}
+
 		// Get the raw API key for external services
 		// We need to get this separately since getAIModelWithMetadata uses it internally
 		const { getRAGProviderConfig } = await import("@repo/ai");
@@ -153,22 +238,7 @@ export async function POST(
 		// Calculate remaining token validity
 		const expiresIn = getRemainingValidity(claims);
 
-		// Look up Jina API key for web search/scraping (optional)
-		let jinaApiKey: string | undefined;
-		try {
-			const jinaConfig = await getSearchProviderConfig({
-				userId,
-				organizationId,
-				providerName: "jina",
-			});
-			if (jinaConfig?.encryptedApiKey) {
-				jinaApiKey = decryptApiKey(jinaConfig.encryptedApiKey);
-				console.log("[AI Exchange] Jina API key found for user");
-			}
-		} catch (error) {
-			// Non-critical - Jina key is optional
-			console.warn("[AI Exchange] Failed to get Jina API key:", error);
-		}
+		const jinaApiKey = await lookupJinaApiKey(userId, organizationId);
 
 		// Return the exchange result with full provider configuration
 		// Use the resolved provider which may differ from the user's default
@@ -229,6 +299,82 @@ export async function POST(
 			{ status: 500 },
 		);
 	}
+}
+
+/** Jina AI API key for web search/scraping, when the user configured one. */
+async function lookupJinaApiKey(
+	userId: string,
+	organizationId: string | undefined,
+): Promise<string | undefined> {
+	try {
+		const jinaConfig = await getSearchProviderConfig({
+			userId,
+			organizationId,
+			providerName: "jina",
+		});
+		if (jinaConfig?.encryptedApiKey) {
+			console.log("[AI Exchange] Jina API key found for user");
+			return decryptApiKey(jinaConfig.encryptedApiKey);
+		}
+	} catch (error) {
+		// Non-critical - Jina key is optional
+		console.warn("[AI Exchange] Failed to get Jina API key:", error);
+	}
+	return undefined;
+}
+
+// Handed-over plan tokens stop being served this long before they expire, so
+// an agent never starts a call with one about to lapse.
+const PLAN_TOKEN_EXPIRY_MARGIN_SECONDS = 60;
+
+/**
+ * A ChatGPT plan — the member's own or an organization's shared account: the
+ * server-refreshed access token stands in for the provider key. It is never paired with the organization's key or base
+ * URL, and the agent's cache of it ends before the token does.
+ */
+async function exchangeChatGptPlan(params: {
+	userId: string;
+	source: AIModelMetadata["planSource"];
+	model: string;
+	tokenValiditySeconds: number;
+	billingMode: string;
+	jinaApiKey: string | undefined;
+}): Promise<NextResponse<ExchangeResponse | ErrorResponse>> {
+	const plan = await getChatGptPlanAgentConfig({
+		userId: params.userId,
+		model: params.model,
+		source: params.source,
+	});
+	if (!plan.ok) {
+		return NextResponse.json(
+			{
+				error: plan.error,
+				code: plan.code,
+				resetAt: plan.resetAt ?? null,
+			},
+			{ status: plan.status },
+		);
+	}
+	const tokenSeconds = Math.floor(
+		(plan.expiresAt.getTime() - Date.now()) / 1000 -
+			PLAN_TOKEN_EXPIRY_MARGIN_SECONDS,
+	);
+	console.log("[AI Exchange] Token exchange successful", {
+		provider: plan.config.provider,
+		model: plan.config.model,
+	});
+	return NextResponse.json({
+		apiKey: plan.config.apiKey,
+		provider: plan.config.provider,
+		model: plan.config.model,
+		expiresIn: Math.max(
+			0,
+			Math.min(params.tokenValiditySeconds, tokenSeconds),
+		),
+		billingMode: params.billingMode,
+		planSource: plan.planSource,
+		...(params.jinaApiKey && { jinaApiKey: params.jinaApiKey }),
+	});
 }
 
 /**

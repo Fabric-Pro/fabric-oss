@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isRepositoryTreeProvider,
 	listRepositoryTree,
+	listRepositoryTreeAtCommit,
 	MAX_REPOSITORY_TREE_ENTRIES,
 } from "../repository-tree";
 
@@ -26,12 +27,12 @@ afterEach(() => {
 // Distinctive and token-shaped, so a leak assertion cannot pass by accident.
 const SECRET_TOKEN = "ghs_example_tree_secret";
 
-function jsonResponse(status: number, body: unknown = {}) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		json: async () => body,
-	};
+function jsonResponse(
+	status: number,
+	body: unknown = {},
+	headers: HeadersInit = {},
+) {
+	return new Response(JSON.stringify(body), { status, headers });
 }
 
 const githubInput = {
@@ -74,6 +75,36 @@ function expectPlain(paths: string[]) {
 }
 
 describe("listRepositoryTree — GitHub", () => {
+	it("refuses and cancels an oversized tree body before parsing it", async () => {
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(
+					new TextEncoder().encode(
+						JSON.stringify({
+							tree: [
+								{
+									path: "a".repeat(17 * 1024 * 1024),
+									type: "blob",
+								},
+							],
+						}),
+					),
+				);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		mockFetch.mockResolvedValueOnce(new Response(body));
+
+		await expect(listRepositoryTree(githubInput)).resolves.toEqual({
+			ok: false,
+			outcome: "unreachable",
+		});
+		expect(cancelled).toBe(true);
+	});
+
 	it("lists blobs as files and trees as dirs in provider order, dropping submodules", async () => {
 		mockFetch.mockResolvedValue(
 			jsonResponse(200, {
@@ -136,6 +167,42 @@ describe("listRepositoryTree — GitHub", () => {
 				{ path: "linked.md", type: "file", regular: false },
 				{ path: "docs/odd-mode.md", type: "file", regular: false },
 				{ path: "legacy.md", type: "file" },
+			],
+			truncated: false,
+		});
+	});
+
+	it("keeps provider blob metadata when the pinned tree reports it", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, {
+				truncated: false,
+				tree: [
+					{
+						path: "AGENTS.md",
+						type: "blob",
+						sha: "b".repeat(40),
+						size: 42,
+						mode: "100644",
+					},
+				],
+			}),
+		);
+
+		expect(
+			await listRepositoryTreeAtCommit({
+				...githubInput,
+				sha: "a".repeat(40),
+			}),
+		).toEqual({
+			ok: true,
+			entries: [
+				{
+					path: "AGENTS.md",
+					type: "file",
+					blobId: "b".repeat(40),
+					size: 42,
+					mode: "100644",
+				},
 			],
 			truncated: false,
 		});
@@ -326,6 +393,77 @@ describe("listRepositoryTree — GitHub", () => {
 });
 
 describe("listRepositoryTree — Azure DevOps", () => {
+	it("pins a tree to the requested commit instead of following the branch", async () => {
+		const commit = "a".repeat(40);
+		const tree = "b".repeat(40);
+		mockFetch
+			.mockResolvedValueOnce(jsonResponse(200, { treeId: tree }))
+			.mockResolvedValueOnce(jsonResponse(200, { treeEntries: [] }));
+
+		await listRepositoryTreeAtCommit({
+			...adoInput,
+			sha: commit,
+		});
+
+		const commitUrl = new URL(mockFetch.mock.calls[0]?.[0] as string);
+		expect(commitUrl.pathname).toContain(`/commits/${commit}`);
+		expect(commitUrl.searchParams.get("api-version")).toBe("7.1");
+		const treeUrl = new URL(mockFetch.mock.calls[1]?.[0] as string);
+		expect(treeUrl.pathname).toContain(`/trees/${tree}`);
+		expect(treeUrl.searchParams.get("recursive")).toBe("true");
+	});
+
+	it("uses Git Trees metadata at a pinned commit, including executable and symbolic-link modes", async () => {
+		mockFetch
+			.mockResolvedValueOnce(
+				jsonResponse(200, { treeId: "b".repeat(40) }),
+			)
+			.mockResolvedValueOnce(
+				jsonResponse(200, {
+					treeEntries: [
+						{
+							relativePath: "scripts/check.sh",
+							gitObjectType: "blob",
+							objectId: "c".repeat(40),
+							mode: "100755",
+							size: 12,
+						},
+						{
+							relativePath: "linked.md",
+							gitObjectType: "blob",
+							objectId: "d".repeat(40),
+							mode: "120000",
+							size: 4,
+						},
+					],
+				}),
+			);
+
+		await expect(
+			listRepositoryTreeAtCommit({ ...adoInput, sha: "a".repeat(40) }),
+		).resolves.toEqual({
+			ok: true,
+			entries: [
+				{
+					path: "scripts/check.sh",
+					type: "file",
+					blobId: "c".repeat(40),
+					mode: "100755",
+					size: 12,
+				},
+				{
+					path: "linked.md",
+					type: "file",
+					blobId: "d".repeat(40),
+					mode: "120000",
+					size: 4,
+					regular: false,
+				},
+			],
+			truncated: false,
+		});
+	});
+
 	it("strips the leading slash, skips the root, maps isFolder to dir and drops submodules", async () => {
 		mockFetch.mockResolvedValue(
 			jsonResponse(200, {
@@ -480,6 +618,97 @@ describe("listRepositoryTree — GitLab", () => {
 		expect(isRepositoryTreeProvider("AZURE_DEVOPS")).toBe(true);
 		expect(isRepositoryTreeProvider("GITLAB")).toBe(false);
 		expect(isRepositoryTreeProvider("BITBUCKET")).toBe(false);
+	});
+
+	it("lists a bounded pinned commit tree without changing legacy branch preview", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, [
+				{
+					path: "AGENTS.md",
+					type: "blob",
+					id: "b".repeat(40),
+					mode: "100644",
+				},
+			]),
+		);
+
+		expect(
+			await listRepositoryTreeAtCommit({
+				...gitlabInput,
+				sha: "a".repeat(40),
+			}),
+		).toEqual({
+			ok: true,
+			entries: [
+				{
+					path: "AGENTS.md",
+					type: "file",
+					blobId: "b".repeat(40),
+					mode: "100644",
+				},
+			],
+			truncated: false,
+		});
+		const [url] = mockFetch.mock.calls[0] as [string];
+		const parsed = new URL(url);
+		expect(parsed.searchParams.get("ref")).toBe("a".repeat(40));
+		expect(parsed.searchParams.get("recursive")).toBe("true");
+	});
+
+	it("follows the provider's bounded pagination at a pinned commit", async () => {
+		mockFetch
+			.mockResolvedValueOnce(
+				jsonResponse(
+					200,
+					[{ path: "AGENTS.md", type: "blob", id: "first" }],
+					{ "x-next-page": "3" },
+				),
+			)
+			.mockResolvedValueOnce(
+				jsonResponse(200, [
+					{ path: "docs/RUNBOOK.md", type: "blob", id: "second" },
+				]),
+			);
+
+		const result = await listRepositoryTreeAtCommit({
+			...gitlabInput,
+			sha: "a".repeat(40),
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			entries: [
+				{ path: "AGENTS.md", type: "file", blobId: "first" },
+				{ path: "docs/RUNBOOK.md", type: "file", blobId: "second" },
+			],
+		});
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		const secondUrl = new URL(mockFetch.mock.calls[1]?.[0] as string);
+		expect(secondUrl.searchParams.get("page")).toBe("3");
+	});
+
+	it("bounds malformed provider pages even when no entry is usable", async () => {
+		mockFetch.mockImplementation((url: string) => {
+			const page = new URL(url).searchParams.get("page") ?? "1";
+			return Promise.resolve(
+				jsonResponse(
+					200,
+					Array.from({ length: 100 }, () => ({
+						path: "",
+						type: "blob",
+					})),
+					{ "x-next-page": String(Number(page) + 1) },
+				),
+			);
+		});
+
+		await expect(
+			listRepositoryTreeAtCommit({
+				...gitlabInput,
+				sha: "a".repeat(40),
+			}),
+		).resolves.toEqual({ ok: true, entries: [], truncated: true });
+		expect(mockFetch).toHaveBeenCalledTimes(200);
 	});
 });
 

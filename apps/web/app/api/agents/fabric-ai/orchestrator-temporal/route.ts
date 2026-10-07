@@ -14,6 +14,11 @@
 
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
+import {
+	chatGptPlanExhaustedChatResponse,
+	chatGptPlanReconnectRefusal,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
 	abandonConversationTurnStart,
@@ -76,6 +81,12 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 
@@ -240,8 +251,8 @@ export async function POST(request: NextRequest) {
 
 		// ✅ Security: a named conversation must be the caller's own in this
 		// organization — checked here, before either starter is chosen, so a
-		// run with no turn (a planner mode skips admission, which re-checks
-		// it) cannot carry another user's or organization's conversation into
+		// run with no turn (Weave skips admission, which re-checks it)
+		// cannot carry another user's or organization's conversation into
 		// completion and memory.
 		if (conversationId) {
 			const owned = await db.agentConversation.findFirst({
@@ -267,8 +278,8 @@ export async function POST(request: NextRequest) {
 
 		// Admit the turn through the durable record before anything billed:
 		// the same creation path as the stream route (./turn-admission.ts).
-		// A planner mode (`save_reuse`, `weave`) gets no turn and the legacy
-		// start (see `executionModeUsesTurns`).
+		// Weave gets no turn and the legacy start (the Planner, `save_reuse`,
+		// runs as a turn like every other mode; see `executionModeUsesTurns`).
 		const usesTurn = executionModeUsesTurns(executionMode);
 		const admission = usesTurn
 			? await admitChatTurn({
@@ -314,13 +325,26 @@ export async function POST(request: NextRequest) {
 			// that never happens. The Temporal activity carries the tag.
 			aiModelResult = await getAIModelWithMetadata(
 				{ taskType: "TOOL_CALLING" },
-				{ userId, organizationId },
+				{ userId, organizationId, planEligible: true },
 			);
 		} catch (error) {
 			// AI usage-limit chokepoint hit a HARD limit.
 			// Surface the rich payload so the
 			// orchestrator launcher renders the shared destructive
 			// toast instead of a generic AI_GATEWAY_MISSING error card.
+			// The member's plan is on here but needs reconnecting: refuse rather
+			// than bill the organization (Fizzy #2939).
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return new Response(JSON.stringify(reconnect.body), {
+					status: reconnect.status,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const exhausted = chatGptPlanExhaustedChatResponse(error);
+			if (exhausted) {
+				return exhausted;
+			}
 			if (error instanceof AiUsageLimitExceededError) {
 				return new Response(
 					JSON.stringify({
@@ -424,6 +448,9 @@ export async function POST(request: NextRequest) {
 			message,
 			history,
 			userId,
+			// A person typed this turn, so its AI steps may run on their own
+			// ChatGPT plan where they turned it on (Fizzy #2939).
+			planEligible: true,
 			organizationId,
 			executionMode,
 			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,

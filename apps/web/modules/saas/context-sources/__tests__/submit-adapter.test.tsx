@@ -157,6 +157,7 @@ function StubOwnerForms({
 		organizationId: "org-1",
 		organizationSlug: "example-org",
 		requireKnowledgeBaseCategory: false,
+		allowLiveRefresh: true,
 		onSourceAdded,
 		onComplete,
 	});

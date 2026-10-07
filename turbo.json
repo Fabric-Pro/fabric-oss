@@ -1,5 +1,13 @@
 {
 	"$schema": "https://turbo.build/schema.json",
+	// Turbo also hashes the files of every workspace package the root
+	// package.json depends on, and of their workspace dependencies, into
+	// every task's hash. Keep application packages out of the root's
+	// dependencies: when the root depended on @repo/temporal, any edit in
+	// temporal or any of the ~25 packages it imports (database, ai, mcp, …)
+	// changed every hash, and each PR's Vitest jobs re-ran the ~3.5 min
+	// Prisma generate. Code that needs temporal without declaring it (root
+	// scripts, the database seed) imports it by relative path instead.
 	"globalDependencies": ["**/.env.*local"],
 	"globalEnv": [
 		"NODE_ENV",
@@ -157,8 +165,16 @@
 			// *.json stays live regardless (the base tsconfig sets
 			// `resolveJsonModule`), as do test files — @repo/temporal and
 			// @repo/database deliberately type-check theirs.
+			//
+			// The `type-check` scripts run `tsgo` from tooling/tsgo, a root
+			// dependency no package declares itself, so its manifest (which pins
+			// the TypeScript 7 version) and its wrapper are named here: a
+			// compiler change must re-check every package rather than replay
+			// results from the old one.
 			"inputs": [
 				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/tooling/tsgo/package.json",
+				"$TURBO_ROOT$/tooling/tsgo/bin/tsgo.mjs",
 				"!**/*.md",
 				"!**/*.mdx",
 				"!**/*.css",
@@ -226,8 +242,11 @@
 			// invocation. Do not re-merge them.
 			"dependsOn": ["typegen", "generate", "^generate", "^build"],
 			"outputs": [],
+			// Same list as the generic `type-check` task, tsgo files included.
 			"inputs": [
 				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/tooling/tsgo/package.json",
+				"$TURBO_ROOT$/tooling/tsgo/bin/tsgo.mjs",
 				"!**/*.md",
 				"!**/*.mdx",
 				"!**/*.css",
@@ -261,6 +280,14 @@
 			"cache": false
 		},
 		"generate": {
+			// `^generate` makes generation transitive. `test` and `type-check`
+			// depend on `^generate`, which schedules `generate` only in a
+			// package's DIRECT dependencies, so a package that reaches
+			// @repo/database through another package (weave-readers via
+			// @repo/ai) never had the Prisma client generated unless some other
+			// package in the same run depended on the database directly. With
+			// this, each package's generate waits for its dependencies'.
+			"dependsOn": ["^generate"],
 			// prisma/zod/** is tracked source, but it must still be a declared
 			// output: this task's generate pipeline rewrites the barrel (raw
 			// generation, then the fix-zod-imports repair), so a cache hit

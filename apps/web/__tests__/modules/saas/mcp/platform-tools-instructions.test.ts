@@ -11,12 +11,21 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: (...args: unknown[]) =>
+		m.getDirectRepositoryState(...args),
+	listDirectRepositoryFilesForApi: (...args: unknown[]) =>
+		m.listDirectRepositoryFiles(...args),
+}));
+
 const m = vi.hoisted(() => ({
+	getDirectRepositoryState: vi.fn(),
+	listDirectRepositoryFiles: vi.fn(),
 	getProjectAccessContext: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	submitInstructionChange: vi.fn(),
 	getPublishedInstructionSnapshot: vi.fn(),
-	getPublishedInstructionSummariesForProjects: vi.fn(),
+	getInstructionSummariesForProjects: vi.fn(),
 	getInstructionManifestDiff: vi.fn(),
 	listInstructionFiles: vi.fn(),
 	getInstructionFileByPath: vi.fn(),
@@ -35,8 +44,7 @@ vi.mock("@repo/database", () => ({
 	Permissions: { INSTRUCTION_READ: "instruction:read" },
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
-	getPublishedInstructionSummariesForProjects:
-		m.getPublishedInstructionSummariesForProjects,
+	getInstructionSummariesForProjects: m.getInstructionSummariesForProjects,
 	getInstructionManifestDiff: m.getInstructionManifestDiff,
 	listInstructionFiles: m.listInstructionFiles,
 	getInstructionFileByPath: m.getInstructionFileByPath,
@@ -106,6 +114,10 @@ beforeEach(() => {
 		source: "project-member",
 		organizationId: "org_1",
 	});
+	m.getDirectRepositoryState.mockResolvedValue({
+		availability: "UPLOAD",
+		readState: "DIRECT",
+	});
 	// Fizzy #2709: every existing fixture here describes an UPLOAD snapshot
 	// (no repository-sync fields), so this is the shared default; the tests
 	// that cover a REPOSITORY-published snapshot override it explicitly.
@@ -117,6 +129,124 @@ beforeEach(() => {
 	// project's current repository-sync configuration; every existing
 	// fixture here is upload-sourced, so `null` is the shared default.
 	m.resolveCurrentInstructionRepository.mockResolvedValue(null);
+});
+
+describe("native repository instruction writes", () => {
+	const nativeBase = { generation: 7, commitSha: "a".repeat(40) };
+	const args = {
+		projectId: "proj_1",
+		nativeBase,
+		changes: [{ op: "put", path: "AGENTS.md", content: "new\r\n" }],
+		note: { title: "Fix instructions" },
+		mode: "publish",
+	};
+	beforeEach(() => {
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
+		m.submitInstructionChange.mockResolvedValue({
+			snapshotId: "intent_1",
+			nativeBase,
+			putCount: 1,
+			deleteCount: 0,
+			status: "READY",
+			proposalStatus: "PENDING",
+		});
+	});
+	it("submits a native PR suggestion with the exact base and cannot promote itself to publish", async () => {
+		const result = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			args,
+			writeSession,
+		);
+		expect(result.isError).toBeFalsy();
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				nativeBase,
+				mode: "proposal",
+				note: args.note,
+				changes: [{ ...args.changes[0], encoding: "utf8" }],
+			}),
+		);
+		expect(m.submitInstructionChange.mock.calls[0]?.[0]).not.toHaveProperty(
+			"baseSnapshotId",
+		);
+		const body = JSON.parse(result.content[0]!.text);
+		expect(body.proposal).toMatchObject({
+			operationId: "intent_1",
+			nativeBase,
+		});
+		expect(body.proposal).not.toHaveProperty("snapshotId");
+		expect(body.proposal).not.toHaveProperty("version");
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+	it("rejects conflicting bases before admission", async () => {
+		const result = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			{ ...args, baseSnapshotId: "snap_1" },
+			writeSession,
+		);
+		expect(result.isError).toBe(true);
+		expect(m.submitInstructionChange).not.toHaveBeenCalled();
+	});
+	it("does not release a result after project access is revoked during admission", async () => {
+		m.submitInstructionChange.mockImplementation(async () => {
+			m.getProjectAccessContext.mockResolvedValue(null);
+			return {
+				snapshotId: "intent_1",
+				nativeBase,
+				putCount: 1,
+				deleteCount: 0,
+				status: "READY",
+				proposalStatus: "PENDING",
+			};
+		});
+		const result = await executePlatformTool(
+			"fabric_propose_project_instruction_change",
+			args,
+			writeSession,
+		);
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toContain("not found or access denied");
+		expect(JSON.stringify(result)).not.toContain("intent_1");
+	});
+	it("adds a repository lesson using only native paths, with no full snapshot read", async () => {
+		m.getDirectRepositoryState.mockResolvedValue({
+			availability: "READY",
+			readState: "DIRECT",
+			currentCommitSha: nativeBase.commitSha,
+			generation: nativeBase.generation,
+		});
+		m.listDirectRepositoryFiles.mockResolvedValue({
+			files: [],
+			incomplete: false,
+			refusal: null,
+		});
+		const result = await executePlatformTool(
+			"fabric_add_instruction_lesson",
+			{
+				projectId: "proj_1",
+				title: "Verify the base",
+				body: "Check Git before submitting.",
+			},
+			writeSession,
+		);
+		expect(result.isError).toBeFalsy();
+		expect(m.submitInstructionChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				nativeBase,
+				mode: "proposal",
+				changes: [
+					expect.objectContaining({
+						op: "put",
+						path: expect.stringMatching(/^Lessons\//),
+					}),
+				],
+			}),
+		);
+		expect(m.listInstructionFiles).not.toHaveBeenCalled();
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
 });
 
 describe("fabric_list_project_instructions", () => {
@@ -432,7 +562,7 @@ describe("the live INSTRUCTION_READ check", () => {
 		);
 
 		expect(r.isError).toBeFalsy();
-		expect(m.resolveEffectiveProjectPermissions).toHaveBeenCalledTimes(1);
+		expect(m.resolveEffectiveProjectPermissions).toHaveBeenCalledTimes(3);
 	});
 
 	it("leaves the proposal tool's gate unchanged: it does not resolve the permission", async () => {
@@ -1179,6 +1309,9 @@ describe("codingInstructions on project responses", () => {
 
 	beforeEach(() => {
 		m.getProjectSummaryById.mockResolvedValue(PROJECT);
+		m.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org_1",
+		});
 		m.listProjects.mockResolvedValue({
 			projects: [PROJECT],
 			total: 1,
@@ -1187,7 +1320,7 @@ describe("codingInstructions on project responses", () => {
 	});
 
 	it("carries the published snapshot's summary on fabric_get_project", async () => {
-		m.getPublishedInstructionSummariesForProjects.mockResolvedValue(
+		m.getInstructionSummariesForProjects.mockResolvedValue(
 			new Map([["proj_1", PUBLISHED]]),
 		);
 
@@ -1206,8 +1339,51 @@ describe("codingInstructions on project responses", () => {
 		expect(body.status).toBe("ACTIVE");
 	});
 
+	it("discovers a direct repository without advertising a historical snapshot", async () => {
+		m.getInstructionSummariesForProjects.mockResolvedValue(
+			new Map([
+				[
+					"proj_1",
+					{
+						source: "repository",
+						repository: {
+							provider: "GITHUB",
+							host: "github.com",
+							path: "example-org/instructions",
+							cloneUrl:
+								"https://github.com/example-org/instructions.git",
+							ref: "main",
+							rootPath: "",
+							generation: 3,
+						},
+					},
+				],
+			]),
+		);
+		const body = await getProject(["mcp:read"]);
+		expect(body.codingInstructions).toMatchObject({
+			source: "repository",
+			repository: { generation: 3, ref: "main" },
+		});
+		expect(body.codingInstructions).not.toHaveProperty("digest");
+		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("omits instruction metadata when the credential's user loses instruction read", async () => {
+		m.getInstructionSummariesForProjects.mockResolvedValue(
+			new Map([["proj_1", PUBLISHED]]),
+		);
+		m.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			organizationId: "org_1",
+		});
+		expect(await getProject(["*"])).not.toHaveProperty(
+			"codingInstructions",
+		);
+	});
+
 	it("carries it on every project fabric_list_projects returns, in one query", async () => {
-		m.getPublishedInstructionSummariesForProjects.mockResolvedValue(
+		m.getInstructionSummariesForProjects.mockResolvedValue(
 			new Map([["proj_1", PUBLISHED]]),
 		);
 
@@ -1227,12 +1403,10 @@ describe("codingInstructions on project responses", () => {
 		});
 		expect(body.total).toBe(1);
 		expect(body.hasMore).toBe(false);
-		expect(
-			m.getPublishedInstructionSummariesForProjects,
-		).toHaveBeenCalledTimes(1);
-		expect(
-			m.getPublishedInstructionSummariesForProjects,
-		).toHaveBeenCalledWith(["proj_1"]);
+		expect(m.getInstructionSummariesForProjects).toHaveBeenCalledTimes(1);
+		expect(m.getInstructionSummariesForProjects).toHaveBeenCalledWith([
+			"proj_1",
+		]);
 	});
 
 	// A project guest who IS in the session's organization — which is the
@@ -1244,7 +1418,7 @@ describe("codingInstructions on project responses", () => {
 	// rather than assuming it: a cross-organization guest reaches the
 	// instruction tools directly, not through this field.
 	it("carries it for an invited guest inside the session's own organization", async () => {
-		m.getPublishedInstructionSummariesForProjects.mockResolvedValue(
+		m.getInstructionSummariesForProjects.mockResolvedValue(
 			new Map([["proj_1", PUBLISHED]]),
 		);
 
@@ -1277,7 +1451,7 @@ describe("codingInstructions on project responses", () => {
 	// organization is not the project's — are all reported identically, so a
 	// caller cannot tell a mis-tenanted snapshot from an absent one.
 	it("says published:false when the query has no summary for the project", async () => {
-		m.getPublishedInstructionSummariesForProjects.mockResolvedValue(
+		m.getInstructionSummariesForProjects.mockResolvedValue(
 			new Map([["proj_1", null]]),
 		);
 
@@ -1287,9 +1461,7 @@ describe("codingInstructions on project responses", () => {
 	});
 
 	it("says published:false when the project is absent from the map entirely", async () => {
-		m.getPublishedInstructionSummariesForProjects.mockResolvedValue(
-			new Map(),
-		);
+		m.getInstructionSummariesForProjects.mockResolvedValue(new Map());
 
 		expect((await getProject(["mcp:read"])).codingInstructions).toEqual({
 			published: false,
@@ -1301,9 +1473,7 @@ describe("codingInstructions on project responses", () => {
 
 		expect(body.id).toBe("proj_1");
 		expect("codingInstructions" in body).toBe(false);
-		expect(
-			m.getPublishedInstructionSummariesForProjects,
-		).not.toHaveBeenCalled();
+		expect(m.getInstructionSummariesForProjects).not.toHaveBeenCalled();
 	});
 
 	it("omits the key on fabric_list_projects for that same key", async () => {
@@ -1315,9 +1485,7 @@ describe("codingInstructions on project responses", () => {
 		const body = JSON.parse(r.content[0]!.text);
 
 		expect("codingInstructions" in body.projects[0]).toBe(false);
-		expect(
-			m.getPublishedInstructionSummariesForProjects,
-		).not.toHaveBeenCalled();
+		expect(m.getInstructionSummariesForProjects).not.toHaveBeenCalled();
 	});
 });
 
@@ -1759,18 +1927,28 @@ describe("fabric_propose_project_instruction_change", () => {
 
 		expect(r.isError).toBe(true);
 		const text = JSON.stringify(r);
-		expect(text).toContain("baseSnapshotId is required");
-		expect(text).toContain("fabric_get_project_instruction_bundle");
+		expect(text).toContain("nativeBase for repository instructions");
+		expect(text).toContain("baseSnapshotId for uploaded instructions");
 		expect(m.submitInstructionChange).not.toHaveBeenCalled();
 	});
 
-	it("declares baseSnapshotId required in its schema", () => {
+	it("requires exactly one native or snapshot base in its schema", () => {
 		const tool = PLATFORM_TOOL_DEFINITIONS.find(
 			(t) => t.name === "fabric_propose_project_instruction_change",
 		);
-		expect(
-			(tool?.inputSchema as { required?: string[] }).required,
-		).toContain("baseSnapshotId");
+		expect(tool?.inputSchema).toMatchObject({
+			required: ["projectId", "changes"],
+			oneOf: [
+				{
+					required: ["nativeBase"],
+					not: { required: ["baseSnapshotId"] },
+				},
+				{
+					required: ["baseSnapshotId"],
+					not: { required: ["nativeBase"] },
+				},
+			],
+		});
 	});
 
 	// The id an agent needs has to be in something it already calls. Both read
@@ -3039,7 +3217,7 @@ describe("note parity and the pull-request block (Fizzy #2563)", () => {
 		"fabric_propose_project_instruction_change",
 		"fabric_add_instruction_lesson",
 	])(
-		"%s declares an optional note and says a repository-backed project gets a pull request",
+		"%s declares an optional note and a repository suggestion reviewed in the provider",
 		(name) => {
 			const tool = PLATFORM_TOOL_DEFINITIONS.find((t) => t.name === name);
 			const schema = tool?.inputSchema as {
@@ -3054,8 +3232,12 @@ describe("note parity and the pull-request block (Fizzy #2563)", () => {
 				},
 			});
 			expect(schema.required).not.toContain("note");
-			expect(tool?.description).toContain("pull request");
-			expect(tool?.description).toContain("awaiting review");
+			expect(tool?.description).toContain("uploaded instructions");
+			expect(tool?.description).toContain("configured provider");
+			expect(tool?.description).toMatch(/pull[ -]request/);
+			expect(tool?.description).not.toContain(
+				"Fabric does not create a repository",
+			);
 		},
 	);
 

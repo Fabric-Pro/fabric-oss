@@ -1,5 +1,16 @@
 # @fabricorg/sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- 436db8c: Read repository coding instructions directly from Git with native commit history and pull request links, preserving existing checkouts and local changes during agent setup.
+
+### Patch Changes
+
+- 436db8c: Restore coding-tool setup and file actions for Git-backed instructions served through Fabric, preserve existing checkout changes, and improve download performance and cancellation.
+- 436db8c: The Fabric SDK, SDK MCP server and integration packages are now built with tsdown instead of tsup, with the same entry points, exports and ES2015 output; `@fabricorg/sdk-mcp` also exports its `FabricLike` client type.
+
 ## 0.4.1
 
 ### Patch Changes

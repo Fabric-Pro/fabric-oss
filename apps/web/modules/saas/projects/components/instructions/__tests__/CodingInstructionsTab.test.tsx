@@ -40,6 +40,8 @@ const IDLE_SYNC = {
 };
 
 const state = vi.hoisted(() => ({
+	repositoryAvailability: "UPLOAD",
+	repositoryCalls: 0,
 	snapshots: [] as unknown[],
 	published: null as unknown,
 	sync: null as unknown,
@@ -79,6 +81,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				repository: {
+					getState: {
+						queryOptions: queryOptionsStub(
+							"repository-getState",
+							async () => {
+								state.repositoryCalls++;
+								return {
+									availability: state.repositoryAvailability,
+								};
+							},
+						),
+					},
+				},
 				list: {
 					queryOptions: queryOptionsStub("list", async () => {
 						state.listCalls++;
@@ -169,6 +184,24 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 
 vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
+}));
+
+vi.mock("../DirectRepositoryInstructions", () => ({
+	DirectRepositoryInstructions: ({
+		onRefresh,
+		canConfigure,
+	}: {
+		onRefresh: () => void;
+		canConfigure: boolean;
+	}) => (
+		<button
+			type="button"
+			onClick={onRefresh}
+			data-testid="direct-repository"
+		>
+			{String(canConfigure)}
+		</button>
+	),
 }));
 
 vi.mock("../InstructionsPublishedView", async () => {
@@ -295,6 +328,9 @@ function Wrapper({ children }: { children: ReactNode }) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	client.setQueryData(["repository-getState", { projectId: "p" }], {
+		availability: state.repositoryAvailability,
+	});
 	return (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
 	);
@@ -302,6 +338,8 @@ function Wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	state.repositoryAvailability = "UPLOAD";
+	state.repositoryCalls = 0;
 	state.snapshots = [snapshot("snap_2", "VALIDATING")];
 	state.published = { id: "snap_1", version: 1, status: "READY" };
 	state.sync = IDLE_SYNC;
@@ -321,6 +359,53 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
+});
+
+describe("direct repository dispatch", () => {
+	it("polls the repository head once a minute and refreshes it on demand, without mounting snapshot or sync polling", async () => {
+		state.repositoryAvailability = "READY";
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Example"
+				canEdit
+			/>,
+			{
+				wrapper: Wrapper,
+			},
+		);
+		await tick(1);
+		expect(screen.getByTestId("direct-repository").textContent).toBe(
+			"true",
+		);
+		const reads = state.repositoryCalls;
+		await tick(IDLE_POLL_MS * 2);
+		expect(state.repositoryCalls).toBe(reads + 2);
+		fireEvent.click(screen.getByTestId("direct-repository"));
+		await tick(1);
+		expect(state.repositoryCalls).toBe(reads + 3);
+		expect(state.listCalls).toBe(0);
+		expect(state.publishedCalls).toBe(0);
+		expect(state.syncCalls).toBe(0);
+		expect(state.listRunsCalls).toBe(0);
+	});
+
+	it("disables repository configuration in project read-only mode", async () => {
+		state.repositoryAvailability = "READY";
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Example"
+				canEdit
+				readOnlyMode
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(1);
+		expect(screen.getByTestId("direct-repository").textContent).toBe(
+			"false",
+		);
+	});
 });
 
 describe("CodingInstructionsTab publication convergence", () => {

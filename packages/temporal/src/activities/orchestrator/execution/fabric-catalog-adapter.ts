@@ -11,6 +11,7 @@
  * one exists, else the plan-mode step handler for the tool.
  */
 
+import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../../workflows/orchestrator/company-context-tool-schemas";
 import {
 	FABRIC_CATALOG_DIRECT_BUILDER_ACCESS as DIRECT_BUILDER_TOOLS,
 	FABRIC_CATALOG_STEP_HANDLER_ACCESS as STEP_HANDLER_TOOLS,
@@ -91,6 +92,8 @@ interface FabricCatalogCall {
 	organizationId?: string;
 	projectId?: string;
 	attachedImageUrls?: string[];
+	/** The Advisor's company-context opt-in; see `ExecuteMcpToolInput`. */
+	companyContextAdvisor?: boolean;
 }
 
 type FabricCatalogResult =
@@ -130,6 +133,7 @@ async function runDirectBuilderTool(
 		userId: call.userId,
 		organizationId: call.organizationId,
 		projectId: call.projectId,
+		companyContextAdvisor: call.companyContextAdvisor,
 	};
 	// The catalog also runs code_tree and code_file_get, so code_search
 	// can point the model at them when its index is unavailable.
@@ -149,6 +153,14 @@ async function runDirectBuilderTool(
 		  }
 		| undefined;
 	if (!built?.execute) {
+		// The company context search needs no project; without the Advisor's
+		// opt-in it is simply not this chat's to run.
+		if (call.toolName === COMPANY_CONTEXT_SEARCH_TOOL_NAME) {
+			return {
+				success: false,
+				error: `Fabric tool "${call.toolName}" is not available in this chat.`,
+			};
+		}
 		return {
 			success: false,
 			error: call.projectId

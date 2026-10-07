@@ -49,6 +49,16 @@ export {
 	reconcileUrlSourceSchedulesActivity,
 } from "./reconcile-schedules-activity";
 export {
+	type RecordUrlPageFetchFailureActivityInput,
+	type RecordUrlPageFetchFailureActivityOutput,
+	recordUrlPageFetchFailureActivity,
+} from "./record-url-page-fetch-failure-activity";
+export {
+	type RecordUrlPageRetryFailureActivityInput,
+	type RecordUrlPageRetryFailureActivityOutput,
+	recordUrlPageRetryFailureActivity,
+} from "./record-url-page-retry-failure-activity";
+export {
 	type UpdateParentStatusActivityInput,
 	type UpdateParentStatusActivityOutput,
 	updateParentStatusActivity,

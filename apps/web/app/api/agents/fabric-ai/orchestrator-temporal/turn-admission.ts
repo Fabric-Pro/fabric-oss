@@ -663,8 +663,8 @@ export function isTerminalTurnStatus(
 }
 
 /**
- * Start a chat run that has no turn (a planner mode; see
- * `executionModeUsesTurns`): the legacy start, with a fresh execution id.
+ * Start a chat run that has no turn (Weave; see `executionModeUsesTurns`):
+ * the legacy start, with a fresh execution id.
  */
 export async function startLegacyChatWorkflow(args: {
 	temporalClient: TemporalClientLike;

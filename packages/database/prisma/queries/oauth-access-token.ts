@@ -23,6 +23,7 @@
 import {
 	type OAuthProjectAudience,
 	parseOAuthReference,
+	staticResourceFor,
 } from "@repo/utils/oauth-project-resource";
 import { db } from "../client";
 import { resolveOAuthProjectGrantTarget } from "./oauth-project-grant";
@@ -40,6 +41,7 @@ export {
 
 export type OAuthAccessTokenRefusal =
 	| "unknown"
+	| "revoked"
 	| "expired"
 	| "client_disabled"
 	| "user_banned"
@@ -80,11 +82,14 @@ const UNKNOWN: OAuthAccessTokenVerification = {
  * Verify a presented bearer value as an OAuth access token.
  *
  * Every refusal is a `valid: false` the caller turns into the same 401 an
- * invalid key gets, so a holder cannot tell a dead token from a departed
+ * invalid key gets. The receiving resource uses the deployment URL from trusted
+ * configuration, never the request URL or Host header. A holder cannot tell a dead
+ * token from a departed
  * person. The reason is for logs and tests only.
  */
 export async function verifyOAuthAccessToken(
 	presented: string,
+	resource: { appUrl: string; audience: OAuthProjectAudience },
 	now: Date = new Date(),
 ): Promise<OAuthAccessTokenVerification> {
 	if (!presented.startsWith(OAUTH_ACCESS_TOKEN_PREFIX)) {
@@ -102,7 +107,10 @@ export async function verifyOAuthAccessToken(
 			userId: true,
 			referenceId: true,
 			scopes: true,
+			resources: true,
 			expiresAt: true,
+			revoked: true,
+			confirmation: true,
 			client: { select: { id: true, name: true, disabled: true } },
 			user: {
 				select: {
@@ -119,6 +127,35 @@ export async function verifyOAuthAccessToken(
 
 	if (!row?.user) {
 		return UNKNOWN;
+	}
+	// These endpoints verify bearer tokens only. A proof-bound token must not
+	// become a bearer credential just because its caller omits the proof.
+	if (row.confirmation !== null) {
+		return UNKNOWN;
+	}
+	// Resource identifiers are an independent boundary from the tenant reference.
+	// Legacy grants are expanded to all configured resources before activation;
+	// empty or malformed lists must never recover that wider legacy access.
+	const mcpResource = staticResourceFor(resource.appUrl, "mcp");
+	const apiResource = staticResourceFor(resource.appUrl, "api");
+	const configured = new Set([mcpResource, `${mcpResource}/`, apiResource]);
+	const expected =
+		resource.audience === "mcp"
+			? [mcpResource, `${mcpResource}/`]
+			: [apiResource];
+	if (
+		!Array.isArray(row.resources) ||
+		row.resources.length === 0 ||
+		!row.resources.every(
+			(identifier) =>
+				typeof identifier === "string" && configured.has(identifier),
+		) ||
+		!expected.some((identifier) => row.resources.includes(identifier))
+	) {
+		return UNKNOWN;
+	}
+	if (row.revoked) {
+		return { valid: false, reason: "revoked" };
 	}
 	if (!row.expiresAt || row.expiresAt <= now) {
 		return { valid: false, reason: "expired" };
@@ -229,7 +266,7 @@ export async function listOAuthConnections(
 			},
 		}),
 		db.oauthAccessToken.findMany({
-			where: { userId, expiresAt: { gt: now } },
+			where: { userId, revoked: null, expiresAt: { gt: now } },
 			select: { clientId: true, referenceId: true },
 			distinct: ["clientId", "referenceId"],
 		}),

@@ -24,6 +24,7 @@ export const FABRIC_CATALOG_DIRECT_BUILDER_ACCESS: Record<string, AccessLevel> =
 		fabric_list_project_sources: "READ",
 		fabric_get_project_source: "READ",
 		fabric_text_to_speech: "READ",
+		search_company_context: "READ",
 	};
 
 /** Catalog tools the adapter runs through a plan-mode step handler. */

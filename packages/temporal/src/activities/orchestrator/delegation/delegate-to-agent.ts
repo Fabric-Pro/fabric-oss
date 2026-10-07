@@ -17,6 +17,10 @@ import {
 	GATEWAY_PROVIDERS,
 	getAIModelWithMetadata,
 } from "@repo/ai";
+import {
+	isAiImpersonatedRequest,
+	isAiInteractiveRequestFor,
+} from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { Context } from "@temporalio/activity";
@@ -300,8 +304,14 @@ async function delegateViaA2A(
 			const aiToken = await issueAIToken({
 				userId: input.userId,
 				organizationId: input.organizationId,
+				impersonated: isAiImpersonatedRequest(),
 				source: `orchestrator->${agent.name}`,
 				expirySeconds: delegatedTokenTtlSeconds(),
+				// In a run a person started (a chat turn they typed), the hints
+				// above already name their ChatGPT plan; the claim lets the key
+				// exchange hand over the same plan, never the organization key
+				// beside a plan model (Fizzy #2939).
+				planEligible: isAiInteractiveRequestFor(input.userId),
 			});
 
 			// Determine the correct base URL for the provider

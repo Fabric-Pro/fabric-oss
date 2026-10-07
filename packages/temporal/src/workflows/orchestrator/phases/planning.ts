@@ -9,10 +9,16 @@
  * - Trust-based approval analysis
  */
 
+import { ActivityCancellationType } from "@temporalio/common";
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as weaveActivities from "../../../activities/weave";
 import { TRAJECTORY } from "../orchestrator-config";
+import {
+	type IterativeTurnOptions,
+	rethrowTurnStop,
+	turnScopeField,
+} from "../turn-contract";
 import type {
 	ApprovalSignalData,
 	ExecutionModeConfig,
@@ -45,6 +51,26 @@ const {
 	},
 });
 
+// The two model-calling planning activities, for a chat turn only (a run
+// without a turn keeps the proxy above and its recorded commands). In a turn
+// they carry its scope and heartbeat every five seconds, which is what
+// delivers a Stop to them; the cancellation type waits for them to abort
+// their request and report CANCELLED before the workflow goes on.
+const {
+	analyzeAndRoute: turnAnalyzeAndRoute,
+	createTaskPlan: turnCreateTaskPlan,
+} = proxyActivities<typeof orchestratorActivities>({
+	startToCloseTimeout: "5 minutes",
+	heartbeatTimeout: "30 seconds",
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+	retry: {
+		initialInterval: "1s",
+		backoffCoefficient: 2,
+		maximumInterval: "30s",
+		maximumAttempts: 3,
+	},
+});
+
 const { convertWeavePlanToOrchestratorSteps } = proxyActivities<
 	typeof weaveActivities
 >({
@@ -66,6 +92,11 @@ const { convertWeavePlanToOrchestratorSteps } = proxyActivities<
  * 3. Creates the task plan
  * 4. Validates the plan
  * 5. Handles plan-level approval
+ *
+ * `turn` is set only for a chat turn (a Planner chat): its model-calling
+ * activities then carry the turn scope, and a stop — a Temporal cancel or a
+ * refused dispatch — leaves the phase as a throw instead of a failed plan, so
+ * the run ends cancelled. Without it the phase is exactly as before.
  */
 export async function executePlanningPhase(
 	state: WorkflowState,
@@ -73,6 +104,7 @@ export async function executePlanningPhase(
 	modeConfig: ExecutionModeConfig,
 	updateProgress: (phase: string, message: string) => void,
 	waitForApproval: () => Promise<ApprovalSignalData | null>,
+	turn?: IterativeTurnOptions,
 ): Promise<
 	PhaseResult<{
 		taskPlan: TaskPlan;
@@ -233,7 +265,7 @@ export async function executePlanningPhase(
 
 		// SECURITY: Credentials are fetched internally by the activity
 		// API keys are NOT passed in workflow inputs to avoid storing them in Temporal history
-		const routingDecision = await analyzeAndRoute({
+		const routingInput = {
 			message: enrichedMessage,
 			history: input.history,
 			userId: input.userId,
@@ -250,7 +282,13 @@ export async function executePlanningPhase(
 			memoryContext: state.enrichedSystemPrompt || undefined,
 			// Pass attached images for image editing routing
 			attachedImageUrls: input.attachedImageUrls,
-		});
+		};
+		const routingDecision = turn?.turnScope
+			? await turnAnalyzeAndRoute({
+					...routingInput,
+					...turnScopeField(turn),
+				})
+			: await analyzeAndRoute(routingInput);
 
 		log.info("Routing decision made", {
 			primaryAgent: routingDecision.primaryAgent,
@@ -316,7 +354,7 @@ export async function executePlanningPhase(
 		if (modeConfig.taskDecomposition) {
 			updateProgress("planning", "Creating task plan...");
 
-			taskPlan = await createTaskPlan({
+			const planInput = {
 				message: enrichedMessage,
 				routingDecision,
 				userId: input.userId,
@@ -329,7 +367,13 @@ export async function executePlanningPhase(
 				history: input.history,
 				// Pass attached images for image editing planning
 				attachedImageUrls: input.attachedImageUrls,
-			});
+			};
+			taskPlan = turn?.turnScope
+				? await turnCreateTaskPlan({
+						...planInput,
+						...turnScopeField(turn),
+					})
+				: await createTaskPlan(planInput);
 
 			log.info("Task plan created", { steps: taskPlan.steps.length });
 			updateProgress(
@@ -375,7 +419,7 @@ export async function executePlanningPhase(
 		// ======================================================================
 		// Step 4: Plan Validation
 		// ======================================================================
-		await validateTaskPlan(state, input, routingDecision, taskPlan);
+		await validateTaskPlan(state, input, routingDecision, taskPlan, turn);
 
 		// ======================================================================
 		// Step 5: Plan-Level Approval
@@ -388,6 +432,7 @@ export async function executePlanningPhase(
 			modeConfig,
 			updateProgress,
 			waitForApproval,
+			turn,
 		);
 
 		if (!approvalResult.success) {
@@ -407,6 +452,9 @@ export async function executePlanningPhase(
 			shouldContinue: true,
 		};
 	} catch (error) {
+		// A chat turn's stop is not a failed plan: it reaches the workflow's
+		// top-level handler, which ends the run cancelled.
+		rethrowTurnStop(error, turn);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		log.error("Planning phase failed", { error: errorMessage });
@@ -426,6 +474,7 @@ async function validateTaskPlan(
 	input: OrchestratorWorkflowInput,
 	routingDecision: RoutingDecision,
 	taskPlan: TaskPlan,
+	turn?: IterativeTurnOptions,
 ): Promise<void> {
 	try {
 		const planValidation = await validatePlan({
@@ -477,6 +526,7 @@ async function validateTaskPlan(
 			});
 		}
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		log.warn("Plan validation/contract inference failed, continuing", {
 			error: error instanceof Error ? error.message : "Unknown error",
 		});
@@ -494,6 +544,7 @@ async function handlePlanApproval(
 	_modeConfig: ExecutionModeConfig,
 	updateProgress: (phase: string, message: string) => void,
 	waitForApproval: () => Promise<ApprovalSignalData | null>,
+	turn?: IterativeTurnOptions,
 ): Promise<{ success: boolean; error?: string }> {
 	const planApprovalAnalysis = await analyzePlanApprovalActivity({
 		plan: taskPlan,
@@ -615,6 +666,7 @@ async function handlePlanApproval(
 			feedback: decision?.feedback,
 		});
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		log.warn("Failed to update plan approval task status", {
 			approvalId: approvalRequest.approvalId,
 			error: error instanceof Error ? error.message : "Unknown error",

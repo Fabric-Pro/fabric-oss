@@ -18,6 +18,7 @@ import {
 	getRetrievableConversationBundleById,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateEmbedding } from "../embedding";
 import { generateSparseVector } from "../embedding/sparse";
 import { rerankContexts } from "../reranking";
@@ -361,6 +362,8 @@ export async function retrieveProjectContexts(
 
 				return rerankedContexts;
 			} catch (error) {
+				// A stopped chat turn is not a reranker outage.
+				rethrowIfDispatchStopped(error);
 				logger.warn(
 					`[Retrieval] Reranking failed, returning original results: ${error}`,
 				);
@@ -394,9 +397,14 @@ export async function retrieveProjectContexts(
 
 		return applySummary(finalContexts);
 	} catch (error) {
+		// A stop from the caller's dispatch guard (a stopped chat turn)
+		// leaves as it is; anything else keeps its cause, so a stop the guard
+		// cannot recognise here is still findable on it.
+		rethrowIfDispatchStopped(error);
 		logger.error(`[Retrieval] Failed to retrieve contexts: ${error}`);
 		throw new Error(
 			`Failed to retrieve project contexts: ${error instanceof Error ? error.message : "Unknown error"}`,
+			{ cause: error },
 		);
 	}
 }

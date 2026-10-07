@@ -47,6 +47,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { commitShaSchema } from "../repository/commit-sha";
 import {
 	assertCommitOnBranch,
 	type CommitSource,
@@ -54,10 +55,7 @@ import {
 	readError,
 } from "./commit-source";
 
-/** A full object id: SHA-1, or SHA-256 for a repository that uses it. */
-export const commitShaSchema = z
-	.string()
-	.regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+export { commitShaSchema } from "../repository/commit-sha";
 
 /** Whether the snapshot's own rules would keep `path` (relative to the folder) out. */
 export function pathIsExcluded(

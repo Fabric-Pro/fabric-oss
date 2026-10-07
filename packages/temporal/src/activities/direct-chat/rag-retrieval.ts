@@ -11,6 +11,12 @@ import {
 	getDefaultRagSettings,
 	getEffectiveRagSettings,
 } from "@repo/database";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	runWithTurnDispatch,
+	startTurnHeartbeat,
+	type TurnScope,
+} from "../orchestrator/turn-dispatch";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -276,6 +282,13 @@ export async function retrieveRagContextForDirectChatActivity(
  * `workspaceIds` could name another organization's workspace until the write
  * path started refusing it. So the ids are narrowed to this call's tenant
  * before anything is read for them, whichever caller supplied them.
+ *
+ * `options.turnScope` (the Advisor chat turn the search serves; the trailing
+ * argument so the other callers are untouched) runs the search inside the
+ * turn's dispatch guard: the query embedding is checked against the turn
+ * record and aborted by a Stop, and a stop is rethrown, not reported as a
+ * retrieval error. A caller already inside a turn's guard (an orchestrator
+ * activity calling this inline) gets the same rethrow without passing it.
  */
 export async function retrieveWorkspaceDocumentsActivity(
 	message: string,
@@ -285,6 +298,39 @@ export async function retrieveWorkspaceDocumentsActivity(
 	documentIds?: string[],
 	topKOverride?: number,
 	minSimilarityOverride?: number,
+	options?: { turnScope?: TurnScope },
+): Promise<{
+	context: string;
+	chunkCount: number;
+	sources?: RagSource[];
+}> {
+	const turnScope = options?.turnScope;
+	const stopHeartbeat = startTurnHeartbeat(turnScope);
+	try {
+		return await runWithTurnDispatch(turnScope, () =>
+			retrieveWorkspaceDocuments(
+				message,
+				userId,
+				organizationId,
+				requestedWorkspaceIds,
+				documentIds,
+				topKOverride,
+				minSimilarityOverride,
+			),
+		);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function retrieveWorkspaceDocuments(
+	message: string,
+	userId: string,
+	organizationId: string | undefined,
+	requestedWorkspaceIds: string[] | undefined,
+	documentIds: string[] | undefined,
+	topKOverride: number | undefined,
+	minSimilarityOverride: number | undefined,
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -610,6 +656,8 @@ export async function retrieveWorkspaceDocumentsActivity(
 			sources,
 		};
 	} catch (error) {
+		// Inside a chat turn's dispatch guard a stop is not a retrieval error.
+		rethrowIfDispatchStopped(error);
 		logger.error("Failed to retrieve workspace RAG context", error);
 		return {
 			context: `\n\n## Workspace Document Error:\nFailed to retrieve content from workspace documents. Error: ${error instanceof Error ? error.message : "Unknown error"}`,

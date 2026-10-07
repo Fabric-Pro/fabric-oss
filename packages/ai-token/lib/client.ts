@@ -24,6 +24,12 @@ export interface ExchangeClientConfig {
 	enableCache?: boolean;
 	/** Request timeout in milliseconds (default: 60000) */
 	timeoutMs?: number;
+	/**
+	 * ChatGPT plans (their `planSource` keys) that just refused a call as
+	 * spent, so the exchange hands over another plan's token (Fizzy #2770).
+	 * Always a fresh exchange: the cache holds the refused plan's token.
+	 */
+	excludeSources?: string[];
 }
 
 /**
@@ -33,6 +39,36 @@ const EXCHANGE_ENDPOINT = "/api/ai/keys/exchange";
 
 // Start cache cleanup on module load
 startCacheCleanup();
+
+/**
+ * The exchange refused the token. Carries the endpoint's status and code so an
+ * agent can tell "your ChatGPT plan is spent" (429, `CHATGPT_PLAN_EXHAUSTED`)
+ * or "reconnect it" (409, `CHATGPT_PLAN_UNAVAILABLE`) from a bad token.
+ */
+export class TokenExchangeError extends Error {
+	readonly status: number;
+	readonly code: string | undefined;
+	/** The endpoint's own sentence, without the "Token exchange failed" prefix. */
+	readonly reason: string | undefined;
+	readonly resetAt: string | null;
+
+	constructor(
+		message: string,
+		details: {
+			status: number;
+			code?: string;
+			reason?: string;
+			resetAt: string | null;
+		},
+	) {
+		super(message);
+		this.name = "TokenExchangeError";
+		this.status = details.status;
+		this.code = details.code;
+		this.reason = details.reason;
+		this.resetAt = details.resetAt;
+	}
+}
 
 /**
  * Exchange an AI token for API credentials
@@ -56,7 +92,9 @@ export async function exchangeTokenForKey(
 	token: string,
 	config: ExchangeClientConfig,
 ): Promise<ExchangeResult> {
-	const { fabricBaseUrl, enableCache = true, timeoutMs = 60000 } = config;
+	const { fabricBaseUrl, timeoutMs = 60000, excludeSources = [] } = config;
+	const enableCache =
+		(config.enableCache ?? true) && excludeSources.length === 0;
 
 	if (!token) {
 		throw new Error("AI token is required for exchange");
@@ -86,7 +124,9 @@ export async function exchangeTokenForKey(
 				"Content-Type": "application/json",
 				"X-AI-Token": token,
 			},
-			body: JSON.stringify({}),
+			body: JSON.stringify(
+				excludeSources.length > 0 ? { excludeSources } : {},
+			),
 			signal: controller.signal,
 		});
 
@@ -95,9 +135,17 @@ export async function exchangeTokenForKey(
 				.json()
 				.catch(() => ({ error: response.statusText }))) as {
 				error?: string;
+				code?: string;
+				resetAt?: string | null;
 			};
-			throw new Error(
+			throw new TokenExchangeError(
 				`Token exchange failed: ${errorBody.error || response.statusText}`,
+				{
+					status: response.status,
+					code: errorBody.code,
+					reason: errorBody.error,
+					resetAt: errorBody.resetAt ?? null,
+				},
 			);
 		}
 

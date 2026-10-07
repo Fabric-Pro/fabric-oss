@@ -20,6 +20,7 @@ import {
 } from "@repo/integrations/repo-auth";
 // Plain constants module (no imports): ties the listing budget to the
 // chat loop's result cap.
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { TOOL_RESULTS } from "../../../../workflows/orchestrator/orchestrator-config";
 import { codeIndexUnavailableResult } from "../../../direct-chat/code-search-repositories";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
@@ -130,6 +131,9 @@ export class CodeSearchHandler implements StepHandler {
 				output,
 			};
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			// Class name only: the message can carry a token or a URL with one.
 			console.error("[CodeSearchHandler] Failed", {
 				toolName,
@@ -575,7 +579,10 @@ export class CodeSearchHandler implements StepHandler {
 						if (Array.isArray(semanticResults)) {
 							indexedResults = semanticResults;
 						}
-					} catch {
+					} catch (error) {
+						// A stop is not an unavailable index (a no-op outside a
+						// chat turn's dispatch guard).
+						rethrowIfDispatchStopped(error);
 						// Index not available, continue with API results only
 					}
 				}
@@ -680,6 +687,7 @@ export class CodeSearchHandler implements StepHandler {
 						result = `Found ${semanticResults.length} semantic code matches:\n\n${semanticResults.join("\n\n")}`;
 					}
 				} catch (error) {
+					rethrowIfDispatchStopped(error);
 					console.warn("[CodeSearchHandler] Semantic search threw", {
 						errorClass: errorClassName(error),
 					});

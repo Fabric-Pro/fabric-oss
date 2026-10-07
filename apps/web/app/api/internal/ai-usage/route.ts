@@ -1,5 +1,9 @@
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
-import { hasProjectAccess, logAiUsage } from "@repo/database";
+import {
+	getChatGptPlanOrgAccount,
+	hasProjectAccess,
+	logAiUsage,
+} from "@repo/database";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -29,7 +33,35 @@ const bodySchema = z.object({
 	gatewayGenerationId: z.string().optional(),
 	billingMode: z.string().optional(),
 	billingCustomerId: z.string().optional(),
+	// The ChatGPT plan that served the call, by its opaque key (Fizzy #2770).
+	planSource: z.string().max(160).optional(),
 });
+
+const ORG_PLAN_SOURCE = /^org:([\w-]{1,128})$/;
+
+/**
+ * The shared ChatGPT plan account a plan call ran on, as its usage row's
+ * `providerConfigId` — only when the account is the token's own
+ * organization's. Anything else, a member's own plan included, records none.
+ */
+async function sharedPlanAccountId(params: {
+	provider: string;
+	planSource: string | undefined;
+	organizationId: string | null | undefined;
+}): Promise<string | undefined> {
+	const accountId =
+		params.provider === "OPENAI_CHATGPT_PLAN"
+			? params.planSource?.match(ORG_PLAN_SOURCE)?.[1]
+			: undefined;
+	if (!accountId || !params.organizationId) {
+		return undefined;
+	}
+	const account = await getChatGptPlanOrgAccount({
+		organizationId: params.organizationId,
+		accountId,
+	});
+	return account?.id;
+}
 
 function mapBillingCategory(
 	billingMode?: string,
@@ -101,6 +133,12 @@ export async function POST(request: Request) {
 			? (body.model.split("/").pop() ?? body.model)
 			: body.model;
 
+		const providerConfigId = await sharedPlanAccountId({
+			provider: body.provider,
+			planSource: body.planSource,
+			organizationId: verified.claims.org,
+		});
+
 		// AI usage limits: post-record overage detection + notification fan-out runs
 		// inside logAiUsage (see packages/database/prisma/queries/ai-models.ts).
 		// This route inherits the post-record path automatically; it cannot pre-check
@@ -110,6 +148,7 @@ export async function POST(request: Request) {
 			organizationId: verified.claims.org,
 			projectId: verifiedProjectId,
 			provider: body.provider as any,
+			providerConfigId,
 			providerModelId: body.model,
 			modelCanonicalName,
 			taskType: body.taskType as any,
@@ -127,6 +166,8 @@ export async function POST(request: Request) {
 			latencyMs: body.latencyMs,
 			billingCategory: mapBillingCategory(body.billingMode),
 			billingCustomerId: body.billingCustomerId,
+			// A ChatGPT plan carries no API cost (Fizzy #2939).
+			...(body.provider === "OPENAI_CHATGPT_PLAN" && { costUsd: 0 }),
 			success: true,
 		});
 

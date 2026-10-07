@@ -10,7 +10,8 @@
 		"forceConsistentCasingInFileNames": true,
 		"declaration": true,
 		"declarationMap": true,
-		"outDir": "./dist"
+		"outDir": "./dist",
+		"types": ["node"]
 	},
 	"include": ["src/**/*", "__tests__/**/*"],
 	"exclude": ["node_modules", "dist"]

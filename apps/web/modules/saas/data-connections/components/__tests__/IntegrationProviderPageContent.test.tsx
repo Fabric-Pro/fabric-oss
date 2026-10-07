@@ -263,3 +263,25 @@ describe("IntegrationProviderPageContent — action badge & description copy", (
 		).toBeInTheDocument();
 	});
 });
+
+describe("IntegrationProviderPageContent — Google Drive verification notice", () => {
+	it("renders the verification notice when provider is GOOGLE_DRIVE", () => {
+		renderPage({ providerKey: "GOOGLE_DRIVE" });
+
+		expect(
+			screen.getByText(
+				"Google Drive access requires Google verification",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("does not render the verification notice for non-Google-Drive providers", () => {
+		renderPage({ providerKey: "SLACK" });
+
+		expect(
+			screen.queryByText(
+				"Google Drive access requires Google verification",
+			),
+		).not.toBeInTheDocument();
+	});
+});

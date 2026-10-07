@@ -257,7 +257,9 @@ export async function extractMaturationQuestions({
 	}
 
 	// Phase 2 — classify only the genuinely-new questions into topics (one batched,
-	// best-effort model call; falls back to "Other" and never throws).
+	// best-effort model call; falls back to "Other"). It throws only when the
+	// member's own ChatGPT plan refused the call — before anything is minted, so
+	// the run stops cleanly and the person learns to wait or reconnect.
 	const topics = await classifyQuestionTopics({
 		questions: toMint.map((q) => q.text),
 		tenantFilter,

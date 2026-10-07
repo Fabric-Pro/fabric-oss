@@ -15,6 +15,7 @@ import {
 	getRetryable,
 	ModelAbortError,
 } from "@langchain/core/errors";
+import { toSubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 
 /**
  * Default ceiling for whole-node retries. Individual agents may keep a
@@ -282,6 +283,8 @@ function exceedsNodeBackoff(error: object): boolean {
  *     the node backoff is shorter than the cooldown.
  *  e. A code in {@link PERMANENT_CONNECTION_CODES} (TLS certificate, invalid
  *     URL) on the error or up to five links down its `.cause` chain -> no.
+ *  e2. A spent ChatGPT plan window (`subscription_sharing_usage_limit_exceeded`)
+ *     -> no; it resets in hours, and OpenAI asks apps not to repeat it.
  *  f. JSON parse error -> yes (an LLM can emit valid JSON on the next try).
  *  g. Stamped retryable (`getRetryable === true`) -> yes.
  *  h. HTTP status (`status`, `statusCode`, `response.status`): 408, 425, 429
@@ -330,6 +333,10 @@ export function isRetryableError(error: unknown): boolean {
 		// e. Permanent connection failure within the bounded cause chain
 		const codes = causeChainCodes(error);
 		if (codes.some((code) => PERMANENT_CONNECTION_CODES.has(code))) {
+			return false;
+		}
+		// e2. Spent ChatGPT plan window
+		if (toSubscriptionPlanExhaustedError(error)) {
 			return false;
 		}
 		// f. JSON parse

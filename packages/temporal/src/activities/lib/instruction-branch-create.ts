@@ -25,6 +25,7 @@ import {
 	type PullRequestPhase,
 	recordBranchReceipt,
 	releaseBlockedBranch,
+	setOperationMembership,
 	transitionBranch,
 } from "@repo/database";
 import {
@@ -46,6 +47,7 @@ import {
 	assertMemberBranch,
 	fetchBranchHead,
 	initBranchWorkspace,
+	isAncestor,
 } from "./instruction-branch-git";
 import {
 	assertBranchCreationAllowed,
@@ -630,11 +632,16 @@ export async function runRetry(i: {
  * ancestor of it and nothing outside the journal is in between. The delete
  * is leased at that tip. `refused` is the provider's own refusal (an active
  * pull request, most often), answered by the next lookup.
+ *
+ * `closedHeadSha` is the head of the pull request the settlement closed.
+ * When it is the tip about to be deleted, the operations that tip contains
+ * are recorded `included` first (`recordIncludedOperations`).
  */
 export async function deleteIfFabricOwned(
 	credential: BranchCredential,
 	branch: BranchWithClock,
 	ops: readonly BranchOperationRow[],
+	closedHeadSha: string | null = null,
 ): Promise<"deleted" | "kept" | "refused"> {
 	try {
 		assertMemberBranch(branch.ref);
@@ -681,6 +688,9 @@ export async function deleteIfFabricOwned(
 	if (provenance.foreign) {
 		return "kept";
 	}
+	if (closedHeadSha === fetched.sha) {
+		await recordIncludedOperations(credential, branch, pushed, fetched.sha);
+	}
 	assertMayContinue(signal);
 	const deleted = await gitCall("close", credential, () =>
 		deleteBranch({
@@ -696,6 +706,45 @@ export async function deleteIfFabricOwned(
 		return "deleted";
 	}
 	return deleted.kind === "refused" ? "refused" : "kept";
+}
+
+/**
+ * The classification of a closed pull request (`runClassify`) reads its final
+ * history from the provider's head ref, else from the branch ref. Azure
+ * DevOps keeps no head ref, so once Fabric deletes the branch that history is
+ * gone and the classification can only wait out its 24 hours. While the
+ * verified tip is still in this workspace, each operation it contains is
+ * recorded `included`, which leaves the classification nothing to fetch. An
+ * operation it does not contain is left for the classification to decide.
+ */
+async function recordIncludedOperations(
+	credential: BranchCredential,
+	branch: BranchWithClock,
+	ops: readonly BranchOperationRow[],
+	tip: string,
+): Promise<void> {
+	for (const op of ops) {
+		if (op.membership === "included") {
+			continue;
+		}
+		safeHeartbeat();
+		const ancestry = await gitCall("close", credential, () =>
+			isAncestor({
+				dir: credential.workDir,
+				ancestor: op.sha,
+				descendant: tip,
+				env: credential.env,
+				signal: credential.signal,
+			}),
+		);
+		if (ancestry === "true") {
+			await setOperationMembership({
+				operationId: op.id,
+				organizationId: branch.organizationId,
+				membership: "included",
+			});
+		}
+	}
 }
 
 /**

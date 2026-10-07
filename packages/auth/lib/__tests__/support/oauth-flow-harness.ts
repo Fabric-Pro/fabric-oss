@@ -9,11 +9,12 @@
 import { createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { getTestInstance } from "better-auth/test";
 import { auditOAuthConsent } from "../../oauth-audit";
+import { enforceOAuthResourceBinding } from "../../oauth-project-binding";
 import {
 	createOAuthProviderPlugin,
+	enforceOAuthDpopPolicy,
 	OAUTH_DISABLED_PATHS,
 } from "../../oauth-provider";
-import { enforceOAuthResourceBinding } from "../../oauth-project-binding";
 import { enforceRegistrationPolicy } from "../../oauth-registration-policy";
 import { OAUTH_SCOPES } from "../../oauth-scopes";
 
@@ -55,6 +56,7 @@ export async function boot() {
 		// requests go through them.
 		hooks: {
 			before: createAuthMiddleware(async (ctx) => {
+				enforceOAuthDpopPolicy(ctx);
 				if (ctx.path === "/oauth2/register") {
 					enforceRegistrationPolicy(ctx.body);
 				}
@@ -108,7 +110,7 @@ export async function register(call: Harness["call"]) {
 			token_endpoint_auth_method: "none",
 			grant_types: ["authorization_code", "refresh_token"],
 			scope: OAUTH_SCOPES.join(" "),
-			type: "native",
+			application_type: "native",
 		}),
 	});
 	return { response, body: (await response.json()) as { client_id: string } };

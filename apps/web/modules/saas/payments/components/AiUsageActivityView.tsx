@@ -88,6 +88,7 @@ import {
 	YAxis,
 } from "recharts";
 import { AiUsageLimitsCard } from "./AiUsageLimitsCard";
+import { PlanCoveredEstimate } from "./PlanCoveredEstimate";
 
 type PeriodKey = "24h" | "7d" | "30d" | "90d";
 type TaskType =
@@ -101,6 +102,8 @@ type TaskType =
 	| "AUDIO"
 	| "EVAL";
 type StatusFilter = "all" | "success" | "error";
+type BillingSource = "chatgpt_plan" | "api";
+type BillingSourceFilter = "all" | BillingSource;
 type SortBy = "createdAt" | "totalTokens" | "costMicroUsd" | "latencyMs";
 type SortOrder = "asc" | "desc";
 
@@ -261,6 +264,12 @@ function formatLatency(ms: number): string {
 	return `${m}m ${Math.round(s - m * 60)}s`;
 }
 
+const CHATGPT_PLAN_PROVIDER = "OPENAI_CHATGPT_PLAN";
+
+function formatProvider(provider: string): string {
+	return provider === CHATGPT_PLAN_PROVIDER ? "ChatGPT plan" : provider;
+}
+
 function formatModel(raw: string | null | undefined): string {
 	if (!raw) {
 		return "—";
@@ -311,6 +320,7 @@ function SummaryTile({
 	value,
 	subtitle,
 	tooltip,
+	footnote,
 	onClick,
 	active = false,
 	loading = false,
@@ -319,6 +329,8 @@ function SummaryTile({
 	value: string;
 	subtitle?: string;
 	tooltip?: string;
+	/** A muted secondary line under the subtitle. */
+	footnote?: React.ReactNode;
 	onClick?: () => void;
 	active?: boolean;
 	loading?: boolean;
@@ -371,6 +383,11 @@ function SummaryTile({
 						{subtitle ? (
 							<div className="mt-0.5 text-[11px] text-muted-foreground">
 								{subtitle}
+							</div>
+						) : null}
+						{footnote ? (
+							<div className="mt-0.5 text-[11px] text-muted-foreground">
+								{footnote}
 							</div>
 						) : null}
 					</>
@@ -436,6 +453,8 @@ export function AiUsageActivityView({
 	// we don't send empty arrays over the wire on every fetch.
 	const [taskTypes, setTaskTypes] = useState<TaskType[]>([]);
 	const [status, setStatus] = useState<StatusFilter>("all");
+	const [billingSource, setBillingSource] =
+		useState<BillingSourceFilter>("all");
 	const [providerModelIds, setProviderModelIds] = useState<string[]>([]);
 	const [projectIds, setProjectIds] = useState<ProjectIdSelection[]>([]);
 	const [memberIds, setMemberIds] = useState<string[]>([]);
@@ -473,6 +492,7 @@ export function AiUsageActivityView({
 	const hasActiveFilters =
 		taskTypes.length > 0 ||
 		status !== "all" ||
+		billingSource !== "all" ||
 		providerModelIds.length > 0 ||
 		projectIds.length > 0 ||
 		memberIds.length > 0 ||
@@ -488,6 +508,7 @@ export function AiUsageActivityView({
 	const resetAllFilters = () => {
 		setTaskTypes([]);
 		setStatus("all");
+		setBillingSource("all");
 		setProviderModelIds([]);
 		setProjectIds([]);
 		setMemberIds([]);
@@ -589,6 +610,7 @@ export function AiUsageActivityView({
 			projectIds: projectIds.length > 0 ? projectIds : undefined,
 			userIds:
 				organizationId && memberIds.length > 0 ? memberIds : undefined,
+			billingSource: billingSource === "all" ? undefined : billingSource,
 			minCostMicroUsd,
 			maxCostMicroUsd,
 			minLatencyMs: minLatencyValue,
@@ -605,6 +627,7 @@ export function AiUsageActivityView({
 			providerModelIds,
 			projectIds,
 			memberIds,
+			billingSource,
 			minCostMicroUsd,
 			maxCostMicroUsd,
 			minLatencyValue,
@@ -660,6 +683,7 @@ export function AiUsageActivityView({
 			projectIds: projectIds.length > 0 ? projectIds : undefined,
 			userIds:
 				organizationId && memberIds.length > 0 ? memberIds : undefined,
+			billingSource: billingSource === "all" ? undefined : billingSource,
 			minCostMicroUsd,
 			maxCostMicroUsd,
 			minLatencyMs: minLatencyValue,
@@ -672,6 +696,7 @@ export function AiUsageActivityView({
 			providerModelIds,
 			projectIds,
 			memberIds,
+			billingSource,
 			minCostMicroUsd,
 			maxCostMicroUsd,
 			minLatencyValue,
@@ -706,6 +731,7 @@ export function AiUsageActivityView({
 					.map((p) => (p === null ? "__null__" : p))
 					.sort(),
 				memberIds: [...memberIds].sort(),
+				billingSource,
 				minCostMicroUsd,
 				maxCostMicroUsd,
 				minLatencyValue,
@@ -725,6 +751,7 @@ export function AiUsageActivityView({
 			providerModelIds,
 			projectIds,
 			memberIds,
+			billingSource,
 			minCostMicroUsd,
 			maxCostMicroUsd,
 			minLatencyValue,
@@ -777,6 +804,29 @@ export function AiUsageActivityView({
 	const isLoading = activityQuery.isPending;
 	const isEmpty = !isLoading && rows.length === 0;
 	const facets = facetsQuery.data;
+	// The split is noise for a workspace nobody runs on a ChatGPT plan, so it
+	// appears once the window holds at least one plan call.
+	const showBillingSplit =
+		(facets?.billingSources?.find((s) => s.value === "chatgpt_plan")
+			?.requests ?? 0) > 0;
+	// The headline cost is what was billed; plan usage billed nothing, so its
+	// API-equivalent sits under it as a secondary line rather than inside it.
+	const planApiEstimate = activityQuery.data?.chatGptPlanApiEstimate;
+	const planCoveredFootnote =
+		planApiEstimate &&
+		(activityQuery.data?.totals.bySource.chatgpt_plan.requests ?? 0) > 0 ? (
+			<PlanCoveredEstimate
+				formattedEstimate={formatUsdFromMicros(
+					planApiEstimate.estimatedApiCostMicroUsd,
+				)}
+				referenceModels={planApiEstimate.referenceModels}
+				testId="total-cost-plan-covered"
+			>
+				+{" "}
+				{formatUsdFromMicros(planApiEstimate.estimatedApiCostMicroUsd)}{" "}
+				covered by ChatGPT plans
+			</PlanCoveredEstimate>
+		) : undefined;
 
 	// Surface a hard permission error instead of silently rendering an
 	// empty page. Org-context procedures throw FORBIDDEN unless the
@@ -1092,7 +1142,7 @@ export function AiUsageActivityView({
 							</button>
 						) : null}
 					</div>
-					<div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
+					<div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-8">
 						<TaskTypeFilter
 							value={taskTypes}
 							onChange={setTaskTypes}
@@ -1170,6 +1220,27 @@ export function AiUsageActivityView({
 								<SelectItem value="error">Errors</SelectItem>
 							</SelectContent>
 						</Select>
+
+						<Select
+							value={billingSource}
+							onValueChange={(v) =>
+								setBillingSource(v as BillingSourceFilter)
+							}
+						>
+							<SelectTrigger
+								className={FILTER_TRIGGER_CLASS}
+								aria-label="Filter by billing source"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="all">All sources</SelectItem>
+								<SelectItem value="chatgpt_plan">
+									ChatGPT plan
+								</SelectItem>
+								<SelectItem value="api">API</SelectItem>
+							</SelectContent>
+						</Select>
 					</div>
 				</div>
 
@@ -1197,7 +1268,8 @@ export function AiUsageActivityView({
 						label="Total cost"
 						value={formatUsdFromMicros(totals.costMicroUsd)}
 						subtitle="USD"
-						tooltip="Per-call cost: (inputTokens × inputCostPer1M + outputTokens × outputCostPer1M) ÷ 1M, summed across the filtered range. Stored at micro-USD precision."
+						tooltip="Per-call cost: (inputTokens × inputCostPer1M + outputTokens × outputCostPer1M) ÷ 1M, summed across the filtered range. Stored at micro-USD precision. Calls on a member's own ChatGPT plan count as $0 here: the member's plan covers them."
+						footnote={planCoveredFootnote}
 						onClick={() => setChartMetric("cost")}
 						active={chartMetric === "cost"}
 						loading={isLoading}
@@ -1211,6 +1283,14 @@ export function AiUsageActivityView({
 						loading={isLoading}
 					/>
 				</div>
+
+				{showBillingSplit ? (
+					<BillingSourceSplit
+						bySource={activityQuery.data?.totals.bySource}
+						planApiEstimate={planApiEstimate}
+						loading={isLoading}
+					/>
+				) : null}
 
 				<UsageTrendChart
 					queryInput={chartFilterInput}
@@ -1428,7 +1508,9 @@ export function AiUsageActivityView({
 															)}
 														</div>
 														<div className="text-xs text-muted-foreground">
-															{row.provider}
+															{formatProvider(
+																row.provider,
+															)}
 														</div>
 													</TableCell>
 													<TableCell className="whitespace-nowrap text-right text-sm tabular-nums">
@@ -1502,6 +1584,12 @@ export function AiUsageActivityView({
 														{formatUsdFromMicros(
 															row.costMicroUsd,
 														)}
+														{row.provider ===
+														CHATGPT_PLAN_PROVIDER ? (
+															<div className="text-xs text-muted-foreground">
+																On plan
+															</div>
+														) : null}
 													</TableCell>
 													<TableCell className="pr-6 text-right">
 														<Badge
@@ -1663,7 +1751,9 @@ export function AiUsageActivityView({
 									/>
 									<DetailRow
 										label="Provider"
-										value={selectedRow.provider}
+										value={formatProvider(
+											selectedRow.provider,
+										)}
 									/>
 									<DetailRow
 										label="Model"
@@ -1718,9 +1808,14 @@ export function AiUsageActivityView({
 									/>
 									<DetailRow
 										label="Cost"
-										value={formatUsdFromMicros(
-											selectedRow.costMicroUsd,
-										)}
+										value={
+											selectedRow.provider ===
+											CHATGPT_PLAN_PROVIDER
+												? `${formatUsdFromMicros(selectedRow.costMicroUsd)} · covered by the member's ChatGPT plan`
+												: formatUsdFromMicros(
+														selectedRow.costMicroUsd,
+													)
+										}
 									/>
 									<DetailRow
 										label="Request ID"
@@ -1747,6 +1842,149 @@ export function AiUsageActivityView({
 				</Sheet>
 			</div>
 		</TooltipProvider>
+	);
+}
+
+type BillingSourceTotals = {
+	requests: number;
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+	costMicroUsd: number;
+};
+
+type PlanApiEstimate = {
+	estimatedApiCostMicroUsd: number;
+	referenceModels: string[];
+};
+
+function BillingSourceSplit({
+	bySource,
+	planApiEstimate,
+	loading,
+}: {
+	bySource: Record<BillingSource, BillingSourceTotals> | undefined;
+	planApiEstimate: PlanApiEstimate | undefined;
+	loading: boolean;
+}) {
+	const plan = bySource?.chatgpt_plan;
+	const api = bySource?.api;
+	const totalRequests = (plan?.requests ?? 0) + (api?.requests ?? 0);
+	const planShare =
+		totalRequests > 0
+			? `${Math.round(((plan?.requests ?? 0) / totalRequests) * 100)}%`
+			: "—";
+	const showPlanEstimate =
+		planApiEstimate !== undefined && (plan?.requests ?? 0) > 0;
+	const columns: Array<{
+		key: BillingSource;
+		title: string;
+		totals: BillingSourceTotals | undefined;
+		cost: React.ReactNode;
+		note: string;
+	}> = [
+		{
+			key: "chatgpt_plan",
+			title: "ChatGPT plan",
+			totals: plan,
+			// The real cost, $0, beside what the same tokens would have cost
+			// on API billing, struck through: not charged (Fizzy #2939).
+			cost: (
+				<span className="inline-flex items-baseline gap-1.5">
+					<span>$0.00</span>
+					{showPlanEstimate ? (
+						<PlanCoveredEstimate
+							formattedEstimate={formatUsdFromMicros(
+								planApiEstimate.estimatedApiCostMicroUsd,
+							)}
+							referenceModels={planApiEstimate.referenceModels}
+							testId="billing-source-plan-api-estimate"
+						/>
+					) : null}
+				</span>
+			),
+			note: `${planShare} of requests · covered by members' own plans`,
+		},
+		{
+			key: "api",
+			title: "API",
+			totals: api,
+			cost: formatUsdFromMicros(api?.costMicroUsd ?? 0),
+			note: "Billed through API keys",
+		},
+	];
+
+	return (
+		<section
+			aria-label="Usage by billing source"
+			className="rounded-lg border border-border bg-muted/40 p-4"
+		>
+			<div className="flex items-center gap-2">
+				<span className="h-3.5 w-0.5 bg-primary" aria-hidden="true" />
+				<h3 className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+					Billing source
+				</h3>
+			</div>
+			<div className="mt-3 grid gap-4 sm:grid-cols-2">
+				{columns.map((column) => (
+					<div
+						key={column.key}
+						data-testid={`billing-source-${column.key}`}
+					>
+						<p className="text-sm font-medium">{column.title}</p>
+						{loading ? (
+							<Skeleton className="mt-2 h-5 w-40" />
+						) : (
+							<dl className="mt-1 grid grid-cols-3 gap-2 text-sm">
+								<div>
+									<dt className="text-[11px] text-muted-foreground">
+										Requests
+									</dt>
+									<dd className="tabular-nums">
+										{(
+											column.totals?.requests ?? 0
+										).toLocaleString()}
+									</dd>
+								</div>
+								<div>
+									<dt className="text-[11px] text-muted-foreground">
+										Tokens
+									</dt>
+									<dd
+										className="tabular-nums"
+										data-testid={`billing-source-${column.key}-tokens`}
+									>
+										{formatTokens(
+											column.totals?.inputTokens ?? 0,
+										)}{" "}
+										in
+										<span className="text-muted-foreground">
+											{" "}
+											·{" "}
+										</span>
+										{formatTokens(
+											column.totals?.outputTokens ?? 0,
+										)}{" "}
+										out
+									</dd>
+								</div>
+								<div>
+									<dt className="text-[11px] text-muted-foreground">
+										Cost
+									</dt>
+									<dd className="tabular-nums">
+										{column.cost}
+									</dd>
+								</div>
+							</dl>
+						)}
+						<p className="mt-1 text-[11px] text-muted-foreground">
+							{column.note}
+						</p>
+					</div>
+				))}
+			</div>
+		</section>
 	);
 }
 

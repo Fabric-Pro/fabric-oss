@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockGetMcpConfigById = vi.fn();
 const mockGetValidAccessToken = vi.fn();
 const mockAuthorizeMcpConfigAccess = vi.fn();
-const mockUpdateMcpConfigTokens = vi.fn();
+const mockCredentialWrite = vi.fn();
 const mockIsOrganizationMember = vi.fn();
 
 vi.mock("@repo/database", () => ({
@@ -31,13 +31,15 @@ vi.mock("@repo/database", () => ({
 		mockGetValidAccessToken(...args),
 	authorizeMcpConfigAccess: (...args: unknown[]) =>
 		mockAuthorizeMcpConfigAccess(...args),
-	updateMcpConfigTokens: (...args: unknown[]) =>
-		mockUpdateMcpConfigTokens(...args),
+	// Every credential write the database-backed provider can make; the
+	// GitLab provider must make none of them.
+	saveMcpOAuthRefresh: (...args: unknown[]) => mockCredentialWrite(...args),
+	wipeMcpOAuthTokens: (...args: unknown[]) => mockCredentialWrite(...args),
+	replaceMcpOAuthRegistration: (...args: unknown[]) =>
+		mockCredentialWrite(...args),
 	getMcpConfigByIdInternal: (...args: unknown[]) =>
 		mockGetMcpConfigById(...args),
 	recordRefreshFailure: vi.fn(),
-	clearRefreshFailures: vi.fn(),
-	getCachedOAuthMetadata: vi.fn(),
 	isPermanentGrantFailure: () => false,
 }));
 
@@ -165,7 +167,7 @@ beforeEach(async () => {
 	mockGetMcpConfigById.mockReset();
 	mockGetValidAccessToken.mockReset();
 	mockAuthorizeMcpConfigAccess.mockReset();
-	mockUpdateMcpConfigTokens.mockReset();
+	mockCredentialWrite.mockReset();
 	mockGetGitLabConnectionToken.mockReset();
 	mockRefreshOAuthToken.mockReset();
 	mockSafeFetchOutbound.mockReset();
@@ -205,7 +207,7 @@ describe("createMcpClientForConfig — GitLab personal servers", () => {
 		expect(transports[0].opts.authProvider).toBeUndefined();
 		expect(mockGetValidAccessToken).not.toHaveBeenCalled();
 		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
-		expect(mockUpdateMcpConfigTokens).not.toHaveBeenCalled();
+		expect(mockCredentialWrite).not.toHaveBeenCalled();
 	});
 
 	it("refuses an endpoint on a different GitLab instance than the credential", async () => {
@@ -595,7 +597,7 @@ describe("createOAuthClientProvider — GitLab personal servers", () => {
 			token_type: "Bearer",
 		});
 		await provider.invalidateCredentials?.("all");
-		expect(mockUpdateMcpConfigTokens).not.toHaveBeenCalled();
+		expect(mockCredentialWrite).not.toHaveBeenCalled();
 		expect(mockRefreshOAuthToken).not.toHaveBeenCalled();
 	});
 

@@ -10,6 +10,7 @@ import {
 	generateEmbeddings,
 } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { cosineSimilarity } from "./capability-embeddings";
 import type {
 	SearchAvailableWorkflowsInput,
@@ -128,6 +129,9 @@ export async function searchAvailableWorkflows(
 		);
 		queryEmbedding = result.embedding;
 	} catch (error) {
+		// Inside a chat turn's dispatch guard a stop is not an embedding
+		// failure to fall back from; a no-op outside one.
+		rethrowIfDispatchStopped(error);
 		console.warn(
 			"[SearchWorkflows] Failed to generate query embedding:",
 			error,
@@ -155,6 +159,7 @@ export async function searchAvailableWorkflows(
 			);
 			workflowEmbeddings = results.embeddings;
 		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			console.warn(
 				"[SearchWorkflows] Failed to generate workflow embeddings:",
 				error,

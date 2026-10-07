@@ -12,9 +12,11 @@ import {
 	type ClaimedRepositorySyncRow,
 	computeSchedulingPatch,
 	db,
+	getProjectInstructionSettings,
 	getProjectRepoIntegration,
 	type InstructionSyncPause,
 	type InstructionSyncSchedulingEffect,
+	instructionRepositoryImportAllowed,
 	type RepositorySyncFence,
 	type RepositorySyncSubjectKind,
 } from "@repo/database";
@@ -221,6 +223,15 @@ async function runRemoteHeadCheck(
 	// so a second `leaseUntil > now` test on this worker's clock would answer
 	// nothing the database does not already answer.
 	const lease = await subject.leaseHeld(db, fence);
+	if (input.kind === "instructions" && lease.held) {
+		const settings = await getProjectInstructionSettings(
+			row.projectId,
+			row.organizationId,
+		);
+		if (!instructionRepositoryImportAllowed(settings, row.id)) {
+			return { outcome: "stale" };
+		}
+	}
 	// This worker's offset from the database, measured here, on the worker
 	// that uses it: Temporal gives the claim and the check no worker
 	// affinity, so an offset measured by the claim could belong to another

@@ -46,7 +46,7 @@ const handler = (
 )["~orpc"].handler;
 
 describe("audit.taxonomy handler", () => {
-	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge)", async () => {
+	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge + chatgpt-plan connect/disconnect/organization-use + chatgpt-plan pooling account/policy/terms/api-fallback)", async () => {
 		const result = await handler({
 			context: { user: { id: "user-1", email: "alice@example.com" } },
 			input: {},
@@ -254,8 +254,25 @@ describe("audit.taxonomy handler", () => {
 		// commit id, ref, file count and a code only, Fizzy #2878) = 185,
 		// + 3 project.instructions.repository_migration_{started, canceled,
 		// completed} (uploaded coding instructions moved into a repository,
-		// Fizzy #2878) = 188.
-		expect(result.actions).toHaveLength(188);
+		// Fizzy #2878) = 188,
+		// + 1 legacy pull-request merge acknowledged in direct mode = 189,
+		// + 3 account.chatgpt_plan.{connected, disconnected,
+		// organization_use_changed} (a member's own ChatGPT plan and where it
+		// serves their work; no token in the metadata, Fizzy #2939) = 192,
+		// + 6 org.chatgpt_plan.{account_connected, account_updated,
+		// account_disconnected, policy_changed, terms_acknowledged,
+		// api_fallback_used} (an organization's shared ChatGPT plan accounts,
+		// its pooling policy and the background calls that fell back to its
+		// provider; no token in the metadata, Fizzy #2770) = 198.
+		expect(result.actions).toHaveLength(198);
+		expect(result.actions).toContain(
+			"account.chatgpt_plan.organization_use_changed",
+		);
+		expect(result.actions).toContain("org.chatgpt_plan.terms_acknowledged");
+		expect(result.actions).toContain("org.chatgpt_plan.api_fallback_used");
+		expect(result.actions).toContain(
+			"project.instructions.pull_request_merge_observed",
+		);
 		expect(result.actions).toContain(
 			"project.instructions.repository_migration_started",
 		);

@@ -12,7 +12,13 @@ import { leftOutListing } from "../../lib/instructions-left-out";
 import type { InstructionsSnapshot } from "../../lib/instructions-snapshot";
 
 /** One labelled fact of the strip: the label above, the value below. */
-function Fact({ label, children }: { label: string; children: ReactNode }) {
+export function InstructionsStatusFact({
+	label,
+	children,
+}: {
+	label: string;
+	children: ReactNode;
+}) {
 	return (
 		<div className="flex min-w-0 flex-col gap-1 border-border border-l px-5 first:border-l-0">
 			<dt className="fab-label">{label}</dt>
@@ -25,6 +31,45 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 /** A button that reads as a link, inside a fact's value. */
 const FACT_ACTION = "h-auto p-0 text-sm underline";
+
+export function InstructionsStatusFacts({ children }: { children: ReactNode }) {
+	return (
+		<dl
+			data-testid="instructions-status-strip"
+			data-onboarding-target="coding-instructions-status"
+			className="m-0 flex flex-wrap gap-y-3 rounded-[10px] border border-border bg-card py-3"
+		>
+			{children}
+		</dl>
+	);
+}
+
+export function InstructionsAgentFact({
+	onConnect,
+}: {
+	onConnect?: () => void;
+}) {
+	const t = useTranslations("projects.codingInstructions.publishedView");
+	return (
+		<InstructionsStatusFact label={t("statusAgents")}>
+			<span>{t("statusMcp")}</span>
+			{onConnect ? (
+				<Button
+					type="button"
+					variant="link"
+					className={`${FACT_ACTION} gap-1`}
+					data-onboarding-target="coding-instructions-connect"
+					onClick={onConnect}
+				>
+					<PlugIcon className="size-3.5" aria-hidden="true" />
+					{t("connectButton")}
+				</Button>
+			) : null}
+		</InstructionsStatusFact>
+	);
+}
+
+const Fact = InstructionsStatusFact;
 
 /**
  * The published version as labelled facts, in place of a sentence holding five
@@ -81,11 +126,7 @@ export function InstructionsStatusStrip({
 				: t("statusSourceUpload");
 
 	return (
-		<dl
-			data-testid="instructions-status-strip"
-			data-onboarding-target="coding-instructions-status"
-			className="m-0 flex flex-wrap gap-y-3 rounded-[10px] border border-border bg-card py-3"
-		>
+		<InstructionsStatusFacts>
 			<Fact label={t("statusSource")}>
 				<span>{source}</span>
 			</Fact>
@@ -175,21 +216,7 @@ export function InstructionsStatusStrip({
 					)}
 				</Fact>
 			) : null}
-			<Fact label={t("statusAgents")}>
-				<span>{t("statusMcp")}</span>
-				{onConnect ? (
-					<Button
-						type="button"
-						variant="link"
-						className={`${FACT_ACTION} gap-1`}
-						data-onboarding-target="coding-instructions-connect"
-						onClick={onConnect}
-					>
-						<PlugIcon className="size-3.5" aria-hidden="true" />
-						{t("connectButton")}
-					</Button>
-				) : null}
-			</Fact>
-		</dl>
+			<InstructionsAgentFact onConnect={onConnect} />
+		</InstructionsStatusFacts>
 	);
 }

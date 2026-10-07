@@ -27,6 +27,8 @@ type Props = {
 	 * onboarding anchor to the menu trigger.
 	 */
 	overflowed?: boolean;
+	/** The pointer or focus reached the tab: a chance to start its first reads. */
+	onIntent?: () => void;
 	onSelect: () => void;
 	registerRef: (element: HTMLButtonElement | null) => void;
 };
@@ -57,6 +59,7 @@ export function ProjectTabButton({
 	anchor,
 	beta,
 	overflowed = false,
+	onIntent,
 	onSelect,
 	registerRef,
 }: Props) {
@@ -69,6 +72,8 @@ export function ProjectTabButton({
 			data-onboarding-target={overflowed ? undefined : anchor}
 			tabIndex={overflowed ? -1 : undefined}
 			onClick={onSelect}
+			onPointerEnter={onIntent}
+			onFocus={onIntent}
 			className={cn(
 				// An underline tab: ink and weight carry the state, no fill.
 				"-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pt-2 pb-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",

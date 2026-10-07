@@ -47,6 +47,7 @@ import {
 	stripInlineDecoration,
 } from "@repo/utils/markdown-heading";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireOrganizationMembership,
@@ -337,6 +338,7 @@ export const reevaluateBugProcedure = tenantProtectedProcedure
 			});
 			llmOutput = object;
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			if (error instanceof AIProviderNotConfiguredError) {
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message:

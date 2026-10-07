@@ -25,6 +25,7 @@ import {
 	getPublishedInstructionTree,
 	InstructionInheritedSourceError,
 	insertInstructionRepositorySyncRun,
+	instructionRepositoryImportAllowed,
 	listUnfinishedInstructionRepositorySyncRunReceipts,
 	recordAudit,
 	rejectAbandonedInstructionSnapshot,
@@ -207,6 +208,20 @@ export async function beginInstructionRepositorySyncRun(
 		trigger: input.trigger,
 		runKey: `${row.id}:${input.workflowRunId}`,
 	};
+	const settings = await getProjectInstructionSettings(
+		row.projectId,
+		row.organizationId,
+	);
+	if (!instructionRepositoryImportAllowed(settings, row.id)) {
+		const admitted = await getInstructionSnapshotBySyncRunKey(
+			context.runKey,
+			context.projectId,
+			context.organizationId,
+		);
+		if (!admitted) {
+			return { ok: false, error: "CONFIGURATION_CHANGED" };
+		}
+	}
 	// The receipt goes in FIRST (plan Decision 4), so every outcome below,
 	// refusals included, has a run row for `record` to complete and the tab
 	// to show.
@@ -404,6 +419,20 @@ export async function acquireInstructionTreeFromRepository(
 			if (adopted && adopted.status !== "RECEIVING") {
 				// Staged already; the child owns the verdict (§5.2 step 3).
 				return stagedResult(adopted);
+			}
+			if (!adopted) {
+				const settings = await getProjectInstructionSettings(
+					context.projectId,
+					context.organizationId,
+				);
+				if (
+					!instructionRepositoryImportAllowed(
+						settings,
+						context.syncId,
+					)
+				) {
+					throw syncFailure("CONFIGURATION_CHANGED", {}, true);
+				}
 			}
 			const integration = await getProjectRepoIntegration(
 				context.repositoryIntegrationId,

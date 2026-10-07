@@ -29,8 +29,9 @@ import { z } from "zod";
 
 // Avoid importing @fabricorg/sdk concrete types at runtime; we only need its
 // shape so the server is decoupled from a specific SDK version. Consumers
-// pass an `FabricClient` instance.
-type FabricLike = {
+// pass an `FabricClient` instance. Exported because the declaration bundler
+// drops the `export {}` marker that keeps unexported types in a .d.ts private.
+export type FabricLike = {
 	integrations: {
 		list(): Promise<
 			Array<{

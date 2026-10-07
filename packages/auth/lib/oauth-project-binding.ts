@@ -3,28 +3,26 @@
  *
  * An MCP client that is configured with a project's URL asks for that project
  * as the `resource` of its authorization (RFC 8707). The plugin the
- * authorization server is built on knows only the fixed resources of
- * `oauthValidAudiences`: it drops `resource` from the query it signs at
- * `/oauth2/authorize`, so the consent pages and the code never see it, and at
- * `/oauth2/token` it refuses any value outside that list. Three global
- * before-hooks close the gap without patching it:
+ * authorization server is built on accepts only the configured static resources
+ * at both authorize and token. Three global before-hooks preserve the project
+ * grant while passing its static audience to the provider:
  *
  *   - at authorize, the request's project is written down against the client
- *     and the PKCE challenge, the pair the plugin keeps in its signed query
- *     (see `@repo/database` `oauth-authorization-resource`);
+ *     and the PKCE challenge, then its resource is normalized to the audience
+ *     the plugin keeps in its signed query (see `oauth-authorization-resource`);
  *   - at consent, the grant the page showed must be the one the server would
  *     issue, or nothing is issued; and
  *   - at token, a project resource is checked against the grant's own
  *     reference, the project the person consented to, and swapped for the
- *     static resource the plugin accepts. Opaque tokens store no audience, so
+ *     static resource stored on the code. The resource selects the surface;
  *     the reference on the grant is what keeps the token on its project.
  *
  * The authorize endpoint is open to anyone who can name a client and a
  * challenge, so a live binding is write-once and nothing removes it but its
  * expiry: not a request, and not the exchange of a code. A request that names
- * no project is none of this module's business: it is left to the plugin
- * exactly as before, and an organization-wide grant is issued the way it always
- * was.
+ * no resource keeps the shared organization surfaces by passing all configured
+ * resources to the provider. An explicit resource remains limited to that
+ * surface.
  */
 
 import {
@@ -47,9 +45,13 @@ import {
 	staticResourceFor,
 } from "@repo/utils/oauth-project-resource";
 import { APIError } from "better-auth/api";
+import { oauthValidAudiences } from "./oauth-scopes";
 
 export interface OAuthResourceHookContext {
 	path?: string;
+	method?: string;
+	/** Set by the provider when it resumes authorize through its dispatcher. */
+	authorizeSettings?: { isAuthorize?: boolean };
 	query?: unknown;
 	body?: unknown;
 	context: {
@@ -172,14 +174,27 @@ function sameProject(
  * another project starts over with a new challenge.
  *
  * The plugin dispatches this endpoint again after sign-in and after the
- * organization page, with the signed query that no longer carries `resource`.
- * Those passes keep a live binding alive, for a while.
+ * organization page, with the signed query carrying the static audience.
+ * Those passes keep the matching live binding alive, for a while.
  */
 async function bindResourceOnAuthorize(
 	ctx: OAuthResourceHookContext,
 	deps: OAuthResourceHookDeps,
-): Promise<void> {
-	const query = (ctx.query ?? {}) as Record<string, unknown>;
+): Promise<
+	| { context: { query: Record<string, unknown> } }
+	| { context: { body: Record<string, unknown> } }
+	| undefined
+> {
+	// A resumed authorize inherits POST from consent/continue, but the provider
+	// runs it with the signed query rather than that endpoint's body.
+	const usesBody =
+		ctx.method === "POST" &&
+		(ctx.authorizeSettings === undefined ||
+			ctx.authorizeSettings.isAuthorize === true);
+	const query = (usesBody ? (ctx.body ?? {}) : (ctx.query ?? {})) as Record<
+		string,
+		unknown
+	>;
 	const key = authorizationKeyOf(
 		singleValueOf(query.client_id),
 		singleValueOf(query.code_challenge),
@@ -187,11 +202,47 @@ async function bindResourceOnAuthorize(
 	const resources = valuesOf(query.resource);
 
 	if (!resources.some((r) => looksLikeProjectResource(deps.appUrl, r))) {
-		if (key && resources.length === 0) {
-			await extendOAuthAuthorizationResource(
+		if (query.resource === undefined) {
+			const binding = key
+				? await findLiveOAuthAuthorizationResource(
+						key.clientId,
+						key.codeChallenge,
+					)
+				: null;
+			if (key && binding) {
+				await extendOAuthAuthorizationResource(
+					key.clientId,
+					key.codeChallenge,
+				);
+			}
+			// Put the compatibility audiences into the query before the provider
+			// signs it or stores a code. A standing project binding stays narrow,
+			// including an older resumed query that omitted its resource.
+			const normalized = {
+				...query,
+				resource: binding
+					? staticResourceFor(deps.appUrl, binding.audience)
+					: oauthValidAudiences(deps.appUrl),
+			};
+			return usesBody
+				? { context: { body: normalized } }
+				: { context: { query: normalized } };
+		}
+		if (key && resources.length === 1) {
+			const binding = await findLiveOAuthAuthorizationResource(
 				key.clientId,
 				key.codeChallenge,
 			);
+			if (
+				binding &&
+				resources[0] ===
+					staticResourceFor(deps.appUrl, binding.audience)
+			) {
+				await extendOAuthAuthorizationResource(
+					key.clientId,
+					key.codeChallenge,
+				);
+			}
 		}
 		return;
 	}
@@ -246,6 +297,16 @@ async function bindResourceOnAuthorize(
 			"This authorization was already started for something else. Start it again from your agent.",
 		);
 	}
+	// The provider now validates resources at authorize and carries them into
+	// the code. Keep the canonical project in Fabric's binding while using the
+	// same static audience at both authorize and token exchange.
+	const normalized = {
+		...query,
+		resource: staticResourceFor(deps.appUrl, requested.audience),
+	};
+	return usesBody
+		? { context: { body: normalized } }
+		: { context: { query: normalized } };
 }
 
 /**
@@ -500,11 +561,14 @@ export async function issuedGrantOfConsent(
 export async function enforceOAuthResourceBinding(
 	ctx: OAuthResourceHookContext,
 	deps: OAuthResourceHookDeps,
-): Promise<{ context: { body: Record<string, unknown> } } | undefined> {
+): Promise<
+	| { context: { body: Record<string, unknown> } }
+	| { context: { query: Record<string, unknown> } }
+	| undefined
+> {
 	switch (ctx.path) {
 		case "/oauth2/authorize":
-			await bindResourceOnAuthorize(ctx, deps);
-			return undefined;
+			return bindResourceOnAuthorize(ctx, deps);
 		case "/oauth2/consent":
 			await requireGrantShown(ctx);
 			return undefined;

@@ -71,6 +71,7 @@ export {
 	DEFAULT_ALTK_CONFIG,
 	EXECUTION_MODE_CONFIGS,
 	ORCHESTRATOR_TURN_CONTRACT_VERSION,
+	usesIterativeExecution,
 } from "./types/index";
 
 // Type aliases for internal use
@@ -582,6 +583,16 @@ export interface PreloadedResources {
 
 	// Loading duration for metrics
 	loadDurationMs: number;
+
+	/**
+	 * The organization's company context, for an Advisor turn whose preload
+	 * found it usable (Fizzy #2719): the prompt hint, ready-made. Its presence
+	 * is what lets the loop pre-register the search. Absent otherwise, and in
+	 * every history recorded before it existed.
+	 */
+	companyContext?: {
+		hint: string;
+	};
 }
 
 /**

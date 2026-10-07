@@ -2803,9 +2803,10 @@ function branchColumnsForPrisma(
 /**
  * One fenced branch transition (spec §4.4): `UPDATE ... WHERE id AND
  * organizationId AND state IN (from) AND attempt = expectedAttempt AND NOT
- * untracked`. Zero rows means another actor moved first. An illegal (from,
- * to) throws. The journal facts (`headSha`, `startSha`, `factsRevision`,
- * `foreignTipAt`) are never written here.
+ * untracked`, optionally also fencing `nextAttemptAt`. Zero rows means
+ * another actor moved first. An illegal (from, to) throws. The journal facts
+ * (`headSha`, `startSha`, `factsRevision`, `foreignTipAt`) are never written
+ * here.
  */
 export async function transitionBranch(
 	i: {
@@ -2813,6 +2814,8 @@ export async function transitionBranch(
 		organizationId: string;
 		from: BranchState[];
 		expectedAttempt: number;
+		/** Optional compare-and-set guard for a newer provider backoff. */
+		expectedNextAttemptAt?: Date | null;
 		to: BranchState | "unchanged";
 		bumpAttempt: boolean;
 		data?: BranchColumns;
@@ -2840,6 +2843,9 @@ export async function transitionBranch(
 			state: { in: i.from },
 			attempt: i.expectedAttempt,
 			untracked: false,
+			...(i.expectedNextAttemptAt !== undefined
+				? { nextAttemptAt: i.expectedNextAttemptAt }
+				: {}),
 		},
 		data,
 	});
@@ -3260,6 +3266,7 @@ export async function getProposalBranch(i: {
 
 const BRANCH_PROPOSAL_SELECT = {
 	...PROPOSAL_SELECT,
+	contentKind: true,
 	baseSnapshotId: true,
 } satisfies Prisma.ProjectInstructionSnapshotSelect;
 

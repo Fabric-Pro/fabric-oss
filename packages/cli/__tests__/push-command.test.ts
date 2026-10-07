@@ -249,6 +249,7 @@ beforeEach(() => {
 describe("preconditions", () => {
 	it("refuses a tree that has never been synced, naming the command to run", async () => {
 		const dest = await mkdtemp(path.join(tmpdir(), "fabric-push-cmd-"));
+		mocks.getPublished.mockResolvedValue(publishedFor({}));
 
 		const result = await runCli([
 			"push",

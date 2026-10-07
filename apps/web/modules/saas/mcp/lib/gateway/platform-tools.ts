@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 // that makes the same edit so the two surfaces write identical rows. Also a
 // pure leaf: its only `@repo/database` import is type-only.
 import { buildContextMetadataAuditEvent } from "@repo/api/modules/projects/lib/context-metadata-audit";
+import { instructionChangeBaseSchema } from "@repo/api/modules/projects/procedures/instructions/change-base";
 // Type-only: erased at compile time, so this does not pull `@repo/database`
 // (and Prisma) into module scope the way a value import would. The runtime
 // binding is always the dynamic `await import("@repo/database")` used inside
@@ -79,7 +80,17 @@ import {
 	parseInstructionEnvironment,
 	sanitizeDisplayText,
 } from "./instruction-checks";
+import {
+	handleDirectInstructionBundle,
+	handleDirectInstructionChecks,
+	handleDirectInstructionFile,
+	handleDirectInstructionList,
+} from "./instruction-direct-tools";
 import { lessonPath, renderLesson } from "./instruction-lessons";
+import {
+	proposeNativeInstructionChange,
+	proposeNativeInstructionLesson,
+} from "./instruction-native-write";
 import {
 	KNOWLEDGE_SEARCH_DEFAULT_BYTES,
 	KNOWLEDGE_SEARCH_MAX_BYTES,
@@ -1100,11 +1111,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_project_instructions",
 		description:
-			"Lists the coding instructions published for a project: the skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow on this project. " +
-			"Returns each file's path, kind, name, description and size. Call this to browse or search the published files before reading one with fabric_get_project_instruction; for a whole install use fabric_get_project_instruction_bundle instead. " +
-			"Project responses (fabric_get_project, fabric_list_projects) carry codingInstructions.published and the current digest, so you can skip this when nothing is published. " +
-			"Pass sinceDigest (the digest you last saw) to have the added/removed/changed paths reported alongside the usual file list; only a digest that still matches short-circuits, answering unchanged:true with no file list at all. changes:null means that digest is unknown here, so treat the list you got as a full refresh. " +
-			"Keep the returned snapshot.id: fabric_propose_project_instruction_change requires it as baseSnapshotId.",
+			"Lists a project's coding instructions: skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow. Repository-backed projects read the configured Git commit directly and return its immutable commitSha and generation instead of a published snapshot. " +
+			"Returns each file's path, kind, name, description and size. Call this to browse or search files before reading one with fabric_get_project_instruction. Uploaded projects support sinceDigest snapshot deltas; direct repositories return commitSha and generation instead.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1135,6 +1143,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					minLength: 1,
 					maxLength: 128,
 				},
+				generation: {
+					type: "integer",
+					description:
+						"Repository generation returned by an earlier direct response. Provide it together with commitSha to keep a later list pinned.",
+					minimum: 0,
+				},
+				commitSha: {
+					type: "string",
+					description:
+						"Full immutable commit SHA returned by an earlier direct response. Provide it together with generation.",
+					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+				},
 			},
 			required: ["projectId"],
 		},
@@ -1144,10 +1164,10 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_instruction",
 		description:
-			"Reads one published coding-instruction file by its path (from fabric_list_project_instructions). " +
+			"Reads one coding-instruction file by its path (from fabric_list_project_instructions). Repository-backed projects read the file directly from the returned Git commit. " +
 			"Use this to read a single skill, rule or agent; for the whole tree use fabric_get_project_instruction_bundle. " +
-			"Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset'. " +
-			"Binary files return a short-lived 'url' instead of a body. Scripts and settings are returned as text for reading only; Fabric never runs them.",
+			"Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset' and, for a repository-backed project, the returned generation and commitSha. " +
+			"Uploaded binary files return a short-lived 'url' instead of a body. Direct repository binary files return a binary state; read them with native Git. Scripts and settings are returned as text for reading only; Fabric never runs them.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1172,6 +1192,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					minimum: 1,
 					maximum: 200_000,
 				},
+				generation: {
+					type: "integer",
+					description:
+						"Required with commitSha for a later page of a repository-backed file; use the pair returned by the first page.",
+					minimum: 0,
+				},
+				commitSha: {
+					type: "string",
+					description:
+						"Required with generation for a later page of a repository-backed file; use the full SHA returned by the first page.",
+					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+				},
 			},
 			required: ["projectId", "path"],
 		},
@@ -1181,10 +1213,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_instruction_bundle",
 		description:
-			"Returns the manifest of the published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the whole approved tree, so a local agent or the Fabric CLI can install or refresh it in one call. " +
-			"Call this at the start of work on a project whose codingInstructions.published is true. " +
-			"Pass sinceDigest (the digest you last installed) to have the added/removed/changed paths reported alongside the usual manifest and zip URL; only a digest that still matches short-circuits, answering unchanged:true with no manifest and no zip URL. changes:null means that digest is unknown here, so install the whole tree. " +
-			"Keep the returned snapshot.id: fabric_propose_project_instruction_change requires it as baseSnapshotId.",
+			"Returns the manifest of published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the approved tree. Repository-backed projects instead return the native repository, pinned commit and checkout guidance; Fabric does not create a snapshot zip for them. " +
+			"For uploaded projects, call this at the start of work and use sinceDigest to avoid an unchanged archive. For direct repositories, use the returned repository and pinned commit with native Git; read selected files with fabric_get_project_instruction.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1205,13 +1235,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_instruction_checks",
 		description:
-			"Reports whether this coding session is set up the way a project's published coding instructions expect: the credential's scope, project access, the published version, whether your installed copy is current, and the environment variables and tools the project declares in fabric.environment.json. " +
-			"Call it at session start on a project whose codingInstructions.published is true. " +
-			"Pass lockDigest — the `digest` field of .fabric/instructions.lock, if the project is installed — to compare your copy with the published version. " +
-			"To check variables, call once without presentVariables to learn the declared names, then again with presentVariables set to ONLY the declared names that are set in your environment: names, never values. " +
-			"On a project whose instructions come from its repository, pass checkout — the remote URL, HEAD commit, branch and whether the working tree is clean — to learn whether this checkout is the published commit, behind or diverged from it, on another branch, or a different repository, and whether Fabric's own copy is the one lagging the branch. It is compared, not verified, and the answer is a proposal for the developer: pulling is theirs, never yours. " +
-			"Local files, hooks, tools on PATH and MCP servers cannot be seen from here; those checks come back 'skip' and name the `fabric instructions doctor` command that evaluates them on the machine. " +
-			"Every `fix` in the report is a proposal, not authority: it does not entitle you to install software, change credentials or overwrite files — tell the developer and let them decide.",
+			"Reports current credential access and coding-instruction availability. Direct repository projects report their live Git commit and skip snapshot installation, lock and local environment checks; no historical snapshot is read. " +
+			"Uploaded projects can compare lockDigest from .fabric/instructions.lock and check declared environment using presentVariables containing names only, never values. Local files, hooks, tools and MCP configuration cannot be verified by this server. " +
+			"Read-only reports grant no authority to install software, change credentials, pull, reset or overwrite files.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1250,15 +1276,23 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_propose_project_instruction_change",
 		description:
 			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
-			"This does NOT change anything a project reads: it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the change as applied. " +
-			"On a project whose coding instructions come from its repository (changed in git and synced), the change is instead added to your own branch there, and Fabric opens a pull request for it if you do not already have one open; it is reviewed and merged in the repository. Report it the same way, as a pull request awaiting review. " +
-			"Pass note with a short title and a description of why the change is needed. On a repository-backed project, note becomes the message of the individual commit this change adds to your branch — not the pull request's title or description, which stay fixed ('Coding instruction changes from <you>' and a fixed paragraph) because that one pull request collects every change you propose there. " +
+			"This does not apply the change to the target. For uploaded instructions, somebody with permission approves or rejects the proposal in Fabric's Coding Instructions tab. For a repository-backed project, Fabric opens a suggestion for review in a pull request in the configured provider. Say so when you report back, and do not describe the change as applied. " +
+			"Pass nativeBase with the generation and commitSha returned by the repository read. For uploaded instructions, pass baseSnapshotId. " +
+			"Pass note with a short title and a description of why the change is needed. " +
 			"Send the file's whole new content, not a patch: each change is 'put' (create or replace the file at that path) or 'delete'. Paths are the ones fabric_list_project_instructions reports. At most 50 changes in one call; for a wholesale replacement the folder is uploaded from the tab instead. " +
-			"baseSnapshotId is REQUIRED: pass the snapshot.id value that fabric_get_project_instruction_bundle or fabric_list_project_instructions returned — the version you actually read. A change written against a version that has since moved is refused rather than silently rebased; read the instructions again and redo the edit if it is.",
+			"The base is required: nativeBase for repository instructions, or baseSnapshotId for uploaded instructions. Pass the exact base returned by the read tools. If a touched file changed since that base, read it again and redo the edit.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: { type: "string", description: "Project ID" },
+				nativeBase: {
+					type: "object",
+					properties: {
+						generation: { type: "integer", minimum: 1 },
+						commitSha: { type: "string" },
+					},
+					required: ["generation", "commitSha"],
+				},
 				changes: {
 					type: "array",
 					minItems: 1,
@@ -1304,7 +1338,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project, this becomes the message of the individual commit this change adds to your branch, not the pull request's title or description — those stay fixed because that one pull request collects every change you propose there.",
+						"Optional title and description for an uploaded instruction proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either.",
 					properties: {
 						title: {
 							type: "string",
@@ -1319,7 +1353,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					},
 				},
 			},
-			required: ["projectId", "changes", "baseSnapshotId"],
+			required: ["projectId", "changes"],
+			oneOf: [
+				{
+					required: ["nativeBase"],
+					not: { required: ["baseSnapshotId"] },
+				},
+				{
+					required: ["baseSnapshotId"],
+					not: { required: ["nativeBase"] },
+				},
+			],
 		},
 		// No `readOnlyHint`: this writes a row and starts a validation run.
 		// There is deliberately no `mode` argument either — this surface
@@ -1331,10 +1375,10 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		description:
 			"Records a lesson — a mistake the team should not repeat — as a new file under this project's coding instructions, so the next agent that reads them learns from it. " +
 			"Use it when the work just showed something went wrong: a check that was skipped, an assumption that turned out false, a fix for a bug that could recur. Write what happened, why it was a mistake, and what to do instead. " +
-			"This does NOT change anything a project reads: like fabric_propose_project_instruction_change, it opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
+			"For uploaded instructions, this opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
 			"The file is created at Lessons/<today's date>-<a slug of the title>.md; a title that collides with an existing file on the same day is suffixed -2, -3, and so on. " +
-			"On a project whose coding instructions come from its repository (changed in git and synced), the change is instead added to your own branch there, and Fabric opens a pull request for it if you do not already have one open; it is reviewed and merged in the repository. Report it the same way, as a pull request awaiting review. " +
-			"note is the proposal's optional title and description. On such a project, note becomes the message of the individual commit this lesson adds to your branch, not the pull request's title or description, which stay fixed because that one pull request collects every change you propose there.",
+			"For repository-backed projects, Fabric submits the lesson as a pull-request suggestion for review in the configured provider. It is not applied to the target branch. " +
+			"note is the proposal's optional title and description for uploaded instructions.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1367,7 +1411,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for the proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either. On a repository-backed project, this becomes the message of the individual commit this change adds to your branch, not the pull request's title or description — those stay fixed because that one pull request collects every change you propose there.",
+						"Optional title and description for an uploaded instruction proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either.",
 					properties: {
 						title: {
 							type: "string",
@@ -2410,12 +2454,11 @@ async function handleSwitchOrganization(
 // ─── Project Handlers ───────────────────────────────────────────────────────
 
 /**
- * What a project response says about its published coding instructions.
+ * Metadata for direct repository or published uploaded instructions.
  *
- * `published: false` is a real answer — "this project has nothing for you" —
- * and it is what an agent needs to stop asking. The key being ABSENT means
- * something different: the key was not permitted to look (see
- * `attachCodingInstructions`).
+ * Direct repositories have a separate source discriminator and no snapshot
+ * digest. `published: false` means no uploaded version is available. An absent
+ * field means the credential was not permitted to look.
  */
 type CodingInstructionsField =
 	| {
@@ -2425,7 +2468,19 @@ type CodingInstructionsField =
 			digest: string;
 			publishedAt: Date | null;
 	  }
-	| { published: false };
+	| { published: false }
+	| {
+			source: "repository";
+			repository: {
+				provider: string;
+				host: string;
+				path: string;
+				cloneUrl: string | null;
+				ref: string;
+				rootPath: string;
+				generation: number;
+			} | null;
+	  };
 
 /**
  * Advertises each project's published coding instructions on the project
@@ -2452,14 +2507,33 @@ async function attachCodingInstructions<T extends { id: string }>(
 	if (projects.length === 0 || !scopeSatisfied(session.scopes, required)) {
 		return projects;
 	}
-	const { getPublishedInstructionSummariesForProjects } = await import(
+	const { getInstructionSummariesForProjects } = await import(
 		"@repo/database"
 	);
-	const summaries = await getPublishedInstructionSummariesForProjects(
-		projects.map((project) => project.id),
+	const projectIds = projects.map((project) => project.id);
+	const summaries = await getInstructionSummariesForProjects(projectIds);
+	const readableProjects = new Set(
+		(
+			await Promise.all(
+				projects.map(async (project) =>
+					(await callerCanReadInstructions(project.id, session))
+						? project.id
+						: null,
+				),
+			)
+		).filter((projectId): projectId is string => projectId !== null),
 	);
 	return projects.map((project) => {
+		if (!readableProjects.has(project.id)) {
+			return project;
+		}
 		const summary = summaries.get(project.id) ?? null;
+		if (summary && "source" in summary) {
+			return {
+				...project,
+				codingInstructions: summary,
+			};
+		}
 		return {
 			...project,
 			codingInstructions: summary
@@ -5395,6 +5469,21 @@ async function callerHoldsInstructionRead(
 }
 
 /**
+ * Direct repository reads do not pass through the legacy snapshot resolver,
+ * so they must retain both halves of that resolver's read gate: a credential
+ * may reach this project's host and its user currently holds instruction read.
+ */
+async function callerCanReadInstructions(
+	projectId: string,
+	session: GatewaySession,
+): Promise<boolean> {
+	return (
+		(await hasGatewayProjectAccess(projectId, session)) &&
+		(await callerHoldsInstructionRead(projectId, session))
+	);
+}
+
+/**
  * `requireRead` is set by the read tools (list, file, bundle, checks) and not
  * by the lesson tool, which only looks at the published version before a
  * write whose own gate is unchanged. A refusal reads as an inaccessible
@@ -5608,6 +5697,24 @@ async function handleListProjectInstructions(
 	if ("error" in since) {
 		return since.error;
 	}
+	const projectId = args.projectId;
+	if (typeof projectId !== "string" || projectId.length === 0) {
+		return errorResult("projectId is required");
+	}
+	const direct = await handleDirectInstructionList({
+		args,
+		projectId,
+		session,
+		access: {
+			ensureInstructionRead: () =>
+				callerCanReadInstructions(projectId, session),
+			jsonResult,
+			errorResult,
+		},
+	});
+	if (direct !== null) {
+		return direct;
+	}
 	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
 		requireRead: true,
 	});
@@ -5682,19 +5789,12 @@ async function handleGetProjectInstruction(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
-		requireRead: true,
-	});
-	if ("error" in resolved) {
-		return resolved.error;
+	const projectId = args.projectId;
+	if (typeof projectId !== "string" || projectId.length === 0) {
+		return errorResult("projectId is required");
 	}
-	if (!resolved.snapshot) {
-		return errorResult(
-			"This project has no published coding instructions yet.",
-		);
-	}
-	const path = args.path as string;
-	if (!path) {
+	const path = args.path;
+	if (typeof path !== "string" || path.length === 0) {
 		return errorResult("path is required");
 	}
 	const offset = (args.offset as number | undefined) ?? 0;
@@ -5713,7 +5813,34 @@ async function handleGetProjectInstruction(
 	if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 200_000) {
 		return errorResult("maxLength must be an integer between 1 and 200000");
 	}
-
+	const direct = await handleDirectInstructionFile({
+		args,
+		projectId,
+		path,
+		offset,
+		maxLength,
+		session,
+		access: {
+			ensureInstructionRead: () =>
+				callerCanReadInstructions(projectId, session),
+			jsonResult,
+			errorResult,
+		},
+	});
+	if (direct !== null) {
+		return direct;
+	}
+	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
+		requireRead: true,
+	});
+	if ("error" in resolved) {
+		return resolved.error;
+	}
+	if (!resolved.snapshot) {
+		return errorResult(
+			"This project has no published coding instructions yet.",
+		);
+	}
 	const { getInstructionFileByPath } = await import("@repo/database");
 	const { getStorageProvider } = await import("@repo/storage");
 	const { config } = await import("@repo/config");
@@ -5771,6 +5898,23 @@ async function handleGetProjectInstructionBundle(
 	const since = readSinceDigest(args);
 	if ("error" in since) {
 		return since.error;
+	}
+	const projectId = args.projectId;
+	if (typeof projectId !== "string" || projectId.length === 0) {
+		return errorResult("projectId is required");
+	}
+	const direct = await handleDirectInstructionBundle({
+		projectId,
+		session,
+		access: {
+			ensureInstructionRead: () =>
+				callerCanReadInstructions(projectId, session),
+			jsonResult,
+			errorResult,
+		},
+	});
+	if (direct !== null) {
+		return direct;
 	}
 	const resolved = await resolvePublishedInstructionSnapshot(args, session, {
 		requireRead: true,
@@ -6243,10 +6387,24 @@ async function handleGetInstructionChecks(
 	const { projectId, lockDigest, presentVariables, checkout } = input;
 	const report = (checks: InstructionCheck[]) =>
 		jsonResult(buildChecksReport(projectId, "mcp", checks));
-	const checks: InstructionCheck[] = [instructionAuthCheck(session)];
+	const authCheck = instructionAuthCheck(session);
+	const checks: InstructionCheck[] = [authCheck];
 
 	let resolved: ResolvedInstructionSnapshot;
 	try {
+		const direct = await handleDirectInstructionChecks({
+			projectId,
+			session,
+			authCheck,
+			...(checkout === undefined ? {} : { checkout }),
+			access: {
+				ensureInstructionRead: () =>
+					callerCanReadInstructions(projectId, session),
+				jsonResult,
+				errorResult,
+			},
+		});
+		if (direct !== null) return direct;
 		resolved = await resolvePublishedInstructionSnapshot(
 			{ projectId },
 			session,
@@ -6771,14 +6929,10 @@ async function handleProposeProjectInstructionChange(
 	// onto v8 in silence — reverting v8's changes to the files it touched. An
 	// agent cannot notice that; the only defence is making it say which
 	// version it read.
-	const baseSnapshotId = args.baseSnapshotId;
-	if (
-		typeof baseSnapshotId !== "string" ||
-		baseSnapshotId.length === 0 ||
-		baseSnapshotId.length > 128
-	) {
+	const base = instructionChangeBaseSchema.safeParse(args);
+	if (!base.success) {
 		return errorResult(
-			"baseSnapshotId is required: the snapshot.id of the published version you read. Call fabric_get_project_instruction_bundle or fabric_list_project_instructions first and pass the snapshot.id it returns.",
+			"Pass nativeBase for repository instructions, or baseSnapshotId for uploaded instructions, from the read tools. Both cannot be supplied together.",
 		);
 	}
 	const parsed = readProposedChanges(args);
@@ -6803,10 +6957,29 @@ async function handleProposeProjectInstructionChange(
 		"@repo/api/modules/projects/procedures/instructions/submit-change"
 	);
 	try {
+		if (base.data.nativeBase !== undefined) {
+			return jsonResult(
+				await proposeNativeInstructionChange({
+					projectId,
+					session,
+					nativeBase: base.data.nativeBase,
+					changes: parsed.changes,
+					note: noted.note ?? undefined,
+					ensureInstructionRead: async () =>
+						!(
+							"error" in
+							(await resolveInstructionProjectAccess(
+								projectId,
+								session,
+							))
+						),
+				}),
+			);
+		}
 		const result = await submitInstructionChange({
 			userId: session.userId,
 			projectId,
-			baseSnapshotId,
+			baseSnapshotId: base.data.baseSnapshotId,
 			changes: parsed.changes,
 			...(noted.note ? { note: noted.note } : {}),
 			// A CONSTANT, never `args.mode`. This tool sits behind
@@ -7040,6 +7213,18 @@ async function handleAddInstructionLesson(
 		// Live access check plus the org-scoped snapshot match, unconditional
 		// (wildcard keys included) — the same shared, scoped resolver the read
 		// tools use, rather than the unscoped pointer read directly.
+		const native = await proposeNativeInstructionLesson({
+			projectId,
+			session,
+			...parsed,
+			note: noted.note ?? undefined,
+			ensureInstructionRead: async () =>
+				!(
+					"error" in
+					(await resolveInstructionProjectAccess(projectId, session))
+				),
+		});
+		if (native !== null) return jsonResult(native);
 		const resolved = await resolvePublishedInstructionSnapshot(
 			args,
 			session,

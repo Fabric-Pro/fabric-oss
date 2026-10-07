@@ -7,6 +7,7 @@ import {
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
 } from "@repo/ai";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { db, hasWorkspaceAccess } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
@@ -29,6 +30,12 @@ export async function POST(request: NextRequest) {
 				{ status: 401 },
 			);
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 		// The body may still carry an `organizationId`; it is not read. The
@@ -80,7 +87,13 @@ export async function POST(request: NextRequest) {
 			trackUsage: trackAiUsage,
 		} = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },
-			{ userId, organizationId: effectiveOrgId },
+			{
+				userId,
+				organizationId: effectiveOrgId,
+				// A person is driving this request, so it may run on their own
+				// ChatGPT plan where they turned it on (Fizzy #2939).
+				planEligible: true,
+			},
 		);
 
 		// Track AI usage (fire-and-forget)

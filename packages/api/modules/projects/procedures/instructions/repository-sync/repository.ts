@@ -108,14 +108,26 @@ export async function loadInstructionSyncIntegration(input: {
 			data: { code: "REPOSITORY_NOT_FOUND" },
 		});
 	}
-	if (integration.status !== "ACTIVE") {
-		throw new ORPCError("BAD_REQUEST", {
-			message:
-				"This repository connection needs attention before it can be synced from.",
-			data: { code: "REPOSITORY_UNAVAILABLE" },
-		});
+	switch (integration.status) {
+		case "ACTIVE":
+			return integration;
+		case "TOKEN_EXPIRED":
+			throw credentialsExpired();
+		case "REPO_UNAVAILABLE":
+		case "ERROR":
+		case "DISCONNECTED":
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"This repository connection needs attention before it can be synced from.",
+				data: { code: "REPOSITORY_UNAVAILABLE" },
+			});
+		default: {
+			const exhaustive: never = integration.status;
+			throw new Error(
+				`Unhandled integration status: ${String(exhaustive)}`,
+			);
+		}
 	}
-	return integration;
 }
 
 /**

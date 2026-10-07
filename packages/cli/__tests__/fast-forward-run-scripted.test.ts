@@ -16,6 +16,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckoutReport } from "../src/lib/instructions/checkout.js";
 import {
+	MERGE_FLOOR_MS,
 	MERGE_RESERVE_MS,
 	runFastForward,
 } from "../src/lib/instructions/fast-forward-run.js";
@@ -35,6 +36,7 @@ const { scripted } = vi.hoisted(() => ({
 		ancestor: vi.fn(),
 		factReads: 0,
 		advanceAtFactRead: null as number | null,
+		leaveMsAtFactRead: 0,
 		commonDir: "",
 	},
 }));
@@ -48,7 +50,7 @@ vi.mock("../src/lib/instructions/git.js", () => {
 		currentBranch: async () => {
 			scripted.factReads += 1;
 			if (scripted.advanceAtFactRead === scripted.factReads) {
-				vi.setSystemTime(deadline - MERGE_RESERVE_MS + 1);
+				vi.setSystemTime(deadline - scripted.leaveMsAtFactRead);
 			}
 			return ok(scripted.branch);
 		},
@@ -149,6 +151,7 @@ beforeEach(async () => {
 	scripted.ancestor.mockResolvedValue({ kind: "ok", value: true });
 	scripted.factReads = 0;
 	scripted.advanceAtFactRead = null;
+	scripted.leaveMsAtFactRead = 0;
 });
 
 afterEach(() => {
@@ -286,7 +289,7 @@ describe("the budget", () => {
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "deadline" });
+		expect(result.outcome).toEqual({ kind: "deadline", stage: "fetch" });
 		expect(scripted.merge).not.toHaveBeenCalled();
 		expect(result.stderr).toEqual([
 			"fabric: coding instructions sync skipped: gave up after 10 s",
@@ -299,26 +302,28 @@ describe("the budget", () => {
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "deadline" });
+		expect(result.outcome).toEqual({ kind: "deadline", stage: "fetch" });
 		expect(scripted.fetch).not.toHaveBeenCalled();
 		expect(scripted.merge).not.toHaveBeenCalled();
 	});
 
-	it("does not merge when the fetch finished but the reserve is gone", async () => {
+	it("still merges when a fetch that used its whole budget leaves less than the reserve", async () => {
 		scripted.fetch.mockImplementation(async () => {
-			vi.setSystemTime(deadline - MERGE_RESERVE_MS + 1);
+			vi.setSystemTime(deadline - MERGE_RESERVE_MS);
 			return { kind: "fetched", tip: TIP };
 		});
+		scripted.advanceAtFactRead = 3;
+		scripted.leaveMsAtFactRead = MERGE_FLOOR_MS;
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "deadline" });
-		expect(scripted.merge).not.toHaveBeenCalled();
+		expect(result.outcome.kind).toBe("fast-forwarded");
+		expect(scripted.merge).toHaveBeenCalledTimes(1);
 	});
 
-	it("merges when exactly the reserve is left", async () => {
+	it("merges when exactly the floor is left", async () => {
 		scripted.fetch.mockImplementation(async () => {
-			vi.setSystemTime(deadline - MERGE_RESERVE_MS);
+			vi.setSystemTime(deadline - MERGE_FLOOR_MS);
 			return { kind: "fetched", tip: TIP };
 		});
 
@@ -327,13 +332,36 @@ describe("the budget", () => {
 		expect(result.outcome.kind).toBe("fast-forwarded");
 	});
 
-	it("does not start a merge when the final facts read consumes its reserve", async () => {
-		scripted.advanceAtFactRead = 4;
+	it("is a merge-stage deadline, with no merge, when the fetch finished with less than the floor left", async () => {
+		scripted.fetch.mockImplementation(async () => {
+			vi.setSystemTime(deadline - MERGE_FLOOR_MS + 1);
+			return { kind: "fetched", tip: TIP };
+		});
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "deadline" });
+		expect(result.outcome).toEqual({ kind: "deadline", stage: "merge" });
 		expect(scripted.merge).not.toHaveBeenCalled();
+		expect(result.stdout).toEqual([BEHIND]);
+		expect(result.stderr).toEqual([
+			"fabric: coding instructions sync skipped: gave up after 10 s",
+		]);
+	});
+
+	it("does not start a merge when the checkout re-read after the fetch leaves less than the floor", async () => {
+		scripted.advanceAtFactRead = 3;
+		scripted.leaveMsAtFactRead = MERGE_FLOOR_MS - 1;
+
+		const result = await run();
+
+		expect(result.outcome).toEqual({ kind: "deadline", stage: "merge" });
+		expect(scripted.merge).not.toHaveBeenCalled();
+	});
+
+	it("reads the checkout once between the fetch and the merge", async () => {
+		await run();
+
+		expect(scripted.factReads).toBe(3);
 	});
 
 	it("is a deadline when git cannot answer and the budget is gone", async () => {
@@ -342,7 +370,7 @@ describe("the budget", () => {
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "deadline" });
+		expect(result.outcome).toEqual({ kind: "deadline", stage: "read" });
 	});
 
 	it("leaves the checkout alone, as busy, when git cannot answer and there is time", async () => {
@@ -441,14 +469,46 @@ describe("when there is nothing to move", () => {
 });
 
 describe("a checkout it must leave alone", () => {
-	it("calls neither verb when the tree is dirty", async () => {
+	it("leaves a dirty tree to git: it fetches and merges, and git's refusal names the files", async () => {
+		scripted.clean = false;
+		scripted.merge.mockResolvedValue({
+			kind: "failed",
+			reason: "local-changes",
+			files: ["AGENTS.md", "notes/a.md"],
+		});
+
+		const result = await run();
+
+		expect(result.outcome).toEqual({
+			kind: "merge-failed",
+			reason: "local-changes",
+			files: ["AGENTS.md", "notes/a.md"],
+		});
+		expect(scripted.fetch).toHaveBeenCalledTimes(1);
+		expect(result.stdout).toEqual([
+			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md, notes/a.md), so nothing was updated. Commit or stash them, then run: git pull --ff-only origin main",
+		]);
+		expect(result.stderr).toEqual([]);
+	});
+
+	it("caps the files it names", async () => {
+		scripted.merge.mockResolvedValue({
+			kind: "failed",
+			reason: "local-changes",
+			files: ["a", "b", "c", "d", "e"],
+		});
+
+		const result = await run();
+
+		expect(result.stdout[0]).toContain("(a, b, c and 2 more)");
+	});
+
+	it("fast-forwards a dirty tree when git allows it", async () => {
 		scripted.clean = false;
 
 		const result = await run();
 
-		expect(result.outcome).toEqual({ kind: "not-safe", reason: "dirty" });
-		expect(scripted.fetch).not.toHaveBeenCalled();
-		expect(scripted.merge).not.toHaveBeenCalled();
+		expect(result.outcome.kind).toBe("fast-forwarded");
 	});
 
 	it("calls neither verb on another branch", async () => {

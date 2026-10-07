@@ -1,3 +1,9 @@
+import { ORPCError } from "@orpc/client";
+import {
+	getInstructionRepositorySync,
+	getProjectInstructionSettings,
+	instructionRepositoryImportAllowed,
+} from "@repo/database";
 import { instructionRepositorySyncWorkflowId } from "@repo/instructions";
 import { getTemporalClient } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
@@ -15,6 +21,17 @@ export async function startInstructionRepositorySync(input: {
 	trigger: "MANUAL";
 	requesterUserId: string;
 }): Promise<boolean> {
+	const [settings, sync] = await Promise.all([
+		getProjectInstructionSettings(input.projectId, input.organizationId),
+		getInstructionRepositorySync(input.projectId, input.organizationId),
+	]);
+	if (!sync || !instructionRepositoryImportAllowed(settings, sync.id)) {
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message:
+				"Repository instructions are read directly from Git. Refresh to read the latest commit.",
+			data: { code: "REPOSITORY_DIRECT_READ" },
+		});
+	}
 	const client = await getTemporalClient();
 	try {
 		await client.workflow.start(

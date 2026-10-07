@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-gmail",
-	"version": "0.1.9",
+	"version": "0.1.10",
 	"description": "Gmail integration plugin for Fabric — type augmentation + runtime",
 	"keywords": [
 		"fabric",
@@ -35,9 +35,9 @@
 		"LICENSE-APACHE-2.0"
 	],
 	"scripts": {
-		"build": "tsup",
-		"dev": "tsup --watch",
-		"type-check": "tsc --noEmit"
+		"build": "tsdown",
+		"dev": "tsdown --watch",
+		"type-check": "tsgo --noEmit"
 	},
 	"peerDependencies": {
 		"@fabricorg/sdk": "workspace:*"
@@ -48,7 +48,7 @@
 	"devDependencies": {
 		"@fabricorg/sdk": "workspace:*",
 		"@repo/tsconfig": "workspace:*",
-		"tsup": "^8.0.0",
+		"tsdown": "^0.23.0",
 		"typescript": "5.9.3"
 	}
 }

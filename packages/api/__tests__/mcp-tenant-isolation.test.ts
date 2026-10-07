@@ -61,6 +61,13 @@ const {
 // holds open handles past test completion and prevents vitest's main
 // process from exiting (vitest #3909 — the post-test hang we hit in CI).
 vi.mock("@repo/database", () => ({
+	// The upsert resolves the server for the caller's tenant; these are
+	// ordinary system servers.
+	getMcpServerForTenant: async (id: string) => ({
+		id,
+		key: `example-${id}`,
+		isSystemProvided: true,
+	}),
 	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",

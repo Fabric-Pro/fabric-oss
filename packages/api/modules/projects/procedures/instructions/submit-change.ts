@@ -161,6 +161,10 @@ import {
 	startAdmittedProposalPullRequest,
 } from "./proposal-pull-request";
 import { versionContentionAsConflict } from "./version-contention";
+import {
+	submitGitIntentChange,
+	type NativeInstructionChangeResult,
+} from "./submit-git-intent";
 
 // Same source `SKILLS_BUCKET_NAME` feeds (config/index.ts), imported the way
 // `create-upload-urls.ts` does.
@@ -218,7 +222,7 @@ export type InlineInstructionChange =
 	  }
 	| { op: "delete"; path: string };
 
-export type SubmitInstructionChangeInput = {
+type SubmitInstructionChangeSharedInput = {
 	/** The human the request acts as. Never a client-supplied field. */
 	userId: string;
 	projectId: string;
@@ -233,7 +237,6 @@ export type SubmitInstructionChangeInput = {
 	 * word, silently reverting whatever v8 changed in the files it touched.
 	 * There is no safe default: only the caller knows which version it read.
 	 */
-	baseSnapshotId: string;
 	changes: readonly InlineInstructionChange[];
 	/**
 	 * What the change set is FOR: a proposal held for review, or a new
@@ -268,7 +271,17 @@ export type SubmitInstructionChangeInput = {
 	message?: string;
 };
 
-export type SubmitInstructionChangeResult = {
+export type SubmitInstructionChangeInput =
+	| (SubmitInstructionChangeSharedInput & {
+			baseSnapshotId: string;
+			nativeBase?: never;
+	  })
+	| (SubmitInstructionChangeSharedInput & {
+			baseSnapshotId?: never;
+			nativeBase: { generation: number; commitSha: string };
+	  });
+
+type SnapshotInstructionChangeResult = {
 	/**
 	 * Which mode actually ran, as the server resolved it.
 	 *
@@ -324,6 +337,10 @@ export type SubmitInstructionChangeResult = {
 	 */
 	pullRequest: ProposalPullRequestView | null;
 };
+
+export type SubmitInstructionChangeResult =
+	| SnapshotInstructionChangeResult
+	| NativeInstructionChangeResult;
 
 /**
  * Read the inline change set into bytes, hashing each `put` server-side.
@@ -407,9 +424,72 @@ function decodeChanges(changes: readonly InlineInstructionChange[]): {
 	return { raw, bytesByIndex };
 }
 
+export function submitInstructionChange(
+	input: Extract<SubmitInstructionChangeInput, { baseSnapshotId: string }>,
+): Promise<SnapshotInstructionChangeResult>;
+export function submitInstructionChange(
+	input: Extract<SubmitInstructionChangeInput, { nativeBase: object }>,
+): Promise<NativeInstructionChangeResult>;
+export function submitInstructionChange(
+	input: SubmitInstructionChangeInput,
+): Promise<SubmitInstructionChangeResult>;
 export async function submitInstructionChange(
 	input: SubmitInstructionChangeInput,
 ): Promise<SubmitInstructionChangeResult> {
+	if (input.nativeBase) {
+		const organizationId = await requireHostingOrganizationId(
+			input.projectId,
+			input.userId,
+		);
+		const mode: InstructionChangeMode =
+			input.mode === "commit"
+				? "commit"
+				: input.mode === "proposal"
+					? "proposal"
+					: "publish";
+		if (mode === "publish") {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"This project's instructions are read directly from Git. Commit changes or open a pull request in the repository.",
+				data: { reason: "REPOSITORY_DIRECT_READ" },
+			});
+		}
+		await assertInstructionDeriveAccess({
+			projectId: input.projectId,
+			userId: input.userId,
+			proposal: mode === "proposal",
+		});
+		const { raw, bytesByIndex } = decodeChanges(input.changes);
+		const nativeChanges = input.changes.map((change, index) => {
+			if (change.op === "delete") {
+				return { op: "delete" as const, path: change.path };
+			}
+			const bytes = bytesByIndex.get(index);
+			if (!bytes) {
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message: "Inline change content was unavailable.",
+				});
+			}
+			return { op: "put" as const, path: change.path, content: bytes };
+		});
+		if (raw.length !== nativeChanges.length) {
+			throw new ORPCError("INTERNAL_SERVER_ERROR", {
+				message: "Inline changes could not be decoded.",
+			});
+		}
+		return submitGitIntentChange({
+			projectId: input.projectId,
+			organizationId,
+			userId: input.userId,
+			nativeBase: input.nativeBase,
+			mode,
+			changes: nativeChanges,
+			...(input.note === undefined ? {} : { note: input.note }),
+			...(input.message === undefined ? {} : { message: input.message }),
+			audit: input.audit,
+			via: input.via,
+		});
+	}
 	// Compared against the publish and commit literals, never against the
 	// proposal one: an absent or unrecognised mode has to land on the REVIEWED
 	// path, and a truthiness test or a `!== "proposal"` would land it on one

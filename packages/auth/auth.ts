@@ -42,6 +42,7 @@ import {
 import { ensureUserHasOrganization } from "./lib/ensure-user-organization";
 import { buildInvitationToken } from "./lib/invitation-token";
 import { runInviteReconciliationForUser } from "./lib/invite-reconciliation";
+import { createLazyAuth } from "./lib/lazy-auth";
 import {
 	revokeDepartingMemberAccess,
 	syncSeatsAfterDeparture,
@@ -51,6 +52,7 @@ import { auditOAuthConsent } from "./lib/oauth-audit";
 import { enforceOAuthResourceBinding } from "./lib/oauth-project-binding";
 import {
 	createOAuthProviderPlugin,
+	enforceOAuthDpopPolicy,
 	OAUTH_DISABLED_PATHS,
 } from "./lib/oauth-provider";
 import { enforceRegistrationPolicy } from "./lib/oauth-registration-policy";
@@ -1013,8 +1015,9 @@ const authOptions = {
 			}
 		}),
 		before: createAuthMiddleware(async (ctx) => {
+			enforceOAuthDpopPolicy(ctx);
 			// Step-up 2FA lockout (issue #2819): refuse a locked account before
-			// Better Auth compares the submitted code. Runs first, and is
+			// Better Auth compares the submitted code. Runs before verification and is
 			// deliberately NOT wrapped in a try/catch — a store failure must
 			// propagate so the comparison never happens. See
 			// ./lib/two-factor-step-up-lockout.ts for why this cannot live in
@@ -1029,12 +1032,11 @@ const authOptions = {
 			}
 
 			// An agent that was configured with a project's URL asks for that
-			// project as the `resource` of its authorization. The plugin drops
-			// the value at authorize and refuses it at token, so this hook
-			// records it, checks at consent that the page showed the grant that
-			// is about to be issued, and matches it against the grant at token;
-			// see ./lib/oauth-project-binding.ts. The token endpoint's answer is
-			// the context it should run with.
+			// project as the `resource` of its authorization. This hook records
+			// it and normalizes the provider's resource to its static audience at
+			// authorize and token. Consent still checks the project the page showed;
+			// see ./lib/oauth-project-binding.ts. Return the context overrides so
+			// the provider uses the normalized resource.
 			if (
 				ctx.path === "/oauth2/authorize" ||
 				ctx.path === "/oauth2/consent" ||
@@ -1568,7 +1570,9 @@ const authOptions = {
 	},
 	socialProviders,
 	plugins: [
-		username(),
+		// User stores only the normalized username. Better Auth 1.7 validates
+		// every plugin field against Prisma before serving any auth request.
+		username({ displayUsername: false }),
 		admin(),
 		// Configured wrapper, never the bare plugin default: enforces user
 		// verification at registration and sign-in so a passkey is genuinely
@@ -1974,7 +1978,10 @@ const authOptions = {
 // shape that re-admits the missing plugin methods. Specific return types
 // are tightened via the explicit `Session`, `Organization`, etc. exports
 // below; everything else is loosely typed but functional.
-const authRaw = betterAuth(authOptions);
+// The OAuth provider seeds resources during initialization in 1.7. Defer the
+// native factory until auth is used; importing routes or procedures must not
+// open database handles during tests or Next.js build collection.
+const authRaw = createLazyAuth(() => betterAuth(authOptions));
 export const auth = authRaw as Omit<typeof authRaw, "api"> & {
 	api: Omit<typeof authRaw.api, "getSession"> &
 		Record<string, (args: any) => Promise<any>> & {
@@ -1993,7 +2000,7 @@ export * from "./lib/organization";
 // Sources:
 // - admin():        role, banned, banReason, banExpires (user); impersonatedBy (session)
 // - organization(): activeOrganizationId (session)
-// - username():     username, displayUsername (user)
+// - username():     username (user)
 // - twoFactor():    twoFactorEnabled (user)
 // - additionalFields (this file): onboardingComplete, locale, mustChangePassword
 export type Session = {
@@ -2024,7 +2031,6 @@ export type Session = {
 		banExpires?: Date | null;
 		// username plugin
 		username?: string | null;
-		displayUsername?: string | null;
 		// twoFactor plugin
 		twoFactorEnabled?: boolean | null;
 		// additionalFields (above)

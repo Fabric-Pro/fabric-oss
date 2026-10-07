@@ -7,6 +7,11 @@ import {
 	getChatAgentSelectionProcedure,
 	setChatAgentSelectionProcedure,
 } from "./procedures/chat-agent-selection";
+import {
+	disconnectChatGptPlanProcedure,
+	getChatGptPlanStatusProcedure,
+	setChatGptPlanOrganizationUseProcedure,
+} from "./procedures/chatgpt-plan";
 import { createAvatarUploadUrl } from "./procedures/create-avatar-upload-url";
 import {
 	getUserDelegationSettingProcedure,
@@ -74,6 +79,11 @@ export const usersRouter = {
 	chatAgentSelection: {
 		get: getChatAgentSelectionProcedure,
 		set: setChatAgentSelectionProcedure,
+	},
+	chatgptPlan: {
+		status: getChatGptPlanStatusProcedure,
+		setOrganizationUse: setChatGptPlanOrganizationUseProcedure,
+		disconnect: disconnectChatGptPlanProcedure,
 	},
 	updateLastActiveWorkspace: updateLastActiveWorkspaceProcedure,
 };

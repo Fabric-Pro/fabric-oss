@@ -11,7 +11,7 @@
 		"build": "tsup --config tsup.config.ts",
 		"start": "PORT=8134 node dist/unified-server.js",
 		"start:a2a": "PORT=8134 node --env-file=.env dist/a2a-server.js",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run"
 	},
 	"dependencies": {

@@ -58,13 +58,14 @@ function credentials(issuer: string) {
 	};
 }
 
-function signIn(project?: string) {
+function signIn(project?: string, scopes?: readonly string[]) {
 	return signInWithBrowser({
 		baseUrl: ORIGIN,
 		origin: ORIGIN,
 		explicit: true,
 		announce: () => undefined,
 		...(project === undefined ? {} : { project }),
+		...(scopes === undefined ? {} : { scopes }),
 	});
 }
 
@@ -136,6 +137,25 @@ describe("a browser sign-in", () => {
 			`Signed in, but ${ORIGIN} did not accept the new credentials.`,
 		);
 		expect(mocks.saveOAuth).not.toHaveBeenCalled();
+	});
+
+	it("does not keep a sign-in that omitted an explicitly requested capability", async () => {
+		mocks.loginWithBrowser.mockResolvedValue(credentials(ORIGIN));
+		mocks.whoami.mockResolvedValue({
+			user: { name: "Dev", email: "dev@example.com" },
+			scopes: ["instructions:read"],
+		});
+
+		await expect(
+			signIn(undefined, ["instructions:read", "repositories:read"]),
+		).rejects.toThrow(
+			`Signed in, but ${ORIGIN} did not accept the new credentials.`,
+		);
+
+		expect(mocks.saveOAuth).not.toHaveBeenCalled();
+		expect(mocks.revokeOAuthSession).toHaveBeenCalledWith(
+			credentials(ORIGIN),
+		);
 	});
 });
 

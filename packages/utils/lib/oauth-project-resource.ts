@@ -78,7 +78,8 @@ export function buildProjectResource(
  * The resource every project of an audience is exchanged under at the token
  * endpoint. The plugin matches `resource` against a fixed list of audiences, so
  * the project resource is swapped for this one once it has been checked against
- * the grant. Opaque tokens store no audience, so nothing else sees it.
+ * the grant. Opaque tokens store this static audience in `resources`; their
+ * reference retains the project boundary.
  */
 export function staticResourceFor(
 	appUrl: string,

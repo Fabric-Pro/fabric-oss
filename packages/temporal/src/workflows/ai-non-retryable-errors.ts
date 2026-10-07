@@ -9,7 +9,7 @@
  * itself is NOT altered, so any message-based detection downstream (route
  * layer, `classifyBacklogAnalysisError`) keeps working unchanged.
  *
- * Both entries are verdicts about CONFIGURATION, not about the provider call:
+ * The first two are verdicts about CONFIGURATION, not about the provider call:
  *
  *  - `AIProviderNotConfiguredError` — the tenant configured no provider, so
  *    model resolution refuses (`packages/ai/lib/dynamic-model-selector.ts`).
@@ -21,6 +21,13 @@
  *  - `AiUsageLimitExceededError` — a HARD `AiUsageLimit` is exhausted. Limits
  *    are windowed in hours or days; a retry ladder measured in seconds cannot
  *    outlast one.
+ *  - `SubscriptionPlanExhaustedError` — the member's own ChatGPT plan has no
+ *    usage left in its window (Fizzy #2939), thrown by the plan model wrapper
+ *    in `@repo/ai`. The window resets in hours, and OpenAI asks apps not to
+ *    repeat the request in the meantime.
+ *  - `ChatGptPlanAuthError` — the member's plan is on but its sign-in must be
+ *    renewed (or is gone). Only the member can fix it, and Fabric never falls
+ *    back to the organization's API billing on its own.
  *
  * Spread this into `retry.nonRetryableErrorTypes` on every proxy whose
  * activities reach a model, alongside whatever workflow-specific types that
@@ -39,6 +46,8 @@
 export const AI_NON_RETRYABLE_ERROR_TYPES = [
 	"AIProviderNotConfiguredError",
 	"AiUsageLimitExceededError",
+	"SubscriptionPlanExhaustedError",
+	"ChatGptPlanAuthError",
 ] as const;
 
 /**

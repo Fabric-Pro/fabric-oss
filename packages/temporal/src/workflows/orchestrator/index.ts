@@ -41,6 +41,9 @@ import {
 import {
 	type IterativeTurnOptions,
 	isCancellationFailure,
+	PLANNER_TURN_PATCH,
+	rethrowTurnStop,
+	settleAllForTurn,
 	TURN_CANCELLATION_PATCH,
 	type TurnStopReason,
 	turnNotDispatchableReason,
@@ -59,6 +62,7 @@ import {
 	type PendingClarificationInfo,
 	type PendingModification,
 	type TaskPlan,
+	usesIterativeExecution,
 	type WorkflowState,
 } from "./types";
 
@@ -126,6 +130,24 @@ export const pendingModificationQuery = defineQuery<PendingModification | null>(
 const longRunningActivities = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "10 minutes",
 	heartbeatTimeout: "30s",
+	retry: {
+		initialInterval: "2s",
+		backoffCoefficient: 2,
+		maximumInterval: "60s",
+		maximumAttempts: 3,
+	},
+});
+
+// The same calls for a chat turn's trajectory replay. Used only when the run
+// has a turn, so a run without one keeps the proxy above and its recorded
+// commands. `executeMcpTool` heartbeats every few seconds in a turn, which is
+// what delivers a Stop to it; the cancellation type waits for it to abort.
+const turnLongRunningActivities = proxyActivities<
+	typeof orchestratorActivities
+>({
+	startToCloseTimeout: "10 minutes",
+	heartbeatTimeout: "30s",
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "2s",
 		backoffCoefficient: 2,
@@ -230,14 +252,28 @@ export async function orchestratorExecutionWorkflow(
 	// from before the turn contract (no marker) replays all of the legacy
 	// behaviour below. See ./turn-contract.ts.
 	const turnContract = patched(TURN_CANCELLATION_PATCH);
+	// Recorded on every new run, whatever its mode; consulted only for the
+	// Planner (see PLANNER_TURN_PATCH for why it exists).
+	const plannerTurnContract = patched(PLANNER_TURN_PATCH);
 	// A chat turn's scope. Only a run with a turn changes behaviour: the
 	// non-chat starters (story automations, Weave, project setup) send no
 	// turnId and keep their legacy cancellation handling. The turn contract
-	// covers the iterative path only; the chat starters create no turn for
-	// the planner modes (`save_reuse`, `weave`), and a turnId that arrives
-	// with one anyway is ignored, so those runs stay legacy end to end.
+	// covers the iterative modes and the Planner (`save_reuse`). Weave is
+	// started without a conversation and stopped by its own `cancel` signal:
+	// the chat starters create no turn for it, and a turnId that arrives with
+	// a Weave run anyway is ignored, so Weave stays legacy end to end.
+	//
+	// Replay: every behaviour the turn adds is keyed on this scope, which
+	// needs the marker and a turnId, and for the Planner also its own marker.
+	// A history recorded before the turn marker has none. A Planner history
+	// recorded by a worker that predates Planner turns lacks
+	// PLANNER_TURN_PATCH, even when the web app already sent it a turnId, so
+	// it replays as the legacy run it was.
 	const turnScope =
-		turnContract && input.turnId && usesIterativeExecution(input)
+		turnContract &&
+		input.turnId &&
+		input.executionMode !== "weave" &&
+		(input.executionMode !== "save_reuse" || plannerTurnContract)
 			? {
 					turnId: input.turnId,
 					// The workflow's own id, not a value from its input: the
@@ -282,13 +318,6 @@ export async function orchestratorExecutionWorkflow(
 	// (the ordering rule), and the run must report what was persisted, or
 	// the live stream and a later reattach would disagree.
 	return normalizeToPersistedStatus(output, persistedStatus);
-}
-
-/** The iterative path: every execution mode but the two planner modes. */
-function usesIterativeExecution(input: OrchestratorWorkflowInput): boolean {
-	return (
-		input.executionMode !== "save_reuse" && input.executionMode !== "weave"
-	);
 }
 
 /**
@@ -806,9 +835,27 @@ async function runOrchestratorExecution(
 			)
 				? attachedProjectContext
 				: undefined;
+			// Without the organization the gate read "our company" as
+			// unresolved and asked which one, although the Advisor can search
+			// the organization's company context (Fizzy #2719). The preload
+			// built this line only for a member it offers company context to,
+			// and only a run through the loop can search, as initialization's
+			// hint requires too; the marker is asked only then, so other turns
+			// record none. The line goes as the Advisor gets it, header and all.
+			const companyContextHint =
+				state.preloadedResources?.companyContext?.hint;
+			const clarityOrganizationContext =
+				companyContextHint &&
+				usesIterativeExecution(input.executionMode) &&
+				patched("orchestrator-clarity-organization-context-v1")
+					? companyContextHint
+					: undefined;
 			const clarity = await analyzeIntentClarityActivity({
 				message: state.enrichedMessage || input.message,
 				conversationSummary: buildConversationSummary(input.history),
+				...(clarityOrganizationContext
+					? { organizationContext: clarityOrganizationContext }
+					: {}),
 				...(clarityProjectContext
 					? { projectContext: clarityProjectContext }
 					: {}),
@@ -856,9 +903,9 @@ async function runOrchestratorExecution(
 		// weave requires upfront planning to load WeavePlan checkboxes,
 		// execute steps in waves with Loom routing, and propagate Tapestry context.
 		// ======================================================================
-		const useIterativeExecution =
-			input.executionMode !== "save_reuse" &&
-			input.executionMode !== "weave";
+		const useIterativeExecution = usesIterativeExecution(
+			input.executionMode,
+		);
 
 		if (useIterativeExecution) {
 			log.info("Using iterative execution mode", {
@@ -964,8 +1011,20 @@ async function runOrchestratorExecution(
 				modeConfig,
 				updateProgress,
 				waitForApproval,
+				turnOptions,
 			);
 
+			// A Stop during planning is a cancelled turn, not a failed one:
+			// checked before the phase's failure is reported.
+			if (turnOptions && isCancelled()) {
+				state.status = "cancelled";
+				exitReason = "cancelled";
+				return buildWorkflowOutput(
+					state,
+					"cancelled",
+					"Execution cancelled",
+				);
+			}
 			if (!planResult.success) {
 				state.status = "failed";
 				exitReason = "failure";
@@ -979,11 +1038,23 @@ async function runOrchestratorExecution(
 				!planResult.shouldContinue
 			) {
 				exitReason = "success";
-				return await replayTrajectory(
+				const replayed = await replayTrajectory(
 					state,
 					input,
 					planResult.data.replayTrajectory,
+					turnOptions,
 				);
+				if (turnOptions && isCancelled()) {
+					state.status = "cancelled";
+					exitReason = "cancelled";
+					return buildWorkflowOutput(
+						state,
+						"cancelled",
+						"Execution cancelled",
+						replayed.response,
+					);
+				}
+				return replayed;
 			}
 
 			// Update state with planning results
@@ -1050,7 +1121,11 @@ async function runOrchestratorExecution(
 			)
 				? attachedProjectContext
 				: undefined;
-			const clarities = await Promise.all(
+			// A chat turn's checks carry its scope (their model requests are
+			// checked against the turn record), a stop is rethrown rather than
+			// read as "no clarification needed", and the fan-out settles
+			// before a stop leaves it. Without a turn: exactly as before.
+			const clarities = await settleAllForTurn(
 				steps.map(async (step) => {
 					try {
 						return await analyzeIntentClarityActivity({
@@ -1061,17 +1136,20 @@ async function runOrchestratorExecution(
 								: {}),
 							userId: input.userId,
 							organizationId: input.organizationId,
+							...turnScopeField(turnOptions),
 						});
-					} catch {
+					} catch (error) {
+						rethrowTurnStop(error, turnOptions);
 						// Fail-open: a clarity-check failure must never block or
 						// fail the run. (The activity is already fail-safe; this
 						// also catches a proxy-level activity timeout.)
 						return { needsClarification: false as const };
 					}
 				}),
+				turnOptions,
 			);
 			for (let i = 0; i < steps.length; i++) {
-				if (state.cancelled) {
+				if (isCancelled()) {
 					break;
 				}
 				const clarity = clarities[i];
@@ -1127,7 +1205,21 @@ async function runOrchestratorExecution(
 			updateProgress,
 			waitForApproval,
 			isCancelled,
+			turnOptions,
 		);
+
+		// A stopped chat turn is reported cancelled, whatever the phase made
+		// of it (a declined-step summary, an abort, an answer it finished as
+		// the Stop landed), and starts no completion work.
+		if (turnOptions && isCancelled()) {
+			state.status = "cancelled";
+			exitReason = "cancelled";
+			return buildWorkflowOutput(
+				state,
+				"cancelled",
+				"Execution cancelled",
+			);
+		}
 
 		// Handle auth required case - workflow pauses waiting for user authorization
 		const execData = execResult.data as
@@ -1164,7 +1256,8 @@ async function runOrchestratorExecution(
 		}
 
 		if (!execResult.success && !execData) {
-			if (state.cancelled) {
+			// `isCancelled()` is `state.cancelled` for a run with no turn.
+			if (isCancelled()) {
 				state.status = "cancelled";
 				exitReason = "cancelled";
 				return buildWorkflowOutput(
@@ -1193,6 +1286,17 @@ async function runOrchestratorExecution(
 			finalResponse,
 			updateProgress,
 		);
+
+		if (turnOptions && isCancelled()) {
+			state.status = "cancelled";
+			exitReason = "cancelled";
+			return buildWorkflowOutput(
+				state,
+				"cancelled",
+				"Execution cancelled",
+				finalResponse,
+			);
+		}
 
 		// ======================================================================
 		// Build Final Output
@@ -1308,6 +1412,7 @@ async function replayTrajectory(
 	state: WorkflowState,
 	input: OrchestratorWorkflowInput,
 	trajectory: any,
+	turn?: IterativeTurnOptions,
 ): Promise<OrchestratorWorkflowOutput> {
 	log.info("Replaying trajectory", { trajectoryId: trajectory.id });
 
@@ -1324,13 +1429,22 @@ async function replayTrajectory(
 		}
 
 		try {
-			const result = await longRunningActivities.executeMcpTool({
+			const toolInput = {
 				toolName: step.toolName || "unknown",
 				args: step.input as Record<string, unknown>,
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
-			});
+			};
+			// A chat turn's replayed tool call carries its scope and waits for
+			// a cancelled call to acknowledge; a run with no turn schedules
+			// exactly the call it always did.
+			const result = turn?.turnScope
+				? await turnLongRunningActivities.executeMcpTool({
+						...toolInput,
+						...turnScopeField(turn),
+					})
+				: await longRunningActivities.executeMcpTool(toolInput);
 
 			replayToolCalls.push({
 				id: `replay-${step.stepId}`,
@@ -1345,6 +1459,8 @@ async function replayTrajectory(
 				replayResponse += `${result.output}\n`;
 			}
 		} catch (error) {
+			// A stop ends the replay; it is not a failed step to skip.
+			rethrowTurnStop(error, turn);
 			log.warn("Trajectory replay step failed, continuing", {
 				stepId: step.stepId,
 				error: error instanceof Error ? error.message : "Unknown",

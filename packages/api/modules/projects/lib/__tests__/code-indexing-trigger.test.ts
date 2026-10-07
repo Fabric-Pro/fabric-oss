@@ -213,6 +213,27 @@ describe("startCodeIndexingForProject", () => {
 	});
 });
 
+// Fizzy #2939: a workflow started with `planEligible: true` runs every AI
+// step on the starting member's own ChatGPT plan. Indexing is bulk work — its
+// summaries would burn the member's plan window — so it must never carry the
+// flag, not even when a person's click inside a browser request starts it.
+describe("startCodeIndexingForProject — never on a member's ChatGPT plan", () => {
+	it("starts indexing without planEligible, even inside a person's request", async () => {
+		const { runWithAiInteractiveContext } = await import(
+			"@repo/ai/lib/chatgpt-plan/interactive-context"
+		);
+		mockGetProjectReposForCodeSearch.mockResolvedValue([repo("a")]);
+		const { startCodeIndexingForProject } = await load();
+		await runWithAiInteractiveContext({ userId: baseOpts.userId }, () =>
+			startCodeIndexingForProject(baseOpts),
+		);
+		expect(mockStart).toHaveBeenCalledTimes(1);
+		expect(mockStart.mock.calls[0][1].args[0]).not.toHaveProperty(
+			"planEligible",
+		);
+	});
+});
+
 describe("cancelCodeIndexingForRepo", () => {
 	it("cancels the INDEXING row's workflow for the given repo", async () => {
 		const cancel = vi.fn(async () => {});

@@ -71,6 +71,7 @@ const CLI_SCOPES = [
 	"frames:write",
 	"instructions:read",
 	"instructions:write",
+	"repositories:read",
 	"reports:read",
 	"reports:write",
 	"skills:read",

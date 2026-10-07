@@ -68,6 +68,11 @@ export interface UsageLoggingContext {
 	 * Undefined = user-initiated. Use a key from AI_JOB_TYPES.
 	 */
 	jobType?: string;
+	/**
+	 * The call's known cost, recorded instead of a catalog estimate. Zero for
+	 * a member's own ChatGPT plan, which no API bill carries.
+	 */
+	costUsd?: number;
 }
 
 /** One whole-turn usage record emitted by a caller that owns a multi-step loop. */
@@ -498,6 +503,7 @@ function emit(
 			gatewayGenerationId,
 			errorStatusCode,
 			errorDetails,
+			...(context.costUsd !== undefined && { costUsd: context.costUsd }),
 		}) as unknown;
 		if (
 			pending &&

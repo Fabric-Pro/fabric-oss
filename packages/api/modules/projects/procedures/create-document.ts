@@ -426,6 +426,7 @@ export const createDocumentProcedure = tenantProtectedProcedure
 					// Asserted above, against the project as it was before the
 					// write; re-asserting now would read it after the demotion.
 					capabilityAlreadyAsserted: true,
+					planEligible: true,
 				})
 			: Promise.resolve(null);
 

@@ -5,6 +5,7 @@
  * GET /mcp/configs/:id  get a specific MCP config
  */
 import {
+	credentialFingerprintMatches,
 	deleteMcpConfig,
 	getMcpConfigById,
 	getOrganizationMembership,
@@ -13,6 +14,8 @@ import {
 	listCustomMcpServersForTenant,
 	listMcpConfigsForTenant,
 	listSystemMcpServers,
+	markMcpOAuthReconnectRequired,
+	parseMcpOAuthBinding,
 } from "@repo/database";
 import { logDataEvent, logger } from "@repo/logs";
 import {
@@ -200,8 +203,32 @@ async function buildExportableServer(
 		// spending it would rotate the grant out from under the connection)
 		// nor its stale expiry.
 		const isGitLabPersonal = isGitLabPersonalMcpConfig(refreshedConfig);
+		// The exported client spends the refresh token on its own, so it is
+		// exported only for a grant bound to its authorization server and
+		// still the credential set that binding was written with
+		// (`credentialFingerprint`). An unbound or bearer-only grant exports
+		// the access token alone; a mismatch — a writer outside the
+		// credential module replaced a credential — also flags the config
+		// for reconnect.
+		const binding = parseMcpOAuthBinding(refreshedConfig.oauthBinding);
+		let exportRefreshToken =
+			!isGitLabPersonal &&
+			!!binding &&
+			!!refreshedConfig.encryptedRefreshToken;
+		if (
+			exportRefreshToken &&
+			binding &&
+			!credentialFingerprintMatches(binding, refreshedConfig)
+		) {
+			exportRefreshToken = false;
+			await markMcpOAuthReconnectRequired({
+				configId: refreshedConfig.id,
+				expectedGeneration: refreshedConfig.oauthGrantGeneration,
+				reason: "Reconnect required: the stored OAuth credentials do not match the connection they were bound with.",
+			});
+		}
 		const refreshToken =
-			!isGitLabPersonal && refreshedConfig.encryptedRefreshToken
+			exportRefreshToken && refreshedConfig.encryptedRefreshToken
 				? decryptApiKey(refreshedConfig.encryptedRefreshToken)
 				: undefined;
 

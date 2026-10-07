@@ -191,7 +191,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/ProjectOverview.tsx",
 	"apps/web/modules/saas/projects/components/DocumentsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectContextsList.tsx",
-	"apps/web/modules/saas/projects/components/instructions/InstructionsPublishedView.tsx",
+	"apps/web/modules/saas/projects/components/instructions/InstructionsPageFrame.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",

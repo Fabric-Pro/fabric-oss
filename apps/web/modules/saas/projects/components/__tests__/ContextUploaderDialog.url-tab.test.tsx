@@ -581,6 +581,33 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		expect(pathPrefix).not.toHaveAttribute("aria-disabled", "true");
 	});
 
+	it("offers the Live refresh cadence, which the task agent honors for a project", async () => {
+		getUserSearchProvidersMock.mockResolvedValue(CONFIGURED_ROWS);
+		const user = userEvent.setup();
+		wrap(
+			<ContextUploaderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={vi.fn()}
+			/>,
+		);
+
+		await user.click(getTabTrigger("link"));
+		await screen.findByLabelText("URL");
+		expect(
+			screen.getByText(/Live re-fetches at retrieval time/),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Refresh cadence" }),
+		);
+		expect(
+			await screen.findByRole("option", {
+				name: "Live (re-fetch on each AI run)",
+			}),
+		).toBeInTheDocument();
+	});
+
 	it("auto-detects to SINGLE_PAGE on a /docs/ URL when PATH_PREFIX is unavailable", async () => {
 		// Jina-only: blur on a /docs/ URL would normally pick PATH_PREFIX,
 		// but the radio is disabled — so the auto-detect should keep

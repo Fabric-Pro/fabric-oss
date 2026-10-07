@@ -12,6 +12,10 @@
  * - Pattern management
  */
 
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type {
 	ChatPrompt,
 	ChatRequest,
@@ -77,6 +81,10 @@ export class FabricClient {
 	): Promise<T> {
 		const url = `${this.baseUrl}${path}`;
 		const controller = new AbortController();
+		// Inside a dispatch guard (an Advisor chat turn) a stopped guard
+		// refuses here, before the timer or the request starts, and the
+		// request carries the guard's abort signal beside the timeout's.
+		const signal = await guardDispatch(controller.signal);
 		const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
 		try {
@@ -86,7 +94,7 @@ export class FabricClient {
 					...this.getHeaders(),
 					...(options.headers || {}),
 				},
-				signal: controller.signal,
+				signal,
 			});
 
 			clearTimeout(timeoutId);
@@ -112,6 +120,8 @@ export class FabricClient {
 			return response.text() as unknown as T;
 		} catch (error) {
 			clearTimeout(timeoutId);
+			// A stop is not a timeout: rethrow it before the mapping below.
+			rethrowIfDispatchStopped(error);
 			if (error instanceof Error && error.name === "AbortError") {
 				throw new Error(`Fabric API timeout after ${this.timeout}ms`);
 			}
@@ -126,7 +136,8 @@ export class FabricClient {
 		try {
 			await this.fetch<string[]>("/patterns/names");
 			return true;
-		} catch {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			return false;
 		}
 	}
@@ -157,7 +168,8 @@ export class FabricClient {
 		try {
 			const patterns = await this.listPatterns();
 			return patterns.includes(name);
-		} catch {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			return false;
 		}
 	}
@@ -251,8 +263,10 @@ export class FabricClient {
 		question: string,
 		aiToken: string,
 	): Promise<string> {
+		const signal = await guardDispatch();
 		const response = await fetch(`${this.baseUrl}/delegated/search`, {
 			method: "POST",
+			signal,
 			headers: {
 				...this.getHeaders(),
 				"X-AI-Token": aiToken,
@@ -281,8 +295,10 @@ export class FabricClient {
 	 * @param aiToken - AI token for credential exchange
 	 */
 	async scrapeUrlDelegated(url: string, aiToken: string): Promise<string> {
+		const signal = await guardDispatch();
 		const response = await fetch(`${this.baseUrl}/delegated/scrape`, {
 			method: "POST",
+			signal,
 			headers: {
 				...this.getHeaders(),
 				"X-AI-Token": aiToken,
@@ -345,8 +361,10 @@ export class FabricClient {
 		};
 
 		// Fabric uses SSE streaming, we need to collect all chunks
+		const signal = await guardDispatch();
 		const response = await fetch(`${this.baseUrl}/chat`, {
 			method: "POST",
+			signal,
 			headers: this.getHeaders(),
 			body: JSON.stringify(request),
 		});
@@ -431,8 +449,10 @@ export class FabricClient {
 			temperature,
 		};
 
+		const signal = await guardDispatch();
 		const response = await fetch(`${this.baseUrl}/chat`, {
 			method: "POST",
+			signal,
 			headers: this.getHeaders(),
 			body: JSON.stringify(request),
 		});
@@ -554,10 +574,12 @@ export class FabricClient {
 		url: string,
 		aiToken: string,
 	): Promise<YouTubeMetadataResponse> {
+		const signal = await guardDispatch();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/metadata`,
 			{
 				method: "POST",
+				signal,
 				headers: {
 					...this.getHeaders(),
 					"X-AI-Token": aiToken,
@@ -589,10 +611,12 @@ export class FabricClient {
 		url: string,
 		aiToken: string,
 	): Promise<YouTubeCommentsResponse> {
+		const signal = await guardDispatch();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/comments`,
 			{
 				method: "POST",
+				signal,
 				headers: {
 					...this.getHeaders(),
 					"X-AI-Token": aiToken,
@@ -624,10 +648,12 @@ export class FabricClient {
 		url: string,
 		aiToken: string,
 	): Promise<YouTubePlaylistResponse> {
+		const signal = await guardDispatch();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/playlist`,
 			{
 				method: "POST",
+				signal,
 				headers: {
 					...this.getHeaders(),
 					"X-AI-Token": aiToken,

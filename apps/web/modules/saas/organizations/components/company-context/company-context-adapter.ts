@@ -55,12 +55,20 @@ export function companyContextSubmitAdapter(
 		processFile: ({ contextId }) =>
 			client.processFile({ organizationId, sourceId: contextId }),
 		processLink: async (link) => {
+			const { refreshMode } = link;
+			// The company form never offers Live (`allowLiveRefresh: false`)
+			// and the procedure refuses it.
+			if (refreshMode === "LIVE") {
+				throw new Error(
+					"Live refresh is not available for company context",
+				);
+			}
 			const { sources } = await client.processLink({
 				organizationId,
 				url: link.url,
 				...(link.label ? { label: link.label } : {}),
 				scope: link.scope,
-				refreshMode: link.refreshMode,
+				refreshMode,
 				...(link.maxPages !== undefined
 					? { maxPages: link.maxPages }
 					: {}),
@@ -264,6 +272,26 @@ export const COMPANY_CONTEXT_POLL_INTERVAL_MS = 2000;
 export const MAX_COMPANY_CONTEXT_POLL_MS = 5 * 60 * 1000;
 
 /**
+ * The slower pace the list keeps while a website crawl outlives the cap. A
+ * crawl writes its pages, not its source, so the source's last write is when
+ * the crawl started — and a first crawl of a large site takes hours.
+ */
+export const COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS = 15_000;
+
+/**
+ * How long a crawl may go without fetching a page before the list stops
+ * following it. A crawl stamps a page only when its scrape succeeds, and the
+ * crawl workflow gives each scrape and each embedding up to three five-minute
+ * attempts (`url-source-crawl.ts`), so a page that hangs costs about fifteen
+ * minutes with nothing written. This allows for about six of them in a row.
+ * Every company crawl takes the workflow's page-by-page path; its older
+ * single-activity path only replays histories that predate company context.
+ * A crawl whose workflow is gone but whose slot was never released fetches
+ * nothing, so the list lets it go.
+ */
+export const MAX_COMPANY_CRAWL_IDLE_MS = 90 * 60 * 1000;
+
+/**
  * Sources whose delete the server accepted, by id, with when the list learned
  * of it. The server only starts a deletion workflow, which removes the row a
  * little later, so the list hides these at once and keeps polling until the
@@ -274,7 +302,9 @@ export type PendingCompanyDeletes = ReadonlyMap<string, number>;
 /**
  * The list's refetch interval: every 2s while any source is in flight and was
  * last written within the cap, or a deleted source is still returned within
- * the cap of its delete, otherwise off. In-flight sources are measured from
+ * the cap of its delete; past the cap, every 15s while a website crawl still
+ * holds its slot and has fetched a page, or started, within the idle limit;
+ * otherwise off. In-flight sources are measured from
  * `updatedAt` rather than the project list's `createdAt`, because a re-sync or
  * re-process puts an old source back in flight and must be followed again.
  * Timestamps in the future (clock skew) keep polling.
@@ -287,6 +317,7 @@ export function companyContextPollInterval(
 	if (!result) {
 		return false;
 	}
+	let liveCrawl = false;
 	const followed = result.sources.some((source) => {
 		const deletedAtMs = pendingDeletes.get(source.id);
 		if (deletedAtMs !== undefined) {
@@ -297,9 +328,23 @@ export function companyContextPollInterval(
 		}
 		const lastWrite = source.updatedAt ?? source.createdAt;
 		const lastWriteMs = lastWrite ? new Date(lastWrite).getTime() : nowMs;
-		return nowMs - lastWriteMs < MAX_COMPANY_CONTEXT_POLL_MS;
+		if (nowMs - lastWriteMs < MAX_COMPANY_CONTEXT_POLL_MS) {
+			return true;
+		}
+		if (source.crawlInProgress) {
+			const lastFetchMs = source.crawlLastFetchedAt
+				? new Date(source.crawlLastFetchedAt).getTime()
+				: 0;
+			liveCrawl ||=
+				nowMs - Math.max(lastWriteMs, lastFetchMs) <
+				MAX_COMPANY_CRAWL_IDLE_MS;
+		}
+		return false;
 	});
-	return followed ? COMPANY_CONTEXT_POLL_INTERVAL_MS : false;
+	if (followed) {
+		return COMPANY_CONTEXT_POLL_INTERVAL_MS;
+	}
+	return liveCrawl ? COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS : false;
 }
 
 /** The sources the list shows: every returned one not already deleted. */

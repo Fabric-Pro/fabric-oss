@@ -55,6 +55,11 @@ const state = vi.hoisted(() => ({
 	retry: vi.fn(),
 	startOver: vi.fn(),
 	stopTracking: vi.fn(),
+	refreshBranch: vi.fn(),
+	refreshResult: { refreshed: true, pending: false } as Record<
+		string,
+		unknown
+	>,
 	commandError: null as Error | null,
 	toastSuccess: vi.fn(),
 	toastError: vi.fn(),
@@ -95,8 +100,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 		projects: {
 			instructions: {
 				proposals: {
-					myBranch: { queryOptions: queryOptions("myBranch") },
-					list: { queryOptions: queryOptions("list") },
+					myBranch: {
+						key: () => ["myBranch"],
+						queryOptions: queryOptions("myBranch"),
+					},
+					list: {
+						key: () => ["list"],
+						queryOptions: queryOptions("list"),
+					},
+					get: { key: () => ["get"] },
+					branches: { key: () => ["branches"] },
 					closeBranch: {
 						mutationOptions: mutationOptions(async (input) => {
 							state.close(input);
@@ -131,6 +144,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 								throw state.commandError;
 							}
 							return { changed: true, attempt: 1 };
+						}),
+					},
+					refreshBranch: {
+						mutationOptions: mutationOptions(async (input) => {
+							state.refreshBranch(input);
+							if (state.commandError) {
+								throw state.commandError;
+							}
+							return state.refreshResult;
 						}),
 					},
 				},
@@ -556,6 +578,14 @@ describe("InstructionProposalBranchPanel", () => {
 	});
 
 	it("Refresh re-reads the branch", async () => {
+		state.refreshBranch.mockImplementation(() => {
+			state.branches = [
+				{
+					branch: branch({ state: "CLOSED" }),
+					liveChanges: 1,
+				},
+			];
+		});
 		const user = userEvent.setup();
 		renderPanel();
 		const refreshButton = await screen.findByRole("button", {
@@ -563,9 +593,74 @@ describe("InstructionProposalBranchPanel", () => {
 		});
 		await user.click(refreshButton);
 		await waitFor(() =>
+			expect(state.refreshBranch).toHaveBeenCalledWith({
+				projectId: "p",
+				branchId: "branch_1",
+				expectedAttempt: 7,
+			}),
+		);
+		await waitFor(() =>
 			expect(state.toastInfo).toHaveBeenCalledWith(
 				branchCopy.refreshSuccess,
 			),
+		);
+		expect(
+			await screen.findByText(branchCopy.states.CLOSED),
+		).toBeInTheDocument();
+	});
+
+	it("Refresh re-reads every proposals view now and again once the backend settles", async () => {
+		const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+		try {
+			const user = userEvent.setup();
+			renderPanel();
+			await user.click(
+				await screen.findByRole("button", {
+					name: new RegExp(branchCopy.refresh),
+				}),
+			);
+			await waitFor(() =>
+				expect(state.toastInfo).toHaveBeenCalledWith(
+					branchCopy.refreshSuccess,
+				),
+			);
+			const invalidatedKeys = () =>
+				invalidate.mock.calls.map(([filters]) =>
+					JSON.stringify(filters?.queryKey),
+				);
+			for (const key of [
+				'["list"]',
+				'["get"]',
+				'["myBranch"]',
+				'["branches"]',
+			]) {
+				expect(invalidatedKeys()).toContain(key);
+			}
+			const afterAnswer = invalidate.mock.calls.length;
+			await waitFor(
+				() =>
+					expect(invalidate.mock.calls.length).toBeGreaterThan(
+						afterAnswer,
+					),
+				{ timeout: 5_000 },
+			);
+		} finally {
+			invalidate.mockRestore();
+		}
+	}, 10_000);
+
+	it("does not claim a refresh succeeded when admission is refused", async () => {
+		state.commandError = new Error("cooldown");
+		const user = userEvent.setup();
+		renderPanel();
+		await user.click(
+			await screen.findByRole("button", {
+				name: new RegExp(branchCopy.refresh),
+			}),
+		);
+		await waitFor(() => expect(state.toastError).toHaveBeenCalled());
+		expect(state.toastInfo).not.toHaveBeenCalledWith(
+			branchCopy.refreshSuccess,
 		);
 	});
 

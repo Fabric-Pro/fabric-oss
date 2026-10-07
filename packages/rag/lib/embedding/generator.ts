@@ -18,6 +18,10 @@ import {
 	logEmbeddingUsageAsync,
 } from "@repo/ai";
 import { logger } from "@repo/logs";
+import {
+	getDispatchGuard,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { embed, embedMany } from "ai";
 // From the module rather than the `../chunking` barrel — that barrel re-exports
 // code which imports back into this one.
@@ -239,6 +243,11 @@ export async function generateEmbedding(
 			modelString: metadata.modelString,
 		};
 	} catch (error) {
+		// A stop from the caller's dispatch guard (a stopped chat turn, see
+		// @repo/utils/dispatch-guard) is rethrown as it is, so the caller's
+		// catch still recognises it. Any other failure is wrapped with its
+		// cause kept.
+		rethrowIfDispatchStopped(error);
 		logger.error("[EmbeddingGenerator] Failed to generate embedding", {
 			error: error instanceof Error ? error.message : error,
 			modelName: baseModelName,
@@ -246,6 +255,7 @@ export async function generateEmbedding(
 
 		throw new Error(
 			`Embedding generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+			{ cause: error },
 		);
 	}
 }
@@ -413,6 +423,14 @@ export async function generateEmbeddings(
 		const pieceEmbeddings: number[][] = [];
 		let totalTokens = 0;
 
+		// Inside a caller's dispatch guard (a chat turn), the SDK's own split
+		// of a batch into several provider requests runs one at a time. Run in
+		// parallel, its internal Promise.all rejects as soon as one request is
+		// refused, while a sibling the guard aborted is still settling — so the
+		// stop would leave this function, and the caller's activity, with a
+		// provider request still running. Without a guard: the SDK default.
+		const maxParallelCalls = getDispatchGuard() ? 1 : undefined;
+
 		// Sequential on purpose. A large input is only a handful of requests,
 		// and firing them concurrently is what draws the provider rate limit —
 		// the same all-or-nothing failure arriving from the other direction.
@@ -426,6 +444,7 @@ export async function generateEmbeddings(
 					},
 				},
 				abortSignal,
+				...(maxParallelCalls ? { maxParallelCalls } : {}),
 			});
 			pieceEmbeddings.push(...result.embeddings);
 			totalTokens += result.usage.tokens;
@@ -474,6 +493,9 @@ export async function generateEmbeddings(
 			modelString: metadata.modelString,
 		};
 	} catch (error) {
+		// As in generateEmbedding: a stop leaves as it is, anything else
+		// keeps its cause.
+		rethrowIfDispatchStopped(error);
 		logger.error(
 			"[EmbeddingGenerator] Failed to generate batch embeddings",
 			{
@@ -483,6 +505,7 @@ export async function generateEmbeddings(
 		);
 		throw new Error(
 			`Batch embedding generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+			{ cause: error },
 		);
 	}
 }

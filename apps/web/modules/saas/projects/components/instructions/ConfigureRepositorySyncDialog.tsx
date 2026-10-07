@@ -4,7 +4,6 @@ import { FABRIC_IGNORE_FILE } from "@repo/instructions";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { Checkbox } from "@ui/components/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -28,8 +27,6 @@ import {
 	type RepositorySyncIntegration,
 	repositorySyncTreeErrorKey,
 	repositorySyncTreeSelection,
-	type SyncNowResult,
-	syncNowResultMessage,
 } from "../../lib/instructions-repository-sync";
 import {
 	hasExclusionEdits,
@@ -166,6 +163,7 @@ export function ConfigureRepositorySyncDialog({
 	onSaved: () => void;
 }) {
 	const t = useTranslations(NAMESPACE);
+	const tDirect = useTranslations("projects.codingInstructions.direct");
 	const syncActionError = useSyncActionError();
 	const id = useId();
 	const seed =
@@ -191,7 +189,6 @@ export function ConfigureRepositorySyncDialog({
 		from: string;
 		changes: number;
 	} | null>(null);
-	const [automatic, setAutomatic] = useState(current?.automatic ?? true);
 	const [inlineError, setInlineError] = useState<string | null>(null);
 	// Which field the inline error is ABOUT, derived from `mapped.key`
 	// (`configureDialog.errors.<CODE>`, set only while `mapped.inline`):
@@ -216,10 +213,7 @@ export function ConfigureRepositorySyncDialog({
 	const configure = useMutation(
 		orpc.projects.instructions.repositorySync.configure.mutationOptions(),
 	);
-	const syncNow = useMutation(
-		orpc.projects.instructions.repositorySync.syncNow.mutationOptions(),
-	);
-	const pending = readingRules || configure.isPending || syncNow.isPending;
+	const pending = readingRules || configure.isPending;
 	const branch = ref.trim();
 	const root = selection.root;
 
@@ -402,14 +396,12 @@ export function ConfigureRepositorySyncDialog({
 			toast.error(t("configureDialog.errors.ignoreRulesUnavailable"));
 			return;
 		}
-		let saved: Awaited<ReturnType<typeof configure.mutateAsync>>;
 		try {
-			saved = await configure.mutateAsync({
+			await configure.mutateAsync({
 				projectId,
 				repositoryIntegrationId: integrationId,
 				ref: branch,
 				rootPath: root,
-				automatic,
 				// Written with the configuration, in one transaction, or not
 				// at all.
 				...(ignoreGlobs === undefined ? {} : { ignoreGlobs }),
@@ -443,27 +435,7 @@ export function ConfigureRepositorySyncDialog({
 			);
 			setSelection((prev) => ({ ...prev, edits: NO_EXCLUSION_EDITS }));
 		}
-		// Saved. A change made while a run was open is already queued behind
-		// it, by the server: that run stops at its next fence and the new
-		// selection syncs next, so there is nothing to start from here, and
-		// "Sync now" would only be refused.
-		if ("syncQueued" in saved) {
-			toast.info(t("syncNowResult.queued"));
-			onSaved();
-			onOpenChange(false);
-			return;
-		}
-		// Otherwise the first sync starts now (§7.2); a refusal to start is
-		// reported, and the configuration stands either way.
-		try {
-			const result = (await syncNow.mutateAsync({
-				projectId,
-			})) as SyncNowResult;
-			const announced = syncNowResultMessage(result);
-			toast[announced.tone](t(announced.key));
-		} catch (error) {
-			toast.error(syncActionError(error, "syncNow", branch));
-		}
+		toast.success(tDirect("connectionSaved"));
 		onSaved();
 		onOpenChange(false);
 	}
@@ -513,9 +485,9 @@ export function ConfigureRepositorySyncDialog({
 		>
 			<DialogContent className="max-w-2xl">
 				<DialogHeader>
-					<DialogTitle>{t("configureDialog.title")}</DialogTitle>
+					<DialogTitle>{tDirect("configure")}</DialogTitle>
 					<DialogDescription>
-						{t("configureDialog.description")}
+						{tDirect("configureDescription")}
 					</DialogDescription>
 				</DialogHeader>
 				<div className="flex flex-col gap-4">
@@ -660,33 +632,8 @@ export function ConfigureRepositorySyncDialog({
 							{inlineError}
 						</p>
 					) : null}
-					<div className="flex items-start gap-2">
-						<Checkbox
-							id="instructions-sync-automatic"
-							className="mt-0.5"
-							checked={automatic}
-							onCheckedChange={(value) =>
-								setAutomatic(value === true)
-							}
-							aria-describedby="instructions-sync-automatic-hint"
-						/>
-						<div className="flex flex-col gap-0.5">
-							<Label htmlFor="instructions-sync-automatic">
-								{t("configureDialog.automaticLabel")}
-							</Label>
-							<p
-								id="instructions-sync-automatic-hint"
-								className="text-muted-foreground text-xs"
-							>
-								{t("configureDialog.automaticHint")}
-							</p>
-						</div>
-					</div>
 					<p className="text-muted-foreground text-sm">
-						{t("configureDialog.afterSyncNotice")}
-					</p>
-					<p className="text-muted-foreground text-sm">
-						{t("configureDialog.actingNotice")}
+						{tDirect("connectionNotice")}
 					</p>
 				</div>
 				<DialogFooter className="items-center">
@@ -717,7 +664,7 @@ export function ConfigureRepositorySyncDialog({
 								aria-hidden="true"
 							/>
 						) : null}
-						{t("configureDialog.submit")}
+						{tDirect("saveConnection")}
 					</Button>
 				</DialogFooter>
 			</DialogContent>

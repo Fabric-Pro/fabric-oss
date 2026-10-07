@@ -14,6 +14,7 @@ import {
 import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
+import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
 import {
 	COMMIT_MAX_INLINE_BYTES,
 	defaultCommitMessage,
@@ -168,6 +169,7 @@ export function pathRefusal(path: string): PathRefusalCode | null {
 export function AddInstructionFileDialog({
 	projectId,
 	baseSnapshotId,
+	nativeBase,
 	open,
 	onOpenChange,
 	folder,
@@ -181,7 +183,6 @@ export function AddInstructionFileDialog({
 }: {
 	projectId: string;
 	/** The published snapshot the new version is derived from. */
-	baseSnapshotId: string;
 	open: boolean;
 	onOpenChange: (o: boolean) => void;
 	/** The folder currently selected in the tree, if any. */
@@ -209,12 +210,13 @@ export function AddInstructionFileDialog({
 	 * re-checks.
 	 */
 	canCommit?: boolean;
-	onAdded: () => void;
+	onAdded: () => unknown;
 	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
-	onCommitted?: (commit: { sha: string; ref: string }) => void;
-}) {
+	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+} & InstructionChangeBase) {
 	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
+	const tDirect = useTranslations("projects.codingInstructions.direct");
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [file, setFile] = useState<File | null>(null);
 	const [path, setPath] = useState("");
@@ -271,7 +273,7 @@ export function AddInstructionFileDialog({
 		}) =>
 			editInstructionSnapshot({
 				projectId,
-				baseSnapshotId,
+				...(nativeBase ? { nativeBase } : { baseSnapshotId }),
 				publishOnReady: proposal ? false : publishOnReady,
 				proposal,
 				// A direct version stores no note, so none is sent with one.
@@ -281,13 +283,15 @@ export function AddInstructionFileDialog({
 			}),
 		onSuccess: (_result, input) => {
 			toast.success(
-				input.proposal
-					? t(
-							repositoryTarget
-								? "pullRequestSubmitted"
-								: "proposalSubmitted",
-						)
-					: t("added"),
+				input.proposal && nativeBase
+					? tDirect("suggestionSubmitted")
+					: input.proposal
+						? t(
+								repositoryTarget
+									? "pullRequestSubmitted"
+									: "proposalSubmitted",
+							)
+						: t("added"),
 			);
 			reset();
 			onOpenChange(false);
@@ -355,7 +359,6 @@ export function AddInstructionFileDialog({
 		path.trim().length > 0 &&
 		!tooLarge &&
 		refusal === null &&
-		!tooLargeToCommit &&
 		!add.isPending &&
 		!commit.busy &&
 		!reading;
@@ -594,6 +597,7 @@ export function AddInstructionFileDialog({
 								<Button
 									disabled={
 										!canSubmit ||
+										tooLargeToCommit ||
 										commitMessage.trim() === ""
 									}
 									onClick={async () => {
@@ -605,7 +609,9 @@ export function AddInstructionFileDialog({
 											const content =
 												await fileToBase64(file);
 											commit.start({
-												baseSnapshotId,
+												...(nativeBase
+													? { nativeBase }
+													: { baseSnapshotId }),
 												message: commitMessage,
 												changes: [
 													{

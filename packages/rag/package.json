@@ -6,7 +6,7 @@
 	"main": "./index.ts",
 	"types": "./**/*.ts",
 	"scripts": {
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:rag": "dotenv -c -e ../../.env.local -- tsx test-rag.ts",
@@ -31,7 +31,7 @@
 		"jszip": "^3.10.1",
 		"mammoth": "^1.8.0",
 		"pdf-parse": "^1.1.1",
-		"sharp": "^0.35.4",
+		"sharp": "^0.35.5",
 		"zod": "4.1.12"
 	},
 	"devDependencies": {

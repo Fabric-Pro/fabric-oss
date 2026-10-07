@@ -9,7 +9,7 @@ import type { LocalSetupRoute } from "../../../lib/instructions-repository-sync"
 import {
 	buildClaudeCodeCommand,
 	buildCloneAndInitLine,
-	buildCodexCommands,
+	buildCodexCommand,
 	buildCursorInstallLink,
 	buildInitLine,
 	buildPortableMcpConfiguration,
@@ -31,7 +31,7 @@ describe("keyless connect entries", () => {
 		expect(gatewayUrl(ORIGIN, PROJECT_ID)).toBe(GATEWAY);
 		for (const entry of [
 			buildClaudeCodeCommand(ORIGIN, PROJECT_ID),
-			buildCodexCommands(ORIGIN, PROJECT_ID),
+			buildCodexCommand(ORIGIN, PROJECT_ID),
 			buildPortableMcpConfiguration(ORIGIN, PROJECT_ID),
 			decodeURIComponent(
 				buildVsCodeInstallLink(ORIGIN, PROJECT_ID, PROJECT_NAME),
@@ -85,19 +85,18 @@ describe("keyless connect entries", () => {
 		});
 	});
 
-	it("adds the server to Codex under a name of the project's own and then signs it in under that name", () => {
-		expect(buildCodexCommands(ORIGIN, PROJECT_ID).split("\n")).toEqual([
+	it("adds the server to Codex under a name of the project's own, with no separate login: the add signs in", () => {
+		expect(buildCodexCommand(ORIGIN, PROJECT_ID)).toBe(
 			`codex mcp add fabric-pleone --url ${GATEWAY}`,
-			"codex mcp login fabric-pleone",
-		]);
+		);
 	});
 
 	it("gives two projects different Codex commands, since Codex keeps one list for all of them", () => {
-		const first = buildCodexCommands(ORIGIN, "cm9x2k4f10000aaaaaa123456");
-		const second = buildCodexCommands(ORIGIN, "cm9x2k4f10000aaaaaa654321");
+		const first = buildCodexCommand(ORIGIN, "cm9x2k4f10000aaaaaa123456");
+		const second = buildCodexCommand(ORIGIN, "cm9x2k4f10000aaaaaa654321");
 
-		expect(first.split("\n")[0]).toContain("fabric-123456");
-		expect(second.split("\n")[0]).toContain("fabric-654321");
+		expect(first).toContain("fabric-123456");
+		expect(second).toContain("fabric-654321");
 		expect(first).not.toBe(second);
 	});
 
@@ -140,13 +139,11 @@ describe("Codex's server name", () => {
 		}
 	});
 
-	it("is the name both lines of the Codex commands use", () => {
-		const [add, login] = buildCodexCommands(ORIGIN, PROJECT_ID).split("\n");
-
-		expect(add).toBe(
+	it("uses the server name the CLI registers", () => {
+		expect(buildCodexCommand(ORIGIN, PROJECT_ID)).toBe(
 			`codex mcp add ${codexServerName(PROJECT_ID)} --url ${GATEWAY}`,
 		);
-		expect(login).toBe(`codex mcp login ${codexServerName(PROJECT_ID)}`);
+		expect(buildCodexCommand(ORIGIN, PROJECT_ID)).not.toContain("login");
 	});
 });
 

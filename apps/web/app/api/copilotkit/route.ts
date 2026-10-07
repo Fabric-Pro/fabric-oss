@@ -22,7 +22,9 @@
 import { LangGraphHttpAgent } from "@ag-ui/langgraph";
 import {
 	CopilotRuntime,
+	type CopilotServiceAdapter,
 	copilotRuntimeNextJSAppRouterEndpoint,
+	ExperimentalEmptyAdapter,
 	OpenAIAdapter,
 } from "@copilotkit/runtime";
 import {
@@ -40,12 +42,19 @@ import type { BaseAgentState } from "@repo/agent-types";
 import {
 	buildEffectiveBaseUrl,
 	createDatabricksFetch,
-	getAIModelWithMetadata,
+	type getAIModelWithMetadata,
 	getCurrentDateContext,
 	getRAGProviderConfig,
 	isReasoningModelName,
 	toDatabricksServingBaseUrl,
 } from "@repo/ai";
+import { chatGptPlanReconnectRefusal } from "@repo/ai/lib/chatgpt-plan/agent-config";
+import {
+	enterAiInteractiveContext,
+	isAiImpersonatedRequest,
+} from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { resolveChatGptPlanModel } from "@repo/ai/lib/chatgpt-plan/models";
+import { planServesInteractiveWork } from "@repo/ai/lib/chatgpt-plan/pool";
 import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
@@ -60,6 +69,7 @@ import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
 import OpenAI from "openai";
 import { AI_TOKEN_TTL_SECONDS } from "./config";
+import { resolveCopilotOrgModel } from "./org-model";
 
 // Note: `./default-mcp-tools` (PR #892 / #897) is no longer imported
 // here. See the comment near the `CopilotRuntime` constructor below for
@@ -487,14 +497,14 @@ type ProviderConfig = Awaited<ReturnType<typeof getRAGProviderConfig>>;
 type BoundPrompt = Awaited<ReturnType<typeof getBoundPromptVersion>>;
 
 interface TenantConfig {
-	aiGatewayUrl: string;
-	providerConfig: ProviderConfig;
+	/** Null for an organization with no provider whose member runs on their own plan. */
+	aiGatewayUrl: string | null;
+	providerConfig: ProviderConfig | null;
 	boundDocPrompt: BoundPrompt;
 	boundProjectDocPrompt: BoundPrompt;
 	metadata: AIModelResult["metadata"];
 	trackUsage: AIModelResult["trackUsage"];
-	openaiClient: OpenAI;
-	serviceAdapter: OpenAIAdapter;
+	serviceAdapter: CopilotServiceAdapter;
 }
 
 class TenantConfigError extends Error {
@@ -534,11 +544,11 @@ async function getTenantConfig(
 			boundDocPrompt,
 			boundProjectDocPrompt,
 		] = await Promise.all([
-			getAIModelWithMetadata(
-				{ taskType: "TOOL_CALLING" },
-				{ userId, organizationId },
+			// The agents' plan decision is made per request below.
+			resolveCopilotOrgModel({ userId, organizationId }),
+			getRAGProviderConfig({ userId, organizationId }).catch(
+				(error: unknown) => error as Error,
 			),
-			getRAGProviderConfig({ userId, organizationId }),
 			getBoundPromptVersion({
 				targetType: "AGENT",
 				targetKey: "document_generator",
@@ -554,6 +564,37 @@ async function getTenantConfig(
 				organizationId,
 			}),
 		]);
+
+		if (!aiModelResult) {
+			const { model: planModel } = await resolveChatGptPlanModel({
+				userId,
+				organizationId,
+				taskType: "COMPLEX",
+			});
+			return {
+				aiGatewayUrl: null,
+				providerConfig: null,
+				boundDocPrompt,
+				boundProjectDocPrompt,
+				metadata: {
+					modelString: planModel,
+					provider: "OPENAI_CHATGPT_PLAN" as const,
+					configId: null,
+					configSource: null,
+					selectionSource: "chatgpt_plan",
+					canonicalName: planModel,
+					billingMode: "external_provider" as const,
+					billingCustomerId: null,
+				},
+				trackUsage: () => {},
+				// No provider to build CopilotKit's own adapter from; the
+				// LangGraph agents do all the model work on the member's plan.
+				serviceAdapter: new ExperimentalEmptyAdapter(),
+			};
+		}
+		if (providerConfig instanceof Error) {
+			throw providerConfig;
+		}
 
 		const { metadata, trackUsage } = aiModelResult;
 		const aiGatewayUrl = buildEffectiveBaseUrl(
@@ -604,7 +645,6 @@ async function getTenantConfig(
 			boundProjectDocPrompt,
 			metadata,
 			trackUsage,
-			openaiClient,
 			serviceAdapter,
 		};
 	})();
@@ -660,6 +700,12 @@ export async function POST(req: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		// The organization arrives on the query string from the mount
 		// (`/api/copilotkit?organizationId=...`). It selects the tenant's
@@ -730,12 +776,31 @@ export async function POST(req: NextRequest) {
 		const organizationId = organizationResolution.organizationId;
 
 		let tenantConfig: TenantConfig;
+		let agentOnPlan: boolean;
 		try {
 			tenantConfig = await getTenantConfig(
 				session.user.id,
 				organizationId,
 			);
+			// A person is driving this request, so the agents may run on their
+			// own ChatGPT plan where they turned it on (Fizzy #2939), or on one
+			// the organization shares with members who have none (Fizzy #2770).
+			// The exchange makes the same decision from the token's claim; the
+			// hints below only have to agree with it.
+			agentOnPlan = await planServesInteractiveWork({
+				userId: session.user.id,
+				organizationId,
+			});
 		} catch (error) {
+			// The member's plan is on here but needs reconnecting: refuse rather
+			// than run the agents on the organization's API billing.
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return new Response(JSON.stringify(reconnect.body), {
+					status: reconnect.status,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
 			// AI usage-limit chokepoint hit a HARD limit.
 			// Surface the rich payload so the client
 			// fetch interceptor can render the shared destructive toast
@@ -801,6 +866,27 @@ export async function POST(req: NextRequest) {
 		// existing usage-accounting semantics.
 		trackUsage();
 
+		// The CopilotKit service adapter itself stays on the organization's
+		// provider; only the agents' hints follow the plan.
+		const agentProvider = agentOnPlan
+			? "OPENAI_CHATGPT_PLAN"
+			: metadata.provider;
+		const agentModel = agentOnPlan
+			? // The task the key exchange resolves for agents, so the hint and
+				// the model the agent finally uses agree.
+				(
+					await resolveChatGptPlanModel({
+						userId: session.user.id,
+						organizationId,
+						taskType: "COMPLEX",
+					})
+				).model
+			: metadata.modelString;
+		const agentGatewayUrl = agentOnPlan ? null : aiGatewayUrl;
+		const agentDeploymentName = agentOnPlan
+			? undefined
+			: providerConfig?.deploymentName;
+
 		// Issue a short-lived AI token instead of passing the raw API key.
 		// Agents will exchange this token for the actual API key via
 		// /api/ai/keys/exchange. Per-request: tokens are short-lived by design.
@@ -809,8 +895,12 @@ export async function POST(req: NextRequest) {
 			aiToken = await issueAIToken({
 				userId: session.user.id,
 				organizationId,
+				impersonated: isAiImpersonatedRequest(),
 				source: "copilotkit",
 				expirySeconds: AI_TOKEN_TTL_SECONDS,
+				// The same decision as the hints above: never while an admin
+				// acts as the member (Fizzy #2939).
+				planEligible: agentOnPlan,
 			});
 		} catch (error) {
 			logger.error("[CopilotKit] Failed to issue AI token", { error });
@@ -867,16 +957,16 @@ export async function POST(req: NextRequest) {
 			// This replaces the insecure X-AI-API-Key header with a short-lived JWT
 			[AI_TOKEN_HEADER]: aiToken,
 			// Model/provider hints (not sensitive) - agents may use these or fetch fresh config
-			...(metadata.modelString && {
-				"X-AI-Model": metadata.modelString,
+			...(agentModel && {
+				"X-AI-Model": agentModel,
 			}),
-			...(aiGatewayUrl && { "X-AI-Base-URL": aiGatewayUrl }),
-			...(metadata.provider && {
-				"X-AI-Provider": metadata.provider,
+			...(agentGatewayUrl && { "X-AI-Base-URL": agentGatewayUrl }),
+			...(agentProvider && {
+				"X-AI-Provider": agentProvider,
 			}),
 			// Azure AI Foundry deployment name (user-defined in Azure portal)
-			...(providerConfig.deploymentName && {
-				"X-AI-Deployment-Name": providerConfig.deploymentName,
+			...(agentDeploymentName && {
+				"X-AI-Deployment-Name": agentDeploymentName,
 			}),
 			"X-AI-Is-Reasoning": aiIsReasoning ? "true" : "false",
 		};
@@ -929,16 +1019,17 @@ export async function POST(req: NextRequest) {
 			fabric_api_url: url.origin,
 			_copilotkit: { tenantId: organizationId ?? session.user.id },
 			// AI model config for agents
-			ai_provider: metadata.provider,
+			ai_provider: agentProvider,
 			ai_token: aiToken, // Token for secure API key exchange
-			ai_model: metadata.modelString,
-			ai_gateway_url: aiGatewayUrl,
-			...(providerConfig.baseUrl && {
-				ai_base_url: providerConfig.baseUrl,
-			}),
+			ai_model: agentModel,
+			ai_gateway_url: agentGatewayUrl,
+			...(!agentOnPlan &&
+				providerConfig?.baseUrl && {
+					ai_base_url: providerConfig.baseUrl,
+				}),
 			// Azure AI Foundry deployment name (user-defined in Azure portal)
-			...(providerConfig.deploymentName && {
-				ai_deployment_name: providerConfig.deploymentName,
+			...(agentDeploymentName && {
+				ai_deployment_name: agentDeploymentName,
 			}),
 			// Canonical-derived reasoning signal (Bug #1942 review).
 			ai_is_reasoning: aiIsReasoning,

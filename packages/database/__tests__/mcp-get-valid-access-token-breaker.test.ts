@@ -9,8 +9,7 @@
  * time.
  *
  * A separate, lighter-weight mock than `mcp-status-reset.test.ts` — that
- * file only stubs `db.mCPConfig.update` for `updateMcpConfigTokens` /
- * `clearRefreshFailures`. Exercising `getValidAccessToken` additionally
+ * file only stubs the credential writes and `clearRefreshFailures`. Exercising `getValidAccessToken` additionally
  * needs `db.mCPConfig.findUnique` (via `getMcpConfigByIdInternal`) and a
  * stub for the OAuth token-endpoint call so a regression that removes the
  * breaker check is caught by an unexpected call, not just a wrong return
@@ -33,7 +32,8 @@ const updateManyMock = vi.fn();
 vi.mock("../prisma/client", () => ({
 	db: {
 		mCPConfig: {
-			findUnique: (...args: unknown[]) => findUniqueMock(...args),
+			findUnique: async (...args: unknown[]) =>
+				asWrittenByCredentialModule(await findUniqueMock(...args)),
 			update: (...args: unknown[]) => updateMock(...args),
 			updateMany: (...args: unknown[]) => updateManyMock(...args),
 		},
@@ -45,10 +45,9 @@ vi.mock("@repo/utils/oauth-refresh", () => ({
 	refreshOAuthToken: (...args: unknown[]) => refreshOAuthTokenMock(...args),
 }));
 
-// The refresh path always attempts RFC 8414 discovery before falling back to
-// the server's configured token endpoint. Stub it so the tests below never
-// reach the network — discovery returning a non-ok response makes the fixtures
-// resolve their endpoint from `mcpServer.oauthTokenEndpoint`.
+// The refresh path never discovers anything: it posts only to the token
+// endpoint the config is bound to. The stub stays so that a regression back
+// to discovery shows up as a call (asserted below), not as network traffic.
 const safeFetchOutboundMock = vi.fn();
 vi.mock("@repo/utils/url-security", () => ({
 	safeFetchOutbound: (...args: unknown[]) => safeFetchOutboundMock(...args),
@@ -78,11 +77,49 @@ vi.mock("@repo/utils", () => ({
 
 import { encryptApiKey } from "@repo/utils";
 import {
+	buildMcpOAuthBinding,
+	withCredentialFingerprint,
+} from "../prisma/queries/lib/mcp-oauth-binding";
+import {
 	GitLabPersonalCredentialRequiredError,
 	getValidAccessToken,
 	isPermanentGrantFailure,
 	recordRefreshFailure,
 } from "../prisma/queries/mcp";
+
+/**
+ * The binding every refreshable fixture below carries. These fixtures change
+ * credential columns freely (a rotation, a reconnect) to exercise the
+ * breaker, so the mocked read stamps this binding with the fingerprint of
+ * whatever credentials the fixture row holds — as if every write had gone
+ * through the credential module. The fingerprint check itself is pinned in
+ * mcp-oauth-refresh.test.ts.
+ */
+const NOTION_BINDING = buildMcpOAuthBinding({
+	authorizationServerUrl: "https://mcp.notion.com",
+	tokenEndpoint: "https://mcp.notion.com/token",
+	source: "backfill",
+});
+
+function asWrittenByCredentialModule(row: unknown): unknown {
+	if (!row || typeof row !== "object") {
+		return row;
+	}
+	const fields = row as Record<string, unknown>;
+	if (fields.oauthBinding !== NOTION_BINDING) {
+		return row;
+	}
+	return {
+		...fields,
+		oauthBinding: withCredentialFingerprint(NOTION_BINDING, {
+			oauthClientId: (fields.oauthClientId as string | null) ?? null,
+			encryptedOauthClientSecret:
+				(fields.encryptedOauthClientSecret as string | null) ?? null,
+			encryptedRefreshToken:
+				(fields.encryptedRefreshToken as string | null) ?? null,
+		}),
+	};
+}
 
 /**
  * A GitLab personal MCP config's credential is the person's GitLab
@@ -319,6 +356,8 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 			needsReauth: false,
 			refreshFailureCount: 0,
 			mcpServer: notionServer,
+			oauthGrantGeneration: 0,
+			oauthBinding: NOTION_BINDING,
 			baseUrl: null,
 		});
 
@@ -355,6 +394,8 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 			// the diagnostics columns without being allowed to condemn.
 			refreshFailureCount: 2,
 			mcpServer: notionServer,
+			oauthGrantGeneration: 0,
+			oauthBinding: NOTION_BINDING,
 			baseUrl: null,
 		});
 
@@ -371,11 +412,15 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 		expect(updateManyMock).toHaveBeenCalledTimes(1);
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "cfg_4", needsReauth: false },
+				where: {
+					id: "cfg_4",
+					needsReauth: false,
+					oauthGrantGeneration: 0,
+				},
 				data: expect.objectContaining({
 					refreshFailureCount: 3,
 					lastRefreshError:
-						"Token refresh failed: upstream returned 503",
+						"Token refresh failed (http_503): upstream returned 503",
 				}),
 			}),
 		);
@@ -411,6 +456,8 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 			needsReauth: false,
 			refreshFailureCount: 2, // third strike
 			mcpServer: notionServer,
+			oauthGrantGeneration: 0,
+			oauthBinding: NOTION_BINDING,
 			baseUrl: null,
 		});
 
@@ -429,6 +476,7 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 					id: "cfg_5",
 					encryptedRefreshToken: "ENC:refresh-token",
 					needsReauth: false,
+					oauthGrantGeneration: 0,
 				},
 				data: expect.objectContaining({
 					refreshFailureCount: 3,
@@ -457,6 +505,8 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 			needsReauth: false,
 			refreshFailureCount: 2, // third strike
 			mcpServer: notionServer,
+			oauthGrantGeneration: 0,
+			oauthBinding: NOTION_BINDING,
 			baseUrl: null,
 		});
 
@@ -473,7 +523,11 @@ describe("getValidAccessToken — what does and does not spend breaker strikes",
 		// concurrent condemnation.
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "cfg_6", needsReauth: false },
+				where: {
+					id: "cfg_6",
+					needsReauth: false,
+					oauthGrantGeneration: 0,
+				},
 				data: expect.objectContaining({
 					refreshFailureCount: 3,
 					lastRefreshError: "OAuth client secret not configured",
@@ -518,6 +572,8 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
 		needsReauth: false,
 		refreshFailureCount: 2, // third strike: a permanent failure condemns
 		mcpServer: notionServer,
+		oauthGrantGeneration: 0,
+		oauthBinding: NOTION_BINDING,
 		baseUrl: null,
 	};
 
@@ -531,9 +587,11 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
 		safeFetchOutboundMock.mockResolvedValue({ ok: false });
 	});
 
-	it("records the failure WITHOUT condemning when the stored token rotated mid-flight", async () => {
+	it("retries once with the rotated token, and binds any condemnation to the token the retry spent", async () => {
 		// The winner persists its replacement while our POST is in flight, so
-		// the reload after the rejection sees a token we never sent.
+		// the reload after the rejection sees a token we never sent. The
+		// refresh retries ONCE with it (same generation, same binding), using
+		// the snapshot's endpoint and client.
 		let rotated = false;
 		findUniqueMock.mockImplementation(async () => ({
 			...expiredConfig,
@@ -556,27 +614,60 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
 		});
 
 		expect(result).toBeNull();
-		// We posted the token this call actually held...
-		expect(refreshOAuthTokenMock).toHaveBeenCalledWith(
-			expect.objectContaining({ refreshToken: "loser-refresh" }),
-		);
-		// ...and the strike still lands for triage, but as diagnostics only:
-		// the credential the row now holds was never rejected by anyone.
+		expect(refreshOAuthTokenMock).toHaveBeenCalledTimes(2);
+		expect(refreshOAuthTokenMock.mock.calls[0]?.[0]).toMatchObject({
+			refreshToken: "loser-refresh",
+			tokenEndpoint: "https://mcp.notion.com/token",
+		});
+		expect(refreshOAuthTokenMock.mock.calls[1]?.[0]).toMatchObject({
+			refreshToken: "winner-refresh",
+			tokenEndpoint: "https://mcp.notion.com/token",
+		});
+		// The retried token was rejected too, so the condemnation is bound to
+		// IT — the row version the provider actually judged.
 		expect(updateMock).not.toHaveBeenCalled();
-		expect(updateManyMock).toHaveBeenCalledTimes(1);
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "cfg_8", needsReauth: false },
+				where: {
+					id: "cfg_8",
+					encryptedRefreshToken: "ENC:winner-refresh",
+					needsReauth: false,
+					oauthGrantGeneration: 0,
+				},
 				data: expect.objectContaining({
-					refreshFailureCount: 3,
-					lastRefreshError:
-						"Token refresh failed: Refresh token revoked",
+					needsReauth: true,
+					status: "UNAVAILABLE",
 				}),
 			}),
 		);
-		const rotatedData = updateManyMock.mock.calls[0]![0].data;
-		expect(rotatedData).not.toHaveProperty("needsReauth");
-		expect(rotatedData).not.toHaveProperty("status");
+	});
+
+	it("stops without a strike when the reload shows the grant itself changed", async () => {
+		// Between the rejection and the reload the config was reconnected: a
+		// new generation. Retrying would post a token of a different grant with
+		// this snapshot's client, so the refresh stops and records nothing.
+		let reconnected = false;
+		findUniqueMock.mockImplementation(async () => ({
+			...expiredConfig,
+			oauthGrantGeneration: reconnected ? 1 : 0,
+			encryptedRefreshToken: reconnected
+				? "ENC:new-grant-refresh"
+				: "ENC:old-refresh",
+		}));
+		refreshOAuthTokenMock.mockImplementation(async () => {
+			reconnected = true;
+			return {
+				ok: false,
+				errorCode: "invalid_grant",
+				errorMessage: "Refresh token revoked",
+			};
+		});
+
+		await getValidAccessToken({ configId: "cfg_8", userId: "user-1" });
+
+		expect(refreshOAuthTokenMock).toHaveBeenCalledTimes(1);
+		expect(updateMock).not.toHaveBeenCalled();
+		expect(updateManyMock).not.toHaveBeenCalled();
 	});
 
 	it("still condemns when the reload shows the very token we posted", async () => {
@@ -604,6 +695,7 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
 					id: "cfg_8",
 					encryptedRefreshToken: "ENC:only-refresh",
 					needsReauth: false,
+					oauthGrantGeneration: 0,
 				},
 				data: expect.objectContaining({
 					refreshFailureCount: 3,
@@ -637,7 +729,11 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
 		// setting it.
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "cfg_8", needsReauth: false },
+				where: {
+					id: "cfg_8",
+					needsReauth: false,
+					oauthGrantGeneration: 0,
+				},
 			}),
 		);
 		expect(updateManyMock.mock.calls[0]![0].data).not.toHaveProperty(
@@ -659,7 +755,7 @@ describe("getValidAccessToken — a rotated refresh token makes invalid_grant st
  *   different credential".
  *
  * A non-rotating provider echoes the refresh token back on every successful
- * refresh and `updateMcpConfigTokens` re-encrypts whatever it is handed, so a
+ * refresh and the refresh write re-encrypts whatever it is handed, so a
  * concurrent winner really does replace the stored ciphertext without changing
  * the credential. The consequence below is deliberate and fail-safe: the
  * condemning write misses and this attempt declines to condemn, while the next
@@ -703,6 +799,8 @@ describe("getValidAccessToken — re-encrypting the same refresh token is not a 
 			needsReauth: false,
 			refreshFailureCount: 2, // next permanent failure is the third strike
 			mcpServer: notionServer,
+			oauthGrantGeneration: 0,
+			oauthBinding: NOTION_BINDING,
 			baseUrl: null,
 		};
 
@@ -760,6 +858,7 @@ describe("getValidAccessToken — re-encrypting the same refresh token is not a 
 					id: "cfg_10",
 					encryptedRefreshToken: postedCiphertext,
 					needsReauth: false,
+					oauthGrantGeneration: 0,
 				},
 				data: expect.objectContaining({
 					refreshFailureCount: 3,
@@ -786,10 +885,15 @@ describe("getValidAccessToken — re-encrypting the same refresh token is not a 
 		// gone — so the strike lands through the diagnostics fallback instead.
 		expect(updateManyMock).toHaveBeenCalledTimes(2);
 		const fallback = updateManyMock.mock.calls[1]![0];
-		expect(fallback.where).toEqual({ id: "cfg_10", needsReauth: false });
+		expect(fallback.where).toEqual({
+			id: "cfg_10",
+			needsReauth: false,
+			oauthGrantGeneration: 0,
+		});
 		expect(fallback.data).toMatchObject({
 			refreshFailureCount: 3,
-			lastRefreshError: "Token refresh failed: Refresh token revoked",
+			lastRefreshError:
+				"Token refresh failed (invalid_grant): Refresh token revoked",
 		});
 		expect(fallback.data).not.toHaveProperty("needsReauth");
 		expect(fallback.data).not.toHaveProperty("status");
@@ -799,7 +903,13 @@ describe("getValidAccessToken — re-encrypting the same refresh token is not a 
 		expect(storedRow.needsReauth).toBe(false);
 		expect(storedRow.status).toBe("HEALTHY");
 		expect(updateMock).not.toHaveBeenCalled();
-		expect(consoleErrorSpy).toHaveBeenCalledOnce();
+		expect(
+			consoleErrorSpy.mock.calls.filter((call) =>
+				String(call[0]).includes(
+					"refresh rejection would have condemned",
+				),
+			),
+		).toHaveLength(1);
 		consoleErrorSpy.mockRestore();
 	});
 

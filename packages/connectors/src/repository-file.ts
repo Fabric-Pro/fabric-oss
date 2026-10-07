@@ -1,4 +1,8 @@
-import { createHash } from "node:crypto";
+import { repositoryRequestSignal } from "./repository-api";
+import {
+	repositoryBlobId as blobIdLike,
+	readCappedRepositoryBody as readCappedBody,
+} from "./repository-body";
 import { parseAdoRepositoryUrl } from "./repository-branch";
 import {
 	isRepositoryTreeProvider,
@@ -98,65 +102,6 @@ function failureFromStatus(status: number): ReadRepositoryFileResult {
 	};
 }
 
-type CappedBody =
-	| { complete: true; bytes: Uint8Array }
-	/** Longer than the cap. `head` is the first chunk read, if any was. */
-	| { complete: false; head: Uint8Array };
-
-/**
- * The body's bytes, or — once it is longer than `maxBytes` — the fact that
- * it is. A streamed body is read chunk by chunk and cancelled as soon as it
- * passes the cap, so a large body is never downloaded whole.
- *
- * With `refuseDeclaredLength`, a declared `Content-Length` over the cap is
- * refused without reading the body at all. Only an unencoded body's length
- * is believed: a compressed length says nothing exact about the bytes it
- * decodes to.
- */
-async function readCappedBody(
-	response: Response,
-	maxBytes: number,
-	options: { refuseDeclaredLength: boolean },
-): Promise<CappedBody> {
-	const declared =
-		!options.refuseDeclaredLength ||
-		response.headers.get("content-encoding")
-			? Number.NaN
-			: Number(response.headers.get("content-length") ?? Number.NaN);
-	if (Number.isFinite(declared) && declared > maxBytes) {
-		await response.body?.cancel().catch(() => {});
-		return { complete: false, head: new Uint8Array(0) };
-	}
-	if (!response.body) {
-		const whole = new Uint8Array(await response.arrayBuffer());
-		return whole.byteLength > maxBytes
-			? { complete: false, head: whole.subarray(0, maxBytes) }
-			: { complete: true, bytes: whole };
-	}
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) {
-			break;
-		}
-		total += value.byteLength;
-		if (total > maxBytes) {
-			await reader.cancel().catch(() => {});
-			return { complete: false, head: chunks[0] ?? value };
-		}
-		chunks.push(value);
-	}
-	const bytes = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return { complete: true, bytes };
-}
-
 /**
  * The found file, undecoded: the caller decodes it as the sync does
  * (`decodeFabricIgnore`), which refuses what a lenient decoding would
@@ -188,26 +133,6 @@ function startsJsonArray(head: Uint8Array): boolean {
 		return byte === 0x5b; // `[`
 	}
 	return false;
-}
-
-/**
- * The git object id of a blob holding `bytes` — `git hash-object` — in the
- * hash `objectId` is spelled in, or null when `objectId` is neither a SHA-1
- * nor a SHA-256 id.
- */
-function blobIdLike(bytes: Uint8Array, objectId: string): string | null {
-	const algorithm = /^[0-9a-f]{40}$/i.test(objectId)
-		? "sha1"
-		: /^[0-9a-f]{64}$/i.test(objectId)
-			? "sha256"
-			: null;
-	if (!algorithm) {
-		return null;
-	}
-	return createHash(algorithm)
-		.update(`blob ${bytes.byteLength}\0`)
-		.update(bytes)
-		.digest("hex");
 }
 
 /**
@@ -254,7 +179,7 @@ async function readGitHubFile(
 			Accept: "application/vnd.github+json",
 			"X-GitHub-Api-Version": "2022-11-28",
 		},
-		signal: AbortSignal.timeout(FILE_REQUEST_TIMEOUT_MS),
+		signal: repositoryRequestSignal(FILE_REQUEST_TIMEOUT_MS, input.signal),
 	});
 	if (response.status === 404) {
 		return ABSENT;
@@ -359,7 +284,10 @@ async function readAzureDevOpsFile(
 				Authorization: authorization,
 				Accept: "application/json",
 			},
-			signal: AbortSignal.timeout(FILE_REQUEST_TIMEOUT_MS),
+			signal: repositoryRequestSignal(
+				FILE_REQUEST_TIMEOUT_MS,
+				input.signal,
+			),
 		},
 	);
 	// ADO answers an invalid/expired PAT with a 203 + HTML sign-in page.
@@ -408,7 +336,10 @@ async function readAzureDevOpsFile(
 				Authorization: authorization,
 				Accept: "application/octet-stream",
 			},
-			signal: AbortSignal.timeout(FILE_REQUEST_TIMEOUT_MS),
+			signal: repositoryRequestSignal(
+				FILE_REQUEST_TIMEOUT_MS,
+				input.signal,
+			),
 		},
 	);
 	if (blobResponse.status === 203) {

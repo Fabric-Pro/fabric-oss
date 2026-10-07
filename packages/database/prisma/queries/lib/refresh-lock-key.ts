@@ -70,6 +70,14 @@ export function mcpConfigLockKey(configId: string): string {
 }
 
 /**
+ * Lock key for one person's ChatGPT plan credential (`ChatGptPlanCredential`),
+ * keyed on the user because the row is unique per user.
+ */
+export function chatGptPlanLockKey(userId: string): string {
+	return `chatgpt-plan:${userId}`;
+}
+
+/**
  * Lifecycle lock for one person's GitLab connection in one tenant context.
  *
  * Keyed on the (user, organization) pair rather than on a row id because the

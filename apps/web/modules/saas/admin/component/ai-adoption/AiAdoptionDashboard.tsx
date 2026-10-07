@@ -5,12 +5,14 @@
  *
  * Reads, in order: how maturation answers were sourced (taken as-is /
  * AI-edited / manual), what reviewers did with AI Backlog Update proposals,
- * platform LLM volume, that volume split by the feature that spent it,
+ * platform LLM volume, that volume split by the feature that spent it and
+ * by organization between members' ChatGPT plans and API billing,
  * acceptance segmented by the model and prompt version that produced the
  * output, and the model/prompt changes in the window to read a movement
  * against. Everything here is a read-only aggregate.
  */
 import type { ApiRouterClient } from "@repo/api/orpc/router";
+import { PlanCoveredEstimate } from "@saas/payments/components/PlanCoveredEstimate";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@ui/components/skeleton";
@@ -603,6 +605,153 @@ function FeatureUsageSection({
 	);
 }
 
+function BillingSourceSection({
+	data,
+}: {
+	data: AiAdoptionMetrics["billingSourceByOrganization"];
+}) {
+	const { rows, totalOrganizations } = data;
+	if (rows.length === 0) {
+		return null;
+	}
+
+	return (
+		<section className="space-y-4">
+			<div>
+				<SectionLabel>Billing source</SectionLabel>
+				<h2 className="mt-1 font-display font-semibold text-lg tracking-tight">
+					ChatGPT plan vs API by organization
+				</h2>
+				<p className="text-muted-foreground text-sm">
+					Calls members ran on their own ChatGPT plan cost the
+					platform nothing, so only API calls carry a cost.
+				</p>
+			</div>
+			<div className="overflow-x-auto rounded-lg border border-border bg-card">
+				<table className="w-full min-w-[44rem] text-sm">
+					<caption className="sr-only">
+						ChatGPT plan and API usage per organization
+					</caption>
+					<thead>
+						<tr className="border-border border-b text-muted-foreground text-xs">
+							<th
+								scope="col"
+								className="px-4 py-2 text-left font-medium"
+							>
+								Organization
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								Plan calls
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								Plan tokens
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								API calls
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								API tokens
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								API cost
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+								title="The plan calls' tokens priced at the catalog API price of the model each plan model is compared with. An estimate: members' plans paid for this usage."
+							>
+								Est. API cost of plan usage
+							</th>
+							<th
+								scope="col"
+								className="px-4 py-2 text-right font-medium"
+							>
+								Plan share
+							</th>
+						</tr>
+					</thead>
+					<tbody>
+						{rows.map((row) => (
+							<tr
+								key={row.organizationId ?? "__none__"}
+								className="border-border/60 border-b last:border-0"
+							>
+								<th
+									scope="row"
+									className="px-4 py-2 text-left font-normal"
+								>
+									{row.organizationId === null
+										? "No organization"
+										: (row.organizationName ??
+											"Deleted organization")}
+								</th>
+								<td className="px-4 py-2 text-right tabular-nums">
+									{numberFormat.format(row.plan.requests)}
+								</td>
+								<td className="px-4 py-2 text-right tabular-nums">
+									{compactFormat.format(row.plan.totalTokens)}
+								</td>
+								<td className="px-4 py-2 text-right tabular-nums">
+									{numberFormat.format(row.api.requests)}
+								</td>
+								<td className="px-4 py-2 text-right tabular-nums">
+									{compactFormat.format(row.api.totalTokens)}
+								</td>
+								<td className="px-4 py-2 text-right tabular-nums">
+									{formatUsd(row.api.costMicroUsd)}
+								</td>
+								<td className="px-4 py-2 text-right text-muted-foreground tabular-nums">
+									{row.plan.requests > 0 ? (
+										<PlanCoveredEstimate
+											formattedEstimate={formatUsd(
+												row.plan
+													.estimatedApiCostMicroUsd,
+											)}
+											referenceModels={
+												row.plan.referenceModels
+											}
+										/>
+									) : (
+										"—"
+									)}
+								</td>
+								<td className="px-4 py-2 text-right text-muted-foreground tabular-nums">
+									{formatPercent(
+										row.plan.requests,
+										row.plan.requests + row.api.requests,
+									)}
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</div>
+			{totalOrganizations > rows.length ? (
+				<p className="text-muted-foreground text-xs">
+					Showing the top {numberFormat.format(rows.length)} of{" "}
+					{numberFormat.format(totalOrganizations)} organizations,
+					ordered by plan calls.
+				</p>
+			) : null}
+		</section>
+	);
+}
+
 function SegmentationSection({
 	segments,
 	minSampleSize,
@@ -829,6 +978,9 @@ export function AiAdoptionDashboard() {
 					<BacklogSection backlog={data.backlog} />
 					<UsageSection usage={data.usage} />
 					<FeatureUsageSection rows={data.usageByFeature} />
+					<BillingSourceSection
+						data={data.billingSourceByOrganization}
+					/>
 					<SegmentationSection
 						segments={data.outcomeSegments}
 						minSampleSize={data.minSampleSize}

@@ -1672,6 +1672,104 @@ describe("useOrchestratorStream — model override (#2040)", () => {
 });
 
 /**
+ * Only an Advisor chat may draw on the organization's company context
+ * (Fizzy #2719). The Advisor page and the Fabric Agent drawer pass
+ * `advisorOrigin`; the MCP chat dialog and a registered agent's try
+ * workspace mount the same chat without it. The route opts a run in only
+ * from the request that starts it, so a reconnect has nothing to carry.
+ */
+describe("useOrchestratorStream — the Advisor's origin (Fizzy #2719)", () => {
+	const originalFetch = global.fetch;
+
+	afterEach(() => {
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	it("sends it on the request that starts the run, never on a reconnect", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ advisorOrigin: true }),
+		);
+
+		let sendPromise: Promise<string | null | undefined> | undefined;
+		act(() => {
+			sendPromise = result.current.sendMessage(
+				"Which case studies do we have?",
+			);
+		});
+
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-6666"}',
+			);
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"stream_timeout","executionId":"orch-6666"}',
+			);
+		});
+		await act(async () => {
+			windows[0].enqueueDone();
+		});
+
+		expect(streamBodies).toHaveLength(2);
+		expect(JSON.parse(streamBodies[0] as string).advisorOrigin).toBe(true);
+		const resume = JSON.parse(streamBodies[1] as string);
+		expect(resume.executionId).toBe("orch-6666");
+		expect(resume).not.toHaveProperty("advisorOrigin");
+
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","response":"done","status":"completed"}',
+			);
+		});
+		await act(async () => {
+			windows[1].enqueueDone();
+		});
+		await act(async () => {
+			await sendPromise;
+		});
+	});
+
+	it.each([
+		["a mount that does not pass it", {}],
+		["a mount that passes false", { advisorOrigin: false }],
+	])("leaves it out of the body for %s", async (_mount, options) => {
+		const { windows, streamBodies } = mockStreamWindows(1);
+		const { result } = renderHook(() => useOrchestratorStream(options));
+
+		let sendPromise: Promise<string | null | undefined> | undefined;
+		act(() => {
+			sendPromise = result.current.sendMessage("What do we offer?");
+		});
+
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-7777"}',
+			);
+		});
+
+		expect(streamBodies).toHaveLength(1);
+		expect(JSON.parse(streamBodies[0] as string)).not.toHaveProperty(
+			"advisorOrigin",
+		);
+
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"completed","response":"done","status":"completed"}',
+			);
+		});
+		await act(async () => {
+			windows[0].enqueueDone();
+		});
+		await act(async () => {
+			await sendPromise;
+		});
+	});
+});
+
+/**
  * Answered clarifying questions have to reach the NEXT turn (Fizzy #2406).
  *
  * The subtle failure this guards: recording the answer only on the execution

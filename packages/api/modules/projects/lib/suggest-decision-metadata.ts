@@ -19,6 +19,7 @@ import {
 } from "@repo/database";
 import { zodSchema } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 
 const SuggestionSchema = z.object({
 	decisionType: z
@@ -194,7 +195,8 @@ export async function suggestDecisionMetadata(
 					: null,
 			reason: object.reason,
 		};
-	} catch {
+	} catch (error) {
+		rethrowChatGptPlanRefusal(error);
 		return null;
 	}
 }

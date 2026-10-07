@@ -1,5 +1,47 @@
 # fabric-app
 
+## 1.16.19
+
+### Patch Changes
+
+- 436db8c: In Orchestrator mode, the Advisor no longer asks which company is meant when an organization member asks about "our company"; it searches the organization's company context directly.
+- 436db8c: The Advisor now knows which organization it works for and can search the organization's company context when a member asks about the company, naming the sources it used.
+- 436db8c: The Advisor's session review now reads only your own conversations, as the app shows them, instead of every member's conversations in the organization.
+- 436db8c: When the Advisor refuses the first message of a new chat because another message in that conversation is already being answered, the refused message is no longer left saved in the conversation, so it no longer reappears after a reload or in later answers' history.
+- 436db8c: Pressing Stop in the Advisor now also stops a Fabric AI web search, page scrape or pattern that is already running, instead of letting it finish or retry through a fallback.
+- 436db8c: Stopping an Advisor chat now also stops the lookups it runs while answering (finding tools, agents and integrations, searching workspace documents, project context, Teams messages and Databricks knowledge, and loading the Advisor's memory): once the stop is recorded, each further model, embedding or Databricks search request they make is refused before it is sent, one already sent is cancelled when the stop reaches the worker, and a stopped lookup ends the turn as stopped instead of being handed to the Advisor as an empty or failed result.
+- 436db8c: Pressing Stop in the Advisor now also stops a Planner chat, including while it is still planning, and the stopped message is shown as cancelled rather than failed.
+- 436db8c: Saving an Advisor answer no longer overwrites messages and answers that another open tab saved in the same conversation.
+- 436db8c: Upgrade authentication with compatible agent registration, resource-bound OAuth grants, and explicit authenticator enrollment.
+- 436db8c: The Workflow Template, CUGA and Agent Builder Sidekick chat boxes now grow with what you type, up to a maximum height, instead of staying at their starting height and scrolling a long message inside a small box.
+- 436db8c: Members can connect their own ChatGPT plan with `fabric connect chatgpt` and run their own AI work on it, behind an organization flag.
+- 436db8c: Organizations can share ChatGPT plan accounts for background jobs and members without a plan, behind the CHATGPT_PLAN_POOLING flag.
+- 436db8c: Company context: a website's first crawl shows how many of its pages are done, and the list keeps updating until the crawl finishes.
+- 436db8c: Adding a website to company context no longer offers the Live refresh option, which never re-fetched a company website and behaved like Once; choose Once, Daily, Weekly or Monthly instead. A company website saved earlier with Live now shows "No automatic refresh", which is how it behaves. Project context sources keep the Live option.
+- 436db8c: Cursor can now sign in to Fabric's MCP gateway: its OAuth callback is accepted at client registration.
+- 436db8c: Cursor's MCP sign-in no longer fails with a server error: the database accepts its OAuth callback like the API does.
+- 436db8c: The database change that lets Cursor sign in now applies under the normal migration role instead of failing on environments where a person installed the OAuth trigger.
+- 436db8c: Read repository coding instructions directly from Git with native commit history and pull request links, preserving existing checkouts and local changes during agent setup.
+- 436db8c: Google Drive integration settings now display a notice explaining that Google Drive access requires Google verification.
+- 436db8c: Feature and bug drafts now follow the selected prompt's structure instead of drifting into short placeholder drafts on some models, and drafting no longer fails on OpenAI, Groq and Cerebras models when a response field is optional.
+- 436db8c: Coding Instructions: direct repository reads cache commit-addressed answers and run their provider calls together, so repeat views stop re-asking the provider.
+- 436db8c: Coding Instructions: the session hook fast-forwards like git pull --ff-only, closed Azure DevOps suggestions settle at once, and editors get a current/behind verdict.
+- 436db8c: Coding Instructions: expired sign-ins offer Reconnect, Azure DevOps commits offer Compare and Revert, and the session hook updates on its first run.
+- 436db8c: Keep the Coding Instructions proposals dialog and header in step with the repository after Refresh, external pushes and commits.
+- 436db8c: Load the Coding Instructions tab faster by starting its repository reads earlier and deferring the commit list.
+- 436db8c: MCP OAuth credentials are now bound to the authorization server that issued them, so a refresh token, client secret or authorization code is never sent to a server an MCP server names later.
+- 436db8c: Describe native repository commits and pull requests without promising a copied snapshot or scanning stage. Preserve the existing wording for uploaded snapshots.
+- 436db8c: Prepare OAuth storage for the authentication upgrade and reject revoked or proof-bound tokens on bearer endpoints.
+- 436db8c: Refreshing an open coding-instructions proposal branch now performs one bounded, authorized provider status check and immediately reloads the branch view.
+- 436db8c: Restore sign-in and session checks by matching the username plugin to the existing user schema.
+- 436db8c: Refreshing an instruction suggestion or its branch now settles a closed or merged pull request immediately instead of waiting for the scheduler.
+- 436db8c: Refreshing a closed or merged instruction suggestion now settles it within seconds; the settlement wake no longer stops before it starts.
+- 436db8c: Explain the separate repository-read capability required for native Git setup in CI. Preserve the MCP key's instruction scopes and guide headless users to the existing API key settings without widening viewer permissions.
+- 436db8c: Restore coding-tool setup and file actions for Git-backed instructions served through Fabric, preserve existing checkout changes, and improve download performance and cancellation.
+- 436db8c: The Fabric SDK, SDK MCP server and integration packages are now built with tsdown instead of tsup, with the same entry points, exports and ES2015 output; `@fabricorg/sdk-mcp` also exports its `FabricLike` client type.
+- 436db8c: Image processing now uses sharp 0.35.5 and the MCP command wrapper uses shell-quote 1.12, picking up fixes for a high-severity librsvg vulnerability and a critical command-injection advisory in `quote()`.
+- 436db8c: Website sources no longer lose an indexed page when its scrape fails during a refresh; the page is kept, marked as failed with the reason, and recovers on the next successful fetch.
+
 ## 1.16.18
 
 ### Patch Changes

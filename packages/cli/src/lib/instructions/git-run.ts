@@ -1,6 +1,8 @@
 /**
  * How this CLI spawns `git`: one bounded, quiet child process at a time, with
- * an environment that cannot redirect git or carry a Fabric credential.
+ * an environment that cannot redirect git or inherit a Fabric credential.
+ * The gateway transport is the sole exception: it injects one URL-scoped
+ * Authorization header into that child process only.
  *
  * Callers outside `git.ts` and `git-write.ts` never see this module; the
  * exported verbs of those two files are the whole vocabulary, and no caller
@@ -46,7 +48,7 @@ const STRIPPED_VARIABLES = new Set([
 	"GIT_CONFIG_NOSYSTEM",
 ]);
 
-const STRIPPED_PATTERN = /^(?:FABRIC_|GIT_CONFIG_(?:KEY|VALUE)_\d+$)/;
+const STRIPPED_PATTERN = /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/;
 
 /** The two askpass programs a read-only question never runs, and the write may. */
 const CREDENTIAL_PROGRAMS = new Set(["GIT_ASKPASS", "SSH_ASKPASS"]);
@@ -85,7 +87,12 @@ export function gitEnvironment(
 			env[name] = value;
 			continue;
 		}
-		if (STRIPPED_VARIABLES.has(upper) || STRIPPED_PATTERN.test(upper)) {
+		if (
+			STRIPPED_VARIABLES.has(upper) ||
+			upper.startsWith("FABRIC_") ||
+			upper.startsWith("GIT_TRACE") ||
+			STRIPPED_PATTERN.test(upper)
+		) {
 			continue;
 		}
 		env[name] = value;
@@ -124,6 +131,54 @@ export type Spawned =
 	| { kind: "unavailable"; reason: string; missing?: boolean };
 
 /**
+ * A Fabric access token scoped to one HTTPS Git gateway base. The caller never
+ * puts it in command arguments, a remote URL, or repository configuration.
+ */
+export type GitHttpAuthorization = {
+	url: string;
+	authorization: string;
+};
+
+function gatewayConfig(
+	authorization: GitHttpAuthorization | undefined,
+): { args: string[]; env: NodeJS.ProcessEnv } | null {
+	if (authorization === undefined) {
+		return { args: [], env: {} };
+	}
+	try {
+		const url = new URL(authorization.url);
+		if (
+			url.protocol !== "https:" ||
+			url.username !== "" ||
+			url.password !== "" ||
+			url.search !== "" ||
+			url.hash !== "" ||
+			authorization.authorization === "" ||
+			/[\r\n]/.test(authorization.authorization)
+		) {
+			return null;
+		}
+		const base = url.toString().replace(/\/$/, "");
+		return {
+			args: [
+				"-c",
+				`http.${base}.extraHeader=`,
+				`--config-env=http.${base}.extraHeader=FABRIC_GIT_AUTH_HEADER`,
+				"-c",
+				"http.followRedirects=false",
+				"-c",
+				"credential.helper=",
+			],
+			env: {
+				FABRIC_GIT_AUTH_HEADER: `Authorization: ${authorization.authorization}`,
+			},
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Run one read-only git command. Private on purpose: the exported functions
  * below are the whole vocabulary.
  */
@@ -131,7 +186,11 @@ export function runGit(
 	cwd: string,
 	args: readonly string[],
 	deadline: GitDeadline,
-	options: { write?: boolean; unattended?: boolean } = {},
+	options: {
+		write?: boolean;
+		unattended?: boolean;
+		httpAuthorization?: GitHttpAuthorization;
+	} = {},
 ): Promise<Spawned> {
 	const remaining = deadline - Date.now();
 	if (remaining <= 0) {
@@ -141,6 +200,14 @@ export function runGit(
 		});
 	}
 	return new Promise((resolve) => {
+		const gateway = gatewayConfig(options.httpAuthorization);
+		if (gateway === null) {
+			resolve({
+				kind: "unavailable",
+				reason: "invalid Fabric Git transport",
+			});
+			return;
+		}
 		let settled = false;
 		const finish = (result: Spawned): void => {
 			if (!settled) {
@@ -154,6 +221,7 @@ export function runGit(
 			child = spawn(
 				"git",
 				[
+					...gateway.args,
 					// Windows Git can report modified long-path files from its file
 					// system cache even when Git's diff is empty. This command-local
 					// setting keeps inspection truthful without changing the user's
@@ -170,10 +238,12 @@ export function runGit(
 				],
 				{
 					cwd,
-					env:
-						options.write && options.unattended
+					env: {
+						...(options.write && options.unattended
 							? hookWriteEnvironment(process.env)
-							: gitEnvironment(process.env, options),
+							: gitEnvironment(process.env, options)),
+						...gateway.env,
+					},
 					stdio: ["ignore", "pipe", "pipe"],
 					shell: false,
 					windowsHide: true,
@@ -185,9 +255,13 @@ export function runGit(
 		}
 		const out: Buffer[] = [];
 		let outBytes = 0;
+		let outOverflow = false;
 		const err: Buffer[] = [];
 		let errBytes = 0;
 		child.stdout?.on("data", (chunk: Buffer) => {
+			if (chunk.length > STDOUT_CAP_BYTES - outBytes) {
+				outOverflow = true;
+			}
 			if (outBytes < STDOUT_CAP_BYTES) {
 				const room = STDOUT_CAP_BYTES - outBytes;
 				out.push(chunk.subarray(0, room));
@@ -217,6 +291,13 @@ export function runGit(
 		});
 		child.on("close", (code) => {
 			clearTimeout(escalate);
+			if (outOverflow) {
+				finish({
+					kind: "unavailable",
+					reason: "git output exceeded the supported size",
+				});
+				return;
+			}
 			finish({
 				kind: "exited",
 				code: code ?? -1,

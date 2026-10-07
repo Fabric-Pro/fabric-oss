@@ -3106,6 +3106,7 @@ function FabricChatContent({
 						*/
 						<FabricTemporalOrchestratorChat
 							key={`orchestrator-${chatInstanceKey}`}
+							advisorOrigin
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
 							// Simple mode hides the reasoning control, so it

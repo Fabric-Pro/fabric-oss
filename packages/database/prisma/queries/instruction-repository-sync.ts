@@ -31,6 +31,7 @@ import { recordAuditTx } from "./audit-log";
 import {
 	InstructionMigrationOpenError,
 	type InstructionMigrationPointer,
+	instructionRepositoryImportAllowed,
 	migrationOfSettings,
 } from "./instruction-migration-pointer";
 import {
@@ -1212,12 +1213,19 @@ export async function claimDueInstructionSyncRows(
 		WHERE s."id" = ANY (ARRAY(
 			SELECT s2."id"
 			FROM "project_instruction_repository_sync" AS s2
+			JOIN "project" AS p ON p."id" = s2."projectId"
+				AND p."organizationId" = s2."organizationId"
 			JOIN "project_repository_integration" AS i
 				ON i."id" = s2."repositoryIntegrationId"
 			WHERE s2."automatic" = true
 				AND s2."automaticPausedReason" IS NULL
 				AND s2."nextCheckAt" <= (clock_timestamp() AT TIME ZONE 'UTC')
 				AND i."status" = 'ACTIVE'
+				AND p."instructionSettings"->>'sourceOfTruth' = 'REPOSITORY'
+				AND instruction_repository_migration_import_allowed(
+					p."instructionSettings", s2."projectId", s2."organizationId",
+					'REPOSITORY', jsonb_build_object('syncId', s2."id")
+				)
 			ORDER BY s2."nextCheckAt" ASC, s2."id" ASC
 			LIMIT ${input.limit}
 			FOR UPDATE OF s2 SKIP LOCKED
@@ -1581,7 +1589,12 @@ export async function findInstructionSyncsForPush(input: {
 			repositoryIntegration: {
 				select: {
 					projectId: true,
-					project: { select: { organizationId: true } },
+					project: {
+						select: {
+							organizationId: true,
+							instructionSettings: true,
+						},
+					},
 				},
 			},
 		},
@@ -1591,7 +1604,11 @@ export async function findInstructionSyncsForPush(input: {
 			(row) =>
 				row.repositoryIntegration.projectId === row.projectId &&
 				row.repositoryIntegration.project.organizationId ===
-					row.organizationId,
+					row.organizationId &&
+				instructionRepositoryImportAllowed(
+					row.repositoryIntegration.project.instructionSettings,
+					row.id,
+				),
 		)
 		.map((row) => ({
 			id: row.id,

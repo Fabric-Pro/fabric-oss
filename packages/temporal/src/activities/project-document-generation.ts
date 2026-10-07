@@ -36,6 +36,8 @@ import {
 	readTokenCount,
 	streamText,
 } from "@repo/ai";
+import { chatGptPlanExhaustedError } from "@repo/ai/lib/chatgpt-plan/exhaustion-breaker";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	computeMaxOutputTokenBudget,
 	computeScaledOutputTokenBudget,
@@ -604,6 +606,8 @@ export async function generateDocumentWithAgent(params: {
 	hasTeamsIntegration?: boolean;
 	/** Whether the project has Slack integration - enables search_slack_messages tool in agent */
 	hasSlackIntegration?: boolean;
+	/** The clicking member's own ChatGPT plan may serve this run (Fizzy #2939). */
+	planEligible?: boolean;
 }): Promise<{
 	content: string;
 	/**
@@ -636,6 +640,7 @@ export async function generateDocumentWithAgent(params: {
 		hasRagContexts: explicitHasRagContexts,
 		hasTeamsIntegration = false,
 		hasSlackIntegration = false,
+		planEligible = false,
 	} = params;
 
 	// Track the resolved prompt version ID for attribution. `null`, never
@@ -914,6 +919,9 @@ export async function generateDocumentWithAgent(params: {
 				organizationId,
 				featureKey: "document-generation",
 				promptVersionId: resolvedPromptVersionId ?? undefined,
+				// Unset, not false: inside a run a person started, the run's own
+				// marker decides (Fizzy #2939).
+				planEligible: planEligible ? true : undefined,
 			},
 		);
 
@@ -1918,7 +1926,13 @@ ${formattingRules}`;
 			totalDurationMs: totalDuration,
 			totalDurationSeconds: (totalDuration / 1000).toFixed(2),
 		});
-		throw error;
+		// The member's plan ran out somewhere in this run — in the agent or the
+		// fallback, whose error shapes differ. Surface the one non-retryable
+		// type rather than whichever symptom arrived last (Fizzy #2939).
+		const planExhausted = planEligible
+			? chatGptPlanExhaustedError(userId)
+			: null;
+		throw planExhausted ?? error;
 	}
 }
 
@@ -3492,13 +3506,17 @@ export async function issueGenerationToken(params: {
 	 * should hand over the same window the API's dispatch mints for.
 	 */
 	expirySeconds?: number;
+	/** Carried over from the run, so a reissued token keeps its eligibility. */
+	planEligible?: boolean;
 }): Promise<{ aiToken: string }> {
 	const { issueAIToken } = await import("@repo/ai-token");
 	const aiToken = await issueAIToken({
 		userId: params.userId,
 		organizationId: params.organizationId,
+		impersonated: isAiImpersonatedRequest(),
 		source: "project-document-generation",
 		expirySeconds: params.expirySeconds,
+		planEligible: params.planEligible,
 	});
 	return { aiToken };
 }

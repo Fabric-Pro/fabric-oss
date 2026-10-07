@@ -282,6 +282,12 @@ async function loadTenantVerifiedSnapshot(
 			"INSTRUCTION_SNAPSHOT_TENANT_MISMATCH",
 		);
 	}
+	if (snapshot.contentKind !== "FULL_SNAPSHOT") {
+		throw ApplicationFailure.nonRetryable(
+			"Repository operations are not instruction snapshots",
+			"INSTRUCTION_SOURCE_MISMATCH",
+		);
+	}
 	// A superseded attempt stops here, before it touches storage or the row:
 	// the run that started it failed (its marker cleared the token) or a "Try
 	// again" gave the row a newer one. Non-retryable, because retrying reads

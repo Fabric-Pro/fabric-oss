@@ -5,23 +5,10 @@
  * repository-backed project answers the same way wherever the change comes
  * from.
  *
- * An upload-backed project is a FABRIC destination and nothing about its path
- * changes except the note. A repository-backed project admits a proposal as a
- * pull-request operation: the destination is FROZEN here (spec §2.2) — the
- * sync row's id and current generation, the integration, the target ref and
- * root, the base commit, the repository identity and the rendered commit
- * attribution and message — and creation-side steps later check the
- * configuration still equals it rather than re-resolving it.
- *
- * Every new REPOSITORY admission is a member branch proposal: its frozen
- * context is `pullRequestContext` v2 (Fizzy #2738 spec Decision 4, §4.2),
- * which has no per-proposal branch, title or body, because the member's
- * branch owns its ref and its pull request's title and description (spec
- * Decision 13). Rows admitted before keep their v1 context, which is read for
- * display only: #2563's per-proposal path that acted on them was retired
- * once they drained (Fizzy #2748). Direct derives and publish mode keep the
- * `REPOSITORY_SOURCE_OF_TRUTH` refusal: a repository-backed project changes
- * through git, and a proposal is the one way to ask git for a change.
+ * Uploaded projects retain FABRIC admission. Repository edits freeze native
+ * commit/configuration pins rather than a published Fabric copy. The same
+ * destination, attribution and permission rules serve both native operations
+ * and the retained upload-to-repository migration.
  *
  * The order is the spec's: destination, sync row, integration, repository
  * identity, authority, base, then the note's rendering. Authority comes after
@@ -37,7 +24,6 @@ import {
 	db,
 	getInstructionRepositorySyncForProposal,
 	getProjectInstructionSettings,
-	getPublishedInstructionSnapshot,
 	type InstructionMigrationPointer,
 	type PullRequestFailure,
 	type RepositoryProposalDestination,
@@ -86,6 +72,7 @@ export type AdmissionInput = {
 	mode: AdmissionMode;
 	/** `migration` only: the synced branch's tip the move's commit is built on. */
 	baseCommitSha?: string;
+	nativeBase?: { generation: number; commitSha: string };
 	/** The raw `note` from the request; parsed here with `proposalNoteSchema`. */
 	note?: unknown;
 	/** The proposer's display name, a body input only (spec §5.2). */
@@ -139,9 +126,6 @@ const REPOSITORY_UNAVAILABLE_MESSAGE =
 const ADO_PROJECT_MESSAGE =
 	"Reconnect the repository with a URL that names its Azure DevOps project.";
 
-const REPOSITORY_BASE_UNAVAILABLE_MESSAGE =
-	"Sync the repository before proposing a change.";
-
 /** A direct commit needs a branch to commit to (Fizzy #2878 §10). */
 const NOT_REPOSITORY_SOURCED_MESSAGE =
 	"This project's coding instructions are uploaded, not synced from a repository, so there is no branch to commit to.";
@@ -150,6 +134,7 @@ type RefusalReason =
 	| "REPOSITORY_SOURCE_OF_TRUTH"
 	| "REPOSITORY_UNAVAILABLE"
 	| "REPOSITORY_BASE_UNAVAILABLE"
+	| "REPOSITORY_DIRECT_READ"
 	| "NOT_REPOSITORY_SOURCED";
 
 function refusal(
@@ -248,19 +233,6 @@ export function commitTextRefused(
 			field: code === "ATTRIBUTION_REJECTED" ? "author" : "message",
 		},
 	});
-}
-
-/**
- * The root PR 1's sync froze into the base's `settingsFrozen` (plan R22), or
- * null. Only a string on a non-null object counts, so missing or malformed
- * provenance never equals a sync root and the base is refused.
- */
-export function frozenRootPath(value: unknown): string | null {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		return null;
-	}
-	const rootPath = (value as { rootPath?: unknown }).rootPath;
-	return typeof rootPath === "string" ? rootPath : null;
 }
 
 /** ISO 8601 UTC in whole seconds: part of the reproducible commit (spec §5.2). */
@@ -393,50 +365,32 @@ export async function admitInstructionProposal(
 		}
 		return { destination: "FABRIC", note };
 	}
-	if (i.mode !== "proposal" && i.mode !== "commit") {
+	if (!i.nativeBase || (i.mode !== "proposal" && i.mode !== "commit")) {
 		throw refusal(
-			"REPOSITORY_SOURCE_OF_TRUTH",
-			REPOSITORY_SOURCE_OF_TRUTH_MESSAGE,
+			"REPOSITORY_DIRECT_READ",
+			"This project's instructions are read directly from Git. Commit changes or open a pull request in the repository.",
 		);
 	}
-
 	const { sync, repository } = await resolveSyncRepository(i);
-
 	await assertRepositoryProposalAccess({
 		projectId: i.projectId,
 		userId: i.userId,
-		// A commit writes the branch itself: the proposal opt-in that lets a
-		// reader suggest a pull request never lets one commit.
-		allowReaders: i.mode === "commit" ? false : sync.allowReaderProposals,
+		allowReaders: i.mode === "proposal" && sync.allowReaderProposals,
 	});
-
-	// Unscoped pointer read (a project-level pointer), so the tenant is
-	// compared here as well as the provenance.
-	const base = await getPublishedInstructionSnapshot(i.projectId);
-	if (
-		!base ||
-		base.organizationId !== i.organizationId ||
-		base.source !== "REPOSITORY" ||
-		!base.sourceCommitSha ||
-		base.repositoryIntegrationId !== sync.repositoryIntegrationId ||
-		base.sourceRef !== sync.ref ||
-		frozenRootPath(base.settingsFrozen) !== sync.rootPath
-	) {
-		throw refusal(
-			"REPOSITORY_BASE_UNAVAILABLE",
-			REPOSITORY_BASE_UNAVAILABLE_MESSAGE,
-		);
+	if (sync.generation !== i.nativeBase.generation) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"The repository configuration changed. Refresh and try again.",
+			data: { code: "REPOSITORY_CONFIGURATION_CHANGED" },
+		});
 	}
-
 	if (i.mode === "commit") {
 		const rendered = renderDirectCommitText({
 			message: i.message ?? "",
 			proposerName: i.proposerName ?? "",
 			mailFrom: config.mails.from,
 		});
-		if (!rendered.ok) {
-			return commitTextRefused(rendered.code);
-		}
+		if (!rendered.ok) return commitTextRefused(rendered.code);
 		return {
 			destination: "REPOSITORY_COMMIT",
 			note: null,
@@ -448,7 +402,7 @@ export async function admitInstructionProposal(
 				provider: repository.provider,
 				targetRef: sync.ref,
 				rootPath: sync.rootPath,
-				baseCommitSha: base.sourceCommitSha,
+				baseCommitSha: i.nativeBase.commitSha,
 				repository,
 				author: rendered.author,
 				committer: rendered.committer,
@@ -457,13 +411,12 @@ export async function admitInstructionProposal(
 			},
 		};
 	}
-
 	return renderRepositoryAdmission({
 		i,
 		sync,
 		repository,
 		note,
-		baseCommitSha: base.sourceCommitSha,
+		baseCommitSha: i.nativeBase.commitSha,
 	});
 }
 

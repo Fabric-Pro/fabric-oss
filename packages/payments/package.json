@@ -25,7 +25,7 @@
 	"name": "@repo/payments",
 	"private": true,
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"types": "./index.ts",
 	"version": "0.0.3",

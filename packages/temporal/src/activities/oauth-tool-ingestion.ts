@@ -31,6 +31,7 @@ import {
 	deleteCapabilitiesByConfigId,
 	upsertCapabilities,
 } from "@repo/rag/lib/vector-store/capability-store";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
 
 export interface IngestOAuthToolsInput {
@@ -331,6 +332,9 @@ export async function ingestOAuthIntegrationToolsActivity(
 			version,
 		};
 	} catch (error) {
+		// Inside a chat turn's dispatch guard (the tool search re-ingests
+		// outdated OAuth tools), a stop is not a failed ingestion.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		logger.error("[OAuth Tool Ingestion] Tool ingestion failed", {

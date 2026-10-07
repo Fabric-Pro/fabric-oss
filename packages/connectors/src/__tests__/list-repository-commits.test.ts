@@ -11,6 +11,7 @@ import {
 	COMMIT_MESSAGE_MAX_CHARS,
 	COMMITS_PAGE_SIZE,
 	listRepositoryCommits,
+	readRepositoryCommitParent,
 } from "../repository-commits";
 
 const mockFetch = vi.fn();
@@ -82,6 +83,16 @@ const gitHubEntry = {
 };
 
 describe("GitHub", () => {
+	it("uses an immutable commit pin instead of the moving branch", async () => {
+		mockFetch.mockResolvedValue(json(200, [gitHubEntry]));
+		await listRepositoryCommits({
+			...githubInput,
+			commitSha: SHA,
+			includeParents: false,
+		});
+		expect(requested().url.searchParams.get("sha")).toBe(SHA);
+		expect(mockFetch).toHaveBeenCalledOnce();
+	});
 	it("asks for the branch's commits that touched the folder, one page of 30", async () => {
 		mockFetch.mockResolvedValue(json(200, [gitHubEntry]));
 
@@ -221,6 +232,46 @@ describe("GitLab", () => {
 });
 
 describe("Azure DevOps", () => {
+	it("pins metadata history and omits per-commit parent requests", async () => {
+		mockFetch.mockResolvedValue(
+			json(200, {
+				value: [
+					{
+						commitId: SHA,
+						author: {
+							name: "Developer",
+							date: "2026-10-01T09:00:00Z",
+						},
+						committer: {
+							name: "Developer",
+							date: "2026-10-01T09:00:00Z",
+						},
+						comment: "Rule update",
+					},
+				],
+			}),
+		);
+		const result = await listRepositoryCommits({
+			...adoInput,
+			commitSha: SHA,
+			includeParents: false,
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			commits: [{ sha: SHA, parent: null }],
+		});
+		expect(
+			requested().url.searchParams.get(
+				"searchCriteria.itemVersion.version",
+			),
+		).toBe(SHA);
+		expect(
+			requested().url.searchParams.get(
+				"searchCriteria.itemVersion.versionType",
+			),
+		).toBe("commit");
+		expect(mockFetch).toHaveBeenCalledOnce();
+	});
 	it("pages with $skip and filters by item path under the branch", async () => {
 		mockFetch.mockResolvedValue(
 			json(200, {
@@ -489,4 +540,57 @@ describe("failures are a closed set and never an empty history", () => {
 			expect(mockFetch).not.toHaveBeenCalled();
 		},
 	);
+});
+
+describe("readRepositoryCommitParent", () => {
+	const {
+		branch: _branch,
+		path: _path,
+		page: _page,
+		...adoRepository
+	} = adoInput;
+
+	it("reads one Azure DevOps commit and returns its first parent", async () => {
+		mockFetch.mockResolvedValue(
+			json(200, { commitId: SHA, parents: [PARENT, "c".repeat(40)] }),
+		);
+
+		const result = await readRepositoryCommitParent({
+			...adoRepository,
+			sha: SHA,
+		});
+
+		expect(result).toEqual({ ok: true, parent: PARENT });
+		expect(mockFetch).toHaveBeenCalledOnce();
+		expect(requested().url.pathname).toContain(`/commits/${SHA}`);
+	});
+
+	it("answers a root commit with a null parent", async () => {
+		mockFetch.mockResolvedValue(json(200, { commitId: SHA, parents: [] }));
+
+		expect(
+			await readRepositoryCommitParent({ ...adoRepository, sha: SHA }),
+		).toEqual({ ok: true, parent: null });
+	});
+
+	it("reports a provider failure instead of a missing parent", async () => {
+		mockFetch.mockResolvedValue(json(401));
+
+		expect(
+			await readRepositoryCommitParent({ ...adoRepository, sha: SHA }),
+		).toEqual({ ok: false, outcome: "unauthorized" });
+	});
+
+	it("refuses a provider that lists parents itself, and a malformed sha, without a request", async () => {
+		expect(
+			await readRepositoryCommitParent({ ...githubInput, sha: SHA }),
+		).toEqual({ ok: false, outcome: "unreachable" });
+		expect(
+			await readRepositoryCommitParent({
+				...adoRepository,
+				sha: "../etc",
+			}),
+		).toEqual({ ok: false, outcome: "unreachable" });
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
 });

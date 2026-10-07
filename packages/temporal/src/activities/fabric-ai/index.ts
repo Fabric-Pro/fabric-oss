@@ -18,6 +18,7 @@
  * Set mode via FABRIC_AI_MODE environment variable.
  */
 
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	analyzeYouTube,
 	checkFabricAIHealth,
@@ -35,6 +36,7 @@ import {
 	transcribeAudio,
 } from "@repo/fabric-ai";
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 
 export interface ExecuteFabricPatternInput {
 	pattern: FabricPattern;
@@ -189,6 +191,9 @@ export async function executeFabricPattern(
 			},
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -238,6 +243,9 @@ export async function extractYouTubeTranscript(
 			durationMs,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -322,6 +330,9 @@ export async function analyzeYouTubeVideo(
 			},
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -351,6 +362,9 @@ export async function listFabricPatternsActivity(): Promise<{
 		const patterns = await listPatterns();
 		return { success: true, patterns };
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		return { success: false, error: errorMessage };
@@ -374,6 +388,9 @@ export async function checkFabricHealth(): Promise<{
 			delegatedSupported: health.delegatedSupported,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		return { healthy: false, error: errorMessage };
@@ -482,6 +499,9 @@ export async function transcribeAudioActivity(
 			},
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -545,6 +565,9 @@ export async function transcribeAndAnalyzeActivity(
 			durationMs,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -733,6 +756,9 @@ export async function scrapeUrlActivity(
 			durationMs,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -795,6 +821,7 @@ export async function scrapeAndAnalyzeActivity(
 				const aiToken = await issueAIToken({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-ai-scrape",
 				});
 
@@ -807,6 +834,9 @@ export async function scrapeAndAnalyzeActivity(
 					contentLength: scrapedContent.length,
 				});
 			} catch (delegatedError) {
+				// A stop is not a delegated failure: falling back would send
+				// a second request for a stopped turn.
+				rethrowIfDispatchStopped(delegatedError);
 				// Fall back to direct mode if delegated fails
 				logger.warn(
 					`[Fabric AI] Delegated scrape failed, falling back to direct mode: ${delegatedError}`,
@@ -901,6 +931,9 @@ export async function scrapeAndAnalyzeActivity(
 				: undefined,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -959,6 +992,7 @@ export async function searchWebActivity(
 				const aiToken = await issueAIToken({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-ai-search",
 				});
 
@@ -979,6 +1013,9 @@ export async function searchWebActivity(
 					durationMs,
 				};
 			} catch (delegatedError) {
+				// A stop is not a delegated failure: falling back would send
+				// a second request for a stopped turn.
+				rethrowIfDispatchStopped(delegatedError);
 				// Fall back to direct mode if delegated fails
 				logger.warn(
 					`[Fabric AI] Delegated search failed, falling back to direct mode: ${delegatedError}`,
@@ -1060,6 +1097,9 @@ export async function searchWebActivity(
 			durationMs,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -1122,6 +1162,7 @@ export async function searchAndAnalyzeActivity(
 				const aiToken = await issueAIToken({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "fabric-ai-search-analyze",
 				});
 
@@ -1134,6 +1175,9 @@ export async function searchAndAnalyzeActivity(
 					contentLength: searchResults.length,
 				});
 			} catch (delegatedError) {
+				// A stop is not a delegated failure: falling back would send
+				// a second request for a stopped turn.
+				rethrowIfDispatchStopped(delegatedError);
 				// Fall back to direct mode if delegated fails
 				logger.warn(
 					`[Fabric AI] Delegated search failed, falling back to direct mode: ${delegatedError}`,
@@ -1230,6 +1274,9 @@ export async function searchAndAnalyzeActivity(
 				: undefined,
 		};
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const durationMs = Date.now() - startTime;
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -1272,6 +1319,9 @@ export async function listStrategiesActivity(): Promise<ListStrategiesOutput> {
 		const strategies = await listFabricStrategies();
 		return { success: true, strategies };
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		return { success: false, error: errorMessage };
@@ -1289,6 +1339,9 @@ export async function listContextsActivity(): Promise<ListContextsOutput> {
 		const contexts = await listFabricContexts();
 		return { success: true, contexts };
 	} catch (error) {
+		// In an Advisor chat turn a stop leaves the activity as an error;
+		// outside a dispatch guard this is a no-op.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		return { success: false, error: errorMessage };

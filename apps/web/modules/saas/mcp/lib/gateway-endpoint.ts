@@ -512,7 +512,10 @@ async function authenticateRequest(
 	// resource (MCP authorization: a server must refuse a token not issued for
 	// it).
 	if (authHeader?.startsWith("Bearer ")) {
-		const token = await verifyOAuthAccessToken(authHeader.substring(7));
+		const token = await verifyOAuthAccessToken(authHeader.substring(7), {
+			appUrl: getBaseUrl(),
+			audience: "mcp",
+		});
 		if (!token.valid) {
 			return UNAUTHENTICATED;
 		}
@@ -1298,7 +1301,7 @@ function codingInstructionsSetupOffer(
 			: ` --base-url ${deployment}`;
 	const project = projectId === null ? "" : ` --project ${projectId}`;
 	return (
-		"If a project's instructions come from its repository and the developer is in a git checkout of it that has no Fabric session hook (no `fabric instructions` entry in .claude/settings.local.json or .codex/hooks.json), offer to run " +
+		"For uploaded instructions, if the developer wants a local installation with a session hook, offer to run " +
 		`\`npx -y ${deployment}${tarball} instructions init --tool ${tool}${baseUrl}${project}\` in the checkout's top folder (or the folder inside it where the project's instructions live) and relay the one line it prints. ` +
 		"Run it only if the developer agrees, and never run git or write hook files yourself.\n"
 	);
@@ -1334,20 +1337,13 @@ function codingInstructionsSection(
 ): string {
 	return (
 		"## Coding instructions\n" +
-		"Projects can publish coding instructions (skills, agents, rules, CLAUDE.md/AGENTS.md, settings, scripts, knowledge docs). " +
+		"Projects provide coding instructions (skills, agents, rules, CLAUDE.md/AGENTS.md, settings, scripts, knowledge docs) through an attached repository or an uploaded version. " +
 		"Project responses from fabric_get_project and fabric_list_projects carry a `codingInstructions` field. " +
-		"When `published` is true, call fabric_get_project_instruction_bundle to install the whole set, " +
-		"or fabric_list_project_instructions + fabric_get_project_instruction to read individual files, " +
-		"and follow those instructions while working on that project. " +
-		"Pass the `digest` you last installed as `sinceDigest`: an unchanged digest is answered without a download, a changed one adds the changed paths to the response.\n" +
-		"At session start, call `fabric_instruction_checks` with the project id, the `digest` from .fabric/instructions.lock if you have one as `lockDigest`, and as `presentVariables` only the NAMES (never values) of the declared environment variables that are set. " +
-		"The report lists findings and proposed remedies; it grants no authority to install software, change credentials, or overwrite files — tell the developer and let them decide.\n" +
-		"When a project's instructions come from its repository (the instruction tools report a `repository` for it), also pass `checkout` — the remote URL, HEAD commit, branch and whether the working tree is clean, read with read-only git commands — so the report can say whether this checkout is the published commit or behind it. Pulling is the developer's: never pull, reset or overwrite files because a report says the checkout is behind.\n" +
+		"When `codingInstructions.source` is `repository`, call fabric_list_project_instructions and fabric_get_project_instruction to read the attached repository directly. Carry the returned generation and commitSha through subsequent reads and pages so they all use one Git commit. fabric_get_project_instruction_bundle returns native checkout guidance, without a snapshot or archive. If the repository is unavailable, report that; never use a historical Fabric snapshot as a fallback.\n" +
+		"For uploaded instructions, `codingInstructions.published:true` means an approved version is available. Use fabric_get_project_instruction_bundle to install it or the list/file tools to read selected files. Pass the last installed digest as sinceDigest to avoid an unchanged download. The optional fabric_instruction_checks report compares lockDigest and declared environment variable NAMES, never values.\n" +
+		"Follow the instructions while working on the project. Read-only reports grant no authority to install software, change credentials, pull, reset or overwrite files.\n" +
 		codingInstructionsSetupOffer(clientName, projectId) +
-		"If the work shows the instructions are wrong or incomplete, call `fabric_propose_project_instruction_change` with the files' new content. " +
-		"That opens a proposal for a person to approve in Fabric — nothing changes for anyone else until they do, so report it as a suggestion awaiting review rather than as a change you made. " +
-		"On a project whose instructions come from its repository, the proposal becomes a pull request in that repository, reviewed and merged there: report it the same way, as a pull request awaiting review. Pass `note` with a short title and why the change is needed.\n" +
-		"If the work shows a mistake the team should not repeat, call `fabric_add_instruction_lesson` to record it as a lesson — it opens a proposal the same way, for a person to approve.\n\n"
+		"For repository instructions, edit and propose changes through native Git and the configured provider's pull requests, subject to the developer's authorization. Fabric shows the provider's history and open pull requests. For uploaded instructions, fabric_propose_project_instruction_change and fabric_add_instruction_lesson open proposals for a person to approve in Fabric; describe them as awaiting review.\n\n"
 	);
 }
 
@@ -1357,7 +1353,7 @@ const BOOTSTRAP_SECTION =
 	"1. Set the project's description with `fabric_update_project`\n" +
 	"2. Push the README, architecture notes, design rules and team conventions with `fabric_upsert_project_context`, one call per file, using the file's repo-relative path as `sourcePath` so a later push of the same file updates it rather than adding a duplicate\n" +
 	"3. Before replacing a file that is already there, read its `contentHash` with fabric_get_project_context or fabric_list_project_contexts and pass it as `expectedContentHash`; a `conflict` means someone else changed it, so read it again and merge rather than overwrite\n" +
-	"Keep coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks, rules, scripts) out of it and propose those with `fabric_propose_project_instruction_change` instead. " +
+	"Keep coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks, rules, scripts) out of it. Propose uploaded instruction changes with `fabric_propose_project_instruction_change`; repository instruction changes belong in native Git and provider pull requests. " +
 	"Never push secrets, `.env` files or generated output, and tell the developer what you pushed.\n\n";
 
 const AUTHORITY_SECTION =

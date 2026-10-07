@@ -62,3 +62,26 @@ describe("LimitBanner internal_budget copy", () => {
 		).toBeTruthy();
 	});
 });
+
+// Fizzy #2770: the spent plan may be one the organization shares with a
+// member who has no plan of their own, so the copy never says "your own".
+describe("LimitBanner subscription_exhausted copy", () => {
+	it("names the plan serving the work, not the member's own plan", () => {
+		render(
+			<LimitBanner
+				signal={{
+					kind: "subscription_exhausted",
+					message:
+						"Every ChatGPT plan this work may use has no usage left",
+					retryAfterMs: 30 * 60_000,
+				}}
+			/>,
+		);
+		const banner = screen.getByRole("alert");
+		expect(banner).toHaveTextContent("The ChatGPT plan has no usage left");
+		expect(banner).toHaveTextContent(
+			"The ChatGPT plan serving your work reached its usage limit",
+		);
+		expect(banner).not.toHaveTextContent(/your own ChatGPT plan reached/i);
+	});
+});

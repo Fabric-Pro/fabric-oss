@@ -26,6 +26,7 @@ import {
 	syncRunEnded,
 } from "../../lib/instructions-repository-sync";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
+import { DirectRepositoryInstructions } from "./DirectRepositoryInstructions";
 import { InstructionsEmptyState } from "./InstructionsEmptyState";
 import {
 	InstructionsPublishedView,
@@ -38,6 +39,8 @@ import {
 } from "./InstructionsTabState";
 import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
 import { UploadFolderDialog } from "./UploadFolderDialog";
+
+const REPOSITORY_STATE_POLL_MS = 60_000;
 
 /**
  * The four fields the polling decision reads off a snapshot row. Declared
@@ -61,7 +64,60 @@ type PollSnapshot = {
 	sourceCommitSha?: string | null;
 };
 
-export function CodingInstructionsTab({
+type CodingInstructionsTabProps = {
+	projectId: string;
+	projectName: string;
+	canEdit?: boolean;
+	canReview?: boolean;
+	readOnlyMode?: boolean;
+};
+
+export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
+	const repository = useQuery({
+		...orpc.projects.instructions.repository.getState.queryOptions({
+			input: { projectId: props.projectId },
+		}),
+		// A push made outside Fabric shows up without More > Refresh. The
+		// read asks the provider for the branch head, so it polls once a
+		// minute and only while the tab is visible (react-query pauses an
+		// interval in a hidden tab). A draft in progress keeps its own base
+		// and shows the "newer commit" notice instead of changing under it.
+		refetchOnWindowFocus: true,
+		refetchInterval: REPOSITORY_STATE_POLL_MS,
+		refetchIntervalInBackground: false,
+	});
+	if (repository.isPending) {
+		return <InstructionsTabSkeleton />;
+	}
+	if (repository.isError && repository.data === undefined) {
+		return (
+			<InstructionsLoadError
+				retrying={repository.isFetching}
+				onRetry={() => void repository.refetch()}
+			/>
+		);
+	}
+	const state = repository.data;
+	if (state.availability === "UPLOAD" || state.availability === "MIGRATING") {
+		return <SnapshotCodingInstructionsTab {...props} />;
+	}
+	return (
+		<DirectRepositoryInstructions
+			key={props.projectId}
+			projectId={props.projectId}
+			projectName={props.projectName}
+			canConfigure={(props.canEdit ?? false) && !props.readOnlyMode}
+			canEdit={props.canEdit ?? false}
+			canReview={props.canReview ?? false}
+			readOnlyMode={props.readOnlyMode ?? false}
+			state={state}
+			refreshing={repository.isFetching}
+			onRefresh={async () => (await repository.refetch()).data}
+		/>
+	);
+}
+
+function SnapshotCodingInstructionsTab({
 	projectId,
 	projectName,
 	canEdit = false,
@@ -425,6 +481,12 @@ export function CodingInstructionsTab({
 	// stays busy until the new state is on screen (Decision 53).
 	const rereadSync = async () => {
 		await Promise.all([
+			queryClient.invalidateQueries({
+				queryKey:
+					orpc.projects.instructions.repository.getState.queryOptions(
+						{ input: { projectId } },
+					).queryKey,
+			}),
 			queryClient.invalidateQueries({
 				queryKey: syncQuery.queryKey,
 			}),

@@ -42,11 +42,15 @@ export async function canReviewInstructionProposals(input: {
  * the snapshot row, which carries the field.
  */
 export function isInstructionSnapshotContentReadable(snapshot: {
+	contentKind: string;
 	status: string;
 	proposalStatus: ProposalStatus | null;
 	proposalDestination?: string;
 }): boolean {
-	if (snapshot.proposalDestination === "REPOSITORY_COMMIT") {
+	if (
+		snapshot.contentKind !== "FULL_SNAPSHOT" ||
+		snapshot.proposalDestination === "REPOSITORY_COMMIT"
+	) {
 		return false;
 	}
 	return (

@@ -53,6 +53,7 @@ const ctx = { user: { id: "u" }, session: { activeOrganizationId: "org_1" } };
 function snapshot(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "s_from",
+		contentKind: "FULL_SNAPSHOT",
 		version: 7,
 		status: "READY",
 		proposalStatus: null,

@@ -6,6 +6,12 @@ const mocks = vi.hoisted(() => ({
 	search: vi.fn(),
 	getStory: vi.fn(),
 }));
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	getProjectAccessContext: mocks.access,
 	searchProjectKnowledge: mocks.search,

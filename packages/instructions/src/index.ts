@@ -17,4 +17,5 @@ export * from "./pull-request-text";
 export * from "./secrets";
 export * from "./snapshot-rules";
 export * from "./storage-keys";
+export * from "./text-page";
 export * from "./workflow-ids";

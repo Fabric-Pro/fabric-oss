@@ -166,6 +166,24 @@ function served(
 	};
 }
 
+function servedDirect() {
+	return {
+		published: false,
+		sourceOfTruth: "REPOSITORY" as const,
+		repository: REPOSITORY,
+		direct: {
+			availability: "READY" as const,
+			readState: "DIRECT" as const,
+			generation: REPOSITORY.generation,
+			currentCommitSha: PUBLISHED_SHA,
+			ref: REPOSITORY.ref,
+			rootPath: REPOSITORY.rootPath,
+			provider: REPOSITORY.provider,
+			repository: { ...REPOSITORY, cloneUrl: REPOSITORY_URL },
+		},
+	};
+}
+
 function inCheckout(
 	dest: string,
 	remotes: Record<string, string | null> = { origin: REPOSITORY_URL },
@@ -193,6 +211,239 @@ async function exists(file: string): Promise<boolean> {
 
 const BEHIND =
 	"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout is behind";
+
+describe("a direct repository project", () => {
+	it("reports a matching native checkout without copying a snapshot or lock", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result).toEqual({
+			code: 0,
+			stdout: `Coding instructions are read directly from ${NAME} at aaaaaaa; this checkout already contains that commit.\n`,
+			stderr: "",
+		});
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(
+			await exists(path.join(dest, ".fabric", "instructions.lock")),
+		).toBe(false);
+		expect(await readdir(dest)).toEqual([]);
+	});
+
+	it("refuses a nonmatching folder instead of falling back to a snapshot copy", async () => {
+		const dest = await makeTree();
+		inCheckout(dest, {
+			origin: "https://git.example.com/example-org/other.git",
+		});
+		mocks.getPublished.mockResolvedValue(servedDirect());
+		stubDownload();
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain(
+			"Fabric does not copy them into this folder",
+		);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(await readdir(dest)).toEqual([]);
+	});
+
+	it("checks a direct repository checkout without snapshot state", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.stdout).toBe(
+			`Coding instructions are read directly from ${NAME} at aaaaaaa; this checkout already contains that commit.\n`,
+		);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("has its hook fast-forward a clean native checkout without copying a snapshot", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		fakeGit.state.fetchResult = { kind: "fetched", tip: PUBLISHED_SHA };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result).toEqual({
+			code: 0,
+			stdout: `fabric: coding instructions: fast-forwarded main from ${"1".repeat(7)} to aaaaaaa.\n`,
+			stderr: "",
+		});
+		expect(fakeGit.fetches).toHaveLength(1);
+		expect(fakeGit.merges).toHaveLength(1);
+		expect(fakeGit.merges[0]?.sha).toBe(PUBLISHED_SHA);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("leaves a dirty direct checkout to git: it fetches", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.clean = false;
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.fetches).toHaveLength(1);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("honors --no-fast-forward for a direct checkout", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+			"--no-fast-forward",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.fetches).toEqual([]);
+		expect(fakeGit.merges).toEqual([]);
+	});
+
+	it("keeps a direct checkout intact when the hook cannot fetch", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		fakeGit.state.fetchResult = { kind: "failed", reason: "network" };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stderr).toContain("sync skipped");
+		expect(fakeGit.merges).toEqual([]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("leaves a direct checkout alone while Git has a lock", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		fakeGit.state.lockFiles = true;
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(fakeGit.fetches).toEqual([]);
+		expect(fakeGit.merges).toEqual([]);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("leaves a diverged direct checkout alone after the hook fetches its configured branch", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: false };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("main and origin/main have diverged");
+		expect(result.stdout).not.toContain("git pull --ff-only");
+		expect(fakeGit.fetches).toHaveLength(1);
+		expect(fakeGit.merges).toEqual([]);
+	});
+
+	it("initializes a matching checkout without claiming that nothing is published", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"init",
+			"--project",
+			"project-1",
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--no-mcp",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			`Coding instructions are read directly from ${NAME} at aaaaaaa; this checkout already contains that commit.`,
+		);
+		expect(result.stdout).not.toContain("Nothing has been published");
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(
+			await exists(path.join(dest, ".claude", "settings.local.json")),
+		).toBe(true);
+	});
+});
 
 // ---------------------------------------------------------------------------
 // Every class that is neither matching nor not-git

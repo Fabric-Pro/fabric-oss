@@ -8,6 +8,7 @@
  * Issue #10: Extract verification logic into shared function
  */
 
+import { ActivityCancellationType } from "@temporalio/common";
 import {
 	log,
 	proxyActivities,
@@ -55,6 +56,11 @@ import {
 } from "./context-manager";
 import { CIRCUIT_BREAKER, CONTEXT, WORKFLOW } from "./orchestrator-config";
 import { isBulkOperation, isDestructiveStep } from "./risk-assessment";
+import {
+	type IterativeTurnOptions,
+	rethrowTurnStop,
+	turnScopeField,
+} from "./turn-contract";
 import type {
 	AgentVariable,
 	ALTKConfig,
@@ -74,6 +80,25 @@ import type {
 const activities = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "15 minutes", // Weave shuttle steps can take 10+ min (CodingRun bridge)
 	heartbeatTimeout: "5 minutes", // Agent delegation (A2A) can block for minutes during LLM calls
+	retry: {
+		initialInterval: "1s",
+		backoffCoefficient: 2,
+		maximumInterval: "30s",
+		maximumAttempts: 3,
+	},
+});
+
+// `executeStep` for a chat turn (a Planner chat) only; a run without a turn
+// keeps the proxy above and its recorded commands. In a turn the activity
+// carries the turn scope and heartbeats every five seconds for its whole
+// run, which is what delivers a Stop to it (so a one-minute heartbeat
+// timeout still fails fast on a wedged worker), and the cancellation type
+// waits for it to abort its requests and report CANCELLED before the
+// workflow goes on.
+const turnStepActivities = proxyActivities<typeof orchestratorActivities>({
+	startToCloseTimeout: "15 minutes",
+	heartbeatTimeout: "1 minute",
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
 		initialInterval: "1s",
 		backoffCoefficient: 2,
@@ -126,6 +151,8 @@ export async function processStepResult(params: {
 	/** Mutable wave queue — retry steps are inserted here */
 	waveQueue?: TaskStep[][];
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void;
+	/** Set only for a chat turn (see `executeStepWithContext`). */
+	turn?: IterativeTurnOptions;
 }): Promise<{
 	responseChunk: string;
 	shouldAbort: boolean;
@@ -143,6 +170,7 @@ export async function processStepResult(params: {
 		taskPlan,
 		waveQueue,
 		updateProgress,
+		turn,
 	} = params;
 
 	const agentId = step.executor || "unknown";
@@ -257,6 +285,7 @@ export async function processStepResult(params: {
 				stepResult.result.outputs,
 				altkConfig,
 				step.expectedOutput,
+				turn,
 			);
 		}
 
@@ -271,6 +300,7 @@ export async function processStepResult(params: {
 			taskPlan,
 			waveQueue,
 			updateProgress,
+			turn,
 		});
 
 		log.info("Step completed", {
@@ -297,6 +327,7 @@ export async function processStepResult(params: {
 		stepStartTime,
 		modeConfig,
 		altkConfig,
+		turn,
 	);
 
 	if (recoveryResult.recovered) {
@@ -453,6 +484,11 @@ export function skipIfCircuitOpen(
 /**
  * Execute a single step with full context propagation.
  * Shared between parallel and sequential execution paths.
+ *
+ * `turn` is set only for a chat turn (a Planner chat; never Weave): the step
+ * activity then carries the turn scope through the turn proxy, and a stop is
+ * rethrown instead of being returned as a failed step, so neither the
+ * recovery loop nor a fallback runs after it. Without it, unchanged.
  */
 export async function executeStepWithContext(
 	state: WorkflowState,
@@ -461,6 +497,7 @@ export async function executeStepWithContext(
 	stepIndex: number,
 	_modeConfig: ExecutionModeConfig,
 	_altkConfig: ALTKConfig,
+	turn?: IterativeTurnOptions,
 ): Promise<StepExecutionResult> {
 	const { taskPlan } = state;
 
@@ -504,7 +541,7 @@ export async function executeStepWithContext(
 		}));
 
 		// Execute the step
-		const result = await activities.executeStep({
+		const stepInput = {
 			step,
 			message: state.enrichedMessage,
 			systemPrompt: `${state.enrichedSystemPrompt}\n\n${contextPrompt}`,
@@ -530,7 +567,13 @@ export async function executeStepWithContext(
 			matchedMcpTools: state.routingDecision?.matchedMcpTools,
 			matchedIntegrations: state.routingDecision?.matchedIntegrations,
 			attachedImageUrls: input.attachedImageUrls,
-		});
+		};
+		const result = turn?.turnScope
+			? await turnStepActivities.executeStep({
+					...stepInput,
+					...turnScopeField(turn),
+				})
+			: await activities.executeStep(stepInput);
 
 		// Check if OAuth authorization is required
 		if (result.status === "auth_required" && result.authRequired) {
@@ -557,6 +600,7 @@ export async function executeStepWithContext(
 			},
 		};
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		return { success: false, error: errorMessage };
@@ -582,6 +626,7 @@ async function verifyAndHandleRetry(params: {
 	taskPlan: TaskPlan;
 	waveQueue?: TaskStep[][];
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void;
+	turn?: IterativeTurnOptions;
 }): Promise<string> {
 	const {
 		state,
@@ -592,6 +637,7 @@ async function verifyAndHandleRetry(params: {
 		taskPlan,
 		waveQueue,
 		updateProgress,
+		turn,
 	} = params;
 
 	log.info("Running operation verification", {
@@ -692,6 +738,7 @@ async function verifyAndHandleRetry(params: {
 
 		return originalResponse;
 	} catch (verifyError) {
+		rethrowTurnStop(verifyError, turn);
 		log.warn("Verification activity failed", {
 			stepId: step.id,
 			error:
@@ -718,6 +765,7 @@ export async function attemptStepRecovery(
 	_stepStartTime: number,
 	modeConfig: ExecutionModeConfig,
 	altkConfig: ALTKConfig,
+	turn?: IterativeTurnOptions,
 ): Promise<RecoveryResult> {
 	const maxRetries = WORKFLOW.maxRecoveryRetries;
 
@@ -755,6 +803,7 @@ export async function attemptStepRecovery(
 				stepIndex,
 				modeConfig,
 				altkConfig,
+				turn,
 			);
 
 			if (retryResult.success && retryResult.result) {
@@ -800,6 +849,7 @@ export async function performReflection(
 	outputs: Record<string, unknown>,
 	altkConfig: ALTKConfig,
 	expectedOutput?: string,
+	turn?: IterativeTurnOptions,
 ): Promise<void> {
 	try {
 		const reflection = await activities.reflectOnOutput({
@@ -814,6 +864,7 @@ export async function performReflection(
 			});
 		}
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		log.warn("Reflection failed", {
 			error: error instanceof Error ? error.message : "Unknown error",
 		});
@@ -830,6 +881,7 @@ export async function performReflection(
 export async function summarizeContextIfNeeded(
 	state: WorkflowState,
 	taskPlan: { steps: TaskStep[] },
+	turn?: IterativeTurnOptions,
 ): Promise<void> {
 	if (
 		state.trajectorySteps.length === 0 ||
@@ -862,6 +914,7 @@ export async function summarizeContextIfNeeded(
 			});
 		}
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Context summarization failed", {
 				error: error instanceof Error ? error.message : "Unknown error",

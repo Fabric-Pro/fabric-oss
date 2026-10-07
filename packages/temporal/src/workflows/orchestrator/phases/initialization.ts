@@ -17,12 +17,17 @@ import type * as projectMetadataActivities from "../../../activities/project-met
 import type * as weaveActivities from "../../../activities/weave";
 import { orchestratorBasePrompt } from "../../../lib/assistant-identity";
 import { formatRepositoryRoleMap } from "../../../lib/repository-role-formatter";
-import { type IterativeTurnOptions, rethrowTurnStop } from "../turn-contract";
-import type {
-	OrchestratorWorkflowInput,
-	PhaseResult,
-	PreloadedResources,
-	WorkflowState,
+import {
+	type IterativeTurnOptions,
+	rethrowTurnStop,
+	turnScopeField,
+} from "../turn-contract";
+import {
+	type OrchestratorWorkflowInput,
+	type PhaseResult,
+	type PreloadedResources,
+	usesIterativeExecution,
+	type WorkflowState,
 } from "../types";
 import {
 	attachedProjectReferenceLine,
@@ -123,6 +128,14 @@ export async function executeInitializationPhase(
 		userId: input.userId,
 	});
 
+	// The company context search is registered only by the iterative loop,
+	// so a run that plans up front (save_reuse, weave) neither asks the
+	// preload for company context nor tells the model it can search it.
+	// The execution mode is workflow input, so replay answers the same.
+	const offersCompanyContext =
+		input.companyContextAdvisor === true &&
+		usesIterativeExecution(input.executionMode);
+
 	try {
 		// ======================================================================
 		// Step 0: Preload ALL Resources (MCP tools, agents, preferences)
@@ -141,6 +154,10 @@ export async function executeInitializationPhase(
 			enabledMcpConfigIds: input.enabledMcpConfigIds ?? undefined,
 			enabledAgentIds: input.enabledAgentIds ?? undefined,
 			enabledIntegrationIds: input.enabledIntegrationIds ?? undefined,
+			// The Advisor's company-context opt-in (Fizzy #2719). Only an
+			// opted-in turn that runs the loop sends it, so every other
+			// turn's preload input, and every recorded one, keeps its shape.
+			...(offersCompanyContext ? { companyContextAdvisor: true } : {}),
 		});
 
 		log.info("Resources preloaded", {
@@ -172,6 +189,7 @@ export async function executeInitializationPhase(
 				projectId,
 				workspaceId,
 				currentQuery: input.message,
+				...turnScopeField(turn),
 			});
 
 			orchestratorMemoryPrompt = memoryResult.memoryContextPrompt;
@@ -699,6 +717,25 @@ export async function executeInitializationPhase(
 					memoryPromptLength: orchestratorMemoryPrompt.length,
 				},
 			);
+		}
+
+		// ======================================================================
+		// Step 5a: Company context hint (Fizzy #2719)
+		// Tells the model which organization the chat works for and that its
+		// company context can be searched. The preload built the text and
+		// sends it only for an opted-in Advisor turn whose person may use
+		// company context with something ready to search. Only a run that
+		// goes through the loop, the one place the search is registered,
+		// shows it. Appended, never assigned, so nothing above is lost. No
+		// marker: a history recorded before the field existed reads it as
+		// absent and adds nothing, and prompt text is an activity input, not
+		// a command.
+		// ======================================================================
+		const companyContextHint = preloadedResources.companyContext?.hint;
+		if (companyContextHint && offersCompanyContext) {
+			enrichedSystemPrompt = enrichedSystemPrompt
+				? `${enrichedSystemPrompt}\n\n${companyContextHint}`
+				: companyContextHint;
 		}
 
 		// ======================================================================

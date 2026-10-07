@@ -3,7 +3,7 @@
  * else the root `AGENTS.md`, else none. A file of the same name inside a folder
  * is not the project's entry point and is not chosen.
  */
-const DEFAULT_FILES = ["CLAUDE.md", "AGENTS.md"] as const;
+export const DEFAULT_FILES = ["CLAUDE.md", "AGENTS.md"] as const;
 
 export function defaultSelectedPath(
 	files: ReadonlyArray<{ path: string }>,

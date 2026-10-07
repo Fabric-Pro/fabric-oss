@@ -29,6 +29,7 @@ import {
 	searchCapabilities,
 	upsertCapabilities,
 } from "@repo/rag/lib/vector-store/capability-store";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 
 // =============================================================================
 // Turned-off MCP configs
@@ -693,6 +694,9 @@ export class ToolIndex {
 					});
 				}
 			} catch (error) {
+				// The query embedding is a model request: a stopped chat turn
+				// is not a Qdrant failure to fall back from.
+				rethrowIfDispatchStopped(error);
 				console.warn(
 					"[ToolIndex] Qdrant search failed, falling back to in-memory:",
 					error,
@@ -1795,6 +1799,8 @@ export class ToolIndex {
 				`[ToolIndex] Generated ${result.embeddings.length} embeddings (${result.totalTokens} tokens)`,
 			);
 		} catch (error) {
+			// A stopped chat turn ends the work; it is not a missing embedding.
+			rethrowIfDispatchStopped(error);
 			console.error("[ToolIndex] Failed to generate embeddings:", error);
 			// Continue without embeddings - BM25 search will still work
 		}

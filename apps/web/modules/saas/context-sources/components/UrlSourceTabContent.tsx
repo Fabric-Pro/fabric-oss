@@ -98,6 +98,8 @@ export function UrlSourceTabContent({
 		// Readiness feature on ⇒ the source must be classified before it is
 		// saved.
 		requireKnowledgeBaseCategory: requireCategory,
+		// Off where retrieval never re-fetches the page (company context).
+		allowLiveRefresh,
 	} = form;
 	const t = useTranslations("tooltips.contextSources");
 	const scopeLabelId = "url-scope-label";
@@ -699,14 +701,17 @@ export function UrlSourceTabContent({
 						<SelectItem value="DAILY">Daily</SelectItem>
 						<SelectItem value="WEEKLY">Weekly</SelectItem>
 						<SelectItem value="MONTHLY">Monthly</SelectItem>
-						<SelectItem value="LIVE">
-							Live (re-fetch on each AI run)
-						</SelectItem>
+						{allowLiveRefresh && (
+							<SelectItem value="LIVE">
+								Live (re-fetch on each AI run)
+							</SelectItem>
+						)}
 					</SelectContent>
 				</Select>
 				<p className="mt-1 text-muted-foreground text-sm">
-					Scheduled refreshes use Temporal. Live re-fetches at
-					retrieval time and is not cached.
+					{allowLiveRefresh
+						? "Scheduled refreshes use Temporal. Live re-fetches at retrieval time and is not cached."
+						: "Scheduled refreshes use Temporal."}
 				</p>
 			</div>
 

@@ -181,7 +181,7 @@ describe("initialize instructions", () => {
 	// Fizzy #2563: on a repository-backed project the same tools open a pull
 	// request in the repository, and the agent must still report it as a
 	// suggestion awaiting review, not as a change it made.
-	it("says a repository-backed project gets a pull request, reported as awaiting review", async () => {
+	it("leaves repository proposals with native Git and the configured provider", async () => {
 		const instructions = await initialize();
 		const section = instructions.slice(
 			instructions.indexOf("## Coding instructions"),
@@ -190,24 +190,29 @@ describe("initialize instructions", () => {
 
 		expect(section).toContain("pull request");
 		expect(section).toMatch(/repository/);
-		expect(section).toContain("awaiting review");
+		expect(section).toContain("native Git");
+		expect(section).toContain("configured provider");
 	});
 
 	// Fizzy #2878. A hookless editor's agent is told what to pass so the
 	// session-start report can say whether its checkout is the published
 	// commit; the sentence also says pulling is the developer's, so a report
 	// that calls the checkout behind is not read as leave to run git.
-	it("tells the client to pass checkout facts on a repository project, and that pulling is the developer's", async () => {
+	it("pins direct repository reads and grants no local checkout mutation authority", async () => {
 		const instructions = await initialize();
 		const section = instructions.slice(
 			instructions.indexOf("## Coding instructions"),
 			instructions.indexOf("## Bootstrap a project"),
 		);
 
-		expect(section).toContain("`checkout`");
+		expect(section).toContain("generation and commitSha");
 		expect(section).toContain("fabric_instruction_checks");
-		expect(section).toContain("read-only git commands");
-		expect(section).toContain("Pulling is the developer's");
+		expect(section).toContain(
+			"never use a historical Fabric snapshot as a fallback",
+		);
+		expect(section).toContain(
+			"grant no authority to install software, change credentials, pull, reset or overwrite files",
+		);
 	});
 
 	describe("the one-line setup offer", () => {
@@ -246,7 +251,7 @@ describe("initialize instructions", () => {
 			);
 			expect(section).toMatch(/offer to run/);
 			expect(section).toContain("relay the one line it prints");
-			expect(section).toContain("no Fabric session hook");
+			expect(section).toContain("For uploaded instructions");
 			expect(section).toContain(
 				"never run git or write hook files yourself",
 			);

@@ -10,6 +10,11 @@
  */
 
 import {
+	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
+	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
+	COMPANY_CONTEXT_SEARCH_TOOL_NAME,
+} from "../../../workflows/orchestrator/company-context-tool-schemas";
+import {
 	FABRIC_CREATE_FRAME_TOOL,
 	FABRIC_CREATE_SLIDESHOW_TOOL,
 	FABRIC_GET_FRAME_TOOL,
@@ -486,6 +491,38 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					},
 					contentAvailable: { type: "boolean" },
 					unavailableReason: { type: "string" },
+				},
+			},
+		},
+
+		// =======================================================================
+		// Company context search (Fizzy #2719)
+		// The organization's own material, for its members in the Advisor only.
+		// Hidden: tool search, its keyword step and the route pre-check must
+		// never offer it, since they do not check membership. The Orchestrator
+		// pre-registers it for an Advisor turn whose preload found it usable;
+		// listed here so the catalog adapter can build it.
+		// =======================================================================
+		{
+			name: COMPANY_CONTEXT_SEARCH_TOOL_NAME,
+			hidden: true,
+			description: COMPANY_CONTEXT_SEARCH_DESCRIPTION,
+			inputSchema: COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
+			outputSchema: {
+				type: "object",
+				properties: {
+					sources: {
+						type: "array",
+						items: { type: "string" },
+						description: "The names of the sources to cite",
+					},
+					context: {
+						type: "string",
+						description:
+							"The matched material, marked as untrusted reference text; empty when nothing matched",
+					},
+					guidance: { type: "string" },
+					notice: { type: "string" },
 				},
 			},
 		},

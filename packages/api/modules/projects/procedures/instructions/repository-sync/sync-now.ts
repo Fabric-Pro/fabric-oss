@@ -1,4 +1,8 @@
-import { getInstructionRepositorySync } from "@repo/database";
+import {
+	getInstructionRepositorySync,
+	getProjectInstructionSettings,
+	instructionRepositoryImportAllowed,
+} from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
@@ -53,6 +57,16 @@ export const syncRepositoryNowProcedure = tenantProtectedProcedure
 			return {
 				started: false as const,
 				reason: "not_configured" as const,
+			};
+		}
+		const settings = await getProjectInstructionSettings(
+			input.projectId,
+			organizationId,
+		);
+		if (!instructionRepositoryImportAllowed(settings, sync.id)) {
+			return {
+				started: false as const,
+				reason: "direct_repository" as const,
 			};
 		}
 		if (sync.repositoryIntegration.status !== "ACTIVE") {

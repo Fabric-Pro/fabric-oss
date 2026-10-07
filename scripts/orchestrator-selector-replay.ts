@@ -4,7 +4,7 @@ import {
 	detectUserIntent,
 	searchAvailableTools,
 	shouldSearchIntegrations,
-} from "@repo/temporal/activities";
+} from "../packages/temporal/src/activities/index";
 
 interface ConversationExecutionRecord {
 	id?: string;

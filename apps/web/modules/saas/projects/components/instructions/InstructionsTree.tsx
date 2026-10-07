@@ -13,19 +13,14 @@ import {
 	SearchIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ChangeMark } from "../../lib/instructions-base-changes";
 
 export type TreeFile = {
-	id: string;
 	path: string;
 	kind: string;
-	name: string | null;
-	description: string | null;
-	size: number;
-	mimeType: string;
-	isText: boolean;
-	mode: number | null;
+	name?: string | null;
+	description?: string | null;
 };
 
 type Node = {
@@ -145,6 +140,7 @@ export function InstructionsTree({
 	onSelect,
 	changes,
 	leftOut,
+	onNoMatchesChange,
 }: {
 	files: TreeFile[];
 	selectedPath: string | null;
@@ -158,6 +154,8 @@ export function InstructionsTree({
 		shown: boolean;
 		onToggle: () => void;
 	};
+	/** Tells the page when the search or kind filter leaves nothing to show. */
+	onNoMatchesChange?: (noMatches: boolean) => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.tree");
 	// Reuses `fileView.kindLabels` rather than a second copy of the same
@@ -241,6 +239,10 @@ export function InstructionsTree({
 	const searchKey = `${query.trim()}\u0000${kindFilter ?? ""}`;
 	const noMatches =
 		searching && visible.length === 0 && visibleLeftOut.length === 0;
+
+	useEffect(() => {
+		onNoMatchesChange?.(noMatches);
+	}, [noMatches, onNoMatchesChange]);
 
 	const toggle = (path: string) => {
 		if (searching) {

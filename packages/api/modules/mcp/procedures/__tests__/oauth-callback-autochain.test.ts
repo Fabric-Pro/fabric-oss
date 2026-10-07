@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	getOauthStateMock,
 	getMcpConfigByIdInternalMock,
-	updateMcpConfigTokensMock,
+	saveMcpOAuthGrantMock,
 	clearRefreshFailuresMock,
 	deleteOauthStateMock,
 	createOauthStateMock,
@@ -29,7 +29,7 @@ const {
 } = vi.hoisted(() => ({
 	getOauthStateMock: vi.fn(),
 	getMcpConfigByIdInternalMock: vi.fn(),
-	updateMcpConfigTokensMock: vi.fn(),
+	saveMcpOAuthGrantMock: vi.fn(),
 	clearRefreshFailuresMock: vi.fn(),
 	deleteOauthStateMock: vi.fn(),
 	createOauthStateMock: vi.fn(),
@@ -37,22 +37,27 @@ const {
 	triggerToolIngestionMock: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	// The config's server is one its tenant may use (see the tenant tests).
+	getMcpServerForTenant: async () => ({ isSystemProvided: true }),
+	// The pure binding helpers are the real ones.
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
+	)),
 	clearRefreshFailures: (...args: unknown[]) =>
 		clearRefreshFailuresMock(...args),
 	createOauthState: (...args: unknown[]) => createOauthStateMock(...args),
 	db: { mCPConfig: { update: vi.fn() } },
 	deleteOauthState: (...args: unknown[]) => deleteOauthStateMock(...args),
-	getCachedOAuthMetadata: vi.fn(),
 	getGoogleAccountEmail: vi.fn(),
 	getMcpConfigByIdInternal: (...args: unknown[]) =>
 		getMcpConfigByIdInternalMock(...args),
+	getMcpServerDefaultTokenExpiry: () => null,
 	getOauthState: (...args: unknown[]) => getOauthStateMock(...args),
 	getOrganizationById: vi.fn(),
-	updateMcpConfigAfterDcr: vi.fn(),
-	updateMcpConfigTokens: (...args: unknown[]) =>
-		updateMcpConfigTokensMock(...args),
-	updateOAuthMetadataCache: vi.fn(),
+	refreshMcpOAuthAccessToken: vi.fn(),
+	replaceMcpOAuthRegistration: vi.fn(),
+	saveMcpOAuthGrant: (...args: unknown[]) => saveMcpOAuthGrantMock(...args),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -104,6 +109,7 @@ vi.mock("@orpc/server", () => ({
 	},
 }));
 
+import { oauthClientFingerprint } from "../../lib/oauth-authorization-server";
 import { oauthProcedures } from "../oauth";
 
 const handler = (
@@ -140,6 +146,25 @@ const ATLASSIAN_STATE = {
 	redirectUri: "https://staging.fabric.pro/api/mcp/oauth/callback",
 	expiresAt: new Date(Date.now() + 600_000),
 	mcpServerId: "srv-atlassian",
+	// What `start` resolved for this flow.
+	authorizationServerSnapshot: {
+		clientId: "rovo-client",
+		// The client the config row below holds.
+		clientFingerprint: oauthClientFingerprint({
+			oauthClientId: "rovo-client",
+			encryptedOauthClientSecret: "secret",
+		}),
+		binding: {
+			authorizationServerUrl: "https://cf.mcp.atlassian.com",
+			tokenEndpoint: "https://cf.mcp.atlassian.com/v1/token",
+			authorizationServerMetadata: {
+				token_endpoint: "https://cf.mcp.atlassian.com/v1/token",
+			},
+			source: "discovery",
+			boundAt: "2026-10-06T00:00:00.000Z",
+		},
+	},
+	expectedGrantGeneration: 0,
 };
 
 function makeAtlassianConfig(
@@ -154,6 +179,7 @@ function makeAtlassianConfig(
 		oauthClientId: "rovo-client",
 		encryptedOauthClientSecret: "secret",
 		encryptedAtlassianCloudAccessToken: null,
+		oauthGrantGeneration: 0,
 		enabled: true,
 		displayName: "Atlassian",
 		mcpServer: {
@@ -174,7 +200,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	clearRefreshFailuresMock.mockResolvedValue(undefined);
 	deleteOauthStateMock.mockResolvedValue(undefined);
-	updateMcpConfigTokensMock.mockResolvedValue(undefined);
+	saveMcpOAuthGrantMock.mockResolvedValue({ written: true, generation: 1 });
 	triggerToolIngestionMock.mockResolvedValue(undefined);
 	createOauthStateMock.mockResolvedValue("chained-state-token");
 	safeFetchOutboundMock.mockImplementation(async (url: string) => {

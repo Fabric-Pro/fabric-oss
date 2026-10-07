@@ -10,6 +10,11 @@ import {
 	getRAGProviderConfig,
 	isReasoningModelName,
 } from "@repo/ai";
+import {
+	chatGptPlanExhaustedRefusal,
+	chatGptPlanReconnectRefusal,
+	getChatGptPlanAgentConfig,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
 import type { AiTaskType } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { type NextRequest, NextResponse } from "next/server";
@@ -43,6 +48,18 @@ export async function GET(req: NextRequest) {
 				{ userId, organizationId },
 			);
 		} catch (error) {
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return NextResponse.json(reconnect.body, {
+					status: reconnect.status,
+				});
+			}
+			const exhausted = chatGptPlanExhaustedRefusal(error);
+			if (exhausted) {
+				return NextResponse.json(exhausted.body, {
+					status: exhausted.status,
+				});
+			}
 			// AI usage-limit chokepoint hit a HARD limit.
 			// Internal agents call this endpoint;
 			// preserve the structured envelope so the calling agent can
@@ -77,6 +94,26 @@ export async function GET(req: NextRequest) {
 
 		const { metadata, trackUsage } = aiModelResult;
 		trackUsage();
+
+		// Only a member who chose "background jobs and agents" for this
+		// organization resolves to their plan here: these signed headers carry
+		// no sign that a person is present (Fizzy #2939).
+		if (metadata.provider === "OPENAI_CHATGPT_PLAN") {
+			const plan = await getChatGptPlanAgentConfig({
+				userId,
+				model: metadata.modelString,
+			});
+			return plan.ok
+				? NextResponse.json(plan.config)
+				: NextResponse.json(
+						{
+							error: plan.error,
+							code: plan.code,
+							resetAt: plan.resetAt ?? null,
+						},
+						{ status: plan.status },
+					);
+		}
 
 		const providerConfig = await getRAGProviderConfig({
 			userId,

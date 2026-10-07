@@ -207,6 +207,7 @@ import { deleteSnapshotProcedure } from "./procedures/instructions/delete-snapsh
 import { deriveSnapshotProcedure } from "./procedures/instructions/derive-snapshot";
 import { finalizeSnapshotProcedure } from "./procedures/instructions/finalize-snapshot";
 import { getFileProcedure } from "./procedures/instructions/get-file";
+import { getGitInstructionOperationProcedure } from "./procedures/instructions/get-git-operation";
 import { getPublishedSnapshotProcedure } from "./procedures/instructions/get-published";
 import { getSettingsProcedure as getInstructionSettingsProcedure } from "./procedures/instructions/get-settings";
 import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
@@ -218,6 +219,7 @@ import {
 	getMyProposalBranchProcedure,
 	getProposalBranchesForReviewerProcedure,
 	proposeAgainProcedure,
+	refreshProposalBranchProcedure,
 	retryProposalBranchProcedure,
 	retryProposalConflictProcedure,
 	startOverProposalBranchProcedure,
@@ -234,6 +236,12 @@ import {
 	rejectInstructionProposalProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
+import { getDirectInstructionRepositoryCommitParentProcedure } from "./procedures/instructions/repository/get-commit-parent";
+import { getDirectInstructionRepositoryFileProcedure } from "./procedures/instructions/repository/get-file";
+import { getDirectInstructionRepositoryStateProcedure } from "./procedures/instructions/repository/get-state";
+import { listDirectInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository/list-commits";
+import { listDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/list-files";
+import { listDirectInstructionRepositoryPullRequestsProcedure } from "./procedures/instructions/repository/list-pull-requests";
 import { compareInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/compare-commits";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
@@ -252,6 +260,7 @@ import { readInstructionRepositoryIgnoreFileProcedure } from "./procedures/instr
 import { syncRepositoryNowProcedure } from "./procedures/instructions/repository-sync/sync-now";
 import { updateRepositorySyncProposalSettingsProcedure } from "./procedures/instructions/repository-sync/update-proposal-settings";
 import { revertCommitProcedure } from "./procedures/instructions/revert-commit";
+import { submitGitInstructionChangeProcedure } from "./procedures/instructions/submit-git-change";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
@@ -2021,6 +2030,8 @@ export const projectsRouter = {
 		// "Commit to <branch>" on a repository-backed project (Fizzy #2878
 		// §10): the change is validated and scanned, then pushed as one commit.
 		commitChange: commitChangeProcedure,
+		getGitOperation: getGitInstructionOperationProcedure,
+		submitGitChange: submitGitInstructionChangeProcedure,
 		// Undo one commit of the synced branch with a revert commit.
 		revertCommit: revertCommitProcedure,
 		createUploadUrls: createUploadUrlsProcedure,
@@ -2055,12 +2066,25 @@ export const projectsRouter = {
 			// "Reviewers see every member's branches read-only") —
 			// independent of the proposal list's own pagination.
 			branches: getProposalBranchesForReviewerProcedure,
+			refreshBranch: refreshProposalBranchProcedure,
 			closeBranch: closeProposalBranchProcedure,
 			startOverBranch: startOverProposalBranchProcedure,
 			retryBranch: retryProposalBranchProcedure,
 			stopTrackingBranch: stopTrackingProposalBranchProcedure,
 			retryConflict: retryProposalConflictProcedure,
 			proposeAgain: proposeAgainProcedure,
+		},
+		// Direct, commit-pinned repository reads. Configuration remains under
+		// `repositorySync` while old setup and migration records are supported.
+		repository: {
+			getState: getDirectInstructionRepositoryStateProcedure,
+			listFiles: listDirectInstructionRepositoryFilesProcedure,
+			getFile: getDirectInstructionRepositoryFileProcedure,
+			listCommits: listDirectInstructionRepositoryCommitsProcedure,
+			getCommitParent:
+				getDirectInstructionRepositoryCommitParentProcedure,
+			listPullRequests:
+				listDirectInstructionRepositoryPullRequestsProcedure,
 		},
 		// Repository as the source of truth (design 2026-09-23 §5.1).
 		repositorySync: {

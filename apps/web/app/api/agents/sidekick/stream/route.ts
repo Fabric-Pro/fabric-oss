@@ -16,6 +16,11 @@ import {
 	toUIMessageStream,
 	type UIMessage,
 } from "@repo/ai";
+import {
+	chatGptPlanExhaustedChatResponse,
+	chatGptPlanReconnectRefusal,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { createSidekickTools } from "@repo/ai/sidekick";
 import { NEW_AGENT_ID } from "@repo/ai/sidekick/constants";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
@@ -54,6 +59,12 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 
@@ -269,6 +280,9 @@ export async function POST(request: NextRequest) {
 				userId,
 				organizationId: effectiveOrganizationId,
 				featureKey: "chat-agent",
+				// A person is typing this turn, so it may run on their own
+				// ChatGPT plan where they turned it on (Fizzy #2939).
+				planEligible: true,
 			},
 		);
 
@@ -320,6 +334,19 @@ export async function POST(request: NextRequest) {
 		// can also bubble through `createSidekickTools` if a tool calls
 		// the chokepoint indirectly. Catch at the outer boundary so the
 		// Sidekick consumer surfaces the shared destructive toast.
+		// The member's plan is on here but needs reconnecting: refuse rather
+		// than bill the organization (Fizzy #2939).
+		const reconnect = chatGptPlanReconnectRefusal(error);
+		if (reconnect) {
+			return new Response(JSON.stringify(reconnect.body), {
+				status: reconnect.status,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		const exhausted = chatGptPlanExhaustedChatResponse(error);
+		if (exhausted) {
+			return exhausted;
+		}
 		if (error instanceof AiUsageLimitExceededError) {
 			return new Response(
 				JSON.stringify({

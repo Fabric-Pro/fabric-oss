@@ -106,6 +106,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
 			instructions: {
+				repository: {
+					getFile: {
+						queryOptions: (o: unknown) => ({
+							queryKey: ["nativeGetFile", o],
+							queryFn: async () => ({
+								state: "found",
+								body: TEXT_FILE.body,
+								size: TEXT_FILE.size,
+								nextOffset: null,
+							}),
+						}),
+					},
+				},
 				getFile: {
 					queryOptions: (o: unknown) => ({
 						queryKey: ["getFile", o],
@@ -450,6 +463,35 @@ describe("InstructionFileView — file actions on a repository project", () => {
 			expect(
 				within(dialog).queryByRole("button", { name: /^Commit to/ }),
 			).toBeNull();
+		});
+
+		it("reports native rename and deletion suggestions without snapshot checks", async () => {
+			const user = userEvent.setup();
+			const nativeBase = { generation: 1, commitSha: SHA };
+			renderView({ canCommit: false, nativeBase, snapshotId: undefined });
+			const dialog = await openRename(user);
+			const newPath = within(dialog).getByLabelText("New path");
+			await user.clear(newPath);
+			await user.type(newPath, "docs/renamed.md");
+			await user.click(
+				within(dialog).getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+			await waitFor(() =>
+				expect(mocks.toastSuccess).toHaveBeenCalledWith(
+					"Suggestion submitted. Fabric is opening the pull request.",
+				),
+			);
+			await openFileActions(user);
+			await user.click(
+				screen.getByRole("menuitem", { name: "Delete file" }),
+			);
+			expect(mocks.confirm).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: `Suggest deleting ${PATH}? Fabric opens a pull request in ${TARGET.repository} against ${TARGET.ref}.`,
+				}),
+			);
 		});
 
 		it("is not offered on a project that is not repository-backed", async () => {

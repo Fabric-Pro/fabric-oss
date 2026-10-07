@@ -331,6 +331,7 @@ model User {
   instructionSnapshots         ProjectInstructionSnapshot[] @relation("InstructionSnapshotCreator")
   reviewedInstructionSnapshots ProjectInstructionSnapshot[] @relation("InstructionSnapshotReviewer")
   instructionFiles     ProjectInstructionFile[]
+  instructionGitIntentEntries ProjectInstructionGitIntentEntry[] @relation("InstructionGitIntentEntryCreator")
   instructionRepositorySyncs     ProjectInstructionRepositorySync[]    @relation("InstructionRepositorySyncDelegate")
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("InstructionRepositorySyncRunActor")
 
@@ -381,6 +382,11 @@ model User {
   // CLI connection nudge (Fizzy #2457). One dismissal per organization; see the
   // model doc for why this is not a column on Member.
   cliPromptDismissals CliConnectionPromptDismissal[]
+
+  // ChatGPT plan connection (Fizzy #2939): one credential per person, and the
+  // organizations they chose to use it in.
+  chatGptPlanCredential ChatGptPlanCredential?
+  chatGptPlanOrgUses    ChatGptPlanOrgUse[]
 
   // Glossy editions (Fizzy #2589). Actor columns only; SetNull on delete.
   glossyBuildsStarted    GlossyBuild[]           @relation("GlossyBuildStartedBy")
@@ -498,41 +504,51 @@ model Passkey {
 ///
 /// Only public clients are ever registered here (no secret, PKCE required).
 model OauthClient {
-  id                      String   @id @default(cuid())
-  clientId                String   @unique
-  clientSecret            String?
-  disabled                Boolean? @default(false)
-  skipConsent             Boolean?
-  enableEndSession        Boolean?
-  subjectType             String?
-  scopes                  String[]
-  userId                  String?
-  createdAt               DateTime?
-  updatedAt               DateTime?
-  name                    String?
-  uri                     String?
-  icon                    String?
-  contacts                String[]
-  tos                     String?
-  policy                  String?
-  softwareId              String?
-  softwareVersion         String?
-  softwareStatement       String?
-  redirectUris            String[]
-  postLogoutRedirectUris  String[]
-  tokenEndpointAuthMethod String?
-  grantTypes              String[]
-  responseTypes           String[]
-  public                  Boolean?
-  type                    String?
-  requirePKCE             Boolean?
-  referenceId             String?
-  metadata                Json?
+  id                               String    @id @default(cuid())
+  clientId                         String    @unique
+  clientSecret                     String?
+  clientDiscoveryId                String?
+  clientCredentialsScopes          String[]  @default([])
+  disabled                         Boolean?  @default(false)
+  skipConsent                      Boolean?
+  enableEndSession                 Boolean?
+  subjectType                      String?
+  scopes                           String[]
+  userId                           String?
+  createdAt                        DateTime?
+  updatedAt                        DateTime?
+  name                             String?
+  uri                              String?
+  icon                             String?
+  contacts                         String[]
+  tos                              String?
+  policy                           String?
+  softwareId                       String?
+  softwareVersion                  String?
+  softwareStatement                String?
+  redirectUris                     String[]
+  postLogoutRedirectUris           String[]
+  backchannelLogoutUri             String?
+  backchannelLogoutSessionRequired Boolean?
+  tokenEndpointAuthMethod          String?
+  grantTypes                       String[]
+  responseTypes                    String[]
+  applicationType                  String?
+  jwks                             String?
+  jwksUri                          String?
+  dpopBoundAccessTokens            Boolean?  @default(false)
+  /// Retained for 1.6 rollback; populated by the separate compatibility backfill.
+  public                           Boolean?
+  type                             String?
+  requirePKCE                      Boolean?
+  referenceId                      String?
+  metadata                         Json?
 
-  user          User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshTokens OauthRefreshToken[]
   accessTokens  OauthAccessToken[]
   consents      OauthConsent[]
+  resources     OauthClientResource[]
 
   @@index([userId])
   @@map("oauth_client")
@@ -541,23 +557,31 @@ model OauthClient {
 /// Refresh token, stored as a sha256 hex digest (never the token itself).
 /// `referenceId` is the organization the user chose at consent time.
 model OauthRefreshToken {
-  id          String    @id @default(cuid())
-  token       String    @unique
-  clientId    String
-  sessionId   String?
-  userId      String
-  referenceId String?
-  expiresAt   DateTime?
-  createdAt   DateTime?
-  revoked     DateTime?
-  authTime    DateTime?
-  scopes      String[]
+  id                      String    @id @default(cuid())
+  token                   String    @unique
+  clientId                String
+  sessionId               String?
+  userId                  String
+  authorizationCodeId     String?
+  referenceId             String?
+  resources               String[]
+  requestedUserInfoClaims String[]
+  expiresAt               DateTime?
+  createdAt               DateTime?
+  revoked                 DateTime?
+  rotatedAt               DateTime?
+  rotationReplayResponse  String?
+  rotationReplayExpiresAt DateTime?
+  authTime                DateTime?
+  confirmation            Json?
+  scopes                  String[]
 
   client       OauthClient        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   session      Session?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   accessTokens OauthAccessToken[]
 
+  @@index([authorizationCodeId])
   @@index([clientId])
   @@index([sessionId])
   @@index([userId])
@@ -571,22 +595,28 @@ model OauthRefreshToken {
 /// organization id, or `project:<audience>:<projectId>` for a token that reaches
 /// one project (see `@repo/utils/oauth-project-resource`).
 model OauthAccessToken {
-  id          String    @id @default(cuid())
-  token       String?   @unique
-  clientId    String
-  sessionId   String?
-  userId      String?
-  referenceId String?
-  refreshId   String?
-  expiresAt   DateTime?
-  createdAt   DateTime?
-  scopes      String[]
+  id                      String    @id @default(cuid())
+  token                   String?   @unique
+  clientId                String
+  sessionId               String?
+  userId                  String?
+  authorizationCodeId     String?
+  referenceId             String?
+  resources               String[]
+  requestedUserInfoClaims String[]
+  refreshId               String?
+  expiresAt               DateTime?
+  createdAt               DateTime?
+  revoked                 DateTime?
+  confirmation            Json?
+  scopes                  String[]
 
-  client  OauthClient         @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
-  session Session?            @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  user    User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  refresh OauthRefreshToken?  @relation(fields: [refreshId], references: [id], onDelete: Cascade)
+  client  OauthClient        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  session Session?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user    User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refresh OauthRefreshToken? @relation(fields: [refreshId], references: [id], onDelete: Cascade)
 
+  @@index([authorizationCodeId])
   @@index([clientId])
   @@index([sessionId])
   @@index([userId])
@@ -600,13 +630,15 @@ model OauthAccessToken {
 /// organization or project grants it nothing in another. `referenceId` reads as
 /// it does on the tokens.
 model OauthConsent {
-  id          String    @id @default(cuid())
-  clientId    String
-  userId      String?
-  referenceId String?
-  scopes      String[]
-  createdAt   DateTime?
-  updatedAt   DateTime?
+  id                      String    @id @default(cuid())
+  clientId                String
+  userId                  String?
+  referenceId             String?
+  resources               String[]
+  requestedUserInfoClaims String[]
+  scopes                  String[]
+  createdAt               DateTime?
+  updatedAt               DateTime?
 
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   user   User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -617,11 +649,57 @@ model OauthConsent {
   @@map("oauth_consent")
 }
 
-/// The project one authorization asked to be bound to. The authorization
-/// endpoint drops `resource` from the query it signs and stores, so the consent
-/// pages and the code never see it; this row carries it from the first request
-/// to the consent. Keyed by the request's PKCE challenge, which only the client
-/// that started the authorization and the person it sent knows. Short-lived:
+/// Global authorization-server resource policy. Like the existing OAuth tables,
+/// these are provider-owned records, not organization tenant data.
+model OauthResource {
+  id                            String    @id @default(cuid())
+  identifier                    String    @unique
+  name                          String
+  accessTokenTtl                Int?
+  refreshTokenTtl               Int?
+  signingAlgorithm              String?
+  signingKeyId                  String?
+  allowedScopes                 String[]
+  customClaims                  Json?
+  dpopBoundAccessTokensRequired Boolean?  @default(false)
+  disabled                      Boolean?  @default(false)
+  createdAt                     DateTime?
+  updatedAt                     DateTime?
+  policyVersion                 Int?      @default(1)
+  metadata                      Json?
+
+  clients OauthClientResource[]
+
+  @@map("oauth_resource")
+}
+
+model OauthClientResource {
+  id         String    @id @default(cuid())
+  clientId   String
+  resourceId String
+  metadata   Json?
+  createdAt  DateTime?
+
+  client   OauthClient   @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  resource OauthResource @relation(fields: [resourceId], references: [identifier], onDelete: Cascade)
+
+  @@unique([clientId, resourceId])
+  @@index([clientId])
+  @@index([resourceId])
+  @@map("oauth_client_resource")
+}
+
+/// Single-use client assertion digest; no organization context or raw assertion.
+model OauthClientAssertion {
+  id        String   @id
+  expiresAt DateTime
+
+  @@map("oauth_client_assertion")
+}
+
+/// Fabric's project binding for one authorization. Stored independently of
+/// the provider's static MCP/API resource identifiers so consent can identify
+/// the requested project. Keyed by the client's PKCE challenge. Short-lived:
 /// the authorization server deletes expired rows as it writes new ones.
 model OauthAuthorizationResource {
   id            String   @id @default(cuid())
@@ -952,6 +1030,7 @@ model Organization {
   // Coding Instructions
   instructionSnapshots ProjectInstructionSnapshot[]
   instructionFiles     ProjectInstructionFile[]
+  instructionGitIntentEntries ProjectInstructionGitIntentEntry[]
   instructionRepositorySyncs     ProjectInstructionRepositorySync[]
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[]
 
@@ -1003,6 +1082,13 @@ model Organization {
   cliReaches          OrganizationCliReach[]
   cliFirstReach       OrganizationCliFirstReach?
   cliPromptDismissals CliConnectionPromptDismissal[]
+
+  // Members who chose to run their own work here on their ChatGPT plan.
+  chatGptPlanOrgUses ChatGptPlanOrgUse[]
+  // ChatGPT plan accounts the organization connected for shared work, and
+  // its pooling policy (Fizzy #2770).
+  chatGptPlanOrgAccounts ChatGptPlanOrgAccount[]
+  chatGptPlanOrgPolicy   ChatGptPlanOrgPolicy?
 
   // Glossy editions (Fizzy #2589); cascade on org delete (tenant erasure).
   glossyEditions        GlossyEdition[]
@@ -11809,9 +11895,27 @@ model MCPConfig {
   lastHealthCheckAt                   DateTime?
   consecutiveFailures                 Int                           @default(0)
   failoverUrl                         String?
-  // OAuth metadata caching (RFC 8414/9728 discovery results)
+  // OAuth metadata caching (RFC 8414/9728 discovery results). Diagnostic
+  // only: no credential is ever sent to an endpoint read from it — the
+  // binding below is the only source of a token endpoint.
   oauthMetadataCache                  Json? // Cached OAuth discovery result
   oauthMetadataCachedAt               DateTime? // When OAuth metadata was cached
+  // The authorization server this config's OAuth credentials belong to:
+  // `{ authorizationServerUrl, tokenEndpoint, authorizationServerMetadata,
+  // resource?, source, boundAt, credentialFingerprint }` (not secret), or a
+  // `{ mode: "bearer-only" }` marker for an import no authorization server
+  // may be trusted for. Written only through
+  // prisma/queries/mcp-oauth-credentials.ts, by the connect flow (from the
+  // authorization server it registered with or exchanged the code at) or
+  // from the catalog. A refresh token or client secret is sent only to its
+  // `tokenEndpoint`, and only while `credentialFingerprint` matches the
+  // stored client and refresh token; null or bearer-only means unbound, and
+  // an unbound config never refreshes (reconnect required).
+  oauthBinding                        Json?
+  // Fences every credential write. Incremented by each registration
+  // replacement, new grant and token wipe; refresh writes and refresh
+  // failure bookkeeping apply only while it still holds the value they read.
+  oauthGrantGeneration                Int                           @default(0)
   // Token refresh error tracking
   refreshFailureCount                 Int                           @default(0) // Consecutive refresh failures
   lastRefreshFailedAt                 DateTime? // When the last refresh failure occurred
@@ -11873,18 +11977,25 @@ model MCPConfig {
 }
 
 model MCPOAuthState {
-  id             String    @id @default(cuid())
-  state          String    @unique
-  mcpServerId    String
-  configId       String
-  userId         String
-  organizationId String?
-  codeVerifier   String?
-  redirectUri    String?
-  createdAt      DateTime  @default(now())
-  expiresAt      DateTime  @default(now())
-  config         MCPConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
-  mcpServer      MCPServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
+  id                          String    @id @default(cuid())
+  state                       String    @unique
+  mcpServerId                 String
+  configId                    String
+  userId                      String
+  organizationId              String?
+  codeVerifier                String?
+  redirectUri                 String?
+  // What `start` resolved for this flow — the authorization server, its
+  // endpoints and the client — so the callback exchanges the code with
+  // exactly those and never re-discovers; and the config's
+  // `oauthGrantGeneration` at that moment, so the callback refuses when the
+  // config's credentials changed since.
+  authorizationServerSnapshot Json?
+  expectedGrantGeneration     Int?
+  createdAt                   DateTime  @default(now())
+  expiresAt                   DateTime  @default(now())
+  config                      MCPConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  mcpServer                   MCPServer @relation(fields: [mcpServerId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([organizationId])
@@ -12588,6 +12699,202 @@ model UserCloudProviderConfig {
   @@map("user_cloud_provider_config")
 }
 
+enum ChatGptPlanCredentialStatus {
+  ACTIVE
+  /// The refresh token was rejected; only a new `fabric connect chatgpt`
+  /// clears this.
+  NEEDS_RECONNECT
+}
+
+/// A person's ChatGPT plan sign-in, uploaded by `fabric connect chatgpt`.
+///
+/// One row per user and no `organizationId`: the plan belongs to the person,
+/// not to any tenant, so the RLS coverage guard (which keys on
+/// `organizationId`) does not apply. Every read and write is keyed by the
+/// session's own `userId`; which organizations may use it is recorded per
+/// organization in `ChatGptPlanOrgUse`.
+///
+/// Tokens are encrypted with `encryptApiKey` and never leave the server except
+/// as a short-lived access token handed to an agent for the same user's call.
+/// Only the server refreshes, under `withRefreshLock`, because the refresh
+/// token rotates.
+model ChatGptPlanCredential {
+  id                    String                      @id @default(cuid())
+  userId                String                      @unique
+  email                 String?
+  /// The ID token's `sub`; a reconnect as a different ChatGPT account replaces
+  /// the row rather than mixing two accounts' tokens.
+  subject               String
+  clientId              String
+  hostId                String
+  encryptedAccessToken  String
+  encryptedRefreshToken String
+  encryptedIdToken      String?
+  accessTokenExpiresAt  DateTime
+  earliestRefreshAt     DateTime?
+  scopes                String[]
+  status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  lastUsedAt            DateTime?
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("chat_gpt_plan_credential")
+}
+
+/// A person's choice to run their own work in one organization on their
+/// ChatGPT plan. The organization must also have the `CHATGPT_PLAN` flag on;
+/// a row here never enables anything by itself.
+///
+/// Same shape as `CliConnectionPromptDismissal`: per-user within an
+/// organization, so `per_user_within_org` in `scripts/apply-rls-direct.ts` and
+/// `PER_USER_ORG_TABLES` in `src/tenant-db.ts`.
+model ChatGptPlanOrgUse {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  /// A row with `enabled: false` is the person's answer to the in-app prompt,
+  /// so they are not asked again.
+  enabled        Boolean
+  /// Also run the work Fabric does on this person's behalf without them —
+  /// scheduled reports, daily briefs, agents started from jobs — on the plan.
+  /// Only an explicit choice in settings turns it on; it counts against the
+  /// plan's limits while they are away.
+  includeBackgroundJobs Boolean @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("chat_gpt_plan_org_use")
+}
+
+/// What a plan account's owner declared it to be. Nothing relies on PRO:
+/// routing is calibrated for the Plus five-hour window.
+enum ChatGptPlanTier {
+  UNKNOWN
+  PLUS
+  PRO
+}
+
+/// What a member's interactive call does when every plan it may use is spent.
+enum ChatGptPlanApiFallbackInteractive {
+  /// Ask the member whether to run it on the organization's provider.
+  ASK
+  NEVER
+}
+
+/// What background work does when every plan it may use is spent.
+enum ChatGptPlanApiFallbackBackground {
+  /// Wait for a window to reset, then fail visibly.
+  NEVER
+  /// Run on the organization's provider, audited.
+  AUTO
+}
+
+enum ChatGptPlanSourceKind {
+  /// A member's own `ChatGptPlanCredential`; `sourceId` is the userId.
+  USER
+  /// A `ChatGptPlanOrgAccount`; `sourceId` is the account id.
+  ORG
+}
+
+/// A ChatGPT plan sign-in an organization admin connected for the
+/// organization's shared work, with `fabric connect chatgpt --shared`
+/// (Fizzy #2770). It belongs to the organization, not to whoever connected it:
+/// `connectedByUserId` is recorded for the audit trail only and is no foreign
+/// key, so the account outlives that person's membership.
+///
+/// Organization-only, so `org_only` in `scripts/apply-rls-direct.ts` and
+/// `ORG_ONLY_TABLES` in `src/tenant-db.ts`. Tokens are encrypted with
+/// `encryptApiKey`, exactly as in `ChatGptPlanCredential`.
+model ChatGptPlanOrgAccount {
+  id                    String                      @id @default(cuid())
+  organizationId        String
+  label                 String
+  connectedByUserId     String
+  email                 String?
+  /// The ID token's `sub`. Unique: one ChatGPT account serves at most one
+  /// organization.
+  subject               String                      @unique
+  clientId              String
+  hostId                String
+  encryptedAccessToken  String
+  encryptedRefreshToken String
+  encryptedIdToken      String?
+  accessTokenExpiresAt  DateTime
+  earliestRefreshAt     DateTime?
+  scopes                String[]
+  status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  tier                  ChatGptPlanTier             @default(UNKNOWN)
+  enabled               Boolean                     @default(true)
+  /// Also serve the interactive work of members with no usable plan of
+  /// their own. Off until an admin turns it on.
+  serveInteractive      Boolean                     @default(false)
+  /// Serve allowlisted background jobs.
+  serveBackground       Boolean                     @default(true)
+  lastUsedAt            DateTime?
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, enabled])
+  @@map("chat_gpt_plan_org_account")
+}
+
+/// How an organization pools its ChatGPT plan accounts (Fizzy #2770). Pooling
+/// stays off until an organization owner has acknowledged the terms;
+/// `termsAcknowledgedById` is that owner, recorded for the audit trail only.
+model ChatGptPlanOrgPolicy {
+  id                     String                            @id @default(cuid())
+  organizationId         String                            @unique
+  poolingEnabled         Boolean                           @default(false)
+  apiFallbackInteractive ChatGptPlanApiFallbackInteractive @default(ASK)
+  apiFallbackBackground  ChatGptPlanApiFallbackBackground  @default(NEVER)
+  /// Background work prefers accounts whose estimated window use is below
+  /// `100 - headroomPct` percent, leaving the rest for people; it uses an
+  /// account past that only when every account serving it is.
+  headroomPct            Int                               @default(40)
+  termsAcknowledgedById  String?
+  termsAcknowledgedAt    DateTime?
+  createdAt              DateTime                          @default(now())
+  updatedAt              DateTime                          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("chat_gpt_plan_org_policy")
+}
+
+/// The shared memory of a spent plan window, one row per plan source, so
+/// every web and worker process stops asking OpenAI once any of them was
+/// refused (Fizzy #2770).
+///
+/// Keyed by source and no `organizationId`: a member's own plan belongs to no
+/// tenant, and an organization account's row is reached only through the
+/// account, whose readers filter by organization. So the RLS coverage guard
+/// does not apply. No foreign key either — `sourceId` names a user or an
+/// account by `sourceKind` — so whoever deletes a source deletes its row.
+model ChatGptPlanSourceState {
+  sourceKind               ChatGptPlanSourceKind
+  sourceId                 String
+  /// Calls fail fast until then.
+  openUntil                DateTime?
+  /// When the window resets, when OpenAI said or the ledger estimated.
+  resetAt                  DateTime?
+  /// Refusals in a row with no reset time; lengthens the next pause.
+  consecutiveUnknownResets Int                   @default(0)
+  lastExhaustedAt          DateTime?
+  updatedAt                DateTime              @updatedAt
+
+  @@id([sourceKind, sourceId])
+  @@map("chat_gpt_plan_source_state")
+}
+
 enum PurchaseType {
   SUBSCRIPTION
   ONE_TIME
@@ -12971,6 +13278,12 @@ enum AIProvider {
   // Legacy/alternative providers (already in database)
   AZURE_OPENAI
   NETLIFY
+
+  // A member's own ChatGPT plan, connected through `fabric connect chatgpt`.
+  // Never an organization provider row: it is resolved per user from
+  // `ChatGptPlanCredential`, and its own value keeps plan-billed usage apart
+  // from API usage in `AiUsageLog`.
+  OPENAI_CHATGPT_PLAN
 }
 
 enum AiUsageBillingCategory {
@@ -18094,6 +18407,19 @@ enum ProjectInstructionSource {
   REPOSITORY
 }
 
+/// The representation behind a durable instruction operation. Full snapshots
+/// keep the existing uploaded/imported tree lifecycle. Git intents carry only
+/// the explicit repository paths a member asked Fabric to write.
+enum ProjectInstructionContentKind {
+  FULL_SNAPSHOT
+  GIT_INTENT
+}
+
+enum ProjectInstructionGitIntentOperation {
+  PUT
+  DELETE
+}
+
 enum ProjectInstructionSnapshotStatus {
   RECEIVING
   VALIDATING
@@ -18266,6 +18592,15 @@ model ProjectInstructionSnapshot {
   version Int
   source  ProjectInstructionSource
   status  ProjectInstructionSnapshotStatus @default(RECEIVING)
+  /// Full trees are the established upload/import representation. A native
+  /// repository operation deliberately stores only its changed intent rows.
+  contentKind ProjectInstructionContentKind @default(FULL_SNAPSHOT)
+  /// Frozen repository configuration identity for a GIT_INTENT. Null for a
+  /// full snapshot, whose source identity follows its existing fields.
+  repositoryGeneration Int?
+  /// The immutable repository commit the GIT_INTENT was based on. Null for a
+  /// full snapshot.
+  repositoryBaseSha String?
 
   /// Null for the existing direct-edit/upload flow. A non-null value makes
   /// this snapshot a file proposal whose publication is controlled only by
@@ -18443,6 +18778,7 @@ model ProjectInstructionSnapshot {
   reviewer     User?        @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
   publishedFor Project?     @relation("PublishedInstructionSnapshot")
   files        ProjectInstructionFile[]
+  gitIntentEntries ProjectInstructionGitIntentEntry[]
 
   baseSnapshot      ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
   derivedSnapshots  ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
@@ -18478,6 +18814,44 @@ model ProjectInstructionSnapshot {
   /// the withdraw pair, the pending-command pair and kind, and the two
   /// null-safe implications between them (spec §4.1).
   @@map("project_instruction_snapshot")
+}
+
+/// One immutable changed path in a native repository instruction operation.
+/// Unlike ProjectInstructionFile this is never a materialized instruction
+/// tree: PUT stores only its supplied blob and DELETE stores no bytes.
+model ProjectInstructionGitIntentEntry {
+  id             String @id @default(cuid())
+  snapshotId     String
+  projectId      String
+  organizationId String
+  userId         String
+
+  operation    ProjectInstructionGitIntentOperation
+  path         String
+  /// The object identity/mode observed at the pinned base. Both are null when
+  /// the path was absent, and freeze conflict detection for a later write.
+  baseObjectId String?
+  baseMode     Int?
+  /// PUT-only immutable staged bytes. DELETE carries no blob reference.
+  storageKey String?
+  sha256     String?
+  size       Int?
+  mimeType   String?
+  isText     Boolean?
+  mode       Int?
+  kind       ProjectInstructionFileKind?
+
+  createdAt DateTime @default(now())
+
+  snapshot     ProjectInstructionSnapshot @relation(fields: [snapshotId, projectId], references: [id, projectId], onDelete: Cascade)
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                       @relation("InstructionGitIntentEntryCreator", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, path])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_git_intent_entry")
 }
 
 /// A durable storage-cleanup receipt for one deleted Coding Instructions

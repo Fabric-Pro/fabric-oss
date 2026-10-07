@@ -702,3 +702,23 @@ describe("InstructionsTree: files the version left out", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("InstructionsTree no-match signal", () => {
+	it("tells the page when a search leaves nothing, and when it clears", async () => {
+		const onNoMatchesChange = vi.fn();
+		render(
+			<InstructionsTree
+				files={[...files]}
+				selectedPath={null}
+				onSelect={() => undefined}
+				onNoMatchesChange={onNoMatchesChange}
+			/>,
+		);
+		expect(onNoMatchesChange).toHaveBeenLastCalledWith(false);
+		const search = screen.getByRole("searchbox", { name: "Search files" });
+		await userEvent.type(search, "zzz-no-match");
+		expect(onNoMatchesChange).toHaveBeenLastCalledWith(true);
+		await userEvent.clear(search);
+		expect(onNoMatchesChange).toHaveBeenLastCalledWith(false);
+	});
+});

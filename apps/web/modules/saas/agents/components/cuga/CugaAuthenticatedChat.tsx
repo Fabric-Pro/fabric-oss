@@ -12,6 +12,7 @@
  */
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { ScrollArea } from "@ui/components/scroll-area";
@@ -60,6 +61,8 @@ export function CugaAuthenticatedChat({
 	const [contextId, setContextId] = useState<string | null>(null);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
+	// Keep in step with the textarea's `max-h-[200px]` class.
+	useAutoResizeTextarea(inputRef, input, 200);
 
 	// Use agent URL from prop or environment
 	const cugaAgentUrl = agentUrl || DEFAULT_CUGA_AGENT_URL;

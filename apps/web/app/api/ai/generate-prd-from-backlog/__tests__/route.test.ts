@@ -160,7 +160,7 @@ describe("POST /api/ai/generate-prd-from-backlog — usage logging", () => {
 
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			expect.not.objectContaining({ usageLogging: "aggregate" }),
-			{ userId: USER_ID, organizationId: ACTIVE_ORG },
+			{ userId: USER_ID, organizationId: ACTIVE_ORG, planEligible: true },
 		);
 	});
 });

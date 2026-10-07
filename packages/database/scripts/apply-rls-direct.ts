@@ -246,6 +246,10 @@ async function applyRLS() {
 			{ name: "diagram", policy: "user_owned" }, // Excalidraw diagrams
 			{ name: "project_instruction_snapshot", policy: "user_owned" }, // Coding Instructions snapshots
 			{ name: "project_instruction_file", policy: "user_owned" }, // Coding Instructions files
+			{
+				name: "project_instruction_git_intent_entry",
+				policy: "user_owned",
+			}, // Native Coding Instructions changes
 			// No project or snapshot FK: this receipt survives either deletion so
 			// the storage reaper can finish the owned-prefix sweep.
 			{
@@ -481,6 +485,11 @@ async function applyRLS() {
 				name: "cli_connection_prompt_dismissal",
 				policy: "per_user_within_org",
 			},
+			// One person's choice to run their own work in an org on their
+			// ChatGPT plan (Fizzy #2939). Per-user within the org: a colleague
+			// must neither read nor set it. The credential table itself has no
+			// organizationId and so no policy; its readers key on userId.
+			{ name: "chat_gpt_plan_org_use", policy: "per_user_within_org" },
 			{ name: "project_user_function_tag", policy: "user_owned" }, // Shared per-project function tags (admin-managed)
 			{ name: "daily_brief", policy: "user_owned" }, // Shared per-project daily brief
 			{
@@ -675,6 +684,14 @@ async function applyRLS() {
 			// either way.
 			{ name: "organization_cli_reach", policy: "org_only" },
 			{ name: "organization_cli_first_reach", policy: "org_only" },
+
+			// ChatGPT plan pooling (Fizzy #2770). The accounts an admin connected
+			// for the organization, and its pooling policy, belong to the
+			// organization and to nobody inside it. The per-source breaker table
+			// has no organizationId and so no policy; it is reached only through
+			// a source its reader already resolved.
+			{ name: "chat_gpt_plan_org_account", policy: "org_only" },
+			{ name: "chat_gpt_plan_org_policy", policy: "org_only" },
 
 			// Dynamic agents
 			{ name: "offloaded_tool_output", policy: "user_owned" }, // Large tool outputs

@@ -209,10 +209,12 @@ describe("fabric auth login in the browser", () => {
 		expect(fake.registrations).toHaveLength(1);
 		expect(fake.registrations[0]).toMatchObject({
 			client_name: "Fabric CLI",
+			application_type: "native",
 			token_endpoint_auth_method: "none",
 			grant_types: ["authorization_code", "refresh_token"],
 			scope: REQUESTED_SCOPES.join(" "),
 		});
+		expect(fake.registrations[0]).not.toHaveProperty("type");
 		expect(fake.registrations[0]?.redirect_uris).toEqual([
 			expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/callback$/),
 		]);
@@ -372,10 +374,35 @@ describe("fabric auth login in the browser", () => {
 			previous.redirectUri,
 		);
 		expect(fake.tokenRequests[0]?.client_id).toBe("client-previous");
+		expect(fake.tokenRequests[0]?.redirect_uri).toBe(
+			fake.authorizations[0]?.get("redirect_uri"),
+		);
 		expect(credentials).toMatchObject({
 			clientId: "client-previous",
 			redirectUri: previous.redirectUri,
 		});
+	});
+
+	it("registers a capability client instead of reusing a default-scoped client", async () => {
+		fake.knownClients.add("client-previous");
+
+		await loginWithBrowser({
+			baseUrl: fake.origin,
+			previous: {
+				clientId: "client-previous",
+				redirectUri: "http://127.0.0.1:1/callback",
+				tokenEndpoint: `${fake.origin}/api/auth/oauth2/token`,
+			},
+			scopes: [...REQUESTED_SCOPES, "repositories:read"],
+			announce: () => {},
+			openBrowser: browserThatApproves(fake),
+		});
+
+		expect(fake.probes).toEqual([]);
+		expect(fake.registrations).toHaveLength(1);
+		expect(fake.registrations[0]?.scope).toBe(
+			[...REQUESTED_SCOPES, "repositories:read"].join(" "),
+		);
 	});
 
 	it("registers again when the server no longer knows the previous client", async () => {

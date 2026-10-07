@@ -195,7 +195,77 @@ export interface PublishedInstructions {
 	 * when talking to a server that does not report it yet.
 	 */
 	repository?: PublishedInstructionRepository | null;
+	/** Present for an active direct repository read, never a snapshot manifest. */
+	direct?: DirectInstructionRepositoryState;
 }
+
+export type DirectInstructionRepositoryAvailability =
+	| "READY"
+	| "UPLOAD"
+	| "MIGRATING"
+	| "DISCONNECTED"
+	| "CREDENTIALS_EXPIRED"
+	| "NOT_FOUND"
+	| "UNAVAILABLE";
+
+export type DirectInstructionRepositoryState =
+	| {
+			availability: "READY";
+			readState: "DIRECT";
+			generation: number;
+			currentCommitSha: string;
+			ref: string;
+			rootPath: string;
+			provider: InstructionRepositoryProvider;
+			/** Fabric supports authenticated native Git upload-pack transport. */
+			gitGateway?: { version: "v1" };
+			repository: {
+				provider: InstructionRepositoryProvider;
+				host: string;
+				path: string;
+				cloneUrl: string | null;
+			};
+	  }
+	| {
+			availability: Exclude<
+				DirectInstructionRepositoryAvailability,
+				"READY"
+			>;
+			readState: "DIRECT";
+	  };
+
+/** Provider tree metadata at one direct, immutable repository commit. */
+export interface DirectInstructionRepositoryFile {
+	path: string;
+	kind: InstructionFileKind;
+	blobId?: string;
+	size?: number;
+	mode?: string;
+}
+
+export interface DirectInstructionRepositoryFiles {
+	generation: number;
+	commitSha: string;
+	files: DirectInstructionRepositoryFile[];
+	incomplete: boolean;
+	refusal: "invalid_tree" | null;
+}
+
+export type DirectInstructionRepositoryFileRead =
+	| {
+			generation: number;
+			commitSha: string;
+			state: "found";
+			body: string;
+			offset: number;
+			nextOffset: number | null;
+			truncated: boolean;
+	  }
+	| {
+			generation: number;
+			commitSha: string;
+			state: "absent" | "tooLarge" | "binary";
+	  };
 
 export interface InstructionDownload {
 	snapshotId: string;
@@ -236,6 +306,29 @@ export interface GetPublishedInstructionsOptions {
 }
 
 export interface CreateInstructionDownloadOptions {
+	org?: string;
+	personal?: boolean;
+}
+
+export interface GetDirectInstructionRepositoryStateOptions {
+	org?: string;
+	personal?: boolean;
+}
+
+export interface GetDirectInstructionRepositoryFilesOptions {
+	/** Omit both fields only for the first request, which pins the branch head. */
+	generation?: number;
+	commitSha?: string;
+	org?: string;
+	personal?: boolean;
+}
+
+export interface GetDirectInstructionRepositoryFileOptions {
+	generation: number;
+	commitSha: string;
+	path: string;
+	offset?: number;
+	maxLength?: number;
 	org?: string;
 	personal?: boolean;
 }
@@ -453,11 +546,7 @@ export interface OpenInstructionProposalChange {
  * hashes of what it changes and never the bytes. `fabric instructions push`
  * reads these so it does not send a change the caller has already proposed.
  */
-export interface OpenInstructionProposal {
-	snapshotId: string;
-	version: number;
-	/** The published snapshot the proposal is stated against. */
-	baseSnapshotId: string;
+interface OpenInstructionProposalDetails {
 	/** The proposal snapshot's validation state. */
 	status: InstructionSnapshotStatus;
 	/** A repository-backed project's pull request; null for a proposal Fabric reviews itself. */
@@ -469,6 +558,21 @@ export interface OpenInstructionProposal {
 	/** The member branch the proposal is on, or null. Absent from an older server. */
 	branch?: ProposalBranch | null;
 }
+
+export type OpenInstructionProposal = OpenInstructionProposalDetails &
+	(
+		| {
+				snapshotId: string;
+				version: number;
+				baseSnapshotId: string;
+				kind?: "snapshot";
+		  }
+		| {
+				kind: "native";
+				operationId: string;
+				nativeBase: { generation: number; commitSha: string };
+		  }
+	);
 
 export interface SubmittedInstructionChange {
 	/**
@@ -528,6 +632,16 @@ export interface SubmittedInstructionChange {
 	pullRequest?: ProposalPullRequest | null;
 }
 
+export interface SubmittedRepositoryInstructionChange {
+	mode: "proposal";
+	operationId: string;
+	nativeBase: { generation: number; commitSha: string };
+	putCount: number;
+	deleteCount: number;
+	status: "READY";
+	proposalStatus: "PENDING";
+}
+
 export class InstructionsResource {
 	constructor(private readonly http: FabricHttpClient) {}
 
@@ -544,6 +658,44 @@ export class InstructionsResource {
 	): Promise<PublishedInstructions> {
 		return this.http.get<PublishedInstructions>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/published${buildQuery(options)}`,
+		);
+	}
+
+	/**
+	 * The credential-free metadata for a repository that Fabric reads directly.
+	 * It resolves the configured branch once but never creates a snapshot,
+	 * manifest, archive or provider write.
+	 */
+	getRepositoryState(
+		projectId: string,
+		options: GetDirectInstructionRepositoryStateOptions = {},
+	): Promise<DirectInstructionRepositoryState> {
+		return this.http.get<DirectInstructionRepositoryState>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/repository${buildQuery(options)}`,
+		);
+	}
+
+	/**
+	 * Bounded repository metadata at one commit. The first call returns the
+	 * commit pin; repeat calls must carry that pin so a moving branch cannot
+	 * mix tree metadata with later file bytes.
+	 */
+	listRepositoryFiles(
+		projectId: string,
+		options: GetDirectInstructionRepositoryFilesOptions = {},
+	): Promise<DirectInstructionRepositoryFiles> {
+		return this.http.get<DirectInstructionRepositoryFiles>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/repository/files${buildQuery(options)}`,
+		);
+	}
+
+	/** Read one text file from an already pinned direct repository commit. */
+	getRepositoryFile(
+		projectId: string,
+		options: GetDirectInstructionRepositoryFileOptions,
+	): Promise<DirectInstructionRepositoryFileRead> {
+		return this.http.get<DirectInstructionRepositoryFileRead>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/repository/file${buildQuery(options)}`,
 		);
 	}
 
@@ -659,6 +811,19 @@ export class InstructionsResource {
 	 * against the five-per-proposer cap. The `snapshotId` a retry returns is
 	 * therefore the same `snapshotId`.
 	 */
+	submitRepositoryChange(
+		projectId: string,
+		nativeBase: { generation: number; commitSha: string },
+		changes: InstructionChange[],
+		options: SubmitInstructionProposalOptions = {},
+	): Promise<SubmittedRepositoryInstructionChange> {
+		const { note, ...context } = options;
+		return this.http.post<SubmittedRepositoryInstructionChange>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(context)}`,
+			{ nativeBase, changes, ...(note ? { note } : {}) },
+		);
+	}
+
 	submitChange(
 		projectId: string,
 		baseSnapshotId: string,

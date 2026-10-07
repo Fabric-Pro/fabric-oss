@@ -16,7 +16,13 @@ import {
 	parseRepoUrl,
 	tenantWhere,
 } from "@repo/database";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { log } from "@temporalio/activity";
+import {
+	runWithTurnDispatch,
+	startTurnHeartbeat,
+	type TurnScope,
+} from "./orchestrator/turn-dispatch";
 
 export async function getProjectMetadataActivity(
 	projectId: string,
@@ -165,6 +171,13 @@ const PROJECT_CONTEXT_RESULTS_HEADER = [
 /**
  * Retrieve project contexts via RAG for the project_rag_query tool.
  * This wraps the @repo/rag retrieval function as a Temporal activity.
+ *
+ * `options.turnScope` (the Advisor chat turn the search serves; the trailing
+ * argument so the other callers are untouched) runs the retrieval inside the
+ * turn's dispatch guard: its embedding and model requests are checked against
+ * the turn record and aborted by a Stop, and a stop is rethrown, not returned
+ * as "no context". A caller already inside a turn's guard gets the same
+ * rethrow without passing it.
  */
 export async function retrieveProjectContextsActivity(
 	query: string,
@@ -172,6 +185,31 @@ export async function retrieveProjectContextsActivity(
 	userId: string,
 	organizationId: string | undefined,
 	topK?: number,
+	options?: { turnScope?: TurnScope },
+): Promise<{ context: string; chunkCount: number }> {
+	const turnScope = options?.turnScope;
+	const stopHeartbeat = startTurnHeartbeat(turnScope);
+	try {
+		return await runWithTurnDispatch(turnScope, () =>
+			retrieveProjectContextsForTool(
+				query,
+				projectId,
+				userId,
+				organizationId,
+				topK,
+			),
+		);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function retrieveProjectContextsForTool(
+	query: string,
+	projectId: string,
+	userId: string,
+	organizationId: string | undefined,
+	topK: number | undefined,
 ): Promise<{ context: string; chunkCount: number }> {
 	try {
 		const { retrieveProjectContexts, contextMetaHeader } = await import(
@@ -245,6 +283,8 @@ export async function retrieveProjectContextsActivity(
 			chunkCount: results.length,
 		};
 	} catch (error) {
+		// Inside a chat turn's dispatch guard a stop is not "no context".
+		rethrowIfDispatchStopped(error);
 		log.error("[ProjectRAG] Failed to retrieve project context", {
 			error: String(error),
 			projectId,

@@ -1,5 +1,17 @@
 # @fabricorg/sdk-mcp
 
+## 0.1.10
+
+### Patch Changes
+
+- 436db8c: MCP OAuth credentials are now bound to the authorization server that issued them, so a refresh token, client secret or authorization code is never sent to a server an MCP server names later.
+- 436db8c: Restore coding-tool setup and file actions for Git-backed instructions served through Fabric, preserve existing checkout changes, and improve download performance and cancellation.
+- 436db8c: The Fabric SDK, SDK MCP server and integration packages are now built with tsdown instead of tsup, with the same entry points, exports and ES2015 output; `@fabricorg/sdk-mcp` also exports its `FabricLike` client type.
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+- Updated dependencies [436db8c]
+  - @fabricorg/sdk@0.5.0
+
 ## 0.1.9
 
 ### Patch Changes

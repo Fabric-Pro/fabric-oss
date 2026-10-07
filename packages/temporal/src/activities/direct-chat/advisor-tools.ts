@@ -9,7 +9,10 @@
  * conversation in full, the agents in the workspace, and the connections
  * (integrations and MCP servers) that are configured.
  *
- * Everything is scoped to the calling user, and to the organisation when
+ * Conversations are the calling user's own, as the app shows them: within
+ * the organisation when the chat runs in one, outside any organisation
+ * otherwise. Other members' sessions, and the answers in them, are not the
+ * caller's to read. Agents and connections belong to the organisation when
  * the chat runs in one, the same way the workflow tools are.
  */
 
@@ -139,6 +142,9 @@ export function createAdvisorTools(
 	organizationId?: string,
 ): Record<string, unknown> {
 	const scope = organizationId ? { organizationId } : { userId };
+	const conversationScope = organizationId
+		? { organizationId, userId }
+		: { organizationId: null, userId };
 
 	return {
 		list_recent_sessions: tool({
@@ -180,7 +186,7 @@ export function createAdvisorTools(
 					);
 					const rows = await db.agentConversation.findMany({
 						where: {
-							...scope,
+							...conversationScope,
 							updatedAt: { gte: since },
 							...(params.includeAllAgents
 								? {}
@@ -235,7 +241,10 @@ export function createAdvisorTools(
 			execute: async (params: { conversationId: string }) => {
 				try {
 					const row = await db.agentConversation.findFirst({
-						where: { id: params.conversationId, ...scope },
+						where: {
+							id: params.conversationId,
+							...conversationScope,
+						},
 						select: {
 							id: true,
 							title: true,

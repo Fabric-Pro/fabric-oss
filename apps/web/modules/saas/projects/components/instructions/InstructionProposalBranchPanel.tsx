@@ -21,6 +21,10 @@ import {
 	offersStopTracking,
 	type ProposalBranchLite,
 } from "./lib/instructions-proposal-branch";
+import {
+	invalidateProposalViews,
+	invalidateProposalViewsAfterRefresh,
+} from "./lib/instructions-proposal-views";
 
 const TONE_CLASS = {
 	progress: "text-foreground",
@@ -42,6 +46,19 @@ type BranchPanelEntry = {
 	branch: ProposalBranchLite;
 	liveChanges: number;
 };
+
+function isRefreshAnswer(
+	value: unknown,
+): value is { refreshed: boolean; pending: boolean } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"refreshed" in value &&
+		"pending" in value &&
+		typeof value.refreshed === "boolean" &&
+		typeof value.pending === "boolean"
+	);
+}
 
 /** `proposals.myBranch`'s answer, and the shape `data` takes in read-only mode. */
 export type MyProposalBranch = {
@@ -121,6 +138,8 @@ export function InstructionProposalBranchPanel({
 			input: { projectId },
 		}),
 		enabled: !readOnly,
+		staleTime: 0,
+		refetchOnMount: "always",
 		refetchInterval: (q) =>
 			branchPanelPollInterval(
 				(q.state.data as MyProposalBranch | undefined)?.branches.map(
@@ -135,19 +154,16 @@ export function InstructionProposalBranchPanel({
 		? dataProp
 		: (query.data as MyProposalBranch | undefined);
 
-	const refresh = () => {
+	const refresh = async (options?: { settling?: boolean }) => {
 		onChanged?.();
 		if (readOnly) {
 			// No query of our own: the caller's `onChanged` is what refetches
 			// the reviewer aggregate this view came from.
 			return;
 		}
-		void query.refetch();
-		void queryClient.invalidateQueries({
-			queryKey: orpc.projects.instructions.proposals.list.queryOptions({
-				input: { projectId },
-			}).queryKey,
-		});
+		await (options?.settling
+			? invalidateProposalViewsAfterRefresh(queryClient)
+			: invalidateProposalViews(queryClient));
 	};
 
 	// The branch's own fencing attempt, as the last read showed it: a command
@@ -222,11 +238,35 @@ export function InstructionProposalBranchPanel({
 			},
 		),
 	);
+	const refreshBranch = useMutation(
+		orpc.projects.instructions.proposals.refreshBranch.mutationOptions({
+			onSuccess: async (result) => {
+				await refresh({ settling: true });
+				if (!isRefreshAnswer(result)) {
+					toast.error(t("loadError"));
+					return;
+				}
+				const answer = result;
+				if (!answer.refreshed) {
+					toast.info(t("refreshSettled"));
+				} else if (answer.pending) {
+					toast.info(t("refreshPending"));
+				} else {
+					toast.info(t("refreshSuccess"));
+				}
+			},
+			onError: async (error: Error) => {
+				await refresh({ settling: true });
+				toast.error(actionError(error));
+			},
+		}),
+	);
 	const busy =
 		close.isPending ||
 		startOver.isPending ||
 		retry.isPending ||
-		stopTracking.isPending;
+		stopTracking.isPending ||
+		refreshBranch.isPending;
 
 	const branches = data?.branches ?? [];
 	// A reviewer sees several members' panels at once, so a read-only one
@@ -458,20 +498,15 @@ export function InstructionProposalBranchPanel({
 									disabled={
 										busy || (!readOnly && query.isFetching)
 									}
-									onClick={() => {
-										if (readOnly) {
-											// No query of our own to await: ask
-											// the caller to refetch the
-											// reviewer aggregate this view
-											// came from.
-											onChanged?.();
-											toast.info(t("refreshSuccess"));
-											return;
-										}
-										void query.refetch().then(() => {
-											toast.info(t("refreshSuccess"));
-										});
-									}}
+									onClick={() =>
+										refreshBranch.mutate({
+											projectId,
+											branchId: branch.id,
+											expectedAttempt: attemptFor(
+												branch.id,
+											),
+										})
+									}
 								>
 									<RefreshCwIcon
 										className="size-3.5"

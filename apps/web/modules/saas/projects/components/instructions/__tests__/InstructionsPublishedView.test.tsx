@@ -227,6 +227,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						},
 					),
 				},
+				repository: {
+					getCommitParent: {
+						queryOptions: () => ({
+							queryKey: ["commitParent"],
+							enabled: false,
+						}),
+					},
+				},
 				repositorySync: {
 					configure: {
 						mutationOptions: mutationOptionsStub(async () => ({
@@ -1885,7 +1893,7 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		);
 	});
 
-	it("shows only the current sync progress when the snapshot list is stale", () => {
+	it("lets the repository sync own its in-flight snapshot progress without a run snapshot id", () => {
 		const pending = {
 			id: "s8",
 			version: 8,
@@ -1911,7 +1919,7 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 						error: null,
 						note: null,
 						commitSha: "a".repeat(40),
-						snapshotId: "s8",
+						snapshotId: null,
 						snapshotVersion: 8,
 						userName: null,
 						fromCurrentConfiguration: true,
@@ -1930,6 +1938,110 @@ describe("InstructionsPublishedView — repository sync (§7.1, §7.3)", () => {
 		);
 		expect(screen.getByText("Checking 20 of 40 files")).toBeInTheDocument();
 		expect(screen.queryByText("Checking 10 of 40 files")).toBeNull();
+	});
+
+	it("keeps an independent upload visible beside repository sync progress", () => {
+		const upload = {
+			id: "s8",
+			version: 8,
+			status: "VALIDATING",
+			source: "UPLOAD",
+			proposalDestination: null,
+			progressPhase: "SAVING",
+			progressDone: 10,
+			progressTotal: 40,
+			createdAt: new Date(),
+			sourceCommitSha: null,
+		};
+		render(
+			view(
+				controls({
+					running: true,
+					latestRun: {
+						id: "run-1",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: null,
+						status: null,
+						error: null,
+						note: null,
+						commitSha: "a".repeat(40),
+						snapshotId: "s7",
+						snapshotVersion: 7,
+						userName: null,
+						fromCurrentConfiguration: true,
+						progress: { phase: "COPYING", done: 40, total: 40 },
+					},
+					inFlightSnapshot: {
+						status: "VALIDATING",
+						version: 7,
+						scanPending: false,
+						progress: { phase: "SAVING", done: 20, total: 40 },
+					},
+				}),
+				{ snapshots: [upload], repositoryConfirmed: true },
+			),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(screen.getByText("Saving 10 of 40 files")).toBeInTheDocument();
+		expect(screen.getByText("Saving 20 of 40 files")).toBeInTheDocument();
+	});
+
+	it("lets the repository sync own publishing while the pointer catches up", () => {
+		render(
+			view(
+				controls({
+					running: true,
+					latestRun: {
+						id: "run-1",
+						trigger: "MANUAL",
+						startedAt: new Date(),
+						finishedAt: null,
+						status: null,
+						error: null,
+						note: null,
+						commitSha: "a".repeat(40),
+						snapshotId: null,
+						snapshotVersion: 8,
+						userName: null,
+						fromCurrentConfiguration: true,
+						progress: { phase: "COPYING", done: 40, total: 40 },
+					},
+					inFlightSnapshot: {
+						status: "READY",
+						version: 8,
+						scanPending: false,
+						progress: null,
+					},
+				}),
+				{
+					awaitingPublish: true,
+					snapshots: [
+						{
+							id: "s8",
+							version: 8,
+							status: "READY",
+							source: "REPOSITORY",
+							publishOnReady: true,
+						} as never,
+					],
+					repositoryConfirmed: true,
+				},
+			),
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(
+			screen.getAllByText(
+				en.projects.codingInstructions.publishedView.publishing,
+			),
+		).toHaveLength(2);
+		expect(
+			screen.getByTestId("repository-sync-progress"),
+		).toHaveTextContent(
+			en.projects.codingInstructions.publishedView.publishing,
+		);
 	});
 
 	// Fizzy #2563 spec §12: on a repository-backed project a proposal opens a

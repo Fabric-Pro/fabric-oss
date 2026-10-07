@@ -1211,6 +1211,13 @@ export function unresolvedPullRequestOperation() {
 			{ mergeSyncRequestedAt: { not: null } },
 			{ pullRequestObligationOpen: true },
 			{ proposalBranch: { is: unresolvedBranch() } },
+			// A direct commit has no pull-request state while its push outcome is
+			// unresolved. Its intent bytes must survive retention until that
+			// outcome is durable.
+			{
+				proposalDestination: "REPOSITORY_COMMIT",
+				commitOutcome: { equals: Prisma.AnyNull },
+			},
 		],
 	} satisfies Prisma.ProjectInstructionSnapshotWhereInput;
 }
@@ -1238,6 +1245,12 @@ export function resolvedPullRequestOperation() {
 				OR: [
 					{ proposalBranchId: null },
 					{ NOT: { proposalBranch: { is: unresolvedBranch() } } },
+				],
+			},
+			{
+				OR: [
+					{ proposalDestination: { not: "REPOSITORY_COMMIT" } },
+					{ commitOutcome: { not: Prisma.AnyNull } },
 				],
 			},
 		],
@@ -1282,6 +1295,8 @@ export function isUnresolvedPullRequestOperation(row: {
 	mergeSyncRequestedAt?: Date | null;
 	pullRequestObligationOpen?: boolean | null;
 	proposalBranch?: RetentionBranchFields | null;
+	proposalDestination?: string | null;
+	commitOutcome?: unknown;
 }): boolean {
 	return (
 		(row.pullRequestState !== null &&
@@ -1294,7 +1309,9 @@ export function isUnresolvedPullRequestOperation(row: {
 		row.pullRequestObligationOpen === true ||
 		(row.proposalBranch !== null &&
 			row.proposalBranch !== undefined &&
-			isUnresolvedBranch(row.proposalBranch))
+			isUnresolvedBranch(row.proposalBranch)) ||
+		(row.proposalDestination === "REPOSITORY_COMMIT" &&
+			(row.commitOutcome === null || row.commitOutcome === undefined))
 	);
 }
 
@@ -1322,13 +1339,17 @@ function unresolvedBranchSql(alias: string): Prisma.Sql {
 
 /** `unresolvedPullRequestOperation()` for raw SQL over `alias`. */
 export function unresolvedPullRequestOperationSql(alias: string): Prisma.Sql {
-	return Prisma.sql`(${column(alias, "pullRequestState")} IN (${stateList(UNRESOLVED_STATES)}) OR ${column(alias, "mergeSyncRequestedAt")} IS NOT NULL OR ${column(alias, "pullRequestObligationOpen")} OR ${unresolvedBranchSql(alias)})`;
+	const destination = column(alias, "proposalDestination");
+	const outcome = column(alias, "commitOutcome");
+	return Prisma.sql`(${column(alias, "pullRequestState")} IN (${stateList(UNRESOLVED_STATES)}) OR ${column(alias, "mergeSyncRequestedAt")} IS NOT NULL OR ${column(alias, "pullRequestObligationOpen")} OR ${unresolvedBranchSql(alias)} OR (${destination} = 'REPOSITORY_COMMIT' AND (${outcome} IS NULL OR ${outcome} = 'null'::jsonb)))`;
 }
 
 /** `resolvedPullRequestOperation()` for raw SQL over `alias`, null-safe as it is. */
 export function resolvedPullRequestOperationSql(alias: string): Prisma.Sql {
 	const state = column(alias, "pullRequestState");
-	return Prisma.sql`(${state} IS NULL OR ${state} IN (${stateList(RESOLVED_STATES)})) AND ${column(alias, "mergeSyncRequestedAt")} IS NULL AND NOT ${column(alias, "pullRequestObligationOpen")} AND NOT ${unresolvedBranchSql(alias)}`;
+	const destination = column(alias, "proposalDestination");
+	const outcome = column(alias, "commitOutcome");
+	return Prisma.sql`(${state} IS NULL OR ${state} IN (${stateList(RESOLVED_STATES)})) AND ${column(alias, "mergeSyncRequestedAt")} IS NULL AND NOT ${column(alias, "pullRequestObligationOpen")} AND NOT ${unresolvedBranchSql(alias)} AND (${destination} IS DISTINCT FROM 'REPOSITORY_COMMIT' OR (${outcome} IS NOT NULL AND ${outcome} <> 'null'::jsonb))`;
 }
 
 // ---------------------------------------------------------------------------

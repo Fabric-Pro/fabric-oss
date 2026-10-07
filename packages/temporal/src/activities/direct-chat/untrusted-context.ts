@@ -17,7 +17,9 @@ export type RetrievedContextSource =
 	| "project"
 	| "focused"
 	| "documents"
-	| "session_memory";
+	| "session_memory"
+	/** The organization's company context, returned by its search tool. */
+	| "company_context";
 
 export const UNTRUSTED_CONTEXT_GUIDANCE = [
 	"## Retrieved Context Handling",

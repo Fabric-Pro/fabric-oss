@@ -25,6 +25,8 @@ export { listConversations } from "./list-conversations";
 // rationale, see the TODO comment at the top of the handler file). PR3
 // adds the registration as the Backlog / CopilotKit callers come online.
 export { recordOperationResult } from "./record-operation-result";
+export { removeMessage } from "./remove-message";
+export { saveTurn, updateSettings } from "./save-turn";
 export {
 	addMessage,
 	updateConversation,

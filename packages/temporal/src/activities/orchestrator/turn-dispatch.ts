@@ -35,10 +35,26 @@
  * A run without a turn scope (started before turns existed, or by a
  * non-chat starter such as story automations or project setup) skips the
  * first gate: it has no turn to consult.
+ *
+ * Where the gates are applied: `runWithTurnDispatch` installs both as the
+ * ambient dispatch guard (`@repo/utils/dispatch-guard`). The activity
+ * interceptor (`lib/turn-dispatch-interceptor.ts`) does that for every
+ * activity whose first argument carries a `turnScope`, and every model the
+ * `@repo/ai` factory returns consults that guard before each physical
+ * request, so model and embedding calls inside such an activity are covered
+ * without per-call-site work. `guardTurnModel` / `guardTurnImageModel` remain
+ * for models built outside the factory (the image activity's gateway models)
+ * and for code running outside the guard.
  */
 
 import { checkConversationTurnDispatchable } from "@repo/database";
 import { logger } from "@repo/logs";
+import {
+	type DispatchGuard,
+	getDispatchGuard,
+	isDispatchGuardedModel,
+	runWithDispatchGuard,
+} from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure, CancelledFailure } from "@temporalio/common";
 import {
@@ -159,6 +175,18 @@ export function findTurnNotDispatchable(
  * A model given as a bare id is first resolved to a model object the way
  * the SDK itself resolves one (the global default provider, else the
  * gateway), so there is no unguarded path.
+ *
+ * A model from the `@repo/ai` factory already makes the same check through
+ * the ambient dispatch guard when `runWithTurnDispatch` is active for this
+ * turn (the activity interceptor sets it). That case is decided per request:
+ * this wrapper then leaves the check to the factory's middleware, so the
+ * turn record is read once per request, not twice. A model built outside the
+ * factory is checked here through that same guard, and takes its abort
+ * signal, so a refusal of any request under the guard also aborts this one.
+ * With no guard for this turn it checks the turn record directly, as before.
+ *
+ * The check runs in `transformParams`, which the SDK calls once per physical
+ * `doGenerate`/`doStream` (ai v7 `wrapLanguageModel`), before the request.
  */
 export function guardTurnModel(
 	model: LanguageModel,
@@ -168,18 +196,13 @@ export function guardTurnModel(
 		return { model };
 	}
 	const resolved = typeof model === "string" ? resolveModelId(model) : model;
+	const checkedByFactory = isDispatchGuardedModel(resolved);
 	return {
 		model: wrapLanguageModel({
 			model: resolved,
 			middleware: {
-				wrapGenerate: async ({ doGenerate }) => {
-					await assertTurnDispatchable(turnScope);
-					return doGenerate();
-				},
-				wrapStream: async ({ doStream }) => {
-					await assertTurnDispatchable(turnScope);
-					return doStream();
-				},
+				transformParams: ({ params }) =>
+					checkTurnRequest(params, turnScope, checkedByFactory),
 			},
 		}),
 	};
@@ -196,12 +219,205 @@ export function guardTurnImageModel(
 	return wrapImageModel({
 		model,
 		middleware: {
-			wrapGenerate: async ({ doGenerate }) => {
-				await assertTurnDispatchable(turnScope);
-				return doGenerate();
-			},
+			transformParams: ({ params }) =>
+				checkTurnRequest(params, turnScope, false),
 		},
 	});
+}
+
+/**
+ * The per-request check behind `guardTurnModel` / `guardTurnImageModel`.
+ * Inside this turn's guard it goes through the guard (so a refusal aborts
+ * the guard's other requests) and attaches the guard's abort signal, unless
+ * the factory's middleware already does both; outside it, it reads the turn
+ * record directly.
+ */
+async function checkTurnRequest<P extends { abortSignal?: AbortSignal }>(
+	params: P,
+	turnScope: TurnScope,
+	checkedByFactory: boolean,
+): Promise<P> {
+	const guard = activeTurnGuard(turnScope);
+	if (!guard) {
+		await assertTurnDispatchable(turnScope);
+		return params;
+	}
+	if (checkedByFactory) {
+		return params;
+	}
+	await guard.assertDispatchable();
+	const signal = guard.abortSignal();
+	if (!signal || signal === params.abortSignal) {
+		return params;
+	}
+	return {
+		...params,
+		abortSignal: params.abortSignal
+			? AbortSignal.any([params.abortSignal, signal])
+			: signal,
+	};
+}
+
+/**
+ * The identity of a turn scope, as the dispatch guard's `key`. All four
+ * fields: the turn check compares every one of them with the record.
+ */
+export function turnScopeKey(turnScope: TurnScope): string {
+	return JSON.stringify([
+		turnScope.turnId,
+		turnScope.executionId,
+		turnScope.userId,
+		turnScope.organizationId,
+	]);
+}
+
+/** The ambient dispatch guard when it is the one for `turnScope`. */
+function activeTurnGuard(turnScope: TurnScope): DispatchGuard | undefined {
+	const guard = getDispatchGuard();
+	return guard?.key === turnScopeKey(turnScope) ? guard : undefined;
+}
+
+/**
+ * Each turn guard's stop controller. Aborted, with the stop as its reason,
+ * the first time anything under the guard sees the turn stop: a refused
+ * dispatch, or a stop a catch hands to `rethrowIfTurnStopped`.
+ */
+const turnGuardStops = new WeakMap<DispatchGuard, AbortController>();
+
+/** The stop controller of the active turn guard, if any. */
+function activeTurnStopController(): AbortController | undefined {
+	const guard = getDispatchGuard();
+	return guard ? turnGuardStops.get(guard) : undefined;
+}
+
+/** The stop `error` carries: a dispatch refusal or a cancellation. */
+function turnStopIn(error: unknown): Error | null {
+	return (
+		findTurnNotDispatchable(error) ??
+		(error instanceof CancelledFailure ? error : null)
+	);
+}
+
+/**
+ * Runs `fn` with the turn's two gates installed as the ambient dispatch
+ * guard: every model or embedding request a `@repo/ai` factory model makes
+ * inside `fn` first passes `assertTurnDispatchable(turnScope)` and carries the
+ * activity's cancellation signal, and catches that consult the guard
+ * (`rethrowIfDispatchStopped`) rethrow a stop. Without a scope `fn` runs
+ * unchanged, so a run with no turn keeps its behaviour.
+ *
+ * The guard also has its own stop controller, merged into the abort signal
+ * it hands every request. The first refused dispatch under the guard (or the
+ * first stop a catch reports through `rethrowIfTurnStopped`) aborts it with
+ * the stop as the reason, so the requests already in flight beside the
+ * refused one — the other half of a parallel fan-out, the SDK's parallel
+ * `embedMany` sub-requests — are aborted too instead of outliving the turn.
+ * Activity cancellation alone does not cover this: a refused dispatch fails
+ * the activity, it does not cancel it. After that, every further check under
+ * the guard refuses without reading the turn record, and every error a catch
+ * hands to `rethrowIfTurnStopped` leaves as that stop.
+ *
+ * The activity interceptor calls this for an activity whose first argument
+ * carries `turnScope`; an activity that receives its scope elsewhere (a
+ * positional activity's trailing options) calls it itself.
+ */
+export function runWithTurnDispatch<T>(
+	turnScope: TurnScope | undefined,
+	fn: () => T,
+): T {
+	if (!turnScope) {
+		return fn();
+	}
+	const stopController = new AbortController();
+	let requestSignal: AbortSignal | undefined;
+	const guard: DispatchGuard = {
+		key: turnScopeKey(turnScope),
+		assertDispatchable: async () => {
+			if (stopController.signal.aborted) {
+				throw stopController.signal.reason;
+			}
+			try {
+				await assertTurnDispatchable(turnScope);
+			} catch (error) {
+				const stop = turnStopIn(error);
+				if (stop && !stopController.signal.aborted) {
+					stopController.abort(stop);
+				}
+				throw error;
+			}
+		},
+		abortSignal: () => {
+			// One combined signal per guard: the activity's cancellation and
+			// the guard's own stop.
+			requestSignal ??= activityAbortSignal(stopController.signal);
+			return requestSignal;
+		},
+		rethrowIfStopped: rethrowIfTurnStopped,
+	};
+	turnGuardStops.set(guard, stopController);
+	return runWithDispatchGuard(guard, fn);
+}
+
+/**
+ * Runs `fn` with this turn's dispatch guard, which it is handed: the one
+ * already active (the activity interceptor's) when there is one for this
+ * turn, else a new one installed for `fn`. For code that must apply the
+ * guard to requests no model factory sees, such as an HTTP search: pass
+ * `guard.assertDispatchable` as the per-request check and `guard.abortSignal()`
+ * as the request signal, so a refusal anywhere under the guard aborts them.
+ */
+export function withTurnDispatchGuard<T>(
+	turnScope: TurnScope,
+	fn: (guard: DispatchGuard) => T,
+): T {
+	const active = activeTurnGuard(turnScope);
+	if (active) {
+		return fn(active);
+	}
+	return runWithTurnDispatch(turnScope, () =>
+		fn(getDispatchGuard() as DispatchGuard),
+	);
+}
+
+/**
+ * Throws when the work must stop: the activity was cancelled, or the active
+ * turn guard has seen the stop. For code that got a result back after a
+ * stop it did not see as an error (a partial result whose aborted parts were
+ * recorded as failures), so the result is not used.
+ */
+export function throwIfTurnStopped(): void {
+	throwIfActivityCancelled();
+	const stopController = activeTurnStopController();
+	if (stopController?.signal.aborted) {
+		throw stopController.signal.reason;
+	}
+}
+
+/**
+ * `Promise.all` for a fan-out of provider requests. Inside a dispatch guard
+ * (a chat turn) it waits for EVERY promise to settle before rejecting, so no
+ * sibling request is still running when the activity (and its heartbeat
+ * ticker) finishes, and rejects with the first stop among the failures, else
+ * the first failure in input order, so a stop is never hidden behind an
+ * ordinary error. With no guard active it IS `Promise.all`: the earliest
+ * rejection, reported at once, so a run with no turn behaves as before.
+ */
+export async function settleAll<T>(
+	promises: readonly Promise<T>[],
+): Promise<T[]> {
+	if (!getDispatchGuard()) {
+		return Promise.all(promises);
+	}
+	const results = await Promise.allSettled(promises);
+	const failures = results.filter(
+		(result): result is PromiseRejectedResult =>
+			result.status === "rejected",
+	);
+	if (failures.length > 0) {
+		const stop = failures.find((failure) => turnStopIn(failure.reason));
+		throw (stop ?? failures[0]).reason;
+	}
+	return results.map((result) => (result as PromiseFulfilledResult<T>).value);
 }
 
 /** Same resolution as the SDK's own for a string model id. */
@@ -274,13 +490,23 @@ export function throwIfActivityCancelled(): void {
  */
 export function rethrowIfTurnStopped(error: unknown): void {
 	throwIfActivityCancelled();
+	// Inside a turn guard that has already seen the stop, every failure is
+	// that stop: a sibling request aborted by the guard fails with whatever
+	// the provider or the SDK makes of the abort, which need not carry it.
+	const stopController = activeTurnStopController();
+	if (stopController?.signal.aborted) {
+		throw stopController.signal.reason;
+	}
 	const refusal = findTurnNotDispatchable(error);
 	if (refusal) {
+		// Abort the guard's other requests in flight: the turn is over.
+		stopController?.abort(refusal);
 		// The refusal itself, unwrapped from any SDK retry error, so
 		// Temporal records the non-retryable TurnNotDispatchable failure.
 		throw refusal;
 	}
 	if (error instanceof CancelledFailure) {
+		stopController?.abort(error);
 		throw error;
 	}
 }
@@ -310,4 +536,25 @@ export function startHeartbeatTicker(
 		}
 	}, intervalMs);
 	return () => clearInterval(timer);
+}
+
+/** Heartbeat interval for a turn-scoped activity waiting on a request. */
+const TURN_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/**
+ * Starts the heartbeat ticker for a turn-scoped activity, so a Stop reaches
+ * a request in flight (cancellation is delivered only in a heartbeat
+ * response); a no-op without a scope, so a run with no turn heartbeats as
+ * before. Returns the function that stops it.
+ *
+ * Heartbeats carry no details: use it only in an activity that does not keep
+ * resumable state in its heartbeat details, which a detail-less beat would
+ * overwrite.
+ */
+export function startTurnHeartbeat(
+	turnScope: TurnScope | undefined,
+): () => void {
+	return turnScope
+		? startHeartbeatTicker(TURN_HEARTBEAT_INTERVAL_MS)
+		: () => undefined;
 }

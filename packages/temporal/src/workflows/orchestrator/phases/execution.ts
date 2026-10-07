@@ -32,6 +32,11 @@ import {
 	skipIfCircuitOpen,
 	summarizeContextIfNeeded,
 } from "../step-processing";
+import {
+	type IterativeTurnOptions,
+	rethrowFirstTurnStop,
+	rethrowTurnStop,
+} from "../turn-contract";
 import type {
 	ALTKConfig,
 	ApprovalSignalData,
@@ -135,6 +140,11 @@ function getGeneralizedWeaveImplementationProvider(
 
 /**
  * Execute all steps in the task plan
+ *
+ * `turn` is set only for a chat turn (a Planner chat; a Weave run never has
+ * one): step activities then carry the turn scope, and a stop is rethrown
+ * from every catch on the way instead of becoming a failed, skipped or
+ * blocked step, so the run ends cancelled. Without it, unchanged.
  */
 export async function executeExecutionPhase(
 	state: WorkflowState,
@@ -146,6 +156,7 @@ export async function executeExecutionPhase(
 		options?: WaitForApprovalOptions,
 	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
+	turn?: IterativeTurnOptions,
 ): Promise<
 	PhaseResult<{
 		finalResponse: string;
@@ -223,6 +234,7 @@ export async function executeExecutionPhase(
 				altkConfig,
 				waveQueue,
 				updateProgress,
+				turn,
 			});
 
 			finalResponse += result.responseChunk;
@@ -270,6 +282,7 @@ export async function executeExecutionPhase(
 				updateProgress,
 				waitForApproval,
 				isCancelled,
+				turn,
 			});
 
 			finalResponse += result.responseChunk;
@@ -300,7 +313,7 @@ export async function executeExecutionPhase(
 				};
 			}
 
-			await summarizeContextIfNeeded(state, taskPlan);
+			await summarizeContextIfNeeded(state, taskPlan, turn);
 		}
 
 		// =================================================================
@@ -634,6 +647,7 @@ async function executeParallelSteps(params: {
 	altkConfig: ALTKConfig;
 	waveQueue: TaskStep[][];
 	updateProgress: (phase: string, message: string, step?: TaskStep) => void;
+	turn?: IterativeTurnOptions;
 }): Promise<{
 	responseChunk: string;
 	shouldAbort: boolean;
@@ -649,6 +663,7 @@ async function executeParallelSteps(params: {
 		altkConfig,
 		waveQueue,
 		updateProgress,
+		turn,
 	} = params;
 
 	// Mark all parallel steps as in_progress
@@ -722,6 +737,8 @@ async function executeParallelSteps(params: {
 				authorityCheckedSteps.push(step);
 			}
 		} catch (error) {
+			// A stop is not an authority failure to record on the step.
+			rethrowTurnStop(error, turn);
 			// Fail closed — authority check errors block the step
 			step.status = "error";
 			step.error = `Authority check failed: ${String(error)}`;
@@ -777,6 +794,7 @@ async function executeParallelSteps(params: {
 				idx,
 				modeConfig,
 				altkConfig,
+				turn,
 			),
 		);
 		promiseToSteps.push([step]);
@@ -808,6 +826,10 @@ async function executeParallelSteps(params: {
 
 	const batchStartTime = safeNowMs();
 	const results = await Promise.allSettled(promises);
+	// A chat turn's stop in any branch ends the wave (every branch has
+	// settled, so nothing is left running); it is not a failed step to
+	// recover. A no-op for a run with no turn.
+	rethrowFirstTurnStop(results, turn);
 
 	// Merge results — for batched shuttle, apply the same result to each step
 	let responseChunk = "";
@@ -841,6 +863,7 @@ async function executeParallelSteps(params: {
 				taskPlan: taskPlan as any,
 				waveQueue,
 				updateProgress,
+				turn,
 			});
 
 			responseChunk += processed.responseChunk;
@@ -860,7 +883,7 @@ async function executeParallelSteps(params: {
 				step,
 			);
 
-			await summarizeContextIfNeeded(state, taskPlan);
+			await summarizeContextIfNeeded(state, taskPlan, turn);
 		}
 	}
 
@@ -884,6 +907,7 @@ async function executeSequentialStep(params: {
 		options?: WaitForApprovalOptions,
 	) => Promise<ApprovalSignalData | null>;
 	isCancelled: () => boolean;
+	turn?: IterativeTurnOptions;
 }): Promise<{
 	responseChunk: string;
 	shouldAbort: boolean;
@@ -902,6 +926,7 @@ async function executeSequentialStep(params: {
 		updateProgress,
 		waitForApproval,
 		isCancelled,
+		turn,
 	} = params;
 
 	const stepIndex = taskPlan.steps.indexOf(step);
@@ -1029,6 +1054,8 @@ async function executeSequentialStep(params: {
 			// For step_approval_required, also fall through to existing approval flow
 		}
 	} catch (error) {
+		// A stop is not an authority failure to record on the step.
+		rethrowTurnStop(error, turn);
 		// Fail closed — authority check errors block the step
 		log.error("Authority check failed, blocking step execution", {
 			stepId: step.id,
@@ -1054,6 +1081,7 @@ async function executeSequentialStep(params: {
 			updateProgress,
 			waitForApproval,
 			isCancelled,
+			turn,
 		);
 
 		if (!approvalResult.success) {
@@ -1096,6 +1124,7 @@ async function executeSequentialStep(params: {
 					stepIndex,
 					modeConfig,
 					altkConfig,
+					turn,
 				);
 
 	const processed = await processStepResult({
@@ -1109,6 +1138,7 @@ async function executeSequentialStep(params: {
 		taskPlan: taskPlan as any,
 		waveQueue,
 		updateProgress,
+		turn,
 	});
 
 	updateProgress(
@@ -1140,6 +1170,7 @@ async function handleStepApproval(
 		options?: WaitForApprovalOptions,
 	) => Promise<ApprovalSignalData | null>,
 	isCancelled: () => boolean,
+	turn?: IterativeTurnOptions,
 ): Promise<{
 	success: boolean;
 	rejected?: boolean;
@@ -1264,6 +1295,7 @@ async function handleStepApproval(
 			feedback: decision?.feedback,
 		});
 	} catch (error) {
+		rethrowTurnStop(error, turn);
 		log.warn("Failed to update approval task status", {
 			approvalId: stepApproval.approvalId,
 			error: error instanceof Error ? error.message : "Unknown error",

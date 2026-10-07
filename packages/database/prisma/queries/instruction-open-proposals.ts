@@ -88,6 +88,7 @@ export type OpenProposalCandidate = {
 	snapshotId: string;
 	version: number;
 	baseSnapshotId: string | null;
+	nativeBase?: { generation: number; commitSha: string };
 	status: string;
 	pullRequestState: ProjectInstructionPullRequestState | null;
 	pullRequestUrl: string | null;
@@ -102,6 +103,18 @@ export type OpenProposalCandidate = {
 	/** The effective delta against the proposal's own base. */
 	changes: OpenProposalChange[];
 };
+
+type SelectedOpenProposalCandidate = OpenProposalCandidate &
+	(
+		| { nativeBase: NonNullable<OpenProposalCandidate["nativeBase"]> }
+		| { nativeBase?: undefined; baseSnapshotId: string }
+	);
+
+function hasProposalBase(
+	c: OpenProposalCandidate,
+): c is SelectedOpenProposalCandidate {
+	return c.nativeBase !== undefined || c.baseSnapshotId !== null;
+}
 
 /** What the selection reads of a branch. */
 export type OpenProposalBranch = Pick<
@@ -122,7 +135,7 @@ export type OpenProposalOp = EvidenceOp & {
 };
 
 export type OpenProposalSelection<B extends OpenProposalBranch> = {
-	candidate: OpenProposalCandidate;
+	candidate: SelectedOpenProposalCandidate;
 	status: OpenProposalStatus;
 	pullRequest: {
 		state: OpenProposalPullRequestState;
@@ -300,7 +313,7 @@ export function selectOpenProposals<B extends OpenProposalBranch>(i: {
 }): OpenProposalSelection<B>[] {
 	const newest = new Map<string, OpenProposalCandidate>();
 	for (const c of i.candidates) {
-		if (!inIntentSet(c) || c.baseSnapshotId === null) {
+		if (!inIntentSet(c) || !hasProposalBase(c)) {
 			continue;
 		}
 		for (const change of c.changes) {
@@ -313,7 +326,7 @@ export function selectOpenProposals<B extends OpenProposalBranch>(i: {
 
 	const out: OpenProposalSelection<B>[] = [];
 	for (const c of i.candidates) {
-		if (c.baseSnapshotId === null || !isOpenStatus(c.status)) {
+		if (!hasProposalBase(c) || !isOpenStatus(c.status)) {
 			continue;
 		}
 		if (
@@ -425,6 +438,9 @@ export async function listOpenInstructionProposals(i: {
 				id: true,
 				version: true,
 				baseSnapshotId: true,
+				contentKind: true,
+				repositoryGeneration: true,
+				repositoryBaseSha: true,
 				status: true,
 				pullRequestState: true,
 				pullRequestUrl: true,
@@ -483,7 +499,15 @@ export async function listOpenInstructionProposals(i: {
 		i.naming,
 	);
 
-	const withBase = rows.filter((r) => r.baseSnapshotId !== null);
+	const nativeRows = rows.filter(
+		(r) =>
+			r.contentKind === "GIT_INTENT" &&
+			r.repositoryGeneration !== null &&
+			r.repositoryBaseSha !== null,
+	);
+	const withBase = rows.filter(
+		(r) => r.contentKind !== "GIT_INTENT" && r.baseSnapshotId !== null,
+	);
 	const snapshotIds = [
 		...new Set([
 			...withBase.map((r) => r.id),
@@ -492,12 +516,12 @@ export async function listOpenInstructionProposals(i: {
 	];
 	const branchIds = [
 		...new Set(
-			withBase.flatMap((r) =>
+			[...withBase, ...nativeRows].flatMap((r) =>
 				r.proposalBranchId === null ? [] : [r.proposalBranchId],
 			),
 		),
 	];
-	const [files, branches, ops] = await Promise.all([
+	const [files, branches, ops, intents] = await Promise.all([
 		snapshotIds.length === 0
 			? Promise.resolve([])
 			: db.projectInstructionFile.findMany({
@@ -536,6 +560,22 @@ export async function listOpenInstructionProposals(i: {
 						entries: true,
 					},
 				}),
+		nativeRows.length === 0
+			? Promise.resolve([])
+			: db.projectInstructionGitIntentEntry.findMany({
+					where: {
+						snapshotId: { in: nativeRows.map((row) => row.id) },
+						projectId: i.projectId,
+						organizationId: i.organizationId,
+						userId: i.userId,
+					},
+					select: {
+						snapshotId: true,
+						path: true,
+						operation: true,
+						sha256: true,
+					},
+				}),
 	]);
 
 	// One map per snapshot, bases read once however many rows share one.
@@ -549,10 +589,30 @@ export async function listOpenInstructionProposals(i: {
 		map.set(f.path, f.sha256);
 	}
 	const empty = new Map<string, string>();
+	const nativeChanges = new Map<string, OpenProposalChange[]>();
+	for (const intent of intents) {
+		const changes = nativeChanges.get(intent.snapshotId) ?? [];
+		changes.push({
+			path: intent.path,
+			op: intent.operation === "PUT" ? "put" : "delete",
+			sha256: intent.sha256,
+		});
+		nativeChanges.set(intent.snapshotId, changes);
+	}
 	const candidates: OpenProposalCandidate[] = rows.map((r) => ({
 		snapshotId: r.id,
 		version: r.version,
 		baseSnapshotId: r.baseSnapshotId,
+		...(r.contentKind === "GIT_INTENT" &&
+		r.repositoryGeneration !== null &&
+		r.repositoryBaseSha !== null
+			? {
+					nativeBase: {
+						generation: r.repositoryGeneration,
+						commitSha: r.repositoryBaseSha,
+					},
+				}
+			: {}),
 		status: r.status,
 		pullRequestState: r.pullRequestState,
 		pullRequestUrl: r.pullRequestUrl,
@@ -563,12 +623,14 @@ export async function listOpenInstructionProposals(i: {
 		intentOrder: r.proposalIntentOrder,
 		withdrawRequestedAt: r.withdrawRequestedAt,
 		changes:
-			r.baseSnapshotId === null
-				? []
-				: effectiveDelta(
-						bySnapshot.get(r.baseSnapshotId) ?? empty,
-						bySnapshot.get(r.id) ?? empty,
-					),
+			r.contentKind === "GIT_INTENT"
+				? (nativeChanges.get(r.id) ?? [])
+				: r.baseSnapshotId === null
+					? []
+					: effectiveDelta(
+							bySnapshot.get(r.baseSnapshotId) ?? empty,
+							bySnapshot.get(r.id) ?? empty,
+						),
 	}));
 	return selectOpenProposals({
 		candidates,

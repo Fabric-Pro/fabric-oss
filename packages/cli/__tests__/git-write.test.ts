@@ -532,7 +532,11 @@ describe("how git's refusals are read", () => {
 		["fatal: Unable to create '/r/.git/index.lock': File exists.", "busy"],
 		[
 			"error: Your local changes to the following files would be overwritten by merge:",
-			"other",
+			"local-changes",
+		],
+		[
+			"error: The following untracked working tree files would be overwritten by merge:",
+			"local-changes",
 		],
 		["", "other"],
 	] as const)("a merge that says %j is %s", (stderr, expected) => {

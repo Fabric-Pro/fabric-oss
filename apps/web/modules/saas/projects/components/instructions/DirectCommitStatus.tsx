@@ -45,11 +45,13 @@ import { useCallback, useEffect, useRef } from "react";
 export function DirectCommitWatcher({
 	projectId,
 	snapshotId,
+	native = false,
 	branch,
 	onSettled,
 }: {
 	projectId: string;
 	snapshotId: string;
+	native?: boolean;
 	branch: string;
 	onSettled: (result: SettledCommit) => void;
 }) {
@@ -67,21 +69,59 @@ export function DirectCommitWatcher({
 		onSettledRef.current(result);
 	}, []);
 
-	const snapshot = useQuery({
-		...orpc.projects.instructions.get.queryOptions({
-			input: { projectId, snapshotId },
-		}),
-		retry: 2,
-		refetchInterval: (query) => {
-			const row = query.state.data;
-			if (row && settledCommit(row) !== null) {
-				return false;
-			}
-			return commitPollInterval(Date.now() - startedAt.current);
-		},
-	});
+	const snapshot = useQuery(
+		!native
+			? {
+					...orpc.projects.instructions.get.queryOptions({
+						input: { projectId, snapshotId },
+					}),
+					enabled: !native,
+					retry: 2,
+					refetchInterval: (query) => {
+						const row = query.state.data;
+						if (row && settledCommit(row) !== null) {
+							return false;
+						}
+						return commitPollInterval(
+							Date.now() - startedAt.current,
+						);
+					},
+				}
+			: {
+					queryKey: [
+						"snapshot-commit-inactive",
+						projectId,
+						snapshotId,
+					],
+					queryFn: async () => null,
+					enabled: false,
+				},
+	);
 
-	const result = snapshot.data ? settledCommit(snapshot.data) : null;
+	const operation = useQuery(
+		native
+			? {
+					...orpc.projects.instructions.getGitOperation.queryOptions({
+						input: { projectId, operationId: snapshotId },
+					}),
+					enabled: native,
+					retry: 2,
+					refetchInterval: (query) =>
+						query.state.data &&
+						settledCommit(query.state.data) !== null
+							? false
+							: commitPollInterval(
+									Date.now() - startedAt.current,
+								),
+				}
+			: {
+					queryKey: ["native-commit-inactive", projectId, snapshotId],
+					queryFn: async () => null,
+					enabled: false,
+				},
+	);
+	const current = native ? operation : snapshot;
+	const result = current.data ? settledCommit(current.data) : null;
 	const resultKind = result?.kind ?? null;
 	useEffect(() => {
 		if (result !== null) {
@@ -91,10 +131,10 @@ export function DirectCommitWatcher({
 		// the dependency so a refetch that changes nothing does not re-run it.
 	}, [resultKind, report]);
 	useEffect(() => {
-		if (snapshot.isError && !snapshot.data) {
+		if (current.isError && !current.data) {
 			report({ kind: "failed", code: "UNKNOWN", retryable: true });
 		}
-	}, [snapshot.isError, snapshot.data, report]);
+	}, [current.isError, current.data, report]);
 	useEffect(() => {
 		const timer = setTimeout(
 			() =>

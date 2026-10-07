@@ -148,6 +148,12 @@ export const AVAILABLE_SCOPES = [
 			"Propose a change to a project's coding instructions for an editor to review",
 	},
 	{
+		id: "repositories:read",
+		label: "Repositories Read",
+		description:
+			"Read a project's complete attached repository through Fabric Git transport",
+	},
+	{
 		id: "instructions:publish",
 		label: "Instructions Publish",
 		description:

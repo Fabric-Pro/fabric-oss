@@ -21,9 +21,24 @@ import {
 const OAUTH_SCOPE_MCP_READ = "mcp:read";
 const OAUTH_SCOPE_INSTRUCTIONS_READ = "instructions:read";
 const OAUTH_SCOPE_INSTRUCTIONS_WRITE = "instructions:write";
+const OAUTH_SCOPE_REPOSITORIES_READ = "repositories:read";
 const OAUTH_SCOPE_OFFLINE_ACCESS = "offline_access";
 
+/** Every scope the authorization server understands. */
 export const OAUTH_SCOPES = [
+	OAUTH_SCOPE_MCP_READ,
+	OAUTH_SCOPE_INSTRUCTIONS_READ,
+	OAUTH_SCOPE_INSTRUCTIONS_WRITE,
+	OAUTH_SCOPE_REPOSITORIES_READ,
+	OAUTH_SCOPE_OFFLINE_ACCESS,
+] as const;
+
+/**
+ * Existing MCP and ordinary CLI grants. Full repository Git transport is an
+ * explicit, separately consented capability because it can expose repository
+ * history outside the coding-instructions tree.
+ */
+export const OAUTH_DEFAULT_SCOPES = [
 	OAUTH_SCOPE_MCP_READ,
 	OAUTH_SCOPE_INSTRUCTIONS_READ,
 	OAUTH_SCOPE_INSTRUCTIONS_WRITE,
@@ -106,5 +121,5 @@ export function gatewayAuthenticateHeader(
 		? oauthProjectGatewayMetadataUrl(appUrl, options.projectId)
 		: oauthGatewayMetadataUrl(appUrl);
 	const error = options.invalidToken ? `error="invalid_token", ` : "";
-	return `Bearer ${error}resource_metadata="${metadataUrl}", scope="${OAUTH_SCOPES.join(" ")}"`;
+	return `Bearer ${error}resource_metadata="${metadataUrl}", scope="${OAUTH_DEFAULT_SCOPES.join(" ")}"`;
 }

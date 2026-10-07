@@ -29,6 +29,7 @@ import {
 	generateEmbeddings,
 } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
 import { cosineSimilarity } from "./capability-embeddings";
 import { calculateKeywordMatchScore } from "./capability-keywords";
 import type {
@@ -436,6 +437,20 @@ function buildProviderFilter(
 export async function searchAvailableIntegrations(
 	input: SearchAvailableIntegrationsInput,
 ): Promise<SearchAvailableIntegrationsOutput> {
+	// In a chat turn the embedding requests are checked against the turn
+	// record and aborted by a Stop (see searchAvailableTools), and a stop is
+	// rethrown rather than scored without embeddings.
+	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
+	try {
+		return await runIntegrationSearch(input);
+	} finally {
+		stopHeartbeat();
+	}
+}
+
+async function runIntegrationSearch(
+	input: SearchAvailableIntegrationsInput,
+): Promise<SearchAvailableIntegrationsOutput> {
 	const startTime = Date.now();
 	console.log(`[SearchIntegrations] Searching for: "${input.query}"`);
 
@@ -531,6 +546,9 @@ export async function searchAvailableIntegrations(
 		);
 		queryEmbedding = result.embedding;
 	} catch (error) {
+		if (input.turnScope) {
+			rethrowIfTurnStopped(error);
+		}
 		console.warn(
 			"[SearchIntegrations] Failed to generate query embedding:",
 			error,
@@ -561,6 +579,9 @@ export async function searchAvailableIntegrations(
 			);
 			integrationEmbeddings = results.embeddings;
 		} catch (error) {
+			if (input.turnScope) {
+				rethrowIfTurnStopped(error);
+			}
 			console.warn(
 				"[SearchIntegrations] Failed to generate integration embeddings:",
 				error,

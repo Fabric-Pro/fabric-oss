@@ -133,10 +133,7 @@ import {
 } from "../../lib/chat-image-upload";
 import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
 import { formatClarificationTurn } from "../../lib/clarification-turns";
-import {
-	getSelectedOrchestratorToolIds,
-	mergeOrchestratorConversationMetadata,
-} from "../../lib/orchestrator-conversation-tools";
+import { getSelectedOrchestratorToolIds } from "../../lib/orchestrator-conversation-tools";
 // CUGA-specific components
 import { type CugaExecutionState, CugaExecutionView } from "../cuga";
 import { CarriedOverContextBanner } from "./CarriedOverContextBanner";
@@ -316,6 +313,7 @@ export function FabricTemporalOrchestratorChat({
 	onResumeConversation,
 	documentChatId: externalDocumentChatId,
 	onDocumentChatCreated,
+	advisorOrigin = false,
 }: FabricTemporalOrchestratorChatProps) {
 	const { user } = useSession();
 	const tooltipT = useTranslations("tooltips.agents");
@@ -476,6 +474,15 @@ export function FabricTemporalOrchestratorChat({
 		conversationId: string;
 		messageId: string;
 	} | null>(null);
+	// A first message the server refused after the conversation was created
+	// holding it (Fizzy #2958). Its removal runs in the background and can
+	// fail, so the next turn's save in that conversation drops any copy still
+	// stored under this id. Like `eagerFirstMessageRef`, it is matched by
+	// conversation, so a switch to another conversation needs no reset.
+	const refusedSeedRef = useRef<{
+		conversationId: string;
+		messageId: string;
+	} | null>(null);
 	// How many stored executions the last hydration saw. A record that grows
 	// while this instance is idle was written by another surface — the drawer
 	// finishing a turn after Expand — and is hydrated again.
@@ -513,14 +520,19 @@ export function FabricTemporalOrchestratorChat({
 		);
 	}, []);
 
-	// Whether the send in flight carried images or documents from the
-	// composer. Set just before `sendMessage` and cleared when it returns —
-	// by the send that set it only: preparations can overlap (uploads run
-	// before the hook reports loading), and one send's cleanup must not
-	// clear another's flag.
-	const sendCarriedAttachmentsRef = useRef<{
+	// The send in flight: whether it carried images or documents from the
+	// composer, and the conversation it created with its question already
+	// saved in it, if it created one. Set just before `sendMessage` and
+	// cleared when it returns — by the send that set it only: preparations
+	// can overlap (uploads run before the hook reports loading), and one
+	// send's cleanup must not clear another's.
+	const sendInFlightRef = useRef<{
 		send: object;
 		carried: boolean;
+		createdConversation: {
+			conversationId: string;
+			messageId: string;
+		} | null;
 	} | null>(null);
 
 	// The server refused the message because another one is already being
@@ -529,12 +541,62 @@ export function FabricTemporalOrchestratorChat({
 	// send it when that answer finishes — unless they have started a new
 	// draft since. Its attachments are not put back: the returned sentence
 	// is added to the notice so the user knows to attach them again.
-	const handleTurnRefused = useCallback((content: string) => {
-		setInput((current) => (current.trim() ? current : content));
-		return sendCarriedAttachmentsRef.current?.carried
-			? "Its attachments were not sent either: attach them again before you send it."
-			: undefined;
-	}, []);
+	//
+	// When this send created the conversation, the conversation was saved
+	// already holding the question (#2040), and the refusal leaves that
+	// question unanswered in it: a reload would show it and later turns would
+	// carry it in their history. Take it back out (Fizzy #2958), retrying
+	// once. The server removes only that message, so whatever the other turn
+	// saved meanwhile stays. A send into an existing conversation saved
+	// nothing yet, and removes nothing — even when `eagerFirstMessageRef`
+	// still holds an earlier send's question because that turn's save failed.
+	//
+	// The seed's id is never given to another message. The removal is not
+	// awaited, so it can land after the user has sent and saved a new
+	// question; it deletes only a user message with the seed's id, and the
+	// next question always gets a fresh id, so a late removal can only ever
+	// match the seed. That is why `eagerFirstMessageRef` stops pointing at
+	// the seed here. The seed is recorded in `refusedSeedRef` instead, and the
+	// next turn's save drops any copy of it a failed removal left behind, so
+	// the question is saved exactly once whether the removal succeeded or
+	// failed.
+	const handleTurnRefused = useCallback(
+		(content: string) => {
+			setInput((current) => (current.trim() ? current : content));
+			const refusedSend = sendInFlightRef.current;
+			const created = refusedSend?.createdConversation;
+			if (created) {
+				const eager = eagerFirstMessageRef.current;
+				if (
+					eager?.conversationId === created.conversationId &&
+					eager.messageId === created.messageId
+				) {
+					eagerFirstMessageRef.current = null;
+				}
+				refusedSeedRef.current = created;
+				// No explicit null: the server refuses a request that names no
+				// organization, and an absent one resolves to the session's.
+				const removeSeed = () =>
+					orpcClient.agents.conversations.removeMessage({
+						conversationId: created.conversationId,
+						messageId: created.messageId,
+						organizationId: organizationId ?? undefined,
+					});
+				removeSeed()
+					.catch(() => removeSeed())
+					.catch((error: unknown) => {
+						console.warn(
+							"[OrchestratorChat] Failed to remove the refused first message:",
+							error,
+						);
+					});
+			}
+			return refusedSend?.carried
+				? "Its attachments were not sent either: attach them again before you send it."
+				: undefined;
+		},
+		[organizationId],
+	);
 
 	// Model selection for the orchestrator's own reasoning (#2040).
 	//
@@ -667,6 +729,7 @@ export function FabricTemporalOrchestratorChat({
 		systemPrompt,
 		instanceId,
 		modelOverride: activeModelOverride,
+		advisorOrigin,
 		// Surface tag for the cancel telemetry event (spec § 10.1 /
 		// task 3.3). Only consumer of `useOrchestratorStream` is the
 		// standalone Loom Orchestrator chat, so the default applies.
@@ -1247,12 +1310,9 @@ export function FabricTemporalOrchestratorChat({
 			return;
 		}
 
-		// Skip if activeConversation hasn't loaded yet.
-		// When a new conversation is just created, activeConversation is null
-		// and calling update with existing=null would produce metadata without
-		// executions, racing with saveExecution and corrupting the stored data.
-		// saveExecution now handles persisting selectedMcpConfigIds atomically,
-		// so we only need this effect for subsequent changes on loaded conversations.
+		// Skip if activeConversation hasn't loaded yet: a new conversation is
+		// created with its selection, and the turn's save carries it too, so
+		// this effect is only for later changes on a loaded conversation.
 		const existingMetadata =
 			(activeConversation?.metadata as Record<string, unknown> | null) ??
 			null;
@@ -1271,10 +1331,9 @@ export function FabricTemporalOrchestratorChat({
 		) {
 			return;
 		}
-		// Nothing to write when the stored settings already match. Loading a
-		// conversation mid-turn hands this effect a snapshot without the
-		// turn's execution; rewriting from it could land after the turn's own
-		// save and erase that execution (#2040).
+		// Nothing to write when the stored settings already match. The write
+		// below no longer carries `executions` (#2040, Fizzy #2949), so this
+		// only saves a request.
 		if (
 			sameToolSelection(
 				getSelectedOrchestratorToolIds(existingMetadata),
@@ -1286,18 +1345,20 @@ export function FabricTemporalOrchestratorChat({
 			return;
 		}
 
+		// Only these keys are sent; the server merges them onto the stored
+		// metadata under a row lock, so an execution another tab saved after
+		// this snapshot was loaded is kept (Fizzy #2949).
 		void orpcClient.agents.conversations
-			.update({
-				id: conversationId,
-				metadata: mergeOrchestratorConversationMetadata({
-					existing: existingMetadata,
+			.updateSettings({
+				conversationId,
+				// No explicit null: the server refuses a request that names
+				// no organization, and an absent one resolves to the session's.
+				organizationId: organizationId ?? undefined,
+				settings: {
 					executionMode: reasoningMode,
 					instanceId,
-					selectedMcpConfigIds:
-						selectedConversationMcpIds === null
-							? undefined
-							: selectedConversationMcpIds,
-				}),
+					selectedMcpConfigIds: selectedConversationMcpIds,
+				},
 			})
 			.catch((error) => {
 				console.error(
@@ -1307,6 +1368,7 @@ export function FabricTemporalOrchestratorChat({
 			});
 	}, [
 		conversationId,
+		organizationId,
 		instanceId,
 		reasoningMode,
 		selectedConversationMcpIds,
@@ -1337,14 +1399,15 @@ export function FabricTemporalOrchestratorChat({
 	 * runs under its id (#2040). A runtime-authority approval binds to the
 	 * conversation; created after the turn, the approval bound to that turn's
 	 * execution and the next turn asked again. It also gives the drawer's
-	 * Expand a conversation to open mid-reply. Returns `null` on failure —
-	 * the turn still runs, and its save creates the conversation as before.
+	 * Expand a conversation to open mid-reply. Returns the conversation and
+	 * the id of the question saved in it, or `null` on failure — the turn
+	 * still runs, and its save creates the conversation as before.
 	 */
 	const ensureConversation = useCallback(
 		async (
 			content: string,
 			documentChatId: string | undefined,
-		): Promise<string | null> => {
+		): Promise<{ conversationId: string; messageId: string } | null> => {
 			const messageId = generateMessageId();
 			try {
 				const result = await createOrchestratorConversation({
@@ -1379,7 +1442,7 @@ export function FabricTemporalOrchestratorChat({
 				createdConversationInSessionRef.current = true;
 				setConversationId(result.id);
 				onConversationCreated?.(result.id);
-				return result.id;
+				return { conversationId: result.id, messageId };
 			} catch (error) {
 				console.error(
 					"[OrchestratorChat] Failed to create conversation:",
@@ -1504,16 +1567,20 @@ export function FabricTemporalOrchestratorChat({
 				};
 
 				// The user message this conversation was created with, when it
-				// was created for this turn: the save below replaces it.
+				// was created for this turn: the save below removes it and
+				// saves the question with the rest of the turn.
 				const eagerFirstMessage =
 					eagerFirstMessageRef.current?.conversationId ===
 					conversationId
 						? eagerFirstMessageRef.current
 						: null;
 
-				// Build messages for this execution
+				// Build messages for this execution. The question always gets
+				// a fresh id and the seeded copy is removed by id in the same
+				// save: a late removal request for the seed's id can then never
+				// delete the saved question.
 				const userMsg = {
-					id: eagerFirstMessage?.messageId ?? generateMessageId(),
+					id: generateMessageId(),
 					role: "user" as const,
 					content: userContent,
 					timestamp: execution.startedAt,
@@ -1565,9 +1632,12 @@ export function FabricTemporalOrchestratorChat({
 				};
 
 				if (!conversationId) {
-					// Create new conversation with first execution
+					// Create new conversation with first execution. Its first
+					// message is this turn's question under the same id, so the
+					// save below finds it stored and does not add it twice.
 					const result = await createOrchestratorConversation({
 						initialMessage: userContent,
+						initialMessageId: userMsg.id,
 						documentChatId: currentDocumentChatId,
 						selectedMcpConfigIds:
 							selectedConversationMcpIds ?? undefined,
@@ -1610,34 +1680,36 @@ export function FabricTemporalOrchestratorChat({
 						documentChatId: currentDocumentChatId,
 					});
 				} else {
-					// Add execution to existing conversation
-					// First get existing messages to append to
-					const existingConvo =
-						await orpcClient.agents.conversations.get({
-							id: conversationId,
-						});
-					// Messages the workflow appended mid-turn (an operation
-					// result) are kept; only the eager copy of the question
-					// is dropped.
-					const existingMessages = (
-						(existingConvo.messages || []) as (typeof userMsg)[]
-					).filter((m) => m.id !== eagerFirstMessage?.messageId);
-					const allMessages = [
-						...existingMessages,
-						userMsg,
-						...clarificationMsgs,
-						assistantMsg,
-					];
+					// Only this turn is sent; the server adds it to the
+					// conversation as stored when the save lands, so messages
+					// the workflow appended mid-turn (an operation result) and
+					// turns another tab saved are kept (Fizzy #2949). Removed
+					// in the same write: the eager copy of the question, and a
+					// refused first message that a failed removal left in the
+					// record (Fizzy #2958).
+					const refusedSeed =
+						refusedSeedRef.current?.conversationId ===
+						conversationId
+							? refusedSeedRef.current
+							: null;
+					const removeMessageIds = [
+						eagerFirstMessage?.messageId,
+						refusedSeed?.messageId,
+					].filter((id): id is string => typeof id === "string");
 
 					await saveExecution({
 						conversationId,
 						execution,
-						messages: allMessages,
+						messages: [userMsg, ...clarificationMsgs, assistantMsg],
+						removeMessageIds,
 						selectedMcpConfigIds: selectedConversationMcpIds,
 						documentChatId: currentDocumentChatId,
 					});
 					if (eagerFirstMessage) {
 						eagerFirstMessageRef.current = null;
+					}
+					if (refusedSeed && refusedSeedRef.current === refusedSeed) {
+						refusedSeedRef.current = null;
 					}
 				}
 
@@ -2573,21 +2645,28 @@ export function FabricTemporalOrchestratorChat({
 		setIsPreparingSend(true);
 		const thisSend = {};
 		try {
+			const existingConversationId = isNewChat ? null : conversationId;
+			// Only a send that created the conversation saved its question
+			// before the turn was admitted; see `handleTurnRefused`.
+			const createdConversation =
+				existingConversationId === null
+					? await ensureConversation(content, documentChatId)
+					: null;
 			const turnConversationId =
-				(isNewChat ? null : conversationId) ??
-				(await ensureConversation(content, documentChatId));
+				existingConversationId ?? createdConversation?.conversationId;
 
 			// Only what this send took out of the composer: uploaded images
 			// and documents (an image also becomes a vision document). Project
 			// or workspace documents attached to the chat stay attached. Set
 			// after the last await before `sendMessage`, so an overlapping
 			// send still preparing cannot replace it before this one is sent.
-			sendCarriedAttachmentsRef.current = {
+			sendInFlightRef.current = {
 				send: thisSend,
 				carried:
 					(newlyAttachedImageUrls?.length ?? 0) > 0 ||
 					sessionDocumentIds.length > 0 ||
 					inlineAttachmentContexts.length > 0,
+				createdConversation,
 			};
 
 			// Pass forceNewChat flag and template instructions to ensure hook starts fresh for new chats
@@ -2613,8 +2692,8 @@ export function FabricTemporalOrchestratorChat({
 			);
 		} finally {
 			setIsPreparingSend(false);
-			if (sendCarriedAttachmentsRef.current?.send === thisSend) {
-				sendCarriedAttachmentsRef.current = null;
+			if (sendInFlightRef.current?.send === thisSend) {
+				sendInFlightRef.current = null;
 			}
 		}
 	};

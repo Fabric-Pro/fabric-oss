@@ -70,6 +70,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings
 	"CliConnectionPromptDismissal", // One person's dismissal of the CLI connection prompt
+	"ChatGptPlanOrgUse", // One person's choice to use their ChatGPT plan in an org
 ]);
 
 /**
@@ -119,6 +120,7 @@ const USER_OWNED_TABLES = new Set([
 	"Diagram", // Excalidraw diagrams - per-user within org, optionally scoped to project
 	"ProjectInstructionSnapshot", // Coding Instructions snapshots
 	"ProjectInstructionFile", // Coding Instructions files
+	"ProjectInstructionGitIntentEntry", // Native Coding Instructions changes
 	"ProjectInstructionRepositorySync", // Coding Instructions repository sync configuration
 	"ProjectInstructionRepositorySyncRun", // Coding Instructions repository sync runs
 	"ProjectInstructionProposalBranch", // Member proposal branches (Fizzy #2738)
@@ -283,6 +285,11 @@ const ORG_ONLY_TABLES = new Set([
 	// NOT project-scoped: a project guest never reaches these rows.
 	"CompanyContextSource",
 	"CompanyContextUrlPage",
+	// ChatGPT plan pooling (Fizzy #2770): the organization's shared plan
+	// accounts and its pooling policy. `connectedByUserId` and
+	// `termsAcknowledgedById` are audit fields, not owners.
+	"ChatGptPlanOrgAccount",
+	"ChatGptPlanOrgPolicy",
 ]);
 
 /**
@@ -337,6 +344,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	Diagram: "projectId",
 	ProjectInstructionSnapshot: "projectId",
 	ProjectInstructionFile: "projectId",
+	ProjectInstructionGitIntentEntry: "projectId",
 	ProjectInstructionRepositorySync: "projectId",
 	ProjectInstructionRepositorySyncRun: "projectId",
 	ProjectInstructionProposalBranch: "projectId",

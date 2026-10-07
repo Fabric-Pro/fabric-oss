@@ -73,6 +73,7 @@ import {
 	FakeScheduleNotFoundError,
 	FakeWorkflowNotFoundError,
 	inputSchemaOf,
+	listRow,
 	mocks,
 	ORG,
 	OTHER_ORG,
@@ -259,6 +260,110 @@ describe("reading sources", () => {
 			identity: CURRENT_MODEL.identity,
 			supported: true,
 		});
+	});
+
+	it("list reports how far a website's first crawl has got, and when each crawl last fetched a page", async () => {
+		const lastFetch = new Date("2026-10-02T22:00:00Z");
+		mocks.listCompanyContextSources.mockResolvedValue([
+			listRow({
+				id: "src_first_crawl",
+				type: "LINK",
+				extractionStatus: "PENDING",
+				extractedAt: null,
+				embeddedAt: null,
+				embeddingModel: null,
+				urlActiveWorkflowId: "url-crawl-src_first_crawl",
+				_count: { urlPages: 200 },
+			}),
+			// Still mapping the site: no pages yet, so nothing to count.
+			listRow({
+				id: "src_mapping",
+				type: "LINK",
+				extractionStatus: "PENDING",
+				extractedAt: null,
+				urlActiveWorkflowId: "url-crawl-src_mapping",
+			}),
+			// A refresh of a website that has finished a crawl before: its
+			// pages keep their earlier state until each is scraped again, so a
+			// count would read as nearly done for the whole refresh.
+			listRow({
+				id: "src_refresh",
+				type: "LINK",
+				urlActiveWorkflowId: "url-crawl-src_refresh",
+				urlLastSyncedAt: new Date("2026-09-01"),
+				extractedAt: new Date("2026-09-01"),
+				_count: { urlPages: 200 },
+			}),
+			// The same after a failed re-sync, which leaves no last sync time:
+			// it still finished a crawl once.
+			listRow({
+				id: "src_after_failed_resync",
+				type: "LINK",
+				urlActiveWorkflowId: "url-crawl-src_after_failed_resync",
+				urlLastSyncedAt: null,
+				extractedAt: new Date("2026-09-01"),
+				_count: { urlPages: 200 },
+			}),
+			listRow({
+				id: "src_idle_site",
+				type: "LINK",
+				_count: { urlPages: 12 },
+			}),
+			listRow({ id: "src_file", type: "FILE" }),
+		]);
+		const summary = (processedPages: number) => ({
+			totalPages: 200,
+			processedPages,
+			lastFetchedAt: lastFetch,
+		});
+		mocks.summarizeCompanyContextCrawlPages.mockResolvedValue(
+			new Map([
+				["src_first_crawl", summary(47)],
+				["src_refresh", summary(199)],
+				["src_after_failed_resync", summary(199)],
+			]),
+		);
+
+		const result = await call(
+			listCompanyContextSourcesProcedure,
+			{ organizationId: ORG },
+			"u_member",
+		);
+
+		const byId = Object.fromEntries(
+			result.sources.map((s: { id: string }) => [s.id, s]),
+		);
+		expect(mocks.summarizeCompanyContextCrawlPages).toHaveBeenCalledWith({
+			organizationId: ORG,
+			parentSourceIds: [
+				"src_first_crawl",
+				"src_mapping",
+				"src_refresh",
+				"src_after_failed_resync",
+			],
+		});
+		expect(byId.src_first_crawl).toMatchObject({
+			crawlProgress: { processedPages: 47, totalPages: 200 },
+			crawlLastFetchedAt: lastFetch,
+		});
+		expect(byId.src_mapping).toMatchObject({
+			crawlProgress: null,
+			crawlLastFetchedAt: null,
+		});
+		for (const id of ["src_refresh", "src_after_failed_resync"]) {
+			expect(byId[id]).toMatchObject({
+				crawlInProgress: true,
+				crawlProgress: null,
+				crawlLastFetchedAt: lastFetch,
+				urlPageCount: 200,
+			});
+		}
+		for (const id of ["src_idle_site", "src_file"]) {
+			expect(byId[id]).toMatchObject({
+				crawlProgress: null,
+				crawlLastFetchedAt: null,
+			});
+		}
 	});
 
 	it("with no embedding provider nothing is ready and nothing is offered for re-processing", async () => {
@@ -731,6 +836,30 @@ describe("adding sources", () => {
 			expect(schema.safeParse({ organizationId: ORG, url }).success).toBe(
 				true,
 			);
+		}
+	});
+
+	it("processLink refuses the Live refresh cadence, which nothing honors for a company website", () => {
+		const schema = inputSchemaOf(processCompanyContextLinkProcedure);
+		const website = (refreshMode: string) => ({
+			organizationId: ORG,
+			url: "https://example.com/",
+			refreshMode,
+		});
+
+		expect(schema.safeParse(website("LIVE")).success).toBe(false);
+		expect(
+			schema.safeParse({
+				organizationId: ORG,
+				urls: ["https://example.com/a"],
+				refreshMode: "LIVE",
+			}).success,
+		).toBe(false);
+		for (const refreshMode of ["ONCE", "DAILY", "WEEKLY", "MONTHLY"]) {
+			expect(
+				schema.safeParse(website(refreshMode)).success,
+				refreshMode,
+			).toBe(true);
 		}
 	});
 

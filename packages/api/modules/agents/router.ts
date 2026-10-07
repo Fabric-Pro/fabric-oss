@@ -30,10 +30,13 @@ import {
 	listForDocument,
 	recordDiffOutcome,
 	recordOperationResult,
+	removeMessage,
 	renameForDocument,
+	saveTurn,
 	setVisibilityForDocument,
 	togglePin,
 	updateConversation,
+	updateSettings,
 	updateTrajectory,
 } from "./procedures/conversations";
 import {
@@ -126,6 +129,10 @@ export const agentsRouter = {
 		continueInNewChat: continueInNewChat,
 		update: updateConversation,
 		addMessage: addMessage,
+		removeMessage: removeMessage,
+		// The Advisor's row-locked turn save and settings change (Fizzy #2949).
+		saveTurn: saveTurn,
+		updateSettings: updateSettings,
 		updateTrajectory: updateTrajectory,
 		delete: deleteConversation,
 		archive: archiveConversation,

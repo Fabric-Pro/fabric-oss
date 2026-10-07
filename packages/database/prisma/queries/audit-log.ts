@@ -87,6 +87,17 @@ export const AUDIT_ACTIONS = [
 	"org.ai_provider.embedding_changed",
 	"org.ai_provider.enabled_providers_changed",
 	"org.ai_provider.deleted",
+	// ChatGPT plan accounts an admin connected for the organization's shared
+	// work, its pooling policy, the owner's acknowledgement of the terms, and
+	// each background call that fell back to the organization's provider
+	// because every shared plan was spent (Fizzy #2770). Never a token in the
+	// metadata.
+	"org.chatgpt_plan.account_connected",
+	"org.chatgpt_plan.account_updated",
+	"org.chatgpt_plan.account_disconnected",
+	"org.chatgpt_plan.policy_changed",
+	"org.chatgpt_plan.terms_acknowledged",
+	"org.chatgpt_plan.api_fallback_used",
 	// The non-member contact register (#2340): people with no Fabric account
 	// whom the organization tracks deliverables against. Security-relevant
 	// because the register holds names and contact details of client staff
@@ -153,6 +164,12 @@ export const AUDIT_ACTIONS = [
 	"account.ai_provider.embedding_changed",
 	"account.ai_provider.enabled_providers_changed",
 	"account.ai_provider.deleted",
+	// A person connected or disconnected their own ChatGPT plan, or changed
+	// whether it serves their work (and their background jobs and agents) in
+	// one organization (Fizzy #2939). Never a token in the metadata.
+	"account.chatgpt_plan.connected",
+	"account.chatgpt_plan.disconnected",
+	"account.chatgpt_plan.organization_use_changed",
 	// project (32)
 	"project.ci_run.triggered",
 	// Fabric dispatched a browser-driving test run against one of the project's
@@ -325,6 +342,7 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.pull_request_close_requested",
 	"project.instructions.pull_request_retry_requested",
 	"project.instructions.pull_request_merge_sync_requested",
+	"project.instructions.pull_request_merge_observed",
 	// Publish first, scan afterwards (Fizzy #2737): a version published before
 	// its content secret scan ran, at the member's acknowledged request
 	// (written in the same transaction as the pointer move), and the scan's
@@ -947,7 +965,10 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 			return "ADMIN_INTEGRATION_REMOVED";
 		case "org.ai_provider.deleted":
 		case "account.ai_provider.deleted":
+		case "org.chatgpt_plan.account_disconnected":
 			return "DATA_DELETE";
+		case "org.chatgpt_plan.account_updated":
+		case "org.chatgpt_plan.policy_changed":
 		case "org.ai_provider.updated":
 		case "org.ai_provider.default_changed":
 		case "org.ai_provider.embedding_changed":

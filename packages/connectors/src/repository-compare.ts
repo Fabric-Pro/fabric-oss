@@ -1,13 +1,14 @@
 import {
 	AZURE_DEVOPS_API_VERSION,
 	getRepositoryJson,
-	headRepositorySize,
 	isRecord,
 	type RepositoryApiInput,
 	type RepositoryFailure,
 	repositoryApiTarget,
+	repositoryRequestSignal,
 	stringField,
 } from "./repository-api";
+import { readCappedRepositoryBody, repositoryBlobId } from "./repository-body";
 import {
 	type ReadRepositoryFileResult,
 	readRepositoryFile,
@@ -414,18 +415,206 @@ export type ReadRepositoryFileAtCommitInput = RepositoryApiInput & {
 	maxBytes: number;
 };
 
+const GITLAB_DIRECTORY_PAGE_SIZE = 100;
+const MAX_GITLAB_DIRECTORY_PAGES = 200;
+const GITLAB_DIRECTORY_RESPONSE_MAX_BYTES = 1024 * 1024;
+const GITLAB_FILE_REQUEST_TIMEOUT_MS = 10_000;
+
+function gitLabFileFailure(status: number): {
+	ok: false;
+	outcome: "unauthorized" | "unreachable";
+} {
+	return {
+		ok: false,
+		outcome:
+			status === 401 || status === 403 || status === 203
+				? "unauthorized"
+				: "unreachable",
+	};
+}
+
+async function readGitLabBody(
+	response: Response,
+	maxBytes: number,
+): Promise<Uint8Array | null> {
+	const body = await readCappedRepositoryBody(response, maxBytes, {
+		refuseDeclaredLength: true,
+	});
+	return body.complete ? body.bytes : null;
+}
+
+function matchesGitBlob(bytes: Uint8Array, blobId: string): boolean {
+	return repositoryBlobId(bytes, blobId) === blobId.toLowerCase();
+}
+
+type GitLabTreeEntry = {
+	id?: unknown;
+	mode?: unknown;
+	path?: unknown;
+	type?: unknown;
+};
+
+async function gitLabRegularFileAtCommit(
+	target: NonNullable<ReturnType<typeof repositoryApiTarget>>,
+	input: ReadRepositoryFileAtCommitInput,
+	signal: AbortSignal,
+): Promise<
+	| { ok: true; state: "found"; blobId: string; rawPath: string }
+	| { ok: true; state: "absent" }
+	| { ok: false; outcome: "unauthorized" | "unreachable" }
+> {
+	const separator = input.path.lastIndexOf("/");
+	const directory = separator === -1 ? "" : input.path.slice(0, separator);
+	const params = new URLSearchParams({
+		ref: input.sha,
+		per_page: String(GITLAB_DIRECTORY_PAGE_SIZE),
+		page: "1",
+		...(directory === "" ? {} : { path: directory }),
+	});
+	let page = 1;
+	for (
+		let pagesRead = 0;
+		pagesRead < MAX_GITLAB_DIRECTORY_PAGES;
+		pagesRead++
+	) {
+		if (signal.aborted) {
+			return { ok: false, outcome: "unreachable" };
+		}
+		params.set("page", String(page));
+		let response: Response;
+		try {
+			response = await fetch(
+				`${target.base}/repository/tree?${params.toString()}`,
+				{ headers: target.headers, signal },
+			);
+		} catch {
+			return { ok: false, outcome: "unreachable" };
+		}
+		if (signal.aborted) {
+			return { ok: false, outcome: "unreachable" };
+		}
+		if (!response.ok) {
+			return response.status === 404
+				? { ok: true, state: "absent" }
+				: gitLabFileFailure(response.status);
+		}
+		let bytes: Uint8Array | null;
+		try {
+			bytes = await readGitLabBody(
+				response,
+				GITLAB_DIRECTORY_RESPONSE_MAX_BYTES,
+			);
+		} catch {
+			return { ok: false, outcome: "unreachable" };
+		}
+		if (bytes === null || signal.aborted) {
+			return { ok: false, outcome: "unreachable" };
+		}
+		let data: unknown;
+		try {
+			data = JSON.parse(Buffer.from(bytes).toString("utf8"));
+		} catch {
+			return { ok: false, outcome: "unreachable" };
+		}
+		if (!Array.isArray(data)) {
+			return { ok: false, outcome: "unreachable" };
+		}
+		for (const item of data as GitLabTreeEntry[]) {
+			if (item.path !== input.path) {
+				continue;
+			}
+			return item.type === "blob" &&
+				(item.mode === "100644" || item.mode === "100755") &&
+				typeof item.id === "string" &&
+				/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(item.id)
+				? {
+						ok: true,
+						state: "found",
+						blobId: item.id,
+						rawPath: `/repository/files/${encodeURIComponent(input.path)}/raw?${new URLSearchParams({ ref: input.sha }).toString()}`,
+					}
+				: { ok: true, state: "absent" };
+		}
+		const next = response.headers.get("x-next-page");
+		if (next === null || next === "") {
+			return { ok: true, state: "absent" };
+		}
+		if (!/^\d+$/.test(next) || Number(next) <= page) {
+			return { ok: false, outcome: "unreachable" };
+		}
+		page = Number(next);
+	}
+	return { ok: false, outcome: "unreachable" };
+}
+
+async function readGitLabFileAtCommit(
+	input: ReadRepositoryFileAtCommitInput,
+): Promise<ReadRepositoryFileResult> {
+	const target = repositoryApiTarget(input);
+	if (target === null) {
+		return { ok: false, outcome: "unreachable" };
+	}
+	const signal = repositoryRequestSignal(
+		GITLAB_FILE_REQUEST_TIMEOUT_MS,
+		input.signal,
+	);
+	const entry = await gitLabRegularFileAtCommit(target, input, signal);
+	if (!entry.ok) {
+		return { ok: false, outcome: entry.outcome };
+	}
+	if (entry.state === "absent") {
+		return entry;
+	}
+	if (signal.aborted) {
+		return { ok: false, outcome: "unreachable" };
+	}
+	let response: Response;
+	try {
+		response = await fetch(`${target.base}${entry.rawPath}`, {
+			headers: target.headers,
+			signal,
+		});
+	} catch {
+		return { ok: false, outcome: "unreachable" };
+	}
+	if (signal.aborted) {
+		return { ok: false, outcome: "unreachable" };
+	}
+	if (!response.ok) {
+		return response.status === 404
+			? { ok: true, state: "absent" }
+			: gitLabFileFailure(response.status);
+	}
+	let bytes: Uint8Array | null;
+	try {
+		bytes = await readGitLabBody(response, input.maxBytes);
+	} catch {
+		return { ok: false, outcome: "unreachable" };
+	}
+	if (signal.aborted) {
+		return { ok: false, outcome: "unreachable" };
+	}
+	if (bytes === null) {
+		return { ok: true, state: "tooLarge" };
+	}
+	return matchesGitBlob(bytes, entry.blobId)
+		? { ok: true, state: "found", bytes }
+		: { ok: false, outcome: "unreachable" };
+}
+
 /**
  * One file as `sha` holds it, at most `maxBytes` of it, undecoded. GitHub and
  * Azure DevOps go through `readRepositoryFile` (same checks: a folder, a
- * submodule or a link is `absent`); GitLab through its files API: a HEAD
- * reads the size from `X-Gitlab-Size` first, so a file over the cap is
- * `tooLarge` without its content being fetched at all, and the GET's own
- * reported size is the check for an answer that carried no header. Never
- * throws.
+ * submodule or a link is `absent`). GitLab first verifies the pinned tree
+ * entry is a regular blob, then reads the provider's raw file bytes. This
+ * avoids GitLab's JSON files API text normalization. Never throws.
  */
 export async function readRepositoryFileAtCommit(
 	input: ReadRepositoryFileAtCommitInput,
 ): Promise<ReadRepositoryFileResult> {
+	if (input.signal?.aborted) {
+		return { ok: false, outcome: "unreachable" };
+	}
 	if (input.provider !== "GITLAB") {
 		return readRepositoryFile({
 			...input,
@@ -433,44 +622,5 @@ export async function readRepositoryFileAtCommit(
 			refType: "commit",
 		});
 	}
-	const target = repositoryApiTarget(input);
-	if (target === null) {
-		return { ok: false, outcome: "unreachable" };
-	}
-	const encodedPath = encodeURIComponent(input.path);
-	const params = new URLSearchParams({ ref: input.sha });
-	const filePath = `/repository/files/${encodedPath}?${params.toString()}`;
-	// The size first, from a HEAD that carries no body: the GET below returns
-	// the whole file base64-encoded and is read into memory up to the client's
-	// response cap, so a file far over `maxBytes` must be refused before it.
-	const head = await headRepositorySize(target, filePath, "X-Gitlab-Size");
-	if (!head.ok) {
-		return head.outcome === "not-found"
-			? { ok: true, state: "absent" }
-			: { ok: false, outcome: head.outcome };
-	}
-	if (head.size !== null && head.size > input.maxBytes) {
-		return { ok: true, state: "tooLarge" };
-	}
-	const answer = await getRepositoryJson(target, filePath);
-	if (!answer.ok) {
-		return answer.outcome === "not-found"
-			? { ok: true, state: "absent" }
-			: { ok: false, outcome: answer.outcome };
-	}
-	if (
-		!isRecord(answer.data) ||
-		typeof answer.data.size !== "number" ||
-		answer.data.encoding !== "base64" ||
-		typeof answer.data.content !== "string"
-	) {
-		return { ok: false, outcome: "unreachable" };
-	}
-	if (answer.data.size > input.maxBytes) {
-		return { ok: true, state: "tooLarge" };
-	}
-	const bytes = new Uint8Array(Buffer.from(answer.data.content, "base64"));
-	return bytes.byteLength > input.maxBytes
-		? { ok: true, state: "tooLarge" }
-		: { ok: true, state: "found", bytes };
+	return readGitLabFileAtCommit(input);
 }

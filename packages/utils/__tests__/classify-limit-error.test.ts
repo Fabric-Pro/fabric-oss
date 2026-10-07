@@ -68,3 +68,65 @@ describe("classifyLimitError — provider credit exhaustion", () => {
 		expect(signal?.kind).toBe("provider_overloaded");
 	});
 });
+
+describe("classifyLimitError — spent ChatGPT plan window (Fizzy #2939)", () => {
+	it("classifies the plan's refusal before its 402 reads as a provider quota", () => {
+		const signal = classifyLimitError({
+			name: "AI_APICallError",
+			statusCode: 402,
+			message: "usage limit reached",
+			responseBody: JSON.stringify({
+				error: { code: "subscription_sharing_usage_limit_exceeded" },
+			}),
+		});
+		expect(signal?.kind).toBe("subscription_exhausted");
+	});
+
+	it("carries the time until the window resets from the typed error", () => {
+		const resetAt = new Date(Date.now() + 60 * 60_000);
+		const signal = classifyLimitError(
+			Object.assign(new Error("Your ChatGPT plan has no usage left"), {
+				name: "SubscriptionPlanExhaustedError",
+				code: "subscription_sharing_usage_limit_exceeded",
+				resetAt,
+			}),
+		);
+		expect(signal?.kind).toBe("subscription_exhausted");
+		expect(signal?.retryAfterMs).toBeGreaterThan(59 * 60_000);
+		expect(signal?.retryAfterMs).toBeLessThanOrEqual(60 * 60_000);
+	});
+
+	it("still reads an ordinary 402 as a provider quota", () => {
+		expect(
+			classifyLimitError({ statusCode: 402, message: "Payment required" })
+				?.kind,
+		).toBe("provider_quota");
+	});
+});
+
+describe("classifyLimitError — ChatGPT plan needs reconnecting (Fizzy #2939)", () => {
+	it("classifies the plan's sign-in refusal, also when wrapped", () => {
+		const refusal = Object.assign(
+			new Error(
+				"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
+			),
+			{ name: "ChatGptPlanAuthError", code: "needs_reconnect" },
+		);
+		expect(classifyLimitError(refusal)?.kind).toBe(
+			"subscription_reconnect",
+		);
+		expect(
+			classifyLimitError(new Error("wrapped", { cause: refusal }))?.kind,
+		).toBe("subscription_reconnect");
+	});
+
+	it("classifies Fabric's own 409 answer", () => {
+		expect(
+			classifyLimitError({
+				status: 409,
+				code: "CHATGPT_PLAN_UNAVAILABLE",
+				message: "reconnect",
+			})?.kind,
+		).toBe("subscription_reconnect");
+	});
+});

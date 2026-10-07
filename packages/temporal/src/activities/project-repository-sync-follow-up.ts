@@ -10,6 +10,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
 	getContextRepositorySync,
 	getInstructionRepositorySync,
+	getProjectInstructionSettings,
+	instructionRepositoryImportAllowed,
 } from "@repo/database";
 import {
 	contextRepositorySyncWorkflowId,
@@ -106,6 +108,15 @@ export async function startQueuedRepositorySync(
 				);
 	if (!sync) {
 		return { outcome: "not_configured" };
+	}
+	if (input.subject === "instructions") {
+		const settings = await getProjectInstructionSettings(
+			input.projectId,
+			input.organizationId,
+		);
+		if (!instructionRepositoryImportAllowed(settings, sync.id)) {
+			return { outcome: "direct_repository" };
+		}
 	}
 	if (sync.repositoryIntegration.status !== "ACTIVE") {
 		return { outcome: "integration_unavailable" };

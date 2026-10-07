@@ -39,11 +39,15 @@ import {
 	resolveOAuthProjectGrantTarget,
 	resolveUserOrganization,
 } from "@repo/database";
-import { buildProjectReference } from "@repo/utils/oauth-project-resource";
+import {
+	buildProjectReference,
+	looksLikeProjectResource,
+} from "@repo/utils/oauth-project-resource";
 import { APIError } from "better-auth/api";
 import { parse as parseCookies } from "cookie";
 import { PROJECT_ACCESS_DENIED_DESCRIPTION } from "./oauth-project-binding";
 import {
+	OAUTH_DEFAULT_SCOPES,
 	OAUTH_ORGANIZATION_CHOSEN_COOKIE,
 	OAUTH_SCOPES,
 	oauthValidAudiences,
@@ -55,6 +59,58 @@ const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_LOGIN_PAGE = "/auth/login";
 const OAUTH_CONSENT_PAGE = "/auth/oauth/consent";
 const OAUTH_ORGANIZATION_PAGE = "/auth/oauth/organization";
+const DPOP_REJECTION = {
+	error: "invalid_request",
+	error_description: "DPoP is not supported by the protected endpoints.",
+};
+
+interface OAuthDpopContext {
+	path?: string;
+	headers?: Headers;
+	query?: unknown;
+	body?: unknown;
+}
+
+function hasDpopBinding(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		Object.hasOwn(value, "dpop_jkt")
+	);
+}
+
+function hasUnsupportedDpop(ctx: OAuthDpopContext): boolean {
+	if (
+		(ctx.path === "/oauth2/token" || ctx.path === "/oauth2/authorize") &&
+		ctx.headers?.has("dpop")
+	) {
+		return true;
+	}
+	if (
+		ctx.path === "/oauth2/authorize" &&
+		(hasDpopBinding(ctx.query) || hasDpopBinding(ctx.body))
+	) {
+		return true;
+	}
+	// A query signed before this policy must not resume into a bound grant.
+	const signedQuery =
+		typeof ctx.body === "object" &&
+		ctx.body !== null &&
+		"oauth_query" in ctx.body
+			? ctx.body.oauth_query
+			: undefined;
+	return (
+		typeof signedQuery === "string" &&
+		new URLSearchParams(signedQuery).has("dpop_jkt")
+	);
+}
+
+/** Apply before provider hooks, including direct server endpoint calls. */
+export function enforceOAuthDpopPolicy(ctx: OAuthDpopContext): void {
+	if (hasUnsupportedDpop(ctx)) {
+		throw new APIError("BAD_REQUEST", DPOP_REJECTION);
+	}
+}
 
 /**
  * Plugin endpoints Fabric does not offer, answered 404 by Better Auth's router
@@ -70,6 +126,13 @@ const OAUTH_ORGANIZATION_PAGE = "/auth/oauth/organization";
  * client's name from.
  */
 export const OAUTH_DISABLED_PATHS = [
+	"/admin/oauth2/create-client",
+	"/admin/oauth2/update-client",
+	"/admin/oauth2/resources",
+	"/oauth2/public-client-prelogin",
+	"/oauth2/end-session",
+	"/oauth2/end-session/confirm",
+	"/oauth2/userinfo",
 	"/oauth2/create-client",
 	"/oauth2/get-client",
 	"/oauth2/get-clients",
@@ -250,7 +313,7 @@ async function needsPostLoginPage(
 }
 
 export function createOAuthProviderPlugin(appUrl: string) {
-	return oauthProvider({
+	const plugin = oauthProvider({
 		loginPage: OAUTH_LOGIN_PAGE,
 		consentPage: OAUTH_CONSENT_PAGE,
 		postLogin: {
@@ -268,9 +331,20 @@ export function createOAuthProviderPlugin(appUrl: string) {
 				),
 		},
 		scopes: [...OAUTH_SCOPES],
-		clientRegistrationDefaultScopes: [...OAUTH_SCOPES],
+		clientRegistrationDefaultScopes: [...OAUTH_DEFAULT_SCOPES],
 		clientRegistrationAllowedScopes: [...OAUTH_SCOPES],
-		validAudiences: oauthValidAudiences(appUrl),
+		resources: oauthValidAudiences(appUrl).map((identifier) => ({
+			identifier,
+			allowedScopes: [...OAUTH_SCOPES],
+		})),
+		resourceSeedMode: "insertOnly",
+		clientRegistrationAllowedResources: oauthValidAudiences(appUrl),
+		// Preserve the global audience access used by existing registered agents.
+		// Fabric's consent reference still enforces the organization or project.
+		enforcePerClientResources: false,
+		resourcePrivileges: async () => false,
+		// The provider otherwise advertises optional DPoP algorithms by default.
+		dpop: { signingAlgorithms: [] },
 		allowDynamicClientRegistration: true,
 		allowUnauthenticatedClientRegistration: true,
 		grantTypes: ["authorization_code", "refresh_token"],
@@ -282,6 +356,108 @@ export function createOAuthProviderPlugin(appUrl: string) {
 		},
 		accessTokenExpiresIn: ACCESS_TOKEN_TTL_SECONDS,
 		refreshTokenExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
-		silenceWarnings: { oauthAuthServerConfig: true },
 	});
+	return {
+		...plugin,
+		onRequest: async (
+			request: Request,
+			ctx: Parameters<NonNullable<typeof plugin.onRequest>>[1],
+		) => {
+			const basePath = new URL(ctx.baseURL).pathname.replace(/\/+$/, "");
+			const requestUrl = new URL(request.url);
+			const pathname = requestUrl.pathname;
+			const path = pathname.startsWith(`${basePath}/`)
+				? pathname.slice(basePath.length)
+				: pathname;
+			// disabledPaths only matches exact paths. Block every parameterized
+			// resource route before parsing, including future descendants.
+			if (
+				path === "/admin/oauth2/resources" ||
+				path.startsWith("/admin/oauth2/resources/")
+			) {
+				return { response: new Response("Not Found", { status: 404 }) };
+			}
+			if (
+				hasUnsupportedDpop({
+					path,
+					headers: request.headers,
+					query: Object.fromEntries(requestUrl.searchParams),
+				})
+			) {
+				return {
+					response: Response.json(DPOP_REJECTION, { status: 400 }),
+				};
+			}
+			if (
+				path === "/oauth2/authorize" &&
+				request.method === "POST" &&
+				request.headers
+					.get("content-type")
+					?.split(";")[0]
+					.trim()
+					.toLowerCase() === "application/x-www-form-urlencoded"
+			) {
+				// The form parser keeps only the last repeated field. Check the
+				// original resource list before it can hide a second project.
+				const form = new URLSearchParams(await request.clone().text());
+				// Reject presence, including empty/repeated values, before parsing
+				// can erase a request for unsupported sender-constrained tokens.
+				if (form.has("dpop_jkt")) {
+					return {
+						response: Response.json(DPOP_REJECTION, {
+							status: 400,
+						}),
+					};
+				}
+				const resources = form.getAll("resource");
+				if (
+					resources.some((resource) =>
+						looksLikeProjectResource(appUrl, resource),
+					)
+				) {
+					const duplicatedKey = ["client_id", "code_challenge"].some(
+						(key) => form.getAll(key).length > 1,
+					);
+					if (resources.length !== 1 || duplicatedKey) {
+						return {
+							response: Response.json(
+								{
+									error: duplicatedKey
+										? "invalid_request"
+										: "invalid_target",
+									error_description:
+										"Send one resource, client_id and code_challenge.",
+								},
+								{ status: 400 },
+							),
+						};
+					}
+				}
+			}
+			if (
+				path === "/oauth2/authorize" &&
+				request.method === "POST" &&
+				request.headers
+					.get("content-type")
+					?.split(";")[0]
+					.trim()
+					.toLowerCase() === "application/json"
+			) {
+				let body: unknown;
+				try {
+					body = await request.clone().json();
+				} catch {
+					// Leave malformed JSON to the endpoint's own validation.
+				}
+				if (hasDpopBinding(body)) {
+					return {
+						response: Response.json(DPOP_REJECTION, {
+							status: 400,
+						}),
+					};
+				}
+			}
+			return plugin.onRequest?.(request, ctx);
+		},
+	};
 }

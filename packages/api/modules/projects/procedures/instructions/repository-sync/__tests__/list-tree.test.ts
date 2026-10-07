@@ -344,7 +344,7 @@ describe("repositorySync.listTree (instructions)", () => {
 	it("refuses an integration that is not ACTIVE before any credential is read", async () => {
 		m.getProjectRepoIntegration.mockResolvedValue({
 			...integration,
-			status: "TOKEN_EXPIRED",
+			status: "DISCONNECTED",
 		});
 
 		await expect(call(input)).rejects.toMatchObject({
@@ -377,7 +377,7 @@ describe("repositorySync.listTree (instructions)", () => {
 		m.getProjectRepoIntegration.mockResolvedValue({
 			...integration,
 			provider: "GITLAB",
-			status: "TOKEN_EXPIRED",
+			status: "DISCONNECTED",
 		});
 
 		await expect(call(input)).rejects.toMatchObject({

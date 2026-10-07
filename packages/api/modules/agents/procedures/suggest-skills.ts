@@ -12,6 +12,7 @@ import { getAIModelWithMetadata } from "@repo/ai";
 import { listSkills } from "@repo/database";
 import { generateObject, zodSchema } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -212,6 +213,7 @@ relevant, return { "suggestions": [] }.`;
 
 			return { suggestions: resolveSuggestions(object, cached.skills) };
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			console.error("[SuggestSkills] LLM error:", error);
 			// Graceful fallback: return empty array on any error
 			return { suggestions: [] as SkillSuggestion[] };

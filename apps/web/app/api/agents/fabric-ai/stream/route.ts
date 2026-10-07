@@ -1,5 +1,10 @@
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata, getCurrentDateContext } from "@repo/ai";
+import {
+	chatGptPlanExhaustedChatResponse,
+	chatGptPlanReconnectRefusal,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -496,6 +501,12 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 
@@ -755,7 +766,7 @@ export async function POST(request: NextRequest) {
 			// the tag. Tagging here would attribute a call that never runs.
 			aiModelResult = await getAIModelWithMetadata(
 				{ taskType: "CHAT" },
-				{ userId, organizationId },
+				{ userId, organizationId, planEligible: true },
 			);
 		} catch (error) {
 			// AI usage-limit chokepoint hit a HARD limit.
@@ -766,6 +777,19 @@ export async function POST(request: NextRequest) {
 			// the shared destructive toast (the consumer hook also
 			// matches `data.code` inside SSE error events for the
 			// post-stream path — see useDirectStream.ts).
+			// The member's plan is on here but needs reconnecting: refuse rather
+			// than bill the organization (Fizzy #2939).
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return new Response(JSON.stringify(reconnect.body), {
+					status: reconnect.status,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const exhausted = chatGptPlanExhaustedChatResponse(error);
+			if (exhausted) {
+				return exhausted;
+			}
 			if (error instanceof AiUsageLimitExceededError) {
 				return new Response(
 					JSON.stringify({
@@ -1145,6 +1169,13 @@ async function handleTemporalWorkflow(params: {
 					history,
 					userId,
 					organizationId,
+					// Every caller of this route is the Advisor: the Fabric AI
+					// page, the Fabric Agent drawer, or a custom agent chosen in
+					// one of them. The turn may tell the model which
+					// organization it works for and search that organization's
+					// company context; the activity checks membership and the
+					// feature gate itself (Fizzy #2719).
+					companyContextAdvisor: true,
 					reasoningMode: normalizeReasoningMode(reasoningMode),
 					chatId,
 					// Forward the optional AgentConversation
@@ -1166,6 +1197,9 @@ async function handleTemporalWorkflow(params: {
 					preferredRepositoryUrl,
 					enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 					enabledFabricToolIds,
+					// A person is typing this turn, so it may run on their own
+					// ChatGPT plan where they turned it on (Fizzy #2939).
+					planEligible: true,
 					systemPrompt,
 					projectContext,
 					modelOverride,

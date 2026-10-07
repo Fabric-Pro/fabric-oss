@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/client";
+import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	buildUpdateProjectOperation,
 	cleanupCodeSearchOnRepoUnlink,
@@ -1128,6 +1129,7 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				const aiToken = await issueAIToken({
 					userId: user.id,
 					organizationId,
+					impersonated: isAiImpersonatedRequest(),
 					source: "auto-code-analysis",
 					expirySeconds: 3600,
 				});

@@ -217,6 +217,26 @@ export async function refreshAccessToken(
 }
 
 /**
+ * The current project-bound access token for a non-HTTP client process.
+ *
+ * Native Git cannot use the SDK's fetch wrapper, so the caller installs this
+ * access token in a URL-scoped child-process header. The refresh still takes
+ * the same rotating-token lock and never asks the authorization server for a
+ * broader scope.
+ */
+export async function projectAccessToken(
+	origin: string,
+	projectId: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	return refreshAccessToken(
+		(current) => current.expiresAt - Date.now() <= REFRESH_WINDOW_MS,
+		{ origin, projectId },
+		signal,
+	);
+}
+
+/**
  * A `fetch` that signs requests with the profile's access token.
  *
  * Refreshes ahead of expiry (`REFRESH_WINDOW_MS`) and once more on a 401, for a

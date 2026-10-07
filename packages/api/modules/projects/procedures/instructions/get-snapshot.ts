@@ -49,7 +49,7 @@ export const getSnapshotProcedure = tenantProtectedProcedure
 			organizationId,
 			{ viewerUserId: context.user.id, canReviewProposals },
 		);
-		if (!snapshot) {
+		if (!snapshot || snapshot.contentKind !== "FULL_SNAPSHOT") {
 			throw new ORPCError("NOT_FOUND", { message: "Snapshot not found" });
 		}
 		return snapshot;

@@ -49,7 +49,7 @@
 		"./lib/*": "./lib/*.ts"
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},

@@ -38,6 +38,7 @@ describe("AI Token Verifier", () => {
 				userId: "user_123",
 				organizationId: "org_456",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const result = await verifyAIToken(token);
@@ -52,6 +53,31 @@ describe("AI Token Verifier", () => {
 				expect(result.claims.iat).toBeDefined();
 				expect(result.claims.exp).toBeDefined();
 			}
+		});
+
+		// Fizzy #2939: only a token minted for interactive work may let the
+		// exchange hand over the member's ChatGPT plan.
+		it("carries the plan-eligible claim only when it was minted with it", async () => {
+			const eligible = await verifyAIToken(
+				await issueAIToken({
+					userId: "user_123",
+					organizationId: "org_456",
+					source: "copilotkit",
+					impersonated: false,
+					planEligible: true,
+				}),
+			);
+			const background = await verifyAIToken(
+				await issueAIToken({
+					userId: "user_123",
+					organizationId: "org_456",
+					source: "scheduled-job",
+					impersonated: false,
+				}),
+			);
+
+			expect(eligible.valid && eligible.claims.pe).toBe(true);
+			expect(background.valid && background.claims.pe).toBeUndefined();
 		});
 
 		it("should reject empty token", async () => {
@@ -283,6 +309,7 @@ describe("AI Token Verifier", () => {
 				userId: "user_123",
 				organizationId: "org_456",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const claims = decodeTokenClaims(token);
@@ -374,11 +401,13 @@ describe("AI Token Verifier", () => {
 			const token1 = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const token2 = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const decoded1 = decodeTokenClaims(token1);

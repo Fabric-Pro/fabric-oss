@@ -25,6 +25,7 @@ export type FakeBranch = BranchRow;
 
 export type FakeProposal = {
 	id: string;
+	contentKind: "FULL_SNAPSHOT";
 	projectId: string;
 	organizationId: string;
 	userId: string;
@@ -349,6 +350,7 @@ export function createFakeDatabase(real: Real) {
 		organizationId: string;
 		from: string[];
 		expectedAttempt: number;
+		expectedNextAttemptAt?: Date | null;
 		to: string;
 		bumpAttempt: boolean;
 		data?: Record<string, unknown>;
@@ -375,6 +377,9 @@ export function createFakeDatabase(real: Real) {
 			!b ||
 			!i.from.includes(b.state) ||
 			b.attempt !== i.expectedAttempt ||
+			(i.expectedNextAttemptAt !== undefined &&
+				(b.nextAttemptAt?.getTime() ?? null) !==
+					(i.expectedNextAttemptAt?.getTime() ?? null)) ||
 			b.untracked
 		) {
 			return { ok: false };

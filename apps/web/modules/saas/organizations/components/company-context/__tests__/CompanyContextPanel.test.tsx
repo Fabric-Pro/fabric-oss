@@ -132,7 +132,9 @@ vi.mock("next-intl", () => {
 	};
 });
 
+import { CompanyContextPanel } from "../CompanyContextPanel";
 import {
+	COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS,
 	COMPANY_CONTEXT_POLL_INTERVAL_MS,
 	COMPANY_URL_PAGES_LIVE_PAGES,
 	COMPANY_URL_PAGES_POLL_INTERVAL_MS,
@@ -140,12 +142,12 @@ import {
 	companyContextPollInterval,
 	companyUrlPagesPollInterval,
 	MAX_COMPANY_CONTEXT_POLL_MS,
+	MAX_COMPANY_CRAWL_IDLE_MS,
 	resolveCompanySourceState,
 	settlePendingCompanyDeletes,
 	visibleCompanySources,
 	withSavedCompanyMetadata,
 } from "../company-context-adapter";
-import { CompanyContextPanel } from "../CompanyContextPanel";
 
 type Source = CompanyContextListResult["sources"][number];
 
@@ -181,6 +183,8 @@ function source(overrides: Partial<Source> & { id: string }): Source {
 		updatedAt: CREATED,
 		urlPageCount: 0,
 		crawlInProgress: false,
+		crawlProgress: null,
+		crawlLastFetchedAt: null,
 		deleting: false,
 		ready: true,
 		needsReprocessing: false,
@@ -741,6 +745,95 @@ describe("CompanyContextPanel — source states", () => {
 		).toBeInTheDocument();
 	});
 
+	it("shows a website saved with Live refresh as not refreshing automatically, which is what it does", async () => {
+		const legacyLive = source({
+			id: "src-legacy-live",
+			type: "LINK",
+			sourceUrl: "https://example.com/",
+			sourceTitle: "Example website",
+			urlRefreshMode: "LIVE",
+		});
+		state.list.mockResolvedValue(
+			listResult([legacyLive, WEBSITE_CRAWLING]),
+		);
+		renderPanel();
+
+		const legacy = await row(legacyLive.id);
+		expect(legacy.getByText("row.refresh.ONCE")).toBeInTheDocument();
+		expect(legacy.queryByText("row.refresh.LIVE")).not.toBeInTheDocument();
+		expect(
+			(await row(WEBSITE_CRAWLING.id)).getByText("row.refresh.WEEKLY"),
+		).toBeInTheDocument();
+	});
+
+	it("shows how far a website's first crawl has got, and that a website is not used until its crawl finishes", async () => {
+		const firstCrawl = source({
+			id: "src-first-crawl",
+			type: "LINK",
+			sourceUrl: "https://example.com/",
+			extractionStatus: "PENDING",
+			crawlInProgress: true,
+			ready: false,
+			embeddedAt: null,
+			urlPageCount: 200,
+			crawlProgress: { processedPages: 47, totalPages: 200 },
+		});
+		// Still mapping the site: no pages to count yet.
+		const mapping = source({
+			id: "src-mapping",
+			type: "LINK",
+			sourceUrl: "https://example.net/",
+			extractionStatus: "PENDING",
+			crawlInProgress: true,
+			ready: false,
+			embeddedAt: null,
+		});
+		// A refresh of a website that is ready: it stays in use, and the
+		// server reports no progress for it.
+		const refresh = source({
+			id: "src-refresh",
+			type: "LINK",
+			sourceUrl: "https://example.org/",
+			crawlInProgress: true,
+			urlPageCount: 200,
+		});
+		state.list.mockResolvedValue(
+			listResult([firstCrawl, mapping, refresh]),
+		);
+		renderPanel();
+
+		const first = await row(firstCrawl.id);
+		expect(first.getByTestId("company-source-status")).toHaveTextContent(
+			"status.processing",
+		);
+		expect(
+			first.getByTestId("company-source-crawl-progress"),
+		).toHaveTextContent('row.crawlProgress {"processed":47,"total":200}');
+		expect(first.queryByText(/row\.pageCount/)).not.toBeInTheDocument();
+		expect(
+			first.getByTestId("company-source-crawl-hint"),
+		).toHaveTextContent("row.crawlHint");
+
+		const mapped = await row(mapping.id);
+		expect(
+			mapped.queryByTestId("company-source-crawl-progress"),
+		).not.toBeInTheDocument();
+		expect(
+			mapped.getByTestId("company-source-crawl-hint"),
+		).toBeInTheDocument();
+
+		const refreshing = await row(refresh.id);
+		expect(
+			refreshing.queryByTestId("company-source-crawl-progress"),
+		).not.toBeInTheDocument();
+		expect(
+			refreshing.getByText('row.pageCount {"count":200}'),
+		).toBeInTheDocument();
+		expect(
+			refreshing.queryByTestId("company-source-crawl-hint"),
+		).not.toBeInTheDocument();
+	});
+
 	it("explains that nothing is usable when no embedding provider is configured", async () => {
 		state.list.mockResolvedValue(listResult([CASE_STUDY], null));
 		renderPanel();
@@ -980,6 +1073,107 @@ describe("company context state helpers", () => {
 			false,
 		);
 		expect(companyContextPollInterval(undefined, now)).toBe(false);
+	});
+
+	it("keeps following a working website crawl past the cap, at a slower pace", () => {
+		const now = CREATED.getTime();
+		const threeHours = 3 * 60 * 60 * 1000;
+		// A crawl writes its pages, not its source, so the source's last
+		// write is when the crawl started.
+		const crawling = source({
+			id: "a",
+			type: "LINK",
+			extractionStatus: "PENDING",
+			crawlInProgress: true,
+			ready: false,
+			embeddedAt: null,
+		});
+		const pending = source({
+			id: "b",
+			extractionStatus: "PENDING",
+			ready: false,
+			embeddedAt: null,
+		});
+		const fetchedAt = (ms: number) => ({
+			...crawling,
+			crawlLastFetchedAt: new Date(ms),
+		});
+
+		expect(
+			companyContextPollInterval(
+				listResult([crawling]),
+				now + MAX_COMPANY_CONTEXT_POLL_MS - 1,
+			),
+		).toBe(COMPANY_CONTEXT_POLL_INTERVAL_MS);
+		// Past the cap, before its first page: it started recently.
+		expect(
+			companyContextPollInterval(
+				listResult([crawling]),
+				now + MAX_COMPANY_CONTEXT_POLL_MS,
+			),
+		).toBe(COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS);
+		// Hours in, still fetching pages.
+		expect(
+			companyContextPollInterval(
+				listResult([fetchedAt(now + threeHours - 60_000)]),
+				now + threeHours,
+			),
+		).toBe(COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS);
+		// A slot that was never released: nothing fetched for the idle limit.
+		expect(
+			companyContextPollInterval(
+				listResult([
+					fetchedAt(now + threeHours - MAX_COMPANY_CRAWL_IDLE_MS),
+				]),
+				now + threeHours,
+			),
+		).toBe(false);
+		expect(
+			companyContextPollInterval(
+				listResult([crawling]),
+				now + threeHours,
+			),
+		).toBe(false);
+		// A fresh in-flight source still sets the faster pace.
+		expect(
+			companyContextPollInterval(
+				listResult([
+					crawling,
+					{
+						...pending,
+						updatedAt: new Date(now + MAX_COMPANY_CONTEXT_POLL_MS),
+					},
+				]),
+				now + MAX_COMPANY_CONTEXT_POLL_MS,
+			),
+		).toBe(COMPANY_CONTEXT_POLL_INTERVAL_MS);
+		// A scheduled refresh of a ready website is followed the same way.
+		const refreshing = source({
+			id: "c",
+			type: "LINK",
+			crawlInProgress: true,
+			crawlLastFetchedAt: new Date(now + threeHours - 60_000),
+		});
+		expect(
+			companyContextPollInterval(
+				listResult([refreshing]),
+				now + threeHours,
+			),
+		).toBe(COMPANY_CONTEXT_CRAWL_POLL_INTERVAL_MS);
+		// Once the crawl lets go of its slot, polling stops.
+		expect(
+			companyContextPollInterval(
+				listResult([{ ...refreshing, crawlInProgress: false }]),
+				now + threeHours,
+			),
+		).toBe(false);
+		// A source stuck pending with no crawl still stops at the cap.
+		expect(
+			companyContextPollInterval(
+				listResult([pending]),
+				now + MAX_COMPANY_CONTEXT_POLL_MS,
+			),
+		).toBe(false);
 	});
 
 	it("follows an old source again once a re-sync writes it", () => {

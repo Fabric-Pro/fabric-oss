@@ -24,6 +24,12 @@ const mocks = vi.hoisted(() => ({
 	getDocumentById: vi.fn(),
 }));
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,

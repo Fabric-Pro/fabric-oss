@@ -1,16 +1,17 @@
 "use client";
 
-import {
-	FABRIC_IGNORE_FILE,
-	parseFrontmatter,
-	SNAPSHOT_LIMITS,
-} from "@repo/instructions";
+import { parseFrontmatter } from "@repo/instructions";
 import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import {
 	editInstructionSnapshot,
 	type InstructionEdit,
 } from "@saas/projects/lib/edit-snapshot";
+import type { NativeInstructionBase } from "@saas/projects/lib/instruction-change-source";
+import {
+	copyInstructionText,
+	instructionEditRefusal,
+} from "@saas/projects/lib/instruction-file-actions";
 import type { ChangeMark } from "@saas/projects/lib/instructions-base-changes";
 import { defaultCommitMessage } from "@saas/projects/lib/instructions-direct-commit";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
@@ -36,88 +37,14 @@ import {
 } from "./InstructionFileHeader";
 import { InstructionFileToolbar } from "./InstructionFileToolbar";
 import { RenameInstructionFileDialog } from "./RenameInstructionFileDialog";
+import {
+	type NativeInstructionFile,
+	useInstructionFileContent,
+} from "./useInstructionFileContent";
 
 // Script/settings/other files render as plain preformatted text — no
 // Markdown or frontmatter parsing, since they are not Markdown documents.
 const PLAIN_KINDS = new Set(["SCRIPT", "SETTINGS", "OTHER"]);
-
-/** Resolves true when `text` reached the clipboard, and says which way it went. */
-async function copyText(
-	text: string,
-	copied: string,
-	failed: string,
-): Promise<boolean> {
-	try {
-		if (!navigator.clipboard) {
-			throw new Error("clipboard unavailable");
-		}
-		await navigator.clipboard.writeText(text);
-		toast.success(copied);
-		return true;
-	} catch {
-		toast.error(failed);
-		return false;
-	}
-}
-
-/**
- * Why a file is editable in the tab and not merely readable.
- *
- * Before this the only way to fix one line of a published tree was to
- * re-upload the whole folder, which needs the folder to hand — so a typo in a
- * skill was a trip back to someone's laptop. An edit here creates a new
- * version through the same derive → upload → verify → scan → publish path an
- * upload takes, so the secret gate, the history and the rejection banner all
- * behave exactly as they do for a folder.
- *
- * Three things are deliberately NOT editable:
- *
- *  - a binary file, which has no text to put in a textarea.
- *  - a file past `maxInlineTextBytes`, or one whose shown body was cut short
- *    (offset paging or the 200,000-character reader cap) — saving a
- *    truncated body would silently delete the rest of the file.
- *  - `.fabricignore`, because it decides what the version excludes and the
- *    validation gate binds it to the snapshot's frozen rules. The server
- *    refuses it too; this is the explanation, not the enforcement.
- *
- * The first two have ONE way out, and the refusal names it: pick the file
- * again with the add control at the same path (`replaceAction`, which is that
- * control's own label for this viewer). The two used to name different routes
- * — "Add file" for one, "upload the folder again" for the other — for what is
- * the same replacement.
- *
- * `file` is always the EFFECTIVE (display) response — the branch's own
- * `written` bytes when the viewer is looking at one, the published file's
- * otherwise — never the published file alone: a branch version can be binary
- * or truncated on its own, independent of whether the published file is, and
- * editing has to be refused on what is actually about to be overwritten.
- */
-function editRefusal(
-	file: {
-		path: string;
-		body: string | null;
-		size: number;
-		truncated: boolean;
-	},
-	t: (key: string, values?: Record<string, string>) => string,
-	replaceAction: string,
-	repositoryBacked: boolean,
-): string | null {
-	if (file.path === FABRIC_IGNORE_FILE) {
-		return t(
-			repositoryBacked
-				? "editFabricignoreRepository"
-				: "editFabricignore",
-		);
-	}
-	if (file.body === null) {
-		return t("editBinary", { action: replaceAction });
-	}
-	if (file.truncated || file.size > SNAPSHOT_LIMITS.maxInlineTextBytes) {
-		return t("editTooLarge", { action: replaceAction });
-	}
-	return null;
-}
 
 /**
  * Reads one file of the published snapshot, and — for someone who may edit —
@@ -136,6 +63,9 @@ export function InstructionFileView({
 	projectId,
 	snapshotId,
 	currentSnapshotId = snapshotId,
+	nativeBase,
+	currentNativeBase = nativeBase,
+	nativeFile,
 	path,
 	canEdit = false,
 	canCommit = false,
@@ -148,11 +78,15 @@ export function InstructionFileView({
 	onChanged,
 	onCommitted,
 	onDraftStateChange,
+	onNativeDraftStateChange,
 }: {
 	projectId: string;
 	/** The published snapshot now current, when this pane temporarily holds its predecessor. */
 	currentSnapshotId?: string;
-	snapshotId: string;
+	snapshotId?: string;
+	nativeBase?: NativeInstructionBase;
+	currentNativeBase?: NativeInstructionBase;
+	nativeFile?: NativeInstructionFile;
 	path: string;
 	/**
 	 * How the published version differs from the one it was edited from, for
@@ -191,29 +125,40 @@ export function InstructionFileView({
 	 */
 	repositoryTarget?: { repository: string; ref: string } | null;
 	/** Refresh the tab's snapshot list and published pointer after a save. */
-	onChanged?: () => void;
+	onChanged?: () => unknown;
 	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
-	onCommitted?: (commit: { sha: string; ref: string }) => void;
+	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
 	/** Lets the parent retain this exact draft while its next file list loads. */
 	onDraftStateChange?: (
 		draft: { snapshotId: string; path: string } | null,
+	) => void;
+	onNativeDraftStateChange?: (
+		draft: { nativeBase: NativeInstructionBase; path: string } | null,
 	) => void;
 }) {
 	const actionError = useInstructionActionError();
 	const { confirm } = useConfirmationAlert();
 	const t = useTranslations("projects.codingInstructions.fileView");
+	const tDirect = useTranslations("projects.codingInstructions.direct");
 	const kindLabels = t.raw("kindLabels") as Record<string, string>;
-	const q = useQuery(
-		orpc.projects.instructions.getFile.queryOptions({
-			input: {
-				projectId,
-				snapshotId,
-				path,
-				offset: 0,
-				maxLength: 200_000,
-			},
-		}),
-	);
+	const q = useInstructionFileContent({
+		projectId,
+		path,
+		snapshotId,
+		nativeBase,
+		nativeFile,
+	});
+	const sourceKey = nativeBase
+		? `${nativeBase.generation}:${nativeBase.commitSha}`
+		: snapshotId;
+	const currentSourceKey = currentNativeBase
+		? `${currentNativeBase.generation}:${currentNativeBase.commitSha}`
+		: currentSnapshotId;
+	const changeBase = nativeBase
+		? { nativeBase }
+		: snapshotId
+			? { baseSnapshotId: snapshotId }
+			: null;
 	/**
 	 * The viewer's accepting branch's projection of THIS path (Fizzy #2738
 	 * spec §10 "Editor"): a Fabric write whose bytes Fabric holds reads as
@@ -326,19 +271,27 @@ export function InstructionFileView({
 	// render with no intermediate state, and keeps the typed text on screen
 	// instead of deleting someone's work to protect someone else's.
 	const [draft, setDraft] = useState<{
-		snapshotId: string;
+		sourceKey: string;
+		nativeBase?: NativeInstructionBase;
 		path: string;
 		text: string;
 		/** The commit message once the person has typed one; the default until then. */
 		message?: string;
 	} | null>(null);
 	useEffect(() => {
+		onNativeDraftStateChange?.(
+			draft?.nativeBase
+				? { nativeBase: draft.nativeBase, path: draft.path }
+				: null,
+		);
 		onDraftStateChange?.(
 			draft === null
 				? null
-				: { snapshotId: draft.snapshotId, path: draft.path },
+				: snapshotId
+					? { snapshotId, path: draft.path }
+					: null,
 		);
-	}, [draft, onDraftStateChange]);
+	}, [draft, onDraftStateChange, onNativeDraftStateChange, snapshotId]);
 	useEffect(() => () => onDraftStateChange?.(null), [onDraftStateChange]);
 	const [renameOpen, setRenameOpen] = useState(false);
 	/** Whether a commit to the branch is what the editor's primary action does. */
@@ -361,23 +314,27 @@ export function InstructionFileView({
 			publishOnReady: boolean;
 			proposal?: boolean;
 		}) =>
-			editInstructionSnapshot({
-				projectId,
-				baseSnapshotId: snapshotId,
-				publishOnReady: input.publishOnReady,
-				proposal: input.proposal,
-				edits: input.edits,
-			}),
+			changeBase
+				? editInstructionSnapshot({
+						projectId,
+						...changeBase,
+						publishOnReady: input.publishOnReady,
+						proposal: input.proposal,
+						edits: input.edits,
+					})
+				: Promise.reject(new Error("Instruction source unavailable")),
 		onSuccess: (_result, input) => {
 			setDraft(null);
 			toast.success(
-				input.proposal
-					? t(
-							repositoryTarget
-								? "suggestionSubmitted"
-								: "proposalSubmitted",
-						)
-					: t("saved"),
+				input.proposal && nativeBase
+					? tDirect("suggestionSubmitted")
+					: input.proposal
+						? t(
+								repositoryTarget
+									? "suggestionSubmitted"
+									: "proposalSubmitted",
+							)
+						: t("saved"),
 			);
 			onChanged?.();
 		},
@@ -399,8 +356,9 @@ export function InstructionFileView({
 	// Saveable only while the version it was taken from is still the one this
 	// view is showing.
 	const editingText =
-		draftForPath?.snapshotId === currentSnapshotId &&
-		snapshotId === currentSnapshotId
+		draftForPath &&
+		draftForPath.sourceKey === currentSourceKey &&
+		sourceKey === currentSourceKey
 			? draftForPath.text
 			: null;
 	// Same text, no longer saveable: the published version moved. Shown
@@ -408,8 +366,8 @@ export function InstructionFileView({
 	// typed can be written against a base it was not read from.
 	const staleText =
 		draftForPath &&
-		(draftForPath.snapshotId !== currentSnapshotId ||
-			snapshotId !== currentSnapshotId)
+		(draftForPath.sourceKey !== currentSourceKey ||
+			sourceKey !== currentSourceKey)
 			? draftForPath.text
 			: null;
 	const editorText = editingText ?? staleText;
@@ -440,7 +398,7 @@ export function InstructionFileView({
 		? t("branchFileLoading")
 		: branchFileFailed
 			? t("branchFileError")
-			: editRefusal(
+			: instructionEditRefusal(
 					{
 						path: f.path,
 						body: displayBody,
@@ -470,7 +428,7 @@ export function InstructionFileView({
 		defaultCommitMessage({ kind: "update", path: f.path });
 
 	function commitDraft() {
-		if (editingText === null || !repositoryTarget) {
+		if (editingText === null || !repositoryTarget || !changeBase) {
 			return;
 		}
 		// The commit is stated against the published file, so that is what an
@@ -481,7 +439,7 @@ export function InstructionFileView({
 			return;
 		}
 		commit.start({
-			baseSnapshotId: snapshotId,
+			...changeBase,
 			message: commitMessage,
 			changes: [
 				{
@@ -496,11 +454,11 @@ export function InstructionFileView({
 	}
 
 	function commitDeletion() {
-		if (!repositoryTarget) {
+		if (!repositoryTarget || !changeBase) {
 			return;
 		}
 		commit.start({
-			baseSnapshotId: snapshotId,
+			...changeBase,
 			message: defaultCommitMessage({ kind: "delete", path: f.path }),
 			changes: [{ op: "delete", path: f.path }],
 		});
@@ -575,7 +533,8 @@ export function InstructionFileView({
 			variant="outline"
 			onClick={() =>
 				setDraft({
-					snapshotId,
+					sourceKey: sourceKey ?? "",
+					nativeBase,
 					path: f.path,
 					// Seeded from the resolved DISPLAY
 					// body — the branch's, when the
@@ -636,14 +595,20 @@ export function InstructionFileView({
 		}
 		const proposal = !canEdit;
 		confirm({
-			title: t(
-				proposal
-					? repositoryTarget
-						? "deleteSuggestionConfirm"
-						: "deleteProposalConfirm"
-					: "deleteConfirm",
-				{ path: f.path, ...(repositoryTarget ?? {}) },
-			),
+			title:
+				proposal && nativeBase
+					? tDirect("deleteSuggestionConfirm", {
+							path: f.path,
+							...(repositoryTarget ?? {}),
+						})
+					: t(
+							proposal
+								? repositoryTarget
+									? "deleteSuggestionConfirm"
+									: "deleteProposalConfirm"
+								: "deleteConfirm",
+							{ path: f.path, ...(repositoryTarget ?? {}) },
+						),
 			confirmLabel: t(
 				proposal
 					? repositoryTarget
@@ -671,7 +636,7 @@ export function InstructionFileView({
 				version={publishedVersion}
 				size={displaySize}
 				onCopyPath={() =>
-					copyText(f.path, t("copied"), t("copyFailed"))
+					copyInstructionText(f.path, t("copied"), t("copyFailed"))
 				}
 				edit={
 					mayChange ? (
@@ -715,13 +680,13 @@ export function InstructionFileView({
 			<div className="flex flex-col gap-3 px-5 pt-4 empty:hidden">
 				{commit.status}
 			</div>
-			{repositoryTarget ? (
+			{repositoryTarget && changeBase ? (
 				<RenameInstructionFileDialog
-					key={`${f.path}@${snapshotId}`}
+					key={`${f.path}@${sourceKey}`}
 					open={renameOpen}
 					onOpenChange={setRenameOpen}
 					projectId={projectId}
-					baseSnapshotId={snapshotId}
+					{...changeBase}
 					path={f.path}
 					content={displayBody}
 					existingPaths={existingPaths}
@@ -758,7 +723,8 @@ export function InstructionFileView({
 						readOnly={staleText !== null}
 						onChange={(e) =>
 							setDraft({
-								snapshotId,
+								sourceKey: sourceKey ?? "",
+								nativeBase,
 								path: f.path,
 								text: e.target.value,
 								message: draftForPath?.message,
@@ -784,12 +750,17 @@ export function InstructionFileView({
 						<div className="flex flex-col gap-2">
 							{repositoryTarget && (committing || canPropose) ? (
 								<p className="text-muted-foreground text-sm">
-									{t(
-										committing
-											? "commitNotice"
-											: "repositoryProposalNotice",
-										repositoryTarget,
-									)}
+									{committing && nativeBase
+										? tDirect(
+												"commitNotice",
+												repositoryTarget,
+											)
+										: t(
+												committing
+													? "commitNotice"
+													: "repositoryProposalNotice",
+												repositoryTarget,
+											)}
 								</p>
 							) : null}
 							{committing ? (
@@ -800,7 +771,8 @@ export function InstructionFileView({
 									onChange={(message) => {
 										commit.clearMessageRefusal();
 										setDraft({
-											snapshotId,
+											sourceKey: sourceKey ?? "",
+											nativeBase,
 											path: f.path,
 											text: editorText,
 											message,
@@ -916,7 +888,12 @@ export function InstructionFileView({
 								) : null}
 								{displayBody == null ? (
 									<p className="text-muted-foreground">
-										{t("binaryFile")}{" "}
+										{t(
+											q.refusal === "tooLarge" &&
+												!showFromBranch
+												? "fileTooLarge"
+												: "binaryFile",
+										)}{" "}
 										{displayUrl ? (
 											<a
 												href={displayUrl}
@@ -933,7 +910,7 @@ export function InstructionFileView({
 										{displayBody}
 									</pre>
 								) : (
-									<Markdown>
+									<Markdown className="[&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
 										{parsed ? parsed.body : displayBody}
 									</Markdown>
 								)}
@@ -943,6 +920,40 @@ export function InstructionFileView({
 											offset: displayNextOffset ?? 0,
 										})}
 									</p>
+								) : null}
+								{nativeBase &&
+								displayBody !== null &&
+								!showFromBranch ? (
+									<div className="flex flex-wrap gap-2">
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={() =>
+												copyInstructionText(
+													displayBody,
+													tDirect("copied"),
+													tDirect("copyFailed"),
+												)
+											}
+										>
+											{tDirect("copyContent")}
+										</Button>
+										{displayNextOffset !== null ? (
+											<Button
+												size="sm"
+												variant="outline"
+												disabled={q.isLoadingMore}
+												onClick={q.loadMore}
+											>
+												{tDirect("loadMore")}
+											</Button>
+										) : null}
+										{q.pageError ? (
+											<p role="alert">
+												{t("couldNotLoad")}
+											</p>
+										) : null}
+									</div>
 								) : null}
 							</>
 						)}

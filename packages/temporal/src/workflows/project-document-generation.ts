@@ -285,6 +285,7 @@ export async function projectDocumentGenerationWorkflow(
 		excludeContextId,
 		generationStartedAt,
 		skipDependencyWait,
+		planEligible,
 	} = input;
 	// Not `const`. The dispatch mints this token for a fifteen-minute run, and
 	// the dependency wait below can outlast that several times over — a run that
@@ -533,6 +534,7 @@ export async function projectDocumentGenerationWorkflow(
 						// make a run that WAITED strictly likelier to die on an
 						// expired token than one that never queued at all.
 						expirySeconds: GENERATION_TOKEN_EXPIRY_SECONDS,
+						planEligible,
 					}));
 
 					log.info(
@@ -651,6 +653,7 @@ export async function projectDocumentGenerationWorkflow(
 						// this call for exactly that reason.
 						suppliedContext, // joined into the child's context array, never over it
 						excludeContextId, // filtered out of this run's retrieval
+						planEligible, // the clicking member's own plan may serve it
 					},
 				],
 			},

@@ -19,6 +19,8 @@
  */
 import {
 	getDirectCommitSnapshot,
+	getProjectInstructionSettings,
+	instructionRepositoryImportAllowed,
 	recordDirectCommitFailureBeforeReady,
 	recordDirectCommitOutcome,
 } from "@repo/database";
@@ -294,6 +296,13 @@ export async function recordRevertedCommit(
 export async function startConfirmingInstructionSync(
 	input: ConfirmingSyncInput,
 ): Promise<void> {
+	const settings = await getProjectInstructionSettings(
+		input.projectId,
+		input.organizationId,
+	);
+	if (!instructionRepositoryImportAllowed(settings, input.syncId)) {
+		return;
+	}
 	const started = await startAutomaticInstructionSync({
 		projectId: input.projectId,
 		organizationId: input.organizationId,

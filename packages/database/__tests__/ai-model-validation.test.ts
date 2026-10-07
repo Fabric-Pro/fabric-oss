@@ -610,6 +610,13 @@ const OFFICIAL_MODELS_BY_PROVIDER: Record<AIProvider, Set<string>> = {
 	// Legacy providers (exist in enum but not actively used)
 	AZURE_OPENAI: new Set(),
 	NETLIFY: new Set(),
+	// A member's own ChatGPT plan: the models its own catalog lists (Fizzy #2939)
+	OPENAI_CHATGPT_PLAN: new Set([
+		"gpt-6-astra",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	]),
 };
 
 // ============================================================================

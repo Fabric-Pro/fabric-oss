@@ -23,7 +23,7 @@
 		}
 	},
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
 		"hono": "^4.13.7",

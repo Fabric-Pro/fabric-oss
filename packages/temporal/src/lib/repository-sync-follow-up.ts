@@ -24,6 +24,7 @@ export type RepositorySyncFollowUpOutcome =
 	| "started"
 	| "already_running"
 	| "not_configured"
+	| "direct_repository"
 	| "integration_unavailable";
 
 /**

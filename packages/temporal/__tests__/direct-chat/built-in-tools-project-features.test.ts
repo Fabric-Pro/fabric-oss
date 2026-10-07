@@ -144,6 +144,23 @@ describe("createBuiltInTools — live roadmap reads", () => {
 		).toEqual({});
 	});
 
+	// Company context reaches a chat only through the Advisor's opt-in in the
+	// chat activity, never through this factory, which Slack, Teams and the
+	// agent executor share (Fizzy #2719).
+	it("builds no company context search, even from an explicit list naming it", async () => {
+		expect(await createBuiltInTools(CTX)).not.toHaveProperty(
+			"search_company_context",
+		);
+		for (const includeProjectFeatureReads of [true, false]) {
+			const tools = await createBuiltInTools({
+				...CTX,
+				enabledFabricToolIds: ["search_company_context"],
+				includeProjectFeatureReads,
+			});
+			expect(tools).not.toHaveProperty("search_company_context");
+		}
+	});
+
 	it("runs the list read against the chat's project, ignoring a model-supplied one", async () => {
 		h.listProjectFeatures.mockResolvedValue({ features: [], total: 0 });
 		const tools = await createBuiltInTools(CTX);

@@ -12,9 +12,11 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
+import type { InstructionMigrationPointer } from "@repo/database/prisma/queries/instruction-migration-pointer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = {
+	contentKind?: "FULL_SNAPSHOT" | "GIT_INTENT";
 	id: string;
 	projectId: string;
 	organizationId: string;
@@ -39,43 +41,74 @@ type FileRow = {
 	storageKey: string;
 };
 
-const h = vi.hoisted(() => ({
-	origin: null as unknown as import("./helpers/instruction-branch-origin").Origin,
-	storage: new Map<string, Buffer>(),
-	row: null as Row | null,
-	files: new Map<string, FileRow[]>(),
-	sync: null as unknown,
-	/** The published snapshot the revert reads the frozen ignore rules from. */
-	published: {
-		organizationId: "org_example",
-		settingsFrozen: { layer: "default", ignoreGlobs: [] as string[] },
-	} as unknown,
-	canCreate: true,
-	/** Read-only mode turns on at this check (1 = the first), or never. */
-	readOnlyFromCheck: null as number | null,
-	readOnlyChecks: 0,
-	/** Runs once before the next push, to move the branch under it. */
-	beforePush: null as null | (() => void),
-	/** Replaces the verifier's diff. */
-	diff: null as null | ((entries: unknown[]) => unknown[]),
-	credentialRequests: 0,
-	/** What a start of the sync answers: a new run, or the one already open. */
-	startOutcome: "started" as "started" | "already_running",
-	/** Thrown by every write that records an outcome, while set. */
-	writeError: null as Error | null,
-	recordPushedFailures: 0,
-	auditFailures: 0,
-	pushAttempts: 0,
-	recordPushed: vi.fn(),
-	recordOutcome: vi.fn(),
-	admit: vi.fn(),
-	join: vi.fn(),
-	publish: vi.fn(),
-	startSync: vi.fn(),
-	wake: vi.fn(),
-	warm: vi.fn(),
-	audit: vi.fn(),
-}));
+const h = vi.hoisted(() => {
+	const settings: {
+		sourceOfTruth: string;
+		migration: InstructionMigrationPointer | null;
+	} = {
+		sourceOfTruth: "REPOSITORY",
+		migration: {
+			v: 1,
+			state: "SWITCHING",
+			branchId: "branch_example",
+			snapshotId: "snap_move",
+			syncId: "sync_example",
+			pullRequestUrl: null,
+			startedAt: "2026-10-03T10:00:00.000Z",
+			userId: "user_example_member",
+		},
+	};
+	return {
+		origin: null as unknown as import("./helpers/instruction-branch-origin").Origin,
+		storage: new Map<string, Buffer>(),
+		row: null as Row | null,
+		nativeIntent: null as {
+			status: string;
+			gitIntentEntries: Array<{
+				path: string;
+				operation: "PUT" | "DELETE";
+				sha256: string | null;
+				storageKey: string | null;
+				mode: number | null;
+				baseMode: number | null;
+				baseObjectId: string | null;
+			}>;
+		} | null,
+		files: new Map<string, FileRow[]>(),
+		sync: null as unknown,
+		settings,
+		/** The published snapshot the revert reads the frozen ignore rules from. */
+		published: {
+			organizationId: "org_example",
+			settingsFrozen: { layer: "default", ignoreGlobs: [] as string[] },
+		} as unknown,
+		canCreate: true,
+		/** Read-only mode turns on at this check (1 = the first), or never. */
+		readOnlyFromCheck: null as number | null,
+		readOnlyChecks: 0,
+		/** Runs once before the next push, to move the branch under it. */
+		beforePush: null as null | (() => void),
+		/** Replaces the verifier's diff. */
+		diff: null as null | ((entries: unknown[]) => unknown[]),
+		credentialRequests: 0,
+		/** What a start of the sync answers: a new run, or the one already open. */
+		startOutcome: "started" as "started" | "already_running",
+		/** Thrown by every write that records an outcome, while set. */
+		writeError: null as Error | null,
+		recordPushedFailures: 0,
+		auditFailures: 0,
+		pushAttempts: 0,
+		recordPushed: vi.fn(),
+		recordOutcome: vi.fn(),
+		admit: vi.fn(),
+		join: vi.fn(),
+		publish: vi.fn(),
+		startSync: vi.fn(),
+		wake: vi.fn(),
+		warm: vi.fn(),
+		audit: vi.fn(),
+	};
+});
 
 vi.mock("@repo/database", async (importOriginal) => {
 	const real = await importOriginal<typeof import("@repo/database")>();
@@ -91,7 +124,9 @@ vi.mock("@repo/database", async (importOriginal) => {
 				throw new Error("the database is unreachable");
 			}
 		},
-		getDirectCommitSnapshot: async () => h.row,
+		getDirectCommitSnapshot: async () =>
+			h.row && { contentKind: "FULL_SNAPSHOT", ...h.row },
+		loadGitIntent: async () => h.nativeIntent,
 		recordDirectCommitOutcome: async (i: { outcome: unknown }) => {
 			h.recordOutcome(i);
 			if (h.writeError) {
@@ -156,9 +191,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		},
 		getInstructionRepositorySyncForProposal: async () => h.sync,
 		getPublishedInstructionSnapshot: async () => h.published,
-		getProjectInstructionSettings: async () => ({
-			sourceOfTruth: "REPOSITORY",
-		}),
+		getProjectInstructionSettings: async () => h.settings,
 		canCreateProjectInstructions: async () => h.canCreate,
 		isProjectReadOnly: async () => {
 			h.readOnlyChecks++;
@@ -436,6 +469,7 @@ describe.skipIf(!hasGit())(
 			h.storage.clear();
 			h.files.clear();
 			h.row = null;
+			h.nativeIntent = null;
 			h.beforePush = null;
 			h.diff = null;
 			h.canCreate = true;
@@ -502,6 +536,48 @@ describe.skipIf(!hasGit())(
 			expect(h.publish).not.toHaveBeenCalled();
 			expect(h.startSync).not.toHaveBeenCalled();
 			expect(h.row?.commitOutcome).toBeNull();
+		});
+
+		it("applies a native changed-path PUT and DELETE with no full snapshot tree", async () => {
+			seedCommit(
+				{ "rules/a.md": "native alpha\n", "rules/b.md": null },
+				{ contentKind: "GIT_INTENT", baseSnapshotId: null },
+			);
+			const put = h.files
+				.get(SNAPSHOT)
+				?.find((file) => file.path === "rules/a.md");
+			if (!put) throw new Error("Native test PUT is missing");
+			h.nativeIntent = {
+				status: "READY",
+				gitIntentEntries: [
+					{
+						...put,
+						operation: "PUT",
+						mode: 0o100644,
+						baseMode: 0o100644,
+						baseObjectId: "a".repeat(40),
+					},
+					{
+						path: "rules/b.md",
+						operation: "DELETE",
+						storageKey: null,
+						sha256: null,
+						mode: null,
+						baseMode: 0o100644,
+						baseObjectId: "b".repeat(40),
+					},
+				],
+			};
+			h.files.clear();
+			const result = await run();
+			expect(result.kind).toBe("pushed");
+			const sha = h.origin.refSha("main");
+			if (!sha) throw new Error("Git tip is missing");
+			expect(h.origin.content(sha, "rules/a.md")).toBe("native alpha");
+			expect(
+				h.origin.git(["ls-tree", "--name-only", sha, "rules/b.md"]),
+			).toBe("");
+			expect(h.publish).not.toHaveBeenCalled();
 		});
 
 		it("never publishes the derived snapshot: on a tip that moved past the base it is a stale copy, and the sync publishes the real tree", async () => {
@@ -1904,6 +1980,19 @@ describe("startConfirmingInstructionSync (the run that takes a pushed head)", ()
 	beforeEach(() => {
 		h.startSync.mockReset();
 		h.startOutcome = "started";
+		h.settings = {
+			sourceOfTruth: "REPOSITORY",
+			migration: {
+				v: 1,
+				state: "SWITCHING",
+				branchId: "branch_example",
+				snapshotId: "snap_move",
+				syncId: SYNC,
+				pullRequestUrl: null,
+				startedAt: "2026-10-03T10:00:00.000Z",
+				userId: USER,
+			},
+		};
 	});
 
 	it("starts a COMMIT_PUSHED run for the row the commit was made against", async () => {
@@ -1920,6 +2009,15 @@ describe("startConfirmingInstructionSync (the run that takes a pushed head)", ()
 			trigger: "COMMIT_PUSHED",
 			expected: { syncId: SYNC, generation: 2 },
 		});
+	});
+
+	it("does not schedule a retired import for an ordinary direct repository", async () => {
+		h.settings = { sourceOfTruth: "REPOSITORY", migration: null };
+
+		await expect(
+			startConfirmingInstructionSync(confirm),
+		).resolves.toBeUndefined();
+		expect(h.startSync).not.toHaveBeenCalled();
 	});
 
 	it("fails retryably while a run is open: that run may have read the branch before the push", async () => {

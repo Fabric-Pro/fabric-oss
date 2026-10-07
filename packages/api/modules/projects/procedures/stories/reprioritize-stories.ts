@@ -19,6 +19,7 @@ import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -314,6 +315,7 @@ async function runReprioritizationModel<T>(args: {
 
 		return object;
 	} catch (error) {
+		rethrowChatGptPlanRefusal(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:

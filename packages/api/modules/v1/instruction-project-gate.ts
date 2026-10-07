@@ -8,7 +8,7 @@
  * it.
  */
 import { db, hasProjectAccess } from "@repo/database";
-import { hasPermission, Permissions } from "@repo/permissions";
+import { hasPermission, type Permission, Permissions } from "@repo/permissions";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
 import {
 	credentialMayReachProject,
@@ -93,7 +93,11 @@ export type ResolvedProject =
 export async function resolveInstructionProject(
 	projectId: string,
 	apiCtx: ExternalApiContext,
-	requested: { org?: string; personal: boolean },
+	requested: {
+		org?: string;
+		personal: boolean;
+		requiredPermission?: Permission;
+	},
 ): Promise<ResolvedProject> {
 	if (requested.personal) {
 		return {
@@ -161,11 +165,15 @@ export async function resolveInstructionProject(
 	// and the different refusals distinguish a slug that does not exist, one
 	// that does, and the project's own. Nothing answers an arbitrary slug
 	// until the caller has proven they may read this project.
-	if (!hasPermission(access.permissions, Permissions.INSTRUCTION_READ)) {
+	const requiredPermission =
+		requested.requiredPermission ?? Permissions.INSTRUCTION_READ;
+	if (!hasPermission(access.permissions, requiredPermission)) {
+		const message =
+			requiredPermission === Permissions.INSTRUCTION_READ
+				? "No coding-instructions read permission for this project"
+				: `No ${requiredPermission} permission for this project`;
 		return {
-			error: forbidden(
-				"No coding-instructions read permission for this project",
-			).error,
+			error: forbidden(message).error,
 			status: 403,
 		};
 	}

@@ -5,7 +5,12 @@
  * the workflow body stays deterministic AND we can unit-test the URL-path
  * derivation + cadence math without spinning a Temporal test environment.
  */
-import { ActivityFailure, ApplicationFailure } from "@temporalio/common";
+import {
+	ActivityFailure,
+	ApplicationFailure,
+	TimeoutFailure,
+	TimeoutType,
+} from "@temporalio/common";
 import { describe, expect, it } from "vitest";
 import { filterByIncludePaths } from "../../src/activities/lib/firecrawl-client";
 import {
@@ -14,6 +19,7 @@ import {
 	computeNextRefreshAt,
 	deriveIncludePaths,
 	extractInPrefixLinks,
+	isPermanentScrapeFailure,
 } from "../../src/workflows/url-source-crawl";
 
 describe("deriveIncludePaths", () => {
@@ -185,6 +191,76 @@ describe("classifyFailureStage / classifyFailureErrorType (Group 10.1 telemetry)
 		);
 		expect(classifyFailureErrorType(failure)).toBe("UNKNOWN");
 		expect(classifyFailureErrorType(new Error("plain"))).toBe("UNKNOWN");
+	});
+});
+
+describe("isPermanentScrapeFailure", () => {
+	const scrapeFailure = (cause?: Error) =>
+		new ActivityFailure(
+			"Activity task failed",
+			"firecrawlScrapeActivity",
+			"act_1",
+			0 as never, // RetryState enum — value not used by the check
+			undefined,
+			cause,
+		);
+
+	it("is permanent when the scrape refused the URL non-retryably", () => {
+		for (const type of [
+			"FIRECRAWL_ROBOTS_BLOCKED",
+			"FIRECRAWL_UNSUPPORTED_CONTENT_TYPE",
+		]) {
+			expect(
+				isPermanentScrapeFailure(
+					scrapeFailure(ApplicationFailure.nonRetryable("no", type)),
+				),
+				type,
+			).toBe(true);
+		}
+	});
+
+	// A quota, key or provider failure says nothing about the URL: the next
+	// crawl, with the account fixed, can fetch it, so it is not permanent for
+	// the page even though the activity does not retry it.
+	it("is transient when the scrape failed for the account, not the URL", () => {
+		for (const type of [
+			"FIRECRAWL_QUOTA_EXCEEDED",
+			"FIRECRAWL_UNAUTHORIZED",
+			"FIRECRAWL_UNKNOWN",
+		]) {
+			expect(
+				isPermanentScrapeFailure(
+					scrapeFailure(ApplicationFailure.nonRetryable("no", type)),
+				),
+				type,
+			).toBe(false);
+		}
+	});
+
+	it("is transient when the scrape ran out of retries, timed out or failed otherwise", () => {
+		expect(
+			isPermanentScrapeFailure(
+				scrapeFailure(
+					ApplicationFailure.retryable(
+						"timed out",
+						"FIRECRAWL_TIMEOUT",
+					),
+				),
+			),
+		).toBe(false);
+		expect(
+			isPermanentScrapeFailure(
+				scrapeFailure(
+					new TimeoutFailure(
+						"timed out",
+						undefined,
+						TimeoutType.START_TO_CLOSE,
+					),
+				),
+			),
+		).toBe(false);
+		expect(isPermanentScrapeFailure(scrapeFailure())).toBe(false);
+		expect(isPermanentScrapeFailure(new Error("plain"))).toBe(false);
 	});
 });
 

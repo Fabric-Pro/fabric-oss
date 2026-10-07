@@ -987,21 +987,35 @@ export async function getProvidersForModel(
 // CENTRALIZED AI MODEL ACCESS - Single Entry Point
 // ============================================================================
 
-import { updateProviderLastUsed } from "@repo/database";
+import {
+	touchChatGptPlanCredential,
+	touchChatGptPlanOrgAccount,
+	updateProviderLastUsed,
+} from "@repo/database";
 import { getTenantAiGatewayBillingState } from "@repo/payments";
-import type { LanguageModel } from "ai";
+import { type LanguageModel, wrapLanguageModel } from "ai";
 // Import from model-factory to avoid circular dependency with index.ts
 import {
 	getEmbeddingModel,
 	getEvaluationModel,
 	getModel,
 } from "../model-factory";
+import { isAiInteractiveRequestFor } from "./chatgpt-plan/interactive-context";
+import { resolveChatGptPlanModel } from "./chatgpt-plan/models";
+import { chatGptPlanSourceForCall } from "./chatgpt-plan/pool";
+import { createChatGptPlanModel } from "./chatgpt-plan/provider";
+import { createChatGptPlanRotationMiddleware } from "./chatgpt-plan/rotation";
+import type { PlanSourceRef } from "./chatgpt-plan/sources";
 import { isReasoningModelName } from "./databricks-compat";
 import {
 	hasProviderCredentials,
 	hasServicePrincipalCredentials,
 	resolveProviderApiKey,
 } from "./databricks-oauth";
+import {
+	wrapEmbeddingModelWithDispatchGuard,
+	wrapModelWithDispatchGuard,
+} from "./dispatch-guard-middleware";
 import { getAiBillingCategory } from "./usage-logging";
 import {
 	type AggregateUsageRecord,
@@ -1062,6 +1076,28 @@ export interface AIOperationContext {
 	 * a Parlume session id). Recorded verbatim on `AiUsageLog.conversationId`.
 	 */
 	conversationId?: string;
+	/**
+	 * The call is the member's own interactive work, so it may run on their
+	 * ChatGPT plan (Fizzy #2939). Left unset, a call inside that member's own
+	 * oRPC browser request counts as interactive (`runWithAiInteractiveContext`)
+	 * and any other call does not. Entry points outside oRPC that a person
+	 * drives — a chat turn, the workflows they start — set it explicitly;
+	 * `false` keeps a call on the organization's provider even inside a
+	 * request. Embeddings never run on the plan.
+	 */
+	planEligible?: boolean;
+	/**
+	 * The caller hands the resolved provider's raw key or base URL to a client
+	 * of its own instead of using the returned model, so the member's ChatGPT
+	 * plan — which has neither — can never serve it.
+	 */
+	excludeChatGptPlan?: boolean;
+	/**
+	 * ChatGPT plans that just refused this work as spent, by their opaque key
+	 * (`user:<id>` / `org:<id>`), so the call goes to another (Fizzy #2770).
+	 * A key naming no plan of this member or organization matches nothing.
+	 */
+	excludePlanSources?: readonly string[];
 }
 
 /**
@@ -1138,6 +1174,12 @@ export interface AIModelMetadata {
 		| "platform_unbilled"
 		| "external_provider";
 	billingCustomerId: string | null;
+	/**
+	 * The ChatGPT plan chosen to serve the call, when one did (Fizzy #2770):
+	 * the member's own or an organization's shared account. Server-side only;
+	 * the agent exchange hands out that plan's token and its opaque key.
+	 */
+	planSource?: PlanSourceRef;
 }
 
 /**
@@ -1396,6 +1438,30 @@ export async function getAIModelWithMetadata(
 	} = options;
 	assertLanguageModelTask(taskType);
 
+	// Only text work can run on a plan — the member's own or one the
+	// organization shares. Embeddings also stay on the organization's provider
+	// because vectors from different models would not be comparable.
+	const routingContext =
+		context.planEligible === undefined &&
+		isAiInteractiveRequestFor(context.userId)
+			? { ...context, planEligible: true }
+			: context;
+	if (
+		!NON_TEXT_TASK_TYPES.has(String(taskType).toUpperCase()) &&
+		context.excludeChatGptPlan !== true
+	) {
+		const plan = await chatGptPlanSourceForCall(routingContext, {
+			exclude: context.excludePlanSources,
+		});
+		if (plan) {
+			return getChatGptPlanModelWithMetadata(
+				options,
+				routingContext,
+				plan.source,
+			);
+		}
+	}
+
 	// No credit/payment pre-check: whether this tenant may use AI is decided
 	// solely by whether a provider resolves below, and the refusal is
 	// `AIProviderNotConfiguredError` in step 2 (Fizzy #1875).
@@ -1532,10 +1598,16 @@ export async function getAIModelWithMetadata(
 		jobType: context.jobType,
 		conversationId: context.conversationId,
 	};
-	const trackedModel =
+	// Dispatch guard (outermost, so a refused request never reaches the usage
+	// logger): every model this resolves, in both usage modes, checks the
+	// caller's ambient dispatch guard before each physical request and takes
+	// its abort signal. A pass-through when the caller installed no guard.
+	// See dispatch-guard-middleware.ts.
+	const trackedModel = wrapModelWithDispatchGuard(
 		usageLogging === "aggregate"
 			? model
-			: wrapModelWithUsageLogging(model, usageLoggingContext);
+			: wrapModelWithUsageLogging(model, usageLoggingContext),
+	);
 
 	if (usageLogging === "aggregate") {
 		return {
@@ -1547,6 +1619,144 @@ export async function getAIModelWithMetadata(
 		};
 	}
 
+	return { model: trackedModel, metadata, trackUsage };
+}
+
+const NON_TEXT_TASK_TYPES = new Set(["EMBEDDING", "IMAGE", "AUDIO"]);
+
+/**
+ * The ChatGPT plan `chatGptPlanSourceForCall` chose: the member's own, or an
+ * organization's shared account. Runs the same usage-limit gate, dispatch
+ * guard and usage logging as every other resolution. The model is the plan
+ * model chosen for the task (preferences, then defaults; see
+ * `resolveChatGptPlanModel`) — a model override names an organization catalog
+ * model and does not apply — and its usage rows are recorded at zero API
+ * cost. A shared account's id is the `providerConfigId` of its usage rows and
+ * of the token limits that apply to it.
+ */
+async function getChatGptPlanModelWithMetadata(
+	options: GetAIModelWithMetadataOptions,
+	context: AIOperationContext,
+	source: PlanSourceRef,
+): Promise<AIModelResult | AggregateAIModelResult> {
+	const taskType = mapTaskTypeToDb(options.taskType as string);
+	const providerConfigId = source.kind === "org" ? source.accountId : null;
+	const { model: modelId, reasoningEffort } = await resolveChatGptPlanModel({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		taskType,
+		source,
+	});
+	await assertWithinAiUsageLimits({
+		userId: context.userId,
+		organizationId: context.organizationId ?? null,
+		projectId: context.projectId ?? null,
+		providerConfigId,
+		modelCanonicalName: modelId,
+		taskType,
+	});
+
+	const metadata: AIModelMetadata = {
+		modelString: modelId,
+		provider: "OPENAI_CHATGPT_PLAN",
+		configId: null,
+		configSource: null,
+		selectionSource: "chatgpt_plan",
+		canonicalName: modelId,
+		billingMode: "external_provider",
+		billingCustomerId: null,
+		planSource: source,
+	};
+	const trackUsage = () => {
+		const touched =
+			source.kind === "org"
+				? touchChatGptPlanOrgAccount({
+						organizationId: source.organizationId,
+						accountId: source.accountId,
+					})
+				: touchChatGptPlanCredential(context.userId);
+		touched.catch(() => {
+			// Silently ignore - tracking is best-effort
+		});
+	};
+	const usageLoggingContext = {
+		userId: context.userId,
+		organizationId: context.organizationId,
+		projectId: context.projectId,
+		providerConfigId: providerConfigId ?? undefined,
+		provider: metadata.provider,
+		providerModelId: modelId,
+		modelCanonicalName: modelId,
+		taskType,
+		billingCategory: getAiBillingCategory(metadata),
+		billingCustomerId: null,
+		featureKey: context.featureKey,
+		promptVersionId: context.promptVersionId,
+		jobType: context.jobType,
+		conversationId: context.conversationId,
+		costUsd: 0,
+	};
+	const build = (current: PlanSourceRef) =>
+		createChatGptPlanModel({
+			userId: context.userId,
+			source: current,
+			modelId,
+			reasoningEffort,
+			// The usage row names the model that actually answered.
+			onModelFallback: (servedBy) => {
+				usageLoggingContext.providerModelId = servedBy;
+				usageLoggingContext.modelCanonicalName = servedBy;
+			},
+		});
+	// A spent plan hands the call to the next one, silently; the usage row
+	// names the account that answered.
+	const model = wrapLanguageModel({
+		model: build(source) as Parameters<
+			typeof wrapLanguageModel
+		>[0]["model"],
+		middleware: createChatGptPlanRotationMiddleware({
+			source,
+			build,
+			repick: async (exclude) =>
+				(
+					await chatGptPlanSourceForCall(context, {
+						exclude: [
+							...(context.excludePlanSources ?? []),
+							...exclude,
+						],
+					})
+				)?.source ?? null,
+			// The account's own token limits apply to the call it takes over.
+			beforeRotate: (next) =>
+				assertWithinAiUsageLimits({
+					userId: context.userId,
+					organizationId: context.organizationId ?? null,
+					projectId: context.projectId ?? null,
+					providerConfigId:
+						next.kind === "org" ? next.accountId : null,
+					modelCanonicalName: modelId,
+					taskType,
+				}),
+			onRotated: (next) => {
+				usageLoggingContext.providerConfigId =
+					next.kind === "org" ? next.accountId : undefined;
+			},
+		}),
+	});
+	const trackedModel = wrapModelWithDispatchGuard(
+		options.usageLogging === "aggregate"
+			? model
+			: wrapModelWithUsageLogging(model, usageLoggingContext),
+	);
+	if (options.usageLogging === "aggregate") {
+		return {
+			model: trackedModel,
+			metadata,
+			trackUsage,
+			recordAggregateUsage: (record) =>
+				recordAggregateUsage(usageLoggingContext, record),
+		};
+	}
 	return { model: trackedModel, metadata, trackUsage };
 }
 
@@ -1672,19 +1882,24 @@ export async function getAIEmbeddingModelWithMetadata(
 
 	// Global embedding usage interceptor — same single-source-of-truth guarantee
 	// as language models. logEmbeddingUsageAsync is now a no-op (see usage-logging.ts).
-	const trackedModel = wrapEmbeddingModelWithUsageLogging(model, {
-		userId: context.userId,
-		organizationId: context.organizationId,
-		projectId: context.projectId,
-		provider: metadata.provider,
-		providerModelId: metadata.modelString,
-		modelCanonicalName: metadata.canonicalName ?? undefined,
-		providerConfigId: metadata.configId ?? undefined,
-		taskType: "EMBEDDING",
-		billingCategory: getAiBillingCategory(metadata),
-		billingCustomerId: metadata.billingCustomerId,
-		jobType: context.jobType,
-	});
+	// Wrapped in the dispatch guard as well, exactly as language models are
+	// in getAIModelWithMetadata: each physical embed request checks the
+	// caller's ambient guard first.
+	const trackedModel = wrapEmbeddingModelWithDispatchGuard(
+		wrapEmbeddingModelWithUsageLogging(model, {
+			userId: context.userId,
+			organizationId: context.organizationId,
+			projectId: context.projectId,
+			provider: metadata.provider,
+			providerModelId: metadata.modelString,
+			modelCanonicalName: metadata.canonicalName ?? undefined,
+			providerConfigId: metadata.configId ?? undefined,
+			taskType: "EMBEDDING",
+			billingCategory: getAiBillingCategory(metadata),
+			billingCustomerId: metadata.billingCustomerId,
+			jobType: context.jobType,
+		}),
+	);
 
 	return { model: trackedModel, metadata, trackUsage };
 }

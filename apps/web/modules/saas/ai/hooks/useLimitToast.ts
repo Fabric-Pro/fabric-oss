@@ -11,6 +11,7 @@
 "use client";
 
 import type { LimitSignal } from "@repo/ai/limits";
+import { planResetHint } from "@saas/shared/lib/ai-error-message";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { toast } from "sonner";
@@ -71,6 +72,23 @@ function getToastCopy(
 			return {
 				title: "AI provider is overloaded",
 				description: `${signal.provider ?? "The AI provider"} is overloaded right now. Please retry in a moment.`,
+			};
+		// Neutral: the spent plan may be the member's own or a shared one.
+		case "subscription_exhausted":
+			return {
+				title: "The ChatGPT plan has no usage left",
+				description: [
+					"Wait for the plan's limit to reset and try again.",
+					planResetHint(signal.retryAfterMs) ||
+						"If it is your own plan, ChatGPT Settings → Usage shows when it resets.",
+				].join(" "),
+			};
+		case "subscription_reconnect":
+			return {
+				title: "Reconnect your ChatGPT plan",
+				description:
+					signal.message ||
+					"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
 			};
 	}
 }

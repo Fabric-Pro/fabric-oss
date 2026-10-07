@@ -30,12 +30,14 @@ describe("instruction proposal authorization", () => {
 	it("serves file content only for direct or approved READY snapshots", () => {
 		expect(
 			isInstructionSnapshotContentReadable({
+				contentKind: "FULL_SNAPSHOT",
 				status: "READY",
 				proposalStatus: null,
 			}),
 		).toBe(true);
 		expect(
 			isInstructionSnapshotContentReadable({
+				contentKind: "FULL_SNAPSHOT",
 				status: "READY",
 				proposalStatus: "APPROVED",
 			}),
@@ -43,6 +45,7 @@ describe("instruction proposal authorization", () => {
 		for (const proposalStatus of ["PENDING", "REJECTED"] as const) {
 			expect(
 				isInstructionSnapshotContentReadable({
+					contentKind: "FULL_SNAPSHOT",
 					status: "READY",
 					proposalStatus,
 				}),
@@ -50,6 +53,7 @@ describe("instruction proposal authorization", () => {
 		}
 		expect(
 			isInstructionSnapshotContentReadable({
+				contentKind: "FULL_SNAPSHOT",
 				status: "VALIDATING",
 				proposalStatus: null,
 			}),
@@ -58,6 +62,7 @@ describe("instruction proposal authorization", () => {
 
 	it("never serves a direct commit's own files as content, before or after the branch holds it (Fizzy #2878 §10)", () => {
 		const commit = {
+			contentKind: "FULL_SNAPSHOT",
 			status: "READY",
 			proposalStatus: null,
 			proposalDestination: "REPOSITORY_COMMIT",
@@ -67,6 +72,7 @@ describe("instruction proposal authorization", () => {
 		expect(isInstructionSnapshotContentReadable(stampedAsCopy)).toBe(false);
 		expect(
 			isInstructionSnapshotContentReadable({
+				contentKind: "FULL_SNAPSHOT",
 				status: "READY",
 				proposalStatus: null,
 				proposalDestination: "FABRIC",

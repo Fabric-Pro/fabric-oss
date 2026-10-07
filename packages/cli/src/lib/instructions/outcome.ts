@@ -57,6 +57,18 @@ type Repo = string;
  * (C0, C1 and the line separators) become spaces and the length is bounded,
  * wherever the line is printed from.
  */
+const MAX_BLOCKED_FILES = 3;
+
+/** ` (a, b, c and 2 more)`, or nothing when git named no file. */
+function blockedFilesText(files: readonly string[]): string {
+	if (files.length === 0) {
+		return "";
+	}
+	const named = files.slice(0, MAX_BLOCKED_FILES).map(shown).join(", ");
+	const more = files.length - MAX_BLOCKED_FILES;
+	return ` (${named}${more > 0 ? ` and ${more} more` : ""})`;
+}
+
 function shown(value: string): string {
 	return sanitizeDisplayText(value, 255);
 }
@@ -84,7 +96,11 @@ export type FastForwardFetchFailure =
 	| "timeout"
 	| "other";
 
-export type FastForwardMergeFailure = "diverged" | "timeout" | "other";
+export type FastForwardMergeFailure =
+	| "diverged"
+	| "local-changes"
+	| "timeout"
+	| "other";
 
 /** Why Fabric's own copy is behind a branch tip the checkout has. */
 export type FabricLag =
@@ -230,6 +246,8 @@ export interface OutcomeParams {
 	/** `diverged` is printed as a line of its own; the others are skips. */
 	"ff-merge-failed": {
 		reason: FastForwardMergeFailure;
+		/** The files git named when local changes blocked the merge. */
+		files?: string[];
 		ref: string;
 		remote: string;
 		commands: FastForwardCommands;
@@ -460,8 +478,10 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 				return reason satisfies never;
 		}
 	},
-	"ff-merge-failed": ({ reason, ref, remote, commands }) => {
+	"ff-merge-failed": ({ reason, files, ref, remote, commands }) => {
 		switch (reason) {
+			case "local-changes":
+				return `${HOOK_PREFIX}: ${ref} is behind ${remote}/${ref}, but local changes would be overwritten${blockedFilesText(files ?? [])}, so nothing was updated. Commit or stash them, then run: ${commands.pull}`;
 			case "diverged":
 				return `${HOOK_PREFIX}: ${ref} and ${remote}/${ref} have diverged, so nothing was updated. Run: ${commands.rebase}, or merge ${remote}/${ref} yourself.`;
 			case "timeout":

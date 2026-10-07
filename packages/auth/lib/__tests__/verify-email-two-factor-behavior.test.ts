@@ -980,21 +980,29 @@ describe("deny-by-default gate — the 2FA management endpoints", () => {
 		expect(await findChallengeRows(instance)).toHaveLength(0);
 	});
 
-	it("does not challenge /two-factor/enable, which mints nothing in this configuration", async () => {
-		// Re-enrolling an ALREADY-enrolled user is the case that would bite:
-		// if enable ever started rotating the session for someone whose flag is
-		// already set, this gate would challenge it and strand them. It does
-		// not — the mint is behind `skipVerificationOnEnable`, which production
-		// does not set, so enrolment completes at /two-factor/verify-totp.
+	it("refuses re-enabling a verified TOTP without replacing the factor or minting a challenge", async () => {
+		// 1.7 rejects verified-factor replacement at enable. Initial enrollment
+		// still completes at verify-totp; neither path needs an enable exemption.
 		const instance = await setup();
 		const auth = instance.auth as TestAuth;
 		const enrolled = await enrollTwoFactor(instance);
 
-		const reEnabled = await auth.api.enableTwoFactor({
+		const readFactor = () =>
+			instance.db.findOne({
+				model: "twoFactor",
+				where: [{ field: "userId", value: enrolled.userId }],
+			});
+		const originalFactor = await readFactor();
+		const reEnabled: Response = await auth.api.enableTwoFactor({
 			body: { password: instance.testUser.password },
 			headers: enrolled.headers,
+			asResponse: true,
 		});
-		expect(reEnabled.totpURI).toBeTruthy();
+		expect(reEnabled.status).toBe(400);
+		expect(await reEnabled.json()).toMatchObject({
+			code: "TOTP_ALREADY_ENABLED",
+		});
+		expect(await readFactor()).toEqual(originalFactor);
 
 		const observation = lastObservationFor(instance, "/two-factor/enable");
 		expect(observation).toBeTruthy();

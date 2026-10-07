@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/sdk",
-	"version": "0.4.1",
+	"version": "0.5.0",
 	"description": "TypeScript SDK for the Fabric AI platform",
 	"keywords": [
 		"fabric",
@@ -33,15 +33,15 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsup",
-		"dev": "tsup --watch",
+		"build": "tsdown",
+		"dev": "tsdown --watch",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
-		"tsup": "^8.0.0",
+		"tsdown": "^0.23.0",
 		"typescript": "5.9.3",
 		"vitest": "^4.1.11"
 	}

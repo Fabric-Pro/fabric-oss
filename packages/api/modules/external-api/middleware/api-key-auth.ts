@@ -14,6 +14,7 @@ import {
 	verifyOAuthAccessToken,
 	verifyOrganizationApiKey,
 } from "@repo/database";
+import { getBaseUrl } from "@repo/utils";
 import type { Context, Next } from "hono";
 import { verifyUserApiKey } from "../../users/procedures/api-keys/verify";
 import {
@@ -158,7 +159,10 @@ export function requireApiKey(requiredScope?: string) {
 			// token can be dead — expired, revoked, client disabled, owner
 			// banned or no longer a member of the organization it was bound to —
 			// and all of them answer like any other bad credential.
-			const token = await verifyOAuthAccessToken(apiKey);
+			const token = await verifyOAuthAccessToken(apiKey, {
+				appUrl: getBaseUrl(),
+				audience: "api",
+			});
 			if (!token.valid) {
 				return c.json(
 					{ error: "Invalid or expired access token" },

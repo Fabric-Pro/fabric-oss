@@ -1,8 +1,8 @@
 /**
  * An agent signed in for ONE project, through Better Auth's real request cycle.
  *
- * The plugin drops `resource` at authorize and refuses a project resource at
- * token, so everything below is what Fabric's two global before-hooks and
+ * The plugin accepts only static resources, so everything below is what
+ * Fabric's global before-hooks and
  * `consentReferenceId` make of it: the project the client asked for is bound at
  * consent, travels as the grant's reference, and is the only thing a token
  * exchange or a refresh may name.
@@ -203,6 +203,241 @@ async function authorizedFor(
 }
 
 describe("authorizing an agent for one project", () => {
+	it("refuses unsupported DPoP parameters and headers before GET or POST authorization writes a project binding", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const base = new URLSearchParams(
+			(
+				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
+			).split("?")[1],
+		);
+		const bound = new URLSearchParams(base);
+		bound.append("dpop_jkt", "j".repeat(43));
+		const repeated = new URLSearchParams(bound);
+		repeated.append("dpop_jkt", "");
+		for (const [path, init] of [
+			[`/oauth2/authorize?${bound}`, {}],
+			[`/oauth2/authorize?${base}&dpop_jkt=`, {}],
+			[
+				`/oauth2/authorize?${base}`,
+				{ headers: { DPoP: "unsupported-proof" } },
+			],
+			[`/oauth2/authorize?${base}`, { headers: { DPoP: "" } }],
+			[
+				"/oauth2/authorize",
+				{ method: "POST", headers: FORM, body: repeated.toString() },
+			],
+			[
+				"/oauth2/authorize",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(Object.fromEntries(bound)),
+				},
+			],
+			[
+				"/oauth2/authorize",
+				{
+					method: "POST",
+					headers: { ...FORM, dPoP: "unsupported-proof" },
+					body: base.toString(),
+				},
+			],
+		] satisfies Array<[string, RequestInit]>) {
+			const response = await ctx.call(path, init);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				error: "invalid_request",
+			});
+			expect(fixtures.bindings.size).toBe(0);
+			expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(0);
+			expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(0);
+		}
+	});
+	it("refuses DPoP bindings in direct server authorization calls", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const query = Object.fromEntries(
+			new URLSearchParams(
+				(
+					await authorizeUrl(client.client_id, {
+						resource: PROJECT_ONE,
+					})
+				).split("?")[1],
+			),
+		);
+		await expect(
+			ctx.auth.api.oauth2Authorize({
+				body: {},
+				query: { ...query, dpop_jkt: "j".repeat(43) },
+				headers: new Headers({ cookie: ctx.cookie }),
+				asResponse: true,
+			}),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			body: { error: "invalid_request" },
+		});
+		expect(fixtures.bindings.size).toBe(0);
+		expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(0);
+	});
+	it("refuses DPoP in a resumed OAuth query before provider continuation hooks run", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const first = await authorize(ctx, client.client_id, {
+			resource: PROJECT_ONE,
+		});
+		const binding = [...fixtures.bindings.values()][0];
+		const expiresAt = binding.expiresAt;
+		const response = await ctx.call("/oauth2/continue", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				postLogin: true,
+				oauth_query: `${signedQueryOf(first)}&dpop_jkt=${"j".repeat(43)}`,
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			error: "invalid_request",
+		});
+		expect(binding.expiresAt).toBe(expiresAt);
+		expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(0);
+		expect(await rowsOf(ctx, "oauthAccessToken")).toHaveLength(0);
+	});
+	it("binds a POST authorization to the same project as a GET authorization", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const query = new URLSearchParams(
+			(
+				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
+			).split("?")[1],
+		);
+		const response = await ctx.call("/oauth2/authorize", {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				accept: "text/html",
+			},
+			body: query.toString(),
+		});
+		expect(response.headers.get("location")).toContain(
+			"/auth/oauth/consent",
+		);
+		expect(pageShows(response)).toEqual({
+			projectId: "project-example-one",
+			audience: "mcp",
+		});
+		const code = await consentTo(ctx, response);
+		expect(
+			(
+				await exchange(ctx, client.client_id, code, {
+					resource: PROJECT_ONE,
+				})
+			).response.status,
+		).toBe(200);
+		expect((await rowsOf(ctx, "oauthAccessToken"))[0].referenceId).toBe(
+			REFERENCE_ONE,
+		);
+	});
+	it("refuses POST requests for several projects, a malformed project URL, or a missing PKCE challenge", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const cases: Array<
+			[NonNullable<Parameters<typeof authorizeUrl>[1]>, string]
+		> = [
+			[{ resource: [PROJECT_ONE, PROJECT_TWO] }, "invalid_target"],
+			[{ resource: `${PROJECT_ONE}/` }, "invalid_target"],
+			[
+				{ resource: PROJECT_ONE, withChallenge: false },
+				"invalid_request",
+			],
+		];
+		for (const [options, error] of cases) {
+			const query = (await authorizeUrl(client.client_id, options)).split(
+				"?",
+			)[1];
+			const response = await ctx.call("/oauth2/authorize", {
+				method: "POST",
+				headers: FORM,
+				body: query,
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error });
+		}
+		expect(fixtures.bindings.size).toBe(0);
+		expect(await rowsOf(ctx, "oauthConsent")).toHaveLength(0);
+	});
+	it("refuses a POST project authorization after the caller loses access", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		fixtures.readableProjects.delete("project-example-one");
+		const response = await ctx.call("/oauth2/authorize", {
+			method: "POST",
+			headers: FORM,
+			body: (
+				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
+			).split("?")[1],
+		});
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({ error: "access_denied" });
+		expect(fixtures.bindings.size).toBe(0);
+	});
+	it("refuses repeated authorization identity fields in a project POST before the form parser discards them", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		for (const field of ["client_id", "code_challenge"]) {
+			const form = new URLSearchParams(
+				(
+					await authorizeUrl(client.client_id, {
+						resource: PROJECT_ONE,
+					})
+				).split("?")[1],
+			);
+			form.append(field, form.get(field) as string);
+			const response = await ctx.call("/oauth2/authorize", {
+				method: "POST",
+				headers: FORM,
+				body: form.toString(),
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				error: "invalid_request",
+			});
+		}
+		expect(fixtures.bindings.size).toBe(0);
+	});
+	it("extends the project binding when the provider resumes its signed query from POST continue", async () => {
+		const ctx = await boot();
+		const { body: client } = await register(ctx.call);
+		const first = await authorize(ctx, client.client_id, {
+			resource: PROJECT_ONE,
+		});
+		const row = [...fixtures.bindings.values()][0];
+		row.expiresAt = Date.now() + 30_000;
+		const continued = await ctx.call("/oauth2/continue", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				postLogin: true,
+				oauth_query: signedQueryOf(first),
+			}),
+		});
+		expect(continued.status).toBe(200);
+		expect(row.expiresAt).toBeGreaterThan(Date.now() + 60_000);
+		const { url } = (await continued.json()) as { url: string };
+		const resumed = new Response(null, {
+			status: 302,
+			headers: { location: url },
+		});
+		const code = await consentTo(ctx, resumed);
+		expect(
+			(
+				await exchange(ctx, client.client_id, code, {
+					resource: PROJECT_ONE,
+				})
+			).response.status,
+		).toBe(200);
+	});
 	it("goes straight to consent, whatever the number of organizations", async () => {
 		fixtures.organizationCount = 3;
 		const ctx = await boot();
@@ -344,10 +579,10 @@ describe("authorizing an agent for one project", () => {
 			await authorize(ctx, client.client_id, { resource: PROJECT_ONE });
 			fixtures.readableProjects.delete("project-example-one");
 
-			// What the plugin dispatches again after the sign-in: the signed query
-			// carries no `resource`, only the client and the challenge.
+			// What the plugin dispatches again after sign-in: the signed query
+			// carries the static audience, client and challenge.
 			const resumed = await authorize(ctx, client.client_id, {
-				resource: null,
+				resource: ORGANIZATION_WIDE,
 			});
 
 			expect(resumed.headers.get("location")).toContain(
@@ -567,7 +802,9 @@ describe("exchanging a code for a project's token", () => {
 		});
 
 		expect(response.status).toBe(400);
-		expect(body.error).toBe("invalid_request");
+		// 1.7 checks the code's authorized resource set before issuance and
+		// reports RFC 8707 invalid_target rather than the old generic error.
+		expect(body.error).toBe("invalid_target");
 	});
 });
 

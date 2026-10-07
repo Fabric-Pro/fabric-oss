@@ -3,6 +3,7 @@ import { buildGatewayProtectedResourceMetadata } from "../oauth-protected-resour
 import {
 	gatewayAuthenticateHeader,
 	isOAuthScope,
+	OAUTH_DEFAULT_SCOPES,
 	OAUTH_SCOPES,
 	oauthGatewayMetadataUrl,
 	oauthIssuer,
@@ -51,7 +52,7 @@ describe("protected-resource metadata", () => {
 			"https://app.example.com/api/mcp-gateway/projects/project-example-one",
 		);
 		expect(metadata.authorization_servers).toEqual([issuer]);
-		expect(metadata.scopes_supported).toEqual([...OAUTH_SCOPES]);
+		expect(metadata.scopes_supported).toEqual([...OAUTH_DEFAULT_SCOPES]);
 	});
 });
 

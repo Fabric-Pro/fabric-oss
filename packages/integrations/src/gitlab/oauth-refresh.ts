@@ -81,7 +81,7 @@ export interface GitLabRefreshResponse {
  * moment a customer points at their own server. Trailing slashes on
  * `baseUrl` are tolerated.
  */
-function resolveTokenUrl(baseUrl?: string): string {
+export function resolveTokenUrl(baseUrl?: string): string {
 	if (!baseUrl) {
 		return GITLAB_TOKEN_URL;
 	}
@@ -113,6 +113,10 @@ export async function refreshGitLabToken(
 			"Content-Type": "application/x-www-form-urlencoded",
 		},
 		body: body.toString(),
+		// The request carries the refresh token and client credentials: a
+		// redirect must never re-send them anywhere else (gitlab.com uses the
+		// plain fetch, which would otherwise follow one).
+		redirect: "error",
 		// See GITLAB_TOKEN_EXCHANGE_TIMEOUT_MS above. This same signal also
 		// covers every body read below (`response.json()`, both branches): a
 		// timeout firing after headers already arrived throws the identical

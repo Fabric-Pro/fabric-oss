@@ -27,7 +27,7 @@
 		"preview": "email dev --port 3005",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"types": "./index.ts",
 	"version": "0.0.1",

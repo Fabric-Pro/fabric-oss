@@ -75,6 +75,8 @@ export async function signInWithBrowser(input: {
 	 * and only this project's previous sign-in is revoked.
 	 */
 	project?: string;
+	/** Explicit capability scopes for this interactive sign-in. */
+	scopes?: readonly string[];
 }): Promise<SignInResult> {
 	const previous = getOAuth(input.origin, input.project);
 	const credentials: OAuthCredentials = await loginWithBrowser({
@@ -84,6 +86,7 @@ export async function signInWithBrowser(input: {
 		openBrowser,
 		announce: input.announce,
 		signal: input.signal,
+		...(input.scopes === undefined ? {} : { scopes: input.scopes }),
 	});
 
 	// Before the token is stored or used: it was requested for this
@@ -115,6 +118,10 @@ export async function signInWithBrowser(input: {
 	// has still granted it, so it is ended before the person is told it was not
 	// kept. Best effort, like every revocation here.
 	if (input.project !== undefined && me.projectContext !== input.project) {
+		await revokeOAuthSession(credentials);
+		throw new SignInRefusedError(input.origin, "rejected");
+	}
+	if (input.scopes?.some((scope) => !me.scopes.includes(scope))) {
 		await revokeOAuthSession(credentials);
 		throw new SignInRefusedError(input.origin, "rejected");
 	}

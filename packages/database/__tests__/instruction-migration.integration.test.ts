@@ -194,7 +194,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			});
 			await db.project.update({
 				where: { id: projectId },
-				data: { publishedInstructionSnapshotId: null },
+				data: {
+					instructionSettings: { sourceOfTruth: "UPLOAD" },
+					publishedInstructionSnapshotId: null,
+				},
 			});
 			await db.projectInstructionSnapshot.deleteMany({
 				where: { projectId },
@@ -374,12 +377,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					whilePaused.map((row) => row.id),
 					"a MIGRATING row is never due",
 				).not.toContain(started.sync.id);
-				await db.projectInstructionRepositorySync.update({
-					where: { id: started.sync.id },
-					data: {
-						automaticPausedReason: null,
-						automaticPausedAt: null,
-					},
+				await attachInstructionMigrationProposal({
+					...tenant(),
+					syncId: started.sync.id,
+					branchId: "branch-1",
+				});
+				await completeInstructionMigration({
+					...tenant(),
+					branchId: "branch-1",
+					pullRequestUrl: null,
 				});
 				const afterwards = await db.$transaction((tx) =>
 					claimDueInstructionSyncRows(tx, {
@@ -1613,6 +1619,13 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 
 			it("refuses a repository snapshot that is not the move's own sync row's", async () => {
 				const started = await openMove();
+				const other = await seedSnapshot({
+					source: "REPOSITORY",
+					settingsFrozen: {
+						syncId: "another-sync-row",
+						syncGeneration: 1,
+					},
+				});
 				await attachInstructionMigrationProposal({
 					...tenant(),
 					syncId: started.sync.id,
@@ -1622,13 +1635,6 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					...tenant(),
 					branchId: "branch-1",
 					pullRequestUrl: null,
-				});
-				const other = await seedSnapshot({
-					source: "REPOSITORY",
-					settingsFrozen: {
-						syncId: "another-sync-row",
-						syncGeneration: 1,
-					},
 				});
 
 				const result = await publishInstructionSnapshot({

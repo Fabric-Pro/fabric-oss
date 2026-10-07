@@ -30,6 +30,7 @@ import {
 	extractAIToken,
 	getAICredentialsFromHeaders,
 } from "./services/token-exchange";
+import { tokenExchangeFailure } from "./services/token-exchange-failure";
 
 // Note: @repo/observability is imported dynamically in start() to avoid
 // bundling OpenTelemetry packages in environments that don't support them (e.g., Turbopack)
@@ -1303,12 +1304,11 @@ export function createUnifiedServer(
 					error,
 				);
 				// Token was provided but exchange failed - this is an error
-				return c.json(
-					{
-						error: "AI token exchange failed. Please check your AI provider configuration.",
-					},
-					401,
+				const failure = tokenExchangeFailure(
+					error,
+					"AI token exchange failed. Please check your AI provider configuration.",
 				);
+				return c.json(failure.body, failure.status);
 			}
 		}
 
@@ -1378,6 +1378,8 @@ export function createUnifiedServer(
 				),
 				ai_billing_mode: exchangedCredentials?.billingMode,
 				ai_billing_customer_id: exchangedCredentials?.billingCustomerId,
+				// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
+				ai_plan_source: exchangedCredentials?.planSource,
 				// Pass through tenant context
 				tenant_user_id:
 					headerTenantUserId ||
@@ -2348,12 +2350,11 @@ export function createUnifiedServer(
 						`[UnifiedServer:${config.name}] A2A token exchange failed:`,
 						error,
 					);
-					return c.json(
-						{
-							error: "AI token exchange failed. Invalid or expired token.",
-						},
-						401,
+					const failure = tokenExchangeFailure(
+						error,
+						"AI token exchange failed. Invalid or expired token.",
 					);
+					return c.json(failure.body, failure.status);
 				}
 			}
 
@@ -2398,6 +2399,8 @@ export function createUnifiedServer(
 					ai_billing_mode: exchangedCredentials?.billingMode,
 					ai_billing_customer_id:
 						exchangedCredentials?.billingCustomerId,
+					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
+					ai_plan_source: exchangedCredentials?.planSource,
 					tenant_user_id:
 						headerTenantUserId || body.metadata?.tenant_user_id,
 					tenant_organization_id:
@@ -2466,12 +2469,11 @@ export function createUnifiedServer(
 						`[UnifiedServer:${config.name}] A2A stream token exchange failed:`,
 						error,
 					);
-					return c.json(
-						{
-							error: "AI token exchange failed. Invalid or expired token.",
-						},
-						401,
+					const failure = tokenExchangeFailure(
+						error,
+						"AI token exchange failed. Invalid or expired token.",
 					);
+					return c.json(failure.body, failure.status);
 				}
 			}
 
@@ -2504,6 +2506,8 @@ export function createUnifiedServer(
 					ai_billing_mode: exchangedCredentials?.billingMode,
 					ai_billing_customer_id:
 						exchangedCredentials?.billingCustomerId,
+					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
+					ai_plan_source: exchangedCredentials?.planSource,
 					tenant_user_id:
 						headerTenantUserId || body.metadata?.tenant_user_id,
 					tenant_organization_id:
@@ -2776,6 +2780,8 @@ export function createUnifiedServer(
 					ai_billing_mode: exchangedCredentials?.billingMode,
 					ai_billing_customer_id:
 						exchangedCredentials?.billingCustomerId,
+					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
+					ai_plan_source: exchangedCredentials?.planSource,
 					// Tenant context
 					tenant_user_id: tenantUserId,
 					tenant_organization_id: tenantOrgId,

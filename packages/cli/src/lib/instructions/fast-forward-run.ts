@@ -40,6 +40,7 @@ import {
 } from "./checkout.js";
 import { sanitizeDisplayText } from "./checks.js";
 import {
+	type DeadlineStage,
 	type FastForwardContext,
 	type FastForwardFacts,
 	type FfOutcome,
@@ -57,8 +58,20 @@ import * as git from "./git.js";
 import { hookTiming } from "./hook-timing.js";
 import { appendTrace } from "./hook-trace.js";
 
-/** What the fetch leaves for the merge and the notice, out of the git budget. */
+/**
+ * What the fetch leaves for the local steps after it (re-reading the checkout,
+ * the merge) and the notice, out of the git budget. Git on a slow disk spends
+ * most of this re-reading, so it is not also the bar the merge must clear.
+ */
 export const MERGE_RESERVE_MS = 1_500;
+
+/**
+ * What must still be left to START the merge: one `git merge --ff-only`, which
+ * the git budget kills if it overruns. Smaller than the reserve on purpose: a
+ * fetch that used its whole budget leaves the reserve, the re-reads spend part
+ * of it, and the merge (the fast-forward the fetch was for) still goes ahead.
+ */
+export const MERGE_FLOOR_MS = 500;
 
 /** Age after which a fast-forward lock with no live owner is reported abandoned. */
 const FF_LOCK_STALE_MS = 30_000;
@@ -72,6 +85,10 @@ export interface FastForwardRun {
 	classification: MatchingClassification;
 	repository: PublishedInstructionRepository;
 	snapshot: PublishedInstructionSnapshot | undefined;
+	/** The immutable direct-read commit, when this project has no snapshot. */
+	directCommitSha?: string;
+	/** Fabric's one-shot Git transport for a direct repository hook. */
+	gitTransport?: git.GitHttpAuthorization;
 	/** The checkout as `check` found it: its state and the line it would print. */
 	report: CheckoutReport;
 	projectId: string;
@@ -175,10 +192,37 @@ async function readFacts(
 }
 
 /** What git not answering means: the budget ran out, or something is in the way. */
-function unanswered(deadline: number, head: string | null): Decision {
+function unanswered(
+	deadline: number,
+	head: string | null,
+	stage: DeadlineStage,
+): Decision {
 	return Date.now() >= deadline
-		? { outcome: { kind: "deadline" }, head }
+		? { outcome: { kind: "deadline", stage }, head }
 		: { outcome: { kind: "not-safe", reason: "git-busy" }, head };
+}
+
+/**
+ * How the fetched tip stands to HEAD. `ahead` is the one a merge can move to;
+ * ahead of the tip is current (the developer has commits to push); neither is
+ * a diverged branch, which is theirs to settle. A git that cannot answer is
+ * `ahead`: `merge --ff-only` is the check that cannot be wrong.
+ */
+async function tipRelation(
+	root: string,
+	head: string,
+	tip: string,
+	deadline: number,
+): Promise<"current" | "ahead" | "diverged"> {
+	if (tip === head) {
+		return "current";
+	}
+	const forward = await git.isAncestor(root, head, tip, deadline);
+	if (forward.kind !== "ok" || forward.value) {
+		return "ahead";
+	}
+	const behind = await git.isAncestor(root, tip, head, deadline);
+	return behind.kind === "ok" && behind.value ? "current" : "diverged";
 }
 
 async function underLock(
@@ -193,7 +237,7 @@ async function underLock(
 	// The checkout may have changed since the gate first looked.
 	const facts = await readFacts(run, deadline);
 	if (facts === null) {
-		return unanswered(deadline, first.state.head);
+		return unanswered(deadline, first.state.head, "read");
 	}
 	const gate = fastForwardEligibility(facts);
 	if (!gate.eligible) {
@@ -212,12 +256,21 @@ async function underLock(
 
 	const fetchDeadline = deadline - MERGE_RESERVE_MS;
 	if (Date.now() >= fetchDeadline) {
-		return { outcome: { kind: "deadline" }, head };
+		return { outcome: { kind: "deadline", stage: "fetch" }, head };
 	}
-	const fetched = await git.fetchRef(root, remote, ref, fetchDeadline);
+	const fetched = run.gitTransport
+		? await git.fetchRefFromUrl(
+				root,
+				run.gitTransport.url,
+				remote,
+				ref,
+				fetchDeadline,
+				run.gitTransport,
+			)
+		: await git.fetchRef(root, remote, ref, fetchDeadline);
 	switch (fetched.kind) {
 		case "timed-out":
-			return { outcome: { kind: "deadline" }, head };
+			return { outcome: { kind: "deadline", stage: "fetch" }, head };
 		case "unavailable":
 			return {
 				outcome: { kind: "fetch-failed", reason: "other" },
@@ -242,36 +295,31 @@ async function underLock(
 			return fetched satisfies never;
 	}
 	const tip = fetched.tip;
-	const afterFetch = await factsStillMatch(run, facts, deadline);
-	if (afterFetch !== null) {
-		return afterFetch;
-	}
-	if (tip === head) {
-		return { outcome: { kind: "already-current" }, head };
-	}
 
-	// Is the tip ahead of HEAD? Ahead of the tip is current (the developer has
-	// commits to push); neither is a diverged branch, which is theirs to settle.
-	const forward = await git.isAncestor(root, head, tip, deadline);
-	if (forward.kind === "ok" && !forward.value) {
-		const behind = await git.isAncestor(root, tip, head, deadline);
-		return behind.kind === "ok" && behind.value
-			? { outcome: { kind: "already-current" }, head }
-			: {
-					outcome: { kind: "merge-failed", reason: "diverged" },
-					head,
-				};
+	// Everything from here on is local: the fetch has finished, so the merge is
+	// not held to the network's budget. It may start whenever `MERGE_FLOOR_MS`
+	// is left, however much of the reserve the checks below spent. The
+	// checkout is re-read once, right before the merge.
+	const relation = await tipRelation(root, head, tip, deadline);
+	const changed = await factsStillMatch(run, facts, deadline);
+	if (changed !== null) {
+		return changed;
 	}
-
-	if (deadline - Date.now() < MERGE_RESERVE_MS) {
-		return { outcome: { kind: "deadline" }, head };
+	switch (relation) {
+		case "current":
+			return { outcome: { kind: "already-current" }, head };
+		case "diverged":
+			return {
+				outcome: { kind: "merge-failed", reason: "diverged" },
+				head,
+			};
+		case "ahead":
+			break;
+		default:
+			return relation satisfies never;
 	}
-	const beforeMerge = await factsStillMatch(run, facts, deadline);
-	if (beforeMerge !== null) {
-		return beforeMerge;
-	}
-	if (deadline - Date.now() < MERGE_RESERVE_MS) {
-		return { outcome: { kind: "deadline" }, head };
+	if (deadline - Date.now() < MERGE_FLOOR_MS) {
+		return { outcome: { kind: "deadline", stage: "merge" }, head };
 	}
 	const merged = await git.fastForwardTo(root, tip, deadline);
 	switch (merged.kind) {
@@ -299,7 +347,13 @@ async function underLock(
 				};
 			}
 			return {
-				outcome: { kind: "merge-failed", reason: merged.reason },
+				outcome: {
+					kind: "merge-failed",
+					reason: merged.reason,
+					...(merged.files === undefined
+						? {}
+						: { files: merged.files }),
+				},
 				head,
 			};
 		default:
@@ -319,7 +373,7 @@ async function factsStillMatch(
 ): Promise<Decision | null> {
 	const facts = await readFacts(run, deadline);
 	if (facts === null) {
-		return unanswered(deadline, expected.state.head);
+		return unanswered(deadline, expected.state.head, "merge");
 	}
 	const gate = fastForwardEligibility(facts);
 	if (!gate.eligible) {
@@ -349,7 +403,7 @@ async function decide(run: FastForwardRun): Promise<Decision> {
 	}
 	const facts = await readFacts(run, deadline);
 	if (facts === null) {
-		return unanswered(deadline, head);
+		return unanswered(deadline, head, "read");
 	}
 	const gate = fastForwardEligibility(facts);
 	if (!gate.eligible) {
@@ -361,7 +415,7 @@ async function decide(run: FastForwardRun): Promise<Decision> {
 
 	const common = await git.commonDir(root, deadline);
 	if (common.kind !== "ok") {
-		return unanswered(deadline, head);
+		return unanswered(deadline, head, "read");
 	}
 	const directory = path.join(common.value, "fabric");
 	try {
@@ -396,6 +450,8 @@ function reasonOf(outcome: FfOutcome): string | null {
 		case "fetch-failed":
 		case "merge-failed":
 			return outcome.reason;
+		case "deadline":
+			return outcome.stage;
 		default:
 			return null;
 	}
@@ -406,8 +462,11 @@ function noticeReason(outcome: FfOutcome, lag: string | null): string | null {
 	if (outcome.kind === "not-safe") {
 		return `not-safe:${outcome.reason}`;
 	}
-	if (outcome.kind === "merge-failed" && outcome.reason === "diverged") {
-		return "merge-failed:diverged";
+	if (
+		outcome.kind === "merge-failed" &&
+		(outcome.reason === "diverged" || outcome.reason === "local-changes")
+	) {
+		return `merge-failed:${outcome.reason}`;
 	}
 	if (
 		(outcome.kind === "fast-forwarded" ||
@@ -446,12 +505,13 @@ export async function runFastForward(
 	const { outcome } = decision;
 
 	const source = snapshot?.source;
-	const publishedSha =
+	const snapshotSha =
 		source?.kind === "REPOSITORY" &&
 		source.current &&
 		git.isCommitSha(source.commitSha)
 			? source.commitSha
 			: null;
+	const publishedSha = run.directCommitSha ?? snapshotSha;
 	const moved =
 		outcome.kind === "fast-forwarded" || outcome.kind === "already-current";
 	const head = outcome.kind === "fast-forwarded" ? outcome.to : decision.head;
@@ -471,14 +531,15 @@ export async function runFastForward(
 		);
 		publishedInHistory = answer.kind === "ok" ? answer.value : null;
 	}
-	const lag = moved
-		? fabricCopyLag({
-				headSha: head,
-				publishedSha,
-				publishedInHistory,
-				sync: repository.sync,
-			})
-		: null;
+	const lag =
+		moved && snapshot !== undefined
+			? fabricCopyLag({
+					headSha: head,
+					publishedSha,
+					publishedInHistory,
+					sync: repository.sync,
+				})
+			: null;
 
 	const remote = show(classification.remote, 100);
 	const ref = show(repository.ref);
@@ -519,6 +580,9 @@ export async function runFastForward(
 			const key = {
 				projectId: run.projectId,
 				publishedVersion: snapshot ? Number(snapshot.version) : 0,
+				...(run.directCommitSha === undefined
+					? {}
+					: { directCommitSha: run.directCommitSha }),
 				reason,
 			};
 			if (await isNewNotice(notices, key)) {

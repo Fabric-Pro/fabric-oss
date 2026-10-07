@@ -27,6 +27,11 @@ import type { AIProvider } from "@repo/database/prisma/generated/client";
 import { logger } from "@repo/logs";
 import { withProviderBreaker } from "@repo/observability";
 import {
+	getDispatchGuard,
+	guardDispatch,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
+import {
 	type TranscriptionModel as SdkTranscriptionModel,
 	transcribe,
 } from "ai";
@@ -213,6 +218,41 @@ function logTranscriptionUsage(
 // Hybrid Mode - Uses user's AI Gateway or direct provider API key
 // ============================================================================
 
+type TranscriptionDoGenerate = (options: {
+	abortSignal?: AbortSignal;
+}) => PromiseLike<unknown>;
+
+/**
+ * The transcription model a request goes through. The model is built from a
+ * provider SDK directly, not by the `@repo/ai` factory, so it does not consult
+ * the dispatch guard by itself. Inside a guard (an Advisor chat turn) the
+ * returned model checks the guard before EVERY physical request, each retry
+ * the AI SDK makes included, and sends it with the guard's abort signal.
+ * Outside a guard the model is returned unchanged.
+ */
+function guardTranscriptionModel(
+	model: SdkTranscriptionModel,
+): SdkTranscriptionModel {
+	if (!getDispatchGuard() || typeof model === "string") {
+		return model;
+	}
+	return new Proxy(model, {
+		get(target, property, receiver) {
+			if (property !== "doGenerate") {
+				return Reflect.get(target, property, receiver);
+			}
+			const doGenerate = (
+				target as unknown as { doGenerate: TranscriptionDoGenerate }
+			).doGenerate.bind(target);
+			return async (options: { abortSignal?: AbortSignal }) =>
+				doGenerate({
+					...options,
+					abortSignal: await guardDispatch(options.abortSignal),
+				});
+		},
+	});
+}
+
 /** Providers that support transcription */
 const TRANSCRIPTION_CAPABLE_PROVIDERS = ["openai", "groq"] as const;
 
@@ -333,7 +373,7 @@ async function transcribeHybrid(
 		// breaker configured" at runtime for them.
 		const transcribeCall = () =>
 			transcribe({
-				model: transcriptionModel,
+				model: guardTranscriptionModel(transcriptionModel),
 				audio: audioData,
 				providerOptions: language
 					? { openai: { language } }
@@ -360,6 +400,8 @@ async function transcribeHybrid(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Hybrid transcription failed", { error: errorMessage });
 		return {
@@ -432,8 +474,10 @@ async function transcribeDelegated(
 		}
 
 		// Call Fabric AI's delegated transcription endpoint
+		const signal = await guardDispatch();
 		const response = await fetch(`${baseUrl}/transcribe/delegated`, {
 			method: "POST",
+			signal,
 			headers: fabricApiKey ? { "X-API-Key": fabricApiKey } : {},
 			body: formData,
 		});
@@ -476,6 +520,8 @@ async function transcribeDelegated(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Delegated transcription failed", { error: errorMessage });
 		return {
@@ -529,8 +575,10 @@ async function transcribeFull(
 		}
 
 		// Call Fabric AI's transcription endpoint
+		const signal = await guardDispatch();
 		const response = await fetch(`${baseUrl}/transcribe`, {
 			method: "POST",
+			signal,
 			headers: fabricApiKey ? { "X-API-Key": fabricApiKey } : {},
 			body: formData,
 		});
@@ -560,6 +608,8 @@ async function transcribeFull(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Full mode transcription failed", { error: errorMessage });
 		return {

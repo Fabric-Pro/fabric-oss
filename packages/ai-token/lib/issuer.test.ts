@@ -27,11 +27,40 @@ describe("AI Token Issuer", () => {
 		}
 	});
 
+	// Fizzy #2939: the exchange reads these to decide whether a token may
+	// hand over the member's own ChatGPT plan.
+	describe("plan claims", () => {
+		it("marks a token minted for the member's own work plan-eligible", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				source: "test-service",
+				planEligible: true,
+				impersonated: false,
+			});
+			const result = await verifyAIToken(token);
+			expect(result.valid && result.claims.pe).toBe(true);
+			expect(result.valid && result.claims.imp).toBeUndefined();
+		});
+
+		it("marks a token an admin minted as the member impersonated, never plan-eligible", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				source: "test-service",
+				planEligible: true,
+				impersonated: true,
+			});
+			const result = await verifyAIToken(token);
+			expect(result.valid && result.claims.imp).toBe(true);
+			expect(result.valid && result.claims.pe).toBeUndefined();
+		});
+	});
+
 	describe("issueAIToken", () => {
 		it("should issue a valid token with required claims", async () => {
 			const token = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			expect(token).toBeDefined();
@@ -53,6 +82,7 @@ describe("AI Token Issuer", () => {
 				userId: "user_123",
 				organizationId: "org_456",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const result = await verifyAIToken(token);
@@ -66,6 +96,7 @@ describe("AI Token Issuer", () => {
 			const token = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const decoded = decodeTokenClaims(token);
@@ -77,6 +108,7 @@ describe("AI Token Issuer", () => {
 				issueAIToken({
 					userId: "",
 					source: "test-service",
+					impersonated: false,
 				}),
 			).rejects.toThrow("userId is required");
 		});
@@ -86,6 +118,7 @@ describe("AI Token Issuer", () => {
 				issueAIToken({
 					userId: "user_123",
 					source: "",
+					impersonated: false,
 				}),
 			).rejects.toThrow("source is required");
 		});
@@ -97,6 +130,7 @@ describe("AI Token Issuer", () => {
 				issueAIToken({
 					userId: "user_123",
 					source: "test-service",
+					impersonated: false,
 				}),
 			).rejects.toThrow(
 				"AI_TOKEN_SECRET environment variable is required",
@@ -113,6 +147,7 @@ describe("AI Token Issuer", () => {
 				const { token, expiresIn } = await issueAITokenWithMetadata({
 					userId: "user_123",
 					source: "test-service",
+					impersonated: false,
 				});
 				expect(expiresIn).toBe(900);
 
@@ -136,6 +171,7 @@ describe("AI Token Issuer", () => {
 			const token = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 				expirySeconds: 60, // 1 minute
 			});
 
@@ -153,11 +189,13 @@ describe("AI Token Issuer", () => {
 			const token1 = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const token2 = await issueAIToken({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			const decoded1 = decodeTokenClaims(token1);
@@ -174,6 +212,7 @@ describe("AI Token Issuer", () => {
 			const result = await issueAITokenWithMetadata({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 			});
 
 			expect(result.token).toBeDefined();
@@ -184,6 +223,7 @@ describe("AI Token Issuer", () => {
 			const result = await issueAITokenWithMetadata({
 				userId: "user_123",
 				source: "test-service",
+				impersonated: false,
 				expirySeconds: 120,
 			});
 

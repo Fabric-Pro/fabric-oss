@@ -11,6 +11,7 @@
  * See that module for why the tool exists (Fizzy #2473).
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	listProjectMeetingTranscripts,
 	readTranscriptFilters,
@@ -41,6 +42,9 @@ export class MeetingTranscriptsHandler implements StepHandler {
 			const output = await this.listTranscripts(input);
 			return { handled: true, output };
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const message =
 				error instanceof Error ? error.message : String(error);
 			console.error("[MeetingTranscriptsHandler] failed:", error);

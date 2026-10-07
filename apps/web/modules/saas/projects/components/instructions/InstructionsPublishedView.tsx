@@ -1,6 +1,5 @@
 "use client";
 
-import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
 import { useDiscardUpload } from "@saas/projects/hooks/use-discard-upload";
@@ -30,6 +29,7 @@ import {
 	offersSyncFromRepository,
 	offersSyncNow,
 	type RepositorySyncControls,
+	repositorySyncOwnsSnapshotProgress,
 	shortCommit,
 } from "../../lib/instructions-repository-sync";
 import type { InstructionsSnapshot } from "../../lib/instructions-snapshot";
@@ -37,16 +37,14 @@ import { supersededEdit } from "../../lib/instructions-superseded";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { InstructionFileView } from "./InstructionFileView";
 import { InstructionProposals } from "./InstructionProposals";
-import {
-	InstructionsActionBar,
-	type InstructionsActions,
-} from "./InstructionsActionBar";
+import type { InstructionsActions } from "./InstructionsActionBar";
 import { InstructionsCheckingStatus } from "./InstructionsCheckingStatus";
 import { InstructionsCommits } from "./InstructionsCommits";
 import { InstructionsCompareDialog } from "./InstructionsCompareDialog";
 import { InstructionsDeferredScanAlerts } from "./InstructionsDeferredScanAlerts";
 import { InstructionsFailedChecksBanner } from "./InstructionsFailedChecksBanner";
 import { InstructionsHistory } from "./InstructionsHistory";
+import { InstructionsPageFrame } from "./InstructionsPageFrame";
 import {
 	InstructionsRejectedBanner,
 	REJECTED_BANNER_ID,
@@ -305,11 +303,12 @@ export function InstructionsPublishedView({
 			: null;
 	// The snapshot list backs off while the sync response continues polling.
 	// Let the sync status own its snapshot's progress instead of showing both.
-	const checkingInSync = Boolean(
-		checking &&
-			repositorySync?.state.running &&
-			repositorySync.state.latestRun?.snapshotId === checking.id,
+	const repositorySyncOwnsNewest = Boolean(
+		newest &&
+			repositorySync &&
+			repositorySyncOwnsSnapshotProgress(repositorySync.state, newest),
 	);
+	const checkingInSync = Boolean(checking && repositorySyncOwnsNewest);
 	// The checks passed and the tab is waiting for the pointer to move onto
 	// this version. Not for a proposal, which publishes only through review.
 	const publishing =
@@ -322,6 +321,7 @@ export function InstructionsPublishedView({
 			newest.id,
 			repositorySync?.state.latestRun,
 		);
+	const publishingInSync = publishing && repositorySyncOwnsNewest;
 	const superseded = supersededEdit({
 		newest,
 		published,
@@ -364,7 +364,18 @@ export function InstructionsPublishedView({
 		}),
 		enabled: Boolean(published),
 	});
-	const treeFiles = (files.data ?? []) as TreeFile[];
+	const treeFiles: TreeFile[] = (files.data ?? []).flatMap((file) =>
+		"kind" in file
+			? [
+					{
+						path: file.path,
+						kind: file.kind,
+						name: file.name,
+						description: file.description,
+					},
+				]
+			: [],
+	);
 	const treePaths = new Set(treeFiles.map((file) => file.path));
 	// The selection is a PATH, and a path outlives the version it was chosen
 	// in: a Delete file publishes a new version without that path, the poll
@@ -533,52 +544,35 @@ export function InstructionsPublishedView({
 		) : null;
 
 	return (
-		<div className="flex h-full min-h-[600px] flex-col gap-4">
-			{notice}
-			{/* Wraps rather than squeezes: the action row outgrew the space
-			    beside the heading, and with the actions unshrinkable the
-			    heading column collapsed to its minimum width, breaking the
-			    title and the published badge over several lines. The
-			    heading keeps a 20rem basis, so once the actions no longer
-			    fit beside it they move to their own row (and wrap within
-			    it) instead. */}
-			<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-				<div className="flex min-w-0 flex-1 basis-80 flex-col gap-0.5">
-					<div className="flex flex-wrap items-center gap-2.5">
-						<h1 className="whitespace-nowrap font-semibold text-xl">
-							{t("heading")}
-						</h1>
-						<PageTourButton pageId="coding-instructions" />
-						{published ? (
-							<span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-success text-xs">
-								<CheckIcon
-									className="size-3"
-									aria-hidden="true"
-								/>
-								{published.source === "REPOSITORY" &&
-								published.sourceRef &&
-								published.sourceCommitSha
-									? t("publishedBadgeRepository", {
-											ref: published.sourceRef,
-											sha7:
-												shortCommit(
-													published.sourceCommitSha,
-												) ?? "",
-										})
-									: t("publishedBadge", {
-											version: published.version,
-										})}
-							</span>
-						) : null}
-					</div>
-					{published || checking || publishing ? null : (
-						<p className="text-muted-foreground">
-							{t("emptySummary")}
-						</p>
-					)}
-				</div>
-				<InstructionsActionBar actions={actions} />
-			</div>
+		<InstructionsPageFrame
+			actions={actions}
+			notice={notice}
+			badge={
+				published ? (
+					<span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-success text-xs">
+						<CheckIcon className="size-3" aria-hidden="true" />
+						{published.source === "REPOSITORY" &&
+						published.sourceRef &&
+						published.sourceCommitSha
+							? t("publishedBadgeRepository", {
+									ref: published.sourceRef,
+									sha7:
+										shortCommit(
+											published.sourceCommitSha,
+										) ?? "",
+								})
+							: t("publishedBadge", {
+									version: published.version,
+								})}
+					</span>
+				) : null
+			}
+			summary={
+				published || checking || publishing ? null : (
+					<p className="text-muted-foreground">{t("emptySummary")}</p>
+				)
+			}
+		>
 			<div className="flex flex-col gap-3">
 				{published ? (
 					<InstructionsStatusStrip
@@ -629,7 +623,7 @@ export function InstructionsPublishedView({
 				) : null}
 				<InstructionsCheckingStatus
 					checking={checkingInSync ? null : checking}
-					publishing={publishing}
+					publishing={publishing && !publishingInSync}
 					// An upload that never finished (its browser could not
 					// reach storage, or its tab was closed) stays here with
 					// nothing to move it: the way out is to discard it.
@@ -644,6 +638,7 @@ export function InstructionsPublishedView({
 					<RepositorySyncStatus
 						projectId={projectId}
 						state={repositorySync.state}
+						publishing={publishingInSync}
 						migration={repositorySync.migration}
 						// Cancel move and Retry write what Move writes:
 						// they need create and update.
@@ -973,6 +968,6 @@ export function InstructionsPublishedView({
 					localSetup={localSetup}
 				/>
 			) : null}
-		</div>
+		</InstructionsPageFrame>
 	);
 }

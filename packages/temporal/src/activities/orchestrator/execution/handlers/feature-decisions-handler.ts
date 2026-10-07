@@ -5,6 +5,7 @@
  * Decision Log entries (DecisionLogEntry threads) from Feature Maturation.
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -62,6 +63,9 @@ export class FeatureDecisionsHandler implements StepHandler {
 			const output = await this.listFeatureDecisions(input);
 			return { handled: true, output };
 		} catch (error) {
+			// Inside a chat turn's dispatch guard a stop is not a step failure
+			// to report or fall back from; a no-op outside one.
+			rethrowIfDispatchStopped(error);
 			const message =
 				error instanceof Error ? error.message : String(error);
 			console.error("[FeatureDecisionsHandler] failed:", error);

@@ -1,6 +1,10 @@
 "use client";
 
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
+import {
+	ChatgptPlanOnlyNotice,
+	ChatgptPlanProviderNote,
+} from "@saas/settings/components/chatgpt-plan/ChatgptPlanProviderStatus";
 import { useReturnToRedirect } from "@saas/settings/hooks/use-return-to-redirect";
 import { aiProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
@@ -63,7 +67,15 @@ import {
 	type ProviderWithIcon,
 } from "../lib/ai-providers";
 
-export function AiProvidersSettingsForm() {
+export function AiProvidersSettingsForm({
+	chatgptPlan = null,
+}: {
+	/**
+	 * Set when the member's own ChatGPT plan serves their own work in the
+	 * organization on screen (Fizzy #2770), so the status banner says so.
+	 */
+	chatgptPlan?: { organizationName: string } | null;
+} = {}) {
 	const queryClient = useQueryClient();
 	const { triggerReturn } = useReturnToRedirect();
 	const [selectedProvider, setSelectedProvider] =
@@ -740,6 +752,13 @@ export function AiProvidersSettingsForm() {
 									<p className="font-medium text-foreground">
 										AI Providers Configured
 									</p>
+									{chatgptPlan ? (
+										<ChatgptPlanProviderNote
+											organizationName={
+												chatgptPlan.organizationName
+											}
+										/>
+									) : null}
 									<p className="text-success/80 text-sm">
 										{configStatus.message}
 									</p>
@@ -858,6 +877,10 @@ export function AiProvidersSettingsForm() {
 								</div>
 							</div>
 						</div>
+					) : chatgptPlan ? (
+						<ChatgptPlanOnlyNotice
+							organizationName={chatgptPlan.organizationName}
+						/>
 					) : (
 						<div className="rounded-md border border-highlight/20 bg-highlight/5 p-4">
 							<div className="flex items-start gap-3">

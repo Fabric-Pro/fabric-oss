@@ -303,6 +303,7 @@ export function ContextUploaderDialog({
 		organizationId,
 		organizationSlug,
 		requireKnowledgeBaseCategory,
+		allowLiveRefresh: true,
 		onSourceAdded: handleSourceAdded,
 		onComplete: closeAndReset,
 	});

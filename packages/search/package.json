@@ -6,7 +6,7 @@
 	"main": "./index.ts",
 	"types": "./**/*.ts",
 	"scripts": {
-		"type-check": "tsc --noEmit"
+		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
 		"@repo/logs": "workspace:*",

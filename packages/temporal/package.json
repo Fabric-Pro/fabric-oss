@@ -29,7 +29,7 @@
 	},
 	"scripts": {
 		"dev": "tsx src/worker.ts",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:replay": "vitest run __tests__/replay-validation.test.ts",

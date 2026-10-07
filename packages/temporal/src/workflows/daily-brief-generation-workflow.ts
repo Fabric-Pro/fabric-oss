@@ -50,6 +50,7 @@ import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import {
 	applyDeploymentsResult,
 	assembleFinalBrief,
+	dailyBriefFailureMessage,
 	resolveBriefCompletion,
 } from "./daily-brief-completion";
 // Runtime helpers from a local, workflow-safe pure module (type-only @repo/database
@@ -59,6 +60,7 @@ import {
 	exclusionSignature,
 	filterExcludedMergedPrs,
 } from "./daily-brief-release-note-exclusions";
+import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
 
 // =============================================================================
 // Input / output
@@ -320,6 +322,17 @@ export async function generateDailyBriefWorkflow(
 		log.info("[Daily Brief] Cancellation signal received", { briefId });
 	});
 	setHandler(briefProgressQuery, () => progress);
+
+	// Every AI step of the brief may run on a shared ChatGPT plan (Fizzy
+	// #2770): when every plan is spent it waits for a reset and tries once
+	// more, instead of the brief losing that section without a word.
+	const planWait = {
+		organizationId,
+		userId: triggeredByUserId,
+		onWait: () => {
+			progress.message = "Waiting for a ChatGPT plan to reset";
+		},
+	};
 
 	const start = new Date(timeWindowStart);
 	const end = new Date(timeWindowEnd);
@@ -675,14 +688,18 @@ export async function generateDailyBriefWorkflow(
 				const [insightsSettled, detectedSettled, releaseSettled] =
 					await Promise.allSettled([
 						meetingItems.length > 0
-							? extractMeetingInsightsActivity({
-									projectId,
-									organizationId,
-									userId: triggeredByUserId,
-									transcriptCuids: meetingItems.map(
-										(m) => m.transcriptCuid,
-									),
-								})
+							? withChatGptPlanWait(
+									() =>
+										extractMeetingInsightsActivity({
+											projectId,
+											organizationId,
+											userId: triggeredByUserId,
+											transcriptCuids: meetingItems.map(
+												(m) => m.transcriptCuid,
+											),
+										}),
+									planWait,
+								)
 							: Promise.resolve({
 									insights: [],
 									extractedCount: 0,
@@ -693,13 +710,17 @@ export async function generateDailyBriefWorkflow(
 							organizationId,
 						}),
 						prodPrs.length + stagingPrs.length > 0
-							? summarizeReleaseNotesActivity({
-									projectId,
-									organizationId,
-									userId: triggeredByUserId,
-									prodPrs,
-									stagingPrs,
-								})
+							? withChatGptPlanWait(
+									() =>
+										summarizeReleaseNotesActivity({
+											projectId,
+											organizationId,
+											userId: triggeredByUserId,
+											prodPrs,
+											stagingPrs,
+										}),
+									planWait,
+								)
 							: Promise.resolve({
 									summary: {} as ReleaseNotesSummary,
 									aiUsageTokens: null,
@@ -756,14 +777,18 @@ export async function generateDailyBriefWorkflow(
 				const [insightsSettled, detectedSettled] =
 					await Promise.allSettled([
 						meetingItems.length > 0
-							? extractMeetingInsightsActivity({
-									projectId,
-									organizationId,
-									userId: triggeredByUserId,
-									transcriptCuids: meetingItems.map(
-										(m) => m.transcriptCuid,
-									),
-								})
+							? withChatGptPlanWait(
+									() =>
+										extractMeetingInsightsActivity({
+											projectId,
+											organizationId,
+											userId: triggeredByUserId,
+											transcriptCuids: meetingItems.map(
+												(m) => m.transcriptCuid,
+											),
+										}),
+									planWait,
+								)
 							: Promise.resolve({
 									insights: [],
 									extractedCount: 0,
@@ -866,17 +891,23 @@ export async function generateDailyBriefWorkflow(
 		progress.phase = "summarizing";
 		progress.message = "Writing executive summary";
 
-		const summary = await summarizeDailyBriefActivity({
-			projectId,
-			organizationId,
-			userId: triggeredByUserId,
-			timeWindowStart: start,
-			timeWindowEnd: end,
-			sections: sections as any,
-			priorityActions,
-			partialFailures,
-			ahead,
-		});
+		// The summary may run on a shared ChatGPT plan (Fizzy #2770): when
+		// every plan is spent the run waits for a reset and tries once more.
+		const summary = await withChatGptPlanWait(
+			() =>
+				summarizeDailyBriefActivity({
+					projectId,
+					organizationId,
+					userId: triggeredByUserId,
+					timeWindowStart: start,
+					timeWindowEnd: end,
+					sections: sections as any,
+					priorityActions,
+					partialFailures,
+					ahead,
+				}),
+			planWait,
+		);
 
 		const anchorV5 = patched("daily-brief-v5-prod-release-anchor");
 		const { status: finalStatus, content: finalContent } =
@@ -950,7 +981,9 @@ export async function generateDailyBriefWorkflow(
 		if (error instanceof CancelledFailure) {
 			throw error;
 		}
-		const errMsg = error instanceof Error ? error.message : String(error);
+		// A missing AI provider is stored as a code the page explains, not as
+		// "Activity task failed".
+		const errMsg = dailyBriefFailureMessage(error);
 		progress.phase = "failed";
 		progress.message = "Daily Brief generation failed";
 		progress.error = errMsg;

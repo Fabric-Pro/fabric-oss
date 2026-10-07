@@ -412,7 +412,7 @@ describe("configure with ignoreGlobs: one write or none", () => {
 	it("writes neither when the integration is not usable", async () => {
 		m.getProjectRepoIntegration.mockResolvedValue({
 			...integration,
-			status: "TOKEN_EXPIRED",
+			status: "DISCONNECTED",
 		});
 
 		await expect(

@@ -6,6 +6,7 @@
  * off as complete, and every failure is a closed outcome. Every identifier is
  * synthetic; no network is touched.
  */
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	compareRepositoryRefs,
@@ -30,6 +31,13 @@ const TO = "b".repeat(40);
 
 function json(status: number, body: unknown = {}) {
 	return new Response(JSON.stringify(body), { status });
+}
+
+function gitBlobId(bytes: Uint8Array): string {
+	return createHash("sha1")
+		.update(`blob ${bytes.byteLength}\0`)
+		.update(bytes)
+		.digest("hex");
 }
 
 const github = {
@@ -477,82 +485,117 @@ describe("readRepositoryFileAtCommit", () => {
 		);
 	});
 
-	/** GitLab's HEAD on a file: no body, the size in a header. */
-	function head(size: number | null, status = 200) {
-		return new Response(null, {
-			status,
-			headers: size === null ? {} : { "X-Gitlab-Size": String(size) },
-		});
-	}
-
 	function methods(): string[] {
 		return mockFetch.mock.calls.map(
 			([, init]) => (init as { method?: string }).method ?? "GET",
 		);
 	}
 
-	it("reads GitLab's file at the commit through the files API, asking its size first", async () => {
-		const bytes = Buffer.from("alpha\n");
-		mockFetch.mockResolvedValueOnce(head(bytes.length));
+	it("reads GitLab's raw bytes only after its pinned tree proves a regular blob", async () => {
+		const bytes = new Uint8Array([0xff, 0xfe, 0x41, 0x00]);
 		mockFetch.mockResolvedValueOnce(
-			json(200, {
-				size: bytes.length,
-				encoding: "base64",
-				content: bytes.toString("base64"),
+			json(200, [
+				{
+					id: gitBlobId(bytes),
+					mode: "100644",
+					path: "rules/a.md",
+					type: "blob",
+				},
+			]),
+		);
+		mockFetch.mockResolvedValueOnce(
+			new Response(bytes, {
+				headers: { "content-length": String(bytes.length) },
 			}),
 		);
 
 		const result = await readRepositoryFileAtCommit({ ...gitlab, ...base });
 
-		expect(methods()).toEqual(["HEAD", "GET"]);
-		for (const n of [0, 1]) {
-			const { url } = call(n);
-			expect(url.origin + url.pathname).toBe(
-				"https://gitlab.com/api/v4/projects/example-org%2Fmemory/repository/files/rules%2Fa.md",
-			);
-			expect(url.searchParams.get("ref")).toBe(TO);
-		}
+		expect(methods()).toEqual(["GET", "GET"]);
+		expect(call(0).url.pathname).toBe(
+			"/api/v4/projects/example-org%2Fmemory/repository/tree",
+		);
+		expect(call(0).url.searchParams.get("path")).toBe("rules");
+		expect(call(0).url.searchParams.get("ref")).toBe(TO);
+		expect(call(1).url.pathname).toBe(
+			"/api/v4/projects/example-org%2Fmemory/repository/files/rules%2Fa.md/raw",
+		);
+		expect(call(1).url.searchParams.get("ref")).toBe(TO);
 		expect(result).toMatchObject({ ok: true, state: "found" });
-		expect(
-			Buffer.from((result as { bytes: Uint8Array }).bytes).toString(
-				"utf8",
-			),
-		).toBe("alpha\n");
+		if (!result.ok || result.state !== "found") {
+			throw new Error("expected pinned raw bytes");
+		}
+		expect([...result.bytes]).toEqual([...bytes]);
 	});
 
-	it("is absent for a GitLab 404 on the HEAD, and tooLarge past the cap WITHOUT a GET that would buffer the file", async () => {
-		mockFetch.mockResolvedValueOnce(head(null, 404));
+	it("refuses GitLab symlinks from the pinned tree without fetching their raw target", async () => {
+		mockFetch.mockResolvedValueOnce(
+			json(200, [
+				{
+					id: "d".repeat(40),
+					mode: "120000",
+					path: "rules/a.md",
+					type: "blob",
+				},
+			]),
+		);
 		expect(
 			await readRepositoryFileAtCommit({ ...gitlab, ...base }),
 		).toEqual({
 			ok: true,
 			state: "absent",
 		});
-		expect(methods()).toEqual(["HEAD"]);
+		expect(methods()).toEqual(["GET"]);
+	});
 
-		mockFetch.mockClear();
-		mockFetch.mockResolvedValueOnce(head(5000));
+	it("caps decoded GitLab bytes rather than their compressed wire length", async () => {
+		const bytes = new Uint8Array([97]);
+		mockFetch.mockResolvedValueOnce(
+			json(200, [
+				{
+					id: gitBlobId(bytes),
+					mode: "100644",
+					path: base.path,
+					type: "blob",
+				},
+			]),
+		);
+		mockFetch.mockResolvedValueOnce(
+			new Response(bytes, {
+				headers: { "content-encoding": "gzip", "content-length": "21" },
+			}),
+		);
+		const result = await readRepositoryFileAtCommit({
+			...gitlab,
+			...base,
+			maxBytes: 1,
+		});
+		expect(result).toEqual({ ok: true, state: "found", bytes });
+	});
+
+	it("caps GitLab raw reads without buffering a larger body", async () => {
+		mockFetch.mockResolvedValueOnce(
+			json(200, [
+				{
+					id: "c".repeat(40),
+					mode: "100644",
+					path: "rules/a.md",
+					type: "blob",
+				},
+			]),
+		);
+		mockFetch.mockResolvedValueOnce(
+			new Response("oversize", {
+				headers: { "content-length": "5000" },
+			}),
+		);
 		expect(
 			await readRepositoryFileAtCommit({ ...gitlab, ...base }),
 		).toEqual({
 			ok: true,
 			state: "tooLarge",
 		});
-		expect(methods(), "a too-large file is never fetched").toEqual([
-			"HEAD",
-		]);
-	});
-
-	it("falls back to the GET's own reported size when the HEAD carries none", async () => {
-		mockFetch.mockResolvedValueOnce(head(null));
-		mockFetch.mockResolvedValueOnce(
-			json(200, { size: 5000, encoding: "base64", content: "AAAA" }),
-		);
-
-		expect(
-			await readRepositoryFileAtCommit({ ...gitlab, ...base }),
-		).toEqual({ ok: true, state: "tooLarge" });
-		expect(methods()).toEqual(["HEAD", "GET"]);
+		expect(methods()).toEqual(["GET", "GET"]);
 	});
 
 	it("answers a rejected credential as unauthorized", async () => {
@@ -564,7 +607,7 @@ describe("readRepositoryFileAtCommit", () => {
 			ok: false,
 			outcome: "unauthorized",
 		});
-		expect(methods()).toEqual(["HEAD"]);
+		expect(methods()).toEqual(["GET"]);
 	});
 
 	it("answers an unreachable provider on the HEAD as unreachable", async () => {

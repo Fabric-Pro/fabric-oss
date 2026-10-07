@@ -25,6 +25,7 @@ import {
 	readMyProposalBranch,
 	readMyProposalBranchFile,
 	readProposalBranchesForReviewer,
+	refreshProposalBranch,
 	retryMyBranchConflict,
 	retryMyProposalBranch,
 	startOverMyProposalBranch,
@@ -216,6 +217,29 @@ export const stopTrackingProposalBranchProcedure = branchCommandProcedure(
 	"Stop tracking a coding-instructions proposal branch",
 	stopTrackingMyProposalBranch,
 );
+
+/** Ask Fabric to observe this branch's pull request now. */
+export const refreshProposalBranchProcedure = branchProcedure
+	.route({
+		method: "POST",
+		path: "/projects/:projectId/instructions/proposal-branches/:branchId/refresh",
+		tags: ["Projects", "Instructions"],
+		summary: "Refresh a coding-instructions proposal branch pull request",
+	})
+	.input(branchCommandInput)
+	.handler(async ({ input, context }) => {
+		const organizationId = await requireHostingOrganizationId(
+			input.projectId,
+			context.user.id,
+		);
+		return refreshProposalBranch({
+			projectId: input.projectId,
+			organizationId,
+			userId: context.user.id,
+			branchId: input.branchId,
+			expectedAttempt: input.expectedAttempt,
+		});
+	});
 
 /** Try again (spec §4.3), by the change's author, at the attempt the card showed. */
 export const retryProposalConflictProcedure = branchProcedure

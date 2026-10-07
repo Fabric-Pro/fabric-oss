@@ -80,6 +80,9 @@ export function AddCompanyContextDialog({
 		organizationSlug,
 		// The category only feeds the project readiness checklist.
 		requireKnowledgeBaseCategory: false,
+		// Nothing re-fetches a company website when a Proposal or Business
+		// Case retrieves it, so Live would behave as Once.
+		allowLiveRefresh: false,
 		onComplete: closeAndReset,
 	});
 	const textForm = useTextSourceForm({ adapter, onComplete: closeAndReset });

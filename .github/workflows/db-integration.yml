@@ -321,7 +321,14 @@ jobs:
           // the suite as it stands; no cases were added by the change that
           // carries this note.
           // Include the two draft-revision tenant isolation controls.
-          const EXPECTED = 59;
+          // 59 -> 62: Fizzy #2939 adds three chat_gpt_plan_org_use cases (a
+          // colleague cannot read the row, a member cannot read their own row
+          // from another org, a member cannot write a row for a colleague).
+          // 62 -> 68: Fizzy #2770 adds six "ChatGPT plan pooling RLS
+          // Isolation" cases (shared plan accounts and pooling policy are
+          // org-only: same-org read, other-org and personal read nothing,
+          // no cross-org write).
+          const EXPECTED = 68;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;
@@ -828,6 +835,40 @@ jobs:
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-admission.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
           if (passed !== 22) { console.error(`::error::expected exactly 22 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
+      - name: Run the Advisor turn save suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # Advisor turn saves (Fizzy #2949): eight saves race on one
+        # conversation under a row lock and every turn must survive, a
+        # settings change racing with them keeps every execution, a late
+        # save of an earlier turn lands before the later one (including a
+        # later turn saved while the earlier save waited for the lock), and a
+        # turn admitted with no conversation is claimed by only one of two
+        # conversations racing for it. A mocked client cannot show the
+        # locks honoured.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/save-conversation-turn.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=save-conversation-turn-results.json
+
+      - name: 'Guard: assert the Advisor turn save suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/save-conversation-turn-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`save-conversation-turn-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/save-conversation-turn.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 8) { console.error(`::error::expected exactly 8 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the runtime authority suite against real Postgres

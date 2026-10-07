@@ -50,7 +50,7 @@ export interface InstructionsActions {
 	 * The branch's commits on a repository-backed project, the project's
 	 * versions otherwise; the button says which.
 	 */
-	history: { onOpen: () => void; commits?: boolean };
+	history?: { onOpen: () => void; commits?: boolean };
 	download?: { pending: boolean; onDownload: () => void };
 	/**
 	 * `awaitingReview` is how many proposals wait for THIS viewer to decide. With
@@ -66,6 +66,7 @@ export interface InstructionsActions {
 		awaitingReview?: number;
 	};
 	syncNow?: {
+		label?: string;
 		running: boolean;
 		busy: boolean;
 		onSync: () => void;
@@ -149,19 +150,21 @@ export function InstructionsActionBar({
 			) : null}
 			{/* The secondary actions drop their labels below `sm` so the bar
 			    stays within two rows on a phone; `aria-label` keeps the name. */}
-			<Button
-				variant="outline"
-				data-onboarding-target="coding-instructions-history"
-				aria-label={t(
-					history.commits ? "commitsButton" : "historyButton",
-				)}
-				onClick={history.onOpen}
-			>
-				<HistoryIcon className="size-4" aria-hidden="true" />
-				<span className="hidden sm:inline">
-					{t(history.commits ? "commitsButton" : "historyButton")}
-				</span>
-			</Button>
+			{history ? (
+				<Button
+					variant="outline"
+					data-onboarding-target="coding-instructions-history"
+					aria-label={t(
+						history.commits ? "commitsButton" : "historyButton",
+					)}
+					onClick={history.onOpen}
+				>
+					<HistoryIcon className="size-4" aria-hidden="true" />
+					<span className="hidden sm:inline">
+						{t(history.commits ? "commitsButton" : "historyButton")}
+					</span>
+				</Button>
+			) : null}
 			{download ? (
 				<Button
 					variant="outline"
@@ -207,11 +210,12 @@ export function InstructionsActionBar({
 									aria-hidden="true"
 								/>
 							)}
-							{t(
-								syncNow.running
-									? "syncingButton"
-									: "syncNowButton",
-							)}
+							{syncNow.label ??
+								t(
+									syncNow.running
+										? "syncingButton"
+										: "syncNowButton",
+								)}
 						</DropdownMenuItem>
 					) : null}
 					{syncFromRepository ? (

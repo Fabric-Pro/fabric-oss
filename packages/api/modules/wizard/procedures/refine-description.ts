@@ -7,6 +7,7 @@ import {
 	retrieveWizardContexts,
 } from "@repo/rag";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../lib/chatgpt-plan-errors";
 import {
 	assertProjectPermission,
 	authorizeInputOrganization,
@@ -294,6 +295,7 @@ Refined description:`;
 				contextCount: retrievedContextCount,
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			console.error("Error refining description:", error);
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message: `Failed to refine description: ${error instanceof Error ? error.message : "Unknown error"}`,

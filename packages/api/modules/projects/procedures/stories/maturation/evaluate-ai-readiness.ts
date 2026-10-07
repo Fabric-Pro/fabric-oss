@@ -10,6 +10,7 @@ import {
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { db, hasProjectAccess } from "@repo/database";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -449,6 +450,7 @@ Instructions:
 			});
 			return { aiReadiness: object };
 		} catch (err) {
+			rethrowChatGptPlanRefusal(err);
 			console.error("[evaluateAiReadiness] LLM execution failed:", err);
 
 			if (err instanceof AIProviderNotConfiguredError) {

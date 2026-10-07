@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
 		content: "",
 		output: "",
 	})),
+	resolveCompanyContextChatAccess: vi.fn(),
+	searchCompanyContext: vi.fn(),
 }));
 
 vi.mock("@repo/mcp", () => ({
@@ -50,6 +52,31 @@ vi.mock("@repo/database", () => ({
 	checkAuthority: vi.fn(),
 	ensureSensitiveOperationAuthority: h.ensureSensitiveOperationAuthority,
 	resolveCanonicalProviderKey: (key: string) => key.toLowerCase(),
+	getDefaultRagSettings: () => ({ similarityThreshold: 0.5 }),
+	getProjectRagSettings: vi.fn(async () => ({ similarityThreshold: 0.6 })),
+}));
+// What the company context search needs to load through the real catalog
+// adapter and Direct's builder; the access and search behind it are mocked.
+vi.mock("@repo/ai", () => ({
+	tool: (definition: unknown) => definition,
+	resolveOpenAiApiKey: vi.fn(),
+}));
+vi.mock("@repo/search", () => ({ createProvider: vi.fn() }));
+vi.mock("@repo/storage", () => ({ uploadFile: vi.fn() }));
+vi.mock("../../../../lib/lifecycle-dispatcher", () => ({
+	dispatchLifecycleEvent: vi.fn(),
+}));
+vi.mock("../../../direct-chat/rag-retrieval", () => ({
+	retrieveWorkspaceDocumentsActivity: vi.fn(),
+}));
+vi.mock("../../../project-metadata", () => ({
+	retrieveProjectContextsActivity: vi.fn(),
+}));
+vi.mock("../../../../lib/company-context-chat-access", () => ({
+	resolveCompanyContextChatAccess: h.resolveCompanyContextChatAccess,
+}));
+vi.mock("../../../../lib/company-context-search", () => ({
+	searchCompanyContext: h.searchCompanyContext,
 }));
 vi.mock("@repo/integrations/github", () => ({ executeGitHubTool: vi.fn() }));
 vi.mock("@repo/integrations/slack", () => ({ executeSlackTool: vi.fn() }));
@@ -401,5 +428,177 @@ describe("Read-only projects gate catalog tools on their declared access", () =>
 		expect(res.success).toBe(false);
 		expect(h.runFabricCatalogTool).not.toHaveBeenCalled();
 		expect(h.getCachedMcpClientForConfig).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The company context search (Fizzy #2719) is hidden from the catalog, so the
+ * executability checks above, which list the visible catalog, never reach it.
+ * The Orchestrator pre-registers it on the virtual config for an Advisor turn
+ * that may use it, and sends the Advisor's opt-in with each call.
+ */
+describe("the company context search, hidden from the catalog", () => {
+	const TOOL = "search_company_context";
+	const MEMBER = {
+		organizationId: "org-1",
+		organizationName: "Example Org",
+		readySourceCount: 2,
+	};
+	const ENTRY = {
+		sourceName: "Logistics case study",
+		text: "[vendor] Example Org moved a freight client to same-day routing.\nGuidance for this source: anonymize the client name.",
+	};
+
+	beforeEach(() => {
+		h.resolveCompanyContextChatAccess.mockReset();
+		h.searchCompanyContext.mockReset();
+		h.resolveCompanyContextChatAccess.mockResolvedValue(MEMBER);
+		h.searchCompanyContext.mockResolvedValue({
+			entries: [ENTRY],
+			timedOut: false,
+		});
+	});
+
+	const actualAdapter = () =>
+		vi.importActual<typeof import("../fabric-catalog-adapter")>(
+			"../fabric-catalog-adapter",
+		);
+
+	it("is a READ on the virtual config: no MCP lookup, no authority, the opt-in carried", async () => {
+		await executeMcpTool({
+			toolName: TOOL,
+			args: { query: "clients we removed" },
+			userId: "u1",
+			organizationId: "org-1",
+			mcpConfigId: "fabric-ai-server",
+			conversationId: "conv-1",
+			requestRuntimeAuthority: true,
+			companyContextAdvisor: true,
+		});
+
+		expect(h.getCachedMcpClientForConfig).not.toHaveBeenCalled();
+		expect(h.ensureSensitiveOperationAuthority).not.toHaveBeenCalled();
+		expect(h.runFabricCatalogTool).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: TOOL,
+				args: { query: "clients we removed" },
+				userId: "u1",
+				organizationId: "org-1",
+				companyContextAdvisor: true,
+			}),
+		);
+	});
+
+	it("still runs in a Read-only project", async () => {
+		h.isProjectReadOnly.mockResolvedValueOnce(true);
+		const res = await executeMcpTool({
+			toolName: TOOL,
+			args: { query: "logistics" },
+			userId: "u1",
+			projectId: "p1",
+			mcpConfigId: "fabric-ai-server",
+			companyContextAdvisor: true,
+		});
+		expect(res.success).toBe(true);
+		expect(h.runFabricCatalogTool).toHaveBeenCalledOnce();
+	});
+
+	it("runs route -> builder -> search for a member, with the sources to cite", async () => {
+		const { runFabricCatalogTool } = await actualAdapter();
+		h.runFabricCatalogTool.mockImplementationOnce(
+			runFabricCatalogTool as never,
+		);
+
+		const res = await executeMcpTool({
+			toolName: TOOL,
+			args: { query: "logistics case studies" },
+			userId: "u1",
+			organizationId: "org-1",
+			mcpConfigId: "fabric-ai-server",
+			companyContextAdvisor: true,
+		});
+
+		expect(res.success).toBe(true);
+		const output = res.output as {
+			sources: string[];
+			context: string;
+			guidance?: string;
+		};
+		expect(output.sources).toEqual(["Logistics case study"]);
+		expect(output.context).toContain('source="company_context"');
+		expect(output.context).toContain('trust="untrusted"');
+		expect(output.context).toContain("anonymize the client name");
+		expect(output.guidance).toContain("must name the sources");
+		expect(h.resolveCompanyContextChatAccess).toHaveBeenCalledWith({
+			userId: "u1",
+			requestOrganizationId: "org-1",
+			projectId: undefined,
+		});
+		expect(h.searchCompanyContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				userId: "u1",
+				query: "logistics case studies",
+			}),
+		);
+	});
+
+	it("searches the project's organization, asked again on the call", async () => {
+		const { runFabricCatalogTool } = await actualAdapter();
+		await runFabricCatalogTool({
+			toolName: TOOL,
+			args: { query: "logistics" },
+			userId: "u1",
+			organizationId: "org-1",
+			projectId: "p1",
+			companyContextAdvisor: true,
+		});
+		expect(h.resolveCompanyContextChatAccess).toHaveBeenCalledWith({
+			userId: "u1",
+			requestOrganizationId: "org-1",
+			projectId: "p1",
+		});
+	});
+
+	it("returns nothing to a project guest", async () => {
+		h.resolveCompanyContextChatAccess.mockResolvedValue(null);
+		const { runFabricCatalogTool } = await actualAdapter();
+
+		const res = await runFabricCatalogTool({
+			toolName: TOOL,
+			args: { query: "your capabilities" },
+			userId: "guest-1",
+			organizationId: "org-1",
+			projectId: "p1",
+			companyContextAdvisor: true,
+		});
+
+		expect(res).toEqual({
+			success: true,
+			output: { sources: [], context: "" },
+		});
+		expect(h.searchCompanyContext).not.toHaveBeenCalled();
+	});
+
+	it("builds nothing without the Advisor's opt-in", async () => {
+		const { runFabricCatalogTool } = await actualAdapter();
+		h.runFabricCatalogTool.mockImplementationOnce(
+			runFabricCatalogTool as never,
+		);
+
+		const res = await executeMcpTool({
+			toolName: TOOL,
+			args: { query: "logistics" },
+			userId: "u1",
+			organizationId: "org-1",
+			mcpConfigId: "fabric-ai-server",
+		});
+
+		expect(res.success).toBe(false);
+		expect(res.output).toEqual({
+			error: `Fabric tool "${TOOL}" is not available in this chat.`,
+		});
+		expect(h.resolveCompanyContextChatAccess).not.toHaveBeenCalled();
+		expect(h.searchCompanyContext).not.toHaveBeenCalled();
 	});
 });

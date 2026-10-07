@@ -25,7 +25,6 @@ import {
 	getBranchProposal,
 	getProposalBranch,
 	listBranchOperations,
-	listInstructionFiles,
 	listMemberBranchWrites,
 	type MemberBranchWrite,
 	markForeignTip,
@@ -77,13 +76,13 @@ import {
 } from "./instruction-proposal-boundary";
 import {
 	buildBranchCommit,
-	computeEffectiveDelta,
 	type EffectiveDelta,
 	type FileRow,
 	findTreeConflicts,
 } from "./instruction-proposal-commit";
 import { gitCall, providerCall } from "./instruction-proposal-operation";
 import { INSTRUCTIONS_BUCKET } from "./instruction-prune";
+import { loadInstructionChangeDelta } from "./instruction-change-delta";
 import {
 	listTreeRaw,
 	MAX_INVENTORY_ENTRIES,
@@ -154,11 +153,20 @@ export type Intent = {
 	path: string;
 	/** The repository path. */
 	rawPath: string;
-	row: FileRow;
-	kind: "added" | "modified" | "deleted";
-	after: TreeEntry | null;
-	afterSha256: string | null;
-};
+} & (
+	| {
+			row: FileRow;
+			kind: "added" | "modified";
+			after: TreeEntry;
+			afterSha256: string;
+	  }
+	| {
+			row: Pick<FileRow, "path" | "mode">;
+			kind: "deleted";
+			after: null;
+			afterSha256: null;
+	  }
+);
 
 export type Blob = { oid: string; sha256: string };
 
@@ -298,16 +306,7 @@ async function appendUnder(
 
 	// Spec §6.4 step 2: the intent, computed once; its blobs hashed from the
 	// stored bytes, the sha256 re-checked.
-	const [baseRows, proposalRows] = await Promise.all([
-		proposal.baseSnapshotId
-			? listInstructionFiles(proposal.baseSnapshotId, i.organizationId)
-			: Promise.resolve([]),
-		listInstructionFiles(proposal.id, i.organizationId),
-	]);
-	const delta = computeEffectiveDelta(
-		baseRows.map(toFileRow),
-		proposalRows.map(toFileRow),
-	);
+	const delta = await loadInstructionChangeDelta(proposal);
 	const blobs = await hashIntentBlobs(credential, delta);
 	await gitCall(APPEND, credential, () =>
 		ensureCommit({ dir, sha: context.baseCommitSha, env, signal }),
@@ -536,13 +535,11 @@ async function appendPass(
 	const deltaT: EffectiveDelta = { added: [], modified: [], deleted: [] };
 	for (const w of writes) {
 		const before = tipEntries.get(w.rawPath) ?? null;
-		const bucket =
-			w.after === null
-				? "deleted"
-				: before === null
-					? "added"
-					: "modified";
-		deltaT[bucket].push(w.row);
+		if (w.kind === "deleted") {
+			deltaT.deleted.push(w.row);
+		} else {
+			deltaT[before === null ? "added" : "modified"].push(w.row);
+		}
 	}
 	if (findTreeConflicts(listed.entries, deltaT, destination.rootPath)) {
 		throw fail("TREE_CONFLICT", false);
@@ -752,7 +749,7 @@ export async function intentsOf(i: {
 			journal.set(pathKey(e.path), e.rawPath);
 		}
 	}
-	const rawPathOf = (row: FileRow) => {
+	const rawPathOf = (row: Pick<FileRow, "path">) => {
 		const key = pathKey(row.path);
 		return (
 			byKey.get(key) ?? journal.get(key) ?? joinRoot(i.rootPath, row.path)
@@ -786,7 +783,7 @@ export async function intentsOf(i: {
 	const tipModes = modified.length === 0 ? none : await readModes(i.tipSha);
 	const baseModes =
 		modified.length === 0 ? none : await readModes(i.baseCommitSha);
-	return rows.map(({ row, kind }, n) => {
+	return rows.map(({ row, kind }, n): Intent => {
 		const rawPath = rawPaths[n] as string;
 		if (kind === "deleted") {
 			return {

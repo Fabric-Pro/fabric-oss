@@ -42,6 +42,11 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 // own, so it carries nothing into the workflow sandbox. Same shape as
 // `safeEvaluateExpression` in template-execution.ts.
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
+import {
+	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
+	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
+	COMPANY_CONTEXT_SEARCH_TOOL_NAME,
+} from "../company-context-tool-schemas";
 import { DIAGRAM_RENDERING_GUIDANCE } from "../diagram-rendering";
 import {
 	FABRIC_AI_SERVER_CONFIG_ID,
@@ -91,6 +96,7 @@ import {
 	type IterativeTurnOptions,
 	rethrowTurnStop,
 	turnScopeField,
+	turnScopeOptionArgs,
 } from "../turn-contract";
 import type {
 	ALTKConfig,
@@ -1861,6 +1867,36 @@ export async function executeIterativePhase(
 		);
 	}
 
+	// The organization's company context (Fizzy #2719), with or without a
+	// project. The preload offers it only for an Advisor turn whose person
+	// may use it — a member, the feature on, a ready source — so it is keyed
+	// on that answer being present and ignores the chat's Fabric tool list: a
+	// member never has to switch it on. Hidden from tool search, which checks
+	// no membership. Routed like the project reads above: the virtual Fabric
+	// config id sends the call through executeMcpTool to the catalog adapter,
+	// and makes it a Fabric-owned read the risk gate does not word-scan.
+	//
+	// Patch-gated because it changes the tool set a recorded history saw and,
+	// through the config id, whether a call waits for approval. The marker is
+	// asked only when the preload offered the tool, so turns without company
+	// context record none; a history from before the field reads it as absent.
+	let companyContextToolRegistered = false;
+	if (
+		state.preloadedResources?.companyContext &&
+		patched("orch-company-context-v1")
+	) {
+		discoveredTools[COMPANY_CONTEXT_SEARCH_TOOL_NAME] = {
+			description: COMPANY_CONTEXT_SEARCH_DESCRIPTION,
+			inputSchema: COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
+		};
+		discoveredToolConfigIds[COMPANY_CONTEXT_SEARCH_TOOL_NAME] =
+			FABRIC_AI_SERVER_CONFIG_ID;
+		companyContextToolRegistered = true;
+		log.info("[IterativeExecution] Pre-registered search_company_context", {
+			projectId: input.projectId,
+		});
+	}
+
 	// Start with meta-tools + any OAuth tools + any pre-loaded MCP tools
 	let availableTools = {
 		...metaTools,
@@ -2113,7 +2149,7 @@ export async function executeIterativePhase(
 			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
 				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
 				: "the loaded schema persists for the rest of this conversation";
-			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			options.firstCall &&
 			preloadedServerNames.length > 0 &&
@@ -2715,6 +2751,7 @@ Never guess or use example values — always use real data from API responses.`;
 							input.enabledIntegrationIds ?? undefined,
 						enabledFabricToolIds:
 							input.enabledFabricToolIds ?? undefined,
+						...turnScopeField(turn),
 					});
 
 					// Format result for agent
@@ -2741,6 +2778,7 @@ Never guess or use example values — always use real data from API responses.`;
 							userId: input.userId,
 							organizationId: input.organizationId,
 							enabledAgentIds: input.enabledAgentIds ?? undefined,
+							...turnScopeField(turn),
 						});
 
 						// Create delegation tools for matched agents
@@ -2826,6 +2864,7 @@ Never guess or use example values — always use real data from API responses.`;
 								executionSurface: chatIntegrationRegistryV1
 									? "LOOM_CHAT"
 									: undefined,
+								...turnScopeField(turn),
 							});
 
 						// Pre-patch replay quarantine: the legacy hardcoded
@@ -3072,6 +3111,7 @@ Never guess or use example values — always use real data from API responses.`;
 							args: toolCall.args,
 							userId: input.userId,
 							organizationId: input.organizationId,
+							...turnScopeField(turn),
 						});
 					toolResult = {
 						response: databricksResult.summary,
@@ -3114,6 +3154,7 @@ Never guess or use example values — always use real data from API responses.`;
 								undefined,
 								topK,
 								minSimilarity,
+								...turnScopeOptionArgs(turn),
 							);
 
 						if (ragResult.context && ragResult.chunkCount > 0) {
@@ -3151,6 +3192,7 @@ Never guess or use example values — always use real data from API responses.`;
 							input.userId,
 							input.organizationId,
 							topK,
+							...turnScopeOptionArgs(turn),
 						);
 
 						if (ragResult.context && ragResult.chunkCount > 0) {
@@ -3285,6 +3327,7 @@ Never guess or use example values — always use real data from API responses.`;
 							userId: input.userId,
 							organizationId: input.organizationId,
 							limit,
+							...turnScopeField(turn),
 						});
 						toolResult = JSON.stringify(teamsResult);
 						log.info("search_teams_messages completed", {
@@ -3342,6 +3385,13 @@ Never guess or use example values — always use real data from API responses.`;
 						// record before each provider request and rethrows a
 						// stop (absent on a run with no turn).
 						...turnScopeField(turn),
+						// The tool's builder builds nothing without the
+						// Advisor's opt-in. Sent only by a turn that registered
+						// the search, which no recorded history before the
+						// company-context marker did, so their input is unchanged.
+						...(companyContextToolRegistered
+							? { companyContextAdvisor: true }
+							: {}),
 						// Binds the integration authority check to this run.
 						// Same patch marker as the registry-backed discovery
 						// above — it widens the recorded activity input.
@@ -3795,11 +3845,15 @@ Never guess or use example values — always use real data from API responses.`;
 			}
 			resultContent = repeatNote + resultContent;
 
-			// Debug: Log the tool result content being added to conversation
+			// Debug: Log the tool result content being added to conversation.
+			// A company context search returns the organization's own text,
+			// which is never logged: its size only.
 			log.info("Adding tool result to conversation", {
 				toolName: toolCall.name,
 				toolCallId: toolCall.id,
-				resultPreview: resultContent.substring(0, 500),
+				...(toolCall.name === COMPANY_CONTEXT_SEARCH_TOOL_NAME
+					? {}
+					: { resultPreview: resultContent.substring(0, 500) }),
 				resultLength: resultContent.length,
 			});
 

@@ -16,6 +16,7 @@ import { logger } from "@repo/logs";
 import { searchProjectCodeIndex } from "@repo/rag";
 import { normalizeQaPlaywrightScript } from "@repo/utils";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -316,6 +317,7 @@ export const generatePlaywrightScriptProcedure = tenantProtectedProcedure
 				sourceResultEventId: runEvidence?.resultEventId ?? null,
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			if (error instanceof ORPCError) {
 				throw error;
 			}

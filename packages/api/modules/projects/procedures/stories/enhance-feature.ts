@@ -53,6 +53,10 @@ import {
 import { zodSchema } from "ai";
 import { z } from "zod";
 import {
+	chatGptPlanRefusalToORPCError,
+	isChatGptPlanRefusal,
+} from "../../../../lib/chatgpt-plan-errors";
+import {
 	Permissions,
 	requireOrganizationMembership,
 	requireProjectPermission,
@@ -140,7 +144,14 @@ async function enhanceFeatureWithAI({
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId, featureKey: "enhance-feature" },
+			{
+				userId,
+				organizationId,
+				featureKey: "enhance-feature",
+				// Only ever run from the procedure below, for the person who
+				// clicked; it may use their own ChatGPT plan (Fizzy #2939).
+				planEligible: true,
+			},
 		);
 
 		const parts = [
@@ -258,7 +269,12 @@ async function enhanceFeatureWithAI({
 		// feature forward with no output and no error — a silent data loss the
 		// PO only discovers on the next stage. Rethrow and let the handler map
 		// it to the same refusal every other AI procedure returns.
-		if (error instanceof AIProviderNotConfiguredError) {
+		// A member's own ChatGPT plan that is spent or needs reconnecting is
+		// the same kind of refusal: nothing ran.
+		if (
+			error instanceof AIProviderNotConfiguredError ||
+			isChatGptPlanRefusal(error)
+		) {
 			throw error;
 		}
 		console.error("AI feature enhancement failed:", error);
@@ -687,7 +703,7 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 					message: error.message,
 				});
 			}
-			throw error;
+			throw chatGptPlanRefusalToORPCError(error) ?? error;
 		}
 
 		if (!enhanced) {

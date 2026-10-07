@@ -48,6 +48,12 @@ const mocks = vi.hoisted(() => ({
 // The body reader is shared with the chat engines and runs for real here; only
 // the two storage readers under it are mocked, by the module paths it imports
 // them from, so the crawled / captured / paging cases below still exercise it.
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database/prisma/queries/projects/contexts", () => ({
 	getCrawledUrlSourceMarkdownPage: mocks.getCrawledUrlSourceMarkdownPage,
 }));

@@ -6,6 +6,7 @@
  */
 
 import { getAIModelWithMetadata } from "@repo/ai";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { auth } from "@repo/auth";
 import { AiUsageLimitExceededError } from "@repo/payments";
@@ -164,6 +165,12 @@ export async function POST(req: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const body = await req.json();
 		const validation = GeneratePrdRequestSchema.safeParse(body);
@@ -193,7 +200,13 @@ export async function POST(req: NextRequest) {
 				taskType: "COMPLEX",
 				modelOverride: undefined,
 			},
-			{ userId, organizationId },
+			{
+				userId,
+				organizationId,
+				// A person is driving this request, so it may run on their own
+				// ChatGPT plan where they turned it on (Fizzy #2939).
+				planEligible: true,
+			},
 		);
 
 		trackUsage();

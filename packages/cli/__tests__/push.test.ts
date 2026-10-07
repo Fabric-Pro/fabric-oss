@@ -515,7 +515,9 @@ describe("changes an open proposal already carries", () => {
 	const BASE = "snap-7";
 
 	function proposal(
-		overrides: Partial<OpenInstructionProposal> = {},
+		overrides: Partial<
+			Extract<OpenInstructionProposal, { snapshotId: string }>
+		> = {},
 	): OpenInstructionProposal {
 		return {
 			snapshotId: "snap-8",

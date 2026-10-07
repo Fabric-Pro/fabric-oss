@@ -10,7 +10,8 @@
 		"resolveJsonModule": true,
 		"declaration": true,
 		"declarationMap": true,
-		"noEmit": true
+		"noEmit": true,
+		"types": ["node"]
 	},
 	"include": ["*.ts"],
 	"exclude": ["node_modules"]

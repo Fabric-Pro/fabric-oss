@@ -8,7 +8,10 @@ import {
 	vi,
 } from "vitest";
 
-import { refreshOAuthToken } from "../lib/oauth-refresh";
+import {
+	refreshOAuthToken,
+	sanitizeOAuthErrorText,
+} from "../lib/oauth-refresh";
 import * as urlSecurity from "../lib/url-security";
 
 const ENDPOINT = "https://oauth.example.com/token";
@@ -435,5 +438,254 @@ describe("refreshOAuthToken", () => {
 			expect(result.errorCode).toBe("network_error");
 			expect(result.errorMessage.toLowerCase()).toContain("loopback");
 		}
+	});
+});
+
+describe("refreshOAuthToken client authentication", () => {
+	it("sends client_secret_basic credentials in an Authorization header, not the body", async () => {
+		mockNextFetch(jsonResponse(200, { access_token: "fresh" }));
+
+		await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+			clientAuthMethod: "client_secret_basic",
+		});
+
+		const init = captured[0]?.init;
+		expect(getHeader(init, "authorization")).toBe(
+			`Basic ${Buffer.from("client-1:secret-1").toString("base64")}`,
+		);
+		const body = decodeBody(init);
+		expect(body.get("client_secret")).toBeNull();
+		expect(body.get("client_id")).toBeNull();
+		expect(body.get("refresh_token")).toBe("old-refresh");
+	});
+
+	it("sends client_secret_post credentials in the body", async () => {
+		mockNextFetch(jsonResponse(200, { access_token: "fresh" }));
+
+		await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+			clientAuthMethod: "client_secret_post",
+		});
+
+		const init = captured[0]?.init;
+		expect(getHeader(init, "authorization")).toBeNull();
+		const body = decodeBody(init);
+		expect(body.get("client_id")).toBe("client-1");
+		expect(body.get("client_secret")).toBe("secret-1");
+	});
+
+	it("never sends a secret for a public client, even when one is passed", async () => {
+		mockNextFetch(jsonResponse(200, { access_token: "fresh" }));
+
+		await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "public-client",
+			clientSecret: "should-not-leave",
+			clientAuthMethod: "none",
+		});
+
+		const init = captured[0]?.init;
+		expect(getHeader(init, "authorization")).toBeNull();
+		const body = decodeBody(init);
+		expect(body.get("client_id")).toBe("public-client");
+		expect(body.get("client_secret")).toBeNull();
+	});
+
+	it("refuses client_secret_basic without a secret and contacts nothing", async () => {
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			clientAuthMethod: "client_secret_basic",
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			errorCode: "missing_client_secret",
+		});
+		expect(safeFetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("refuses redirects on the token request", async () => {
+		mockNextFetch(jsonResponse(200, { access_token: "fresh" }));
+
+		await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+		});
+
+		expect(captured[0]?.init?.redirect).toBe("error");
+	});
+});
+
+describe("refreshOAuthToken error text", () => {
+	const SECRET_SHAPED = "rt_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c";
+
+	it("never puts a raw non-JSON error body in the message", async () => {
+		mockNextFetch(
+			textResponse(
+				400,
+				`<html>refresh_token=old-refresh client_secret=secret-1 ${SECRET_SHAPED}</html>`,
+				"text/html",
+			),
+		);
+
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+		});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.errorMessage).toBe("HTTP 400 from token endpoint");
+			expect(result.errorMessage).not.toContain("html");
+		}
+	});
+
+	it("never echoes a 2xx non-JSON body", async () => {
+		mockNextFetch(
+			textResponse(200, `access_token=${SECRET_SHAPED}&scope=repo`),
+		);
+
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+		});
+
+		expect(result).toEqual({
+			ok: false,
+			errorCode: "invalid_response",
+			errorMessage: "Token endpoint returned a non-JSON body",
+		});
+	});
+
+	it("redacts the request's own secrets and token-shaped values from error_description", async () => {
+		mockNextFetch(
+			jsonResponse(400, {
+				error: "invalid_grant",
+				error_description: `refresh token old-refresh-token-value for client secret-1 is revoked; hint ${SECRET_SHAPED} Bearer abc.def`,
+			}),
+		);
+
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh-token-value",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+		});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.errorCode).toBe("invalid_grant");
+			for (const leaked of [
+				"old-refresh-token-value",
+				"secret-1",
+				SECRET_SHAPED,
+				"abc.def",
+			]) {
+				expect(result.errorMessage).not.toContain(leaked);
+			}
+			expect(result.errorMessage).toContain("is revoked");
+		}
+	});
+
+	it("never echoes a provider error code it does not recognise", async () => {
+		// The provider puts the very refresh token it was sent in `error`.
+		mockNextFetch(jsonResponse(400, { error: "old-refresh-token-value" }));
+
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh-token-value",
+			clientId: "client-1",
+			clientSecret: "secret-1",
+		});
+
+		expect(result).toEqual({
+			ok: false,
+			errorCode: "unrecognized_error",
+			errorMessage: "unrecognized_error",
+		});
+	});
+
+	it("classifies an unrecognised code the same way on a 200 and in a form-encoded body", async () => {
+		mockNextFetch(jsonResponse(200, { error: "s3cr3t-in-error" }));
+		mockNextFetch(textResponse(400, "error=s3cr3t-in-error"));
+
+		const first = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "r",
+			clientId: "c",
+		});
+		const second = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "r",
+			clientId: "c",
+		});
+
+		for (const result of [first, second]) {
+			expect(JSON.stringify(result)).not.toContain("s3cr3t-in-error");
+		}
+		expect(first).toMatchObject({ errorCode: "unrecognized_error" });
+		expect(second).toMatchObject({
+			errorCode: "http_400",
+			errorMessage:
+				"HTTP 400 from token endpoint (error: unrecognized_error)",
+		});
+	});
+
+	it("bounds the description", async () => {
+		mockNextFetch(
+			jsonResponse(400, {
+				error: "invalid_request",
+				error_description: "word ".repeat(200),
+			}),
+		);
+
+		const result = await refreshOAuthToken({
+			tokenEndpoint: ENDPOINT,
+			refreshToken: "old-refresh",
+			clientId: "client-1",
+		});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.errorMessage.length).toBeLessThanOrEqual(201);
+		}
+	});
+});
+
+describe("sanitizeOAuthErrorText", () => {
+	it("removes credential-named parameters, JWTs and listed secrets", () => {
+		const out = sanitizeOAuthErrorText(
+			'bad "client_secret": "s3cr3t-value" code=abc123 eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl and my-listed-secret',
+			["my-listed-secret"],
+		);
+		expect(out).not.toContain("s3cr3t-value");
+		expect(out).not.toContain("abc123");
+		expect(out).not.toContain("eyJhbGciOi");
+		expect(out).not.toContain("my-listed-secret");
+	});
+
+	it("keeps an ordinary message and a URL", () => {
+		expect(
+			sanitizeOAuthErrorText(
+				"The refresh token is expired, see https://auth.example.com/docs/errors/expired",
+			),
+		).toBe(
+			"The refresh token is expired, see https://auth.example.com/docs/errors/expired",
+		);
 	});
 });

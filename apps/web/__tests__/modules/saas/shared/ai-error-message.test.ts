@@ -179,3 +179,20 @@ describe("describeAiError — the out-of-credit message names the account", () =
 		expect(copy.description).toContain("The AI provider account");
 	});
 });
+
+// Fizzy #2770: a chat route answers 429 with the plan's exhaustion code when
+// every plan serving the member is spent — possibly a shared one, so the
+// copy never claims it was their own plan.
+describe("describeAiError — spent ChatGPT plan", () => {
+	it("names the plan serving the work, not the member's own plan", () => {
+		const copy = describeAiError(429, {
+			error: "Every ChatGPT plan this work may use has no usage left in this window.",
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: null,
+		});
+		expect(copy.title).toBe("The ChatGPT plan has no usage left");
+		expect(`${copy.title} ${copy.description}`).not.toMatch(
+			/your own ChatGPT plan reached/i,
+		);
+	});
+});

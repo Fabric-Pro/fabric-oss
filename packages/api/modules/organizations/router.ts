@@ -16,6 +16,13 @@ import {
 	updateBrandKitProcedure,
 } from "./procedures/brand-kit";
 import {
+	acknowledgeChatGptPlanPoolTermsProcedure,
+	disconnectChatGptPlanPoolAccountProcedure,
+	getChatGptPlanPoolProcedure,
+	updateChatGptPlanPoolAccountProcedure,
+	updateChatGptPlanPoolPolicyProcedure,
+} from "./procedures/chatgpt-plan-pool";
+import {
 	cancelCompanyContextUrlSourceCrawlProcedure,
 	createCompanyContextDownloadUrlProcedure,
 	createCompanyContextTextProcedure,
@@ -89,6 +96,13 @@ export const organizationsRouter = {
 	// once about itself for Proposals and Business Cases. Brand kit
 	// permissions: members read, admins and owners write, behind the
 	// COMPANY_CONTEXT gate.
+	chatgptPlanPool: {
+		get: getChatGptPlanPoolProcedure,
+		updateAccount: updateChatGptPlanPoolAccountProcedure,
+		disconnectAccount: disconnectChatGptPlanPoolAccountProcedure,
+		updatePolicy: updateChatGptPlanPoolPolicyProcedure,
+		acknowledgeTerms: acknowledgeChatGptPlanPoolTermsProcedure,
+	},
 	companyContext: {
 		list: listCompanyContextSourcesProcedure,
 		get: getCompanyContextSourceProcedure,

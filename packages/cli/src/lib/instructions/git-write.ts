@@ -12,7 +12,12 @@
  * classified by shape only.
  */
 import { COMMIT_SHA, isBranchLiteral, isRemoteName } from "./git-literals.js";
-import { type GitDeadline, lines, runGit } from "./git-run.js";
+import {
+	type GitDeadline,
+	type GitHttpAuthorization,
+	lines,
+	runGit,
+} from "./git-run.js";
 
 export type FetchFailure =
 	| "auth"
@@ -29,11 +34,11 @@ export type FetchResult =
 	| { kind: "timed-out" }
 	| { kind: "unavailable"; reason: string };
 
-export type MergeFailure = "diverged" | "busy" | "other";
+export type MergeFailure = "diverged" | "busy" | "local-changes" | "other";
 
 export type MergeResult =
 	| { kind: "merged"; head: string }
-	| { kind: "failed"; reason: MergeFailure }
+	| { kind: "failed"; reason: MergeFailure; files?: string[] }
 	| { kind: "timed-out" }
 	| { kind: "unavailable"; reason: string };
 
@@ -79,6 +84,12 @@ export function mergeFailureOf(stderr: string): MergeFailure {
 		return "busy";
 	}
 	if (
+		/would be overwritten by merge/i.test(stderr) &&
+		/local changes|untracked working tree files/i.test(stderr)
+	) {
+		return "local-changes";
+	}
+	if (
 		/Not possible to fast-forward|refusing to merge unrelated histories|diverging branches/i.test(
 			stderr,
 		)
@@ -86,6 +97,27 @@ export function mergeFailureOf(stderr: string): MergeFailure {
 		return "diverged";
 	}
 	return "other";
+}
+
+/**
+ * The files git names when it refuses a merge because a change in the tree
+ * would be overwritten: the tab-indented lines under its "would be
+ * overwritten by merge:" heading. Paths are git's own words, shown and capped
+ * by the caller; none is ever run.
+ */
+function blockedFilesOf(stderr: string): string[] {
+	const files: string[] = [];
+	let listing = false;
+	for (const line of stderr.split(/\r?\n/)) {
+		if (/would be overwritten by merge:\s*$/i.test(line)) {
+			listing = true;
+		} else if (listing && /^\s+\S/.test(line)) {
+			files.push(line.trim());
+		} else {
+			listing = false;
+		}
+	}
+	return files;
 }
 
 /**
@@ -154,6 +186,63 @@ export async function fetchRef(
 }
 
 /**
+ * Fetch through Fabric's authenticated Git gateway into the existing remote
+ * tracking ref. The configured provider remote is never rewritten.
+ */
+export async function fetchRefFromUrl(
+	root: string,
+	url: string,
+	remote: string,
+	ref: string,
+	deadline: GitDeadline,
+	httpAuthorization: GitHttpAuthorization,
+): Promise<FetchResult> {
+	if (!isRemoteName(remote) || !isBranchLiteral(ref)) {
+		return { kind: "unavailable", reason: "not a branch this will fetch" };
+	}
+	const tracking = `refs/remotes/${remote}/${ref}`;
+	const fetched = await runGit(
+		root,
+		[
+			"-c",
+			"gc.auto=0",
+			"-c",
+			"maintenance.auto=false",
+			"fetch",
+			"--no-recurse-submodules",
+			"--",
+			url,
+			`refs/heads/${ref}:${tracking}`,
+		],
+		deadline,
+		{ write: true, unattended: true, httpAuthorization },
+	);
+	if (fetched.kind === "unavailable") {
+		return fetched.reason === "git timed out"
+			? { kind: "timed-out" }
+			: { kind: "unavailable", reason: fetched.reason };
+	}
+	if (fetched.code !== 0) {
+		return { kind: "failed", reason: fetchFailureOf(fetched.stderr) };
+	}
+	const tip = await runGit(
+		root,
+		["rev-parse", "--verify", "-q", `${tracking}^{commit}`],
+		deadline,
+	);
+	if (tip.kind === "unavailable") {
+		return tip.reason === "git timed out"
+			? { kind: "timed-out" }
+			: { kind: "unavailable", reason: tip.reason };
+	}
+	const [sha] = lines(tip.stdout);
+	if (tip.code !== 0 || !sha || !COMMIT_SHA.test(sha)) {
+		return { kind: "failed", reason: "missing-ref" };
+	}
+	return { kind: "fetched", tip: sha };
+}
+
+/**
  * Move the checked-out branch to `sha`, which must descend from HEAD:
  * `git merge --ff-only --no-edit --quiet <sha>`, then HEAD must BE `sha`.
  * `sha` must be a full commit name.
@@ -178,7 +267,10 @@ export async function fastForwardTo(
 			: { kind: "unavailable", reason: merged.reason };
 	}
 	if (merged.code !== 0) {
-		return { kind: "failed", reason: mergeFailureOf(merged.stderr) };
+		const reason = mergeFailureOf(merged.stderr);
+		return reason === "local-changes"
+			? { kind: "failed", reason, files: blockedFilesOf(merged.stderr) }
+			: { kind: "failed", reason };
 	}
 	const head = await runGit(
 		root,

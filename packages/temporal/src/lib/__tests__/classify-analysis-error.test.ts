@@ -463,3 +463,18 @@ describe("classifyBacklogAnalysisError", () => {
 		});
 	});
 });
+
+describe("classifyBacklogAnalysisError — spent ChatGPT plan (Fizzy #2939)", () => {
+	it("tells the person when the plan resets", () => {
+		const resetAt = new Date(Date.now() + 2 * 60 * 60_000);
+		const classified = classifyBacklogAnalysisError(
+			Object.assign(new Error("Your ChatGPT plan has no usage left"), {
+				name: "SubscriptionPlanExhaustedError",
+				code: "subscription_sharing_usage_limit_exceeded",
+				resetAt,
+			}),
+		);
+		expect(classified.errorClass).toBe("subscription_exhausted");
+		expect(classified.userMessage).toContain("It resets in about 2 h.");
+	});
+});

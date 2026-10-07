@@ -29,6 +29,7 @@
 
 import {
 	type CompanyContextSourceRecord,
+	type CompanyContextUrlPageFetchFailureResult,
 	type CompanyLinkSourceCrawlOutcome,
 	type CompanyLinkSourceCrawlState,
 	cancelUnfinishedCompanyContextUrlPages,
@@ -50,6 +51,7 @@ import {
 	markContextAsEmbedded,
 	pruneCompanyContextUrlPages,
 	recordCompanyContextSourceIndexingFailure,
+	recordCompanyContextUrlPageFetchFailure,
 	recordContextIndexingFailure,
 	type UpsertCompanyContextUrlPageResult,
 	updateCompanyContextSourceStatus,
@@ -289,6 +291,18 @@ export interface CompanyLinkCrawlStore {
 		message: string,
 		options?: { pointsRemoved?: boolean },
 	): Promise<boolean>;
+	/**
+	 * Record that a crawl could not fetch the page at `pageUrl`, so the crawl
+	 * keeps it rather than pruning it; `message` is the whole reason. Marks
+	 * or creates the page by the rules of
+	 * `recordCompanyContextUrlPageFetchFailure`, and writes nothing under a
+	 * source that is gone or being deleted. Returns whether the URL is kept,
+	 * and the page with its index markers.
+	 */
+	recordPageFetchFailure(
+		sourceId: string,
+		failure: { pageUrl: string; message: string; permanent: boolean },
+	): Promise<CompanyContextUrlPageFetchFailureResult>;
 	/** Delete the pages a crawl no longer returned; empty `keptUrls` deletes none. */
 	prunePages(
 		sourceId: string,
@@ -414,6 +428,14 @@ export function companyLinkCrawlStore(
 			});
 			return count > 0;
 		},
+		recordPageFetchFailure: (sourceId, { pageUrl, message, permanent }) =>
+			recordCompanyContextUrlPageFetchFailure({
+				parentSourceId: sourceId,
+				organizationId,
+				pageUrl,
+				message,
+				permanent,
+			}),
 		prunePages: (sourceId, keptUrls) =>
 			pruneCompanyContextUrlPages({
 				parentSourceId: sourceId,

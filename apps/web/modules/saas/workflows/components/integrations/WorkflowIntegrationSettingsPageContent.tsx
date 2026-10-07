@@ -1,6 +1,7 @@
 "use client";
 
 import type { WorkflowIntegrationProvider } from "@repo/database";
+import { GoogleDriveVerificationNotice } from "@saas/data-connections/components/GoogleDriveVerificationNotice";
 import { toFriendlyPermissionError } from "@saas/data-connections/lib/permission-error-copy";
 import {
 	gitlabStateFromIntegrationList,
@@ -829,6 +830,9 @@ export function WorkflowIntegrationSettingsPageContent({
 
 			<div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
 				<div className="space-y-6">
+					{activePlugin.type === "GOOGLE_DRIVE" ? (
+						<GoogleDriveVerificationNotice />
+					) : null}
 					<IntegrationSharingControls
 						organizationId={organizationId}
 						provider={activePlugin.type}

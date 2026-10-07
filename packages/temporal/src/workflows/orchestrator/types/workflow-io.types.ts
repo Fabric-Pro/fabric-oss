@@ -57,6 +57,14 @@ export interface OrchestratorWorkflowInput {
 	history: Array<{ role: "user" | "assistant"; content: string }>;
 	/** User ID */
 	userId: string;
+	/**
+	 * Set only by the chat routes a person types into (the Advisor and the
+	 * Fabric Agent drawer, in orchestrator mode): every AI step of the run may
+	 * then run on that person's own ChatGPT plan (Fizzy #2939). Story
+	 * automations, Weave, project setup and delegations leave it unset and
+	 * stay on the organization's provider.
+	 */
+	planEligible?: boolean;
 	/** Organization ID */
 	organizationId?: string;
 	// SECURITY: API keys are NOT passed in workflow inputs
@@ -140,6 +148,17 @@ export interface OrchestratorWorkflowInput {
 	 * Absent on personal-context callers.
 	 */
 	organizationSlug?: string;
+	/**
+	 * Set only by the Orchestrator stream route, for a chat started from the
+	 * Advisor (the Fabric AI page or the Fabric Agent drawer, with or without
+	 * a custom agent chosen there). It lets the turn tell the model which
+	 * organization it works for and search that organization's company
+	 * context, for its members only; membership and the feature gate are
+	 * still checked on every use. The MCP chat dialog, a registered agent's
+	 * try workspace and Nexus leave it unset. Absent in histories recorded
+	 * before it existed, which is the same as unset.
+	 */
+	companyContextAdvisor?: boolean;
 	/**
 	 * Autonomy level for approval behavior.
 	 * CONSERVATIVE: Always ask for medium+ risk

@@ -7,6 +7,7 @@ import {
 import { db, getPromptByKey } from "@repo/database";
 import { NoObjectGeneratedError } from "ai";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireOrganizationMembership,
@@ -329,6 +330,7 @@ export const proposeAiMergeProcedure = tenantProtectedProcedure
 				truncated: finishReason === "length",
 			};
 		} catch (error) {
+			rethrowChatGptPlanRefusal(error);
 			// `generateObject` THROWS on an output-token cutoff (the partial
 			// JSON fails schema validation) instead of returning a
 			// `finishReason: "length"` result. Surface that as `truncated` —

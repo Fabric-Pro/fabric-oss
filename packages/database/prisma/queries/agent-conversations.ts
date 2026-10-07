@@ -392,9 +392,92 @@ export class ConversationNotFoundError extends Error {
 	}
 }
 
+/**
+ * A turn save whose messages repeat an id. Nothing is written: with two
+ * messages under one id, a retry could not tell them apart.
+ */
+export class DuplicateTurnMessageIdError extends Error {
+	readonly messageId: string;
+	constructor(messageId: string) {
+		super(`Turn messages repeat the id ${messageId}`);
+		this.name = "DuplicateTurnMessageIdError";
+		this.messageId = messageId;
+	}
+}
+
+/**
+ * A turn save whose message id is already used by a stored message the turn
+ * does not own (another turn's message, or an unstamped message of a
+ * different role). Nothing is written.
+ */
+export class TurnMessageIdConflictError extends Error {
+	readonly messageId: string;
+	constructor(messageId: string) {
+		super(
+			`Message id ${messageId} already belongs to another message in this conversation`,
+		);
+		this.name = "TurnMessageIdConflictError";
+		this.messageId = messageId;
+	}
+}
+
 interface SelectForUpdateRow {
 	messages: ConversationMessage[];
 }
+
+type RawQueryClient = {
+	$queryRaw: (
+		strings: TemplateStringsArray,
+		...values: unknown[]
+	) => Promise<SelectForUpdateRow[]>;
+};
+
+/**
+ * Reads a conversation's messages with a row lock, inside the caller's
+ * transaction, scoped to the caller's tenant.
+ *
+ * Row lock — Postgres `FOR UPDATE` blocks other transactions from reading
+ * this row with intent to modify until the caller's transaction commits.
+ * `$queryRaw` is the only way to opt into row locking from Prisma; the
+ * parameterised template tag prevents SQL injection. The table name is the
+ * DB-level identifier `agent_conversation` (set via `@@map` on the
+ * `AgentConversation` model) — using the Prisma model name in raw SQL
+ * produces a `relation does not exist` (Postgres 42P01) at runtime. The
+ * column names `"userId"` and `"organizationId"` ARE camelCase and must
+ * stay quoted; the SQL is hand-rolled because Prisma's fluent builder does
+ * not support `FOR UPDATE`.
+ *
+ * The tenant filter is a tri-state mirroring the strict tenant XOR rules
+ * used throughout the codebase: when `organizationId` is undefined the
+ * column filter is omitted (legacy "match by userId only"); when it's null
+ * the row must have "organizationId IS NULL"; when it's a string the row
+ * must match it exactly. Zero rows means a tenant mismatch or a missing
+ * conversation, and the caller cannot tell which.
+ */
+async function selectConversationMessagesForUpdate(
+	tx: typeof db,
+	{
+		id,
+		userId,
+		organizationId,
+	}: { id: string; userId: string; organizationId?: string | null },
+): Promise<SelectForUpdateRow[]> {
+	const raw = tx as unknown as RawQueryClient;
+	if (organizationId === undefined) {
+		return await raw.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`;
+	}
+	if (organizationId === null) {
+		return await raw.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" IS NULL FOR UPDATE`;
+	}
+	return await raw.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+}
+
+type SerializableTransactionClient = {
+	$transaction: <T>(
+		fn: (tx: typeof db) => Promise<T>,
+		opts?: { isolationLevel?: "Serializable" },
+	) => Promise<T>;
+};
 
 export async function appendConversationMessage({
 	id,
@@ -420,72 +503,13 @@ export async function appendConversationMessage({
 		);
 	}
 
-	// The tenant filter is a tri-state: `undefined` falls back to legacy
-	// "match by userId only", `null` means strict personal context, a
-	// string means strict org context. The SELECT below uses these flags
-	// to build the WHERE clause without injecting unscoped values.
-	const orgIsExplicit = organizationId !== undefined;
-	const orgIsPersonal = organizationId === null;
-
-	return await (
-		db as unknown as {
-			$transaction: <T>(
-				fn: (tx: typeof db) => Promise<T>,
-				opts?: { isolationLevel?: "Serializable" },
-			) => Promise<T>;
-		}
-	).$transaction(
+	return await (db as unknown as SerializableTransactionClient).$transaction(
 		async (tx) => {
-			// Row lock — Postgres `FOR UPDATE` blocks other transactions
-			// from reading this row with intent to modify until we commit.
-			// `$queryRaw` is the only way to opt into row locking from
-			// Prisma; the parameterised template tag prevents SQL
-			// injection. The table name is the DB-level identifier
-			// `agent_conversation` (set via `@@map` on the
-			// `AgentConversation` model) — using the Prisma model name
-			// in raw SQL produces a `relation does not exist` (Postgres
-			// 42P01) at runtime. The column names `"userId"` and
-			// `"organizationId"` ARE camelCase and must stay quoted; we
-			// hand-roll the SQL because Prisma's fluent builder does not
-			// support `FOR UPDATE`.
-			//
-			// The WHERE clause mirrors the strict tenant XOR rules used
-			// throughout the codebase: when `organizationId` is undefined
-			// we omit the column filter; when it's null we require
-			// "organizationId IS NULL"; when it's a string we require
-			// equality.
-			let rows: SelectForUpdateRow[];
-			if (!orgIsExplicit) {
-				rows = await (
-					tx as unknown as {
-						$queryRaw: (
-							strings: TemplateStringsArray,
-							...values: unknown[]
-						) => Promise<SelectForUpdateRow[]>;
-					}
-				)
-					.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`;
-			} else if (orgIsPersonal) {
-				rows = await (
-					tx as unknown as {
-						$queryRaw: (
-							strings: TemplateStringsArray,
-							...values: unknown[]
-						) => Promise<SelectForUpdateRow[]>;
-					}
-				)
-					.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" IS NULL FOR UPDATE`;
-			} else {
-				rows = await (
-					tx as unknown as {
-						$queryRaw: (
-							strings: TemplateStringsArray,
-							...values: unknown[]
-						) => Promise<SelectForUpdateRow[]>;
-					}
-				)
-					.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" = ${organizationId} FOR UPDATE`;
-			}
+			const rows = await selectConversationMessagesForUpdate(tx, {
+				id,
+				userId,
+				organizationId,
+			});
 
 			if (rows.length === 0) {
 				// Tenant mismatch OR conversation doesn't exist. We
@@ -535,6 +559,621 @@ export async function appendConversationMessage({
 		},
 		{ isolationLevel: "Serializable" },
 	);
+}
+
+/**
+ * Removes one user message from a conversation, leaving every other message
+ * in place.
+ *
+ * Exists for the Advisor's first message (Fizzy #2958): a new chat is
+ * created already holding the user's question, before the server decides
+ * whether that question may run. When the server refuses it because another
+ * message in the conversation is being answered, the question was never
+ * answered and must not stay in the saved history. Messages written to the
+ * conversation in the meantime (the other turn's own save) are kept: the
+ * read and write happen under the same row lock, so nothing written between
+ * them is lost.
+ *
+ * Only a `user` message with exactly this id is removed. When none matches
+ * — already removed, or replaced by a completed turn's save — nothing is
+ * written and `removed` is false, so a retried call is harmless.
+ *
+ * Throws `ConversationNotFoundError` when the conversation does not exist
+ * for this user and tenant. `organizationId` is required: there is no
+ * personal or unfiltered variant of this removal.
+ */
+export async function removeConversationMessage({
+	id,
+	userId,
+	organizationId,
+	messageId,
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+	messageId: string;
+}): Promise<{ removed: boolean }> {
+	// Fail closed even for a caller that slipped past the type: an empty or
+	// missing organization would select the helper's unfiltered arm.
+	if (typeof organizationId !== "string" || organizationId.length === 0) {
+		throw new ConversationNotFoundError();
+	}
+
+	return await (db as unknown as SerializableTransactionClient).$transaction(
+		async (tx) => {
+			const rows = await selectConversationMessagesForUpdate(tx, {
+				id,
+				userId,
+				organizationId,
+			});
+
+			if (rows.length === 0) {
+				throw new ConversationNotFoundError();
+			}
+
+			const firstRow = rows[0];
+			const currentMessages =
+				firstRow && Array.isArray(firstRow.messages)
+					? (firstRow.messages as ConversationMessage[])
+					: [];
+
+			const remainingMessages = currentMessages.filter(
+				(m) => !(m?.id === messageId && m?.role === "user"),
+			);
+			if (remainingMessages.length === currentMessages.length) {
+				return { removed: false };
+			}
+
+			await tx.agentConversation.update({
+				where: { id },
+				data: {
+					messages:
+						remainingMessages as unknown as Prisma.InputJsonValue,
+				},
+			});
+
+			return { removed: true };
+		},
+		{ isolationLevel: "Serializable" },
+	);
+}
+
+/**
+ * The Advisor's conversation settings that a turn save or a settings change
+ * may write, merged onto the row's current metadata under the row lock.
+ *
+ * `selectedMcpConfigIds`: absent keeps the stored selection, `null` removes
+ * it ("no selection"), an array replaces it. The other keys are written only
+ * when given and non-empty. `mode` is never taken from the caller: a missing
+ * one is filled with `orchestrator`, an existing one is kept (Fizzy #2040).
+ */
+export interface AdvisorConversationSettings {
+	executionMode?: string;
+	instanceId?: string;
+	selectedMcpConfigIds?: string[] | null;
+	documentChatId?: string;
+}
+
+/** One saved Advisor execution record (`metadata.executions[]`). */
+export type AdvisorExecutionRecord = { id: string } & Record<string, unknown>;
+
+interface ConversationStateRow {
+	messages: unknown;
+	metadata: unknown;
+}
+
+type ConversationStateQueryClient = {
+	$queryRaw: (
+		strings: TemplateStringsArray,
+		...values: unknown[]
+	) => Promise<ConversationStateRow[]>;
+};
+
+/**
+ * Reads a conversation's messages and metadata with a row lock, inside the
+ * caller's transaction, in exactly one organization. There is no personal or
+ * unfiltered arm: the caller has already refused a missing organization.
+ */
+async function selectConversationStateForUpdate(
+	tx: typeof db,
+	{
+		id,
+		userId,
+		organizationId,
+	}: { id: string; userId: string; organizationId: string },
+): Promise<ConversationStateRow[]> {
+	const raw = tx as unknown as ConversationStateQueryClient;
+	return await raw.$queryRaw`SELECT messages, metadata FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+}
+
+type ReadCommittedTransactionClient = {
+	$transaction: <T>(
+		fn: (tx: typeof db) => Promise<T>,
+		opts?: { isolationLevel?: "ReadCommitted" },
+	) => Promise<T>;
+};
+
+/**
+ * Runs `fn` in a Read Committed transaction. The turn save and the settings
+ * change take the row lock as their first statement, so a writer that waits
+ * on it reads the row as the previous writer committed it and applies its
+ * change on top. Under Serializable the waiter instead fails with
+ * "could not serialize access due to concurrent update" (40001), which the
+ * real-database test showed for concurrent saves: one tab's turn was lost to
+ * an error rather than to an overwrite.
+ */
+async function inRowLockTransaction<T>(
+	fn: (tx: typeof db) => Promise<T>,
+): Promise<T> {
+	return await (db as unknown as ReadCommittedTransactionClient).$transaction(
+		fn,
+		{ isolationLevel: "ReadCommitted" },
+	);
+}
+
+function assertOrganization(organizationId: unknown): void {
+	// Fail closed even for a caller that slipped past the type.
+	if (typeof organizationId !== "string" || organizationId.length === 0) {
+		throw new ConversationNotFoundError();
+	}
+}
+
+function asMetadataObject(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? { ...(value as Record<string, unknown>) }
+		: {};
+}
+
+/**
+ * Applies the settings onto `current` (the locked row's metadata), mirroring
+ * the web client's `mergeOrchestratorConversationMetadata`, except that an
+ * absent `selectedMcpConfigIds` keeps the stored one instead of removing it.
+ * `executions` is never touched here.
+ */
+function mergeAdvisorSettings(
+	current: Record<string, unknown>,
+	settings: AdvisorConversationSettings,
+	options: { executionModeOnlyIfUnset: boolean },
+): Record<string, unknown> {
+	const next: Record<string, unknown> = { ...current };
+	if (typeof next.mode !== "string" || next.mode.length === 0) {
+		next.mode = "orchestrator";
+	}
+	if (settings.executionMode) {
+		const stored = next.executionMode;
+		const keepStored =
+			options.executionModeOnlyIfUnset &&
+			typeof stored === "string" &&
+			stored.length > 0;
+		if (!keepStored) {
+			next.executionMode = settings.executionMode;
+		}
+	}
+	if (settings.instanceId) {
+		next.instanceId = settings.instanceId;
+	}
+	if (settings.documentChatId) {
+		next.documentChatId = settings.documentChatId;
+	}
+	if (settings.selectedMcpConfigIds === null) {
+		delete next.selectedMcpConfigIds;
+	} else if (settings.selectedMcpConfigIds !== undefined) {
+		next.selectedMcpConfigIds = settings.selectedMcpConfigIds;
+	}
+	next.lastUpdated = new Date().toISOString();
+	return next;
+}
+
+/** The execution a message was saved with, if a turn save stamped it. */
+function messageExecutionId(message: unknown): string | undefined {
+	const meta = (message as { metadata?: unknown } | null)?.metadata;
+	if (meta === null || typeof meta !== "object") {
+		return undefined;
+	}
+	const value = (meta as { executionId?: unknown }).executionId;
+	return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Inserts `block` before the first element `isLater` matches, or at the end
+ * when none does.
+ */
+function insertBefore<T>(
+	list: T[],
+	block: T[],
+	isLater: (item: T) => boolean,
+): T[] {
+	const index = list.findIndex(isLater);
+	if (index === -1) {
+		return [...list, ...block];
+	}
+	return [...list.slice(0, index), ...block, ...list.slice(index)];
+}
+
+/**
+ * Resolves the `ConversationTurn` an execution id names, inside the caller's
+ * transaction and after the conversation row is locked, and decides what the
+ * save may do with it.
+ *
+ * - No turn (the client's `exec-<time>` fallback id): save without ordering.
+ * - The caller's turn in this conversation (`conversationId` or the kept
+ *   `scopeConversationId`): save, ordered by its `generation`.
+ * - The caller's turn admitted with no conversation at all (the chat could
+ *   not create one before the turn ran, so it creates one when the turn
+ *   ends): claim the turn for this conversation with a conditional UPDATE
+ *   that matches only while both conversation fields are still null. The
+ *   claim lasts while the claiming conversation exists: deleting it nulls
+ *   `conversationId` through the foreign key, and a later save of the turn
+ *   into another of the caller's conversations can claim it again. That is
+ *   within one user and organization, and the first conversation is gone. Two saves racing to claim it for different conversations
+ *   hold different conversation locks, so they meet on the turn row: the
+ *   second UPDATE waits, matches nothing once the first commits, and the
+ *   re-read below refuses it. Only `conversationId` is set;
+ *   `scopeConversationId` stays the conversation the turn was ADMITTED for
+ *   (none), which is what admission's key-retry check and the stream and
+ *   cancel routes compare against. Such a turn has no generation and is not
+ *   ordered.
+ * - Anything else (another user's or organization's turn, or a turn of
+ *   another conversation): `ConversationNotFoundError`.
+ */
+async function resolveTurnForSave(
+	tx: typeof db,
+	args: {
+		executionId: string;
+		conversationId: string;
+		userId: string;
+		organizationId: string;
+	},
+): Promise<{ generation: number | null }> {
+	const turnSelect = {
+		userId: true,
+		organizationId: true,
+		conversationId: true,
+		scopeConversationId: true,
+		generation: true,
+	} as const;
+	const turn = await tx.conversationTurn.findUnique({
+		where: { executionId: args.executionId },
+		select: turnSelect,
+	});
+	if (!turn) {
+		return { generation: null };
+	}
+	if (
+		turn.userId !== args.userId ||
+		turn.organizationId !== args.organizationId
+	) {
+		throw new ConversationNotFoundError();
+	}
+	if (
+		turn.conversationId === args.conversationId ||
+		turn.scopeConversationId === args.conversationId
+	) {
+		return { generation: turn.generation };
+	}
+	if (turn.conversationId !== null || turn.scopeConversationId !== null) {
+		throw new ConversationNotFoundError();
+	}
+
+	const claimed = await tx.conversationTurn.updateMany({
+		where: {
+			executionId: args.executionId,
+			userId: args.userId,
+			organizationId: args.organizationId,
+			conversationId: null,
+			scopeConversationId: null,
+		},
+		data: { conversationId: args.conversationId },
+	});
+	if (claimed.count === 1) {
+		return { generation: null };
+	}
+	// Lost a race to claim it: accept only if the winner claimed it for
+	// this same conversation.
+	const after = await tx.conversationTurn.findUnique({
+		where: { executionId: args.executionId },
+		select: turnSelect,
+	});
+	if (after?.conversationId === args.conversationId) {
+		return { generation: null };
+	}
+	throw new ConversationNotFoundError();
+}
+
+/**
+ * Saves one finished Advisor turn into its conversation without rewriting
+ * anything another writer saved (Fizzy #2949).
+ *
+ * The client used to read the whole conversation, add its turn, and write the
+ * whole `messages` array and `metadata` back. Two tabs on one conversation,
+ * or a late save from a stream that outlived its tab, then replaced the other
+ * writer's newer turn — and could put back a refused first message that
+ * `removeConversationMessage` had just taken out. Here every read the save
+ * depends on, including the turn lookups, happens in one transaction after a
+ * `SELECT ... FOR UPDATE` lock on the conversation row (see
+ * `inRowLockTransaction`), so every change is made to the row as it is now:
+ *
+ *   1. `removeMessageIds`: removed only when the message is a `user`
+ *      message that no turn save has stamped (the question a new chat was
+ *      created with, and a refused first message a failed removal left
+ *      behind — neither is ever stamped). A saved turn's question is
+ *      stamped, so it is never removed this way, and an id that is one of
+ *      this turn's own messages is not removed either.
+ *   2. `messages`: each is stamped with `metadata.executionId` (the
+ *      execution record's id). Their ids must be distinct
+ *      (`DuplicateTurnMessageIdError`), and an id may match only a stored
+ *      message the turn owns: one stamped with this execution, or an
+ *      unstamped message of the same role, which the turn adopts (the
+ *      question a conversation was created with at save time). Any other
+ *      match is `TurnMessageIdConflictError`. Both are raised before any
+ *      write. The messages then fill, in order, the positions of the
+ *      messages the turn owns; extras go right after the last of them,
+ *      unfilled positions are dropped, and a turn that owns nothing yet is
+ *      added as one block (see Order). Ids play no part in placement, and
+ *      messages the turn does not own never move, so a retry of the same
+ *      turn — same ids or regenerated — leaves the array unchanged.
+ *   3. `execution`: replaces the stored record with the same id, or is added.
+ *   4. `settings`: merged onto the locked metadata (see
+ *      `AdvisorConversationSettings`); `executionMode` is used only when the
+ *      conversation has none, as the client's save did.
+ *
+ * Order. When the turn belongs to this conversation and has a `generation`,
+ * a turn saved for the first time is placed before the messages and
+ * execution of any turn of this conversation with a higher generation, so a
+ * late save of an earlier turn does not land after a later one. Later turns
+ * are recognised by the `metadata.executionId` this function stamps;
+ * messages without it (saved before this function existed, or appended
+ * mid-turn by the workflow) are never moved. The lookup of later turns runs
+ * under the lock, so a later turn saved while this save waited for the lock
+ * is seen. Without a generation (no turn, or a turn associated here — see
+ * `resolveTurnForSave`) the turn is appended at the end.
+ *
+ * Throws `ConversationNotFoundError` when the conversation is not this
+ * user's in this organization, or when the execution id names a turn this
+ * save may not use (see `resolveTurnForSave`), and the two message-id errors
+ * above. Nothing is written then.
+ * `organizationId` is required: there is no personal or unfiltered variant.
+ */
+export async function saveConversationTurn({
+	id,
+	userId,
+	organizationId,
+	messages,
+	execution,
+	removeMessageIds = [],
+	settings = {},
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+	messages: ConversationMessage[];
+	execution: AdvisorExecutionRecord;
+	removeMessageIds?: string[];
+	settings?: AdvisorConversationSettings;
+}): Promise<{ addedMessages: number; removedMessages: number }> {
+	assertOrganization(organizationId);
+	const executionId = execution?.id;
+	if (typeof executionId !== "string" || executionId.length === 0) {
+		throw new Error("saveConversationTurn: execution.id is required");
+	}
+
+	const seenIds = new Set<string>();
+	for (const message of messages) {
+		if (seenIds.has(message.id)) {
+			throw new DuplicateTurnMessageIdError(message.id);
+		}
+		seenIds.add(message.id);
+	}
+
+	const stamped: ConversationMessage[] = messages.map((message) => ({
+		...message,
+		metadata: { ...(message.metadata ?? {}), executionId },
+	}));
+	const turnMessageIds = new Set(stamped.map((m) => m.id));
+	const toRemove = new Set(
+		removeMessageIds.filter((messageId) => !turnMessageIds.has(messageId)),
+	);
+
+	return await inRowLockTransaction(async (tx) => {
+		const rows = await selectConversationStateForUpdate(tx, {
+			id,
+			userId,
+			organizationId,
+		});
+		const row = rows[0];
+		if (!row) {
+			throw new ConversationNotFoundError();
+		}
+
+		const { generation } = await resolveTurnForSave(tx, {
+			executionId,
+			conversationId: id,
+			userId,
+			organizationId,
+		});
+		const laterExecutionIds = new Set<string>();
+		if (generation !== null) {
+			const later = await tx.conversationTurn.findMany({
+				where: {
+					userId,
+					organizationId,
+					OR: [{ conversationId: id }, { scopeConversationId: id }],
+					generation: { gt: generation },
+					executionId: { not: null },
+				},
+				select: { executionId: true },
+			});
+			for (const turn of later) {
+				if (turn.executionId) {
+					laterExecutionIds.add(turn.executionId);
+				}
+			}
+		}
+
+		const stored = Array.isArray(row.messages)
+			? (row.messages as ConversationMessage[])
+			: [];
+		const kept = stored.filter(
+			(m) =>
+				!(
+					m?.role === "user" &&
+					messageExecutionId(m) === undefined &&
+					toRemove.has(m?.id)
+				),
+		);
+
+		// Rule 1: a turn message may reuse only the id of a stored message
+		// the turn owns — one stamped with this execution, or an unstamped
+		// message of the same role (the question a conversation was created
+		// with at save time), which the turn adopts. Anything else is
+		// refused before any write.
+		const turnRoleById = new Map(stamped.map((m) => [m.id, m.role]));
+		for (const m of stored) {
+			const role = turnRoleById.get(m?.id);
+			if (role === undefined) {
+				continue;
+			}
+			const owner = messageExecutionId(m);
+			if (owner === executionId) {
+				continue;
+			}
+			if (owner === undefined && m?.role === role) {
+				continue;
+			}
+			throw new TurnMessageIdConflictError(m.id);
+		}
+
+		// Rules 2–3: the turn's slots are the positions, in stored order, of
+		// the messages it owns (stamped with this execution, or adopted).
+		// The turn's messages fill them in payload order; any left over go
+		// right after the last slot; unfilled slots are dropped. With no
+		// slot, the turn goes as one block before the first message of a
+		// later turn, else at the end. Messages the turn does not own never
+		// move, so a retry of the same turn — same ids or regenerated —
+		// leaves the array unchanged.
+		const owned = (m: ConversationMessage) => {
+			const owner = messageExecutionId(m);
+			return (
+				owner === executionId ||
+				(owner === undefined && turnRoleById.has(m?.id))
+			);
+		};
+		const slots: number[] = [];
+		kept.forEach((m, index) => {
+			if (owned(m)) {
+				slots.push(index);
+			}
+		});
+		const next: Array<ConversationMessage | null> = [...kept];
+		slots.forEach((slot, i) => {
+			next[slot] = stamped[i] ?? null;
+		});
+		const extras = stamped.slice(slots.length);
+		let insertAt = kept.length;
+		const lastSlot = slots[slots.length - 1];
+		if (lastSlot !== undefined) {
+			insertAt = lastSlot + 1;
+		} else {
+			const laterIndex = kept.findIndex((m) => {
+				const owner = messageExecutionId(m);
+				return owner !== undefined && laterExecutionIds.has(owner);
+			});
+			if (laterIndex !== -1) {
+				insertAt = laterIndex;
+			}
+		}
+		const nextMessages = [
+			...next.slice(0, insertAt),
+			...extras,
+			...next.slice(insertAt),
+		].filter((m): m is ConversationMessage => m !== null);
+
+		const metadata = mergeAdvisorSettings(
+			asMetadataObject(row.metadata),
+			settings,
+			{ executionModeOnlyIfUnset: true },
+		);
+		const executions = Array.isArray(metadata.executions)
+			? (metadata.executions as AdvisorExecutionRecord[])
+			: [];
+		const existingIndex = executions.findIndex(
+			(e) => e?.id === executionId,
+		);
+		metadata.executions =
+			existingIndex === -1
+				? insertBefore(executions, [execution], (e) =>
+						laterExecutionIds.has(e?.id),
+					)
+				: executions.map((e, index) =>
+						index === existingIndex ? execution : e,
+					);
+
+		await tx.agentConversation.update({
+			where: { id },
+			data: {
+				messages: nextMessages as unknown as Prisma.InputJsonValue,
+				metadata: metadata as unknown as Prisma.InputJsonValue,
+			},
+		});
+
+		const storedIds = new Set(stored.map((m) => m?.id));
+		const nextIds = new Set(nextMessages.map((m) => m?.id));
+		return {
+			addedMessages: [...nextIds].filter((m) => !storedIds.has(m)).length,
+			removedMessages: [...storedIds].filter((m) => !nextIds.has(m))
+				.length,
+		};
+	});
+}
+
+/**
+ * Changes an Advisor conversation's settings (chat tools, reasoning mode,
+ * agent instance) without touching its messages or `metadata.executions`
+ * (Fizzy #2949). The keys are merged onto the metadata read under the row
+ * lock, never onto a snapshot the client loaded earlier, so an execution
+ * another tab saved in the meantime is kept. `executionMode`, when given,
+ * replaces the stored one.
+ *
+ * Throws `ConversationNotFoundError` when the conversation is not this
+ * user's in this organization. `organizationId` is required.
+ */
+export async function updateConversationSettings({
+	id,
+	userId,
+	organizationId,
+	settings,
+}: {
+	id: string;
+	userId: string;
+	organizationId: string;
+	settings: AdvisorConversationSettings;
+}): Promise<{ updated: true }> {
+	assertOrganization(organizationId);
+
+	return await inRowLockTransaction(async (tx) => {
+		const rows = await selectConversationStateForUpdate(tx, {
+			id,
+			userId,
+			organizationId,
+		});
+		const row = rows[0];
+		if (!row) {
+			throw new ConversationNotFoundError();
+		}
+
+		const metadata = mergeAdvisorSettings(
+			asMetadataObject(row.metadata),
+			settings,
+			{ executionModeOnlyIfUnset: false },
+		);
+		await tx.agentConversation.update({
+			where: { id },
+			data: {
+				metadata: metadata as unknown as Prisma.InputJsonValue,
+			},
+		});
+		return { updated: true as const };
+	});
 }
 
 /**

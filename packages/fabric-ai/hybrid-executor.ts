@@ -15,6 +15,7 @@
 
 import { getAIModelWithMetadata, logModelUsageAsync } from "@repo/ai";
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateText, streamText } from "ai";
 import { createFabricClient } from "./client";
 import type { FabricConfig, FabricPattern } from "./types";
@@ -208,6 +209,7 @@ async function buildSystemMessage(
 	try {
 		patternContent = await fabricClient.getPattern(pattern);
 	} catch (err) {
+		rethrowIfDispatchStopped(err);
 		logger.error("Failed to fetch pattern from Fabric AI", {
 			pattern,
 			error: err,
@@ -227,6 +229,7 @@ async function buildSystemMessage(
 		try {
 			contextContent = await fabricClient.getContext(context);
 		} catch (err) {
+			rethrowIfDispatchStopped(err);
 			logger.warn("Failed to fetch context from Fabric AI", {
 				context,
 				error: err,
@@ -244,6 +247,7 @@ async function buildSystemMessage(
 				strategyPrompt = strategyInfo.prompt;
 			}
 		} catch (err) {
+			rethrowIfDispatchStopped(err);
 			logger.warn("Failed to fetch strategy from Fabric AI", {
 				strategy,
 				error: err,
@@ -342,7 +346,8 @@ export async function executePatternHybrid(
 					organizationId: userContext.organizationId,
 				},
 			);
-		} catch (_error) {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			return {
 				output: "",
 				success: false,
@@ -392,6 +397,8 @@ export async function executePatternHybrid(
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error("Hybrid pattern execution failed", {
 			pattern,
@@ -473,7 +480,8 @@ export async function* executePatternHybridStream(
 					organizationId: userContext.organizationId,
 				},
 			);
-		} catch (_error) {
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			yield { type: "error", content: "No AI provider configured" };
 			return;
 		}
@@ -511,6 +519,8 @@ export async function* executePatternHybridStream(
 
 		yield { type: "complete", content: "" };
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		yield { type: "error", content: errorMessage };
 	}
@@ -561,6 +571,8 @@ export async function analyzeYouTubeHybrid(options: {
 			},
 		};
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		return {
 			output: "",
@@ -622,6 +634,8 @@ export async function scrapeAndAnalyzeHybrid(options: {
 			fabricConfig,
 		});
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		return {
 			output: "",
@@ -683,6 +697,8 @@ export async function searchAndAnalyzeHybrid(options: {
 			fabricConfig,
 		});
 	} catch (err) {
+		// A stop leaves as an error, never as a failed result.
+		rethrowIfDispatchStopped(err);
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		return {
 			output: "",

@@ -22,11 +22,16 @@ import {
 	resolveAzureDeploymentTarget,
 } from "@repo/agent-types";
 import {
+	CHATGPT_PLAN_ORIGIN,
+	createChatGptPlanFetch,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import {
 	createDatabricksFetch,
 	isReasoningModelName,
 } from "@repo/agent-types/databricks-compat";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { isRetryableError } from "../retry";
+import { reexchangeChatGptPlan } from "./chatgpt-plan-reexchange";
 import { createLangChainTelemetryCallback } from "./langchain-telemetry";
 
 /**
@@ -1337,6 +1342,10 @@ function createUninstrumentedProviderModel(
 	// Gateway API keys only work with their respective gateway URLs
 	const { provider, apiKey, model, baseUrl } = config;
 
+	if (provider === "OPENAI_CHATGPT_PLAN") {
+		return createChatGptPlanChatModel(config);
+	}
+
 	// Calculate temperature with retry reduction
 	let temperature = options.temperature ?? 0.7;
 	if (options.retryCount !== undefined && options.retryCount > 0) {
@@ -1883,6 +1892,51 @@ function createUninstrumentedProviderModel(
 	}
 }
 
+/**
+ * A ChatGPT plan — the member's own or an organization's shared account
+ * (Fizzy #2939, #2770). The exchange hands over the server-refreshed plan
+ * access token as `apiKey` and the plan's model as `model`; the shared plan
+ * fetch pins the origin and rewrites each Responses request to the plan's
+ * rules. No temperature or output cap: the plan route rejects both. Any base
+ * URL in the config is ignored, so the token can only ever go to
+ * api.openai.com.
+ *
+ * When the plan refuses a call as spent before any output, the model asks
+ * once for another plan's token and sends the call again; a second refusal
+ * is final.
+ */
+function createChatGptPlanChatModel(
+	config: RuntimeProviderConfig,
+): BaseChatModel {
+	const { model } = config;
+	let accessToken = config.apiKey;
+	let reexchanged = false;
+	return new ChatOpenAI({
+		model,
+		apiKey: "chatgpt-plan",
+		useResponsesApi: true,
+		zdrEnabled: true,
+		maxRetries: DEFAULT_MAX_RETRIES,
+		configuration: {
+			baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
+			fetch: createChatGptPlanFetch({
+				getAccessToken: async () => accessToken,
+				onExhausted: async () => {
+					if (reexchanged) {
+						return null;
+					}
+					reexchanged = true;
+					const next = await reexchangeChatGptPlan(accessToken);
+					if (next) {
+						accessToken = next;
+					}
+					return next;
+				},
+			}),
+		},
+	});
+}
+
 export function createProviderModel(
 	config: RuntimeProviderConfig,
 	options: ModelOptions = {},
@@ -2009,7 +2063,14 @@ export async function getAgentModelAsync(
 
 	// If we have a task type and tenant context, check for task-specific model preferences
 	// In the simplified design: user has ONE default provider, model overrides are scoped to that provider
-	if (options.taskType && tenantUserId && providerConfig) {
+	// A member's own ChatGPT plan has one model; the task endpoint resolves
+	// the organization's provider and would replace it (Fizzy #2939).
+	if (
+		options.taskType &&
+		tenantUserId &&
+		providerConfig &&
+		providerConfig.provider !== "OPENAI_CHATGPT_PLAN"
+	) {
 		console.log(
 			`[LangChainModels] Checking task-specific preferences for ${options.taskType}...`,
 		);

@@ -19,6 +19,7 @@ import { uploadFile } from "@repo/storage";
 import { decryptApiKey, getBaseUrl } from "@repo/utils";
 import { z } from "zod";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
+import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
@@ -78,6 +79,12 @@ interface BuiltInToolContext {
 	organizationId?: string;
 	workspaceIds?: string[];
 	projectId?: string;
+	/**
+	 * The Advisor's company-context opt-in, carried by the Orchestrator's
+	 * catalog adapter. Nothing else sets it, so `createBuiltInTools` (Slack,
+	 * Teams, the agent executor) never builds the company context search.
+	 */
+	companyContextAdvisor?: boolean;
 }
 
 interface CreateBuiltInToolsOptions extends BuiltInToolContext {
@@ -981,6 +988,26 @@ export async function createFabricTool(
 				},
 			} as unknown as Parameters<typeof tool>[0]),
 		};
+	}
+
+	// The organization's company context, for an Advisor turn that opted in
+	// (Fizzy #2719). Refused before anything loads without the opt-in, so an
+	// explicit tool list naming it builds nothing. Every call re-checks
+	// membership and the feature gate, and takes the organization from the
+	// project when the chat has one.
+	if (toolId === COMPANY_CONTEXT_SEARCH_TOOL_NAME) {
+		if (context.companyContextAdvisor !== true) {
+			return {};
+		}
+		const { createCompanyContextTools } = await import(
+			"./company-context-tool"
+		);
+		return createCompanyContextTools({
+			companyContextAdvisor: context.companyContextAdvisor,
+			userId,
+			organizationId,
+			projectId,
+		});
 	}
 
 	if (toolId === "search_slack_messages") {

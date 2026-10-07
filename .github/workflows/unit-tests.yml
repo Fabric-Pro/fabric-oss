@@ -36,13 +36,13 @@ name: Unit Tests
 #
 # Vitest shard args reach the suite as Turbo pass-through (`-- --shard=1/2`),
 # and Turbo folds pass-through args into the task hash, so the two web shards
-# get distinct cache entries and cannot alias each other. The same hashing
-# means a shard carrying pass-through args also re-keys the `generate` task it
-# depends on and therefore misses the master-warmed Prisma entry: the two web
-# shards pay one Prisma generate each (~77s, in parallel with the other
-# shards). Measured, deliberate, and cheap against a serial sweep — do not
-# "fix" it by dropping the pass-through, which would make both web shards run
-# the whole suite.
+# get distinct cache entries and cannot alias each other. Turbo also hands
+# those args to the `generate` task the tests depend on and hashes them there,
+# which made each web shard miss the shared Prisma entry and pay a cold
+# generate (~3.5 min once the Zod generator joined it). So those shards run
+# `generate` on its own first and then `test --only` with the pass-through
+# (see `Run unit tests`). Do not "fix" the hashing by dropping the
+# pass-through, which would make both web shards run the whole suite.
 #
 # Security: this workflow does not interpolate any user-controlled fields
 # (PR title, body, branch name, commit message, etc.) into run: blocks.
@@ -557,6 +557,16 @@ jobs:
       # would be both redundant and a second chance to disagree with the plan.
       # SHARD_PASSTHROUGH is a single Vitest flag or empty, and an empty one
       # must not be forwarded — `-- ""` reaches vitest as an empty argument.
+      #
+      # Turbo hands pass-through args to dependency tasks too and hashes them,
+      # so `turbo run test -- --shard=1/2` would key @repo/database#generate
+      # differently on each web shard and miss the shared Prisma entry (a cold
+      # generate is ~3.5 min). A shard with pass-through therefore generates
+      # first without it (`<pkg>...` covers every `^generate` the test task
+      # would have pulled in), then runs only the test task with `--only`.
+      # The test hash still covers its dependency packages' files under
+      # `--only` (a schema.prisma edit changes @repo/web#test's --dry=json
+      # hash), so a Prisma change cannot replay a stale web result.
       - name: Run unit tests
         env:
           SHARD_PACKAGES: ${{ matrix.packages }}
@@ -577,7 +587,8 @@ jobs:
             filters+=("--filter=$pkg")
           done
           if [[ -n "$SHARD_PASSTHROUGH" ]]; then
-            pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" "${filters[@]}" -- "$SHARD_PASSTHROUGH"
+            pnpm turbo run generate --concurrency="$TURBO_CONCURRENCY" "${filters[@]/%/...}"
+            pnpm turbo run test --only --concurrency="$TURBO_CONCURRENCY" "${filters[@]}" -- "$SHARD_PASSTHROUGH"
           else
             pnpm turbo run test --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
           fi

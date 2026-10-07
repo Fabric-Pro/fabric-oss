@@ -18,6 +18,7 @@ const m = vi.hoisted(() => ({
 	transitionPullRequest: vi.fn(),
 	proposalBranchIdOf: vi.fn(),
 	wakeBranchAfterCommand: vi.fn(),
+	refreshBranchOfProposal: vi.fn(),
 	canReviewInstructionProposals: vi.fn(),
 	correlationId: null as string | null,
 }));
@@ -41,6 +42,8 @@ vi.mock("@repo/database", () => ({
 vi.mock("../proposal-branch", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../proposal-branch")>()),
 	wakeBranchAfterCommand: (...a: unknown[]) => m.wakeBranchAfterCommand(...a),
+	refreshBranchOfProposal: (...a: unknown[]) =>
+		m.refreshBranchOfProposal(...a),
 }));
 vi.mock("../proposal-authorization", () => ({
 	canReviewInstructionProposals: (...a: unknown[]) =>
@@ -67,6 +70,7 @@ beforeEach(() => {
 		m.transitionPullRequest,
 		m.proposalBranchIdOf,
 		m.wakeBranchAfterCommand,
+		m.refreshBranchOfProposal,
 		m.canReviewInstructionProposals,
 	]) {
 		fn.mockReset();
@@ -75,6 +79,7 @@ beforeEach(() => {
 	m.start.mockResolvedValue({ workflowId: "wf" });
 	m.proposalBranchIdOf.mockResolvedValue(null);
 	m.wakeBranchAfterCommand.mockResolvedValue(undefined);
+	m.refreshBranchOfProposal.mockResolvedValue(undefined);
 	m.canReviewInstructionProposals.mockResolvedValue(false);
 });
 
@@ -457,12 +462,56 @@ describe("refreshProposalPullRequest", () => {
 		},
 	);
 
+	// Deliberate contract change (Fizzy #2784): an OPEN row on a member branch
+	// is observed now through the branch's own Refresh instead of waiting for
+	// the sweeper's next tick.
+	it("observes the member branch an OPEN row is on, through the branch's Refresh", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal());
+		m.requestPullRequestRefresh.mockResolvedValue({
+			admitted: true,
+			state: "OPEN",
+			attempt: 3,
+			failure: null,
+		});
+		m.proposalBranchIdOf.mockResolvedValue("branch_1");
+
+		expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
+			refreshed: true,
+		});
+		expect(m.refreshBranchOfProposal).toHaveBeenCalledWith({
+			...PROPOSER,
+			branchId: "branch_1",
+		});
+		expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
+	it("observes nothing for an OPEN row on no branch, and when the branch's Refresh is refused it surfaces the refusal", async () => {
+		m.getInstructionProposal.mockResolvedValue(proposal());
+		m.requestPullRequestRefresh.mockResolvedValue({
+			admitted: true,
+			state: "OPEN",
+			attempt: 3,
+			failure: null,
+		});
+
+		expect(await refreshProposalPullRequest(PROPOSER)).toEqual({
+			refreshed: true,
+		});
+		expect(m.refreshBranchOfProposal).not.toHaveBeenCalled();
+
+		m.proposalBranchIdOf.mockResolvedValue("branch_1");
+		m.refreshBranchOfProposal.mockRejectedValue(new Error("cooldown"));
+		await expect(refreshProposalPullRequest(PROPOSER)).rejects.toThrow(
+			"cooldown",
+		);
+	});
+
 	it.each([
-		["OPEN", null],
 		["CLOSE_REQUESTED", null],
 		["BLOCKED", failureOf("PR_CREATION_REFUSED", false)],
 	])(
-		"starts nothing for a %s row: Observe, Close or a human retry moves it",
+		"starts nothing for a %s row: Close or a human retry moves it",
 		async (state, failure) => {
 			m.getInstructionProposal.mockResolvedValue(proposal());
 			m.requestPullRequestRefresh.mockResolvedValue({

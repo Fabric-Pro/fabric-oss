@@ -95,6 +95,7 @@ vi.mock("sonner", () => ({
 
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { AddCompanyContextDialog } from "../AddCompanyContextDialog";
+import { companyContextSubmitAdapter } from "../company-context-adapter";
 
 const FIRECRAWL_ROW = {
 	id: "sp_1",
@@ -201,6 +202,41 @@ describe("AddCompanyContextDialog — tabs", () => {
 		expect(link).toHaveFocus();
 		await user.keyboard("{ArrowLeft}{ArrowLeft}");
 		expect(screen.getByRole("tab", { name: "tabs.text" })).toHaveFocus();
+	});
+
+	it("offers the scheduled refresh cadences but not Live", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(screen.getByRole("tab", { name: "tabs.link" }));
+		await screen.findByTestId("url-source-indexing-with");
+		expect(
+			screen.getByText("Scheduled refreshes use Temporal."),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("combobox", { name: "Refresh cadence" }),
+		);
+		const options = await screen.findAllByRole("option");
+		expect(options.map((option) => option.textContent)).toEqual([
+			"Once (no auto-refresh)",
+			"Daily",
+			"Weekly",
+			"Monthly",
+		]);
+	});
+
+	it("refuses a Live link before calling the company procedure", async () => {
+		const adapter = companyContextSubmitAdapter("org-1");
+
+		await expect(
+			adapter.processLink({
+				url: "https://example.com/",
+				scope: "SINGLE_PAGE",
+				refreshMode: "LIVE",
+			}),
+		).rejects.toThrow("Live refresh is not available for company context");
+		expect(state.processLink).not.toHaveBeenCalled();
 	});
 });
 

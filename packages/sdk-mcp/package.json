@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/sdk-mcp",
-	"version": "0.1.9",
+	"version": "0.1.10",
 	"description": "MCP server adapter for @fabricorg/sdk — expose a Fabric workspace as MCP tools",
 	"keywords": [
 		"fabric",
@@ -38,21 +38,21 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsup",
-		"dev": "tsup --watch",
-		"type-check": "tsc --noEmit"
+		"build": "tsdown",
+		"dev": "tsdown --watch",
+		"type-check": "tsgo --noEmit"
 	},
 	"peerDependencies": {
 		"@fabricorg/sdk": "workspace:*"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@modelcontextprotocol/sdk": "^1.32.1",
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {
 		"@fabricorg/sdk": "workspace:*",
 		"@repo/tsconfig": "workspace:*",
-		"tsup": "^8.0.0",
+		"tsdown": "^0.23.0",
 		"typescript": "5.9.3"
 	}
 }

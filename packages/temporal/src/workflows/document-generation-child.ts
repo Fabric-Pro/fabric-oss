@@ -130,6 +130,12 @@ export interface DocumentGenerationChildInput {
 	 * via `suppliedContext` and once through the corpus.
 	 */
 	excludeContextId?: string;
+	/**
+	 * A person started this run from the editor or the Documents tab, so it
+	 * may run on their own ChatGPT plan (Fizzy #2939). Every other starter
+	 * leaves it unset and stays on the organization's provider.
+	 */
+	planEligible?: boolean;
 }
 
 /**
@@ -193,6 +199,7 @@ export async function documentGenerationChildWorkflow(
 		directContext,
 		suppliedContext,
 		excludeContextId,
+		planEligible,
 	} = input;
 
 	const startTime = Date.now();
@@ -566,6 +573,7 @@ export async function documentGenerationChildWorkflow(
 			hasRagContexts: hasProjectContextEntries(contexts),
 			hasTeamsIntegration,
 			hasSlackIntegration,
+			planEligible,
 		});
 		documentContent = generationResult.content;
 

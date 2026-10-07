@@ -145,7 +145,7 @@ describe("POST /api/ai/generate-workflow — requested organization", () => {
 		expect(res.status).toBe(200);
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			{ userId: USER_ID, organizationId: MEMBER_ORG },
+			{ userId: USER_ID, organizationId: MEMBER_ORG, planEligible: true },
 		);
 		expect(generateText).toHaveBeenCalledWith(
 			expect.objectContaining({ model: RESOLVED_MODEL }),
@@ -159,7 +159,7 @@ describe("POST /api/ai/generate-workflow — requested organization", () => {
 		expect(hasOrganizationTie).toHaveBeenCalledWith(USER_ID, ACTIVE_ORG);
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			{ userId: USER_ID, organizationId: ACTIVE_ORG },
+			{ userId: USER_ID, organizationId: ACTIVE_ORG, planEligible: true },
 		);
 	});
 

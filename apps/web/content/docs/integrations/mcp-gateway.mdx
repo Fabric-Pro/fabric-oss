@@ -75,8 +75,10 @@ deployment's URL and the project filled in.
 
     ```bash
     codex mcp add fabric-<end-of-project-id> --url https://your-fabric.com/api/mcp-gateway/projects/<project-id>
-    codex mcp login fabric-<end-of-project-id>
     ```
+
+    The command opens your browser to sign in and finishes once you approve. If
+    the sign-in did not finish, run `codex mcp login fabric-<end-of-project-id>`.
   </Tab>
   <Tab value="Other">
     Any client that implements MCP authorization works from the server entry

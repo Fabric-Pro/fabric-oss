@@ -31,6 +31,7 @@ export {
 	EXECUTION_MODE_CONFIGS,
 	type ExecutionMode,
 	type ExecutionModeConfig,
+	usesIterativeExecution,
 } from "./execution-mode.types";
 // =============================================================================
 // MCP Default-Tool Signal Types

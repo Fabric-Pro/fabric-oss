@@ -50,6 +50,12 @@ const databaseMocks = vi.hoisted(() => ({
 	getWorkspaceById: vi.fn(),
 }));
 
+vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
+	getDirectRepositoryState: vi
+		.fn()
+		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
+}));
+
 vi.mock("@repo/database", () => ({
 	getWorkspaceAccessContext: mocks.getWorkspaceAccessContext,
 	hasWorkspaceAccess: databaseMocks.hasWorkspaceAccess,

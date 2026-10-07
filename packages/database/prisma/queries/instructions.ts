@@ -157,7 +157,7 @@ function noPendingCleanupFilter() {
  * says it without a journal join. `proposalBranchId` is set only on v2 rows,
  * so a #2563 row and a FABRIC row are counted as before.
  */
-function activeProposalFilter() {
+export function activeProposalFilter() {
 	return {
 		OR: [
 			{ proposalStatus: "PENDING" as const },
@@ -203,6 +203,7 @@ function rejectionsWithProposalCleanupMarker(value: unknown) {
 
 const summarySelect = {
 	id: true,
+	contentKind: true,
 	projectId: true,
 	organizationId: true,
 	userId: true,
@@ -435,7 +436,7 @@ function isVersionCollision(error: unknown): boolean {
  * colliders do not retry in lockstep. `onCollision` may answer instead of
  * retrying (a repository sync's run key already holding its row).
  */
-async function withVersionRetry<T>(
+export async function withVersionRetry<T>(
 	attempt: () => Promise<T>,
 	onCollision?: () => Promise<T | null>,
 ): Promise<T> {
@@ -2007,6 +2008,7 @@ export function listInstructionSnapshots(
 		where: {
 			projectId,
 			organizationId,
+			contentKind: "FULL_SNAPSHOT",
 			...snapshotVisibilityFilter(visibility),
 		},
 		orderBy: { version: "desc" },
@@ -2053,6 +2055,7 @@ export async function listInstructionProposals(
 	const items = page.map((proposal) => ({
 		...proposal,
 		isStale:
+			proposal.contentKind === "FULL_SNAPSHOT" &&
 			proposal.proposalStatus === "PENDING" &&
 			proposal.baseSnapshotId !== project.publishedInstructionSnapshotId,
 	}));
@@ -2103,6 +2106,7 @@ export async function getInstructionProposal(
 	return {
 		...proposal,
 		isStale:
+			proposal.contentKind === "FULL_SNAPSHOT" &&
 			proposal.proposalStatus === "PENDING" &&
 			proposal.baseSnapshotId !== project.publishedInstructionSnapshotId,
 	};
@@ -2569,80 +2573,6 @@ export async function getInstructionSnapshotWithPublishedPointer(
 				? publishedPointer
 				: null,
 	};
-}
-
-/**
- * The published snapshot of MANY projects at once, as the summary the MCP
- * project tools advertise on each project they return.
- *
- * UNSCOPED by tenant, for the same reason as `getPublishedInstructionSnapshot`
- * above: the published snapshot is a project-level pointer, and the caller has
- * already access-filtered the ids it passes (the MCP handlers pass only ids
- * that `listProjects`/`getProjectSummaryById` returned for this caller).
- *
- * ONE query for the whole page: the project rows carry the pointer, so the
- * snapshot comes back through the relation rather than through a second round
- * trip per project.
- *
- * A project maps to a summary only when its pointer resolves to a READY
- * snapshot that carries a digest AND whose `organizationId` is the project's
- * own — the integrity check `resolvePublishedInstructionSnapshot` makes on the
- * single-project path, repeated here so the two surfaces cannot disagree.
- * Anything else maps to `null`, which the caller reports as "nothing
- * published" rather than as an error: a caller must not be able to learn from
- * this that a snapshot exists but is mis-tenanted.
- *
- * A project id with no row at all is simply absent from the map.
- */
-export type PublishedInstructionSummary = {
-	version: number;
-	fileCount: number;
-	digest: string;
-	publishedAt: Date | null;
-};
-
-export async function getPublishedInstructionSummariesForProjects(
-	projectIds: string[],
-): Promise<Map<string, PublishedInstructionSummary | null>> {
-	const summaries = new Map<string, PublishedInstructionSummary | null>();
-	if (projectIds.length === 0) {
-		return summaries;
-	}
-	const projects = await db.project.findMany({
-		where: { id: { in: projectIds } },
-		select: {
-			id: true,
-			organizationId: true,
-			publishedInstructionSnapshot: {
-				select: {
-					organizationId: true,
-					status: true,
-					version: true,
-					fileCount: true,
-					digest: true,
-					publishedAt: true,
-				},
-			},
-		},
-	});
-	for (const project of projects) {
-		const snapshot = project.publishedInstructionSnapshot;
-		summaries.set(
-			project.id,
-			snapshot &&
-				snapshot.status === "READY" &&
-				snapshot.digest !== null &&
-				snapshot.organizationId === project.organizationId
-				? {
-						version: snapshot.version,
-						fileCount: snapshot.fileCount,
-						digest: snapshot.digest,
-						publishedAt: snapshot.publishedAt,
-					}
-				: null,
-		);
-	}
-	return summaries;
 }
 
 /** One manifest entry, reduced to what a diff is decided on. */
@@ -3503,6 +3433,7 @@ export async function startInstructionSnapshotValidation(input: {
 			id: input.snapshotId,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
+			contentKind: "FULL_SNAPSHOT",
 			status: { in: ["RECEIVING", "FAILED"] },
 			...ownedByAttempt(input.validationAttemptId),
 		},
@@ -3554,6 +3485,7 @@ export async function claimInstructionSnapshotValidation(input: {
 			id: input.snapshotId,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
+			contentKind: "FULL_SNAPSHOT",
 			status:
 				input.validationAttemptId === undefined
 					? "RECEIVING"
@@ -3591,6 +3523,7 @@ export async function claimInstructionValidationAttempt(input: {
 		id: input.snapshotId,
 		projectId: input.projectId,
 		organizationId: input.organizationId,
+		contentKind: "FULL_SNAPSHOT" as const,
 		status: { in: ["RECEIVING", "FAILED"] as InstructionSnapshotStatus[] },
 	};
 	const read = () =>
@@ -3653,6 +3586,7 @@ export async function failInstructionSnapshot(input: {
 			id: input.snapshotId,
 			projectId: input.projectId,
 			organizationId: input.organizationId,
+			contentKind: "FULL_SNAPSHOT",
 			status: { in: ["RECEIVING", "VALIDATING"] },
 			...ownedByAttempt(input.validationAttemptId),
 		},
@@ -5579,6 +5513,7 @@ export async function publishInstructionSnapshot(input: {
 				proposalStatus: true,
 				proposalDestination: true,
 				version: true,
+				contentKind: true,
 				baseSnapshotId: true,
 				baseVersion: true,
 				publishedAt: true,
@@ -5588,7 +5523,7 @@ export async function publishInstructionSnapshot(input: {
 				deferredScanStatus: true,
 			},
 		});
-		if (!snapshot) {
+		if (!snapshot || snapshot.contentKind !== "FULL_SNAPSHOT") {
 			return {
 				published: false as const,
 				changed: false as const,
@@ -7067,6 +7002,8 @@ export async function deleteInstructionSnapshot(
 							pullRequestState: true,
 							mergeSyncRequestedAt: true,
 							pullRequestObligationOpen: true,
+							proposalDestination: true,
+							commitOutcome: true,
 						},
 					},
 				);

@@ -175,6 +175,12 @@ export interface ProjectDocumentGenerationInput {
 	 */
 	excludeContextId?: string;
 	/**
+	 * A person started this run from the editor or the Documents tab, so it
+	 * may run on their own ChatGPT plan (Fizzy #2939). Every other starter
+	 * leaves it unset and stays on the organization's provider.
+	 */
+	planEligible?: boolean;
+	/**
 	 * This attempt's identity — the `generationStartedAt` the queue write
 	 * returned — as an ISO-8601 string.
 	 *
@@ -364,6 +370,24 @@ export interface DirectChatWorkflowInput {
 	preferredRepositoryUrl?: string;
 	/** Model override — canonical model name to use instead of user's default (e.g. "gpt-4o", "claude-3-5-sonnet") */
 	modelOverride?: string;
+	/**
+	 * Set only by the Advisor's stream route, where a person is typing the
+	 * turn: it may then run on their own ChatGPT plan (Fizzy #2939). Mention
+	 * replies, meetings and every other starter leave it unset, so they stay
+	 * on the organization's provider.
+	 */
+	planEligible?: boolean;
+	/**
+	 * Set only by the Advisor's stream route (the Fabric AI page, the Fabric
+	 * Agent drawer, and a custom agent chosen in either). It lets the turn
+	 * tell the model which organization it works for and search that
+	 * organization's company context, for its members only; the membership
+	 * and the feature gate are still checked on every use. Every other caller
+	 * leaves it unset: a project comment reply is read by project guests, and
+	 * the meeting agent is not the Advisor. Absent in histories recorded
+	 * before it existed, which is the same as unset.
+	 */
+	companyContextAdvisor?: boolean;
 	/**
 	 * When true, the activity skips all tool-calling (built-in + MCP). Used by
 	 * the workflow's degraded retry after a tools-related failure (#1644).

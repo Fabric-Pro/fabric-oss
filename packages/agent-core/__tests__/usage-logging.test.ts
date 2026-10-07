@@ -279,3 +279,44 @@ describe("logAgentUsageFromRunnableConfig — cache accounting", () => {
 		});
 	});
 });
+
+// Fizzy #2770: the usage row of a call on a shared ChatGPT plan account names
+// the account; the agent passes on the plan the exchange handed it.
+describe("logAgentUsageFromRunnableConfig — plan source", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("sends the plan source the exchange returned", async () => {
+		let requestBody: Record<string, unknown> | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				requestBody = JSON.parse(String(init?.body));
+				return new Response(null, { status: 204 });
+			}),
+		);
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					ai_token: "token",
+					ai_provider: "OPENAI_CHATGPT_PLAN",
+					ai_model: "gpt-6-astra",
+					ai_plan_source: "org:acc-1",
+				},
+			},
+			{
+				usage_metadata: {
+					input_tokens: 10,
+					output_tokens: 2,
+					total_tokens: 12,
+				},
+			},
+			{ taskType: "TOOL_CALLING" },
+		);
+		expect(requestBody).toMatchObject({
+			provider: "OPENAI_CHATGPT_PLAN",
+			planSource: "org:acc-1",
+		});
+	});
+});

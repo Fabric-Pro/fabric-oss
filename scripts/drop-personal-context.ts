@@ -137,10 +137,10 @@ async function settlePurchases(
 		return { cancelled: live.length };
 	}
 
-	// Relative rather than by package name: only `@repo/temporal` and
-	// `@repo/tsconfig` are declared at the repository root, and the other
-	// workspace packages do not resolve from here. Declaring them would be
-	// an install; a path is enough for a script.
+	// Relative rather than by package name: the repository root declares no
+	// application packages, so they do not resolve from here, and declaring
+	// one would add its files to every Turbo task hash (see turbo.json). A
+	// path is enough for a script.
 	const { cancelSubscription } = await import("../packages/payments/index");
 	let cancelled = 0;
 	for (const purchase of live) {

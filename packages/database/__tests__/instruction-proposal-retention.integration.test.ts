@@ -322,6 +322,21 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				...settled("CANCELED"),
 				status: "REJECTED",
 			});
+			await seed("main", "directCommitPending", {
+				proposalDestination: "REPOSITORY_COMMIT",
+				commitContext: { v: 1 },
+				commitOutcome: Prisma.DbNull,
+			});
+			await seed("main", "directCommitJsonNull", {
+				proposalDestination: "REPOSITORY_COMMIT",
+				commitContext: { v: 1 },
+				commitOutcome: Prisma.JsonNull,
+			});
+			await seed("main", "directCommitSettled", {
+				proposalDestination: "REPOSITORY_COMMIT",
+				commitContext: { v: 1 },
+				commitOutcome: { outcome: "committed" },
+			});
 			await seed("main", "fabricReady", {});
 			await seed("main", "fabricRejected", { status: "REJECTED" });
 			await seed("main", "fabricFailed", { status: "FAILED" });
@@ -464,6 +479,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					"unresolvedOpen",
 					"unresolvedRejected",
 					"branchMembershipPending",
+					"directCommitPending",
+					"directCommitJsonNull",
 				].sort(),
 			);
 			expect(resolved).toEqual(
@@ -471,6 +488,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					"branchUntrackedConfirming",
 					"branchSettled",
 					"v1Merged",
+					"directCommitSettled",
 				]),
 			);
 			// A partition: every row is exactly one of the two, FABRIC rows
@@ -483,6 +501,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						pullRequestState: true,
 						mergeSyncRequestedAt: true,
 						pullRequestObligationOpen: true,
+						proposalDestination: true,
+						commitOutcome: true,
 						proposalBranch: {
 							select: {
 								state: true,
@@ -565,6 +585,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					"closed",
 					"fabricReady",
 					"fabricNoRejection",
+					"directCommitSettled",
 					// REJECTED/FAILED window.
 					"canceled",
 					"fabricRejected",
@@ -595,6 +616,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				"mergeSyncOwed",
 				"canceledAwaitingConfirmation",
 				"rejectedWithCreateMarker",
+				"directCommitPending",
+				"directCommitJsonNull",
 			]) {
 				expect(
 					await deleteInstructionSnapshot(
@@ -657,6 +680,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				"fabricReady",
 				"fabricFailed",
 				"fabricNoRejection",
+				"directCommitSettled",
 			]) {
 				expect(
 					await deleteInstructionSnapshot(

@@ -63,6 +63,7 @@ export const ORG_API_KEY_SCOPES = [
 	"frames:write", // Create, update and share frames
 	"instructions:read", // Read the published coding instructions of a project
 	"instructions:write", // Propose a change to a project's coding instructions
+	"repositories:read", // Read a project's complete attached repository through Git transport
 	// Publish a new version of a project's coding instructions directly, with
 	// no review. A SEPARATE authority from `instructions:write` rather than a
 	// mode inside it: that scope is what the Connect dialog mints, on the

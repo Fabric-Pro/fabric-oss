@@ -74,6 +74,13 @@ vi.mock("../proposal-pull-request", () => ({
 vi.mock("../direct-commit-workflow", () => ({
 	startDirectCommitWorkflow: vi.fn(),
 }));
+vi.mock("../submit-git-intent", () => ({
+	submitGitIntentChange: vi.fn(() => {
+		throw new Error(
+			"An uploaded-snapshot change cannot enter Git admission.",
+		);
+	}),
+}));
 
 import { submitInstructionChange } from "../submit-change";
 

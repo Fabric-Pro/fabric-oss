@@ -4,6 +4,7 @@ import { AIProviderNotConfiguredError } from "@repo/ai";
 import { getProjectFunctionTagClause } from "@repo/ai/lib/function-tag-context";
 import { db, generateTaskIdentifier } from "@repo/database";
 import { z } from "zod";
+import { rethrowChatGptPlanRefusal } from "../../../../lib/chatgpt-plan-errors";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -219,6 +220,7 @@ async function generateTasksWithAI(
 			}))
 			.slice(0, 10); // Max 10 tasks
 	} catch (error) {
+		rethrowChatGptPlanRefusal(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message: error.message,

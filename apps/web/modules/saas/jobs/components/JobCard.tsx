@@ -1,5 +1,6 @@
 "use client";
 
+import { AI_PROVIDER_NOT_CONFIGURED } from "@saas/shared/lib/ai-provider-missing";
 import { Badge } from "@ui/components/badge";
 import {
 	Collapsible,
@@ -211,7 +212,11 @@ export function JobCard({ job }: { job: JobListItem }) {
 			) : null}
 
 			{job.error ? (
-				<p className="mt-2 text-xs text-destructive">{job.error}</p>
+				<p className="mt-2 text-xs text-destructive">
+					{job.error === AI_PROVIDER_NOT_CONFIGURED
+						? t("aiProviderMissing")
+						: job.error}
+				</p>
 			) : null}
 
 			<div className="mt-2 flex items-center justify-between gap-2">

@@ -107,6 +107,7 @@ beforeEach(() => {
 	});
 	m.getInstructionSnapshot.mockResolvedValue({
 		id: "snap_1",
+		contentKind: "FULL_SNAPSHOT",
 		status: "RECEIVING",
 		userId: "user_1",
 		proposalStatus: null,
@@ -215,8 +216,16 @@ describe("projects.instructions.finalize", () => {
 	it("starts nothing and answers the row's real status when the row left RECEIVING/FAILED before the token could be written", async () => {
 		m.claimInstructionValidationAttempt.mockResolvedValue(null);
 		m.getInstructionSnapshot
-			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
-			.mockResolvedValueOnce({ id: "snap_1", status: "VALIDATING" });
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "RECEIVING",
+			})
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "VALIDATING",
+			});
 
 		const result = await m.handlers.finalize!({
 			input: baseInput,
@@ -267,6 +276,7 @@ describe("projects.instructions.finalize", () => {
 	it("reports VALIDATING without starting a workflow or writing a status", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "VALIDATING",
 		});
 
@@ -293,6 +303,7 @@ describe("projects.instructions.finalize", () => {
 	it("re-attempts the start for a FAILED snapshot (the tab's 'Try again')", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "FAILED",
 		});
 
@@ -316,6 +327,7 @@ describe("projects.instructions.finalize", () => {
 	it("re-attempts a FAILED repository-source snapshot under the same workflow id", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "FAILED",
 			source: "REPOSITORY",
 		});
@@ -350,6 +362,7 @@ describe("projects.instructions.finalize", () => {
 	it("returns FAILED without writing a status when AlreadyStarted comes from the still-closing previous run", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "FAILED",
 		});
 		const alreadyStarted = new Error("workflow already started");
@@ -374,8 +387,16 @@ describe("projects.instructions.finalize", () => {
 	// the row's real status, not the "previous run is still closing" FAILED.
 	it("answers the row's real status when AlreadyStarted comes from a run a moment-earlier press started", async () => {
 		m.getInstructionSnapshot
-			.mockResolvedValueOnce({ id: "snap_1", status: "FAILED" })
-			.mockResolvedValueOnce({ id: "snap_1", status: "VALIDATING" });
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "FAILED",
+			})
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "VALIDATING",
+			});
 		const alreadyStarted = new Error("workflow already started");
 		alreadyStarted.name = "WorkflowExecutionAlreadyStartedError";
 		m.workflowStart.mockRejectedValue(alreadyStarted);
@@ -396,6 +417,7 @@ describe("projects.instructions.finalize", () => {
 	it("answers a repeated finalize for an already-VALIDATING snapshot with VALIDATING", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "VALIDATING",
 		});
 
@@ -419,8 +441,16 @@ describe("projects.instructions.finalize", () => {
 		// The pre-check saw RECEIVING; by the time the transition ran, the
 		// workflow had finished.
 		m.getInstructionSnapshot
-			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
-			.mockResolvedValueOnce({ id: "snap_1", status: "READY" });
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "RECEIVING",
+			})
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "READY",
+			});
 		m.startInstructionSnapshotValidation.mockResolvedValue({
 			changed: false,
 		});
@@ -438,8 +468,16 @@ describe("projects.instructions.finalize", () => {
 
 	it("returns REJECTED when the workflow rejected the snapshot while finalize was mid-flight", async () => {
 		m.getInstructionSnapshot
-			.mockResolvedValueOnce({ id: "snap_1", status: "RECEIVING" })
-			.mockResolvedValueOnce({ id: "snap_1", status: "REJECTED" });
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "RECEIVING",
+			})
+			.mockResolvedValueOnce({
+				id: "snap_1",
+				contentKind: "FULL_SNAPSHOT",
+				status: "REJECTED",
+			});
 		m.startInstructionSnapshotValidation.mockResolvedValue({
 			changed: false,
 		});
@@ -455,6 +493,7 @@ describe("projects.instructions.finalize", () => {
 	it("is idempotent: a snapshot already past RECEIVING returns its current status without restarting the workflow", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "READY",
 		});
 		const result = await m.handlers.finalize!({
@@ -547,6 +586,7 @@ describe("projects.instructions.finalize: publish first, scan afterwards (Fizzy 
 	beforeEach(() => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "RECEIVING",
 			userId: "user_1",
 			proposalStatus: null,
@@ -595,6 +635,7 @@ describe("projects.instructions.finalize: publish first, scan afterwards (Fizzy 
 	it("asks for nothing extra for an ordinary row", async () => {
 		m.getInstructionSnapshot.mockResolvedValue({
 			id: "snap_1",
+			contentKind: "FULL_SNAPSHOT",
 			status: "RECEIVING",
 			userId: "user_1",
 			proposalStatus: null,

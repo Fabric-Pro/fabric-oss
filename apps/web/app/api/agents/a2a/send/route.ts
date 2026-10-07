@@ -126,6 +126,7 @@ export async function POST(req: NextRequest) {
 			aiToken = await issueAIToken({
 				userId: session.user.id,
 				organizationId,
+				impersonated: Boolean(session.session.impersonatedBy),
 				source: "a2a-proxy",
 			});
 

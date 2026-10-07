@@ -5,6 +5,13 @@ import {
 	queryDatabricksVectorIndexes,
 } from "@repo/integrations/databricks-vector-search";
 import { Context } from "@temporalio/activity";
+import {
+	rethrowIfTurnStopped,
+	startTurnHeartbeat,
+	type TurnScope,
+	throwIfTurnStopped,
+	withTurnDispatchGuard,
+} from "../orchestrator/turn-dispatch";
 
 // Ticks a Temporal activity heartbeat while `fn` is in flight, so a search
 // that spans multiple OAuth/index round-trips isn't cancelled by the 30s
@@ -185,6 +192,15 @@ export async function executeDatabricksKnowledgeSearch(
 	binding: Pick<AgentDatabricksBinding, "integrationId" | "indexNames">,
 	args: ExecuteDatabricksKnowledgeSearchArgs,
 	tenant: ExecuteDatabricksKnowledgeSearchTenant,
+	/**
+	 * A chat turn's controls for the index requests: `signal` aborts those
+	 * in flight, `beforeRequest` is checked before each one (retries
+	 * included) and refuses it once the turn is stopped.
+	 */
+	dispatch?: {
+		signal?: AbortSignal;
+		beforeRequest?: () => Promise<void>;
+	},
 ): Promise<DatabricksKnowledgeSearchResult> {
 	const { chunks, failures, skippedIndexes, credentials } =
 		await withActivityHeartbeat(async () => {
@@ -212,6 +228,8 @@ export async function executeDatabricksKnowledgeSearch(
 								Math.min(50, Math.floor(args.num_results)),
 							)
 						: undefined,
+				signal: dispatch?.signal,
+				beforeRequest: dispatch?.beforeRequest,
 			});
 			return { credentials, ...result };
 		});
@@ -295,13 +313,59 @@ export interface ExecuteDatabricksKnowledgeSearchActivityInput {
 	args: ExecuteDatabricksKnowledgeSearchArgs;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat turn this search serves. When set, the turn record is checked
+	 * before the search is sent, the index requests carry the activity's
+	 * cancellation signal, and a stop is rethrown rather than reported as
+	 * failed or partial results. Absent for runs without a turn.
+	 */
+	turnScope?: TurnScope;
 }
 
 export async function executeDatabricksKnowledgeSearchActivity(
 	input: ExecuteDatabricksKnowledgeSearchActivityInput,
 ): Promise<DatabricksKnowledgeSearchResult> {
-	return executeDatabricksKnowledgeSearch(input.binding, input.args, {
+	const { turnScope } = input;
+	const tenant = {
 		userId: input.userId,
 		organizationId: input.organizationId,
-	});
+	};
+	if (!turnScope) {
+		return executeDatabricksKnowledgeSearch(
+			input.binding,
+			input.args,
+			tenant,
+		);
+	}
+	const stopHeartbeat = startTurnHeartbeat(turnScope);
+	try {
+		// The search is HTTP, not a model call, so the factory's middleware
+		// never sees it. The turn's guard is applied to it directly: checked
+		// before the credentials are loaded, before each index's work and
+		// before every physical search request (retries included), and its
+		// signal — the activity's cancellation plus the guard's own stop —
+		// aborts the requests in flight.
+		return await withTurnDispatchGuard(turnScope, async (guard) => {
+			await guard.assertDispatchable();
+			const result = await executeDatabricksKnowledgeSearch(
+				input.binding,
+				input.args,
+				tenant,
+				{
+					signal: guard.abortSignal(),
+					beforeRequest: () => guard.assertDispatchable(),
+				},
+			);
+			// An index aborted by a stop the client did not see as a refusal
+			// is recorded as a per-index failure beside the rest: after a
+			// Stop that is not a result.
+			throwIfTurnStopped();
+			return result;
+		});
+	} catch (error) {
+		rethrowIfTurnStopped(error);
+		throw error;
+	} finally {
+		stopHeartbeat();
+	}
 }

@@ -1,6 +1,18 @@
 "use client";
 
 import {
+	ChatgptPlanPrompt,
+	useChatgptPlanPromptVisible,
+} from "@saas/settings/components/chatgpt-plan/ChatgptPlanPrompt";
+import {
+	ChatgptPlanReconnectNotice,
+	useChatgptPlanReconnectNoticeVisible,
+} from "@saas/settings/components/chatgpt-plan/ChatgptPlanReconnectActions";
+import {
+	ChatgptPlanSharedFallbackNotice,
+	useChatgptPlanSharedFallbackVisible,
+} from "@saas/settings/components/chatgpt-plan/ChatgptPlanSharedFallbackNotice";
+import {
 	MfaSetupBanner,
 	useMfaNoticeVisible,
 } from "@saas/shared/components/MfaSetupBanner";
@@ -29,7 +41,7 @@ import { Fragment, type ReactNode } from "react";
  *      which keeps its own `sticky` mount ABOVE this region so it cannot
  *      scroll out of view before a forced reload;
  *   2. security;
- *   3. product setup and onboarding — registered, no member yet.
+ *   3. product setup and onboarding — the ChatGPT plan prompt.
  */
 
 export interface ShellNotice {
@@ -41,9 +53,9 @@ export interface ShellNotice {
  * The presentational half: one labelled landmark, one gap, nothing at all when
  * there is nothing to show.
  *
- * Split out from the region so the tier ordering stays testable while the
- * region has a single real member — and so the empty case is a property of this
- * component rather than an accident of how its children happen to render.
+ * Split out from the region so the tier ordering stays testable with stubs —
+ * and so the empty case is a property of this component rather than an
+ * accident of how its children happen to render.
  *
  * Spacing lives here, never threaded into a member's `className`: members
  * compose primitives whose own `cva` already owns padding, and passing `p-*`
@@ -101,11 +113,37 @@ export function ShellNoticeRegion() {
 function ShellNoticeRegionMembers() {
 	// Asked before rendering — see `useMfaNoticeVisible` for why.
 	const securityNoticeVisible = useMfaNoticeVisible();
+	const chatgptPlanPromptVisible = useChatgptPlanPromptVisible();
+	const chatgptPlanReconnectVisible = useChatgptPlanReconnectNoticeVisible();
+	const chatgptPlanSharedFallbackVisible =
+		useChatgptPlanSharedFallbackVisible();
 
 	const notices: ShellNotice[] = [];
 
 	if (securityNoticeVisible) {
 		notices.push({ id: "security", node: <MfaSetupBanner /> });
+	}
+
+	// Before the one-time prompt: every AI call here is refused until the
+	// member reconnects or switches the organization back to its billing.
+	if (chatgptPlanReconnectVisible) {
+		notices.push({
+			id: "chatgpt-plan-reconnect",
+			node: <ChatgptPlanReconnectNotice />,
+		});
+	}
+
+	// The member's own plan is spent and the shared plan carries their work
+	// until it resets (Fizzy #2770): a warning, nothing to act on.
+	if (chatgptPlanSharedFallbackVisible) {
+		notices.push({
+			id: "chatgpt-plan-shared-fallback",
+			node: <ChatgptPlanSharedFallbackNotice />,
+		});
+	}
+
+	if (chatgptPlanPromptVisible) {
+		notices.push({ id: "chatgpt-plan", node: <ChatgptPlanPrompt /> });
 	}
 
 	return <ShellNoticeStack notices={notices} />;

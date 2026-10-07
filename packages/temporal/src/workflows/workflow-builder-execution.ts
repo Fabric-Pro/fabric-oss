@@ -20,6 +20,7 @@ import {
 } from "@temporalio/workflow";
 import type * as preflightActivities from "../activities/preflight-validation";
 import type * as activities from "../activities/workflow-builder-execution";
+import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
 import { isNonRetryableNodeType } from "./lib/workflow-builder-nodes";
 
 const {
@@ -39,6 +40,10 @@ const {
 		backoffCoefficient: 2,
 		maximumInterval: "60s",
 		maximumAttempts: 3,
+		// Retrying cannot refill a spent ChatGPT plan; `withChatGptPlanWait`
+		// waits for a reset instead (Fizzy #2770). Retry options are not part
+		// of the command sequence, so no `patched()` guard.
+		nonRetryableErrorTypes: ["SubscriptionPlanExhaustedError"],
 	},
 });
 
@@ -416,16 +421,22 @@ export async function workflowBuilderExecutionWorkflow(
 				? executeExternalWriteNode
 				: executeWorkflowNode;
 
-			const result = await dispatch({
-				executionId: input.executionId,
-				nodeId,
-				nodeType: node.type,
-				nodeConfig,
-				inputs: nodeInputs,
-				userId: input.userId,
-				organizationId: input.organizationId,
-				projectId,
-			});
+			// A node may run on a shared ChatGPT plan (Fizzy #2770): when every
+			// plan is spent it waits for a reset and tries once more.
+			const result = await withChatGptPlanWait(
+				() =>
+					dispatch({
+						executionId: input.executionId,
+						nodeId,
+						nodeType: node.type,
+						nodeConfig,
+						inputs: nodeInputs,
+						userId: input.userId,
+						organizationId: input.organizationId,
+						projectId,
+					}),
+				{ organizationId: input.organizationId, userId: input.userId },
+			);
 
 			nodeOutputs[nodeId] = result.output;
 			executed.add(nodeId);

@@ -44,7 +44,6 @@
  */
 import { listRepositoryCommits, type RepositoryCommit } from "@repo/connectors";
 import { getInstructionCommitOverlay } from "@repo/database";
-import { FALLBACK_PROPOSER_NAME, scanTextForSecrets } from "@repo/instructions";
 import { z } from "zod";
 import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
@@ -52,6 +51,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { presentRepositoryCommit } from "../repository/commit-presentation";
 import { loadCommitSource, readError } from "./commit-source";
 import { TtlCache } from "./ttl-cache";
 
@@ -68,22 +68,8 @@ export function resetCommitHistoryCache(): void {
 	historyCache.clear();
 }
 
-const FABRIC_TRAILER = /^Fabric-(?:Commit|Change): /m;
-
-/** Fabric wrote this commit: its committer is Fabric, or it carries one of Fabric's trailers. */
-function isFabricCommit(commit: RepositoryCommit): boolean {
-	return (
-		commit.committerName === "Fabric" || FABRIC_TRAILER.test(commit.message)
-	);
-}
-
 /** The most pages a history may be walked: a bound, not a feature. */
 const MAX_CURSOR = 1000;
-
-/** Whether `text` holds anything the secret scanner would refuse: the same test a file gets before Fabric serves it. */
-function holdsSecret(text: string): boolean {
-	return scanTextForSecrets(text, { limit: 0 }).total > 0;
-}
 
 /**
  * AUTHORIZATION: tenantProtectedProcedure + projectNotFoundUnlessVisible +
@@ -139,25 +125,12 @@ export const listInstructionRepositoryCommitsProcedure =
 				shas: listed.commits.map((commit) => commit.sha),
 			});
 			return {
-				commits: listed.commits.map((commit) => {
-					const messageWithheld = holdsSecret(commit.message);
-					return {
-						sha: commit.sha,
-						author: {
-							name: holdsSecret(commit.authorName)
-								? FALLBACK_PROPOSER_NAME
-								: commit.authorName,
-						},
-						date: commit.date,
-						message: messageWithheld ? null : commit.message,
-						messageWithheld,
-						url: commit.url,
-						parent: commit.parent,
+				commits: listed.commits.map((commit) =>
+					presentRepositoryCommit(commit, {
 						published: overlay.published.get(commit.sha) ?? null,
 						refused: overlay.refused.has(commit.sha),
-						isFabric: isFabricCommit(commit),
-					};
-				}),
+					}),
+				),
 				nextCursor: listed.hasMore ? page + 1 : null,
 			};
 		});

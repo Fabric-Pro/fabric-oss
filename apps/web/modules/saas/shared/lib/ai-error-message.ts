@@ -141,6 +141,78 @@ function describeProvider(slug: string | undefined): string {
 	}
 }
 
+/**
+ * "Resets in about …" for a spent ChatGPT plan window, or nothing when the
+ * reset time is unknown. Shared by the toast, the banner and this describer
+ * so the three never word it differently.
+ */
+export function planResetHint(retryAfterMs: number | undefined | null): string {
+	if (!retryAfterMs || retryAfterMs <= 0) {
+		return "";
+	}
+	const minutes = Math.ceil(retryAfterMs / 60_000);
+	return minutes < 60
+		? `Resets in about ${minutes} min.`
+		: `Resets in about ${Math.round(minutes / 60)} h.`;
+}
+
+// Neutral on purpose: the plan that ran out may be the member's own or one
+// the organization shares with members who have none (Fizzy #2770).
+const PLAN_EXHAUSTED_TITLE = "The ChatGPT plan has no usage left";
+const PLAN_RECONNECT_TITLE = "Reconnect your ChatGPT plan";
+const PLAN_RECONNECT_DESCRIPTION =
+	"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.";
+const PLAN_EXHAUSTED_DESCRIPTION =
+	"The ChatGPT plan serving your work reached its usage limit. Wait for it to reset and try again. If it is your own plan, ChatGPT Settings → Usage shows when.";
+
+/** A ChatGPT plan refusal Fabric itself answered with (Fizzy #2939). */
+function describeChatGptPlanRefusal(
+	body: unknown,
+	providerMessage: string | undefined,
+): AiErrorToastCopy | null {
+	if (!body || typeof body !== "object") {
+		return null;
+	}
+	const bag = body as {
+		code?: unknown;
+		resetAt?: unknown;
+		data?: { code?: unknown; retryAfterMs?: unknown };
+		limitSignal?: { retryAfterMs?: unknown };
+	};
+	const code = bag.code ?? bag.data?.code;
+	// The agent exchange answers CHATGPT_PLAN_EXHAUSTED; a chat route whose
+	// model resolution found every plan spent answers the plan's own code
+	// with `resetAt` (Fizzy #2770).
+	if (
+		code === "CHATGPT_PLAN_EXHAUSTED" ||
+		code === "subscription_sharing_usage_limit_exceeded"
+	) {
+		const resetAt =
+			typeof bag.resetAt === "string"
+				? Date.parse(bag.resetAt)
+				: Number.NaN;
+		const retryAfterMs = Number.isNaN(resetAt)
+			? Number(bag.data?.retryAfterMs ?? bag.limitSignal?.retryAfterMs)
+			: Math.max(0, resetAt - Date.now());
+		return {
+			title: PLAN_EXHAUSTED_TITLE,
+			// Fabric's own sentence already names the reset when it is known.
+			description:
+				providerMessage ??
+				[PLAN_EXHAUSTED_DESCRIPTION, planResetHint(retryAfterMs)]
+					.filter(Boolean)
+					.join(" "),
+		};
+	}
+	if (code === "CHATGPT_PLAN_UNAVAILABLE") {
+		return {
+			title: PLAN_RECONNECT_TITLE,
+			description: PLAN_RECONNECT_DESCRIPTION,
+		};
+	}
+	return null;
+}
+
 function withProviderDetail(
 	base: AiErrorToastCopy,
 	providerMessage: string | undefined,
@@ -161,6 +233,11 @@ export function describeAiError(
 	body: unknown,
 ): AiErrorToastCopy {
 	const providerMessage = extractProviderMessage(body);
+
+	const planRefusal = describeChatGptPlanRefusal(body, providerMessage);
+	if (planRefusal) {
+		return planRefusal;
+	}
 
 	// Classify first: a limit condition is worth naming precisely even when the
 	// status alone would look like a generic 400 — an exhausted balance is
@@ -198,6 +275,21 @@ export function describeAiError(
 				title: "Conversation too long",
 				description:
 					"This conversation exceeded the model's context window. Start a new conversation, or narrow the request, and try again.",
+			};
+		case "subscription_reconnect":
+			return {
+				title: PLAN_RECONNECT_TITLE,
+				description: PLAN_RECONNECT_DESCRIPTION,
+			};
+		case "subscription_exhausted":
+			return {
+				title: PLAN_EXHAUSTED_TITLE,
+				description: [
+					PLAN_EXHAUSTED_DESCRIPTION,
+					planResetHint(signal.retryAfterMs),
+				]
+					.filter(Boolean)
+					.join(" "),
 			};
 		default:
 			break;

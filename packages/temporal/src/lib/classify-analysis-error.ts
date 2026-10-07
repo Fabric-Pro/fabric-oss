@@ -21,6 +21,8 @@ export type BacklogAnalysisErrorClass =
 	| "provider_quota"
 	| "provider_rate_limit"
 	| "provider_overloaded"
+	| "subscription_exhausted"
+	| "subscription_reconnect"
 	| "provider_unavailable"
 	| "output_limit"
 	| "schema_parse"
@@ -43,6 +45,10 @@ const USER_MESSAGES: Record<BacklogAnalysisErrorClass, string> = {
 		"The AI provider is busy right now. Wait a moment and retry.",
 	provider_overloaded:
 		"The AI provider is busy right now. Wait a moment and retry.",
+	subscription_exhausted:
+		"Your ChatGPT plan has no usage left in this window. Wait for it to reset, then retry.",
+	subscription_reconnect:
+		"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
 	provider_unavailable:
 		"The AI provider is temporarily unavailable (server error). Please wait a moment and retry.",
 	output_limit:
@@ -324,12 +330,22 @@ export function classifyBacklogAnalysisError(
 		// Use limit.message (already sanitized by classifyLimitError) as rawCause
 		// so that credentials stripped by sanitize() are never re-exposed via
 		// the raw error's unwrapped message.
-		return build(
+		const classified = build(
 			mapped,
 			probe,
 			{ provider: limit.provider, limitKind: limit.kind },
 			limit.message,
 		);
+		// The one limit with a reset the person can wait for (Fizzy #2939).
+		if (mapped === "subscription_exhausted" && limit.retryAfterMs) {
+			const minutes = Math.ceil(limit.retryAfterMs / 60_000);
+			classified.userMessage = `${classified.userMessage} It resets in about ${
+				minutes < 60
+					? `${minutes} min`
+					: `${Math.round(minutes / 60)} h`
+			}.`;
+		}
+		return classified;
 	}
 
 	// 2) Provider-side server error (5xx) the limit classifier doesn't own

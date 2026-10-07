@@ -25,7 +25,6 @@ const state = vi.hoisted(() => ({
 	>,
 	config: null as Record<string, unknown> | null,
 	oauthState: null as Record<string, unknown> | null,
-	cachedMetadata: null as Record<string, unknown> | null,
 }));
 
 const persistGitLabToken = vi.hoisted(() =>
@@ -35,16 +34,16 @@ const safeFetchOutbound = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<object>()),
+	// The config's server is one its tenant may use (see the tenant tests).
+	getMcpServerForTenant: async () => ({ isSystemProvided: true }),
 	get db() {
 		return state.fake.db;
 	},
 	getMcpConfigByIdInternal: async () => state.config,
 	getOauthState: async () => state.oauthState,
-	getCachedOAuthMetadata: async () => state.cachedMetadata,
-	updateOAuthMetadataCache: vi.fn(async () => undefined),
 	clearRefreshFailures: vi.fn(async () => undefined),
 	deleteOauthState: vi.fn(async () => undefined),
-	updateMcpConfigTokens: vi.fn(async () => {
+	saveMcpOAuthGrant: vi.fn(async () => {
 		throw new Error("a GitLab personal config never stores its own token");
 	}),
 	getOrganizationById: vi.fn(async () => null),
@@ -128,8 +127,35 @@ vi.mock("../../../orpc/procedures", () => {
 	};
 });
 
+import {
+	buildMcpOAuthBinding,
+	withCredentialFingerprint,
+} from "@repo/database/prisma/queries/lib/mcp-oauth-binding";
 import { resetGitLabConnectionDepsForTests } from "@repo/integrations/gitlab";
+import { oauthClientFingerprint } from "../lib/oauth-authorization-server";
 import { oauthProcedures } from "../procedures/oauth";
+
+/** The OAuth state fields `start` writes for a flow bound to `tokenEndpoint`. */
+function flowFor(tokenEndpoint: string, clientId: string) {
+	return {
+		authorizationServerSnapshot: {
+			clientId,
+			// These configs hold a public DCR client (no secret).
+			clientFingerprint: oauthClientFingerprint({
+				oauthClientId: clientId,
+				encryptedOauthClientSecret: null,
+			}),
+			binding: {
+				authorizationServerUrl: new URL(tokenEndpoint).origin,
+				tokenEndpoint,
+				authorizationServerMetadata: { token_endpoint: tokenEndpoint },
+				source: "discovery",
+				boundAt: "2026-10-06T00:00:00.000Z",
+			},
+		},
+		expectedGrantGeneration: 0,
+	};
+}
 
 type Handler = (args: {
 	input: Record<string, unknown>;
@@ -177,7 +203,6 @@ beforeEach(() => {
 	state.fake = createGitLabFakeDb({ mCPServer: [officialServer] });
 	state.config = null;
 	state.oauthState = null;
-	state.cachedMetadata = null;
 	vi.spyOn(console, "log").mockImplementation(() => {});
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(console, "error").mockImplementation(() => {});
@@ -187,13 +212,26 @@ describe("mcp.oauth.refresh — GitLab personal server", () => {
 	it("refreshes the person's connection with the DCR client that issued it", async () => {
 		state.fake = createGitLabFakeDb({
 			mCPServer: [officialServer],
-			// The registration stays; the token copy is gone.
+			// The registration stays, bound to gitlab.com by the connect flow;
+			// the token copy is gone.
 			mCPConfig: [
 				{
 					...dcrOnlyCopy(),
 					encryptedAccessToken: null,
 					encryptedRefreshToken: null,
 					tokenExpiresAt: null,
+					oauthBinding: withCredentialFingerprint(
+						buildMcpOAuthBinding({
+							authorizationServerUrl: "https://gitlab.com",
+							tokenEndpoint: "https://gitlab.com/oauth/token",
+							source: "connection",
+						}),
+						{
+							oauthClientId: "dcr-client",
+							encryptedOauthClientSecret: null,
+							encryptedRefreshToken: null,
+						},
+					),
 				},
 			],
 			workflowIntegration: [
@@ -324,8 +362,14 @@ describe("mcp.oauth.callback — GitLab personal server on gitlab.com", () => {
 				defaultUrl: officialServer.defaultUrl,
 			},
 		};
-		state.cachedMetadata = {
-			tokenEndpoint: "https://gitlab.com/oauth/token",
+		// What `start` resolved for this flow: the callback uses exactly that.
+		state.config = { ...state.config, oauthGrantGeneration: 0 };
+		state.oauthState = {
+			...state.oauthState,
+			...flowFor(
+				"https://gitlab.com/oauth/token",
+				String(state.config.oauthClientId),
+			),
 		};
 		fetchMock.mockResolvedValueOnce(
 			new Response(
@@ -399,8 +443,14 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 			mcpServerId: officialServer.id,
 			mcpServer: { key: "gitlab-official", defaultUrl: null },
 		};
-		state.cachedMetadata = {
-			tokenEndpoint: "https://gitlab.example.com/oauth/token",
+		// What `start` resolved for this flow: the callback uses exactly that.
+		state.config = { ...state.config, oauthGrantGeneration: 0 };
+		state.oauthState = {
+			...state.oauthState,
+			...flowFor(
+				"https://gitlab.example.com/oauth/token",
+				String(state.config.oauthClientId),
+			),
 		};
 		safeFetchOutbound.mockResolvedValueOnce(
 			new Response(
@@ -481,8 +531,14 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 			mcpServerId: officialServer.id,
 			mcpServer: { key: "gitlab-official", defaultUrl: null },
 		};
-		state.cachedMetadata = {
-			tokenEndpoint: "http://gitlab.example.com/oauth/token",
+		// What `start` resolved for this flow: the callback uses exactly that.
+		state.config = { ...state.config, oauthGrantGeneration: 0 };
+		state.oauthState = {
+			...state.oauthState,
+			...flowFor(
+				"http://gitlab.example.com/oauth/token",
+				String(state.config.oauthClientId),
+			),
 		};
 		safeFetchOutbound.mockResolvedValueOnce(
 			new Response(
@@ -532,8 +588,14 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 			mcpServerId: officialServer.id,
 			mcpServer: { key: "gitlab-official", defaultUrl: null },
 		};
-		state.cachedMetadata = {
-			tokenEndpoint: "https://10.0.0.5/oauth/token",
+		// What `start` resolved for this flow: the callback uses exactly that.
+		state.config = { ...state.config, oauthGrantGeneration: 0 };
+		state.oauthState = {
+			...state.oauthState,
+			...flowFor(
+				"https://10.0.0.5/oauth/token",
+				String(state.config.oauthClientId),
+			),
 		};
 
 		const outcome = await handlerOf(oauthProcedures.callback)({

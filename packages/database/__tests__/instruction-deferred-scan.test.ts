@@ -380,6 +380,7 @@ describe("publishInstructionSnapshot: publish-first rules", () => {
 	function snapshot(overrides: Record<string, unknown> = {}) {
 		m.snapshot.findFirst.mockResolvedValue({
 			id: "snap_9",
+			contentKind: "FULL_SNAPSHOT",
 			status: "READY",
 			proposalStatus: null,
 			proposalDestination: null,

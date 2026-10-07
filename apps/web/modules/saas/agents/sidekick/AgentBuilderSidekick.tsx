@@ -8,6 +8,7 @@ import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
+import { useAutoResizeTextarea } from "@saas/shared/hooks/use-auto-resize-textarea";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { DefaultChatTransport } from "ai";
@@ -376,6 +377,9 @@ export function AgentBuilderSidekick({
 
 	// Input state
 	const [inputValue, setInputValue] = useState("");
+	const inputRef = useRef<HTMLTextAreaElement>(null);
+	// 192px is the textarea's `max-h-48` class; keep the two in step.
+	useAutoResizeTextarea(inputRef, inputValue, 192);
 
 	const handleSubmit = useCallback(
 		(e?: React.FormEvent) => {
@@ -450,6 +454,7 @@ export function AgentBuilderSidekick({
 			<div className="border-t border-border bg-card p-3">
 				<form onSubmit={handleSubmit} className="flex items-end gap-2">
 					<Textarea
+						ref={inputRef}
 						value={inputValue}
 						onChange={(e) => setInputValue(e.target.value)}
 						onKeyDown={handleKeyDown}
