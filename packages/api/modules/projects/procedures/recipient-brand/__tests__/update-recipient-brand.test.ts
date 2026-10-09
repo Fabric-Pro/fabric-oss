@@ -862,6 +862,55 @@ describe("recipient brand gate (KTD19)", () => {
 			"GLOSSY_EDITION",
 			ORG,
 		);
+		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
+			"PROPOSAL_ARTIFACT",
+			ORG,
+		);
+	});
+
+	// Fizzy #2801: the Proposal artifact's Style tab edits this same recipient
+	// brand, so either rollout gate, on for the project's organization, opens
+	// every recipient brand procedure.
+	it.each([["PROPOSAL_ARTIFACT"], ["GLOSSY_EDITION"]])(
+		"every procedure works with only %s on",
+		async (flag) => {
+			mocks.isFeatureEnabled.mockImplementation(
+				async (key: string, organizationId?: string) =>
+					key === flag && organizationId === ORG,
+			);
+
+			const fetched = await fetchAs(EDITOR_A, RED_LOGO);
+			expect(fetched).toEqual(expect.any(String));
+			const token = await uploadAs(EDITOR_A, RED_LOGO);
+			expect(
+				await confirm({ logo: { action: "replace", token } }),
+			).toEqual({ outcome: "applied", version: 1 });
+			await expect(
+				call(getRecipientBrandProcedure, { projectId: PROJECT }),
+			).resolves.toMatchObject({
+				version: 1,
+				recipientBrand: { name: "Example Client" },
+			});
+		},
+	);
+
+	it("every procedure is NOT_FOUND with neither gate on, whatever else is on", async () => {
+		mocks.isFeatureEnabled.mockImplementation(
+			async (key: string) =>
+				key !== "GLOSSY_EDITION" && key !== "PROPOSAL_ARTIFACT",
+		);
+
+		expect(await rejection(fetchAs(EDITOR_A, RED_LOGO))).toBe("NOT_FOUND");
+		expect(await rejection(uploadAs(EDITOR_A, RED_LOGO))).toBe("NOT_FOUND");
+		expect(await rejection(confirm())).toBe("NOT_FOUND");
+		expect(
+			await rejection(
+				call(getRecipientBrandProcedure, { projectId: PROJECT }),
+			),
+		).toBe("NOT_FOUND");
+		expect(mocks.fetchWebsiteBrand).not.toHaveBeenCalled();
+		expect(storage.getSignedUploadUrl).not.toHaveBeenCalled();
+		expect(mocks.confirmRecipientBrand).not.toHaveBeenCalled();
 	});
 
 	it("an invited guest editor of the project can confirm", async () => {

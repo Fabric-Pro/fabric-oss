@@ -40,7 +40,52 @@ const h = vi.hoisted(() => ({
 	beforeTransition: null as null | (() => void),
 	wake: vi.fn(),
 	startSync: vi.fn(),
+	failCloneInto: null as null | string,
+	noBudget: false,
 }));
+
+vi.mock(
+	"../src/activities/lib/instruction-branch-git",
+	async (importOriginal) => {
+		const real =
+			await importOriginal<
+				typeof import("../src/activities/lib/instruction-branch-git")
+			>();
+		return {
+			...real,
+			initBranchWorkspace: (
+				...args: Parameters<typeof real.initBranchWorkspace>
+			) => {
+				if (
+					h.failCloneInto !== null &&
+					args[0].dir.endsWith(h.failCloneInto)
+				) {
+					throw new Error("clone failed");
+				}
+				return real.initBranchWorkspace(...args);
+			},
+		};
+	},
+);
+
+vi.mock(
+	"../src/activities/lib/instruction-proposal-boundary",
+	async (importOriginal) => {
+		const real =
+			await importOriginal<
+				typeof import("../src/activities/lib/instruction-proposal-boundary")
+			>();
+		return {
+			...real,
+			assertTimeFor: (...args: Parameters<typeof real.assertTimeFor>) => {
+				if (h.noBudget) {
+					throw new real.ProposalDeadlineExceeded();
+				}
+				return real.assertTimeFor(...args);
+			},
+		};
+	},
+);
 
 vi.mock("@repo/database", async (importOriginal) => {
 	const real = await importOriginal<typeof import("@repo/database")>();
@@ -212,6 +257,7 @@ import {
 	runBranchConfirmations,
 	settleBranch,
 } from "../src/activities/instruction-proposal-branches";
+import { runClassify } from "../src/activities/lib/instruction-branch-classify";
 import { createOrigin, hasGit } from "./helpers/instruction-branch-origin";
 import {
 	appendInput,
@@ -311,7 +357,15 @@ async function observed(state: "MERGED" | "CLOSED", headSha: string) {
 	expect(branch(s).membership).toMatchObject({ status: "pending" });
 }
 
-const classify = () =>
+/** The classification alone, which leaves the merge sync it requests to the sweeper. */
+const classify = async () => ({
+	outcome: await runClassify({
+		...ids(),
+		factsRevision: branch(s).factsRevision,
+		signal: new AbortController().signal,
+	}),
+});
+const classifyActivity = () =>
 	classifyBranch({ ...ids(), factsRevision: branch(s).factsRevision });
 const settle = () =>
 	settleBranch({ ...ids(), branchAttempt: branch(s).attempt });
@@ -392,6 +446,8 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 		h.adapter.pullRequestHeadRef.mockReturnValue(null);
 		h.wake.mockReset();
 		h.wake.mockResolvedValue(undefined);
+		h.failCloneInto = null;
+		h.noBudget = false;
 		h.startSync.mockReset();
 		h.startSync.mockResolvedValue({ runId: "run_example_1" });
 		s = { fake: h.fake, origin: h.origin, storage: h.storage };
@@ -1269,6 +1325,19 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 			});
 		});
 
+		it("an evidence clone that fails does not hold the settlement; the classification decides afterwards", async () => {
+			const head = await opened();
+			h.adapter.get.mockResolvedValueOnce(observation("OPEN", head));
+			h.adapter.get.mockResolvedValue(observation("CLOSED", head));
+			h.adapter.close.mockResolvedValueOnce(observation("CLOSED", head));
+			h.failCloneInto = "evidence-1";
+			requestClose();
+			expect(await settle()).toEqual({ outcome: "closed" });
+			expect(branch(s).state).toBe("CLOSED");
+			expect(await classify()).toEqual({ outcome: "done" });
+			expect(proposal(s, "snap_p1").pullRequestState).toBe("CLOSED");
+		});
+
 		it("MERGED wins: a pull request merged before the close is recorded MERGED, with no deletion", async () => {
 			const head = await opened();
 			h.adapter.get.mockResolvedValue(observation("MERGED", head));
@@ -1821,6 +1890,47 @@ describe.skipIf(!hasGit())("member branch settlement (spec §6.6, §6.7)", () =>
 					metadata: { branchId: BRANCH_ID, syncRunKey: "sync_run_1" },
 				}),
 			]);
+		});
+
+		it("the classification activity asks for the merge sync at once: a direct project is acknowledged without waiting for the sweeper", async () => {
+			const head = await opened();
+			await observed("MERGED", head);
+
+			expect(await classifyActivity()).toEqual({ outcome: "done" });
+
+			expect(branch(s).mergeSyncRequestedAt).toBeNull();
+			expect(h.startSync).not.toHaveBeenCalled();
+			expect(s.fake.state.audits).toContainEqual(
+				expect.objectContaining({
+					action: "project.instructions.pull_request_merge_observed",
+				}),
+			);
+		});
+
+		it("the classification activity dispatches the sync of an import project once, at once", async () => {
+			retainMigrationImport();
+			const head = await opened();
+			await observed("MERGED", head);
+
+			expect(await classifyActivity()).toEqual({ outcome: "done" });
+
+			expect(h.startSync).toHaveBeenCalledTimes(1);
+			expect(branch(s).mergeSyncRunId).toBe("run_example_1");
+		});
+
+		it("leaves the merge sync to the sweeper when the attempt has no time left, and still answers the classification", async () => {
+			const head = await opened();
+			await observed("MERGED", head);
+			h.noBudget = true;
+
+			expect(await classifyActivity()).toEqual({ outcome: "done" });
+
+			expect(branch(s).mergeSyncRequestedAt).not.toBeNull();
+			expect(h.startSync).not.toHaveBeenCalled();
+			h.noBudget = false;
+			expect(await dispatchBranchMergeSync(ids())).toEqual({
+				outcome: "acknowledged",
+			});
 		});
 
 		it("acknowledges an admitted branch in direct mode without a legacy import", async () => {

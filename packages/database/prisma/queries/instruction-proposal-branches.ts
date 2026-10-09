@@ -2712,22 +2712,31 @@ export async function markForeignTip(i: {
 }
 
 /**
- * An operation's classification (spec Decision 14): `included` when
+ * Operations' classification (spec Decision 14): `included` when
  * `isAncestor(sha, headSha)` held, otherwise `unverified`. Only inclusion is
- * ever proved, so `included` is never overwritten by `unverified`. A fact:
- * conditional only on the operation's identity. True when written.
+ * ever proved, so `included` is never overwritten by `unverified`. Facts:
+ * conditional only on each operation's identity, written by one statement so
+ * a classification lands whole or not at all. Answers how many rows were
+ * written.
  */
-export async function setOperationMembership(i: {
-	operationId: string;
+export async function setOperationMembershipMany(i: {
 	organizationId: string;
-	membership: "included" | "unverified";
-}): Promise<boolean> {
-	const count = await db.$executeRaw`
-		UPDATE "project_instruction_proposal_branch_operation"
-		SET "membership" = ${i.membership}
-		WHERE "id" = ${i.operationId} AND "organizationId" = ${i.organizationId}
-			AND ("membership" IS DISTINCT FROM 'included' OR ${i.membership} = 'included')`;
-	return count === 1;
+	entries: readonly {
+		operationId: string;
+		membership: "included" | "unverified";
+	}[];
+}): Promise<number> {
+	if (i.entries.length === 0) {
+		return 0;
+	}
+	const ids = i.entries.map((e) => e.operationId);
+	const memberships = i.entries.map((e) => e.membership);
+	return db.$executeRaw`
+		UPDATE "project_instruction_proposal_branch_operation" AS op
+		SET "membership" = v."membership"
+		FROM unnest(${ids}::text[], ${memberships}::text[]) AS v("id", "membership")
+		WHERE op."id" = v."id" AND op."organizationId" = ${i.organizationId}
+			AND (op."membership" IS DISTINCT FROM 'included' OR v."membership" = 'included')`;
 }
 
 // ---------------------------------------------------------------------------

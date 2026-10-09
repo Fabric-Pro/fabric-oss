@@ -35,6 +35,12 @@ export interface AiErrorToastCopy {
 	 * action is warranted, not where it goes.
 	 */
 	billingActionable?: boolean;
+	/**
+	 * True when every ChatGPT plan serving the member is spent and switching
+	 * their work to the organization's API billing would actually reroute it
+	 * (Fizzy #2770) — the server decides, this only carries its answer.
+	 */
+	planApiBillingActionable?: boolean;
 }
 
 /**
@@ -160,10 +166,45 @@ export function planResetHint(retryAfterMs: number | undefined | null): string {
 // the organization shares with members who have none (Fizzy #2770).
 const PLAN_EXHAUSTED_TITLE = "The ChatGPT plan has no usage left";
 const PLAN_RECONNECT_TITLE = "Reconnect your ChatGPT plan";
+const PLAN_MODEL_NOT_SERVED_TITLE = "Model not available on the ChatGPT plan";
+const PLAN_MODEL_NOT_SERVED_DESCRIPTION =
+	"The ChatGPT plan does not serve the chosen model. Choose another model in Organization settings → AI Models.";
 const PLAN_RECONNECT_DESCRIPTION =
 	"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.";
 const PLAN_EXHAUSTED_DESCRIPTION =
 	"The ChatGPT plan serving your work reached its usage limit. Wait for it to reset and try again. If it is your own plan, ChatGPT Settings → Usage shows when.";
+
+const PLAN_SPENT_WAIT_HINT = "Try again once they reset.";
+const PLAN_SPENT_API_BILLING_HINT =
+	"Try again once they reset, or use the organization's API billing for your work.";
+
+/**
+ * "All ChatGPT plans for your work are spent until 16:37." in the viewer's own
+ * time, naming the weekday when the reset is not today (a window can be weekly).
+ */
+function planSpentUntilSentence(resetAt: Date, now = new Date()): string {
+	return `All ChatGPT plans for your work are spent until ${formatPlanResetTime(resetAt, now)}.`;
+}
+
+/** "16:37", or "Thu 16:37" when the reset is not today, in the viewer's time. */
+export function formatPlanResetTime(resetAt: Date, now = new Date()): string {
+	const sameDay = resetAt.toDateString() === now.toDateString();
+	return new Intl.DateTimeFormat(undefined, {
+		...(!sameDay && { weekday: "short" }),
+		hour: "2-digit",
+		minute: "2-digit",
+	}).format(resetAt);
+}
+
+const PLAN_SPENT_CODES: ReadonlySet<string> = new Set([
+	"CHATGPT_PLAN_EXHAUSTED",
+	"subscription_sharing_usage_limit_exceeded",
+]);
+
+/** Every ChatGPT plan serving the member is spent (Fizzy #2770). */
+export function isChatGptPlanSpentCode(code: unknown): boolean {
+	return typeof code === "string" && PLAN_SPENT_CODES.has(code);
+}
 
 /** A ChatGPT plan refusal Fabric itself answered with (Fizzy #2939). */
 function describeChatGptPlanRefusal(
@@ -176,6 +217,7 @@ function describeChatGptPlanRefusal(
 	const bag = body as {
 		code?: unknown;
 		resetAt?: unknown;
+		apiBillingOption?: unknown;
 		data?: { code?: unknown; retryAfterMs?: unknown };
 		limitSignal?: { retryAfterMs?: unknown };
 	};
@@ -191,23 +233,45 @@ function describeChatGptPlanRefusal(
 			typeof bag.resetAt === "string"
 				? Date.parse(bag.resetAt)
 				: Number.NaN;
-		const retryAfterMs = Number.isNaN(resetAt)
-			? Number(bag.data?.retryAfterMs ?? bag.limitSignal?.retryAfterMs)
-			: Math.max(0, resetAt - Date.now());
+		const billingSwitch = bag.apiBillingOption === true && {
+			planApiBillingActionable: true,
+		};
+		if (!Number.isNaN(resetAt)) {
+			return {
+				title: PLAN_EXHAUSTED_TITLE,
+				description: [
+					planSpentUntilSentence(new Date(resetAt)),
+					billingSwitch
+						? PLAN_SPENT_API_BILLING_HINT
+						: PLAN_SPENT_WAIT_HINT,
+				].join(" "),
+				...billingSwitch,
+			};
+		}
+		const retryAfterMs = Number(
+			bag.data?.retryAfterMs ?? bag.limitSignal?.retryAfterMs,
+		);
 		return {
 			title: PLAN_EXHAUSTED_TITLE,
-			// Fabric's own sentence already names the reset when it is known.
 			description:
 				providerMessage ??
 				[PLAN_EXHAUSTED_DESCRIPTION, planResetHint(retryAfterMs)]
 					.filter(Boolean)
 					.join(" "),
+			...billingSwitch,
 		};
 	}
 	if (code === "CHATGPT_PLAN_UNAVAILABLE") {
 		return {
 			title: PLAN_RECONNECT_TITLE,
 			description: PLAN_RECONNECT_DESCRIPTION,
+		};
+	}
+	if (code === "CHATGPT_PLAN_MODEL_NOT_SERVED") {
+		return {
+			title: PLAN_MODEL_NOT_SERVED_TITLE,
+			// Fabric's own sentence names the model.
+			description: providerMessage ?? PLAN_MODEL_NOT_SERVED_DESCRIPTION,
 		};
 	}
 	return null;

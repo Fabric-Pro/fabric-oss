@@ -8,7 +8,8 @@
  * exported verbs of those two files are the whole vocabulary, and no caller
  * can run an arbitrary git command.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { taskkillPath } from "./taskkill-path.js";
 
 export type GitResult<T> =
 	| { kind: "ok"; value: T }
@@ -21,6 +22,14 @@ export type GitDeadline = number;
 const STDOUT_CAP_BYTES = 64 * 1024;
 const STDERR_CAP_BYTES = 8 * 1024;
 const KILL_GRACE_MS = 1_000;
+/**
+ * How long a hook's git process group has between SIGTERM and SIGKILL: less
+ * than `KILL_GRACE_MS` because the hook's own margin after the git deadline is
+ * under a second.
+ */
+const GROUP_KILL_GRACE_MS = 500;
+/** What a read of file bytes (`binary`) may return. */
+const BINARY_STDOUT_CAP_BYTES = 1024 * 1024;
 
 /**
  * Removed from the inherited environment, alongside every `FABRIC_*` and
@@ -190,6 +199,16 @@ export function runGit(
 		write?: boolean;
 		unattended?: boolean;
 		httpAuthorization?: GitHttpAuthorization;
+		/**
+		 * The output is file content: up to 1 MiB, returned as `latin1` (one
+		 * character per byte, so two different byte strings never read as
+		 * equal) instead of as UTF-8 text.
+		 */
+		binary?: boolean;
+		/** Text written to git's standard input, which is closed after it. */
+		input?: string;
+		/** Cap on what a `binary` read may return, in bytes. */
+		binaryCapBytes?: number;
 	} = {},
 ): Promise<Spawned> {
 	const remaining = deadline - Date.now();
@@ -208,6 +227,11 @@ export function runGit(
 			});
 			return;
 		}
+		// Only the unattended hook is run to a deadline that must also end
+		// its descendants; a person's `init --clone` stays in the terminal's
+		// own process group, where Ctrl-C reaches git.
+		const grouped = Boolean(options.write && options.unattended);
+		let escalate: ReturnType<typeof setTimeout> | undefined;
 		let settled = false;
 		const finish = (result: Spawned): void => {
 			if (!settled) {
@@ -244,9 +268,16 @@ export function runGit(
 							: gitEnvironment(process.env, options)),
 						...gateway.env,
 					},
-					stdio: ["ignore", "pipe", "pipe"],
+					stdio: [
+						options.input === undefined ? "ignore" : "pipe",
+						"pipe",
+						"pipe",
+					],
 					shell: false,
 					windowsHide: true,
+					// Its own process group, so the deadline can take the
+					// transport children with it (`killTree`).
+					detached: grouped && process.platform !== "win32",
 				},
 			);
 		} catch (error) {
@@ -258,12 +289,19 @@ export function runGit(
 		let outOverflow = false;
 		const err: Buffer[] = [];
 		let errBytes = 0;
+		const stdoutCap = options.binary
+			? (options.binaryCapBytes ?? BINARY_STDOUT_CAP_BYTES)
+			: STDOUT_CAP_BYTES;
+		if (options.input !== undefined) {
+			child.stdin?.on("error", () => undefined);
+			child.stdin?.end(options.input);
+		}
 		child.stdout?.on("data", (chunk: Buffer) => {
-			if (chunk.length > STDOUT_CAP_BYTES - outBytes) {
+			if (chunk.length > stdoutCap - outBytes) {
 				outOverflow = true;
 			}
-			if (outBytes < STDOUT_CAP_BYTES) {
-				const room = STDOUT_CAP_BYTES - outBytes;
+			if (outBytes < stdoutCap) {
+				const room = stdoutCap - outBytes;
 				out.push(chunk.subarray(0, room));
 				outBytes += Math.min(room, chunk.length);
 			}
@@ -275,14 +313,41 @@ export function runGit(
 				errBytes += Math.min(room, chunk.length);
 			}
 		});
-		let escalate: ReturnType<typeof setTimeout> | undefined;
+		// A grouped git being stopped on POSIX: SIGTERM went to the group, and
+		// SIGKILL follows after the grace whether or not the leader has gone,
+		// because a transport child can outlive it.
+		let stoppingGroup = false;
+		const releaseGroup = (): void => {
+			// A descendant that survives still holds these pipes: let go of
+			// them so they cannot keep this process alive.
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			child.unref();
+		};
 		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			// Fires unless the process has exited by then, so a git that
-			// ignores SIGTERM does not outlive the grace period.
-			escalate = setTimeout(() => {
-				child.kill("SIGKILL");
-			}, KILL_GRACE_MS);
+			if (grouped) {
+				stopTree(child, "SIGTERM");
+				if (process.platform !== "win32") {
+					stoppingGroup = true;
+					escalate = setTimeout(() => {
+						stopTree(child, "SIGKILL");
+						releaseGroup();
+						finish({
+							kind: "unavailable",
+							reason: "git timed out",
+						});
+					}, GROUP_KILL_GRACE_MS);
+					return;
+				}
+				releaseGroup();
+			} else {
+				child.kill("SIGTERM");
+				// Fires unless the process has exited by then, so a git that
+				// ignores SIGTERM does not outlive the grace period.
+				escalate = setTimeout(() => {
+					child.kill("SIGKILL");
+				}, KILL_GRACE_MS);
+			}
 			finish({ kind: "unavailable", reason: "git timed out" });
 		}, remaining);
 		timer.unref();
@@ -290,6 +355,9 @@ export function runGit(
 			finish(spawnFailure(error));
 		});
 		child.on("close", (code) => {
+			if (stoppingGroup) {
+				return;
+			}
 			clearTimeout(escalate);
 			if (outOverflow) {
 				finish({
@@ -301,11 +369,55 @@ export function runGit(
 			finish({
 				kind: "exited",
 				code: code ?? -1,
-				stdout: Buffer.concat(out).toString("utf8"),
+				stdout: Buffer.concat(out).toString(
+					options.binary ? "latin1" : "utf8",
+				),
 				stderr: Buffer.concat(err).toString("utf8"),
 			});
 		});
 	});
+}
+
+/**
+ * Stop git and everything it started. Killing only the `git` the CLI spawned
+ * is not enough: git runs its transport (`git-remote-https`, ssh, a
+ * credential helper) as children, and on Windows they outlive their parent
+ * and keep the output pipes open, so a hung fetch holds the whole process
+ * (and the session that is waiting for it) long after the deadline. On Windows
+ * that is `taskkill /T`, on POSIX the process group the child was started as
+ * the leader of (`detached`). Best effort and synchronous: it runs on the
+ * deadline, when nothing may wait.
+ *
+ * `SIGTERM` first on POSIX: git removes its `index.lock` when it is asked to
+ * stop and leaves it behind when it is killed outright. Windows has no such
+ * request, and `taskkill` is only aimed at a PID this process still owns: once
+ * git has exited the number may belong to something else.
+ */
+function stopTree(
+	child: ReturnType<typeof spawn>,
+	signal: "SIGTERM" | "SIGKILL",
+): void {
+	const pid = child.pid;
+	if (pid === undefined) {
+		child.kill(signal);
+		return;
+	}
+	try {
+		if (process.platform === "win32") {
+			if (child.exitCode === null && child.signalCode === null) {
+				spawnSync(taskkillPath(), ["/PID", String(pid), "/T", "/F"], {
+					stdio: "ignore",
+					windowsHide: true,
+					timeout: 2_000,
+				});
+			}
+		} else {
+			process.kill(-pid, signal);
+		}
+	} catch {
+		// Already gone, or not ours to signal.
+	}
+	child.kill(signal);
 }
 
 function spawnFailure(error: unknown): Spawned {

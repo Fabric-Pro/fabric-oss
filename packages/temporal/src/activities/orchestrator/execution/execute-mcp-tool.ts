@@ -63,7 +63,7 @@ import {
 	resolveFabricCatalogRoute,
 	runFabricCatalogTool,
 } from "./fabric-catalog-adapter";
-import { runWithTimeout } from "./mcp-call-timeout";
+import { effectiveMcpToolTimeoutMs, runWithTimeout } from "./mcp-call-timeout";
 
 /**
  * Parse the synthetic config ID discovery stores for an integration tool
@@ -677,7 +677,11 @@ export async function executeMcpTool(
 	// never-settling tool.execute releases its request/socket instead of piling
 	// up across cycles (finding 8). One controller per call → siblings sharing
 	// the cached client are unaffected.
-	const abortController = input.timeoutMs ? new AbortController() : undefined;
+	const timeoutMs = effectiveMcpToolTimeoutMs(
+		input.timeoutMs,
+		isFirstPartyFabricTool(input.toolName),
+	);
+	const abortController = timeoutMs ? new AbortController() : undefined;
 
 	try {
 		// In a chat turn, an MCP or Fabric tool call is not launched once a
@@ -699,12 +703,12 @@ export async function executeMcpTool(
 		// Opt-in per-call timeout. The race resolves on timeout, so this function
 		// returns and the `finally` below clears the heartbeat interval — the
 		// hung `tool.execute` inside `work` can no longer leak a live timer.
-		const result = await (input.timeoutMs
-			? runWithTimeout(work, input.timeoutMs, () => {
+		const result = await (timeoutMs
+			? runWithTimeout(work, timeoutMs, () => {
 					abortController?.abort();
 					return {
 						output: {
-							error: `MCP tool "${input.toolName}" timed out after ${input.timeoutMs}ms`,
+							error: `MCP tool "${input.toolName}" timed out after ${timeoutMs}ms`,
 						},
 						durationMs: Date.now() - startTime,
 						success: false,
@@ -1132,6 +1136,17 @@ async function gateMcpServerTool(
 			cached: false,
 		};
 	}
+}
+
+/**
+ * Fabric's own tools: the in-process `fabric_*` tools and the catalog tools
+ * this activity runs itself, as opposed to a connected MCP server's.
+ */
+export function isFirstPartyFabricTool(toolName: string): boolean {
+	return (
+		toolName.toLowerCase().startsWith("fabric_") ||
+		resolveFabricCatalogRoute(toolName) !== undefined
+	);
 }
 
 /**

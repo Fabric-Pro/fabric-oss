@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	createContext,
 	db,
@@ -295,7 +295,7 @@ export const syncPrdSourceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const ragProviderConfig = await getRAGProviderConfig({
+		const ragProviderConfig = await getEmbeddingRAGProviderConfig({
 			userId: user.id,
 			organizationId,
 		});
@@ -799,7 +799,7 @@ export const bindNotionPageProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const ragProviderConfig = await getRAGProviderConfig({
+		const ragProviderConfig = await getEmbeddingRAGProviderConfig({
 			userId: user.id,
 			organizationId,
 		});

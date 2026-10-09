@@ -73,7 +73,7 @@ export function PublishFlaggedVersionDialog({
 	const ready = checked && acknowledged;
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent>
+			<DialogContent className="grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>{t("flaggedDialogTitle")}</DialogTitle>
 					<DialogDescription>
@@ -99,7 +99,7 @@ export function PublishFlaggedVersionDialog({
 					onAcknowledgedChange={setAcknowledged}
 					disabled={pending}
 				/>
-				<DialogFooter>
+				<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 					<Button
 						variant="outline"
 						disabled={pending}

@@ -47,6 +47,21 @@ export const AUTH_RATE_LIMITS: Record<
 		windowMs: 60_000,
 		keyPrefix: "auth:2fa",
 	},
+	// Dynamic client registration is open to anyone and writes a row per call,
+	// and an unauthenticated authorize writes a binding row. The OAuth plugin
+	// ships its own limits for both, but Better Auth applies them from
+	// in-memory counters per server instance, so they do not hold across a
+	// scaled-out or serverless deployment. These are the shared ones.
+	"/oauth2/register": {
+		limit: 10,
+		windowMs: 60_000,
+		keyPrefix: "auth:oauth-register",
+	},
+	"/oauth2/authorize": {
+		limit: 60,
+		windowMs: 60_000,
+		keyPrefix: "auth:oauth-authorize",
+	},
 };
 
 /**

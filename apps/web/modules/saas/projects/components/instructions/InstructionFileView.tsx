@@ -1,7 +1,11 @@
 "use client";
 
 import { parseFrontmatter } from "@repo/instructions";
-import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
+import {
+	type CommittedCallback,
+	type RereadCallback,
+	useDirectCommit,
+} from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import {
 	editInstructionSnapshot,
@@ -16,9 +20,8 @@ import type { ChangeMark } from "@saas/projects/lib/instructions-base-changes";
 import { defaultCommitMessage } from "@saas/projects/lib/instructions-direct-commit";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { Markdown } from "@ui/components/markdown";
 import { Skeleton } from "@ui/components/skeleton";
 import { Textarea } from "@ui/components/textarea";
 import {
@@ -32,10 +35,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CommitMessageField } from "./CommitMessageField";
 import {
+	type InstructionDraft,
+	useInstructionDraftStore,
+} from "./InstructionDrafts";
+import {
 	extraFrontmatterFields,
 	InstructionFileHeader,
 } from "./InstructionFileHeader";
 import { InstructionFileToolbar } from "./InstructionFileToolbar";
+import { InstructionMarkdown } from "./InstructionMarkdown";
+import type { RepositoryLinks } from "./instruction-links";
+import {
+	invalidateProposalViews,
+	liveChangesOnMyBranch,
+} from "./lib/instructions-proposal-views";
 import { RenameInstructionFileDialog } from "./RenameInstructionFileDialog";
 import {
 	type NativeInstructionFile,
@@ -72,6 +85,9 @@ export function InstructionFileView({
 	canPropose = false,
 	repositoryTarget = null,
 	existingPaths,
+	repositoryLinks = null,
+	onOpenPath,
+	onRenamed,
 	pausedReason = null,
 	change = null,
 	publishedVersion = 0,
@@ -116,6 +132,15 @@ export function InstructionFileView({
 	canCommit?: boolean;
 	/** The paths of the version on screen, so a rename never lands on a file that exists. */
 	existingPaths?: ReadonlySet<string>;
+	/** Where the repository's files are on the web, for a link in the text that leaves the instructions. */
+	repositoryLinks?: RepositoryLinks | null;
+	/**
+	 * Opens another instruction file of the version on screen: a relative link
+	 * in the text, the file a rename produced, or the file a kept draft is for.
+	 */
+	onOpenPath?: (path: string) => void;
+	/** A rename has been committed: the file now sits at this path. */
+	onRenamed?: (newPath: string) => void;
 	/** Whether this reader may submit a version for an editor to review. */
 	canPropose?: boolean;
 	/**
@@ -125,9 +150,9 @@ export function InstructionFileView({
 	 */
 	repositoryTarget?: { repository: string; ref: string } | null;
 	/** Refresh the tab's snapshot list and published pointer after a save. */
-	onChanged?: () => unknown;
+	onChanged?: RereadCallback;
 	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
-	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+	onCommitted?: CommittedCallback;
 	/** Lets the parent retain this exact draft while its next file list loads. */
 	onDraftStateChange?: (
 		draft: { snapshotId: string; path: string } | null,
@@ -167,6 +192,7 @@ export function InstructionFileView({
 	 * never a silent substitution. Only relevant on a repository-backed
 	 * project, where a member branch can exist at all.
 	 */
+	const queryClient = useQueryClient();
 	const myBranch = useQuery({
 		...orpc.projects.instructions.proposals.myBranch.queryOptions({
 			input: { projectId },
@@ -270,14 +296,26 @@ export function InstructionFileView({
 	// Comparing here rather than clearing in an effect keeps it a single
 	// render with no intermediate state, and keeps the typed text on screen
 	// instead of deleting someone's work to protect someone else's.
-	const [draft, setDraft] = useState<{
-		sourceKey: string;
-		nativeBase?: NativeInstructionBase;
-		path: string;
-		text: string;
-		/** The commit message once the person has typed one; the default until then. */
-		message?: string;
-	} | null>(null);
+	//
+	// The draft outlives this view when a provider above the tabs holds it:
+	// picking another project tab unmounts the whole tab, and the text typed
+	// is read back when the tab returns (`InstructionDrafts`).
+	const draftStore = useInstructionDraftStore(projectId);
+	const [draft, setDraft] = useState<InstructionDraft | null>(
+		draftStore.read,
+	);
+	const { write: keepDraft } = draftStore;
+	useEffect(() => {
+		keepDraft(draft);
+	}, [draft, keepDraft]);
+	const restoredPath = useRef(draft?.path ?? null);
+	useEffect(() => {
+		const kept = restoredPath.current;
+		restoredPath.current = null;
+		if (kept !== null && kept !== path) {
+			onOpenPath?.(kept);
+		}
+	}, [path, onOpenPath]);
 	useEffect(() => {
 		onNativeDraftStateChange?.(
 			draft?.nativeBase
@@ -293,6 +331,18 @@ export function InstructionFileView({
 		);
 	}, [draft, onDraftStateChange, onNativeDraftStateChange, snapshotId]);
 	useEffect(() => () => onDraftStateChange?.(null), [onDraftStateChange]);
+	const hasDraft = draft !== null;
+	useEffect(() => {
+		if (!hasDraft) {
+			return;
+		}
+		const guard = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", guard);
+		return () => window.removeEventListener("beforeunload", guard);
+	}, [hasDraft]);
 	const [renameOpen, setRenameOpen] = useState(false);
 	/** Whether a commit to the branch is what the editor's primary action does. */
 	const committing = canCommit && repositoryTarget !== null;
@@ -300,11 +350,15 @@ export function InstructionFileView({
 	// branch-moved dialog. A ref, so the hook below is built before the
 	// function that needs the loaded file exists.
 	const suggestDraftRef = useRef<() => void>(() => undefined);
+	// A deletion leaves nothing at the open path to read back: asking for it
+	// failed, and the failure was announced beside the commit's own toast.
+	const rereadsOpenFile = useRef(true);
 	const commit = useDirectCommit({
 		projectId,
 		branch: repositoryTarget?.ref ?? "",
 		onChanged: () => onChanged?.(),
-		onCommitted,
+		onCommitted: (committed) =>
+			rereadsOpenFile.current ? onCommitted?.(committed) : undefined,
 		onFinished: () => setDraft(null),
 	});
 
@@ -313,6 +367,7 @@ export function InstructionFileView({
 			edits: InstructionEdit[];
 			publishOnReady: boolean;
 			proposal?: boolean;
+			message?: string;
 		}) =>
 			changeBase
 				? editInstructionSnapshot({
@@ -321,13 +376,18 @@ export function InstructionFileView({
 						publishOnReady: input.publishOnReady,
 						proposal: input.proposal,
 						edits: input.edits,
+						...(input.message ? { message: input.message } : {}),
 					})
 				: Promise.reject(new Error("Instruction source unavailable")),
 		onSuccess: (_result, input) => {
 			setDraft(null);
 			toast.success(
 				input.proposal && nativeBase
-					? tDirect("suggestionSubmitted")
+					? tDirect(
+							liveChangesOnMyBranch(queryClient, projectId) > 0
+								? "suggestionAdded"
+								: "suggestionSubmitted",
+						)
 					: input.proposal
 						? t(
 								repositoryTarget
@@ -336,6 +396,9 @@ export function InstructionFileView({
 							)
 						: t("saved"),
 			);
+			if (input.proposal) {
+				void invalidateProposalViews(queryClient);
+			}
 			onChanged?.();
 		},
 		onError: (error: Error) => toast.error(actionError(error)),
@@ -438,6 +501,7 @@ export function InstructionFileView({
 			toast.info(t("noChangesRepository"));
 			return;
 		}
+		rereadsOpenFile.current = true;
 		commit.start({
 			...changeBase,
 			message: commitMessage,
@@ -457,6 +521,7 @@ export function InstructionFileView({
 		if (!repositoryTarget || !changeBase) {
 			return;
 		}
+		rereadsOpenFile.current = false;
 		commit.start({
 			...changeBase,
 			message: defaultCommitMessage({ kind: "delete", path: f.path }),
@@ -492,6 +557,9 @@ export function InstructionFileView({
 		save.mutate({
 			publishOnReady: proposal ? false : publishOnReady,
 			proposal,
+			// A suggestion carries the commit message the person typed; without
+			// one the pull request gets its default title.
+			message: proposal ? draftForPath?.message : undefined,
 			edits: [
 				{
 					op: "put",
@@ -694,7 +762,10 @@ export function InstructionFileView({
 					canCommit={committing}
 					canPropose={canPropose}
 					onChanged={() => onChanged?.()}
-					onCommitted={onCommitted}
+					onRenamed={(newPath) => {
+						setRenameOpen(false);
+						onRenamed?.(newPath);
+					}}
 				/>
 			) : null}
 			{editorText !== null ? (
@@ -910,9 +981,14 @@ export function InstructionFileView({
 										{displayBody}
 									</pre>
 								) : (
-									<Markdown className="[&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
+									<InstructionMarkdown
+										path={f.path}
+										existingPaths={existingPaths}
+										repositoryLinks={repositoryLinks}
+										onOpenPath={onOpenPath}
+									>
 										{parsed ? parsed.body : displayBody}
-									</Markdown>
+									</InstructionMarkdown>
 								)}
 								{displayTruncated ? (
 									<p className="text-muted-foreground text-xs">

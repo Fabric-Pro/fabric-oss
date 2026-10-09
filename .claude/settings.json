@@ -45,13 +45,9 @@
 					},
 					{
 						"type": "command",
-						"if": "Bash(gh pr create*)",
-						"command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-quality-gate.mjs"
-					},
-					{
-						"type": "command",
-						"if": "Bash(gh pr edit*)",
-						"command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-quality-gate.mjs"
+						"if": "Bash(*gh*)",
+						"command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-quality-gate.mjs",
+						"timeout": 600
 					}
 				]
 			},

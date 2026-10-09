@@ -35,6 +35,48 @@ export interface SelectedAgent {
 	enabledIntegrationIds?: string[];
 	/** Raw OAuth provider names from toolConnections — resolved to IDs before storing */
 	enabledIntegrationProviders?: string[];
+	/**
+	 * A ChatGPT plan model picked for this chat (Fizzy #2770 F13): kept in the
+	 * chat, never saved as the member's selection.
+	 */
+	chatOnly?: boolean;
+}
+
+/** A chat's ChatGPT plan pick, never a saved provider model's id. */
+export const PLAN_MODEL_AGENT_PREFIX = "plan-model:";
+
+/** A model picked as the chat's agent: a provider model or a plan pick. */
+export function isModelSelectionId(agentId: string): boolean {
+	return (
+		agentId.startsWith("model:") ||
+		agentId.startsWith(PLAN_MODEL_AGENT_PREFIX)
+	);
+}
+
+/**
+ * For a multi-agent selection (Nexus): what to save after `changed` was
+ * picked or removed, or null to save nothing. A chat-only plan pick is never
+ * saved, and changing it saves nothing.
+ */
+export function selectionToPersist(
+	changed: SelectedAgent | undefined,
+	next: SelectedAgent[],
+): SelectedAgent[] | null {
+	if (changed?.chatOnly) {
+		return null;
+	}
+	return next.filter((agent) => !agent.chatOnly);
+}
+
+/**
+ * Whether a selection change should be saved: never one that picks, or
+ * clears, a model kept in this chat only.
+ */
+export function shouldPersistAgentSelection(
+	current: SelectedAgent | null,
+	next: SelectedAgent | null,
+): boolean {
+	return !(next ? next.chatOnly : current?.chatOnly);
 }
 
 /** Older saved selections identify instances only through the agent ID. */

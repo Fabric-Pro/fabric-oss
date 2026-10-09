@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	exhausted: vi.fn(),
 	pick: vi.fn(),
+	servesBackground: vi.fn(async (_organizationId: string) => false),
 }));
 
 vi.mock("../../../../../lib/audit", () => ({
@@ -31,12 +32,36 @@ vi.mock("@repo/database", () => ({
 		},
 	],
 	setChatGptPlanOrgUse: vi.fn(),
-	getChatGptPlanUsageSince: async () => ({
+	getChatGptPlanUserWindow: async () => ({
+		windowStart: null,
+		resetsAt: null,
+		lastRequestAt: null,
 		requests: 0,
 		inputTokens: 0,
+		cachedInputTokens: 0,
 		outputTokens: 0,
+		topConsumers: [],
 	}),
+	getChatGptPlanWindowBudget: async () => 2_000_000,
+	CHATGPT_PLAN_WINDOW_MS: 5 * 60 * 60_000,
+	CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS: 1_000_000_000,
+	chatGptPlanWindowPercent: () => 0,
 }));
+
+vi.mock("@repo/ai/lib/chatgpt-plan/subscription-backfill", () => ({
+	backfillChatGptPlanSubscription: async (_ref: unknown, row: unknown) => row,
+}));
+
+vi.mock("../share", async () => {
+	const { z } = await import("zod");
+	return {
+		chatGptPlanSharedHereSchema: z.object({}).passthrough(),
+		chatGptPlanShareState: async () => ({
+			canShare: false,
+			sharedHere: [],
+		}),
+	};
+});
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
 	disconnectChatGptPlan: vi.fn(),
@@ -46,6 +71,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/exhaustion-breaker", () => ({
 }));
 vi.mock("@repo/ai/lib/chatgpt-plan/pool", () => ({
 	sharedPlanServesMember: mocks.pick,
+	sharedPlansServeBackgroundWork: mocks.servesBackground,
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {
@@ -93,8 +119,10 @@ beforeEach(() => {
 describe("users.chatgptPlan.status — own plan spent", () => {
 	it("is null while the own plan has usage left", async () => {
 		mocks.exhausted.mockResolvedValue(null);
+		mocks.pick.mockResolvedValue(false);
 		await expect(status()).resolves.toMatchObject({ ownPlanSpent: null });
-		expect(mocks.pick).not.toHaveBeenCalled();
+		// Asked once, for whether a shared account serves the member's work.
+		expect(mocks.pick).toHaveBeenCalledTimes(1);
 	});
 
 	it("says the shared plan is serving the member's work until the reset", async () => {
@@ -124,5 +152,33 @@ describe("users.chatgptPlan.status — own plan spent", () => {
 	it("stays advisory: a failing check is null, never an error", async () => {
 		mocks.exhausted.mockRejectedValue(new Error("database down"));
 		await expect(status()).resolves.toMatchObject({ ownPlanSpent: null });
+	});
+
+	// Fizzy #2770: the shell's "AI provider required" notice reads this.
+	it("says whether a shared account serves the member's own work here", async () => {
+		mocks.exhausted.mockResolvedValue(null);
+		mocks.pick.mockResolvedValue(true);
+		await expect(status()).resolves.toMatchObject({
+			sharedPlanServesOwnWork: true,
+		});
+		mocks.pick.mockRejectedValue(new Error("database down"));
+		await expect(status()).resolves.toMatchObject({
+			sharedPlanServesOwnWork: false,
+		});
+	});
+
+	// Fizzy #2770 F3: the channel and meeting link dialogs read this.
+	it("says whether the organization's shared plans serve its background jobs", async () => {
+		mocks.exhausted.mockResolvedValue(null);
+		mocks.pick.mockResolvedValue(false);
+		mocks.servesBackground.mockResolvedValue(true);
+		await expect(status()).resolves.toMatchObject({
+			sharedPlansServeBackground: true,
+		});
+		expect(mocks.servesBackground).toHaveBeenCalledWith("org-1");
+		mocks.servesBackground.mockResolvedValue(false);
+		await expect(status()).resolves.toMatchObject({
+			sharedPlansServeBackground: false,
+		});
 	});
 });

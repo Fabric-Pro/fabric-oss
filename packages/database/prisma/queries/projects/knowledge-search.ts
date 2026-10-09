@@ -114,7 +114,8 @@ export function buildProjectKnowledgeSearchQuery(
      COALESCE((SELECT string_agg(value, '' ORDER BY ordinal) FROM prose), '')
      ELSE COALESCE(s.description, '') END
    ) ELSE COALESCE(s.description, '') END AS body
-   FROM user_story s WHERE s."projectId" = ${projectId} AND s."organizationId" = ${organizationId}
+   FROM user_story s JOIN project p ON p.id = s."projectId"
+   WHERE s."projectId" = ${projectId} AND p."organizationId" = ${organizationId}
   UNION ALL
   SELECT 'document', d.id, NULL, d.title, NULL, d.type::text, NULL, d.content
    FROM project_document d WHERE d."projectId" = ${projectId} AND d."organizationId" = ${organizationId}

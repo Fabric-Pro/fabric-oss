@@ -43,9 +43,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 
 // Both queries report loading → component short-circuits to the skeleton.
 vi.mock("@tanstack/react-query", () => ({
+	// The page invalidates on document nudges in a Proposal's artifact mode.
+	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 	useQuery: () => ({ data: undefined, isLoading: true }),
 }));
 
+vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
+	useIsGuestInOrg: () => false,
+}));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: mockOrganizationId.current,

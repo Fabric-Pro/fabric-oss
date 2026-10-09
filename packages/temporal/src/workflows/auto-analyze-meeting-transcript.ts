@@ -28,6 +28,7 @@
 import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
 
 const { autoAnalyzeMeetingTranscriptActivity } = proxyActivities<
 	typeof activities
@@ -76,6 +77,12 @@ export interface AutoAnalyzeMeetingTranscriptWorkflowInput {
 	transcriptText: string;
 	/** #1814 FR7 — see the matching field on `AutoAnalyzeMeetingTranscriptInput`. */
 	userInitiated?: boolean;
+	/**
+	 * Set by the "Create feature proposals" click: the run's model calls are
+	 * the person's own interactive work (Fizzy #2770). Read by the client
+	 * interceptor, which carries it to the activity as a header.
+	 */
+	planEligible?: boolean;
 }
 
 export interface AutoAnalyzeMeetingTranscriptWorkflowOutput {
@@ -89,7 +96,21 @@ export async function autoAnalyzeMeetingTranscriptWorkflow(
 	input: AutoAnalyzeMeetingTranscriptWorkflowInput,
 ): Promise<AutoAnalyzeMeetingTranscriptWorkflowOutput> {
 	try {
-		return await autoAnalyzeMeetingTranscriptActivity(input);
+		// The automatic scan may run on a shared ChatGPT plan (Fizzy #2770 A4).
+		// When every plan is spent the activity has released its claim, so the
+		// transcript waits for a reset and is analyzed once more instead of
+		// being marked FAILED for good. A person's "Create feature proposals"
+		// click runs as their interactive work and is not held: a spent plan
+		// fails it like any other interactive request.
+		// `userInitiated` is workflow input, so the branch is replay-safe, and
+		// the helper's own `patched()` keeps older histories unchanged.
+		if (input.userInitiated) {
+			return await autoAnalyzeMeetingTranscriptActivity(input);
+		}
+		return await withChatGptPlanWait(
+			() => autoAnalyzeMeetingTranscriptActivity(input),
+			{ organizationId: input.organizationId, userId: input.userId },
+		);
 	} catch (err) {
 		// The analyze activity exhausted its retries. Record a terminal FAILED
 		// status on the transcript so the scan-status view shows "Failed" instead

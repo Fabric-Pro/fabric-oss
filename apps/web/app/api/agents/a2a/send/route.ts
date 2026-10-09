@@ -14,6 +14,7 @@ import {
 	getAIModelWithMetadata,
 	getRAGProviderConfig,
 } from "@repo/ai";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { auth } from "@repo/auth";
 import { isOrganizationMember } from "@repo/database";
@@ -49,6 +50,13 @@ export async function POST(req: NextRequest) {
 				{ status: 401 },
 			);
 		}
+
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2770).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const body: A2ASendRequest = await req.json();
 		const { agentUrl, message, contextId, history, organizationId } = body;
@@ -109,10 +117,13 @@ export async function POST(req: NextRequest) {
 
 		try {
 			// Get AI model with metadata using centralized entry point
+			// A person sent this message, so it may run on their ChatGPT plan
+			// or one the organization shares (Fizzy #2770).
 			const { metadata, trackUsage } = await getAIModelWithMetadata(
 				{ taskType: "TOOL_CALLING" },
-				{ userId: session.user.id, organizationId },
+				{ userId: session.user.id, organizationId, planEligible: true },
 			);
+			const onPlan = metadata.provider === "OPENAI_CHATGPT_PLAN";
 
 			// Track usage (fire-and-forget)
 			trackUsage();
@@ -128,15 +139,21 @@ export async function POST(req: NextRequest) {
 				organizationId,
 				impersonated: Boolean(session.session.impersonatedBy),
 				source: "a2a-proxy",
+				// The same decision as the resolution above, so the agent's key
+				// exchange lands on the same plan; never while impersonating.
+				planEligible: onPlan,
 			});
 
 			aiModel = metadata.modelString;
 			aiProvider = metadata.provider;
-			aiBaseUrl =
-				buildEffectiveBaseUrl(
-					metadata.provider,
-					providerConfig.baseUrl || undefined,
-				) || undefined;
+			// A plan has no base URL; the organization's would point the agent
+			// at the wrong provider.
+			aiBaseUrl = onPlan
+				? undefined
+				: buildEffectiveBaseUrl(
+						metadata.provider,
+						providerConfig.baseUrl || undefined,
+					) || undefined;
 
 			console.log("[A2A Send] Issued AI token for user:", {
 				userId: session.user.id,

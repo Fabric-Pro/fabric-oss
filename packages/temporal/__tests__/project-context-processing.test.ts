@@ -39,9 +39,10 @@ vi.mock("@repo/database/prisma/client", () => ({
 	},
 }));
 
-const getSystemRAGProviderConfigMock = vi.fn();
+const getSystemEmbeddingRAGProviderConfigMock = vi.fn();
 vi.mock("@repo/ai", () => ({
-	getSystemRAGProviderConfig: getSystemRAGProviderConfigMock,
+	getSystemEmbeddingRAGProviderConfig:
+		getSystemEmbeddingRAGProviderConfigMock,
 }));
 
 const extractMock = vi.fn();
@@ -90,7 +91,7 @@ function setupHappyContext(mimeType = "text/csv") {
 		text: "a,b,c\n1,2,3\n",
 		extractorUsed: "local-text",
 	});
-	getSystemRAGProviderConfigMock.mockResolvedValue({
+	getSystemEmbeddingRAGProviderConfigMock.mockResolvedValue({
 		apiKey: "test-key",
 		provider: "OPENAI_DIRECT",
 		baseUrl: null,

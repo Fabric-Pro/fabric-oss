@@ -54,8 +54,30 @@ describe("markDocumentGenerationQueued", () => {
 			generationError: null,
 			generationStartedAt: result.generationStartedAt,
 			generationNotificationEmittedAt: null,
+			liveRunId: null,
+			liveAttempt: null,
+			liveContent: null,
 		});
 		expect(result.applied).toBe(true);
+	});
+
+	/**
+	 * The previous coordinated Proposal run keeps writing under its run token
+	 * until it notices it lost the document. This attempt's own run claims the
+	 * document only at its plan, after the QUEUED → GENERATING flip, so until
+	 * then a token left in place would let that run's late progress or
+	 * terminal write move this row off QUEUED, and the flip, which requires
+	 * QUEUED, would give the new generation up.
+	 */
+	it("ends the previous run's ownership as the new attempt is accepted", async () => {
+		await markDocumentGenerationQueued(DOCUMENT_ID);
+
+		const [{ data }] = updateMany.mock.calls[0];
+		expect(data).toMatchObject({
+			liveRunId: null,
+			liveAttempt: null,
+			liveContent: null,
+		});
 	});
 
 	/**

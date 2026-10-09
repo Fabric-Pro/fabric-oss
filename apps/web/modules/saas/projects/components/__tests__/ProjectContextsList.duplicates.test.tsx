@@ -60,6 +60,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			get: {
+				key: ({ input }: { input: unknown }) => ["projects.get", input],
+			},
 			contexts: {
 				list: {
 					queryOptions: ({

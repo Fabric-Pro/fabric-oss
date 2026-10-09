@@ -22,6 +22,10 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The Proposal artifact gate (Fizzy #2801) is off here, so a Proposal in
+	// the batch takes today's path; its refusal is covered in
+	// `batch-generate-proposal-prompt.test.ts`.
+	isFeatureEnabled: async () => false,
 	db: {
 		project: {
 			findUnique: async () => ({

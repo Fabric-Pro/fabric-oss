@@ -73,6 +73,7 @@ describe("own-plan background denylist", () => {
 			"newsletter-curation",
 			"security-scan",
 			"slack-channel-monitor",
+			"teams-channel-monitor",
 			"image-generation",
 			"transcription",
 		]);

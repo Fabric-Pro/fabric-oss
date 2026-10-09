@@ -111,7 +111,7 @@ export const PROJECT_SOURCE_LIST_INPUT_SCHEMA = {
 		search: {
 			type: "string",
 			description:
-				"Case-insensitive text to match in the title, file name or URL.",
+				"Case-insensitive text to match in the title, file name, URL or a synced file's repository path (e.g. a folder name). It does not search inside file text: use project_rag_query to find text within files.",
 		},
 		includeCodeContexts: {
 			type: "boolean",
@@ -142,10 +142,10 @@ export const PROJECT_DOCUMENT_GET_DESCRIPTION =
 	"Read one document of the attached project LIVE from Fabric: title, type, status, version and its full text. Pass an id from fabric_list_project_documents or the exact title. Long documents come in parts: when truncated is true, call again with offset set to nextOffset. contentAvailable=false means there is no text yet — unavailableReason says why (e.g. still generating).";
 
 export const PROJECT_SOURCE_LIST_DESCRIPTION =
-	"List the attached project's Context-tab sources LIVE from Fabric — uploaded files, web links, pasted notes, meeting transcripts and connected-integration sources — with id, title, kind, type, file name or URL, and dates. Use this — never project_rag_query — for which files, links or sources the project has, or how many; the list is exact, never a sample. Repository code-index entries are excluded by default (summary says how many). Filter by type or text; page with offset when hasMore is true. Read one with fabric_get_project_source.";
+	"List the attached project's Context-tab sources LIVE from Fabric — uploaded files, web links, pasted notes, meeting transcripts and connected-integration sources — with id, title, kind, type, file name or URL, sourcePath for a synced repository file (name such a file by its full sourcePath, not its title), and dates. Use this — never project_rag_query — for which files, links or sources the project has, or how many; the list is exact, never a sample. Repository code-index entries are excluded by default (summary says how many). Filter by type or text; page with offset when hasMore is true. Read one with fabric_get_project_source.";
 
 export const PROJECT_SOURCE_GET_DESCRIPTION =
-	"Read one Context-tab source of the attached project LIVE from Fabric: the extracted text of an uploaded file, the crawled text of a link, a pasted note, a meeting transcript or a captured conversation. Pass an id from fabric_list_project_sources. Long sources come in parts: when truncated is true, call again with offset set to nextOffset. contentAvailable=false means there is no text to read — unavailableReason says why; do not report the source as empty.";
+	"Read one Context-tab source of the attached project LIVE from Fabric: the extracted text of an uploaded file, the crawled text of a link, a pasted note, a meeting transcript or a captured conversation. Pass an id from fabric_list_project_sources. A synced repository file carries sourcePath (e.g. docs/architecture.md): name it by that full path, not by its title. Long sources come in parts: when truncated is true, call again with offset set to nextOffset. contentAvailable=false means there is no text to read — unavailableReason says why; do not report the source as empty.";
 
 /**
  * Appended to project_rag_query's description wherever the list tools are

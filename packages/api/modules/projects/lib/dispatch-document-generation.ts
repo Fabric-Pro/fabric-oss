@@ -42,8 +42,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { ORPCError } from "@orpc/server";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
+import { isFeatureEnabled } from "@repo/database";
 // The canonical-form helper, imported from the module that defines it rather
 // than from the `@repo/database` barrel: this one is pure (node:crypto only),
 // so the dispatcher does not drag the Prisma client in behind a hash.
@@ -54,6 +56,12 @@ import {
 } from "@repo/database/prisma/queries/projects/documents";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import {
+	findBoundProposalPrompt,
+	proposalPromptNotBoundMessage,
+} from "@repo/temporal/proposal-artifact-prompts";
+import { PROPOSAL_PROMPT_NOT_BOUND } from "@repo/temporal/proposal-artifact-types";
+import { PROPOSAL_CLIENT_MAIN_AGENT_KEY } from "@repo/utils/prompt-action-catalog";
 import {
 	WorkflowExecutionAlreadyStartedError,
 	WorkflowNotFoundError,
@@ -142,8 +150,10 @@ export interface DispatchDocumentGenerationInput {
 	 */
 	planEligible?: boolean;
 	/**
-	 * The caller already asserted this type's capability, before a write that
-	 * changes the answer. Server-internal: no procedure schema carries it.
+	 * The caller already ran {@link assertDocumentGenerationAvailable} — the
+	 * type's capability and, for a Proposal, its bound Main prompt — before a
+	 * write that changes the answer. Server-internal: no procedure schema
+	 * carries it.
 	 *
 	 * The create route needs it. Creating a document stands down every active
 	 * document of the same type, and an existing one may be the very source
@@ -243,9 +253,52 @@ function buildGenerationWorkflowId(
 }
 
 /**
- * Refuse a generation of this document type unless its capability may run.
+ * Why a Proposal generation would be refused before it is queued, or null
+ * when nothing stops it (Fizzy #2801).
  *
- * A no-op for a type with no refusable gate — see
+ * With the Proposal artifact rollout gate on for the project's owning
+ * organization, the run renders its Main Document from the prompt bound to
+ * the client-only Main action and fails closed when nothing is bound — no
+ * fallback to the combined Draft prompt or the built-in instructions. That
+ * failure would otherwise surface only after the run was queued, as a FAILED
+ * document; asking here turns it into an answer at the door. The plan
+ * activity in the run stays authoritative: this is the early copy of the
+ * same question, resolved the same way, for the same person.
+ *
+ * Every other type, a gate that is off, and a project with no organization
+ * answer null without a read of the binding, so their runs are unchanged.
+ */
+export async function proposalPromptRefusal(input: {
+	documentType: string;
+	projectId: string;
+	userId: string;
+	/** The project's owning organization, never the session's. */
+	organizationId: string | null;
+}): Promise<string | null> {
+	if (input.documentType !== "PROPOSAL" || !input.organizationId) {
+		return null;
+	}
+	if (!(await isFeatureEnabled("PROPOSAL_ARTIFACT", input.organizationId))) {
+		return null;
+	}
+	const bound = await findBoundProposalPrompt({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		projectId: input.projectId,
+		action: PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	});
+	return bound
+		? null
+		: proposalPromptNotBoundMessage(PROPOSAL_CLIENT_MAIN_AGENT_KEY);
+}
+
+/**
+ * Refuse a generation of this document type unless it can run: a Proposal
+ * needs its Main prompt bound while the Proposal artifact is on (see
+ * {@link proposalPromptRefusal}), and a type with a refusable capability needs
+ * that capability.
+ *
+ * A no-op for a type with neither — see
  * {@link GATED_DOCUMENT_CAPABILITY_KEYS}.
  */
 export async function assertDocumentGenerationAvailable(input: {
@@ -260,6 +313,16 @@ export async function assertDocumentGenerationAvailable(input: {
 	 */
 	suppliesSource?: boolean;
 }): Promise<void> {
+	const refusal = await proposalPromptRefusal(input);
+	if (refusal) {
+		// The same code the run itself would fail with, so a client can
+		// recognise the refusal without matching on its prose.
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message: refusal,
+			data: { code: PROPOSAL_PROMPT_NOT_BOUND },
+		});
+	}
+
 	const capabilityKey = documentCapabilityKey(input.documentType);
 	if (!capabilityKey) {
 		return;

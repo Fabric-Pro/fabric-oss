@@ -25,12 +25,34 @@ interface CallbackResult {
 	params: URLSearchParams;
 }
 
+/** The authorization server sent the browser back with an `error`. */
+export class CallbackError extends Error {
+	constructor(
+		readonly error: string,
+		readonly description: string | null,
+	) {
+		super(
+			error === "access_denied"
+				? "Sign-in was denied in the browser."
+				: `Sign-in failed (${error}).`,
+		);
+		this.name = "CallbackError";
+	}
+}
+
 export interface LoopbackListener {
 	redirectUri: string;
 	/** Resolves with the code, or rejects on denial, timeout or abort. */
 	result: Promise<CallbackResult>;
 	close: () => void;
 }
+
+// The last page of a sign-in: the listener closes right after it, so the
+// browser is told not to keep the connection for another request.
+const FINAL_PAGE_HEADERS = {
+	"Content-Type": "text/html; charset=utf-8",
+	Connection: "close",
+};
 
 const PAGE = (title: string, body: string): string =>
 	`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-weight:400">${title}</h1><p>${body}</p></body>`;
@@ -88,21 +110,21 @@ export async function startLoopbackListener(options: {
 		}
 
 		if (error) {
+			const failure = new CallbackError(
+				error,
+				url.searchParams.get("error_description"),
+			);
+			// Settled only once the page is written: whoever awaits the result
+			// closes the listener, which would otherwise cut the reply off.
 			response
-				.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+				.writeHead(200, FINAL_PAGE_HEADERS)
 				.end(
 					PAGE(
 						"Sign-in cancelled",
 						"You can close this tab and return to your terminal.",
 					),
+					() => settle({ error: failure }),
 				);
-			settle({
-				error: new Error(
-					error === "access_denied"
-						? "Sign-in was denied in the browser."
-						: `Sign-in failed (${error}).`,
-				),
-			});
 			return;
 		}
 
@@ -118,15 +140,16 @@ export async function startLoopbackListener(options: {
 			return;
 		}
 
+		// As above: the browser gets the whole page before anyone can close.
 		response
-			.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+			.writeHead(200, FINAL_PAGE_HEADERS)
 			.end(
 				PAGE(
 					"Signed in",
 					"You can close this tab and return to your terminal.",
 				),
+				() => settle({ code, params: url.searchParams }),
 			);
-		settle({ code, params: url.searchParams });
 	});
 
 	const listen = (port: number) =>

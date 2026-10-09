@@ -131,6 +131,26 @@ export function migrationOpenRefusal(
 	};
 }
 
+/**
+ * A branch command refused because the branch moved since the caller read
+ * its attempt (`BRANCH_CHANGED`); nothing was written.
+ */
+export function isBranchChangedRefusal(error: unknown): boolean {
+	if (codeOf(error) !== "CONFLICT") {
+		return false;
+	}
+	const data =
+		error && typeof error === "object" && "data" in error
+			? error.data
+			: undefined;
+	return (
+		!!data &&
+		typeof data === "object" &&
+		"reason" in data &&
+		data.reason === "BRANCH_CHANGED"
+	);
+}
+
 /** The line for an error: its code's own, or the generic one. */
 export function instructionActionErrorKey(
 	error: unknown,

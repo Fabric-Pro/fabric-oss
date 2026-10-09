@@ -23,21 +23,36 @@ import { ExternalLinkIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
+import { ChatgptPlanModelList } from "../chatgpt-plan-models/ChatgptPlanModelList";
+import { useChatgptPlanModels } from "../chatgpt-plan-models/chatgpt-plan-models-queries";
 import { ChatgptConnectCommand } from "./ChatgptConnectCommand";
 import { ChatgptPlanReconnectActions } from "./ChatgptPlanReconnectActions";
+import {
+	ChatgptPlanShareAction,
+	ChatgptPlanSharedHere,
+} from "./ChatgptPlanShare";
+import { ChatgptPlanSubscription } from "./ChatgptPlanSubscription";
 import {
 	useChatgptPlanStatus,
 	useDisconnectChatgptPlan,
 	useSetChatgptPlanBackgroundJobs,
 	useSetChatgptPlanOrganizationUse,
 } from "./chatgpt-plan-status";
+import {
+	PlanWindowDetails,
+	type PlanWindowEstimate,
+} from "./PlanWindowDetails";
 
 const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
 
 function UsageMeter({
 	estimate,
 }: {
-	estimate: { windowHours: number; estimatedPercent: number };
+	estimate: PlanWindowEstimate & {
+		windowHours: number;
+		estimatedPercent: number;
+		weeklyLimitOnly?: boolean;
+	};
 }) {
 	const t = useTranslations("settings.chatgptPlan");
 	const percent = Math.round(
@@ -49,10 +64,24 @@ function UsageMeter({
 			className="space-y-2 border-border border-t pt-4"
 			data-testid="chatgpt-plan-usage"
 		>
-			<p className="text-sm">
-				{t("usageEstimate", { percent, hours: estimate.windowHours })}
-			</p>
-			<Progress aria-hidden="true" className="h-2" value={percent} />
+			{estimate.weeklyLimitOnly ? (
+				<p className="text-sm">{t("weeklyLimitOnly")}</p>
+			) : (
+				<>
+					<p className="text-sm">
+						{t("usageEstimate", {
+							percent,
+							hours: estimate.windowHours,
+						})}
+					</p>
+					<Progress
+						aria-hidden="true"
+						className="h-2"
+						value={percent}
+					/>
+				</>
+			)}
+			<PlanWindowDetails estimate={estimate} />
 			<p className="text-muted-foreground text-xs">
 				{t("usageEstimateNote")}{" "}
 				<a
@@ -75,6 +104,24 @@ function UsageMeter({
  * nothing, and mounts no query, unless `CHATGPT_PLAN` is on for the
  * organization on screen.
  */
+/** The organization picks the plan models; a member's plan runs its choice. */
+function OrganizationPlanModels() {
+	const t = useTranslations("settings.chatgptPlanModels");
+	const models = useChatgptPlanModels();
+	if (!models.data || models.data.tasks.length === 0) {
+		return null;
+	}
+	return (
+		<div
+			className="space-y-2 border-border border-t pt-4"
+			data-testid="chatgpt-plan-organization-models"
+		>
+			<p className="text-muted-foreground text-sm">{t("memberNote")}</p>
+			<ChatgptPlanModelList tasks={models.data.tasks} />
+		</div>
+	);
+}
+
 export function ChatgptPlanSettings() {
 	return useFeatureFlag("CHATGPT_PLAN") ? <ChatgptPlanSection /> : null;
 }
@@ -156,6 +203,12 @@ function ChatgptPlanSection() {
 									? t("statusNeedsReconnect")
 									: t("statusActive")}
 							</Badge>
+							<ChatgptPlanSubscription
+								subscriptionActiveUntil={
+									query.data.subscriptionActiveUntil ?? null
+								}
+								tier={query.data.tier ?? null}
+							/>
 						</div>
 						<Button
 							autoLoading={false}
@@ -242,11 +295,27 @@ function ChatgptPlanSection() {
 						</div>
 					) : null}
 
+					{currentOrganization ? <OrganizationPlanModels /> : null}
+
 					{query.data.usageEstimate ? (
 						<UsageMeter estimate={query.data.usageEstimate} />
 					) : null}
+
+					{query.data.canShare && currentOrganization ? (
+						<ChatgptPlanShareAction
+							organizationName={currentOrganization.name}
+						/>
+					) : null}
 				</Card>
 			)}
+
+			{query.data && currentOrganization ? (
+				<ChatgptPlanSharedHere
+					accounts={query.data.sharedHere ?? []}
+					hasOwnPlan={query.data.connected}
+					organizationName={currentOrganization.name}
+				/>
+			) : null}
 
 			<AlertDialog onOpenChange={setConfirmOpen} open={confirmOpen}>
 				<AlertDialogContent>

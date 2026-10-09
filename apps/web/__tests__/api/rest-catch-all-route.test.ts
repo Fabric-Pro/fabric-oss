@@ -12,12 +12,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	after: vi.fn(),
 	flushAppInsights: vi.fn().mockResolvedValue(undefined),
+	initAppInsights: vi.fn(),
+	startWebAppInsights: vi.fn(),
 	handle: vi.fn(),
 }));
 
 vi.mock("next/server", () => ({ after: mocks.after }));
 vi.mock("@repo/observability", () => ({
 	flushAppInsights: mocks.flushAppInsights,
+	initAppInsights: mocks.initAppInsights,
+}));
+vi.mock("@shared/lib/web-app-insights", () => ({
+	startWebAppInsights: mocks.startWebAppInsights,
 }));
 vi.mock("@repo/api", () => ({ app: {} }));
 vi.mock("hono/vercel", () => ({
@@ -32,6 +38,17 @@ beforeEach(() => {
 });
 
 describe("app/api/[[...rest]]/route.ts", () => {
+	it("sets the cloud role before it initialises the custom-event transport", async () => {
+		vi.resetModules();
+		const order: string[] = [];
+		mocks.startWebAppInsights.mockImplementation(() => order.push("role"));
+		mocks.initAppInsights.mockImplementation(() => order.push("init"));
+
+		await import("../../app/api/[[...rest]]/route");
+
+		expect(order).toEqual(["role", "init"]);
+	});
+
 	it("schedules a flush via after() on a successful request", async () => {
 		const { GET } = await import("../../app/api/[[...rest]]/route");
 

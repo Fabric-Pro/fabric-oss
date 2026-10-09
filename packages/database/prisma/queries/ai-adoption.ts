@@ -78,7 +78,9 @@ export interface AiBillingSourceByOrganization {
 }
 
 export interface AiUsageAdoptionSummary {
+	/** Successful calls only: a failed attempt retried elsewhere counts once. */
 	requests: number;
+	/** Failed attempts, never in `requests` or the token and cost totals. */
 	failedRequests: number;
 	totalTokens: number;
 	costMicroUsd: number;
@@ -275,13 +277,17 @@ export async function getAiUsageAdoptionSummary(
 		totalTokens: 0,
 		costMicroUsd: 0,
 	};
+	// A request a ChatGPT plan failed and another subscription then served
+	// leaves a failed row and a successful one (Fizzy #2972 AC3): only the
+	// success is a request; failures are reported apart.
 	for (const group of groups) {
+		if (!group.success) {
+			summary.failedRequests += group._count._all;
+			continue;
+		}
 		summary.requests += group._count._all;
 		summary.totalTokens += group._sum.totalTokens ?? 0;
 		summary.costMicroUsd += group._sum.costMicroUsd ?? 0;
-		if (!group.success) {
-			summary.failedRequests += group._count._all;
-		}
 	}
 	return summary;
 }
@@ -300,9 +306,10 @@ export async function getAiBillingSourceByOrganization(
 	const { from, to } = clampRange(range);
 
 	const [groups, planModelGroups] = await Promise.all([
+		// Successful calls only, as in the summary above.
 		db.aiUsageLog.groupBy({
 			by: ["organizationId", "provider"],
-			where: { createdAt: { gte: from, lte: to } },
+			where: { createdAt: { gte: from, lte: to }, success: true },
 			_count: { _all: true },
 			_sum: { totalTokens: true, costMicroUsd: true },
 		}),
@@ -311,6 +318,7 @@ export async function getAiBillingSourceByOrganization(
 			where: {
 				createdAt: { gte: from, lte: to },
 				provider: "OPENAI_CHATGPT_PLAN",
+				success: true,
 			},
 			_sum: {
 				inputTokens: true,

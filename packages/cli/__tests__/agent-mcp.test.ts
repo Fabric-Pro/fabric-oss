@@ -29,6 +29,7 @@ import {
 	writeCodexConfig,
 } from "./helpers/agent-tools.js";
 
+const NAME = "fabric-pleone";
 const ORIGIN = "https://deploy.example.com";
 const PROJECT = "project-example-one";
 const OTHER_PROJECT = "project-example-two";
@@ -57,6 +58,7 @@ async function register(
 		tools?: Array<"claude-code" | "codex">;
 		interactive?: boolean;
 		origin?: string;
+		checkSignIn?: boolean;
 	} = {},
 ) {
 	const files = await toolFiles();
@@ -64,13 +66,19 @@ async function register(
 	if (state.claudeUnreadable) {
 		await writeFile(path.join(files.home, ".claude.json"), "{ not json");
 	} else if (state.claude !== undefined) {
-		await writeClaudeFiles(files, state.claude);
+		await writeClaudeFiles(
+			files,
+			state.claude.map((entry) => ({ name: NAME, ...entry })),
+		);
 	}
 	if (state.codex !== undefined) {
 		await writeCodexConfig(files, state.codex);
 	}
-	const { run, calls } = simulateAgentTools(tools, files);
+	const { run, calls, statusCalls } = simulateAgentTools(tools, files);
 	const results = await registerAgentMcp({
+		...(options.checkSignIn === undefined
+			? {}
+			: { checkSignIn: options.checkSignIn }),
 		tools: options.tools ?? ["claude-code"],
 		projectId: PROJECT,
 		origin: options.origin ?? ORIGIN,
@@ -81,7 +89,13 @@ async function register(
 		run,
 		interactive: options.interactive ?? false,
 	});
-	return { results, calls, lines: agentMcpLines(results), files };
+	return {
+		results,
+		calls,
+		statusCalls,
+		lines: agentMcpLines(results),
+		files,
+	};
 }
 
 const ADD_CLAUDE = [
@@ -91,7 +105,7 @@ const ADD_CLAUDE = [
 	"local",
 	"--transport",
 	"http",
-	"fabric",
+	"fabric-pleone",
 	URL,
 ];
 
@@ -118,12 +132,190 @@ describe("codexServerName", () => {
 	});
 
 	it("keeps Claude Code's server for a project under the one name", () => {
-		expect(serverNameFor("claude-code", PROJECT)).toBe("fabric");
-		expect(serverNameFor("codex", PROJECT)).toBe("fabric-pleone");
+		expect(serverNameFor(PROJECT)).toBe("fabric-pleone");
+		expect(serverNameFor(PROJECT)).toBe("fabric-pleone");
 	});
 });
 
 describe("registerAgentMcp for Claude Code", () => {
+	it.each(["user", "local"] as const)(
+		"leaves the organization-wide server in the %s scope as it is, adds the project's and says so",
+		async (scope) => {
+			const { results, calls, lines } = await register(
+				{},
+				{
+					state: {
+						claude: [
+							{
+								scope,
+								url: `${ORIGIN}/api/mcp-gateway/`,
+								name: "fabric",
+							},
+						],
+					},
+				},
+			);
+
+			expect(verbs(calls)).toEqual(["claude mcp add"]);
+			expect(calls[0]?.args).toEqual(ADD_CLAUDE);
+			expect(results[0]?.outcome).toEqual({ kind: "registered" });
+			expect(lines).toContain(
+				'Your organization-wide Fabric server "fabric" stays as it is; coding instructions use the project server "fabric-pleone".',
+			);
+		},
+	);
+
+	it("counts a legacy `fabric` at this URL as registered and adds nothing", async () => {
+		const { results, calls, lines } = await register(
+			{},
+			{
+				state: {
+					claude: [{ scope: "local", url: URL, name: "fabric" }],
+				},
+			},
+		);
+
+		expect(calls).toEqual([]);
+		expect(results[0]?.outcome).toEqual({ kind: "already" });
+		expect(results[0]?.name).toBe("fabric");
+		expect(lines[0]).toBe(
+			'The Fabric MCP server is already registered for Claude Code as "fabric".',
+		);
+	});
+
+	it.each([
+		["a trailing slash", `${URL}/`],
+		[
+			"capitals in the scheme and host",
+			URL.replace("https://deploy", "HTTPS://Deploy"),
+		],
+		["an explicit default port", URL.replace(".com", ".com:443")],
+		["an empty query and fragment", `${URL}/?#`],
+	])(
+		"counts a legacy `fabric` spelled with %s as this project's",
+		async (_label, spelled) => {
+			const { results, calls } = await register(
+				{},
+				{
+					state: {
+						claude: [
+							{ scope: "local", url: spelled, name: "fabric" },
+						],
+					},
+				},
+			);
+
+			expect(calls).toEqual([]);
+			expect(results[0]?.outcome).toEqual({ kind: "already" });
+		},
+	);
+
+	it.each([
+		[
+			"another host that only adds www",
+			URL.replace("//deploy", "//www.deploy"),
+		],
+		["a query", `${URL}?a=1`],
+		["a path below the project", `${URL}/extra`],
+	])(
+		"does not take %s for this project's gateway",
+		async (_label, spelled) => {
+			const { results, calls } = await register(
+				{},
+				{
+					state: {
+						claude: [
+							{ scope: "local", url: spelled, name: "fabric" },
+						],
+					},
+				},
+			);
+
+			expect(verbs(calls)).toEqual(["claude mcp add"]);
+			expect(results[0]?.outcome).toEqual({ kind: "registered" });
+		},
+	);
+
+	it.each([
+		["another project's", OTHER_URL],
+		[
+			"another project's, spelled with a trailing slash and capitals",
+			`${OTHER_URL.replace("deploy", "DEPLOY")}/`,
+		],
+	])(
+		"replaces this deployment's own legacy `fabric` for %s gateway",
+		async (_label, stale) => {
+			const { results, calls } = await register(
+				{},
+				{
+					state: {
+						claude: [
+							{ scope: "local", url: stale, name: "fabric" },
+						],
+					},
+				},
+			);
+
+			expect(verbs(calls)).toEqual([
+				"claude mcp remove",
+				"claude mcp add",
+			]);
+			expect(calls[0]?.args).toEqual([
+				"mcp",
+				"remove",
+				"fabric",
+				"--scope",
+				"local",
+			]);
+			expect(calls[1]?.args).toEqual(ADD_CLAUDE);
+			expect(results[0]?.outcome).toEqual({ kind: "replaced" });
+		},
+	);
+
+	it.each([
+		["a command", null],
+		["another host", FOREIGN_URL],
+		["another deployment", OTHER_DEPLOYMENT_URL],
+	])(
+		"never touches a local `fabric` that is %s, and still registers the project's own name",
+		async (_label, foreign) => {
+			const { results, calls, lines } = await register(
+				{},
+				{
+					state: {
+						claude: [
+							{ scope: "local", url: foreign, name: "fabric" },
+						],
+					},
+				},
+			);
+
+			expect(verbs(calls)).toEqual(["claude mcp add"]);
+			expect(calls[0]?.args).toEqual(ADD_CLAUDE);
+			expect(results[0]?.outcome).toEqual({ kind: "registered" });
+			expect(lines[0]).toBe(
+				'Registered the Fabric MCP server for Claude Code as "fabric-pleone".',
+			);
+		},
+	);
+
+	it("is already registered on the second run beside a foreign `fabric`", async () => {
+		const { results, calls } = await register(
+			{},
+			{
+				state: {
+					claude: [
+						{ scope: "local", url: null, name: "fabric" },
+						{ scope: "local", url: URL },
+					],
+				},
+			},
+		);
+
+		expect(calls).toEqual([]);
+		expect(results[0]?.outcome).toEqual({ kind: "already" });
+	});
+
 	it("adds the project's gateway in the checkout's own scope when there is no server of that name", async () => {
 		const { results, calls, lines, files } = await register({});
 
@@ -132,16 +324,16 @@ describe("registerAgentMcp for Claude Code", () => {
 		expect(calls.every((call) => call.cwd === files.cwd)).toBe(true);
 		expect(results[0]).toMatchObject({
 			tool: "claude-code",
-			name: "fabric",
+			name: "fabric-pleone",
 			url: URL,
 			outcome: { kind: "registered" },
 			login: "printed",
 			registerLine: `claude ${ADD_CLAUDE.join(" ")}`,
-			loginLine: "claude mcp login fabric",
+			loginLine: "claude mcp login fabric-pleone",
 		});
 		expect(lines).toEqual([
-			'Registered the Fabric MCP server for Claude Code as "fabric".',
-			"To finish, sign Claude Code in to it: claude mcp login fabric",
+			'Registered the Fabric MCP server for Claude Code as "fabric-pleone".',
+			"To finish, sign Claude Code in to it: claude mcp login fabric-pleone",
 		]);
 	});
 
@@ -154,12 +346,23 @@ describe("registerAgentMcp for Claude Code", () => {
 		expect(calls).toEqual([]);
 		expect(results[0]).toMatchObject({
 			outcome: { kind: "already" },
-			login: "hint",
+			login: "printed",
+			status: "needs-sign-in",
 		});
 		expect(lines).toEqual([
 			"The Fabric MCP server is already registered for Claude Code.",
-			"If Claude Code has not signed in to it yet, run: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-pleone",
 		]);
+	});
+
+	it("does not remove and add a local server whose URL only differs in spelling", async () => {
+		const { results, calls } = await register(
+			{},
+			{ state: { claude: [{ scope: "local", url: `${URL}/` }] } },
+		);
+
+		expect(calls).toEqual([]);
+		expect(results[0]?.outcome).toEqual({ kind: "already" });
 	});
 
 	it.each(["user", "project"] as const)(
@@ -185,59 +388,89 @@ describe("registerAgentMcp for Claude Code", () => {
 		expect(calls[0]?.args).toEqual([
 			"mcp",
 			"remove",
-			"fabric",
+			"fabric-pleone",
 			"--scope",
 			"local",
 		]);
 		expect(calls[1]?.args).toEqual(ADD_CLAUDE);
 		expect(results[0]?.outcome).toEqual({ kind: "replaced" });
 		expect(lines[0]).toBe(
-			'Replaced the Fabric MCP server "fabric" in Claude Code with this project\'s.',
+			'Replaced the Fabric MCP server "fabric-pleone" in Claude Code with this project\'s.',
 		);
 	});
 
 	it.each(["user", "project"] as const)(
-		"leaves a server of ours in the %s scope alone and says how to move it",
+		"registers the checkout's own server over one of ours in the %s scope, and says it takes precedence",
 		async (scope) => {
 			const { results, calls, lines } = await register(
 				{},
 				{ state: { claude: [{ scope, url: OTHER_URL }] } },
 			);
 
-			expect(calls).toEqual([]);
-			expect(results[0]?.outcome).toEqual({
-				kind: "left",
-				reason: "other-scope",
-			});
-			expect(lines).toEqual([
-				`Claude Code has a "fabric" server in another scope that points at a different Fabric gateway, so it was left alone. Remove it with: claude mcp remove fabric, then run: claude ${ADD_CLAUDE.join(" ")}`,
-			]);
+			expect(verbs(calls)).toEqual(["claude mcp add"]);
+			expect(calls[0]?.args).toEqual(ADD_CLAUDE);
+			expect(results[0]?.outcome).toEqual({ kind: "registered" });
+			expect(lines[0]).toBe(
+				'Registered the Fabric MCP server for Claude Code as "fabric-pleone".',
+			);
+			expect(lines[1]).toBe(
+				`Claude Code also has a "fabric-pleone" server in your ${scope} settings (${new globalThis.URL(OTHER_URL).host}); in this checkout the project's gateway takes precedence.`,
+			);
 		},
 	);
 
 	it.each([
-		["another vendor's server", FOREIGN_URL],
-		["a gateway of another deployment", OTHER_DEPLOYMENT_URL],
-		["a server with no URL", null],
-	])("leaves %s alone", async (_label, serverUrl) => {
+		["user", FOREIGN_URL, "mcp.vendor.example.net"],
+		["project", FOREIGN_URL, "mcp.vendor.example.net"],
+		["user", OTHER_DEPLOYMENT_URL, "elsewhere.example.org"],
+		["project", null, "a local command"],
+	] as const)(
+		"registers the checkout's own server despite a foreign one in the %s scope (%s)",
+		async (scope, serverUrl, points) => {
+			const { results, calls, lines } = await register(
+				{},
+				{ state: { claude: [{ scope, url: serverUrl }] } },
+			);
+
+			expect(verbs(calls)).toEqual(["claude mcp add"]);
+			expect(results[0]?.outcome).toEqual({ kind: "registered" });
+			expect(lines).toContain(
+				`Claude Code also has a "fabric-pleone" server in your ${scope} settings (${points}); in this checkout the project's gateway takes precedence.`,
+			);
+		},
+	);
+
+	it.each([
+		["another vendor's server", FOREIGN_URL, "mcp.vendor.example.net"],
+		[
+			"a gateway of another deployment",
+			OTHER_DEPLOYMENT_URL,
+			"elsewhere.example.org",
+		],
+		["a server with no URL", null, "a local command"],
+	])(
+		"leaves %s in the checkout's local scope alone",
+		async (_label, serverUrl, points) => {
+			const { results, calls, lines } = await register(
+				{},
+				{ state: { claude: [{ scope: "local", url: serverUrl }] } },
+			);
+
+			expect(calls).toEqual([]);
+			expect(results[0]?.outcome).toEqual({
+				kind: "left",
+				scope: "local",
+				points,
+			});
+			expect(results[0]?.login).toBe("unneeded");
+			expect(lines).toEqual([
+				`Claude Code already has a server named "fabric-pleone" in this checkout's local settings that points at ${points}, not at this project's gateway, so it was left alone. Remove it, then run: claude ${ADD_CLAUDE.join(" ")}`,
+			]);
+		},
+	);
+
+	it("replaces the checkout's own entry of ours and notes a foreign one in the user scope", async () => {
 		const { results, calls, lines } = await register(
-			{},
-			{ state: { claude: [{ scope: "local", url: serverUrl }] } },
-		);
-
-		expect(calls).toEqual([]);
-		expect(results[0]?.outcome).toEqual({
-			kind: "left",
-			reason: "foreign",
-		});
-		expect(results[0]?.login).toBe("unneeded");
-		expect(lines).toEqual([
-			`Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone. Remove it, then run: claude ${ADD_CLAUDE.join(" ")}`,
-		]);
-	});
-
-	it("leaves a foreign server alone even when one of ours is in the checkout's own scope", async () => {
-		const { results, calls } = await register(
 			{},
 			{
 				state: {
@@ -249,11 +482,48 @@ describe("registerAgentMcp for Claude Code", () => {
 			},
 		);
 
-		expect(calls).toEqual([]);
-		expect(results[0]?.outcome).toEqual({
-			kind: "left",
-			reason: "foreign",
-		});
+		expect(verbs(calls)).toEqual(["claude mcp remove", "claude mcp add"]);
+		expect(results[0]?.outcome).toEqual({ kind: "replaced" });
+		expect(lines).toContain(
+			'Claude Code also has a "fabric-pleone" server in your user settings (mcp.vendor.example.net); in this checkout the project\'s gateway takes precedence.',
+		);
+	});
+
+	it("registers locally when a higher-precedence entry points elsewhere and only a lower one is at this URL", async () => {
+		const { results, calls, lines } = await register(
+			{},
+			{
+				state: {
+					claude: [
+						{ scope: "project", url: FOREIGN_URL },
+						{ scope: "user", url: URL },
+					],
+				},
+			},
+		);
+
+		expect(verbs(calls)).toEqual(["claude mcp add"]);
+		expect(results[0]?.outcome).toEqual({ kind: "registered" });
+		expect(lines).toContain(
+			'Claude Code also has a "fabric-pleone" server in your project settings (mcp.vendor.example.net); in this checkout the project\'s gateway takes precedence.',
+		);
+	});
+
+	it("is already registered when the winning entry is ours, whatever sits below it", async () => {
+		const { results, calls } = await register(
+			{},
+			{
+				state: {
+					claude: [
+						{ scope: "project", url: URL },
+						{ scope: "user", url: FOREIGN_URL },
+					],
+				},
+			},
+		);
+
+		expect(calls.filter((call) => call.args[1] === "add")).toEqual([]);
+		expect(results[0]?.outcome).toEqual({ kind: "already" });
 	});
 
 	it("says the tool is not there, with the line to run once it is", async () => {
@@ -511,12 +781,14 @@ describe("registerAgentMcp for Codex", () => {
 		);
 
 		expect(calls).toEqual([]);
-		expect(results[0]?.outcome).toEqual({
+		expect(results[0]?.outcome).toMatchObject({
 			kind: "left",
-			reason: "foreign",
+			scope: null,
 		});
 		expect(lines).toEqual([
-			`Codex already has a server named "fabric-pleone" that is not a Fabric gateway, so it was left alone. Remove it, then run: codex ${ADD_CODEX.join(" ")}`,
+			expect.stringMatching(
+				/^Codex already has a server named "fabric-pleone" in its settings that points at .+, not at this project's gateway, so it was left alone. Remove it, then run: codex /,
+			),
 		]);
 	});
 
@@ -651,14 +923,14 @@ describe("registerAgentMcp's sign-in", () => {
 		const login = calls.at(-1);
 		expect(login).toMatchObject({
 			command: "claude",
-			args: ["mcp", "login", "fabric"],
+			args: ["mcp", "login", "fabric-pleone"],
 			cwd: files.cwd,
 			interactive: true,
 			timeoutMs: 5 * 60_000,
 		});
 		expect(results[0]?.login).toBe("completed");
 		expect(lines).toEqual([
-			'Registered the Fabric MCP server for Claude Code as "fabric".',
+			'Registered the Fabric MCP server for Claude Code as "fabric-pleone".',
 		]);
 	});
 
@@ -698,8 +970,8 @@ describe("registerAgentMcp's sign-in", () => {
 				login: "not-finished",
 			});
 			expect(lines).toEqual([
-				'Registered the Fabric MCP server for Claude Code as "fabric".',
-				"The Claude Code sign-in did not finish. Run: claude mcp login fabric",
+				'Registered the Fabric MCP server for Claude Code as "fabric-pleone".',
+				"The Claude Code sign-in did not finish. Run: claude mcp login fabric-pleone",
 			]);
 		},
 	);
@@ -736,7 +1008,7 @@ describe("registerAgentMcp's sign-in", () => {
 		).toEqual([
 			`claude ${ADD_CLAUDE.join(" ")}`,
 			`codex mcp add fabric-pleone --url ${URL}`,
-			"claude mcp login fabric",
+			"claude mcp login fabric-pleone",
 		]);
 		expect(results.map((result) => result.login)).toEqual([
 			"completed",
@@ -756,7 +1028,7 @@ describe("registerAgentMcp's sign-in", () => {
 		]);
 	});
 
-	it("says a Claude Code server that was registered before may not be signed in, and never signs it in itself", async () => {
+	it("says a Claude Code server that was registered before needs a sign-in, and never signs it in itself", async () => {
 		const { results, calls, lines } = await register(
 			{ login: "ok" },
 			{
@@ -768,16 +1040,54 @@ describe("registerAgentMcp's sign-in", () => {
 		expect(calls).toEqual([]);
 		expect(results[0]).toMatchObject({
 			outcome: { kind: "already" },
-			login: "hint",
-			loginLine: "claude mcp login fabric",
+			login: "printed",
+			loginLine: "claude mcp login fabric-pleone",
 		});
 		expect(lines).toEqual([
 			"The Fabric MCP server is already registered for Claude Code.",
-			"If Claude Code has not signed in to it yet, run: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-pleone",
 		]);
 	});
 
-	it("gives the hint for a server found in another scope too", async () => {
+	it.each(["disconnected", "reconnected", "not-connected"] as const)(
+		"does not read a %s server as signed in",
+		async (claudeStatus) => {
+			const { results } = await register(
+				{ claudeStatus },
+				{ state: { claude: [{ scope: "local", url: URL }] } },
+			);
+
+			expect(results[0]?.login).toBe("hint");
+		},
+	);
+
+	it("does not ask Claude Code about its sign-in when the caller says not to", async () => {
+		const { results, statusCalls } = await register(
+			{ claudeStatus: "connected" },
+			{
+				checkSignIn: false,
+				state: { claude: [{ scope: "local", url: URL }] },
+			},
+		);
+
+		expect(statusCalls).toEqual([]);
+		expect(results[0]?.login).toBe("hint");
+	});
+
+	it("treats a Codex server at the same address spelled differently as already registered", async () => {
+		const { results, calls } = await register(
+			{},
+			{
+				tools: ["codex"],
+				state: { codex: codexTable("fabric-pleone", `${URL}/`) },
+			},
+		);
+
+		expect(calls).toEqual([]);
+		expect(results[0]?.outcome).toEqual({ kind: "already" });
+	});
+
+	it("gives the sign-in line for a server found in another scope too", async () => {
 		const { lines } = await register(
 			{},
 			{ state: { claude: [{ scope: "user", url: URL }] } },
@@ -785,7 +1095,7 @@ describe("registerAgentMcp's sign-in", () => {
 
 		expect(lines).toEqual([
 			"The Fabric MCP server is already registered for Claude Code.",
-			"If Claude Code has not signed in to it yet, run: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-pleone",
 		]);
 	});
 });
@@ -842,18 +1152,16 @@ describe("registerAgentMcp never asks a tool what it holds", () => {
 		},
 	);
 
-	it("leaves a project-scope server that runs a command alone, without starting anything to look at it", async () => {
-		const { results, calls, lines } = await register(
+	it("registers over a project-scope server that runs a command, without starting anything to look at it", async () => {
+		const { results, calls } = await register(
 			{},
 			{ state: { claude: [{ scope: "project", url: null }] } },
 		);
 
-		expect(calls).toEqual([]);
-		expect(results[0]?.outcome).toEqual({
-			kind: "left",
-			reason: "foreign",
-		});
-		expect(lines[0]).toContain("was left alone");
+		expect(verbs(calls)).toEqual(["claude mcp add"]);
+		expect(results[0]?.shadowed).toEqual([
+			{ scope: "project", points: "a local command" },
+		]);
 	});
 });
 
@@ -1038,17 +1346,6 @@ describe("a deployment address that cannot be written into a command", () => {
 				state: { claude: [{ scope: "local", url: FOREIGN_URL }] },
 			},
 		);
-		const otherScope = await register(
-			{},
-			{
-				origin: address,
-				state: {
-					claude: [
-						{ scope: "user", url: url(address, OTHER_PROJECT) },
-					],
-				},
-			},
-		);
 
 		expect(absent.lines).toEqual([
 			`Could not register the Fabric MCP server for Claude Code. ${NO_LINE_FOR_ADDRESS}`,
@@ -1057,10 +1354,7 @@ describe("a deployment address that cannot be written into a command", () => {
 			`Skipped the Claude Code MCP server: claude is not on PATH. Once it is, ${NO_LINE_FOR_ADDRESS}`,
 		]);
 		expect(foreign.lines).toEqual([
-			`Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone. Remove it, then ${NO_LINE_FOR_ADDRESS}`,
-		]);
-		expect(otherScope.lines).toEqual([
-			`Claude Code has a "fabric" server in another scope that points at a different Fabric gateway, so it was left alone. Remove it with: claude mcp remove fabric, then ${NO_LINE_FOR_ADDRESS}`,
+			`Claude Code already has a server named "fabric-pleone" in this checkout's local settings that points at mcp.vendor.example.net, not at this project's gateway, so it was left alone. Remove it, then ${NO_LINE_FOR_ADDRESS}`,
 		]);
 	});
 

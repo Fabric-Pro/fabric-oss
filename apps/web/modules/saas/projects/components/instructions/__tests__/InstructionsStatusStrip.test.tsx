@@ -186,7 +186,9 @@ describe("InstructionsStatusStrip", () => {
 				leftOutShown: true,
 			});
 
-			expect(strip).toHaveTextContent("Showing the first 4");
+			expect(strip).toHaveTextContent(
+				"Showing the first 4 of 4,000 files.",
+			);
 			expect(strip).toHaveTextContent("4,000 files");
 		});
 	});

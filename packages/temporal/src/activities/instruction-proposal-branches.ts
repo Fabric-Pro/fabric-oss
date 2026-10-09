@@ -35,6 +35,7 @@ import { logger } from "@repo/logs";
 import { PROPOSAL_VALIDATION_CLOCK_MS } from "../lib/instruction-proposal-pull-request-types";
 import { checkInstructionProposalReadiness } from "./instruction-proposal-pull-requests";
 import { runBranchAppend } from "./lib/instruction-branch-append";
+import { runClassify } from "./lib/instruction-branch-classify";
 import {
 	deferLookup,
 	runCreate,
@@ -42,6 +43,10 @@ import {
 	runRelease,
 	runRetry,
 } from "./lib/instruction-branch-create";
+import {
+	type BranchMergeSyncResult,
+	runBranchMergeSync,
+} from "./lib/instruction-branch-merge-sync";
 import {
 	recoverOperation,
 	reobserveProposal,
@@ -51,9 +56,6 @@ import {
 	runBranchRevert,
 } from "./lib/instruction-branch-revert";
 import {
-	type BranchMergeSyncResult,
-	runBranchMergeSync,
-	runClassify,
 	runConfirmations,
 	runReconcile,
 	runRehome,
@@ -98,6 +100,7 @@ import {
 	activityCancellationSignal,
 	asJson,
 	assertMayContinue,
+	assertTimeFor,
 	cancellationOf,
 	errorClassName,
 	failureJson,
@@ -701,12 +704,48 @@ export async function classifyBranch(
 				factsRevision: input.factsRevision,
 				signal: activityCancellationSignal(),
 			});
+			if (outcome === "done" || outcome === "unverified") {
+				await dispatchMergeSyncNow(input);
+			}
 			return { outcome };
 		} catch (error) {
 			stopOrLog(error, "classify");
 			throw sanitized("classify");
 		}
 	});
+}
+
+/** The least budget left for which the immediate merge sync is attempted. */
+const IMMEDIATE_MERGE_SYNC_BUDGET_MS = 90_000;
+
+/**
+ * The merge sync a classification just requested, asked for at once rather
+ * than at the sweeper's next tick, which for a repository-backed project is
+ * minutes in which the row still reads "syncing" though the head already
+ * shows the merge. The classification is already committed, so this never
+ * fails the activity (a retry would only answer `stale_revision`): without
+ * the budget it is left to the sweeper, and any failure, the deadline
+ * included, is logged. Only the activity's own cancellation is rethrown.
+ */
+async function dispatchMergeSyncNow(input: ClassifyBranchInput): Promise<void> {
+	try {
+		assertTimeFor(IMMEDIATE_MERGE_SYNC_BUDGET_MS);
+		await runBranchMergeSync({
+			branchId: input.branchId,
+			organizationId: input.organizationId,
+			signal: activityCancellationSignal(),
+		});
+	} catch (error) {
+		const stopped = cancellationOf(error);
+		if (stopped instanceof ProposalDeadlineExceeded) {
+			logger.info(
+				{ event: "instruction_proposal_branch.merge_sync_deferred" },
+				"Immediate merge sync left to the sweeper: no time left",
+			);
+			return;
+		}
+		stopOrLog(error, "classify_merge_sync");
+	}
 }
 
 /** `rehomeBranchProposals` (spec §6.6 "Rehome", §4.3). */

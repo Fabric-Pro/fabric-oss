@@ -1,3 +1,4 @@
+import "../../../../start-web-telemetry";
 import { app } from "@repo/api";
 import { getOauthState } from "@repo/database";
 import { orpcClient } from "@shared/lib/orpc-client";

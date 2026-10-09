@@ -19,6 +19,7 @@
 import {
 	db,
 	isGitLabPersonalMcpServerKey,
+	isHiddenSystemMcpServerKey,
 	resolveWorkflowIntegrationForProvider,
 	type WorkflowIntegrationProvider,
 } from "@repo/database";
@@ -281,6 +282,10 @@ export async function detectRequiredConnections(
 	const requiredConnections: RequiredConnection[] = [];
 
 	for (const server of serversWithConfig) {
+		if (isHiddenSystemMcpServerKey(server.key) && !server.config) {
+			continue;
+		}
+
 		const credentials = await credentialState(
 			server,
 			server.config,
@@ -417,6 +422,10 @@ export async function searchSystemServersForTask(
 					needsReauth: true,
 				},
 			});
+
+			if (isHiddenSystemMcpServerKey(server.key) && !config) {
+				continue;
+			}
 
 			matches.push({
 				server: {
@@ -564,6 +573,14 @@ export async function checkServerConnection(
 			needsReauth: true,
 		},
 	});
+
+	if (
+		server.isSystemProvided &&
+		isHiddenSystemMcpServerKey(server.key) &&
+		!config
+	) {
+		return { isConnected: false };
+	}
 
 	const credentials = await credentialState(
 		server,

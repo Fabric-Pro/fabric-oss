@@ -33,6 +33,7 @@ import {
 	createPendingBacklogProposal,
 	db,
 	getLinkedSlackChannelsForMonitor,
+	releaseSlackMessageClaim,
 } from "@repo/database";
 import type {
 	AttachmentWarning,
@@ -46,6 +47,7 @@ import {
 	type ChangeProposal,
 } from "../backlog-context/analyze-context";
 import { getCachedProjectBacklog } from "../backlog-context/project-backlog-cache";
+import { isWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import {
 	JOB_SOURCE,
 	JOB_STEPS,
@@ -307,6 +309,8 @@ export async function analyzeSlackThreadActivity(
 	await jobStep("fetch", "completed", { sourceId: linked.linkedChannelId });
 	await jobStep("analyze", "running", { sourceId: linked.linkedChannelId });
 
+	// Set once this run owns the seen-row claim and no proposal exists yet.
+	let unansweredClaim = false;
 	try {
 		// Step 2: fetch the full thread via conversations.replies.
 		//
@@ -391,6 +395,8 @@ export async function analyzeSlackThreadActivity(
 			};
 		}
 
+		unansweredClaim = true;
+
 		// Step 6: load the flat project backlog (TTL-cached).
 		heartbeat("fetching project backlog");
 		const existingBacklog = await getCachedProjectBacklog(projectId);
@@ -417,6 +423,9 @@ export async function analyzeSlackThreadActivity(
 			// Enrichment is decided afterwards by the semantic routing pass, which
 			// applies the project's own opt-in.
 			allowRouting: true,
+			// Background work an organization's shared ChatGPT plan accounts may
+			// serve, never a member's own plan (Fizzy #2770 A4).
+			jobType: "slack-channel-monitor",
 		});
 
 		if (proposal.changes.length === 0) {
@@ -464,6 +473,7 @@ export async function analyzeSlackThreadActivity(
 		const proposalJson = JSON.parse(JSON.stringify(proposal));
 		const sourceMetadataJson = JSON.parse(JSON.stringify(sourceMetadata));
 
+		unansweredClaim = false;
 		const pending = await createPendingBacklogProposal({
 			projectId,
 			source: "SLACK_CHANNEL",
@@ -526,9 +536,20 @@ export async function analyzeSlackThreadActivity(
 			sourceId: linked.linkedChannelId,
 			error: errorMessage,
 		});
-		// Rethrow so Temporal retries; the seen-marker stays in place because
-		// the lock is not transactional with the LLM/proposal write. That's
-		// intentional: a permanently-failing thread should not loop forever.
+		// A spent ChatGPT plan (Fizzy #2770 A4) is not a failing thread: the
+		// analysis never ran, so the claim is given back and the thread is
+		// analyzed when it is next picked up (a later message in it, or a
+		// catch-up scan) instead of being marked seen unanalyzed for good.
+		if (unansweredClaim && isWorkflowHandledPlanRefusal(error)) {
+			await releaseSlackMessageClaim(
+				linked.linkedChannelId,
+				threadRootTs,
+			);
+		}
+		// Otherwise rethrow so Temporal retries; the seen-marker stays in place
+		// because the lock is not transactional with the LLM/proposal write.
+		// That's intentional: a permanently-failing thread should not loop
+		// forever.
 		throw error;
 	}
 }

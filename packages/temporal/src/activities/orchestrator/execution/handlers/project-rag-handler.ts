@@ -140,6 +140,7 @@ export class ProjectRagHandler implements StepHandler {
 						contentLength: result.length,
 						sources: contexts.map((ctx) => ({
 							name:
+								ctx.sourcePath ||
 								ctx.filename ||
 								ctx.sourceTitle ||
 								`Context ${ctx.id.slice(0, 8)}`,

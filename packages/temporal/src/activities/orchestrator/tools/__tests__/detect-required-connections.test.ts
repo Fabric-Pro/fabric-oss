@@ -24,7 +24,10 @@ const mockMcpConfigFindFirst = vi.fn();
 
 const mockGitLabConnectionStatus = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/hidden-mcp-server-keys",
+	)),
 	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",
@@ -51,6 +54,7 @@ import {
 	checkServerConnection,
 	detectMissingIntegrations,
 	detectRequiredConnections,
+	searchSystemServersForTask,
 } from "../detect-required-connections";
 
 beforeEach(() => {
@@ -245,4 +249,142 @@ it("uses the same authorized provider resolution for shared connection discovery
 		"actor",
 		"org-example",
 	);
+});
+
+describe("hidden system servers with no connection", () => {
+	const serverRow = (key: string, authMethods: string[]) => ({
+		id: `srv-${key}`,
+		key,
+		name: key,
+		description: null,
+		authMethods,
+		isSystemProvided: true,
+		iconUrl: null,
+		category: null,
+	});
+
+	it("skips a hidden system server when it has no connection", async () => {
+		mockMcpServerFindMany.mockResolvedValueOnce([
+			serverRow("brave-search", ["API_KEY"]),
+			serverRow("example-server", ["API_KEY"]),
+		]);
+		mockMcpConfigFindFirst
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null);
+
+		const result = await detectRequiredConnections({
+			query: "search the web",
+			userId: "user-1",
+			organizationId: "org-1",
+			matchedServerNames: ["brave-search", "example-server"],
+		});
+
+		expect(result.requiredConnections.map((c) => c.serverId)).toEqual([
+			"srv-example-server",
+		]);
+	});
+
+	it("still reports a hidden system server when its existing connection needs re-authentication", async () => {
+		mockMcpServerFindMany.mockResolvedValueOnce([
+			serverRow("brave-search", ["OAUTH2"]),
+		]);
+		mockMcpConfigFindFirst.mockResolvedValueOnce({
+			id: "cfg-brave",
+			authType: "OAUTH2",
+			encryptedApiKey: null,
+			encryptedAccessToken: "expired-token",
+			tokenExpiresAt: null,
+			needsReauth: true,
+		});
+
+		const result = await detectRequiredConnections({
+			query: "search the web",
+			userId: "user-1",
+			organizationId: "org-1",
+			matchedServerNames: ["brave-search"],
+		});
+
+		expect(result.requiredConnections.map((c) => c.serverId)).toEqual([
+			"srv-brave-search",
+		]);
+		expect(result.requiredConnections[0]?.reason).toContain(
+			"needs to be re-authenticated",
+		);
+	});
+
+	it("checkServerConnection: returns isConnected: false without requiredConnection for a hidden server with no config", async () => {
+		mockMcpServerFindUnique.mockResolvedValueOnce(
+			serverRow("brave-search", ["API_KEY"]),
+		);
+		mockMcpConfigFindFirst.mockResolvedValueOnce(null);
+
+		const result = await checkServerConnection(
+			"srv-brave-search",
+			"user-1",
+			"org-1",
+		);
+
+		expect(result).toEqual({ isConnected: false });
+	});
+
+	it("checkServerConnection: still returns requiredConnection for a hidden server when its config needs re-authentication", async () => {
+		mockMcpServerFindUnique.mockResolvedValueOnce(
+			serverRow("brave-search", ["OAUTH2"]),
+		);
+		mockMcpConfigFindFirst.mockResolvedValueOnce({
+			id: "cfg-brave",
+			authType: "OAUTH2",
+			encryptedApiKey: null,
+			encryptedAccessToken: "expired-token",
+			tokenExpiresAt: null,
+			needsReauth: true,
+		});
+
+		const result = await checkServerConnection(
+			"srv-brave-search",
+			"user-1",
+			"org-1",
+		);
+
+		expect(result.isConnected).toBe(false);
+		expect(result.requiredConnection?.serverId).toBe("srv-brave-search");
+		expect(result.requiredConnection?.reason).toContain(
+			"needs to be re-authenticated",
+		);
+	});
+
+	it("searchSystemServersForTask: skips hidden system servers with no config so they do not take top-5 slots", async () => {
+		const searchServers = [
+			serverRow("brave-search", ["API_KEY"]),
+			serverRow("example-search-1", ["API_KEY"]),
+			serverRow("example-search-2", ["API_KEY"]),
+			serverRow("example-search-3", ["API_KEY"]),
+			serverRow("example-search-4", ["API_KEY"]),
+			serverRow("example-search-5", ["API_KEY"]),
+		].map((s) => ({
+			...s,
+			name: `${s.key} search`,
+			tags: ["search"],
+		}));
+
+		mockMcpServerFindMany.mockResolvedValueOnce(searchServers);
+		mockMcpConfigFindFirst
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null);
+
+		const matches = await searchSystemServersForTask(
+			"search the web",
+			"user-1",
+			"org-1",
+		);
+
+		expect(matches.some((m) => m.server.key === "brave-search")).toBe(
+			false,
+		);
+		expect(matches).toHaveLength(5);
+	});
 });

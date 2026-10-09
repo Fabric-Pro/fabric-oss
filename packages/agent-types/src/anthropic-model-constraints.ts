@@ -22,17 +22,19 @@
 
 /**
  * Adaptive-only Claude: Opus 4.7/4.8 and the 5.x generation (Opus, Sonnet,
- * Fable, Mythos, including point releases such as Opus 5.5), plus the Mythos
- * preview id.
+ * Fable, Mythos, including point releases such as Opus 5.5), Haiku 5.5, plus
+ * the Mythos preview id.
  *
  * Mirrors `ADAPTIVE_ONLY_MODEL_PREFIXES` in `@langchain/anthropic`
  * (`dist/utils/params.cjs`, which throws client-side for these) and the
  * `rejectsSamplingParameters` / `supportsAdaptiveThinking` rows of
  * `getModelCapabilities` in `@ai-sdk/anthropic`. Keep the three in step when
- * a vendor list changes.
+ * a vendor list changes. Haiku 5.5 is ahead of both vendor lists
+ * (`@langchain/anthropic` 1.5.9 omits it), so this predicate is what keeps
+ * `budget_tokens` and sampling parameters off its requests.
  */
 const ADAPTIVE_ONLY_CLAUDE_RE =
-	/(?:^|[^a-z0-9])claude-(?:opus-4[.-][78]|(?:opus|sonnet|fable|mythos)-5|mythos-preview)(?![0-9])/i;
+	/(?:^|[^a-z0-9])claude-(?:opus-4[.-][78]|(?:opus|sonnet|fable|mythos)-5|haiku-5[.-]5|mythos-preview)(?![0-9])/i;
 
 /**
  * Claude models that return HTTP 400 for a forced `tool_choice`

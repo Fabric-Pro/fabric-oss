@@ -27,20 +27,37 @@ type Props = {
 	canEdit: boolean;
 };
 
+/** What the brand is used by, which is what the card's description says. */
+type RecipientBrandAudience = "glossy" | "proposalArtifact";
+
 /**
  * The project's recipient brand in project settings (Fizzy #2589, R32): the
- * party this project's Glossy editions are prepared for. Behind the
- * `GLOSSY_EDITION` rollout gate — with it off nothing renders or loads.
+ * party this project's Glossy editions are prepared for. Coordinated
+ * Proposals color their visuals from it too (Fizzy #2801), so the card shows
+ * behind either rollout gate, `GLOSSY_EDITION` or `PROPOSAL_ARTIFACT` — the
+ * same either-gate the `recipientBrand.*` procedures apply. With both off
+ * nothing renders or loads.
  */
 export function ProjectRecipientBrandCard({ projectId, canEdit }: Props) {
-	const enabled = useFeatureFlag("GLOSSY_EDITION");
-	if (!enabled) {
+	const glossyEnabled = useFeatureFlag("GLOSSY_EDITION");
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	if (!glossyEnabled && !proposalArtifactEnabled) {
 		return null;
 	}
-	return <RecipientBrandCard projectId={projectId} canEdit={canEdit} />;
+	return (
+		<RecipientBrandCard
+			projectId={projectId}
+			canEdit={canEdit}
+			audience={glossyEnabled ? "glossy" : "proposalArtifact"}
+		/>
+	);
 }
 
-function RecipientBrandCard({ projectId, canEdit }: Props) {
+function RecipientBrandCard({
+	projectId,
+	canEdit,
+	audience,
+}: Props & { audience: RecipientBrandAudience }) {
 	const t = useTranslations("projects.glossy.recipientBrand");
 	const queryClient = useQueryClient();
 	const queryKey = recipientBrandQueryKey(projectId);
@@ -124,7 +141,7 @@ function RecipientBrandCard({ projectId, canEdit }: Props) {
 
 	if (query.isLoading) {
 		return (
-			<RecipientBrandCardShell>
+			<RecipientBrandCardShell audience={audience}>
 				<p className="text-muted-foreground text-sm">{t("loading")}</p>
 			</RecipientBrandCardShell>
 		);
@@ -132,7 +149,7 @@ function RecipientBrandCard({ projectId, canEdit }: Props) {
 
 	if (query.error || !query.data) {
 		return (
-			<RecipientBrandCardShell>
+			<RecipientBrandCardShell audience={audience}>
 				<div className="flex items-center gap-2 text-destructive text-sm">
 					<AlertCircle className="size-4" aria-hidden="true" />
 					<span>{t("loadFailed")}</span>
@@ -159,7 +176,7 @@ function RecipientBrandCard({ projectId, canEdit }: Props) {
 	};
 
 	return (
-		<RecipientBrandCardShell>
+		<RecipientBrandCardShell audience={audience}>
 			{!canEdit && (
 				<p className="text-muted-foreground text-sm">{t("readOnly")}</p>
 			)}
@@ -218,13 +235,24 @@ function RecipientBrandCard({ projectId, canEdit }: Props) {
 	);
 }
 
-function RecipientBrandCardShell({ children }: { children: ReactNode }) {
+function RecipientBrandCardShell({
+	audience,
+	children,
+}: {
+	audience: RecipientBrandAudience;
+	children: ReactNode;
+}) {
 	const t = useTranslations("projects.glossy.recipientBrand");
+	const tProposalArtifact = useTranslations("projects.proposalArtifactEntry");
 	return (
 		<Card className="p-6">
 			<h3 className="font-medium text-base">{t("title")}</h3>
 			<p className="mt-1 text-muted-foreground text-sm">
-				{t("description")}
+				{/* Without Glossy there is no cover to carry the logo: the
+				    brand only colors a coordinated Proposal's visuals. */}
+				{audience === "glossy"
+					? t("description")
+					: tProposalArtifact("recipientBrandDescription")}
 			</p>
 			<div className="mt-5 space-y-5">{children}</div>
 		</Card>

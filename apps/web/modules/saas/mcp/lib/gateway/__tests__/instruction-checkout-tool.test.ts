@@ -33,6 +33,7 @@ vi.mock("@repo/database", () => ({
 	hasPermission: (permissions: readonly string[], permission: string) =>
 		permissions.includes(permission),
 	Permissions: { INSTRUCTION_READ: "instruction:read" },
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getInstructionFileByPath: m.getInstructionFileByPath,
@@ -207,6 +208,13 @@ describe("the checkout argument", () => {
 		).checkout;
 
 		expect(schema.required).toEqual(["remoteUrl", "headSha", "clean"]);
+		const description = (schema as unknown as { description: string })
+			.description;
+		expect(description).toContain("git diff --quiet");
+		expect(description).toContain("git diff --cached --quiet");
+		expect(description).toContain(
+			"Do NOT derive clean from `git status --porcelain`",
+		);
 		expect(schema.properties.remoteUrl?.maxLength).toBe(512);
 		expect(schema.properties.branch?.maxLength).toBe(255);
 		expect(schema.properties.headSha?.pattern).toBe(

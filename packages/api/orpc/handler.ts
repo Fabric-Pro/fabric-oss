@@ -1,8 +1,6 @@
-import { SmartCoercionPlugin } from "@orpc/json-schema";
-import { OpenAPIHandler } from "@orpc/openapi/fetch";
+import { unlazyRouter } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import { ResponseHeadersPlugin } from "@orpc/server/plugins";
-import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { router } from "./router";
 import {
 	createRpcErrorCaptureInterceptor,
@@ -30,14 +28,54 @@ export const rpcHandler = new RPCHandler(router, {
 	rootInterceptors: [createRpcErrorLoggingInterceptor()],
 });
 
-export const openApiHandler = new OpenAPIHandler(router, {
-	plugins: [
-		new ResponseHeadersPlugin(),
-		new SmartCoercionPlugin({
-			schemaConverters: [new ZodToJsonSchemaConverter()],
-		}),
-	],
-	interceptors: [createRpcErrorCaptureInterceptor()],
-	clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
-	rootInterceptors: [createRpcErrorLoggingInterceptor()],
-});
+// The REST (OpenAPI) handler is built on the first non-RPC request, from the
+// fully resolved router: the OpenAPI matcher only resolves a lazy module
+// router whose path prefix matches the request, and explicit `route.path`s do
+// not always start with the module key. Resolving everything keeps every REST
+// route reachable, and keeps the OpenAPI/zod/json-schema packages off the
+// RPC cold path.
+export const openApiHandler = {
+	async handle(
+		...args: Parameters<
+			Awaited<ReturnType<typeof loadOpenApiHandler>>["handle"]
+		>
+	) {
+		return (await loadOpenApiHandler()).handle(...args);
+	},
+};
+
+let openApiHandlerPromise: ReturnType<typeof createOpenApiHandler> | undefined;
+
+function loadOpenApiHandler() {
+	openApiHandlerPromise ??= createOpenApiHandler().catch((error: unknown) => {
+		openApiHandlerPromise = undefined;
+		throw error;
+	});
+	return openApiHandlerPromise;
+}
+
+async function createOpenApiHandler() {
+	const [
+		{ SmartCoercionPlugin },
+		{ OpenAPIHandler },
+		{ ZodToJsonSchemaConverter },
+		resolvedRouter,
+	] = await Promise.all([
+		import("@orpc/json-schema"),
+		import("@orpc/openapi/fetch"),
+		import("@orpc/zod/zod4"),
+		unlazyRouter(router),
+	]);
+
+	return new OpenAPIHandler(resolvedRouter, {
+		plugins: [
+			new ResponseHeadersPlugin(),
+			new SmartCoercionPlugin({
+				schemaConverters: [new ZodToJsonSchemaConverter()],
+			}),
+		],
+		interceptors: [createRpcErrorCaptureInterceptor()],
+		clientInterceptors: [createRpcRouteTemplateCaptureInterceptor()],
+		rootInterceptors: [createRpcErrorLoggingInterceptor()],
+	});
+}

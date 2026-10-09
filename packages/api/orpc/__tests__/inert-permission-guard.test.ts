@@ -50,6 +50,8 @@ const ACCEPTED: Record<string, string> = {
 	"admin/procedures/ai-adoption.ts":
 		"adminProcedure gates on deployment admin, which is a different axis from an organization role — and these read across tenants by design.",
 	"admin/procedures/audit-log-via-api-key.ts": "As ai-adoption.",
+	"admin/procedures/chatgpt-plan-health.ts":
+		"As ai-adoption: the plan health list reads every organization's shared ChatGPT plan accounts by design (Fizzy #2770).",
 	"admin/procedures/feature-flags.ts":
 		"As ai-adoption; feature flags are instance-wide and have no tenant.",
 	"admin/procedures/find-organization.ts": "As ai-adoption.",

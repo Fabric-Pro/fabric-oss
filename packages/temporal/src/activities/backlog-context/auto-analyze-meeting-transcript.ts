@@ -271,6 +271,12 @@ export async function autoAnalyzeMeetingTranscriptActivity(
 			// Enrichment is decided afterwards by the semantic routing pass, which
 			// applies the project's own opt-in.
 			allowRouting: true,
+			// The automatic scan is meeting-sync background work, which an
+			// organization's shared ChatGPT plan accounts may serve (Fizzy #2770
+			// A4); a person's "Create feature proposals" click is not.
+			...(userInitiated
+				? {}
+				: { jobType: "meeting-transcript-sync" as const }),
 		});
 
 		// Step 5: zero changes — mark SCANNED (no proposal) so the transcript is

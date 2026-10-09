@@ -58,7 +58,7 @@ to confuse:
 | `PASSED` | Every case reached a verdict and none failed |
 | `FAILED` | At least one case failed — a verdict about the software, not the runner |
 | `BLOCKED` | The run completed but at least one case could never be attempted, and none failed |
-| `NEEDS_REVIEW` | Cases ran, nothing failed, and at least one verdict fell below the project's confidence threshold |
+| `NEEDS_REVIEW` | Nothing failed, and at least one verdict fell below the confidence threshold or the model explicitly selected no operation |
 | `CANCELLED` | A person stopped it, or the workflow died |
 | `REFUSED` | The run never started, because the cost estimate exceeded the cap |
 
@@ -238,8 +238,38 @@ gate and an unusable one:
   With a threshold set that is now `NEEDS_REVIEW`; with the gate off it still
   reports `FAILED`, exactly as before.
 
-An unperformed operation stays `BLOCKED` regardless: there is no judgement to be
-unsure about when nothing was done.
+An incomplete or unsupported operation is `BLOCKED`, and the runner does not
+ask the model to assess it. An explicit `none` retains the model's reason and
+always records `NEEDS_REVIEW`. Test steps contain only free-text action and
+expected fields, so the runner cannot reliably prove that a step was
+observation-only in every language. The expected outcome being visible does not
+prove the requested interaction happened.
+
+## Browser containment and blocked explanations
+
+Mode A confines all HTTP requests, including every redirect hop and subresource,
+to the environment's exact origin. Each connection uses a public DNS address
+validated and pinned by the relay. Operator host exceptions do not apply to this
+credentialed runner. Service workers and WebSockets are blocked.
+
+The relay never hands Chromium a redirect response to follow with its own network
+stack. Navigation redirects become screened refresh navigations; subresources
+are followed within the same origin. Redirect chains are capped, and POST
+307/308 navigations are refused rather than replayed or changed to GET. Chromium
+applies cookies from the fulfilled response under its own cookie rules.
+Unsupported 3xx responses are refused, including bodyless 304 responses: routed
+requests have no browser HTTP cache or relay-owned cached representation to use.
+
+A blocked navigation ends the case without an assessment call. Its explanation
+uses the navigation refusal, rather than a newer failed font or other subresource.
+Off-origin navigation and missing DNS names point to the environment's base URL;
+private addresses point to environment configuration. Certificate validation and
+TLS protocol or handshake failures have separate explanations. Timeouts and
+temporary DNS failures name both the environment and runner network as possible
+causes. Recorded URLs omit query strings and fragments.
+
+Each relay request has a 25-second deadline, shorter than the page's 30-second
+timeout, and is cancelled when the case closes or the activity is cancelled.
 
 ## Credentials
 

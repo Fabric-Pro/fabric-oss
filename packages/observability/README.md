@@ -90,6 +90,53 @@ await llmInstrumentation.traceToolCall('web-search', async (span) => {
 - `llm.request.duration` - Histogram of request duration
 - `llm.errors` - Counter of errors by type
 
+#### Decision calls (`experimental_decide`)
+
+AI decision calls are traced and measured without recording content. Neither
+the AI SDK's own telemetry option nor `@ai-sdk/otel` is used, because
+registering it would capture prompts and outputs for every AI call.
+
+- `llm.decide` span - one per decision-model round trip, opened by
+  `wrapDecisionModelWithTelemetry` (`packages/ai/lib/decision-telemetry.ts`)
+  through `llmInstrumentation.startInvocation({ operation: "decide" })`.
+  Attributes: `gen_ai.system`, `gen_ai.request.model` (requested),
+  `gen_ai.response.model` (answering model: the requested model or a known
+  gateway fallback, otherwise `unknown`), `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+  `llm.outcome`, `error.type` on failure, `llm.decision.question_count`,
+  `llm.decision.refusal_count` (a number, never the refusal), and the
+  span-only identifiers `fabric.organization.id`, `fabric.project.id`,
+  `fabric.feature_key`, `fabric.job_type` (each omitted when absent).
+- The same invocation feeds `llm.requests`, `llm.request.duration` and
+  `llm.errors` with `operation: "decide"`. `llm.tokens` has no `operation`
+  label (provider, model and type only), so decide tokens are told apart from
+  chat tokens by nothing but the model.
+- `llm.decision.outcomes` - Counter by `site`, `outcome`, `model`. Recorded
+  by each decision call site through `recordDecisionOutcome` once it knows
+  whether it used the answer. `outcome` is one of `accepted`,
+  `below_threshold`, `malformed`, `refused`, `failed`, `limit_exceeded`,
+  `unavailable`; everything except `accepted` and `limit_exceeded` means the
+  site fell back to the language model. `malformed` covers an answer the AI
+  SDK rejects as invalid (`InvalidResponseDataError`) and a readable answer
+  the site cannot use; `refused` is `Experimental_DecisionRefusalError`;
+  transport, HTTP, abort and timeout errors are `failed`. `model` is the
+  catalog name of the model that answered, even when the SDK then threw (a
+  request-scoped capture records it); it is the requested model, a known
+  gateway fallback, or `unknown`, and a model id supplied by the provider is
+  never used as a label (`none` when no decision model resolved). `site` is
+  one of five fixed names.
+- `llm.decision.confidence` - Histogram (0..1) by `site`, `model`: one sample
+  per readable answer (the chosen option's probability, or the likelier side
+  of a boolean).
+- The same call also sets `llm.decision.site`, `llm.decision.outcome` and
+  `llm.decision.confidence` (lowest sample) on the active span, if there is one.
+
+Privacy: only identifiers, model ids, counts, numbers, enums and error class
+names are recorded. Prompts, decision state, questions, instructions,
+criteria, chosen labels, answer text, reasoning and error messages never reach
+a span attribute, span event or metric label, and `organizationId` is never
+a metric label. `packages/temporal/__tests__/decision-telemetry-privacy.test.ts`
+checks this with a planted sentinel.
+
 ### Database Instrumentation
 
 Track Prisma database operations:

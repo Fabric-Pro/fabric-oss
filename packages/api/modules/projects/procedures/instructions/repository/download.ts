@@ -12,6 +12,8 @@ import {
 } from "./direct-source";
 
 const MAX_DOWNLOADS = 4;
+/** Each file is one provider request: a larger folder could spend the integration's hourly budget. */
+const MAX_DOWNLOAD_FILES = 5_000;
 const ZIP_READ_BATCH_SIZE = 4;
 let activeDownloads = 0;
 
@@ -58,6 +60,11 @@ export async function downloadDirectRepository(input: {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:
 					"The repository listing is incomplete. Refresh and try again.",
+			});
+		}
+		if (listed.files.length > MAX_DOWNLOAD_FILES) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message: `This repository folder has more than ${MAX_DOWNLOAD_FILES} files, which is too many to download at once.`,
 			});
 		}
 		const readFile = async (path: string, signal = input.signal) => {

@@ -24,10 +24,17 @@ import {
 	readDirectRepositoryFileAtCommit,
 	resolveDirectRepositoryIgnore,
 } from "./direct-source";
-import { settle, unsettle } from "./settle";
+import { inOrder } from "./settle";
 
 /** A direct listing remains useful and bounded even for very large repositories. */
-const MAX_DIRECT_REPOSITORY_FILES = 5_000;
+/**
+ * As many files as the connector lists at all (its own entry cap), so a
+ * listing is `incomplete` only when the provider or the connector truncated
+ * it, never because this layer cut a tree the provider returned whole. The
+ * cached tree is weighed per entry, so a tree this size holds one third of
+ * the tree cache.
+ */
+const MAX_DIRECT_REPOSITORY_FILES = 20_000;
 
 export type DirectRepositoryFile = {
 	path: string;
@@ -86,7 +93,7 @@ async function listTree(
 	source: DirectRepositorySource,
 	pin: DirectRepositoryPin,
 ) {
-	const cached = directTreeCache.get(source, pin.commitSha);
+	const cached = directTreeCache.get(source, [pin.commitSha]);
 	if (cached !== undefined) {
 		return cached;
 	}
@@ -95,7 +102,7 @@ async function listTree(
 		sha: pin.commitSha,
 	});
 	if (tree.ok) {
-		directTreeCache.set(source, pin.commitSha, tree);
+		directTreeCache.set(source, [pin.commitSha], tree);
 	}
 	return tree;
 }
@@ -112,12 +119,10 @@ export async function listDirectRepositoryFiles(input: {
 }> {
 	// The ignore rules and the tree are independent reads of the same commit;
 	// the ignore rules still fail first.
-	const [ignored, listed] = await Promise.all([
-		settle(resolveDirectRepositoryIgnore(input.source, input.pin)),
-		settle(listTree(input.source, input.pin)),
-	]);
-	const ignore = unsettle(ignored);
-	const tree = unsettle(listed);
+	const [ignore, tree] = await inOrder(
+		resolveDirectRepositoryIgnore(input.source, input.pin),
+		listTree(input.source, input.pin),
+	);
 	if (!tree.ok) {
 		if (tree.outcome === "unsupported") {
 			throw directRepositoryReadError(input.source, "unreachable");
@@ -200,21 +205,18 @@ export async function readDirectRepositoryFile(input: {
 	}
 	// The ignore rules and the file are read together. A file the rules hide
 	// is never returned, and the ignore failure still wins over the read's.
-	const [ignored, fetched] = await Promise.all([
-		settle(resolveDirectRepositoryIgnore(input.source, input.pin)),
-		settle(
-			readDirectRepositoryFileAtCommit(
-				input.source,
-				input.pin,
-				directRepositoryPath(input.source, checked.path),
-				SNAPSHOT_LIMITS.maxInlineTextBytes,
-			),
+	const [ignore, read] = await inOrder(
+		resolveDirectRepositoryIgnore(input.source, input.pin),
+		readDirectRepositoryFileAtCommit(
+			input.source,
+			input.pin,
+			directRepositoryPath(input.source, checked.path),
+			SNAPSHOT_LIMITS.maxInlineTextBytes,
 		),
-	]);
-	if (buildIgnoreMatcher(unsettle(ignored))(checked.path)) {
+	);
+	if (buildIgnoreMatcher(ignore)(checked.path)) {
 		throw notFound();
 	}
-	const read = unsettle(fetched);
 	if (!read.ok) {
 		throw directRepositoryReadError(
 			input.source,

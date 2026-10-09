@@ -8,7 +8,7 @@
 
 import { resolveProviderApiKey } from "@repo/ai";
 import type { AIProvider } from "@repo/database";
-import { db } from "@repo/database";
+import { db, LLM_PROVIDER_PURPOSE_FILTER } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -104,6 +104,7 @@ export const listModelsFromGatewayProcedure = tenantProtectedProcedure
 					organizationId,
 					enabled: true,
 					isDefault: true,
+					...LLM_PROVIDER_PURPOSE_FILTER,
 				},
 				orderBy: { priority: "desc" },
 			});
@@ -112,7 +113,11 @@ export const listModelsFromGatewayProcedure = tenantProtectedProcedure
 			config =
 				gatewayConfig ||
 				(await db.cloudProviderConfig.findFirst({
-					where: { organizationId, enabled: true },
+					where: {
+						organizationId,
+						enabled: true,
+						...LLM_PROVIDER_PURPOSE_FILTER,
+					},
 					orderBy: { priority: "desc" },
 				}));
 		} else {
@@ -122,6 +127,7 @@ export const listModelsFromGatewayProcedure = tenantProtectedProcedure
 					userId: user.id,
 					enabled: true,
 					isDefault: true,
+					...LLM_PROVIDER_PURPOSE_FILTER,
 				},
 				orderBy: { priority: "desc" },
 			});
@@ -130,7 +136,11 @@ export const listModelsFromGatewayProcedure = tenantProtectedProcedure
 			config =
 				gatewayConfig ||
 				(await db.userCloudProviderConfig.findFirst({
-					where: { userId: user.id, enabled: true },
+					where: {
+						userId: user.id,
+						enabled: true,
+						...LLM_PROVIDER_PURPOSE_FILTER,
+					},
 					orderBy: { priority: "desc" },
 				}));
 		}

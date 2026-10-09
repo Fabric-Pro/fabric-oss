@@ -55,6 +55,7 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: () => {},
 }));
 
+import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { analyzeChannelThreadActivity } from "../analyze-channel-messages";
 import type { FetchedThread } from "../fetch-new-messages";
 
@@ -270,6 +271,38 @@ describe("analyzeChannelThreadActivity — attachment sidecar", () => {
 			allowEpics?: boolean;
 		};
 		expect(callArg.allowEpics).toBe(false);
+	});
+
+	// Fizzy #2770: the job key is what lets an organization's shared ChatGPT
+	// plan accounts serve channel monitoring, and keeps it off members' plans.
+	it("tags the analysis as teams-channel-monitor background work", async () => {
+		await analyzeChannelThreadActivity({
+			...BASE_INPUT_WITHOUT_THREAD,
+			thread: buildThread({}),
+		});
+		const callArg = analyzeContextAndPropose.mock.calls[0][0] as {
+			jobType?: string;
+		};
+		expect(callArg.jobType).toBe("teams-channel-monitor");
+	});
+
+	// Fizzy #2770 A4: a spent plan must not lose the thread. Nothing marks it
+	// seen before the analysis succeeds, so the error reaches the workflow,
+	// which keeps the channel cursor where it was and the next tick fetches the
+	// thread again.
+	it("marks nothing seen when the analysis hits a spent ChatGPT plan", async () => {
+		const spent = new SubscriptionPlanExhaustedError("No usage left", null);
+		analyzeContextAndPropose.mockRejectedValue(spent);
+		await expect(
+			analyzeChannelThreadActivity({
+				...BASE_INPUT_WITHOUT_THREAD,
+				thread: buildThread({}),
+			}),
+		).rejects.toBe(spent);
+		expect(markTeamsMessagesAsSeen).not.toHaveBeenCalled();
+		expect(createMany).not.toHaveBeenCalled();
+		expect(updateMany).not.toHaveBeenCalled();
+		expect(create).not.toHaveBeenCalled();
 	});
 
 	it("LLM prompt input is byte-identical whether pendingAttachments is empty or populated (FR-9)", async () => {

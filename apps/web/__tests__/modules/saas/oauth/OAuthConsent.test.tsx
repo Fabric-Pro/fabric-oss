@@ -153,7 +153,7 @@ describe("an authorization that asks for an organization", () => {
 		});
 	});
 
-	it("sends its answer with an explicit none for the project it showed", async () => {
+	it("sends its answer with an explicit none for the project it showed, and the organization it showed", async () => {
 		renderConsent();
 		await screen.findByText("Example Org");
 		await waitFor(() => expect(allow()).toBeEnabled());
@@ -163,7 +163,11 @@ describe("an authorization that asks for an organization", () => {
 		await waitFor(() =>
 			expect(mocks.fetch).toHaveBeenCalledWith("/oauth2/consent", {
 				method: "POST",
-				body: { accept: true, displayed_binding: null },
+				body: {
+					accept: true,
+					displayed_binding: null,
+					displayed_organization: "org-example",
+				},
 			}),
 		);
 	});
@@ -261,6 +265,7 @@ describe("an authorization that asks for one project", () => {
 						projectId: "project-example-one",
 						audience: "mcp",
 					},
+					displayed_organization: null,
 				},
 			}),
 		);
@@ -308,6 +313,7 @@ describe("an authorization that asks for one project", () => {
 							projectId: "project-example-one",
 							audience: "mcp",
 						},
+						displayed_organization: null,
 					},
 				}),
 			),

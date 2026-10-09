@@ -481,7 +481,7 @@ describe("usage-logging middleware — evaluation models", () => {
 	});
 
 	it("records successful typed evaluations with decision usage attribution", async () => {
-		const doEvaluate = vi.fn().mockResolvedValue({
+		const doDecide = vi.fn().mockResolvedValue({
 			answers: {},
 			warnings: [],
 			usage: { inputTokens: 120, outputTokens: 30 },
@@ -493,7 +493,7 @@ describe("usage-logging middleware — evaluation models", () => {
 				provider: "vercel-gateway",
 				modelId: "typesafe-ai/jev",
 				supportedQuestionTypes: ["choice", "score", "boolean"],
-				doEvaluate,
+				doDecide,
 			} as any,
 			{
 				...CTX,
@@ -504,7 +504,7 @@ describe("usage-logging middleware — evaluation models", () => {
 			},
 		);
 
-		await model.doEvaluate({
+		await model.doDecide({
 			state: "evaluate this choice",
 			questions: {
 				choice: {
@@ -532,21 +532,84 @@ describe("usage-logging middleware — evaluation models", () => {
 		});
 	});
 
+	it("attributes the usage row to the fallback model when the gateway says it answered", async () => {
+		const doDecide = vi.fn().mockResolvedValue({
+			answers: {},
+			warnings: [],
+			usage: { inputTokens: 40, outputTokens: 2 },
+			response: { modelId: "typesafe-ai/jev" },
+		});
+		const lunaContext = {
+			...CTX,
+			provider: "VERCEL_GATEWAY" as any,
+			providerModelId: "openai/gpt-6-luna-decisions",
+			modelCanonicalName: "gpt-6-luna-decisions",
+			taskType: "DECISION" as any,
+		};
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "vercel-gateway",
+				modelId: "openai/gpt-6-luna-decisions",
+				supportedQuestionTypes: ["choice"],
+				doDecide,
+			} as any,
+			lunaContext,
+			{
+				answeringModelCanonicalNames: {
+					"typesafe-ai/jev": "typesafe-ai-jev",
+				},
+			},
+		);
+		const call = {
+			state: "decide this choice",
+			questions: {
+				choice: {
+					type: "choice" as const,
+					instructions: "Choose one",
+					criteria: { yes: "yes", no: "no" },
+				},
+			},
+		};
+
+		await model.doDecide(call);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			providerModelId: "typesafe-ai/jev",
+			modelCanonicalName: "typesafe-ai-jev",
+			success: true,
+		});
+
+		// A model id the call never offered as a fallback is not guessed at:
+		// the row keeps the requested model.
+		logAiUsageAsync.mockReset();
+		doDecide.mockResolvedValueOnce({
+			answers: {},
+			warnings: [],
+			usage: { inputTokens: 40, outputTokens: 2 },
+			response: { modelId: "example/unknown-decider" },
+		});
+		await model.doDecide(call);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			providerModelId: "openai/gpt-6-luna-decisions",
+			modelCanonicalName: "gpt-6-luna-decisions",
+		});
+	});
+
 	it("records a failed evaluation without marking it successful", async () => {
-		const doEvaluate = vi.fn().mockRejectedValue(new Error("gateway down"));
+		const doDecide = vi.fn().mockRejectedValue(new Error("gateway down"));
 		const model = wrapEvaluationModelWithUsageLogging(
 			{
 				specificationVersion: "v4",
 				provider: "vercel-gateway",
 				modelId: "typesafe-ai/jev",
 				supportedQuestionTypes: ["choice"],
-				doEvaluate,
+				doDecide,
 			} as any,
 			{ ...CTX, taskType: "DECISION" as any },
 		);
 
 		await expect(
-			model.doEvaluate({
+			model.doDecide({
 				state: "evaluate this choice",
 				questions: {
 					choice: {
@@ -573,7 +636,7 @@ describe("usage-logging middleware — evaluation models", () => {
 	});
 
 	it("captures the gateway's status code and routing metadata from a responseBody-carrying failure", async () => {
-		const doEvaluate = vi.fn().mockRejectedValue(
+		const doDecide = vi.fn().mockRejectedValue(
 			buildGatewayShapedError({
 				responseBody: JSON.stringify(GATEWAY_ERROR_BODY),
 			}),
@@ -584,7 +647,7 @@ describe("usage-logging middleware — evaluation models", () => {
 				provider: "vercel-gateway",
 				modelId: "typesafe-ai/jev",
 				supportedQuestionTypes: ["choice"],
-				doEvaluate,
+				doDecide,
 			} as any,
 			{
 				...CTX,
@@ -595,7 +658,7 @@ describe("usage-logging middleware — evaluation models", () => {
 		);
 
 		await expect(
-			model.doEvaluate({
+			model.doDecide({
 				state: "evaluate this choice",
 				questions: {
 					choice: {
@@ -625,7 +688,7 @@ describe("usage-logging middleware — evaluation models", () => {
 	});
 
 	it("captures the same gateway body when it arrives as cause.data instead of responseBody", async () => {
-		const doEvaluate = vi
+		const doDecide = vi
 			.fn()
 			.mockRejectedValue(
 				buildGatewayShapedError({ data: GATEWAY_ERROR_BODY }),
@@ -636,7 +699,7 @@ describe("usage-logging middleware — evaluation models", () => {
 				provider: "vercel-gateway",
 				modelId: "typesafe-ai/jev",
 				supportedQuestionTypes: ["choice"],
-				doEvaluate,
+				doDecide,
 			} as any,
 			{
 				...CTX,
@@ -647,7 +710,7 @@ describe("usage-logging middleware — evaluation models", () => {
 		);
 
 		await expect(
-			model.doEvaluate({
+			model.doDecide({
 				state: "evaluate this choice",
 				questions: {
 					choice: {

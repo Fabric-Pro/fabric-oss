@@ -16,6 +16,7 @@ vi.mock("../direct-source", () => ({
 }));
 vi.mock("../direct-read", () => ({ listDirectRepositoryFiles: m.list }));
 vi.mock("@repo/connectors", () => ({ readRepositoryFileAtCommit: m.read }));
+
 import { downloadDirectRepository } from "../download";
 
 const input = {
@@ -108,6 +109,27 @@ it("refuses incomplete trees and a revoked source", async () => {
 	});
 	m.current.mockRejectedValueOnce(new Error("revoked"));
 	await expect(downloadDirectRepository(input)).rejects.toThrow("revoked");
+});
+
+it("refuses a folder of more than 5,000 files before any provider read, and accepts exactly 5,000", async () => {
+	const files = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({ path: `f-${i}.md` }));
+	m.list.mockResolvedValue({
+		incomplete: false,
+		refusal: null,
+		files: files(5_001),
+	});
+	await expect(downloadDirectRepository(input)).rejects.toMatchObject({
+		code: "PRECONDITION_FAILED",
+		message: expect.stringContaining("5000"),
+	});
+	expect(m.read).not.toHaveBeenCalled();
+	m.list.mockResolvedValue({
+		incomplete: false,
+		refusal: null,
+		files: files(5_000),
+	});
+	await expect(downloadDirectRepository(input)).resolves.toBeDefined();
 });
 
 it("releases a cancelled streaming export so later downloads work", async () => {

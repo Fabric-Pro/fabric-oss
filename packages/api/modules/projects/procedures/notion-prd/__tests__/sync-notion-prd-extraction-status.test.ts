@@ -78,7 +78,7 @@ vi.mock("@repo/rag", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: mockGetRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mockGetRAGProviderConfig,
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {

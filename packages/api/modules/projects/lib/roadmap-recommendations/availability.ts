@@ -1,4 +1,8 @@
-import { db, readProviderRowCredentials } from "@repo/database";
+import {
+	db,
+	LLM_PROVIDER_PURPOSE_FILTER,
+	readProviderRowCredentials,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 
 /**
@@ -29,6 +33,7 @@ export async function isRoadmapRecommendationProviderAvailable(args: {
 				organizationId: args.organizationId,
 				isDefault: true,
 				enabled: true,
+				...LLM_PROVIDER_PURPOSE_FILTER,
 			},
 			select: {
 				encryptedApiKey: true,

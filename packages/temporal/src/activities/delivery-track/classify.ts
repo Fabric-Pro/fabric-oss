@@ -13,7 +13,7 @@
  *    anything is persisted (plan §3 rule 9).
  *
  * When the organization has a typed decision model configured, pass 2 first
- * asks it for the whole batch in ONE `experimental_evaluate` call — one
+ * asks it for the whole batch in ONE `experimental_decide` call — one
  * `choice` question per story, over the same rendered classification prompt
  * the language classifier would have received, so an operator's project
  * context and track guidance still govern the verdict. A story whose answer
@@ -28,11 +28,13 @@
  * Plan: docs/features/inverted-loop-delivery-tracks.md, Slice 2.
  */
 import {
-	experimental_evaluate,
+	createDecisionCapture,
+	experimental_decide,
 	generateObject,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
+	recordDecisionOutcome,
 } from "@repo/ai";
 import {
 	type DeliveryTrack,
@@ -70,6 +72,8 @@ export const LOW_CONFIDENCE_PREFIX = "Low confidence: ";
 const DECISION_TIMEOUT_MS = 30_000;
 const DECISION_MAX_RETRIES = 1;
 const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+// Fixed call-site name for decision telemetry (llm.decision.outcomes).
+const DECISION_SITE = "delivery-track";
 
 /** Delimiters around untrusted story / repository text in the prompt. */
 export const UNTRUSTED_DATA_START = "<<<UNTRUSTED_STORY_DATA>>>";
@@ -441,7 +445,7 @@ interface TrackDecision {
  * above the floor (and no greater than 1) is uncertain — never a verdict.
  */
 function readTrackChoice(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 	questionKey: string,
 ): TrackDecision | null {
 	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
@@ -534,19 +538,30 @@ async function decideBatchTracks(params: {
 		};
 	});
 
-	let result: Awaited<ReturnType<typeof experimental_evaluate>>;
+	let result: Awaited<ReturnType<typeof experimental_decide>>;
+	const capture = createDecisionCapture();
 	try {
-		result = await experimental_evaluate({
-			model: decisionModel.model,
-			state: {
-				classifierPolicy: params.classifierPolicy,
-				stories: stateStories,
-			},
-			questions,
-			maxRetries: DECISION_MAX_RETRIES,
-			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-		});
+		result = await capture.run(() =>
+			experimental_decide({
+				model: decisionModel.model,
+				state: {
+					classifierPolicy: params.classifierPolicy,
+					stories: stateStories,
+				},
+				questions,
+				maxRetries: DECISION_MAX_RETRIES,
+				abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+			}),
+		);
 	} catch (error) {
+		// One outcome per story: the whole batch shares this failure.
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			error,
+			decisionModel,
+			capture,
+			count: stories.length,
+		});
 		if (error instanceof AiUsageLimitExceededError) {
 			throw error;
 		}
@@ -566,8 +581,18 @@ async function decideBatchTracks(params: {
 	// inspecting the answers.
 	decisionModel.trackUsage();
 
+	const answers = (result as { answers?: Record<string, unknown> }).answers;
 	for (const [key, storyId] of storyIdByKey) {
 		const verdict = readTrackChoice(result, key);
+		// One outcome and one confidence sample per story.
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			outcome: verdict ? "accepted" : "below_threshold",
+			decisionModel,
+			result,
+			capture,
+			answers: [answers?.[key]],
+		});
 		if (verdict) {
 			decided.set(storyId, verdict);
 		}
@@ -779,6 +804,12 @@ export async function classifyDeliveryTracks(
 		});
 	} catch (error) {
 		if (error instanceof AiUsageLimitExceededError) {
+			// No question was asked; count the stories that would have been.
+			recordDecisionOutcome({
+				site: DECISION_SITE,
+				error,
+				count: remaining.length,
+			});
 			throw error;
 		}
 		decisionModel = null;
@@ -893,6 +924,14 @@ export async function classifyDeliveryTracks(
 					batchIndex,
 					decidedByDecisionModel: handled.size,
 					toLanguageModel: leftover.length,
+				});
+			} else {
+				// No decision model: every story in the batch goes to the
+				// language classifier.
+				recordDecisionOutcome({
+					site: DECISION_SITE,
+					outcome: "unavailable",
+					count: batch.length,
 				});
 			}
 

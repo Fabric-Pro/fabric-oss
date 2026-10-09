@@ -49,6 +49,7 @@ import {
 	getConfigPath,
 	getOAuth,
 	hasStoredApiKey,
+	listProjectSignIns,
 } from "../../lib/config.js";
 import { runningInCi } from "../../lib/environment.js";
 import {
@@ -59,9 +60,12 @@ import {
 } from "../../lib/instructions/adoption.js";
 import {
 	agentMcpLines,
+	agentMcpSummaryLines,
 	agentRegistrationFacts,
 	mcpAuthenticationPending,
+	mcpManualSteps,
 	mcpRegistrationComplete,
+	mcpSetupFailed,
 	registerAgentMcp,
 } from "../../lib/instructions/agent-mcp.js";
 import { createAgentRunner } from "../../lib/instructions/agent-run.js";
@@ -77,6 +81,7 @@ import {
 	classifyCheckout,
 	classLine,
 	currentLine,
+	directBehindLine,
 	downloadsIn,
 	nothingPublishedLine,
 	reportForClassification,
@@ -105,6 +110,7 @@ import {
 	PER_FILE_MAX_WRITES,
 	PublishedChangedError,
 } from "../../lib/instructions/file-downloads.js";
+import { gatewayProbeFor } from "../../lib/instructions/gateway-probe.js";
 import * as git from "../../lib/instructions/git.js";
 import { excludeLocalFiles } from "../../lib/instructions/git-exclude.js";
 import {
@@ -116,8 +122,11 @@ import {
 	type InstructionsHookTool,
 } from "../../lib/instructions/hook.js";
 import { resolveHookLauncher } from "../../lib/instructions/hook-launcher.js";
-import { hookTiming } from "../../lib/instructions/hook-timing.js";
-import { traceFile } from "../../lib/instructions/hook-trace.js";
+import {
+	hookTiming,
+	sinceProcessStart,
+} from "../../lib/instructions/hook-timing.js";
+import { appendTrace, traceFile } from "../../lib/instructions/hook-trace.js";
 import { isIdentifier } from "../../lib/instructions/identifiers.js";
 import { installHooks } from "../../lib/instructions/init-hooks.js";
 import {
@@ -186,6 +195,7 @@ import {
 import {
 	refreshKeptCopy,
 	selfUpdateLine,
+	startBackgroundSelfUpdate,
 } from "../../lib/instructions/self-update.js";
 import {
 	IN_MEMORY_SNAPSHOT_BYTES,
@@ -313,6 +323,27 @@ export function buildInstructionsCommand(): Command {
 	const instructions = new Command("instructions").description(
 		"Keep a checkout current with a project's published coding instructions",
 	);
+
+	// Started by the session hook, detached, when it had no time left for
+	// the kept copy's daily update (`startBackgroundSelfUpdate`). Not for
+	// people: hidden, and silent.
+	instructions
+		.command("self-update", { hidden: true })
+		.description("Refresh the kept copy of the served CLI, out of band")
+		.option("--base-url <origin>", BASE_URL_HELP)
+		.action(async (opts: { baseUrl?: string }) => {
+			// Its own budget, not what is left of a hook's deadline, and it
+			// never defers again: a child that started another child would
+			// chain forever without downloading anything.
+			await refreshKeptCopyAfterHook(
+				opts,
+				Date.now() +
+					hookTiming.selfUpdateBudgetMs +
+					hookTiming.selfUpdateMarginMs +
+					BACKGROUND_UPDATE_SLACK_MS,
+				{ mayDefer: false },
+			);
+		});
 
 	instructions
 		.command("check")
@@ -587,18 +618,26 @@ async function run(
 	takeAuthFailure();
 	takeUpgradeNotice();
 	let hookDeadlineAt: number | undefined;
+	hookPhases = {};
+	hookTraced = false;
 	try {
 		if (opts.hook) {
 			// The deadline's signal is published for the bundle download
 			// (`activeDeadline`) and withdrawn the moment the race settles,
-			// whichever side won it.
-			const totalMs = hookDeadlineMs();
-			activeDeadlineAt = Date.now() + totalMs;
+			// whichever side won it. It counts from when the process began, so
+			// Node's own start-up is inside the budget and the hook never
+			// outlives `hookTiming.deadlineMs` in wall time.
+			hookPhases.node = sinceProcessStart();
+			activeDeadlineAt =
+				(hookTiming.processStartedAt ?? Date.now()) + hookDeadlineMs();
 			hookDeadlineAt = activeDeadlineAt;
-			await withDeadline(totalMs, (signal) => {
-				activeDeadline = signal;
-				return body();
-			}).finally(() => {
+			await withDeadline(
+				Math.max(0, activeDeadlineAt - Date.now()),
+				(signal) => {
+					activeDeadline = signal;
+					return body();
+				},
+			).finally(() => {
 				activeDeadline = undefined;
 				activeDeadlineAt = undefined;
 			});
@@ -628,7 +667,7 @@ async function run(
 							: null));
 			if (signedOutOf !== null) {
 				line(
-					`${HOOK_PREFIX}: ${outcomeLine("hook-signed-out", { origin: signedOutOf || describedOrigin(opts), project: opts.project })}`,
+					`${HOOK_PREFIX}: ${outcomeLine("hook-signed-out", { origin: signedOutOf || describedOrigin(opts), project: opts.project, otherProjects: signedInForOtherProjects(signedOutOf || describedOrigin(opts), opts.project) })}`,
 				);
 			} else if (error instanceof UpgradeRequiredFailure) {
 				line(error.line);
@@ -637,6 +676,12 @@ async function run(
 					`${HOOK_PREFIX} ${verb} skipped: ${failure.message === outcomeLine("project-not-found", {}) ? "no project for this checkout" : failure.message}\n`,
 				);
 			}
+			await traceHookFailure(opts, {
+				signedOut: signedOutOf !== null,
+				upgrade: error instanceof UpgradeRequiredFailure,
+				timedOut: /gave up after/.test(failure.message),
+				exitCode: failure.exitCode,
+			});
 			showUpgradeNotice(true);
 			if (error instanceof UpgradeRequiredFailure) {
 				// The failure a newer copy fixes: the deployment will not talk
@@ -644,6 +689,7 @@ async function run(
 				// update.
 				await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
 			}
+			await endHookProcess();
 			process.exit(0);
 		}
 		// A list a person has to read (several projects) keeps its lines.
@@ -654,8 +700,86 @@ async function run(
 	showUpgradeNotice(Boolean(opts.hook));
 	if (opts.hook) {
 		await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
+		await endHookProcess();
 	}
 }
+
+/** Milliseconds spent in each phase of the hook run so far, for its trace entry. */
+let hookPhases: Record<string, number> = {};
+
+/** The fast-forward already wrote this run's trace entry, so a failure after it must not write a second. */
+let hookTraced = false;
+
+async function timedPhase<T>(name: string, work: () => Promise<T>): Promise<T> {
+	const started = Date.now();
+	try {
+		return await work();
+	} finally {
+		hookPhases[name] = (hookPhases[name] ?? 0) + (Date.now() - started);
+	}
+}
+
+/**
+ * What a hook run that never reached the fast-forward left in the trace: it
+ * could not sign in, the deployment would not talk to this build, the clock ran
+ * out, or the request failed. The reasons are a closed set; none carries a
+ * word of the failure.
+ */
+async function traceHookFailure(
+	opts: { project?: string },
+	why: {
+		signedOut: boolean;
+		upgrade: boolean;
+		timedOut: boolean;
+		exitCode: number;
+	},
+): Promise<void> {
+	if (hookTraced) {
+		return;
+	}
+	const reason = why.signedOut
+		? "not-signed-in"
+		: why.upgrade
+			? "upgrade-required"
+			: why.timedOut
+				? "deadline"
+				: `failed-${why.exitCode}`;
+	await appendTrace(traceFile(path.dirname(getConfigPath())), {
+		at: new Date().toISOString(),
+		projectId: opts.project ?? "",
+		outcome: "skipped",
+		reason,
+		ms: sinceProcessStart(),
+		totalMs: sinceProcessStart(),
+		phases: { ...hookPhases },
+	});
+}
+
+/**
+ * End the process once the hook's output is written, when the entry point has
+ * asked for it. A descendant that still holds an output pipe (a git transport
+ * that outlived its parent, say) would otherwise keep the session waiting for
+ * a hook that has already said everything; Claude Code and Codex stop waiting
+ * only when the pipes close. The writes are flushed first: an exit with output
+ * still queued loses it.
+ */
+async function endHookProcess(): Promise<void> {
+	if (!hookTiming.exitWhenDone) {
+		return;
+	}
+	await Promise.all(
+		[process.stdout, process.stderr].map(
+			(stream) =>
+				new Promise<void>((resolve) => {
+					stream.write("", () => resolve());
+				}),
+		),
+	);
+	process.exit(0);
+}
+
+/** Room beyond the budget and margin that the detached update child is given. */
+const BACKGROUND_UPDATE_SLACK_MS = 5_000;
 
 /**
  * After a hook run has said what it has to say: the kept copy of the served
@@ -666,13 +790,15 @@ async function run(
 async function refreshKeptCopyAfterHook(
 	opts: { baseUrl?: string },
 	deadlineAt: number | undefined,
+	{ mayDefer = true }: { mayDefer?: boolean } = {},
 ): Promise<void> {
 	const origin =
 		opts.baseUrl === undefined ? null : normalizeOrigin(opts.baseUrl);
 	if (origin === null || deadlineAt === undefined) {
 		return;
 	}
-	const outcome = await refreshKeptCopy({
+	const started = Date.now();
+	const input = {
 		origin,
 		script: bundleScriptPath(),
 		configDirectory: path.dirname(getConfigPath()),
@@ -683,7 +809,31 @@ async function refreshKeptCopyAfterHook(
 			budgetMs: hookTiming.selfUpdateBudgetMs,
 			marginMs: hookTiming.selfUpdateMarginMs,
 		},
-	});
+	};
+	const outcome = await refreshKeptCopy(input);
+	if (
+		mayDefer &&
+		outcome.kind === "skipped" &&
+		outcome.reason === "no-time"
+	) {
+		// Too little of the deadline is left for it: do it out of band, so a
+		// slow session start does not mean the copy is never refreshed.
+		startBackgroundSelfUpdate({
+			script: input.script,
+			origin,
+			env: process.env,
+		});
+	}
+	if (outcome.kind !== "skipped") {
+		await appendTrace(traceFile(path.dirname(getConfigPath())), {
+			at: new Date().toISOString(),
+			projectId: "",
+			outcome: "self-update",
+			reason: outcome.kind,
+			ms: Date.now() - started,
+			totalMs: sinceProcessStart(),
+		});
+	}
 	if (outcome.kind === "failed" && process.env.FABRIC_DEBUG) {
 		process.stderr.write(
 			`debug: ${describeError(outcome.cause ?? outcome.reason)}\n`,
@@ -854,13 +1004,31 @@ function describedOrigin(opts: { baseUrl?: string }): string {
 	);
 }
 
+/** This machine holds a sign-in to the deployment, but for projects other than `project`. */
+function signedInForOtherProjects(
+	origin: string,
+	project: string | undefined,
+): boolean {
+	return (
+		project !== undefined &&
+		listProjectSignIns(origin).some((entry) => entry.projectId !== project)
+	);
+}
+
 /** There is no sign-in stored for the deployment this run talks to. */
 class NotSignedInError extends CliFailure {
 	constructor(
 		readonly origin: string,
 		project?: string,
 	) {
-		super(outcomeLine("not-signed-in", { origin, project }), 3);
+		super(
+			outcomeLine("not-signed-in", {
+				origin,
+				project,
+				otherProjects: signedInForOtherProjects(origin, project),
+			}),
+			3,
+		);
 		this.name = "NotSignedInError";
 	}
 }
@@ -999,6 +1167,49 @@ async function directGitTransport(
 		throw new NotSignedInError(origin, opts.project);
 	}
 	return { url: base.toString(), authorization: `Bearer ${token}` };
+}
+
+/**
+ * The gateway's transport, asked for only when a fetch is about to need it.
+ * `undefined` when this is not a hook or the deployment has no gateway. A
+ * failure to produce it (a sign-in that cannot be used) is kept and thrown by
+ * `rethrow` once the fast-forward has returned, so the hook says what it
+ * always said about it, and the fast-forward itself only sees a fetch that
+ * could not be made.
+ */
+function lazyGitTransport(
+	opts: CommonOptions & { hook?: boolean },
+	direct: Extract<
+		DirectInstructionRepositoryState,
+		{ availability: "READY" }
+	>,
+):
+	| {
+			resolve: () => Promise<{ url: string; authorization: string }>;
+			rethrow: () => void;
+	  }
+	| undefined {
+	if (!opts.hook || direct.gitGateway?.version !== "v1") {
+		return undefined;
+	}
+	let failure: unknown;
+	let pending: Promise<{ url: string; authorization: string }> | undefined;
+	return {
+		resolve: () => {
+			pending ??= timedPhase("token", () =>
+				directGitTransport(opts, direct),
+			).catch((error: unknown) => {
+				failure = error;
+				throw error;
+			});
+			return pending;
+		},
+		rethrow: () => {
+			if (failure !== undefined) {
+				throw failure;
+			}
+		},
+	};
 }
 
 /**
@@ -1143,14 +1354,16 @@ async function fetchPublished(
 	const org = orgSlugFor(opts);
 	let published: PublishedInstructions;
 	try {
-		published = await client.instructions.getPublished(opts.project, {
-			org,
-			sinceDigest,
-		});
+		published = await timedPhase("api", () =>
+			client.instructions.getPublished(opts.project, {
+				org,
+				sinceDigest,
+			}),
+		);
 	} catch (error) {
 		throw fixedFailure(error);
 	}
-	await guard?.admit(published);
+	await timedPhase("classify", async () => guard?.admit(published));
 	return published;
 }
 
@@ -1244,8 +1457,29 @@ function directRepositoryRead(
 		: null;
 }
 
+/**
+ * Where a checkout stands against the commit a direct-repository project
+ * reads: `current` (HEAD holds it), `behind` (a fast-forward away),
+ * `diverged`, `not-fetched` (the commit is not in this clone yet),
+ * `unknown` (HEAD could not be read) or `no-checkout` (the folder is not a
+ * matching checkout).
+ */
+type DirectCheckoutVerdict =
+	| "current"
+	| "behind"
+	| "diverged"
+	| "not-fetched"
+	| "unknown"
+	| "no-checkout";
+
+/** `check --verify` hashes the files a sync copied; a direct read copies none. */
+const NO_VERIFY_FOR_DIRECT =
+	"--verify has nothing to check: this project reads its repository directly, so Fabric keeps no copy here. Git is the record of what this checkout holds.";
+
 type DirectRepositoryCheckoutStatus = {
 	current: boolean;
+	/** The same verdict as a word, for `check --format json`. */
+	verdict: DirectCheckoutVerdict;
 	line: string;
 };
 
@@ -1263,13 +1497,16 @@ async function directRepositoryCheckoutStatus(input: {
 	if (input.checkout.class !== "matching") {
 		return {
 			current: false,
+			verdict: "no-checkout",
 			line: `Coding instructions are read directly from ${repository} at ${commit}. Open a matching native checkout before reading them locally.`,
 		};
 	}
-	const head = input.report.state?.head;
-	if (head === null || head === undefined) {
+	const state = input.report.state;
+	const head = state?.head;
+	if (state === null || head === null || head === undefined) {
 		return {
 			current: false,
+			verdict: "unknown",
 			line: `Coding instructions are read directly from ${repository} at ${commit}; this checkout could not be compared to that commit.`,
 		};
 	}
@@ -1282,6 +1519,7 @@ async function directRepositoryCheckoutStatus(input: {
 	if (contains.kind === "ok" && contains.value) {
 		return {
 			current: true,
+			verdict: "current",
 			line: `Coding instructions are read directly from ${repository} at ${commit}; this checkout already contains that commit.`,
 		};
 	}
@@ -1295,14 +1533,22 @@ async function directRepositoryCheckoutStatus(input: {
 		if (behind.kind === "ok") {
 			return {
 				current: false,
+				verdict: behind.value ? "behind" : "diverged",
 				line: behind.value
-					? `Coding instructions are read directly from ${repository} at ${commit}; this checkout is behind. Run git pull --ff-only.`
+					? directBehindLine({
+							repository: input.repository,
+							commitSha: input.direct.currentCommitSha,
+							ref: input.direct.ref,
+							remote: input.checkout.remote,
+							state,
+						})
 					: `Coding instructions are read directly from ${repository} at ${commit}; this checkout has diverged. Inspect its Git history before choosing how to update it.`,
 			};
 		}
 	}
 	return {
 		current: false,
+		verdict: "not-fetched",
 		line: `Coding instructions are read directly from ${repository} at ${commit}; fetch that commit with your normal Git remote before continuing.`,
 	};
 }
@@ -1483,12 +1729,27 @@ async function runCheck(
 					projectId: opts.project,
 					destination,
 					direct,
-					checkout: checkout?.json ?? null,
+					// The same words and verdict as the text mode: the checkout
+					// block's own line knows nothing of a direct read.
+					checkout:
+						checkout === null
+							? null
+							: {
+									...checkout.json,
+									line: status.current ? null : status.line,
+									verdict: status.verdict,
+								},
+					verified: false,
 				},
 				{ format: "json" },
 			);
-		} else if (!opts.hook || !status.current) {
-			process.stdout.write(`${status.line}\n`);
+		} else {
+			if (!opts.hook || !status.current) {
+				process.stdout.write(`${status.line}\n`);
+			}
+			if (opts.verify) {
+				process.stdout.write(`${NO_VERIFY_FOR_DIRECT}\n`);
+			}
 		}
 		return;
 	}
@@ -1743,6 +2004,9 @@ async function runDoctorCommand(
 			home: machine.home(),
 			env: machine.env(),
 			platform: machine.platform(),
+			probe: opts.probeNetwork
+				? gatewayProbeFor({ origin, projectId: opts.project })
+				: undefined,
 		}),
 		client: () =>
 			instructionsClient({ ...opts, hook: false }, CHECK_TIMEOUT_MS),
@@ -1962,22 +2226,27 @@ async function syncOnce(
 				7,
 			);
 		}
-		const report = await reportForClassification({
-			classification: guard.checkout,
-			repository: directRepository,
-			snapshot: undefined,
-			deadline: gitDeadline(),
-		});
-		const status = await directRepositoryCheckoutStatus({
-			repository: directRepository,
-			direct,
-			checkout: guard.checkout,
-			report,
-		});
-		const gitTransport =
-			opts.hook && direct.gitGateway?.version === "v1"
-				? await directGitTransport(opts, direct)
-				: undefined;
+		const checkout = guard.checkout;
+		const report = await timedPhase("report", () =>
+			reportForClassification({
+				classification: checkout,
+				repository: directRepository,
+				snapshot: undefined,
+				deadline: gitDeadline(),
+				contentChanges: opts.hook ? "when-behind" : "always",
+			}),
+		);
+		const status = await timedPhase("status", () =>
+			directRepositoryCheckoutStatus({
+				repository: directRepository,
+				direct,
+				checkout,
+				report,
+			}),
+		);
+		// The gateway's credential is only needed by a fetch, which a checkout
+		// that already holds the commit never makes.
+		const lazyTransport = lazyGitTransport(opts, direct);
 		const fastForward =
 			opts.hook && guard.checkout.class === "matching"
 				? await runFastForward({
@@ -1985,7 +2254,10 @@ async function syncOnce(
 						repository: directRepository,
 						snapshot: undefined,
 						directCommitSha: direct.currentCommitSha,
-						...(gitTransport === undefined ? {} : { gitTransport }),
+						...(lazyTransport === undefined
+							? {}
+							: { gitTransport: lazyTransport.resolve }),
+						timings: hookPhases,
 						report: {
 							...report,
 							reportKind: status.current ? "current" : "behind",
@@ -1997,6 +2269,8 @@ async function syncOnce(
 						traceFile: traceFile(path.dirname(getConfigPath())),
 					})
 				: null;
+		hookTraced = fastForward !== null;
+		lazyTransport?.rethrow();
 		return {
 			kind: "reported",
 			destination: existing,
@@ -2018,12 +2292,16 @@ async function syncOnce(
 		if (refused !== null) {
 			throw refused;
 		}
-		const report = await reportForClassification({
-			classification: guard.checkout,
-			repository: published.repository,
-			snapshot: published.snapshot,
-			deadline: gitDeadline(),
-		});
+		const checkout = guard.checkout;
+		const report = await timedPhase("report", () =>
+			reportForClassification({
+				classification: checkout,
+				repository: published.repository,
+				snapshot: published.snapshot,
+				deadline: gitDeadline(),
+				contentChanges: opts.hook ? "when-behind" : "always",
+			}),
+		);
 		// A session hook in a checkout of the repository brings it up to date
 		// when that is safe; `check` never does, and neither does a person's
 		// own `sync`.
@@ -2040,6 +2318,7 @@ async function syncOnce(
 						deadline: gitDeadline(),
 						optedOut: opts.fastForward === false,
 						traceFile: traceFile(path.dirname(getConfigPath())),
+						timings: hookPhases,
 					})
 				: null;
 		return {
@@ -3425,6 +3704,10 @@ async function runInit(
 				tools: tools.tools,
 				projectId: opts.project,
 				origin: deploymentOrigin(opts),
+				probe: gatewayProbeFor({
+					origin: deploymentOrigin(opts),
+					projectId: opts.project,
+				}),
 				cwd: toplevel ?? root,
 				home: machine.home(),
 				env: machine.env(),
@@ -3440,8 +3723,11 @@ async function runInit(
 					canPrompt() &&
 					process.stdout.isTTY === true &&
 					!runningInCi(),
+				checkSignIn: format !== "json",
 			});
 	const mcpComplete = !mcpRequested || mcpRegistrationComplete(mcp);
+	const mcpFailed = mcpRequested && mcpSetupFailed(mcp);
+	const mcpManual = mcpManualSteps(mcp);
 	const mcpAuthPending = mcpAuthenticationPending(mcp);
 
 	const first = hooks[0];
@@ -3464,12 +3750,14 @@ async function runInit(
 				lessonsHook: Boolean(opts.lessons),
 				mcpRequested,
 				mcpComplete,
+				manualSteps: mcpManual,
 				mcpAuthenticationPending: mcpAuthPending,
 				mcp: mcp.map((result) => ({
 					tool: result.tool,
 					name: result.name,
 					url: result.url,
 					outcome: result.outcome.kind,
+					status: result.status,
 					login: result.login,
 					registerLine: result.registerLine,
 					loginLine: result.loginLine,
@@ -3486,7 +3774,7 @@ async function runInit(
 			},
 			{ format: "json" },
 		);
-		if (!mcpComplete) {
+		if (mcpFailed) {
 			throw new CliFailure(
 				"Coding tool setup is incomplete: the Fabric MCP server was not registered for every selected tool. Complete the action shown above, then run init again.",
 				7,
@@ -3542,7 +3830,10 @@ async function runInit(
 	if (launcher.warning !== null) {
 		line(launcher.warning);
 	}
-	for (const mcpLine of agentMcpLines(mcp)) {
+	for (const mcpLine of [
+		...agentMcpLines(mcp),
+		...agentMcpSummaryLines(mcp),
+	]) {
 		line(mcpLine);
 	}
 	if (mcpAuthPending) {
@@ -3563,7 +3854,7 @@ async function runInit(
 			}),
 		);
 	}
-	if (!mcpComplete) {
+	if (mcpFailed) {
 		line(
 			"The session hook was set up, but the Fabric MCP server was not registered for every selected tool.",
 		);

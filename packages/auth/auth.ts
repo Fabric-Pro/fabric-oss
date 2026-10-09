@@ -54,6 +54,7 @@ import {
 	createOAuthProviderPlugin,
 	enforceOAuthDpopPolicy,
 	OAUTH_DISABLED_PATHS,
+	resolveConsentOrganizationId,
 } from "./lib/oauth-provider";
 import { enforceRegistrationPolicy } from "./lib/oauth-registration-policy";
 import { updateSeatsInOrganizationSubscription } from "./lib/organization";
@@ -1046,6 +1047,16 @@ const authOptions = {
 					appUrl,
 					getSessionUserId: async () =>
 						(await getSessionFromCtx(ctx))?.user.id ?? null,
+					getConsentOrganizationId: async () => {
+						const current = await getSessionFromCtx(ctx);
+						if (!current) {
+							throw new APIError("UNAUTHORIZED");
+						}
+						return resolveConsentOrganizationId(
+							current.user.id,
+							current.session.activeOrganizationId,
+						);
+					},
 				});
 				if (resourceContext) {
 					return resourceContext;

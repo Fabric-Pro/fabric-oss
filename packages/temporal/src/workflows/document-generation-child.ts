@@ -17,19 +17,35 @@
  * 4. Save document to database
  * 5. Create document version
  * 6. Embed document for RAG
+ *
+ * A Proposal in an organization with the Proposal artifact rollout gate on
+ * runs as a coordinated job (Fizzy #2801): a plan first, the client-only
+ * Main prompt pinned for generation, visuals before the save, run-guarded
+ * writes, and an Internal Analysis started after the embed.
  */
 
 import { hasProjectContextEntries } from "@repo/agent-types";
+import { WorkflowExecutionAlreadyStartedError } from "@temporalio/common";
 import {
 	ActivityFailure,
 	ApplicationFailure,
 	log,
+	ParentClosePolicy,
 	patched,
 	proxyActivities,
+	startChild,
+	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	type CreateProposalAnalysisRunResult,
+	DOCUMENT_GENERATION_STALE,
+	DOCUMENT_GENERATION_SUPERSEDED,
+	type ProposalArtifactPlan,
+} from "../lib/proposal-artifact/types";
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import type { proposalAnalysisWorkflow } from "./proposal-analysis";
 
 // Generation awaits its own embedding before returning. Keep that activity
 // on the foreground queue too: the next setup document retrieves its vectors,
@@ -88,6 +104,52 @@ const { runDocumentDecisionPrecheckActivity } = proxyActivities<
 	},
 });
 
+// Coordinated Proposal job (Fizzy #2801): the plan, the cleanup of a failed
+// run's live preview, and the Internal Analysis run record. Database reads
+// and writes only; none of them calls a model.
+const {
+	planProposalArtifact,
+	clearProposalLiveContent,
+	createProposalAnalysisRun,
+	failProposalAnalysisRun,
+} = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	startToCloseTimeout: "1 minute",
+	retry: {
+		initialInterval: "2s",
+		maximumInterval: "30s",
+		backoffCoefficient: 2,
+		maximumAttempts: 5,
+	},
+});
+
+// The Proposal's visuals: one bounded attempt with a heartbeat, ticking
+// during every model call. The activity fails open, returning the content it
+// was given, and the workflow treats any failure of it the same way.
+const { generateProposalVisuals } = proxyActivities<typeof activities>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	startToCloseTimeout: "5 minutes",
+	heartbeatTimeout: "1 minute",
+	retry: {
+		maximumAttempts: 1,
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
+	},
+});
+
+/**
+ * Visuals are skipped once the child has run this long, so a setup flow that
+ * bounds the child at twenty minutes keeps room for the save.
+ */
+const PROPOSAL_VISUALS_MAX_CHILD_AGE_MS = 10 * 60 * 1000;
+
+/**
+ * Why a coordinated run stopped at its plan: a newer request for the same
+ * document took it over. Written for the person who reads it on the Job Hub
+ * card; the document itself shows the newer run.
+ */
+const SUPERSEDED_BEFORE_START_MESSAGE =
+	"A newer generation of this document started, so this one stopped without changing it.";
+
 /**
  * Input for the document generation child workflow
  */
@@ -136,6 +198,16 @@ export interface DocumentGenerationChildInput {
 	 * leaves it unset and stays on the organization's provider.
 	 */
 	planEligible?: boolean;
+	/**
+	 * The generation attempt's identity, as the parent received it from the
+	 * dispatch (an ISO-8601 `ProjectDocument.generationStartedAt`). A
+	 * coordinated Proposal's plan takes the document over only while the
+	 * document still carries it (Fizzy #2801), so a plan that arrives after a
+	 * newer request replaced this attempt stops the run without writing.
+	 * Unset for starters with no attempt identity (batch and setup flows),
+	 * whose plan takes the document over unconditionally.
+	 */
+	generationStartedAt?: string;
 }
 
 /**
@@ -146,6 +218,13 @@ export interface DocumentGenerationChildOutput {
 	documentId: string;
 	documentContent?: string;
 	error?: string;
+	/**
+	 * A coordinated Proposal run's token (Fizzy #2801), for the parent's own
+	 * status writes after this child returns: guarded by it, they never land
+	 * on a newer run that took the document over in between. Absent for every
+	 * other run, and from any result recorded before the field existed.
+	 */
+	liveRunId?: string;
 	metrics: {
 		contextCount: number;
 		episodeCount: number;
@@ -157,19 +236,174 @@ export interface DocumentGenerationChildOutput {
 	};
 }
 
-/** Non-fatal progress update — never throws, never blocks generation */
+/**
+ * Non-fatal progress update — never throws, never blocks generation.
+ *
+ * A coordinated Proposal passes its run token (Fizzy #2801): the write then
+ * lands only while the run still owns the document, so a superseded run can
+ * never flip a newer run's finished document back to GENERATING. Unset
+ * otherwise, which the payload drops: today's write, unchanged.
+ */
 async function reportProgress(
 	documentId: string,
 	progress: number,
+	liveRunId: string | undefined,
 ): Promise<void> {
 	try {
 		await updateProjectDocumentStatus({
 			documentId,
 			status: "GENERATING",
 			progress,
+			liveRunId,
 		});
 	} catch {
 		// Non-fatal — progress reporting should never break generation
+	}
+}
+
+/**
+ * A coordinated Proposal's Main with its visuals, or exactly `content` when
+ * the child has already run too long or the visuals step fails in any way.
+ */
+async function withProposalVisuals(input: {
+	projectId: string;
+	documentId: string;
+	organizationId: string;
+	userId: string;
+	liveRunId: string;
+	content: string;
+	planEligible?: boolean;
+}): Promise<string> {
+	const childAgeMs = Date.now() - workflowInfo().startTime.getTime();
+	if (childAgeMs > PROPOSAL_VISUALS_MAX_CHILD_AGE_MS) {
+		log.info("Proposal visuals skipped: the child has run too long", {
+			documentId: input.documentId,
+			childAgeMs,
+		});
+		return input.content;
+	}
+	try {
+		const visuals = await generateProposalVisuals(input);
+		log.info("Proposal visuals done", {
+			documentId: input.documentId,
+			insertedCount: visuals.insertedCount,
+		});
+		return visuals.content;
+	} catch (visualsError) {
+		log.warn("Proposal visuals failed; saving Main without them", {
+			documentId: input.documentId,
+			error: extractActivityError(visualsError),
+		});
+		return input.content;
+	}
+}
+
+/**
+ * Record a coordinated Proposal's Internal Analysis run and, when it may
+ * run, start the analysis workflow: abandoned on close, keyed by the run, ids
+ * only. A run a project guest triggered, or one with no analysis prompt
+ * bound, is recorded FAILED with its code and nothing starts.
+ *
+ * Never throws. A start that fails marks the run FAILED (`START_FAILED`); a
+ * start that finds the workflow already running leaves the run to it. If
+ * even the run record cannot be written there is no run to mark, and the
+ * failure is only logged.
+ */
+async function startProposalAnalysis(
+	plan: ProposalArtifactPlan,
+	run: {
+		projectId: string;
+		documentId: string;
+		organizationId: string;
+		userId: string;
+		contexts: string[];
+		planEligible?: boolean;
+	},
+): Promise<void> {
+	let created: CreateProposalAnalysisRunResult | null = null;
+	try {
+		created = await createProposalAnalysisRun({
+			organizationId: run.organizationId,
+			projectId: run.projectId,
+			documentId: run.documentId,
+			userId: run.userId,
+			liveRunId: plan.liveRunId,
+			analysisPrompt: plan.analysisPrompt,
+			analysisSkipReason: plan.analysisSkipReason,
+			triggeredByGuest: plan.triggeredByGuest,
+			contexts: run.contexts,
+		});
+		if (created.kind === "superseded") {
+			// A newer generation owns the document: its Main is not this
+			// run's to analyse, and that run records its own analysis.
+			log.info("Proposal analysis not recorded: run superseded", {
+				documentId: run.documentId,
+				liveRunId: plan.liveRunId,
+			});
+			return;
+		}
+		if (created.kind === "skipped") {
+			log.info("Proposal analysis not started", {
+				documentId: run.documentId,
+				runId: created.runId,
+				errorCode: created.errorCode,
+			});
+			return;
+		}
+		// Started by name, typed by the workflow: this module does not load
+		// the analysis workflow's activity proxies. The worker's bundle
+		// registers it from the workflows index.
+		await startChild<typeof proposalAnalysisWorkflow>(
+			"proposalAnalysisWorkflow",
+			{
+				workflowId: created.runKey,
+				parentClosePolicy:
+					ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON,
+				args: [
+					{
+						runId: created.runId,
+						organizationId: run.organizationId,
+						projectId: run.projectId,
+						documentId: run.documentId,
+						userId: run.userId,
+						planEligible: run.planEligible,
+					},
+				],
+			},
+		);
+		log.info("Proposal analysis started", {
+			documentId: run.documentId,
+			runId: created.runId,
+		});
+	} catch (analysisError) {
+		log.warn("Proposal analysis could not be started; Main is unaffected", {
+			documentId: run.documentId,
+			runId: created?.kind === "ready" ? created.runId : null,
+			error: extractActivityError(analysisError),
+		});
+		if (
+			created?.kind !== "ready" ||
+			analysisError instanceof WorkflowExecutionAlreadyStartedError
+		) {
+			return;
+		}
+		try {
+			await failProposalAnalysisRun({
+				runId: created.runId,
+				organizationId: run.organizationId,
+				projectId: run.projectId,
+				documentId: run.documentId,
+				userId: run.userId,
+				errorCode: "START_FAILED",
+			});
+		} catch {
+			// The page reads a run with no update for twenty minutes as
+			// timed out, so a run left PENDING here does not wait forever.
+			log.warn("Could not record the proposal analysis start failure", {
+				documentId: run.documentId,
+				runId: created.runId,
+			});
+		}
 	}
 }
 
@@ -200,6 +434,7 @@ export async function documentGenerationChildWorkflow(
 		suppliedContext,
 		excludeContextId,
 		planEligible,
+		generationStartedAt,
 	} = input;
 
 	const startTime = Date.now();
@@ -208,6 +443,17 @@ export async function documentGenerationChildWorkflow(
 	const teamsSearchCount = 0;
 	let hasTeamsIntegration = false;
 	let hasSlackIntegration = false;
+	// Set when this run is a coordinated Proposal (Fizzy #2801), with the
+	// organization it runs in. Declared outside the `try` so a failure can
+	// clean up under the run's token.
+	let proposal: {
+		plan: ProposalArtifactPlan;
+		organizationId: string;
+	} | null = null;
+	// Set when the plan found a newer request owns the document. The run
+	// never took it over, so it has nothing of its own to clean up, and any
+	// write it made, guarded or not, could only land on the newer run.
+	let supersededBeforeStart = false;
 
 	log.info("Child workflow started: Document Generation", {
 		projectId,
@@ -221,6 +467,54 @@ export async function documentGenerationChildWorkflow(
 	});
 
 	try {
+		// Step 0: Is this a coordinated Proposal run? Decided once, here,
+		// for every path that reaches this workflow. The plan activity reads
+		// the rollout gate for the project's owning organization first and
+		// returns null when it is off, so a gate-off run continues exactly as
+		// before. A Main prompt that is not bound fails the run here, before
+		// any agent call or live section.
+		//
+		// `patched()` is REQUIRED — the plan, and every step it switches on
+		// below, adds commands to the stream. A history recorded before this
+		// change has no marker, so it replays with no plan and takes the
+		// legacy path throughout. Evaluated only for a Proposal in an
+		// organization, so no other document records the marker.
+		if (
+			documentType === "PROPOSAL" &&
+			organizationId &&
+			patched("proposal-artifact-v1")
+		) {
+			const plan = await planProposalArtifact({
+				projectId,
+				documentId,
+				documentType,
+				userId,
+				organizationId,
+				// The run token is this execution's own run id: the same on
+				// every retry of the plan and on replay, and new for every
+				// generation, since each starts a new child execution.
+				liveRunId: workflowInfo().runId,
+				// Scopes the plan's takeover to this attempt, when the run
+				// has an identity; unset otherwise, which the payload drops.
+				generationStartedAt,
+			});
+			if (plan && "superseded" in plan) {
+				supersededBeforeStart = true;
+				throw ApplicationFailure.nonRetryable(
+					SUPERSEDED_BEFORE_START_MESSAGE,
+					DOCUMENT_GENERATION_STALE,
+				);
+			}
+			if (plan) {
+				proposal = { plan, organizationId };
+				log.info("Coordinated Proposal run planned", {
+					documentId,
+					liveRunId: plan.liveRunId,
+					analysisSkipReason: plan.analysisSkipReason,
+				});
+			}
+		}
+
 		if (directContext && directContext.length > 0) {
 			// Direct context path: skip RAG, episodic memory, and Teams retrieval
 			// Used by code-based project setup where orchestrator response IS the context
@@ -235,7 +529,7 @@ export async function documentGenerationChildWorkflow(
 					),
 				},
 			);
-			await reportProgress(documentId, 30);
+			await reportProgress(documentId, 30, proposal?.plan.liveRunId);
 		} else {
 			// Step 1: Retrieve project contexts from Qdrant
 			const contextStartTime = Date.now();
@@ -273,7 +567,7 @@ export async function documentGenerationChildWorkflow(
 					durationMs: contextDuration,
 				});
 
-				await reportProgress(documentId, 15);
+				await reportProgress(documentId, 15, proposal?.plan.liveRunId);
 			} catch (contextError) {
 				const rawMessage =
 					contextError instanceof Error
@@ -363,7 +657,7 @@ export async function documentGenerationChildWorkflow(
 				);
 			}
 
-			await reportProgress(documentId, 25);
+			await reportProgress(documentId, 25, proposal?.plan.liveRunId);
 
 			// Step 2.5: Check if Teams integration is available
 			try {
@@ -500,7 +794,7 @@ export async function documentGenerationChildWorkflow(
 				}
 			}
 
-			await reportProgress(documentId, 30);
+			await reportProgress(documentId, 30, proposal?.plan.liveRunId);
 		} // end of else (non-directContext path)
 
 		// Supplied source content: JOIN, never assign.
@@ -552,7 +846,7 @@ export async function documentGenerationChildWorkflow(
 			contextCount: contexts.length,
 		});
 
-		await reportProgress(documentId, 35);
+		await reportProgress(documentId, 35, proposal?.plan.liveRunId);
 
 		const generationResult = await generateDocumentWithAgent({
 			projectId,
@@ -574,6 +868,19 @@ export async function documentGenerationChildWorkflow(
 			hasTeamsIntegration,
 			hasSlackIntegration,
 			planEligible,
+			// A coordinated Proposal renders exactly the pinned client-only
+			// Main prompt and saves its sections live under the run token;
+			// the request's `promptId` is not used then. Only an argument
+			// changes, so no marker is needed beyond the plan's. Unset
+			// otherwise, which the payload drops: today's input, unchanged.
+			artifact: proposal
+				? {
+						liveRunId: proposal.plan.liveRunId,
+						promptId: proposal.plan.mainPrompt.promptId,
+						promptVersionNumber:
+							proposal.plan.mainPrompt.versionNumber,
+					}
+				: undefined,
 		});
 		documentContent = generationResult.content;
 
@@ -606,7 +913,22 @@ export async function documentGenerationChildWorkflow(
 			durationMs: generationDuration,
 		});
 
-		await reportProgress(documentId, 80);
+		await reportProgress(documentId, 80, proposal?.plan.liveRunId);
+
+		// Step 3.5: A coordinated Proposal's visuals go into Main before the
+		// save (Fizzy #2801). Bounded and fail-open: whatever happens here,
+		// the save below receives Main, with visuals or without.
+		if (proposal) {
+			documentContent = await withProposalVisuals({
+				projectId,
+				documentId,
+				organizationId: proposal.organizationId,
+				userId,
+				liveRunId: proposal.plan.liveRunId,
+				content: documentContent,
+				planEligible,
+			});
+		}
 
 		// Step 4: Save document to database
 		const saveStartTime = Date.now();
@@ -625,8 +947,30 @@ export async function documentGenerationChildWorkflow(
 		// slot-free branch passes exactly the three arguments it always has —
 		// as does any history whose generation finished before the field
 		// existed, since its recorded result simply lacks it.
-		const { baselineVersion } = generationResult;
-		if (baselineVersion !== undefined) {
+		//
+		// A coordinated Proposal's save is also guarded by its run token, so
+		// a run superseded by a newer regeneration cannot overwrite the newer
+		// Main: the refusal is the same non-retryable stale failure. Again one
+		// activity at the same point; only its input differs.
+		//
+		// A coordinated Proposal is guarded by a version as well, slots or
+		// none: the one it was planned at, which a person's save during the
+		// run moves on. A plan recorded before it carried one leaves the
+		// generation's baseline, exactly as that history ran. The save also
+		// requires the body the run was planned against, which catches the
+		// edits that do not move the version.
+		const baselineVersion =
+			proposal?.plan.baselineVersion ?? generationResult.baselineVersion;
+		if (proposal) {
+			const { baselineContentHash } = proposal.plan;
+			await saveProjectDocument(documentId, documentContent, userId, {
+				...(baselineVersion !== undefined && { baselineVersion }),
+				liveRunId: proposal.plan.liveRunId,
+				...(baselineContentHash !== undefined && {
+					baselineContentHash,
+				}),
+			});
+		} else if (baselineVersion !== undefined) {
 			await saveProjectDocument(documentId, documentContent, userId, {
 				baselineVersion,
 			});
@@ -676,8 +1020,22 @@ export async function documentGenerationChildWorkflow(
 			// the live one, or a person's save that landed after Step 4 gets
 			// this run's stale body as its version. Same replay argument as
 			// Step 4 — one activity at the same point either way, and the
-			// slot-free call keeps exactly its four arguments.
-			if (baselineVersion !== undefined) {
+			// slot-free call keeps exactly its four arguments. A coordinated
+			// Proposal's version row is guarded by its run token as well.
+			if (proposal) {
+				await createDocumentVersion(
+					documentId,
+					documentContent,
+					userId,
+					effectivePromptVersionId,
+					{
+						...(baselineVersion !== undefined && {
+							baselineVersion,
+						}),
+						liveRunId: proposal.plan.liveRunId,
+					},
+				);
+			} else if (baselineVersion !== undefined) {
 				await createDocumentVersion(
 					documentId,
 					documentContent,
@@ -700,11 +1058,12 @@ export async function documentGenerationChildWorkflow(
 		} catch (versionError) {
 			// A stale refusal is the run's verdict, not a versioning hiccup:
 			// the regenerated body is no longer the document, so the run fails
-			// like a refused save. Only the baseline-guarded call can refuse
-			// this way, so a slot-free run — and every history recorded before
-			// the guard — takes the non-fatal branch below exactly as before.
+			// like a refused save. Only a guarded call (baseline or run token)
+			// can refuse this way, so a slot-free legacy run — and every
+			// history recorded before the guard — takes the non-fatal branch
+			// below exactly as before.
 			if (
-				baselineVersion !== undefined &&
+				(proposal || baselineVersion !== undefined) &&
 				isStaleRegenerationFailure(versionError)
 			) {
 				throw versionError;
@@ -754,6 +1113,21 @@ export async function documentGenerationChildWorkflow(
 			});
 		}
 
+		// Step 7: A coordinated Proposal's Internal Analysis (Fizzy #2801),
+		// started once Main is saved, versioned and embedded. Non-fatal by
+		// construction, like the decision pre-check: Main is complete
+		// whatever happens here.
+		if (proposal) {
+			await startProposalAnalysis(proposal.plan, {
+				projectId,
+				documentId,
+				organizationId: proposal.organizationId,
+				userId,
+				contexts,
+				planEligible,
+			});
+		}
+
 		const totalDuration = Date.now() - startTime;
 
 		log.info("🎉 Child workflow completed successfully", {
@@ -770,6 +1144,7 @@ export async function documentGenerationChildWorkflow(
 			success: true,
 			documentId,
 			documentContent,
+			...(proposal && { liveRunId: proposal.plan.liveRunId }),
 			metrics: {
 				contextCount: contexts.length,
 				episodeCount,
@@ -793,6 +1168,37 @@ export async function documentGenerationChildWorkflow(
 			...(error instanceof Error && { stack: error.stack }),
 		});
 
+		// A coordinated run a newer generation superseded — refused at its
+		// plan, or at its save or version write — ends with its own type, so
+		// a parent writes nothing to the document either: the newer run owns
+		// it. Every other failure keeps today's type, and so today's handling
+		// by every parent.
+		const failureType =
+			(proposal || supersededBeforeStart) &&
+			isStaleRegenerationFailure(error)
+				? DOCUMENT_GENERATION_SUPERSEDED
+				: "DOCUMENT_GENERATION_CHILD_FAILED";
+
+		// Refused at its plan: the run never took the document over, so it
+		// has no live preview to drop and no status of its own to write.
+		if (supersededBeforeStart) {
+			throw ApplicationFailure.nonRetryable(errorMessage, failureType);
+		}
+
+		// A coordinated Proposal drops its live preview first, and its FAILED
+		// write is guarded by its run token: a run superseded by a newer
+		// regeneration neither clears nor fails the newer run's document.
+		if (proposal) {
+			try {
+				await clearProposalLiveContent({
+					documentId,
+					liveRunId: proposal.plan.liveRunId,
+				});
+			} catch {
+				// Non-fatal — the FAILED write below still runs
+			}
+		}
+
 		// Mark document as FAILED so it doesn't stay stuck in GENERATING
 		try {
 			await updateProjectDocumentStatus({
@@ -800,15 +1206,23 @@ export async function documentGenerationChildWorkflow(
 				status: "FAILED",
 				progress: 0,
 				error: errorMessage,
+				// The run guard; unset outside a coordinated Proposal.
+				liveRunId: proposal?.plan.liveRunId,
 			});
 		} catch {
 			// Non-fatal — don't mask the original error
 		}
 
-		throw ApplicationFailure.nonRetryable(
-			errorMessage,
-			"DOCUMENT_GENERATION_CHILD_FAILED",
-		);
+		// A coordinated run's token rides in the failure's details, so a
+		// parent can guard its own FAILED write the way this one is guarded.
+		// Message and type are unchanged, and so is every other child's
+		// failure.
+		if (proposal) {
+			throw ApplicationFailure.nonRetryable(errorMessage, failureType, {
+				liveRunId: proposal.plan.liveRunId,
+			});
+		}
+		throw ApplicationFailure.nonRetryable(errorMessage, failureType);
 	}
 }
 
@@ -839,23 +1253,18 @@ function extractActivityError(error: unknown): string {
 }
 
 /**
- * The failure type the document activities abandon a stale regeneration with
- * (`STALE_REGENERATION_FAILURE_TYPE` in `project-document-generation.ts`,
- * which keeps its constant private to the activity module).
- */
-const STALE_REGENERATION_FAILURE_TYPE = "DOCUMENT_GENERATION_STALE";
-
-/**
- * Did an activity abandon this run as a stale regeneration? The activity's
- * `ApplicationFailure` reaches the workflow wrapped in an `ActivityFailure`,
- * so the type is looked for down the cause chain.
+ * Did an activity abandon this run as a stale regeneration — a refused
+ * baseline or run-token write? The activity's `ApplicationFailure` reaches the
+ * workflow wrapped in an `ActivityFailure`, so its type
+ * (`DOCUMENT_GENERATION_STALE`, shared through the Proposal artifact types)
+ * is looked for down the cause chain.
  */
 function isStaleRegenerationFailure(error: unknown): boolean {
 	let current: unknown = error;
 	for (let depth = 0; current != null && depth < 8; depth += 1) {
 		if (
 			current instanceof ApplicationFailure &&
-			current.type === STALE_REGENERATION_FAILURE_TYPE
+			current.type === DOCUMENT_GENERATION_STALE
 		) {
 			return true;
 		}

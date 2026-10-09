@@ -34,6 +34,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,

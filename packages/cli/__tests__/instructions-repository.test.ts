@@ -53,6 +53,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
@@ -281,6 +282,68 @@ describe("a direct repository project", () => {
 			`Coding instructions are read directly from ${NAME} at aaaaaaa; this checkout already contains that commit.\n`,
 		);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+	});
+
+	it("gives check --format json the verdict the text mode prints, as a field", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: false, [HEAD_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		const json = JSON.parse(result.stdout);
+		expect(json.checkout.verdict).toBe("behind");
+		expect(json.checkout.line).toContain("this checkout is behind");
+		expect(json.checkout.line).not.toContain("nothing has been published");
+		expect(json.direct.currentCommitSha).toBe(PUBLISHED_SHA);
+	});
+
+	it("reports a current checkout in json with a verdict and no line", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		const json = JSON.parse(result.stdout);
+		expect(json.checkout).toMatchObject({ verdict: "current", line: null });
+	});
+
+	it("says check --verify has nothing to verify instead of doing nothing", async () => {
+		const dest = await makeTree();
+		inCheckout(dest);
+		fakeGit.state.ancestors = { [PUBLISHED_SHA]: true };
+		mocks.getPublished.mockResolvedValue(servedDirect());
+
+		const result = await runCli([
+			"check",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--verify",
+		]);
+
+		expect(result.stdout).toContain("--verify has nothing to check");
+		expect(result.stdout).toContain("already contains that commit");
 	});
 
 	it("has its hook fast-forward a clean native checkout without copying a snapshot", async () => {

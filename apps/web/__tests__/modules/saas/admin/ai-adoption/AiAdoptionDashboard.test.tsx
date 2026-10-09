@@ -258,7 +258,11 @@ describe("AiAdoptionDashboard", () => {
 		expect(screen.getByText("1.2K")).toBeInTheDocument();
 		expect(screen.getByText("5M")).toBeInTheDocument();
 		expect(screen.getByText("$12.34")).toBeInTheDocument();
-		expect(screen.getByText("12 failed")).toBeInTheDocument();
+		// Requests count successes only; failed attempts are apart and the
+		// error rate is of attempts (Fizzy #2972 AC3).
+		expect(
+			screen.getByText("12 failed attempts, not in the counts above"),
+		).toBeInTheDocument();
 	});
 
 	it("shows zero states for an empty payload", async () => {

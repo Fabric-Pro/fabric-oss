@@ -23,7 +23,10 @@ configure({ asyncUtilTimeout: 5000 });
 // Mocks — defined BEFORE the import of GetStartedController.
 // ----------------------------------------------------------------------------
 
-const flags = vi.hoisted(() => ({ glossyEdition: false }));
+const flags = vi.hoisted(() => ({
+	glossyEdition: false,
+	proposalArtifact: false,
+}));
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
@@ -95,10 +98,17 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	// A genuine hook, so hook order is exercised the way React would. Only
-	// the Glossy gate is driven here; every other flag stays off.
+	// the Glossy and Proposal artifact gates are driven here; every other
+	// flag stays off.
 	useFeatureFlag: (key: string) => {
 		const [value] = useMockFlagState(false);
-		return key === "GLOSSY_EDITION" ? flags.glossyEdition : value;
+		if (key === "GLOSSY_EDITION") {
+			return flags.glossyEdition;
+		}
+		if (key === "PROPOSAL_ARTIFACT") {
+			return flags.proposalArtifact;
+		}
+		return value;
 	},
 }));
 vi.mock("@saas/shared/components/RoleTagSnapshotProvider", () => ({
@@ -116,10 +126,16 @@ vi.mock("../GetStartedWelcomeDialog", () => ({
 	GetStartedWelcomeDialog: () => null,
 }));
 vi.mock("../GetStartedSpotlight", () => ({
-	GetStartedSpotlight: (props: { steps: readonly { id: string }[] }) => (
+	GetStartedSpotlight: (props: {
+		steps: readonly { id: string; copyId?: string; body?: string }[];
+	}) => (
 		<div data-testid="spotlight">
 			<span data-testid="ids">
 				{props.steps.map((s) => s.id).join(",")}
+			</span>
+			{/* What each step would say: its literal body, or its copy key. */}
+			<span data-testid="copy">
+				{props.steps.map((s) => s.body ?? s.copyId ?? s.id).join("\n")}
 			</span>
 		</div>
 	),
@@ -195,6 +211,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	sessionStorage.clear();
 	flags.glossyEdition = false;
+	flags.proposalArtifact = false;
 	// A settled user: no welcome dialog, no auto-launch, no tags prompt.
 	getState.mockResolvedValue(
 		makeStateData({
@@ -268,5 +285,44 @@ describe("GetStartedController — Glossy gate on the guided tour", () => {
 
 		const ids = stepIds();
 		expect(ids[ids.indexOf("documents") + 1]).toBe("glossy");
+	});
+});
+
+// Fizzy #2801: the Proposal artifact flag reaches both consumers too — not to
+// hide the Glossy component or step, but to change what they say.
+describe("GetStartedController — Glossy copy under the Proposal artifact gate", () => {
+	const copy = () => screen.getByTestId("copy").textContent ?? "";
+
+	it("describes Glossy as a Business Case edition on the Documents page tour", async () => {
+		flags.glossyEdition = true;
+		flags.proposalArtifact = true;
+		mountDocumentsAnchors();
+		renderController();
+		await tourDocumentsPage();
+
+		expect(stepIds()).toContain("page-documents-documents-glossy");
+		expect(copy()).toContain("A Business Case can also become");
+		expect(copy()).toContain("Main Document, Internal Analysis and Style");
+		expect(copy()).not.toContain("A Proposal or Business Case can also");
+	});
+
+	it("keeps today's copy with the artifact gate off", async () => {
+		flags.glossyEdition = true;
+		mountDocumentsAnchors();
+		renderController();
+		await tourDocumentsPage();
+
+		expect(copy()).toContain("A Proposal or Business Case can also");
+		expect(copy()).not.toContain("Internal Analysis");
+	});
+
+	it("hands the guided tour's Glossy step its artifact copy", async () => {
+		flags.glossyEdition = true;
+		flags.proposalArtifact = true;
+		renderController();
+		await startGuidedTour();
+
+		expect(stepIds()).toContain("glossy");
+		expect(copy().split("\n")).toContain("glossyProposalArtifact");
 	});
 });

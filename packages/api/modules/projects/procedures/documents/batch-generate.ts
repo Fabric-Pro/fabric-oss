@@ -11,8 +11,20 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { findRefusedCapabilities } from "../../../capabilities/assert";
-import { documentCapabilityKey } from "../../lib/dispatch-document-generation";
+import {
+	documentCapabilityKey,
+	proposalPromptRefusal,
+} from "../../lib/dispatch-document-generation";
 import { buildDocumentTitle } from "../../utils/document-title";
+
+/**
+ * The `reasonKey` a Proposal is skipped with when the Proposal artifact is on
+ * and nothing is bound to its client-only Main prompt (Fizzy #2801). Not a
+ * capability gate: the binding is an administrator's to fix, which the
+ * message says.
+ */
+const PROPOSAL_PROMPT_NOT_BOUND_REASON_KEY =
+	"documents.proposal-prompt-not-bound";
 
 /**
  * Batch generate multiple documents for a project
@@ -109,29 +121,52 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 		const refusedKeys = new Map(
 			refused.map((entry) => [entry.gate.capabilityKey, entry]),
 		);
-		const documents = input.documents.filter((doc) => {
-			const key = documentCapabilityKey(doc.type);
-			return key === undefined || !refusedKeys.has(key);
-		});
-		const skipped = input.documents.flatMap((doc) => {
-			const key = documentCapabilityKey(doc.type);
+
+		// A Proposal whose client-only Main prompt is unbound, with the
+		// Proposal artifact on (Fizzy #2801), is refused here like a type
+		// the capability gate refuses: skipped and reported, before anything
+		// is written, so the rest of the batch still runs. Asked once — the
+		// answer is the same for every Proposal in the batch.
+		const proposalRefusal = batchTypes.includes("PROPOSAL")
+			? await proposalPromptRefusal({
+					documentType: "PROPOSAL",
+					projectId,
+					userId: user.id,
+					organizationId: project.organizationId ?? null,
+				})
+			: null;
+
+		const refusalFor = (
+			type: string,
+		): { reasonKey: string | null; message: string } | undefined => {
+			if (type === "PROPOSAL" && proposalRefusal) {
+				return {
+					reasonKey: PROPOSAL_PROMPT_NOT_BOUND_REASON_KEY,
+					message: proposalRefusal,
+				};
+			}
+			const key = documentCapabilityKey(type);
 			const entry = key ? refusedKeys.get(key) : undefined;
 			return entry
-				? [
-						{
-							type: doc.type,
-							reasonKey: entry.gate.reasonKey,
-							message: entry.message,
-						},
-					]
-				: [];
+				? { reasonKey: entry.gate.reasonKey, message: entry.message }
+				: undefined;
+		};
+
+		const documents = input.documents.filter(
+			(doc) => refusalFor(doc.type) === undefined,
+		);
+		const skipped = input.documents.flatMap((doc) => {
+			const refusal = refusalFor(doc.type);
+			return refusal ? [{ type: doc.type, ...refusal }] : [];
 		});
 		if (documents.length === 0 && skipped.length > 0) {
 			// Nothing left to run. A structured refusal naming the first missing
-			// source is the honest answer; an empty workflow would not be.
+			// source is the honest answer; an empty workflow would not be. An
+			// unbound Proposal prompt is not a capability gate, so a batch
+			// refused only for that carries no gate.
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message: skipped[0].message,
-				data: { gate: refused[0].gate, skipped },
+				data: { gate: refused[0]?.gate ?? null, skipped },
 			});
 		}
 

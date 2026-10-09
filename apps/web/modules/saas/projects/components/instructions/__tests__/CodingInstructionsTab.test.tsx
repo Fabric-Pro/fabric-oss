@@ -42,6 +42,12 @@ const IDLE_SYNC = {
 const state = vi.hoisted(() => ({
 	repositoryAvailability: "UPLOAD",
 	repositoryCalls: 0,
+	repositoryHead: "a".repeat(40),
+	repositoryGate: null as Promise<void> | null,
+	repositoryFails: false,
+	refreshOutcome: "none",
+	toastInfo: vi.fn(),
+	toastError: vi.fn(),
 	snapshots: [] as unknown[],
 	published: null as unknown,
 	sync: null as unknown,
@@ -82,13 +88,24 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 		projects: {
 			instructions: {
 				repository: {
+					key: ({ input }: { input: unknown }) => [
+						"repository",
+						input,
+					],
 					getState: {
 						queryOptions: queryOptionsStub(
 							"repository-getState",
 							async () => {
 								state.repositoryCalls++;
+								const head = state.repositoryHead;
+								await state.repositoryGate;
+								if (state.repositoryFails) {
+									throw new Error("offline");
+								}
 								return {
 									availability: state.repositoryAvailability,
+									generation: 1,
+									currentCommitSha: head,
 								};
 							},
 						),
@@ -182,6 +199,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
+vi.mock("sonner", () => ({
+	toast: { info: state.toastInfo, error: state.toastError, success: vi.fn() },
+}));
+
 vi.mock("../ConfigureRepositorySyncDialog", () => ({
 	ConfigureRepositorySyncDialog: () => null,
 }));
@@ -189,18 +210,45 @@ vi.mock("../ConfigureRepositorySyncDialog", () => ({
 vi.mock("../DirectRepositoryInstructions", () => ({
 	DirectRepositoryInstructions: ({
 		onRefresh,
+		onReread,
+		onUserRefresh,
 		canConfigure,
+		state: repositoryState,
 	}: {
+		state: { currentCommitSha?: string };
 		onRefresh: () => void;
+		onReread: () => void;
+		onUserRefresh: () => void;
 		canConfigure: boolean;
 	}) => (
-		<button
-			type="button"
-			onClick={onRefresh}
-			data-testid="direct-repository"
-		>
-			{String(canConfigure)}
-		</button>
+		<>
+			<button
+				type="button"
+				onClick={onUserRefresh}
+				data-testid="direct-repository"
+			>
+				{String(canConfigure)}
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					state.refreshOutcome = "pending";
+					onRefresh().then(
+						() => {
+							state.refreshOutcome = "ok";
+						},
+						() => {
+							state.refreshOutcome = "rejected";
+						},
+					);
+				}}
+				data-testid="state-only"
+			/>
+			<button type="button" onClick={onReread} data-testid="reread" />
+			<output data-testid="head">
+				{repositoryState.currentCommitSha}
+			</output>
+		</>
 	),
 }));
 
@@ -330,6 +378,8 @@ function Wrapper({ children }: { children: ReactNode }) {
 	});
 	client.setQueryData(["repository-getState", { projectId: "p" }], {
 		availability: state.repositoryAvailability,
+		generation: 1,
+		currentCommitSha: "a".repeat(40),
 	});
 	return (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -340,6 +390,12 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	state.repositoryAvailability = "UPLOAD";
 	state.repositoryCalls = 0;
+	state.repositoryHead = "a".repeat(40);
+	state.repositoryGate = null;
+	state.repositoryFails = false;
+	state.refreshOutcome = "none";
+	state.toastInfo.mockReset();
+	state.toastError.mockReset();
 	state.snapshots = [snapshot("snap_2", "VALIDATING")];
 	state.published = { id: "snap_1", version: 1, status: "READY" };
 	state.sync = IDLE_SYNC;
@@ -388,6 +444,122 @@ describe("direct repository dispatch", () => {
 		expect(state.publishedCalls).toBe(0);
 		expect(state.syncCalls).toBe(0);
 		expect(state.listRunsCalls).toBe(0);
+	});
+
+	describe("what a refresh re-reads at the current commit", () => {
+		const SHA = "a".repeat(40);
+		const read = (procedure: string, commitSha = SHA) =>
+			({
+				queryKey: [
+					["projects", "instructions", "repository", procedure],
+					{ input: { projectId: "p", generation: 1, commitSha } },
+				],
+			}) as never;
+		async function renderAndCapture() {
+			state.repositoryAvailability = "READY";
+			const invalidate = vi.spyOn(
+				QueryClient.prototype,
+				"invalidateQueries",
+			);
+			render(
+				<CodingInstructionsTab
+					projectId="p"
+					projectName="Example"
+					canEdit
+				/>,
+				{ wrapper: Wrapper },
+			);
+			await tick(1);
+			invalidate.mockClear();
+			return invalidate;
+		}
+		const predicateOf = (spy: { mock: { calls: unknown[][] } }) =>
+			(
+				spy.mock.calls.at(-1)?.[0] as {
+					predicate: (query: never) => boolean;
+				}
+			).predicate;
+
+		it("re-reads the list and files at the same commit when the user refreshes, even though the head did not move", async () => {
+			const invalidate = await renderAndCapture();
+			fireEvent.click(screen.getByTestId("direct-repository"));
+			await tick(1);
+			expect(invalidate).toHaveBeenCalledTimes(1);
+			const predicate = predicateOf(invalidate);
+			expect(predicate(read("listFiles"))).toBe(true);
+			expect(predicate(read("getFile"))).toBe(true);
+			expect(predicate(read("getState"))).toBe(false);
+			expect(predicate(read("listFiles", "b".repeat(40)))).toBe(false);
+			invalidate.mockRestore();
+		});
+
+		it("does the same after settings were saved", async () => {
+			const invalidate = await renderAndCapture();
+			fireEvent.click(screen.getByTestId("reread"));
+			await tick(1);
+			expect(invalidate).toHaveBeenCalledTimes(1);
+			invalidate.mockRestore();
+		});
+
+		it("answers a commit with the head after it, not with a poll that began before it", async () => {
+			const invalidate = await renderAndCapture();
+			let release = () => {};
+			state.repositoryGate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			await tick(IDLE_POLL_MS);
+			state.repositoryHead = "b".repeat(40);
+			fireEvent.click(screen.getByTestId("state-only"));
+			release();
+			state.repositoryGate = null;
+			await tick(1);
+			expect(screen.getByTestId("head").textContent).toBe("b".repeat(40));
+			invalidate.mockRestore();
+		});
+
+		it("does not claim to be up to date, or re-read the old commit, when the refresh failed", async () => {
+			const invalidate = await renderAndCapture();
+			state.repositoryFails = true;
+			fireEvent.click(screen.getByTestId("direct-repository"));
+			await tick(1);
+			expect(state.toastError).toHaveBeenCalledTimes(1);
+			expect(state.toastInfo).not.toHaveBeenCalled();
+			expect(invalidate).not.toHaveBeenCalled();
+			invalidate.mockRestore();
+		});
+
+		it("reports a failed state read after a commit as a rejection, so the commit says the page may be stale", async () => {
+			const invalidate = await renderAndCapture();
+			state.repositoryFails = true;
+			fireEvent.click(screen.getByTestId("state-only"));
+			await tick(1);
+			expect(state.refreshOutcome).toBe("rejected");
+			invalidate.mockRestore();
+		});
+
+		it("after a settings save whose state read fails, still invalidates the reads at the last known commit and says so", async () => {
+			const invalidate = await renderAndCapture();
+			state.repositoryFails = true;
+			fireEvent.click(screen.getByTestId("reread"));
+			await tick(1);
+			expect(invalidate).toHaveBeenCalledTimes(1);
+			const predicate = predicateOf(invalidate);
+			expect(predicate(read("listFiles"))).toBe(true);
+			expect(predicate(read("getState"))).toBe(false);
+			expect(state.toastError).toHaveBeenCalledTimes(1);
+			invalidate.mockRestore();
+		});
+
+		it("only re-reads the state after a commit, leaving the listings alone", async () => {
+			const invalidate = await renderAndCapture();
+			const before = state.repositoryCalls;
+			fireEvent.click(screen.getByTestId("state-only"));
+			fireEvent.click(screen.getByTestId("state-only"));
+			await tick(1);
+			expect(invalidate).not.toHaveBeenCalled();
+			expect(state.repositoryCalls).toBe(before + 1);
+			invalidate.mockRestore();
+		});
 	});
 
 	it("disables repository configuration in project read-only mode", async () => {

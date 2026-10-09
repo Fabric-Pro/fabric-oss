@@ -450,6 +450,30 @@ describe("upsertSyncedFile — validation", () => {
 		expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		"CLAUDE.md",
+		"docs/guide.md",
+		".claude/qa-x.md",
+		"qa-push/.fabric/state.md",
+		"skills/review/SKILL.md",
+	])(
+		"refuses the coding-instruction or tool-state path %j before the database",
+		async (sourcePath) => {
+			// docs/guide.md is an ordinary doc and must pass; the others must not.
+			if (sourcePath === "docs/guide.md") {
+				await expect(call({ sourcePath })).resolves.toBeDefined();
+				return;
+			}
+			await expect(call({ sourcePath })).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: expect.stringContaining(
+					"fabric_propose_project_instruction_change",
+				),
+			});
+			expect(mocks.upsertContextBySourcePath).not.toHaveBeenCalled();
+		},
+	);
+
 	it("rejects an expectedContentHash that is not a sha256 hex digest", async () => {
 		const schema = await inputSchema();
 

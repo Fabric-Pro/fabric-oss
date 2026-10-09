@@ -8,6 +8,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
+import { noteWithCommitMessage } from "./proposal-message-note";
 import { commitShaSchema } from "./repository/commit-sha";
 import { type NativeChange, submitGitIntentChange } from "./submit-git-intent";
 
@@ -84,6 +85,7 @@ export const submitGitInstructionChangeProcedure = tenantProtectedProcedure
 		});
 		const result = await submitGitIntentChange({
 			...input,
+			note: noteWithCommitMessage(input.note, input.message),
 			changes,
 			organizationId,
 			userId: context.user.id,

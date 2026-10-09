@@ -27,6 +27,15 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+// The shared-plan heads-up reads the ChatGPT plan status under the app's
+// providers; its own behaviour is covered next to it.
+vi.mock(
+	"@saas/settings/components/chatgpt-plan/ChatgptPlanImportNotice",
+	() => ({
+		ChatgptPlanImportNotice: () => null,
+	}),
+);
+
 vi.mock("sonner", () => ({
 	toast: { success: vi.fn(), warning: toastWarningMock, error: vi.fn() },
 }));

@@ -12,7 +12,7 @@
  * warm each other's cache instead of each paying to embed the backlog.
  *
  * When the organization has a typed decision model configured, each item's
- * candidates first go to it in ONE `experimental_evaluate` call — a `boolean`
+ * candidates first go to it in ONE `experimental_decide` call — a `boolean`
  * question per candidate over the same relationship rule the language verifier
  * is given — and a candidate whose answer is confident either way is settled
  * from that answer alone. Everything else (no decision model, an uncertain or
@@ -33,10 +33,12 @@
  */
 
 import {
-	experimental_evaluate,
+	createDecisionCapture,
+	experimental_decide,
 	generateObject,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	recordDecisionOutcome,
 	resolveModelWithProvider,
 } from "@repo/ai";
 import {
@@ -94,6 +96,10 @@ const HEARTBEAT_EVERY_ITEMS = 10;
 const DECISION_TIMEOUT_MS = 30_000;
 const DECISION_MAX_RETRIES = 1;
 const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+// Fixed call-site name for decision telemetry (llm.decision.outcomes). Outcomes
+// are recorded per candidate question; a failure of a whole call is recorded
+// once per candidate it covered.
+const DECISION_SITE = "link-action-items";
 // Stated as a literal rather than derived as `1 - DECISION_CONFIDENCE_THRESHOLD`,
 // which is 0.09999999999999998 in binary floating point and would let an answer
 // of exactly 0.1 escape the rejection arm.
@@ -108,7 +114,7 @@ const DECISION_REJECTION_THRESHOLD = 0.1;
  * A malformed answer must cost one language call, not a wrong link.
  */
 function readRelatesAnswer(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 	questionKey: string,
 ): number | null {
 	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
@@ -394,6 +400,9 @@ export async function linkMeetingActionItemsActivity(
 		});
 	} catch (err) {
 		if (err instanceof AiUsageLimitExceededError) {
+			// Nothing was asked yet, so the questions it would have covered are
+			// unknown: one outcome for the run.
+			recordDecisionOutcome({ site: DECISION_SITE, error: err });
 			throw err;
 		}
 		decisionModel = null;
@@ -479,25 +488,36 @@ export async function linkMeetingActionItemsActivity(
 			});
 
 			let decision: Awaited<
-				ReturnType<typeof experimental_evaluate>
+				ReturnType<typeof experimental_decide>
 			> | null = null;
+			const capture = createDecisionCapture();
 			try {
-				decision = await experimental_evaluate({
-					model: decisionModel.model,
-					state: {
-						policy: MATCH_RULE_TEXT,
-						meetingSubject: meetingSubject ?? "",
-						actionItem: {
-							text: item.text,
-							tentativeOwnerName: item.tentativeOwnerName ?? "",
+				decision = await capture.run(() =>
+					experimental_decide({
+						model: decisionModel.model,
+						state: {
+							policy: MATCH_RULE_TEXT,
+							meetingSubject: meetingSubject ?? "",
+							actionItem: {
+								text: item.text,
+								tentativeOwnerName:
+									item.tentativeOwnerName ?? "",
+							},
+							candidates: stateCandidates,
 						},
-						candidates: stateCandidates,
-					},
-					questions,
-					maxRetries: DECISION_MAX_RETRIES,
-					abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-				});
+						questions,
+						maxRetries: DECISION_MAX_RETRIES,
+						abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+					}),
+				);
 			} catch (err) {
+				recordDecisionOutcome({
+					site: DECISION_SITE,
+					error: err,
+					decisionModel,
+					capture,
+					count: candidates.length,
+				});
 				if (err instanceof AiUsageLimitExceededError) {
 					// The one decision failure that must NOT be retried through
 					// the language verifier: doing so would bill the very spend
@@ -531,6 +551,9 @@ export async function linkMeetingActionItemsActivity(
 				// update last-used BEFORE inspecting the answers.
 				decisionModel.trackUsage();
 
+				const decisionAnswers = (
+					decision as { answers?: Record<string, unknown> }
+				).answers;
 				const uncertain: SelectedCandidate[] = [];
 				let decidedRelated = 0;
 				let decidedUnrelated = 0;
@@ -554,6 +577,18 @@ export async function linkMeetingActionItemsActivity(
 						)
 					) {
 						decidedRelated += 1;
+						recordDecisionOutcome({
+							site: DECISION_SITE,
+							outcome: "accepted",
+							decisionModel,
+							result: decision,
+							capture,
+							answers: [
+								decisionAnswers?.[
+									`candidate_${candidateIndex}`
+								],
+							],
+						});
 						accepted.push({
 							itemKey: item.itemKey,
 							itemTextSnapshot: item.text,
@@ -572,8 +607,30 @@ export async function linkMeetingActionItemsActivity(
 						probability <= DECISION_REJECTION_THRESHOLD
 					) {
 						decidedUnrelated += 1;
+						recordDecisionOutcome({
+							site: DECISION_SITE,
+							outcome: "accepted",
+							decisionModel,
+							result: decision,
+							capture,
+							answers: [
+								decisionAnswers?.[
+									`candidate_${candidateIndex}`
+								],
+							],
+						});
 						continue;
 					}
+					recordDecisionOutcome({
+						site: DECISION_SITE,
+						outcome: "below_threshold",
+						decisionModel,
+						result: decision,
+						capture,
+						answers: [
+							decisionAnswers?.[`candidate_${candidateIndex}`],
+						],
+					});
 					uncertain.push(candidate);
 				}
 
@@ -589,6 +646,13 @@ export async function linkMeetingActionItemsActivity(
 					uncertain: uncertain.length,
 				});
 			}
+		} else {
+			// No decision model: every candidate goes to the language verifier.
+			recordDecisionOutcome({
+				site: DECISION_SITE,
+				outcome: "unavailable",
+				count: candidates.length,
+			});
 		}
 
 		if (leftover.length === 0) {

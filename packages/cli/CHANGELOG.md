@@ -1,5 +1,15 @@
 # @fabricorg/cli
 
+## 0.6.1
+
+### Patch Changes
+
+- bb63a9f: ChatGPT plans recognize one account across sign-ins, run on Sol and Luna by default, and show members the plan that serves their work.
+- bb63a9f: `fabric instructions init` names each project's MCP server `fabric-<project id>` for every coding tool, keeps existing setups working, and never stops on a server it didn't create.
+- bb63a9f: ChatGPT plan follow-ups: clear spent-plan messages, safer embedding model changes, optional plan type, and a CLI connect fix.
+- bb63a9f: The coding-instructions hook now ends within its deadline, fast-forwards past line-ending-only rewrites, and takes about 2 s when current.
+- bb63a9f: Fixes from a full Coding Instructions and Living Memory QA pass: MCP knowledge search works again, tighter MCP, CORS and OAuth, and many UI fixes.
+
 ## 0.6.0
 
 ### Minor Changes

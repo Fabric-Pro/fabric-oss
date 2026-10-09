@@ -38,10 +38,12 @@ vi.mock("next/navigation", () => ({
 // mandates it for destructive copy (`<DestructiveTooltip copy={t.raw(...)}>`
 // reads a `{ label, warning }` object, which `t()` would stringify). A bare
 // function mock made every such component throw "t.raw is not a function" on
-// render, so the echo needs to carry it too.
+// render, so the echo needs to carry it too. `t.has` answers "no key", so a
+// caller's raw-key fallback is what renders.
 const mockTranslator = () => {
 	const t = (key: string) => key;
 	t.raw = (key: string) => key;
+	t.has = (_key: string) => false;
 	return t;
 };
 

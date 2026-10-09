@@ -81,9 +81,12 @@ function flags(overrides: Partial<Record<FeatureFlagKey, boolean>>) {
 
 function renderCard({
 	gate = true,
+	proposalArtifactGate = false,
 	canEdit = true,
 }: {
 	gate?: boolean;
+	/** `PROPOSAL_ARTIFACT` (Fizzy #2801), the second gate the card answers to. */
+	proposalArtifactGate?: boolean;
 	canEdit?: boolean;
 } = {}) {
 	const client = new QueryClient({
@@ -93,7 +96,12 @@ function renderCard({
 		},
 	});
 	return render(
-		<FeatureFlagProvider value={flags({ GLOSSY_EDITION: gate })}>
+		<FeatureFlagProvider
+			value={flags({
+				GLOSSY_EDITION: gate,
+				PROPOSAL_ARTIFACT: proposalArtifactGate,
+			})}
+		>
 			<QueryClientProvider client={client}>
 				<ProjectRecipientBrandCard
 					projectId={PROJECT_ID}
@@ -155,6 +163,52 @@ describe("ProjectRecipientBrandCard", () => {
 
 		expect(container).toBeEmptyDOMElement();
 		expect(api.get).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2801: coordinated Proposals color their visuals from the
+	// recipient brand, and its procedures accept either rollout gate, so the
+	// card does too.
+	it("renders and loads behind the Proposal artifact gate alone", async () => {
+		api.get.mockResolvedValue(savedBrand(2));
+		renderCard({ gate: false, proposalArtifactGate: true });
+
+		expect(await screen.findByLabelText("name")).toHaveValue(
+			"Example Corp",
+		);
+		expect(api.get).toHaveBeenCalledWith({ projectId: PROJECT_ID });
+		// No Glossy cover exists for such an organization, so the card says
+		// what the brand is used for there instead.
+		expect(
+			screen.getByText("recipientBrandDescription"),
+		).toBeInTheDocument();
+		expect(screen.queryByText("description")).not.toBeInTheDocument();
+	});
+
+	it("keeps the Glossy description when both gates are on", async () => {
+		renderCard({ gate: true, proposalArtifactGate: true });
+
+		expect(await screen.findByText("description")).toBeInTheDocument();
+		expect(
+			screen.queryByText("recipientBrandDescription"),
+		).not.toBeInTheDocument();
+	});
+
+	it("can still be saved behind the Proposal artifact gate alone", async () => {
+		const user = userEvent.setup();
+		renderCard({ gate: false, proposalArtifactGate: true });
+
+		await user.type(await screen.findByLabelText("name"), "Example Corp");
+		await user.click(screen.getByRole("button", { name: "save" }));
+
+		await waitFor(() =>
+			expect(api.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: PROJECT_ID,
+					expectedVersion: 0,
+					name: "Example Corp",
+				}),
+			),
+		);
 	});
 
 	it("loads the saved recipient brand into the fields", async () => {

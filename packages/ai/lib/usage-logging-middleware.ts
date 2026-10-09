@@ -39,7 +39,7 @@ import type {
 import { logger } from "@repo/logs";
 import type {
 	EmbeddingModel,
-	Experimental_EvaluationModel,
+	Experimental_DecisionModel,
 	LanguageModel,
 } from "ai";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
@@ -868,35 +868,80 @@ export function wrapEmbeddingModelWithUsageLogging(
 }
 
 /**
- * Evaluation-model counterpart of the language-model interceptor. Evaluation
- * models expose `doEvaluate` directly rather than supporting the SDK's generic
+ * Decision-model counterpart of the language-model interceptor. Decision
+ * models expose `doDecide` directly rather than supporting the SDK's generic
  * model middleware, so preserve the provider contract while observing that one
  * network boundary. The shared `emit` writer creates the usage row and lets its
  * registered database recorder advance applicable tenant limit counters.
  */
-type EvaluationModelInstance = Exclude<Experimental_EvaluationModel, string>;
+export type DecisionModelInstance = Extract<
+	Experimental_DecisionModel,
+	{ doDecide: unknown }
+>;
+
+export interface DecisionUsageLoggingOptions {
+	/**
+	 * Gateway model ids, other than the one in `context`, that may answer this
+	 * call (the gateway's `models` fallback list), mapped to their catalog
+	 * canonical names. When the response names one of them as the model that
+	 * answered, the usage row is attributed to it instead of the requested
+	 * model, so cost and per-model reporting follow the model that ran.
+	 */
+	answeringModelCanonicalNames?: Readonly<Record<string, string>>;
+}
+
+function contextForAnsweringModel(
+	context: UsageLoggingContext,
+	answeringModelId: unknown,
+	options: DecisionUsageLoggingOptions | undefined,
+): UsageLoggingContext {
+	if (
+		typeof answeringModelId !== "string" ||
+		answeringModelId === context.providerModelId
+	) {
+		return context;
+	}
+	const canonicalName =
+		options?.answeringModelCanonicalNames?.[answeringModelId];
+	// An id this call did not offer as a fallback is not something the
+	// catalog can price, so the row keeps the requested model rather than
+	// guessing.
+	if (!canonicalName) {
+		return context;
+	}
+	return {
+		...context,
+		providerModelId: answeringModelId,
+		modelCanonicalName: canonicalName,
+	};
+}
 
 export function wrapEvaluationModelWithUsageLogging(
-	model: EvaluationModelInstance,
+	model: DecisionModelInstance,
 	context: UsageLoggingContext,
-): EvaluationModelInstance {
-	const doEvaluate = model.doEvaluate.bind(model);
+	options?: DecisionUsageLoggingOptions,
+): DecisionModelInstance {
+	const doDecide = model.doDecide.bind(model);
 
 	return {
-		// GatewayEvaluationModel exposes `provider` through a prototype getter.
+		// GatewayDecisionModel exposes `provider` through a prototype getter.
 		// Read each SDK contract field explicitly: spreading the instance would
 		// silently discard that getter and make the wrapped model invalid.
 		specificationVersion: model.specificationVersion,
 		provider: model.provider,
 		modelId: model.modelId,
 		supportedQuestionTypes: model.supportedQuestionTypes,
-		doEvaluate: async (options) => {
+		doDecide: async (callOptions) => {
 			const start = Date.now();
 			try {
-				const result = await doEvaluate(options);
+				const result = await doDecide(callOptions);
 				try {
 					emit(
-						context,
+						contextForAnsweringModel(
+							context,
+							result.response?.modelId,
+							options,
+						),
 						normalizeUsage(result.usage),
 						Date.now() - start,
 						true,

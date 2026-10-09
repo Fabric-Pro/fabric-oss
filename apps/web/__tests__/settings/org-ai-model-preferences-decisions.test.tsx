@@ -123,6 +123,25 @@ const decisionModelsResponse = {
 	providerIds: ["VERCEL_GATEWAY"],
 	models: [
 		{
+			id: "luna-decisions-model",
+			canonicalName: "gpt-6-luna-decisions",
+			displayName: "GPT-6 Luna Decisions",
+			description: null,
+			family: "luna-decisions",
+			vendor: "OpenAI",
+			contextWindow: 0,
+			speedTier: "FAST",
+			qualityTier: "STANDARD",
+			suitableForTasks: ["DECISION"],
+			providerMappings: [
+				{
+					provider: "VERCEL_GATEWAY",
+					providerModelId: "openai/gpt-6-luna-decisions",
+					isAvailable: true,
+				},
+			],
+		},
+		{
 			id: "jev-model",
 			canonicalName: "typesafe-ai-jev",
 			displayName: "TypeSafe AI Jev",
@@ -147,6 +166,20 @@ const decisionModelsResponse = {
 			gatewayDisplayName: "Vercel AI Gateway",
 			isDefault: false,
 			providers: {
+				OpenAI: {
+					providerDisplayName: "OpenAI",
+					models: [
+						{
+							id: "luna-decisions-model",
+							canonicalName: "gpt-6-luna-decisions",
+							displayName: "GPT-6 Luna Decisions",
+							providerModelId: "openai/gpt-6-luna-decisions",
+							speedTier: "FAST",
+							qualityTier: "STANDARD",
+							capabilities: ["EVALUATION"],
+						},
+					],
+				},
 				"TypeSafe AI": {
 					providerDisplayName: "TypeSafe AI",
 					models: [
@@ -215,6 +248,10 @@ describe("organization AI model preferences decisions", () => {
 
 		fireEvent.click(within(decisionCard).getByRole("combobox"));
 		expect(await screen.findByText("typesafe-ai/jev")).toBeInTheDocument();
+		// Luna is the default decision model; Jev stays selectable beside it.
+		expect(
+			screen.getByText("openai/gpt-6-luna-decisions"),
+		).toBeInTheDocument();
 		fireEvent.click(screen.getByText("TypeSafe AI Jev"));
 
 		expect(
@@ -321,7 +358,7 @@ describe("switching decisions off", () => {
 				taskType: "DECISION",
 				customParameters: null,
 				// A stored preference with no model. Reading it as "no
-				// preference" would wrongly show the seeded Jev default.
+				// preference" would wrongly show the seeded default.
 				model: null,
 			},
 		]);
@@ -380,9 +417,9 @@ describe("decisions without Vercel", () => {
 		// Nothing to switch off when there was never anything to switch on.
 		expect(within(card).queryByText("Disabled")).not.toBeInTheDocument();
 		expect(
-			within(card).getByText(/Jev requires Vercel AI Gateway/),
+			within(card).getByText(/Decision models require Vercel AI Gateway/),
 		).toHaveTextContent(
-			"Jev requires Vercel AI Gateway. Work items use your regular AI model when no decision model is available.",
+			"Decision models require Vercel AI Gateway. Work items use your regular AI model when no decision model is available.",
 		);
 	});
 });

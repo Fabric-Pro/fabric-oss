@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 const WRAPPER = fileURLToPath(
 	new URL("../run-type-check.mjs", import.meta.url),
 );
+const RESOLVER = fileURLToPath(
+	new URL("../lib/resolve-base.mjs", import.meta.url),
+);
+
 /** @param {string} path @param {string} contents */
 function write(path, contents) {
 	mkdirSync(dirname(path), { recursive: true });
@@ -69,6 +73,9 @@ function createFixture(t, name) {
 		const copiedWrapper = join(root, "scripts/run-type-check.mjs");
 		write(copiedWrapper, "");
 		copyFileSync(WRAPPER, copiedWrapper);
+		const copiedResolver = join(root, "scripts/lib/resolve-base.mjs");
+		write(copiedResolver, "");
+		copyFileSync(RESOLVER, copiedResolver);
 	}
 
 	return { root, invocation: join(root, "turbo-invocation.json") };
@@ -493,8 +500,45 @@ test("preserves a quoted max-old-space-size option", (t) => {
 	);
 });
 
+/**
+ * Makes the fixture a git repo whose HEAD is one commit ahead of origin/staging.
+ * @param {string} root
+ */
+function initStagingRepo(root) {
+	const git = (/** @type {string[]} */ ...args) => {
+		const r = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+		assert.equal(r.status, 0, String(r.stderr));
+	};
+	git("init", "-q", "-b", "work");
+	git("add", ".");
+	git(
+		"-c",
+		"user.name=t",
+		"-c",
+		"user.email=t@example.com",
+		"commit",
+		"-q",
+		"-m",
+		"root",
+	);
+	git("update-ref", "refs/remotes/origin/staging", "HEAD");
+	write(join(root, "mine.txt"), "mine");
+	git("add", "mine.txt");
+	git(
+		"-c",
+		"user.name=t",
+		"-c",
+		"user.email=t@example.com",
+		"commit",
+		"-q",
+		"-m",
+		"mine",
+	);
+}
+
 test("keeps an existing heap limit and scopes changed checks", (t) => {
 	const { root, invocation } = createFixture(t, "changed");
+	initStagingRepo(root);
 
 	const result = run(root, ["--changed", "--dry=json"], {
 		NODE_OPTIONS: "--max_old_space_size=2048 --trace-warnings",
@@ -507,13 +551,43 @@ test("keeps an existing heap limit and scopes changed checks", (t) => {
 	assert.deepEqual(child.argv, [
 		"type-check",
 		"--concurrency=2",
-		"--filter=...[origin/master]",
+		"--filter=...[origin/staging]",
 		"--dry=json",
 	]);
+	assert.match(result.stderr, /Base: origin\/staging/);
 	assert.equal(
 		child.env.NODE_OPTIONS,
 		"--max_old_space_size=2048 --trace-warnings",
 	);
+});
+
+test("--base picks the changed-check ref and is not forwarded to Turbo", (t) => {
+	const { root, invocation } = createFixture(t, "changed-base");
+	initStagingRepo(root);
+
+	const result = run(root, ["--changed", "--base=HEAD~1", "--dry=json"], {
+		TYPE_CHECK_INVOCATION: invocation,
+	});
+
+	assert.equal(result.code, 0, result.stderr);
+	const child = JSON.parse(requireRead(invocation));
+	assert.ok(child.argv.includes("--filter=...[HEAD~1]"));
+	assert.equal(
+		child.argv.some((arg) => arg.startsWith("--base")),
+		false,
+	);
+});
+
+test("--changed fails with a --base hint when no base can be resolved", (t) => {
+	const { root, invocation } = createFixture(t, "changed-no-base");
+
+	const result = run(root, ["--changed"], {
+		TYPE_CHECK_INVOCATION: invocation,
+	});
+
+	assert.equal(result.code, 2);
+	assert.match(result.stderr, /--base=<ref>/);
+	assert.equal(existsSync(invocation), false);
 });
 
 test("propagates Turbo's nonzero exit code", (t) => {

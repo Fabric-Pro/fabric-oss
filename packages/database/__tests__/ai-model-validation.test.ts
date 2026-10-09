@@ -104,6 +104,7 @@ const ANTHROPIC_DIRECT_OFFICIAL_MODELS = new Set([
 	// Claude 5 series
 	"claude-sonnet-5-5",
 	"claude-sonnet-5",
+	"claude-haiku-5-5",
 	// Claude 4.6 series
 	"claude-sonnet-4-6",
 	"claude-opus-4-6",
@@ -202,8 +203,9 @@ const DEEPSEEK_OFFICIAL_MODELS = new Set([
  * - meta/llama-3.3-70b (NOT groq/llama-3.3-70b-versatile)
  */
 const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
-	// Evaluation models (Vercel AI Gateway evaluation modality)
+	// Decision models (Vercel AI Gateway decision modality)
 	"typesafe-ai/jev",
+	"openai/gpt-6-luna-decisions",
 
 	// OpenAI models (from Vercel dashboard)
 	"openai/gpt-5.5",
@@ -249,6 +251,7 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"anthropic/claude-sonnet-4-6",
 	"anthropic/claude-opus-4-6",
 	"anthropic/claude-sonnet-4.5",
+	"anthropic/claude-haiku-5.5",
 	"anthropic/claude-haiku-4.5",
 	"anthropic/claude-opus-4.5",
 	"anthropic/claude-sonnet-4",
@@ -315,6 +318,7 @@ const OPENROUTER_OFFICIAL_MODELS = new Set([
 	"anthropic/claude-opus-4-6",
 	"anthropic/claude-opus-4.5",
 	"anthropic/claude-sonnet-4.5",
+	"anthropic/claude-haiku-5.5",
 	"anthropic/claude-haiku-4.5",
 
 	// Meta
@@ -547,6 +551,7 @@ const AWS_BEDROCK_OFFICIAL_MODELS = new Set([
 	"anthropic.claude-opus-4-6-v1",
 	"anthropic.claude-opus-4-5-20251101-v1:0",
 	"anthropic.claude-sonnet-4-5-20250929-v1:0",
+	"anthropic.claude-haiku-5-5",
 	"anthropic.claude-haiku-4-5-20251001-v1:0",
 
 	// Meta
@@ -572,6 +577,7 @@ const DATABRICKS_OFFICIAL_MODELS = new Set([
 	"system.ai.claude-opus-4-7",
 	"system.ai.claude-opus-4-6",
 	"system.ai.claude-opus-4-5",
+	"system.ai.claude-haiku-5-5",
 	"system.ai.claude-haiku-4-5",
 	"system.ai.meta-llama-3-3-70b-instruct",
 	// Embeddings
@@ -770,16 +776,46 @@ describe("AI Model Name Validation", () => {
 				providerModelId: "typesafe-ai/jev",
 			},
 		]);
+	});
+
+	it("catalogs GPT-6 Luna Decisions only for typed decision evaluation through Vercel AI Gateway", () => {
+		const luna = MODELS.find(
+			(model) => model.canonicalName === "gpt-6-luna-decisions",
+		);
+
+		expect(
+			luna,
+			"GPT-6 Luna Decisions must be present in the model catalog",
+		).toBeDefined();
+		expect(luna?.vendor).toBe("OpenAI");
+		expect(luna?.capabilities).toEqual(["EVALUATION"]);
+		expect(luna?.suitableForTasks).toEqual(["DECISION"]);
+		expect(luna?.providerMappings).toEqual([
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6-luna-decisions",
+			},
+		]);
+	});
+
+	it("defaults DECISION to GPT-6 Luna Decisions on Vercel AI Gateway, with Jev still a catalogued decision model", () => {
 		expect(
 			TASK_DEFAULTS.filter(
 				(defaultModel) => defaultModel.taskType === "DECISION",
 			),
 		).toEqual([
 			expect.objectContaining({
-				canonicalName: "typesafe-ai-jev",
+				canonicalName: "gpt-6-luna-decisions",
 				provider: "VERCEL_GATEWAY",
 			}),
 		]);
+		expect(
+			MODELS.filter((model) =>
+				model.suitableForTasks.includes("DECISION"),
+			)
+				.map((model) => model.canonicalName)
+				.sort(),
+		).toEqual(["gpt-6-luna-decisions", "typesafe-ai-jev"]);
 	});
 
 	describe("OpenAI Direct", () => {

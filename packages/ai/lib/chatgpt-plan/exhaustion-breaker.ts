@@ -1,8 +1,9 @@
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	clearChatGptPlanSourceState,
-	getChatGptPlanOrgAccountFirstUseSince,
+	getChatGptPlanOrgAccountWindows,
 	getChatGptPlanSourceStates,
+	recordChatGptPlanBudgetObservation,
 	recordChatGptPlanSourceExhausted as storeChatGptPlanSourceExhausted,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -37,6 +38,10 @@ const ORG_FIRST_UNKNOWN_PAUSE_MS = 30 * 60_000;
 const PLAN_WINDOW_MS = 5 * 60 * 60_000;
 
 const STATE_CACHE_MS = 30_000;
+
+// How far past Fabric's estimate of the window's reset OpenAI's reset may
+// fall and still be this window's.
+const WINDOW_RESET_TOLERANCE_MS = 10 * 60_000;
 
 interface CachedState {
 	openUntil: number | null;
@@ -134,9 +139,9 @@ export function chatGptPlanExhaustedError(
 /**
  * How long a source stays closed after a refusal with no reset time. An
  * organization account's first such refusal trusts Fabric's own ledger — the
- * window started with its oldest call in the last five hours — and every
- * refusal in a row after that backs off instead, since the ledger misses
- * whatever else spends the account.
+ * reset of the anchored window its calls show — and every refusal in a row
+ * after that backs off instead, since the ledger misses whatever else spends
+ * the account.
  */
 async function unknownResetPause(
 	ref: PlanSourceRef,
@@ -147,12 +152,13 @@ async function unknownResetPause(
 		return { openUntil: now + UNKNOWN_RESET_PAUSE_MS, resetAt: null };
 	}
 	if (previousUnknownResets === 0) {
-		const firstUse = await getChatGptPlanOrgAccountFirstUseSince({
+		const windows = await getChatGptPlanOrgAccountWindows({
 			organizationId: ref.organizationId,
-			accountId: ref.accountId,
-			since: new Date(now - PLAN_WINDOW_MS),
+			accountIds: [ref.accountId],
+			now: new Date(now),
 		}).catch(() => null);
-		const estimate = firstUse ? firstUse.getTime() + PLAN_WINDOW_MS : null;
+		const estimate =
+			windows?.get(ref.accountId)?.resetsAt?.getTime() ?? null;
 		if (estimate !== null && estimate > now) {
 			return { openUntil: estimate, resetAt: new Date(estimate) };
 		}
@@ -169,10 +175,33 @@ async function unknownResetPause(
  * for every process through Postgres. A failed write is logged, never thrown —
  * the caller is already reporting the refusal itself.
  */
-export async function recordChatGptPlanSourceExhausted(
+export function recordChatGptPlanSourceExhausted(
 	ref: PlanSourceRef,
 	error: SubscriptionPlanExhaustedError,
 	now = Date.now(),
+): Promise<void> {
+	return recordExhausted(ref, error, { now, observeBudget: true });
+}
+
+/**
+ * {@link recordChatGptPlanSourceExhausted} for a refusal another service
+ * reported (an agent's): it closes the source the same way, but teaches no
+ * budget — the reporter's call never went through this window's ledger.
+ */
+export function recordReportedChatGptPlanSourceExhausted(
+	ref: PlanSourceRef,
+	error: SubscriptionPlanExhaustedError,
+): Promise<void> {
+	return recordExhausted(ref, error, {
+		now: Date.now(),
+		observeBudget: false,
+	});
+}
+
+async function recordExhausted(
+	ref: PlanSourceRef,
+	error: SubscriptionPlanExhaustedError,
+	{ now, observeBudget }: { now: number; observeBudget: boolean },
 ): Promise<void> {
 	const key = planSourceKey(ref);
 	const previous = cache.get(key)?.consecutiveUnknownResets ?? 0;
@@ -202,6 +231,64 @@ export async function recordChatGptPlanSourceExhausted(
 					? writeError.message
 					: String(writeError),
 		});
+	}
+	if (observeBudget) {
+		await observeWindowBudget(ref, error, now);
+	}
+}
+
+/**
+ * Calibration (Fizzy #2770 D6): what a shared account's open window had used
+ * when OpenAI refused it is one observation of its real budget. Organization
+ * accounts only: a member's own plan is also used outside Fabric, so Fabric's
+ * share of its window says little about the allowance. Best effort, like the
+ * state write above.
+ */
+async function observeWindowBudget(
+	ref: PlanSourceRef,
+	error: SubscriptionPlanExhaustedError,
+	now: number,
+): Promise<void> {
+	if (ref.kind !== "org") {
+		return;
+	}
+	try {
+		const at = new Date(now);
+		const window = (
+			await getChatGptPlanOrgAccountWindows({
+				organizationId: ref.organizationId,
+				accountIds: [ref.accountId],
+				now: at,
+			})
+		).get(ref.accountId);
+		if (!window?.windowStart || window.inputTokens <= 0) {
+			return;
+		}
+		// Only a five-hour-window refusal measures the window. One that
+		// resets well after this window would (the weekly cap) says nothing
+		// about it, and would teach a budget far too small.
+		if (
+			error.resetAt &&
+			window.resetsAt &&
+			error.resetAt.getTime() >
+				window.resetsAt.getTime() + WINDOW_RESET_TOLERANCE_MS
+		) {
+			return;
+		}
+		await recordChatGptPlanBudgetObservation({
+			source: ref,
+			windowStart: window.windowStart,
+			inputTokens: window.inputTokens,
+			observedAt: at,
+		});
+	} catch (error) {
+		logger.warn(
+			"[chatgpt-plan] Recording a window budget observation failed",
+			{
+				...planSourceLogFields(ref),
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
 	}
 }
 

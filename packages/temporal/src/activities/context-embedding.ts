@@ -12,7 +12,7 @@
 
 import {
 	AIProviderNotConfiguredError,
-	getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
 import {
 	db,
@@ -313,7 +313,7 @@ export async function embedSingleContextActivity(
 		}
 
 		// Get AI provider configuration
-		const providerConfig = await getSystemRAGProviderConfig({
+		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 			userId,
 			organizationId,
 		});

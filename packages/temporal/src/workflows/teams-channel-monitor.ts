@@ -25,6 +25,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as teamsChannelMonitorActivities from "../activities/teams-channel-monitor";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
 // =============================================================================
 // Types
@@ -73,6 +74,12 @@ const activities = proxyActivities<typeof teamsChannelMonitorActivities>({
 		backoffCoefficient: 2,
 		maximumInterval: "60s",
 		maximumAttempts: 3,
+		// The analysis reaches a model: a spent ChatGPT plan or a missing
+		// provider fails the same way on every attempt, and a retry would
+		// repeat the Graph fetch and capture for nothing (Fizzy #2770). The
+		// next tick tries the thread again. Retry options are not part of the
+		// command sequence, so no `patched()` guard.
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
 });
 

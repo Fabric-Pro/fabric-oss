@@ -4,20 +4,17 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import { ConnectCliDialog } from "@saas/projects/components/cli-connection/ConnectCliDialog";
 import type { NativeInstructionBase } from "@saas/projects/lib/instruction-change-source";
 import { safeHttpsUrl } from "@saas/projects/lib/instructions-direct-commit";
+import { instructionsFreshness } from "@saas/projects/lib/instructions-query-freshness";
 import { localSetupRouteFor } from "@saas/projects/lib/instructions-repository-sync";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { CheckIcon } from "lucide-react";
+import { Skeleton } from "@ui/components/skeleton";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { defaultSelectedPath } from "../../lib/instructions-default-file";
-import {
-	navigateToProjectSettingsTab,
-	REPOSITORY_SETTINGS_ANCHOR_ID,
-} from "../settings-tab-navigation";
 import { AddInstructionFileDialog } from "./AddInstructionFileDialog";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
 import { InstructionFileView } from "./InstructionFileView";
@@ -31,11 +28,16 @@ import {
 	InstructionsStatusFacts,
 } from "./InstructionsStatusStrip";
 import { InstructionsTree, type TreeFile } from "./InstructionsTree";
-import { prefetchDefaultInstructionFiles } from "./lib/coding-instructions-warmup";
+import { type RepositoryLinks, repositoryWebUrl } from "./instruction-links";
+import { RepositoryHeaderBadge } from "./RepositoryHeaderBadge";
 import { RepositorySyncSettingsSection } from "./RepositorySyncSettingsSection";
+import {
+	type RepositoryUnavailability,
+	RepositoryUnavailableNotice,
+} from "./RepositoryUnavailableNotice";
 import { nativeInstructionDownloadUrl } from "./useInstructionFileContent";
-
-const COMMITS_IDLE_DELAY_MS = 1_500;
+import { useRenameFollowing } from "./useRenameFollowing";
+import { useRepositoryReads, useRereadOpenFile } from "./useRepositoryReads";
 
 type ReadyRepository = {
 	availability: "READY";
@@ -48,36 +50,7 @@ type ReadyRepository = {
 };
 type RepositoryState =
 	| ReadyRepository
-	| {
-			availability:
-				| "UPLOAD"
-				| "MIGRATING"
-				| "DISCONNECTED"
-				| "CREDENTIALS_EXPIRED"
-				| "NOT_FOUND"
-				| "UNAVAILABLE";
-	  };
-
-function RepositoryUnavailableNotice({
-	message,
-	onReconnect,
-	reconnectLabel,
-}: {
-	message: string;
-	onReconnect?: () => void;
-	reconnectLabel: string;
-}) {
-	return (
-		<div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-4 text-sm">
-			<output>{message}</output>
-			{onReconnect ? (
-				<Button type="button" size="sm" onClick={onReconnect}>
-					{reconnectLabel}
-				</Button>
-			) : null}
-		</div>
-	);
-}
+	| { availability: "UPLOAD" | "MIGRATING" | RepositoryUnavailability };
 
 type Props = {
 	projectId: string;
@@ -88,7 +61,12 @@ type Props = {
 	readOnlyMode?: boolean;
 	state: RepositoryState;
 	refreshing: boolean;
-	onRefresh: () => Promise<RepositoryState | undefined>;
+	/** Re-reads the repository state once; the answer reaches `state`. */
+	onRefresh: () => Promise<void>;
+	/** The state, then the reads at the current commit: after a setting changed what they show. */
+	onReread: () => Promise<void>;
+	/** The Refresh button: the same re-read, then says what it found. */
+	onUserRefresh: () => Promise<void>;
 };
 
 export function DirectRepositoryInstructions(props: Props) {
@@ -116,48 +94,29 @@ export function DirectRepositoryInstructions(props: Props) {
 			: lastReady?.projectId === props.projectId
 				? lastReady.repository
 				: null;
-	const unavailableMessage = available
-		? undefined
-		: t(
-				props.state.availability === "DISCONNECTED"
-					? "disconnected"
-					: props.state.availability === "CREDENTIALS_EXPIRED"
-						? "credentialsExpired"
-						: props.state.availability === "NOT_FOUND"
-							? "notFound"
-							: "unavailable",
-			);
-	const onReconnect =
-		props.state.availability === "CREDENTIALS_EXPIRED"
-			? () =>
-					navigateToProjectSettingsTab(
-						props.projectId,
-						"development",
-						{
-							anchorId: REPOSITORY_SETTINGS_ANCHOR_ID,
-						},
-					)
-			: undefined;
-	const queryClient = useQueryClient();
+	const unavailable: RepositoryUnavailability | null =
+		props.state.availability === "READY" ||
+		props.state.availability === "UPLOAD" ||
+		props.state.availability === "MIGRATING"
+			? null
+			: props.state.availability;
 	const [connectOpen, setConnectOpen] = useState(false);
-	const refresh = async () => {
-		const [, next] = await Promise.all([
-			queryClient.invalidateQueries({
-				queryKey: orpc.projects.instructions.repository.key({
-					input: { projectId: props.projectId },
-				}),
-			}),
-			props.onRefresh(),
-		]);
-		return next;
-	};
 	const [configureOpen, setConfigureOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const settingsChanged = useRef(false);
+	// Every way the settings dialog closes ends here, so a save is re-read
+	// once and the flag never outlives the dialog.
+	const finishSettings = () => {
+		if (settingsChanged.current) {
+			settingsChanged.current = false;
+			void props.onReread();
+		}
+	};
 	const configuration = useQuery({
 		...orpc.projects.instructions.repositorySync.get.queryOptions({
 			input: { projectId: props.projectId },
 		}),
-		refetchOnWindowFocus: false,
+		...instructionsFreshness.configurationRead,
 	});
 	const localSetup = localSetupRouteFor({
 		repositoryBacked: true,
@@ -172,8 +131,7 @@ export function DirectRepositoryInstructions(props: Props) {
 					projectId={props.projectId}
 					projectName={props.projectName}
 					repository={repository}
-					unavailableMessage={unavailableMessage}
-					onReconnect={onReconnect}
+					unavailable={unavailable}
 					connectOpen={connectOpen}
 					localSetup={localSetup}
 					onConnectOpenChange={setConnectOpen}
@@ -187,7 +145,8 @@ export function DirectRepositoryInstructions(props: Props) {
 					}
 					readOnlyMode={props.readOnlyMode ?? false}
 					refreshing={props.refreshing}
-					onRefresh={refresh}
+					onRefresh={props.onRefresh}
+					onUserRefresh={props.onUserRefresh}
 					onOpenSettings={() => setSettingsOpen(true)}
 					repositoryLabel={
 						configuration.data?.configured
@@ -201,26 +160,30 @@ export function DirectRepositoryInstructions(props: Props) {
 						syncNow: {
 							running: false,
 							busy: props.refreshing,
-							onSync: refresh,
+							onSync: props.onUserRefresh,
 							label: t("refresh"),
 						},
 						settings: { onOpen: () => setSettingsOpen(true) },
 					}}
 				>
-					<RepositoryUnavailableNotice
-						message={unavailableMessage ?? ""}
-						onReconnect={onReconnect}
-						reconnectLabel={t("reconnect")}
-					/>
+					{unavailable ? (
+						<RepositoryUnavailableNotice
+							projectId={props.projectId}
+							availability={unavailable}
+						/>
+					) : null}
 				</InstructionsPageFrame>
 			)}
 			<InstructionsSettingsDialog
 				projectId={props.projectId}
 				open={settingsOpen}
+				onSaved={() => {
+					settingsChanged.current = true;
+				}}
 				onOpenChange={(open) => {
 					setSettingsOpen(open);
 					if (!open) {
-						refresh();
+						finishSettings();
 					}
 				}}
 				canEdit={props.canConfigure}
@@ -238,10 +201,12 @@ export function DirectRepositoryInstructions(props: Props) {
 							directRepository
 							onChange={() => {
 								setSettingsOpen(false);
+								finishSettings();
 								setConfigureOpen(true);
 							}}
 							onChanged={async () => {
-								refresh();
+								settingsChanged.current = true;
+								props.onRefresh().catch(() => undefined);
 								await configuration.refetch();
 							}}
 						/>
@@ -263,7 +228,7 @@ export function DirectRepositoryInstructions(props: Props) {
 					onOpenChange={setConfigureOpen}
 					integrations={configuration.data.availableIntegrations}
 					current={configuration.data.configured}
-					onSaved={refresh}
+					onSaved={props.onReread}
 				/>
 			) : null}
 		</>
@@ -274,8 +239,7 @@ function ReadyRepositoryInstructions({
 	projectId,
 	projectName,
 	repository,
-	unavailableMessage,
-	onReconnect,
+	unavailable,
 	connectOpen,
 	localSetup,
 	onConnectOpenChange,
@@ -286,14 +250,14 @@ function ReadyRepositoryInstructions({
 	readOnlyMode,
 	refreshing,
 	onRefresh,
+	onUserRefresh,
 	onOpenSettings,
 	repositoryLabel,
 }: {
 	projectId: string;
 	projectName: string;
 	repository: ReadyRepository;
-	unavailableMessage?: string;
-	onReconnect?: () => void;
+	unavailable: RepositoryUnavailability | null;
 	connectOpen: boolean;
 	localSetup: ReturnType<typeof localSetupRouteFor>;
 	onConnectOpenChange: (open: boolean) => void;
@@ -303,7 +267,8 @@ function ReadyRepositoryInstructions({
 	allowReaderProposals: boolean;
 	readOnlyMode: boolean;
 	refreshing: boolean;
-	onRefresh: () => Promise<RepositoryState | undefined>;
+	onRefresh: () => Promise<void>;
+	onUserRefresh: () => Promise<void>;
 	onOpenSettings: () => void;
 	repositoryLabel: string | null;
 }) {
@@ -319,7 +284,6 @@ function ReadyRepositoryInstructions({
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [addOpen, setAddOpen] = useState(false);
 	const [leftOutShown, setLeftOutShown] = useState(false);
-	const [treeHasNoMatches, setTreeHasNoMatches] = useState(false);
 	const fileListRef = useRef<TreeFile[]>([]);
 	const [draftOwner, setDraftOwner] = useState<{
 		nativeBase: NativeInstructionBase;
@@ -344,47 +308,12 @@ function ReadyRepositoryInstructions({
 		generation: repository.generation,
 		commitSha: repository.currentCommitSha,
 	};
-	const files = useQuery({
-		...orpc.projects.instructions.repository.listFiles.queryOptions({
-			input: { projectId, ...pin },
-		}),
-		staleTime: Number.POSITIVE_INFINITY,
-		refetchOnWindowFocus: false,
-		enabled: unavailableMessage === undefined,
-	});
-	const queryClient = useQueryClient();
-	const pinGeneration = pin.generation;
-	const pinCommitSha = pin.commitSha;
-	const readable = unavailableMessage === undefined;
-	useEffect(() => {
-		if (readable) {
-			prefetchDefaultInstructionFiles(queryClient, projectId, {
-				generation: pinGeneration,
-				commitSha: pinCommitSha,
-			});
-		}
-	}, [readable, queryClient, projectId, pinGeneration, pinCommitSha]);
-	// The commit list only decorates the header ("published by"), so it waits
-	// until the file is on screen, or until History is opened.
-	const [commitsIdle, setCommitsIdle] = useState(false);
-	const filesLoaded = files.data !== undefined;
-	useEffect(() => {
-		if (!filesLoaded) {
-			return;
-		}
-		const timer = setTimeout(
-			() => setCommitsIdle(true),
-			COMMITS_IDLE_DELAY_MS,
-		);
-		return () => clearTimeout(timer);
-	}, [filesLoaded]);
-	const commits = useQuery({
-		...orpc.projects.instructions.repository.listCommits.queryOptions({
-			input: { projectId, ...pin, cursor: 1 },
-		}),
-		staleTime: Number.POSITIVE_INFINITY,
-		refetchOnWindowFocus: false,
-		enabled: readable && (commitsIdle || history === "commits"),
+	const readable = unavailable === null;
+	const { files, commits, defaultPath } = useRepositoryReads({
+		projectId,
+		pin,
+		readable,
+		historyOpen: history === "commits",
 	});
 	if (files.data) fileListRef.current = files.data.files;
 	const listing =
@@ -396,32 +325,45 @@ function ReadyRepositoryInstructions({
 		(commit) => commit.sha === pin.commitSha,
 	);
 	const repositoryUrl = safeHttpsUrl(repository.repositoryUrl);
+	const repositoryLinks: RepositoryLinks | null = repositoryUrl
+		? {
+				provider: repository.provider,
+				repositoryUrl,
+				ref: repository.ref,
+				rootPath: repository.rootPath,
+			}
+		: null;
+	const renameFollow = useRenameFollowing({
+		paths: files.data?.files.map((file) => file.path),
+		pin,
+		onLanded: setSelectedPath,
+	});
+	const wantedPath = renameFollow.landedPath ?? selectedPath;
 	const selectedFile =
 		files.data === undefined
-			? null
-			: selectedPath !== null &&
-					files.data.files.some((file) => file.path === selectedPath)
-				? selectedPath
+			? (wantedPath ?? defaultPath ?? null)
+			: wantedPath !== null &&
+					files.data.files.some((file) => file.path === wantedPath)
+				? wantedPath
 				: defaultSelectedPath(files.data.files);
-	const refreshWithFeedback = async () => {
-		const next = await onRefresh();
-		if (next?.availability !== "READY") {
-			return;
-		}
-		toast.info(
-			next.currentCommitSha === pin.commitSha
-				? t("refreshUpToDate")
-				: t("refreshUpdated", {
-						sha7: next.currentCommitSha.slice(0, 7),
-					}),
-		);
-	};
-	const badgeText = tPublished("publishedBadgeRepository", {
-		ref: repository.ref,
-		sha7: pin.commitSha.slice(0, 7),
+	const viewPath =
+		draftOwner?.path ?? renameFollow.waiting?.from ?? selectedFile;
+	const rereadOpenFile = useRereadOpenFile({
+		projectId,
+		path: viewPath,
+		onRefresh,
 	});
-	const viewPath = draftOwner?.path ?? selectedFile;
-	const viewBase = draftOwner?.nativeBase ?? pin;
+	const viewBase = draftOwner?.nativeBase ?? renameFollow.waiting?.pin ?? pin;
+	const selectPath = useCallback(
+		(path: string) => {
+			if (draftOwner && path !== draftOwner.path) {
+				toast.info(t("finishEditingFirst"));
+				return;
+			}
+			setSelectedPath(path);
+		},
+		[draftOwner, t],
+	);
 	const canCommit = canEdit && !readOnlyMode;
 	const canPropose = canEdit || (canRead && allowReaderProposals);
 	const repositoryTarget = {
@@ -450,7 +392,7 @@ function ReadyRepositoryInstructions({
 				syncNow: {
 					running: false,
 					busy: refreshing,
-					onSync: () => void refreshWithFeedback(),
+					onSync: onUserRefresh,
 					label: t("refresh"),
 				},
 				settings: { onOpen: onOpenSettings },
@@ -460,28 +402,27 @@ function ReadyRepositoryInstructions({
 						: undefined,
 			}}
 			badge={
-				<span
-					data-testid="instructions-branch-pill"
-					title={badgeText}
-					className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-success text-xs"
-				>
-					<CheckIcon className="size-3 shrink-0" aria-hidden="true" />
-					<span className="truncate">{badgeText}</span>
-				</span>
+				<RepositoryHeaderBadge
+					branch={repository.ref}
+					commitSha={pin.commitSha}
+				/>
 			}
 		>
-			{unavailableMessage ? (
+			{unavailable ? (
 				<RepositoryUnavailableNotice
-					message={unavailableMessage}
-					onReconnect={onReconnect}
-					reconnectLabel={t("reconnect")}
+					projectId={projectId}
+					availability={unavailable}
 				/>
 			) : null}
 			<InstructionsStatusFacts>
 				<InstructionsStatusFact label={tPublished("statusSource")}>
 					{repositoryUrl ? (
 						<a
-							href={repositoryUrl}
+							href={
+								repositoryLinks
+									? repositoryWebUrl(repositoryLinks)
+									: repositoryUrl
+							}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="hover:underline"
@@ -546,100 +487,113 @@ function ReadyRepositoryInstructions({
 							<span className="text-muted-foreground text-xs">
 								{tPublished("statusLeftOutPartial", {
 									shown: files.data.excludedPaths.length,
+									total: files.data.excludedCount,
 								})}
 							</span>
 						) : null}
 					</InstructionsStatusFact>
 				) : null}
 			</InstructionsStatusFacts>
-			{!listing ? (
+			{!listing && viewPath === null ? (
 				<output>{t("loading")}</output>
-			) : (files.isError || listing.refusal) && !draftOwner ? (
-				<p role="alert">{t("loadError")}</p>
+			) : (files.isError || listing?.refusal) && !draftOwner ? (
+				<div role="alert" className="flex flex-wrap items-center gap-3">
+					<p>{t("loadError")}</p>
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						onClick={() => void files.refetch()}
+					>
+						{t("retryLoad")}
+					</Button>
+				</div>
 			) : (
 				<>
-					{listing.incomplete ? (
+					{listing?.incomplete ? (
 						<p className="text-muted-foreground text-sm">
 							{t("incomplete")}
 						</p>
 					) : null}
-					{listing.files.length === 0 && !draftOwner ? (
+					{listing && listing.files.length === 0 && !draftOwner ? (
 						<p className="rounded-lg border p-6 text-sm">
 							{t("empty")}
 						</p>
 					) : (
 						<div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)]">
-							<div
-								data-onboarding-target="coding-instructions-tree"
-								className="min-w-0"
-							>
-								<InstructionsTree
-									files={listing.files}
-									leftOut={
-										files.data &&
-										files.data.excludedCount > 0
-											? {
-													files: files.data
-														.excludedPaths,
-													shown: leftOutShown,
-													onToggle: () =>
-														setLeftOutShown(
-															(shown) => !shown,
-														),
-												}
-											: undefined
-									}
-									selectedPath={selectedFile}
-									onSelect={setSelectedPath}
-									onNoMatchesChange={setTreeHasNoMatches}
-								/>
+							<div className="min-w-0">
+								{listing ? (
+									<InstructionsTree
+										files={listing.files}
+										leftOut={
+											files.data &&
+											files.data.excludedCount > 0
+												? {
+														files: files.data
+															.excludedPaths,
+														shown: leftOutShown,
+														onToggle: () =>
+															setLeftOutShown(
+																(shown) =>
+																	!shown,
+															),
+													}
+												: undefined
+										}
+										selectedPath={viewPath}
+										onSelect={selectPath}
+									/>
+								) : (
+									<Skeleton
+										className="h-64 w-full rounded-lg"
+										aria-hidden="true"
+										data-onboarding-target="coding-instructions-tree"
+									/>
+								)}
 							</div>
 							<div
 								data-onboarding-target="coding-instructions-file-view"
 								className="min-w-0 overflow-hidden rounded-lg border bg-card"
 							>
-								{treeHasNoMatches ? (
+								{viewPath ? (
+									<InstructionFileView
+										projectId={projectId}
+										nativeBase={viewBase}
+										currentNativeBase={pin}
+										path={viewPath}
+										nativeFile={files.data?.files.find(
+											(file) => file.path === viewPath,
+										)}
+										canCommit={
+											canCommit && listing !== undefined
+										}
+										canPropose={
+											canPropose && listing !== undefined
+										}
+										repositoryTarget={repositoryTarget}
+										repositoryLinks={repositoryLinks}
+										onOpenPath={selectPath}
+										onRenamed={(to) =>
+											renameFollow.begin(viewPath, to)
+										}
+										existingPaths={
+											new Set(
+												listing?.files.map(
+													(file) => file.path,
+												),
+											)
+										}
+										onChanged={onRefresh}
+										onCommitted={rereadOpenFile}
+										onNativeDraftStateChange={
+											onNativeDraftStateChange
+										}
+									/>
+								) : (
 									<p className="p-6 text-muted-foreground text-sm">
-										{t("searchNoMatches")}
+										{t("selectFile")}
 									</p>
-								) : null}
-								<div
-									className={
-										treeHasNoMatches ? "hidden" : undefined
-									}
-								>
-									{viewPath ? (
-										<InstructionFileView
-											projectId={projectId}
-											nativeBase={viewBase}
-											currentNativeBase={pin}
-											path={viewPath}
-											nativeFile={files.data?.files.find(
-												(file) =>
-													file.path === viewPath,
-											)}
-											canCommit={canCommit}
-											canPropose={canPropose}
-											repositoryTarget={repositoryTarget}
-											existingPaths={
-												new Set(
-													listing.files.map(
-														(file) => file.path,
-													),
-												)
-											}
-											onChanged={onRefresh}
-											onCommitted={onRefresh}
-											onNativeDraftStateChange={
-												onNativeDraftStateChange
-											}
-										/>
-									) : (
-										<p className="p-6 text-muted-foreground text-sm">
-											{t("selectFile")}
-										</p>
-									)}
-								</div>
+								)}
 							</div>
 						</div>
 					)}

@@ -10,6 +10,7 @@
  */
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import {
+	type AiJobKey,
 	generateObject,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
@@ -48,6 +49,7 @@ import {
 } from "../../lib/resolve-backlog-update-target";
 import { detectDestructiveRewrite } from "../../lib/structure-guards";
 import { triggerDuplicateDetection } from "../../lib/trigger-duplicate-detection";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { routeActionItemsToExistingTickets } from "./route-action-items";
 
 // =============================================================================
@@ -723,6 +725,8 @@ export interface AnalyzeContextInput {
 	deferDecisionPrecheck?: boolean;
 	/** Prompt variant (plan Slice 6). Omitted = "standard". */
 	intakeMode?: BacklogIntakeMode;
+	/** Tags a background caller's model call; omitted for a person's AI Update. */
+	jobType?: AiJobKey;
 }
 
 /**
@@ -2270,6 +2274,7 @@ export async function analyzeContextAndPropose(
 		allowRouting = false,
 		deferDecisionPrecheck = false,
 		intakeMode = "standard",
+		jobType,
 	} = input;
 
 	logger.info("[Backlog Analysis] Starting context analysis", {
@@ -2344,7 +2349,12 @@ export async function analyzeContextAndPropose(
 		// Resolve AI model via centralized entry point
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId, featureKey: "backlog-update" },
+			{
+				userId,
+				organizationId,
+				featureKey: "backlog-update",
+				...(jobType ? { jobType } : {}),
+			},
 		);
 
 		logger.info("[Backlog Analysis] Using AI model", {
@@ -2428,6 +2438,16 @@ export async function analyzeContextAndPropose(
 			},
 			latencyMs: Date.now() - analysisStart,
 		});
+		// A background caller's spent or rotated ChatGPT plan is its workflow's
+		// to handle (Fizzy #2770 A4): the Slack monitor gives its claim back,
+		// meeting auto-analysis waits for the reset, and a rotation stays
+		// retryable. Those read the error's own type, so it goes up unchanged.
+		if (jobType) {
+			const planRefusal = findWorkflowHandledPlanRefusal(error);
+			if (planRefusal) {
+				throw planRefusal;
+			}
+		}
 		// DO NOT pass a `cause` argument here. The classified message/errorClass
 		// survive Temporal's ActivityFailure wrapper ONLY because no cause is
 		// attached — `unwrapPmSyncError` in the workflow walks the `.cause` chain

@@ -14,7 +14,7 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	attachArtifactToProject,
 	createContext,
@@ -73,7 +73,7 @@ export const attachToProjectProcedure = tenantProtectedProcedure
 			return { success: true, indexed: Boolean(artifact.indexedAt) };
 		}
 
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getEmbeddingRAGProviderConfig({
 			userId: context.user.id,
 			organizationId,
 		});

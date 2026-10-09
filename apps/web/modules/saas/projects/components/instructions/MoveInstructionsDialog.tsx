@@ -154,7 +154,7 @@ export function MoveInstructionsDialog({
 				onOpenChange(next);
 			}}
 		>
-			<DialogContent className="max-w-lg">
+			<DialogContent className="max-w-lg grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>{t("moveDialog.title")}</DialogTitle>
 					<DialogDescription>
@@ -236,7 +236,7 @@ export function MoveInstructionsDialog({
 							{problem.message}
 						</p>
 					) : null}
-					<DialogFooter className="items-center">
+					<DialogFooter className="items-center sm:flex-wrap sm:gap-y-2">
 						<Button
 							type="button"
 							variant="outline"

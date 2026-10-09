@@ -30,14 +30,17 @@ import {
 	countTokensBatch,
 	splitByTokens,
 } from "../chunking/tokenizer";
+import {
+	EMBEDDING_MODEL_CONFIG,
+	embeddingBaseModelName,
+	getEmbeddingDimensions,
+} from "./dimensions";
 import type {
 	BatchEmbeddingResult,
 	EmbeddingResult,
 	TenantContext,
 } from "./types";
 
-// Default dimensions for unknown models
-const EMBEDDING_DIMENSIONS = 1536;
 const COST_PER_MILLION_TOKENS = 0.02; // $0.02 per 1M tokens
 
 // The endpoint rejects a request whose inputs exceed 300k tokens in total, or
@@ -47,6 +50,8 @@ const COST_PER_MILLION_TOKENS = 0.02; // $0.02 per 1M tokens
 // be evaluated" degrades far past what the input warranted. 250k leaves room
 // for the provider counting tokens slightly differently than tiktoken does.
 // Exported so tests track the real ceilings instead of a drifting copy.
+export { getEmbeddingDimensions } from "./dimensions";
+
 export const MAX_TOKENS_PER_REQUEST = 250_000;
 export const MAX_INPUTS_PER_REQUEST = 2048;
 // The per-input ceiling, matching what `ai-model-catalog.ts` records as the
@@ -91,19 +96,6 @@ function combineChunkEmbeddings(
 }
 
 /**
- * Embedding model configuration for different models
- * Maps model names to their dimensions and cost
- */
-const EMBEDDING_MODEL_CONFIG: Record<
-	string,
-	{ dimensions: number; costPerMillion: number }
-> = {
-	"text-embedding-3-small": { dimensions: 1536, costPerMillion: 0.02 },
-	"text-embedding-3-large": { dimensions: 3072, costPerMillion: 0.13 },
-	"text-embedding-ada-002": { dimensions: 1536, costPerMillion: 0.1 },
-};
-
-/**
  * Provider configuration for embedding
  * @deprecated Use tenant context instead - the centralized function handles API keys
  */
@@ -114,33 +106,12 @@ export interface EmbeddingProviderConfig {
 }
 
 /**
- * Get the dimensions for an embedding model
- *
- * Exported so a caller that has to know whether a model's vectors fit a
- * fixed-size collection (company context, Fizzy #2719) reads the same table
- * the embedding calls size their requests from.
- *
- * @param modelName - The model name
- * @returns The dimensions for the model
- */
-export function getEmbeddingDimensions(modelName: string): number {
-	// Extract base model name if it has a provider prefix
-	const baseName = modelName.includes("/")
-		? (modelName.split("/").pop() ?? modelName)
-		: modelName;
-	return EMBEDDING_MODEL_CONFIG[baseName]?.dimensions ?? EMBEDDING_DIMENSIONS;
-}
-
-/**
  * Get the cost per million tokens for an embedding model
  * @param modelName - The model name
  * @returns The cost per million tokens
  */
 function getEmbeddingCostPerMillion(modelName: string): number {
-	// Extract base model name if it has a provider prefix
-	const baseName = modelName.includes("/")
-		? (modelName.split("/").pop() ?? modelName)
-		: modelName;
+	const baseName = embeddingBaseModelName(modelName);
 	return (
 		EMBEDDING_MODEL_CONFIG[baseName]?.costPerMillion ??
 		COST_PER_MILLION_TOKENS

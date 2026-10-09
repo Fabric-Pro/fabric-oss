@@ -28,6 +28,14 @@ export const OAUTH_API_RESOURCE_PATH = "/api/v1";
  */
 export const OAUTH_DISPLAYED_BINDING_FIELD = "displayed_binding";
 
+/**
+ * The field of the consent request in which an organization-wide page says
+ * which organization it showed. The server refuses the consent when the
+ * organization it would grant is another, so what the person read is what is
+ * granted.
+ */
+export const OAUTH_DISPLAYED_ORGANIZATION_FIELD = "displayed_organization";
+
 /** Which surface a project grant reaches: the MCP gateway or the v1 REST API. */
 export type OAuthProjectAudience = "mcp" | "api";
 

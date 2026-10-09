@@ -440,6 +440,48 @@ describe("listProjectSources", () => {
 	});
 });
 
+describe("synced Living Memory sources", () => {
+	it("names a synced file by its full repository path when listing", async () => {
+		h.listProjectContextSummaries.mockResolvedValue({
+			contexts: [
+				sourceSummary({
+					type: "TEXT",
+					sourceTitle: "architecture.md",
+					originalFilename: null,
+					sourcePath: "docs/architecture.md",
+				}),
+			],
+			total: 1,
+			hasMore: false,
+			excludedCodeContexts: 0,
+		});
+
+		const res = await listProjectSources({ search: "docs" }, CTX);
+
+		expect(res).toMatchObject({
+			sources: [
+				{
+					title: "architecture.md",
+					sourcePath: "docs/architecture.md",
+				},
+			],
+		});
+	});
+
+	it("names a synced file by its full repository path when reading", async () => {
+		h.getContextById.mockResolvedValue(
+			sourceRow({
+				sourceTitle: "architecture.md",
+				sourcePath: "docs/architecture.md",
+			}),
+		);
+
+		const res = await getProjectSource({ source: "c-1" }, CTX);
+
+		expect(res).toMatchObject({ sourcePath: "docs/architecture.md" });
+	});
+});
+
 describe("getProjectSource", () => {
 	it("pages a long source and gives the continuation offset", async () => {
 		h.getContextById.mockResolvedValue(

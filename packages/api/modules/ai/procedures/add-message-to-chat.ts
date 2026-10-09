@@ -4,7 +4,7 @@ import {
 	generateChatTitle,
 	getAggressiveStreamingConfig,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getEmbeddingRAGProviderConfig,
 	logModelUsageAsync,
 	streamText,
 	toUIMessageStream,
@@ -289,7 +289,7 @@ export const addMessageToChat = tenantProtectedProcedure
 				try {
 					// Get API key for inline RAG retrieval
 					// This is an API procedure (not Temporal workflow), so fetching key here is safe
-					const ragConfig = await getRAGProviderConfig({
+					const ragConfig = await getEmbeddingRAGProviderConfig({
 						userId: user.id,
 						organizationId: chat.organizationId || undefined,
 					});

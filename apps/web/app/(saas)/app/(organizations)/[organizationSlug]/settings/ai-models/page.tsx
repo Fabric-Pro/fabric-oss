@@ -1,6 +1,6 @@
 import { isOrganizationAdmin } from "@repo/auth/lib/helper";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
-import { OrgAiModelPreferencesForm } from "@saas/settings/components/OrgAiModelPreferencesForm";
+import { OrgAiModelsSettings } from "@saas/settings/components/ai-models-routing/OrgAiModelsSettings";
 import { SettingsHero } from "@saas/settings/components/SettingsHero";
 import { SettingsList } from "@saas/shared/components/SettingsList";
 import { redirect } from "next/navigation";
@@ -25,6 +25,11 @@ export default async function OrgAiModelPreferencesPage({
 	}
 
 	const isAdmin = isOrganizationAdmin(organization, session?.user);
+	// The organization's own admins and owners choose its ChatGPT plan models;
+	// a platform admin who is no member has nothing to choose there.
+	const memberRole = organization.members.find(
+		(member) => member.userId === session?.user.id,
+	)?.role;
 
 	return (
 		<>
@@ -34,7 +39,12 @@ export default async function OrgAiModelPreferencesPage({
 				description="Choose which models power each task type for your organization."
 			/>
 			<SettingsList>
-				<OrgAiModelPreferencesForm readOnly={!isAdmin} />
+				<OrgAiModelsSettings
+					canManagePlanModels={
+						memberRole === "admin" || memberRole === "owner"
+					}
+					readOnly={!isAdmin}
+				/>
 			</SettingsList>
 		</>
 	);

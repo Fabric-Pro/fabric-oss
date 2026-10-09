@@ -114,6 +114,13 @@ export type GsRuntimeGates = {
 	 * Glossy editions are reached from a document, not from a tab of their own.
 	 */
 	glossyEdition: boolean;
+	/**
+	 * `PROPOSAL_ARTIFACT`, resolved for the viewer's organization (Fizzy #2801).
+	 * Hides nothing in the tour by itself: with it on a Proposal needs no
+	 * Glossy edition, so it changes what the Glossy component says (see
+	 * `GsPageComponent.gatedCopy`).
+	 */
+	proposalArtifact: boolean;
 };
 
 /**
@@ -736,6 +743,16 @@ type GsPageComponent = {
 	 * when the gate is off even if something happens to render its anchor.
 	 */
 	runtimeGate?: keyof GsRuntimeGates;
+	/**
+	 * Copy to show instead of `title` and `body` while this per-organization
+	 * flag is on: the component stays, but its usual words would describe
+	 * something the flag takes away. Resolved by `pageComponentsFor`.
+	 */
+	gatedCopy?: {
+		runtimeGate: keyof GsRuntimeGates;
+		title: string;
+		body: string;
+	};
 };
 
 /** A covered page and the components its detailed tour walks through. */
@@ -819,6 +836,14 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				// A per-organization rollout (#2589): `runtimeGate`, never
 				// `enabled`. Off, neither entry point renders.
 				runtimeGate: "glossyEdition",
+				// Fizzy #2801: under the Proposal artifact gate a Proposal is
+				// written client-ready and offers no Glossy entry unless it
+				// already has an edition, so the copy stops promising one.
+				gatedCopy: {
+					runtimeGate: "proposalArtifact",
+					title: "A Glossy edition for stakeholders",
+					body: "A Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, with Main Document, Internal Analysis and Style tabs on its page, and one that already has a Glossy edition keeps it.",
+				},
 			},
 		],
 	},
@@ -969,8 +994,8 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 			{
 				id: "coding-instructions-commit",
 				anchor: "coding-instructions-commit",
-				title: "Edit uploaded instructions",
-				body: "On an upload project, Edit saves a proposed or published instruction version according to your permissions. Attached repository files are edited with native Git or the provider, with changes reviewed through its pull requests.",
+				title: "Edit an instruction file",
+				body: "Edit opens the file in Fabric. On an attached repository, write a commit message, then Commit to the branch, or Suggest as a pull request to have the change reviewed there. On an upload project, Edit saves a proposed or published version according to your permissions.",
 				conditional: true,
 			},
 			{
@@ -982,8 +1007,8 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 			{
 				id: "coding-instructions-history",
 				anchor: "coding-instructions-history",
-				title: "History and pull requests",
-				body: "For an attached repository, Commits shows native history for the configured folder. Pull requests shows open proposals targeting its branch. Open a provider link to inspect diffs, review or merge there. Upload projects retain version history and its publish, download and delete controls.",
+				title: "History and suggestions",
+				body: "For an attached repository, Commits shows native history for the configured folder. The pull requests behind your suggestions are under More, in Your proposals (Suggested changes for reviewers): follow a provider link there to review or merge. Upload projects retain version history and its publish, download and delete controls.",
 			},
 			{
 				id: "coding-instructions-connect",
@@ -1756,17 +1781,26 @@ export function pageForTab(
 
 /**
  * The components of `page` this viewer may be walked through: the ones whose
- * own `runtimeGate` is on (or that have none). The single place page tours and
- * "Show me" read components from, so a gated component cannot be spotlighted
- * by one path while another withholds it.
+ * own `runtimeGate` is on (or that have none), each with the copy its
+ * `gatedCopy` gate selects. The single place page tours and "Show me" read
+ * components from, so a gated component cannot be spotlighted by one path
+ * while another withholds it, nor described differently by each.
  */
 export function pageComponentsFor(
 	page: GsPage,
 	gates: GsRuntimeGates,
 ): readonly GsPageComponent[] {
-	return page.components.filter((component) =>
-		isGsEntryEnabled(component, gates),
-	);
+	return page.components
+		.filter((component) => isGsEntryEnabled(component, gates))
+		.map((component) =>
+			component.gatedCopy && gates[component.gatedCopy.runtimeGate]
+				? {
+						...component,
+						title: component.gatedCopy.title,
+						body: component.gatedCopy.body,
+					}
+				: component,
+		);
 }
 
 /**

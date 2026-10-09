@@ -16,16 +16,13 @@
  */
 
 import {
-	PlanSourceRotatedError,
-	SubscriptionPlanExhaustedError,
-} from "@repo/agent-types/chatgpt-plan-fetch";
-import {
 	generateText,
 	getAIModelWithMetadata,
 	logModelUsageAsync,
 } from "@repo/ai";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { isWorkflowHandledPlanRefusal } from "../chatgpt-plan-refusal";
 import {
 	applyFabricEnrichment,
 	extractFabricConfig,
@@ -157,10 +154,7 @@ export async function executeAiGenerateTextStep(
 		// A spent ChatGPT plan, or one that ran out mid-reply with another left,
 		// is the workflow's to handle — it waits for a reset or retries on the
 		// next plan (Fizzy #2770) — so it is thrown, not turned into a result.
-		if (
-			error instanceof SubscriptionPlanExhaustedError ||
-			error instanceof PlanSourceRotatedError
-		) {
+		if (isWorkflowHandledPlanRefusal(error)) {
 			throw error;
 		}
 		const errorMessage =

@@ -6,11 +6,14 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildProjectResource,
-	isProjectId as sharedIsProjectId,
 	parseProjectResource,
+	isProjectId as sharedIsProjectId,
 } from "../../utils/lib/oauth-project-resource";
 import {
+	classifyGatewayResource,
+	classifyGatewayUrl,
 	isGatewayUrlOf,
+	isOrgGatewayUrlOf,
 	isProjectId,
 	projectResource,
 } from "../src/lib/oauth/project-resource.js";
@@ -105,14 +108,146 @@ describe("whose gateway a URL is", () => {
 			"a longer path",
 			"https://deploy.example.com/api/mcp-gateway/projects/p/extra",
 		],
-		["a trailing slash", "https://deploy.example.com/api/mcp-gateway/"],
 		["a query", "https://deploy.example.com/api/mcp-gateway?x=1"],
 		[
 			"a lookalike host",
 			"https://deploy.example.com.evil.example/api/mcp-gateway",
 		],
+		[
+			"www. added to the host",
+			"https://www.deploy.example.com/api/mcp-gateway",
+		],
+		["a password", "https://u:p@deploy.example.com/api/mcp-gateway"],
+		["another scheme", "ftp://deploy.example.com/api/mcp-gateway"],
+		[
+			"a project id with a dot",
+			"https://deploy.example.com/api/mcp-gateway/projects/a.b",
+		],
 		["nothing", ""],
 	])("is not this deployment's for %s", (_label, url) => {
 		expect(isGatewayUrlOf(origin, url)).toBe(false);
+	});
+
+	it.each([
+		["a trailing slash", "https://deploy.example.com/api/mcp-gateway/"],
+		[
+			"capitals in the scheme and host",
+			"HTTPS://Deploy.Example.com/api/mcp-gateway",
+		],
+		["the default port", "https://deploy.example.com:443/api/mcp-gateway"],
+		[
+			"an empty query and fragment",
+			"https://deploy.example.com/api/mcp-gateway?#",
+		],
+		[
+			"a project's trailing slash",
+			"https://deploy.example.com/api/mcp-gateway/projects/project-example-one/",
+		],
+	])(
+		"is this deployment's for the same address spelled with %s",
+		(_label, url) => {
+			expect(isGatewayUrlOf(origin, url)).toBe(true);
+		},
+	);
+
+	it("tells the organization-wide gateway from a project's, however each is spelled", () => {
+		expect(
+			isOrgGatewayUrlOf(
+				origin,
+				"HTTPS://deploy.example.com/api/mcp-gateway/",
+			),
+		).toBe(true);
+		expect(
+			isOrgGatewayUrlOf(
+				origin,
+				projectResource(origin, "mcp", "project-example-one"),
+			),
+		).toBe(false);
+		expect(
+			isOrgGatewayUrlOf(
+				origin,
+				"https://elsewhere.example.com/api/mcp-gateway",
+			),
+		).toBe(false);
+	});
+});
+
+describe("how a URL stands to a project", () => {
+	const origin = "https://deploy.example.com";
+	const here = `${origin}/api/mcp-gateway/projects/project-example-one`;
+
+	it.each([
+		["the project's gateway", here, "this-project"],
+		["a trailing slash", `${here}/`, "this-project"],
+		[
+			"capitals and a default port",
+			here
+				.replace("https://deploy", "HTTPS://Deploy")
+				.replace(".com", ".com:443"),
+			"this-project",
+		],
+		[
+			"another project's gateway",
+			`${origin}/api/mcp-gateway/projects/project-example-two`,
+			"other-project",
+		],
+		[
+			"the organization-wide gateway",
+			`${origin}/api/mcp-gateway`,
+			"org-wide",
+		],
+		[
+			"the organization-wide gateway, slashed",
+			`${origin}/api/mcp-gateway/`,
+			"org-wide",
+		],
+		["another host", "https://mcp.vendor.example.net/mcp", "foreign"],
+		[
+			"another deployment's gateway",
+			"https://other.example.org/api/mcp-gateway",
+			"foreign",
+		],
+		[
+			"a lookalike host",
+			"https://deploy.example.com.evil.example.net/api/mcp-gateway",
+			"foreign",
+		],
+		["not a web address", "stdio://local", "foreign"],
+		["the origin's other path", `${origin}/mcp`, "unfamiliar"],
+		["the gateway with a query", `${here}?x=1`, "unfamiliar"],
+		["a deeper path", `${here}/sse`, "unfamiliar"],
+	])("is read for %s", (_label, url, expected) => {
+		expect(classifyGatewayUrl(origin, "project-example-one", url)).toBe(
+			expected,
+		);
+	});
+
+	it.each([
+		["the gateway", here, "this-project"],
+		[
+			"the REST API of this project",
+			`${origin}/api/v1/projects/project-example-one`,
+			"this-project",
+		],
+		[
+			"the REST API of another",
+			`${origin}/api/v1/projects/project-example-two`,
+			"other-project",
+		],
+		[
+			"the organization-wide gateway",
+			`${origin}/api/mcp-gateway`,
+			"org-wide",
+		],
+		["something else", `${origin}/elsewhere`, "unfamiliar"],
+		[
+			"another host",
+			"https://other.example.org/api/v1/projects/project-example-one",
+			"foreign",
+		],
+	])("names a resource that is %s", (_label, resource, expected) => {
+		expect(
+			classifyGatewayResource(origin, "project-example-one", resource),
+		).toBe(expected);
 	});
 });

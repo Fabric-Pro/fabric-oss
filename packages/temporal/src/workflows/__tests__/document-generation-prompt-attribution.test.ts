@@ -29,6 +29,9 @@ const { activityMocks } = vi.hoisted(() => ({
 		fetchRecentSlackMessages: vi.fn(),
 		updateProjectDocumentStatus: vi.fn(),
 		runDocumentDecisionPrecheckActivity: vi.fn(),
+		// The Proposal artifact gate is off (Fizzy #2801): no plan, so the
+		// run takes the path these tests pin.
+		planProposalArtifact: vi.fn(async () => null),
 	},
 }));
 

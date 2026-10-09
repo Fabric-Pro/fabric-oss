@@ -544,6 +544,7 @@ export async function analyzeChannelThreadActivity(
 			// Enrichment is decided afterwards by the semantic routing pass, which
 			// applies the project's own opt-in.
 			allowRouting: true,
+			jobType: "teams-channel-monitor",
 		});
 
 		// Step 3a: Zero-change thread → seen marker only (cursor is advanced

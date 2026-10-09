@@ -66,8 +66,10 @@ vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
 
 // Fizzy #2939: whether the member's own work here runs on their ChatGPT plan.
 const ownWorkOnPlanMock = vi.fn(() => false);
+const sharedPlanMock = vi.fn(() => false);
 vi.mock("@saas/settings/components/chatgpt-plan/chatgpt-plan-status", () => ({
 	useChatgptPlanServesOwnWork: () => ownWorkOnPlanMock(),
+	useSharedChatgptPlanServesOwnWork: () => sharedPlanMock(),
 }));
 
 const getStatusMock = vi.fn();
@@ -162,6 +164,7 @@ beforeEach(() => {
 	});
 	guestMock.mockReturnValue(false);
 	ownWorkOnPlanMock.mockReturnValue(false);
+	sharedPlanMock.mockReturnValue(false);
 	pathnameMock.mockReturnValue("/app/acme/projects");
 	// Every fixture in this file stands on a route whose organization has
 	// resolved, so the tenant gate is open by default — nothing that passes
@@ -741,5 +744,23 @@ describe("AiGatewayWarningBanner — a member whose own work runs on their ChatG
 		expect(
 			screen.queryByText("Document search needs an AI provider"),
 		).toBeNull();
+	});
+});
+
+describe("AiGatewayWarningBanner — a member served by a shared ChatGPT account (Fizzy #2770)", () => {
+	it("says only document search needs a provider, naming the shared plan", async () => {
+		sharedPlanMock.mockReturnValue(true);
+
+		renderBanner();
+
+		expect(
+			await screen.findByText("Document search needs an AI provider"),
+		).toBeInTheDocument();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+		expect(
+			screen.getByText(
+				"Your chat, agents, and document generation run on your organization's shared ChatGPT plan here. Document search needs embeddings, which only a provider key gives: add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible key to use it.",
+			),
+		).toBeInTheDocument();
 	});
 });

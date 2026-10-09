@@ -19,6 +19,10 @@ import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
+import {
+	describeAiError,
+	isChatGptPlanSpentCode,
+} from "@saas/shared/lib/ai-error-message";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
 import {
@@ -1196,8 +1200,19 @@ export function useOrchestratorStream(
 									...prev,
 									status: "cancelled",
 								}));
+								setCurrentPhase("idle");
 								setIsLoading(false);
 								return null;
+							}
+							// Every ChatGPT plan serving the member is spent
+							// (Fizzy #2770): say until when, in the turn itself.
+							// The app's fetch interceptor raises the toast, with
+							// the API-billing switch when the server offers it.
+							if (isChatGptPlanSpentCode(error?.code)) {
+								throw new Error(
+									describeAiError(response.status, error)
+										.description,
+								);
 							}
 							// AI usage-limit short-circuit. The orchestrator stream route emits
 							// a 429 with `code: "AI_USAGE_LIMIT_EXCEEDED"` and a
@@ -1223,6 +1238,7 @@ export function useOrchestratorStream(
 									...prev,
 									status: "idle",
 								}));
+								setCurrentPhase("idle");
 								return;
 							}
 							throw new Error(
@@ -1516,6 +1532,10 @@ export function useOrchestratorStream(
 					status: "failed",
 					result: { ...prev.result, error: errorMessage },
 				}));
+				// The activity panel reads the phase: left on "routing", a
+				// refusal before the stream opened looked like a run still
+				// routing forever.
+				setCurrentPhase("error");
 
 				setIsLoading(false);
 				return null;

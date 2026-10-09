@@ -3,6 +3,7 @@ import {
 	adminAuditLogStatsViaApiKeyProcedure,
 	adminAuditLogViaApiKeyProcedure,
 } from "./procedures/audit-log-via-api-key";
+import { listChatGptPlanHealthProcedure } from "./procedures/chatgpt-plan-health";
 import { adminDeleteOrganizationProcedure } from "./procedures/delete-organization";
 import {
 	listFeatureFlagsProcedure,
@@ -25,6 +26,9 @@ export const adminRouter = {
 	},
 	users: {
 		list: listUsers,
+	},
+	chatgptPlanHealth: {
+		list: listChatGptPlanHealthProcedure,
 	},
 	organizations: {
 		list: listOrganizations,

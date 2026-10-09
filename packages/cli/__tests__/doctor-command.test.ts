@@ -80,6 +80,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	getConfigPath: () => path.join(tmpdir(), "fabricai", "config.json"),
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
@@ -1468,7 +1469,7 @@ describe("a repository-backed project", () => {
 				"checkoutTraits",
 				"currentBranch",
 				"headSha",
-				"isClean",
+				"hasNoTrackedContentChanges",
 				"operationInProgress",
 				"isAncestor",
 			]),

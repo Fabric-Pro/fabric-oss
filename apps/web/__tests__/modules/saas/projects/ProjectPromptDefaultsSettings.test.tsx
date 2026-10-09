@@ -394,3 +394,73 @@ describe("the inherited section toggle", () => {
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 	});
 });
+
+describe("the client proposal prompt (Fizzy #2801)", () => {
+	// The bind procedure refuses a personal default for this action. This
+	// surface never offers one: a project default is an ORG binding narrowed
+	// to the project, with no tier to choose, so the action needs no special
+	// case here. Pinned so a tier picker added later cannot quietly start
+	// writing USER for it.
+	const CLIENT_MAIN = "proposal_client_main";
+
+	it("writes an ORG binding narrowed to the project, never a personal one", async () => {
+		catalogList.mockResolvedValue({
+			entries: [
+				entry({
+					targetKey: CLIENT_MAIN,
+					documentType: "PROPOSAL",
+					prompts: [
+						{
+							promptId: "p-org-client",
+							promptName: "Org Client Proposal",
+							promptVersionId: "pv-org-client",
+							scope: "ORG",
+							projectId: null,
+							isDefault: true,
+							isEffective: true,
+						},
+						{
+							promptId: "p-sys-client",
+							promptName: "Fabric Client Proposal",
+							promptVersionId: "pv-sys-client",
+							scope: "SYSTEM",
+							projectId: null,
+							isDefault: true,
+							isEffective: false,
+						},
+					],
+				}),
+			],
+		});
+		const user = userEvent.setup();
+		wrap();
+
+		await screen.findByText(/Org Client Proposal/);
+		await user.click(
+			screen.getByRole("combobox", {
+				name: /Set the prompt this project uses for Client proposal \(Main\)/i,
+			}),
+		);
+		// The choice is a prompt, not a tier: nothing reads "Personal".
+		expect(
+			screen.queryByRole("option", { name: /personal|just for me/i }),
+		).not.toBeInTheDocument();
+		await user.click(await screen.findByText("Fabric Client Proposal"));
+
+		await waitFor(() =>
+			expect(bindSet).toHaveBeenCalledWith(
+				expect.objectContaining({
+					targetKey: CLIENT_MAIN,
+					documentType: "PROPOSAL",
+					scope: "ORG",
+					organizationId: "org-a",
+					projectId: PROJECT,
+					promptVersionId: "pv-sys-client",
+				}),
+			),
+		);
+		expect(bindSet).not.toHaveBeenCalledWith(
+			expect.objectContaining({ scope: "USER" }),
+		);
+	});
+});

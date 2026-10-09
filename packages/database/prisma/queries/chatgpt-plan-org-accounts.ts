@@ -18,6 +18,10 @@ import {
 	type ChatGptPlanTier,
 	Prisma,
 } from "../generated/client";
+import {
+	type ChatGptPlanAccountIdentity,
+	chatGptPlanAccountIdentityWhere,
+} from "./chatgpt-plan-credentials";
 import { isFeatureEnabled } from "./feature-flags";
 
 export type {
@@ -49,9 +53,11 @@ export const CHATGPT_PLAN_ORG_ACCOUNT_PUBLIC_SELECT = {
 	email: true,
 	status: true,
 	tier: true,
+	subscriptionActiveUntil: true,
 	enabled: true,
 	serveInteractive: true,
 	serveBackground: true,
+	maxMemberSharePct: true,
 	connectedByUserId: true,
 	lastUsedAt: true,
 	createdAt: true,
@@ -84,18 +90,19 @@ export function getChatGptPlanOrgAccount(params: {
 }
 
 /**
- * Whether this ChatGPT account is already one of any organization's shared
- * accounts. Says nothing about which: a person connecting it as their own
- * plan is refused without learning the organization.
+ * Who connected this ChatGPT account as one of an organization's shared
+ * accounts, by `sub` or by email; null when no organization shares it.
+ * Callers tell only that member: anyone else connecting it as their own plan
+ * is refused without learning the organization.
  */
-export async function isChatGptPlanOrgAccountSubject(
-	subject: string,
-): Promise<boolean> {
-	const found = await db.chatGptPlanOrgAccount.findUnique({
-		where: { subject },
-		select: { id: true },
+export async function findChatGptPlanSharedAccountConnector(
+	identity: ChatGptPlanAccountIdentity,
+): Promise<string | null> {
+	const found = await db.chatGptPlanOrgAccount.findFirst({
+		where: chatGptPlanAccountIdentityWhere(identity),
+		select: { connectedByUserId: true },
 	});
-	return found !== null;
+	return found?.connectedByUserId ?? null;
 }
 
 export interface ChatGptPlanOrgAccountWrite {
@@ -112,6 +119,9 @@ export interface ChatGptPlanOrgAccountWrite {
 	accessTokenExpiresAt: Date;
 	earliestRefreshAt: Date | null;
 	scopes: string[];
+	/** From the ID token's subscription claims, when it has them. */
+	tier?: ChatGptPlanTier;
+	subscriptionActiveUntil?: Date | null;
 }
 
 /**
@@ -119,16 +129,22 @@ export interface ChatGptPlanOrgAccountWrite {
  * organization already has replaces its tokens and clears NEEDS_RECONNECT,
  * keeping its label and serving toggles.
  *
- * @throws ChatGptPlanSubjectBoundElsewhereError when the ChatGPT account is
- *   connected to another organization, including when two organizations
- *   race to connect it.
+ * @throws ChatGptPlanSubjectBoundElsewhereError when the ChatGPT account —
+ *   matched by `sub` or by email — is connected to another organization,
+ *   including when two organizations race to connect it.
  */
 export async function upsertChatGptPlanOrgAccount(
 	input: ChatGptPlanOrgAccountWrite,
 ): Promise<{ id: string; created: boolean }> {
-	const { organizationId, label, subject, ...tokens } = input;
-	const existing = await db.chatGptPlanOrgAccount.findUnique({
-		where: { subject },
+	// The connector stays who first connected the account: they alone may
+	// take it back as their own plan, and a reconnect by another admin does
+	// not change whose it is (Fizzy #2770 I1).
+	const { organizationId, label, subject, connectedByUserId, ...tokens } =
+		input;
+	// By email too: a reconnect through a fresh client registration brings a
+	// new `sub` for the same account.
+	const existing = await db.chatGptPlanOrgAccount.findFirst({
+		where: chatGptPlanAccountIdentityWhere({ subject, email: input.email }),
 		select: { id: true, organizationId: true },
 	});
 	if (existing && existing.organizationId !== organizationId) {
@@ -138,7 +154,7 @@ export async function upsertChatGptPlanOrgAccount(
 		if (existing) {
 			await db.chatGptPlanOrgAccount.updateMany({
 				where: { id: existing.id, organizationId },
-				data: { ...tokens, status: "ACTIVE" },
+				data: { ...tokens, subject, status: "ACTIVE" },
 			});
 			return { id: existing.id, created: false };
 		}
@@ -147,6 +163,7 @@ export async function upsertChatGptPlanOrgAccount(
 				organizationId,
 				label,
 				subject,
+				connectedByUserId,
 				...tokens,
 				status: "ACTIVE",
 			},
@@ -170,6 +187,8 @@ export interface ChatGptPlanOrgAccountPatch {
 	serveInteractive?: boolean;
 	serveBackground?: boolean;
 	tier?: ChatGptPlanTier;
+	/** 1–100, or null for no cap. */
+	maxMemberSharePct?: number | null;
 }
 
 /** The account before and after the change; null when it is not this organization's. */
@@ -207,8 +226,8 @@ export async function updateChatGptPlanOrgAccount(params: {
 }
 
 /**
- * Deletes the account and its breaker row, which has no foreign key to
- * cascade from. False when the account is not this organization's.
+ * Deletes the account and its breaker, served-model and calibration rows,
+ * which have no foreign key to cascade from. False when the account is not this organization's.
  */
 export async function deleteChatGptPlanOrgAccount(params: {
 	organizationId: string;
@@ -223,6 +242,12 @@ export async function deleteChatGptPlanOrgAccount(params: {
 		});
 		if (count > 0) {
 			await tx.chatGptPlanSourceState.deleteMany({
+				where: { sourceKind: "ORG", sourceId: params.accountId },
+			});
+			await tx.chatGptPlanServedModel.deleteMany({
+				where: { sourceKind: "ORG", sourceId: params.accountId },
+			});
+			await tx.chatGptPlanBudgetObservation.deleteMany({
 				where: { sourceKind: "ORG", sourceId: params.accountId },
 			});
 		}
@@ -246,9 +271,13 @@ export type ChatGptPlanOrgPolicyValues = Pick<
 	| "apiFallbackInteractive"
 	| "apiFallbackBackground"
 	| "headroomPct"
+	| "fallbackModel"
 	| "termsAcknowledgedById"
 	| "termsAcknowledgedAt"
 >;
+
+/** The plan model a call retries on when the plan does not serve the chosen one. */
+export const DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL = "gpt-6-astra";
 
 /** What an organization with no policy row gets: pooling off, nothing acknowledged. */
 export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
@@ -256,6 +285,7 @@ export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
 	apiFallbackInteractive: "ASK",
 	apiFallbackBackground: "NEVER",
 	headroomPct: 40,
+	fallbackModel: DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL,
 	termsAcknowledgedById: null,
 	termsAcknowledgedAt: null,
 };
@@ -265,6 +295,7 @@ const POLICY_SELECT = {
 	apiFallbackInteractive: true,
 	apiFallbackBackground: true,
 	headroomPct: true,
+	fallbackModel: true,
 	termsAcknowledgedById: true,
 	termsAcknowledgedAt: true,
 } as const;
@@ -279,10 +310,49 @@ export async function getChatGptPlanOrgPolicy(
 	return row ?? DEFAULT_CHATGPT_PLAN_ORG_POLICY;
 }
 
+/**
+ * How long a process reuses an organization's policy on the call path —
+ * every plan-served call reads it (Fizzy #2770). A change made in this
+ * process applies at once; one made in another applies within this long.
+ */
+export const CHATGPT_PLAN_ORG_POLICY_CACHE_MS = 30_000;
+
+const policyCache = new Map<
+	string,
+	{ policy: Promise<ChatGptPlanOrgPolicyValues>; fetchedAt: number }
+>();
+
+/**
+ * {@link getChatGptPlanOrgPolicy} for the call path, reused for
+ * {@link CHATGPT_PLAN_ORG_POLICY_CACHE_MS}. Settings surfaces read the
+ * uncached one.
+ */
+export function getCachedChatGptPlanOrgPolicy(
+	organizationId: string,
+	now = Date.now(),
+): Promise<ChatGptPlanOrgPolicyValues> {
+	const cached = policyCache.get(organizationId);
+	if (cached && now - cached.fetchedAt < CHATGPT_PLAN_ORG_POLICY_CACHE_MS) {
+		return cached.policy;
+	}
+	const policy = getChatGptPlanOrgPolicy(organizationId);
+	policyCache.set(organizationId, { policy, fetchedAt: now });
+	// A failed read is not reused.
+	policy.catch(() => policyCache.delete(organizationId));
+	return policy;
+}
+
+export function __resetChatGptPlanOrgPolicyCache(): void {
+	policyCache.clear();
+}
+
 export type ChatGptPlanOrgPolicyPatch = Partial<
 	Pick<
 		ChatGptPlanOrgPolicyValues,
-		"poolingEnabled" | "apiFallbackBackground" | "headroomPct"
+		| "poolingEnabled"
+		| "apiFallbackBackground"
+		| "headroomPct"
+		| "fallbackModel"
 	>
 >;
 
@@ -309,6 +379,7 @@ export async function updateChatGptPlanOrgPolicy(params: {
 		update: patch,
 		select: POLICY_SELECT,
 	});
+	policyCache.delete(organizationId);
 	return { before, after };
 }
 
@@ -321,80 +392,14 @@ export async function acknowledgeChatGptPlanOrgTerms(params: {
 		termsAcknowledgedById: params.userId,
 		termsAcknowledgedAt: new Date(),
 	};
-	return db.chatGptPlanOrgPolicy.upsert({
+	const policy = await db.chatGptPlanOrgPolicy.upsert({
 		where: { organizationId: params.organizationId },
 		create: { organizationId: params.organizationId, ...acknowledged },
 		update: acknowledged,
 		select: POLICY_SELECT,
 	});
-}
-
-export interface ChatGptPlanPoolUsage {
-	requests: number;
-	inputTokens: number;
-	outputTokens: number;
-}
-
-/**
- * What each of the organization's accounts served through Fabric since
- * `since`, keyed by account id. An organization account's calls carry its id
- * in `providerConfigId`; accounts with no calls are absent. Only Fabric's
- * own use: anything else spending the same ChatGPT account is invisible here.
- */
-export async function getChatGptPlanPoolUsageSince(params: {
-	organizationId: string;
-	accountIds: string[];
-	since: Date;
-}): Promise<Map<string, ChatGptPlanPoolUsage>> {
-	if (params.accountIds.length === 0) {
-		return new Map();
-	}
-	const groups = await db.aiUsageLog.groupBy({
-		by: ["providerConfigId"],
-		where: {
-			organizationId: params.organizationId,
-			createdAt: { gte: params.since },
-			provider: "OPENAI_CHATGPT_PLAN",
-			providerConfigId: { in: params.accountIds },
-		},
-		_count: { _all: true },
-		_sum: { inputTokens: true, outputTokens: true },
-	});
-	return new Map(
-		groups
-			.filter((group) => group.providerConfigId !== null)
-			.map((group) => [
-				group.providerConfigId as string,
-				{
-					requests: group._count._all,
-					inputTokens: group._sum.inputTokens ?? 0,
-					outputTokens: group._sum.outputTokens ?? 0,
-				},
-			]),
-	);
-}
-
-/**
- * When the account's oldest Fabric call since `since` ran, or null when none
- * did — the start of its usage window as far as Fabric can tell, so the window
- * resets no earlier than five hours later.
- */
-export async function getChatGptPlanOrgAccountFirstUseSince(params: {
-	organizationId: string;
-	accountId: string;
-	since: Date;
-}): Promise<Date | null> {
-	const first = await db.aiUsageLog.findFirst({
-		where: {
-			organizationId: params.organizationId,
-			provider: "OPENAI_CHATGPT_PLAN",
-			providerConfigId: params.accountId,
-			createdAt: { gte: params.since },
-		},
-		orderBy: { createdAt: "asc" },
-		select: { createdAt: true },
-	});
-	return first?.createdAt ?? null;
+	policyCache.delete(params.organizationId);
+	return policy;
 }
 
 export interface ChatGptPlanPoolAdminOrganization {
@@ -439,4 +444,20 @@ export async function findChatGptPlanPoolAdminOrganization(
 		isFeatureEnabled("CHATGPT_PLAN_POOLING", organization.id),
 	]);
 	return plan && pooling ? { ...organization, role: membership.role } : null;
+}
+
+/**
+ * Every organization's shared account with its organization's name, for the
+ * app-admin plan health list (Fizzy #2770 D6). Deliberately cross-tenant:
+ * only `adminProcedure` (deployment admins) may call it. No tokens.
+ */
+export function listChatGptPlanOrgAccountsForAdmin() {
+	return db.chatGptPlanOrgAccount.findMany({
+		select: {
+			...CHATGPT_PLAN_ORG_ACCOUNT_PUBLIC_SELECT,
+			organizationId: true,
+			organization: { select: { name: true } },
+		},
+		orderBy: [{ organizationId: "asc" }, { createdAt: "asc" }],
+	});
 }

@@ -20,8 +20,10 @@ type StateRow = {
 const db = vi.hoisted(() => ({
 	rows: new Map<string, StateRow>(),
 	failReads: false,
-	firstUse: null as Date | null,
-	firstUseCalls: [] as unknown[],
+	windowResetsAt: null as Date | null,
+	windowCalls: [] as unknown[],
+	window: { windowStart: null as Date | null, inputTokens: 0 },
+	observations: [] as unknown[],
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -50,9 +52,19 @@ vi.mock("@repo/database", () => ({
 	}) => {
 		db.rows.delete(`${key.sourceKind}:${key.sourceId}`);
 	},
-	getChatGptPlanOrgAccountFirstUseSince: async (params: unknown) => {
-		db.firstUseCalls.push(params);
-		return db.firstUse;
+	getChatGptPlanOrgAccountWindows: async (params: {
+		accountIds: string[];
+	}) => {
+		db.windowCalls.push(params);
+		return new Map(
+			params.accountIds.map((id) => [
+				id,
+				{ resetsAt: db.windowResetsAt, ...db.window },
+			]),
+		);
+	},
+	recordChatGptPlanBudgetObservation: async (input: unknown) => {
+		db.observations.push(input);
 	},
 }));
 
@@ -62,6 +74,7 @@ import {
 	chatGptPlanSourceExhaustedError,
 	noteChatGptPlanSourceAnswered,
 	recordChatGptPlanSourceExhausted,
+	recordReportedChatGptPlanSourceExhausted,
 } from "../lib/chatgpt-plan/exhaustion-breaker";
 import {
 	chatGptPlanSourceLockKey,
@@ -84,8 +97,10 @@ beforeEach(() => {
 	__resetChatGptPlanBreaker();
 	db.rows.clear();
 	db.failReads = false;
-	db.firstUse = null;
-	db.firstUseCalls = [];
+	db.windowResetsAt = null;
+	db.windowCalls = [];
+	db.window = { windowStart: null, inputTokens: 0 };
+	db.observations = [];
 });
 
 describe("plan source keys", () => {
@@ -134,20 +149,20 @@ describe("shared breaker", () => {
 		expect(
 			chatGptPlanExhaustedError("user_1", NOW + 15 * MINUTE),
 		).toBeNull();
-		expect(db.firstUseCalls).toEqual([]);
+		expect(db.windowCalls).toEqual([]);
 	});
 
-	it("estimates an organization account's reset from its oldest call in the window", async () => {
-		db.firstUse = new Date(NOW - 4 * 60 * MINUTE);
+	it("estimates an organization account's reset from its anchored window", async () => {
+		db.windowResetsAt = new Date(NOW + 60 * MINUTE);
 		await recordChatGptPlanSourceExhausted(account, spent(), NOW);
 
 		const row = db.rows.get("ORG:acc_1");
 		expect(row?.openUntil?.getTime()).toBe(NOW + 60 * MINUTE);
 		expect(row?.resetAt?.getTime()).toBe(NOW + 60 * MINUTE);
-		expect(db.firstUseCalls[0]).toEqual({
+		expect(db.windowCalls[0]).toEqual({
 			organizationId: "org_a",
-			accountId: "acc_1",
-			since: new Date(NOW - 5 * 60 * MINUTE),
+			accountIds: ["acc_1"],
+			now: new Date(NOW),
 		});
 	});
 
@@ -165,7 +180,7 @@ describe("shared breaker", () => {
 	});
 
 	it("trusts the ledger only for the first refusal in a row", async () => {
-		db.firstUse = new Date(NOW - 4 * 60 * MINUTE);
+		db.windowResetsAt = new Date(NOW + 60 * MINUTE);
 		await recordChatGptPlanSourceExhausted(account, spent(), NOW);
 		await recordChatGptPlanSourceExhausted(
 			account,
@@ -194,5 +209,67 @@ describe("shared breaker", () => {
 			NOW,
 		);
 		expect(db.rows.get("ORG:acc_1")?.consecutiveUnknownResets).toBe(0);
+	});
+});
+
+describe("window budget calibration (Fizzy #2770 D6)", () => {
+	it("records what a shared account's open window had used when it was refused", async () => {
+		const windowStart = new Date(NOW - 3 * 60 * MINUTE);
+		db.window = { windowStart, inputTokens: 1_150_000 };
+
+		await recordChatGptPlanSourceExhausted(account, spent(), NOW);
+
+		expect(db.observations).toEqual([
+			{
+				source: account,
+				windowStart,
+				inputTokens: 1_150_000,
+				observedAt: new Date(NOW),
+			},
+		]);
+	});
+
+	it("never observes a member's own plan, which is also used outside Fabric", async () => {
+		db.window = {
+			windowStart: new Date(NOW - 60 * MINUTE),
+			inputTokens: 400_000,
+		};
+		await recordChatGptPlanSourceExhausted(user, spent(), NOW);
+		expect(db.observations).toEqual([]);
+	});
+
+	it("learns nothing from a refusal that resets after this window — the weekly cap", async () => {
+		const windowStart = new Date(NOW - 3 * 60 * MINUTE);
+		db.window = { windowStart, inputTokens: 150_000 };
+		db.windowResetsAt = new Date(windowStart.getTime() + 5 * 60 * MINUTE);
+
+		await recordChatGptPlanSourceExhausted(
+			account,
+			spent(new Date(NOW + 4 * 24 * 60 * MINUTE)),
+			NOW,
+		);
+		expect(db.observations).toEqual([]);
+
+		// A reset within ten minutes of the window's own is this window.
+		await recordChatGptPlanSourceExhausted(
+			account,
+			spent(new Date(db.windowResetsAt.getTime() + 5 * MINUTE)),
+			NOW,
+		);
+		expect(db.observations).toHaveLength(1);
+	});
+
+	it("learns nothing from a refusal another service reported", async () => {
+		db.window = {
+			windowStart: new Date(NOW - 60 * MINUTE),
+			inputTokens: 900_000,
+		};
+		await recordReportedChatGptPlanSourceExhausted(account, spent());
+		expect(db.observations).toEqual([]);
+	});
+
+	it("records nothing when Fabric's calls show no open window", async () => {
+		await recordChatGptPlanSourceExhausted(account, spent(), NOW);
+		expect(db.observations).toEqual([]);
 	});
 });

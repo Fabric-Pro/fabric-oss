@@ -404,6 +404,7 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 			keyHash: ORG_KEY_HASH,
 			organizationId: ALPHA,
 			createdByUserId: USER_ID,
+			scopes: ["mcp:read", "mcp:write"],
 		});
 		isOrganizationMember.mockResolvedValue(true);
 
@@ -655,6 +656,7 @@ describe("MCP gateway — a tool executor failure is logged safely", () => {
 			payload as unknown as { result: { isError: boolean } }
 		).result;
 		expect(rpcResult.isError).toBe(true);
+		expect(JSON.stringify(payload)).not.toContain("boom");
 
 		const call = consoleError.mock.calls.find(([msg]) =>
 			typeof msg === "string" ? msg.includes("tools/call") : false,

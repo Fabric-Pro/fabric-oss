@@ -134,6 +134,28 @@ describe("authRateLimitMiddleware", () => {
 			);
 		});
 
+		it("OAuth client registration uses limit 10 per 60s", async () => {
+			const app = createTestApp();
+			await makeRequest(app, "/api/auth/oauth2/register");
+
+			expect(mockCheckRateLimit).toHaveBeenCalledWith(
+				expect.stringContaining("auth:oauth-register:"),
+				10,
+				60_000,
+			);
+		});
+
+		it("OAuth authorize uses limit 60 per 60s", async () => {
+			const app = createTestApp();
+			await makeRequest(app, "/api/auth/oauth2/authorize");
+
+			expect(mockCheckRateLimit).toHaveBeenCalledWith(
+				expect.stringContaining("auth:oauth-authorize:"),
+				60,
+				60_000,
+			);
+		});
+
 		it("exports AUTH_RATE_LIMITS with all expected endpoints", () => {
 			expect(AUTH_RATE_LIMITS).toHaveProperty("/sign-in/email");
 			expect(AUTH_RATE_LIMITS).toHaveProperty("/sign-up/email");

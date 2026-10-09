@@ -32,7 +32,9 @@ import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/
 import {
 	buildInstanceAgentConfig,
 	getSelectedAgentInstanceId,
+	isModelSelectionId,
 	type SelectedAgent,
+	selectionToPersist,
 } from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { useEscToStopOrClose } from "@saas/agents/hooks/useEscToStopOrClose";
@@ -497,7 +499,7 @@ function buildCapabilityExecutionOptions(params: {
 			prioritizedAgentIds.add(agentId);
 		}
 		for (const selectedAgent of selectedAgents) {
-			if (!selectedAgent.agentId.startsWith("model:")) {
+			if (!isModelSelectionId(selectedAgent.agentId)) {
 				enabledAgentIds.add(selectedAgent.agentId);
 			}
 		}
@@ -740,7 +742,7 @@ function SelectedAgentsInline({
 				{selectedAgents
 					.slice(0, 3)
 					.map((agent) =>
-						agent.agentId.startsWith("model:") && agent.vendor ? (
+						isModelSelectionId(agent.agentId) && agent.vendor ? (
 							<VendorLogo
 								key={agent.agentId}
 								vendor={agent.vendor}
@@ -802,7 +804,7 @@ function AgentDetailSheet({
 		return null;
 	}
 
-	const isModelAgent = agent.agentId.startsWith("model:");
+	const isModelAgent = isModelSelectionId(agent.agentId);
 	const isSystemAgent = agent.scope === "SYSTEM";
 	const heroEmoji = (agent.metadata as any)?.heroEmojis?.[0] as
 		| string
@@ -2055,7 +2057,7 @@ export function ComposeInput({
 							key={agent.agentId}
 							className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-primary px-2.5 py-0.5 text-xs font-medium"
 						>
-							{agent.agentId.startsWith("model:") &&
+							{isModelSelectionId(agent.agentId) &&
 							agent.vendor ? (
 								<VendorLogo vendor={agent.vendor} size={14} />
 							) : (
@@ -3101,7 +3103,7 @@ function AgentResponseBlock({
 		}
 	}, [mcpAppToolCalls, organizationId]);
 
-	const isModelAgent = response.agentId.startsWith("model:");
+	const isModelAgent = isModelSelectionId(response.agentId);
 
 	return (
 		<div className="group flex gap-4">
@@ -5019,13 +5021,19 @@ export function CopilotPage({
 				: [...current, resolvedAgent];
 			selectedAgentsRef.current = next;
 			setSelectedAgents(next);
+			// A ChatGPT plan pick is kept in this chat only (Fizzy #2770 F13):
+			// picking or clearing it saves nothing, and it is never saved.
+			const toPersist = selectionToPersist(resolvedAgent, next);
+			if (!toPersist) {
+				return;
+			}
 			// Serialized persist via `firePersistAgentSelection` — only ONE
 			// request in flight at a time, the LATEST state is queued for
 			// after current settle. Replaces direct `persistMutation.mutate`
 			// which fired N parallel POSTs whose response order was
 			// non-deterministic; the staging repro showed UI:[] but
 			// DB:[Gemini] (one of the intermediate states won the race).
-			firePersistAgentSelection(persistSelectionShape(next));
+			firePersistAgentSelection(persistSelectionShape(toPersist));
 		},
 		[workflowIntegrationsData, firePersistAgentSelection],
 	);
@@ -5041,9 +5049,16 @@ export function CopilotPage({
 			const next = selectedAgentsRef.current.filter(
 				(a) => a.agentId !== agentId,
 			);
+			const removed = selectedAgentsRef.current.find(
+				(a) => a.agentId === agentId,
+			);
 			selectedAgentsRef.current = next;
 			setSelectedAgents(next);
-			firePersistAgentSelection(persistSelectionShape(next));
+			const toPersist = selectionToPersist(removed, next);
+			if (!toPersist) {
+				return;
+			}
+			firePersistAgentSelection(persistSelectionShape(toPersist));
 		},
 		[firePersistAgentSelection],
 	);

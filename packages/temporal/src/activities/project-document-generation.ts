@@ -8,7 +8,7 @@
  * - Version management
  */
 
-import { Client } from "@langchain/langgraph-sdk";
+import { Client, type StreamMode } from "@langchain/langgraph-sdk";
 import {
 	type DocumentSection,
 	getDocumentSections,
@@ -30,7 +30,7 @@ import {
 	embed,
 	getAIEmbeddingModelWithMetadata,
 	getAIModelWithMetadata,
-	getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 	logEmbeddingUsageAsync,
 	logModelUsageAsync,
 	readTokenCount,
@@ -50,6 +50,8 @@ import {
 	type SkillContext,
 } from "@repo/ai/skills";
 import {
+	claimLiveAttempt,
+	clearLiveContent,
 	type DocumentGenerationOutcome,
 	db,
 	emitDocumentGenerationNotification,
@@ -67,6 +69,7 @@ import {
 	resolveGenerationDependencies,
 	resolveProjectAccess,
 	setDocumentGenerationQueueReason,
+	writeLiveSections,
 } from "@repo/database";
 import {
 	applyContextSummary,
@@ -89,11 +92,26 @@ import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
+import {
+	findPromptAgentTarget,
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+} from "@repo/utils/prompt-action-catalog";
+import { completedSections } from "@repo/utils/proposal-artifact/live-sections";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
+import { emitDocumentChange } from "@repo/utils/realtime-emit";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import { retrieveCompanyContextEntries } from "../lib/company-context-retrieval";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
+import { contentIdentity } from "../lib/proposal-artifact/content-identity";
+import {
+	type CreatedDocumentVersion,
+	DOCUMENT_GENERATION_STALE,
+	PROPOSAL_PROMPT_NOT_BOUND,
+	type ProposalArtifactGenerationOptions,
+	type ProposalLiveRunGuard,
+} from "../lib/proposal-artifact/types";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
+import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { activityLogger } from "./lib/activity-logger";
 import {
 	type BackgroundJobStepStatus,
@@ -545,7 +563,11 @@ async function retrieveProjectContextEntries(
 			const roleTag = c.metadata?.roleTag as string | undefined;
 			if (roleTag) {
 				const source =
-					c.sourceTitle || c.filename || c.sourceUrl || "Codebase";
+					c.sourcePath ||
+					c.sourceTitle ||
+					c.filename ||
+					c.sourceUrl ||
+					"Codebase";
 				content = `--- ${roleTag}: ${source} ---\n${content}`;
 			}
 			return content;
@@ -580,6 +602,453 @@ async function retrieveProjectContextEntries(
 	}
 }
 
+// =============================================================================
+// Proposal artifact: pinned prompt and live sections (Fizzy #2801)
+// =============================================================================
+
+/**
+ * The stream modes an artifact-mode run asks for: the final document from
+ * `values`, as always, and the agent's cumulative previews from `updates`.
+ */
+const LIVE_SECTIONS_STREAM_MODES: StreamMode[] = ["values", "updates"];
+
+/**
+ * At most one live write per this many milliseconds. The agent takes seconds
+ * to write a section, so each one still reaches the page within a few seconds
+ * of the next heading starting.
+ */
+const LIVE_SECTIONS_WRITE_INTERVAL_MS = 1_500;
+
+/**
+ * `userName` of the `document_change` nudge a live write sends. The schema
+ * requires one and no person made the change; the page only refetches on the
+ * event, so the nudge reads like any other document update.
+ */
+const LIVE_SECTIONS_NUDGE_USER_NAME = "Fabric";
+
+/**
+ * How long the run waits for its live preview to settle (a write in flight,
+ * the clear, the final write) or for a nudge, before carrying on without it:
+ * the bound the agent-stream fallback gives its audit write. The preview is a
+ * courtesy to the page, so a stalled database or realtime call must not hold
+ * up the fallback or the result. A wait that runs out is abandoned, not
+ * cancelled; anything it still writes is guarded by the run, the attempt and
+ * GENERATING like every live write.
+ */
+const LIVE_SECTIONS_SETTLE_TIMEOUT_MS = 10_000;
+
+/**
+ * Heartbeat details while the run waits for its live preview: the stream's
+ * own heartbeat has stopped by then.
+ */
+const LIVE_SECTIONS_SETTLE_HEARTBEAT = {
+	phase: "live_sections",
+	message: "Settling the live preview",
+};
+
+/**
+ * Whether `work` settled within {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}.
+ * `work` must never reject; when it runs out of time it carries on
+ * unawaited.
+ */
+async function settlesInTime(work: Promise<void>): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			work.then(() => true),
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(
+					() => resolve(false),
+					LIVE_SECTIONS_SETTLE_TIMEOUT_MS,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * A content-free name for an error, for the artifact-mode logs: a Prisma or
+ * system code when it has one, else its class. Never the message, which can
+ * quote prompt or model text.
+ */
+function errorCode(error: unknown): string {
+	if (error && typeof error === "object") {
+		const { code, name } = error as { code?: unknown; name?: unknown };
+		if (typeof code === "string" && code) {
+			return code;
+		}
+		if (typeof name === "string" && name) {
+			return name;
+		}
+	}
+	return "UNKNOWN";
+}
+
+/**
+ * The failure of an artifact-mode run whose pinned Main prompt cannot be
+ * rendered. Non-retryable: the same version renders the same way on every
+ * attempt, and no other prompt may stand in for it.
+ */
+function pinnedProposalPromptFailure(): ApplicationFailure {
+	const label =
+		findPromptAgentTarget(PROPOSAL_CLIENT_MAIN_AGENT_KEY)?.label ??
+		PROPOSAL_CLIENT_MAIN_AGENT_KEY;
+	return ApplicationFailure.nonRetryable(
+		`The prompt bound to the "${label}" action could not be rendered, so this Proposal cannot be generated. An organization admin can check that prompt in the Prompt Library under Project Documents.`,
+		PROPOSAL_PROMPT_NOT_BOUND,
+	);
+}
+
+/**
+ * What `renderPromptWithContext` (`./prompt-activities`) throws when the
+ * pinned prompt itself is the problem: the prompt is gone or no longer
+ * visible to the run, or its pinned version is. Every attempt would read the
+ * same answer. A template that fails to render throws nothing there:
+ * `renderTemplate` hands back the raw template instead.
+ */
+const PINNED_PROMPT_REFUSAL = /^Prompt (version )?not found: /;
+
+/**
+ * Whether a render error is the pinned prompt's refusal, so the run fails
+ * for good. Anything else — a database or network fault while loading the
+ * prompt — is transient and left to the activity's retry policy.
+ */
+function isPinnedPromptRefusal(error: unknown): boolean {
+	return error instanceof Error && PINNED_PROMPT_REFUSAL.test(error.message);
+}
+
+/**
+ * The cumulative partial document an `updates` chunk carries. The agent sends
+ * `{ [nodeName]: state }`, and the node that is writing puts the whole
+ * document so far in `state.document`.
+ */
+function documentFromUpdate(data: unknown): string | undefined {
+	if (!data || typeof data !== "object") {
+		return undefined;
+	}
+	for (const update of Object.values(data)) {
+		const document = (update as { document?: unknown } | null)?.document;
+		if (typeof document === "string" && document) {
+			return document;
+		}
+	}
+	return undefined;
+}
+
+interface LiveSectionsRun {
+	projectId: string;
+	documentId: string;
+	/** The triggering member; the nudge names them as its `userId`. */
+	userId: string;
+	/** As stored, e.g. `"PROPOSAL"`. */
+	documentType: string;
+	liveRunId: string;
+}
+
+/**
+ * The live preview of one artifact-mode generation attempt: the finished
+ * sections of the streaming document, saved to the document's live columns so
+ * the page can show them before the run ends.
+ *
+ * It writes what `completedSections` calls finished, normalized as the final
+ * save will store it, only when that changed and at most once per
+ * {@link LIVE_SECTIONS_WRITE_INTERVAL_MS}, and nudges the page after each
+ * write. Every write is guarded in the database by the run token and this
+ * attempt's number: `superseded` means a newer run or a later attempt owns
+ * the preview, so this attempt stops writing and carries on generating.
+ *
+ * A live write never fails the generation. An error is logged with ids and a
+ * code, and the next preview tries again. Writes are awaited one at a time in
+ * the stream loop, so {@link LiveSections.clear} can wait for the one in
+ * flight and nothing lands after it. Once the stream has ended
+ * {@link LiveSections.finish} writes the whole document, whose last section
+ * no next heading completes.
+ *
+ * It also owns the stream's abort signal: on a timeout or a cancellation the
+ * stream is aborted and live writing stops at the same moment.
+ *
+ * Every wait after the stream (finish, clear, stop) and every nudge is
+ * bounded by {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}, so a stalled database or
+ * realtime call delays neither the fallback nor the result.
+ */
+class LiveSections {
+	private readonly streamAbort = new AbortController();
+	private state: "open" | "stopped" | "superseded";
+	private lastWritten = "";
+	private lastWriteAt = Number.NEGATIVE_INFINITY;
+	private inFlight: Promise<void> | null = null;
+	private cleared = false;
+
+	private constructor(
+		private readonly run: LiveSectionsRun,
+		private readonly attempt: number | undefined,
+		private readonly cancellationSignal: AbortSignal | undefined,
+	) {
+		this.state = attempt === undefined ? "stopped" : "open";
+		cancellationSignal?.addEventListener("abort", () => this.abort(), {
+			once: true,
+		});
+	}
+
+	/**
+	 * Open this attempt's preview and claim the run for it. A later attempt's
+	 * claim turns every write of an earlier one into `superseded`, so an
+	 * attempt Temporal gave up on stops writing as soon as its replacement
+	 * starts. A refused or failed claim disables live writes for this attempt;
+	 * it never fails the generation.
+	 */
+	static async open(run: LiveSectionsRun): Promise<LiveSections> {
+		let attempt: number | undefined;
+		let cancellationSignal: AbortSignal | undefined;
+		try {
+			const context = Context.current();
+			attempt = context.info.attempt;
+			cancellationSignal = context.cancellationSignal;
+		} catch {
+			// Outside an activity there is no attempt to claim with, and a
+			// guessed one could overwrite a real attempt's preview: generate
+			// without one.
+		}
+		const live = new LiveSections(run, attempt, cancellationSignal);
+		await live.claim();
+		return live;
+	}
+
+	/** The signal the agent stream is aborted with. */
+	get signal(): AbortSignal {
+		return this.streamAbort.signal;
+	}
+
+	/** Temporal cancelled this attempt (a cancellation or a lost heartbeat). */
+	get cancelled(): boolean {
+		return this.cancellationSignal?.aborted ?? false;
+	}
+
+	private async claim(): Promise<void> {
+		if (this.attempt === undefined) {
+			return;
+		}
+		try {
+			const outcome = await claimLiveAttempt({
+				documentId: this.run.documentId,
+				runId: this.run.liveRunId,
+				attempt: this.attempt,
+			});
+			if (outcome === "superseded") {
+				this.state = "superseded";
+				activityLogger.info(
+					"Live sections not claimed: a newer run or a later attempt owns them",
+					this.logIds(),
+				);
+			}
+		} catch (error) {
+			this.state = "stopped";
+			activityLogger.warn(
+				"Could not claim live sections; generating without them",
+				{
+					...this.logIds(),
+					error: errorCode(error),
+				},
+			);
+		}
+	}
+
+	/** Offer the agent's latest cumulative partial document. */
+	async offer(partial: string): Promise<void> {
+		if (this.state !== "open") {
+			return;
+		}
+		const sections = contentAsSaved(completedSections(partial));
+		if (!sections || sections === this.lastWritten) {
+			return;
+		}
+		const now = Date.now();
+		if (now - this.lastWriteAt < LIVE_SECTIONS_WRITE_INTERVAL_MS) {
+			return;
+		}
+		this.lastWriteAt = now;
+		await this.writeTracked(sections);
+	}
+
+	/**
+	 * Write the whole document once the stream has ended. Its last section
+	 * has no next heading to complete it, so without this the page would not
+	 * show it until the final save, after the visuals step. The throttle does
+	 * not apply; the guards do (run, attempt, GENERATING). Waits for a write
+	 * in flight first, then stops writing. Bounded; never throws.
+	 */
+	async finish(document: string): Promise<void> {
+		await this.settle("finish", async () => {
+			await this.inFlight;
+			if (this.state !== "open") {
+				return;
+			}
+			const sections = contentAsSaved(
+				completedSections(document, { ended: true }),
+			);
+			if (sections && sections !== this.lastWritten) {
+				await this.writeTracked(sections);
+			}
+			if (this.state === "open") {
+				this.state = "stopped";
+			}
+		});
+	}
+
+	/** Write, tracked so clear, stop and finish can wait for it. */
+	private async writeTracked(sections: string): Promise<void> {
+		this.inFlight = this.write(sections);
+		try {
+			await this.inFlight;
+		} finally {
+			this.inFlight = null;
+		}
+	}
+
+	private async write(sections: string): Promise<void> {
+		if (this.attempt === undefined) {
+			return;
+		}
+		try {
+			const outcome = await writeLiveSections({
+				documentId: this.run.documentId,
+				runId: this.run.liveRunId,
+				attempt: this.attempt,
+				content: sections,
+			});
+			if (outcome === "superseded") {
+				this.state = "superseded";
+				activityLogger.info(
+					"Live sections superseded: this attempt stops writing them",
+					this.logIds(),
+				);
+				return;
+			}
+			this.lastWritten = sections;
+			await this.nudge();
+		} catch (error) {
+			activityLogger.warn("Could not write live sections", {
+				...this.logIds(),
+				error: errorCode(error),
+			});
+		}
+	}
+
+	/**
+	 * Stop writing and abort the stream, at once. A write already in flight
+	 * still settles; {@link LiveSections.clear} waits for it.
+	 */
+	abort(): void {
+		if (this.state === "open") {
+			this.state = "stopped";
+		}
+		this.streamAbort.abort();
+	}
+
+	/**
+	 * Abort, wait for any write in flight, then drop this run's preview so the
+	 * page shows progress instead: the gateway fallback writes nothing live.
+	 * Left alone when a newer run or a later attempt owns the preview.
+	 * Bounded; never throws; clears at most once.
+	 */
+	async clear(): Promise<void> {
+		this.abort();
+		await this.settle("clear", async () => {
+			await this.inFlight;
+			if (this.cleared || this.state === "superseded") {
+				return;
+			}
+			if (this.attempt === undefined) {
+				return;
+			}
+			this.cleared = true;
+			try {
+				const outcome = await clearLiveContent({
+					documentId: this.run.documentId,
+					runId: this.run.liveRunId,
+					attempt: this.attempt,
+				});
+				if (outcome === "written") {
+					await this.nudge();
+				}
+			} catch (error) {
+				activityLogger.warn("Could not clear live sections", {
+					...this.logIds(),
+					error: errorCode(error),
+				});
+			}
+		});
+	}
+
+	/**
+	 * Stop writing and wait for any write in flight, without clearing.
+	 * Bounded; never throws.
+	 */
+	async stop(): Promise<void> {
+		this.abort();
+		await this.settle("stop", async () => {
+			await this.inFlight;
+		});
+	}
+
+	/**
+	 * Run `work` (which never rejects) with the heartbeat ticking, for at most
+	 * {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}.
+	 */
+	private async settle(
+		step: "finish" | "clear" | "stop",
+		work: () => Promise<void>,
+	): Promise<void> {
+		const settled = await withHeartbeatTicker(() => settlesInTime(work()), {
+			details: LIVE_SECTIONS_SETTLE_HEARTBEAT,
+		});
+		if (!settled) {
+			activityLogger.warn(
+				"Live sections did not settle in time; carrying on without them",
+				{ ...this.logIds(), step, error: "TIMEOUT" },
+			);
+		}
+	}
+
+	/** Tell the page to refetch. Bounded; never throws. */
+	private async nudge(): Promise<void> {
+		let failure: string | undefined;
+		const emitted = emitDocumentChange({
+			projectId: this.run.projectId,
+			documentId: this.run.documentId,
+			action: "updated",
+			userId: this.run.userId,
+			userName: LIVE_SECTIONS_NUDGE_USER_NAME,
+			documentType: this.run.documentType,
+		}).catch((error: unknown) => {
+			failure = errorCode(error);
+		});
+		if (!(await settlesInTime(emitted))) {
+			failure = "TIMEOUT";
+		}
+		if (failure) {
+			activityLogger.warn(
+				"Could not nudge the page about live sections",
+				{
+					...this.logIds(),
+					error: failure,
+				},
+			);
+		}
+	}
+
+	private logIds() {
+		return {
+			projectId: this.run.projectId,
+			documentId: this.run.documentId,
+			liveRunId: this.run.liveRunId,
+			attempt: this.attempt,
+		};
+	}
+}
+
 /**
  * Generate document using LangGraph agent
  */
@@ -608,6 +1077,13 @@ export async function generateDocumentWithAgent(params: {
 	hasSlackIntegration?: boolean;
 	/** The clicking member's own ChatGPT plan may serve this run (Fizzy #2939). */
 	planEligible?: boolean;
+	/**
+	 * Artifact mode, for a coordinated Proposal run (Fizzy #2801). The run
+	 * renders exactly this prompt version, ignores `promptId`, never falls
+	 * back to another prompt, and saves finished sections to the document's
+	 * live columns while the agent streams. Absent, every path is today's.
+	 */
+	artifact?: ProposalArtifactGenerationOptions;
 }): Promise<{
 	content: string;
 	/**
@@ -641,6 +1117,7 @@ export async function generateDocumentWithAgent(params: {
 		hasTeamsIntegration = false,
 		hasSlackIntegration = false,
 		planEligible = false,
+		artifact,
 	} = params;
 
 	// Track the resolved prompt version ID for attribution. `null`, never
@@ -692,6 +1169,19 @@ export async function generateDocumentWithAgent(params: {
 			);
 		}
 
+		// Artifact mode claims the run's live preview for this attempt first,
+		// so an earlier attempt that is still streaming stops writing at once.
+		const live =
+			artifact && documentId
+				? await LiveSections.open({
+						projectId,
+						documentId,
+						userId,
+						documentType: rawDocumentType,
+						liveRunId: artifact.liveRunId,
+					})
+				: undefined;
+
 		const project = await db.project.findUnique({
 			where: { id: projectId },
 			select: {
@@ -740,7 +1230,97 @@ export async function generateDocumentWithAgent(params: {
 
 		// NEW: Fetch and render custom prompt if promptId provided
 		let systemPrompt: string | undefined;
-		if (promptId) {
+		if (artifact) {
+			// Artifact mode: the client-only Main prompt at exactly the version
+			// the run was planned with, on every attempt. The request's
+			// `promptId` is ignored, and a prompt that cannot be rendered fails
+			// the run: the built-in instructions below must never write a
+			// client document.
+			safeHeartbeat({
+				phase: "loading_prompt",
+				message: "Rendering the bound Proposal prompt",
+				progress: 18,
+			});
+
+			const { renderPromptWithContext } = await import(
+				"./prompt-activities"
+			);
+
+			let rendered: Awaited<ReturnType<typeof renderPromptWithContext>>;
+			try {
+				rendered = await renderPromptWithContext({
+					promptId: artifact.promptId,
+					versionNumber: artifact.promptVersionNumber,
+					variables: qaDepthVariables,
+					projectContext: {
+						name: project.name,
+						description: project.description ?? undefined,
+						goals: project.goals ?? undefined,
+						techStack: project.techStack,
+						features: project.features,
+						projectTypes:
+							project.projectTypes.length > 0
+								? project.projectTypes
+								: undefined,
+					},
+					ragContexts: contexts,
+					currentDocument: isRegeneration
+						? undefined
+						: currentDocument,
+					userId,
+					organizationId,
+					documentType,
+				});
+			} catch (error) {
+				if (!isPinnedPromptRefusal(error)) {
+					// Transient: rethrown as it is, so the activity retries.
+					throw error;
+				}
+				activityLogger.warn(
+					"The bound Proposal prompt could not be rendered",
+					{
+						projectId,
+						documentId,
+						promptId: artifact.promptId,
+						versionNumber: artifact.promptVersionNumber,
+						error: errorCode(error),
+					},
+				);
+				throw pinnedProposalPromptFailure();
+			}
+			if (
+				rendered.version !== artifact.promptVersionNumber ||
+				rendered.rendered.trim().length === 0
+			) {
+				activityLogger.warn(
+					"The bound Proposal prompt rendered no usable text at its version",
+					{
+						projectId,
+						documentId,
+						promptId: artifact.promptId,
+						versionNumber: artifact.promptVersionNumber,
+						renderedVersion: rendered.version,
+					},
+				);
+				throw pinnedProposalPromptFailure();
+			}
+
+			systemPrompt = rendered.rendered;
+			resolvedPromptVersionId = rendered.versionId;
+			activityLogger.info("Bound Proposal prompt rendered", {
+				projectId,
+				documentId,
+				promptId: artifact.promptId,
+				promptVersion: rendered.version,
+				promptLength: systemPrompt.length,
+			});
+
+			safeHeartbeat({
+				phase: "prompt_loaded",
+				message: "Bound Proposal prompt rendered",
+				progress: 22,
+			});
+		} else if (promptId) {
 			activityLogger.info(
 				"Fetching custom prompt for document generation",
 				{
@@ -1508,6 +2088,15 @@ ${formattingRules}`;
 						organizationId,
 						activeSkill,
 					},
+					// Artifact mode reads the agent's previews from `updates`
+					// and can abort the stream; every other run sends exactly
+					// today's payload.
+					...(live
+						? {
+								streamMode: LIVE_SECTIONS_STREAM_MODES,
+								signal: live.signal,
+							}
+						: {}),
 				},
 			);
 
@@ -1529,6 +2118,11 @@ ${formattingRules}`;
 									},
 								);
 							}
+						} else if (live && chunk.event === "updates") {
+							const partial = documentFromUpdate(chunk.data);
+							if (partial) {
+								await live.offer(partial);
+							}
 						}
 					}
 					return documentContent;
@@ -1545,12 +2139,18 @@ ${formattingRules}`;
 				setTimeout(() => {
 					clearInterval(heartbeatLoop); // Clear heartbeat loop on timeout
 					streamComplete = true;
+					// Nothing is written live once the run gives up on the stream.
+					live?.abort();
 					resolve("__TIMED_OUT__");
 				}, timeoutMs),
 			);
 			const result = await Promise.race([collectPromise, timedOut]);
 			if (result === "__TIMED_OUT__") {
 				throw new Error(`Agent stream timeout after ${timeoutMs}ms`);
+			}
+			if (live?.cancelled) {
+				// An aborted stream can end quietly instead of throwing.
+				throw new Error("Agent stream cancelled");
 			}
 			const streamDuration = Date.now() - startTime;
 			activityLogger.info("Document stream completed successfully", {
@@ -1561,6 +2161,12 @@ ${formattingRules}`;
 				streamDurationMs: streamDuration,
 				streamDurationSeconds: (streamDuration / 1000).toFixed(2),
 			});
+			// The agent has finished the whole document: show its last
+			// section now rather than after the visuals step. An empty
+			// document is left to the direct fallback below, which clears.
+			if (live && documentContent) {
+				await live.finish(documentContent);
+			}
 		} catch (err) {
 			// Clear the stream heartbeat loop — if stream() threw synchronously,
 			// the collectPromise finally block never runs and the interval leaks.
@@ -1568,6 +2174,18 @@ ${formattingRules}`;
 				clearInterval(heartbeatLoop);
 			}
 			streamComplete = true;
+
+			if (live) {
+				if (live.cancelled) {
+					// Temporal has given up on this attempt: nothing is left to
+					// fall back for, and nothing may be written live after this.
+					await live.stop();
+					throw err;
+				}
+				// The gateway fallback below writes nothing live: drop the
+				// preview so the page shows progress until the final save.
+				await live.clear();
+			}
 
 			const streamDuration = Date.now() - startTime;
 			// The primary failure is the CAUSE of everything that follows. Before
@@ -1743,6 +2361,8 @@ ${formattingRules}`;
 					documentType,
 				},
 			);
+			// As for the agent-stream fallback: no preview survives this one.
+			await live?.clear();
 			// Whole-document generation from a short prompt — maximal mode (see the
 			// agent-stream fallback above for why an explicit budget is required).
 			const directFallbackMaxOutputTokens = computeMaxOutputTokenBudget(
@@ -2177,19 +2797,15 @@ export function repairMalformedMermaidFences(source: string): string {
 }
 
 // =============================================================================
-// Stale regeneration guard (visual slots)
+// Stale regeneration guards (visual slots, and the Proposal artifact run)
 // =============================================================================
 
-/**
- * The failure type a regeneration is abandoned with when the document moved
- * past the version its visual slots were lifted from.
- *
- * Non-retryable: a moved document stays moved, and retrying would only race
- * the person who moved it. Not exported — what crosses the activity boundary
- * is the serialized type STRING, and a non-function export here would be
- * registered alongside the activities.
- */
-const STALE_REGENERATION_FAILURE_TYPE = "DOCUMENT_GENERATION_STALE";
+// A regeneration whose document moved on is abandoned with the failure type
+// `DOCUMENT_GENERATION_STALE`, imported from the shared contracts rather than
+// declared here: what crosses the activity boundary is the serialized type
+// STRING, and a non-function export of this module would be registered
+// alongside the activities. Non-retryable: a moved document stays moved, and
+// retrying would only race whoever moved it.
 
 /**
  * Written for the person who opens the document: the workflow's existing
@@ -2210,7 +2826,36 @@ function staleRegenerationFailure(details: {
 	);
 	return ApplicationFailure.nonRetryable(
 		STALE_REGENERATION_MESSAGE,
-		STALE_REGENERATION_FAILURE_TYPE,
+		DOCUMENT_GENERATION_STALE,
+	);
+}
+
+/**
+ * Written for the same reader. Rarely seen: the FAILED write it leads to is
+ * guarded by the same run, so on a document a newer run owns it is a no-op.
+ */
+const SUPERSEDED_RUN_MESSAGE =
+	"A newer generation of this document started, so this run's text was discarded and the newer generation was left to finish.";
+
+/**
+ * A Proposal artifact run (Fizzy #2801) whose document a newer run has taken
+ * over: planning a run points the document's `liveRunId` at it, so a run that
+ * no longer matches must not save, version or fail the newer run's Main. The
+ * same failure type as a stale regeneration, so the workflow takes the path it
+ * already takes for one.
+ */
+function supersededRunFailure(details: {
+	documentId: string;
+	liveRunId: string;
+	phase: "save" | "version";
+}): ApplicationFailure {
+	activityLogger.warn(
+		"Abandoning a superseded Proposal run: a newer run owns the document",
+		details,
+	);
+	return ApplicationFailure.nonRetryable(
+		SUPERSEDED_RUN_MESSAGE,
+		DOCUMENT_GENERATION_STALE,
 	);
 }
 
@@ -2272,31 +2917,62 @@ async function bindRegenerationBaseline(params: {
 }
 
 /**
- * Write a regeneration only if the document is still at `baselineVersion`.
+ * The statuses a save moves to COMPLETE; it leaves any other status as it is.
+ */
+const SAVE_COMPLETES_STATUSES: ReadonlySet<string> = new Set([
+	"DRAFT",
+	"GENERATING",
+]);
+
+/**
+ * Write a regeneration only while the guards it was given still hold. Each
+ * guard is optional and joins the WHERE clause only when given:
+ *
+ * - `baselineVersion` (visual slots, Fizzy #2589): the document is still at
+ *   the version its slots were lifted from.
+ * - `liveRunId` (Proposal artifact run, Fizzy #2801): the document's live run
+ *   is still this one, so a run a newer one superseded cannot overwrite the
+ *   newer Main. This write also drops the run's live preview and keeps
+ *   `liveRunId`, so a retry can recognize its own commit.
+ * - `baselineContentHash` (Proposal artifact run): the body is still the one
+ *   the run was planned against. A rejected regeneration rewinds the version,
+ *   and its fallback rewrites the body without moving it, so the version
+ *   alone cannot see those edits. The body read here joins the WHERE clause,
+ *   so one landing after the read is caught as well.
  *
  * The same writes as the unguarded save — the pre-regeneration snapshot, then
  * content, word count and status — but in ONE transaction, and the update is
- * conditional on the version (`updateMany` with the version in its WHERE, the
- * shape of `updateDocument`'s `expectedVersion` path). A person's save that
- * lands between the read and the update makes it match no row, and the throw
- * rolls the snapshot back with it: on a conflict nothing at all is written.
+ * conditional (`updateMany` with each guard in its WHERE, the shape of
+ * `updateDocument`'s `expectedVersion` path). A write that lands between the
+ * read and the update makes it match no row, and the throw rolls the snapshot
+ * back with it: on a conflict nothing at all is written.
  *
  * The snapshot is therefore not best-effort here as it is on the unguarded
  * path: a failed statement aborts a Postgres transaction, so it cannot be
  * swallowed and carried past. A snapshot failure fails the attempt, which
  * retries like any database error. The version is not bumped here — as on the
- * unguarded path, `createDocumentVersion` does that, against the same
- * baseline (see {@link createVersionAgainstRegenerationBaseline}) — so a
- * retried attempt after a lost result finds the same version and rewrites the
- * same body.
+ * unguarded path, `createDocumentVersion` does that, against the same guards
+ * (see {@link createVersionWithGuards}). A retried attempt after a lost result
+ * under the version guard alone finds the same version and rewrites the same
+ * body; under the run guard it writes nothing when the row already holds
+ * exactly what this save writes.
  */
-async function saveAgainstRegenerationBaseline(params: {
+async function saveWithGuards(params: {
 	documentId: string;
 	content: string;
 	userId: string | undefined;
-	baselineVersion: number;
+	baselineVersion?: number;
+	liveRunId?: string;
+	baselineContentHash?: string;
 }): Promise<void> {
-	const { documentId, content, userId, baselineVersion } = params;
+	const {
+		documentId,
+		content,
+		userId,
+		baselineVersion,
+		liveRunId,
+		baselineContentHash,
+	} = params;
 	const wordCount = content
 		.split(/\s+/)
 		.filter((word) => word.length > 0).length;
@@ -2304,12 +2980,51 @@ async function saveAgainstRegenerationBaseline(params: {
 	await db.$transaction(async (tx) => {
 		const currentDoc = await tx.projectDocument.findUnique({
 			where: { id: documentId },
-			select: { status: true, content: true, version: true },
+			select: {
+				status: true,
+				content: true,
+				version: true,
+				...(liveRunId !== undefined && {
+					liveRunId: true,
+					liveContent: true,
+				}),
+			},
 		});
 		if (!currentDoc) {
 			throw new Error(`Document not found: ${documentId}`);
 		}
-		if (currentDoc.version !== baselineVersion) {
+		if (liveRunId !== undefined) {
+			if (currentDoc.liveRunId !== liveRunId) {
+				throw supersededRunFailure({
+					documentId,
+					liveRunId,
+					phase: "save",
+				});
+			}
+			// The row already holds exactly what this save writes — the body,
+			// no preview, and a status the save would leave as it is — so an
+			// earlier attempt of this run committed it, and writing again could
+			// only overwrite an edit made since. Not the body alone: a
+			// regeneration can reproduce the text it replaces, and its first
+			// save must still complete the document.
+			if (
+				currentDoc.content === content &&
+				currentDoc.liveContent === null &&
+				!SAVE_COMPLETES_STATUSES.has(currentDoc.status)
+			) {
+				activityLogger.info(
+					"Project document already saved by an earlier attempt of this run",
+					{ documentId, liveRunId },
+				);
+				return;
+			}
+		}
+		if (
+			(baselineVersion !== undefined &&
+				currentDoc.version !== baselineVersion) ||
+			(baselineContentHash !== undefined &&
+				contentIdentity(currentDoc.content) !== baselineContentHash)
+		) {
 			throw staleRegenerationFailure({
 				documentId,
 				phase: "save",
@@ -2336,24 +3051,43 @@ async function saveAgainstRegenerationBaseline(params: {
 		}
 
 		// The unguarded save's status rule, unchanged.
-		const newStatus =
-			currentDoc.status === "DRAFT" || currentDoc.status === "GENERATING"
-				? "COMPLETE"
-				: currentDoc.status;
+		const newStatus = SAVE_COMPLETES_STATUSES.has(currentDoc.status)
+			? "COMPLETE"
+			: currentDoc.status;
 		const { count } = await tx.projectDocument.updateMany({
-			where: { id: documentId, version: baselineVersion },
+			where: {
+				id: documentId,
+				...(baselineVersion !== undefined && {
+					version: baselineVersion,
+				}),
+				...(liveRunId !== undefined && { liveRunId }),
+				...(baselineContentHash !== undefined && {
+					content: currentDoc.content,
+				}),
+			},
 			data: {
 				content,
 				wordCount,
 				status: newStatus,
+				...(liveRunId !== undefined && { liveContent: null }),
 				updatedAt: new Date(),
 			},
 		});
 		if (count !== 1) {
 			const actual = await tx.projectDocument.findUnique({
 				where: { id: documentId },
-				select: { version: true },
+				select: {
+					version: true,
+					...(liveRunId !== undefined && { liveRunId: true }),
+				},
 			});
+			if (liveRunId !== undefined && actual?.liveRunId !== liveRunId) {
+				throw supersededRunFailure({
+					documentId,
+					liveRunId,
+					phase: "save",
+				});
+			}
 			throw staleRegenerationFailure({
 				documentId,
 				phase: "save",
@@ -2362,11 +3096,12 @@ async function saveAgainstRegenerationBaseline(params: {
 			});
 		}
 
-		activityLogger.info("Project document saved against its baseline", {
+		activityLogger.info("Project document saved against its guards", {
 			documentId,
 			wordCount,
 			status: newStatus,
 			baselineVersion,
+			liveRunId,
 		});
 	});
 }
@@ -2381,7 +3116,8 @@ async function saveAgainstRegenerationBaseline(params: {
  * well-formed.
  *
  * The guarded version step recomputes it from the same string to tell
- * whether the regenerated body is still the live one.
+ * whether the regenerated body is still the live one, and an artifact run's
+ * live preview is normalized with it so it shows what the save will store.
  */
 function contentAsSaved(rawContent: string): string {
 	return normalizeQuoteArtifacts(repairMalformedMermaidFences(rawContent));
@@ -2398,34 +3134,49 @@ function contentAsSaved(rawContent: string): string {
  *
  * `options.baselineVersion` comes from `generateDocumentWithAgent`, only when
  * a visual slot is involved. With it the write is conditional on the
- * document still being at that version (see
- * {@link saveAgainstRegenerationBaseline}); without it — every slot-free
- * regeneration, and any run whose generation finished before the field
+ * document still being at that version. `options.liveRunId` is a Proposal
+ * artifact run's guard (Fizzy #2801): with it the write is conditional on the
+ * document's live run still being this one, clears the live preview, and a
+ * superseded run's save is refused as stale. Either or both select
+ * {@link saveWithGuards}; without both — every slot-free regeneration outside
+ * an artifact run, and any run whose generation finished before the fields
  * existed — the save below is unchanged.
  */
 export async function saveProjectDocument(
 	documentId: string,
 	rawContent: string,
 	userId?: string,
-	options?: { baselineVersion?: number },
+	options?: {
+		baselineVersion?: number;
+		baselineContentHash?: string;
+	} & Partial<ProposalLiveRunGuard>,
 ): Promise<void> {
 	activityLogger.info("Saving project document", { documentId });
 
 	const content = contentAsSaved(rawContent);
 
-	if (options?.baselineVersion !== undefined) {
+	const baselineVersion = options?.baselineVersion;
+	const liveRunId = options?.liveRunId;
+	const baselineContentHash = options?.baselineContentHash;
+	if (
+		baselineVersion !== undefined ||
+		liveRunId !== undefined ||
+		baselineContentHash !== undefined
+	) {
 		try {
-			await saveAgainstRegenerationBaseline({
+			await saveWithGuards({
 				documentId,
 				content,
 				userId,
-				baselineVersion: options.baselineVersion,
+				baselineVersion,
+				liveRunId,
+				baselineContentHash,
 			});
 		} catch (error) {
 			// A stale refusal was already logged as the warning it is.
 			const isStale =
 				error instanceof ApplicationFailure &&
-				error.type === STALE_REGENERATION_FAILURE_TYPE;
+				error.type === DOCUMENT_GENERATION_STALE;
 			if (!isStale) {
 				activityLogger.error("Failed to save project document", error, {
 					documentId,
@@ -2624,133 +3375,275 @@ export async function runDocumentDecisionPrecheckActivity(params: {
 }
 
 /**
- * Version a regeneration only while its body is still the live one at
- * `baselineVersion`.
+ * The id of the version row a Proposal artifact run writes (Fizzy #2801). A
+ * run writes at most one, and its token is unique to it, so the row's id
+ * names the run: a retry recognizes its own commit by this id, and no other
+ * row — however alike — can pass for it.
+ */
+function versionRowIdForRun(liveRunId: string): string {
+	return `proposal-run-${liveRunId}`;
+}
+
+/**
+ * Rolls back a run-guarded version transaction whose document no longer
+ * holds the body the run saved. {@link createVersionWithGuards} catches it
+ * and skips the version; it never reaches the run.
+ */
+class ContentChangedSinceSave extends Error {
+	constructor() {
+		super("The document changed after this run's save");
+		this.name = "ContentChangedSinceSave";
+	}
+}
+
+/**
+ * Version a regeneration only while the guards it was given still hold: its
+ * body is still the live one at `baselineVersion` (visual slots), and the
+ * document's live run is still `liveRunId` with the body that run saved
+ * (Proposal artifact run, Fizzy #2801). Each guard is optional and joins the
+ * checks and the WHERE clause only when given.
  *
  * The guarded save writes the regenerated body but leaves the version where
  * it was; this step then numbers it. A person's save landing in between
  * moves the document on, and the unguarded step would still create a row of
  * the stale body under the next number and point the document's version at
  * it, labelling their content with this run's version. So here, in ONE
- * transaction: the live document must still be at the baseline AND hold
- * exactly what the save wrote; the row is numbered from the history maximum,
- * as the unguarded step does; and the version advances with the baseline and
- * that body in the WHERE clause, so a write committing after the read makes
- * the update match no row and the throw rolls the row back. On any mismatch
- * nothing is written and the run is abandoned as stale, like the save.
+ * transaction: the live document must still hold exactly what the save
+ * wrote (and, under the baseline, still be at it); the row is numbered from
+ * the history maximum, as the unguarded step does; and the version advances
+ * with those guards in the WHERE clause, so a write committing after the read
+ * makes the update match no row and the throw rolls the row back. The row
+ * holds the body as saved, not the raw generation: it is the version of what
+ * the document now shows, and restoring it must not bring back the malformed
+ * fences the save repaired.
  *
- * The row holds the body as saved, not the raw generation: it is the version
- * of what the document now shows, and restoring it must not bring back the
- * malformed fences the save repaired.
+ * On a mismatch nothing is written. Under the baseline alone the run is
+ * abandoned as stale, like the save. Under the run guard the save has
+ * already completed the document, so an edit made since (a person's save, a
+ * rejected regeneration) is not a failure of the run: the version is
+ * skipped, the step resolves with nothing, and history never calls the
+ * edited body the generated one. A newer run owning the document is still
+ * refused as stale.
  *
- * A retry must not call its own committed attempt stale. The row and the
- * advance commit together, so a row carrying exactly what this step writes
- * (same body, author, prompt version and description), numbered from the
- * baseline up to the live version, can only be that attempt's, and the retry
- * succeeds without a second row. That holds even if a person has saved over
- * it since: they did so after this step had succeeded.
+ * A retry must not call its own committed attempt stale. Under the run guard
+ * the row carries an id derived from the run ({@link versionRowIdForRun}),
+ * so the retry finds exactly its own commit, even if a person has saved over
+ * it since or a newer run has taken over: they did so after this step had
+ * succeeded. Matching on the body instead could take an older row with the
+ * same text, author and prompt for this run's, and skip the version this
+ * run owes. Under the baseline alone, a row carrying exactly what this step
+ * writes (same body, author, prompt version and description), numbered from
+ * the baseline up to the live version, can only be that attempt's.
+ *
+ * Only the run guard's result names the row; under the baseline alone the
+ * step resolves with nothing, as `createDocumentVersion` does.
  */
-async function createVersionAgainstRegenerationBaseline(params: {
+async function createVersionWithGuards(params: {
 	documentId: string;
 	content: string;
 	userId: string;
 	promptVersionId: string | undefined;
-	baselineVersion: number;
-}): Promise<void> {
-	const { documentId, content, userId, promptVersionId, baselineVersion } =
-		params;
+	baselineVersion?: number;
+	liveRunId?: string;
+}): Promise<CreatedDocumentVersion | undefined> {
+	const {
+		documentId,
+		content,
+		userId,
+		promptVersionId,
+		baselineVersion,
+		liveRunId,
+	} = params;
 	const savedContent = contentAsSaved(content);
+	const runRowId =
+		liveRunId !== undefined ? versionRowIdForRun(liveRunId) : undefined;
 
-	await db.$transaction(async (tx) => {
-		const liveDoc = await tx.projectDocument.findUnique({
-			where: { id: documentId },
-			select: { content: true, version: true },
-		});
-		if (!liveDoc) {
-			throw new Error(`Document not found: ${documentId}`);
-		}
-
-		const committedRow = await tx.documentVersion.findFirst({
-			where: {
-				documentId,
-				version: { gte: baselineVersion, lte: liveDoc.version },
-				content: savedContent,
-				changedBy: userId,
-				promptVersionId: promptVersionId ?? null,
-				changeDescription: {
-					in: ["Initial version", "Regenerated version"],
-				},
-			},
-			select: { version: true },
-		});
-		if (committedRow) {
-			activityLogger.info(
-				"Document version already created by an earlier attempt",
-				{ documentId, version: committedRow.version, baselineVersion },
-			);
-			return;
-		}
-
-		if (
-			liveDoc.version !== baselineVersion ||
-			liveDoc.content !== savedContent
-		) {
-			throw staleRegenerationFailure({
-				documentId,
-				phase: "version",
-				baselineVersion,
-				actualVersion: liveDoc.version,
-			});
-		}
-
-		const maxVersion = await tx.documentVersion.findFirst({
-			where: { documentId },
-			orderBy: { version: "desc" },
-			select: { version: true },
-		});
-		const nextVersion = maxVersion ? maxVersion.version + 1 : 1;
-
-		await tx.documentVersion.create({
-			data: {
-				documentId,
-				content: savedContent,
-				version: nextVersion,
-				changeDescription:
-					nextVersion <= 1
-						? "Initial version"
-						: "Regenerated version",
-				changedBy: userId,
-				promptVersionId,
-			},
-		});
-
-		const { count } = await tx.projectDocument.updateMany({
-			where: {
-				id: documentId,
-				version: baselineVersion,
-				content: savedContent,
-			},
-			data: { version: nextVersion },
-		});
-		if (count !== 1) {
-			const actual = await tx.projectDocument.findUnique({
+	try {
+		return await db.$transaction(async (tx) => {
+			const liveDoc = await tx.projectDocument.findUnique({
 				where: { id: documentId },
+				select: {
+					content: true,
+					version: true,
+					...(liveRunId !== undefined && { liveRunId: true }),
+				},
+			});
+			if (!liveDoc) {
+				throw new Error(`Document not found: ${documentId}`);
+			}
+
+			if (runRowId !== undefined) {
+				const committedRow = await tx.documentVersion.findUnique({
+					where: { id: runRowId },
+					select: { version: true },
+				});
+				if (committedRow) {
+					activityLogger.info(
+						"Document version already created by an earlier attempt",
+						{
+							documentId,
+							version: committedRow.version,
+							baselineVersion,
+							liveRunId,
+						},
+					);
+					return {
+						version: committedRow.version,
+						versionId: runRowId,
+					};
+				}
+			} else {
+				const committedRow = await tx.documentVersion.findFirst({
+					where: {
+						documentId,
+						version: {
+							...(baselineVersion !== undefined && {
+								gte: baselineVersion,
+							}),
+							lte: liveDoc.version,
+						},
+						content: savedContent,
+						changedBy: userId,
+						promptVersionId: promptVersionId ?? null,
+						changeDescription: {
+							in: ["Initial version", "Regenerated version"],
+						},
+					},
+					select: { version: true },
+				});
+				if (committedRow) {
+					activityLogger.info(
+						"Document version already created by an earlier attempt",
+						{
+							documentId,
+							version: committedRow.version,
+							baselineVersion,
+							liveRunId,
+						},
+					);
+					return undefined;
+				}
+			}
+
+			if (liveRunId !== undefined && liveDoc.liveRunId !== liveRunId) {
+				throw supersededRunFailure({
+					documentId,
+					liveRunId,
+					phase: "version",
+				});
+			}
+			if (liveRunId !== undefined && liveDoc.content !== savedContent) {
+				throw new ContentChangedSinceSave();
+			}
+			if (
+				baselineVersion !== undefined &&
+				(liveDoc.version !== baselineVersion ||
+					liveDoc.content !== savedContent)
+			) {
+				throw staleRegenerationFailure({
+					documentId,
+					phase: "version",
+					baselineVersion,
+					actualVersion: liveDoc.version,
+				});
+			}
+
+			const maxVersion = await tx.documentVersion.findFirst({
+				where: { documentId },
+				orderBy: { version: "desc" },
 				select: { version: true },
 			});
-			throw staleRegenerationFailure({
-				documentId,
-				phase: "version",
-				baselineVersion,
-				actualVersion: actual?.version,
-			});
-		}
+			const nextVersion = maxVersion ? maxVersion.version + 1 : 1;
 
-		activityLogger.info("Document version created against its baseline", {
-			documentId,
-			version: nextVersion,
-			baselineVersion,
+			// Under the run guard a second attempt racing this one fails here
+			// on the row id, an ordinary error the retry policy takes; the
+			// retry then finds the row the other attempt committed.
+			const row = await tx.documentVersion.create({
+				data: {
+					...(runRowId !== undefined && { id: runRowId }),
+					documentId,
+					content: savedContent,
+					version: nextVersion,
+					changeDescription:
+						nextVersion <= 1
+							? "Initial version"
+							: "Regenerated version",
+					changedBy: userId,
+					promptVersionId,
+				},
+			});
+
+			const { count } = await tx.projectDocument.updateMany({
+				where: {
+					id: documentId,
+					...(baselineVersion !== undefined && {
+						version: baselineVersion,
+						content: savedContent,
+					}),
+					...(liveRunId !== undefined && {
+						content: savedContent,
+						liveRunId,
+					}),
+				},
+				data: { version: nextVersion },
+			});
+			if (count !== 1) {
+				const actual = await tx.projectDocument.findUnique({
+					where: { id: documentId },
+					select: {
+						version: true,
+						...(liveRunId !== undefined && {
+							liveRunId: true,
+							content: true,
+						}),
+					},
+				});
+				if (
+					liveRunId !== undefined &&
+					actual?.liveRunId !== liveRunId
+				) {
+					throw supersededRunFailure({
+						documentId,
+						liveRunId,
+						phase: "version",
+					});
+				}
+				if (
+					liveRunId !== undefined &&
+					actual?.content !== savedContent
+				) {
+					throw new ContentChangedSinceSave();
+				}
+				throw staleRegenerationFailure({
+					documentId,
+					phase: "version",
+					baselineVersion,
+					actualVersion: actual?.version,
+				});
+			}
+
+			activityLogger.info("Document version created against its guards", {
+				documentId,
+				version: nextVersion,
+				baselineVersion,
+				liveRunId,
+			});
+			return { version: nextVersion, versionId: row.id };
 		});
-	});
+	} catch (error) {
+		if (error instanceof ContentChangedSinceSave) {
+			activityLogger.info(
+				"Document version skipped: the document changed after this run's save",
+				{
+					documentId,
+					liveRunId,
+					code: "VERSION_SKIPPED_CONTENT_CHANGED",
+				},
+			);
+			return undefined;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -2760,34 +3653,58 @@ async function createVersionAgainstRegenerationBaseline(params: {
  * For regeneration, creates the next version after the current one.
  *
  * `options.baselineVersion` is the same baseline the save was given, passed
- * only when a visual slot is involved. With it the row and the version bump
- * happen only while the regenerated body is still live at that version (see
- * {@link createVersionAgainstRegenerationBaseline}); without it — every
- * slot-free run — the step below is unchanged.
+ * only when a visual slot is involved; `options.liveRunId` is the same run
+ * guard, passed by a Proposal artifact run (Fizzy #2801). With either, the row
+ * and the version bump happen only while those guards hold (see
+ * {@link createVersionWithGuards}); without both — every slot-free run outside
+ * an artifact run — the step below is unchanged.
+ *
+ * Only the run-guarded step reports the row it wrote (or found, on a retry),
+ * and resolves with nothing when it skipped the row because the document
+ * changed after the run's save; every other call resolves with nothing, as
+ * it always has.
  */
+export async function createDocumentVersion(
+	documentId: string,
+	content: string,
+	userId: string,
+	promptVersionId: string | undefined,
+	options: { baselineVersion?: number } & ProposalLiveRunGuard,
+): Promise<CreatedDocumentVersion | undefined>;
 export async function createDocumentVersion(
 	documentId: string,
 	content: string,
 	userId: string,
 	promptVersionId?: string,
 	options?: { baselineVersion?: number },
-): Promise<void> {
+): Promise<undefined>;
+export async function createDocumentVersion(
+	documentId: string,
+	content: string,
+	userId: string,
+	promptVersionId?: string,
+	options?: { baselineVersion?: number } & Partial<ProposalLiveRunGuard>,
+): Promise<CreatedDocumentVersion | undefined> {
 	activityLogger.info("Creating document version", { documentId });
 
-	if (options?.baselineVersion !== undefined) {
+	const baselineVersion = options?.baselineVersion;
+	const liveRunId = options?.liveRunId;
+	if (baselineVersion !== undefined || liveRunId !== undefined) {
 		try {
-			await createVersionAgainstRegenerationBaseline({
+			const created = await createVersionWithGuards({
 				documentId,
 				content,
 				userId,
 				promptVersionId,
-				baselineVersion: options.baselineVersion,
+				baselineVersion,
+				liveRunId,
 			});
+			return liveRunId !== undefined ? created : undefined;
 		} catch (error) {
 			// A stale refusal was already logged as the warning it is.
 			const isStale =
 				error instanceof ApplicationFailure &&
-				error.type === STALE_REGENERATION_FAILURE_TYPE;
+				error.type === DOCUMENT_GENERATION_STALE;
 			if (!isStale) {
 				activityLogger.error(
 					"Failed to create document version",
@@ -2799,7 +3716,6 @@ export async function createDocumentVersion(
 			}
 			throw error;
 		}
-		return;
 	}
 
 	try {
@@ -2976,7 +3892,7 @@ export async function embedProjectDocumentActivity(params: {
 		}
 
 		// Get provider config for embedding
-		const providerConfig = await getSystemRAGProviderConfig({
+		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 			userId,
 			organizationId,
 		});
@@ -3091,6 +4007,23 @@ export async function updateProjectWorkflowStatus(
 
 /**
  * Update project document generation status
+ *
+ * `liveRunId` is a Proposal artifact run's guard (Fizzy #2801): with it the
+ * write lands only while the document's live run is still this one, so a run
+ * a newer one superseded can neither mark the newer run's document FAILED nor
+ * move its status at all; for such a run the write is a no-op, not an error.
+ * A guarded GENERATING (a progress report) lands only while the document is
+ * still QUEUED or GENERATING: the save keeps the run's token, so a progress
+ * attempt that commits after it must not reopen the finished document. A
+ * guarded FAILED write also drops the run's live preview.
+ *
+ * Without the guard the write is today's, except when it starts a new
+ * attempt: an unguarded GENERATING at 0, or with `startsAttempt` (a parent
+ * that starts its attempts elsewhere on the bar). That write stamps the
+ * attempt's identity, `generationStartedAt`, and returns it so the parent can
+ * scope its child's plan to it; and it ends a previous coordinated run's
+ * ownership of the document, as the dispatcher's queue mark does, so that
+ * run's late guarded writes match nothing.
  */
 export async function updateProjectDocumentStatus(params: {
 	documentId: string;
@@ -3103,8 +4036,11 @@ export async function updateProjectDocumentStatus(params: {
 		| "FAILED";
 	progress: number;
 	error?: string;
-}): Promise<void> {
-	const { documentId, status, progress, error } = params;
+	liveRunId?: ProposalLiveRunGuard["liveRunId"];
+	/** This unguarded GENERATING starts a new attempt at any progress. */
+	startsAttempt?: boolean;
+}): Promise<{ generationStartedAt: string } | undefined> {
+	const { documentId, status, progress, error, liveRunId } = params;
 
 	activityLogger.info("Updating project document status", {
 		documentId,
@@ -3119,8 +4055,13 @@ export async function updateProjectDocumentStatus(params: {
 			updatedAt: new Date(),
 		};
 
-		if (status === "GENERATING" && progress === 0) {
-			updateData.generationStartedAt = new Date();
+		const startsAttempt =
+			liveRunId === undefined &&
+			status === "GENERATING" &&
+			(progress === 0 || params.startsAttempt === true);
+		const attemptStartedAt = new Date();
+		if ((status === "GENERATING" && progress === 0) || startsAttempt) {
+			updateData.generationStartedAt = attemptStartedAt;
 		}
 
 		if (status === "COMPLETE") {
@@ -3131,15 +4072,48 @@ export async function updateProjectDocumentStatus(params: {
 			updateData.generationError = error;
 		}
 
-		await db.projectDocument.update({
-			where: { id: documentId },
-			data: updateData,
-		});
+		if (liveRunId !== undefined) {
+			const { count } = await db.projectDocument.updateMany({
+				where: {
+					id: documentId,
+					liveRunId,
+					...(status === "GENERATING" && {
+						status: { in: ["QUEUED", "GENERATING"] },
+					}),
+				},
+				data: {
+					...updateData,
+					...(status === "FAILED" && { liveContent: null }),
+				},
+			});
+			if (count === 0) {
+				activityLogger.info(
+					"Skipped the status write of a superseded or finished Proposal run",
+					{ documentId, liveRunId, status },
+				);
+				return undefined;
+			}
+		} else {
+			await db.projectDocument.update({
+				where: { id: documentId },
+				data: {
+					...updateData,
+					...(startsAttempt && {
+						liveRunId: null,
+						liveAttempt: null,
+						liveContent: null,
+					}),
+				},
+			});
+		}
 
 		activityLogger.info("Project document status updated", {
 			documentId,
 			status,
 		});
+		return startsAttempt
+			? { generationStartedAt: attemptStartedAt.toISOString() }
+			: undefined;
 	} catch (err) {
 		activityLogger.error("Failed to update project document status", err, {
 			documentId,

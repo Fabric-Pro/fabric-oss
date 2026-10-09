@@ -183,3 +183,12 @@ describe("executeMcpTool timeoutMs", () => {
 		error.mockRestore();
 	});
 });
+
+describe("isFirstPartyFabricTool", () => {
+	it("tells Fabric's own tools from a connected server's", async () => {
+		const { isFirstPartyFabricTool } = await import("../execute-mcp-tool");
+		expect(isFirstPartyFabricTool("fabric_run_pattern")).toBe(true);
+		expect(isFirstPartyFabricTool("FABRIC_web_search")).toBe(true);
+		expect(isFirstPartyFabricTool("fizzy_get_card")).toBe(false);
+	});
+});

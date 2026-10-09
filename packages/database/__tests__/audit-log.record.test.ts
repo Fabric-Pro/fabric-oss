@@ -267,6 +267,18 @@ describe("mapToLegacyEventType", () => {
 });
 
 describe("unknown-action warning", () => {
+	it("does not warn for a machine-derived activity.* action, which is open by design", async () => {
+		mocks.auditLogCreateMock.mockResolvedValue({ id: "audit-1" });
+		recordAudit({
+			...baseInput,
+			action: "activity.projects.instructions.commitChange",
+		});
+		await flush();
+
+		expect(mocks.auditLogCreateMock).toHaveBeenCalledTimes(1);
+		expect(mocks.loggerWarnMock).not.toHaveBeenCalled();
+	});
+
 	it("logs a structured warning when action is outside the closed taxonomy", async () => {
 		mocks.auditLogCreateMock.mockResolvedValue({ id: "audit-1" });
 		recordAudit({

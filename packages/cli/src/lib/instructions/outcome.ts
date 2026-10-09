@@ -49,6 +49,26 @@ export interface ProjectChoice {
 	label: string;
 }
 
+/**
+ * A run's missing sign-in. `otherProjects` is set when this machine holds a
+ * sign-in to the deployment for some other project: the one missing is then
+ * that project's, which is a different thing to fix than no sign-in at all.
+ */
+type SignedOutParams = {
+	origin: string;
+	project?: string;
+	otherProjects?: boolean;
+};
+
+function forProject(
+	project: string | undefined,
+	otherProjects?: boolean,
+): string {
+	return project !== undefined && otherProjects === true
+		? ` for project ${project} (it is signed in for other projects)`
+		: "";
+}
+
 /** `host/path` of a repository, as every line names one. */
 type Repo = string;
 
@@ -57,6 +77,10 @@ type Repo = string;
  * (C0, C1 and the line separators) become spaces and the length is bounded,
  * wherever the line is printed from.
  */
+function shown(value: string): string {
+	return sanitizeDisplayText(value, 255);
+}
+
 const MAX_BLOCKED_FILES = 3;
 
 /** ` (a, b, c and 2 more)`, or nothing when git named no file. */
@@ -69,15 +93,12 @@ function blockedFilesText(files: readonly string[]): string {
 	return ` (${named}${more > 0 ? ` and ${more} more` : ""})`;
 }
 
-function shown(value: string): string {
-	return sanitizeDisplayText(value, 255);
-}
-
 type CloneFailureClass =
 	| "auth"
 	| "network"
 	| "missing-ref"
 	| "checkout"
+	| "old-git"
 	| "other";
 
 /** Why the hook did not fast-forward a checkout it left alone, for the reasons `behind` has no words for. */
@@ -94,13 +115,25 @@ export type FastForwardFetchFailure =
 	| "network"
 	| "missing-ref"
 	| "timeout"
+	| "old-git"
 	| "other";
 
+/** Why the merge did not happen; only local changes name files. */
 export type FastForwardMergeFailure =
-	| "diverged"
-	| "local-changes"
-	| "timeout"
-	| "other";
+	| { reason: "local-changes"; files: string[] }
+	| { reason: "diverged" | "timeout" | "other" };
+
+/**
+ * Whether the person at the keyboard has something to do about this merge
+ * failure (their branch has diverged, or local changes are in the way): it is
+ * said on stdout, where the session reads it. Every other failure is a skip
+ * for the log.
+ */
+export function isUserActionableMergeFailure(
+	reason: FastForwardMergeFailure["reason"],
+): boolean {
+	return reason === "diverged" || reason === "local-changes";
+}
 
 /** Why Fabric's own copy is behind a branch tip the checkout has. */
 export type FabricLag =
@@ -149,8 +182,8 @@ export interface OutcomeParams {
 	"bad-org-slug": Record<string, never>;
 	"bad-remote-name": Record<string, never>;
 	/** `project` names the project whose sign-in is missing, when the run has one. */
-	"not-signed-in": { origin: string; project?: string };
-	"hook-signed-out": { origin: string; project?: string };
+	"not-signed-in": SignedOutParams;
+	"hook-signed-out": SignedOutParams;
 	"sign-in-failed": { origin: string; project?: string };
 	"unknown-tool": { tool: string };
 	"lessons-need-claude": Record<string, never>;
@@ -207,6 +240,13 @@ export interface OutcomeParams {
 		traits: CheckoutTrait[];
 		condition: BehindCondition;
 	};
+	"behind-direct": {
+		repo: Repo;
+		sha7: string;
+		ref: string;
+		traits: CheckoutTrait[];
+		condition: BehindCondition;
+	};
 	"earlier-source": {
 		version: number;
 		sourceRef: string;
@@ -245,9 +285,7 @@ export interface OutcomeParams {
 	};
 	/** `diverged` is printed as a line of its own; the others are skips. */
 	"ff-merge-failed": {
-		reason: FastForwardMergeFailure;
-		/** The files git named when local changes blocked the merge. */
-		files?: string[];
+		failure: FastForwardMergeFailure;
 		ref: string;
 		remote: string;
 		commands: FastForwardCommands;
@@ -322,6 +360,24 @@ function loginCommand(origin: string, project?: string): string {
 	);
 }
 
+/** What follows "this checkout is behind": the one thing to do for the state it is in. */
+function behindAdvice(condition: BehindCondition, ref: string): string {
+	switch (condition.kind) {
+		case "clean":
+			return ` — run: ${condition.pull}`;
+		case "dirty":
+			return " and has uncommitted changes — commit or stash, then pull.";
+		case "operation":
+			return `; a ${condition.operation} is in progress; nothing was changed.`;
+		case "detached":
+			return `; HEAD is detached — check out ${ref} and pull.`;
+		case "other-branch":
+			return `; you are on ${condition.branch} — pull ${ref} when you switch to it.`;
+		default:
+			return condition satisfies never;
+	}
+}
+
 const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 	"needs-project": ({ verb }) =>
 		`This folder is not a git checkout, so its project cannot be found. Run: ${fabricCommand(`instructions ${verb} --project <id>`)}`,
@@ -351,10 +407,10 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 		"--org must be an organization slug: letters, digits, '.', '_' or '-', starting with a letter or digit, at most 64 characters.",
 	"bad-remote-name": () =>
 		"--remote must be the name of a git remote: letters, digits, '.', '_', '-' and '/', starting with a letter, digit, '.' or '_'.",
-	"not-signed-in": ({ origin, project }) =>
-		`Not signed in to ${origin}. Run: ${loginCommand(origin, project)}`,
-	"hook-signed-out": ({ origin, project }) =>
-		`not signed in to ${origin} — run: ${loginCommand(origin, project)}`,
+	"not-signed-in": ({ origin, project, otherProjects }) =>
+		`Not signed in to ${origin}${forProject(project, otherProjects)}. Run: ${loginCommand(origin, project)}`,
+	"hook-signed-out": ({ origin, project, otherProjects }) =>
+		`not signed in to ${origin}${forProject(project, otherProjects)} — run: ${loginCommand(origin, project)}`,
 	"sign-in-failed": ({ origin, project }) =>
 		`Could not sign in to ${origin}. Run: ${loginCommand(origin, project)} to see why.`,
 	"unknown-tool": ({ tool }) =>
@@ -407,6 +463,8 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 				return `Could not clone ${repo}: it has no branch ${shown(ref)}. The Fabric MCP server was not registered.`;
 			case "checkout":
 				return `Could not finish checking out ${repo}. Fabric did not change the partial checkout or register its MCP server. Inspect it with git status, then repair or remove it yourself before trying again.`;
+			case "old-git":
+				return `Could not clone ${repo}: this git is older than 2.31, which Fabric's repository transport needs. The Fabric MCP server was not registered. Update git and try again.`;
 			case "other":
 				return `Could not clone ${repo}. The Fabric MCP server was not registered. Run: git clone -- ${url} to see why.`;
 			default:
@@ -419,23 +477,10 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 		`Removed .fabric/instructions.lock: this checkout follows ${repo} through git now.`,
 	"exclude-failed": ({ entries }) =>
 		`Could not update .git/info/exclude. Add these to your own ignore rules: ${entries.map(shown).join(" ")}`,
-	behind: ({ version, sha7, ref, notFetched, traits, condition }) => {
-		const state = `${HOOK_PREFIX} v${version} (${sha7}) is on ${ref}; this checkout ${notFetched ? "has not fetched it yet" : "is behind"}${traits.map((trait) => TRAIT_TEXT[trait]).join("")}`;
-		switch (condition.kind) {
-			case "clean":
-				return `${state} — run: ${condition.pull}`;
-			case "dirty":
-				return `${state} and has uncommitted changes — commit or stash, then pull.`;
-			case "operation":
-				return `${state}; a ${condition.operation} is in progress; nothing was changed.`;
-			case "detached":
-				return `${state}; HEAD is detached — check out ${ref} and pull.`;
-			case "other-branch":
-				return `${state}; you are on ${condition.branch} — pull ${ref} when you switch to it.`;
-			default:
-				return condition satisfies never;
-		}
-	},
+	behind: ({ version, sha7, ref, notFetched, traits, condition }) =>
+		`${HOOK_PREFIX} v${version} (${sha7}) is on ${ref}; this checkout ${notFetched ? "has not fetched it yet" : "is behind"}${traits.map((trait) => TRAIT_TEXT[trait]).join("")}${behindAdvice(condition, ref)}`,
+	"behind-direct": ({ repo, sha7, ref, traits, condition }) =>
+		`${HOOK_PREFIX}: read directly from ${repo} at ${sha7}; this checkout is behind${traits.map((trait) => TRAIT_TEXT[trait]).join("")}${behindAdvice(condition, ref)}`,
 	"earlier-source": ({ version, sourceRef, ref, repo }) =>
 		`${HOOK_PREFIX} v${version} was published from ${sourceRef}; the project now syncs ${ref} of ${repo} — pull ${ref} to pick up the next publication`,
 	"nothing-published": ({ repo }) =>
@@ -472,16 +517,18 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 				return `could not fetch ${repo}: it has no branch ${ref}; nothing was updated.`;
 			case "timeout":
 				return `could not fetch ${repo}: ${host} answered too slowly; nothing was updated.`;
+			case "old-git":
+				return `${HOOK_PREFIX}: could not fetch ${repo}: this git is older than 2.31, which Fabric's repository transport needs. Update git.`;
 			case "other":
 				return `could not fetch ${repo}. Run: ${commands.fetch} to see why.`;
 			default:
 				return reason satisfies never;
 		}
 	},
-	"ff-merge-failed": ({ reason, files, ref, remote, commands }) => {
-		switch (reason) {
+	"ff-merge-failed": ({ failure, ref, remote, commands }) => {
+		switch (failure.reason) {
 			case "local-changes":
-				return `${HOOK_PREFIX}: ${ref} is behind ${remote}/${ref}, but local changes would be overwritten${blockedFilesText(files ?? [])}, so nothing was updated. Commit or stash them, then run: ${commands.pull}`;
+				return `${HOOK_PREFIX}: ${ref} is behind ${remote}/${ref}, but local changes would be overwritten${blockedFilesText(failure.files)}, so nothing was updated. Stash them or move them to another branch; the next session start updates this checkout on its own.`;
 			case "diverged":
 				return `${HOOK_PREFIX}: ${ref} and ${remote}/${ref} have diverged, so nothing was updated. Run: ${commands.rebase}, or merge ${remote}/${ref} yourself.`;
 			case "timeout":
@@ -489,7 +536,7 @@ const LINES: { [K in OutcomeId]: (params: OutcomeParams[K]) => string } = {
 			case "other":
 				return `git could not fast-forward ${ref}. Run: ${commands.pull} to see why.`;
 			default:
-				return reason satisfies never;
+				return failure satisfies never;
 		}
 	},
 	"ff-locked": () =>
@@ -581,6 +628,7 @@ const EXIT_CODES: {
 	"lock-removed": 0,
 	"exclude-failed": 0,
 	behind: 0,
+	"behind-direct": 0,
 	"earlier-source": 0,
 	"nothing-published": 0,
 	"already-current": 0,

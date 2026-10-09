@@ -1,7 +1,7 @@
 /**
- * Adaptive-only Claude (Opus 4.7/4.8 and the 5.x generation) rejects any
- * non-default `temperature` / `top_p` / `top_k`, and `@langchain/anthropic`
- * throws client-side when one is set.
+ * Adaptive-only Claude (Opus 4.7/4.8, the 5.x generation and Haiku 5.5)
+ * rejects any non-default `temperature` / `top_p` / `top_k`, and
+ * `@langchain/anthropic` throws client-side when one is set.
  *
  * Mirror of `isAnthropicAdaptiveOnlyModel` in
  * `packages/agent-types/src/anthropic-model-constraints.ts` — this Next app
@@ -10,7 +10,7 @@
  * step.
  */
 const ADAPTIVE_ONLY_CLAUDE_RE =
-	/(?:^|[^a-z0-9])claude-(?:opus-4[.-][78]|(?:opus|sonnet|fable|mythos)-5|mythos-preview)(?![0-9])/i;
+	/(?:^|[^a-z0-9])claude-(?:opus-4[.-][78]|(?:opus|sonnet|fable|mythos)-5|haiku-5[.-]5|mythos-preview)(?![0-9])/i;
 
 function isAnthropicAdaptiveOnlyModel(model: string): boolean {
 	return ADAPTIVE_ONLY_CLAUDE_RE.test(model);

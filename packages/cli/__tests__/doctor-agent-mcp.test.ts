@@ -95,11 +95,19 @@ function fact(
 	tool: AgentMcpFact["tool"],
 	state: AgentMcpFact["state"],
 ): AgentMcpFact {
-	const name = tool === "codex" ? "fabric-pleone" : "fabric";
+	const name = "fabric-pleone";
 	return {
 		tool,
 		name,
 		state,
+		projectServers:
+			state === "registered"
+				? [name]
+				: state === "legacy"
+					? ["fabric"]
+					: [],
+		orgWide: [],
+		foreignSameName: false,
 		registerLine:
 			tool === "codex"
 				? `codex mcp add ${name} --url https://deploy.example.com/api/mcp-gateway/projects/${PROJECT}`
@@ -262,6 +270,110 @@ describe("doctor's mcp-servers check and the tools' registrations", () => {
 		});
 	});
 
+	it("warns, not errors, about a server registered under the older name, with the line to remove it", async () => {
+		const root = await tree();
+
+		const check = await checkOf(
+			inputFor(root, { agentMcp: [fact("claude-code", "legacy")] }),
+			"mcp-servers",
+		);
+
+		expect(check.status).toBe("warn");
+		expect(check.items?.[0]?.status).toBe("warn");
+		expect(check.items?.[0]?.detail).toContain('older name "fabric"');
+		expect(check.fix?.command).toBe(
+			"claude mcp remove fabric --scope local",
+		);
+	});
+
+	it("warns when the project's gateway is registered under several names", async () => {
+		const root = await tree();
+
+		const check = await checkOf(
+			inputFor(root, {
+				agentMcp: [
+					{
+						...fact("claude-code", "registered"),
+						projectServers: ["fabric-pleone", "work-fabric"],
+					},
+				],
+			}),
+			"mcp-servers",
+		);
+
+		expect(check.status).toBe("warn");
+		expect(check.items?.[0]).toEqual({
+			name: "Fabric server in Claude Code",
+			status: "warn",
+			detail: 'this project\'s gateway is registered under 2 names ("fabric-pleone", "work-fabric"); one is enough',
+		});
+	});
+
+	it("offers to remove the older name when it duplicates the current one", async () => {
+		const root = await tree();
+
+		const check = await checkOf(
+			inputFor(root, {
+				agentMcp: [
+					{
+						...fact("claude-code", "registered"),
+						projectServers: ["fabric-pleone", "fabric"],
+					},
+				],
+			}),
+			"mcp-servers",
+		);
+
+		expect(check.items?.[0]?.status).toBe("warn");
+		expect(check.fix?.command).toBe(
+			"claude mcp remove fabric --scope local",
+		);
+	});
+
+	it("notes the organization-wide server without warning about it", async () => {
+		const root = await tree();
+
+		const check = await checkOf(
+			inputFor(root, {
+				agentMcp: [
+					{ ...fact("codex", "registered"), orgWide: ["everything"] },
+				],
+			}),
+			"mcp-servers",
+		);
+
+		expect(check.status).toBe("pass");
+		expect(check.items?.[1]).toEqual({
+			name: "Organization-wide Fabric server in Codex",
+			status: "skip",
+			detail: 'present as "everything"; left as it is, coding instructions use the project server',
+		});
+	});
+
+	it("notes a server under init's name that is not Fabric's, when the project is registered under another", async () => {
+		const root = await tree();
+
+		const check = await checkOf(
+			inputFor(root, {
+				agentMcp: [
+					{
+						...fact("claude-code", "registered"),
+						projectServers: ["work-fabric"],
+						foreignSameName: true,
+					},
+				],
+			}),
+			"mcp-servers",
+		);
+
+		expect(check.status).toBe("pass");
+		expect(check.items?.[1]).toEqual({
+			name: 'Server named "fabric-pleone" in Claude Code',
+			status: "skip",
+			detail: "not Fabric's; left as it is",
+		});
+	});
+
 	it("skips a tool whose configuration could not be read, without saying why", async () => {
 		const root = await tree();
 
@@ -358,7 +470,7 @@ describe("doctor's mcp-servers check and the tools' registrations", () => {
 
 		expect(check.status).toBe("warn");
 		expect(check.fix).toEqual({
-			description: `remove the "fabric" server from Claude Code so it can be registered for this project, then register it by hand. ${NO_LINE_FOR_ADDRESS}`,
+			description: `remove the "fabric-pleone" server from Claude Code so it can be registered for this project, then register it by hand. ${NO_LINE_FOR_ADDRESS}`,
 		});
 		expect(check.fix).not.toHaveProperty("command");
 	});

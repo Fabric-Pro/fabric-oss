@@ -410,7 +410,7 @@ export function InstructionsHistory({
 	return (
 		<>
 			<Dialog open={open} onOpenChange={onOpenChange}>
-				<DialogContent className="max-w-2xl">
+				<DialogContent className="max-w-2xl grid-cols-[minmax(0,1fr)]">
 					<DialogHeader>
 						{/* A repository project's versions are the commits Fabric
 						    took from the branch, not uploads, so the dialog says so. */}

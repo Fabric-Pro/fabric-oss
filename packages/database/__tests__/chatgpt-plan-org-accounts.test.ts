@@ -15,9 +15,10 @@ const mocks = vi.hoisted(() => ({
 	accountUpdateMany: vi.fn(),
 	accountDeleteMany: vi.fn(),
 	stateDeleteMany: vi.fn(),
+	servedDeleteMany: vi.fn(),
+	observationDeleteMany: vi.fn(),
 	policyFindUnique: vi.fn(),
 	policyUpsert: vi.fn(),
-	usageGroupBy: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => {
@@ -31,24 +32,30 @@ vi.mock("../prisma/client", () => {
 			deleteMany: mocks.accountDeleteMany,
 		},
 		chatGptPlanSourceState: { deleteMany: mocks.stateDeleteMany },
+		chatGptPlanServedModel: { deleteMany: mocks.servedDeleteMany },
+		chatGptPlanBudgetObservation: {
+			deleteMany: mocks.observationDeleteMany,
+		},
 		chatGptPlanOrgPolicy: {
 			findUnique: mocks.policyFindUnique,
 			upsert: mocks.policyUpsert,
 		},
-		aiUsageLog: { groupBy: mocks.usageGroupBy },
 		$transaction: (fn: (tx: unknown) => unknown) => fn(db),
 	};
 	return { db };
 });
 
 import {
+	__resetChatGptPlanOrgPolicyCache,
+	acknowledgeChatGptPlanOrgTerms,
 	ChatGptPlanSubjectBoundElsewhereError,
 	DEFAULT_CHATGPT_PLAN_ORG_POLICY,
 	deleteChatGptPlanOrgAccount,
+	getCachedChatGptPlanOrgPolicy,
 	getChatGptPlanOrgAccount,
 	getChatGptPlanOrgPolicy,
-	getChatGptPlanPoolUsageSince,
 	updateChatGptPlanOrgAccount,
+	updateChatGptPlanOrgPolicy,
 	upsertChatGptPlanOrgAccount,
 } from "../prisma/queries/chatgpt-plan-org-accounts";
 
@@ -74,7 +81,7 @@ beforeEach(() => {
 
 describe("upsertChatGptPlanOrgAccount", () => {
 	it("creates a new account in the caller's organization", async () => {
-		mocks.accountFindUnique.mockResolvedValue(null);
+		mocks.accountFindFirst.mockResolvedValue(null);
 		mocks.accountCreate.mockResolvedValue({ id: "acc_1" });
 
 		await expect(upsertChatGptPlanOrgAccount(write)).resolves.toEqual({
@@ -88,8 +95,8 @@ describe("upsertChatGptPlanOrgAccount", () => {
 		});
 	});
 
-	it("reconnects the same organization's account by subject, keeping its label", async () => {
-		mocks.accountFindUnique.mockResolvedValue({
+	it("reconnects the same organization's account, keeping its label", async () => {
+		mocks.accountFindFirst.mockResolvedValue({
 			id: "acc_1",
 			organizationId: "org_a",
 		});
@@ -103,10 +110,12 @@ describe("upsertChatGptPlanOrgAccount", () => {
 		expect(call.where).toEqual({ id: "acc_1", organizationId: "org_a" });
 		expect(call.data).not.toHaveProperty("label");
 		expect(call.data.status).toBe("ACTIVE");
+		// A fresh client registration brings a new sub; the row takes it.
+		expect(call.data.subject).toBe("sub_1");
 	});
 
 	it("refuses an account another organization already connected", async () => {
-		mocks.accountFindUnique.mockResolvedValue({
+		mocks.accountFindFirst.mockResolvedValue({
 			id: "acc_9",
 			organizationId: "org_b",
 		});
@@ -119,7 +128,7 @@ describe("upsertChatGptPlanOrgAccount", () => {
 	});
 
 	it("maps a lost race on the unique subject to the same refusal", async () => {
-		mocks.accountFindUnique.mockResolvedValue(null);
+		mocks.accountFindFirst.mockResolvedValue(null);
 		mocks.accountCreate.mockRejectedValue(
 			new Prisma.PrismaClientKnownRequestError("Unique constraint", {
 				code: "P2002",
@@ -130,6 +139,39 @@ describe("upsertChatGptPlanOrgAccount", () => {
 		await expect(upsertChatGptPlanOrgAccount(write)).rejects.toBeInstanceOf(
 			ChatGptPlanSubjectBoundElsewhereError,
 		);
+	});
+
+	// Fizzy #2770: OpenAI's sub differs per client registration, so the same
+	// ChatGPT account is found by its email as well.
+	it("finds the same account by sub or by email, case-insensitively", async () => {
+		mocks.accountFindFirst.mockResolvedValue(null);
+		mocks.accountCreate.mockResolvedValue({ id: "acc_1" });
+		await upsertChatGptPlanOrgAccount({
+			...write,
+			email: " Shared@Example.com ",
+		});
+		expect(mocks.accountFindFirst.mock.calls[0][0].where).toEqual({
+			OR: [
+				{ subject: "sub_1" },
+				{
+					email: {
+						equals: "shared@example.com",
+						mode: "insensitive",
+					},
+				},
+			],
+		});
+	});
+
+	it("refuses an account another organization has under a different sub", async () => {
+		mocks.accountFindFirst.mockResolvedValue({
+			id: "acc_9",
+			organizationId: "org_b",
+		});
+		await expect(
+			upsertChatGptPlanOrgAccount({ ...write, subject: "sub_fresh" }),
+		).rejects.toBeInstanceOf(ChatGptPlanSubjectBoundElsewhereError);
+		expect(mocks.accountCreate).not.toHaveBeenCalled();
 	});
 });
 
@@ -179,7 +221,7 @@ describe("organization filter on reads and writes by account id", () => {
 		});
 	});
 
-	it("deletes the account and its breaker row, and only within the organization", async () => {
+	it("deletes the account, its breaker row, served models and calibration, and only within the organization", async () => {
 		mocks.accountDeleteMany.mockResolvedValue({ count: 1 });
 
 		await expect(
@@ -194,6 +236,12 @@ describe("organization filter on reads and writes by account id", () => {
 		expect(mocks.stateDeleteMany).toHaveBeenCalledWith({
 			where: { sourceKind: "ORG", sourceId: "acc_1" },
 		});
+		expect(mocks.servedDeleteMany).toHaveBeenCalledWith({
+			where: { sourceKind: "ORG", sourceId: "acc_1" },
+		});
+		expect(mocks.observationDeleteMany).toHaveBeenCalledWith({
+			where: { sourceKind: "ORG", sourceId: "acc_1" },
+		});
 	});
 
 	it("leaves the breaker row alone when the account is not this organization's", async () => {
@@ -206,6 +254,8 @@ describe("organization filter on reads and writes by account id", () => {
 			}),
 		).resolves.toBe(false);
 		expect(mocks.stateDeleteMany).not.toHaveBeenCalled();
+		expect(mocks.servedDeleteMany).not.toHaveBeenCalled();
+		expect(mocks.observationDeleteMany).not.toHaveBeenCalled();
 	});
 });
 
@@ -224,43 +274,50 @@ describe("getChatGptPlanOrgPolicy", () => {
 	});
 });
 
-describe("getChatGptPlanPoolUsageSince", () => {
-	it("groups the organization's plan rows by account", async () => {
-		mocks.usageGroupBy.mockResolvedValue([
-			{
-				providerConfigId: "acc_1",
-				_count: { _all: 3 },
-				_sum: { inputTokens: 300, outputTokens: 30 },
-			},
-		]);
-		const since = new Date("2026-10-07T07:00:00Z");
-
-		const usage = await getChatGptPlanPoolUsageSince({
-			organizationId: "org_a",
-			accountIds: ["acc_1", "acc_2"],
-			since,
-		});
-		expect(usage.get("acc_1")).toEqual({
-			requests: 3,
-			inputTokens: 300,
-			outputTokens: 30,
-		});
-		expect(usage.has("acc_2")).toBe(false);
-		expect(mocks.usageGroupBy.mock.calls[0][0].where).toEqual({
-			organizationId: "org_a",
-			createdAt: { gte: since },
-			provider: "OPENAI_CHATGPT_PLAN",
-			providerConfigId: { in: ["acc_1", "acc_2"] },
-		});
+// Fizzy #2770: every plan-served call reads the policy, so the call path
+// reuses it for 30 s; a change made in this process applies at once.
+describe("getCachedChatGptPlanOrgPolicy", () => {
+	const T0 = Date.parse("2026-10-08T12:00:00Z");
+	const policy = (fallbackModel: string) => ({
+		...DEFAULT_CHATGPT_PLAN_ORG_POLICY,
+		fallbackModel,
 	});
 
-	it("does not query for an empty pool", async () => {
-		const usage = await getChatGptPlanPoolUsageSince({
+	beforeEach(() => {
+		__resetChatGptPlanOrgPolicyCache();
+		mocks.policyFindUnique.mockReset();
+		mocks.policyUpsert.mockReset();
+	});
+
+	it("reuses an organization's policy for 30 s, per organization", async () => {
+		mocks.policyFindUnique.mockResolvedValue(policy("gpt-6-astra"));
+		await getCachedChatGptPlanOrgPolicy("org_a", T0);
+		await getCachedChatGptPlanOrgPolicy("org_a", T0 + 29_000);
+		expect(mocks.policyFindUnique).toHaveBeenCalledTimes(1);
+		await getCachedChatGptPlanOrgPolicy("org_b", T0);
+		await getCachedChatGptPlanOrgPolicy("org_a", T0 + 31_000);
+		expect(mocks.policyFindUnique).toHaveBeenCalledTimes(3);
+	});
+
+	it("reads it again at once after this process changes it or accepts the terms", async () => {
+		mocks.policyFindUnique.mockResolvedValue(policy("gpt-6-astra"));
+		await getCachedChatGptPlanOrgPolicy("org_a");
+		mocks.policyUpsert.mockResolvedValue(policy("gpt-5.6-terra"));
+		await updateChatGptPlanOrgPolicy({
 			organizationId: "org_a",
-			accountIds: [],
-			since: new Date(),
+			patch: { fallbackModel: "gpt-5.6-terra" },
 		});
-		expect(usage.size).toBe(0);
-		expect(mocks.usageGroupBy).not.toHaveBeenCalled();
+		mocks.policyFindUnique.mockResolvedValue(policy("gpt-5.6-terra"));
+		await expect(
+			getCachedChatGptPlanOrgPolicy("org_a"),
+		).resolves.toMatchObject({ fallbackModel: "gpt-5.6-terra" });
+
+		await acknowledgeChatGptPlanOrgTerms({
+			organizationId: "org_a",
+			userId: "u_owner",
+		});
+		const reads = mocks.policyFindUnique.mock.calls.length;
+		await getCachedChatGptPlanOrgPolicy("org_a");
+		expect(mocks.policyFindUnique).toHaveBeenCalledTimes(reads + 1);
 	});
 });

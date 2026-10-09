@@ -5,6 +5,7 @@ import { getAiActivityEstimate } from "./procedures/get-ai-activity-estimate";
 import { getAiActivityFacets } from "./procedures/get-ai-activity-facets";
 import { getAiActivityTimeSeries } from "./procedures/get-ai-activity-time-series";
 import { getAiUsageBreakdown } from "./procedures/get-ai-usage-breakdown";
+import { getChatGptPlanUsage } from "./procedures/get-chatgpt-plan-usage";
 import { listAiActivity } from "./procedures/list-ai-activity";
 import { listPurchases } from "./procedures/list-purchases";
 
@@ -15,6 +16,7 @@ export const paymentsRouter = {
 	getAiActivityFacets,
 	getAiActivityTimeSeries,
 	getAiUsageBreakdown,
+	getChatGptPlanUsage,
 	listAiActivity,
 	listPurchases,
 	// New `aiUsageLimits` sub-namespace per spec

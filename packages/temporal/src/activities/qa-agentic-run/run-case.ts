@@ -36,21 +36,36 @@ import { logger } from "@repo/logs";
 import { buildTenantStoragePath, uploadFile } from "@repo/storage";
 import { assertSafeOutboundUrlResolved } from "@repo/utils/url-security";
 import { NoObjectGeneratedError } from "ai";
-import { z } from "zod";
-import { safeHeartbeat } from "../lib/activity-liveness";
 import {
-	type BrowserOperation,
+	activityCancellationSignal,
+	safeHeartbeat,
+} from "../lib/activity-liveness";
+import {
 	captureScreenshot,
 	closeBrowser,
+	describeBrowserRefusal,
+	describeNavigationFailure,
 	explainBlockedNavigation,
 	openBrowser,
 	performOperation,
 	type RunnerBrowser,
+	refusalForFetchError,
 	resolveSameOriginUrl,
+	settleNavigation,
 	signInWithForm,
 	snapshotPage,
 } from "./browser-driver";
 import { decideWithModel, describeModelFailure } from "./model-decision";
+import {
+	ACT_JSON_CONTRACT,
+	ActDecisionSchema,
+	ASSESS_JSON_CONTRACT,
+	AssessDecisionSchema,
+	normaliseOperation,
+	operationKindForLog,
+} from "./operation-decision";
+
+export { normaliseOperation } from "./operation-decision";
 
 /** Agent key + document type for the (org-editable) runner prompt. */
 export const AGENTIC_RUNNER_PROMPT_AGENT = "qa_agentic_runner";
@@ -132,31 +147,6 @@ export interface RunAgenticCaseInput {
 		| { kind: "FORM"; username: string; secret: string }
 		| { kind: "TOKEN"; secret: string }
 		| { kind: "HEADER"; headerName: string; secret: string };
-}
-
-/**
- * When a navigation failure's message is a bare `net::ERR_BLOCKED_BY_CLIENT`,
- * a sentence on its own line naming which side must act, taken from the
- * runner's most recent recorded refusal — or `""` when the failure has
- * nothing to do with a blocked request, or no refusal was recorded to explain
- * it. Appended directly onto the failure message being built.
- *
- * On its own line, not merely a leading space: the message it is appended to
- * is often Playwright's own multi-line call log ("waiting until
- * \"domcontentloaded\"\n…"), and a single space glued the explanation onto
- * the end of that log's last line instead of setting it apart. The UI already
- * renders these messages with `whitespace-pre-wrap`, so a newline here is
- * enough.
- */
-export function blockedNavigationSuffix(
-	message: string,
-	runner: Pick<RunnerBrowser, "refusals">,
-): string {
-	if (!message.includes("ERR_BLOCKED_BY_CLIENT")) {
-		return "";
-	}
-	const explanation = explainBlockedNavigation(runner.refusals);
-	return explanation ? `\n${explanation}` : "";
 }
 
 type RunnerAuth = NonNullable<RunAgenticCaseInput["auth"]>;
@@ -257,62 +247,6 @@ export interface RunAgenticCaseResult {
 	modelCalls: number;
 }
 
-/**
- * Lenient on purpose — `kind` and the target are plain strings, not enums.
- *
- * A strict `z.enum` turns "Click" or "CLICK" into a schema-rejection retry loop
- * and, on a model that keeps missing, an outright activity failure. Normalised
- * below, where anything unrecognised becomes `none` — which is a safe answer,
- * because it touches nothing and lets the assessment call decide the step.
- */
-const ActDecisionSchema = z.object({
-	kind: z.string().optional(),
-	role: z.string().optional(),
-	name: z.string().optional(),
-	text: z.string().optional(),
-	key: z.string().optional(),
-	path: z.string().optional(),
-	ms: z.number().optional(),
-	reasoning: z.string().optional(),
-});
-
-const AssessDecisionSchema = z.object({
-	met: z.boolean().optional(),
-	observation: z.string().optional(),
-	/**
-	 * How sure the model is of `met`, 0–100.
-	 *
-	 * Optional like everything else here, and its absence is NOT read as zero:
-	 * "I did not say how sure I was" and "I was not sure" are different answers,
-	 * and a provider that drops the field would otherwise send every step of every
-	 * project to review at once. See {@link stepStatusFor}.
-	 */
-	confidence: z.number().optional(),
-});
-
-/**
- * Spelled-out JSON contracts, used ONLY when a deployment ignored the schema and
- * answered in prose (see `model-decision.ts`). They describe the same shapes as
- * the schemas above in words, because the fallback's whole premise is a provider
- * that did not read the schema.
- *
- * Kept beside the schemas rather than in the org-editable prompt: an admin
- * editing how strictly their team judges an expectation must not be able to
- * break the wire format the runner parses.
- */
-const ACT_JSON_CONTRACT = [
-	"Reply with a single JSON object and nothing else — no prose, no markdown fence.",
-	'Keys, all optional: "kind" (one of click, fill, press, goto, wait, none),',
-	'"role", "name", "text", "key", "path", "ms" (a number), "reasoning".',
-].join(" ");
-
-const ASSESS_JSON_CONTRACT = [
-	"Reply with a single JSON object and nothing else — no prose, no markdown fence.",
-	'Keys, all optional: "met" (true or false), "observation" (one or two sentences),',
-	'"confidence" (a number from 0 to 100 — how sure you are of "met", where 100 is',
-	"certain and anything below 50 means you are guessing).",
-].join(" ");
-
 /** How much of the model's raw reply to keep in the log line. */
 const RAW_REPLY_LOG_LIMIT = 2_000;
 
@@ -345,40 +279,6 @@ export function modelFailureDetail(err: unknown): Record<string, unknown> {
 		// is enough to see whether it is JSON, prose, or empty.
 		rawReply: err.text?.slice(0, RAW_REPLY_LOG_LIMIT) ?? null,
 	};
-}
-
-/** Map whatever the model said onto the closed operation set. */
-export function normaliseOperation(
-	raw: z.infer<typeof ActDecisionSchema>,
-): BrowserOperation {
-	const kind = (raw.kind ?? "").trim().toLowerCase();
-	switch (kind) {
-		case "click":
-			return raw.role && raw.name
-				? { kind: "click", role: raw.role, name: raw.name }
-				: { kind: "none" };
-		case "fill":
-		case "type":
-			return raw.role && raw.name
-				? {
-						kind: "fill",
-						role: raw.role,
-						name: raw.name,
-						text: raw.text ?? "",
-					}
-				: { kind: "none" };
-		case "press":
-			return raw.key ? { kind: "press", key: raw.key } : { kind: "none" };
-		case "goto":
-		case "navigate":
-			return raw.path
-				? { kind: "goto", path: raw.path }
-				: { kind: "none" };
-		case "wait":
-			return { kind: "wait", ms: raw.ms ?? 1000 };
-		default:
-			return { kind: "none" };
-	}
 }
 
 /**
@@ -439,7 +339,7 @@ export function stepStatusFor(input: {
 	confidence: number | null;
 	/** 0 disables the gate. */
 	threshold: number;
-}): AgenticStepStatusValue {
+}): Exclude<AgenticStepStatusValue, "SKIPPED"> {
 	// An operation that could not be performed is BLOCKED, not FAILED. "The button
 	// was not there" and "the button was there and did the wrong thing" are
 	// different findings, and collapsing them is how a broken runner gets reported
@@ -539,6 +439,39 @@ async function storeEvidence(input: {
 	}
 }
 
+async function finalizeTerminalStep(input: {
+	steps: AgenticStepResult[];
+	runner: RunnerBrowser;
+	caseInput: RunAgenticCaseInput;
+	step: AgenticCaseStepInput;
+	status: Exclude<AgenticStepStatusValue, "SKIPPED">;
+	observation: string;
+}): Promise<void> {
+	let evidenceKey: string | null = null;
+	if (shouldCapture(input.caseInput.evidencePolicy, input.status)) {
+		const png = await captureScreenshot(input.runner.page);
+		if (png) {
+			evidenceKey = await storeEvidence({
+				projectId: input.caseInput.projectId,
+				organizationId: input.caseInput.organizationId,
+				userId: input.caseInput.userId,
+				runId: input.caseInput.runId ?? null,
+				testCaseId: input.caseInput.testCaseId,
+				stepOrder: input.step.order,
+				png,
+			});
+		}
+	}
+	input.steps.push({
+		order: input.step.order,
+		action: input.step.action,
+		expected: input.step.expected,
+		status: input.status,
+		observation: input.observation,
+		evidenceKey,
+	});
+}
+
 /**
  * Activity: run one case end to end. Always returns a verdict — a thrown
  * activity would lose the log of every step that already ran, and the steps are
@@ -592,12 +525,13 @@ export async function runAgenticCase(
 				),
 			].map((url) => assertSafeOutboundUrlResolved(url)),
 		);
-	} catch {
+	} catch (error) {
 		return {
 			testCaseId: input.testCaseId,
 			result: "BLOCKED",
-			failureMessage:
-				"The environment URL does not resolve to a public address.",
+			failureMessage: describeBrowserRefusal(
+				refusalForFetchError(targetBaseUrl, error),
+			),
 			durationMs: Date.now() - startedAt,
 			steps: [],
 			modelCalls: 0,
@@ -643,6 +577,7 @@ export async function runAgenticCase(
 			browser: input.browser,
 			resolution: input.resolution,
 			timeoutMs: 30_000,
+			signal: activityCancellationSignal(),
 			targetOrigin: new URL(targetBaseUrl).origin,
 			scopedHTTPHeaders:
 				auth.kind === "TOKEN"
@@ -667,11 +602,13 @@ export async function runAgenticCase(
 				auth.secret,
 				signInUrl,
 			);
-			if (!signIn.ok) {
+			if (!signIn.ok || explainBlockedNavigation(runner.refusals)) {
 				return {
 					testCaseId: input.testCaseId,
 					result: "BLOCKED",
-					failureMessage: `Sign-in failed: ${signIn.detail}${blockedNavigationSuffix(signIn.detail, runner)}`,
+					failureMessage:
+						explainBlockedNavigation(runner.refusals) ??
+						`Sign-in failed: ${signIn.detail}`,
 					durationMs: Date.now() - startedAt,
 					steps: [],
 					modelCalls,
@@ -682,13 +619,18 @@ export async function runAgenticCase(
 				await runner.page.goto(targetBaseUrl, {
 					waitUntil: "domcontentloaded",
 				});
+				await settleNavigation(runner.page);
+				const refusal = explainBlockedNavigation(runner.refusals);
+				if (refusal) {
+					throw new Error(refusal);
+				}
 			} catch (err) {
-				const message =
-					err instanceof Error ? err.message : String(err);
 				return {
 					testCaseId: input.testCaseId,
 					result: "BLOCKED",
-					failureMessage: `Could not open ${targetBaseUrl}: ${message}${blockedNavigationSuffix(message, runner)}`,
+					failureMessage:
+						explainBlockedNavigation(runner.refusals) ??
+						describeNavigationFailure(targetBaseUrl, err),
 					durationMs: Date.now() - startedAt,
 					steps: [],
 					modelCalls,
@@ -731,13 +673,13 @@ export async function runAgenticCase(
 			});
 
 			if (operations >= MAX_OPERATIONS_PER_CASE) {
-				steps.push({
-					order: step.order,
-					action: step.action,
-					expected: step.expected,
+				await finalizeTerminalStep({
+					steps,
+					runner,
+					caseInput: input,
+					step,
 					status: "BLOCKED",
 					observation: `Stopped after ${MAX_OPERATIONS_PER_CASE} operations in this case — the run was taking more actions than a case of this size should need.`,
-					evidenceKey: null,
 				});
 				ended = true;
 				continue;
@@ -745,7 +687,10 @@ export async function runAgenticCase(
 
 			// 1. Decide.
 			const before = await snapshotPage(runner.page);
-			let operation: BrowserOperation = { kind: "none" };
+			let operation: ReturnType<typeof normaliseOperation> = {
+				kind: "none",
+			};
+			let modelReasoning: string | null = null;
 			const actPrompt = [
 				instructions,
 				"",
@@ -773,6 +718,13 @@ export async function runAgenticCase(
 				});
 				modelCalls += decision.calls;
 				operation = normaliseOperation(decision.value);
+				modelReasoning = decision.value.reasoning?.trim() || null;
+				logger.info("qa.agentic_run.action_decision", {
+					projectId: input.projectId,
+					testCaseId: input.testCaseId,
+					stepOrder: step.order,
+					kind: operationKindForLog(decision.value.kind),
+				});
 				if (decision.via === "text") {
 					// Worth a line of its own: it means the deployment ignored the
 					// schema request and the run only worked because of the
@@ -804,15 +756,38 @@ export async function runAgenticCase(
 				// A model outage ends the CASE, not the whole run — the other
 				// cases may still be runnable, and a partial run with an honest
 				// blocked case beats no results at all.
-				steps.push({
-					order: step.order,
-					action: step.action,
-					expected: step.expected,
+				await finalizeTerminalStep({
+					steps,
+					runner,
+					caseInput: input,
+					step,
 					status: "BLOCKED",
-					// Names the cause rather than repeating the SDK's one-size
-					// sentence: whoever is testing reads this, not the logs.
 					observation: `The model could not decide this step — ${describeModelFailure(err)}`,
-					evidenceKey: null,
+				});
+				ended = true;
+				continue;
+			}
+
+			if (operation.kind === "blocked") {
+				await finalizeTerminalStep({
+					steps,
+					runner,
+					caseInput: input,
+					step,
+					status: "BLOCKED",
+					observation: `${operation.reason}${modelReasoning ? ` Reasoning: ${modelReasoning}` : ""}`,
+				});
+				ended = true;
+				continue;
+			}
+			if (operation.kind === "none") {
+				await finalizeTerminalStep({
+					steps,
+					runner,
+					caseInput: input,
+					step,
+					status: "NEEDS_REVIEW",
+					observation: `The model chose no interaction. This runner cannot prove an authored step was observation-only, so it requires review.${modelReasoning ? ` Reasoning: ${modelReasoning}` : ""}`,
 				});
 				ended = true;
 				continue;
@@ -823,8 +798,21 @@ export async function runAgenticCase(
 				runner.page,
 				operation,
 				targetBaseUrl,
+				runner.refusals,
 			);
 			operations++;
+			if (!outcome.ok) {
+				await finalizeTerminalStep({
+					steps,
+					runner,
+					caseInput: input,
+					step,
+					status: "BLOCKED",
+					observation: outcome.detail,
+				});
+				ended = true;
+				continue;
+			}
 
 			// 3. Judge the result against `expected`, from the page as it now is.
 			const after = await snapshotPage(runner.page);
@@ -837,7 +825,7 @@ export async function runAgenticCase(
 				caseContext,
 				"",
 				`STEP ${step.order}`,
-				`Action that was performed: ${step.action}`,
+				`Requested action: ${step.action}`,
 				`What the runner did: ${outcome.detail}`,
 				`Expected outcome: ${step.expected}`,
 				"",
@@ -919,29 +907,13 @@ export async function runAgenticCase(
 				threshold,
 			});
 
-			let evidenceKey: string | null = null;
-			if (shouldCapture(input.evidencePolicy, status)) {
-				const png = await captureScreenshot(runner.page);
-				if (png) {
-					evidenceKey = await storeEvidence({
-						projectId: input.projectId,
-						organizationId: input.organizationId,
-						userId: input.userId,
-						runId: input.runId ?? null,
-						testCaseId: input.testCaseId,
-						stepOrder: step.order,
-						png,
-					});
-				}
-			}
-
-			steps.push({
-				order: step.order,
-				action: step.action,
-				expected: step.expected,
+			await finalizeTerminalStep({
+				steps,
+				runner,
+				caseInput: input,
+				step,
 				status,
 				observation,
-				evidenceKey,
 			});
 
 			if (status !== "PASSED") {
@@ -971,7 +943,7 @@ export async function runAgenticCase(
 				: blocked
 					? `Step ${blocked.order} could not be attempted: ${blocked.observation ?? "(no observation recorded)"}`
 					: needsReview
-						? `Step ${needsReview.order} was judged with too little confidence to record a verdict — expected: ${needsReview.expected}\nObserved: ${needsReview.observation ?? "(no observation recorded)"}`
+						? `Step ${needsReview.order} needs review — expected: ${needsReview.expected}\nObserved: ${needsReview.observation ?? "(no observation recorded)"}`
 						: null,
 			durationMs: Date.now() - startedAt,
 			steps,

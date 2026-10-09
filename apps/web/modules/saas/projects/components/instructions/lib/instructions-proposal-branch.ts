@@ -61,6 +61,18 @@ const UNRESOLVED = new Set<ProposalBranchState>([
 	"CLOSE_REQUESTED",
 ]);
 
+/**
+ * States a branch passes through within seconds (a provider call is in
+ * flight), polled faster than a steady unresolved branch for a bounded time.
+ */
+const TRANSITIONAL = new Set<ProposalBranchState>([
+	"PENDING",
+	"OPENING",
+	"CLOSE_REQUESTED",
+]);
+export const TRANSITION_POLL_MS = 2_000;
+export const TRANSITION_POLL_WINDOW_MS = 120_000;
+
 /** Every state Close is offered from: not already closing, not settled. */
 const CLOSEABLE = new Set<ProposalBranchState>([
 	"PENDING",
@@ -124,8 +136,12 @@ export function branchCardLine(
 				: branch.state === "CLOSED" || branch.state === "CANCELED"
 					? "neutral"
 					: "progress";
+	const state =
+		branch.state === "CLOSE_REQUESTED" && !branch.pullRequest
+			? "CLOSE_REQUESTED_NO_PR"
+			: branch.state;
 	return {
-		key: `${options?.readOnly ? "otherStates" : "states"}.${branch.state}`,
+		key: `${options?.readOnly ? "otherStates" : "states"}.${state}`,
 		tone,
 	};
 }
@@ -174,9 +190,78 @@ export function offersBranchRefresh(branch: ProposalBranchLite): boolean {
  */
 export function branchPanelPollInterval(
 	branches: ReadonlyArray<Pick<ProposalBranchLite, "state">> | undefined,
+	transitionSince: number | null = null,
+	now: number = Date.now(),
 ): number | false {
 	if (!branches || branches.length === 0) {
 		return false;
 	}
+	if (
+		transitionSince !== null &&
+		now - transitionSince < TRANSITION_POLL_WINDOW_MS &&
+		branches.some((b) => TRANSITIONAL.has(b.state))
+	) {
+		return TRANSITION_POLL_MS;
+	}
 	return branches.some((b) => UNRESOLVED.has(b.state)) ? 10_000 : false;
+}
+
+/**
+ * The in-flight pull-request states of a proposal list's rows, as branch
+ * states, so the list polls by the same rule as the branch card
+ * (`branchPanelPollInterval`, `nextTransitionSince`): QUEUED is a row
+ * waiting for its branch (PENDING).
+ */
+export function inFlightRowStates(
+	rows: ReadonlyArray<{ pullRequest?: { state: string } | null }> | undefined,
+): Array<{ state: ProposalBranchState }> {
+	const out: Array<{ state: ProposalBranchState }> = [];
+	for (const row of rows ?? []) {
+		switch (row.pullRequest?.state) {
+			case "QUEUED":
+				out.push({ state: "PENDING" });
+				break;
+			case "OPENING":
+				out.push({ state: "OPENING" });
+				break;
+			case "CLOSE_REQUESTED":
+				out.push({ state: "CLOSE_REQUESTED" });
+				break;
+		}
+	}
+	return out;
+}
+
+/**
+ * What the member's proposal list polls by: its rows' in-flight pull-request
+ * states plus the member's own branch states. During a branch-level open or
+ * close every row still reads "On your branch", so the branch is the only
+ * sign that something is moving.
+ */
+export function listInFlightStates(
+	rows: Parameters<typeof inFlightRowStates>[0],
+	branches: ReadonlyArray<Pick<ProposalBranchLite, "state">> | undefined,
+): Array<{ state: ProposalBranchState }> {
+	return [
+		...inFlightRowStates(rows),
+		...(branches ?? [])
+			.filter((b) => TRANSITIONAL.has(b.state))
+			.map((b) => ({ state: b.state })),
+	];
+}
+
+/**
+ * When the current run of in-flight branches began: kept while any shown
+ * branch is still in flight, `now` when one first appears, null once none is.
+ * It bounds the fast poll to `TRANSITION_POLL_WINDOW_MS`.
+ */
+export function nextTransitionSince(
+	since: number | null,
+	branches: ReadonlyArray<Pick<ProposalBranchLite, "state">> | undefined,
+	now: number,
+): number | null {
+	if (!branches?.some((b) => TRANSITIONAL.has(b.state))) {
+		return null;
+	}
+	return since ?? now;
 }

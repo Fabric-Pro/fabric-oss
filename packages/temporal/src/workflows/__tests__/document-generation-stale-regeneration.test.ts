@@ -38,6 +38,9 @@ const activityStubs = vi.hoisted(() => ({
 	fetchRecentSlackMessages: vi.fn(),
 	updateProjectDocumentStatus: vi.fn(),
 	runDocumentDecisionPrecheckActivity: vi.fn(),
+	// The Proposal artifact gate is off (Fizzy #2801): no plan, so the
+	// run takes the path these tests pin.
+	planProposalArtifact: vi.fn(async () => null),
 }));
 
 vi.mock("@temporalio/workflow", async (importOriginal) => {
@@ -48,6 +51,8 @@ vi.mock("@temporalio/workflow", async (importOriginal) => {
 		log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 		patched: vi.fn(() => true),
 		proxyActivities: vi.fn(() => activityStubs),
+		// A Proposal asks the (gate-off) plan, handing it the run id.
+		workflowInfo: () => ({ runId: "run-1", startTime: new Date() }),
 	};
 });
 

@@ -2,6 +2,7 @@
 import {
 	buildProjectResource,
 	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
 } from "@repo/utils/oauth-project-resource";
 import { betterAuth } from "better-auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,6 +116,7 @@ async function start(
 			accept: true,
 			oauth_query: query,
 			[OAUTH_DISPLAYED_BINDING_FIELD]: displayed,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 		}),
 	});
 	expect(consent.status).toBe(200);

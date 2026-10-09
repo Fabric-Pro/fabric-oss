@@ -1927,3 +1927,92 @@ describe("useOrchestratorStream — a failed run's tool cards (#2040 F11)", () =
 		});
 	});
 });
+
+// Fizzy #2770: every ChatGPT plan serving the member is spent. The route
+// refuses before a run exists; the turn must end, say until when, and leave
+// no "Routing to agent…" behind.
+describe("useOrchestratorStream — every plan spent", () => {
+	const originalFetch = global.fetch;
+
+	afterEach(() => {
+		global.fetch = originalFetch;
+	});
+
+	it("ends the turn with the plan-spent message instead of routing forever", async () => {
+		const resetAt = new Date();
+		resetAt.setHours(17, 50, 0, 0);
+		global.fetch = vi.fn(async () => ({
+			ok: false,
+			status: 429,
+			headers: new Headers({ "Content-Type": "application/json" }),
+			json: async () => ({
+				error: "Every ChatGPT plan this work may use has no usage left in this window.",
+				code: "subscription_sharing_usage_limit_exceeded",
+				resetAt: resetAt.toISOString(),
+				apiBillingOption: false,
+			}),
+		})) as unknown as typeof fetch;
+
+		const { result } = renderHook(() => useOrchestratorStream());
+		await act(async () => {
+			await result.current.sendMessage("plan this");
+		});
+
+		const until = new Intl.DateTimeFormat(undefined, {
+			hour: "2-digit",
+			minute: "2-digit",
+		}).format(resetAt);
+		await waitFor(() => expect(result.current.isRunning).toBe(false));
+		expect(result.current.currentPhase).toBe("error");
+		expect(result.current.isLoading).toBe(false);
+		const reply = result.current.messages.at(-1);
+		expect(reply).toMatchObject({ role: "assistant", isError: true });
+		expect(reply?.content).toContain(
+			`All ChatGPT plans for your work are spent until ${until}.`,
+		);
+		expect(result.current.state.result?.error).toContain(until);
+	});
+
+	it.each([
+		[
+			"a usage limit",
+			429,
+			{
+				error: "Limit reached",
+				code: "AI_USAGE_LIMIT_EXCEEDED",
+				data: {
+					limitId: "limit-1",
+					dimension: "TOKENS",
+					window: "DAY",
+					used: "10",
+					max: "10",
+					manageLimitsUrl: "/settings/limits",
+				},
+			},
+		],
+		[
+			"a message stopped before it started",
+			409,
+			{ code: "TURN_CANCELLED" },
+		],
+	])(
+		"leaves no routing phase behind after %s refused the turn",
+		async (_case, status, body) => {
+			global.fetch = vi.fn(async () => ({
+				ok: false,
+				status,
+				headers: new Headers({ "Content-Type": "application/json" }),
+				json: async () => body,
+			})) as unknown as typeof fetch;
+
+			const { result } = renderHook(() => useOrchestratorStream());
+			await act(async () => {
+				await result.current.sendMessage("plan this");
+			});
+
+			await waitFor(() => expect(result.current.isLoading).toBe(false));
+			expect(result.current.isRunning).toBe(false);
+			expect(result.current.currentPhase).toBe("idle");
+		},
+	);
+});

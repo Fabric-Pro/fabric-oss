@@ -13,7 +13,10 @@ import {
 	requirePermission,
 } from "../../../orpc/procedures";
 import { hasScope, validateApiKey } from "../lib/api-key-auth";
-import { resolveModelForTenant } from "../lib/model-resolver";
+import {
+	modelUnavailableMessage,
+	resolveModelForTenant,
+} from "../lib/model-resolver";
 import { ResolvedModelConfigSchema, TaskTypeSchema } from "../types";
 
 export const resolveModelProcedure = publicProcedure
@@ -56,8 +59,7 @@ export const resolveModelProcedure = publicProcedure
 
 		if (!modelConfig) {
 			throw new ORPCError("PRECONDITION_FAILED", {
-				message:
-					"No AI provider configured. Please configure at least one provider in settings.",
+				message: await modelUnavailableMessage(tenant),
 			});
 		}
 

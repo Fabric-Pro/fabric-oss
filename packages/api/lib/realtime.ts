@@ -13,9 +13,12 @@ import {
 	type ContextChangePayload,
 	contextChangeSchema,
 	conversationMessageAppendedSchema,
+	type DocumentChangePayload,
+	documentChangeSchema,
 	getProjectChannelName,
 	emitActivity as sharedEmitActivity,
 	emitContextChange as sharedEmitContextChange,
+	emitDocumentChange as sharedEmitDocumentChange,
 } from "@repo/utils/realtime-emit";
 import { Realtime } from "@upstash/realtime";
 import { Redis } from "@upstash/redis";
@@ -27,14 +30,16 @@ import { z } from "zod";
 // `@repo/api/lib/realtime` keep working without changes.
 //
 // `emitContextChange` and `emitActivity` are implemented there too since the
-// synced-file deletion workflow publishes its deletes itself (Fizzy #2636);
-// the schema below uses their zod objects, so emitter and subscriber agree.
-// The API keeps its own wrappers for those two (below), which hand the shared
-// emitters this module's client, so an API caller never splits its events
-// across two clients.
+// synced-file deletion workflow publishes its deletes itself (Fizzy #2636),
+// and `emitDocumentChange` since Proposal generation nudges the page as its
+// sections land (Fizzy #2801); the schema below uses their zod objects, so
+// emitter and subscriber agree. The API keeps its own wrappers for those
+// three (below), which hand the shared emitters this module's client, so an
+// API caller never splits its events across two clients.
 export type {
 	ActivityPayload,
 	ContextChangePayload,
+	DocumentChangePayload,
 } from "@repo/utils/realtime-emit";
 export {
 	emitConversationMessageAppended,
@@ -78,17 +83,10 @@ const projectRealtimeSchema = {
 	}),
 
 	/**
-	 * Document changes: created, updated, deleted
+	 * Document changes: created, updated, deleted. The SHARED schema from
+	 * `@repo/utils/realtime-emit`, whose emitter a Temporal activity uses.
 	 */
-	document_change: z.object({
-		projectId: z.string(),
-		documentId: z.string(),
-		action: z.enum(["created", "updated", "deleted"]),
-		userId: z.string(),
-		userName: z.string(),
-		documentType: z.string().optional(),
-		documentTitle: z.string().optional(),
-	}),
+	document_change: documentChangeSchema,
 
 	/**
 	 * Context changes: added, updated, deleted. The SHARED schema from
@@ -123,9 +121,6 @@ const projectRealtimeSchema = {
  */
 export type PresenceUpdatePayload = z.infer<
 	typeof projectRealtimeSchema.presence_update
->;
-export type DocumentChangePayload = z.infer<
-	typeof projectRealtimeSchema.document_change
 >;
 export type LockUpdatePayload = z.infer<
 	typeof projectRealtimeSchema.lock_update
@@ -271,24 +266,13 @@ export async function emitPresenceUpdate(
 }
 
 /**
- * Emit a document change event
+ * Emit a document change event, through this module's Realtime client.
+ * Never throws.
  */
-export async function emitDocumentChange(
+export function emitDocumentChange(
 	payload: DocumentChangePayload,
 ): Promise<void> {
-	const realtime = getProjectRealtime();
-	if (!realtime) {
-		return;
-	}
-
-	try {
-		const channel = realtime.channel(
-			getProjectChannelName(payload.projectId),
-		);
-		await channel.emit("document_change", payload);
-	} catch (error) {
-		console.error("[Realtime] Failed to emit document_change:", error);
-	}
+	return sharedEmitDocumentChange(payload, getProjectRealtime());
 }
 
 /**

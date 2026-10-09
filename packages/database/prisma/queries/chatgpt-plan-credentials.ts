@@ -14,6 +14,7 @@ import { db } from "../client";
 import type {
 	ChatGptPlanCredential,
 	ChatGptPlanCredentialStatus,
+	ChatGptPlanTier,
 } from "../generated/client";
 import { isFeatureEnabled } from "./feature-flags";
 
@@ -31,12 +32,17 @@ export interface ChatGptPlanCredentialWrite {
 	accessTokenExpiresAt: Date;
 	earliestRefreshAt: Date | null;
 	scopes: string[];
+	/** From the ID token's subscription claims, when it has them. */
+	tier?: ChatGptPlanTier;
+	subscriptionActiveUntil?: Date | null;
 }
 
 /** The fields the status surfaces may show; never a token. */
 export const CHATGPT_PLAN_CREDENTIAL_PUBLIC_SELECT = {
 	email: true,
 	status: true,
+	tier: true,
+	subscriptionActiveUntil: true,
 	createdAt: true,
 	updatedAt: true,
 	lastUsedAt: true,
@@ -58,41 +64,98 @@ export function getChatGptPlanCredentialStatus(userId: string) {
 /**
  * Stores a fresh sign-in. A new sign-in always clears NEEDS_RECONNECT, and
  * replaces every token, so a reconnect as a different ChatGPT account never
- * keeps the old account's refresh token.
+ * keeps the old account's refresh token. A first own plan starts with no
+ * breaker, served-model or calibration rows: any left under this member's key
+ * belong to a plan they shared or disconnected, and an open breaker among
+ * them would read the new plan as spent (Fizzy #2770 I1).
  */
 export async function upsertChatGptPlanCredential(
 	input: ChatGptPlanCredentialWrite,
 ): Promise<void> {
 	const { userId, ...fields } = input;
-	await db.chatGptPlanCredential.upsert({
-		where: { userId },
-		create: { userId, ...fields, status: "ACTIVE" },
-		update: { ...fields, status: "ACTIVE" },
+	await db.$transaction(async (tx) => {
+		const existing = await tx.chatGptPlanCredential.findUnique({
+			where: { userId },
+			select: { id: true },
+		});
+		if (existing) {
+			await tx.chatGptPlanCredential.update({
+				where: { userId },
+				data: { ...fields, status: "ACTIVE" },
+			});
+			return;
+		}
+		const source = { sourceKind: "USER" as const, sourceId: userId };
+		await tx.chatGptPlanSourceState.deleteMany({ where: source });
+		await tx.chatGptPlanServedModel.deleteMany({ where: source });
+		await tx.chatGptPlanBudgetObservation.deleteMany({ where: source });
+		await tx.chatGptPlanCredential.create({
+			data: { userId, ...fields, status: "ACTIVE" },
+		});
 	});
 }
 
 /**
- * Whether anyone has this ChatGPT account connected as their own plan.
- * Says nothing about who: an admin connecting it as an organization's shared
- * account is refused without learning whose plan it is (Fizzy #2770).
+ * One ChatGPT account, as Fabric can recognize it. OpenAI's `sub` differs per
+ * client registration — and every `fabric connect chatgpt --shared` registers
+ * afresh — so the same account can arrive with a new `sub`; its email does
+ * not change. Either matching means the same account (Fizzy #2770).
  */
-export async function isChatGptPlanPersonalSubject(
-	subject: string,
-): Promise<boolean> {
-	const found = await db.chatGptPlanCredential.findFirst({
-		where: { subject },
-		select: { id: true },
-	});
-	return found !== null;
+export interface ChatGptPlanAccountIdentity {
+	subject: string;
+	email: string | null;
 }
 
-/** Deletes the sign-in and its breaker row, which has no foreign key to cascade from. */
+export function normalizeChatGptPlanEmail(
+	email: string | null | undefined,
+): string | null {
+	const normalized = email?.trim().toLowerCase();
+	return normalized ? normalized : null;
+}
+
+/** The `where` that finds a row of the same ChatGPT account. */
+export function chatGptPlanAccountIdentityWhere(
+	identity: ChatGptPlanAccountIdentity,
+) {
+	const email = normalizeChatGptPlanEmail(identity.email);
+	return {
+		OR: [
+			{ subject: identity.subject },
+			...(email
+				? [{ email: { equals: email, mode: "insensitive" as const } }]
+				: []),
+		],
+	};
+}
+
+/**
+ * Whose own plan this ChatGPT account is, if anyone's. Callers tell only the
+ * owner themselves: an admin connecting it as an organization's shared
+ * account is refused without learning whose plan it is (Fizzy #2770).
+ */
+export async function findChatGptPlanPersonalAccountOwner(
+	identity: ChatGptPlanAccountIdentity,
+): Promise<string | null> {
+	const found = await db.chatGptPlanCredential.findFirst({
+		where: chatGptPlanAccountIdentityWhere(identity),
+		select: { userId: true },
+	});
+	return found?.userId ?? null;
+}
+
+/** Deletes the sign-in and its breaker, served-model and calibration rows, which have no foreign key to cascade from. */
 export async function deleteChatGptPlanCredential(
 	userId: string,
 ): Promise<boolean> {
 	const [{ count }] = await db.$transaction([
 		db.chatGptPlanCredential.deleteMany({ where: { userId } }),
 		db.chatGptPlanSourceState.deleteMany({
+			where: { sourceKind: "USER", sourceId: userId },
+		}),
+		db.chatGptPlanServedModel.deleteMany({
+			where: { sourceKind: "USER", sourceId: userId },
+		}),
+		db.chatGptPlanBudgetObservation.deleteMany({
 			where: { sourceKind: "USER", sourceId: userId },
 		}),
 	]);
@@ -269,32 +332,4 @@ export async function listChatGptPlanOrganizations(params: {
 		includeBackgroundJobs:
 			byOrg.get(org.id)?.includeBackgroundJobs === true,
 	}));
-}
-
-/**
- * What this person's own plan calls used through Fabric since `since`, across
- * every organization — the plan's window is the person's, not a tenant's.
- * Their calls on an organization's shared account carry that account's id in
- * `providerConfigId` and spend its window, not theirs, so they are left out
- * (Fizzy #2770). Uses the (userId, createdAt) index.
- */
-export async function getChatGptPlanUsageSince(params: {
-	userId: string;
-	since: Date;
-}): Promise<{ requests: number; inputTokens: number; outputTokens: number }> {
-	const totals = await db.aiUsageLog.aggregate({
-		where: {
-			userId: params.userId,
-			createdAt: { gte: params.since },
-			provider: "OPENAI_CHATGPT_PLAN",
-			providerConfigId: null,
-		},
-		_count: { _all: true },
-		_sum: { inputTokens: true, outputTokens: true },
-	});
-	return {
-		requests: totals._count._all,
-		inputTokens: totals._sum.inputTokens ?? 0,
-		outputTokens: totals._sum.outputTokens ?? 0,
-	};
 }

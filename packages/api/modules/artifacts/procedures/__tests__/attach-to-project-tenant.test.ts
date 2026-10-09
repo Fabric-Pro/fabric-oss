@@ -21,7 +21,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		attachArtifactToProject: vi.fn(),
 		createContext: vi.fn(),
 		markArtifactIndexed: vi.fn(),
-		getRAGProviderConfig: vi.fn(),
+		getEmbeddingRAGProviderConfig: vi.fn(),
 		embedProjectContext: vi.fn(),
 	};
 	return { handlers, mocks };
@@ -38,7 +38,7 @@ vi.mock("@orpc/server", () => ({
 	},
 }));
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: mocks.getRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mocks.getEmbeddingRAGProviderConfig,
 }));
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: mocks.projectFindUnique } },
@@ -93,7 +93,7 @@ beforeEach(() => {
 	});
 	mocks.attachArtifactToProject.mockResolvedValue({ count: 1 });
 	mocks.createContext.mockResolvedValue({ id: "ctx-1" });
-	mocks.getRAGProviderConfig.mockResolvedValue({
+	mocks.getEmbeddingRAGProviderConfig.mockResolvedValue({
 		apiKey: "key",
 		provider: "OPENAI",
 	});
@@ -126,7 +126,7 @@ describe("attachToProjectProcedure — tenant comes from the project", () => {
 			"user-1",
 			"org-a",
 		);
-		expect(mocks.getRAGProviderConfig).toHaveBeenCalledWith({
+		expect(mocks.getEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-a",
 		});
@@ -160,7 +160,7 @@ describe("attachToProjectProcedure — tenant comes from the project", () => {
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-		expect(mocks.getRAGProviderConfig).not.toHaveBeenCalled();
+		expect(mocks.getEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
 		expect(mocks.attachArtifactToProject).not.toHaveBeenCalled();
 	});
 
@@ -180,7 +180,7 @@ describe("attachToProjectProcedure — tenant comes from the project", () => {
 
 		expect(mocks.getChatArtifact).not.toHaveBeenCalled();
 		expect(mocks.attachArtifactToProject).not.toHaveBeenCalled();
-		expect(mocks.getRAGProviderConfig).not.toHaveBeenCalled();
+		expect(mocks.getEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
 		expect(mocks.createContext).not.toHaveBeenCalled();
 		expect(mocks.embedProjectContext).not.toHaveBeenCalled();
 	});

@@ -27,6 +27,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Stub the full child card — the integration test only needs to know
 // that the card is mounted at the right slot. Card-level behaviour is
 // covered by `AiUsageLimitsCard.test.tsx`.
+// The plan breakdown reads the feature flags and its own query; covered in
+// ChatgptPlanUsageBreakdown.test.tsx.
+vi.mock("../ChatgptPlanUsageBreakdown", () => ({
+	ChatgptPlanUsageBreakdown: () => null,
+}));
+
 vi.mock("../AiUsageLimitsCard", () => ({
 	AiUsageLimitsCard: ({
 		organizationId,

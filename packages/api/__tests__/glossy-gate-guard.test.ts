@@ -25,6 +25,10 @@
  * `packages/mcp`, or `apps/web` is either directly awaited, or a member of an
  * `await Promise.all([...])`.
  *
+ * The Proposal artifact gate (Fizzy #2801) is held to the same rule: the
+ * recipient brand procedures now pass on GLOSSY_EDITION OR PROPOSAL_ARTIFACT,
+ * so an un-awaited Proposal artifact gate would open them just as surely.
+ *
  * If this fails on your new call site, add the `await` — do not relax the
  * pattern. The gate is a gate only when it is awaited.
  */
@@ -64,7 +68,7 @@ const SKIP_DIRS = new Set([
  * other flag too.
  */
 const GATE_CALL_RE =
-	/assertGlossyEnabled(?:ForOrganization)?\s*\(|isFeatureEnabled\s*\(\s*["']GLOSSY_EDITION["']/g;
+	/assertGlossyEnabled(?:ForOrganization)?\s*\(|assertProposalArtifactEnabled(?:ForOrganization)?\s*\(|assertGlossyOrProposalArtifactEnabled\s*\(|isFeatureEnabled\s*\(\s*["'](?:GLOSSY_EDITION|PROPOSAL_ARTIFACT)["']/g;
 
 /** The gate's own definition — `export async function assert…(` — is not a call. */
 const DECLARATION_BEFORE_RE = /\bfunction\s+$/;
@@ -149,7 +153,9 @@ function collectReferences(): Reference[] {
 			const raw = readFileSync(absFile, "utf-8");
 			if (
 				!raw.includes("GLOSSY_EDITION") &&
-				!raw.includes("assertGlossyEnabled")
+				!raw.includes("PROPOSAL_ARTIFACT") &&
+				!raw.includes("assertGlossyEnabled") &&
+				!raw.includes("ProposalArtifactEnabled")
 			) {
 				continue;
 			}
@@ -194,7 +200,8 @@ describe("Glossy Version Export gate — await guard", () => {
 						.map((o) => `  ${o.file}:${o.line}  …${o.snippet}…`)
 						.join("\n") +
 					"\n\nFix: `await assertGlossyEnabled(...)` / " +
-					'`await isFeatureEnabled("GLOSSY_EDITION", ...)`, or place the call ' +
+					'`await isFeatureEnabled("GLOSSY_EDITION", ...)` (and the same for ' +
+					"the Proposal artifact gate), or place the call " +
 					"inside an `await Promise.all([...])`.",
 			);
 		}
@@ -205,14 +212,37 @@ describe("Glossy Version Export gate — await guard", () => {
 	// AE10: with the gate off every Glossy procedure answers NOT_FOUND. The
 	// permission middleware would answer a viewer's write FORBIDDEN first,
 	// so the gate middleware must come before it in every procedure chain.
-	it("every Glossy and recipient-brand procedure runs the gate before the permission middleware", () => {
-		const dirs = [
-			"packages/api/modules/projects/procedures/glossy",
-			"packages/api/modules/projects/procedures/recipient-brand",
-		];
-		const problems: string[] = [];
-		let procedures = 0;
-		for (const dir of dirs) {
+	//
+	// Each directory has its own gate. The Glossy procedures keep
+	// GLOSSY_EDITION alone; only the recipient brand, which the Proposal
+	// artifact's Style tab edits too, accepts GLOSSY_EDITION or
+	// PROPOSAL_ARTIFACT (Fizzy #2801).
+	it.each([
+		{
+			dir: "packages/api/modules/projects/procedures/glossy",
+			gate: ".use(requireGlossyEnabled())",
+			forbidden: [
+				"requireGlossyOrProposalArtifactEnabled",
+				"requireProposalArtifactEnabled",
+			],
+			// Five Glossy procedures today.
+			atLeast: 5,
+		},
+		{
+			dir: "packages/api/modules/projects/procedures/recipient-brand",
+			gate: ".use(requireGlossyOrProposalArtifactEnabled())",
+			forbidden: [
+				"requireGlossyEnabled",
+				"requireProposalArtifactEnabled",
+			],
+			// Four recipient-brand procedures today.
+			atLeast: 4,
+		},
+	])(
+		"every procedure under $dir runs $gate before the permission middleware",
+		({ dir, gate, forbidden, atLeast }) => {
+			const problems: string[] = [];
+			let procedures = 0;
 			for (const absFile of walkTsFiles(resolve(repoRoot, dir))) {
 				const source = stripComments(readFileSync(absFile, "utf-8"));
 				if (!source.includes("tenantProtectedProcedure")) {
@@ -220,22 +250,68 @@ describe("Glossy Version Export gate — await guard", () => {
 				}
 				procedures++;
 				const file = relative(repoRoot, absFile).split(sep).join("/");
-				const gateAt = source.indexOf(".use(requireGlossyEnabled())");
+				const gateAt = source.indexOf(gate);
 				const permissionAt = source.indexOf(
 					".use(requireProjectPermission(",
 				);
 				if (gateAt === -1) {
-					problems.push(`${file}: no .use(requireGlossyEnabled())`);
+					problems.push(`${file}: no ${gate}`);
 				} else if (permissionAt !== -1 && permissionAt < gateAt) {
 					problems.push(
 						`${file}: requireProjectPermission runs before the gate`,
 					);
 				}
+				for (const name of forbidden) {
+					if (source.includes(name)) {
+						problems.push(`${file}: uses ${name}`);
+					}
+				}
 			}
+			expect(problems).toEqual([]);
+			expect(procedures).toBeGreaterThanOrEqual(atLeast);
+		},
+	);
+
+	// The handlers re-run their directory's gate through a shared loader, so
+	// the loaders must agree with the middleware: a recipient brand loader
+	// still on GLOSSY_EDITION alone would refuse what its middleware let in,
+	// and a Glossy loader on the wider gate would open every Glossy handler.
+	// The Brand kit has no project and gates on the organization in its
+	// handler; it stays on GLOSSY_EDITION alone.
+	it.each([
+		{
+			file: "packages/api/modules/projects/lib/glossy-access.ts",
+			gate: "await assertGlossyEnabled(",
+			forbidden: ["ProposalArtifact"],
+		},
+		{
+			file: "packages/api/modules/projects/lib/glossy-feature.ts",
+			gate: 'isFeatureEnabled("GLOSSY_EDITION"',
+			forbidden: ["PROPOSAL_ARTIFACT", "ProposalArtifact"],
+		},
+		{
+			file: "packages/api/modules/organizations/procedures/brand-kit/get-brand-kit.ts",
+			gate: "await assertGlossyEnabledForOrganization(",
+			forbidden: ["ProposalArtifact"],
+		},
+		{
+			file: "packages/api/modules/organizations/procedures/brand-kit/update-brand-kit.ts",
+			gate: "await assertGlossyEnabledForOrganization(",
+			forbidden: ["ProposalArtifact"],
+		},
+		{
+			file: "packages/api/modules/projects/lib/recipient-brand.ts",
+			gate: "await assertGlossyOrProposalArtifactEnabled(",
+			forbidden: ["assertGlossyEnabled"],
+		},
+	])("$file gates on $gate", ({ file, gate, forbidden }) => {
+		const source = stripComments(
+			readFileSync(resolve(repoRoot, file), "utf-8"),
+		);
+		expect(source).toContain(gate);
+		for (const name of forbidden) {
+			expect(source).not.toContain(name);
 		}
-		expect(problems).toEqual([]);
-		// Five Glossy procedures and four recipient-brand ones today.
-		expect(procedures).toBeGreaterThanOrEqual(9);
 	});
 
 	// The gate helper itself must always resolve — a scan that finds zero
@@ -252,5 +328,33 @@ describe("Glossy Version Export gate — await guard", () => {
 			"utf-8",
 		);
 		expect(source).toContain("export async function assertGlossyEnabled(");
+	});
+
+	it("the Proposal artifact gate module still exists under the names the scan expects", () => {
+		const source = readFileSync(
+			resolve(
+				repoRoot,
+				"packages/api/modules/projects/lib/proposal-artifact-feature.ts",
+			),
+			"utf-8",
+		);
+		expect(source).toContain(
+			"export async function assertProposalArtifactEnabled(",
+		);
+		expect(source).toContain(
+			"export async function assertGlossyOrProposalArtifactEnabled(",
+		);
+	});
+
+	// The scan must actually see the wider gate: zero references found would
+	// also mean zero offenders.
+	it("finds the Proposal artifact gate's own call sites", () => {
+		const files = new Set(collectReferences().map((r) => r.file));
+		expect(files).toContain(
+			"packages/api/modules/projects/lib/proposal-artifact-feature.ts",
+		);
+		expect(files).toContain(
+			"packages/api/modules/projects/lib/recipient-brand.ts",
+		);
 	});
 });

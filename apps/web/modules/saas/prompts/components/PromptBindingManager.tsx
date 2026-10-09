@@ -349,6 +349,13 @@ export function PromptBindingManager({
 								</Button>
 							</div>
 						)}
+						{promptDetails && !latestVersion && (
+							<output className="text-muted-foreground text-xs">
+								This prompt has no content yet, so it cannot be
+								set as default. Add its content and save it
+								first.
+							</output>
+						)}
 
 						{/* Agent Selection */}
 						<div className="space-y-2">

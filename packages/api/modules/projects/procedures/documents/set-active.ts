@@ -10,7 +10,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	getDocumentById,
 	hasProjectAccess,
@@ -96,7 +96,7 @@ export const setActiveDocumentProcedure = tenantProtectedProcedure
 				activatedDoc.content
 			) {
 				try {
-					const providerConfig = await getRAGProviderConfig({
+					const providerConfig = await getEmbeddingRAGProviderConfig({
 						userId: user.id,
 						organizationId,
 					});

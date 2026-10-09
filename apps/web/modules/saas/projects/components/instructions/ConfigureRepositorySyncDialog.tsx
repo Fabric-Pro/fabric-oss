@@ -483,7 +483,7 @@ export function ConfigureRepositorySyncDialog({
 				onOpenChange(next);
 			}}
 		>
-			<DialogContent className="max-w-2xl">
+			<DialogContent className="max-w-2xl grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>{tDirect("configure")}</DialogTitle>
 					<DialogDescription>
@@ -636,7 +636,7 @@ export function ConfigureRepositorySyncDialog({
 						{tDirect("connectionNotice")}
 					</p>
 				</div>
-				<DialogFooter className="items-center">
+				<DialogFooter className="items-center sm:flex-wrap sm:gap-y-2">
 					{saveBlocked === "noRepository" ||
 					saveBlocked === "noBranch" ? (
 						<p

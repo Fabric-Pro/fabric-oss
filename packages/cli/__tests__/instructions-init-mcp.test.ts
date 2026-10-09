@@ -49,6 +49,7 @@ const { mocks, agent } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
@@ -88,7 +89,7 @@ vi.mock("../src/lib/instructions/agent-run.js", () => ({
 const ORIGIN = "https://deploy.example.com";
 const URL = `${ORIGIN}/api/mcp-gateway/projects/project-1`;
 const OTHER_URL = `${ORIGIN}/api/mcp-gateway/projects/project-2`;
-const ADD_CLAUDE = `claude mcp add --scope local --transport http fabric ${URL}`;
+const ADD_CLAUDE = `claude mcp add --scope local --transport http fabric-oject1 ${URL}`;
 
 const TERMINAL_STREAMS = ["stdin", "stdout", "stderr"] as const;
 const savedTerminal = new Map<string, PropertyDescriptor | undefined>();
@@ -164,7 +165,13 @@ async function init(
 	const files = await toolFiles();
 	files.cwd = await realpath(dest);
 	if (options.state?.claude !== undefined) {
-		await writeClaudeFiles(files, options.state.claude);
+		await writeClaudeFiles(
+			files,
+			options.state.claude.map((entry) => ({
+				name: "fabric-oject1",
+				...entry,
+			})),
+		);
 	}
 	if (options.state?.codex !== undefined) {
 		await writeCodexConfig(files, options.state.codex);
@@ -216,10 +223,10 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			true,
 		);
 		expect(result.stdout).toContain(
-			'Registered the Fabric MCP server for Claude Code as "fabric".',
+			'Registered the Fabric MCP server for Claude Code as "fabric-oject1".',
 		);
 		expect(result.stdout).toContain(
-			"To finish, sign Claude Code in to it: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-oject1",
 		);
 		expect(
 			result.stdout.indexOf("Registered the Fabric MCP server"),
@@ -231,17 +238,27 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			tool: "codex",
 		});
 
-		expect(result.code).toBe(7);
+		expect(result.code).toBe(0);
 		expect(calls).toEqual([]);
 		expect(agent.runner).not.toHaveBeenCalled();
 		expect(result.stdout).toContain(
 			`Codex signs in as part of adding the Fabric MCP server, which opens your browser and waits for you, so init did not run it. Run: codex mcp add fabric-oject1 --url ${URL}`,
 		);
-		expect(result.stdout).not.toContain("Set up.");
+		expect(result.stdout).toContain("Set up.");
+		expect(result.stdout).not.toContain("not registered for every");
+		expect(result.stderr).not.toContain("Coding tool setup is incomplete");
+	});
+
+	it("says Claude Code is signed in, and not that a sign-in is pending, when claude reports the server connected", async () => {
+		const { result, calls } = await init({ claudeStatus: "connected" });
+
+		expect(result.code).toBe(0);
+		expect(verbs(calls)).toEqual(["claude mcp add"]);
 		expect(result.stdout).toContain(
-			"The session hook was set up, but the Fabric MCP server was not registered for every selected tool.",
+			'Claude Code: "fabric-oject1" connected.',
 		);
-		expect(result.stderr).toContain("Coding tool setup is incomplete");
+		expect(result.stdout).not.toContain("To finish, sign");
+		expect(result.stdout).not.toContain("sign-in is still pending");
 	});
 
 	it("registers the project's gateway with Codex at a terminal, under the project's own name, with the terminal handed over", async () => {
@@ -298,10 +315,41 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		);
 	});
 
-	it("does nothing the second time, when the same URL is already registered", async () => {
+	it("ends in success, not an incomplete setup, when a legacy `fabric` is already at this URL", async () => {
 		const { result, calls } = await init({}, [], {
-			state: { claude: [{ scope: "local", url: URL }] },
+			state: {
+				claude: [{ scope: "local", url: URL, name: "fabric" }],
+			},
 		});
+
+		expect(result.code).toBe(0);
+		expect(calls).toEqual([]);
+		expect(result.stdout).toContain(
+			'The Fabric MCP server is already registered for Claude Code as "fabric".',
+		);
+		expect(result.stderr).not.toContain("Coding tool setup is incomplete");
+	});
+
+	it("registers the project's name and ends in success beside a foreign local `fabric`", async () => {
+		const { result, calls } = await init({}, [], {
+			state: {
+				claude: [{ scope: "local", url: null, name: "fabric" }],
+			},
+		});
+
+		expect(result.code).toBe(0);
+		expect(verbs(calls)).toContain("claude mcp add");
+		expect(result.stderr).not.toContain("Coding tool setup is incomplete");
+	});
+
+	it("does nothing the second time, when the same URL is already registered", async () => {
+		const { result, calls } = await init(
+			{ claudeStatus: "connected" },
+			[],
+			{
+				state: { claude: [{ scope: "local", url: URL }] },
+			},
+		);
 
 		expect(result.code).toBe(0);
 		expect(calls).toEqual([]);
@@ -333,7 +381,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		expect(left.result.code).toBe(7);
 		expect(left.calls).toEqual([]);
 		expect(left.result.stdout).toContain(
-			`Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone. Remove it, then run: ${ADD_CLAUDE}`,
+			`Claude Code already has a server named "fabric-oject1" in this checkout's local settings that points at mcp.vendor.example.net, not at this project's gateway, so it was left alone. Remove it, then run: ${ADD_CLAUDE}`,
 		);
 	});
 
@@ -383,7 +431,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 
 		expect(login(calls)).toBeUndefined();
 		expect(result.stdout).toContain(
-			"To finish, sign Claude Code in to it: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-oject1",
 		);
 	});
 
@@ -395,7 +443,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		expect(result.code).toBe(0);
 		expect(login(calls)).toMatchObject({
 			command: "claude",
-			args: ["mcp", "login", "fabric"],
+			args: ["mcp", "login", "fabric-oject1"],
 			interactive: true,
 			timeoutMs: 5 * 60_000,
 		});
@@ -410,7 +458,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain(
-			"The Claude Code sign-in did not finish. Run: claude mcp login fabric",
+			"The Claude Code sign-in did not finish. Run: claude mcp login fabric-oject1",
 		);
 		expect(result.stdout).toContain("Set up.");
 	});
@@ -423,7 +471,7 @@ describe("fabric instructions init and the tool's MCP server", () => {
 
 		expect(login(calls)).toBeUndefined();
 		expect(result.stdout).toContain(
-			"To finish, sign Claude Code in to it: claude mcp login fabric",
+			"To finish, sign Claude Code in to it: claude mcp login fabric-oject1",
 		);
 	});
 
@@ -443,12 +491,13 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		expect(output.mcp).toEqual([
 			{
 				tool: "claude-code",
-				name: "fabric",
+				name: "fabric-oject1",
 				url: URL,
 				outcome: "registered",
+				status: "unchecked",
 				login: "printed",
 				registerLine: ADD_CLAUDE,
-				loginLine: "claude mcp login fabric",
+				loginLine: "claude mcp login fabric-oject1",
 			},
 		]);
 	});
@@ -461,14 +510,23 @@ describe("fabric instructions init and the tool's MCP server", () => {
 			globals: ["--format", "json"],
 		});
 
-		expect(result.code).toBe(7);
+		expect(result.code).toBe(0);
 		expect(calls).toEqual([]);
-		expect(JSON.parse(result.stdout).mcp).toEqual([
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.mcpComplete).toBe(false);
+		expect(parsed.manualSteps).toEqual([
+			{
+				tool: "codex",
+				registerLine: `codex mcp add fabric-oject1 --url ${URL}`,
+			},
+		]);
+		expect(parsed.mcp).toEqual([
 			{
 				tool: "codex",
 				name: "fabric-oject1",
 				url: URL,
 				outcome: "manual",
+				status: "unchecked",
 				login: "unneeded",
 				registerLine: `codex mcp add fabric-oject1 --url ${URL}`,
 				loginLine: "codex mcp login fabric-oject1",
@@ -485,16 +543,16 @@ describe("fabric instructions init and the tool's MCP server", () => {
 		expect(result.stdout + result.stderr).not.toContain("Bearer");
 	});
 
-	it("never asks a tool what it holds, in a checkout whose own .mcp.json runs a command", async () => {
+	it("registers its own server in a checkout whose .mcp.json runs a command under the same name, and says which wins", async () => {
 		const { result, calls } = await init({}, [], {
 			state: { claude: [{ scope: "project", url: null }] },
 		});
 
-		expect(result.code).toBe(7);
-		expect(calls).toEqual([]);
+		expect(verbs(calls)).toContain("claude mcp add");
 		expect(result.stdout).toContain(
-			'Claude Code already has a server named "fabric" that is not a Fabric gateway, so it was left alone.',
+			'Claude Code also has a "fabric-oject1" server in your project settings (a local command); in this checkout the project\'s gateway takes precedence.',
 		);
+		expect(result.stderr).not.toContain("Coding tool setup is incomplete");
 	});
 
 	it("is told, not handed a line, when the deployment address cannot be written into a command", async () => {

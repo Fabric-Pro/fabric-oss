@@ -1,114 +1,220 @@
-import type { RouterClient } from "@orpc/server";
-import { adminRouter } from "../modules/admin/router";
-import { agentDeploymentsRouter } from "../modules/agent-deployments/router";
-import { agentMemoryRouter } from "../modules/agent-memory/router";
-import { agentTemplatesRouter } from "../modules/agent-templates/router";
-import { agentsRouter } from "../modules/agents/router";
-import { aiRouter } from "../modules/ai/router";
-import { aiConfigRouter } from "../modules/ai-config/router";
-import { artifactsRouter } from "../modules/artifacts/router";
-import { atlasRouter } from "../modules/atlas/router";
-import { auditRouter } from "../modules/audit/router";
-import { authRouter } from "../modules/auth/router";
-import { automationTemplatesRouter } from "../modules/automation-templates/router";
-import { codingRunsRouter } from "../modules/coding-runs/router";
-import { dailyBriefRouter } from "../modules/daily-brief/router";
-import { dashboardRouter } from "../modules/dashboard/router";
-import { dataConnectionsRouter } from "../modules/data-connections/router";
-import { framesRouter } from "../modules/frames/router";
-import { functionTagsRouter } from "../modules/function-tags/router";
-import { githubRouter } from "../modules/github/router";
-import { incidentsRouter } from "../modules/incidents/router";
-import { integrationHealthRouter } from "../modules/integration-health/router";
-import { integrationsRouter } from "../modules/integrations/router";
-import { jobsRouter } from "../modules/jobs/router";
-import { kanbanRouter } from "../modules/kanban/router";
-import { mcpRouter } from "../modules/mcp/router";
-import { newsletterRouter } from "../modules/newsletter/router";
-import { notificationsRouter } from "../modules/notifications/router";
-import { openapiRouter } from "../modules/openapi/router";
-import { orchestratorRouter } from "../modules/orchestrator/router";
-import { organizationsRouter } from "../modules/organizations/router";
-import { outcomesRouter } from "../modules/outcomes/router";
-import { paymentsRouter } from "../modules/payments/router";
-import { capabilitiesRouter } from "../modules/capabilities/router";
-import { projectsRouter } from "../modules/projects/router";
-import { promptsRouter } from "../modules/prompts/router";
-import { ragProvidersRouter } from "../modules/rag-providers/router";
-import { reportsRouter } from "../modules/reports/router";
-import { runtimeRouter } from "../modules/runtime/router";
-import { sandboxRouter } from "../modules/sandbox/router";
-import { searchProvidersRouter } from "../modules/search-providers/router";
-import { skillsRouter } from "../modules/skills/router";
-import { subscriptionsRouter } from "../modules/subscriptions/router";
-import { systemHealthRouter } from "../modules/system-health/router";
-import { todosRouter } from "../modules/todos/router";
-import { userActivityRouter } from "../modules/user-activity/router";
-import { usersRouter } from "../modules/users/router";
-import { waitlistRouter } from "../modules/waitlist/router";
-import { weaveRouter } from "../modules/weave/router";
-import { wizardRouter } from "../modules/wizard/router";
-import { workflowsRouter } from "../modules/workflows/router";
-import { workspaceRouter } from "../modules/workspace/router";
-import { documentWorkspacesRouter } from "../modules/workspaces/router";
+import { type AnyRouter, lazy, type RouterClient } from "@orpc/server";
 import { publicProcedure } from "./procedures";
+
+/**
+ * Mounts a module router lazily. A request resolves only the module router it
+ * addresses, so a cold function instance evaluates that module's import graph
+ * (and no other) instead of all ~50 module routers up front. The router type,
+ * and with it `ApiRouterClient`, is unchanged: oRPC unwraps `Lazy` in
+ * `RouterClient` and in the OpenAPI generator.
+ */
+function lazyRouter<TKey extends string, TRouter extends AnyRouter>(
+	key: TKey,
+	load: () => Promise<Record<TKey, TRouter>>,
+) {
+	return lazy(() => load().then((loaded) => ({ default: loaded[key] })));
+}
 
 export const router = publicProcedure
 	// Prefix for openapi
 	.prefix("/api")
 	.router({
-		admin: adminRouter,
-		agentDeployments: agentDeploymentsRouter,
-		agentMemory: agentMemoryRouter,
-		agents: agentsRouter,
-		agentTemplates: agentTemplatesRouter,
-		ai: aiRouter,
-		aiConfig: aiConfigRouter,
-		auth: authRouter,
-		artifacts: artifactsRouter,
-		audit: auditRouter,
-		userActivity: userActivityRouter,
-		automationTemplates: automationTemplatesRouter,
-		atlas: atlasRouter,
-		codingRuns: codingRunsRouter,
-		dailyBrief: dailyBriefRouter,
-		dashboard: dashboardRouter,
-		frames: framesRouter,
-		functionTags: functionTagsRouter,
-		todos: todosRouter,
-		github: githubRouter,
-		incidents: incidentsRouter,
-		integrationHealth: integrationHealthRouter,
-		integrations: integrationsRouter,
-		jobs: jobsRouter,
-		kanban: kanbanRouter,
-		mcp: mcpRouter,
-		newsletter: newsletterRouter,
-		notifications: notificationsRouter,
-		openapi: openapiRouter,
-		orchestrator: orchestratorRouter,
-		organizations: organizationsRouter,
-		outcomes: outcomesRouter,
-		payments: paymentsRouter,
-		projects: projectsRouter,
-		capabilities: capabilitiesRouter,
-		prompts: promptsRouter,
-		ragProviders: ragProvidersRouter,
-		runtime: runtimeRouter,
-		sandbox: sandboxRouter,
-		searchProviders: searchProvidersRouter,
-		users: usersRouter,
-		wizard: wizardRouter,
-		workflows: workflowsRouter,
-		workspace: workspaceRouter,
-		documentWorkspaces: documentWorkspacesRouter,
-		reports: reportsRouter,
-		waitlist: waitlistRouter,
-		dataConnections: dataConnectionsRouter,
-		skills: skillsRouter,
-		subscriptions: subscriptionsRouter,
-		systemHealth: systemHealthRouter,
-		weave: weaveRouter,
+		admin: lazyRouter(
+			"adminRouter",
+			() => import("../modules/admin/router"),
+		),
+		agentDeployments: lazyRouter(
+			"agentDeploymentsRouter",
+			() => import("../modules/agent-deployments/router"),
+		),
+		agentMemory: lazyRouter(
+			"agentMemoryRouter",
+			() => import("../modules/agent-memory/router"),
+		),
+		agents: lazyRouter(
+			"agentsRouter",
+			() => import("../modules/agents/router"),
+		),
+		agentTemplates: lazyRouter(
+			"agentTemplatesRouter",
+			() => import("../modules/agent-templates/router"),
+		),
+		ai: lazyRouter("aiRouter", () => import("../modules/ai/router")),
+		aiConfig: lazyRouter(
+			"aiConfigRouter",
+			() => import("../modules/ai-config/router"),
+		),
+		auth: lazyRouter("authRouter", () => import("../modules/auth/router")),
+		artifacts: lazyRouter(
+			"artifactsRouter",
+			() => import("../modules/artifacts/router"),
+		),
+		audit: lazyRouter(
+			"auditRouter",
+			() => import("../modules/audit/router"),
+		),
+		userActivity: lazyRouter(
+			"userActivityRouter",
+			() => import("../modules/user-activity/router"),
+		),
+		automationTemplates: lazyRouter(
+			"automationTemplatesRouter",
+			() => import("../modules/automation-templates/router"),
+		),
+		atlas: lazyRouter(
+			"atlasRouter",
+			() => import("../modules/atlas/router"),
+		),
+		codingRuns: lazyRouter(
+			"codingRunsRouter",
+			() => import("../modules/coding-runs/router"),
+		),
+		dailyBrief: lazyRouter(
+			"dailyBriefRouter",
+			() => import("../modules/daily-brief/router"),
+		),
+		dashboard: lazyRouter(
+			"dashboardRouter",
+			() => import("../modules/dashboard/router"),
+		),
+		frames: lazyRouter(
+			"framesRouter",
+			() => import("../modules/frames/router"),
+		),
+		functionTags: lazyRouter(
+			"functionTagsRouter",
+			() => import("../modules/function-tags/router"),
+		),
+		todos: lazyRouter(
+			"todosRouter",
+			() => import("../modules/todos/router"),
+		),
+		github: lazyRouter(
+			"githubRouter",
+			() => import("../modules/github/router"),
+		),
+		incidents: lazyRouter(
+			"incidentsRouter",
+			() => import("../modules/incidents/router"),
+		),
+		integrationHealth: lazyRouter(
+			"integrationHealthRouter",
+			() => import("../modules/integration-health/router"),
+		),
+		integrations: lazyRouter(
+			"integrationsRouter",
+			() => import("../modules/integrations/router"),
+		),
+		jobs: lazyRouter("jobsRouter", () => import("../modules/jobs/router")),
+		kanban: lazyRouter(
+			"kanbanRouter",
+			() => import("../modules/kanban/router"),
+		),
+		mcp: lazyRouter("mcpRouter", () => import("../modules/mcp/router")),
+		newsletter: lazyRouter(
+			"newsletterRouter",
+			() => import("../modules/newsletter/router"),
+		),
+		notifications: lazyRouter(
+			"notificationsRouter",
+			() => import("../modules/notifications/router"),
+		),
+		openapi: lazyRouter(
+			"openapiRouter",
+			() => import("../modules/openapi/router"),
+		),
+		orchestrator: lazyRouter(
+			"orchestratorRouter",
+			() => import("../modules/orchestrator/router"),
+		),
+		organizations: lazyRouter(
+			"organizationsRouter",
+			() => import("../modules/organizations/router"),
+		),
+		outcomes: lazyRouter(
+			"outcomesRouter",
+			() => import("../modules/outcomes/router"),
+		),
+		payments: lazyRouter(
+			"paymentsRouter",
+			() => import("../modules/payments/router"),
+		),
+		projects: lazyRouter(
+			"projectsRouter",
+			() => import("../modules/projects/router"),
+		),
+		capabilities: lazyRouter(
+			"capabilitiesRouter",
+			() => import("../modules/capabilities/router"),
+		),
+		prompts: lazyRouter(
+			"promptsRouter",
+			() => import("../modules/prompts/router"),
+		),
+		ragProviders: lazyRouter(
+			"ragProvidersRouter",
+			() => import("../modules/rag-providers/router"),
+		),
+		runtime: lazyRouter(
+			"runtimeRouter",
+			() => import("../modules/runtime/router"),
+		),
+		sandbox: lazyRouter(
+			"sandboxRouter",
+			() => import("../modules/sandbox/router"),
+		),
+		searchProviders: lazyRouter(
+			"searchProvidersRouter",
+			() => import("../modules/search-providers/router"),
+		),
+		users: lazyRouter(
+			"usersRouter",
+			() => import("../modules/users/router"),
+		),
+		wizard: lazyRouter(
+			"wizardRouter",
+			() => import("../modules/wizard/router"),
+		),
+		workflows: lazyRouter(
+			"workflowsRouter",
+			() => import("../modules/workflows/router"),
+		),
+		workspace: lazyRouter(
+			"workspaceRouter",
+			() => import("../modules/workspace/router"),
+		),
+		documentWorkspaces: lazyRouter(
+			"documentWorkspacesRouter",
+			() => import("../modules/workspaces/router"),
+		),
+		reports: lazyRouter(
+			"reportsRouter",
+			() => import("../modules/reports/router"),
+		),
+		waitlist: lazyRouter(
+			"waitlistRouter",
+			() => import("../modules/waitlist/router"),
+		),
+		dataConnections: lazyRouter(
+			"dataConnectionsRouter",
+			() => import("../modules/data-connections/router"),
+		),
+		skills: lazyRouter(
+			"skillsRouter",
+			() => import("../modules/skills/router"),
+		),
+		subscriptions: lazyRouter(
+			"subscriptionsRouter",
+			() => import("../modules/subscriptions/router"),
+		),
+		systemHealth: lazyRouter(
+			"systemHealthRouter",
+			() => import("../modules/system-health/router"),
+		),
+		weave: lazyRouter(
+			"weaveRouter",
+			() => import("../modules/weave/router"),
+		),
 	});
 
 export type ApiRouterClient = RouterClient<typeof router>;

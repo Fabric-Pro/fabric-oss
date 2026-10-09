@@ -45,7 +45,12 @@ import {
 } from "../company-contexts/resolution";
 import { storeCompanyContextPoints } from "../company-contexts/store";
 import { generateEmbedding, generateEmbeddings } from "../embedding";
-import { deleteProjectContext, storeProjectContext } from "./store";
+import {
+	deleteProjectContext,
+	deleteProjectContextPoints,
+	listProjectContextPointIds,
+	storeProjectContext,
+} from "./store";
 
 /**
  * Provider configuration for embeddings
@@ -102,6 +107,8 @@ export interface EmbedResult {
 	qdrantId?: string;
 	error?: string;
 	chunksCreated?: number;
+	/** Every point id this embed wrote (project embeds only). */
+	pointIds?: string[];
 }
 
 /**
@@ -510,6 +517,7 @@ async function embedContext(
 			success: true,
 			qdrantId,
 			chunksCreated: 1,
+			pointIds: [qdrantId],
 		};
 	} catch (error) {
 		const errorMessage =
@@ -645,6 +653,7 @@ async function embedWithChunking(
 
 	// Generate embeddings and store each chunk
 	let firstQdrantId: string | undefined;
+	const pointIds: string[] = [];
 	let successCount = 0;
 	const errors: string[] = [];
 
@@ -717,6 +726,7 @@ async function embedWithChunking(
 			if (!firstQdrantId) {
 				firstQdrantId = qdrantId;
 			}
+			pointIds.push(qdrantId);
 			successCount++;
 		} catch (error) {
 			const errorMsg =
@@ -750,13 +760,18 @@ async function embedWithChunking(
 		success: true,
 		qdrantId: firstQdrantId,
 		chunksCreated: successCount,
+		pointIds,
 	};
 }
 
 /**
  * Re-embed a context after content update
  *
- * This removes the old embedding and creates a new one.
+ * Writes the new points first and only then removes the old ones the new
+ * embed did not overwrite (point ids are deterministic per chunk, so an
+ * unchanged id is replaced in place). A failed embed — a provider outage, or
+ * a model whose vectors the collection cannot hold — leaves the old points
+ * untouched, so the context stays searchable on its previous embedding.
  *
  * @param options - Embed options with new content
  * @returns Embed result
@@ -769,17 +784,21 @@ export async function reembedProjectContext(
 	logger.info(`[AutoEmbed] Re-embedding context ${contextId}`);
 
 	try {
-		// Delete old embedding (ignore errors if it doesn't exist)
-		try {
-			await deleteProjectContext(contextId, organizationId);
-		} catch {
-			logger.debug(
-				`[AutoEmbed] No existing embedding to delete for ${contextId}`,
-			);
+		const previousPointIds = await listProjectContextPointIds(
+			contextId,
+			organizationId,
+		);
+
+		const result = await embedProjectContext(options);
+		if (!result.success) {
+			return result;
 		}
 
-		// Create new embedding
-		return await embedProjectContext(options);
+		const written = new Set(result.pointIds ?? []);
+		const stale = previousPointIds.filter((id) => !written.has(id));
+		await deleteProjectContextPoints(stale, organizationId);
+
+		return result;
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";

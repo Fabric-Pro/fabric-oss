@@ -430,7 +430,7 @@ export type ClassificationCommit = {
  * membership becomes `status`; and on a MERGED branch whose pull request
  * merged into its frozen target, the merge sync is requested, once per
  * branch. The operations' own memberships are facts the caller wrote first
- * (`setOperationMembership`).
+ * (`setOperationMembershipMany`).
  */
 export async function commitBranchClassification(i: {
 	branchId: string;

@@ -72,7 +72,7 @@ const MESSAGE = { role: "user", content: "hello" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	getSession.mockResolvedValue({ user: { id: "user-1" } });
+	getSession.mockResolvedValue({ user: { id: "user-1" }, session: {} });
 	isOrganizationMember.mockResolvedValue(true);
 	sendMessageSecure.mockResolvedValue({ id: "t1", status: "completed" });
 	process.env.AGENT_DISCOVERY_ALLOWED_HOSTS = "";

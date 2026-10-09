@@ -395,6 +395,7 @@ describe("embedProjectContext is unchanged", () => {
 			success: true,
 			qdrantId: "project-point",
 			chunksCreated: 1,
+			pointIds: ["project-point"],
 		});
 		expect(mocks.getProjectRagSettings).toHaveBeenCalledWith("proj-1");
 		expect(mocks.generateEmbedding).toHaveBeenCalledWith(
@@ -442,6 +443,7 @@ describe("embedProjectContext is unchanged", () => {
 			success: true,
 			qdrantId: "project-point",
 			chunksCreated: 2,
+			pointIds: ["project-point", "project-point"],
 		});
 		expect(mocks.generateEmbedding.mock.calls).toEqual([
 			[

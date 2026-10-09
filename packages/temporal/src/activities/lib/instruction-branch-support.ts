@@ -8,6 +8,7 @@
  * Not re-exported from the activities barrel: every export of a module the
  * barrel re-exports becomes a schedulable Temporal activity.
  */
+import path from "node:path";
 import {
 	type BranchOperationRow,
 	type BranchPullRequestObservation,
@@ -38,10 +39,19 @@ import {
 	repositoryIdentity,
 	sameRepository,
 } from "@repo/integrations/instruction-pull-requests";
+import { safeHeartbeat } from "./activity-liveness";
 import type { BranchCredential } from "./instruction-branch-credential";
-import { isAncestor, revListOutside } from "./instruction-branch-git";
-import { ProposalStepFailure } from "./instruction-proposal-boundary";
-import { providerCall } from "./instruction-proposal-operation";
+import {
+	fetchBranchHead,
+	initBranchWorkspace,
+	isAncestor,
+	revListOutside,
+} from "./instruction-branch-git";
+import {
+	cancellationOf,
+	ProposalStepFailure,
+} from "./instruction-proposal-boundary";
+import { gitCall, providerCall } from "./instruction-proposal-operation";
 import {
 	assertObjectId,
 	type GitCallBase,
@@ -480,4 +490,45 @@ export function renderBranchPresentation(i: {
 			body: escapeMarkdown(body),
 		},
 	};
+}
+
+/** The workspace a step clones into: one directory per step, never reused. */
+export function stepCredential(
+	credential: BranchCredential,
+	step: string,
+): BranchCredential {
+	return { ...credential, workDir: path.join(credential.runDir, step) };
+}
+
+/** Rethrows a stop; answers the step failure; rethrows anything else. */
+export function stepFailureOf(error: unknown): ProposalStepFailure {
+	const stopped = cancellationOf(error);
+	if (stopped) {
+		throw stopped;
+	}
+	if (!(error instanceof ProposalStepFailure)) {
+		throw error;
+	}
+	return error;
+}
+
+/** A blobless clone of the target, then the branch's tip, in `credential.workDir`. */
+export async function fetchTip(
+	credential: BranchCredential,
+	ref: string,
+	phase: "close" | "reconcile",
+): Promise<{ kind: "present"; sha: string } | { kind: "absent" }> {
+	const { env, signal } = credential;
+	const dir = credential.workDir;
+	return gitCall(phase, credential, async () => {
+		await initBranchWorkspace({
+			url: credential.url,
+			targetRef: credential.destination.targetRef,
+			dir,
+			env,
+			signal,
+		});
+		safeHeartbeat();
+		return fetchBranchHead({ dir, branch: ref, env, signal });
+	});
 }

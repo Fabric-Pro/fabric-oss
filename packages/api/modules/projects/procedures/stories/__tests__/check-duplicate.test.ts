@@ -32,7 +32,7 @@ const {
 	mockGetAIModelWithMetadata,
 	mockResolveModelWithProvider,
 	mockGetDecisionModel,
-	mockEvaluate,
+	mockDecide,
 	mockHasProjectAccess,
 	mockGetProjectTenantId,
 	mockListActiveStories,
@@ -55,7 +55,7 @@ const {
 		mockGetAIModelWithMetadata: vi.fn(),
 		mockResolveModelWithProvider: vi.fn(),
 		mockGetDecisionModel: vi.fn(),
-		mockEvaluate: vi.fn(),
+		mockDecide: vi.fn(),
 		mockHasProjectAccess: vi.fn(async () => true),
 		mockGetProjectTenantId: vi.fn(),
 		mockListActiveStories: vi.fn(),
@@ -92,7 +92,13 @@ vi.mock("@repo/ai", () => {
 			mockResolveModelWithProvider(...a),
 		getAIDecisionModelWithMetadata: (...a: unknown[]) =>
 			mockGetDecisionModel(...a),
-		experimental_evaluate: (...a: unknown[]) => mockEvaluate(...a),
+		experimental_decide: (...a: unknown[]) => mockDecide(...a),
+		// Decision telemetry is not under test here.
+		recordDecisionOutcome: () => {},
+		createDecisionCapture: () => ({
+			run: <T>(fn: () => T) => fn(),
+			answeringModelLabel: undefined,
+		}),
 	};
 });
 
@@ -260,7 +266,7 @@ function arrangeDecision(answers: Record<string, unknown>) {
 		metadata: { provider: "VERCEL_GATEWAY" },
 		trackUsage: vi.fn(),
 	});
-	mockEvaluate.mockResolvedValue({ answers });
+	mockDecide.mockResolvedValue({ answers });
 }
 
 beforeEach(() => {
@@ -574,7 +580,7 @@ describe("checkDuplicateProcedure — never blocks creation", () => {
 			metadata: { provider: "VERCEL_GATEWAY" },
 			trackUsage: vi.fn(),
 		});
-		mockEvaluate.mockRejectedValue(new AiUsageLimitExceededError());
+		mockDecide.mockRejectedValue(new AiUsageLimitExceededError());
 
 		const result = await runCheck();
 
@@ -634,7 +640,7 @@ describe("checkDuplicateProcedure — never blocks creation", () => {
 		// Never settles — simulates a provider that does not honour the
 		// abort signal it was given. The REQUEST still has to return on
 		// time, which is exactly what the outer deadline race is for.
-		mockEvaluate.mockImplementation(() => new Promise(() => {}));
+		mockDecide.mockImplementation(() => new Promise(() => {}));
 
 		const startedAt = Date.now();
 		const result = await runCheck();

@@ -971,7 +971,12 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 
 		await expect(
 			run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" }),
-		).resolves.toEqual({ canceled: true, pullRequest: "close_requested" });
+		).resolves.toEqual({
+			canceled: true,
+			pullRequest: "close_requested",
+			scope: "branch",
+			pullRequestStaysOpen: false,
+		});
 		expect(m.proposalBranchIdOf).toHaveBeenCalledWith({
 			snapshotId: "proposal_1",
 			organizationId: "org_1",
@@ -990,7 +995,14 @@ describe("repository proposals (Fizzy #2563 spec §12)", () => {
 			pullRequest: "close_requested",
 			scope: "change",
 		});
-		await run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" });
+		await expect(
+			run(CANCEL, { projectId: "project_1", snapshotId: "proposal_1" }),
+		).resolves.toEqual({
+			canceled: true,
+			pullRequest: "close_requested",
+			scope: "change",
+			pullRequestStaysOpen: true,
+		});
 		expect(m.wakeBranchAfterCommand).not.toHaveBeenCalled();
 	});
 

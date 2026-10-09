@@ -41,7 +41,7 @@ const {
 	mockListCacheRows,
 	mockUpsertCache,
 	mockGetBoundPrompt,
-	mockEvaluate,
+	mockDecide,
 	mockGetDecisionModel,
 	mockDecisionTrackUsage,
 	AiUsageLimitExceededError,
@@ -68,7 +68,7 @@ const {
 		mockListCacheRows: vi.fn(),
 		mockUpsertCache: vi.fn(),
 		mockGetBoundPrompt: vi.fn(),
-		mockEvaluate: vi.fn(),
+		mockDecide: vi.fn(),
 		mockGetDecisionModel: vi.fn(),
 		mockDecisionTrackUsage: vi.fn(),
 	};
@@ -82,8 +82,14 @@ vi.mock("@repo/ai", () => ({
 	generateObject: mockGenerateObject,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
-	experimental_evaluate: mockEvaluate,
+	experimental_decide: mockDecide,
 	getAIDecisionModelWithMetadata: mockGetDecisionModel,
+	// Decision telemetry is asserted in backlog-routing-core.test.ts.
+	recordDecisionOutcome: vi.fn(),
+	createDecisionCapture: () => ({
+		run: <T>(fn: () => T) => fn(),
+		answeringModelLabel: undefined,
+	}),
 }));
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
@@ -191,7 +197,7 @@ function arrangeDecision(answers: Record<string, unknown>) {
 		metadata: { provider: "VERCEL_GATEWAY" },
 		trackUsage: mockDecisionTrackUsage,
 	});
-	mockEvaluate.mockResolvedValue({ answers });
+	mockDecide.mockResolvedValue({ answers });
 }
 
 beforeEach(() => {
@@ -993,7 +999,7 @@ describe("typed decision model fast path", () => {
 			changes: [createChange()],
 		});
 
-		const call = mockEvaluate.mock.calls[0][0];
+		const call = mockDecide.mock.calls[0][0];
 		// The org's prompt customisation binds the typed path too — otherwise
 		// tuning the judge would silently stop working the moment a decision
 		// model is configured.
@@ -1152,7 +1158,7 @@ describe("typed decision model fast path", () => {
 
 		// Unchanged from before the fast path existed: one language judgement,
 		// one enrichment, and no error stamp for the missing decision model.
-		expect(mockEvaluate).not.toHaveBeenCalled();
+		expect(mockDecide).not.toHaveBeenCalled();
 		expect(mockGenerateObject).toHaveBeenCalledOnce();
 		expect(result.enriched).toBe(1);
 		expect(result.failed).toBe(0);
@@ -1169,7 +1175,7 @@ describe("typed decision model fast path", () => {
 			model: { modelId: "typesafe-ai/jev" },
 			trackUsage: mockDecisionTrackUsage,
 		});
-		mockEvaluate.mockRejectedValue(new Error("gateway timeout"));
+		mockDecide.mockRejectedValue(new Error("gateway timeout"));
 
 		const result = await routeActionItemsToExistingTickets({
 			...BASE_PARAMS,
@@ -1187,7 +1193,7 @@ describe("typed decision model fast path", () => {
 			model: { modelId: "typesafe-ai/jev" },
 			trackUsage: mockDecisionTrackUsage,
 		});
-		mockEvaluate.mockRejectedValue(new AiUsageLimitExceededError());
+		mockDecide.mockRejectedValue(new AiUsageLimitExceededError());
 
 		// Falling through would bill exactly the spend the limit refused, so
 		// the item fails — and the pass still resolves, because it is

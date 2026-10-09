@@ -210,6 +210,8 @@ packages/database/verify-publishing-prompt-sync-integration-results.json
 packages/temporal/publishing-notify-activity-results.json
 packages/temporal/publishing-email-delivery-results.json
 packages/temporal/publishing-reconcile-activity-results.json
+# Bundling scratch of a replay test; removed in `finally`, left only by a killed run
+packages/temporal/src/workflows/__tests__/.superseded-parent-replay-*/
 
 # Local database dump/restore workspace (staging migration scratch — never commit real data)
 db_dump/

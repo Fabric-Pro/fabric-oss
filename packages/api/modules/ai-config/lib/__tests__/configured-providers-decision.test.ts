@@ -77,3 +77,27 @@ describe("getConfiguredProviders for DECISION", () => {
 		expect(mockDb.userCloudProviderConfig.findMany).not.toHaveBeenCalled();
 	});
 });
+
+describe("getConfiguredProviders with an embeddings-only key", () => {
+	it("never falls back to an embeddings-only key as the default", async () => {
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			{
+				id: "embed-config",
+				provider: "OPENAI_DIRECT",
+				displayName: null,
+				isDefault: false,
+				priority: 10,
+				purpose: "EMBEDDINGS_ONLY",
+				config: {},
+			},
+		]);
+
+		const result = await getConfiguredProviders("user-1", "org-1");
+
+		expect(result.defaultProvider).toBeNull();
+		expect(result.allProviders[0]).toMatchObject({
+			isDefault: false,
+			purpose: "EMBEDDINGS_ONLY",
+		});
+	});
+});

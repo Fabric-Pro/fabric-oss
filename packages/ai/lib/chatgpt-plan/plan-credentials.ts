@@ -4,6 +4,7 @@ import {
 	deleteChatGptPlanOrgAccount,
 	getChatGptPlanCredential,
 	getChatGptPlanOrgAccount,
+	notifyChatGptPlanOrgAccountNeedsReconnect,
 	upsertChatGptPlanCredential,
 	upsertChatGptPlanOrgAccount,
 } from "@repo/database";
@@ -27,6 +28,11 @@ import {
 	planSourceKey,
 	planSourceLogFields,
 } from "./sources";
+import { missingSubscriptionFields } from "./subscription-backfill";
+import {
+	logChatGptPlanIdTokenShape,
+	readChatGptPlanSubscription,
+} from "./subscription-claims";
 
 const REFRESH_MARGIN_MS = 5 * 60_000;
 // Below this, earliest_refresh_at is ignored: a token with seconds left would
@@ -70,6 +76,9 @@ type PlanSignIn = Pick<
 	| "earliestRefreshAt"
 	| "scopes"
 	| "status"
+	| "tier"
+	| "subscriptionActiveUntil"
+	| "encryptedIdToken"
 >;
 
 function assertUsable(
@@ -110,11 +119,37 @@ function toAccessToken(credential: PlanSignIn): ChatGptPlanAccessToken {
 	};
 }
 
+/**
+ * A tier or paid-until date the row lacks, from the ID token stored at
+ * sign-in: a refresh need not bring a new one, or one with the claims.
+ */
+function storedSubscriptionFields(current: PlanSignIn): Partial<PlanSignIn> {
+	if (!current.encryptedIdToken) {
+		return {};
+	}
+	try {
+		return missingSubscriptionFields(
+			current,
+			readChatGptPlanSubscription(
+				decryptApiKey(current.encryptedIdToken),
+			),
+		);
+	} catch {
+		return {};
+	}
+}
+
 function rotatedFields(
+	current: PlanSignIn,
 	tokens: ChatGptPlanTokenResponse,
 	now: number,
 ): Partial<PlanSignIn> {
 	return {
+		// A refresh may bring a new ID token; its subscription claims keep
+		// the tier and paid-until date current (Fizzy #2770 G7), and the
+		// stored one fills only what neither the new token nor the row says.
+		...storedSubscriptionFields(current),
+		...readChatGptPlanSubscription(tokens.id_token),
 		encryptedAccessToken: encryptApiKey(tokens.access_token),
 		...(tokens.refresh_token && {
 			encryptedRefreshToken: encryptApiKey(tokens.refresh_token),
@@ -182,20 +217,35 @@ async function storeRotatedUnderLock(
 	return toAccessToken(updated);
 }
 
-function markNeedsReconnect(ref: PlanSourceRef): Promise<unknown> {
+/**
+ * Flips an ACTIVE source to NEEDS_RECONNECT. Only that flip tells a shared
+ * account's owners and admins (Fizzy #2770 D4): an account already waiting
+ * for a reconnect is not announced again, and only a new sign-in makes it
+ * ACTIVE.
+ */
+async function markNeedsReconnect(ref: PlanSourceRef): Promise<void> {
 	const data = { status: "NEEDS_RECONNECT" as const };
-	return ref.kind === "user"
-		? db.chatGptPlanCredential.updateMany({
-				where: { userId: ref.userId },
-				data,
-			})
-		: db.chatGptPlanOrgAccount.updateMany({
-				where: {
-					id: ref.accountId,
-					organizationId: ref.organizationId,
-				},
-				data,
-			});
+	if (ref.kind === "user") {
+		await db.chatGptPlanCredential.updateMany({
+			where: { userId: ref.userId },
+			data,
+		});
+		return;
+	}
+	const flipped = await db.chatGptPlanOrgAccount.updateMany({
+		where: {
+			id: ref.accountId,
+			organizationId: ref.organizationId,
+			status: "ACTIVE",
+		},
+		data,
+	});
+	if (flipped.count === 1) {
+		await notifyChatGptPlanOrgAccountNeedsReconnect({
+			organizationId: ref.organizationId,
+			accountId: ref.accountId,
+		});
+	}
 }
 
 /**
@@ -249,10 +299,11 @@ async function refreshUnderLock(
 					}
 					throw error;
 				}
+				logChatGptPlanIdTokenShape("refresh", ref, tokens.id_token);
 				return storeRotatedUnderLock(
 					tx,
 					ref,
-					rotatedFields(tokens, now()),
+					rotatedFields(current, tokens, now()),
 				);
 			},
 		);
@@ -380,7 +431,13 @@ export async function storeChatGptPlanCredential(
 			input.tokens.earliest_refresh_at,
 		),
 		scopes: input.scopes,
+		...readChatGptPlanSubscription(input.tokens.id_token),
 	});
+	logChatGptPlanIdTokenShape(
+		"connect",
+		{ kind: "user", userId: input.userId },
+		input.tokens.id_token,
+	);
 }
 
 /**
@@ -431,7 +488,7 @@ export async function storeChatGptPlanOrgAccount(
 	input: StoreChatGptPlanOrgAccountInput,
 ): Promise<{ id: string; created: boolean }> {
 	const now = input.now ?? Date.now();
-	return upsertChatGptPlanOrgAccount({
+	const stored = await upsertChatGptPlanOrgAccount({
 		organizationId: input.organizationId,
 		connectedByUserId: input.connectedByUserId,
 		label: input.label,
@@ -447,7 +504,18 @@ export async function storeChatGptPlanOrgAccount(
 			input.tokens.earliest_refresh_at,
 		),
 		scopes: input.scopes,
+		...readChatGptPlanSubscription(input.tokens.id_token),
 	});
+	logChatGptPlanIdTokenShape(
+		"connect",
+		{
+			kind: "org",
+			organizationId: input.organizationId,
+			accountId: stored.id,
+		},
+		input.tokens.id_token,
+	);
+	return stored;
 }
 
 /**

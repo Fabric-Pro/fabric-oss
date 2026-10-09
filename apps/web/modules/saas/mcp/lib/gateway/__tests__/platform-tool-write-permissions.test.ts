@@ -46,6 +46,7 @@ vi.mock("@repo/database", () => ({
 	db: {
 		storyTask: { findFirst: mocks.storyTaskFindFirst },
 	},
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,
 	Permissions: {

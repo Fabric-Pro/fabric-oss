@@ -103,6 +103,28 @@ export const MODELS: ModelSeedData[] = [
 			},
 		],
 	},
+	{
+		canonicalName: "gpt-6-luna-decisions",
+		displayName: "GPT-6 Luna Decisions",
+		description:
+			"OpenAI's typed choice, score, and boolean decisions through Vercel AI Gateway",
+		family: "luna-decisions",
+		vendor: "OpenAI",
+		capabilities: ["EVALUATION"],
+		contextWindow: 0,
+		// No benchmarks are published for the decision variant. Speed follows
+		// GPT-6 Luna, the catalog's FAST tier; quality matches Jev because there
+		// is no evidence to rank either decision model above the other.
+		speedTier: "FAST",
+		qualityTier: "STANDARD",
+		suitableForTasks: ["DECISION"],
+		providerMappings: [
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6-luna-decisions",
+			},
+		],
+	},
 
 	// ============================================================================
 	// OpenAI Models
@@ -356,7 +378,13 @@ export const MODELS: ModelSeedData[] = [
 		contextWindow: 272000,
 		speedTier: "BALANCED",
 		qualityTier: "STANDARD",
-		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING", "EVAL"],
+		suitableForTasks: [
+			"COMPLEX",
+			"REASONING",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
 		providerMappings: [
 			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-5.6-sol" },
 		],
@@ -427,6 +455,8 @@ export const MODELS: ModelSeedData[] = [
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6-sol" },
 			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6-sol" },
+			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
+			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6-sol" },
 		],
 	},
 	{
@@ -457,6 +487,8 @@ export const MODELS: ModelSeedData[] = [
 				providerModelId: "openai/gpt-6.1-sol",
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-sol" },
+			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
+			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6.1-sol" },
 		],
 	},
 	{
@@ -482,6 +514,8 @@ export const MODELS: ModelSeedData[] = [
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6-luna" },
 			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6-luna" },
+			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
+			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6-luna" },
 		],
 	},
 	{
@@ -997,6 +1031,48 @@ export const MODELS: ModelSeedData[] = [
 			{
 				provider: "DATABRICKS",
 				providerModelId: "system.ai.claude-sonnet-4-5",
+			},
+		],
+	},
+	{
+		canonicalName: "claude-haiku-5-5",
+		displayName: "Claude Haiku 5.5",
+		description:
+			"Anthropic's latest Haiku with 1M context, 128K output, and adaptive thinking for fast, high-volume work",
+		family: "claude",
+		vendor: "Anthropic",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		contextWindow: 1000000,
+		maxOutputTokens: 128000,
+		speedTier: "FAST",
+		qualityTier: "STANDARD",
+		// Rate for prompts of 100K tokens or fewer; longer prompts are billed
+		// at $0.50 / $2.50, which a single per-model price cannot express.
+		inputCostPer1M: 0.1,
+		outputCostPer1M: 0.5,
+		suitableForTasks: ["SIMPLE", "CHAT", "TOOL_CALLING"],
+		providerMappings: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				providerModelId: "claude-haiku-5-5",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "anthropic/claude-haiku-5.5",
+			},
+			{
+				provider: "OPENROUTER",
+				providerModelId: "anthropic/claude-haiku-5.5",
+			},
+			{
+				provider: "AWS_BEDROCK",
+				providerModelId: "anthropic.claude-haiku-5-5",
+			},
+			{
+				// Follows the `system.ai` naming of the other Claude 5.5 models;
+				// Databricks had not published this name when it was added.
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.claude-haiku-5-5",
 			},
 		],
 	},
@@ -2506,7 +2582,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("SIMPLE", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-5.6-luna",
+		OPENAI_CHATGPT_PLAN: "gpt-6-luna",
 		DATABRICKS: "llama-3-3-70b",
 		VERCEL_GATEWAY: "claude-haiku-4-5",
 		OPENAI_DIRECT: "gpt-5.5",
@@ -2529,7 +2605,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("COMPLEX", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6-astra",
+		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 		OPENAI_DIRECT: "gpt-5.5",
@@ -2552,7 +2628,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("REASONING", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6-astra",
+		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		VERCEL_GATEWAY: "claude-opus-4-8",
 		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: "claude-opus-4-8",
@@ -2572,7 +2648,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("CHAT", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-5.6-sol",
+		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 		OPENAI_DIRECT: "gpt-5.5",
@@ -2598,7 +2674,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		{
 			// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 			// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-			OPENAI_CHATGPT_PLAN: "gpt-6-astra",
+			OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 			DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 			VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
 			OPENAI_DIRECT: "gpt-5.5",
@@ -2649,7 +2725,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("EVAL", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-5.6-terra",
+		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		VERCEL_GATEWAY: "claude-sonnet-5",
 		OPENAI_DIRECT: "gpt-5.5",
 		ANTHROPIC_DIRECT: "claude-sonnet-5",
@@ -2668,8 +2744,11 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// ============================================================================
 	// DECISION Tasks - Typed choice, score, and boolean evaluation
 	// ============================================================================
+	// GPT-6 Luna Decisions is the default; TypeSafe AI Jev stays selectable and
+	// is the gateway-level fallback for organizations on this default (see
+	// SYSTEM_DEFAULT_DECISION_FALLBACKS in @repo/ai).
 	...createTaskDefaults("DECISION", "MEDIUM", {
-		VERCEL_GATEWAY: "typesafe-ai-jev",
+		VERCEL_GATEWAY: "gpt-6-luna-decisions",
 	}),
 ];
 

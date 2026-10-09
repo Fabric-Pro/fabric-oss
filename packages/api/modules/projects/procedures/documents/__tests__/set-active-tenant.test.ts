@@ -19,7 +19,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		hasProjectAccess: vi.fn(),
 		setDocumentActive: vi.fn(),
 		getDocumentById: vi.fn(),
-		getRAGProviderConfig: vi.fn(),
+		getEmbeddingRAGProviderConfig: vi.fn(),
 		embedProjectDocument: vi.fn(),
 		removeDocumentEmbedding: vi.fn(),
 	};
@@ -37,7 +37,7 @@ vi.mock("@orpc/client", () => ({
 	},
 }));
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: mocks.getRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mocks.getEmbeddingRAGProviderConfig,
 }));
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: mocks.projectFindUnique } },
@@ -97,7 +97,7 @@ beforeEach(() => {
 		type: "PRD",
 		title: "PRD",
 	});
-	mocks.getRAGProviderConfig.mockResolvedValue({
+	mocks.getEmbeddingRAGProviderConfig.mockResolvedValue({
 		apiKey: "key",
 		provider: "OPENAI",
 		baseUrl: null,
@@ -113,7 +113,7 @@ describe("setActiveDocumentProcedure — tenant comes from the project", () => {
 			context: ctx,
 		});
 
-		expect(mocks.getRAGProviderConfig).toHaveBeenCalledWith({
+		expect(mocks.getEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-a",
 		});
@@ -124,7 +124,7 @@ describe("setActiveDocumentProcedure — tenant comes from the project", () => {
 			"doc-old",
 			"org-a",
 		);
-		for (const call of mocks.getRAGProviderConfig.mock.calls) {
+		for (const call of mocks.getEmbeddingRAGProviderConfig.mock.calls) {
 			expect(call[0].organizationId).not.toBe("org-b");
 		}
 	});
@@ -141,7 +141,7 @@ describe("setActiveDocumentProcedure — tenant comes from the project", () => {
 
 		expect(mocks.setDocumentActive).not.toHaveBeenCalled();
 		expect(mocks.removeDocumentEmbedding).not.toHaveBeenCalled();
-		expect(mocks.getRAGProviderConfig).not.toHaveBeenCalled();
+		expect(mocks.getEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
 		expect(mocks.embedProjectDocument).not.toHaveBeenCalled();
 	});
 });

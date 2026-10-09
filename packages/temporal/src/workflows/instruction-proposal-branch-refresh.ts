@@ -7,6 +7,7 @@ import {
 import type * as branchActivities from "../activities/instruction-proposal-branches";
 import type * as proposalActivities from "../activities/instruction-proposal-pull-requests";
 import type { ReconcileBranchResult } from "../activities/lib/instruction-branch-types";
+import { PROPOSAL_DEADLINE_MARGIN_MS } from "../lib/proposal-deadline-margin";
 import { INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE } from "../task-queues";
 
 export const PROPOSAL_BRANCH_REFRESH_TERMINAL_WAKE_PATCH =
@@ -24,11 +25,13 @@ const { reconcileInstructionProposalBranch } = proxyActivities<
 });
 
 /**
- * The wake's start-to-close. A proposal activity stops issuing effects 10
- * seconds before its timeout (`withProposalDeadline`), so this leaves 10
- * seconds for one `signalWithStart`; 10 seconds here left none.
+ * The wake's start-to-close. A proposal activity stops issuing effects the
+ * deadline margin before its timeout (`withProposalDeadline`), so this
+ * leaves 10 seconds for one `signalWithStart` on top of it; the margin alone
+ * left none.
  */
-export const PROPOSAL_BRANCH_REFRESH_WAKE_TIMEOUT_MS = 20_000;
+export const PROPOSAL_BRANCH_REFRESH_WAKE_TIMEOUT_MS =
+	PROPOSAL_DEADLINE_MARGIN_MS + 10_000;
 
 const { wakeInstructionProposalBranch } = proxyActivities<
 	typeof proposalActivities
@@ -37,6 +40,27 @@ const { wakeInstructionProposalBranch } = proxyActivities<
 	startToCloseTimeout: PROPOSAL_BRANCH_REFRESH_WAKE_TIMEOUT_MS,
 	retry: { maximumAttempts: 1 },
 });
+
+/**
+ * Whether a finished observation is followed by a wake: the patched
+ * workflow, a caller that sent a project id, a terminal state, and room in
+ * the run's execution timeout. The sweeper wakes a terminal branch on its
+ * next tick anyway, so the wake only makes it immediate: a run an older API
+ * started without a project id, a slow observation that left no room for
+ * it, or a wake that fails still answers with the recorded observation.
+ */
+function shouldWake(
+	terminalWake: boolean,
+	result: ReconcileBranchResult,
+	input: ProposalBranchRefreshWorkflowInput,
+): input is ProposalBranchRefreshWorkflowInput & { projectId: string } {
+	return (
+		terminalWake &&
+		input.projectId !== undefined &&
+		(result.state === "CLOSED" || result.state === "MERGED") &&
+		wakeFits()
+	);
+}
 
 /** Whether the run's execution timeout still leaves room for a whole wake. */
 function wakeFits(): boolean {
@@ -62,16 +86,7 @@ export async function projectInstructionProposalBranchRefreshWorkflow(
 ): Promise<ReconcileBranchResult> {
 	const terminalWake = patched(PROPOSAL_BRANCH_REFRESH_TERMINAL_WAKE_PATCH);
 	const result = await reconcileInstructionProposalBranch(input);
-	// The sweeper wakes a terminal branch on its next tick anyway, so this wake
-	// only makes it immediate: a run an older API started without a project id,
-	// a slow observation that left no room for the wake, or a wake that fails,
-	// still answers with the recorded observation.
-	if (
-		terminalWake &&
-		input.projectId !== undefined &&
-		(result.state === "CLOSED" || result.state === "MERGED") &&
-		wakeFits()
-	) {
+	if (shouldWake(terminalWake, result, input)) {
 		try {
 			await wakeInstructionProposalBranch({
 				branchId: input.branchId,

@@ -19,11 +19,13 @@ const OFF: GsRuntimeGates = {
 	publishingSuite: false,
 	todoList: false,
 	glossyEdition: false,
+	proposalArtifact: false,
 };
 const ON: GsRuntimeGates = {
 	publishingSuite: true,
 	todoList: false,
 	glossyEdition: false,
+	proposalArtifact: false,
 };
 
 describe("Get Started — Publishing Suite runtime gate", () => {

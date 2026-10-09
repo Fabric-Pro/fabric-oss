@@ -162,7 +162,7 @@ describe("fetchRef, with real git", () => {
 	);
 
 	itWithGit(
-		"brings the tags that point into what it fetched, as git pull does",
+		"does not bring tags: a session start fetches only the tracked branch",
 		async () => {
 			const fx = await fixture();
 			git(fx.seed, "tag", "v1");
@@ -171,7 +171,7 @@ describe("fetchRef, with real git", () => {
 
 			await fetchRef(fx.checkout, "origin", "main", soon());
 
-			expect(git(fx.checkout, "tag", "--list")).toBe("v1");
+			expect(git(fx.checkout, "tag", "--list")).toBe("");
 		},
 	);
 

@@ -15,6 +15,7 @@
 import { logger } from "@repo/logs";
 import { MODELS, TASK_DEFAULTS } from "./ai-model-catalog";
 import { db } from "./client";
+import { isAutoDetectedChatGptPlanModel } from "./queries/chatgpt-plan-served-models";
 
 // Re-export for backwards compatibility
 export { MODELS, TASK_DEFAULTS };
@@ -243,19 +244,80 @@ async function seedTaskDefaults() {
 	);
 }
 
+/**
+ * A model added from a ChatGPT plan's own model list (Fizzy #2770) stands in
+ * until the catalog maps the same plan slug itself. Once it does, the stand-in
+ * would show the slug twice in every picker, so it goes — after everything
+ * that chose it (organization and member preferences, task defaults) is moved
+ * onto the catalog model. Moving is a plain re-point: none of those rows is
+ * unique on the model, so it cannot collide.
+ */
+export async function retireAdoptedChatGptPlanProbeModels(): Promise<number> {
+	const planMappings = await db.aiModelProviderMapping.findMany({
+		where: { provider: "OPENAI_CHATGPT_PLAN" },
+		select: {
+			modelId: true,
+			providerModelId: true,
+			model: { select: { canonicalName: true, metadata: true } },
+		},
+	});
+	const catalogBySlug = new Map(
+		planMappings
+			.filter(
+				(mapping) =>
+					!isAutoDetectedChatGptPlanModel(mapping.model.metadata),
+			)
+			.map((mapping) => [mapping.providerModelId, mapping.modelId]),
+	);
+	let retired = 0;
+	for (const probe of planMappings) {
+		if (!isAutoDetectedChatGptPlanModel(probe.model.metadata)) {
+			continue;
+		}
+		const catalogModelId = catalogBySlug.get(probe.providerModelId);
+		if (!catalogModelId || catalogModelId === probe.modelId) {
+			continue;
+		}
+		const repoint = {
+			where: { modelId: probe.modelId },
+			data: { modelId: catalogModelId },
+		};
+		await db.$transaction([
+			db.organizationModelPreference.updateMany(repoint),
+			db.userModelPreference.updateMany(repoint),
+			db.aiTaskModelDefault.updateMany(repoint),
+			db.aiModelProviderMapping.deleteMany({
+				where: { modelId: probe.modelId },
+			}),
+			db.aiModel.deleteMany({ where: { id: probe.modelId } }),
+		]);
+		logger.info(
+			`  ↷ ${probe.model.canonicalName}: the catalog now maps plan slug ${probe.providerModelId}; preferences moved, stand-in removed`,
+		);
+		retired += 1;
+	}
+	return retired;
+}
+
 async function cleanupOrphanedData() {
 	logger.info("Cleaning up orphaned provider mappings and task defaults...");
 
 	// Get all canonical names from the catalog
 	const catalogNames = new Set(MODELS.map((m) => m.canonicalName));
 
-	// Find models in DB that are NOT in the catalog (orphaned/deprecated)
+	// Find models in DB that are NOT in the catalog (orphaned/deprecated).
+	// A model added from a ChatGPT plan's own model list is not the catalog's
+	// to remove: it stays until the catalog adopts it (Fizzy #2770).
 	const allDbModels = await db.aiModel.findMany({
-		select: { id: true, canonicalName: true },
+		select: { id: true, canonicalName: true, metadata: true },
 	});
 
 	const orphanedModelIds = allDbModels
-		.filter((m) => !catalogNames.has(m.canonicalName))
+		.filter(
+			(m) =>
+				!catalogNames.has(m.canonicalName) &&
+				!isAutoDetectedChatGptPlanModel(m.metadata),
+		)
 		.map((m) => m.id);
 
 	if (orphanedModelIds.length > 0) {
@@ -309,12 +371,14 @@ async function cleanupOrphanedData() {
 		select: {
 			id: true,
 			provider: true,
-			model: { select: { canonicalName: true } },
+			model: { select: { canonicalName: true, metadata: true } },
 		},
 	});
 	const orphanedMappingIds = allDbMappings
 		.filter(
-			(m) => !catalogPairs.has(`${m.model.canonicalName} ${m.provider}`),
+			(m) =>
+				!catalogPairs.has(`${m.model.canonicalName} ${m.provider}`) &&
+				!isAutoDetectedChatGptPlanModel(m.model.metadata),
 		)
 		.map((m) => m.id);
 	if (orphanedMappingIds.length > 0) {
@@ -378,6 +442,7 @@ export async function seedAiModels() {
 	await cleanupOrphanedData();
 
 	await seedModels();
+	await retireAdoptedChatGptPlanProbeModels();
 	await linkDeprecatedModels();
 	await seedTaskDefaults();
 

@@ -38,7 +38,7 @@
  * @see https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
  */
 
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { verifyUserApiKey } from "@repo/api/modules/users/procedures/api-keys";
 import { auth } from "@repo/auth";
 import { gatewayAuthenticateHeader } from "@repo/auth/lib/oauth-scopes";
@@ -65,11 +65,13 @@ import {
 	updateSessionOrganization,
 } from "@saas/mcp/lib/gateway";
 import {
+	classifyConnectedToolAccess,
 	enforceAuthority,
 	generateRequestFingerprint,
 	resolveProviderKeyFromToolPrefix,
 } from "@saas/mcp/lib/gateway/authority-service";
 import { boundProjectId } from "@saas/mcp/lib/gateway/project-binding";
+import { scopeSatisfied } from "@saas/mcp/lib/gateway/tool-scope";
 import type { GatewayCredential } from "@saas/mcp/lib/gateway/types";
 import {
 	type McpKeyIdentity,
@@ -445,8 +447,12 @@ async function authenticateRequest(
 			return UNAUTHENTICATED;
 		}
 
-		const keyHash = createHash("sha256").update(apiKey).digest("hex");
-		if (keyHash !== storedKey.keyHash) {
+		const keyHash = createHash("sha256").update(apiKey).digest();
+		const storedHash = Buffer.from(storedKey.keyHash, "hex");
+		if (
+			keyHash.length !== storedHash.length ||
+			!timingSafeEqual(keyHash, storedHash)
+		) {
 			return UNAUTHENTICATED;
 		}
 
@@ -721,6 +727,20 @@ async function releaseGatewaySession(sessionId: string): Promise<void> {
 	deleteGatewaySession(sessionId);
 }
 
+function sameCredentialAuthority(
+	session: GatewaySession,
+	authResult: AuthResult,
+): boolean {
+	if (session.credential !== authResult.credential) {
+		return false;
+	}
+	const granted = new Set(session.scopes);
+	return (
+		granted.size === new Set(authResult.scopes).size &&
+		authResult.scopes.every((scope) => granted.has(scope))
+	);
+}
+
 /**
  * Return the session this request runs in.
  *
@@ -755,18 +775,27 @@ async function getOrCreateSession(
 				existing.organizationId === authResult.organizationId &&
 				boundProjectId(existing) === authResult.projectId
 			) {
-				return {
-					session: existing,
-					sessionId: mcpSessionId,
-					isNew: false,
-				};
+				// The session also carries what its opener was allowed to do,
+				// and a request that quotes its id presents its own credential.
+				// A narrower key or sign-in must not inherit a broader one's
+				// scopes, so a session is reused only by the same kind of
+				// credential holding the same scopes. A different one is
+				// served in a session of its own and the original is left to
+				// its client.
+				if (sameCredentialAuthority(existing, authResult)) {
+					return {
+						session: existing,
+						sessionId: mcpSessionId,
+						isNew: false,
+					};
+				}
+			} else {
+				// This caller's own session no longer names the organization
+				// they resolve to, so it is released rather than left for a
+				// later request to pick up. Only ever their own: a session id
+				// quoted by a different user is left alone on this path.
+				await releaseGatewaySession(mcpSessionId);
 			}
-
-			// This caller's own session no longer names the organization they
-			// resolve to, so it is released rather than left for a later
-			// request to pick up. Only ever their own: a session id quoted by
-			// a different user is left alone on this path.
-			await releaseGatewaySession(mcpSessionId);
 		}
 	}
 
@@ -844,30 +873,16 @@ function isServedMethod(method: string): boolean {
 	}
 }
 
-export async function handleGatewayPost(
+/**
+ * Authenticate a gateway request, answering with the refusal itself when it
+ * cannot proceed. Every method of the endpoint goes through here, so a session
+ * is never read, ended or described for a caller who has not proven who they
+ * are.
+ */
+async function authenticateGatewayRequest(
 	request: NextRequest,
 	binding: GatewayBinding | null,
-): Promise<NextResponse> {
-	// Validate Origin
-	if (!validateOrigin(request)) {
-		return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
-	}
-
-	// Validate Accept header
-	const accept = request.headers.get("accept") || "";
-	if (
-		!accept.includes("application/json") &&
-		!accept.includes("text/event-stream") &&
-		!accept.includes("*/*")
-	) {
-		return NextResponse.json(
-			{
-				error: "Accept header must include application/json or text/event-stream",
-			},
-			{ status: 406 },
-		);
-	}
-
+): Promise<AuthResult | NextResponse> {
 	// Authenticate. A refusal is answered before any session is looked up, so a
 	// caller whose organization selection was denied cannot be served from the
 	// session they opened before it.
@@ -968,6 +983,37 @@ export async function handleGatewayPost(
 			},
 			{ status: 403 },
 		);
+	}
+	return authResult;
+}
+
+export async function handleGatewayPost(
+	request: NextRequest,
+	binding: GatewayBinding | null,
+): Promise<NextResponse> {
+	// Validate Origin
+	if (!validateOrigin(request)) {
+		return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
+	}
+
+	// Validate Accept header
+	const accept = request.headers.get("accept") || "";
+	if (
+		!accept.includes("application/json") &&
+		!accept.includes("text/event-stream") &&
+		!accept.includes("*/*")
+	) {
+		return NextResponse.json(
+			{
+				error: "Accept header must include application/json or text/event-stream",
+			},
+			{ status: 406 },
+		);
+	}
+
+	const authResult = await authenticateGatewayRequest(request, binding);
+	if (authResult instanceof NextResponse) {
+		return authResult;
 	}
 
 	// Parse JSON-RPC request
@@ -1073,41 +1119,22 @@ export async function handleGatewayDelete(
 	request: NextRequest,
 	binding: GatewayBinding | null,
 ): Promise<NextResponse> {
-	const mcpSessionId = request.headers.get("mcp-session-id");
-	// A session ends at the URL it was opened at and nowhere else, so one URL
-	// cannot be used to end a session of another binding.
-	const existing = mcpSessionId ? getGatewaySession(mcpSessionId) : null;
-	if (existing && boundProjectId(existing) !== (binding?.projectId ?? null)) {
-		return new NextResponse(null, { status: 204 });
+	const authResult = await authenticateGatewayRequest(request, binding);
+	if (authResult instanceof NextResponse) {
+		return authResult;
 	}
-	if (mcpSessionId) {
-		// Complete any active authority sessions tied to this gateway session
-		// This ensures authority doesn't outlive the transport session
-		try {
-			const { db } = await import("@repo/database");
-			const { completeAuthoritySession } = await import("@repo/database");
-			const gatewaySession = getGatewaySession(mcpSessionId);
-			if (gatewaySession) {
-				const orgFilter = gatewaySession.organizationId
-					? { organizationId: gatewaySession.organizationId }
-					: { organizationId: null };
-				const activeSessions = await db.authoritySession.findMany({
-					where: {
-						userId: gatewaySession.userId,
-						...orgFilter,
-						runType: "MCP_GATEWAY",
-						status: "ACTIVE",
-					},
-					select: { id: true },
-				});
-				for (const s of activeSessions) {
-					completeAuthoritySession(s.id).catch(() => {});
-				}
-			}
-		} catch {
-			// Best-effort cleanup
-		}
-		deleteGatewaySession(mcpSessionId);
+	const mcpSessionId = request.headers.get("mcp-session-id");
+	const existing = mcpSessionId ? getGatewaySession(mcpSessionId) : null;
+	// Only the session's own user ends it, and only at the URL it was opened
+	// at. Anything else is answered as if the session were already gone, so the
+	// response does not say whether someone else's session id exists.
+	if (
+		mcpSessionId &&
+		existing &&
+		existing.userId === authResult.userId &&
+		boundProjectId(existing) === (binding?.projectId ?? null)
+	) {
+		await releaseGatewaySession(mcpSessionId);
 	}
 	return new NextResponse(null, { status: 204 });
 }
@@ -1550,6 +1577,42 @@ async function handleToolsCall(
 				  }
 				| undefined;
 
+			// The credential's own scopes come first: a connected tool is read
+			// or write by the same classification the authority gate uses, and
+			// the key or sign-in must hold the matching scope before a runtime
+			// grant is even considered. An OAuth agent cannot hold `mcp:write`.
+			const requiredScope =
+				classifyConnectedToolAccess(
+					toolName,
+					annotations,
+					session.credential,
+				) === "READ"
+					? ({ scope: "mcp:read", kind: "read" } as const)
+					: ({ scope: "mcp:write", kind: "write" } as const);
+			if (
+				!scopeSatisfied(
+					session.scopes,
+					requiredScope,
+					session.credential,
+				)
+			) {
+				return jsonRpcSuccess(
+					id,
+					{
+						content: [
+							{
+								type: "text" as const,
+								text: JSON.stringify({
+									error: `This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
+								}),
+							},
+						],
+						isError: true,
+					},
+					sessionId,
+				);
+			}
+
 			// Generate request fingerprint for one-shot grant matching
 			const fingerprint = await generateRequestFingerprint(
 				toolName,
@@ -1633,15 +1696,18 @@ async function handleToolsCall(
 
 		return jsonRpcSuccess(id, result, sessionId);
 	} catch (error) {
-		const message =
-			error instanceof Error ? error.message : "Tool execution failed";
 		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
 
 		return jsonRpcSuccess(
 			id,
 			{
 				content: [
-					{ type: "text", text: JSON.stringify({ error: message }) },
+					{
+						type: "text",
+						text: JSON.stringify({
+							error: "Tool execution failed because of an internal error.",
+						}),
+					},
 				],
 				isError: true,
 			},

@@ -202,12 +202,19 @@ async function postOrganization(
 async function deleteSession(
 	projectId: string | null,
 	sessionId: string,
+	authorization?: string,
 ): Promise<Response> {
 	const request = new Request(
 		projectId
 			? `${ORIGIN}/api/mcp-gateway/projects/${projectId}`
 			: `${ORIGIN}/api/mcp-gateway`,
-		{ method: "DELETE", headers: { "mcp-session-id": sessionId } },
+		{
+			method: "DELETE",
+			headers: {
+				"mcp-session-id": sessionId,
+				...(authorization ? { authorization } : {}),
+			},
+		},
 	) as never;
 	if (projectId) {
 		const { DELETE } = await import(
@@ -626,11 +633,16 @@ describe("sessions", () => {
 		});
 		const sessionId = opened.sessionId as string;
 
-		expect((await deleteSession(null, sessionId)).status).toBe(204);
-		expect((await deleteSession(PROJECT_TWO, sessionId)).status).toBe(204);
+		await deleteSession(null, sessionId, PROJECT_TOKEN);
+		await deleteSession(PROJECT_TWO, sessionId, OTHER_PROJECT_TOKEN);
 		expect(await storedSession(sessionId)).not.toBeNull();
 
-		expect((await deleteSession(PROJECT_ONE, sessionId)).status).toBe(204);
+		expect((await deleteSession(PROJECT_ONE, sessionId)).status).toBe(401);
+		expect(await storedSession(sessionId)).not.toBeNull();
+
+		expect(
+			(await deleteSession(PROJECT_ONE, sessionId, PROJECT_TOKEN)).status,
+		).toBe(204);
 		expect(await storedSession(sessionId)).toBeNull();
 	});
 });

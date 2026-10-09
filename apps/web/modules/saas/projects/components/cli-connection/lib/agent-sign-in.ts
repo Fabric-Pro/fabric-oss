@@ -19,7 +19,7 @@
  * The command and link formats come from each tool's own documentation
  * (checked 2026-10-02):
  *
- *   - Claude Code: `claude mcp add --transport http <name> <url>`, then
+ *   - Claude Code: `claude mcp add --scope local --transport http <name> <url>`, then
  *     `/mcp` to authenticate (https://code.claude.com/docs/en/mcp).
  *   - VS Code: `vscode:mcp/install?` followed by
  *     `encodeURIComponent(JSON.stringify(server))`
@@ -101,7 +101,7 @@ export function buildClaudeCodeCommand(
 	origin: string,
 	projectId: string,
 ): string {
-	return `claude mcp add --transport http ${SERVER_NAME} ${gatewayUrl(origin, projectId)}`;
+	return `claude mcp add --scope local --transport http ${codexServerName(projectId)} ${gatewayUrl(origin, projectId)}`;
 }
 
 export function buildVsCodeInstallLink(
@@ -127,7 +127,7 @@ export function buildCursorInstallLink(
 }
 
 /**
- * The name Codex registers a project's server under: `fabric-` and the last
+ * The name the CLI tools register a project's server under, Claude Code and Codex alike (the Claude Code command above, `codex mcp add`, and `fabric instructions init`): `fabric-` and the last
  * six letters and digits of the project's id, which is `editorServerName` with
  * no project name to slug. Codex keeps one list of servers for every project
  * on the machine, so a name that did not carry the project would be replaced by

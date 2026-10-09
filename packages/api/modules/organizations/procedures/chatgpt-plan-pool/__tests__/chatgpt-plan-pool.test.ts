@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
 	updatePolicy: vi.fn(),
 	acknowledge: vi.fn(),
 	disconnect: vi.fn(),
+	backfill: vi.fn(),
+	ownPlan: null as { status: string } | null,
 	audit: vi.fn(),
 }));
 
@@ -29,12 +31,20 @@ vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: mocks.audit,
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await vi.importActual<Record<string, unknown>>(
+		"../../../../../../database/prisma/queries/chatgpt-plan-window",
+	)),
 	isFeatureEnabled: async (key: string) => mocks.flags[key] === true,
 	listChatGptPlanOrgAccounts: mocks.accounts,
 	getChatGptPlanOrgPolicy: mocks.policy,
-	getChatGptPlanPoolUsageSince: mocks.usage,
+	getChatGptPlanOrgAccountWindows: mocks.usage,
+	getChatGptPlanWindowBudgets: async (_kind: string, ids: string[]) =>
+		new Map(ids.map((id) => [id, 2_000_000])),
 	getChatGptPlanSourceStates: mocks.states,
+	getChatGptPlanCredentialStatus: async () => mocks.ownPlan,
+	getUsersByIds: async (ids: string[]) =>
+		new Map(ids.map((id) => [id, { id, name: `Name of ${id}` }] as const)),
 	updateChatGptPlanOrgAccount: mocks.updateAccount,
 	updateChatGptPlanOrgPolicy: mocks.updatePolicy,
 	acknowledgeChatGptPlanOrgTerms: mocks.acknowledge,
@@ -42,6 +52,10 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
 	disconnectChatGptPlanOrgAccount: mocks.disconnect,
+}));
+
+vi.mock("@repo/ai/lib/chatgpt-plan/subscription-backfill", () => ({
+	backfillChatGptPlanSubscriptions: mocks.backfill,
 }));
 
 vi.mock("../../../lib/membership", () => ({
@@ -63,10 +77,14 @@ vi.mock("../../../../../orpc/procedures", () => {
 		Object.assign(chainable, {
 			use: () => chainable,
 			route: () => chainable,
-			input: () => chainable,
+			input: (schema: unknown) => {
+				chainable._input = schema;
+				return chainable;
+			},
 			output: () => chainable,
 			handler: (fn: (...args: unknown[]) => unknown) => ({
 				_handler: fn,
+				_input: chainable._input,
 			}),
 		});
 		return chainable;
@@ -113,6 +131,7 @@ const ACCOUNT = {
 	enabled: true,
 	serveInteractive: false,
 	serveBackground: true,
+	maxMemberSharePct: null,
 	connectedByUserId: "user_1",
 	lastUsedAt: null,
 	createdAt: new Date(NOW - 86_400_000),
@@ -141,12 +160,9 @@ beforeEach(() => {
 	mocks.membershipCalls = [];
 	mocks.accounts.mockResolvedValue([ACCOUNT]);
 	mocks.policy.mockResolvedValue(POLICY);
-	mocks.usage.mockResolvedValue(
-		new Map([
-			["acc_1", { requests: 4, inputTokens: 375_000, outputTokens: 10 }],
-		]),
-	);
+	mocks.usage.mockResolvedValue(new Map([["acc_1", OPEN_WINDOW]]));
 	mocks.states.mockResolvedValue([]);
+	mocks.backfill.mockImplementation(async (rows: unknown[]) => rows);
 });
 
 describe("access", () => {
@@ -206,6 +222,25 @@ describe("access", () => {
 	});
 });
 
+const OPEN_WINDOW = {
+	windowStart: new Date("2026-10-08T01:37:00Z"),
+	resetsAt: new Date("2026-10-08T06:37:00Z"),
+	lastRequestAt: new Date("2026-10-08T03:33:00Z"),
+	requests: 4,
+	inputTokens: 1_000_000,
+	cachedInputTokens: 250_000,
+	outputTokens: 10,
+	topConsumers: [
+		{
+			kind: "job",
+			key: "teams-channel-monitor",
+			requests: 3,
+			inputTokens: 920_000,
+			percent: 92,
+		},
+	],
+};
+
 describe("getChatGptPlanPool", () => {
 	it("shows a masked email, the estimate and the cooling time, never a token", async () => {
 		const coolingUntil = new Date(NOW + 30 * 60_000);
@@ -222,12 +257,87 @@ describe("getChatGptPlanPool", () => {
 		const [account] = result.accounts;
 		expect(account.maskedEmail).toBe("sh***@example.com");
 		expect(account.coolingUntil).toEqual(coolingUntil);
-		expect(account.usageEstimate).toMatchObject({ estimatedPercent: 50 });
+		expect(account.usageEstimate).toEqual({
+			windowHours: 5,
+			windowStart: OPEN_WINDOW.windowStart,
+			resetsAt: OPEN_WINDOW.resetsAt,
+			lastRequestAt: OPEN_WINDOW.lastRequestAt,
+			requests: 4,
+			inputTokens: 1_000_000,
+			cachedInputTokens: 250_000,
+			outputTokens: 10,
+			estimatedPercent: 50,
+			// Fizzy #2770 G7: only a Pro plan's budget has no five-hour window.
+			weeklyLimitOnly: false,
+			topConsumers: OPEN_WINDOW.topConsumers,
+		});
 		expect(JSON.stringify(result)).not.toMatch(
 			/encrypted|accessToken|refreshToken|idToken|shared-plan@/,
 		);
 		expect(result.viewer.isOwner).toBe(false);
 		expect(mocks.states).toHaveBeenCalledWith("ORG", ["acc_1"]);
+	});
+
+	it("shows a tier and paid-until date filled from the stored ID token, read within the session's organization", async () => {
+		const until = new Date("2026-11-01T00:00:00Z");
+		mocks.accounts.mockResolvedValue([{ ...ACCOUNT, tier: "UNKNOWN" }]);
+		mocks.backfill.mockImplementation(
+			async (
+				rows: Array<Record<string, unknown>>,
+				refOf: (row: unknown) => unknown,
+			) => {
+				expect(refOf(rows[0])).toEqual({
+					kind: "org",
+					organizationId: "org_a",
+					accountId: "acc_1",
+				});
+				return rows.map((row) => ({
+					...row,
+					tier: "PLUS",
+					subscriptionActiveUntil: until,
+				}));
+			},
+		);
+		const result = (await handler(getChatGptPlanPoolProcedure)({
+			context: context(),
+		})) as { accounts: Array<Record<string, unknown>> };
+		expect(result.accounts[0]).toMatchObject({
+			tier: "PLUS",
+			subscriptionActiveUntil: until,
+		});
+	});
+
+	// Fizzy #2770 I1: only the connector may take it back as their own plan.
+	it("names who connected each account and whether it was the viewer", async () => {
+		mocks.accounts.mockResolvedValue([
+			ACCOUNT,
+			{ ...ACCOUNT, id: "acc_2", connectedByUserId: "user_2" },
+		]);
+		const result = (await handler(getChatGptPlanPoolProcedure)({
+			context: context(),
+		})) as { accounts: Array<Record<string, unknown>> };
+		expect(
+			result.accounts.map((account) => [
+				account.connectedByName,
+				account.viewerIsConnector,
+			]),
+		).toEqual([
+			["Name of user_1", true],
+			["Name of user_2", false],
+		]);
+	});
+
+	it("says whether the viewer has an own plan, which blocks a take-back", async () => {
+		mocks.ownPlan = { status: "ACTIVE" };
+		const withOwn = (await handler(getChatGptPlanPoolProcedure)({
+			context: context(),
+		})) as { viewer: { hasOwnPlan: boolean } };
+		expect(withOwn.viewer.hasOwnPlan).toBe(true);
+		mocks.ownPlan = null;
+		const without = (await handler(getChatGptPlanPoolProcedure)({
+			context: context(),
+		})) as { viewer: { hasOwnPlan: boolean } };
+		expect(without.viewer.hasOwnPlan).toBe(false);
 	});
 
 	it("does not offer the interactive fallback, which nothing changes", async () => {
@@ -253,6 +363,25 @@ describe("getChatGptPlanPool", () => {
 });
 
 describe("accounts", () => {
+	it("lets an admin set a plan type, or clear it back to Not set", () => {
+		const input = (
+			updateChatGptPlanPoolAccountProcedure as unknown as {
+				_input: {
+					safeParse: (value: unknown) => { success: boolean };
+				};
+			}
+		)._input;
+		expect(
+			input.safeParse({ accountId: "acc_1", tier: "PRO" }).success,
+		).toBe(true);
+		expect(
+			input.safeParse({ accountId: "acc_1", tier: "UNKNOWN" }).success,
+		).toBe(true);
+		expect(
+			input.safeParse({ accountId: "acc_1", tier: "ENTERPRISE" }).success,
+		).toBe(false);
+	});
+
 	it("answers NOT_FOUND for an account that is not this organization's", async () => {
 		mocks.updateAccount.mockResolvedValue(null);
 		const error = await rejection(
@@ -287,6 +416,33 @@ describe("accounts", () => {
 				metadata: {
 					before: { serveInteractive: false },
 					after: { serveInteractive: true },
+				},
+			}),
+		);
+	});
+
+	// Fizzy #2770 D6: an admin sets a member's fair share of the account.
+	it("sets the fair share and audits it", async () => {
+		mocks.updateAccount.mockResolvedValue({
+			before: ACCOUNT,
+			after: { ...ACCOUNT, maxMemberSharePct: 30 },
+		});
+		await handler(updateChatGptPlanPoolAccountProcedure)({
+			context: context(),
+			input: { accountId: "acc_1", maxMemberSharePct: 30 },
+		});
+		expect(mocks.updateAccount).toHaveBeenCalledWith({
+			organizationId: "org_a",
+			accountId: "acc_1",
+			patch: { maxMemberSharePct: 30 },
+		});
+		expect(mocks.audit).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				action: "org.chatgpt_plan.account_updated",
+				metadata: {
+					before: { maxMemberSharePct: null },
+					after: { maxMemberSharePct: 30 },
 				},
 			}),
 		);

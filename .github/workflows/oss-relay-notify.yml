@@ -93,6 +93,7 @@ jobs:
       github.repository == 'Fabric-Pro/fabric-dev' &&
       ((github.event_name == 'pull_request_target' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
+        !startsWith(github.event.pull_request.head.ref, 'promotion/') &&
         (github.event.action != 'labeled' ||
          github.event.label.name == 'ready-for-relay') &&
         contains(github.event.pull_request.labels.*.name, 'ready-for-relay')) ||
@@ -100,7 +101,8 @@ jobs:
         github.event.issue.pull_request != null &&
         startsWith(github.event.comment.body, '/relay ')) ||
        (github.event_name == 'workflow_run' &&
-        github.event.workflow_run.event == 'pull_request'))
+        github.event.workflow_run.event == 'pull_request' &&
+        !startsWith(github.event.workflow_run.head_branch, 'promotion/')))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     environment: oss-relay-notifier
@@ -211,6 +213,17 @@ jobs:
           [[ "$STAGING_PR" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::GitHub supplied an invalid PR number"; exit 1; }
           PR=$(GH_TOKEN="$STAGING_TOKEN" gh api "repos/$GITHUB_REPOSITORY/pulls/$STAGING_PR")
+          # Promotion publication belongs to ops finalize, which records
+          # durable relay authorization before its explicit dispatch. Its
+          # preparation label and completed checks must not publish early.
+          # Check live state for every trigger, including issue comments and
+          # stale payloads that still name an ordinary branch.
+          PR_HEAD_BRANCH=$(jq -er '.head.ref | strings | select(length > 0)' <<<"$PR") \
+            || { echo "::error::GitHub supplied an invalid PR head branch"; exit 1; }
+          if [[ "$PR_HEAD_BRANCH" == promotion/* ]]; then
+            echo "Promotion publication is dispatched by ops finalize; no dispatch."
+            exit 0
+          fi
           # The relay itself adds the `relayed` label and closes the PR when
           # it finishes, and that label addition re-fires this notifier. A
           # closed PR can never be relayed (ops re-derives authorization from

@@ -30,7 +30,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		generateChatTitle: vi.fn(),
 		getAggressiveStreamingConfig: vi.fn(),
 		getAIModelWithMetadata: vi.fn(),
-		getRAGProviderConfig: vi.fn(),
+		getEmbeddingRAGProviderConfig: vi.fn(),
 		logModelUsageAsync: vi.fn(),
 		streamText: vi.fn(),
 		toUIMessageStream: vi.fn(),
@@ -58,7 +58,7 @@ vi.mock("@repo/ai", () => ({
 	generateChatTitle: mocks.generateChatTitle,
 	getAggressiveStreamingConfig: mocks.getAggressiveStreamingConfig,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
-	getRAGProviderConfig: mocks.getRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mocks.getEmbeddingRAGProviderConfig,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 	streamText: mocks.streamText,
 	toUIMessageStream: mocks.toUIMessageStream,
@@ -180,7 +180,9 @@ describe("addMessageToChat — non-RAG path is unchanged", () => {
 describe("addMessageToChat — inline RAG retrieval (ready documents)", () => {
 	beforeEach(() => {
 		mocks.hasReadyDocuments.mockResolvedValue(true);
-		mocks.getRAGProviderConfig.mockResolvedValue({ apiKey: "key-1" });
+		mocks.getEmbeddingRAGProviderConfig.mockResolvedValue({
+			apiKey: "key-1",
+		});
 		mocks.retrieveContext.mockResolvedValue([{ id: "chunk-1" }]);
 		mocks.formatContextForLLM.mockReturnValue("RAG_CONTEXT_TEXT");
 	});

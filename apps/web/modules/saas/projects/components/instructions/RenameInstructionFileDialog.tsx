@@ -1,6 +1,10 @@
 "use client";
 
-import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
+import {
+	type CommittedCallback,
+	type RereadCallback,
+	useDirectCommit,
+} from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
 import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
@@ -20,7 +24,7 @@ import { Label } from "@ui/components/label";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
-import { pathRefusal } from "./AddInstructionFileDialog";
+import { pathRefusal, WRAPPING_BUTTON } from "./AddInstructionFileDialog";
 import { CommitMessageField } from "./CommitMessageField";
 
 /**
@@ -48,6 +52,7 @@ export function RenameInstructionFileDialog({
 	canPropose,
 	onChanged,
 	onCommitted,
+	onRenamed,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -60,8 +65,13 @@ export function RenameInstructionFileDialog({
 	repositoryTarget: { repository: string; ref: string };
 	canCommit: boolean;
 	canPropose: boolean;
-	onChanged: () => unknown;
-	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+	onChanged: RereadCallback;
+	onCommitted?: CommittedCallback;
+	/**
+	 * The file now sits at this path. Called as the commit lands, before the
+	 * refreshed list can drop the old path from under the page.
+	 */
+	onRenamed?: (newPath: string) => void;
 } & InstructionChangeBase) {
 	const t = useTranslations("projects.codingInstructions.renameDialog");
 	const tAdd = useTranslations("projects.codingInstructions.addFileDialog");
@@ -134,7 +144,10 @@ export function RenameInstructionFileDialog({
 		projectId,
 		branch: repositoryTarget.ref,
 		onChanged,
-		onCommitted,
+		onCommitted: (committed) => {
+			onRenamed?.(target);
+			return onCommitted?.(committed);
+		},
 		onFinished: (result) => {
 			if (result.kind === "pull-request") {
 				setPullRequestOpened(true);
@@ -154,10 +167,10 @@ export function RenameInstructionFileDialog({
 				}
 			}}
 		>
-			<DialogContent>
+			<DialogContent className="grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>{t("title")}</DialogTitle>
-					<DialogDescription>
+					<DialogDescription className="[overflow-wrap:anywhere]">
 						{t("description", { path, ref: repositoryTarget.ref })}
 					</DialogDescription>
 				</DialogHeader>
@@ -193,7 +206,7 @@ export function RenameInstructionFileDialog({
 					) : null}
 					{commit.status}
 				</div>
-				<DialogFooter>
+				<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 					{pullRequestOpened ? (
 						<Button onClick={close}>{t("done")}</Button>
 					) : (
@@ -207,6 +220,7 @@ export function RenameInstructionFileDialog({
 							</Button>
 							{canPropose ? (
 								<Button
+									className={WRAPPING_BUTTON}
 									variant={canCommit ? "outline" : "default"}
 									disabled={!ready || working}
 									onClick={() => suggest.mutate()}
@@ -216,6 +230,7 @@ export function RenameInstructionFileDialog({
 							) : null}
 							{canCommit ? (
 								<Button
+									className={WRAPPING_BUTTON}
 									disabled={
 										!ready ||
 										working ||

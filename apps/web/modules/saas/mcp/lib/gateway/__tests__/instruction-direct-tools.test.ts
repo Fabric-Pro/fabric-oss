@@ -73,6 +73,7 @@ vi.mock("@repo/database", () => ({
 	hasPermission: (permissions: readonly string[], permission: string) =>
 		permissions.includes(permission),
 	Permissions: { INSTRUCTION_READ: "instruction:read" },
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	listInstructionFiles: m.listInstructionFiles,
@@ -367,6 +368,50 @@ describe("direct repository instruction tools", () => {
 		expect(m.listInstructionFiles).not.toHaveBeenCalled();
 		expect(m.downloadFile).not.toHaveBeenCalled();
 		expect(m.buildInstructionSnapshotZip).not.toHaveBeenCalled();
+	});
+
+	it("pages a large repository listing instead of returning every file", async () => {
+		m.listDirectRepositoryFilesForApi.mockResolvedValue({
+			commitSha: SHA,
+			generation: 7,
+			incomplete: false,
+			refusal: null,
+			files: Array.from({ length: 5253 }, (_, i) => ({
+				path: `docs/f${String(i).padStart(5, "0")}.md`,
+				kind: "KNOWLEDGE",
+				name: `f${String(i).padStart(5, "0")}.md`,
+				description: null,
+				size: 10,
+			})),
+		});
+		const first = await executePlatformTool(
+			"fabric_list_project_instructions",
+			{ projectId: PROJECT },
+			session,
+		);
+		const firstPayload = payload(first) as {
+			files: { path: string }[];
+			page: { total: number; nextCursor: string | null };
+			message: string;
+		};
+		expect(firstPayload.files).toHaveLength(200);
+		expect(firstPayload.page.total).toBe(5253);
+		expect(firstPayload.message).toContain("cursor");
+		expect(JSON.stringify(firstPayload).length).toBeLessThan(40_000);
+
+		const second = payload(
+			await executePlatformTool(
+				"fabric_list_project_instructions",
+				{
+					projectId: PROJECT,
+					cursor: firstPayload.page.nextCursor,
+					limit: 50,
+				},
+				session,
+			),
+		) as { files: { path: string }[] };
+		expect(second.files).toHaveLength(50);
+		expect(second.files[0]?.path).toBe("docs/f00200.md");
 	});
 
 	it("keeps a direct page pinned and refuses an unpinned continuation", async () => {

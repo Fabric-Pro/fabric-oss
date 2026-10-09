@@ -88,6 +88,7 @@ import {
 	YAxis,
 } from "recharts";
 import { AiUsageLimitsCard } from "./AiUsageLimitsCard";
+import { ChatgptPlanUsageBreakdown } from "./ChatgptPlanUsageBreakdown";
 import { PlanCoveredEstimate } from "./PlanCoveredEstimate";
 
 type PeriodKey = "24h" | "7d" | "30d" | "90d";
@@ -781,12 +782,16 @@ export function AiUsageActivityView({
 
 	const totals = activityQuery.data?.totals ?? {
 		requests: 0,
+		failedAttempts: 0,
+		rowCount: 0,
 		inputTokens: 0,
 		outputTokens: 0,
 		totalTokens: 0,
 		costMicroUsd: 0,
 		avgLatencyMs: 0,
 	};
+	// The log lists every row, failed attempts included; the totals do not.
+	const logSize = totals.rowCount ?? totals.requests;
 
 	const nextCursor = activityQuery.data?.nextCursor ?? null;
 	const hasNextPage = Boolean(nextCursor);
@@ -1250,7 +1255,16 @@ export function AiUsageActivityView({
 					<SummaryTile
 						label="Requests"
 						value={totals.requests.toLocaleString()}
-						subtitle={periodLabel}
+						subtitle={
+							// Filtered to errors, the failed attempts are the count.
+							status !== "error" && totals.failedAttempts > 0
+								? `${periodLabel} · ${totals.failedAttempts.toLocaleString()} failed ${
+										totals.failedAttempts === 1
+											? "attempt"
+											: "attempts"
+									} not counted`
+								: periodLabel
+						}
 						onClick={() => setChartMetric("requests")}
 						active={chartMetric === "requests"}
 						loading={isLoading}
@@ -1292,6 +1306,10 @@ export function AiUsageActivityView({
 					/>
 				) : null}
 
+				{organizationId ? (
+					<ChatgptPlanUsageBreakdown range={dateScope} />
+				) : null}
+
 				<UsageTrendChart
 					queryInput={chartFilterInput}
 					filterFrom={filterRange.from}
@@ -1310,13 +1328,13 @@ export function AiUsageActivityView({
 							</CardTitle>
 							<div className="flex items-center gap-3">
 								<span className="text-xs tabular-nums text-muted-foreground">
-									{totals.requests > 0
+									{logSize > 0
 										? `${(
 												(pageIndex - 1) * pageSize + 1
 											).toLocaleString()}–${(
 												(pageIndex - 1) * pageSize +
 													rows.length
-											).toLocaleString()} of ${totals.requests.toLocaleString()}`
+											).toLocaleString()} of ${logSize.toLocaleString()}`
 										: "—"}
 								</span>
 								<Button
@@ -1623,7 +1641,7 @@ export function AiUsageActivityView({
 											<span className="font-medium text-foreground">
 												{pageIndex}
 											</span>
-											{totals.requests > 0 ? (
+											{logSize > 0 ? (
 												<>
 													{" "}
 													of{" "}
@@ -1631,7 +1649,7 @@ export function AiUsageActivityView({
 														{Math.max(
 															1,
 															Math.ceil(
-																totals.requests /
+																logSize /
 																	pageSize,
 															),
 														).toLocaleString()}

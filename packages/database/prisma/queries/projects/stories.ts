@@ -55,6 +55,22 @@ export class StoryVersionConflictError extends Error {
 	}
 }
 
+/**
+ * `moveStory` was given a story, or a status column, that does not exist in
+ * the project. One error for both, with a message safe to show a caller: it
+ * never says whether the id exists somewhere else.
+ */
+export class StoryMoveTargetNotFoundError extends Error {
+	constructor(what: "story" | "status") {
+		super(
+			what === "story"
+				? "Story not found"
+				: "Status not found in this project",
+		);
+		this.name = "StoryMoveTargetNotFoundError";
+	}
+}
+
 // ============================================================================
 // Story Status Queries (Kanban Columns)
 // ============================================================================
@@ -1777,7 +1793,17 @@ export async function moveStory(
 			select: { statusId: true, lastEditedAt: true },
 		});
 		if (!currentStory) {
-			throw new Error("Story not found");
+			throw new StoryMoveTargetNotFoundError("story");
+		}
+
+		// A column belongs to one project. Without this, an id from another
+		// project's board was written onto the story and its status returned.
+		const targetStatus = await tx.projectStoryStatus.findFirst({
+			where: { id: newStatusId, projectId },
+			select: { id: true },
+		});
+		if (!targetStatus) {
+			throw new StoryMoveTargetNotFoundError("status");
 		}
 
 		let order = newOrder;

@@ -34,7 +34,7 @@ import {
 } from "../repository-sync/repository";
 import { commitShaSchema } from "./commit-sha";
 import { directBranchMembershipCache, directFileCache } from "./direct-cache";
-import { settle, unsettle } from "./settle";
+import { inOrder } from "./settle";
 
 type RefreshFault = Awaited<
 	ReturnType<typeof resolveInstructionSyncCredential>
@@ -204,17 +204,13 @@ export async function loadDirectRepositorySource(input: {
 		await loadDirectRepositoryConfiguration(input);
 	// The caller's live permission is read while the credential resolves, and
 	// wins over a credential failure, so a revoked caller learns nothing of it.
-	const [credential, allowed] = await Promise.all([
-		settle(
-			resolveInstructionSyncCredential(integration, {
-				userId: input.userId,
-				organizationId: configuration.organizationId,
-			}),
-		),
-		settle(assertDirectRepositoryReadAllowed(input)),
-	]);
-	unsettle(allowed);
-	const { token, refreshFault } = unsettle(credential);
+	const [, { token, refreshFault }] = await inOrder(
+		assertDirectRepositoryReadAllowed(input),
+		resolveInstructionSyncCredential(integration, {
+			userId: input.userId,
+			organizationId: configuration.organizationId,
+		}),
+	);
 	input.signal?.throwIfAborted();
 	return {
 		...configuration,
@@ -264,7 +260,10 @@ export async function assertDirectRepositoryPin(
 	if (pin.generation !== source.generation) {
 		throw configurationChanged();
 	}
-	if (directBranchMembershipCache.has(source, pin.commitSha)) {
+	if (
+		directBranchMembershipCache.get(source, [source.ref, pin.commitSha]) ===
+		true
+	) {
 		return;
 	}
 	const result = await isCommitOnBranch({
@@ -281,7 +280,7 @@ export async function assertDirectRepositoryPin(
 	if (!result.onBranch) {
 		throw commitNotFound();
 	}
-	directBranchMembershipCache.remember(source, pin.commitSha);
+	directBranchMembershipCache.set(source, [source.ref, pin.commitSha], true);
 }
 
 function sameOptionalStrings(
@@ -327,17 +326,11 @@ export async function assertDirectRepositorySourceCurrent(input: {
 	userId: string;
 	source: DirectRepositorySource;
 }): Promise<void> {
-	const [allowed, current] = await Promise.all([
-		settle(assertDirectRepositoryReadAllowed(input)),
-		settle(loadDirectRepositoryConfiguration(input)),
-	]);
-	unsettle(allowed);
-	if (
-		!sameRepositoryConfiguration(
-			input.source,
-			unsettle(current).configuration,
-		)
-	) {
+	const [, current] = await inOrder(
+		assertDirectRepositoryReadAllowed(input),
+		loadDirectRepositoryConfiguration(input),
+	);
+	if (!sameRepositoryConfiguration(input.source, current.configuration)) {
 		throw configurationChanged();
 	}
 }
@@ -349,7 +342,7 @@ export async function readDirectRepositoryFileAtCommit(
 	path: string,
 	maxBytes: number,
 ): ReturnType<typeof readRepositoryFileAtCommit> {
-	const cached = directFileCache.get(source, pin.commitSha, path, maxBytes);
+	const cached = directFileCache.get(source, [pin.commitSha, maxBytes, path]);
 	if (cached !== undefined) {
 		return cached;
 	}
@@ -360,7 +353,7 @@ export async function readDirectRepositoryFileAtCommit(
 		maxBytes,
 	});
 	if (read.ok) {
-		directFileCache.set(source, pin.commitSha, path, maxBytes, read);
+		directFileCache.set(source, [pin.commitSha, maxBytes, path], read);
 	}
 	return read;
 }

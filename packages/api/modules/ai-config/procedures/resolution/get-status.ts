@@ -6,8 +6,13 @@ import {
 	getModelForTask,
 	getProviderDisplayName,
 	isGatewayProvider,
+	LLM_PROVIDER_PURPOSE_FILTER,
 	readProviderRowCredentials,
 } from "@repo/database";
+import {
+	type AiProviderPurpose,
+	AiProviderPurposeSchema,
+} from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
 	Permissions,
@@ -43,6 +48,7 @@ interface ConfiguredProvider {
 	displayName: string | null;
 	isDefault: boolean;
 	isEmbeddingProvider: boolean;
+	purpose: AiProviderPurpose;
 	source: "user_config" | "org_config";
 }
 
@@ -71,6 +77,22 @@ function rowCarriesCredentials(row: {
 	config: unknown;
 }): boolean {
 	return readProviderRowCredentials(row).hasCredentials;
+}
+
+/** The row the resolver would pick: the default, never an embeddings-only key. */
+function isResolvableDefault(row: {
+	isDefault: boolean;
+	purpose: AiProviderPurpose;
+	encryptedApiKey: string | null;
+	clientId: string | null;
+	encryptedClientSecret: string | null;
+	config: unknown;
+}): boolean {
+	return (
+		row.isDefault &&
+		row.purpose !== "EMBEDDINGS_ONLY" &&
+		rowCarriesCredentials(row)
+	);
 }
 
 /**
@@ -260,6 +282,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 					displayName: z.string().nullable(),
 					isDefault: z.boolean(),
 					isEmbeddingProvider: z.boolean(),
+					purpose: AiProviderPurposeSchema,
 					source: z.string(),
 				}),
 			),
@@ -305,6 +328,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 						displayName: p.displayName,
 						isDefault: p.isDefault,
 						isEmbeddingProvider: p.isEmbeddingProvider,
+						purpose: p.purpose,
 						source: "org_config",
 					});
 					if (p.isDefault && !defaultProvider) {
@@ -324,9 +348,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			// some other row has one — it would report resolvable while every
 			// real call refuses, which is the exact divergence this field
 			// exists to remove.
-			canResolveProvider = orgProviders.some(
-				(row) => row.isDefault && rowCarriesCredentials(row),
-			);
+			canResolveProvider = orgProviders.some(isResolvableDefault);
 		} else {
 			// Personal context: ONLY query user_cloud_provider_config
 			const userProviders = await db.userCloudProviderConfig.findMany({
@@ -342,6 +364,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 						displayName: p.displayName,
 						isDefault: p.isDefault,
 						isEmbeddingProvider: p.isEmbeddingProvider,
+						purpose: p.purpose,
 						source: "user_config",
 					});
 					if (p.isDefault && !defaultProvider) {
@@ -354,9 +377,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			}
 
 			// Same rule as the organization arm above, and for the same reason.
-			canResolveProvider = userProviders.some(
-				(row) => row.isDefault && rowCarriesCredentials(row),
-			);
+			canResolveProvider = userProviders.some(isResolvableDefault);
 		}
 
 		// The resolver's last rung, mirrored: inside an organization that
@@ -368,7 +389,12 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 		// what the organization is told about its tenants.
 		if (organizationId && !canResolveProvider) {
 			const ownProviders = await db.userCloudProviderConfig.findMany({
-				where: { userId: user.id, isDefault: true, enabled: true },
+				where: {
+					userId: user.id,
+					isDefault: true,
+					enabled: true,
+					...LLM_PROVIDER_PURPOSE_FILTER,
+				},
 				select: CREDENTIAL_COLUMNS,
 			});
 			canResolveProvider = ownProviders.some(rowCarriesCredentials);
@@ -409,10 +435,13 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			);
 		}
 
-		// If still no default, use first configured
-		if (!defaultProvider && configuredProviders.length > 0) {
-			defaultProvider = configuredProviders[0].provider;
-			configuredProviders[0].isDefault = true;
+		// If still no default, use first configured that may serve LLM work
+		const fallbackDefault = configuredProviders.find(
+			(p) => p.purpose !== "EMBEDDINGS_ONLY",
+		);
+		if (!defaultProvider && fallbackDefault) {
+			defaultProvider = fallbackDefault.provider;
+			fallbackDefault.isDefault = true;
 		}
 
 		const isConfigured = hasUserConfig || hasOrgConfig;

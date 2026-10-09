@@ -23,13 +23,20 @@
  *
  * Regular renders leave out visual slots (R38): a slot is a Glossy layout
  * marker, not document content.
+ *
+ * A GFM table renders as a table in both formats, header row first, the way
+ * the Glossy renderer draws one; before, each row came out as a line of raw
+ * pipes.
  */
 
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
 import {
+	isThematicBreak,
 	normalizeOrderedMarkerEscape,
+	readMarkdownTable,
 	stripInlineMarkdown,
 	svgToPng,
+	toWinAnsiText,
 	tryAddPdfImage,
 	tryLoadImageBytes,
 } from "./document-export-helpers";
@@ -252,7 +259,18 @@ export async function renderMermaidToPng(
 	return null;
 }
 
-/** Generate a PDF Blob from markdown using jsPDF native text rendering. */
+/** A table cell's text: its escaped pipes shown as pipes. */
+function tableCellMarkdown(cell: string | undefined): string {
+	return (cell ?? "").replace(/\\\|/g, "|");
+}
+
+/**
+ * Generate a PDF Blob from markdown using jsPDF native text rendering.
+ *
+ * Every string drawn goes through `toWinAnsiText` first: the built-in fonts
+ * draw only Windows-1252, and anything else (`≥`, `→`) came out as wrong,
+ * letter-spaced glyphs that ran past the margin or out of a table cell.
+ */
 export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 	const { default: jsPDF } = await import("jspdf");
 
@@ -274,29 +292,119 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 		}
 	};
 
+	// A heading moves to the next page unless the start of its section fits
+	// under it: a few lines of text, or a table's header and a first row of
+	// up to three lines.
+	const keepWithNext = 96;
+
+	// A grid with a shaded, bold header row. A row moves to the next page
+	// whole when it does not fit; the header never stands alone at a page's
+	// foot, moving with the first row, and is repeated on every page the
+	// table continues onto.
+	const drawTable = (table: { rows: string[][]; columns: number }) => {
+		const cellWidth = contentWidth / table.columns;
+		const padding = 5;
+		const lineHeight = 12;
+		const setRowFont = (header: boolean) => {
+			doc.setFont("helvetica", header ? "bold" : "normal");
+			doc.setFontSize(9.5);
+		};
+		const layOut = (row: string[], header: boolean) => {
+			setRowFont(header);
+			const cells: string[][] = Array.from(
+				{ length: table.columns },
+				(_, c) =>
+					doc.splitTextToSize(
+						toWinAnsiText(
+							stripInlineMarkdown(tableCellMarkdown(row[c])),
+						),
+						cellWidth - padding * 2,
+					),
+			);
+			const height =
+				Math.max(1, ...cells.map((cell) => cell.length)) * lineHeight +
+				padding * 2;
+			return { cells, height, header };
+		};
+		const draw = (row: ReturnType<typeof layOut>) => {
+			setRowFont(row.header);
+			doc.setDrawColor(200, 200, 200);
+			doc.setLineWidth(0.5);
+			if (row.header) {
+				doc.setFillColor(245, 245, 245);
+				doc.rect(margin, y, contentWidth, row.height, "F");
+			}
+			row.cells.forEach((cell, c) => {
+				const x = margin + c * cellWidth;
+				if (cell.join("").trim()) {
+					doc.text(cell, x + padding, y + padding + 9, {
+						lineHeightFactor: lineHeight / 9.5,
+					});
+				}
+				doc.rect(x, y, cellWidth, row.height, "S");
+			});
+			y += row.height;
+		};
+
+		const [headerRow = [], ...bodyRows] = table.rows;
+		const header = layOut(headerRow, true);
+		const body = bodyRows.map((row) => layOut(row, false));
+		y += 4;
+		checkPageBreak(header.height + (body[0]?.height ?? 0));
+		draw(header);
+		for (const row of body) {
+			if (y + row.height > pageHeight - margin) {
+				doc.addPage();
+				y = margin;
+				draw(header);
+			}
+			draw(row);
+		}
+		y += 10;
+	};
+
 	// Visual slots are Glossy layout, not content (R38).
 	const lines = stripVisualSlots(content).split("\n");
 	let i = 0;
 	while (i < lines.length) {
 		const line = lines[i];
 
+		const table = readMarkdownTable(lines, i);
+		if (table) {
+			drawTable(table);
+			i = table.next;
+			continue;
+		}
+
 		if (/^### /.test(line)) {
-			checkPageBreak(22);
+			checkPageBreak(22 + keepWithNext);
 			doc.setFontSize(13);
 			doc.setFont("helvetica", "bold");
-			doc.text(stripInlineMarkdown(line.slice(4)), margin, y);
+			doc.text(
+				toWinAnsiText(stripInlineMarkdown(line.slice(4))),
+				margin,
+				y,
+			);
 			y += 20;
 		} else if (/^## /.test(line)) {
-			checkPageBreak(26);
+			checkPageBreak(26 + keepWithNext);
 			doc.setFontSize(16);
 			doc.setFont("helvetica", "bold");
-			doc.text(stripInlineMarkdown(line.slice(3)), margin, y);
+			doc.text(
+				toWinAnsiText(stripInlineMarkdown(line.slice(3))),
+				margin,
+				y,
+			);
 			y += 24;
 		} else if (/^# /.test(line)) {
-			checkPageBreak(30);
+			checkPageBreak(30 + keepWithNext);
 			doc.setFontSize(20);
 			doc.setFont("helvetica", "bold");
-			doc.text(stripInlineMarkdown(line.slice(2)), margin, y);
+			doc.text(
+				toWinAnsiText(stripInlineMarkdown(line.slice(2))),
+				margin,
+				y,
+			);
 			y += 28;
 		} else if (line.startsWith("```mermaid")) {
 			// Mermaid diagram block: render to PNG and embed
@@ -338,7 +446,7 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 				doc.setFont("helvetica", "italic");
 				doc.setTextColor(100, 100, 100);
 				doc.text(
-					`[Diagram: ${diagramTitle}]`,
+					toWinAnsiText(`[Diagram: ${diagramTitle}]`),
 					margin + contentWidth / 2,
 					y + boxH / 2 + 4,
 					{ align: "center" },
@@ -352,7 +460,7 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 			doc.setFont("courier", "normal");
 			while (i < lines.length && !lines[i].startsWith("```")) {
 				const codeLines = doc.splitTextToSize(
-					lines[i],
+					toWinAnsiText(lines[i]),
 					contentWidth - 16,
 				);
 				checkPageBreak(codeLines.length * 13);
@@ -389,7 +497,11 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 				doc.setFontSize(10);
 				doc.setFont("helvetica", "italic");
 				doc.setTextColor(100, 100, 100);
-				doc.text(alt ? `[Image: ${alt}]` : "[Image]", margin, y);
+				doc.text(
+					toWinAnsiText(alt ? `[Image: ${alt}]` : "[Image]"),
+					margin,
+					y,
+				);
 				doc.setTextColor(0, 0, 0);
 				y += 18;
 			}
@@ -399,7 +511,7 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 				doc.setFont("helvetica", "italic");
 				doc.setTextColor(120, 120, 120);
 				const captionWrapped = doc.splitTextToSize(
-					caption,
+					toWinAnsiText(caption),
 					contentWidth,
 				);
 				checkPageBreak(captionWrapped.length * 12);
@@ -409,10 +521,14 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 				doc.setTextColor(0, 0, 0);
 				y += captionWrapped.length * 12 + 4;
 			}
+		} else if (line.trim() === "" || isThematicBreak(line)) {
+			y += 8;
 		} else if (/^[-*+] /.test(line)) {
 			doc.setFontSize(11);
 			doc.setFont("helvetica", "normal");
-			const text = `\u2022 ${stripInlineMarkdown(line.slice(2))}`;
+			const text = toWinAnsiText(
+				`\u2022 ${stripInlineMarkdown(line.slice(2))}`,
+			);
 			const wrapped = doc.splitTextToSize(text, contentWidth - 12);
 			checkPageBreak(wrapped.length * 15);
 			doc.text(wrapped, margin + 8, y);
@@ -420,18 +536,16 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 		} else if (ORDERED_ITEM_LINE_RE.test(line)) {
 			doc.setFontSize(11);
 			doc.setFont("helvetica", "normal");
-			const text = stripInlineMarkdown(line);
+			const text = toWinAnsiText(stripInlineMarkdown(line));
 			const wrapped = doc.splitTextToSize(text, contentWidth - 12);
 			checkPageBreak(wrapped.length * 15);
 			doc.text(wrapped, margin + 8, y);
 			y += wrapped.length * 15;
-		} else if (line.trim() === "" || line.trim() === "---") {
-			y += 8;
 		} else {
 			doc.setFontSize(11);
 			doc.setFont("helvetica", "normal");
 			const wrapped = doc.splitTextToSize(
-				stripInlineMarkdown(line),
+				toWinAnsiText(stripInlineMarkdown(line)),
 				contentWidth,
 			);
 			checkPageBreak(wrapped.length * 15);
@@ -458,9 +572,17 @@ export async function renderMarkdownToDocx(
 		HeadingLevel,
 		AlignmentType,
 		ImageRun,
+		Table,
+		TableRow,
+		TableCell,
+		WidthType,
+		ShadingType,
 	} = await import("docx");
 
-	const children: InstanceType<typeof Paragraph>[] = [];
+	const children: (
+		| InstanceType<typeof Paragraph>
+		| InstanceType<typeof Table>
+	)[] = [];
 
 	// Visual slots are Glossy layout, not content (R38).
 	const lines = stripVisualSlots(content).split("\n");
@@ -509,8 +631,67 @@ export async function renderMarkdownToDocx(
 		return runs;
 	};
 
+	// The A4 text width docx lays a section out on (1" margins), in twips.
+	const textWidth = 9026;
+
 	while (i < lines.length) {
 		const line = lines[i];
+
+		const table = readMarkdownTable(lines, i);
+		if (table) {
+			const columnWidth = Math.floor(textWidth / table.columns);
+			children.push(
+				new Table({
+					width: { size: textWidth, type: WidthType.DXA },
+					columnWidths: Array.from(
+						{ length: table.columns },
+						() => columnWidth,
+					),
+					rows: table.rows.map(
+						(row, rowIndex) =>
+							new TableRow({
+								tableHeader: rowIndex === 0,
+								children: Array.from(
+									{ length: table.columns },
+									(_, c) => {
+										const cell = tableCellMarkdown(row[c]);
+										return new TableCell({
+											shading:
+												rowIndex === 0
+													? {
+															type: ShadingType.CLEAR,
+															color: "auto",
+															fill: "F5F5F5",
+														}
+													: undefined,
+											children: [
+												new Paragraph({
+													children:
+														rowIndex === 0
+															? [
+																	new TextRun(
+																		{
+																			text: stripInlineMarkdown(
+																				cell,
+																			),
+																			bold: true,
+																		},
+																	),
+																]
+															: parseInline(cell),
+												}),
+											],
+										});
+									},
+								),
+							}),
+					),
+				}),
+			);
+			children.push(new Paragraph({}));
+			i = table.next;
+			continue;
+		}
 
 		if (/^### /.test(line)) {
 			children.push(
@@ -533,6 +714,8 @@ export async function renderMarkdownToDocx(
 					heading: HeadingLevel.HEADING_1,
 				}),
 			);
+		} else if (line.trim() === "" || isThematicBreak(line)) {
+			children.push(new Paragraph({}));
 		} else if (/^[-*+] /.test(line)) {
 			children.push(
 				new Paragraph({
@@ -692,8 +875,6 @@ export async function renderMarkdownToDocx(
 					}),
 				);
 			}
-		} else if (line.trim() === "" || line.trim() === "---") {
-			children.push(new Paragraph({}));
 		} else {
 			children.push(new Paragraph({ children: parseInline(line) }));
 		}

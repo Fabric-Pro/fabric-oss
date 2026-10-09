@@ -23,6 +23,7 @@ import {
 import { logger } from "@repo/logs";
 import { CancelledFailure, Context } from "@temporalio/activity";
 import type { ProposalActivityDeadline } from "../../lib/instruction-proposal-pull-request-types";
+import { PROPOSAL_DEADLINE_MARGIN_MS } from "../../lib/proposal-deadline-margin";
 import {
 	currentActivityAttemptDeadline,
 	withHeartbeatTicker,
@@ -95,14 +96,6 @@ export class ProposalDeadlineExceeded extends Error {
 		this.name = "ProposalDeadlineExceeded";
 	}
 }
-
-/**
- * How long before its earliest timeout an attempt stops: the time the last
- * call's abort, the git process group's kill and the failure report take,
- * plus the gap between Temporal starting the attempt and the function
- * running. As the repository poll's check does (#2540 Decision 50).
- */
-const PROPOSAL_DEADLINE_MARGIN_MS = 10_000;
 
 /**
  * The absolute time (worker clock, epoch ms) this attempt must stop issuing

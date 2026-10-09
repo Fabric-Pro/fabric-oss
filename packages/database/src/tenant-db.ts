@@ -285,6 +285,13 @@ const ORG_ONLY_TABLES = new Set([
 	// NOT project-scoped: a project guest never reaches these rows.
 	"CompanyContextSource",
 	"CompanyContextUrlPage",
+	// Proposal artifact (Fizzy #2801): internal analysis runs, their findings
+	// and the document style. Organization-owned with no userId, and NOT
+	// project-scoped: a project guest never reaches internal review material,
+	// even on a project they were invited to.
+	"ProjectDocumentAnalysis",
+	"ProjectDocumentFinding",
+	"ProjectDocumentStyle",
 	// ChatGPT plan pooling (Fizzy #2770): the organization's shared plan
 	// accounts and its pooling policy. `connectedByUserId` and
 	// `termsAcknowledgedById` are audit fields, not owners.

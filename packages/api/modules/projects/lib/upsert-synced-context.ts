@@ -64,6 +64,10 @@ import {
 	type SyncedContextRow,
 	upsertContextBySourcePath,
 } from "@repo/database";
+import {
+	createContextDefaultRules,
+	isInContextSyncFabricDirectory,
+} from "@repo/instructions/context-sync-rules";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { startContextEmbeddingWorkflow } from "@repo/temporal/context-embedding-start";
@@ -180,6 +184,18 @@ function basename(path: string): string {
 	return path.slice(path.lastIndexOf("/") + 1);
 }
 
+/**
+ * The files repository sync and `fabric context push` already leave out:
+ * every coding-instruction file or folder, tool state, and the CLI's own
+ * `.fabric` folder, judged by the one canonical rule set.
+ */
+function isInstructionOrToolStatePath(sourcePath: string): boolean {
+	return (
+		isInContextSyncFabricDirectory(sourcePath) ||
+		createContextDefaultRules().ruleFor(sourcePath, "file") !== null
+	);
+}
+
 function validate(input: UpsertSyncedContextInput): {
 	sourcePath: string;
 	title: string;
@@ -195,6 +211,12 @@ function validate(input: UpsertSyncedContextInput): {
 			throw badRequest(error.message);
 		}
 		throw error;
+	}
+
+	if (isInstructionOrToolStatePath(sourcePath)) {
+		throw badRequest(
+			`${sourcePath} is a coding-instruction or tool-state file, which Living Memory does not store. Use fabric_propose_project_instruction_change (or the project's Coding Instructions) for instruction files.`,
+		);
 	}
 
 	// The same rules as the path itself, compared once both are normalized:

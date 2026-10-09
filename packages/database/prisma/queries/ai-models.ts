@@ -359,7 +359,14 @@ export async function upsertTaskModelDefault(data: {
 // ============================================================================
 
 /**
- * Get all of user's model overrides for a specific provider
+ * The API model preferences, without the ChatGPT plan's per-task choices that
+ * share their table (`chatgpt-plan-models.ts` owns those). Without a provider
+ * argument the readers below return API rows only.
+ */
+const NOT_A_CHATGPT_PLAN = { not: "OPENAI_CHATGPT_PLAN" } as const;
+
+/**
+ * Get all of user's model overrides, for one provider or every API provider
  */
 export async function getUserModelPreferences(
 	userId: string,
@@ -368,7 +375,7 @@ export async function getUserModelPreferences(
 	return await db.userModelPreference.findMany({
 		where: {
 			userId,
-			...(provider && { provider }),
+			provider: provider ?? NOT_A_CHATGPT_PLAN,
 		},
 		include: {
 			model: {
@@ -478,6 +485,7 @@ export async function deleteUserModelPreferencesByTaskType(
 		where: {
 			userId,
 			taskType,
+			provider: NOT_A_CHATGPT_PLAN,
 		},
 	});
 }
@@ -496,7 +504,7 @@ export async function getOrgModelPreferences(
 	return await db.organizationModelPreference.findMany({
 		where: {
 			organizationId,
-			...(provider && { provider }),
+			provider: provider ?? NOT_A_CHATGPT_PLAN,
 		},
 		include: {
 			model: {
@@ -599,8 +607,10 @@ export async function deleteOrgModelPreference(
 }
 
 /**
- * Delete ALL organization's model overrides for a task type (any provider).
- * Used when setting a new preference to avoid duplicates across providers.
+ * Delete ALL organization's model overrides for a task type (any API
+ * provider). Used when setting a new preference to avoid duplicates across
+ * providers. The ChatGPT plan's choice for the task is a separate setting and
+ * survives.
  */
 export async function deleteOrgModelPreferencesByTaskType(
 	organizationId: string,
@@ -610,6 +620,7 @@ export async function deleteOrgModelPreferencesByTaskType(
 		where: {
 			organizationId,
 			taskType,
+			provider: NOT_A_CHATGPT_PLAN,
 		},
 	});
 }
@@ -747,6 +758,11 @@ async function resolveDeprecatedModel(
  * If a selected model is deprecated and has a replacement configured,
  * the replacement model will be returned instead. A warning is logged
  * for observability.
+ * DECISION EXCEPTION:
+ * An organization's explicit DECISION choice is never substituted. If it
+ * cannot be honoured (no available mapping for the provider, or deprecation
+ * would replace it), the result is null instead of a replacement or the
+ * system default.
  * @param userId - The user ID
  * @param provider - The current default provider
  * @param taskType - The task type
@@ -791,6 +807,32 @@ export async function getModelForTask(
 			const providerMapping = model.providerMappings?.find(
 				(m) => m.provider === provider,
 			);
+			// DECISION is held to the organization's explicit choice. Typed
+			// decisions send the organization's data to the decision model's
+			// vendor, so a choice that cannot be honoured as made (its gateway
+			// mapping is gone or inactive, or deprecation swapped in another
+			// model) resolves to NO decision model. The decision resolver then
+			// refuses, and each decision site takes its language-model path.
+			// Falling through to the system default here would silently move
+			// the organization to a different decision model and vendor.
+			// Language-model tasks keep the soft degrade below.
+			if (
+				taskType === "DECISION" &&
+				(model.id !== orgOverride.model.id ||
+					!providerMapping?.providerModelId)
+			) {
+				console.warn(
+					"[getModelForTask] organization's chosen decision model is unavailable — not substituting another",
+					{
+						organizationId,
+						taskType,
+						provider,
+						chosenCanonicalName: orgOverride.model.canonicalName,
+						resolvedCanonicalName: model.canonicalName,
+					},
+				);
+				return null;
+			}
 			// Defense-in-depth (PR 1090 review I-1).
 			// When the org preference points at a (modelId, provider) pair
 			// the catalog no longer carries — e.g., after Fallback A removed

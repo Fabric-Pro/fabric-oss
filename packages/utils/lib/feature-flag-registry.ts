@@ -304,6 +304,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2770. Works only together with CHATGPT_PLAN, and only for an organization: enable it per organization, never through the instance-wide switch. On, the organization's AI Providers settings show the shared accounts and the pooling policy; nothing routes to a shared account until an organization owner has acknowledged the terms and turned pooling on there. Off, nothing routes to a shared account and every pool procedure answers NOT_FOUND, while connected accounts and the policy are kept, so turning it back on restores them exactly. Resolve it in API code and activities, never in workflow code.",
 	},
+	PROPOSAL_ARTIFACT: {
+		label: "Proposal artifact",
+		description:
+			"Generates a Proposal as one client-ready Main Document that appears section by section with its visuals, followed by a separate Internal Analysis that only organization members can read, on a document page with Main Document, Internal Analysis and Style tabs.",
+		envVar: "FABRIC_FEATURE_PROPOSAL_ARTIFACT",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2801. The rollout gate for the Proposal artifact, read for the project's OWNING organization, never the session's. Off, Proposals keep today's Draft and Glossy flow, the document page is unchanged, and every Internal Analysis and Style procedure answers NOT_FOUND; documents, analyses and styles already written are kept, so turning it back on restores them. The recipient brand procedures accept this gate or GLOSSY_EDITION; every other Glossy and Brand kit procedure still needs GLOSSY_EDITION. The worker reads the gate once at the start of each generation, so a run already under way keeps the flow it started with. Enable it per organization only, after BOTH the web deployment and the Temporal worker rollout have completed and the client-only Main prompt action is bound: an organization gated on with nothing bound has its Proposal generation refused. Business Case and every other document type are unaffected. Resolve it in API code and activities, never in workflow code.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

@@ -6,7 +6,7 @@
  * accessible name and the markers' wording can be asserted against actual
  * shipped copy rather than a key.
  */
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -703,22 +703,189 @@ describe("InstructionsTree: files the version left out", () => {
 	});
 });
 
-describe("InstructionsTree no-match signal", () => {
-	it("tells the page when a search leaves nothing, and when it clears", async () => {
-		const onNoMatchesChange = vi.fn();
+describe("InstructionsTree on a large repository", () => {
+	const many = Array.from({ length: 5000 }, (_, i) => ({
+		path: `docs/section-${i % 10}/page-${String(i).padStart(4, "0")}.md`,
+		kind: "KNOWLEDGE",
+		name: `page-${String(i).padStart(4, "0")}.md`,
+		description: null,
+	}));
+
+	it("mounts only the rows around the viewport when a search opens every folder", async () => {
 		render(
 			<InstructionsTree
-				files={[...files]}
+				files={many}
 				selectedPath={null}
 				onSelect={() => undefined}
-				onNoMatchesChange={onNoMatchesChange}
 			/>,
 		);
-		expect(onNoMatchesChange).toHaveBeenLastCalledWith(false);
-		const search = screen.getByRole("searchbox", { name: "Search files" });
-		await userEvent.type(search, "zzz-no-match");
-		expect(onNoMatchesChange).toHaveBeenLastCalledWith(true);
-		await userEvent.clear(search);
-		expect(onNoMatchesChange).toHaveBeenLastCalledWith(false);
+		await userEvent.type(
+			screen.getByRole("searchbox", { name: "Search files" }),
+			"page",
+		);
+		const mounted = screen.getAllByRole("button", {
+			name: /page-|section-/,
+		});
+		expect(mounted.length).toBeGreaterThan(0);
+		expect(mounted.length).toBeLessThan(100);
+	});
+
+	it("still opens a file from the visible window", async () => {
+		const onSelect = vi.fn();
+		render(
+			<InstructionsTree
+				files={many}
+				selectedPath={null}
+				onSelect={onSelect}
+			/>,
+		);
+		await userEvent.type(
+			screen.getByRole("searchbox", { name: "Search files" }),
+			"page-0000",
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: /page-0000\.md/ }),
+		);
+		expect(onSelect).toHaveBeenCalledWith("docs/section-0/page-0000.md");
+	});
+
+	function scrollTo(container: HTMLElement, top: number) {
+		const scroller = container.querySelector<HTMLElement>(".overflow-auto");
+		if (!scroller) {
+			throw new Error("no scroller");
+		}
+		scroller.scrollTop = top;
+		fireEvent.scroll(scroller);
+	}
+	const flat = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({
+			path: `item-${String(i).padStart(4, "0")}.md`,
+			kind: "KNOWLEDGE",
+			name: `item-${String(i).padStart(4, "0")}.md`,
+			description: null,
+		}));
+
+	it("shows the rows at the scroll position, and keeps the selected row mounted when it is far off screen", () => {
+		const { container } = render(
+			<InstructionsTree
+				files={flat(1000)}
+				selectedPath="item-0003.md"
+				onSelect={() => undefined}
+			/>,
+		);
+		scrollTo(container, 12_000);
+		expect(
+			screen.getByRole("button", { name: /item-0500\.md/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /item-0003\.md/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /item-0200\.md/ }),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders at the scroll position when a folder opens and pushes a scrolled tree over the window threshold", async () => {
+		const files = [
+			...flat(150),
+			...Array.from({ length: 100 }, (_, i) => ({
+				path: `folder/inner-${String(i).padStart(3, "0")}.md`,
+				kind: "KNOWLEDGE",
+				name: `inner-${String(i).padStart(3, "0")}.md`,
+				description: null,
+			})),
+		];
+		const { container } = render(
+			<InstructionsTree
+				files={files}
+				selectedPath={null}
+				onSelect={() => undefined}
+			/>,
+		);
+		scrollTo(container, 3_000);
+		await userEvent.click(screen.getByRole("button", { name: /folder/ }));
+		expect(
+			screen.getByRole("button", { name: /item-0020\.md/ }),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the rows in tree order when the selected row is pinned below the window", () => {
+		const items = Array.from({ length: 1000 }, (_, i) => ({
+			path: `item-${String(i).padStart(4, "0")}.md`,
+			kind: "KNOWLEDGE",
+			name: `item-${String(i).padStart(4, "0")}.md`,
+			description: null,
+		}));
+		const { container } = render(
+			<InstructionsTree
+				files={items}
+				selectedPath="item-0900.md"
+				onSelect={() => undefined}
+			/>,
+		);
+		const names = screen
+			.getAllByRole("button", { name: /item-/ })
+			.map((button) => button.textContent ?? "");
+		expect(names).toEqual([...names].sort());
+		expect(names).toContain("item-0900.md");
+		expect(container.querySelector(".overflow-auto")).not.toBeNull();
+	});
+
+	describe("height bounding", () => {
+		it("bounds the panel to the viewport so the list scrolls inside it instead of growing the page", () => {
+			const { container } = render(
+				<InstructionsTree
+					files={flat(1000)}
+					selectedPath={null}
+					onSelect={() => undefined}
+				/>,
+			);
+			const panel = screen.getByTestId("instructions-tree-panel");
+			const scroller =
+				container.querySelector<HTMLElement>(".overflow-auto");
+			expect(panel.className).toContain("max-h-[60svh]");
+			expect(panel.className).toContain("lg:max-h-[calc(100svh-8rem)]");
+			expect(panel.getAttribute("data-onboarding-target")).toBe(
+				"coding-instructions-tree",
+			);
+			expect(panel.className).toContain("lg:sticky");
+			expect(panel.className).toContain("flex-col");
+			expect(panel.className).not.toMatch(/(^|\s)h-full(\s|$)/);
+			expect(scroller?.parentElement).toBe(panel);
+			expect(scroller?.className).toContain("min-h-0");
+			expect(scroller?.className).toContain("flex-1");
+		});
+
+		it("windows against the height the scroll box reports, not the whole list", () => {
+			const reported = vi
+				.spyOn(HTMLElement.prototype, "clientHeight", "get")
+				.mockReturnValue(240);
+			const original = globalThis.ResizeObserver;
+			globalThis.ResizeObserver = class {
+				constructor(private readonly callback: () => void) {}
+				observe() {
+					this.callback();
+				}
+				unobserve() {}
+				disconnect() {}
+			} as unknown as typeof ResizeObserver;
+			try {
+				render(
+					<InstructionsTree
+						files={flat(1000)}
+						selectedPath={null}
+						onSelect={() => undefined}
+					/>,
+				);
+				const mounted = screen.getAllByRole("button", {
+					name: /item-/,
+				}).length;
+				expect(mounted).toBeLessThan(60);
+				expect(mounted).toBeGreaterThan(0);
+			} finally {
+				reported.mockRestore();
+				globalThis.ResizeObserver = original;
+			}
+		});
 	});
 });

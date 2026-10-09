@@ -27,6 +27,7 @@ import {
 	type ContextSyncNowResult,
 	contextSyncActionErrorMessage,
 	contextSyncAutomaticInput,
+	contextSyncBranchNotFound,
 	contextSyncConfigureErrorMessage,
 	contextSyncNowResultMessage,
 	contextSyncPathValidationMessage,
@@ -251,7 +252,7 @@ export function ConfigureContextRepositorySyncDialog({
 				}),
 			});
 		} catch (error) {
-			const mapped = contextSyncConfigureErrorMessage(error);
+			const mapped = contextSyncConfigureErrorMessage(error, branch);
 			const message = t(mapped.key, mapped.values);
 			if (mapped.inline) {
 				setInlineError(message);
@@ -297,13 +298,25 @@ export function ConfigureContextRepositorySyncDialog({
 		nothingSelected: `${id}-nothing-selected`,
 		saveReason: `${id}-save-reason`,
 	};
-	const saveBlocked: "noRepository" | "noBranch" | "nothingSelected" | null =
-		pending
-			? null
-			: integrationId === ""
-				? "noRepository"
-				: branch === ""
-					? "noBranch"
+	// The listing already said this branch is not on the remote: saving it
+	// would only be refused.
+	const branchMissing =
+		listingEnabled &&
+		treeQuery.isError &&
+		contextSyncBranchNotFound(treeQuery.error);
+	const saveBlocked:
+		| "noRepository"
+		| "noBranch"
+		| "branchMissing"
+		| "nothingSelected"
+		| null = pending
+		? null
+		: integrationId === ""
+			? "noRepository"
+			: branch === ""
+				? "noBranch"
+				: branchMissing
+					? "branchMissing"
 					: selection.paths.length === 0
 						? "nothingSelected"
 						: null;
@@ -489,12 +502,22 @@ export function ConfigureContextRepositorySyncDialog({
 				</div>
 				<DialogFooter className="items-center">
 					{saveBlocked === "noRepository" ||
-					saveBlocked === "noBranch" ? (
+					saveBlocked === "noBranch" ||
+					saveBlocked === "branchMissing" ? (
 						<p
 							id={ids.saveReason}
 							className="mr-auto text-muted-foreground text-xs"
 						>
-							{t(`configureDialog.saveBlocked.${saveBlocked}`)}
+							{saveBlocked === "branchMissing"
+								? t(
+										"configureDialog.saveBlocked.branchMissing",
+										{
+											ref: branch,
+										},
+									)
+								: t(
+										`configureDialog.saveBlocked.${saveBlocked}`,
+									)}
 						</p>
 					) : null}
 					<Button

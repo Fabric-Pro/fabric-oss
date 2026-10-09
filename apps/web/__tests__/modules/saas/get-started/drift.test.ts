@@ -96,8 +96,8 @@ const inPageSource = [
 	// anchors ("Sync from repository", "Sync now") even though it mounts
 	// inside ProjectContextsList's Living Memory section header.
 	"apps/web/modules/saas/projects/components/ContextRepositorySyncStatus.tsx",
-	// The coding-instructions page-tour anchors: the tree and file-view ones
-	// on wrapper elements in the composing view, the header action ones
+	// The coding-instructions page-tour anchors: the file-view one on a
+	// wrapper element in the composing view, the header action ones
 	// (History, and the More button that stands for the menu's actions) in the
 	// action bar it renders, and the status strip's own and its Connect your
 	// agent link in the strip.
@@ -107,6 +107,10 @@ const inPageSource = [
 	// The Commit action of a repository project: the file view's Edit button,
 	// and the Commit button that replaces it while a file is being edited.
 	"apps/web/modules/saas/projects/components/instructions/InstructionFileView.tsx",
+	// The tree's anchor sits on the tree panel itself: its column stretches to
+	// the file view's height (the room the panel sticks in), so an anchor on
+	// the column framed empty space below the tree.
+	"apps/web/modules/saas/projects/components/instructions/InstructionsTree.tsx",
 	"apps/web/modules/saas/projects/components/ProjectReports.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectMetricsPanel.tsx",
@@ -301,6 +305,24 @@ describe("get-started tour — structure & copy", () => {
 				expect(
 					typeof value === "string" && value.length > 0,
 					`missing onboarding.tour.steps.${step.id}.${field}`,
+				).toBe(true);
+			}
+		}
+	});
+
+	it("has i18n copy for every step's gated copy", () => {
+		// A step that says something else behind a rollout flag reads that
+		// copy from its own key; a missing one would show the raw key path.
+		for (const step of ONBOARDING_STEPS) {
+			if (!step.gatedCopy) {
+				continue;
+			}
+			for (const field of ["title", "body"] as const) {
+				const key = `onboarding.tour.steps.${step.gatedCopy.copyId}.${field}`;
+				const value = messageAt(key);
+				expect(
+					typeof value === "string" && value.length > 0,
+					`missing ${key}`,
 				).toBe(true);
 			}
 		}

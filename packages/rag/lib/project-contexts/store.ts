@@ -10,8 +10,11 @@
 import { logger } from "@repo/logs";
 import {
 	type CollectionLayout,
+	collectionExistsUncached,
 	ensureCollection,
 	getCollectionLayout,
+	getCollectionName,
+	PROJECT_CONTEXTS_BASE_COLLECTION,
 } from "../collection-manager";
 import { generateSparseVector } from "../embedding/sparse";
 import { generatePointId } from "../utils";
@@ -514,6 +517,64 @@ export async function deleteProjectContext(
 }
 
 /**
+ * List the ids of every point a context currently holds — the same set
+ * `deleteProjectContext` would remove: points matched by `originalContextId`
+ * or `contextId`, plus the deterministic base-id point legacy writes used.
+ *
+ * Throws on any vector-store failure: a caller that snapshots ids to replace
+ * them must not proceed on a partial or missing snapshot.
+ */
+export async function listProjectContextPointIds(
+	contextId: string,
+	organizationId?: string | null,
+): Promise<string[]> {
+	const collectionName = await getProjectCollection(organizationId);
+	const ids = new Set<string>([generatePointId(contextId)]);
+
+	let offset: string | number | undefined;
+	do {
+		const page = await qdrantClient.scroll(collectionName, {
+			filter: {
+				should: [
+					{ key: "originalContextId", match: { value: contextId } },
+					{ key: "contextId", match: { value: contextId } },
+				],
+			},
+			limit: 256,
+			with_payload: false,
+			with_vector: false,
+			...(offset !== undefined ? { offset } : {}),
+		});
+		for (const point of page.points) {
+			ids.add(String(point.id));
+		}
+		const next = page.next_page_offset;
+		offset =
+			typeof next === "string" || typeof next === "number"
+				? next
+				: undefined;
+	} while (offset !== undefined);
+
+	return [...ids];
+}
+
+/**
+ * Delete specific project-context points by id. Qdrant ignores ids that do
+ * not exist; failures propagate.
+ */
+export async function deleteProjectContextPoints(
+	pointIds: string[],
+	organizationId?: string | null,
+): Promise<void> {
+	const ids = pointIds.filter(isValidQdrantPointId);
+	if (ids.length === 0) {
+		return;
+	}
+	const collectionName = await getProjectCollection(organizationId);
+	await qdrantClient.delete(collectionName, { wait: true, points: ids });
+}
+
+/**
  * Delete stale project-document chunks in Qdrant whose `documentVersion`
  * payload has fallen behind the source `ProjectDocument.version`.
  *
@@ -833,4 +894,117 @@ export async function deleteAllProjectContexts(
 			`Failed to delete project contexts: ${error instanceof Error ? error.message : "Unknown error"}`,
 		);
 	}
+}
+
+/**
+ * Point types a `ProjectContext` row's own embed writes. Everything else in
+ * the collection — code-index chunks, context summaries, crawled URL pages,
+ * wizard contexts, document chunks, conversation bundles — has an owner in
+ * another table or none at all, and is never a candidate.
+ */
+const PROJECT_CONTEXT_POINT_TYPES: ReadonlySet<string> = new Set([
+	"FILE",
+	"LINK",
+	"TEXT",
+	"DOCUMENT",
+	"TECH_STACK",
+	"FEATURES",
+	"GOALS",
+	"DESCRIPTION",
+	"IMAGE",
+	"SPREADSHEET",
+	"MEETING_TRANSCRIPT",
+	"SLACK_HUDDLE_NOTES",
+	"ARCHITECTURE_DECISION",
+	"TEST_CASE",
+	"API_SPEC",
+]);
+
+function isProjectContextRowPoint(payload: Record<string, unknown>): boolean {
+	return (
+		typeof payload.type === "string" &&
+		PROJECT_CONTEXT_POINT_TYPES.has(payload.type) &&
+		!payload.documentId &&
+		!payload.conversationBundleId &&
+		!payload.parentContextId &&
+		!payload.isWizardContext
+	);
+}
+
+/**
+ * Deletes the points of `ProjectContext` rows that no longer exist, so a
+ * deleted context stops turning up in search. Only points a context row's own
+ * embed writes are candidates (see `PROJECT_CONTEXT_POINT_TYPES`), and only
+ * when their owner is not among `liveIds` — which the caller fills with every
+ * id a point of this project may be written under: contexts, URL pages,
+ * summaries and conversation bundles. An empty `liveIds` deletes nothing: a
+ * project with points has rows, so an empty read is a fault, not a fact.
+ * Returns how many points went.
+ */
+export async function deleteOrphanProjectContextPoints(params: {
+	projectId: string;
+	organizationId?: string | null;
+	liveIds: ReadonlySet<string>;
+}): Promise<number> {
+	const { projectId, organizationId, liveIds } = params;
+	if (liveIds.size === 0) {
+		return 0;
+	}
+	// Created lazily on first write: no collection, nothing to clean.
+	const collectionName = getCollectionName(
+		PROJECT_CONTEXTS_BASE_COLLECTION,
+		organizationId,
+	);
+	if (!(await collectionExistsUncached(collectionName))) {
+		return 0;
+	}
+	const orphans: string[] = [];
+	let offset: string | number | undefined;
+	do {
+		const page = await qdrantClient.scroll(collectionName, {
+			filter: {
+				must: [
+					{ key: "projectId", match: { value: projectId } },
+					...(organizationId
+						? [
+								{
+									key: "organizationId",
+									match: { value: organizationId },
+								},
+							]
+						: []),
+				],
+			},
+			limit: 256,
+			with_payload: [
+				"type",
+				"contextId",
+				"originalContextId",
+				"documentId",
+				"conversationBundleId",
+				"parentContextId",
+				"isWizardContext",
+			],
+			with_vector: false,
+			...(offset !== undefined ? { offset } : {}),
+		});
+		for (const point of page.points) {
+			const payload = (point.payload ?? {}) as Record<string, unknown>;
+			if (!isProjectContextRowPoint(payload)) {
+				continue;
+			}
+			const owner = payload.originalContextId ?? payload.contextId;
+			if (typeof owner === "string" && !liveIds.has(owner)) {
+				orphans.push(String(point.id));
+			}
+		}
+		const next = page.next_page_offset;
+		offset =
+			typeof next === "string" || typeof next === "number"
+				? next
+				: undefined;
+	} while (offset !== undefined);
+
+	await deleteProjectContextPoints(orphans, organizationId);
+	return orphans.length;
 }

@@ -19,10 +19,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	createAgentRunner,
-	taskkillPath,
-} from "../src/lib/instructions/agent-run.js";
+import { createAgentRunner } from "../src/lib/instructions/agent-run.js";
+import { taskkillPath } from "../src/lib/instructions/taskkill-path.js";
 
 const CLI_ROOT = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),

@@ -10,7 +10,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
-	headersForRequest,
+	classifyFetchFailure,
+	describeBrowserRefusal,
 	parseResolution,
 	resolveSameOriginUrl,
 } from "../browser-driver";
@@ -66,49 +67,6 @@ describe("resolveSameOriginUrl", () => {
 	});
 });
 
-describe("headersForRequest", () => {
-	const scopedHeaders = {
-		origin: BASE,
-		headers: { Authorization: "Bearer secret" },
-	};
-
-	it("adds authentication only to the configured origin", () => {
-		expect(
-			headersForRequest(
-				`${BASE}/api/data`,
-				{ Accept: "application/json" },
-				scopedHeaders,
-			),
-		).toEqual({
-			Accept: "application/json",
-			Authorization: "Bearer secret",
-		});
-	});
-
-	it.each([
-		"https://cdn.example.com/script.js",
-		"https://staging.example.com.evil.test/collect",
-		"http://staging.example.com/insecure",
-	])("does not send authentication to %s", (url) => {
-		expect(
-			headersForRequest(url, { Accept: "*/*" }, scopedHeaders),
-		).toEqual({ Accept: "*/*" });
-	});
-
-	it("replaces an existing header case-insensitively", () => {
-		expect(
-			headersForRequest(
-				`${BASE}/api/data`,
-				{ authorization: "old", Accept: "*/*" },
-				scopedHeaders,
-			),
-		).toEqual({
-			Accept: "*/*",
-			Authorization: "Bearer secret",
-		});
-	});
-});
-
 describe("parseResolution", () => {
 	it("parses the settings format", () => {
 		expect(parseResolution("1366x768")).toEqual({
@@ -135,6 +93,35 @@ describe("parseResolution", () => {
 			});
 		},
 	);
+});
+
+describe("classifyFetchFailure", () => {
+	it.each([
+		["a TLS protocol failure", { code: "EPROTO" }, "tls-failed"],
+		[
+			"an aggregate whose nested cause names the TLS failure",
+			new AggregateError([
+				{ code: "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE" },
+			]),
+			"tls-failed",
+		],
+		["a missing host", { code: "ENOTFOUND" }, "host-not-found"],
+		["a transient DNS failure", { code: "EAI_AGAIN" }, "fetch-failed"],
+	])("classifies %s", (_label, cause, expected) => {
+		expect(
+			classifyFetchFailure(new TypeError("fetch failed", { cause })),
+		).toBe(expected);
+	});
+
+	it("calls out the environment TLS configuration for a handshake failure", () => {
+		expect(
+			describeBrowserRefusal({
+				kind: "tls-failed",
+				url: BASE,
+				detail: "EPROTO",
+			}),
+		).toContain("environment's TLS configuration");
+	});
 });
 
 describe("normaliseOperation", () => {
@@ -169,24 +156,38 @@ describe("normaliseOperation", () => {
 		});
 	});
 
-	it("degrades to a no-op when a required target is missing", () => {
-		// `none` is the safe answer: it touches nothing and lets the assessment
-		// call decide the step, rather than clicking something unrelated.
+	it("blocks an incomplete authored operation rather than assessing it as a no-op", () => {
 		expect(normaliseOperation({ kind: "click", role: "button" })).toEqual({
-			kind: "none",
+			kind: "blocked",
+			reason: "The requested click operation is missing a role or accessible name.",
 		});
 		expect(normaliseOperation({ kind: "fill", name: "Email" })).toEqual({
-			kind: "none",
+			kind: "blocked",
+			reason: "The requested fill operation is missing a role or accessible name.",
 		});
-		expect(normaliseOperation({ kind: "goto" })).toEqual({ kind: "none" });
-		expect(normaliseOperation({ kind: "press" })).toEqual({ kind: "none" });
+		expect(normaliseOperation({ kind: "goto" })).toEqual({
+			kind: "blocked",
+			reason: "The requested goto operation is missing a path.",
+		});
+		expect(normaliseOperation({ kind: "press" })).toEqual({
+			kind: "blocked",
+			reason: "The requested press operation is missing a key.",
+		});
 	});
 
-	it("degrades to a no-op for anything unrecognised", () => {
+	it("blocks an unknown authored operation", () => {
 		expect(normaliseOperation({ kind: "exec", text: "rm -rf /" })).toEqual({
-			kind: "none",
+			kind: "blocked",
+			reason: "The requested operation kind is not supported by the QA runner.",
 		});
-		expect(normaliseOperation({})).toEqual({ kind: "none" });
+		expect(normaliseOperation({})).toEqual({
+			kind: "blocked",
+			reason: "The requested operation kind is missing.",
+		});
+	});
+
+	it("keeps an explicit none as an observation-only operation", () => {
+		expect(normaliseOperation({ kind: "none" })).toEqual({ kind: "none" });
 	});
 
 	it("defaults a wait rather than waiting forever", () => {

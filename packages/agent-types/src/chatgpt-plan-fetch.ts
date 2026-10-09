@@ -36,6 +36,22 @@ export const CHATGPT_PLAN_FORBIDDEN_FIELDS = [
 	"service_tier",
 ] as const;
 
+/**
+ * Marks a chat's model pick as a ChatGPT plan pick (Fizzy #2770 F13): the
+ * override runs only on a plan, and every other path ignores it rather than
+ * running the model at API cost or failing on a plan-only name.
+ */
+export const CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX = "chatgpt-plan:";
+
+/** The catalog name a plan pick names, or null for any other override. */
+export function chatGptPlanModelOverride(
+	override: string | null | undefined,
+): string | null {
+	return override?.startsWith(CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX)
+		? override.slice(CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX.length) || null
+		: null;
+}
+
 /** The plan's usage window is spent; nothing but waiting for it to reset helps. */
 export const CHATGPT_PLAN_EXHAUSTED_CODE =
 	"subscription_sharing_usage_limit_exceeded";
@@ -448,10 +464,23 @@ export interface ChatGptPlanFetchOptions {
 	/**
 	 * Asked once for another plan's token when the plan refuses a call as
 	 * spent before any output; the call is then sent again with it. Null, or
-	 * a second refusal, is final.
+	 * a second refusal, is final. Told when the spent window resets, when
+	 * OpenAI said.
 	 */
-	onExhausted?: () => Promise<string | null>;
+	onExhausted?: (refusal: { resetAt: Date | null }) => Promise<string | null>;
 	baseFetch?: typeof fetch;
+}
+
+/** When a spent-window reply says the window resets; null when it does not. */
+async function exhaustedResetAt(response: Response): Promise<Date | null> {
+	try {
+		const body = (await response.clone().json()) as {
+			error?: { resets_at?: unknown };
+		};
+		return toResetDate(body.error?.resets_at, Date.now());
+	} catch {
+		return null;
+	}
 }
 
 /** Whether a reply this fetch produced is a spent plan window, before any output. */
@@ -528,7 +557,9 @@ export function createChatGptPlanFetch({
 		if (!original || !onExhausted || !isExhaustedReply(first)) {
 			return first;
 		}
-		const next = await onExhausted();
+		const next = await onExhausted({
+			resetAt: await exhaustedResetAt(first),
+		});
 		if (next === null) {
 			return first;
 		}

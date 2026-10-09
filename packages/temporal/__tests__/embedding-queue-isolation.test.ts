@@ -71,6 +71,19 @@ describe("embedding activity isolation", () => {
 			input: {
 				...tenant,
 				documentId: "example-document",
+				documentType: "PRD",
+				aiToken: "example-token",
+			},
+		},
+		{
+			// A Proposal in an organization asks the Proposal artifact plan
+			// first (Fizzy #2801), on the same foreground queue.
+			workflowType: "documentGenerationChildWorkflow",
+			activity: "planProposalArtifact",
+			queue: "project-document-generation",
+			input: {
+				...tenant,
+				documentId: "example-document",
 				documentType: "PROPOSAL",
 				aiToken: "example-token",
 			},
@@ -243,6 +256,9 @@ describe("embedding activity isolation", () => {
 					saveProjectDocument: async () => undefined,
 					runDocumentDecisionPrecheckActivity: async () => undefined,
 					createDocumentVersion: async () => undefined,
+					// The Proposal artifact gate is off (Fizzy #2801): no plan,
+					// so the Proposal takes the path this test pins.
+					planProposalArtifact: async () => null,
 					embedProjectDocumentActivity: async ({
 						documentId,
 					}: {

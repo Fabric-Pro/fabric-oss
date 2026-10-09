@@ -14,6 +14,11 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	capturedDecisionOutcomes,
+	decideWithFallbackRefusal,
+	resetCapturedDecisionOutcomes,
+} from "../../../__tests__/test-helpers/decision-outcomes";
 
 const {
 	mockGenerateEmbeddings,
@@ -26,7 +31,7 @@ const {
 	mockListCacheRows,
 	mockUpsertCache,
 	mockGetBoundPrompt,
-	mockEvaluate,
+	mockDecide,
 	mockGetDecisionModel,
 	mockDecisionTrackUsage,
 	AiUsageLimitExceededError,
@@ -49,7 +54,7 @@ const {
 		mockListCacheRows: vi.fn(),
 		mockUpsertCache: vi.fn(),
 		mockGetBoundPrompt: vi.fn(),
-		mockEvaluate: vi.fn(),
+		mockDecide: vi.fn(),
 		mockGetDecisionModel: vi.fn(),
 		mockDecisionTrackUsage: vi.fn(),
 	};
@@ -57,13 +62,27 @@ const {
 
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	generateObject: mockGenerateObject,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
-	experimental_evaluate: mockEvaluate,
+	experimental_decide: mockDecide,
 	getAIDecisionModelWithMetadata: mockGetDecisionModel,
+	recordDecisionOutcome: await (
+		await import("../../../__tests__/test-helpers/decision-outcomes")
+	).realRecordDecisionOutcome(),
+	createDecisionCapture: await (
+		await import("../../../__tests__/test-helpers/decision-outcomes")
+	).realCreateDecisionCapture(),
 }));
+
+// The real telemetry helper runs against this stand-in, so tests assert the
+// outcome, model and confidence samples that would reach the metrics.
+vi.mock("@repo/observability/llm", async () =>
+	(
+		await import("../../../__tests__/test-helpers/decision-outcomes")
+	).observabilityLlmMock(),
+);
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -91,6 +110,10 @@ vi.mock("@repo/database", async () => {
 	};
 });
 
+import {
+	decideWithRefusal,
+	rejectedWithRefusal,
+} from "../../../__tests__/test-helpers/refusing-decision-model";
 import {
 	judgeRoutingItem,
 	loadRoutingCorpus,
@@ -472,7 +495,7 @@ describe("judgeRoutingItem", () => {
 			model: { modelId: "typesafe-ai/jev" },
 			trackUsage: mockDecisionTrackUsage,
 		});
-		mockEvaluate.mockRejectedValue(new AiUsageLimitExceededError());
+		mockDecide.mockRejectedValue(new AiUsageLimitExceededError());
 		// Resolved through the real function rather than hand-built, so the
 		// value's static type is the real `AIDecisionModelResult` regardless
 		// of the loose shape the mock actually returns at runtime.
@@ -492,13 +515,51 @@ describe("judgeRoutingItem", () => {
 		expect(mockGenerateObject).not.toHaveBeenCalled();
 	});
 
+	it("treats a decision refusal as no decision and falls through to the language judge", async () => {
+		mockGetDecisionModel.mockResolvedValue({
+			model: { modelId: "typesafe-ai/jev" },
+			trackUsage: mockDecisionTrackUsage,
+		});
+		mockDecide.mockImplementation(decideWithRefusal);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				decision: "enrich",
+				targetIdentifier: "F-1",
+				confidence: 0.9,
+				reasoning: "same work",
+			},
+		});
+		const { decisionModel } = await resolveRoutingModels(BASE);
+
+		const judgement = await judgeRoutingItem({
+			itemText: "Export throttling detail",
+			itemEmbedding: [1, 0],
+			...corpusOf([1, 0]),
+			judge: await getJudge(),
+			decisionModel,
+			threshold: 0.7,
+			...BASE,
+		});
+
+		expect(
+			await rejectedWithRefusal(mockDecide.mock.results[0]?.value),
+		).toBe(true);
+		// The language judge's verdict, not a refusal read as create.
+		expect(judgement.kind).toBe("enrich");
+		if (judgement.kind === "enrich") {
+			expect(judgement.source).toBe("language_model");
+		}
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(mockDecisionTrackUsage).not.toHaveBeenCalled();
+	});
+
 	it("aborts the decision fast path when the caller's signal aborts, falling through to the language judge", async () => {
 		mockGetDecisionModel.mockResolvedValue({
 			model: { modelId: "typesafe-ai/jev" },
 			trackUsage: mockDecisionTrackUsage,
 		});
 		let receivedSignal: AbortSignal | undefined;
-		mockEvaluate.mockImplementation(
+		mockDecide.mockImplementation(
 			(params: { abortSignal?: AbortSignal }) =>
 				new Promise((_resolve, reject) => {
 					receivedSignal = params.abortSignal;
@@ -565,5 +626,198 @@ describe("judgeRoutingItem", () => {
 		expect(mockGenerateObject.mock.calls[0][0].abortSignal).toBe(
 			controller.signal,
 		);
+	});
+
+	describe("decision telemetry", () => {
+		const SITE = "backlog-routing";
+
+		async function withDecisionModel() {
+			mockGetAIModelWithMetadata.mockResolvedValue({
+				model: { id: "judge-model" },
+				trackUsage: vi.fn(),
+			});
+			mockGetDecisionModel.mockResolvedValue({
+				model: { modelId: "openai/example-decider" },
+				metadata: {
+					provider: "VERCEL_GATEWAY",
+					modelString: "openai/example-decider",
+					canonicalName: "example-decider",
+				},
+				trackUsage: mockDecisionTrackUsage,
+			});
+			return (await resolveRoutingModels(BASE)).decisionModel;
+		}
+
+		async function judge(
+			decisionModel: Awaited<ReturnType<typeof withDecisionModel>>,
+			embedding = [1, 0],
+		) {
+			return judgeRoutingItem({
+				itemText: "Export throttling detail",
+				itemEmbedding: embedding,
+				...corpusOf([1, 0]),
+				judge: await getJudge(),
+				decisionModel,
+				threshold: 0.7,
+				...BASE,
+			});
+		}
+
+		function answers(routing: unknown, target?: unknown) {
+			return { answers: { routing, ...(target ? { target } : {}) } };
+		}
+
+		const create = (p: number) => ({
+			type: "choice",
+			choice: "create",
+			probabilities: { create: p, enrich: 1 - p },
+		});
+		const enrich = (p: number) => ({
+			type: "choice",
+			choice: "enrich",
+			probabilities: { create: 1 - p, enrich: p },
+		});
+		const target = (p: number) => ({
+			type: "choice",
+			choice: "F-1",
+			probabilities: { "F-1": p },
+		});
+
+		beforeEach(() => {
+			resetCapturedDecisionOutcomes();
+			mockGenerateObject.mockResolvedValue({
+				object: { decision: "create", confidence: 1 },
+			});
+		});
+
+		it("records an accepted create with the routing confidence only", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockResolvedValue(answers(create(0.95)));
+
+			await judge(decisionModel);
+
+			expect(capturedDecisionOutcomes).toEqual([
+				{
+					site: SITE,
+					outcome: "accepted",
+					model: "example-decider",
+					confidences: [0.95],
+				},
+			]);
+		});
+
+		it("samples both the routing and the target confidence for an enrich", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockResolvedValue({
+				...answers(enrich(0.95), target(0.93)),
+				response: { modelId: "typesafe-ai/jev" },
+			});
+
+			await judge(decisionModel);
+
+			expect(capturedDecisionOutcomes).toEqual([
+				{
+					site: SITE,
+					outcome: "accepted",
+					model: "typesafe-ai-jev",
+					confidences: [0.95, 0.93],
+				},
+			]);
+		});
+
+		it.each([
+			["a low routing confidence", answers(create(0.6)), [0.6]],
+			[
+				"a low target confidence",
+				answers(enrich(0.95), target(0.5)),
+				[0.95, 0.5],
+			],
+		])(
+			"records below_threshold and falls through to the language judge for %s",
+			async (_name, decideResult, confidences) => {
+				const decisionModel = await withDecisionModel();
+				mockDecide.mockResolvedValue(decideResult);
+
+				await judge(decisionModel);
+
+				expect(mockGenerateObject).toHaveBeenCalledOnce();
+				expect(capturedDecisionOutcomes).toEqual([
+					{
+						site: SITE,
+						outcome: "below_threshold",
+						model: "example-decider",
+						confidences,
+					},
+				]);
+			},
+		);
+
+		it("records malformed when the routing answer carries no readable probability", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockResolvedValue(
+				answers({ type: "choice", choice: "create" }),
+			);
+
+			await judge(decisionModel);
+
+			expect(capturedDecisionOutcomes).toEqual([
+				{
+					site: SITE,
+					outcome: "malformed",
+					model: "example-decider",
+					confidences: [],
+				},
+			]);
+		});
+
+		it("records refused, failed and limit_exceeded for the three error kinds", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockImplementationOnce(decideWithRefusal);
+			await judge(decisionModel);
+			mockDecide.mockRejectedValueOnce(new Error("gateway timeout"));
+			await judge(decisionModel);
+			mockDecide.mockRejectedValueOnce(new AiUsageLimitExceededError());
+			const limited = await judge(decisionModel);
+
+			expect(limited.kind).toBe("failed");
+			expect(
+				capturedDecisionOutcomes.map(({ outcome, model }) => [
+					outcome,
+					model,
+				]),
+			).toEqual([
+				["refused", "example-decider"],
+				["failed", "example-decider"],
+				["limit_exceeded", "example-decider"],
+			]);
+		});
+
+		it("records unavailable for an item judged without a decision model, but nothing when no candidate is shortlisted", async () => {
+			await judge(null);
+			await judge(null, [0, 1]);
+
+			expect(capturedDecisionOutcomes).toEqual([
+				{
+					site: SITE,
+					outcome: "unavailable",
+					model: "none",
+					confidences: [],
+				},
+			]);
+		});
+
+		it("labels a refusal by the gateway fallback model with that model, although the SDK threw", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockImplementation(decideWithFallbackRefusal);
+
+			await judge(decisionModel);
+
+			expect(
+				capturedDecisionOutcomes.map(({ outcome, model }) => [
+					outcome,
+					model,
+				]),
+			).toEqual([["refused", "typesafe-ai-jev"]]);
+		});
 	});
 });

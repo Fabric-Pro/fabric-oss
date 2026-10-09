@@ -248,9 +248,10 @@ after later revisions:
   eligible for the `skip-changeset` label. Other changes may skip only when
   they genuinely have no user-visible or deployable effect.
 
-For an impacting change, run `pnpm exec changeset status
---since=<the PR's base, normally the staging branch> --output=<temporary-json>` and verify that `.releases` is
-non-empty. Exit code zero with `"releases": []` is not success. For a
+For an impacting change, run `pnpm changeset:gate` (add `--base=<ref>` to
+override the detected base). It counts untracked changesets, lists the releases,
+and exits non-zero when `.releases` is empty. Exit code zero from plain
+`changeset status` with `"releases": []` is not success. For a
 non-impacting change, record the reason and apply `skip-changeset` as soon as
 the PR exists; omission alone is not a decision. The CI contract is in the
 [changeset workflow](.github/workflows/changeset-check.yml).
@@ -268,8 +269,12 @@ While private staging release is enabled (`STAGING_RELEASE_ENABLED`), feature
 work lands on the protected `staging` integration branch, not `master`. The
 release-cycle runbook in the ops repository is authoritative and changes; read
 it before delivering.
+Complete that runbook's outgoing publication preflight before the first relay;
+report all blockers together and rerun after changes.
 
 - Branch from `staging` and open the PR with `staging` as its base.
+- Name the branch `feature/`, `fix/`, `docs/` or `refactor/` plus a lowercase
+  name (`[a-z0-9._-]`); the push hook blocks any other name.
 - Merge only when the user's requested workflow includes landing and every
   required check on the current head has passed:
   `gh pr merge <n> --squash --match-head-commit <sha>`. Adding `--auto` merges

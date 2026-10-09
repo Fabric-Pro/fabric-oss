@@ -23,6 +23,7 @@ import {
 } from "@repo/ai";
 import { logAiUsageAsync } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { isChatGptPlanRefusal } from "../chatgpt-plan-refusal";
 import {
 	applyFabricEnrichment,
 	extractFabricConfig,
@@ -72,29 +73,18 @@ export async function executeAiGenerateImageStep(
 			);
 
 			if (enrichment.fabricUsed && enrichment.systemPrompt) {
-				// Use centralized AI model for prompt enhancement
-				const { model } = await getAIModelWithMetadata(
-					{ taskType: "SIMPLE" },
-					{
-						userId: params.userId,
-						organizationId: params.organizationId,
-						projectId: params.projectId,
-						jobType: params.jobType,
-					},
+				enhancedPrompt = await enhanceImagePrompt(
+					params,
+					interpolatedPrompt,
+					enrichment.systemPrompt,
 				);
-
-				const enhanceResult = await generateText({
-					model,
-					prompt: `Enhance this image prompt: "${interpolatedPrompt}"`,
-					instructions: enrichment.systemPrompt,
-				});
-
-				enhancedPrompt = enhanceResult.text.trim();
-				interpolatedPrompt = enhancedPrompt;
-				console.log("[ai-generate-image] Enhanced prompt:", {
-					original: imagePrompt,
-					enhanced: enhancedPrompt,
-				});
+				if (enhancedPrompt) {
+					interpolatedPrompt = enhancedPrompt;
+					console.log("[ai-generate-image] Enhanced prompt:", {
+						original: imagePrompt,
+						enhanced: enhancedPrompt,
+					});
+				}
 			}
 		}
 
@@ -166,5 +156,44 @@ export async function executeAiGenerateImageStep(
 			success: false,
 			error: `Image generation failed: ${errorMessage}`,
 		};
+	}
+}
+
+/**
+ * Enhancement is optional, and its text model may be a ChatGPT plan (Fizzy
+ * #2770): a plan that is spent, ran out mid-reply or does not serve the model
+ * skips it — the image is generated from the original prompt rather than the
+ * node waiting hours for a reset or failing.
+ */
+async function enhanceImagePrompt(
+	params: StepParams,
+	prompt: string,
+	instructions: string,
+): Promise<string | undefined> {
+	try {
+		const { model } = await getAIModelWithMetadata(
+			{ taskType: "SIMPLE" },
+			{
+				userId: params.userId,
+				organizationId: params.organizationId,
+				projectId: params.projectId,
+				jobType: params.jobType,
+			},
+		);
+		const result = await generateText({
+			model,
+			prompt: `Enhance this image prompt: "${prompt}"`,
+			instructions,
+		});
+		return result.text.trim();
+	} catch (error) {
+		if (!isChatGptPlanRefusal(error)) {
+			throw error;
+		}
+		console.warn(
+			"[ai-generate-image] Prompt enhancement skipped; the ChatGPT plan refused it",
+			{ reason: (error as Error).name },
+		);
+		return undefined;
 	}
 }

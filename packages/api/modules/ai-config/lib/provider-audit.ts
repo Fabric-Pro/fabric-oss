@@ -24,6 +24,7 @@ export interface ProviderAuditSnapshot {
 	isDefault: boolean;
 	enabled: boolean;
 	isEmbeddingProvider: boolean;
+	purpose: string;
 	enabledProviders: string[] | null;
 }
 
@@ -33,6 +34,7 @@ interface ProviderRowLike {
 	isDefault?: boolean;
 	enabled?: boolean;
 	isEmbeddingProvider?: boolean;
+	purpose?: string;
 }
 
 const EMPTY_SNAPSHOT: ProviderAuditSnapshot = {
@@ -42,6 +44,7 @@ const EMPTY_SNAPSHOT: ProviderAuditSnapshot = {
 	isDefault: false,
 	enabled: false,
 	isEmbeddingProvider: false,
+	purpose: "ALL",
 	enabledProviders: null,
 };
 
@@ -82,6 +85,7 @@ export function snapshotProviderRow(
 		isDefault: row.isDefault ?? false,
 		enabled: row.enabled ?? true,
 		isEmbeddingProvider: row.isEmbeddingProvider ?? false,
+		purpose: row.purpose ?? "ALL",
 		enabledProviders,
 	};
 }

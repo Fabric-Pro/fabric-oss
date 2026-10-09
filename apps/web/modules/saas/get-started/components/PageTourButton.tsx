@@ -37,12 +37,14 @@ export function PageTourButton({
 	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
 	const todoListEnabled = useFeatureFlag("TODO_LIST");
 	const glossyEditionEnabled = useFeatureFlag("GLOSSY_EDITION");
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	if (
 		!GET_STARTED_ENABLED ||
 		!pageForTab(pageId, {
 			publishingSuite: publishingSuiteEnabled,
 			todoList: todoListEnabled,
 			glossyEdition: glossyEditionEnabled,
+			proposalArtifact: proposalArtifactEnabled,
 		})
 	) {
 		return null;

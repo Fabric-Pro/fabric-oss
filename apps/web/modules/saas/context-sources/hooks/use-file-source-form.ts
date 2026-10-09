@@ -147,6 +147,9 @@ export function useFileSourceForm({
 							filename: row.name,
 							mimeType: row.mimeType,
 							size: row.size,
+							...(fileTitle.trim()
+								? { title: fileTitle.trim() }
+								: {}),
 						});
 
 					// 2. Upload file to storage.

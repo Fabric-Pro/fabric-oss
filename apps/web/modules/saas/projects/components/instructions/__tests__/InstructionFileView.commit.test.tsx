@@ -134,6 +134,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				},
 				proposals: {
 					myBranch: {
+						key: () => ["myBranch"],
 						queryOptions: (o: unknown) => ({
 							queryKey: ["myBranch", o],
 							queryFn: async () => ({
@@ -271,6 +272,20 @@ describe("InstructionFileView — commit to the branch", () => {
 			expect(mocks.editInstructionSnapshot).toHaveBeenCalledWith(
 				expect.objectContaining({ nativeBase, proposal: true }),
 			);
+		});
+
+		it("asks before the page is closed or reloaded while a draft is open, and not otherwise", async () => {
+			const user = userEvent.setup();
+			renderView();
+			const closing = () => {
+				const event = new Event("beforeunload", { cancelable: true });
+				window.dispatchEvent(event);
+				return event.defaultPrevented;
+			};
+			await screen.findByRole("button", { name: "Edit" });
+			expect(closing()).toBe(false);
+			await user.click(screen.getByRole("button", { name: "Edit" }));
+			expect(closing()).toBe(true);
 		});
 
 		it("offers a commit message, Commit to the branch as the primary action, and a pull request as the alternative", async () => {
@@ -465,6 +480,49 @@ describe("InstructionFileView — commit to the branch", () => {
 				),
 			);
 			expect(mocks.commitChange).not.toHaveBeenCalled();
+		});
+
+		it("suggests with the commit message the person wrote", async () => {
+			const user = userEvent.setup();
+			renderView();
+			await startEditing(user);
+
+			const message = screen.getByLabelText("Commit message");
+			await user.clear(message);
+			await user.type(message, "Tighten the review checklist");
+			await user.click(
+				screen.getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+
+			await waitFor(() =>
+				expect(mocks.editInstructionSnapshot).toHaveBeenCalledWith(
+					expect.objectContaining({
+						proposal: true,
+						message: "Tighten the review checklist",
+					}),
+				),
+			);
+		});
+
+		it("suggests without a message when the person kept the default", async () => {
+			const user = userEvent.setup();
+			renderView();
+			await startEditing(user);
+
+			await user.click(
+				screen.getByRole("button", {
+					name: "Suggest as a pull request",
+				}),
+			);
+
+			await waitFor(() =>
+				expect(mocks.editInstructionSnapshot).toHaveBeenCalled(),
+			);
+			expect(
+				mocks.editInstructionSnapshot.mock.calls[0]?.[0],
+			).not.toHaveProperty("message");
 		});
 	});
 

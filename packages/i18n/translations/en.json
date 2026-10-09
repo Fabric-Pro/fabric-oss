@@ -338,14 +338,14 @@
 				"failed": "The request could not be completed. Start again from your agent.",
 				"signInRequired": "Sign in to continue.",
 				"scopes": {
-					"mcp:read": "Read this organization's projects and context.",
+					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, workspaces, workflows and frames. Your personal AI chats are not included.",
 					"instructions:read": "Read coding instructions.",
 					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read the attached repository's files and history to clone or update it through Fabric.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"scopesProject": {
-					"mcp:read": "Read this project and its context.",
+					"mcp:read": "Read this project and its features, decisions, revisions, documents and context, and search its knowledge.",
 					"instructions:read": "Read this project's coding instructions.",
 					"instructions:write": "Suggest changes to this project's coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read this attached repository's files and history to clone or update it through Fabric.",
@@ -962,6 +962,10 @@
 				},
 				"glossy": {
 					"body": "A Proposal or Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document.",
+					"title": "Hand stakeholders a Glossy edition"
+				},
+				"glossyProposalArtifact": {
+					"body": "A Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, and its page has Main Document, Internal Analysis and Style tabs.",
 					"title": "Hand stakeholders a Glossy edition"
 				},
 				"overview": {
@@ -1590,11 +1594,14 @@
 					},
 					"chatgpt_plan": {
 						"account_connected": "Shared ChatGPT plan account connected",
+						"account_shared_from_personal": "Own ChatGPT plan shared with the organization",
+						"account_returned_to_personal": "Shared ChatGPT plan taken back as own plan",
 						"account_updated": "Shared ChatGPT plan account updated",
 						"account_disconnected": "Shared ChatGPT plan account disconnected",
 						"policy_changed": "ChatGPT plan pooling policy changed",
 						"terms_acknowledged": "ChatGPT plan pooling terms accepted",
-						"api_fallback_used": "Background AI work fell back to the organization provider"
+						"api_fallback_used": "Background AI work fell back to the organization provider",
+						"fallback_model_changed": "ChatGPT plan fallback model changed"
 					},
 					"restored": "Organization restored",
 					"purged": "Organization permanently deleted",
@@ -2551,32 +2558,49 @@
 				"everythingElse": "The AI provider below serves everything else, such as background jobs and document search.",
 				"onlyTitle": "Only your ChatGPT plan is set up",
 				"onlyDescription": "Your own AI work in {organization} runs on your ChatGPT plan. Background jobs and document search need an AI provider: add one below."
+			},
+			"subscription": {
+				"tier": {
+					"FREE": "Free",
+					"PLUS": "Plus",
+					"PRO": "Pro",
+					"TEAM": "Team",
+					"UNKNOWN": "Unknown"
+				},
+				"freeWarning": "Free plans have very small limits",
+				"paidUntil": "Paid until {date}",
+				"expiring": "Paid until {date}: runs out within 3 days",
+				"expired": "Subscription ended {date}: renew it in ChatGPT"
+			},
+			"weeklyLimitOnly": "No five-hour window on this plan: weekly limit only",
+			"share": {
+				"action": "Share with {organization}",
+				"description": "Make this ChatGPT account one of {organization}'s shared accounts. No new sign-in is needed.",
+				"confirmTitle": "Share your ChatGPT plan with {organization}?",
+				"confirmBody": "It stops being your own plan in every organization and becomes a shared account of {organization}. Its admins manage how it is used; only you can take it back.",
+				"confirm": "Share",
+				"shared": "Your ChatGPT plan is now shared with {organization}",
+				"failed": "Couldn't share the ChatGPT plan",
+				"sharedWithTitle": "Shared with {organization}",
+				"sharedWithNote": "Admins of {organization} manage this account. Only you can take it back as your own plan.",
+				"takeBack": "Take back",
+				"takeBackBlocked": "Disconnect your own ChatGPT plan first to take this account back.",
+				"takeBackConfirmTitle": "Take back {account}?",
+				"takeBackConfirmBody": "It becomes your own plan again and stops serving {organization}'s shared work. You can share it again later.",
+				"takenBack": "The account is your own plan again",
+				"takeBackFailed": "Couldn't take the account back"
 			}
 		},
 		"chatgptPlanPool": {
 			"title": "Shared ChatGPT plans",
 			"description": "ChatGPT accounts the organization shares. Allowlisted background jobs, and where you allow it the own work of members without a plan of their own, run on them instead of the organization's AI provider.",
 			"loadFailed": "The shared ChatGPT plans could not be loaded. Reload the page to try again.",
-			"policyTitle": "Pooling policy",
-			"policyDescription": "Whether work may run on the shared accounts at all, and what happens when every plan has no usage left.",
 			"termsTitle": "Terms for sharing ChatGPT plans",
 			"termsBody": "Sharing a ChatGPT plan across an organization is governed by OpenAI's terms for that plan. By accepting, you confirm that the organization holds the accounts it connects here and may use them for its members' and its background work.",
-			"termsAcceptedOn": "Accepted on {date}.",
 			"acceptTerms": "Accept terms",
-			"termsAccepted": "Terms accepted",
 			"ownerOnly": "Only an organization owner can accept these terms.",
-			"poolingEnabled": "Run work on shared plans",
-			"poolingEnabledHelp": "Off, nothing runs on the shared accounts; they stay connected.",
-			"poolingNeedsTerms": "An organization owner must accept the terms before this can be turned on.",
-			"backgroundFallback": "When every plan is spent, background jobs",
-			"backgroundNever": "Wait for a plan to reset, then fail",
-			"backgroundAuto": "Run on the organization's AI provider",
 			"backgroundAutoWarningTitle": "Background jobs will be billed to the organization",
 			"backgroundAutoWarning": "Once every shared plan is spent, allowlisted background jobs run on the organization's own AI provider without asking anyone. Each switch to it is recorded in the audit log.",
-			"headroom": "Headroom kept for people",
-			"headroomChoice": "{percent}% of each window",
-			"headroomHelp": "Background jobs prefer accounts that still have this much of their estimated five-hour window left.",
-			"policyUpdated": "Pooling policy updated",
 			"accountsTitle": "Shared accounts",
 			"accountsDescription": "Each account's status, an estimate of its current five-hour window, and the work it serves.",
 			"emptyAccounts": "No shared account is connected yet. An organization admin connects one from a terminal:",
@@ -2589,6 +2613,14 @@
 			"enabled": "Enabled",
 			"serveInteractive": "Serves the own work of members without a plan",
 			"serveBackground": "Serves allowlisted background jobs",
+			"planType": "Plan type",
+			"planTypeDescription": "The account's ChatGPT plan. OpenAI does not report it; it sizes the usage estimate.",
+			"planTypeNotSet": "Not set",
+			"memberShare": "Fair share per member",
+			"memberShareDescription": "The most of this account's window one member's own work may use; past it their work goes to the organization's other accounts.",
+			"memberShareNone": "No cap",
+			"memberSharePercent": "{percent}%",
+			"importHeadsUp": "The first import of this history runs on your organization's shared ChatGPT plans and can use a large share of a plan's five-hour window.",
 			"accountUpdated": "Account updated",
 			"updateFailed": "The change could not be saved. Try again.",
 			"disconnect": "Disconnect",
@@ -2597,7 +2629,187 @@
 			"disconnectFailed": "The account could not be disconnected. Try again.",
 			"disconnectConfirmTitle": "Disconnect this shared account?",
 			"disconnectConfirmDescription": "{label} is signed out at OpenAI and removed from Fabric. Nothing runs on it any more; connect it again with the Fabric CLI to bring it back.",
-			"cancel": "Cancel"
+			"cancel": "Cancel",
+			"switchLabel": "{setting} — {account}",
+			"policyLink": "Routing and spend policy → AI Models",
+			"connectedBy": "Connected by {name}",
+			"connectedByYou": "Connected by you",
+			"connectedByUnknown": "Connected by a former member",
+			"takeBack": "Take back as my plan",
+			"takeBackConfirmBody": "It becomes your own plan again and stops serving this organization's shared work. You can share it again later."
+		},
+		"aiProviders": {
+			"embeddingsOnly": {
+				"badge": "Embeddings only",
+				"badgeTooltip": "This key serves document search (embeddings) and nothing else. Fabric never uses it for chat, agents or generation.",
+				"toggleLabel": "Embeddings only",
+				"toggleHint": "Never use this key for chat, agents or generation. It cannot be the default provider.",
+				"enabledToast": "Key restricted to embeddings",
+				"disabledToast": "Key may now serve all AI work",
+				"failedToast": "Failed to update the key's purpose",
+				"takenHint": "{provider} is already the embeddings-only key. Change its purpose or remove it first."
+			}
+		},
+		"chatgptPlanWindow": {
+			"lastRequestResets": "Last request {last} · resets at {reset}",
+			"lastRequestNoWindow": "Last request {last} · no open window",
+			"noOpenWindow": "No open window",
+			"usedBy": "Used by: {consumers}",
+			"otherConsumer": "Other",
+			"consumers": {
+				"teams-channel-monitor": "Teams channel monitor",
+				"slack-channel-monitor": "Slack channel monitor",
+				"daily-brief": "Daily brief",
+				"workflow-builder": "Workflow builder",
+				"meeting-transcript-sync": "Meeting transcript sync",
+				"chat-agent": "Chat",
+				"maturation": "Feature maturation",
+				"answer-recommendation": "Answer recommendations",
+				"clean-spec": "Clean spec",
+				"backlog-update": "Backlog update",
+				"document-generation": "Document generation",
+				"generate-tasks": "Task generation",
+				"enhance-feature": "Enhance feature",
+				"publishing-suite": "Publishing"
+			}
+		},
+		"aiModelsRouting": {
+			"routing": {
+				"label": "Routing",
+				"title": "How AI work runs in this organization",
+				"description": "Fabric tries these in order for each request. Embeddings and document search always use API billing.",
+				"ownPlansTitle": "Member's own ChatGPT plan",
+				"ownPlansBody": "Used for that member's own work when they have connected a plan.",
+				"ownPlansCount": "{count, plural, one {# member connected} other {# members connected}}",
+				"sharedTitle": "Shared organization accounts",
+				"sharedBody": "Serve members without a plan and allowlisted background jobs.",
+				"sharedActive": "{count} active · {percent}% of window used",
+				"sharedNone": "No accounts connected",
+				"sharedOff": "Sharing is off",
+				"sharedNotEnabled": "Not enabled for this organization",
+				"manageShared": "Manage shared accounts",
+				"apiTitle": "API billing",
+				"apiBody": "Used when no plan can serve the request.",
+				"apiBodyNone": "Not available. Requests no plan can serve will fail.",
+				"apiNone": "No API provider for LLM work",
+				"manageProviders": "Manage providers",
+				"addProvider": "Add an API provider",
+				"stepNumber": "Step {number}",
+				"sharingQuestion": "Share accounts with members and background jobs",
+				"sharingHelp": "Shared accounts serve members without a plan of their own and the allowlisted background jobs.",
+				"sharingNeedsTerms": "An organization owner must accept the terms before sharing can be turned on.",
+				"spentQuestion": "When every plan is spent",
+				"spentHelpWait": "Background jobs wait for the window to reset. Interactive work asks the member.",
+				"spentHelpAuto": "Background jobs move to API billing. Interactive work asks the member.",
+				"spentHelpNoApi": "With no API provider, everything waits for the window to reset.",
+				"spentHelpNoSharing": "Applies to the shared accounts. Turn sharing on to choose.",
+				"interactiveLabel": "Interactive work",
+				"interactiveAsk": "Ask the member",
+				"interactiveFixed": "Fixed: a spent plan's refusal already asks the member; their work never moves to API billing on its own.",
+				"backgroundLabel": "Background jobs",
+				"backgroundWait": "Wait for reset",
+				"backgroundApi": "Use API billing",
+				"headroomLabel": "Leave for people",
+				"fallbackQuestion": "If the plan stops serving a chosen model",
+				"fallbackHelpRecommended": "Fabric retries once on this model. GPT-6 Astra is the strongest and uses the most of the plan window.",
+				"fallbackHelpOther": "Fabric retries once on this model. If it isn't served either, the work stops with an error.",
+				"fallbackHelpNone": "Work that needs an unserved model stops with an error asking an admin to choose another model here.",
+				"fallbackLabel": "Fallback model",
+				"recommended": "Recommended",
+				"noFallback": "No fallback",
+				"noFallbackDescription": "Show an error and ask an admin to choose another model.",
+				"saved": "Saved",
+				"saveFailed": "Could not save the change",
+				"loadFailed": "Could not load how AI work runs here"
+			},
+			"models": {
+				"label": "Models",
+				"title": "Model for each kind of work",
+				"description": "The left column runs whenever a ChatGPT plan serves the request. The right column runs on API billing.",
+				"kindColumn": "Kind of work",
+				"planColumn": "On a ChatGPT plan",
+				"planColumnHint": "Own plans and shared accounts",
+				"apiColumn": "On API billing",
+				"apiColumnHint": "No plan, or plans spent",
+				"apiColumnHintNone": "Add a provider to choose",
+				"defaultModel": "Default · {model}",
+				"defaultPlain": "Default",
+				"newest": "Newest",
+				"servedGroup": "Served by your plans today",
+				"servedFooter": "Checked {time} · {count, plural, one {# model} other {# models}}. If a model stops being served, Fabric uses the fallback model set under Routing.",
+				"servedFooterUnchecked": "Not checked against your plans yet. If a model stops being served, Fabric uses the fallback model set under Routing.",
+				"noLongerServed": "No longer served; calls use the fallback model.",
+				"notOnPlan": "Not run on a plan",
+				"noApiProvider": "No API provider for LLM work",
+				"needsApiProvider": "Needs an API provider · not run on a plan",
+				"noModelsAvailable": "No models available",
+				"enforced": "Members can't change this",
+				"planSelectLabel": "{task} on a ChatGPT plan",
+				"apiSelectLabel": "{task} on API billing",
+				"embeddingsTitle": "Embeddings",
+				"embeddingsHint": "Document search, codebase indexing, knowledge retrieval",
+				"embeddingsWhy": "Always API billing. Plans don't run embeddings.",
+				"embeddingsVia": "via {provider}",
+				"embeddingsOffTitle": "Document search is off",
+				"embeddingsOffBody": "Plans can't run embeddings. Add an API key for embeddings only, for example OpenAI with \"Use for documents\".",
+				"addEmbeddingsKey": "Add an embeddings key",
+				"embeddingsNeedsVectorSize": "needs 1536-dimension vectors",
+				"embeddingsChangeTitle": "Change the embeddings model?",
+				"embeddingsChangeBody": "Documents indexed with the current model must be re-indexed before search finds them.",
+				"embeddingsChangeCancel": "Cancel",
+				"embeddingsChangeConfirm": "Change",
+				"tasks": {
+					"COMPLEX": {
+						"name": "Complex work",
+						"hint": "Documents, specs, analysis"
+					},
+					"REASONING": {
+						"name": "Reasoning",
+						"hint": "Multi-step problem solving"
+					},
+					"TOOL_CALLING": {
+						"name": "Tool calling",
+						"hint": "Advisor, ⌘J chat, agents, MCP tools"
+					},
+					"CHAT": {
+						"name": "Chat",
+						"hint": "Workspace document chat, Atlas assistant, Agent Builder Sidekick"
+					},
+					"EVAL": {
+						"name": "Evaluation",
+						"hint": "Scoring and review passes"
+					},
+					"SIMPLE": {
+						"name": "Simple tasks",
+						"hint": "Titles, short summaries"
+					},
+					"IMAGE": {
+						"name": "Image generation",
+						"hint": "Images from text prompts"
+					},
+					"AUDIO": {
+						"name": "Audio",
+						"hint": "Speech-to-text transcription"
+					},
+					"DECISION": {
+						"name": "Decisions",
+						"hint": "Bug or feature classification"
+					}
+				}
+			}
+		},
+		"chatgptPlanModels": {
+			"noModel": "No model available",
+			"memberNote": "Your organization chose these models; they run on your plan.",
+			"connectNote": "{organization} chose these models; connecting your plan there means they run on it.",
+			"tasks": {
+				"COMPLEX": "Complex work",
+				"REASONING": "Reasoning",
+				"TOOL_CALLING": "Tool calling",
+				"CHAT": "Chat",
+				"EVAL": "Evaluation",
+				"SIMPLE": "Simple tasks"
+			}
 		},
 		"brandKit": {
 			"title": "Brand kit",
@@ -2989,6 +3201,9 @@
 						"notSynced": "Not synced yet",
 						"applied": "Applied commit {sha} · {time} ago · {count, plural, one {# file} other {# files}}",
 						"partial": "Partially applied commit {sha} · {count, plural, one {# file kept an older version} other {# files kept an older version}}",
+						"partialBoth": "Partially applied commit {sha} · {kept, plural, one {# file kept an older version} other {# files kept an older version}} · {skipped, plural, one {# file skipped} other {# files skipped}}",
+						"partialSkipped": "Applied commit {sha} · {count, plural, one {# file skipped} other {# files skipped}}",
+						"partialNoDetail": "Partially applied commit {sha}",
 						"failed": "Sync failed part-way at commit {sha} · previous content remains"
 					},
 					"failure": {
@@ -3103,7 +3318,8 @@
 						},
 						"saveBlocked": {
 							"noRepository": "Choose a repository to sync from.",
-							"noBranch": "Enter the branch to sync from."
+							"noBranch": "Enter the branch to sync from.",
+							"branchMissing": "Branch {ref} wasn't found in the repository. Choose another branch to save."
 						},
 						"contextignoreNotice": "Each selected folder's own .contextignore is honored, the same way `fabric context push` applies it.",
 						"pruneNotice": "A file no longer selected, left out, or removed from the repository is pruned from Living Memory on the next sync.",
@@ -6027,6 +6243,7 @@
 				"title": "Coding instructions",
 				"description": "Read from the attached Git repository. Files load when you open them.",
 				"refresh": "Refresh",
+				"refreshFailed": "Refresh failed, so the page may be out of date. Try again.",
 				"refreshUpToDate": "Up to date.",
 				"refreshUpdated": "Updated to {sha7}.",
 				"configure": "Repository settings",
@@ -6042,6 +6259,7 @@
 				"connectionSaved": "Repository connection saved.",
 				"commitNotice": "Committing pushes to {ref} in {repository}. The commit names you as author with a Fabric no-reply address. Fabric reads the committed files directly from Git.",
 				"suggestionSubmitted": "Suggestion submitted. Fabric is opening the pull request.",
+				"suggestionAdded": "Suggestion added to your open pull request.",
 				"deleteSuggestionConfirm": "Suggest deleting {path}? Fabric opens a pull request in {repository} against {ref}.",
 				"configureDescription": "Choose the repository, branch, folder and exclusion rules. Files remain in Git.",
 				"saveConnection": "Save connection",
@@ -6051,7 +6269,8 @@
 				"reconnect": "Reconnect repository",
 				"notFound": "The configured repository or branch could not be found.",
 				"selectFile": "Select a file to read it from Git.",
-				"searchNoMatches": "No files match the current search or filter. Clear it to see a file here.",
+				"retryLoad": "Try again",
+				"finishEditingFirst": "Commit or discard your changes to this file before opening another one.",
 				"fileUnavailable": "This file cannot be displayed. Open it in the repository to inspect it.",
 				"copyPath": "Copy path",
 				"copyContent": "Copy loaded content",
@@ -6388,8 +6607,12 @@
 			},
 			"settingsDialog": {
 				"title": "Coding instructions settings",
-				"description": "Folders and files to leave out of every upload, one glob per line. An uploaded .fabricignore always takes priority over this list.",
-				"descriptionRepository": "Folders and files to leave out of the instructions Fabric reads from the repository, one glob per line.",
+				"description": "Choose which folders and files Fabric leaves out of every upload.",
+				"descriptionRepository": "Choose which folders and files Fabric leaves out of the instructions it reads from the repository.",
+				"textareaHint": "One glob per line. An uploaded .fabricignore always takes priority over this list.",
+				"textareaHintRepository": "One glob per line.",
+				"textareaPlaceholder": "docs/drafts/**",
+				"defaultsInEffect": "No rules are saved for this project, so these built-in defaults apply. Saving a list above replaces them.",
 				"readOnlyNotice": "You can see these settings, but only people who can change coding instructions can edit them.",
 				"textareaLabel": "Ignore globs",
 				"resetToDefaults": "Reset to defaults",
@@ -6415,7 +6638,7 @@
 				"statusLeftOut": "Left out",
 				"statusShowLeftOut": "Show",
 				"statusHideLeftOut": "Hide",
-				"statusLeftOutPartial": "Showing the first {shown}",
+				"statusLeftOutPartial": "Showing the first {shown} of {total, plural, one {# file} other {# files}}. The list stops there; the other files follow the same rules.",
 				"statusSince": "Since version {version}",
 				"statusAdded": "{count} added",
 				"statusChanged": "{count} changed",
@@ -6848,6 +7071,8 @@
 				"cancel": "Cancel",
 				"committing": "Committing to {ref}…",
 				"committed": "Committed {sha7} to {ref}",
+				"retryNeedsMerge": "{ref} changed since you started editing, or the change could not be checked against it, so your draft was not committed over it. Your draft is still here: copy it, then reopen the files to edit the latest version, or suggest it as a pull request.",
+				"rereadFailed": "The commit was made, but this page could not be refreshed. Reload the page to see the new version.",
 				"unchanged": "Nothing changed, so nothing was committed.",
 				"rejected": "The commit wasn't made: a file looks like it contains a secret, so nothing was pushed. The findings are listed on the page.",
 				"protectedTitle": "{ref} is protected, so your change was opened as a pull request instead",
@@ -6961,6 +7186,7 @@
 				"diffIncomplete": "Some file text is not shown here. Inspect the applicable versions before making a decision.",
 				"fileTooLarge": "This side is too large to show inline.",
 				"responseLimit": "This side is not shown because the inline diff reached its size limit.",
+				"sourceChanged": "This side is not shown because the repository settings changed after this suggestion was made, so its original version can no longer be read.",
 				"viewFullSide": "View full text",
 				"fullSideTitle": "{side}: {path}",
 				"filePageError": "Could not load this file text. Try again.",
@@ -6993,6 +7219,7 @@
 				"withdrawConfirmBody": "If Fabric already pushed its branch or opened its pull request, Fabric closes the pull request and deletes the branch it created.",
 				"withdrawSuccess": "Suggestion withdrawn.",
 				"withdrawClosing": "Suggestion withdrawn. Fabric is closing its pull request.",
+				"withdrawStillOpen": "Suggestion withdrawn. The pull request stays open with your other suggestions.",
 				"pullRequest": {
 					"states": {
 						"QUEUED": "Checking files",
@@ -7092,12 +7319,13 @@
 					"viewPullRequest": "View pull request",
 					"checkedAt": "Checked {time}",
 					"close": "Close pull request",
-					"closeConfirm": "Fabric closes the pull request and withdraws its {count} changes. It deletes the branch only if Fabric made every commit on it.",
+					"closeConfirm": "Fabric closes the pull request and withdraws {count, plural, one {its # change} other {its # changes}}. It deletes the branch only if Fabric made every commit on it.",
 					"closeSuccess": "Fabric is closing your pull request.",
+					"closeSuccessNoPr": "Fabric is withdrawing your suggested changes.",
 					"retryOpening": "Retry opening the pull request",
 					"retrySuccess": "Fabric is opening the pull request again.",
 					"startOver": "Start over on a new branch",
-					"startOverConfirm": "Fabric first looks for the pull request again and keeps it if it exists. If none exists, Fabric adds your {count} changes to a new branch and pull request. It does not start over if your branch has commits made outside Fabric.",
+					"startOverConfirm": "Fabric first looks for the pull request again and keeps it if it exists. If none exists, Fabric adds {count, plural, one {your # change} other {your # changes}} to a new branch and pull request. It does not start over if your branch has commits made outside Fabric.",
 					"startOverSuccess": "Fabric is starting your branch over.",
 					"stopTracking": "Stop tracking",
 					"stopTrackingConfirm": "Stop tracking this branch here? Fabric does nothing in the repository; close the pull request there yourself.",
@@ -7118,6 +7346,7 @@
 						"OPENING": "Opening your branch's pull request",
 						"OPEN": "Your branch's pull request is open",
 						"CLOSE_REQUESTED": "Closing your branch's pull request",
+						"CLOSE_REQUESTED_NO_PR": "Withdrawing your suggested changes",
 						"MERGED": "Merged",
 						"CLOSED": "Closed without merging",
 						"CANCELED": "Withdrawn"
@@ -7129,6 +7358,7 @@
 						"OPENING": "Opening the branch's pull request",
 						"OPEN": "The branch's pull request is open",
 						"CLOSE_REQUESTED": "Closing the branch's pull request",
+						"CLOSE_REQUESTED_NO_PR": "Withdrawing the suggested changes",
 						"MERGED": "Merged",
 						"CLOSED": "Closed without merging",
 						"CANCELED": "Withdrawn"
@@ -7179,6 +7409,11 @@
 		"glossyEntry": {
 			"editorLink": "Glossy version",
 			"menuItem": "Glossy version"
+		},
+		"proposalArtifactEntry": {
+			"libraryPrompt": "Client proposal prompt from the library",
+			"libraryPromptHint": "Proposals are written from the client proposal prompt your organization keeps in the prompt library, so there is no prompt to choose here.",
+			"recipientBrandDescription": "Who this project's Proposals are prepared for. Their colors shape the visuals of the next Proposal generated in this project."
 		},
 		"proposals": {
 			"source": {
@@ -7417,6 +7652,131 @@
 				"action": "Show dismissed warnings",
 				"count": "{count, plural, one {# dismissed warning} other {# dismissed warnings}}",
 				"done": "Dismissed warnings restored"
+			}
+		},
+		"proposalArtifact": {
+			"analysis": {
+				"title": "Internal Analysis",
+				"description": "Review notes on this Proposal for your team. Project guests never see them, and they are never part of the Main Document or its downloads.",
+				"loading": "Loading the Internal Analysis…",
+				"loadFailed": "The Internal Analysis couldn't be loaded.",
+				"retry": "Try again",
+				"unavailable": "The Internal Analysis isn't available.",
+				"notRun": "No Internal Analysis yet. One runs automatically after the next generation of this Proposal.",
+				"afterGeneration": "An Internal Analysis will run after this generation.",
+				"newRunAfterGeneration": "A new Internal Analysis will run after this generation. The analysis below is of the previous version.",
+				"awaiting": "The Internal Analysis of this version is on its way.",
+				"awaitingNewRun": "The Internal Analysis of this version is on its way. The analysis below is of the previous version.",
+				"pending": "Waiting to start. The Internal Analysis runs after the Main Document is complete.",
+				"running": "Analyzing the Proposal…",
+				"timedOut": "The Internal Analysis stopped responding.",
+				"failedTitle": "The Internal Analysis didn't run.",
+				"failed": {
+					"AI_PROVIDER_NOT_CONFIGURED": "No AI provider is configured for this organization. An organization admin can add one in the organization's AI settings.",
+					"PROMPT_NOT_BOUND": "No prompt is bound to the Proposal internal analysis action. An organization admin can bind one in the Prompt Library.",
+					"GUEST_TRIGGERED": "The Internal Analysis isn't run for generations started by project guests.",
+					"PROMPT_RENDER_FAILED": "The internal analysis prompt couldn't be prepared.",
+					"MODEL_ERROR": "The AI model couldn't complete the Internal Analysis.",
+					"START_FAILED": "The Internal Analysis couldn't be started.",
+					"TIMED_OUT": "The Internal Analysis took too long and was stopped.",
+					"unknown": "Something went wrong while running the Internal Analysis."
+				},
+				"failedHint": "The Main Document isn't affected. The analysis runs again with the next generation.",
+				"stale": "This analysis is of an earlier version of the document. The next generation runs a new one.",
+				"noContext": "This analysis ran without source context, so it reviewed the document on its own.",
+				"empty": "No findings. The analysis found nothing to flag in this version.",
+				"summary": "{count, plural, one {# finding} other {# findings}}",
+				"severity": {
+					"BLOCKING": "Blocking",
+					"IMPORTANT": "Important",
+					"INFORMATIONAL": "Informational"
+				},
+				"groupCount": "{count}",
+				"groupEmpty": "None.",
+				"type": {
+					"SCOPE": "Scope",
+					"COMMERCIAL": "Commercial",
+					"ASSUMPTION": "Assumption",
+					"RISK": "Risk",
+					"GAP": "Gap",
+					"SOURCE_VALIDATION": "Source validation",
+					"ARCHITECTURE": "Architecture",
+					"BRANDING": "Branding",
+					"OPPORTUNITY": "Opportunity",
+					"unknown": "Other"
+				},
+				"recommendation": "Recommendation:",
+				"section": "Section: {heading}"
+			},
+			"style": {
+				"title": "Style",
+				"description": "How the visuals in this Proposal's next generation look. Saved changes don't alter what is already generated.",
+				"loading": "Loading the style…",
+				"loadFailed": "The style couldn't be loaded.",
+				"retry": "Try again",
+				"unavailable": "The style isn't available.",
+				"readOnly": "Only project editors can change the style.",
+				"generating": "A generation is running. Changes you save now are meant for the next generation; the running one may not use them.",
+				"styleDirection": "Style direction",
+				"styleDirectionPlaceholder": "For example: calm and factual, lead with the timeline",
+				"styleDirectionHelp": "Optional guidance for the visuals.",
+				"characterCount": "{count} / {max} characters",
+				"directionTooLong": "Keep the style direction to {max} characters or fewer.",
+				"colors": "Colors",
+				"colorsHelp": "Your colors for the diagrams in the next generation.",
+				"primaryColor": "Primary color",
+				"primaryHex": "Primary color (hex)",
+				"primaryPicker": "Pick the primary color",
+				"primaryRemove": "Remove the primary color",
+				"accentColors": "Accent colors",
+				"accentColorsHelp": "Up to {max}.",
+				"accentHex": "Accent color {position} (hex)",
+				"accentPicker": "Pick accent color {position}",
+				"accentRemove": "Remove accent color {position}",
+				"addColor": "Add color",
+				"invalidColor": "Enter a color as #rrggbb, for example #1a73e8.",
+				"noColors": "No colors.",
+				"recipient": "Recipient brand",
+				"recipientHelp": "Shared by all Proposals in this project: a change here applies to every one of them.",
+				"recipientLoadFailed": "The recipient brand couldn't be loaded.",
+				"recipientConflict": "Someone else changed the recipient brand while you were editing. Their version is shown below — review it and save again.",
+				"save": "Save style",
+				"discard": "Discard changes",
+				"saving": "Saving…",
+				"unsaved": "Unsaved changes",
+				"saved": "Saved. The changes apply to the next generation of this Proposal.",
+				"regenerate": "Regenerate now",
+				"invalid": {
+					"directionTooLong": "Shorten the style direction before saving.",
+					"invalidColor": "Fix the highlighted colors before saving.",
+					"tooManyAccentColors": "Use at most {max} accent colors."
+				},
+				"styleFailed": "The style couldn't be saved. Try again.",
+				"recipientFailed": "The recipient brand couldn't be saved. Try again."
+			}
+		},
+		"proposalArtifactPage": {
+			"tabs": {
+				"label": "Proposal",
+				"main": "Main Document",
+				"analysis": "Internal Analysis",
+				"style": "Style"
+			},
+			"analysisIndicator": {
+				"pending": "Waiting",
+				"running": "Running",
+				"blocking": "{count} blocking",
+				"failed": "Failed"
+			},
+			"live": {
+				"sectionsReady": "{count, plural, one {# section ready} other {# sections ready}}",
+				"writingNext": "Writing the next section…",
+				"finishing": "Adding visuals and finishing the proposal…",
+				"previousVersion": "Previous version, shown until the first new section is ready",
+				"newDocument": "The first section appears here as soon as it is written.",
+				"stalled": "Generation is taking longer than expected.",
+				"retry": "Retry generation",
+				"retryFailed": "Generation couldn't be restarted: {message}"
 			}
 		},
 		"glossy": {

@@ -198,6 +198,11 @@ export type TourStepGates = {
 	todoList: boolean;
 	/** `GLOSSY_EDITION`, resolved for the viewer's organization (Fizzy #2589). */
 	glossyEdition: boolean;
+	/**
+	 * `PROPOSAL_ARTIFACT`, resolved for the viewer's organization (Fizzy #2801).
+	 * Drops no step: it changes what the Glossy step says (`gatedCopy`).
+	 */
+	proposalArtifact: boolean;
 };
 
 export type OnboardingStep = {
@@ -219,6 +224,18 @@ export type OnboardingStep = {
 	 * spotlight nothing and send them to a page that cannot load.
 	 */
 	runtimeGate?: keyof TourStepGates;
+	/**
+	 * Say something else while this per-organization flag is on: the copy under
+	 * `onboarding.tour.steps.<copyId>` instead of the step's own. The step —
+	 * its id, its place, its target — stays; only its words would otherwise
+	 * describe something the flag takes away. `resolveTourSteps` applies it.
+	 */
+	gatedCopy?: { runtimeGate: keyof TourStepGates; copyId: string };
+	/**
+	 * The key under `onboarding.tour.steps` the step's copy is read from, when
+	 * it is not the step's id. Set by `resolveTourSteps` from `gatedCopy`.
+	 */
+	copyId?: string;
 	/** Literal copy for ad-hoc steps (drawer "Show me"); tour steps use i18n. */
 	title?: string;
 	body?: string;
@@ -328,11 +345,18 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	// conditional even with the gate on — it sits only on a Proposal or
 	// Business Case card — so, like `proposals`, a project without one gets
 	// the centered card on the Documents tab instead of a spotlight.
+	// Fizzy #2801: under the Proposal artifact gate a Proposal offers no
+	// Glossy entry unless it already has an edition, so the step says so
+	// rather than sending the viewer to look for one.
 	{
 		id: "glossy",
 		area: "glossy",
 		icon: SparklesIcon,
 		runtimeGate: "glossyEdition",
+		gatedCopy: {
+			runtimeGate: "proposalArtifact",
+			copyId: "glossyProposalArtifact",
+		},
 		target: {
 			kind: "projectComponent",
 			tab: "documents",
@@ -462,6 +486,9 @@ type TourStepContext = {
  * from a viewer who does have projects, because a query had not settled yet,
  * is a worse failure than the repeated card.
  *
+ * A step that survives with a `gatedCopy` whose gate is on comes back with
+ * that copy's `copyId`; an unsupplied gate keeps the step's own copy.
+ *
  * Kept pure and exported so it can be tested directly over arrays, the way
  * `anchorIdsUsedBySteps` is.
  */
@@ -478,15 +505,24 @@ export function resolveTourSteps({
 		return tab === null || isTabVisible(tab);
 	});
 
+	const withCopy = (steps: readonly OnboardingStep[]) =>
+		steps.map((step) =>
+			step.gatedCopy && gates[step.gatedCopy.runtimeGate] === true
+				? { ...step, copyId: step.gatedCopy.copyId }
+				: step,
+		);
+
 	if (hasProject !== false) {
-		return visible;
+		return withCopy(visible);
 	}
 
 	const firstProjectStep = visible.find(
 		(step) => projectTabOf(step) !== null,
 	);
-	return visible.filter(
-		(step) => projectTabOf(step) === null || step === firstProjectStep,
+	return withCopy(
+		visible.filter(
+			(step) => projectTabOf(step) === null || step === firstProjectStep,
+		),
 	);
 }
 

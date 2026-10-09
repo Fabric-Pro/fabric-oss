@@ -263,6 +263,21 @@ describe("autoAnalyzeMeetingTranscriptActivity", () => {
 		expect(analyzeContextAndPropose).not.toHaveBeenCalled();
 	});
 
+	// Fizzy #2770 A4: the automatic scan is meeting-sync background work a
+	// shared ChatGPT plan account may serve; a person's click is not tagged.
+	it("tags the automatic scan as meeting-transcript-sync work, and a person's request not at all", async () => {
+		await autoAnalyzeMeetingTranscriptActivity(BASE_INPUT);
+		await autoAnalyzeMeetingTranscriptActivity({
+			...BASE_INPUT,
+			userInitiated: true,
+		});
+		const [auto, clicked] = analyzeContextAndPropose.mock.calls.map(
+			(call) => call[0] as { jobType?: string },
+		);
+		expect(auto?.jobType).toBe("meeting-transcript-sync");
+		expect(clicked).not.toHaveProperty("jobType");
+	});
+
 	it("#1814 FR7: userInitiated skips the project-flag gate entirely (both flags OFF) and still analyzes", async () => {
 		projectFindUnique.mockResolvedValue({
 			meetingTranscriptSyncEnabled: false,

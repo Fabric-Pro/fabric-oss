@@ -49,9 +49,9 @@ describe("keyless connect entries", () => {
 		}
 	});
 
-	it("adds the gateway to Claude Code over HTTP, under the name fabric", () => {
+	it("adds the gateway to Claude Code over HTTP in the checkout's scope, under the project's own name", () => {
 		expect(buildClaudeCodeCommand(ORIGIN, PROJECT_ID)).toBe(
-			`claude mcp add --transport http fabric ${GATEWAY}`,
+			`claude mcp add --scope local --transport http fabric-pleone ${GATEWAY}`,
 		);
 	});
 

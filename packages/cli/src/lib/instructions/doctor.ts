@@ -57,7 +57,7 @@ import {
 } from "../launcher.js";
 import { DEFAULT_ORIGIN } from "../origin.js";
 import { NO_LINE_FOR_ADDRESS } from "../shell-words.js";
-import type { AgentMcpFact } from "./agent-mcp-config.js";
+import { type AgentMcpFact, LEGACY_SERVER_NAME } from "./agent-mcp-config.js";
 import { extractBundle } from "./bundle.js";
 import {
 	type CheckoutReport,
@@ -85,6 +85,7 @@ import {
 	TOOL_NAME,
 } from "./checks.js";
 import { fetchFilesByUrl, PublishedChangedError } from "./file-downloads.js";
+import * as git from "./git.js";
 import {
 	buildHookArguments,
 	findSessionStartHooks,
@@ -219,6 +220,8 @@ const CLI_INSTALL_COMMAND = "npm install -g @fabricorg/cli";
 /** The read-only git inspection's whole budget. */
 const GIT_BUDGET_MS = 10_000;
 const LOCK_NOT_USED = "not used in a checkout of the repository";
+const LOCK_NOT_USED_DIRECT =
+	"not used: this project reads its repository directly, so Fabric keeps no copy here";
 const LOCK_NOT_HERE =
 	"not used here: this folder is not a checkout of the project's repository";
 const SKIP_AFTER_AUTH = "not evaluated: the API key check failed";
@@ -587,6 +590,11 @@ type AccessState =
 type SnapshotState =
 	| { kind: "unavailable"; reason: string }
 	| { kind: "unpublished" }
+	/**
+	 * A project that reads its repository directly: Fabric copies nothing, so
+	 * there is no snapshot, only the commit the server read on the branch.
+	 */
+	| { kind: "direct"; commitSha: string; ref: string }
 	| {
 			kind: "published";
 			snapshot: PublishedInstructionSnapshot;
@@ -755,7 +763,7 @@ async function resolveCheckout(
 	}
 	const { repository, snapshot } = access.published;
 	try {
-		return input.inspectCheckout
+		const report = input.inspectCheckout
 			? await input.inspectCheckout({ repository, snapshot })
 			: await inspectCheckoutWithGit({
 					destination: input.root,
@@ -764,12 +772,42 @@ async function resolveCheckout(
 					deadline: Date.now() + GIT_BUDGET_MS,
 					remote: input.remote,
 				});
+		return await withDirectContains(report, access.published);
 	} catch {
 		return reportFor(repository, {
 			class: "unknown",
 			reason: "the checkout could not be read",
 		});
 	}
+}
+
+/**
+ * A project that reads its repository directly has no snapshot to compare
+ * with, so the classifier left `contains` unsaid: ask whether HEAD holds the
+ * commit the server read.
+ */
+async function withDirectContains(
+	report: CheckoutReport,
+	published: PublishedInstructions,
+): Promise<CheckoutReport> {
+	const direct = published.direct;
+	const head = report.state?.head;
+	if (
+		report.classification.class !== "matching" ||
+		report.contains !== undefined ||
+		direct?.availability !== "READY" ||
+		head === null ||
+		head === undefined
+	) {
+		return report;
+	}
+	const answer = await git.isAncestor(
+		report.classification.toplevel,
+		direct.currentCommitSha,
+		head,
+		Date.now() + GIT_BUDGET_MS,
+	);
+	return { ...report, contains: answer.kind === "ok" ? answer.value : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1093,28 @@ function checkPublished(
 	}
 	const answer = access.published;
 	const repository = answer.sourceOfTruth === "REPOSITORY";
+	const direct = answer.direct;
+	if (repository && answer.repository && direct?.availability === "READY") {
+		const where = sanitizeDisplayText(
+			`${answer.repository.host}/${answer.repository.path}`,
+			200,
+		);
+		const commit = sanitizeDisplayText(direct.currentCommitSha, 40);
+		return [
+			makeCheck(
+				id,
+				"server",
+				"pass",
+				`read directly from ${where} at ${commit.slice(0, 12)}… on ${sanitizeDisplayText(answer.repository.ref, 200)}; Fabric copies nothing`,
+				{ repository: answer.repository },
+			),
+			{
+				kind: "direct",
+				commitSha: direct.currentCommitSha,
+				ref: answer.repository.ref,
+			},
+		];
+	}
 	// The project's CURRENT repository-sync configuration (Fizzy #2709); the
 	// API returns it regardless of whether anything is published. Named
 	// distinctly from the `repository` boolean above, which answers a
@@ -1236,7 +1296,15 @@ function checkCheckout(
 	if (snapshot.kind === "unpublished") {
 		return makeCheck(id, "machine", "skip", NOTHING_PUBLISHED);
 	}
-	const source = snapshot.snapshot.source;
+	const source: PublishedInstructionSource | undefined =
+		snapshot.kind === "direct"
+			? {
+					kind: "REPOSITORY",
+					ref: snapshot.ref,
+					commitSha: snapshot.commitSha,
+					current: true,
+				}
+			: snapshot.snapshot.source;
 	const repository =
 		access.kind === "ok" ? (access.published.repository ?? null) : null;
 	if (
@@ -1301,6 +1369,12 @@ async function checkLock(
 	if (snapshot.kind === "unpublished") {
 		return [
 			makeCheck(id, "machine", "skip", NOTHING_PUBLISHED),
+			notEvaluated,
+		];
+	}
+	if (snapshot.kind === "direct") {
+		return [
+			makeCheck(id, "machine", "skip", LOCK_NOT_USED_DIRECT),
 			notEvaluated,
 		];
 	}
@@ -1480,6 +1554,9 @@ async function checkDrift(
 	}
 	if (snapshot.kind === "unpublished") {
 		return makeCheck(id, "machine", "skip", NOTHING_PUBLISHED);
+	}
+	if (snapshot.kind === "direct") {
+		return makeCheck(id, "machine", "skip", LOCK_NOT_USED_DIRECT);
 	}
 	if (checkout !== null && checkoutClass(checkout) !== "upload") {
 		return checkoutDrift(snapshot.snapshot, checkout);
@@ -2412,39 +2489,81 @@ const AGENT_TITLE: Record<InstructionsHookTool, string> = {
 
 /** One item per coding tool: is this project's Fabric server registered with it. */
 function agentRegistrationItems(input: DoctorInput): CheckItem[] {
-	return (input.agentMcp ?? []).map((fact): CheckItem => {
-		const name = `Fabric server in ${AGENT_TITLE[fact.tool]}`;
-		switch (fact.state) {
-			case "registered":
-				return {
-					name,
-					status: "pass",
-					detail: "registered at this project's gateway",
-				};
-			case "elsewhere":
-				return {
-					name,
-					status: "warn",
-					detail: `"${fact.name}" is registered, but not at this project's gateway`,
-				};
-			case "missing":
-				return {
-					name,
-					status: "skip",
-					detail: "not registered; init registers it, unless it was run with --no-mcp or, for Codex, with no terminal to sign in at",
-				};
-			case "unreadable":
-				return {
-					name,
-					status: "skip",
-					detail: "its configuration could not be read",
-				};
-			default: {
-				const unreachable: never = fact.state;
-				return unreachable;
-			}
+	return (input.agentMcp ?? []).flatMap((fact): CheckItem[] => [
+		registrationItem(fact),
+		...registrationNotes(fact),
+	]);
+}
+
+/** What else the tool holds around the project's server, which `init` leaves as it is. */
+function registrationNotes(fact: AgentMcpFact): CheckItem[] {
+	const title = AGENT_TITLE[fact.tool];
+	const notes: CheckItem[] = [];
+	if (fact.orgWide.length > 0) {
+		notes.push({
+			name: `Organization-wide Fabric server in ${title}`,
+			status: "skip",
+			detail: `present as ${listNames(fact.orgWide.map((name) => `"${name}"`))}; left as it is, coding instructions use the project server`,
+		});
+	}
+	if (
+		fact.foreignSameName &&
+		(fact.state === "registered" || fact.state === "legacy")
+	) {
+		notes.push({
+			name: `Server named "${fact.name}" in ${title}`,
+			status: "skip",
+			detail: "not Fabric's; left as it is",
+		});
+	}
+	return notes;
+}
+
+function registrationItem(fact: AgentMcpFact): CheckItem {
+	const name = `Fabric server in ${AGENT_TITLE[fact.tool]}`;
+	if (fact.projectServers.length > 1) {
+		return {
+			name,
+			status: "warn",
+			detail: `this project's gateway is registered under ${fact.projectServers.length} names (${fact.projectServers.map((server) => `"${server}"`).join(", ")}); one is enough`,
+		};
+	}
+	switch (fact.state) {
+		case "registered":
+			return {
+				name,
+				status: "pass",
+				detail: "registered at this project's gateway",
+			};
+		case "legacy":
+			return {
+				name,
+				status: "warn",
+				detail: `registered at this project's gateway under the older name "fabric", which still works; init now registers "${fact.name}"`,
+			};
+		case "elsewhere":
+			return {
+				name,
+				status: "warn",
+				detail: `"${fact.name}" is registered, but not at this project's gateway`,
+			};
+		case "missing":
+			return {
+				name,
+				status: "skip",
+				detail: "not registered; init registers it, unless it was run with --no-mcp or, for Codex, with no terminal to sign in at",
+			};
+		case "unreadable":
+			return {
+				name,
+				status: "skip",
+				detail: "its configuration could not be read",
+			};
+		default: {
+			const unreachable: never = fact.state;
+			return unreachable;
 		}
-	});
+	}
 }
 
 /**
@@ -2453,6 +2572,20 @@ function agentRegistrationItems(input: DoctorInput): CheckItem[] {
  * person's to choose.
  */
 function agentRegistrationFix(input: DoctorInput): CheckFix | undefined {
+	const legacy = (input.agentMcp ?? []).find(
+		(fact) =>
+			fact.state === "legacy" ||
+			(fact.projectServers.length > 1 &&
+				fact.projectServers.includes(LEGACY_SERVER_NAME)),
+	);
+	if (legacy !== undefined) {
+		return fixOf(
+			legacy.state === "legacy"
+				? `optional: remove the older "fabric" server from ${AGENT_TITLE[legacy.tool]} and run init, which registers "${legacy.name}" in its place, or leave it as it is`
+				: `optional: remove the older "fabric" server from ${AGENT_TITLE[legacy.tool]}, which "${legacy.name}" already replaces, or leave it as it is`,
+			`${legacy.tool === "codex" ? "codex" : "claude"} mcp remove fabric${legacy.tool === "codex" ? "" : " --scope local"}`,
+		);
+	}
 	const first = (input.agentMcp ?? []).find(
 		(fact) => fact.state === "elsewhere",
 	);

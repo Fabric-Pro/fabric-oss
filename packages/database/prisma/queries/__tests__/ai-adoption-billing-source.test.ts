@@ -11,7 +11,10 @@ vi.mock("../../client", () => ({
 	Prisma: {},
 }));
 
-import { getAiBillingSourceByOrganization } from "../ai-adoption";
+import {
+	getAiBillingSourceByOrganization,
+	getAiUsageAdoptionSummary,
+} from "../ai-adoption";
 
 const RANGE = {
 	from: new Date("2026-09-01T00:00:00Z"),
@@ -175,5 +178,46 @@ describe("getAiBillingSourceByOrganization — plan tokens per model", () => {
 				cachedInputTokens: 100,
 			},
 		]);
+	});
+});
+
+// Fizzy #2972 AC3: a request a plan failed and another subscription served is
+// counted once, for the success.
+describe("successful calls only", () => {
+	beforeEach(() => {
+		usageGroupBy.mockReset();
+		organizationFindMany.mockReset();
+		organizationFindMany.mockResolvedValue([]);
+	});
+
+	it("keeps failed attempts out of the request, token and cost totals", async () => {
+		usageGroupBy.mockResolvedValue([
+			{
+				success: true,
+				_count: { _all: 10 },
+				_sum: { totalTokens: 1000, costMicroUsd: 50 },
+			},
+			{
+				success: false,
+				_count: { _all: 3 },
+				_sum: { totalTokens: 90, costMicroUsd: 0 },
+			},
+		]);
+		await expect(getAiUsageAdoptionSummary(RANGE)).resolves.toEqual({
+			requests: 10,
+			failedRequests: 3,
+			totalTokens: 1000,
+			costMicroUsd: 50,
+		});
+	});
+
+	it("splits only successful calls per organization", async () => {
+		mockGroups([]);
+		await getAiBillingSourceByOrganization(RANGE);
+		for (const call of usageGroupBy.mock.calls) {
+			expect(
+				(call[0] as { where: { success?: boolean } }).where.success,
+			).toBe(true);
+		}
 	});
 });

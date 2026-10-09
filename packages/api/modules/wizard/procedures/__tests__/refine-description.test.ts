@@ -60,7 +60,7 @@ vi.mock("@repo/rag", () => ({
 
 vi.mock("@repo/ai", () => ({
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
-	getRAGProviderConfig: mockGetRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mockGetRAGProviderConfig,
 	logModelUsageAsync: mockLogModelUsageAsync,
 }));
 

@@ -28,11 +28,11 @@ import {
 	assertNoOpenMigration,
 	migrationOpenFromRefusal,
 } from "./migration-freeze";
-import { canReviewInstructionProposals } from "./proposal-authorization";
 import {
 	buildNativeProposalChanges,
 	readNativeProposalFile,
 } from "./native-proposal-content";
+import { canReviewInstructionProposals } from "./proposal-authorization";
 import { wakeBranchAfterCommand } from "./proposal-branch";
 import {
 	getProposalPullRequestStatus,
@@ -192,7 +192,12 @@ type DiffFile = Awaited<ReturnType<typeof listInstructionFiles>>[number];
 
 const MAX_PROPOSAL_DIFF_INLINE_BYTES = SNAPSHOT_LIMITS.maxInlineTextBytes;
 
-type OmissionReason = "BINARY" | "FILE_TOO_LARGE" | "RESPONSE_LIMIT" | null;
+type OmissionReason =
+	| "BINARY"
+	| "FILE_TOO_LARGE"
+	| "RESPONSE_LIMIT"
+	| "SOURCE_CHANGED"
+	| null;
 
 async function buildProposalChanges(input: {
 	proposal: NonNullable<Awaited<ReturnType<typeof getInstructionProposal>>>;
@@ -749,7 +754,22 @@ export const cancelInstructionProposalProcedure = tenantProtectedProcedure
 		}
 		// `canceled` when nothing had been pushed or created, `close_requested`
 		// when Fabric now closes what it opened, null for a FABRIC proposal.
-		return { canceled: true as const, pullRequest: result.pullRequest };
+		// With a member branch, `scope` and `pullRequestStaysOpen` say which:
+		// a withdrawal of one change among several asks for that change's
+		// revert and the pull request stays open (`scope: "change"`); the
+		// branch's last live change closes the pull request (`"branch"`).
+		return {
+			canceled: true as const,
+			pullRequest: result.pullRequest,
+			...(result.scope === undefined
+				? {}
+				: {
+						scope: result.scope,
+						pullRequestStaysOpen:
+							result.pullRequest === "close_requested" &&
+							result.scope === "change",
+					}),
+		};
 	});
 
 /**

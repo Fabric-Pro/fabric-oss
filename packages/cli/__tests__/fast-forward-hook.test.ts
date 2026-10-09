@@ -217,7 +217,7 @@ describe("sync --hook in a checkout of a repository project", () => {
 		const second = await hook("sync", dest);
 
 		expect(first.stdout).toBe(
-			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md), so nothing was updated. Commit or stash them, then run: git pull --ff-only origin main\n",
+			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md), so nothing was updated. Stash them or move them to another branch; the next session start updates this checkout on its own.\n",
 		);
 		expect(second.stdout).toBe("");
 	});
@@ -333,7 +333,7 @@ describe("sync --hook in a checkout of a repository project", () => {
 
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe(
-			"fabric: coding instructions sync skipped: gave up after 10 s\n",
+			"fabric: coding instructions sync skipped: gave up after 9.5 s\n",
 		);
 		expect(fakeGit.merges).toEqual([]);
 	});

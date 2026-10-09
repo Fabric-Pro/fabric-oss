@@ -12,6 +12,7 @@
  * parent plan delivers the matching procedure.
  */
 
+import { ChatgptPlanImportNotice } from "@saas/settings/components/chatgpt-plan/ChatgptPlanImportNotice";
 import { orpcClient } from "@shared/lib/orpc-client";
 import {
 	useInfiniteQuery,
@@ -274,6 +275,8 @@ export function SlackChannelPickerDialog({
 						for backlog proposals.
 					</DialogDescription>
 				</DialogHeader>
+
+				<ChatgptPlanImportNotice />
 
 				{isLoading && (
 					<div className="flex flex-col items-center gap-3 py-10 text-center">

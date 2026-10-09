@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => ({
 	embedProjectContext: vi.fn(),
 	reembedProjectContext: vi.fn(),
 	deleteProjectContext: vi.fn(),
-	getSystemRAGProviderConfig: vi.fn(),
+	getSystemEmbeddingRAGProviderConfig: vi.fn(),
 	updateContextExtractionStatus: vi.fn(),
 	recordContextIndexingFailure: vi.fn(),
 	findUnique: vi.fn(),
@@ -42,7 +42,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/ai", () => ({
 	AIProviderNotConfiguredError: class extends Error {},
-	getSystemRAGProviderConfig: mocks.getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig:
+		mocks.getSystemEmbeddingRAGProviderConfig,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -99,7 +100,9 @@ const embedded = { success: true, qdrantId: "ctx-1-chunk-0", chunksCreated: 2 };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.getSystemRAGProviderConfig.mockResolvedValue({ apiKey: "key" });
+	mocks.getSystemEmbeddingRAGProviderConfig.mockResolvedValue({
+		apiKey: "key",
+	});
 	mocks.embedProjectContext.mockResolvedValue(embedded);
 	mocks.reembedProjectContext.mockResolvedValue(embedded);
 	mocks.deleteProjectContext.mockResolvedValue(undefined);

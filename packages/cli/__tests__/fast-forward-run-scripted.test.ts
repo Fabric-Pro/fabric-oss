@@ -55,7 +55,7 @@ vi.mock("../src/lib/instructions/git.js", () => {
 			return ok(scripted.branch);
 		},
 		headSha: async () => ok(scripted.head),
-		isClean: async () => ok(scripted.clean),
+		hasNoTrackedContentChanges: async () => ok(scripted.clean),
 		operationInProgress: async () => ok(null),
 		upstreamOf: async () => ok(scripted.upstream),
 		lockFilesPresent: async () => ok(false),
@@ -219,6 +219,19 @@ describe("a fast-forward that works", () => {
 });
 
 describe("a fetch that fails", () => {
+	it("says once per version that git is too old for the gateway, not at every session", async () => {
+		scripted.fetch.mockResolvedValue({ kind: "failed", reason: "old-git" });
+
+		const first = await run();
+		const second = await run();
+
+		expect(first.stdout[0]).toBe(
+			"fabric: coding instructions: could not fetch github.com/example-org/rules: this git is older than 2.31, which Fabric's repository transport needs. Update git.",
+		);
+		expect(second.stdout).toEqual([]);
+		expect(scripted.merge).not.toHaveBeenCalled();
+	});
+
 	it("is a line for the agent when credentials are missing, every time, and never merges", async () => {
 		scripted.fetch.mockResolvedValue({ kind: "failed", reason: "auth" });
 
@@ -292,7 +305,7 @@ describe("the budget", () => {
 		expect(result.outcome).toEqual({ kind: "deadline", stage: "fetch" });
 		expect(scripted.merge).not.toHaveBeenCalled();
 		expect(result.stderr).toEqual([
-			"fabric: coding instructions sync skipped: gave up after 10 s",
+			"fabric: coding instructions sync skipped: gave up after 9.5 s",
 		]);
 		expect(result.stdout).toEqual([BEHIND]);
 	});
@@ -344,7 +357,7 @@ describe("the budget", () => {
 		expect(scripted.merge).not.toHaveBeenCalled();
 		expect(result.stdout).toEqual([BEHIND]);
 		expect(result.stderr).toEqual([
-			"fabric: coding instructions sync skipped: gave up after 10 s",
+			"fabric: coding instructions sync skipped: gave up after 9.5 s",
 		]);
 	});
 
@@ -486,7 +499,7 @@ describe("a checkout it must leave alone", () => {
 		});
 		expect(scripted.fetch).toHaveBeenCalledTimes(1);
 		expect(result.stdout).toEqual([
-			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md, notes/a.md), so nothing was updated. Commit or stash them, then run: git pull --ff-only origin main",
+			"fabric: coding instructions: main is behind origin/main, but local changes would be overwritten (AGENTS.md, notes/a.md), so nothing was updated. Stash them or move them to another branch; the next session start updates this checkout on its own.",
 		]);
 		expect(result.stderr).toEqual([]);
 	});

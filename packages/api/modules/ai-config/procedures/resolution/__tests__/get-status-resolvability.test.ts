@@ -54,6 +54,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: mockDb,
+	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getModelForTask: (...args: unknown[]) => mockGetModelForTask(...args),
 	getProviderDisplayName: (provider: string) => provider,
 	isGatewayProvider: () => false,
@@ -245,6 +246,30 @@ describe("canResolveProvider — the credential gap", () => {
 	});
 });
 
+describe("canResolveProvider — an embeddings-only key", () => {
+	it("an organization whose only key is embeddings-only cannot resolve LLM work, and reports no default", async () => {
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			row({
+				isDefault: false,
+				isEmbeddingProvider: true,
+				purpose: "EMBEDDINGS_ONLY",
+				encryptedApiKey: "encrypted:sk-embed",
+			}),
+		]);
+
+		const result = await callInOrg();
+
+		expect(result.isConfigured).toBe(true);
+		expect(result.canResolveProvider).toBe(false);
+		expect(result.defaultProvider).toBeNull();
+		expect(result.embeddingProvider).toBe("OPENAI");
+		expect(result.configuredProviders[0]).toMatchObject({
+			isDefault: false,
+			purpose: "EMBEDDINGS_ONLY",
+		});
+	});
+});
+
 describe("canResolveProvider — the personal-key gap", () => {
 	it("a member's own key inside an organization with none makes AI resolvable", async () => {
 		mockDb.userCloudProviderConfig.findMany.mockResolvedValue([
@@ -263,12 +288,18 @@ describe("canResolveProvider — the personal-key gap", () => {
 		await callInOrg();
 
 		// `isDefault` joined this clause when the field was corrected to mirror
-		// the resolver, which reads only the default row. The part that matters
+		// the resolver, which reads only the default row, and `purpose` when the
+		// resolver began skipping embeddings-only keys. The part that matters
 		// here is unchanged: the query is scoped to this caller's `userId`, so
 		// no other member's configuration is ever read.
 		expect(mockDb.userCloudProviderConfig.findMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { userId: "user-1", isDefault: true, enabled: true },
+				where: {
+					userId: "user-1",
+					isDefault: true,
+					enabled: true,
+					purpose: { not: "EMBEDDINGS_ONLY" },
+				},
 			}),
 		);
 	});

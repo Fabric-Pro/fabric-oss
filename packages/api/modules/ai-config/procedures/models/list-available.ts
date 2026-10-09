@@ -17,11 +17,23 @@
  * 5. Return models grouped by vendor (for UI organization)
  */
 
+// Task types that require specialized providers (not all providers support these)
+import { interactivePlanModel } from "@repo/ai/lib/chatgpt-plan/pool";
 import type { AiTaskType } from "@repo/database";
 import { db, getProviderDisplayName } from "@repo/database";
-
-// Task types that require specialized providers (not all providers support these)
+import { AiProviderPurposeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
+
+// Only text work can run on a ChatGPT plan.
+const PLAN_TEXT_TASKS = new Set([
+	"SIMPLE",
+	"COMPLEX",
+	"REASONING",
+	"CHAT",
+	"TOOL_CALLING",
+	"EVAL",
+]);
+
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -62,6 +74,10 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 		z.object({
 			organizationId: z.string().nullable().optional(),
 			taskType: AiTaskTypeEnum.optional(),
+			// The work the ChatGPT plan answer is for, when it differs from
+			// the provider listing's: Advisor lists chat models but runs tool
+			// calling, so its plan "Default" must be that task's (F13).
+			planTaskType: AiTaskTypeEnum.optional(),
 		}),
 	)
 	.output(
@@ -75,6 +91,7 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 					isDefault: z.boolean(),
 					priority: z.number(),
 					enabledProviders: z.array(z.string()),
+					purpose: AiProviderPurposeSchema,
 					source: z.string(),
 				}),
 			),
@@ -126,6 +143,30 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 					}),
 				),
 			),
+			// The ChatGPT plan that runs the caller's own work of this task
+			// instead of any provider below (Fizzy #2770): the member's own
+			// plan or one the organization shares.
+			chatgptPlan: z
+				.object({
+					model: z.string(),
+					source: z.enum(["own", "shared"]),
+					// What a chat may pick instead (Fizzy #2770 F13): the
+					// models the serving plan lists.
+					models: z.array(
+						z.object({
+							canonicalName: z.string(),
+							slug: z.string(),
+							displayName: z.string(),
+							isDefault: z.boolean(),
+							newest: z.boolean(),
+						}),
+					),
+					// Every plan serving the member is spent: nothing runs
+					// until the reset, and no provider model stands in.
+					spent: z.object({ until: z.date().nullable() }).optional(),
+				})
+				.nullable()
+				.optional(),
 			// Hierarchical: Gateway → Provider → Models (for route selection UI)
 			modelsByGatewayAndProvider: z.record(
 				z.string(), // Gateway provider (e.g., VERCEL_GATEWAY, OPENAI_DIRECT)
@@ -166,6 +207,22 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 			session,
 		);
 
+		// Only for the session's own organization: the input's organizationId
+		// is unverified here, and a plan lookup must never be pointed at an
+		// organization the caller does not work in.
+		const sessionOrganizationId = resolveOrganizationId(undefined, session);
+		const planTaskType = input.planTaskType ?? input.taskType;
+		const chatgptPlan =
+			sessionOrganizationId &&
+			sessionOrganizationId === organizationId &&
+			(planTaskType === undefined || PLAN_TEXT_TASKS.has(planTaskType))
+				? await interactivePlanModel({
+						userId: user.id,
+						organizationId: sessionOrganizationId,
+						taskType: planTaskType ?? "CHAT",
+					})
+				: null;
+
 		// Get the user's configured providers
 		// For general tasks: only the DEFAULT provider's models are returned
 		// For specialized tasks (IMAGE, AUDIO, EMBEDDING): all capable providers' models are returned
@@ -191,13 +248,21 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 			input.taskType ? `(taskType: ${input.taskType})` : "(general)",
 		);
 
-		if (!defaultProvider || effectiveProviders.length === 0) {
-			// No default provider configured - return empty
+		// An embeddings-only key (Fizzy #2770 F11) is never the default, yet
+		// its embedding models must still list; it serves nothing else.
+		const embeddingsOnlyProviders = new Set(
+			allProviders
+				.filter((provider) => provider.purpose === "EMBEDDINGS_ONLY")
+				.map((provider) => provider.provider),
+		);
+		if (effectiveProviders.length === 0) {
+			// No provider configured - return empty
 			return {
 				configuredProviders: allProviders,
 				defaultProvider: null,
 				providerIds: [],
 				models: [],
+				chatgptPlan,
 				modelsByProvider: {},
 				modelsByGatewayAndProvider: {},
 			};
@@ -249,6 +314,19 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 			);
 			throw error;
 		}
+
+		// What an embeddings-only key may list is its embedding models; an
+		// LLM listing must never offer a model only that key would serve.
+		models = models
+			.map((model) => ({
+				...model,
+				providerMappings: model.providerMappings.filter(
+					(mapping) =>
+						!embeddingsOnlyProviders.has(mapping.provider) ||
+						model.suitableForTasks.includes("EMBEDDING"),
+				),
+			}))
+			.filter((model) => model.providerMappings.length > 0);
 
 		console.log(
 			"[AI Config] Found",
@@ -351,7 +429,7 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 		// Build structure for ALL effective providers (not just default)
 		// This allows the UI to display models from specialized providers (e.g., OpenAI for IMAGE)
 		for (const providerKey of effectiveProviders) {
-			const isDefault = providerKey === defaultProvider.provider;
+			const isDefault = providerKey === defaultProvider?.provider;
 			const isProviderWithSubProviders =
 				PROVIDERS_WITH_SUBPROVIDERS.has(providerKey);
 
@@ -442,6 +520,7 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 			configuredProviders: allProviders,
 			defaultProvider: defaultProviderType,
 			providerIds: effectiveProviders,
+			chatgptPlan,
 			models: models.map((model) => ({
 				id: model.id,
 				canonicalName: model.canonicalName,

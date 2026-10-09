@@ -125,7 +125,9 @@ Procedures resolve `organizationId` from the project row only. Reads use project
 
 ## Rollout
 
-The feature is behind one org-scopable flag, `GLOSSY_EDITION` (`FABRIC_FEATURE_GLOSSY_EDITION`, default off). It is the only switch — there is no kill switch, because a build writes only Glossy-owned rows. With it off, the page returns 404, every Glossy and recipient-brand procedure returns NOT_FOUND (the gate runs before the permission check), an in-flight build is left to finish, and existing editions lie dormant.
+The feature is behind one org-scopable flag, `GLOSSY_EDITION` (`FABRIC_FEATURE_GLOSSY_EDITION`, default off). It is the only switch — there is no kill switch, because a build writes only Glossy-owned rows. With it off, the page returns 404, every Glossy procedure returns NOT_FOUND (the gate runs before the permission check), as does every recipient-brand procedure unless `PROPOSAL_ARTIFACT` is on for the organization, an in-flight build is left to finish, and existing editions lie dormant.
+
+Organizations with `PROPOSAL_ARTIFACT` on generate Proposals client-ready with visuals in one run, so the Glossy entry points are hidden for a Proposal that has no edition yet; Business Case is unaffected. See [Proposal Artifact](proposal-artifact.md).
 
 **Deploy order:**
 

@@ -13,10 +13,15 @@ import {
 	buildChecksReport,
 	CHECK_IDS,
 	CHECK_TITLES,
+	type CheckId,
 	type CheckoutFacts,
 	type InstructionCheck,
 } from "./instruction-checks";
 import { resolveGatewayDirectInstructionRead } from "./instruction-direct-repository";
+import {
+	pageInstructionFiles,
+	readInstructionListLimit,
+} from "./instruction-list-page";
 import type { GatewaySession, ToolCallResult } from "./types";
 
 const INSTRUCTION_PROJECT_DENIED = "Project not found or access denied";
@@ -38,7 +43,7 @@ export async function handleDirectInstructionChecks(input: {
 	session: GatewaySession;
 	access: DirectToolAccess;
 	authCheck: InstructionCheck;
-	checkout?: CheckoutFacts;
+	checkout: CheckoutFacts | undefined;
 }): Promise<ToolCallResult | null> {
 	const direct = await resolveDirectToolRead(
 		input.projectId,
@@ -95,42 +100,44 @@ export async function handleDirectInstructionChecks(input: {
 					: "The configured repository is unavailable; no snapshot fallback was used.",
 		},
 	];
+	const resolvers: Partial<Record<CheckId, () => InstructionCheck>> =
+		direct.kind === "repository"
+			? {
+					checkout: () => {
+						const { state } = direct;
+						return instructionCheckoutCheck({
+							facts: input.checkout,
+							sourceOfTruth: "REPOSITORY",
+							repository: {
+								provider: state.repository.provider,
+								host: state.repository.host,
+								path: state.repository.path,
+								ref: state.ref,
+								rootPath: state.rootPath,
+								generation: state.generation,
+								cloneUrl: state.repository.cloneUrl,
+							},
+							source: {
+								kind: "REPOSITORY",
+								ref: state.ref,
+								commitSha: state.currentCommitSha,
+								current: true,
+							},
+						});
+					},
+				}
+			: {};
 	for (const id of CHECK_IDS) {
 		if (id === "auth" || id === "access" || id === "published") continue;
-		if (id === "checkout" && direct.kind === "repository") {
-			// The live branch head is what the checkout is compared with: the
-			// same decision the snapshot mode makes against its published commit.
-			const { state } = direct;
-			checks.push(
-				instructionCheckoutCheck({
-					facts: input.checkout,
-					sourceOfTruth: "REPOSITORY",
-					repository: {
-						provider: state.repository.provider,
-						host: state.repository.host,
-						path: state.repository.path,
-						ref: state.ref,
-						rootPath: state.rootPath,
-						generation: state.generation,
-						cloneUrl: state.repository.cloneUrl,
-					},
-					source: {
-						kind: "REPOSITORY",
-						ref: state.ref,
-						commitSha: state.currentCommitSha,
-						current: true,
-					},
-				}),
-			);
-			continue;
-		}
-		checks.push({
-			id,
-			title: CHECK_TITLES[id],
-			status: "skip",
-			evidence: "server",
-			detail: "Direct repository mode uses native Git and the agent's local setup; Fabric does not install or verify a snapshot.",
-		});
+		checks.push(
+			resolvers[id]?.() ?? {
+				id,
+				title: CHECK_TITLES[id],
+				status: "skip",
+				evidence: "server",
+				detail: "Direct repository mode uses native Git and the agent's local setup; Fabric does not install or verify a snapshot.",
+			},
+		);
 	}
 	return input.access.jsonResult({
 		...buildChecksReport(input.projectId, "mcp", checks),
@@ -286,6 +293,36 @@ export async function handleDirectInstructionList(input: {
 		}
 		const query = input.args.query as string | undefined;
 		const queryFolded = query?.toLocaleLowerCase();
+		const limit = readInstructionListLimit(input.args.limit);
+		if ("error" in limit) {
+			return input.access.errorResult(limit.error);
+		}
+		const prefix = input.args.prefix;
+		if (prefix !== undefined && typeof prefix !== "string") {
+			return input.access.errorResult("prefix must be a string.");
+		}
+		const cursor = input.args.cursor;
+		if (cursor !== undefined && typeof cursor !== "string") {
+			return input.access.errorResult("cursor must be a string.");
+		}
+		const paged = pageInstructionFiles({
+			files: listed.files.filter(
+				(file) =>
+					(kind === undefined || file.kind === kind) &&
+					(queryFolded === undefined ||
+						file.path.toLocaleLowerCase().includes(queryFolded)),
+			),
+			limit: limit.limit,
+			cursor,
+			prefix,
+			binding: {
+				generation: listed.generation,
+				commitSha: listed.commitSha,
+			},
+		});
+		if ("error" in paged) {
+			return input.access.errorResult(paged.error);
+		}
 		return input.access.jsonResult({
 			snapshot: null,
 			repository: directRepositoryIdentity(direct.state),
@@ -295,14 +332,9 @@ export async function handleDirectInstructionList(input: {
 				incomplete: listed.incomplete,
 				refusal: listed.refusal,
 			},
-			files: listed.files.filter(
-				(file) =>
-					(kind === undefined || file.kind === kind) &&
-					(queryFolded === undefined ||
-						file.path.toLocaleLowerCase().includes(queryFolded)),
-			),
-			message:
-				"These files are read directly from the pinned repository commit; no Fabric snapshot was created.",
+			files: paged.files,
+			page: paged.page,
+			message: `These files are read directly from the pinned repository commit; no Fabric snapshot was created.${paged.hint ? ` ${paged.hint}` : ""}`,
 		});
 	} catch (error) {
 		if (!(await input.access.ensureInstructionRead()))

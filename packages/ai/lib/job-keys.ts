@@ -145,6 +145,8 @@ export const AI_JOB_TYPES = [
 	"publishing-refine",
 	/** Slack channel monitor note summarization. */
 	"slack-channel-monitor",
+	/** Teams channel and chat monitor analysis into feature/bug proposals. */
+	"teams-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */
 	"security-scan",
 	/** Weave reader agents (Thread, Spindle, Weft, Warp). */

@@ -616,12 +616,56 @@ interface ConfiguredProvider {
 	displayName: string | null;
 	isDefault: boolean;
 	isEmbeddingProvider: boolean;
+	/** EMBEDDINGS_ONLY: the key serves document search and nothing else. */
+	purpose?: "ALL" | "EMBEDDINGS_ONLY";
 	source: string;
 }
 
 interface ConfigStatus {
 	configuredProviders: ConfiguredProvider[];
 	embeddingProvider: string | null;
+}
+
+/**
+ * True when the provider's key is restricted to embeddings (document search).
+ */
+export function isProviderEmbeddingsOnly(
+	providerId: string,
+	configStatus?: ConfigStatus | null,
+): boolean {
+	return (
+		configStatus?.configuredProviders.some(
+			(p) => p.provider === providerId && p.purpose === "EMBEDDINGS_ONLY",
+		) ?? false
+	);
+}
+
+/**
+ * The provider that already holds the one embeddings-only key, other than
+ * `providerId`, by display name; undefined when none does.
+ */
+export function embeddingsOnlyTakenBy(
+	configStatus: ConfigStatus | null | undefined,
+	providerId: string,
+): string | undefined {
+	const holder = configStatus?.configuredProviders.find(
+		(provider) =>
+			provider.purpose === "EMBEDDINGS_ONLY" &&
+			provider.provider !== providerId,
+	);
+	return holder ? (holder.displayName ?? holder.provider) : undefined;
+}
+
+/**
+ * Whether a provider's key can serve embeddings at all — a direct embedding
+ * provider or a gateway that routes to one — so it may be saved as
+ * "Embeddings only".
+ */
+export function isEmbeddingCapableProvider(providerId: string): boolean {
+	return [
+		...EMBEDDING_CAPABLE_PROVIDERS,
+		...GATEWAY_EMBEDDING_PROVIDERS,
+	].includes(providerId as AIProvider);
 }
 
 /**

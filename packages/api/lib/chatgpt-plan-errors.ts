@@ -1,11 +1,13 @@
 /**
- * The two ways a member's own ChatGPT plan can refuse a procedure's AI call
- * (Fizzy #2939), as the client-facing error. A procedure maps these instead of
+ * The ways a ChatGPT plan can refuse a procedure's AI call (Fizzy #2939,
+ * #2770), as the client-facing error. A procedure maps these instead of
  * treating them as "the model produced nothing": nothing ran, so nothing may
- * advance, and the person needs to know whether to wait or to reconnect.
+ * advance, and the person needs to know whether to wait, to reconnect, or to
+ * have another model chosen.
  */
 import { ORPCError } from "@orpc/client";
 import { toSubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
+import { ChatGptPlanModelNotServedError } from "@repo/ai/lib/chatgpt-plan/models";
 import {
 	CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE,
 	ChatGptPlanAuthError,
@@ -25,6 +27,7 @@ function resetPhrase(resetAt: Date | null, now: number): string {
 export function isChatGptPlanRefusal(error: unknown): boolean {
 	return (
 		error instanceof ChatGptPlanAuthError ||
+		error instanceof ChatGptPlanModelNotServedError ||
 		toSubscriptionPlanExhaustedError(error) !== null
 	);
 }
@@ -62,6 +65,12 @@ export function chatGptPlanRefusalToORPCError(
 		return new ORPCError("PRECONDITION_FAILED", {
 			message: CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE,
 			data: { code: "CHATGPT_PLAN_UNAVAILABLE" },
+		});
+	}
+	if (error instanceof ChatGptPlanModelNotServedError) {
+		return new ORPCError("PRECONDITION_FAILED", {
+			message: error.message,
+			data: { code: "CHATGPT_PLAN_MODEL_NOT_SERVED", model: error.model },
 		});
 	}
 	return null;

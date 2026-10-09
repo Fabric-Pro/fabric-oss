@@ -1,5 +1,45 @@
 # fabric-app
 
+## 1.16.20
+
+### Patch Changes
+
+- bb63a9f: Fabric now uses the AI SDK's current decision API, and OpenAI GPT-6 Luna Decisions is the default decision model for organizations that have not chosen one, with TypeSafe AI Jev still selectable in organization AI model settings.
+- bb63a9f: Cut the cold start of the API function: module routers and the REST surfaces load on demand, and the proxy no longer initialises App Insights.
+- bb63a9f: Browser test runs now enforce request deadlines independently of the transport and report navigation timeouts without raw browser call logs.
+- bb63a9f: Pick a ChatGPT plan model per chat in Advisor and ⌘J, plan defaults move to GPT-6.1 Sol and GPT-6 Luna, and embeddings-only keys work end to end.
+- bb63a9f: Shared ChatGPT plan accounts can now run meeting sync and Slack/Teams channel monitoring for their organization.
+- bb63a9f: Members can share their own ChatGPT plan with an organization and take it back without signing in again; settings navigation hints at more below.
+- bb63a9f: ChatGPT plans recognize one account across sign-ins, run on Sol and Luna by default, and show members the plan that serves their work.
+- bb63a9f: Organization admins choose which ChatGPT subscription model runs each kind of work, and members see that choice when they connect a plan.
+- bb63a9f: Shared ChatGPT plans get a unified AI Models page, fair-share caps, reconnect alerts, learned window budgets and clearer spent-plan messages.
+- bb63a9f: Shared and personal ChatGPT plans now show their tier and paid-until date even when a token refresh brings no new ID token.
+- bb63a9f: Claude Haiku 5.5 is now available in AI model settings through Anthropic, Vercel AI Gateway, OpenRouter, AWS Bedrock and Databricks.
+- bb63a9f: `fabric instructions init` names each project's MCP server `fabric-<project id>` for every coding tool, keeps existing setups working, and never stops on a server it didn't create.
+- bb63a9f: Sequential Thinking and Memory MCP servers are no longer listed in Connections or the MCP registry; existing configurations keep working.
+- bb63a9f: AI decision calls now emit OpenTelemetry spans and metrics for latency, model, confidence and fallback outcome, without recording prompt or decision content.
+- bb63a9f: PDF and Word downloads of documents now draw Markdown tables as tables, with a header row, instead of printing each row as raw text.
+- bb63a9f: ChatGPT plan follow-ups: clear spent-plan messages, safer embedding model changes, optional plan type, and a CLI connect fix.
+- bb63a9f: Fix `instructions init --clone` on GitHub-backed projects by forwarding gzip-encoded Git fetch requests, and log why the Git transport returns 503.
+- bb63a9f: Keep agentic QA browser redirects within the selected environment and screen every network hop. Report skipped interactions and blocked navigation with their actual reasons instead of allowing misleading passes.
+- bb63a9f: Update handlebars to 4.7.10 for two critical template-compilation advisories (GHSA-8r5x-fm3f-whwj, GHSA-p8wg-vrv2-v86f).
+- bb63a9f: Hide rarely used and local-only MCP servers (such as Fetch, Time, SQLite, Puppeteer, Brave Search and Google Maps) from Add from Registry.
+- bb63a9f: Coding Instructions: Close no longer fails while a pull request is being opened, and suggestion cards update within seconds.
+- bb63a9f: The coding-instructions hook now ends within its deadline, fast-forwards past line-ending-only rewrites, and takes about 2 s when current.
+- bb63a9f: Coding Instructions: each suggestion in Your proposals settles within seconds of its pull request opening or closing.
+- bb63a9f: Coding Instructions: Your proposals refreshes each suggestion as soon as its branch's pull request opens or closes.
+- bb63a9f: Fixes from a full Coding Instructions and Living Memory QA pass: MCP knowledge search works again, tighter MCP, CORS and OAuth, and many UI fixes.
+- bb63a9f: Coding Instructions: a rename stays on the file without flashing AGENTS.md, Close works right after Suggest, and dialogs no longer overflow.
+- bb63a9f: Coding Instructions: closed pull requests are classified from one evidence step, and direct repository reads share one authorization path.
+- bb63a9f: The Coding Instructions file tree now scrolls inside its own box and stays beside the open file, and the tab makes fewer redundant reads on load.
+- bb63a9f: Coding Instructions tab opens faster on large repositories, the MCP instruction list is paged, and the checkout check now matches the CLI's definition of clean.
+- bb63a9f: Coding Instructions says it is withdrawing changes when no pull request exists yet, and Living Memory's indexing line updates every few seconds.
+- bb63a9f: MCP gateway: connected-server tools need the right scope, delegated agents get read access only to tools a server declares read-only, and consent says exactly what it grants.
+- bb63a9f: Upgrade Next.js to 16.3.8 for the image-optimization server-side request forgery advisory (GHSA-cjq9-62q9-8jv4).
+- bb63a9f: The Internal Analysis tab now shows a Proposal's new analysis as soon as it is ready, without reloading the page; PDF downloads keep a table's header row with its first row and repeat it on each page, and draw symbols such as ≥ and → legibly; the prompt editor saves exactly the text shown in its plain view; and setting a prompt with no content as a default explains why it is not possible.
+- bb63a9f: Organizations can now generate a client-ready Proposal in one step: its sections appear as they are written, visuals are added in the same run, and a separate Internal Analysis with severity and type for each finding is shown to organization members only, behind a new per-organization setting.
+- bb63a9f: PDF and Word downloads no longer turn a horizontal rule into an empty bullet, a PDF heading moves to the next page with the start of its section instead of being left at the foot of a page, and a Proposal's Internal Analysis tab says its new analysis is on the way between the end of a generation and the analysis appearing.
+
 ## 1.16.19
 
 ### Patch Changes

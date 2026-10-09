@@ -592,8 +592,8 @@ export const PINNED_FETCH_ANY_CONTENT_TYPE = "*/*";
 
 export class UnsafeOutboundUrlError extends Error {
 	readonly code = "UNSAFE_OUTBOUND_URL" as const;
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "UnsafeOutboundUrlError";
 	}
 }
@@ -622,23 +622,43 @@ async function defaultLookup(hostname: string): Promise<ResolvedAddress[]> {
  * a stalled resolver would hold a pinned fetch (and anything waiting on it,
  * such as an intercepted browser request) past the caller's deadline.
  */
-function settleBefore<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	if (signal.aborted) {
-		return Promise.reject(signal.reason);
-	}
+export function settleBefore<T>(
+	promise: Promise<T>,
+	signal: AbortSignal,
+): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const onAbort = () => reject(signal.reason);
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const onAbort = () => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			cleanup();
+			reject(signal.reason);
+		};
 		signal.addEventListener("abort", onAbort, { once: true });
 		promise.then(
 			(value) => {
-				signal.removeEventListener("abort", onAbort);
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
 				resolve(value);
 			},
 			(error) => {
-				signal.removeEventListener("abort", onAbort);
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
 				reject(error);
 			},
 		);
+		if (signal.aborted) {
+			onAbort();
+		}
 	});
 }
 
@@ -674,6 +694,7 @@ export async function resolvePinnedAddress(
 	} catch (error) {
 		throw new UnsafeOutboundUrlError(
 			`Could not resolve ${hostname}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
 		);
 	}
 	if (answers.length === 0) {

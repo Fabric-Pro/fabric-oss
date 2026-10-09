@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runWithTimeout } from "../mcp-call-timeout";
+import {
+	DEFAULT_MCP_TOOL_TIMEOUT_MS,
+	effectiveMcpToolTimeoutMs,
+	FIRST_PARTY_MCP_TOOL_TIMEOUT_MS,
+	runWithTimeout,
+} from "../mcp-call-timeout";
 
 describe("runWithTimeout", () => {
 	beforeEach(() => vi.useFakeTimers());
@@ -29,5 +34,27 @@ describe("runWithTimeout", () => {
 		await expect(p).resolves.toBe("TIMEOUT");
 		reject(new Error("late failure")); // must NOT surface as unhandled rejection
 		await Promise.resolve();
+	});
+});
+
+// Fizzy #2770 D8: Fabric's own tools may run a model step on a ChatGPT plan
+// that takes longer than the ceiling meant for a hung external server.
+describe("effectiveMcpToolTimeoutMs", () => {
+	it("raises the ceiling for Fabric's own tools only", () => {
+		expect(
+			effectiveMcpToolTimeoutMs(DEFAULT_MCP_TOOL_TIMEOUT_MS, true),
+		).toBe(FIRST_PARTY_MCP_TOOL_TIMEOUT_MS);
+		expect(
+			effectiveMcpToolTimeoutMs(DEFAULT_MCP_TOOL_TIMEOUT_MS, false),
+		).toBe(DEFAULT_MCP_TOOL_TIMEOUT_MS);
+	});
+
+	it("never lowers a longer ceiling, and adds none where none was asked", () => {
+		expect(effectiveMcpToolTimeoutMs(240_000, true)).toBe(240_000);
+		expect(effectiveMcpToolTimeoutMs(undefined, true)).toBeUndefined();
+	});
+
+	it("stays under the 5-minute activity timeout", () => {
+		expect(FIRST_PARTY_MCP_TOOL_TIMEOUT_MS).toBeLessThan(5 * 60_000);
 	});
 });

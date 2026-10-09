@@ -14,13 +14,17 @@
 
 import { ORPCError } from "@orpc/server";
 import { disconnectChatGptPlanOrgAccount } from "@repo/ai/lib/chatgpt-plan/plan-credentials";
+import { backfillChatGptPlanSubscriptions } from "@repo/ai/lib/chatgpt-plan/subscription-backfill";
 import {
 	acknowledgeChatGptPlanOrgTerms,
 	type ChatGptPlanOrgAccountSummary,
 	type ChatGptPlanOrgPolicyValues,
+	getChatGptPlanCredentialStatus,
+	getChatGptPlanOrgAccountWindows,
 	getChatGptPlanOrgPolicy,
-	getChatGptPlanPoolUsageSince,
 	getChatGptPlanSourceStates,
+	getChatGptPlanWindowBudgets,
+	getUsersByIds,
 	isFeatureEnabled,
 	listChatGptPlanOrgAccounts,
 	updateChatGptPlanOrgAccount,
@@ -29,6 +33,11 @@ import {
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
+	chatGptPlanUsageEstimateSchema,
+	toChatGptPlanUsageEstimate,
+} from "../../../../lib/chatgpt-plan-usage";
+import { maskEmail } from "../../../../lib/mask-email";
+import {
 	Permissions,
 	requirePermission,
 	resolveOrganizationId,
@@ -36,11 +45,17 @@ import {
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../lib/membership";
 
-// Plus plans meter usage in rolling five-hour windows OpenAI does not expose.
-// The share below is an estimate of how much of one window Fabric alone used,
-// against a rough allowance for a Plus plan; it is labelled as an estimate.
-const PLAN_WINDOW_MS = 5 * 60 * 60_000;
-const ESTIMATED_WINDOW_INPUT_TOKENS = 750_000;
+const EMPTY_WINDOW = {
+	windowStart: null,
+	resetsAt: null,
+	requests: 0,
+	inputTokens: 0,
+	cachedInputTokens: 0,
+	outputTokens: 0,
+	lastRequestAt: null,
+	topConsumers: [],
+	inputTokensByUser: {},
+};
 
 const OWNER_ONLY_TERMS = "Only an organization owner can accept these terms.";
 
@@ -100,19 +115,7 @@ function refuseImpersonated(context: {
 	}
 }
 
-/** `ab***@example.com`: enough to tell accounts apart, not to address one. */
-function maskEmail(email: string | null): string | null {
-	if (!email) {
-		return null;
-	}
-	const at = email.lastIndexOf("@");
-	if (at <= 0) {
-		return "***";
-	}
-	return `${email.slice(0, Math.min(2, at))}***${email.slice(at)}`;
-}
-
-const tierSchema = z.enum(["UNKNOWN", "PLUS", "PRO"]);
+const tierSchema = z.enum(["UNKNOWN", "PLUS", "PRO", "FREE", "TEAM"]);
 const backgroundFallbackSchema = z.enum(["NEVER", "AUTO"]);
 
 const accountSchema = z.object({
@@ -121,20 +124,23 @@ const accountSchema = z.object({
 	maskedEmail: z.string().nullable(),
 	status: z.enum(["ACTIVE", "NEEDS_RECONNECT"]),
 	tier: tierSchema,
+	/** When the paid subscription runs out, per the sign-in (Fizzy #2770 G7). */
+	subscriptionActiveUntil: z.date().nullable(),
 	enabled: z.boolean(),
 	serveInteractive: z.boolean(),
 	serveBackground: z.boolean(),
+	/** Fair share: the most of the window one member may use, in percent; null = no cap. */
+	maxMemberSharePct: z.number().int().nullable(),
 	lastUsedAt: z.date().nullable(),
 	createdAt: z.date(),
 	/** Set while the account's window is known to be spent. */
 	coolingUntil: z.date().nullable(),
-	usageEstimate: z.object({
-		windowHours: z.number(),
-		requests: z.number(),
-		inputTokens: z.number(),
-		outputTokens: z.number(),
-		estimatedPercent: z.number(),
-	}),
+	/** Who connected it; only they may take it back as their own plan (Fizzy #2770 I1). */
+	connectedByName: z.string().nullable(),
+	viewerIsConnector: z.boolean(),
+	// An estimate of the account's current window from Fabric's own calls;
+	// labelled as one, since anything else spending the account is unseen.
+	usageEstimate: chatGptPlanUsageEstimateSchema,
 });
 
 const policySchema = z.object({
@@ -181,34 +187,49 @@ export const getChatGptPlanPoolProcedure = tenantProtectedProcedure
 		z.object({
 			accounts: z.array(accountSchema),
 			policy: policySchema,
-			viewer: z.object({ isOwner: z.boolean() }),
+			viewer: z.object({
+				isOwner: z.boolean(),
+				/** A connector with an own plan must disconnect it before taking an account back. */
+				hasOwnPlan: z.boolean(),
+			}),
 		}),
 	)
 	.handler(async ({ context }) => {
 		const caller = await requirePoolAdmin(context);
 		const { organizationId } = caller;
-		const accounts = await listChatGptPlanOrgAccounts(organizationId);
+		const accounts = await backfillChatGptPlanSubscriptions(
+			await listChatGptPlanOrgAccounts(organizationId),
+			(account) => ({
+				kind: "org",
+				organizationId,
+				accountId: account.id,
+			}),
+		);
 		const ids = accounts.map((account) => account.id);
 		const now = Date.now();
-		const [policy, usage, states] = await Promise.all([
-			getChatGptPlanOrgPolicy(organizationId),
-			getChatGptPlanPoolUsageSince({
-				organizationId,
-				accountIds: ids,
-				since: new Date(now - PLAN_WINDOW_MS),
-			}),
-			getChatGptPlanSourceStates("ORG", ids),
-		]);
+		const [policy, windows, budgets, states, connectors, ownPlan] =
+			await Promise.all([
+				getChatGptPlanOrgPolicy(organizationId),
+				getChatGptPlanOrgAccountWindows({
+					organizationId,
+					accountIds: ids,
+					now: new Date(now),
+				}),
+				getChatGptPlanWindowBudgets("ORG", ids),
+				getChatGptPlanSourceStates("ORG", ids),
+				getUsersByIds([
+					...new Set(
+						accounts.map((account) => account.connectedByUserId),
+					),
+				]),
+				getChatGptPlanCredentialStatus(context.user.id),
+			]);
 		const openUntil = new Map(
 			states.map((state) => [state.sourceId, state.openUntil]),
 		);
 		return {
 			accounts: accounts.map((account) => {
-				const used = usage.get(account.id) ?? {
-					requests: 0,
-					inputTokens: 0,
-					outputTokens: 0,
-				};
+				const window = windows.get(account.id);
 				const cooling = openUntil.get(account.id) ?? null;
 				return {
 					id: account.id,
@@ -216,29 +237,30 @@ export const getChatGptPlanPoolProcedure = tenantProtectedProcedure
 					maskedEmail: maskEmail(account.email),
 					status: account.status,
 					tier: account.tier,
+					subscriptionActiveUntil: account.subscriptionActiveUntil,
 					enabled: account.enabled,
 					serveInteractive: account.serveInteractive,
 					serveBackground: account.serveBackground,
+					maxMemberSharePct: account.maxMemberSharePct,
 					lastUsedAt: account.lastUsedAt,
 					createdAt: account.createdAt,
 					coolingUntil:
 						cooling && cooling.getTime() > now ? cooling : null,
-					usageEstimate: {
-						windowHours: PLAN_WINDOW_MS / 3_600_000,
-						...used,
-						estimatedPercent: Math.min(
-							100,
-							Math.round(
-								(used.inputTokens /
-									ESTIMATED_WINDOW_INPUT_TOKENS) *
-									100,
-							),
-						),
-					},
+					connectedByName:
+						connectors.get(account.connectedByUserId)?.name ?? null,
+					viewerIsConnector:
+						account.connectedByUserId === context.user.id,
+					usageEstimate: toChatGptPlanUsageEstimate(
+						window ?? EMPTY_WINDOW,
+						budgets.get(account.id) ?? 0,
+					),
 				};
 			}),
 			policy: toPolicyOutput(policy),
-			viewer: { isOwner: caller.role === "owner" },
+			viewer: {
+				isOwner: caller.role === "owner",
+				hasOwnPlan: ownPlan !== null,
+			},
 		};
 	});
 
@@ -248,6 +270,7 @@ const ACCOUNT_FIELDS = [
 	"serveInteractive",
 	"serveBackground",
 	"tier",
+	"maxMemberSharePct",
 ] as const;
 
 export const updateChatGptPlanPoolAccountProcedure = tenantProtectedProcedure
@@ -258,7 +281,7 @@ export const updateChatGptPlanPoolAccountProcedure = tenantProtectedProcedure
 		tags: ["Organizations"],
 		summary: "Update a shared ChatGPT plan account",
 		description:
-			"Rename a shared ChatGPT plan account, or change whether it is enabled and which work it serves",
+			"Rename a shared ChatGPT plan account, or change whether it is enabled, which work it serves and the most of its window one member may use",
 	})
 	.input(
 		z.object({
@@ -267,7 +290,16 @@ export const updateChatGptPlanPoolAccountProcedure = tenantProtectedProcedure
 			enabled: z.boolean().optional(),
 			serveInteractive: z.boolean().optional(),
 			serveBackground: z.boolean().optional(),
+			// The plan type is the admin's to state (OpenAI's ID token for
+			// Fabric's client does not carry it); UNKNOWN clears it to "Not set".
 			tier: tierSchema.optional(),
+			maxMemberSharePct: z
+				.number()
+				.int()
+				.min(1)
+				.max(100)
+				.nullable()
+				.optional(),
 		}),
 	)
 	.output(z.object({ updated: z.literal(true) }))

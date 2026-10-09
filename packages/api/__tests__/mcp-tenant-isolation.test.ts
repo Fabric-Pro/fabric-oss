@@ -60,7 +60,10 @@ const {
 // loads the real prisma singleton (PrismaPg pool) at module load, which
 // holds open handles past test completion and prevents vitest's main
 // process from exiting (vitest #3909 — the post-test hang we hit in CI).
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/hidden-mcp-server-keys",
+	)),
 	// The upsert resolves the server for the caller's tenant; these are
 	// ordinary system servers.
 	getMcpServerForTenant: async (id: string) => ({
@@ -727,5 +730,39 @@ describe("registryProcedures.list — cache bypass behavior", () => {
 				expect.objectContaining({ isSystemProvided: true }),
 			]),
 		);
+	});
+
+	it("filters out hidden system servers on cache hit while retaining non-hidden system servers and custom servers", async () => {
+		const nonHiddenSystemServer = {
+			id: "sys-github-1",
+			name: "GitHub",
+			key: "github",
+			isSystemProvided: true,
+		};
+		const cachedServers = [
+			{
+				id: "sys-mem-1",
+				name: "Memory",
+				key: "memory",
+				isSystemProvided: true,
+			},
+			nonHiddenSystemServer,
+		];
+		const customServers = [
+			{
+				id: "cust-mem-1",
+				name: "Custom Memory",
+				key: "memory",
+				isSystemProvided: false,
+			},
+		];
+
+		mockCache.getCachedSystemServers.mockResolvedValue(cachedServers);
+		mockDb.listCustomMcpServersForTenant.mockResolvedValue(customServers);
+
+		const handler = (registryProcedures.list as any)["~orpc"].handler;
+		const result = await handler({ input: {}, context: mockSession });
+
+		expect(result).toEqual([nonHiddenSystemServer, ...customServers]);
 	});
 });

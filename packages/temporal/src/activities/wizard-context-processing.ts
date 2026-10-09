@@ -5,7 +5,7 @@
  * Similar pattern to workspace-document-activities.ts for durability and offloading
  */
 
-import { getSystemRAGProviderConfig } from "@repo/ai";
+import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	db,
 	type ExtractionStatus,
@@ -217,10 +217,10 @@ export async function processWizardTempContext(
 
 		// Step 6: Check if we should embed (need AI provider)
 		let providerConfig: Awaited<
-			ReturnType<typeof getSystemRAGProviderConfig>
+			ReturnType<typeof getSystemEmbeddingRAGProviderConfig>
 		>;
 		try {
-			providerConfig = await getSystemRAGProviderConfig({
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
 				userId,
 				organizationId,
 			});
@@ -236,7 +236,7 @@ export async function processWizardTempContext(
 			};
 		}
 
-		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
+		// providerConfig.apiKey is already decrypted by getSystemEmbeddingRAGProviderConfig()
 		const apiKey = providerConfig.apiKey;
 
 		// Step 7: Chunk the content

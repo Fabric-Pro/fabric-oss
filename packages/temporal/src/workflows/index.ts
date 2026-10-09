@@ -593,6 +593,13 @@ export { projectInstructionRepositoryPollWorkflow } from "./project-instruction-
 // `export *`: only the workflow function belongs in the bundle's registry.
 export { projectInstructionRepositorySyncWorkflow } from "./project-instruction-repository-sync";
 export * from "./project-instruction-snapshot";
+// Internal Analysis of a coordinated Proposal (Fizzy #2801), started by the
+// document generation child workflow. Named: only the workflow function
+// belongs in the bundle's registry.
+export {
+	type ProposalAnalysisWorkflowResult,
+	proposalAnalysisWorkflow,
+} from "./proposal-analysis";
 // Publishing Suite 1C-2d-2a — hourly reconciliation sweep (the cycle-level
 // PENDING -> ABANDONED write and the enrolment pass that feeds it).
 export {

@@ -13,6 +13,11 @@
  *     classifier, and everything else falls through to it unchanged.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	capturedDecisionOutcomes,
+	decideWithFallbackRefusal,
+	resetCapturedDecisionOutcomes,
+} from "./test-helpers/decision-outcomes";
 
 const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 	vi.hoisted(() => {
@@ -38,7 +43,7 @@ const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 				generateObject: vi.fn(),
 				getAIModelWithMetadata: vi.fn(),
 				getAIDecisionModelWithMetadata: vi.fn(),
-				experimental_evaluate: vi.fn(),
+				experimental_decide: vi.fn(),
 				logModelUsageAsync: vi.fn(),
 				retrieveProjectRagContext: vi.fn(),
 			},
@@ -58,14 +63,26 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	AIProviderNotConfiguredError,
-	experimental_evaluate: mocks.experimental_evaluate,
+	experimental_decide: mocks.experimental_decide,
 	generateObject: mocks.generateObject,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
+	recordDecisionOutcome: await (
+		await import("./test-helpers/decision-outcomes")
+	).realRecordDecisionOutcome(),
+	createDecisionCapture: await (
+		await import("./test-helpers/decision-outcomes")
+	).realCreateDecisionCapture(),
 }));
+
+// The real telemetry helper runs against this stand-in, so tests assert the
+// outcome, model and confidence samples that would reach the metrics.
+vi.mock("@repo/observability/llm", async () =>
+	(await import("./test-helpers/decision-outcomes")).observabilityLlmMock(),
+);
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -119,6 +136,10 @@ import {
 	UNTRUSTED_DATA_END,
 	UNTRUSTED_DATA_START,
 } from "../src/activities/delivery-track/classify";
+import {
+	decideWithRefusal,
+	rejectedWithRefusal,
+} from "./test-helpers/refusing-decision-model";
 
 const baseProject = {
 	id: "proj-1",
@@ -189,7 +210,7 @@ let decisionTrackUsage = vi.fn();
 
 /** Queue one decision evaluation whose answers are keyed `story_<index>`. */
 function decisionAnswers(answers: Record<string, unknown>) {
-	mocks.experimental_evaluate.mockResolvedValue({
+	mocks.experimental_decide.mockResolvedValue({
 		answers,
 		usage: { inputTokens: 10, outputTokens: 10 },
 	});
@@ -751,7 +772,7 @@ describe("classifyDeliveryTracks", () => {
 				organizationId: "org-1",
 				projectId: "proj-1",
 			});
-			expect(mocks.experimental_evaluate).toHaveBeenCalledTimes(1);
+			expect(mocks.experimental_decide).toHaveBeenCalledTimes(1);
 			expect(mocks.generateObject).not.toHaveBeenCalled();
 			// A completed evaluation used the organization provider.
 			expect(decisionTrackUsage).toHaveBeenCalledTimes(1);
@@ -980,7 +1001,7 @@ describe("classifyDeliveryTracks", () => {
 				storyIds: ["s-1"],
 			});
 
-			expect(mocks.experimental_evaluate).not.toHaveBeenCalled();
+			expect(mocks.experimental_decide).not.toHaveBeenCalled();
 			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
 			expect(mocks.generateObject.mock.calls[0][0].prompt).toContain(
 				"Story ids in this batch: s-1",
@@ -1006,7 +1027,7 @@ describe("classifyDeliveryTracks", () => {
 
 		it("propagates a usage-limit error raised by the decision evaluation", async () => {
 			enableDecisionModel();
-			mocks.experimental_evaluate.mockRejectedValue(
+			mocks.experimental_decide.mockRejectedValue(
 				new AiUsageLimitExceededError(),
 			);
 			queueStories([dbStory({ id: "s-1" })]);
@@ -1017,9 +1038,44 @@ describe("classifyDeliveryTracks", () => {
 			expect(mocks.generateObject).not.toHaveBeenCalled();
 		});
 
+		it("treats a decision refusal as no decision and sends the batch to the language model", async () => {
+			enableDecisionModel();
+			mocks.experimental_decide.mockImplementation(decideWithRefusal);
+			queueStories([dbStory({ id: "s-1" })]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "SPIKE",
+					rationale: "x",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				...ORG_INPUT,
+				storyIds: ["s-1"],
+			});
+
+			expect(
+				await rejectedWithRefusal(
+					mocks.experimental_decide.mock.results[0]?.value,
+				),
+			).toBe(true);
+			expect(mocks.generateObject).toHaveBeenCalledTimes(1);
+			expect(out.errors).toHaveLength(0);
+			// The language model's track, never a refusal read as a track.
+			expect(out.results).toEqual([
+				expect.objectContaining({
+					storyId: "s-1",
+					track: "SPIKE",
+					source: "model",
+				}),
+			]);
+		});
+
 		it("a failed decision evaluation sends the batch on without recording an error", async () => {
 			enableDecisionModel();
-			mocks.experimental_evaluate.mockRejectedValue(
+			mocks.experimental_decide.mockRejectedValue(
 				new Error("jev unavailable"),
 			);
 			queueStories([dbStory({ id: "s-1" })]);
@@ -1046,6 +1102,193 @@ describe("classifyDeliveryTracks", () => {
 			expect(out.results).toEqual([
 				expect.objectContaining({ source: "model" }),
 			]);
+		});
+
+		describe("decision telemetry", () => {
+			function enableNamedDecisionModel() {
+				mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
+					model: { modelId: "openai/example-decider" },
+					metadata: {
+						provider: "VERCEL_GATEWAY",
+						modelString: "openai/example-decider",
+						canonicalName: "example-decider",
+					},
+					trackUsage: decisionTrackUsage,
+				});
+			}
+
+			const THREE_STORIES = [
+				dbStory({ id: "s-1", identifier: "F-001" }),
+				dbStory({
+					id: "s-2",
+					identifier: "F-002",
+					title: "Add a print view",
+				}),
+				dbStory({
+					id: "s-3",
+					identifier: "F-003",
+					title: "Rename a column",
+				}),
+			];
+
+			beforeEach(() => {
+				resetCapturedDecisionOutcomes();
+				modelReturns([
+					{
+						storyId: "s-2",
+						track: "SPECIFY",
+						rationale: "x",
+						confidence: 0.9,
+					},
+					{
+						storyId: "s-3",
+						track: "SPECIFY",
+						rationale: "y",
+						confidence: 0.9,
+					},
+				]);
+			});
+
+			it("records one outcome and confidence sample per story in a mixed batch", async () => {
+				enableNamedDecisionModel();
+				queueStories(THREE_STORIES);
+				decisionAnswers({
+					story_0: choice("SPECIFY", 0.97),
+					story_1: choice("SPIKE", 0.6),
+					story_2: { type: "choice", choice: "SPECIFY" },
+				});
+
+				await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				});
+
+				expect(capturedDecisionOutcomes).toEqual([
+					{
+						site: "delivery-track",
+						outcome: "accepted",
+						model: "example-decider",
+						confidences: [0.97],
+					},
+					{
+						site: "delivery-track",
+						outcome: "below_threshold",
+						model: "example-decider",
+						confidences: [0.6],
+					},
+					{
+						site: "delivery-track",
+						outcome: "malformed",
+						model: "example-decider",
+						confidences: [],
+					},
+				]);
+			});
+
+			it("records a failed or refused call once per story it covered", async () => {
+				enableNamedDecisionModel();
+				queueStories(THREE_STORIES);
+				mocks.experimental_decide.mockRejectedValueOnce(
+					new Error("jev unavailable"),
+				);
+				await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				});
+				queueStories(THREE_STORIES);
+				mocks.experimental_decide.mockImplementationOnce(
+					decideWithRefusal,
+				);
+				await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				});
+
+				expect(
+					capturedDecisionOutcomes.map(({ outcome, count }) => [
+						outcome,
+						count,
+					]),
+				).toEqual([
+					["failed", 3],
+					["refused", 3],
+				]);
+			});
+
+			it("records unavailable for every story of a batch when no decision model resolves", async () => {
+				mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+					new AIProviderNotConfiguredError(),
+				);
+				queueStories(THREE_STORIES);
+
+				await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				});
+
+				expect(capturedDecisionOutcomes).toEqual([
+					{
+						site: "delivery-track",
+						outcome: "unavailable",
+						model: "none",
+						confidences: [],
+						count: 3,
+					},
+				]);
+			});
+
+			it("records limit_exceeded when a usage limit stops the decision call or its resolution", async () => {
+				enableNamedDecisionModel();
+				queueStories(THREE_STORIES);
+				mocks.experimental_decide.mockRejectedValueOnce(
+					new AiUsageLimitExceededError(),
+				);
+				await expect(
+					classifyDeliveryTracks({
+						...ORG_INPUT,
+						storyIds: ["s-1", "s-2", "s-3"],
+					}),
+				).rejects.toThrow(AiUsageLimitExceededError);
+
+				mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+					new AiUsageLimitExceededError(),
+				);
+				queueStories(THREE_STORIES);
+				await expect(
+					classifyDeliveryTracks({
+						...ORG_INPUT,
+						storyIds: ["s-1", "s-2", "s-3"],
+					}),
+				).rejects.toThrow(AiUsageLimitExceededError);
+
+				expect(
+					capturedDecisionOutcomes.map(
+						({ outcome, model, count }) => [outcome, model, count],
+					),
+				).toEqual([
+					["limit_exceeded", "example-decider", 3],
+					["limit_exceeded", "none", 3],
+				]);
+			});
+
+			it("labels a refusal by the gateway fallback model with that model, for every story in the batch", async () => {
+				enableNamedDecisionModel();
+				queueStories(THREE_STORIES);
+				mocks.experimental_decide.mockImplementation(
+					decideWithFallbackRefusal,
+				);
+
+				await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				});
+
+				expect(
+					capturedDecisionOutcomes.map(
+						({ outcome, model, count }) => [outcome, model, count],
+					),
+				).toEqual([["refused", "typesafe-ai-jev", 3]]);
+			});
 		});
 	});
 });

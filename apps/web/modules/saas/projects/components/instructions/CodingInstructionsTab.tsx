@@ -1,7 +1,12 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	type Query,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -13,6 +18,7 @@ import {
 	instructionsAwaitsPublish,
 	instructionsPollInterval,
 } from "../../lib/instructions-poll";
+import { instructionsFreshness } from "../../lib/instructions-query-freshness";
 import {
 	latestSyncRunChanged,
 	localSetupRouteFor,
@@ -40,7 +46,35 @@ import {
 import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
 import { UploadFolderDialog } from "./UploadFolderDialog";
 
-const REPOSITORY_STATE_POLL_MS = 60_000;
+/** Whether a cached read was made for exactly this commit pin. */
+function isReadAtPin(
+	query: Query,
+	generation: number,
+	commitSha: string,
+): boolean {
+	const options = query.queryKey[1];
+	if (typeof options !== "object" || options === null) {
+		return false;
+	}
+	const input = "input" in options ? options.input : null;
+	return (
+		typeof input === "object" &&
+		input !== null &&
+		"commitSha" in input &&
+		input.commitSha === commitSha &&
+		"generation" in input &&
+		input.generation === generation
+	);
+}
+
+/**
+ * Whether a cached read is one of the commit-pinned repository reads (files,
+ * file bodies, commits) rather than the repository state itself.
+ */
+function isPinnedRepositoryRead(query: Query): boolean {
+	const procedure = query.queryKey[0];
+	return Array.isArray(procedure) && procedure.at(-1) !== "getState";
+}
 
 /**
  * The four fields the polling decision reads off a snapshot row. Declared
@@ -73,19 +107,77 @@ type CodingInstructionsTabProps = {
 };
 
 export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
+	const t = useTranslations("projects.codingInstructions.direct");
+	const queryClient = useQueryClient();
 	const repository = useQuery({
 		...orpc.projects.instructions.repository.getState.queryOptions({
 			input: { projectId: props.projectId },
 		}),
-		// A push made outside Fabric shows up without More > Refresh. The
-		// read asks the provider for the branch head, so it polls once a
-		// minute and only while the tab is visible (react-query pauses an
-		// interval in a hidden tab). A draft in progress keeps its own base
-		// and shows the "newer commit" notice instead of changing under it.
-		refetchOnWindowFocus: true,
-		refetchInterval: REPOSITORY_STATE_POLL_MS,
-		refetchIntervalInBackground: false,
+		// A draft in progress keeps its own base and shows the "newer commit"
+		// notice instead of changing under it.
+		...instructionsFreshness.liveRepositoryState,
 	});
+	// Re-reads the repository state after something this tab did. It always
+	// starts a fresh request (a poll that began before the action would answer
+	// with the old head) and is shared only by the callers of the same action,
+	// which run back to back: a commit announces itself through both
+	// `onChanged` and `onCommitted`.
+	type StateRead = { data: typeof repository.data; failed: boolean };
+	const postAction = useRef<Promise<StateRead> | null>(null);
+	const refreshState = () => {
+		if (postAction.current === null) {
+			postAction.current = repository.refetch().then((result) => ({
+				data: result.data,
+				failed: result.isError,
+			}));
+			setTimeout(() => {
+				postAction.current = null;
+			}, 0);
+		}
+		return postAction.current;
+	};
+	// The state read, then every read pinned to the commit it names: a pinned
+	// read is keyed by its sha, so a head that did not move would otherwise
+	// keep a stale list (settings changed what the tree shows) or a failed
+	// read. A head that moved has new keys and nothing to invalidate. When
+	// the state read fails, the pin is the last known one: a user's refresh
+	// invalidates nothing (the state it kept is the old one), but after a
+	// change this tab made (`changedTree`) the old pin's reads are stale
+	// all the same, since such a change never moves the head.
+	const rereadPin = async (changedTree = false): Promise<StateRead> => {
+		const read = await refreshState();
+		const next = read.data;
+		if ((!read.failed || changedTree) && next?.availability === "READY") {
+			await queryClient.invalidateQueries({
+				queryKey: orpc.projects.instructions.repository.key({
+					input: { projectId: props.projectId },
+				}),
+				predicate: (query) =>
+					isPinnedRepositoryRead(query) &&
+					isReadAtPin(query, next.generation, next.currentCommitSha),
+			});
+		}
+		return read;
+	};
+	const refreshWithFeedback = async () => {
+		const before = repository.data;
+		const { data: next, failed } = await rereadPin();
+		if (failed) {
+			toast.error(t("refreshFailed"));
+			return;
+		}
+		if (next?.availability !== "READY") {
+			return;
+		}
+		toast.info(
+			before?.availability === "READY" &&
+				before.currentCommitSha === next.currentCommitSha
+				? t("refreshUpToDate")
+				: t("refreshUpdated", {
+						sha7: next.currentCommitSha.slice(0, 7),
+					}),
+		);
+	};
 	if (repository.isPending) {
 		return <InstructionsTabSkeleton />;
 	}
@@ -112,7 +204,19 @@ export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
 			readOnlyMode={props.readOnlyMode ?? false}
 			state={state}
 			refreshing={repository.isFetching}
-			onRefresh={async () => (await repository.refetch()).data}
+			onRefresh={async () => {
+				const read = await refreshState();
+				if (read.failed) {
+					throw new Error("repository state read failed");
+				}
+			}}
+			onReread={async () => {
+				const read = await rereadPin(true);
+				if (read.failed) {
+					toast.error(t("refreshFailed"));
+				}
+			}}
+			onUserRefresh={refreshWithFeedback}
 		/>
 	);
 }

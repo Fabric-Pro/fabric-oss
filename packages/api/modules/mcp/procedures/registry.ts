@@ -7,6 +7,7 @@ import {
 	listMcpServersAccessibleToTenant,
 	Prisma,
 	updateCustomMcpServer,
+	withoutHiddenSystemMcpServers,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -76,7 +77,10 @@ export const registryProcedures = {
 						userId,
 						organizationId: organizationId ?? undefined,
 					});
-					return [...cachedSystemServers, ...customServers];
+					return [
+						...withoutHiddenSystemMcpServers(cachedSystemServers),
+						...customServers,
+					];
 				}
 			}
 

@@ -11,7 +11,7 @@ import {
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
 import { z } from "zod";
-import { assertGlossyEnabled } from "./glossy-feature";
+import { assertGlossyOrProposalArtifactEnabled } from "./proposal-artifact-feature";
 
 /**
  * Shared plumbing for the recipient brand procedures (Fizzy #2589, KTD19,
@@ -104,7 +104,9 @@ export function newRecipientLogoCurrentKey(projectId: string): string {
 /**
  * The gate every recipient brand procedure runs after
  * `requireProjectPermission` (KTD19), in NOT_FOUND-before-FORBIDDEN order:
- *   1. the rollout gate, resolved from the project row (NOT_FOUND when off);
+ *   1. the rollout gate, resolved from the project row: GLOSSY_EDITION or
+ *      PROPOSAL_ARTIFACT, since the Proposal artifact's Style tab edits the
+ *      same recipient brand (Fizzy #2801; NOT_FOUND when both are off);
  *   2. a trashed project, or one outside any organization, is NOT_FOUND;
  *   3. `hasProjectAccess`, the same project access the Glossy page's
  *      document procedures require (FORBIDDEN otherwise);
@@ -119,7 +121,7 @@ export async function loadRecipientBrandProject(args: {
 	userId: string;
 	write: boolean;
 }): Promise<{ organizationId: string }> {
-	await assertGlossyEnabled(args.projectId);
+	await assertGlossyOrProposalArtifactEnabled(args.projectId);
 
 	const project = await db.project.findUnique({
 		where: { id: args.projectId },

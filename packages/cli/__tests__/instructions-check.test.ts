@@ -42,6 +42,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
@@ -638,7 +639,7 @@ describe("--hook never fails", () => {
 
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: gave up after 10 s\n",
+			"fabric: coding instructions check skipped: gave up after 9.5 s\n",
 		);
 		// Comfortably inside Claude Code's own 15s hook timeout.
 		expect(elapsed).toBeLessThan(13_000);

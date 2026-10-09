@@ -68,6 +68,27 @@ function getLLMMetrics() {
 	};
 }
 
+function getDecisionMetrics() {
+	const meter = metrics.getMeter("fabric-llm");
+	return {
+		outcomeCounter: meter.createCounter("llm.decision.outcomes", {
+			description:
+				"Decision outcomes per call site: whether the typed decision was used or the site fell back",
+			unit: "1",
+		}),
+		confidenceHistogram: meter.createHistogram("llm.decision.confidence", {
+			description:
+				"Confidence (0..1) of typed decision answers per call site and answering model",
+			unit: "1",
+			advice: {
+				explicitBucketBoundaries: [
+					0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1,
+				],
+			},
+		}),
+	};
+}
+
 export interface LLMCallOptions {
 	/** LLM provider (anthropic, openai, groq, etc.) */
 	provider: string;
@@ -95,9 +116,45 @@ export interface LLMTokenUsage {
 	outputTokens?: number;
 }
 
+/** Operations an invocation span can represent. Chat is the default. */
+export type LLMInvocationOperation = "chat" | "decide";
+
+/**
+ * Span-only context for an invocation. Every field is an identifier, enum or
+ * number, bounded before it is recorded. None of it is ever a metric label:
+ * `organizationId` in particular is unbounded cardinality.
+ */
+export interface LLMInvocationContext {
+	/** Opaque organization id, never a name. */
+	organizationId?: string;
+	projectId?: string;
+	featureKey?: string;
+	jobType?: string;
+	/** Number of questions in a decide call. */
+	questionCount?: number;
+}
+
+export interface LLMInvocationOptions {
+	/** LLM provider (anthropic, openai, groq, etc.) */
+	provider: string;
+	/** Requested model identifier */
+	model: string;
+	/** Defaults to "chat". "decide" produces an `llm.decide` span. */
+	operation?: LLMInvocationOperation;
+	/** Span-only context. Omitted fields are not recorded. */
+	context?: LLMInvocationContext;
+}
+
+export interface LLMSuccessDetails {
+	/** Model that actually answered, when it can differ from the requested one. */
+	responseModel?: string;
+	/** Number of per-question refusals in a decide result. Never the refusal text. */
+	refusalCount?: number;
+}
+
 export interface LLMInvocation {
 	/** Finish the invocation successfully. Duplicate terminal signals are ignored. */
-	succeed(usage?: LLMTokenUsage): void;
+	succeed(usage?: LLMTokenUsage, details?: LLMSuccessDetails): void;
 	/** Finish the invocation as failed without recording the error message or stack. */
 	fail(error?: unknown): void;
 	/** Finish an invocation whose streaming consumer cancelled it. */
@@ -137,25 +194,64 @@ const noopInvocation: LLMInvocation = {
 	cancel() {},
 };
 
-function startInvocation(options: LLMCallOptions): LLMInvocation {
+/**
+ * Span-only attributes for the optional invocation context. A field that is
+ * absent, empty or not the expected type is omitted rather than recorded as a
+ * placeholder.
+ */
+function contextAttributes(
+	context: LLMInvocationContext | undefined,
+): Attributes {
+	const attributes: Attributes = {};
+	if (!context) {
+		return attributes;
+	}
+	const strings: Array<[string, string | undefined]> = [
+		["fabric.organization.id", context.organizationId],
+		["fabric.project.id", context.projectId],
+		["fabric.feature_key", context.featureKey],
+		["fabric.job_type", context.jobType],
+	];
+	for (const [key, value] of strings) {
+		if (typeof value === "string" && value.trim()) {
+			attributes[key] = boundedAttribute(value, "unknown");
+		}
+	}
+	if (
+		typeof context.questionCount === "number" &&
+		Number.isFinite(context.questionCount) &&
+		context.questionCount >= 0
+	) {
+		attributes["llm.decision.question_count"] = context.questionCount;
+	}
+	return attributes;
+}
+
+function startInvocation(options: LLMInvocationOptions): LLMInvocation {
 	try {
 		const provider = boundedAttribute(options.provider, "unknown");
 		const model = boundedAttribute(options.model, "unknown");
+		const operation: LLMInvocationOperation =
+			options.operation === "decide" ? "decide" : "chat";
 		const startedAt = Date.now();
-		const span = trace.getTracer("fabric-llm").startSpan("llm.chat", {
-			attributes: {
-				[LLM_SYSTEM]: provider,
-				[LLM_REQUEST_MODEL]: model,
-				[LLM_USAGE_INPUT_TOKENS]: 0,
-				[LLM_USAGE_OUTPUT_TOKENS]: 0,
-			},
-		});
+		const span = trace
+			.getTracer("fabric-llm")
+			.startSpan(`llm.${operation}`, {
+				attributes: {
+					[LLM_SYSTEM]: provider,
+					[LLM_REQUEST_MODEL]: model,
+					[LLM_USAGE_INPUT_TOKENS]: 0,
+					[LLM_USAGE_OUTPUT_TOKENS]: 0,
+					...contextAttributes(options.context),
+				},
+			});
 		let finished = false;
 
 		const finish = (
 			outcome: "success" | "error" | "cancelled",
 			usage?: LLMTokenUsage,
 			error?: unknown,
+			details?: LLMSuccessDetails,
 		) => {
 			if (finished) {
 				return;
@@ -176,6 +272,27 @@ function startInvocation(options: LLMCallOptions): LLMInvocation {
 					[LLM_USAGE_OUTPUT_TOKENS]: outputTokens,
 					"llm.outcome": outcome,
 				});
+				if (outcome === "success" && details) {
+					if (
+						typeof details.responseModel === "string" &&
+						details.responseModel.trim()
+					) {
+						span.setAttribute(
+							LLM_RESPONSE_MODEL,
+							boundedAttribute(details.responseModel, "unknown"),
+						);
+					}
+					if (
+						typeof details.refusalCount === "number" &&
+						Number.isFinite(details.refusalCount) &&
+						details.refusalCount >= 0
+					) {
+						span.setAttribute(
+							"llm.decision.refusal_count",
+							details.refusalCount,
+						);
+					}
+				}
 				if (outcome === "success") {
 					span.setStatus({ code: SpanStatusCode.OK });
 				} else if (outcome === "error") {
@@ -188,7 +305,7 @@ function startInvocation(options: LLMCallOptions): LLMInvocation {
 				requestCounter.add(1, {
 					provider,
 					model,
-					operation: "chat",
+					operation,
 					status: outcome,
 				});
 				tokensCounter.add(inputTokens, {
@@ -205,14 +322,14 @@ function startInvocation(options: LLMCallOptions): LLMInvocation {
 					errorCounter.add(1, {
 						provider,
 						model,
-						operation: "chat",
+						operation,
 						error_type: boundedErrorType(error),
 					});
 				}
 				requestDuration.record(Date.now() - startedAt, {
 					provider,
 					model,
-					operation: "chat",
+					operation,
 				});
 			} catch {
 				// Telemetry is best-effort and must never change model behavior.
@@ -226,12 +343,80 @@ function startInvocation(options: LLMCallOptions): LLMInvocation {
 		};
 
 		return {
-			succeed: (usage) => finish("success", usage),
+			succeed: (usage, details) =>
+				finish("success", usage, undefined, details),
 			fail: (error) => finish("error", undefined, error),
 			cancel: () => finish("cancelled"),
 		};
 	} catch {
 		return noopInvocation;
+	}
+}
+
+export interface LLMDecisionOutcomeRecord {
+	/** Fixed identifier of the decision call site. Never user-derived. */
+	site: string;
+	/** Closed-enum outcome. Never free text. */
+	outcome: string;
+	/** Answering model label. Bounded. */
+	model: string;
+	/** Confidence samples in 0..1; values outside that range are dropped. */
+	confidences?: readonly number[];
+	/** How many decisions share this outcome. Defaults to 1. */
+	count?: number;
+}
+
+/**
+ * Record one decision-call-site outcome. Metric labels are site, outcome and
+ * model only. Never throws.
+ */
+function recordDecisionOutcome(record: LLMDecisionOutcomeRecord): void {
+	try {
+		const site = boundedAttribute(record.site, "unknown");
+		const outcome = boundedAttribute(record.outcome, "unknown");
+		const model = boundedAttribute(record.model, "unknown");
+		const count =
+			typeof record.count === "number" &&
+			Number.isInteger(record.count) &&
+			record.count > 0
+				? record.count
+				: 1;
+		const confidences = (record.confidences ?? []).filter(
+			(value) =>
+				typeof value === "number" &&
+				Number.isFinite(value) &&
+				value >= 0 &&
+				value <= 1,
+		);
+
+		try {
+			const { confidenceHistogram, outcomeCounter } =
+				getDecisionMetrics();
+			outcomeCounter.add(count, { site, outcome, model });
+			for (const confidence of confidences) {
+				confidenceHistogram.record(confidence, { site, model });
+			}
+		} catch {
+			// Telemetry is best-effort and must never change decision behavior.
+		}
+
+		try {
+			const span = trace.getActiveSpan();
+			if (span) {
+				span.setAttribute("llm.decision.site", site);
+				span.setAttribute("llm.decision.outcome", outcome);
+				if (confidences.length > 0) {
+					span.setAttribute(
+						"llm.decision.confidence",
+						Math.min(...confidences),
+					);
+				}
+			}
+		} catch {
+			// Telemetry is best-effort and must never change decision behavior.
+		}
+	} catch {
+		// Telemetry is best-effort and must never change decision behavior.
 	}
 }
 
@@ -277,6 +462,9 @@ function createLLMSpan(span: Span, options: LLMCallOptions): LLMSpan {
 export const llmInstrumentation = {
 	/** Start a privacy-safe span whose lifetime can cross streaming callbacks. */
 	startInvocation,
+
+	/** Record how a decision call site used (or fell back from) a typed decision. */
+	recordDecisionOutcome,
 
 	/**
 	 * Trace an LLM call with automatic metrics recording

@@ -7,6 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
 	branchCardLine,
 	branchPanelPollInterval,
+	inFlightRowStates,
+	listInFlightStates,
+	nextTransitionSince,
 	offersBranchRefresh,
 	offersClose,
 	offersRetryOpening,
@@ -14,6 +17,8 @@ import {
 	offersStopTracking,
 	type ProposalBranchLite,
 	type ProposalBranchState,
+	TRANSITION_POLL_MS,
+	TRANSITION_POLL_WINDOW_MS,
 } from "../instructions-proposal-branch";
 
 const branchCopy = en.projects.codingInstructions.proposalReview.branch;
@@ -36,6 +41,13 @@ function branch(
 	};
 }
 
+const openPr = {
+	url: "https://github.com/example-org/example-repo/pull/9",
+	externalId: "9",
+	state: "OPEN",
+	lastCheckedAt: null,
+} as const;
+
 describe("branchCardLine (spec §10 Tab)", () => {
 	it.each([
 		"PENDING",
@@ -46,12 +58,41 @@ describe("branchCardLine (spec §10 Tab)", () => {
 		"CLOSED",
 		"CANCELED",
 	] as const)("has copy in en.json for state %s", (state) => {
-		const line = branchCardLine(branch({ state }));
+		const line = branchCardLine(branch({ state, pullRequest: openPr }));
 		expect(line.key).toBe(`states.${state}`);
 		expect((branchCopy.states as Record<string, string>)[state]).toBeTypeOf(
 			"string",
 		);
 	});
+
+	it.each([
+		[
+			false,
+			"states.CLOSE_REQUESTED_NO_PR",
+			"otherStates.CLOSE_REQUESTED_NO_PR",
+		],
+		[true, "states.CLOSE_REQUESTED", "otherStates.CLOSE_REQUESTED"],
+	])(
+		"a closing branch with pullRequest=%s reads %s (%s when readOnly)",
+		(hasPr, own, other) => {
+			const closing = branch({
+				state: "CLOSE_REQUESTED",
+				pullRequest: hasPr ? openPr : null,
+			});
+			expect(branchCardLine(closing).key).toBe(own);
+			expect(branchCardLine(closing, { readOnly: true }).key).toBe(other);
+			expect(
+				(branchCopy.states as Record<string, string>)[
+					own.replace("states.", "")
+				],
+			).toBeTypeOf("string");
+			expect(
+				(branchCopy.otherStates as Record<string, string>)[
+					other.replace("otherStates.", "")
+				],
+			).toBeTypeOf("string");
+		},
+	);
 
 	it("a failure replaces the state headline outright, reusing the shared failures.* copy", () => {
 		const line = branchCardLine(
@@ -80,7 +121,12 @@ describe("branchCardLine (spec §10 Tab)", () => {
 	] as const)(
 		"reads the de-personalized otherStates copy for state %s when readOnly (spec §10 reviewer visibility)",
 		(state) => {
-			const line = branchCardLine(branch({ state }), { readOnly: true });
+			const line = branchCardLine(
+				branch({ state, pullRequest: openPr }),
+				{
+					readOnly: true,
+				},
+			);
 			expect(line.key).toBe(`otherStates.${state}`);
 			expect(
 				(branchCopy.otherStates as Record<string, string>)[state],
@@ -234,5 +280,134 @@ describe("branchPanelPollInterval", () => {
 		).toBe(false);
 		expect(branchPanelPollInterval([])).toBe(false);
 		expect(branchPanelPollInterval(undefined)).toBe(false);
+	});
+});
+
+describe("fast poll while a branch is in flight", () => {
+	it("polls every 2s for PENDING, OPENING and CLOSE_REQUESTED inside the window", () => {
+		for (const state of [
+			"PENDING",
+			"OPENING",
+			"CLOSE_REQUESTED",
+		] satisfies ProposalBranchState[]) {
+			expect(
+				branchPanelPollInterval([{ state }], 1_000, 1_000 + 5_000),
+			).toBe(TRANSITION_POLL_MS);
+		}
+	});
+
+	it("keeps 10s for steady unresolved states even inside the window", () => {
+		for (const state of [
+			"OPEN",
+			"BLOCKED",
+		] satisfies ProposalBranchState[]) {
+			expect(branchPanelPollInterval([{ state }], 1_000, 2_000)).toBe(
+				10_000,
+			);
+		}
+	});
+
+	it("falls back to 10s once the window has passed", () => {
+		expect(
+			branchPanelPollInterval(
+				[{ state: "OPENING" }],
+				1_000,
+				1_000 + TRANSITION_POLL_WINDOW_MS,
+			),
+		).toBe(10_000);
+	});
+
+	it("tracks when a run of in-flight branches began", () => {
+		expect(nextTransitionSince(null, [{ state: "OPENING" }], 50)).toBe(50);
+		expect(
+			nextTransitionSince(50, [{ state: "CLOSE_REQUESTED" }], 90),
+		).toBe(50);
+		expect(nextTransitionSince(50, [{ state: "OPEN" }], 90)).toBeNull();
+		expect(nextTransitionSince(50, undefined, 90)).toBeNull();
+	});
+});
+
+describe("inFlightRowStates (proposal list rows)", () => {
+	it("maps QUEUED, OPENING and CLOSE_REQUESTED rows to their branch-like states", () => {
+		expect(
+			inFlightRowStates([
+				{ pullRequest: { state: "QUEUED" } },
+				{ pullRequest: { state: "OPENING" } },
+				{ pullRequest: { state: "CLOSE_REQUESTED" } },
+			]),
+		).toEqual([
+			{ state: "PENDING" },
+			{ state: "OPENING" },
+			{ state: "CLOSE_REQUESTED" },
+		]);
+	});
+
+	it("ignores steady, settled and pull-request-less rows", () => {
+		expect(
+			inFlightRowStates([
+				{ pullRequest: { state: "OPEN" } },
+				{ pullRequest: { state: "BLOCKED" } },
+				{ pullRequest: { state: "CLOSED" } },
+				{ pullRequest: null },
+				{},
+			]),
+		).toEqual([]);
+		expect(inFlightRowStates(undefined)).toEqual([]);
+	});
+
+	it("drives the 2s rule inside the window and hands back to the steady poll after it", () => {
+		const rows = [{ pullRequest: { state: "CLOSE_REQUESTED" } }];
+		expect(
+			branchPanelPollInterval(inFlightRowStates(rows), 1_000, 4_000),
+		).toBe(TRANSITION_POLL_MS);
+		expect(
+			branchPanelPollInterval(
+				inFlightRowStates(rows),
+				1_000,
+				1_000 + TRANSITION_POLL_WINDOW_MS,
+			),
+		).toBe(10_000);
+	});
+});
+
+describe("listInFlightStates (member proposal list)", () => {
+	const onYourBranch = [
+		{ pullRequest: { state: "OPEN" } },
+		{ pullRequest: { state: "OPEN" } },
+	];
+
+	it("polls at 2s while the branch is in flight even if every row reads steady", () => {
+		for (const state of [
+			"PENDING",
+			"OPENING",
+			"CLOSE_REQUESTED",
+		] satisfies ProposalBranchState[]) {
+			const shown = listInFlightStates(onYourBranch, [{ state }]);
+			expect(branchPanelPollInterval(shown, 1_000, 4_000)).toBe(
+				TRANSITION_POLL_MS,
+			);
+		}
+	});
+
+	it("does not speed up for a steady or settled branch with steady rows", () => {
+		for (const state of [
+			"OPEN",
+			"BLOCKED",
+			"CLOSED",
+		] satisfies ProposalBranchState[]) {
+			expect(listInFlightStates(onYourBranch, [{ state }])).toEqual([]);
+		}
+		expect(listInFlightStates(onYourBranch, undefined)).toEqual([]);
+	});
+
+	it("falls back after the window", () => {
+		const shown = listInFlightStates(onYourBranch, [{ state: "OPENING" }]);
+		expect(
+			branchPanelPollInterval(
+				shown,
+				1_000,
+				1_000 + TRANSITION_POLL_WINDOW_MS,
+			),
+		).toBe(10_000);
 	});
 });

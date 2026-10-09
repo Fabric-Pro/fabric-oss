@@ -75,8 +75,16 @@ vi.mock("@repo/database", () => ({
 		termsAcknowledgedById: "owner_1",
 		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
 	}),
+	getCachedChatGptPlanOrgPolicy: async () => ({
+		poolingEnabled: true,
+		apiFallbackInteractive: "ASK",
+		apiFallbackBackground: "NEVER",
+		headroomPct: 40,
+		termsAcknowledgedById: "owner_1",
+		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+	}),
 	listChatGptPlanOrgAccounts: async () => state.accounts,
-	getChatGptPlanPoolUsageSince: async (params: { accountIds: string[] }) =>
+	getChatGptPlanOrgAccountWindows: async (params: { accountIds: string[] }) =>
 		new Map(
 			params.accountIds
 				.filter((id) => state.usage.has(id))
@@ -86,9 +94,13 @@ vi.mock("@repo/database", () => ({
 						requests: 1,
 						inputTokens: state.usage.get(id),
 						outputTokens: 0,
+						resetsAt: null,
 					},
 				]),
 		),
+	getChatGptPlanWindowBudget: async () => 750_000,
+	getChatGptPlanWindowBudgets: async (_kind: string, ids: string[]) =>
+		new Map(ids.map((id) => [id, 750_000])),
 	getChatGptPlanSourceStates: async (kind: string, ids: string[]) =>
 		ids
 			.filter((id) => state.rows.has(`${kind}:${id}`))
@@ -110,7 +122,6 @@ vi.mock("@repo/database", () => ({
 		});
 	},
 	clearChatGptPlanSourceState: async () => {},
-	getChatGptPlanOrgAccountFirstUseSince: async () => null,
 	getUserModelPreference: async () => null,
 	getModelForTask: async () => null,
 	touchChatGptPlanCredential: async () => {},
@@ -146,6 +157,7 @@ vi.mock("../lib/chatgpt-plan/plan-credentials", () => {
 
 import { __resetChatGptPlanBreaker } from "../lib/chatgpt-plan/exhaustion-breaker";
 import { ChatGptPlanAuthError } from "../lib/chatgpt-plan/oauth";
+import { __resetChatGptPlanWindowCache } from "../lib/chatgpt-plan/window-cache";
 import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
 
 function sse(events: object[]): Response {
@@ -274,6 +286,7 @@ const ELIGIBLE = {
 };
 
 beforeEach(() => {
+	__resetChatGptPlanWindowCache();
 	__resetChatGptPlanBreaker();
 	vi.clearAllMocks();
 	state.ownUse = null;
@@ -308,6 +321,7 @@ describe("rotation before any output", () => {
 
 		expect(result.text).toBe("From B");
 		expect(calls).toEqual(["org:acc_A", "org:acc_B"]);
+		// A rotation before any output writes exactly one row (Fizzy #2972 AC3).
 		expect(state.logUsage).toHaveBeenCalledTimes(1);
 		expect(state.logUsage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -503,6 +517,19 @@ describe("a plan spent after output started", () => {
 			generateText({ model: retry.model, prompt: "Hi" }),
 		).resolves.toMatchObject({ text: "From B" });
 		expect(calls).toEqual(["org:acc_B"]);
+
+		// Fizzy #2972 AC3: the cut-off attempt is a failed row and the retry a
+		// successful one; usage totals count the success only.
+		const rows = state.logUsage.mock.calls.map(
+			(call: unknown[]) =>
+				call[0] as { success?: boolean; providerConfigId?: string },
+		);
+		expect(rows.filter((row) => row.success !== false)).toEqual([
+			expect.objectContaining({ providerConfigId: "acc_B" }),
+		]);
+		expect(rows.filter((row) => row.success === false)).toEqual([
+			expect.objectContaining({ providerConfigId: "acc_A" }),
+		]);
 	});
 
 	it("ends it with SubscriptionPlanExhaustedError when no plan remains", async () => {

@@ -134,6 +134,15 @@ const repoIntegrationTokenExpiredPayload = z.object({
 	status: z.enum(["TOKEN_EXPIRED", "ERROR"]),
 });
 
+// CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT payload — written by the `@repo/database`
+// helper `notifyChatGptPlanOrgAccountNeedsReconnect`, called from the ChatGPT
+// plan credential refresh in `@repo/ai` when a shared account flips to
+// NEEDS_RECONNECT (Fizzy #2770). Registered so the validator stays total.
+const chatGptPlanAccountNeedsReconnectPayload = z.object({
+	accountId: z.string(),
+	accountName: z.string(),
+});
+
 // PM_ATTACHMENT_SYNC_FAILED payload — written by the GitLab REST push path
 // (`packages/temporal/src/activities/pm-integration/gitlab-rest-story-sync.ts`)
 // when one or more attachments never reached the PM tool (Fizzy #1745, AC-4).
@@ -526,6 +535,8 @@ const NotificationPayloadByType = {
 	[NotificationType.TODO_ASSIGNED]: todoAssignedPayload,
 	[NotificationType.TODO_MEETING_ITEMS_ASSIGNED]:
 		todoMeetingItemsAssignedPayload,
+	[NotificationType.CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT]:
+		chatGptPlanAccountNeedsReconnectPayload,
 } as const;
 
 export function validatePayload(

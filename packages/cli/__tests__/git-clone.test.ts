@@ -215,6 +215,10 @@ describe("cloneFailureOf", () => {
 			"fatal: unable to access 'https://github.com/o/r/': Failed to connect to github.com port 443",
 			"network",
 		],
+		[
+			"unknown option: --config-env=http.x.extraHeader=FABRIC\nusage: git [-v | --version]",
+			"old-git",
+		],
 		["fatal: something git has not said before", "other"],
 		["", "other"],
 	] as const)("reads %j as %s", (stderr, expected) => {

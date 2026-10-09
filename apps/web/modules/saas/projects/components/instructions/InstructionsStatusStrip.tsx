@@ -157,7 +157,10 @@ export function InstructionsStatusStrip({
 					) : null}
 					{listing.listable && listing.partial && leftOutShown ? (
 						<span className="text-muted-foreground text-xs">
-							{t("statusLeftOutPartial", { shown })}
+							{t("statusLeftOutPartial", {
+								shown,
+								total: published.excludedCount,
+							})}
 						</span>
 					) : null}
 				</Fact>

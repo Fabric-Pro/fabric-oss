@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	capturedDecisionOutcomes,
+	decideWithFallbackRefusal,
+	resetCapturedDecisionOutcomes,
+} from "../../../../__tests__/test-helpers/decision-outcomes";
 
 const {
 	mockGenerateEmbeddings,
@@ -15,7 +20,7 @@ const {
 	mockListStoryDuplicateEmbeddings,
 	mockUpsertStoryDuplicateEmbeddings,
 	mockFindFirstTranscript,
-	mockEvaluate,
+	mockDecide,
 	mockGetDecisionModel,
 	mockDecisionTrackUsage,
 	mockHeartbeat,
@@ -46,7 +51,7 @@ const {
 		mockListStoryDuplicateEmbeddings: vi.fn(),
 		mockUpsertStoryDuplicateEmbeddings: vi.fn(),
 		mockFindFirstTranscript: vi.fn(),
-		mockEvaluate: vi.fn(),
+		mockDecide: vi.fn(),
 		mockGetDecisionModel: vi.fn(),
 		mockDecisionTrackUsage: vi.fn(),
 		mockHeartbeat: vi.fn(),
@@ -55,13 +60,27 @@ const {
 
 vi.mock("@repo/rag", () => ({ generateEmbeddings: mockGenerateEmbeddings }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	generateObject: mockGenerateObject,
 	getAIModelWithMetadata: mockGetAIModelWithMetadata,
 	resolveModelWithProvider: mockResolveModelWithProvider,
-	experimental_evaluate: mockEvaluate,
+	experimental_decide: mockDecide,
 	getAIDecisionModelWithMetadata: mockGetDecisionModel,
+	recordDecisionOutcome: await (
+		await import("../../../../__tests__/test-helpers/decision-outcomes")
+	).realRecordDecisionOutcome(),
+	createDecisionCapture: await (
+		await import("../../../../__tests__/test-helpers/decision-outcomes")
+	).realCreateDecisionCapture(),
 }));
+
+// The real telemetry helper runs against this stand-in, so tests assert the
+// outcome, model and confidence samples that would reach the metrics.
+vi.mock("@repo/observability/llm", async () =>
+	(
+		await import("../../../../__tests__/test-helpers/decision-outcomes")
+	).observabilityLlmMock(),
+);
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -110,6 +129,10 @@ vi.mock("@repo/database", async () => {
 });
 
 import { computeActionItemKey } from "@repo/database";
+import {
+	decideWithRefusal,
+	rejectedWithRefusal,
+} from "../../../../__tests__/test-helpers/refusing-decision-model";
 import {
 	buildMatchPrompt,
 	MATCH_RULE_TEXT,
@@ -170,7 +193,7 @@ function enableDecisionModel() {
 }
 
 /**
- * One `experimental_evaluate` result: the probability, per synthetic candidate
+ * One `experimental_decide` result: the probability, per synthetic candidate
  * key, that the action item DOES relate to that candidate.
  */
 function decisionAnswers(probabilities: Record<string, number>) {
@@ -612,7 +635,7 @@ describe("typed decision fast path", () => {
 
 	it("links a candidate it is confident about, without calling the language verifier", async () => {
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.97 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.97 }));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -650,7 +673,7 @@ describe("typed decision fast path", () => {
 	it("asks one boolean question per candidate over the shared match rule", async () => {
 		enableDecisionModel();
 		arrangeThreeCandidates();
-		mockEvaluate.mockResolvedValue(
+		mockDecide.mockResolvedValue(
 			decisionAnswers({
 				candidate_0: 0.5,
 				candidate_1: 0.5,
@@ -660,8 +683,8 @@ describe("typed decision fast path", () => {
 
 		await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockEvaluate).toHaveBeenCalledTimes(1);
-		const call = mockEvaluate.mock.calls[0][0];
+		expect(mockDecide).toHaveBeenCalledTimes(1);
+		const call = mockDecide.mock.calls[0][0];
 		expect(Object.keys(call.questions)).toEqual([
 			"candidate_0",
 			"candidate_1",
@@ -692,7 +715,7 @@ describe("typed decision fast path", () => {
 
 	it("stores nothing for a confident 'no' and never calls the language verifier", async () => {
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.02 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.02 }));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -706,7 +729,7 @@ describe("typed decision fast path", () => {
 
 	it("sends an uncertain candidate to the language verifier", async () => {
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.5 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.5 }));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -720,7 +743,7 @@ describe("typed decision fast path", () => {
 		// is uncertain — never a link the operator asked not to be made.
 		vi.stubEnv("MEETING_ACTION_ITEM_LINK_MIN_CONFIDENCE", "0.95");
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.92 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.92 }));
 
 		await linkMeetingActionItemsActivity(baseInput);
 
@@ -759,7 +782,7 @@ describe("typed decision fast path", () => {
 		"treats %s as uncertain and uses the language verifier",
 		async (_label, evaluation) => {
 			enableDecisionModel();
-			mockEvaluate.mockResolvedValue(evaluation);
+			mockDecide.mockResolvedValue(evaluation);
 
 			const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -772,7 +795,7 @@ describe("typed decision fast path", () => {
 	it("verifies only the candidates it could not settle", async () => {
 		enableDecisionModel();
 		arrangeThreeCandidates();
-		mockEvaluate.mockResolvedValue(
+		mockDecide.mockResolvedValue(
 			decisionAnswers({
 				candidate_0: 0.95, // yes
 				candidate_1: 0.4, // uncertain
@@ -815,7 +838,7 @@ describe("typed decision fast path", () => {
 	it("falls back to the language verifier with every candidate when the evaluation errors", async () => {
 		enableDecisionModel();
 		arrangeThreeCandidates();
-		mockEvaluate.mockRejectedValue(new Error("decision provider down"));
+		mockDecide.mockRejectedValue(new Error("decision provider down"));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -831,12 +854,34 @@ describe("typed decision fast path", () => {
 		expect(mockDecisionTrackUsage).not.toHaveBeenCalled();
 	});
 
+	it("treats a decision refusal as no decision, never as 'unrelated', and verifies every candidate", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockImplementation(decideWithRefusal);
+
+		const result = await linkMeetingActionItemsActivity(baseInput);
+
+		expect(
+			await rejectedWithRefusal(mockDecide.mock.results[0]?.value),
+		).toBe(true);
+		// A refusal read as probability 0 would settle all three candidates as
+		// "no" and skip the verifier; instead every one of them reaches it.
+		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		const prompt = mockGenerateObject.mock.calls[0][0].prompt;
+		expect(prompt).toContain("F-1");
+		expect(prompt).toContain("F-2");
+		expect(prompt).toContain("F-3");
+		expect(result.verifierFailures).toBe(0);
+		expect(result.linksCreated).toBe(1);
+		expect(mockDecisionTrackUsage).not.toHaveBeenCalled();
+	});
+
 	it("counts a decision usage limit as a verifier failure and skips that item", async () => {
 		enableDecisionModel();
 		mockFindFirstTranscript.mockResolvedValue(
 			transcript(["Ship the digest", "Fix the agenda"]),
 		);
-		mockEvaluate
+		mockDecide
 			.mockRejectedValueOnce(new AiUsageLimitExceededError())
 			.mockResolvedValueOnce(decisionAnswers({ candidate_0: 0.5 }));
 
@@ -868,7 +913,7 @@ describe("typed decision fast path", () => {
 			),
 			model: "text-embedding-3-small",
 		}));
-		mockEvaluate.mockRejectedValue(new AiUsageLimitExceededError());
+		mockDecide.mockRejectedValue(new AiUsageLimitExceededError());
 
 		await expect(linkMeetingActionItemsActivity(baseInput)).rejects.toThrow(
 			/verifier failed for all 1 action item\(s\)/,
@@ -885,14 +930,14 @@ describe("typed decision fast path", () => {
 			/AI usage limit exceeded/,
 		);
 
-		expect(mockEvaluate).not.toHaveBeenCalled();
+		expect(mockDecide).not.toHaveBeenCalled();
 		expect(mockGenerateObject).not.toHaveBeenCalled();
 		expect(mockMarkActionItemsLinked).not.toHaveBeenCalled();
 	});
 
 	it("accepts a probability of exactly the confidence floor", async () => {
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.9 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.9 }));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -911,7 +956,7 @@ describe("typed decision fast path", () => {
 		// so an answer of exactly 0.1 would escape into a needless language
 		// call.
 		enableDecisionModel();
-		mockEvaluate.mockResolvedValue(decisionAnswers({ candidate_0: 0.1 }));
+		mockDecide.mockResolvedValue(decisionAnswers({ candidate_0: 0.1 }));
 
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
@@ -930,7 +975,7 @@ describe("typed decision fast path", () => {
 		mockFindFirstTranscript.mockResolvedValue(
 			transcript(["Ship the digest", "Fix the agenda"]),
 		);
-		mockEvaluate
+		mockDecide
 			.mockResolvedValueOnce(decisionAnswers({ candidate_0: 0.97 }))
 			.mockRejectedValueOnce(new AiUsageLimitExceededError());
 
@@ -959,7 +1004,7 @@ describe("typed decision fast path", () => {
 		// heartbeatTimeout.
 		enableDecisionModel();
 		const order: string[] = [];
-		mockEvaluate.mockImplementation(async () => {
+		mockDecide.mockImplementation(async () => {
 			order.push("evaluate");
 			return decisionAnswers({ candidate_0: 0.5 });
 		});
@@ -1012,7 +1057,7 @@ describe("typed decision fast path", () => {
 		// error; this asserts what that means for the verifier prompt.
 		const result = await linkMeetingActionItemsActivity(baseInput);
 
-		expect(mockEvaluate).not.toHaveBeenCalled();
+		expect(mockDecide).not.toHaveBeenCalled();
 		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
 		expect(mockGenerateObject.mock.calls[0][0].prompt).toBe(
 			buildMatchPrompt(
@@ -1028,5 +1073,148 @@ describe("typed decision fast path", () => {
 			),
 		);
 		expect(result).toMatchObject({ linksCreated: 1, verifierFailures: 0 });
+	});
+});
+
+describe("decision telemetry", () => {
+	const SITE = "link-action-items";
+
+	beforeEach(() => {
+		resetCapturedDecisionOutcomes();
+	});
+
+	it("records one outcome and confidence sample per candidate question", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockResolvedValue({
+			...decisionAnswers({
+				candidate_0: 0.97,
+				candidate_1: 0.05,
+				candidate_2: 0.5,
+			}),
+			response: { modelId: "jev-1" },
+		});
+
+		await linkMeetingActionItemsActivity(baseInput);
+
+		// A confident yes and a confident no both use the decision; the
+		// middling answer goes to the language verifier.
+		expect(mockGenerateObject).toHaveBeenCalledOnce();
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: SITE,
+				outcome: "accepted",
+				model: "jev-1",
+				confidences: [0.97],
+			},
+			{
+				site: SITE,
+				outcome: "accepted",
+				model: "jev-1",
+				confidences: [0.95],
+			},
+			{
+				site: SITE,
+				outcome: "below_threshold",
+				model: "jev-1",
+				confidences: [0.5],
+			},
+		]);
+	});
+
+	it("records malformed for a boolean answer with no readable probability", async () => {
+		enableDecisionModel();
+		mockDecide.mockResolvedValue({
+			answers: { candidate_0: { type: "boolean" } },
+		});
+
+		await linkMeetingActionItemsActivity(baseInput);
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: SITE,
+				outcome: "malformed",
+				model: "jev-1",
+				confidences: [],
+			},
+		]);
+	});
+
+	it("records a failed or refused call once per candidate it covered, and the fallback still runs", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockRejectedValueOnce(new Error("gateway timeout"));
+		await linkMeetingActionItemsActivity(baseInput);
+		mockDecide.mockImplementationOnce(decideWithRefusal);
+		await linkMeetingActionItemsActivity(baseInput);
+
+		expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, count }) => [
+				outcome,
+				count,
+			]),
+		).toEqual([
+			["failed", 3],
+			["refused", 3],
+		]);
+	});
+
+	it("records limit_exceeded for a usage limit at the decision call and at resolution", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockRejectedValueOnce(new AiUsageLimitExceededError());
+		await expect(
+			linkMeetingActionItemsActivity(baseInput),
+		).rejects.toThrow();
+		mockGetDecisionModel.mockRejectedValueOnce(
+			new AiUsageLimitExceededError(),
+		);
+		await expect(
+			linkMeetingActionItemsActivity(baseInput),
+		).rejects.toThrow();
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([
+			["limit_exceeded", "jev-1", 3],
+			["limit_exceeded", "none", undefined],
+		]);
+	});
+
+	it("records unavailable per candidate when the organization has no decision model", async () => {
+		arrangeThreeCandidates();
+
+		await linkMeetingActionItemsActivity(baseInput);
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: SITE,
+				outcome: "unavailable",
+				model: "none",
+				confidences: [],
+				count: 3,
+			},
+		]);
+	});
+
+	it("labels a refusal by the gateway fallback model with that model, once per candidate", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockImplementation(decideWithFallbackRefusal);
+
+		await linkMeetingActionItemsActivity(baseInput);
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([["refused", "typesafe-ai-jev", 3]]);
 	});
 });

@@ -23,6 +23,7 @@ import { signInWithForm } from "../browser-driver";
 function makePage(options: {
 	formAtUrl: string;
 	abortFirstAppNavigation?: boolean;
+	initialNavigationError?: Error;
 }) {
 	const visited: string[] = [];
 	let current = "";
@@ -50,6 +51,9 @@ function makePage(options: {
 		page: {
 			goto: vi.fn(async (url: string) => {
 				visited.push(url);
+				if (options.initialNavigationError) {
+					throw options.initialNavigationError;
+				}
 				if (
 					options.abortFirstAppNavigation &&
 					url !== options.formAtUrl &&
@@ -65,6 +69,7 @@ function makePage(options: {
 			getByRole: () => field(() => true),
 			keyboard: { press: vi.fn(async () => undefined) },
 			waitForLoadState: vi.fn(async () => undefined),
+			waitForFunction: vi.fn(async () => undefined),
 		} as never,
 	};
 }
@@ -153,5 +158,28 @@ describe("signInWithForm", () => {
 		// Names the URL actually visited, and the field that would fix it.
 		expect(result.detail).toContain(APP);
 		expect(result.detail).toContain("sign-in URL");
+	});
+
+	it("does not expose a raw navigation timeout when the sign-in page cannot open", async () => {
+		const { page } = makePage({
+			formAtUrl: LOGIN,
+			initialNavigationError: new Error(
+				'page.goto: Timeout 30000ms exceeded. navigating to "https://app.example.com/auth/login?token=fixture-secret"',
+			),
+		});
+
+		const result = await signInWithForm(
+			page,
+			APP,
+			"user@example.com",
+			"pw",
+			"https://app.example.com/auth/login?token=fixture-secret",
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.detail).toContain("runner's own network");
+		expect(result.detail).not.toContain("page.goto");
+		expect(result.detail).not.toContain("fixture-secret");
+		expect(result.detail).not.toContain("TLS");
 	});
 });

@@ -349,7 +349,12 @@ every file the lock names and reports the ones that drifted — edited,
 deleted, chmod-ed or replaced by a symlink. It stays informational and still
 exits 0. A file whose edit an earlier `sync` kept is reported as `(kept)`, and
 the report names `fabric instructions sync --repair` as the way to replace it.
-`--format json` also lists those paths as `keptEdited`.
+`--format json` also lists those paths as `keptEdited`. For a project that reads
+its repository directly there is no copy to hash: `--verify` says so in one line
+(JSON: `verified: false`) instead of silently doing nothing, and the JSON
+`checkout` block carries the same verdict as the text (`verdict`: `current`,
+`behind`, `diverged`, `not-fetched`, `unknown` or `no-checkout`, with the line
+the text prints, or `null` when current).
 
 ### `fabric instructions sync [--project <id>] [--dest <dir>] [--dry-run] [--repair] [--hook]`
 
@@ -703,8 +708,10 @@ node <config folder>/cli/<deployment>/fabric.mjs instructions check --project <i
      from the next session.
 
   The step is bounded so it can never delay or cost the hook's own output: it
-  starts only when at least five seconds of the hook's ten-second deadline are
-  unspent (a slow run skips it), it has a budget of four seconds of its own
+  starts in the hook only when at least five seconds of the hook's ten-second
+  deadline are unspent; a slower run starts it in a detached child instead
+  (`fabric instructions self-update`, hidden), with every stream ignored so it
+  holds none of the hook's pipes and cannot delay it, it has a budget of four seconds of its own
   (`selfUpdateBudgetMs` in `hook-timing.ts`), and its output is at most one line
   on stderr, never stdout: `fabric: this CLI copy was updated to <version>; it
   runs from the next session`, or `fabric: this CLI copy was not updated (<why>);
@@ -757,43 +764,81 @@ so through the tool's own command line and never by editing its files:
 
 | Tool | Registers | Scope |
 |---|---|---|
-| Claude Code | `claude mcp add --scope local --transport http fabric <url>` | this checkout only (Claude Code's local scope) |
+| Claude Code | `claude mcp add --scope local --transport http fabric-<last six letters and digits of the id> <url>` | this checkout only (Claude Code's local scope) |
 | Codex | `codex mcp add fabric-<last six letters and digits of the id> --url <url>`, which also signs in | Codex's one global list, so each project's server has a name of its own |
 
-The Connect dialog's Codex commands use the same name for the same project, so a
+Every tool's server for a project has that one name. A server found at the project's gateway under any spelling of its URL (trailing slash, capitals, default port) counts as registered, and so does one under the older name `fabric`, which `doctor` warns about (as it does when the project's gateway is registered under several names; it also notes an organization-wide server and a non-Fabric server under the project's name, which stay as they are). A `fabric` that is someone else's server is never touched and never blocks setup; this deployment's own entry for another project is replaced; the organization-wide server is left as it is, with a line saying so. The Connect dialog's Claude Code and Codex commands use the same name for the same project, so a
 server added from either is the one the other finds; a test in the CLI runs one
 corpus of ids through both rules and fails if they differ.
 
 If registration was requested but any selected tool did not register the
-server, `init` exits 7 and reports incomplete setup; the installed hook remains
+server (a tool that is not installed, a refused write, a server of another
+vendor under the name), `init` exits 7 and reports incomplete setup. Codex's
+manual step (below) is a note, not a failure: `init` exits 0 when everything it
+could do succeeded; the installed hook remains
 available for a retry. Successful registration with OAuth sign-in still pending
-is reported separately. Registration is not evidence of a successful MCP tool
-call. JSON output carries `mcpRequested`, `mcpComplete` and
-`mcpAuthenticationPending` alongside each tool's result.
+is reported separately, and only when Claude Code says so: `init` asks `claude
+mcp get <name>` about the one server of this project's gateway and prints, as the
+last line for the tool, `Claude Code: "<name>" connected.`, `... registered, needs
+sign-in.` or `... registered, unreachable (<host>).` (a sign-in another checkout
+made covers this one). Codex has no question for a single server, so its line
+says `sign-in status not available for Codex` and keeps the login line.
+Registration is not evidence of a successful MCP tool call. JSON output carries `mcpRequested`, `mcpComplete` (true only when every
+selected tool actually has the server registered), `manualSteps` (the tools left
+for the person, each with its `registerLine`; a manual step does not fail the
+run) and `mcpAuthenticationPending` alongside each tool's result. JSON mode does
+not ask Claude Code about its sign-in.
 
 Before it writes anything it reads what the tool already holds, from the tool's
 own files as data (Claude Code's `~/.claude.json`, for the checkout's local scope
 and the user scope, and the checkout's `.mcp.json`; Codex's `config.toml`), and
-acts on what it finds. It never asks the tool: Claude Code's `mcp get` and `mcp
-list` start the servers they name to check them, and one of those can be a
+acts on what it finds. It reads every server, whatever it is named, and
+classifies each by its address alone: this project's gateway, another project's
+of this deployment, this deployment's organization-wide gateway, someone else's,
+or a command. `doctor` classifies with the same code. An address on this
+deployment's own origin that is not spelled like any published gateway is asked
+about once, with a single unauthenticated `GET` (no cookies, no redirects
+followed, 3 seconds at most, only to that origin; `doctor` does so only with
+`--probe-network`): a Fabric gateway answers 401 with a `resource_metadata`
+challenge, and the same-origin metadata names the resource it protects. An
+address that cannot be classified this way is not counted as Fabric's, the
+project's server is added beside it, and a line says so. It never asks the tool what it holds: Claude Code's `mcp list` starts the servers they name to check them, and one of those can be a
 `fabric` server that the repository's own `.mcp.json` runs as a command, before
 anyone has been asked to trust it. A file that cannot be read, or that writes
 Codex's servers in a form the reader does not follow (an inline table, a dotted
 key, `[mcp_servers]` on its own), stops the registration with the line to run by
 hand, since `codex mcp add` would replace a server the reader had missed.
 
-- **The same URL is already registered**: nothing is registered or run. For
-  Codex that holds under any name, so a server the person named themselves
-  counts. Registered does not mean signed in, so `init` adds one line, `If <tool>
-  has not signed in to it yet, run: <tool> mcp login <name>`, and never runs that
-  login itself, so a rerun opens no browser the person did not ask for.
-- **The name holds another gateway of this deployment** (the project was
-  connected to another one before): it is replaced. For Claude Code only in the
-  checkout's own scope; the same name in another scope is left, with the line
-  that removes it.
-- **Anything else under that name** (a different vendor's server, another
-  deployment's gateway, a server with no URL): it is left alone, and `init`
-  says so with the line to run once the person has removed it.
+The one question it does ask is whether Claude Code is connected, with `claude mcp get
+<name>`, and only about the server that points at this project's gateway,
+so what the tool starts is a request to Fabric. A server whose URL is the same
+address however it is spelled (a trailing slash, a host in capitals) is left
+alone: Claude Code keeps its sign-in under the server's name and URL, shared by
+every checkout that registers it, and `claude mcp remove` signs all of them out.
+Only an entry that points somewhere else is removed and added again.
+
+- **A server the tool will use points at this project**: nothing is registered
+  or run, under any name and in any scope (for Claude Code the entry that wins
+  for its name, local before project before user, is the one that counts). When
+  `claude mcp get` says the server needs a sign-in, `init` prints the login line
+  and the pending note; it never runs that login itself for a server that was
+  already there, so a rerun opens no browser the person did not ask for.
+- **The project's own name holds another project's gateway of this deployment**
+  (the project was connected to another one before): it is replaced, for Claude
+  Code only in the checkout's own scope, and only under the names `init`
+  registers (`fabric-<id>`, and the older `fabric` that earlier versions wrote
+  to the local scope). Entries under any other name are never removed; the same name in a wider scope stays and is named in
+  a line saying the checkout's entry takes precedence. An older `fabric` entry
+  of this deployment for another project in the checkout's scope is replaced
+  too.
+- **The organization-wide server of this deployment** is the person's earlier
+  setup and is never replaced: `init` adds the project server beside it and
+  says `Your organization-wide Fabric server "<name>" stays as it is`.
+- **A foreign server under the old name `fabric`** is never touched and does
+  not block setup. A foreign one under the project's own name in the checkout's
+  scope (a different vendor's server, another deployment's gateway, a server
+  with no URL) is left alone, and `init` says so with the line to run once the
+  person has removed it.
 - **The tool is not on `PATH`**: one line, with the command to run once it is.
   (Codex with no terminal is not asked, so there it is the line to run by hand.)
 - **The tool cannot register it**: one line with the command to run by hand.
@@ -1022,26 +1067,65 @@ start when safe.` At each session start, in a matching checkout, it:
 2. if it is, takes `<git common dir>/fabric/ff.lock` without waiting (a second
    hook that finds it held says another process is updating the checkout and
    changes nothing), looks again, and fetches the branch with `git fetch
-   --no-tags --no-recurse-submodules -- <remote>
+   --no-tags --no-write-fetch-head --no-recurse-submodules -- <source>
    refs/heads/<ref>:refs/remotes/<remote>/<ref>`, a refspec that is not forced:
-   a branch whose upstream was rewritten is refused as diverged, never reset;
+   a branch whose upstream was rewritten is refused as diverged, never reset.
+   Only the tracked branch is asked for (no tags, no `FETCH_HEAD`). For a
+   project that reads its repository directly, **nothing is fetched when HEAD
+   already holds the commit the server read on the branch**: that is the common
+   session start, and it costs the one API request and a few local git reads.
+   When a fetch is needed, `<source>` is Fabric's authenticated Git gateway when
+   the deployment offers one, otherwise the checkout's own remote. The gateway is
+   the faster of the two (measured against an Azure DevOps repository: about 1.0
+   to 1.4 s against 1.8 to 2.2 s for the remote, which pays Git Credential
+   Manager and the provider's authentication handshake on every round trip), and
+   its credential is only produced when a fetch is about to need it;
 3. moves to the fetched tip with `git merge --ff-only` when HEAD is an ancestor
-   of it. **The target is the branch tip, not the published commit**: git is
+   of it. When git refuses because a tracked file's work-tree copy differs from
+   the index **only in line endings** (`core.autocrlf`, or a tool that rewrites
+   generated files at each session; `git diff` shows nothing for it), those files
+   are put back from the index (`git checkout -- <files>`, no content changes)
+   and the merge is tried once more. This is the only write to the work tree
+   besides the merge, and it is made only when every file git names is tracked
+   in the ordinary state (not assume-unchanged or skip-worktree), has no
+   `filter`, `ident` or `working-tree-encoding` attribute, has no staged change
+   and no content change by git's own reckoning (a file git can never see as
+   clean is not rewritten at every session), is a regular text file under 1 MiB
+   whose type and, where `core.fileMode` is on, executable bit are the index's,
+   and its raw bytes equal the index's apart from CRLF versus LF (all blockers
+   are read in one `git cat-file --batch`); the bytes are read again just before
+   the overwrite, a check that runs out of time reports that rather than blaming
+   the files, and
+   nothing is started with less than 1.5 s left. If any blocker fails any of that
+   (an untracked file, a real edit, a filtered or binary file), nothing is
+   restored, the tree stays exactly as found, and the refusal names only those
+   files. **The target is the branch tip, not the published commit**: git is
    the authority on where the branch is, and Fabric's published copy only
    mirrors it;
 4. says what happened, once (below), and appends one line to a trace.
 
 It runs with the developer's own credentials but nothing that can ask a person
 (no askpass programs, no terminal prompt, ssh in batch mode), and inside the
-hook's budget: the fetch gets the 10 seconds minus a 1.5 second reserve, and the
+hook's budget, which counts from when the process started (Node's own start-up
+is inside the ten seconds) and which the process always keeps: on the deadline
+the whole git process tree is killed (`taskkill /T /F` on Windows, the process
+group elsewhere) and its pipes are released, and hook mode ends the process
+itself once its output is written, so a transport child that outlived git cannot
+keep a session waiting. The fetch gets the 10 seconds minus a 1.5 second reserve, and the
 local steps after it (looking at the checkout once more, then the merge) are
 not held to the network's budget: the merge starts as long as half a second is
 left, however much of the reserve the look spent, so a fetch that used its whole
 budget still ends in a fast-forward on the first run, and a slow remote can
 never leave the hook mid-merge. When the budget does run out, the trace records
 which stage (`read`, `fetch` or `merge`) as its `reason`, stderr says `gave up
-after 10 s`, and stdout still says where the checkout stands. It never pulls, rebases, stashes, resets, checks out,
-commits or pushes; a checkout it cannot fast-forward is left exactly as it was.
+after <n> s` (the time the process had actually run), and stdout still says where the checkout stands. It never pulls, rebases, stashes, resets, switches branches,
+commits or pushes; the one other write it makes is putting back line-ending-only
+files from the index (step 3), and a checkout it cannot fast-forward is left
+exactly as it was. The hook needs git 2.31 or later for the gateway transport
+(`--config-env`); an older git prints one line saying to update it, and the
+fetch flags added in 2.29 are dropped automatically on a git that lacks them.
+The ten seconds count from when Node starts: time spent by an `npx` or `.cmd`
+shim before that is outside them.
 `check --hook` never writes at all, and a person's own `sync` only reports.
 
 *Opting out.* `init --report-only` writes `check --hook` instead, and a
@@ -1066,8 +1150,14 @@ published version, reason; readable by its owner only), so an agent is not
 told the same thing at every session start. A fast-forward and missing
 credentials always print, and a fast-forward forgets what was said before it.
 The trace, `<config dir>/traces/instructions-hook.jsonl` (owner only, the last
-50 runs), holds `{ at, projectId, outcome, reason, ms }` and nothing else: no
-path, URL, commit or word git said. A trace or notice that cannot be written
+50 runs), holds `{ at, projectId, outcome, reason, ms, totalMs, phases }` and
+nothing else: no path, URL, commit or word git said. `totalMs` counts from the
+process start; `phases` is the milliseconds in each named step (`node` start-up,
+`api`, `classify`, `report`, `status`, `facts`, `contains`, `token`, `fetch`,
+`relate`, `merge`). A run that never reached the checkout leaves an entry too,
+with outcome `skipped` and reason `not-signed-in`, `upgrade-required`,
+`deadline` or `failed-<exit code>`, and the kept copy's update leaves one with
+outcome `self-update`. A trace or notice that cannot be written
 never fails a session start.
 
 **The report in a matching checkout.** The published commit is the snapshot's

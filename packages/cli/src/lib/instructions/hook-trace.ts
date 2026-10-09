@@ -3,7 +3,8 @@
  * results, one JSON object per line, in `<config dir>/traces/instructions-hook.jsonl`
  * (readable by its owner only). It exists so "the hook did nothing" can be
  * answered afterwards; it holds a time, the project id, the result and its
- * reason (both from closed sets) and how long the run took — never a path, a
+ * reason (both from closed sets), how long the run took and where that time
+ * went, by phase — never a path, a
  * URL, a commit name or a word git said.
  *
  * Best effort: a trace that cannot be written is dropped, and the hook never
@@ -21,6 +22,10 @@ export interface TraceEntry {
 	outcome: string;
 	reason: string | null;
 	ms: number;
+	/** Milliseconds since the process started, Node's start-up included. */
+	totalMs?: number;
+	/** Milliseconds in each named phase (a closed set of names this CLI chose). */
+	phases?: Record<string, number>;
 }
 
 export function traceFile(configDir: string): string {

@@ -15,6 +15,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
 	loadRecipientBrandProject,
 	newRecipientLogoToken,
@@ -22,7 +23,6 @@ import {
 	recipientLogoPendingKey,
 	signRecipientLogoRead,
 } from "../../lib/recipient-brand";
-import { requireGlossyEnabled } from "../../lib/glossy-feature";
 
 /**
  * Propose a recipient brand from the recipient's own website (Fizzy #2589,
@@ -38,12 +38,13 @@ import { requireGlossyEnabled } from "../../lib/glossy-feature";
  * colors were found, so the form falls back to manual entry. It never carries
  * a host, resolver message or upstream text.
  *
- * AUTHORIZATION: `requireGlossyEnabled` first (gate off → NOT_FOUND for every
- * caller), then `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
+ * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
+ * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
  * recipient brand gate including `canEditProject`.
  */
 export const fetchRecipientBrandProcedure = tenantProtectedProcedure
-	.use(requireGlossyEnabled())
+	.use(requireGlossyOrProposalArtifactEnabled())
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
 	.route({
 		method: "POST",

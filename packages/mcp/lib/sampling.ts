@@ -31,7 +31,6 @@ import {
 	DEFAULT_MODELS,
 	MODEL_ALIASES,
 } from "@repo/database/prisma/ai-model-catalog";
-import type { AIProvider } from "@repo/database/prisma/generated/client";
 
 // ============================================================================
 // Types
@@ -181,6 +180,26 @@ export function selectModelFromPreferences(
 	return defaultModel;
 }
 
+/**
+ * The kind of work a sampling request asks for, from the server's
+ * priorities: the task its model is chosen for on a plan, and its usage row's
+ * task type.
+ */
+export function samplingTaskType(
+	preferences?: ModelPreferences,
+): "SIMPLE" | "COMPLEX" | "CHAT" {
+	const speed = preferences?.speedPriority ?? 0;
+	const intelligence = preferences?.intelligencePriority ?? 0;
+	const cost = preferences?.costPriority ?? 0;
+	if (intelligence > 0 && intelligence >= Math.max(speed, cost)) {
+		return "COMPLEX";
+	}
+	if (Math.max(speed, cost) > 0) {
+		return "SIMPLE";
+	}
+	return "CHAT";
+}
+
 // ============================================================================
 // Sampling Handler Creation
 // ============================================================================
@@ -192,12 +211,9 @@ export function createSamplingHandler(config: SamplingConfig): SamplingHandler {
 	return {
 		handleSamplingRequest: async (params) => {
 			// Dynamically import @repo/ai to avoid circular dependencies
-			const {
-				generateText,
-				getModel,
-				getRAGProviderConfig,
-				wrapModelWithUsageLogging,
-			} = await import("@repo/ai");
+			const { generateText, getAIModelWithMetadata } = await import(
+				"@repo/ai"
+			);
 
 			// Check if approval is required
 			if (config.requireApproval && config.onApprovalRequired) {
@@ -220,41 +236,27 @@ export function createSamplingHandler(config: SamplingConfig): SamplingHandler {
 				}
 			}
 
-			// Get AI provider configuration using centralized entry point
-			const providerConfig = await getRAGProviderConfig({
-				userId: config.userId,
-				organizationId: config.organizationId,
-			});
-
-			// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
-			const apiKey = providerConfig.apiKey;
-
 			// Select model based on preferences
 			const modelId = selectModelFromPreferences(
 				params.modelPreferences,
 				config.defaultModel,
 			);
 
-			// Get the model instance. MCP sampling resolves via getModel directly
-			// (not getAIModelWithMetadata), so it would bypass the global usage
-			// interceptor — wrap it explicitly so these calls are still counted.
-			const rawModel = getModel(modelId, {
-				userId: config.userId,
-				organizationId: config.organizationId,
-				apiKey,
-				provider: providerConfig.provider || undefined,
-				baseUrl: providerConfig.baseUrl,
-			});
-			const model = providerConfig.provider
-				? wrapModelWithUsageLogging(rawModel, {
-						userId: config.userId,
-						organizationId: config.organizationId,
-						// provider is typed string|null on RAGProviderConfig but is an
-						// AIProvider value here; a bad value is caught by the logger.
-						provider: providerConfig.provider as AIProvider,
-						providerModelId: modelId,
-					})
-				: rawModel;
+			// The single plan-aware entry point (Fizzy #2770 D9): a member whose
+			// work runs on a ChatGPT plan has sampling served there too, by the
+			// same rules as every other call, and usage is logged either way. On
+			// API billing the preferred model is mapped to the tenant's provider;
+			// a plan runs the organization's plan model for the task instead.
+			const { model, metadata } = await getAIModelWithMetadata(
+				{
+					taskType: samplingTaskType(params.modelPreferences),
+					modelOverride: modelId,
+				},
+				{
+					userId: config.userId,
+					organizationId: config.organizationId,
+				},
+			);
 
 			// Convert MCP messages to AI SDK format
 			const messages = params.messages.map((msg) => {
@@ -328,7 +330,7 @@ export function createSamplingHandler(config: SamplingConfig): SamplingHandler {
 			const stopReason = stopReasonMap[result.finishReason] ?? "endTurn";
 
 			return {
-				model: modelId,
+				model: metadata.modelString,
 				role: "assistant" as const,
 				content: {
 					type: "text" as const,

@@ -53,6 +53,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
@@ -1189,7 +1190,7 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(mocks.getClient.mock.calls.map(([options]) => options)).toEqual([
 			{
 				project: "project-1",
-				timeoutMs: 10_000,
+				timeoutMs: 9_500,
 				retry: { maxRetries: 0 },
 			},
 		]);

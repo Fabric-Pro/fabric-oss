@@ -1,7 +1,13 @@
 import { app } from "@repo/api";
-import { flushAppInsights } from "@repo/observability";
+import { flushAppInsights, initAppInsights } from "@repo/observability";
+import { startWebAppInsights } from "@shared/lib/web-app-insights";
 import { handle } from "hono/vercel";
 import { after } from "next/server";
+
+// The cloud role must be set before the custom-event transport is built, and
+// `@repo/api` no longer initialises App Insights when it is imported.
+startWebAppInsights();
+initAppInsights();
 
 const handler = handle(app);
 

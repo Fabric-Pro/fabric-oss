@@ -39,7 +39,9 @@ const {
 	queryDbxMock: vi.fn(),
 }));
 
-vi.mock("@repo/ai", () => ({ getRAGProviderConfig: getProviderConfigMock }));
+vi.mock("@repo/ai", () => ({
+	getEmbeddingRAGProviderConfig: getProviderConfigMock,
+}));
 vi.mock("@repo/database", () => ({
 	getRetrievableContextById: getContextMock,
 	loadProjectDatabricksKnowledgeBinding: loadBindingMock,

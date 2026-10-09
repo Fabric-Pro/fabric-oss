@@ -25,7 +25,12 @@ type Scope = {
 type Side = {
 	text: string | null;
 	size: number | null;
-	omitted: "BINARY" | "FILE_TOO_LARGE" | "RESPONSE_LIMIT" | null;
+	omitted:
+		| "BINARY"
+		| "FILE_TOO_LARGE"
+		| "RESPONSE_LIMIT"
+		| "SOURCE_CHANGED"
+		| null;
 };
 
 function unavailable(): never {
@@ -48,12 +53,14 @@ async function openContent(scope: Scope) {
 		generation: intent.repositoryGeneration,
 		commitSha: intent.sourceCommitSha,
 	};
-	if (
-		source.integrationId !== intent.repositoryIntegrationId ||
-		source.ref !== intent.sourceRef
-	)
-		return unavailable();
-	await assertDirectRepositoryPin(source, pin);
+	// A proposal is frozen against the repository configuration it was made
+	// under. Once that changes, its base can no longer be read from the
+	// repository, but its own changed bytes are stored and stay viewable.
+	const baseReadable =
+		source.generation === intent.repositoryGeneration &&
+		source.integrationId === intent.repositoryIntegrationId &&
+		source.ref === intent.sourceRef;
+	if (baseReadable) await assertDirectRepositoryPin(source, pin);
 	const readSide = async (
 		path: string,
 		side: "before" | "after",
@@ -68,6 +75,8 @@ async function openContent(scope: Scope) {
 			(side === "after" && entry.operation === "DELETE")
 		)
 			return { text: null, size: null, omitted: null };
+		if (side === "before" && !baseReadable)
+			return { text: null, size: null, omitted: "SOURCE_CHANGED" };
 		if (maxBytes <= 0)
 			return {
 				text: null,
@@ -135,7 +144,10 @@ async function openContent(scope: Scope) {
 	return {
 		intent,
 		readSide,
-		check: () => assertDirectRepositorySourceCurrent({ ...scope, source }),
+		check: async () => {
+			if (baseReadable)
+				await assertDirectRepositorySourceCurrent({ ...scope, source });
+		},
 	};
 }
 

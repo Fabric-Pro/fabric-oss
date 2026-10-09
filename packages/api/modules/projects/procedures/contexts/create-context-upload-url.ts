@@ -38,6 +38,11 @@ export const createContextUploadUrlProcedure = tenantProtectedProcedure
 			filename: z.string(),
 			mimeType: z.string(),
 			size: z.number(),
+			/**
+			 * The name the source is listed under. Absent or blank, the file
+			 * name is used.
+			 */
+			title: z.string().max(300).optional(),
 			documentTag: z.string().optional(),
 			/**
 			 * How the uploaded file is meant to be used, when it was supplied
@@ -69,6 +74,7 @@ export const createContextUploadUrlProcedure = tenantProtectedProcedure
 			filename,
 			mimeType,
 			size,
+			title,
 			documentTag,
 			documentUsage,
 			targetDocumentId,
@@ -198,7 +204,7 @@ export const createContextUploadUrlProcedure = tenantProtectedProcedure
 			mimeType: effectiveMimeType,
 			fileSize: size,
 			metadata: {
-				title: filename,
+				title: title?.trim() || filename,
 				uploadedBy: user.id,
 				uploadedAt: new Date().toISOString(),
 				...(documentTag

@@ -366,6 +366,22 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"An organization admin connected a ChatGPT plan account for the organization's shared work with the Fabric CLI. The sign-in is stored encrypted; the row records the account's label and email domain only.",
 	},
 	{
+		key: "org.chatgpt_plan.account_shared_from_personal",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.account_shared_from_personal",
+		description:
+			"A member turned their own ChatGPT plan into one of the organization's shared accounts without signing in again. The sign-in moved as stored, encrypted; only that member can take it back.",
+	},
+	{
+		key: "org.chatgpt_plan.account_returned_to_personal",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.account_returned_to_personal",
+		description:
+			"The member who connected a shared ChatGPT plan account took it back as their own plan. It no longer serves the organization's shared work.",
+	},
+	{
 		key: "org.chatgpt_plan.account_updated",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.chatgpt_plan.account_updated",
@@ -386,6 +402,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.org.chatgpt_plan.policy_changed",
 		description:
 			"An admin changed how the organization pools its ChatGPT plan accounts: pooling on or off, what happens when every plan is spent, or the headroom kept for people. Values before and after are in the metadata.",
+	},
+	{
+		key: "org.chatgpt_plan.fallback_model_changed",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.fallback_model_changed",
+		description:
+			"An admin changed the model a ChatGPT plan call retries on when the plan does not serve the chosen one, or turned that retry off. The model before and after is in the metadata.",
 	},
 	{
 		key: "org.chatgpt_plan.terms_acknowledged",

@@ -215,8 +215,12 @@ export const gitFake = {
 		}
 		return result as GitResult<boolean>;
 	},
-	async isClean(_root: string, deadline: number) {
-		return gate("isClean", deadline, () => fakeGit.state.clean);
+	async hasNoTrackedContentChanges(_root: string, deadline: number) {
+		return gate(
+			"hasNoTrackedContentChanges",
+			deadline,
+			() => fakeGit.state.clean,
+		);
 	},
 	async checkoutAppearsIncomplete(_root: string, deadline: number) {
 		return gate(

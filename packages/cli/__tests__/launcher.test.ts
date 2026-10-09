@@ -55,34 +55,33 @@ describe("the served bundle run from its tarball", () => {
 	it("names the npx line, on the deployment's own address", () => {
 		servedBundle({ tarball: TARBALL, origin: ORIGIN });
 
-		expect(launcherWords(ORIGIN, FROM_NPX)).toEqual([
+		expect(launcherWords(FROM_NPX)).toEqual([
 			"npx",
 			"-y",
 			`${ORIGIN}${TARBALL}`,
 		]);
 	});
 
-	it("takes the address from the run when the build did not know one", () => {
+	it("never takes the tarball's host from the run when the build did not know one", () => {
 		servedBundle({ tarball: TARBALL });
 		setLauncherOrigin("https://staging.example.com");
 
-		expect(launcherWords(undefined, FROM_NPX).join(" ")).toBe(
-			`npx -y https://staging.example.com${TARBALL}`,
-		);
+		expect(launcherWords(FROM_NPX)).toEqual(["node", FROM_NPX]);
 	});
 
-	it("binds a line to the run's deployment with --base-url when a bare command would go elsewhere", () => {
+	it("binds a line to the run's deployment with --base-url, and still fetches the tarball from the deployment the build was packed for", () => {
 		servedBundle({ tarball: TARBALL, origin: ORIGIN });
-		setLauncherOrigin("https://staging.example.com");
+		setLauncherOrigin("http://10.255.255.1");
 
-		const command = fabricCommand("instructions sync --project p");
-
-		expect(command).toContain(
-			`npx -y https://staging.example.com${TARBALL} instructions sync --project p`,
+		const command = fabricCommand(
+			"auth login --project p",
+			"http://10.255.255.1",
 		);
-		expect(
-			command.endsWith(" --base-url https://staging.example.com"),
-		).toBe(true);
+
+		expect(command).toBe(
+			`npx -y ${ORIGIN}${TARBALL} auth login --project p --base-url http://10.255.255.1`,
+		);
+		expect(command).not.toContain("http://10.255.255.1/cli");
 	});
 
 	it("adds no --base-url for the address the build is packed for", () => {
@@ -124,7 +123,7 @@ describe("the served bundle run from the copy a hook keeps", () => {
 	it("names the npx line, which is short and keeps working after the deployment ships a newer build", () => {
 		servedBundle({ tarball: TARBALL, origin: ORIGIN });
 
-		expect(launcherWords(ORIGIN, FROM_COPY)).toEqual([
+		expect(launcherWords(FROM_COPY)).toEqual([
 			"npx",
 			"-y",
 			`${ORIGIN}${TARBALL}`,
@@ -141,12 +140,8 @@ describe("the served bundle run from the copy a hook keeps", () => {
 		const unsafe =
 			"/opt/with$dollar/cli/https-fabric.example.com/fabric.mjs";
 
-		expect(launcherWords(ORIGIN, spaced)).toEqual(
-			launcherWords(ORIGIN, FROM_NPX),
-		);
-		expect(launcherWords(ORIGIN, unsafe)).toEqual(
-			launcherWords(ORIGIN, FROM_NPX),
-		);
+		expect(launcherWords(spaced)).toEqual(launcherWords(FROM_NPX));
+		expect(launcherWords(unsafe)).toEqual(launcherWords(FROM_NPX));
 	});
 
 	it("is not a printed file path, so nothing has to be kept from a home-folder scrub", () => {
@@ -160,8 +155,8 @@ describe("the served bundle that never learned where it is served", () => {
 	it("runs the file it is, from the copy or anywhere else", () => {
 		servedBundle({ origin: ORIGIN });
 
-		expect(launcherWords(ORIGIN, FROM_NPX)).toEqual(["node", FROM_NPX]);
-		expect(launcherWords(ORIGIN, FROM_COPY)).toEqual(["node", FROM_COPY]);
+		expect(launcherWords(FROM_NPX)).toEqual(["node", FROM_NPX]);
+		expect(launcherWords(FROM_COPY)).toEqual(["node", FROM_COPY]);
 	});
 
 	it("quotes a path with a space, so the line is one command", () => {
@@ -169,7 +164,7 @@ describe("the served bundle that never learned where it is served", () => {
 		const spaced =
 			"D:/Dev Config/Config/cli/https-fabric.example.com/fabric.mjs";
 
-		expect(launcherWords(ORIGIN, spaced)).toEqual(["node", `"${spaced}"`]);
+		expect(launcherWords(spaced)).toEqual(["node", `"${spaced}"`]);
 	});
 
 	it("falls back to `fabric` when the file has no spelling a shell reads the same", () => {
@@ -177,7 +172,7 @@ describe("the served bundle that never learned where it is served", () => {
 		const unsafe =
 			"/opt/with$dollar/cli/https-fabric.example.com/fabric.mjs";
 
-		expect(launcherWords(ORIGIN, unsafe)).toEqual(["fabric"]);
+		expect(launcherWords(unsafe)).toEqual(["fabric"]);
 	});
 
 	it("keeps the file path in what a message scrub must leave alone", () => {
@@ -290,7 +285,7 @@ describe("a deployment address no command can carry", () => {
 	});
 
 	it.each(HOSTILE)("leaves doctor no command to offer for %s", (origin) => {
-		servedBundle({ tarball: TARBALL });
+		servedBundle({ tarball: TARBALL, origin: ORIGIN });
 		setLauncherOrigin(origin);
 
 		expect(
@@ -299,11 +294,11 @@ describe("a deployment address no command can carry", () => {
 	});
 
 	it("does not keep an address that is plain from being written", () => {
-		servedBundle({ tarball: TARBALL });
+		servedBundle({ tarball: TARBALL, origin: ORIGIN });
 		setLauncherOrigin("http://localhost:3001");
 
 		expect(fabricCommand("auth login")).toBe(
-			`npx -y http://localhost:3001${TARBALL} auth login --base-url http://localhost:3001`,
+			`npx -y ${ORIGIN}${TARBALL} auth login --base-url http://localhost:3001`,
 		);
 	});
 });

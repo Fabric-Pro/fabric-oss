@@ -27,6 +27,7 @@ const OFF: GsRuntimeGates = {
 	publishingSuite: false,
 	todoList: false,
 	glossyEdition: false,
+	proposalArtifact: false,
 };
 const ON: GsRuntimeGates = { ...OFF, glossyEdition: true };
 
@@ -82,6 +83,7 @@ describe("Get Started — Glossy edition page-tour component", () => {
 			publishingSuite: true,
 			todoList: true,
 			glossyEdition: false,
+			proposalArtifact: true,
 		};
 		expect(componentIds(everyOtherGateOn)).not.toContain(
 			"documents-glossy",
@@ -205,5 +207,123 @@ describe("Get Started — Glossy edition copy", () => {
 			expect(body).toContain("Proposal or Business Case");
 			expect(body).toContain("never changes the source document");
 		}
+	});
+
+	it("keeps the artifact-mode copy in English only, with the same concept for a Business Case", () => {
+		const copy = load("en").onboarding.tour.steps.glossyProposalArtifact;
+		expect(copy?.title).toBeTruthy();
+		const component = pageComponentsFor(documentsPage(), {
+			...ON,
+			proposalArtifact: true,
+		}).find((c) => c.id === "documents-glossy");
+		for (const body of [component?.body ?? "", copy?.body ?? ""]) {
+			expect(body).toContain("A Business Case can also become");
+			expect(body).toContain("never changes the source document");
+			// What a Proposal has instead of a Glossy edition.
+			expect(body).toContain(
+				"Main Document, Internal Analysis and Style tabs",
+			);
+			// No promise of a Glossy edition the Proposal no longer offers.
+			expect(body).not.toContain("Proposal or Business Case");
+		}
+	});
+});
+
+/**
+ * Under the `PROPOSAL_ARTIFACT` rollout gate (Fizzy #2801) a Proposal is
+ * written client-ready and offers no Glossy entry unless a legacy edition was
+ * published. Glossy itself stays for Business Case, so the gate hides no
+ * component or step: it changes what they say, so neither points an
+ * artifact-mode viewer at a Glossy entry their Proposals no longer carry.
+ */
+describe("Get Started — Glossy copy under the Proposal artifact gate", () => {
+	const ARTIFACT: GsRuntimeGates = { ...ON, proposalArtifact: true };
+	const glossyComponent = (gates: GsRuntimeGates) =>
+		pageComponentsFor(documentsPage(), gates).find(
+			(c) => c.id === "documents-glossy",
+		);
+	const glossyStep = (
+		gates: Parameters<typeof resolveTourSteps>[0]["gates"],
+	) =>
+		resolveTourSteps({
+			hasProject: true,
+			isTabVisible: allVisible,
+			gates,
+		}).find((s) => s.id === "glossy");
+
+	it("swaps the page-tour component's copy, not the component", () => {
+		const classic = glossyComponent(ON);
+		const artifact = glossyComponent(ARTIFACT);
+
+		expect(classic?.body).toContain("Proposal or Business Case");
+		expect(artifact?.body).not.toBe(classic?.body);
+		expect(artifact?.body).toContain("Internal Analysis");
+		// Same component, same anchor, still conditional: the anchor now sits
+		// on Business Case cards and on Proposals with a published edition.
+		expect(artifact).toMatchObject({
+			id: "documents-glossy",
+			anchor: ANCHOR,
+			conditional: true,
+		});
+		expect(componentIds(ARTIFACT)).toEqual(componentIds(ON));
+	});
+
+	it("does not reopen the component with the Glossy gate off", () => {
+		expect(componentIds({ ...OFF, proposalArtifact: true })).not.toContain(
+			"documents-glossy",
+		);
+	});
+
+	it("leaves every other component's copy alone", () => {
+		const others = (gates: GsRuntimeGates) =>
+			pageComponentsFor(documentsPage(), gates).filter(
+				(c) => c.id !== "documents-glossy",
+			);
+		expect(others(ARTIFACT)).toEqual(others(ON));
+	});
+
+	it("points the guided-tour step at the artifact copy, keeping its id and place", () => {
+		const classic = glossyStep({
+			todoList: false,
+			glossyEdition: true,
+			proposalArtifact: false,
+		});
+		const artifact = glossyStep({
+			todoList: false,
+			glossyEdition: true,
+			proposalArtifact: true,
+		});
+
+		expect(classic?.copyId).toBeUndefined();
+		expect(artifact?.copyId).toBe("glossyProposalArtifact");
+		expect(artifact?.target).toEqual(classic?.target);
+		const steps = ids(
+			resolveTourSteps({
+				hasProject: true,
+				isTabVisible: allVisible,
+				gates: {
+					todoList: false,
+					glossyEdition: true,
+					proposalArtifact: true,
+				},
+			}),
+		);
+		expect(steps[steps.indexOf("documents") + 1]).toBe("glossy");
+	});
+
+	it("keeps the step's own copy when the artifact gate is unsupplied", () => {
+		// Fail-safe: a caller that could not resolve the flag gets today's
+		// copy, which is right for every organization not enrolled.
+		expect(glossyStep({ glossyEdition: true })?.copyId).toBeUndefined();
+	});
+
+	it("does not bring the step back with the Glossy gate off", () => {
+		expect(
+			glossyStep({
+				todoList: true,
+				glossyEdition: false,
+				proposalArtifact: true,
+			}),
+		).toBeUndefined();
 	});
 });

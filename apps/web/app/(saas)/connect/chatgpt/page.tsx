@@ -1,5 +1,6 @@
 import {
 	findChatGptPlanPoolAdminOrganization,
+	getChatGptPlanOrgModelChoices,
 	listChatGptPlanOrganizations,
 } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
@@ -68,7 +69,13 @@ export default async function ConnectChatgptPlanPage({
 				<ConnectSharedChatgptPlanForm
 					organization={
 						organization && slug
-							? { slug, name: organization.name }
+							? {
+									slug,
+									name: organization.name,
+									models: await getChatGptPlanOrgModelChoices(
+										organization.id,
+									),
+								}
 							: null
 					}
 					port={port}
@@ -86,11 +93,18 @@ export default async function ConnectChatgptPlanPage({
 		<AuthWrapper>
 			<ConnectChatgptPlanForm
 				email={session.user.email}
-				organizations={organizations.map(({ id, name, enabled }) => ({
-					id,
-					name,
-					enabled,
-				}))}
+				organizations={
+					await Promise.all(
+						organizations.map(async ({ id, name, enabled }) => ({
+							id,
+							name,
+							enabled,
+							// The organization decides which plan models run its work;
+							// connecting a plan there means agreeing to them (Fizzy #2770).
+							models: await getChatGptPlanOrgModelChoices(id),
+						})),
+					)
+				}
 				port={port}
 				state={state}
 			/>

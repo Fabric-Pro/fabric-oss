@@ -16,7 +16,7 @@
 
 import {
 	AIProviderNotConfiguredError,
-	getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -220,10 +220,10 @@ export async function ingestOAuthIntegrationToolsActivity(
 			organizationId || integration.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemEmbeddingRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getSystemRAGProviderConfig({
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});
@@ -493,10 +493,10 @@ export async function ingestOAuthServerActivity(
 			organizationId || integration.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemEmbeddingRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getSystemRAGProviderConfig({
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});

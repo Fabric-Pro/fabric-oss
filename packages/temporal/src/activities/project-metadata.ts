@@ -244,6 +244,7 @@ async function retrieveProjectContextsForTool(
 						content: string;
 						filename?: string;
 						sourceTitle?: string;
+						sourcePath?: string;
 						sourceUrl?: string;
 						metadata?: { filename?: string; type?: string };
 						sourceType?: string;
@@ -261,6 +262,7 @@ async function retrieveProjectContextsForTool(
 					// "Meeting Transcript: Fabric DSU (9/10/2026, 4:01:34 PM)"
 					// (Fizzy #2473). Precedence matches `formatContextsForPrompt`.
 					const source =
+						r.sourcePath ||
 						r.filename ||
 						r.sourceTitle ||
 						r.sourceUrl ||

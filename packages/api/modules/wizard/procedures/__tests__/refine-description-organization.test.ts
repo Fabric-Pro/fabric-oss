@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => ({
 	hasProjectAccess: vi.fn(),
 	resolveEffectiveProjectPermissions: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
-	getRAGProviderConfig: vi.fn(),
+	getEmbeddingRAGProviderConfig: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 	generateText: vi.fn(),
 	retrieveWizardContexts: vi.fn(),
@@ -62,7 +62,7 @@ vi.mock("@repo/rag", () => ({
 }));
 vi.mock("@repo/ai", () => ({
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
-	getRAGProviderConfig: mocks.getRAGProviderConfig,
+	getEmbeddingRAGProviderConfig: mocks.getEmbeddingRAGProviderConfig,
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
 vi.mock("ai", () => ({ generateText: mocks.generateText }));
@@ -158,7 +158,7 @@ function projectMember(role: "EDITOR" | "VIEWER", organizationId: string) {
 
 function expectNoAiOrRag() {
 	expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
-	expect(mocks.getRAGProviderConfig).not.toHaveBeenCalled();
+	expect(mocks.getEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
 	expect(mocks.retrieveProjectContexts).not.toHaveBeenCalled();
 	expect(mocks.retrieveWizardContexts).not.toHaveBeenCalled();
 }
@@ -182,7 +182,7 @@ beforeEach(() => {
 		metadata: {},
 		trackUsage: vi.fn(),
 	});
-	mocks.getRAGProviderConfig.mockResolvedValue({
+	mocks.getEmbeddingRAGProviderConfig.mockResolvedValue({
 		apiKey: "key",
 		provider: "OPENAI",
 	});
@@ -219,7 +219,7 @@ describe("refineDescriptionProcedure — without a project: the input organizati
 			{ taskType: "SIMPLE" },
 			{ userId: USER_ID, organizationId: SESSION_ORG },
 		);
-		expect(mocks.getRAGProviderConfig).toHaveBeenCalledWith({
+		expect(mocks.getEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
 			userId: USER_ID,
 			organizationId: SESSION_ORG,
 		});
@@ -259,7 +259,7 @@ describe("refineDescriptionProcedure — with a project: the project and its org
 			{ taskType: "SIMPLE" },
 			{ userId: USER_ID, organizationId: FOREIGN_ORG },
 		);
-		expect(mocks.getRAGProviderConfig).toHaveBeenCalledWith({
+		expect(mocks.getEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
 			userId: USER_ID,
 			organizationId: FOREIGN_ORG,
 		});

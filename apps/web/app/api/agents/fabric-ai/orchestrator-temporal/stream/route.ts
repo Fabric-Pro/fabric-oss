@@ -25,6 +25,7 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { chatGptPlanSpentChatResponse } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import {
 	abandonConversationTurnStart,
 	CARRIED_OVER_MARKER_PREFIX,
@@ -624,6 +625,16 @@ export async function POST(request: NextRequest) {
 		// attach to. The workflow resolves its own model on the Temporal
 		// worker regardless.
 		if (newTurn || legacyExecutionId) {
+			// Every ChatGPT plan serving the member's work is spent: refuse
+			// with when it resets, rather than start a run that can only fail
+			// or quietly bill the organization (Fizzy #2770).
+			const planSpent = await chatGptPlanSpentChatResponse({
+				userId,
+				organizationId,
+			});
+			if (planSpent) {
+				return planSpent;
+			}
 			let aiModelResult: Awaited<
 				ReturnType<typeof getAIModelWithMetadata>
 			>;

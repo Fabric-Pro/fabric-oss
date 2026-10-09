@@ -95,6 +95,28 @@ describe("fetchProjectContextSources — EXTERNAL_INDEX attribution", () => {
 	});
 });
 
+describe("fetchProjectContextSources — synced file path", () => {
+	it("labels a synced file by its full repository path", async () => {
+		mocks.retrieveRelevantContextsForSpec.mockResolvedValue([
+			{
+				id: "ctx_2",
+				type: "TEXT",
+				content: "architecture notes",
+				score: 0.03,
+				sourceTitle: "architecture.md",
+				sourcePath: "docs/architecture.md",
+				metadata: {},
+			},
+		]);
+
+		const sources = await fetchProjectContextSources(BASE);
+
+		expect(sources.contextItems[0].sourceLabel).toBe(
+			"docs/architecture.md",
+		);
+	});
+});
+
 describe("system prompt — external-source precedence", () => {
 	it("ranks EXTERNAL_INDEX below every internal artifact tier and warns about undated externals", () => {
 		expect(UPDATE_WITH_CONTEXT_SYSTEM_PROMPT).toContain(

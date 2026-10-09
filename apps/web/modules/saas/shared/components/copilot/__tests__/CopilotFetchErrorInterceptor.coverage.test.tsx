@@ -20,6 +20,8 @@
  * through a stub original fetch.
  */
 
+import { ActiveOrganizationContext } from "@saas/organizations/lib/active-organization-context";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +36,11 @@ vi.mock("sonner", () => ({
 vi.mock("@saas/payments/lib/ai-usage-limit-toast", () => ({
 	isAiUsageLimitExceededPayload: () => false,
 	useShowAiUsageLimitToast: () => vi.fn(),
+}));
+
+const setOrganizationUse = vi.hoisted(() => vi.fn());
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: { users: { chatgptPlan: { setOrganizationUse } } },
 }));
 
 const originalWindowFetch = window.fetch;
@@ -477,5 +484,119 @@ describe("the out-of-credit toast offers somewhere to go", () => {
 		const [, opts] = (toast.error as unknown as ReturnType<typeof vi.fn>)
 			.mock.calls[0] as [string, { action?: unknown }];
 		expect(opts.action).toBeUndefined();
+	});
+});
+
+// Fizzy #2770: every ChatGPT plan serving the member is spent. That is not
+// rate limiting — retrying sooner cannot help — so it must never read as
+// "AI service is busy" nor arm the client-side backoff.
+describe("every ChatGPT plan for the member's work is spent", () => {
+	function planSpent(apiBillingOption: boolean): Response {
+		return new Response(
+			JSON.stringify({
+				error: "Every ChatGPT plan this work may use has no usage left in this window.",
+				code: "subscription_sharing_usage_limit_exceeded",
+				resetAt: "2026-10-08T16:37:00.000Z",
+				apiBillingOption,
+			}),
+			{ status: 429, headers: { "Content-Type": "application/json" } },
+		);
+	}
+
+	type ToastOptions = {
+		description?: string;
+		action?: { label: string; onClick: () => void };
+	};
+	const toastCalls = () =>
+		(toast.error as unknown as ReturnType<typeof vi.fn>).mock.calls as [
+			string,
+			ToastOptions,
+		][];
+
+	it("shows the plan state, not the rate-limit toast, and arms no backoff", async () => {
+		const stub = vi.fn(() => planSpent(false));
+		window.fetch = stub as unknown as typeof window.fetch;
+		render(<CopilotFetchErrorInterceptor />);
+		await window.fetch("/api/copilotkit", { method: "POST" });
+		await window.fetch("/api/copilotkit", { method: "POST" });
+
+		// Both reached the server: a backoff would have answered the second.
+		expect(stub).toHaveBeenCalledTimes(2);
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		const titles = toastCalls().map(([title]) => title);
+		expect(titles).not.toContain("AI service is busy");
+		expect(titles).not.toContain("Slowing down requests");
+		const [title, opts] = toastCalls()[0];
+		expect(title).toBe("The ChatGPT plan has no usage left");
+		expect(opts.description).toMatch(
+			/All ChatGPT plans for your work are spent until /,
+		);
+		expect(opts.action).toBeUndefined();
+	});
+
+	// The switch acts on the session's organization: offered only for a
+	// refusal in the organization on screen, and it refreshes the plan status.
+	function renderInOrganization(queryClient: QueryClient) {
+		render(
+			<QueryClientProvider client={queryClient}>
+				<ActiveOrganizationContext.Provider
+					value={
+						{
+							activeOrganization: {
+								id: "org-1",
+								slug: "example-org",
+							},
+							isOrganizationAdmin: false,
+						} as never
+					}
+				>
+					<CopilotFetchErrorInterceptor />
+				</ActiveOrganizationContext.Provider>
+			</QueryClientProvider>,
+		);
+	}
+
+	it("offers the organization's API billing when the server says it helps", async () => {
+		setOrganizationUse.mockResolvedValue({
+			enabled: false,
+			includeBackgroundJobs: false,
+		});
+		const queryClient = new QueryClient();
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+		window.fetch = vi.fn(() =>
+			planSpent(true),
+		) as unknown as typeof window.fetch;
+		renderInOrganization(queryClient);
+		await window.fetch("/api/copilotkit?organizationId=org-1", {
+			method: "POST",
+		});
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		const [, opts] = toastCalls()[0];
+		expect(opts.action?.label).toBe("useOrganizationBilling");
+		opts.action?.onClick();
+		expect(setOrganizationUse).toHaveBeenCalledWith({ enabled: false });
+		await waitFor(() =>
+			expect(toast.success).toHaveBeenCalledWith(
+				"usingOrganizationBilling",
+			),
+		);
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: ["users", "chatgpt-plan", "status"],
+			}),
+		);
+	});
+
+	it("offers no switch for a refusal in another organization than the one on screen", async () => {
+		window.fetch = vi.fn(() =>
+			planSpent(true),
+		) as unknown as typeof window.fetch;
+		renderInOrganization(new QueryClient());
+		await window.fetch("/api/copilotkit?organizationId=org-2", {
+			method: "POST",
+		});
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(toastCalls()[0][1].action).toBeUndefined();
 	});
 });
